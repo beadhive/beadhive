@@ -56,6 +56,6 @@
     "landed_commit": "071521b05ee16f3069980e6c9dc508e5f9b71974",
     "molecule": "bh-id9pp",
     "official_release": "docs/proof/official-v1-contract-compatibility.json",
-    "official_release_digest": "sha256:fdfe82e323c9bd9dd438fc709c51ae1e1d0d2dca7803035c216fa564587c910b"
+    "official_release_digest": "sha256:6a29221d337ea4614e242776aba88b4aa648cd0b3dd8395b8565ccbd8ad14a68"
   }
 }

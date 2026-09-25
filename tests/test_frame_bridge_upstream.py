@@ -9,6 +9,8 @@ import json
 import os
 import socket
 import tempfile
+import threading
+import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,7 +25,14 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from beadhive import daemon_auth, frame_bridge_factory
+from beadhive import (
+    daemon_auth,
+    frame_bridge_factory,
+    operator_api,
+    operator_feed,
+    operator_sources,
+    state_stream,
+)
 from beadhive import frame_bridge_upstream as upstream
 
 NOW = 1_800_000_000
@@ -1291,3 +1300,83 @@ def test_pinned_gateway_case_matrix_is_immutable_and_covered() -> None:
     }
     assert "counterpartRegistrationMismatchTest" not in proof["aggregateGateway"]
     assert "counterpartTestExecution" not in proof["aggregateGateway"]
+
+
+def test_private_directory_serves_cached_daemon_summaries_with_slow_hive_sources(
+    tmp_path: Path,
+) -> None:
+    release = threading.Event()
+
+    class SlowProvider:
+        def refresh(self, request):
+            release.wait(30)
+            return state_stream.ProviderSnapshot(
+                scope="hive", revision="beads-1", as_of="2026-08-24T00:00:00Z"
+            )
+
+    cfg = {
+        "managed_repos": [
+            {"provider": "github", "org": "beadhive", "repo": repo, "prefix": repo}
+            for repo in ("alpha", "beadhive", "zebra")
+        ]
+    }
+    sources = operator_sources.OperatorSources(
+        cfg=cfg,
+        host_id="factory",
+        provider=SlowProvider(),
+        summary_reader=lambda *_args: (_ for _ in ()).throw(OSError("unused")),
+        journal_base=tmp_path,
+        dispatch_sink_for_entry=lambda _cfg, _entry: tmp_path / "dispatch.jsonl",
+    )
+    api = operator_api.OperatorAPI(
+        sources=sources,
+        feed=operator_feed.OperatorFeed(sources),
+        host_id="factory",
+        instance_id="instance-1",
+        ready=lambda: True,
+    )
+    daemon_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=Starlette(routes=api.routes())),
+        base_url="http://127.0.0.1:8420",
+    )
+    source = upstream.HostDaemonFrameBridgeSource(
+        daemon_bearer=daemon_auth.SecretBearer("bh1.frame-bridge." + "d" * 43),
+        instance=upstream.RegisteredInstance(),
+        client=daemon_client,
+    )
+    fixture = _fixture()
+    fixture.app = upstream.build_private_frame_bridge_application(
+        config=upstream.PrivateFrameBridgeConfig(
+            verifier_store=fixture.verifier_store, host_epoch=EPOCH
+        ),
+        source=source,
+        now=lambda: NOW,
+    )
+    target = f"{BASE}/instances/dev%2Fdemo/hives?limit=50"
+
+    async def exercise():
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=fixture.app),
+                base_url="http://frame-bridge.invalid",
+            ) as client:
+                started = time.monotonic()
+                # The pinned headers carry a 1s deadline, well inside the 5s directory budget.
+                response = await client.get(
+                    target,
+                    headers=_headers(fixture, target=target, scope="upstream:read", jti=b"s" * 16),
+                )
+                return response, time.monotonic() - started
+        finally:
+            release.set()
+            await asyncio.to_thread(sources.hive_summaries.wait_idle, 10)
+            sources.close()
+            await source.close()
+
+    response, elapsed = asyncio.run(exercise())
+
+    assert response.status_code == 200
+    assert elapsed < 1.0
+    [item] = response.json()["items"]
+    assert item["hiveId"] == "github/beadhive/beadhive"
+    assert item["availability"] == "available"

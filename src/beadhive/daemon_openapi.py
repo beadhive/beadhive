@@ -15,11 +15,17 @@ from pathlib import Path
 from typing import Any
 
 from . import daemon_contract
-from .daemon_contract import NON_MCP_ROUTES, TERMINAL_PROTOCOL, RouteSpec, WireModel
+from .daemon_contract import (
+    ADDITIVE_RESPONSE_FIELD,
+    NON_MCP_ROUTES,
+    TERMINAL_PROTOCOL,
+    RouteSpec,
+    WireModel,
+)
 from .transport_inventory import catalog_projection_extension, operator_projection
 
 OPENAPI_CONTRACT = "beadhive-host-openapi-v1.json"
-OPENAPI_COMPONENTS_SHA256 = "d054f98fc60a102253eeb0ef8e18a10647011867082ceb01a60cdc99626456d6"
+OPENAPI_COMPONENTS_SHA256 = "b54cd63eba4bfab08c274bfd7f2a4f5027ba9c49b8b3ac220ba5d9f3e812074d"
 
 _ERROR_RESPONSES = {
     400: "BadRequest",
@@ -81,7 +87,11 @@ def _require_serialized_fields(value: Any) -> None:
     if isinstance(value, dict):
         properties = value.get("properties")
         if value.get("type") == "object" and isinstance(properties, dict):
-            value["required"] = list(properties)
+            value["required"] = [
+                name
+                for name, schema in properties.items()
+                if not (isinstance(schema, dict) and schema.get(ADDITIVE_RESPONSE_FIELD))
+            ]
         for item in value.values():
             _require_serialized_fields(item)
     elif isinstance(value, list):
@@ -254,9 +264,20 @@ def _route_non_header_parameters(route: RouteSpec) -> list[dict[str, Any]]:
                 "cursor",
                 "query",
                 {"type": "string", "minLength": 1},
-                description="Opaque snapshot-scoped cursor returned by nextCursor.",
+                description=(
+                    "Opaque cursor returned by nextCursor. It is scoped to registry membership, "
+                    "order, and filters; background summary refreshes do not invalidate it."
+                ),
             ),
-            _parameter("availability", "query", {"enum": ["available", "unavailable"]}),
+            _parameter(
+                "availability",
+                "query",
+                {"enum": ["available", "unavailable"]},
+                description=(
+                    "Filter on cached summary availability; best effort across pages because "
+                    "cached state may refresh between page reads."
+                ),
+            ),
         ]
     if key in {
         ("GET", "/api/v1/hives/{hive_id}/snapshot"),

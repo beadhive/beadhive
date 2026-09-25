@@ -100,7 +100,7 @@
       "id": "urn:beadhive:wire-contract:host-openapi:1",
       "kind": "openapi",
       "path": "artifacts/host-openapi-v1.json",
-      "sha256": "sha256:4ae39cbeb100e9bf97d0e05958a1877c3ea6c40383c4dc39fe8a40d926880234",
+      "sha256": "sha256:106e82d8c4722bda8503febfb7ff355b6bca3b82f1c23cf609f1ea40799fb0b3",
       "source_owner": "beadhive.daemon_openapi.generate_openapi_document",
       "version": 1
     },

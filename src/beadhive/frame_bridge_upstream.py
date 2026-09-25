@@ -34,6 +34,8 @@ from starlette.routing import Route
 from . import daemon_auth, daemon_contract, operator_work_items
 
 UPSTREAM_CONTRACT = "frame-bridge.upstream.v1"
+_DIRECTORY_PAGE_LIMIT = 200
+_DIRECTORY_MAX_PAGES = 64
 GATEWAY_ISSUER = "gateway/dev/aggregate"
 _PREFIX = "/frame-bridge/upstream/v1"
 _LOOPBACK_ORIGIN = "http://127.0.0.1:8420"
@@ -538,27 +540,54 @@ class HostDaemonFrameBridgeSource:
         return validated.to_wire()
 
     async def directory(self, *, limit: int, cursor: str | None) -> Mapping[str, object]:
-        snapshot = await self.snapshot()
-        revision = snapshot.get("revision")
-        generated_at = snapshot.get("generatedAt")
-        if not isinstance(revision, str) or not revision or type(generated_at) is not int:
-            raise SourceUnavailable
+        # The daemon directory serves cached per-hive summaries and never waits on a per-hive
+        # refresh, so this read stays inside the private directory deadline however slow the
+        # hive's own source is.  A full snapshot read here would not.
+        page, summary = await self._primary_directory_summary()
+        availability = summary.availability.state
         return {
-            "generatedAt": generated_at,
-            "revision": revision,
+            "generatedAt": page.generated_at,
+            "revision": summary.revision or page.revision,
             "items": []
             if cursor is not None
             else [
                 {
                     "hiveId": self._instance.primary_hive_id,
                     "displayName": self._display_name,
-                    "availability": "available",
-                    "coverage": "complete",
-                    "asOf": generated_at,
+                    "availability": availability,
+                    "coverage": summary.coverage.state,
+                    "asOf": summary.as_of if summary.as_of is not None else page.generated_at,
                 }
             ][:limit],
             "nextCursor": None,
         }
+
+    async def _primary_directory_summary(
+        self,
+    ) -> tuple[daemon_contract.FactoryHivePage, daemon_contract.FactoryHiveSummary]:
+        params: dict[str, object] = {"limit": _DIRECTORY_PAGE_LIMIT}
+        for _ in range(_DIRECTORY_MAX_PAGES):
+            try:
+                response = await self._client.get(
+                    "/api/v1/factory/hives", params=params, auth=self._auth
+                )
+            except httpx.HTTPError as exc:
+                raise SourceUnavailable from exc
+            if response.status_code != 200:
+                raise SourceUnavailable
+            try:
+                page = daemon_contract.FactoryHivePage.model_validate(
+                    _strict_json_object(response.content)
+                )
+            except (TypeError, ValueError) as exc:
+                raise SourceUnavailable from exc
+            for summary in page.items:
+                if summary.id == self._instance.primary_hive_id:
+                    return page, summary
+            if page.next_cursor is None:
+                raise SourceNotFound
+            params = {"limit": _DIRECTORY_PAGE_LIMIT, "cursor": page.next_cursor}
+        raise SourceUnavailable
 
     async def events(self, *, subscription: str, after: str | None) -> AsyncIterator[bytes]:
         params: dict[str, str] = {"subscription": subscription}

@@ -15,7 +15,15 @@ from enum import StrEnum
 from typing import Annotated, Any, Literal
 from urllib.parse import quote, unquote_to_bytes
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from . import registry
 
@@ -32,6 +40,11 @@ _IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 def _camel(name: str) -> str:
     head, *tail = name.split("_")
     return head + "".join(part.capitalize() for part in tail)
+
+
+# JSON Schema annotation for a response field added after a published baseline.  OpenAPI
+# generation leaves such a field out of ``required`` so the addition stays compatible.
+ADDITIVE_RESPONSE_FIELD = "x-beadhive-additive"
 
 
 class WireModel(BaseModel):
@@ -324,6 +337,20 @@ class FactoryHiveCoverage(WireModel):
     reason: str | None
 
 
+class FactoryHiveFreshness(WireModel):
+    """How current a cached directory summary is (additive; absent from older producers).
+
+    ``fresh`` is inside its refresh interval, ``stale`` has expired, ``refreshing`` has a
+    background refresh in flight, and ``unknown`` has never been observed.  ``asOf`` is when
+    the host observed the summary and ``expiresAt`` when it stops being fresh; both are null
+    before the first observation.
+    """
+
+    state: Literal["fresh", "stale", "refreshing", "unknown"]
+    as_of: int | None = Field(ge=0)
+    expires_at: int | None = Field(ge=0)
+
+
 class FactoryHiveSummary(WireModel):
     id: str = Field(pattern=r"^[A-Za-z0-9._~-]+/[A-Za-z0-9._~-]+/[A-Za-z0-9._~-]+$")
     display_label: str = Field(min_length=1)
@@ -339,6 +366,18 @@ class FactoryHiveSummary(WireModel):
     as_of: int | None = Field(default=None, ge=0)
     coverage: FactoryHiveCoverage
     advertised_actions: tuple[AdvertisedAction, ...]
+    # Additive after the published v1 baseline: emitted by this producer, optional on the wire.
+    freshness: FactoryHiveFreshness | None = Field(
+        default=None, json_schema_extra={ADDITIVE_RESPONSE_FIELD: True}
+    )
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_freshness(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        # Round-trip producers that predate the additive member without inventing it.
+        data = handler(self)
+        if self.freshness is None:
+            data.pop("freshness", None)
+        return data
 
     @model_validator(mode="after")
     def _identity_matches(self) -> FactoryHiveSummary:

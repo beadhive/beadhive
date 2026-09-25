@@ -82,6 +82,30 @@ def _safe_timestamp(value: object) -> int:
     return value
 
 
+def _directory_freshness(value: object, *, available: bool) -> tuple[str, int | None]:
+    """Map the daemon's cached-summary freshness onto the Gateway freshness vocabulary."""
+
+    if value is None:
+        # A producer without the additive member refreshed every hive on read.
+        return ("fresh" if available else "unknown"), None
+    if not isinstance(value, dict) or set(value) != {"state", "asOf", "expiresAt"}:
+        raise RuntimeError("operator hive directory is incompatible")
+    state = value["state"]
+    if state not in operator_contract.FACTORY_HIVE_FRESHNESS_STATES:
+        raise RuntimeError("operator hive directory is incompatible")
+    as_of = None if value["asOf"] is None else _safe_timestamp(value["asOf"])
+    expires_at = None if value["expiresAt"] is None else _safe_timestamp(value["expiresAt"])
+    if (as_of is None) != (expires_at is None):
+        raise RuntimeError("operator hive directory is incompatible")
+    if not available or as_of is None:
+        # Never observed (cold or refreshing) or unavailable: nothing current to vouch for.
+        return "unknown", None
+    if state == "fresh":
+        return "fresh", expires_at
+    # Stale, or a refresh in flight over an expired summary.
+    return "stale", expires_at
+
+
 @dataclass(frozen=True)
 class _LiveSnapshotState:
     subscription: str
@@ -199,6 +223,9 @@ class LoopbackGatewayReadSource:
             detail = coverage.get("reason") or availability.get("reason")
             if detail is not None and not isinstance(detail, str):
                 raise RuntimeError("operator hive directory is incompatible")
+            freshness_state, expires_at = _directory_freshness(
+                raw.get("freshness"), available=availability_state == "available"
+            )
             items.append(
                 {
                     "factoryId": gateway_read.FACTORY_ID,
@@ -208,9 +235,9 @@ class LoopbackGatewayReadSource:
                     "scenarioId": None,
                     "availability": ("online" if availability_state == "available" else "offline"),
                     "freshness": {
-                        "state": "fresh" if availability_state == "available" else "unknown",
+                        "state": freshness_state,
                         "asOf": freshness_as_of,
-                        "expiresAt": None,
+                        "expiresAt": expires_at,
                         "detail": detail,
                     },
                     "capabilities": ["snapshot", "events"],
