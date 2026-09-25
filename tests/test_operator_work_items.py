@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
 import jsonschema
+import pytest
 from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
 
 from beadhive import (
+    daemon_contract,
     host_daemon,
     operator_api,
     operator_feed,
@@ -422,3 +425,236 @@ def test_missing_and_unavailable_hives_are_not_empty_successes(tmp_path: Path) -
         "snapshot_source_unavailable",
     )
     assert unavailable.headers["retry-after"] == "1"
+
+
+def test_byte_budget_materializes_each_bounded_row_once_and_preserves_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    labels = tuple(f"label-{index:02}-" + "x" * 240 for index in range(12))
+    issues = tuple(
+        _issue(f"bh-wide-{index:03}", priority="P0", labels=labels) for index in range(250)
+    )
+    issues = tuple(
+        state_stream.StreamIssue(**{**issue.__dict__, "title": "x" * 4_096}) for issue in issues
+    )
+    beads = state_stream.ProviderSnapshot(
+        scope="hive", revision="beads-wide", as_of=NOW, issues=issues
+    )
+    runtime = _runtime("host-1", "runtime")
+    query = operator_work_items.WorkItemQuery(queue="ready", limit=200)
+    original = operator_work_items._row
+    projected = 0
+
+    def counted(*args, **kwargs):
+        nonlocal projected
+        projected += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(operator_work_items, "_row", counted)
+
+    first = operator_work_items.remote_queue_payload(
+        hive_id=HIVE, beads=beads, runtime=runtime, query=query
+    )
+    first_projected = projected
+    second = operator_work_items.remote_queue_payload(
+        hive_id=HIVE,
+        beads=beads,
+        runtime=runtime,
+        query=operator_work_items.WorkItemQuery(
+            queue="ready", limit=200, cursor=first["nextCursor"]
+        ),
+    )
+
+    assert 0 < first["returned"] < 200
+    assert len(operator_work_items.encoded_bytes(first)) <= operator_work_items.QUEUE_MAX_BYTES
+    assert first["items"][-1]["id"] != second["items"][0]["id"]
+    assert second["items"][0]["id"] == f"bh-wide-{first['returned']:03}"
+    assert first_projected <= query.limit
+
+
+def test_exact_detail_rejects_dependency_overflow_after_only_max_plus_one_projections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dependency_count = operator_work_items.DETAIL_MAX_DEPENDENCIES + 500
+    beads = state_stream.ProviderSnapshot(
+        scope="hive",
+        revision="beads-hostile",
+        as_of=NOW,
+        issues=(_issue("bh-target"),),
+        work_dependencies=tuple(
+            _dependency("bh-target", f"bh-prerequisite-{index:04}")
+            for index in range(dependency_count)
+        ),
+    )
+    original = operator_work_items._remote_dependency_detail
+    projected = 0
+
+    def counted(*args, **kwargs):
+        nonlocal projected
+        projected += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(operator_work_items, "_remote_dependency_detail", counted)
+
+    with pytest.raises(operator_sources.OperatorSourceError) as raised:
+        operator_work_items.remote_detail_payload(
+            hive_id=HIVE,
+            bead_id="bh-target",
+            beads=beads,
+            runtime=_runtime("host-1", "runtime"),
+        )
+
+    assert raised.value.code == "work_item_detail_too_large"
+    assert raised.value.status_code == 413
+    assert projected == operator_work_items.DETAIL_MAX_DEPENDENCIES + 1
+
+
+def test_exact_detail_rejects_oversized_rich_text_with_stable_413() -> None:
+    issue = _issue("bh-huge")
+    issue = state_stream.StreamIssue(
+        **{
+            **issue.__dict__,
+            "description": "x" * (operator_work_items.DETAIL_TEXT_MAX_BYTES + 1),
+        }
+    )
+    beads = state_stream.ProviderSnapshot(
+        scope="hive", revision="beads-huge", as_of=NOW, issues=(issue,)
+    )
+
+    with pytest.raises(operator_sources.OperatorSourceError) as raised:
+        operator_work_items.remote_detail_payload(
+            hive_id=HIVE,
+            bead_id=issue.id,
+            beads=beads,
+            runtime=_runtime("host-1", "runtime"),
+        )
+
+    assert raised.value.code == "work_item_detail_too_large"
+    assert raised.value.status_code == 413
+
+
+def test_exact_detail_contract_rejects_nested_action_command_or_path_fields() -> None:
+    issue = _issue("bh-safe-action")
+    payload = operator_work_items.remote_detail_payload(
+        hive_id=HIVE,
+        bead_id=issue.id,
+        beads=state_stream.ProviderSnapshot(
+            scope="hive", revision="beads-action", as_of=NOW, issues=(issue,)
+        ),
+        runtime=_runtime("host-1", "runtime"),
+    )
+    launch = payload["item"]["advertisedActions"][2]
+    launch["input"]["schema"]["properties"]["command"] = {"type": "string"}
+
+    with pytest.raises(ValueError, match="fixed contract"):
+        daemon_contract.RemoteWorkItemDetail.model_validate(payload)
+
+
+def test_legacy_detail_preserves_unbounded_dependency_type_contract() -> None:
+    issue = _issue("bh-legacy")
+    dependency_type = "x" * 4_097
+    dependency = state_stream.WorkDependency(
+        id=state_stream.projection_id(
+            "work-dependency", (HIVE, issue.id, "bh-other", dependency_type)
+        ),
+        hive=HIVE,
+        issue_id=issue.id,
+        depends_on_id="bh-other",
+        type=dependency_type,
+        created_at=NOW,
+        created_by="planner@example.test",
+    )
+    payload = operator_work_items.detail_payload(
+        hive_id=HIVE,
+        bead_id=issue.id,
+        beads=state_stream.ProviderSnapshot(
+            scope="hive",
+            revision="beads-legacy",
+            as_of=NOW,
+            issues=(issue,),
+            work_dependencies=(dependency,),
+        ),
+        runtime=_runtime("host-1", "runtime"),
+    )
+
+    assert payload["item"]["dependencies"][0]["type"] == dependency_type
+    daemon_contract.WorkItemDetail.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda payload: payload.__setitem__("limit", "1"),
+        lambda payload: payload.__setitem__("returned", 1.0),
+        lambda payload: payload["filters"]["priorities"].__setitem__(0, "urgent"),
+        lambda payload: payload["items"][0].__setitem__("priority", "1"),
+        lambda payload: payload["items"][0].__setitem__("priority", True),
+        lambda payload: payload["warnings"].append("x" * 4_097),
+        lambda payload: payload.__setitem__("unexpected", True),
+        lambda payload: payload["coverage"]["sources"]["beads"].__setitem__("detail", "x" * 4_097),
+    ],
+)
+def test_remote_queue_contract_rejects_coercion_unbounded_text_and_extras(mutate) -> None:
+    issue = _issue("bh-strict", priority="P1")
+    payload = operator_work_items.remote_queue_payload(
+        hive_id=HIVE,
+        beads=state_stream.ProviderSnapshot(
+            scope="hive", revision="beads-strict", as_of=NOW, issues=(issue,)
+        ),
+        runtime=_runtime("host-1", "runtime"),
+        query=operator_work_items.WorkItemQuery(queue="ready", limit=1, priorities=("P1",)),
+    )
+    mutate(payload)
+
+    with pytest.raises(ValueError):
+        daemon_contract.RemoteWorkItemQueue.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda payload: payload.__setitem__("hiveId", "github/other/repo"),
+        lambda payload: payload["item"].__setitem__("revision", "sha256:other"),
+        lambda payload: payload["item"]["ref"].__setitem__("id", "bh-other"),
+        lambda payload: payload["item"]["advertisedActions"][0].__setitem__(
+            "availability", "forbidden"
+        ),
+        lambda payload: payload["item"]["advertisedActions"][0].__setitem__("reason", "x" * 4_097),
+        lambda payload: payload["item"]["advertisedActions"][0].__setitem__("advertisedAt", "1"),
+        lambda payload: payload["item"]["advertisedActions"][0].__setitem__("advertisedAt", 2**53),
+        lambda payload: payload["item"]["advertisedActions"][2].__setitem__(
+            "reasonCode", "x" * 257
+        ),
+        lambda payload: payload["item"]["advertisedActions"][0]["preconditions"].__setitem__(
+            "mustMatch", "false"
+        ),
+        lambda payload: payload["item"]["advertisedActions"][0].__setitem__(
+            "command", "bh work claim"
+        ),
+        lambda payload: payload["item"]["dependencies"].append(
+            {
+                "id": "bh-other",
+                "title": None,
+                "type": "blocks",
+                "state": "open",
+                "direction": "prerequisite",
+                "path": "/private/repo",
+            }
+        ),
+    ],
+)
+def test_remote_detail_contract_rejects_identity_action_and_nested_drift(mutate) -> None:
+    issue = _issue("bh-strict-detail")
+    payload = operator_work_items.remote_detail_payload(
+        hive_id=HIVE,
+        bead_id=issue.id,
+        beads=state_stream.ProviderSnapshot(
+            scope="hive", revision="beads-detail", as_of=NOW, issues=(issue,)
+        ),
+        runtime=_runtime("host-1", "runtime"),
+    )
+    candidate = copy.deepcopy(payload)
+    mutate(candidate)
+
+    with pytest.raises(ValueError):
+        daemon_contract.RemoteWorkItemDetail.model_validate(candidate)

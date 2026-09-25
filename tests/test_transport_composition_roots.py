@@ -136,7 +136,7 @@ def test_checked_before_after_evidence_is_current_and_closes_every_root() -> Non
         exclusions = drift["comparison"]["excluded_declarations"]
         if row["surface"] == "operator-api":
             assert exclusions == ["OPTIONS *"]
-            assert drift["comparison"]["projection_declaration_count"] == 13
+            assert drift["comparison"]["projection_declaration_count"] == 16
             assert "OpenAPI" in drift["comparison"]["exclusion_reason"]
         else:
             assert exclusions == []

@@ -677,13 +677,13 @@ def test_deck_cursor_reaches_ready_items_beyond_the_generic_queue_page_limit(
             pass
 
     queue_calls = []
-    queue_payload = operator_work_items.queue_payload
+    queue_payload = operator_work_items.complete_queue_payload
 
     def counted_queue_payload(**kwargs):
         queue_calls.append(kwargs["query"].queue)
         return queue_payload(**kwargs)
 
-    monkeypatch.setattr(operator_work_items, "queue_payload", counted_queue_payload)
+    monkeypatch.setattr(operator_work_items, "complete_queue_payload", counted_queue_payload)
     backend = herdr_views.ViewBackend(cfg={}, sources=Sources(), _roster=_roster())
     first = backend.deck(HIVE, limit=200, cursor=None)
     second = backend.deck(HIVE, limit=200, cursor=first["next_cursor"])

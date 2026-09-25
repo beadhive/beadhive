@@ -133,6 +133,8 @@ class LoopbackGatewayReadSource:
             raise gateway_read.ReadSourceInvalidRequest
         if response.status_code == 409:
             raise gateway_read.ReadSourceResnapshotRequired
+        if response.status_code == 413:
+            raise gateway_read.ReadSourceTooLarge
         response.raise_for_status()
 
     async def list_hives(
@@ -232,7 +234,7 @@ class LoopbackGatewayReadSource:
             raise gateway_read.ReadSourceInvalidRequest
         encoded_hive = quote(hive_id, safe="-._~")
         response = await self._client.get(
-            f"/api/v1/hives/{encoded_hive}/snapshot",
+            f"/api/v1/hives/{encoded_hive}/snapshot-with-work-items",
             auth=self._daemon_auth,
         )
         self._raise_for_status(response)
@@ -240,7 +242,7 @@ class LoopbackGatewayReadSource:
         if not isinstance(snapshot, dict):
             raise RuntimeError("operator snapshot is incompatible")
         try:
-            validated = daemon_contract.HiveSnapshotResponse.model_validate(snapshot)
+            validated = daemon_contract.RemoteHiveSnapshotResponse.model_validate(snapshot)
         except ValueError as exc:
             raise RuntimeError("operator snapshot is incompatible") from exc
         if validated.schema_version != 1:
@@ -292,6 +294,98 @@ class LoopbackGatewayReadSource:
                 revision=revision,
             )
         return envelope
+
+    async def work_items(
+        self,
+        subject: str,
+        *,
+        factory_id: str,
+        hive_id: str,
+        view: str,
+        limit: int,
+        cursor: str | None,
+        priorities: tuple[str, ...],
+        labels: tuple[str, ...],
+        assignee: str | None,
+        issue_type: str | None,
+        parent: str | None,
+    ) -> Mapping[str, object]:
+        self._require_scope(subject, factory_id)
+        if _HIVE_ID.fullmatch(hive_id) is None or view not in gateway_read.WORK_ITEM_VIEWS:
+            raise gateway_read.ReadSourceInvalidRequest
+        params: list[tuple[str, str]] = [("queue", view), ("limit", str(limit))]
+        params.extend(("priority", value) for value in priorities)
+        params.extend(("label", value) for value in labels)
+        for name, value in (("assignee", assignee), ("type", issue_type), ("parent", parent)):
+            if value is not None:
+                params.append((name, value))
+        if cursor is not None:
+            params.append(("cursor", cursor))
+        response = await self._client.get(
+            f"/api/v1/hives/{quote(hive_id, safe='-._~')}/work-item-pages",
+            params=params,
+            auth=self._daemon_auth,
+        )
+        self._raise_for_status(response)
+        try:
+            validated = daemon_contract.RemoteWorkItemQueue.model_validate(response.json())
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("operator work-items page is incompatible") from exc
+        if (
+            validated.hive_id != hive_id
+            or validated.queue != view
+            or validated.limit != limit
+            or validated.filters.priorities != priorities
+            or validated.filters.labels != labels
+            or validated.filters.assignee != assignee
+            or validated.filters.type != issue_type
+            or validated.filters.parent != parent
+        ):
+            raise RuntimeError("operator work-items page is incompatible")
+        page = validated.to_wire()
+        page["view"] = page.pop("queue")
+        return {
+            "schemaVersion": gateway_read.SCHEMA_VERSION,
+            "contractVersion": gateway_read.CONTRACT_VERSION,
+            "instanceId": gateway_read.INSTANCE_ID,
+            "factoryId": factory_id,
+            "hiveId": hive_id,
+            "detailLevel": "summary-page",
+            "sourceRevision": validated.revision,
+            "page": page,
+        }
+
+    async def work_item_detail(
+        self, subject: str, *, factory_id: str, hive_id: str, bead_id: str
+    ) -> Mapping[str, object]:
+        self._require_scope(subject, factory_id)
+        if (
+            _HIVE_ID.fullmatch(hive_id) is None
+            or re.fullmatch(r"[A-Za-z0-9._~-]{1,256}", bead_id) is None
+        ):
+            raise gateway_read.ReadSourceInvalidRequest
+        response = await self._client.get(
+            f"/api/v1/hives/{quote(hive_id, safe='-._~')}/work-item-details/"
+            f"{quote(bead_id, safe='-._~')}",
+            auth=self._daemon_auth,
+        )
+        self._raise_for_status(response)
+        try:
+            validated = daemon_contract.RemoteWorkItemDetail.model_validate(response.json())
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("operator work-item detail is incompatible") from exc
+        if validated.hive_id != hive_id or validated.item.id != bead_id:
+            raise RuntimeError("operator work-item detail is incompatible")
+        return {
+            "schemaVersion": gateway_read.SCHEMA_VERSION,
+            "contractVersion": gateway_read.CONTRACT_VERSION,
+            "instanceId": gateway_read.INSTANCE_ID,
+            "factoryId": factory_id,
+            "hiveId": hive_id,
+            "detailLevel": "exact",
+            "sourceRevision": validated.revision,
+            "detail": validated.to_wire(),
+        }
 
     async def events(
         self,
@@ -484,7 +578,7 @@ class LoopbackDemoRuntime:
 
     async def snapshot(self) -> Mapping[str, object]:
         response = await self._client.get(
-            f"{_HIVE_PATH}/snapshot",
+            f"{_HIVE_PATH}/snapshot-with-work-items",
             auth=self._daemon_auth,
         )
         response.raise_for_status()
@@ -492,7 +586,7 @@ class LoopbackDemoRuntime:
         if not isinstance(value, dict) or not isinstance(value.get("cursor"), dict):
             raise RuntimeError("operator snapshot is incompatible")
         try:
-            validated = daemon_contract.HiveSnapshotResponse.model_validate(value).to_wire()
+            validated = daemon_contract.RemoteHiveSnapshotResponse.model_validate(value).to_wire()
         except ValueError as exc:
             raise RuntimeError("operator snapshot is incompatible") from exc
         return {

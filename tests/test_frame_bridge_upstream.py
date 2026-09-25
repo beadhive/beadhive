@@ -35,11 +35,24 @@ GATEWAY_REVISION = "e482bb44ad9f89dd9a751ce42d4332bec0b311e6"
 GATEWAY_CONTRACT_CASES_SHA256 = "22c102911d8c346814db24dcd0ad70d6f9a6691c12a512072b2ae1116d1e52e9"
 
 
+def _retrieval(revision: str) -> dict[str, object]:
+    return {
+        "contract": "beadhive.work-items/v1",
+        "revision": revision,
+        "views": ["ready", "active", "blocked", "recent"],
+        "maxPageItems": 200,
+        "maxPageBytes": 917_504,
+        "maxDetailBytes": 917_504,
+    }
+
+
 @dataclass
 class Source:
     online_value: bool = True
     calls: list[str] = field(default_factory=list)
     refreshes: int = 0
+    page_too_large: bool = False
+    detail_too_large: bool = False
 
     async def online(self) -> bool:
         self.calls.append("online")
@@ -93,10 +106,64 @@ class Source:
                 "policy": "beadhive.snapshot-summary/v1",
                 "sourceRevision": REVISION,
                 "limits": {"maxBytes": 917_504, "maxWorkItems": 4_096},
+                "workItemRetrieval": _retrieval(REVISION),
                 "sources": {},
             },
             "workItems": [],
         }
+
+    async def work_items(
+        self,
+        *,
+        view: str,
+        limit: int,
+        cursor: str | None,
+        priorities: tuple[str, ...],
+        labels: tuple[str, ...],
+        assignee: str | None,
+        issue_type: str | None,
+        parent: str | None,
+    ) -> dict[str, object]:
+        self.calls.append(f"work-items:{view}:{limit}:{cursor}")
+        if self.page_too_large:
+            raise upstream.WorkItemPageTooLarge
+        return {
+            "schemaVersion": 1,
+            "projectionPolicy": "beadhive.snapshot-summary/v1",
+            "hiveId": "github/beadhive/beadhive",
+            "queue": view,
+            "revision": REVISION,
+            "generatedAt": 1_787_000_000_000,
+            "limits": {"maxBytes": 917_504, "maxItems": 200},
+            "filters": {
+                "priorities": list(priorities),
+                "labels": list(labels),
+                "assignee": assignee,
+                "type": issue_type,
+                "parent": parent,
+                "ordering": "beadhive.work-items/v1",
+            },
+            "coverage": {
+                "state": "complete",
+                "sources": {},
+                "eligible": 0,
+                "returned": 0,
+                "truncated": False,
+                "nextCursor": None,
+            },
+            "limit": limit,
+            "returned": 0,
+            "truncated": False,
+            "nextCursor": None,
+            "items": [],
+            "warnings": [],
+        }
+
+    async def work_item_detail(self, *, bead_id: str) -> dict[str, object]:
+        self.calls.append(f"work-item-detail:{bead_id}")
+        if self.detail_too_large:
+            raise upstream.WorkItemDetailTooLarge
+        raise upstream.SourceNotFound
 
     async def events(self, *, subscription: str, after: str | None):
         self.calls.append(f"events:{subscription}:{after}")
@@ -360,6 +427,67 @@ def test_private_registration_readiness_and_source_operations_are_request_bound(
     assert fixture.source.calls == ["online", "directory:50:None", "snapshot"]
 
 
+def test_private_work_item_page_is_normalized_and_detail_overflow_is_stable() -> None:
+    fixture = _fixture()
+    fixture.source.detail_too_large = True
+
+    async def exercise():
+        transport = httpx.ASGITransport(app=fixture.app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://frame-bridge.invalid"
+        ) as client:
+            page_target = (
+                f"{BASE}/instances/dev%2Fdemo/hives/github%2Fbeadhive%2Fbeadhive/"
+                "work-items?limit=2&priority=P0&view=ready"
+            )
+            page = await client.get(
+                page_target,
+                headers=_headers(fixture, target=page_target, scope="upstream:read", jti=b"w" * 16),
+            )
+            detail_target = (
+                f"{BASE}/instances/dev%2Fdemo/hives/github%2Fbeadhive%2Fbeadhive/work-items/bh-1"
+            )
+            detail = await client.get(
+                detail_target,
+                headers=_headers(
+                    fixture, target=detail_target, scope="upstream:read", jti=b"d" * 16
+                ),
+            )
+            return page, detail
+
+    page, detail = asyncio.run(exercise())
+    assert page.status_code == 200
+    assert page.json()["view"] == "ready"
+    assert "queue" not in page.json()
+    assert page.json()["filters"]["priorities"] == ["P0"]
+    assert "work-items:ready:2:None" in fixture.source.calls
+    assert detail.status_code == 413
+    assert detail.json()["error"]["code"] == "work_item_detail_too_large"
+
+
+def test_private_work_item_page_overflow_preserves_stable_413() -> None:
+    fixture = _fixture()
+    fixture.source.page_too_large = True
+
+    async def exercise():
+        transport = httpx.ASGITransport(app=fixture.app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://frame-bridge.invalid"
+        ) as client:
+            target = (
+                f"{BASE}/instances/dev%2Fdemo/hives/github%2Fbeadhive%2Fbeadhive/"
+                "work-items?limit=200&view=ready"
+            )
+            return await client.get(
+                target,
+                headers=_headers(fixture, target=target, scope="upstream:read", jti=b"p" * 16),
+            )
+
+    response = asyncio.run(exercise())
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "work_items_page_too_large"
+
+
 def test_private_authority_failures_are_fail_closed_before_daemon_access() -> None:
     fixture = _fixture()
     target = f"{BASE}/instances/dev%2Fdemo/hives?limit=50"
@@ -555,6 +683,7 @@ def test_host_daemon_adapter_is_loopback_only_and_rejects_malformed_snapshots() 
             "policy": "beadhive.snapshot-summary/v1",
             "sourceRevision": REVISION,
             "limits": {"maxBytes": 917_504, "maxWorkItems": 4_096},
+            "workItemRetrieval": _retrieval(REVISION),
             "sources": {},
         },
         "workItems": [],
@@ -588,13 +717,51 @@ def test_host_daemon_adapter_is_loopback_only_and_rejects_malformed_snapshots() 
 
     assert snapshot == valid_snapshot
     assert [request.url.raw_path.decode("ascii") for request in requests] == [
-        "/api/v1/hives/github%2Fbeadhive%2Fbeadhive/snapshot",
-        "/api/v1/hives/github%2Fbeadhive%2Fbeadhive/snapshot",
+        "/api/v1/hives/github%2Fbeadhive%2Fbeadhive/snapshot-with-work-items",
+        "/api/v1/hives/github%2Fbeadhive%2Fbeadhive/snapshot-with-work-items",
     ]
     assert all(
         request.headers["authorization"] == "Bearer bh1.frame-bridge." + "d" * 43
         for request in requests
     )
+
+
+def test_host_daemon_adapter_preserves_queue_overflow_as_stable_413_signal() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            413,
+            json={
+                "schemaVersion": 1,
+                "error": {
+                    "code": "work_items_page_too_large",
+                    "message": "The work-items page exceeds its disclosure limit.",
+                    "retryable": False,
+                },
+            },
+        )
+
+    async def exercise() -> None:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url="http://127.0.0.1:8420"
+        ) as client:
+            source = upstream.HostDaemonFrameBridgeSource(
+                daemon_bearer=daemon_auth.SecretBearer("bh1.frame-bridge." + "d" * 43),
+                instance=upstream.RegisteredInstance(),
+                client=client,
+            )
+            with pytest.raises(upstream.WorkItemPageTooLarge):
+                await source.work_items(
+                    view="ready",
+                    limit=200,
+                    cursor=None,
+                    priorities=(),
+                    labels=(),
+                    assignee=None,
+                    issue_type=None,
+                    parent=None,
+                )
+
+    asyncio.run(exercise())
 
 
 def test_invalid_verifier_reload_retains_active_set_but_marks_readiness_unready() -> None:
@@ -827,6 +994,7 @@ def test_gateway_and_daemon_authority_do_not_cross_the_private_seam() -> None:
             "policy": "beadhive.snapshot-summary/v1",
             "sourceRevision": REVISION,
             "limits": {"maxBytes": 917_504, "maxWorkItems": 4_096},
+            "workItemRetrieval": _retrieval(REVISION),
             "sources": {},
         },
         "workItems": [],
@@ -837,7 +1005,9 @@ def test_gateway_and_daemon_authority_do_not_cross_the_private_seam() -> None:
         return JSONResponse(daemon_snapshot)
 
     daemon_app = Starlette(
-        routes=[Route("/api/v1/hives/{hive:path}/snapshot", daemon_snapshot_handler)]
+        routes=[
+            Route("/api/v1/hives/{hive:path}/snapshot-with-work-items", daemon_snapshot_handler)
+        ]
     )
     daemon_client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=daemon_app), base_url="http://127.0.0.1:8420"

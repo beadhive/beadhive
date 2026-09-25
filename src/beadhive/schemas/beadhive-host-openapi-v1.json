@@ -374,6 +374,90 @@
         ]
       }
     },
+    "/api/v1/hives/{hive_id}/snapshot-with-work-items": {
+      "get": {
+        "operationId": "operatorRemoteHiveSnapshot",
+        "summary": "operatorRemoteHiveSnapshot",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "x-beadhive-required-scope": "operator:read",
+        "responses": {
+          "200": {
+            "description": "Product wire response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoteHiveSnapshotResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "408": {
+            "$ref": "#/components/responses/RequestTimeout"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "x-beadhive-catalog-projection": {
+          "classification": "composite",
+          "shape": "coarser",
+          "canonicalContracts": [
+            {
+              "operation": "work.list",
+              "requestSchema": "catalog:work.list#parameters",
+              "resultSchema": "urn:beadhive:wire-schema:json-value:1",
+              "privilege": "unprivileged-read",
+              "sideEffects": "none"
+            },
+            {
+              "operation": "work.schedule",
+              "requestSchema": "catalog:work.schedule#parameters",
+              "resultSchema": "urn:beadhive:wire-schema:json-value:1",
+              "privilege": "unprivileged-read",
+              "sideEffects": "none"
+            }
+          ],
+          "transportOwner": "bh-q0lol",
+          "transportPrivilege": "operator:read",
+          "sideEffects": "none",
+          "reason": "remote-safe state seed with revision-pinned work-item retrieval capability"
+        },
+        "parameters": [
+          {
+            "name": "hive_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+$"
+            },
+            "description": "Full canonical provider/organization/repository identity, with separators encoded as uppercase %2F."
+          }
+        ]
+      }
+    },
     "/api/v1/hives/{hive_id}/work-items": {
       "get": {
         "operationId": "operatorWorkItems",
@@ -661,6 +745,325 @@
           "transportPrivilege": "operator:read",
           "sideEffects": "none",
           "reason": "richer exact-identity projection of the canonical work issue read"
+        },
+        "parameters": [
+          {
+            "name": "hive_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+$"
+            },
+            "description": "Full canonical provider/organization/repository identity, with separators encoded as uppercase %2F."
+          },
+          {
+            "name": "bead_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._~-]+$"
+            }
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/hives/{hive_id}/work-item-pages": {
+      "get": {
+        "operationId": "operatorRemoteWorkItems",
+        "summary": "operatorRemoteWorkItems",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "x-beadhive-required-scope": "operator:read",
+        "responses": {
+          "200": {
+            "description": "Product wire response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoteWorkItemQueue"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-cache"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The current representation matches If-None-Match",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-cache"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "408": {
+            "$ref": "#/components/responses/RequestTimeout"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "x-beadhive-catalog-projection": {
+          "classification": "catalog-entry",
+          "shape": "richer",
+          "canonicalContracts": [
+            {
+              "operation": "work.list",
+              "requestSchema": "catalog:work.list#parameters",
+              "resultSchema": "urn:beadhive:wire-schema:json-value:1",
+              "privilege": "unprivileged-read",
+              "sideEffects": "none"
+            }
+          ],
+          "transportOwner": "bh-q0lol",
+          "transportPrivilege": "operator:read",
+          "sideEffects": "none",
+          "reason": "bounded remote-safe summary projection of the canonical work list read"
+        },
+        "parameters": [
+          {
+            "name": "hive_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+$"
+            },
+            "description": "Full canonical provider/organization/repository identity, with separators encoded as uppercase %2F."
+          },
+          {
+            "name": "queue",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkItemQueueName"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Opaque cursor returned by the preceding page."
+          },
+          {
+            "name": "priority",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^P[0-4]$"
+              }
+            },
+            "description": "Repeat to select any supplied priority.",
+            "style": "form",
+            "explode": true
+          },
+          {
+            "name": "label",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "description": "Repeat to require every supplied label.",
+            "style": "form",
+            "explode": true
+          },
+          {
+            "name": "assignee",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "parent",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/hives/{hive_id}/work-item-details/{bead_id}": {
+      "get": {
+        "operationId": "operatorRemoteWorkItemDetail",
+        "summary": "operatorRemoteWorkItemDetail",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "x-beadhive-required-scope": "operator:read",
+        "responses": {
+          "200": {
+            "description": "Product wire response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoteWorkItemDetail"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-cache"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The current representation matches If-None-Match",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-cache"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "408": {
+            "$ref": "#/components/responses/RequestTimeout"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "x-beadhive-catalog-projection": {
+          "classification": "catalog-entry",
+          "shape": "richer",
+          "canonicalContracts": [
+            {
+              "operation": "work.issue",
+              "requestSchema": "catalog:work.issue#parameters",
+              "resultSchema": "urn:beadhive:wire-schema:json-value:1",
+              "privilege": "unprivileged-read",
+              "sideEffects": "none"
+            }
+          ],
+          "transportOwner": "bh-q0lol",
+          "transportPrivilege": "operator:read",
+          "sideEffects": "none",
+          "reason": "bounded remote-safe exact projection of the canonical work issue read"
         },
         "parameters": [
           {
@@ -2665,6 +3068,1397 @@
         ],
         "type": "string"
       },
+      "RemoteAdvertisedAction": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "enum": [
+              "work-item.inspect",
+              "work-item.refresh",
+              "work-item.launch"
+            ],
+            "type": "string"
+          },
+          "capability": {
+            "enum": [
+              "inspect",
+              "refresh",
+              "launch"
+            ],
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/components/schemas/RemoteAdvertisedActionTarget"
+          },
+          "availability": {
+            "enum": [
+              "allowed",
+              "confirmation-required",
+              "forbidden",
+              "unavailable"
+            ],
+            "type": "string"
+          },
+          "reasonCode": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "reason": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "consequence": {
+            "enum": [
+              "navigate",
+              "read",
+              "reversible-write"
+            ],
+            "type": "string"
+          },
+          "advertisedAt": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sourceRevision": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "preconditions": {
+            "$ref": "#/components/schemas/RemoteAdvertisedActionPreconditions"
+          },
+          "input": {
+            "$ref": "#/components/schemas/RemoteAdvertisedActionInput"
+          }
+        },
+        "required": [
+          "id",
+          "capability",
+          "target",
+          "availability",
+          "reasonCode",
+          "reason",
+          "consequence",
+          "advertisedAt",
+          "sourceRevision",
+          "preconditions",
+          "input"
+        ],
+        "type": "object"
+      },
+      "RemoteAdvertisedActionInput": {
+        "additionalProperties": false,
+        "properties": {
+          "transport": {
+            "enum": [
+              "none",
+              "parameters"
+            ],
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "schema": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "transport",
+          "required",
+          "schema"
+        ],
+        "type": "object"
+      },
+      "RemoteAdvertisedActionPreconditions": {
+        "additionalProperties": false,
+        "properties": {
+          "sourceRevision": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "mustMatch": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "sourceRevision",
+          "mustMatch"
+        ],
+        "type": "object"
+      },
+      "RemoteAdvertisedActionTarget": {
+        "additionalProperties": false,
+        "properties": {
+          "hiveId": {
+            "maxLength": 768,
+            "minLength": 1,
+            "type": "string"
+          },
+          "kind": {
+            "const": "work-item",
+            "type": "string"
+          },
+          "id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "hiveId",
+          "kind",
+          "id"
+        ],
+        "type": "object"
+      },
+      "RemoteHiveSnapshotResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "schemaVersion": {
+            "const": 1,
+            "default": 1,
+            "type": "integer"
+          },
+          "hive": {
+            "$ref": "#/components/schemas/HiveInfo"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "generatedAt": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StreamCursor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "projectionPolicy": {
+            "const": "beadhive.snapshot-summary/v1",
+            "type": "string"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/SnapshotProjectionLimits"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/RemoteOperatorCoverage"
+          },
+          "workItems": {
+            "items": {
+              "$ref": "#/components/schemas/SnapshotWorkItemSummary"
+            },
+            "maxItems": 4096,
+            "type": "array"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "hive",
+          "revision",
+          "generatedAt",
+          "cursor",
+          "projectionPolicy",
+          "limits",
+          "coverage",
+          "workItems"
+        ],
+        "type": "object"
+      },
+      "RemoteOperatorCoverage": {
+        "additionalProperties": false,
+        "properties": {
+          "state": {
+            "enum": [
+              "complete",
+              "partial"
+            ],
+            "type": "string"
+          },
+          "generatedAt": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "eligible": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "returned": {
+            "maximum": 4096,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "byte_budget",
+                  "structural_cap"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "policy": {
+            "const": "beadhive.snapshot-summary/v1",
+            "type": "string"
+          },
+          "sourceRevision": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/SnapshotProjectionLimits"
+          },
+          "sources": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/OperatorSourceCoverage"
+            },
+            "type": "object"
+          },
+          "workItemRetrieval": {
+            "$ref": "#/components/schemas/WorkItemRetrievalCapability"
+          }
+        },
+        "required": [
+          "state",
+          "generatedAt",
+          "eligible",
+          "returned",
+          "reason",
+          "policy",
+          "sourceRevision",
+          "limits",
+          "sources",
+          "workItemRetrieval"
+        ],
+        "type": "object"
+      },
+      "RemoteProjectionCoverage": {
+        "additionalProperties": false,
+        "properties": {
+          "state": {
+            "enum": [
+              "complete",
+              "partial",
+              "unavailable"
+            ],
+            "type": "string"
+          },
+          "sources": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/RemoteProjectionSourceCoverage"
+            },
+            "maxProperties": 16,
+            "propertyNames": {
+              "maxLength": 128,
+              "minLength": 1
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "state",
+          "sources"
+        ],
+        "type": "object"
+      },
+      "RemoteProjectionFreshness": {
+        "additionalProperties": false,
+        "properties": {
+          "state": {
+            "const": "fresh",
+            "type": "string"
+          },
+          "asOf": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "state",
+          "asOf"
+        ],
+        "type": "object"
+      },
+      "RemoteProjectionSourceCoverage": {
+        "additionalProperties": false,
+        "properties": {
+          "state": {
+            "enum": [
+              "complete",
+              "partial",
+              "unavailable",
+              "degraded",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "state",
+          "detail"
+        ],
+        "type": "object"
+      },
+      "RemoteSnapshotWorkItemSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 4096,
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "open",
+              "in_progress",
+              "blocked",
+              "closed"
+            ],
+            "type": "string"
+          },
+          "readiness": {
+            "enum": [
+              "ready",
+              "active",
+              "blocked",
+              "completed"
+            ],
+            "type": "string"
+          },
+          "issueType": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "priority": {
+            "maximum": 4,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "labels": {
+            "items": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 12,
+            "type": "array"
+          },
+          "remainingLabelCount": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "assignee": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "updatedAt": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "blockerCount": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "openGateCount": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "liveAgentCount": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "status",
+          "readiness",
+          "issueType",
+          "priority",
+          "labels",
+          "remainingLabelCount",
+          "assignee",
+          "owner",
+          "updatedAt",
+          "blockerCount",
+          "openGateCount",
+          "liveAgentCount"
+        ],
+        "type": "object"
+      },
+      "RemoteWorkDependencyDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "type": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "state": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "direction": {
+            "enum": [
+              "prerequisite",
+              "dependent"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "type",
+          "state",
+          "direction"
+        ],
+        "type": "object"
+      },
+      "RemoteWorkItemAgent": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "state": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "ownerSeat": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "startedAt": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "updatedAt": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "endedAt": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "ownerSeat",
+          "startedAt",
+          "updatedAt",
+          "endedAt"
+        ],
+        "type": "object"
+      },
+      "RemoteWorkItemClaim": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "leaseExpiresAt": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "type": "object",
+        "required": [
+          "actor",
+          "leaseExpiresAt"
+        ]
+      },
+      "RemoteWorkItemDetail": {
+        "additionalProperties": false,
+        "description": "Typed envelope emitted by ``operator_work_items.detail_payload``.",
+        "properties": {
+          "schemaVersion": {
+            "const": 1,
+            "default": 1,
+            "type": "integer"
+          },
+          "projectionPolicy": {
+            "const": "beadhive.snapshot-summary/v1",
+            "type": "string"
+          },
+          "hiveId": {
+            "maxLength": 768,
+            "minLength": 1,
+            "type": "string"
+          },
+          "revision": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "generatedAt": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/RemoteWorkItemDetailLimits"
+          },
+          "freshness": {
+            "$ref": "#/components/schemas/RemoteProjectionFreshness"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/RemoteProjectionCoverage"
+          },
+          "item": {
+            "$ref": "#/components/schemas/RemoteWorkItemExact"
+          },
+          "warnings": {
+            "items": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 16,
+            "type": "array"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "projectionPolicy",
+          "hiveId",
+          "revision",
+          "generatedAt",
+          "limits",
+          "freshness",
+          "coverage",
+          "item",
+          "warnings"
+        ],
+        "type": "object"
+      },
+      "RemoteWorkItemDetailLimits": {
+        "additionalProperties": false,
+        "properties": {
+          "maxBytes": {
+            "const": 917504,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "maxBytes"
+        ],
+        "type": "object"
+      },
+      "RemoteWorkItemExact": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 4096,
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "open",
+              "in_progress",
+              "blocked",
+              "closed"
+            ],
+            "type": "string"
+          },
+          "readiness": {
+            "enum": [
+              "ready",
+              "active",
+              "blocked",
+              "completed"
+            ],
+            "type": "string"
+          },
+          "issueType": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "priority": {
+            "maximum": 4,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "labels": {
+            "items": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 256,
+            "type": "array"
+          },
+          "remainingLabelCount": {
+            "const": 0,
+            "type": "integer"
+          },
+          "assignee": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "updatedAt": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "blockerCount": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "openGateCount": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "liveAgentCount": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ref": {
+            "$ref": "#/components/schemas/RemoteWorkItemRef"
+          },
+          "revision": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "readinessReason": {
+            "maxLength": 4096,
+            "type": "string"
+          },
+          "parentId": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "blockedDependentCount": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": {
+            "maxLength": 131072,
+            "type": "string"
+          },
+          "design": {
+            "maxLength": 131072,
+            "type": "string"
+          },
+          "acceptanceCriteria": {
+            "maxLength": 131072,
+            "type": "string"
+          },
+          "notes": {
+            "maxLength": 131072,
+            "type": "string"
+          },
+          "moleculeType": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "createdBy": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "createdAt": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "closedAt": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "dueAt": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "deferUntil": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "claim": {
+            "$ref": "#/components/schemas/RemoteWorkItemClaim"
+          },
+          "dependencies": {
+            "items": {
+              "$ref": "#/components/schemas/RemoteWorkDependencyDetail"
+            },
+            "maxItems": 1024,
+            "type": "array"
+          },
+          "dependents": {
+            "items": {
+              "$ref": "#/components/schemas/RemoteWorkDependencyDetail"
+            },
+            "maxItems": 1024,
+            "type": "array"
+          },
+          "gates": {
+            "items": {
+              "$ref": "#/components/schemas/RemoteWorkItemGate"
+            },
+            "maxItems": 256,
+            "type": "array"
+          },
+          "agents": {
+            "items": {
+              "$ref": "#/components/schemas/RemoteWorkItemAgent"
+            },
+            "maxItems": 256,
+            "type": "array"
+          },
+          "advertisedActions": {
+            "items": {
+              "$ref": "#/components/schemas/RemoteAdvertisedAction"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "status",
+          "readiness",
+          "issueType",
+          "priority",
+          "labels",
+          "remainingLabelCount",
+          "assignee",
+          "owner",
+          "updatedAt",
+          "blockerCount",
+          "openGateCount",
+          "liveAgentCount",
+          "ref",
+          "revision",
+          "readinessReason",
+          "parentId",
+          "blockedDependentCount",
+          "description",
+          "design",
+          "acceptanceCriteria",
+          "notes",
+          "moleculeType",
+          "createdBy",
+          "createdAt",
+          "closedAt",
+          "dueAt",
+          "deferUntil",
+          "claim",
+          "dependencies",
+          "dependents",
+          "gates",
+          "agents",
+          "advertisedActions"
+        ],
+        "type": "object"
+      },
+      "RemoteWorkItemFilters": {
+        "additionalProperties": false,
+        "properties": {
+          "priorities": {
+            "items": {
+              "enum": [
+                "P0",
+                "P1",
+                "P2",
+                "P3",
+                "P4"
+              ],
+              "type": "string"
+            },
+            "maxItems": 5,
+            "type": "array"
+          },
+          "labels": {
+            "items": {
+              "maxLength": 64,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 8,
+            "type": "array"
+          },
+          "assignee": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "type": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "ordering": {
+            "enum": [
+              "beadhive.work-items/v1",
+              "beadhive.ready-order/v1"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "priorities",
+          "labels",
+          "assignee",
+          "type",
+          "parent",
+          "ordering"
+        ],
+        "type": "object"
+      },
+      "RemoteWorkItemGate": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "kind": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "status": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 131072,
+            "type": "string"
+          },
+          "openedAt": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "resolvedAt": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "type",
+          "status",
+          "reason",
+          "openedAt",
+          "resolvedAt"
+        ],
+        "type": "object"
+      },
+      "RemoteWorkItemQueue": {
+        "additionalProperties": false,
+        "description": "Typed envelope emitted by ``operator_work_items.queue_payload``.",
+        "properties": {
+          "schemaVersion": {
+            "const": 1,
+            "default": 1,
+            "type": "integer"
+          },
+          "projectionPolicy": {
+            "const": "beadhive.snapshot-summary/v1",
+            "type": "string"
+          },
+          "hiveId": {
+            "maxLength": 768,
+            "minLength": 1,
+            "type": "string"
+          },
+          "queue": {
+            "enum": [
+              "ready",
+              "active",
+              "blocked",
+              "recent"
+            ],
+            "type": "string"
+          },
+          "revision": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "generatedAt": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/RemoteWorkItemQueueLimits"
+          },
+          "filters": {
+            "$ref": "#/components/schemas/RemoteWorkItemFilters"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/RemoteWorkItemQueueCoverage"
+          },
+          "limit": {
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "returned": {
+            "maximum": 200,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RemoteSnapshotWorkItemSummary"
+            },
+            "maxItems": 200,
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 16,
+            "type": "array"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "projectionPolicy",
+          "hiveId",
+          "queue",
+          "revision",
+          "generatedAt",
+          "limits",
+          "filters",
+          "coverage",
+          "limit",
+          "returned",
+          "truncated",
+          "nextCursor",
+          "items",
+          "warnings"
+        ],
+        "type": "object"
+      },
+      "RemoteWorkItemQueueCoverage": {
+        "additionalProperties": false,
+        "properties": {
+          "state": {
+            "enum": [
+              "complete",
+              "partial",
+              "unavailable"
+            ],
+            "type": "string"
+          },
+          "sources": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/RemoteProjectionSourceCoverage"
+            },
+            "maxProperties": 16,
+            "propertyNames": {
+              "maxLength": 128,
+              "minLength": 1
+            },
+            "type": "object"
+          },
+          "eligible": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "returned": {
+            "maximum": 200,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "state",
+          "sources",
+          "eligible",
+          "returned",
+          "truncated",
+          "nextCursor"
+        ],
+        "type": "object"
+      },
+      "RemoteWorkItemQueueLimits": {
+        "additionalProperties": false,
+        "properties": {
+          "maxBytes": {
+            "const": 917504,
+            "type": "integer"
+          },
+          "maxItems": {
+            "const": 200,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "maxBytes",
+          "maxItems"
+        ],
+        "type": "object"
+      },
+      "RemoteWorkItemRef": {
+        "additionalProperties": false,
+        "properties": {
+          "hiveId": {
+            "maxLength": 768,
+            "minLength": 1,
+            "type": "string"
+          },
+          "kind": {
+            "const": "work-item",
+            "type": "string"
+          },
+          "id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "hiveId",
+          "kind",
+          "id"
+        ],
+        "type": "object"
+      },
       "ResetPayload": {
         "additionalProperties": false,
         "properties": {
@@ -3181,7 +4975,7 @@
       },
       "WorkItemDetail": {
         "additionalProperties": false,
-        "description": "Typed envelope emitted by ``operator_work_items.detail_payload``.",
+        "description": "Published loopback exact-detail contract retained for compatibility.",
         "properties": {
           "schemaVersion": {
             "const": 1,
@@ -3487,7 +5281,7 @@
       },
       "WorkItemQueue": {
         "additionalProperties": false,
-        "description": "Typed envelope emitted by ``operator_work_items.queue_payload``.",
+        "description": "Published loopback queue contract retained for compatibility.",
         "properties": {
           "schemaVersion": {
             "const": 1,
@@ -3632,6 +5426,55 @@
           "hiveId",
           "kind",
           "id"
+        ],
+        "type": "object"
+      },
+      "WorkItemRetrievalCapability": {
+        "additionalProperties": false,
+        "properties": {
+          "contract": {
+            "const": "beadhive.work-items/v1",
+            "type": "string"
+          },
+          "revision": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "views": {
+            "items": {
+              "enum": [
+                "ready",
+                "active",
+                "blocked",
+                "recent"
+              ],
+              "type": "string"
+            },
+            "maxItems": 4,
+            "minItems": 4,
+            "type": "array"
+          },
+          "maxPageItems": {
+            "const": 200,
+            "type": "integer"
+          },
+          "maxPageBytes": {
+            "const": 917504,
+            "type": "integer"
+          },
+          "maxDetailBytes": {
+            "const": 917504,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "contract",
+          "revision",
+          "views",
+          "maxPageItems",
+          "maxPageBytes",
+          "maxDetailBytes"
         ],
         "type": "object"
       },

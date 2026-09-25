@@ -35,6 +35,17 @@ CORRELATION_ID = "123e4567-e89b-42d3-a456-426614174000"
 EVENT_EPOCH = "123e4567-e89b-42d3-a456-426614174000"
 
 
+def _retrieval(revision: str) -> dict[str, object]:
+    return {
+        "contract": "beadhive.work-items/v1",
+        "revision": revision,
+        "views": ["ready", "active", "blocked", "recent"],
+        "maxPageItems": 200,
+        "maxPageBytes": 917_504,
+        "maxDetailBytes": 917_504,
+    }
+
+
 def _keys() -> tuple[RSAKey, RSAKey]:
     private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     return RSAKey.import_key(private), RSAKey.import_key(private.public_key())
@@ -80,6 +91,7 @@ def _snapshot() -> dict[str, object]:
             "policy": "beadhive.snapshot-summary/v1",
             "sourceRevision": "sha256:" + "a" * 64,
             "limits": limits,
+            "workItemRetrieval": _retrieval("sha256:" + "a" * 64),
             "sources": {"private": "must-not-cross"},
         },
         "workItems": [
@@ -450,6 +462,7 @@ def test_authorized_subject_discovers_only_dev_demo_and_reads_redacted_snapshot(
                 "policy": "beadhive.snapshot-summary/v1",
                 "sourceRevision": "sha256:" + "a" * 64,
                 "limits": {"maxBytes": 917504, "maxWorkItems": 4096},
+                "workItemRetrieval": _retrieval("sha256:" + "a" * 64),
             },
             "workItems": [
                 {
@@ -517,6 +530,7 @@ def test_public_caller_bearer_is_never_forwarded_to_the_host_daemon() -> None:
                     "policy": "beadhive.snapshot-summary/v1",
                     "sourceRevision": "sha256:" + "a" * 64,
                     "limits": {"maxBytes": 917504, "maxWorkItems": 4096},
+                    "workItemRetrieval": _retrieval("sha256:" + "a" * 64),
                     "sources": {},
                 },
                 "workItems": [],

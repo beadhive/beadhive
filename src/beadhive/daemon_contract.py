@@ -445,6 +445,17 @@ class SnapshotProjectionLimits(WireModel):
     max_work_items: Literal[4_096]
 
 
+class WorkItemRetrievalCapability(WireModel):
+    contract: Literal["beadhive.work-items/v1"]
+    revision: str = Field(min_length=1, max_length=256)
+    views: tuple[Literal["ready", "active", "blocked", "recent"], ...] = Field(
+        min_length=4, max_length=4
+    )
+    max_page_items: Literal[200]
+    max_page_bytes: Literal[917_504]
+    max_detail_bytes: Literal[917_504]
+
+
 class OperatorCoverage(WireModel):
     state: Literal["complete", "partial"]
     generated_at: int = Field(strict=True, ge=0, le=2**53 - 1)
@@ -467,6 +478,23 @@ class OperatorCoverage(WireModel):
             raise ValueError("snapshot coverage reason disagrees with counts")
         if self.reason == "structural_cap" and self.returned != self.limits.max_work_items:
             raise ValueError("structural-cap coverage must return the structural limit")
+        return self
+
+
+class RemoteOperatorCoverage(OperatorCoverage):
+    work_item_retrieval: WorkItemRetrievalCapability
+
+    @model_validator(mode="after")
+    def _retrieval_is_revision_pinned(self) -> RemoteOperatorCoverage:
+        if self.work_item_retrieval.revision != self.source_revision:
+            raise ValueError("work-item retrieval revision must match snapshot source revision")
+        if self.work_item_retrieval.views != (
+            "ready",
+            "active",
+            "blocked",
+            "recent",
+        ):
+            raise ValueError("work-item retrieval views must use canonical order")
         return self
 
 
@@ -526,6 +554,10 @@ class HiveSnapshotResponse(WireModel):
         if len(self.work_items) != self.coverage.returned:
             raise ValueError("snapshot work-item count disagrees with coverage")
         return self
+
+
+class RemoteHiveSnapshotResponse(HiveSnapshotResponse):
+    coverage: RemoteOperatorCoverage
 
 
 class EntityUpsertPayload(WireModel):
@@ -805,7 +837,7 @@ class WorkItemExact(WorkItemRow):
 
 
 class WorkItemQueue(WireModel):
-    """Typed envelope emitted by ``operator_work_items.queue_payload``."""
+    """Published loopback queue contract retained for compatibility."""
 
     schema_version: Literal[1] = WIRE_SCHEMA_VERSION
     hive_id: str
@@ -823,7 +855,7 @@ class WorkItemQueue(WireModel):
 
 
 class WorkItemDetail(WireModel):
-    """Typed envelope emitted by ``operator_work_items.detail_payload``."""
+    """Published loopback exact-detail contract retained for compatibility."""
 
     schema_version: Literal[1] = WIRE_SCHEMA_VERSION
     hive_id: str
@@ -833,6 +865,325 @@ class WorkItemDetail(WireModel):
     coverage: ProjectionCoverage
     item: WorkItemExact
     warnings: tuple[str, ...]
+
+
+RemoteShortText = Annotated[str, Field(min_length=1, max_length=4_096)]
+RemoteWarning = Annotated[str, Field(min_length=1, max_length=4_096)]
+RemoteLabelFilter = Annotated[str, Field(min_length=1, max_length=64)]
+RemoteSourceName = Annotated[str, Field(min_length=1, max_length=128)]
+
+
+class RemoteProjectionSourceCoverage(WireModel):
+    state: Literal["complete", "partial", "unavailable", "degraded", "unknown"]
+    detail: str | None = Field(default=None, max_length=4_096)
+
+
+class RemoteProjectionCoverage(WireModel):
+    state: Literal["complete", "partial", "unavailable"]
+    sources: dict[RemoteSourceName, RemoteProjectionSourceCoverage] = Field(max_length=16)
+
+
+class RemoteProjectionFreshness(WireModel):
+    state: Literal["fresh"]
+    as_of: int = Field(strict=True, ge=0, le=2**53 - 1)
+
+
+class RemoteAdvertisedActionTarget(WireModel):
+    hive_id: str = Field(min_length=1, max_length=768)
+    kind: Literal["work-item"]
+    id: str = Field(min_length=1, max_length=256)
+
+
+class RemoteAdvertisedActionPreconditions(WireModel):
+    source_revision: str = Field(min_length=1, max_length=256)
+    must_match: bool = Field(strict=True)
+
+
+class RemoteAdvertisedActionInput(WireModel):
+    transport: Literal["none", "parameters"]
+    required: bool = Field(strict=True)
+    input_schema: dict[str, Any] | None = Field(alias="schema")
+
+
+class RemoteAdvertisedAction(WireModel):
+    id: Literal["work-item.inspect", "work-item.refresh", "work-item.launch"]
+    capability: Literal["inspect", "refresh", "launch"]
+    target: RemoteAdvertisedActionTarget
+    availability: Literal["allowed", "confirmation-required", "forbidden", "unavailable"]
+    reason_code: str | None = Field(default=None, min_length=1, max_length=256)
+    reason: str = Field(min_length=1, max_length=4_096)
+    consequence: Literal["navigate", "read", "reversible-write"]
+    advertised_at: int = Field(strict=True, ge=0, le=2**53 - 1)
+    source_revision: str = Field(min_length=1, max_length=256)
+    preconditions: RemoteAdvertisedActionPreconditions
+    input: RemoteAdvertisedActionInput
+
+
+class RemoteWorkItemRef(WireModel):
+    hive_id: str = Field(min_length=1, max_length=768)
+    kind: Literal["work-item"]
+    id: str = Field(min_length=1, max_length=256)
+
+
+class RemoteWorkDependencyDetail(WireModel):
+    id: str = Field(min_length=1, max_length=4_096)
+    title: str | None = Field(default=None, max_length=4_096)
+    type: str = Field(min_length=1, max_length=4_096)
+    state: str = Field(min_length=1, max_length=4_096)
+    direction: Literal["prerequisite", "dependent"]
+
+
+class RemoteWorkItemClaim(WireModel):
+    actor: str | None = Field(default=None, max_length=4_096)
+    lease_expires_at: int | None = Field(default=None, strict=True, ge=0, le=2**53 - 1)
+
+
+class RemoteWorkItemGate(WireModel):
+    id: str = Field(min_length=1, max_length=4_096)
+    kind: str = Field(min_length=1, max_length=4_096)
+    type: str | None = Field(default=None, max_length=4_096)
+    status: str = Field(min_length=1, max_length=4_096)
+    reason: str = Field(max_length=131_072)
+    opened_at: int | None = Field(default=None, strict=True, ge=0, le=2**53 - 1)
+    resolved_at: int | None = Field(default=None, strict=True, ge=0, le=2**53 - 1)
+
+
+class RemoteWorkItemAgent(WireModel):
+    id: str = Field(min_length=1, max_length=4_096)
+    state: str = Field(min_length=1, max_length=128)
+    owner_seat: str | None = Field(default=None, max_length=4_096)
+    started_at: int | None = Field(default=None, strict=True, ge=0, le=2**53 - 1)
+    updated_at: int | None = Field(default=None, strict=True, ge=0, le=2**53 - 1)
+    ended_at: int | None = Field(default=None, strict=True, ge=0, le=2**53 - 1)
+
+
+class RemoteSnapshotWorkItemSummary(SnapshotWorkItemSummary):
+    status: Literal["open", "in_progress", "blocked", "closed"]
+    readiness: Literal["ready", "active", "blocked", "completed"]
+
+
+class RemoteWorkItemExact(RemoteSnapshotWorkItemSummary):
+    ref: RemoteWorkItemRef
+    revision: str = Field(min_length=1, max_length=256)
+    readiness_reason: str = Field(max_length=4_096)
+    parent_id: str | None = Field(default=None, max_length=4_096)
+    blocked_dependent_count: int = Field(strict=True, ge=0, le=2**53 - 1)
+    description: str = Field(max_length=131_072)
+    design: str = Field(max_length=131_072)
+    acceptance_criteria: str = Field(max_length=131_072)
+    notes: str = Field(max_length=131_072)
+    molecule_type: str | None = Field(default=None, max_length=4_096)
+    labels: tuple[Annotated[str, Field(min_length=1, max_length=256)], ...] = Field(max_length=256)
+    remaining_label_count: Literal[0]
+    created_by: str | None = Field(default=None, max_length=4_096)
+    created_at: int | None = Field(default=None, strict=True, ge=0, le=2**53 - 1)
+    closed_at: int | None = Field(default=None, strict=True, ge=0, le=2**53 - 1)
+    due_at: int | None = Field(default=None, strict=True, ge=0, le=2**53 - 1)
+    defer_until: int | None = Field(default=None, strict=True, ge=0, le=2**53 - 1)
+    claim: RemoteWorkItemClaim
+    dependencies: tuple[RemoteWorkDependencyDetail, ...] = Field(max_length=1_024)
+    dependents: tuple[RemoteWorkDependencyDetail, ...] = Field(max_length=1_024)
+    gates: tuple[RemoteWorkItemGate, ...] = Field(max_length=256)
+    agents: tuple[RemoteWorkItemAgent, ...] = Field(max_length=256)
+    advertised_actions: tuple[RemoteAdvertisedAction, ...] = Field(min_length=3, max_length=3)
+
+    @model_validator(mode="after")
+    def _actions_are_declarative_and_allowlisted(self) -> RemoteWorkItemExact:
+        if self.ref.id != self.id:
+            raise ValueError("work-item detail id and reference disagree")
+        expected = {
+            "work-item.inspect": ("inspect", "navigate", "none", False, None),
+            "work-item.refresh": ("refresh", "read", "none", False, None),
+            "work-item.launch": (
+                "launch",
+                "reversible-write",
+                "parameters",
+                True,
+                {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [],
+                    "properties": {
+                        "actor": {"type": "string", "minLength": 1},
+                        "kind": {"type": "string", "minLength": 1},
+                        "direction": {"enum": ["right", "down"], "default": "right"},
+                        "focus": {"type": "boolean", "default": False},
+                        "adoptExpired": {"type": "boolean", "default": False},
+                    },
+                },
+            ),
+        }
+        if tuple(action.id for action in self.advertised_actions) != tuple(expected):
+            raise ValueError("work-item advertised actions must use the fixed allowlist")
+        for action in self.advertised_actions:
+            capability, consequence, transport, must_match, schema = expected[action.id]
+            if (
+                action.capability != capability
+                or action.consequence != consequence
+                or action.target.to_wire() != self.ref.to_wire()
+                or action.source_revision != self.revision
+                or action.preconditions.source_revision != self.revision
+                or action.preconditions.must_match is not must_match
+                or action.input.transport != transport
+                or action.input.required
+                or action.input.input_schema != schema
+            ):
+                raise ValueError("work-item advertised action disagrees with its fixed contract")
+        inspect, refresh, _ = self.advertised_actions
+        if (
+            inspect.availability != "allowed"
+            or inspect.reason_code is not None
+            or inspect.reason != "the exact work item is present in the projection"
+            or refresh.availability != "allowed"
+            or refresh.reason_code is not None
+            or refresh.reason != "the exact work item can be refreshed"
+        ):
+            raise ValueError("work-item read action availability disagrees with fixed contract")
+        return self
+
+
+class RemoteWorkItemQueueLimits(WireModel):
+    max_bytes: Literal[917_504]
+    max_items: Literal[200]
+
+
+class RemoteWorkItemDetailLimits(WireModel):
+    max_bytes: Literal[917_504]
+
+
+class RemoteWorkItemFilters(WireModel):
+    priorities: tuple[Literal["P0", "P1", "P2", "P3", "P4"], ...] = Field(max_length=5)
+    labels: tuple[RemoteLabelFilter, ...] = Field(max_length=8)
+    assignee: str | None = Field(default=None, min_length=1, max_length=256)
+    type: str | None = Field(default=None, min_length=1, max_length=256)
+    parent: str | None = Field(default=None, min_length=1, max_length=256)
+    ordering: Literal["beadhive.work-items/v1", "beadhive.ready-order/v1"]
+
+    @model_validator(mode="after")
+    def _filters_are_canonical(self) -> RemoteWorkItemFilters:
+        if self.priorities != tuple(sorted(set(self.priorities))):
+            raise ValueError("work-item priorities must be unique and canonical")
+        if self.labels != tuple(sorted(set(self.labels))):
+            raise ValueError("work-item labels must be unique and canonical")
+        return self
+
+
+class RemoteWorkItemQueueCoverage(RemoteProjectionCoverage):
+    eligible: int = Field(strict=True, ge=0, le=2**53 - 1)
+    returned: int = Field(strict=True, ge=0, le=200)
+    truncated: bool = Field(strict=True)
+    next_cursor: str | None = Field(default=None, min_length=1, max_length=4_096)
+
+    @model_validator(mode="after")
+    def _coverage_is_consistent(self) -> RemoteWorkItemQueueCoverage:
+        if self.returned > self.eligible:
+            raise ValueError("work-item coverage returned exceeds eligible")
+        if self.truncated != (self.next_cursor is not None):
+            raise ValueError("work-item coverage cursor and truncation disagree")
+        return self
+
+
+class RemoteWorkItemQueue(WireModel):
+    """Typed envelope emitted by ``operator_work_items.queue_payload``."""
+
+    schema_version: Literal[1] = WIRE_SCHEMA_VERSION
+    projection_policy: Literal["beadhive.snapshot-summary/v1"]
+    hive_id: str = Field(min_length=1, max_length=768)
+    queue: Literal["ready", "active", "blocked", "recent"]
+    revision: str = Field(min_length=1, max_length=256)
+    generated_at: int = Field(strict=True, ge=0, le=2**53 - 1)
+    limits: RemoteWorkItemQueueLimits
+    filters: RemoteWorkItemFilters
+    coverage: RemoteWorkItemQueueCoverage
+    limit: int = Field(strict=True, ge=1, le=200)
+    returned: int = Field(strict=True, ge=0, le=200)
+    truncated: bool = Field(strict=True)
+    next_cursor: str | None = Field(default=None, min_length=1, max_length=4_096)
+    items: tuple[RemoteSnapshotWorkItemSummary, ...] = Field(max_length=200)
+    warnings: tuple[RemoteWarning, ...] = Field(max_length=16)
+
+    @model_validator(mode="after")
+    def _page_is_consistent(self) -> RemoteWorkItemQueue:
+        if self.returned != len(self.items) or self.returned > self.limit:
+            raise ValueError("work-item page counts disagree")
+        if self.truncated != (self.next_cursor is not None):
+            raise ValueError("work-item page cursor and truncation disagree")
+        if (
+            self.coverage.returned != self.returned
+            or self.coverage.truncated != self.truncated
+            or self.coverage.next_cursor != self.next_cursor
+        ):
+            raise ValueError("work-item page coverage disagrees")
+        if (
+            len(json.dumps(self.to_wire(), separators=(",", ":"), ensure_ascii=False).encode())
+            > self.limits.max_bytes
+        ):
+            raise ValueError("work-item page exceeds encoded limit")
+        return self
+
+
+class RemoteWorkItemDetail(WireModel):
+    """Typed envelope emitted by ``operator_work_items.detail_payload``."""
+
+    schema_version: Literal[1] = WIRE_SCHEMA_VERSION
+    projection_policy: Literal["beadhive.snapshot-summary/v1"]
+    hive_id: str = Field(min_length=1, max_length=768)
+    revision: str = Field(min_length=1, max_length=256)
+    generated_at: int = Field(strict=True, ge=0, le=2**53 - 1)
+    limits: RemoteWorkItemDetailLimits
+    freshness: RemoteProjectionFreshness
+    coverage: RemoteProjectionCoverage
+    item: RemoteWorkItemExact
+    warnings: tuple[RemoteWarning, ...] = Field(max_length=16)
+
+    @model_validator(mode="after")
+    def _detail_is_bounded(self) -> RemoteWorkItemDetail:
+        if self.item.ref.hive_id != self.hive_id or self.item.revision != self.revision:
+            raise ValueError("work-item detail identity or revision disagrees")
+        if self.freshness.as_of != self.generated_at:
+            raise ValueError("work-item detail freshness disagrees")
+        expected_launch = {
+            ("partial", self.item.readiness): (
+                "unavailable",
+                "work_item_projection_partial",
+                "authoritative launch prerequisites are only partially observed",
+            ),
+            ("complete", "ready"): ("allowed", None, self.item.readiness_reason),
+            ("complete", "blocked"): (
+                "forbidden",
+                "work_item_blocked",
+                self.item.readiness_reason,
+            ),
+            ("complete", "completed"): (
+                "forbidden",
+                "work_item_completed",
+                self.item.readiness_reason,
+            ),
+            ("complete", "active"): (
+                "unavailable",
+                "work_item_claim_ownership_required",
+                "the current caller's claim ownership must be proven before reuse",
+            ),
+        }.get((self.coverage.state, self.item.readiness))
+        if expected_launch is None:
+            expected_launch = (
+                "unavailable",
+                "work_item_state_unavailable",
+                self.item.readiness_reason,
+            )
+        launch = self.item.advertised_actions[2]
+        if (launch.availability, launch.reason_code, launch.reason) != expected_launch:
+            raise ValueError("work-item launch availability disagrees with detail state")
+        if any(
+            action.advertised_at != self.generated_at for action in self.item.advertised_actions
+        ):
+            raise ValueError("work-item action timestamp disagrees with detail")
+        if (
+            len(json.dumps(self.to_wire(), separators=(",", ":"), ensure_ascii=False).encode())
+            > self.limits.max_bytes
+        ):
+            raise ValueError("work-item detail exceeds encoded limit")
+        return self
 
 
 class RunActivityEnvelope(WireModel):
@@ -959,6 +1310,13 @@ NON_MCP_ROUTES: tuple[RouteSpec, ...] = (
     ),
     RouteSpec(
         "GET",
+        "/api/v1/hives/{hive_id}/snapshot-with-work-items",
+        AuthScope.OPERATOR_READ,
+        (200, 400, 401, 403, 404, 408, 413, 429, 503),
+        RemoteHiveSnapshotResponse,
+    ),
+    RouteSpec(
+        "GET",
         "/api/v1/hives/{hive_id}/work-items",
         AuthScope.OPERATOR_READ,
         (200, 304, 400, 401, 403, 404, 408, 409, 413, 429, 503),
@@ -971,6 +1329,22 @@ NON_MCP_ROUTES: tuple[RouteSpec, ...] = (
         AuthScope.OPERATOR_READ,
         (200, 304, 400, 401, 403, 404, 408, 413, 429, 503),
         WorkItemDetail,
+        request_headers=("If-None-Match",),
+    ),
+    RouteSpec(
+        "GET",
+        "/api/v1/hives/{hive_id}/work-item-pages",
+        AuthScope.OPERATOR_READ,
+        (200, 304, 400, 401, 403, 404, 408, 409, 413, 429, 503),
+        RemoteWorkItemQueue,
+        request_headers=("If-None-Match",),
+    ),
+    RouteSpec(
+        "GET",
+        "/api/v1/hives/{hive_id}/work-item-details/{bead_id}",
+        AuthScope.OPERATOR_READ,
+        (200, 304, 400, 401, 403, 404, 408, 413, 429, 503),
+        RemoteWorkItemDetail,
         request_headers=("If-None-Match",),
     ),
     RouteSpec(
@@ -1025,6 +1399,7 @@ WIRE_MODELS: tuple[type[WireModel], ...] = (
     FactoryResponse,
     FactoryHivePage,
     HiveSnapshotResponse,
+    RemoteHiveSnapshotResponse,
     OperatorEvent,
     ResnapshotInstruction,
     EventResnapshotResponse,
@@ -1043,6 +1418,19 @@ WIRE_MODELS: tuple[type[WireModel], ...] = (
     WorkItemExact,
     WorkItemQueue,
     WorkItemDetail,
+    RemoteWorkItemRef,
+    RemoteWorkDependencyDetail,
+    RemoteWorkItemClaim,
+    RemoteWorkItemGate,
+    RemoteWorkItemAgent,
+    RemoteSnapshotWorkItemSummary,
+    RemoteWorkItemExact,
+    RemoteWorkItemQueueLimits,
+    RemoteWorkItemDetailLimits,
+    RemoteWorkItemFilters,
+    RemoteWorkItemQueueCoverage,
+    RemoteWorkItemQueue,
+    RemoteWorkItemDetail,
     RunActivityEnvelope,
     RunActivityCoverage,
     RunActivityFrame,

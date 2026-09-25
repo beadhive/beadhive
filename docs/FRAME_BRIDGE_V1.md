@@ -33,10 +33,20 @@ sealed `dev/demo` composition.
 - `GET /v1/instances?limit=50` returns the caller's bounded authorized instance page. For this
   profile it contains either `dev/demo` or no items and always has `nextCursor: null`.
 - `GET /v1/instances/dev/demo/snapshot` returns a `gateway.v1` envelope containing snapshot
-  schema version 1. Only the explicitly projected work-item and agent summary fields cross the
-  remote boundary. The initial profile fails unavailable rather than serializing more than 1,000
-  work items, 256 agents, or 64 labels on one work item. Millisecond timestamps are non-negative
+  schema version 1. Its fixed `beadhive.snapshot-summary/v1` seed contains only bounded work-item
+  summaries and is measured against a 917,504-byte producer target beneath the unchanged 1 MiB
+  parser limit. Coverage advertises `beadhive.work-items/v1`, its exact source revision, the four
+  finite views, and the independent page/detail limits. Millisecond timestamps are non-negative
   integers no greater than JavaScript's exact integer limit (`2^53 - 1`).
+- `GET /v1/instances/dev/demo/hives/{hive}/work-items` (and the canonical
+  `/v1/factories/development/...` alias) retrieves one `ready`, `active`, `blocked`, or `recent`
+  summary page. `view` maps exactly to the daemon queue. Pages contain at most 200 compact summary
+  DTOs and at most 917,504 encoded bytes. The complete canonical query is capped at 16 KiB.
+  If even one bounded summary cannot fit, every relay hop preserves
+  `work_items_page_too_large` (413); it is never collapsed into source unavailability.
+- `GET .../work-items/{bead-id}` returns the fixed exact-detail DTO. Rich text and related facts
+  exist only here; each field and collection is bounded and the final envelope is capped at
+  917,504 bytes. Oversize returns `work_item_detail_too_large` (413) without reflecting data.
 - `POST /v1/instances/dev/demo/commands/refresh` invokes the sole initial command only when
   discovery advertises `refresh`. Its exact JSON input is schema version 1, a browser-generated
   correlation ID restricted to a canonical lowercase UUIDv4, and the
@@ -49,6 +59,10 @@ sealed `dev/demo` composition.
   `snapshot-invalidated` event advances that same epoch by exactly one sequence and exposes only
   its cursor and resulting snapshot revision. Clients fetch a fresh snapshot after invalidation;
   event payloads never duplicate work-item, agent, transcript, or workspace data.
+
+Queue filters never enter the subscription identity or create replay state. One hive-wide
+invalidation causes a client to refetch only its active bounded pane, preserving membership
+changes when an item enters or leaves a view.
 
 All calls require the exact Host and Origin from one complete Development network profile. Cloud
 DEV additionally requires `Authorization: Bearer <token>`; its preflight permits GET with
@@ -99,10 +113,10 @@ a `beadhive-gateway` command; that name is reserved for the multi-frame Gateway.
 binds only `127.0.0.1:8787` and reads the real registered `github/beadhive/beadhive` snapshot and
 retained event stream from the existing loopback host daemon at `127.0.0.1:8420`. It never reads
 a fixture or accepts a browser-selected hive. Its `refresh` command performs a revision-checked
-refresh of that authoritative source. The Development demo projection includes current `open`,
+refresh of that authoritative source. The Development demo seed includes current `open`,
 `in_progress`, and `blocked` work while omitting closed/deferred history and internal `event` and
-`gate` records. The Frame Bridge's independent 1,000-item fail-closed bound still applies after this
-selection.
+`gate` records. It is byte-first with a 4,096-summary defensive structural cap; bounded `recent`
+history is available through the revision-pinned page route instead of enlarging the seed.
 
 The cloud launcher accepts Clerk public JWKS, the authorized Development subject list, and one
 independently scoped host-daemon bearer only through mode-0600 service credential files. Under

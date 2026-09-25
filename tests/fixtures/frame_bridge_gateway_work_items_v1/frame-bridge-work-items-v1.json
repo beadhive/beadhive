@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "handoffVersion": "frame-bridge-work-items/v1",
+  "producerRepository": "github/beadhive/beadhive",
+  "consumerRepository": "github/beadhive/beadhive-gateway",
+  "consumerBaselineCommit": "cf78b73fbcb231d0cce4034e242cc4b9b7ad3e64",
+  "snapshotCapability": {
+    "contract": "beadhive.work-items/v1",
+    "revisionBinding": "coverage.sourceRevision",
+    "views": ["ready", "active", "blocked", "recent"],
+    "maxPageItems": 200,
+    "maxPageBytes": 917504,
+    "maxDetailBytes": 917504
+  },
+  "queryLimits": {
+    "maxCanonicalBytes": 16384,
+    "maxPriorities": 5,
+    "maxLabels": 8,
+    "maxLabelBytes": 64,
+    "maxScalarBytes": 256,
+    "maxCursorBytes": 4096
+  },
+  "privateOperations": [
+    "GET /frame-bridge/upstream/v1/instances/{instance_id}/hives/{hive_id}/work-items",
+    "GET /frame-bridge/upstream/v1/instances/{instance_id}/hives/{hive_id}/work-items/{bead_id}"
+  ],
+  "publicOperations": [
+    "GET /v1/instances/{stage}/{slug}/hives/{hive_id}/work-items",
+    "GET /v1/instances/{stage}/{slug}/hives/{hive_id}/work-items/{bead_id}",
+    "GET /v1/factories/{factory_id}/hives/{hive_id}/work-items",
+    "GET /v1/factories/{factory_id}/hives/{hive_id}/work-items/{bead_id}"
+  ],
+  "cursorConflict": {"status": 409, "code": "resnapshot_required"},
+  "detailOverflow": {"status": 413, "code": "work_item_detail_too_large"},
+  "stream": {
+    "scope": "one hive",
+    "payload": "invalidation-only",
+    "querySpecificState": false
+  }
+}
