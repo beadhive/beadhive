@@ -5,7 +5,8 @@
 - **OpenAPI source:** `f45b249ce6b40ba62aecc03949e6371e8f7c79d8`, SHA-256
   `9a33a349e5266bdba916246594a4fc457c63e39d7affb5acec9bd5b75acde4dd`
 - **SDK generator:** `openapi-python-client==0.29.1`, uv locked
-- **Client source commit:** `ff4b35e9`; session source commit: `6281095e`
+- **Generated client source commit:** `ff4b35e9`; reviewed session and matrix source
+  commit: `1c5feb0f`
 - **Versioned installed matrix:**
   `packages/beadhive-beads-client/src/beadhive_beads_client/operation_matrix_v1.json`
 
