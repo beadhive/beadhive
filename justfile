@@ -57,6 +57,11 @@ check: check-native
 # Pants retains its impact-selected developer route.
 check-native: lint lint-md license-check architecture-structural-check stateful-native
 
+# Compare the checked-in SDK and exercise the package without the root app.
+beads-client-check:
+    uv run --locked --offline python packages/beadhive-beads-client/regenerate.py
+    uv run --locked --offline --no-build-isolation --package beadhive-beads-client pytest packages/beadhive-beads-client/tests -m 'not real_service'
+
 check-pants: lint lint-md license-check architecture-structural-check test-changed
 
 # Current-candidate proof rows are generated evidence and must match the exact release tree.
@@ -668,6 +673,7 @@ stateful_workers := "16"
 stateful-native:
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
         ./scripts/hermetic.sh uv run pytest -n {{stateful_workers}} tests -m "not integration and not pants_profile"
+    just beads-client-check
 
 # Recursive PEX packaging executes the Pants engine and needs its pinned artifact cache. Keep
 # this one test in the Pants full profile and outside the native collection.

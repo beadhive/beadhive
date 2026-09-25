@@ -1,0 +1,384 @@
+{
+  "version": 1,
+  "beads_release": "1.3.0",
+  "api_version": "v0",
+  "scope": "named routes required by bh-bwnys.1 and bh-sy36q.2/.3/.5; command cutover still requires Beadhive policy tests",
+  "operations": [
+    {
+      "name": "context.verify",
+      "classification": "api-ready",
+      "capability": "project.enforce",
+      "session_method": "open",
+      "evidence": "real-service authenticated version, project, database, repository and capability negotiation"
+    },
+    {
+      "name": "work.issue.get",
+      "classification": "api-ready",
+      "capability": "issues.get",
+      "session_method": "get_issue",
+      "evidence": "real-service typed detail and 404"
+    },
+    {
+      "name": "work.issue.list",
+      "classification": "api-ready",
+      "capability": "issues.list",
+      "session_method": "list_issues",
+      "evidence": "real-service two-page cursor traversal"
+    },
+    {
+      "name": "work.ready.list",
+      "classification": "api-ready",
+      "capability": "ready.list",
+      "session_method": "list_ready",
+      "evidence": "real-service ready selection excludes a blocked issue"
+    },
+    {
+      "name": "work.dependencies.list",
+      "classification": "api-ready",
+      "capability": "dependencies.list",
+      "session_method": "list_dependencies",
+      "evidence": "real-service created edge readback"
+    },
+    {
+      "name": "work.dependencies.add",
+      "classification": "api-ready",
+      "capability": "dependencies.add",
+      "session_method": "add_dependencies",
+      "evidence": "real-service atomic edge add and readback; CLI hooks omitted"
+    },
+    {
+      "name": "work.dependencies.remove",
+      "classification": "api-ready",
+      "capability": "dependencies.remove",
+      "session_method": "remove_dependency",
+      "evidence": "real-service add/list/remove/re-add proof restored blocked selection; CLI hooks omitted"
+    },
+    {
+      "name": "work.issue.update",
+      "classification": "api-ready",
+      "capability": "issues.update",
+      "session_method": "update_issue",
+      "evidence": "real-service guarded update, stale revision conflict and lost-response reconciliation; CLI hooks omitted"
+    },
+    {
+      "name": "work.claim.acquire",
+      "classification": "api-ready",
+      "capability": "issues.claim",
+      "session_method": "claim_issue",
+      "evidence": "real-service actor and assignee readback plus simultaneous-claim conflict; this route does not grant a renewable CLI lease"
+    },
+    {
+      "name": "work.claim-next",
+      "classification": "api-ready",
+      "capability": "issues.claimNext",
+      "session_method": "claim_next",
+      "evidence": "real-service atomic ready selection excludes a blocked issue; CLI hooks omitted"
+    },
+    {
+      "name": "work.claim.release",
+      "classification": "api-ready",
+      "capability": "issues.release",
+      "session_method": "release_issue",
+      "evidence": "real-service ownership-fenced release cleared assignee and status and produced a new revision; CLI hooks omitted"
+    },
+    {
+      "name": "work.issue.close",
+      "classification": "api-ready",
+      "capability": "issues.close",
+      "session_method": "close_issue",
+      "evidence": "real-service guarded close and audit actor; CLI hooks omitted"
+    },
+    {
+      "name": "work.issue.reopen",
+      "classification": "api-ready",
+      "capability": "issues.reopen",
+      "session_method": "reopen_issue",
+      "evidence": "real-service guarded reopen and audit actor; CLI hooks omitted"
+    },
+    {
+      "name": "work.feedback.comment.add",
+      "classification": "api-ready",
+      "capability": "issues.addComment",
+      "session_method": "add_comment",
+      "evidence": "real-service author and comment-body readback through issue detail"
+    },
+    {
+      "name": "plan.issue.get",
+      "classification": "api-ready",
+      "capability": "issues.get",
+      "session_method": "get_issue",
+      "evidence": "real-service typed detail used by filing reconciliation"
+    },
+    {
+      "name": "plan.issue.list",
+      "classification": "api-ready",
+      "capability": "issues.list",
+      "session_method": "list_issues",
+      "evidence": "real-service cursor traversal used by verification and repair discovery"
+    },
+    {
+      "name": "plan.issue.create",
+      "classification": "api-ready",
+      "capability": "issues.create",
+      "session_method": "create_issue",
+      "evidence": "real-service explicit issue_type, priority, actor and readback; CLI hooks omitted"
+    },
+    {
+      "name": "plan.issue.update",
+      "classification": "api-ready",
+      "capability": "issues.update",
+      "session_method": "update_issue",
+      "evidence": "real-service guarded update and reconciliation proof; CLI hooks omitted"
+    },
+    {
+      "name": "plan.dependencies.list",
+      "classification": "api-ready",
+      "capability": "dependencies.list",
+      "session_method": "list_dependencies",
+      "evidence": "real-service dependency readback used by DAG verification"
+    },
+    {
+      "name": "plan.dependencies.add",
+      "classification": "api-ready",
+      "capability": "dependencies.add",
+      "session_method": "add_dependencies",
+      "evidence": "real-service atomic edge add and readback; CLI hooks omitted"
+    },
+    {
+      "name": "plan.dependencies.remove",
+      "classification": "api-ready",
+      "capability": "dependencies.remove",
+      "session_method": "remove_dependency",
+      "evidence": "real-service add/list/remove/re-add proof; CLI hooks omitted"
+    },
+    {
+      "name": "plan.labels.update",
+      "classification": "api-ready",
+      "capability": "issues.update",
+      "session_method": "update_issue",
+      "evidence": "real-service guarded add/remove label mutation and detail readback; CLI hooks omitted"
+    },
+    {
+      "name": "plan.metadata.compare-and-set",
+      "classification": "api-ready",
+      "capability": "issues.casMetadata",
+      "session_method": "compare_and_set_metadata",
+      "evidence": "real-service successful swap, refused stale expectation and detail readback"
+    },
+    {
+      "name": "plan.feedback.comment.add",
+      "classification": "api-ready",
+      "capability": "issues.addComment",
+      "session_method": "add_comment",
+      "evidence": "real-service author and comment-body readback through issue detail"
+    },
+    {
+      "name": "work.molecule.progress",
+      "classification": "api-ready",
+      "capability": "issues.get",
+      "session_method": "get_issue",
+      "evidence": "real-service issue detail and dependency readback provide durable molecule state for polling"
+    },
+    {
+      "name": "work.swarm.inspect",
+      "classification": "api-ready",
+      "capability": "issues.list",
+      "session_method": "list_issues",
+      "evidence": "real-service issue and dependency reads provide restartable swarm inspection"
+    },
+    {
+      "name": "work.dispatch.poll",
+      "classification": "api-ready",
+      "capability": "ready.list",
+      "session_method": "list_ready",
+      "evidence": "real-service repeated ready reads reflect dependency transitions without a mirrored journal"
+    },
+    {
+      "name": "work.local-loop.state",
+      "classification": "api-ready",
+      "capability": "issues.get",
+      "session_method": "get_issue",
+      "evidence": "real-service issue detail is the durable restart source for local-loop state"
+    },
+    {
+      "name": "work.gate.lookup",
+      "classification": "cli-compatibility",
+      "reason": "v1.3 has no gate lookup route; generic issue queries do not implement bd gate list --blocks semantics"
+    },
+    {
+      "name": "work.gate.create",
+      "classification": "cli-compatibility",
+      "reason": "v1.3 createIssue cannot set await_type or atomically reproduce bd gate create --blocks"
+    },
+    {
+      "name": "work.gate.resolve",
+      "classification": "cli-compatibility",
+      "reason": "v1.3 has no gate resolve route; generic issue close is not proof of Beadhive gate-resolution semantics"
+    },
+    {
+      "name": "plan.gate.lookup",
+      "classification": "cli-compatibility",
+      "reason": "v1.3 has no gate lookup route for kickoff verification and repair"
+    },
+    {
+      "name": "plan.gate.create",
+      "classification": "cli-compatibility",
+      "reason": "v1.3 createIssue cannot set await_type or atomically reproduce bd gate create --blocks"
+    },
+    {
+      "name": "plan.gate.resolve",
+      "classification": "cli-compatibility",
+      "reason": "v1.3 has no gate resolve route; generic issue close does not carry the gate convention"
+    },
+    {
+      "name": "work.review.submit",
+      "classification": "cli-compatibility",
+      "reason": "review gate creation, validation evidence and Git handoff remain Beadhive shell policy"
+    },
+    {
+      "name": "work.review.inspect",
+      "classification": "cli-compatibility",
+      "reason": "review packets compose Git, validation evidence and gate history outside the Beads HTTP API"
+    },
+    {
+      "name": "work.review.approve",
+      "classification": "cli-compatibility",
+      "reason": "approval requires focused review-gate lookup and resolution, which v1.3 does not expose"
+    },
+    {
+      "name": "work.review.bounce",
+      "classification": "cli-compatibility",
+      "reason": "bounce composes focused gate resolution, review state and feedback policy not available as one HTTP route"
+    },
+    {
+      "name": "work.validation.check",
+      "classification": "cli-compatibility",
+      "reason": "Beadhive validation execution and attestation are shell policy"
+    },
+    {
+      "name": "work.state.get",
+      "classification": "cli-compatibility",
+      "reason": "Beadhive state dimensions are absent from the v1.3 HTTP API"
+    },
+    {
+      "name": "work.state.update",
+      "classification": "cli-compatibility",
+      "reason": "Beadhive state dimensions are absent from the v1.3 HTTP API"
+    },
+    {
+      "name": "plan.kickoff.get",
+      "classification": "cli-compatibility",
+      "reason": "kickoff is a Beadhive state dimension and gate convention absent from the v1.3 HTTP API"
+    },
+    {
+      "name": "plan.kickoff.update",
+      "classification": "cli-compatibility",
+      "reason": "kickoff state and its gate transition require the explicit Beadhive CLI convention"
+    },
+    {
+      "name": "work.lease.acquire",
+      "classification": "cli-compatibility",
+      "reason": "issues.claim does not grant or configure the renewable CLI claim lease"
+    },
+    {
+      "name": "work.lease.heartbeat",
+      "classification": "cli-compatibility",
+      "reason": "v1.3 has no heartbeat route"
+    },
+    {
+      "name": "work.lease.reclaim",
+      "classification": "cli-compatibility",
+      "reason": "v1.3 has no expired-lease reclaim route"
+    },
+    {
+      "name": "work.lease.release",
+      "classification": "cli-compatibility",
+      "reason": "issues.release drops an issue claim but does not implement the complete Beadhive lease release convention"
+    },
+    {
+      "name": "work.merge-slot.check",
+      "classification": "cli-compatibility",
+      "reason": "v1.3 has no merge-slot route"
+    },
+    {
+      "name": "work.merge-slot.create",
+      "classification": "cli-compatibility",
+      "reason": "v1.3 has no merge-slot route"
+    },
+    {
+      "name": "work.merge-slot.acquire",
+      "classification": "cli-compatibility",
+      "reason": "v1.3 has no merge-slot acquire or holder-fencing route"
+    },
+    {
+      "name": "work.merge-slot.release",
+      "classification": "cli-compatibility",
+      "reason": "v1.3 has no merge-slot release route"
+    },
+    {
+      "name": "work.merge",
+      "classification": "cli-compatibility",
+      "reason": "merge serialization, Git integration and post-land validation are outside the Beads HTTP API"
+    },
+    {
+      "name": "plan.molecule.file",
+      "classification": "cli-compatibility",
+      "reason": "the filed molecule contract includes gate and state conventions absent from HTTP even though issue and dependency primitives are API-ready"
+    },
+    {
+      "name": "plan.molecule.verify",
+      "classification": "cli-compatibility",
+      "reason": "verification requires focused kickoff-gate and Beadhive state-dimension reads absent from HTTP"
+    },
+    {
+      "name": "plan.molecule.repair",
+      "classification": "cli-compatibility",
+      "reason": "repair composes gate and state conventions absent from HTTP and must remain explicitly selected"
+    },
+    {
+      "name": "plan.batch-create.atomic",
+      "classification": "cli-compatibility",
+      "reason": "issues.batchCreate is generated but lacks the required real-service transaction and failure proof"
+    },
+    {
+      "name": "plan.batch-apply.atomic",
+      "classification": "cli-compatibility",
+      "reason": "issues.batchApply is generated but lacks the required real-service atomicity and end-gate proof"
+    },
+    {
+      "name": "plan.batch-close.partial",
+      "classification": "cli-compatibility",
+      "reason": "issues.batchClose is generated but its per-item partial outcome contract lacks real-service proof"
+    },
+    {
+      "name": "plan.partial-failure.reconcile",
+      "classification": "cli-compatibility",
+      "reason": "cross-request filing reconciliation still depends on explicit gate and state compatibility operations"
+    },
+    {
+      "name": "admin.sync",
+      "classification": "administrative",
+      "reason": "Dolt publication is an explicit CLI administration operation"
+    },
+    {
+      "name": "admin.backup",
+      "classification": "administrative",
+      "reason": "backup is an explicit CLI administration operation"
+    },
+    {
+      "name": "admin.migration",
+      "classification": "administrative",
+      "reason": "schema migration is an explicit CLI administration operation"
+    },
+    {
+      "name": "issues.delete",
+      "classification": "denied",
+      "reason": "destructive API operation outside the approved surface"
+    },
+    {
+      "name": "issues.sweep",
+      "classification": "denied",
+      "reason": "destructive API operation outside the approved surface"
+    }
+  ]
+}

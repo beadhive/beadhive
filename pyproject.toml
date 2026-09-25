@@ -83,6 +83,9 @@ beadhive-pants = { workspace = true }
 
 [dependency-groups]
 dev = [
+    "editables>=0.5",
+    # Exact offline-capable generator for the checked-in Beads v1.3 SDK.
+    "openapi-python-client==0.29.1",
     # Installed-artifact tests build both workspace wheels offline and without an isolated
     # environment, so the declared build backend must be present in the developer environment.
     "hatchling",
@@ -125,6 +128,7 @@ addopts = "--durations=25 --durations-min=1.0"
 testpaths = ["tests"]
 pythonpath = [".", "src"]
 markers = [
+    "real_service: isolated Beads v1.3 HTTP conformance (opt in)",
     "integration: real-bd AGF topology harness (slower; needs the bd binary)",
     "pants_profile: executes the Pants engine; required by the Pants full gate only",
     # Not documentation: conftest's `_bound_concurrent_dolt_servers` makes a marked test hold one
@@ -147,3 +151,7 @@ src = ["src", "tests", "packages/*/src", "packages/*/tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# Upstream OpenAPI descriptions are reproduced verbatim in generated docstrings.
+"packages/beadhive-beads-client/src/beads_v1_3/**/*.py" = ["E501"]

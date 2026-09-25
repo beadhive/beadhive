@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from types import SimpleNamespace
 
 from beadhive import selective_validation
@@ -360,7 +361,8 @@ def test_enable_disable_enable_restores_identical_execution(monkeypatch, capsys)
     def once(key):
         calls = []
         rc, resolver = _run(monkeypatch, _attest(key), lambda cmd: calls.append(cmd) or 0)
-        return rc, resolver.seen, calls, capsys.readouterr().out
+        output = re.sub(r"\d+\.\d{3}s", "<elapsed>", capsys.readouterr().out)
+        return rc, resolver.seen, calls, output
 
     before = once(base)
     disabled = once(
