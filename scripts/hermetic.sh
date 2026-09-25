@@ -84,6 +84,9 @@ args=(
     --die-with-parent
     --setenv HOME "${HOME}"
     --setenv TMPDIR "${SCRATCH}"
+    # `just` chooses XDG_RUNTIME_DIR ahead of TMPDIR for shebang recipe scripts. The host's
+    # /run/user directory is read-only here, so point it at the writable private scratch.
+    --setenv XDG_RUNTIME_DIR "${SCRATCH}"
     --setenv BH_HERMETIC_FENCE "1"
     --chdir "${REPO}"
 )
@@ -141,11 +144,11 @@ fi
 # with a finding that looked like a migration bug. Left unbound it lands on the tmpfs: writable,
 # empty, and gone when the run ends.
 #
-# .local/share/mise is the one ~/.local/share subpath added to that list (bh-1j3ei.2): it is
-# mise's own tool-install cache (scie-pants, uv, ...), disjoint from ~/.local/share/beadhive's
-# bh/bd state, and `scripts/pants_launcher.py`'s `mise which scie-pants` fallback needs it to
-# find Pants — otherwise `just architecture-check`'s ownership check can't run fenced at all.
-for dir in .local/bin .local/lib .local/share/mise .nix-profile; do
+# .local/share/mise holds scie-pants and other tool installs. uv-managed CPython lives separately
+# in .local/share/uv/python; hiding it makes a provisioned .venv interpreter symlink appear
+# broken, so uv replaces the environment inside the offline fence. Bind only the interpreter
+# installs read-only, never the adjacent .local/share/beadhive operator state.
+for dir in .local/bin .local/lib .local/share/mise .local/share/uv/python .nix-profile; do
     [ -e "${HOME}/${dir}" ] && args+=(--ro-bind "${HOME}/${dir}" "${HOME}/${dir}")
 done
 

@@ -15,6 +15,48 @@ def test_catalog_partitions_check_all() -> None:
     assert MODULE.main() == 0
 
 
+def test_both_explicit_profiles_fail_closed_on_missing_steps() -> None:
+    source = (ROOT / "justfile").read_text()
+    assert MODULE.check(source) == []
+    for recipe, step in (
+        ("check-native", "stateful-native"),
+        ("check-pants", "test-changed"),
+        ("check-all-native", "packages-check"),
+        ("check-all-pants", "pants-attest"),
+        ("check-all-pants", "pants-artifact-check"),
+    ):
+        declaration = next(line for line in source.splitlines() if line.startswith(f"{recipe}:"))
+        changed = source.replace(declaration, declaration.replace(f" {step}", ""), 1)
+        assert any(recipe in error for error in MODULE.check(changed))
+
+
+def test_aliases_select_one_explicit_profile() -> None:
+    source = (ROOT / "justfile").read_text()
+    changed = source.replace("check: check-native", "check: check-pants check-native", 1)
+    assert any("check must alias" in error for error in MODULE.check(changed))
+
+
+def test_alias_and_push_hook_profiles_cannot_drift() -> None:
+    source = (ROOT / "justfile").read_text()
+    changed = source.replace("check-all: check-all-native", "check-all: check-all-pants", 1)
+    assert any("same profile" in error for error in MODULE.check(changed))
+    hook = (ROOT / "scripts" / "main-push-gate.sh").read_text()
+    changed_hook = hook.replace(
+        'gate_cmd="just check-all-native"', 'gate_cmd="just check-all-pants"'
+    )
+    assert any("push hook" in error for error in MODULE.check(source, changed_hook))
+
+
+def test_pants_artifact_proof_cannot_disappear_from_its_recipe() -> None:
+    source = (ROOT / "justfile").read_text()
+    changed = source.replace(
+        "tests/test_beadhive_pants_artifacts.py::test_bh_pex_contains_and_resolves_the_backend",
+        "tests/test_beadhive_pants_artifacts.py::test_bh_pex_declares_the_plugin_in_its_build_closure",
+        1,
+    )
+    assert any("recursive PEX proof" in error for error in MODULE.check(changed))
+
+
 def test_architecture_key_owns_the_bootstrap_safe_gate_recipe() -> None:
     assert "architecture-structural-check" in MODULE.KEY_RECIPES["architecture-contracts"][1]
     assert "architecture-check" not in MODULE.KEY_RECIPES["architecture-contracts"][1]

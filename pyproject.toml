@@ -120,12 +120,13 @@ pre_bump_hooks = ["scripts/prepare-release-version.sh $CZ_PRE_NEW_VERSION"]
 
 [tool.pytest.ini_options]
 addopts = "--durations=25 --durations-min=1.0"
-# A bare `pytest` (the native partition) collects tests/ only. packages/*/tests run under Pants
-# with their own source roots (bh-3fcl0.1); explicit paths, as Pants passes them, still work.
+# Core pytest collection is rooted at tests/. Workspace distributions under packages/* use
+# their own source roots and are run by the packages-check native/Pants build validation path.
 testpaths = ["tests"]
 pythonpath = [".", "src"]
 markers = [
     "integration: real-bd AGF topology harness (slower; needs the bd binary)",
+    "pants_profile: executes the Pants engine; required by the Pants full gate only",
     # Not documentation: conftest's `_bound_concurrent_dolt_servers` makes a marked test hold one
     # of `harness.world.MAX_CONCURRENT_DOLT_SERVER_TESTS` run-wide slots. That is the ONLY thing
     # bounding how many real servers `-n auto` (24 workers for 54 integration tests on the box
