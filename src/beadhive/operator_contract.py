@@ -252,10 +252,41 @@ def factory_hive_summary(
     }
 
 
+FACTORY_HIVE_FRESHNESS_STATES = ("fresh", "stale", "refreshing", "unknown")
+FACTORY_HIVE_PENDING_REASON = "summary_pending"
+
+
+def factory_hive_pending_summary(entry: Mapping[str, object]) -> dict[str, object]:
+    """Project a registered hive whose summary has not been observed yet.
+
+    A cold directory entry is not evidence that the hive is unavailable, so it keeps the
+    ``available`` availability state with null counts and a ``partial`` coverage whose reason
+    names the pending summary.  The additive ``freshness`` member carries the precise state.
+    """
+
+    summary = factory_hive_summary(entry, None)
+    return {
+        **summary,
+        "availability": {"state": "available", "reason": FACTORY_HIVE_PENDING_REASON},
+        "coverage": {"state": "partial", "reason": FACTORY_HIVE_PENDING_REASON},
+    }
+
+
 def factory_hive_page_revision(items: Sequence[Mapping[str, object]]) -> str:
-    """Return the opaque revision shared by ETags and snapshot-scoped cursors."""
+    """Return the opaque content revision of one directory page's summaries."""
 
     return _revision("factory-hives-v1", list(items))
+
+
+def factory_hive_cursor_revision(hive_ids: Sequence[str], availability: str | None) -> str:
+    """Return the membership/order revision that scopes directory cursors.
+
+    Summaries refresh in the background, so cursors bind only to registry membership, its
+    order, and the filter scope.  A summary refresh never invalidates an open cursor; a
+    registry membership change does.
+    """
+
+    return _revision("factory-hives-cursor-v1", list(hive_ids), availability)
 
 
 def _work_item(issue: StreamIssue, hive_id: str, revision: str, generated_at: int) -> dict:

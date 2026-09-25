@@ -40,6 +40,24 @@ counts instead of looking empty. The browser derives each authoritative hive rou
 frames after the snapshot cursor. Run activity is also read directly from `/api/v1`. Browser
 requests omit cookies and do not send an `Authorization` header in this phase-one profile.
 
+### Hive directory freshness
+
+`GET /api/v1/factory/hives` never waits on a per-hive source. Membership and order come from
+the registry alone; each item is the host's cached per-hive summary, refreshed in the background
+when it is missing, older than the refresh interval (60 seconds by default), or marked dirty. At
+most one refresh per hive is in flight and a fixed worker pool caps the host-wide total. Any
+single-hive read (snapshot, work items, detail) also refreshes that hive's cached summary.
+
+Each item carries a `freshness` object: `fresh`, `stale` (interval elapsed), `refreshing` (a
+background refresh is in flight), or `unknown` (never observed). A hive not yet observed is
+listed as `available` with null counts and `partial` coverage whose reason is
+`summary_pending`, never as `unavailable`; read the directory again to see completed refreshes.
+
+`nextCursor` is bound to registry membership, order, and filters only, so a background summary
+refresh does not invalidate it; a registry membership change still returns 409
+`hive_cursor_revision_mismatch`. The page `revision` and `ETag` track summary content. The
+`availability=` filter applies to cached state and is best effort across pages.
+
 ## Bounded work-item reads
 
 Operator clients that need a queue or inspector use the generic work-item resources instead of

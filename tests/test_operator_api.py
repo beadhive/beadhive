@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -13,8 +15,10 @@ import pytest
 from starlette.middleware import Middleware
 
 from beadhive import (
+    daemon_auth,
     daemon_contract,
     daemon_state_broker,
+    frame_bridge,
     frame_bridge_runtime,
     frame_bridge_upstream,
     host_daemon,
@@ -395,12 +399,22 @@ def _factory_cfg():
     }
 
 
+async def _warm_directory(client, app) -> httpx.Response:
+    """Read the directory cold, then wait for the background refreshes it scheduled."""
+
+    cold = await client.get("/api/v1/factory/hives")
+    summaries = app.state.operator_feed.sources.hive_summaries
+    assert await asyncio.to_thread(summaries.wait_idle, 10)
+    return cold
+
+
 def test_factory_hives_are_bounded_deterministic_and_distinguish_unavailable(
     tmp_path: Path,
 ) -> None:
     provider = FactoryProvider()
 
-    async def action(client, _app):
+    async def action(client, app):
+        await _warm_directory(client, app)
         first = await client.get("/api/v1/factory/hives", params={"limit": 2})
         second = await client.get(
             "/api/v1/factory/hives", params={"limit": 2, "cursor": first.json()["nextCursor"]}
@@ -438,6 +452,7 @@ def test_factory_hives_are_bounded_deterministic_and_distinguish_unavailable(
     }
     beadhive = first.json()["items"][1]
     assert beadhive["counts"] == {"open": 2, "ready": 1, "active": 1, "blocked": 2}
+    assert beadhive["freshness"]["state"] == "fresh"
     assert beadhive["opaqueRef"].startswith("hive-sha256-")
     assert [action["id"] for action in beadhive["advertisedActions"]] == [
         "hive.inspect",
@@ -464,7 +479,8 @@ def test_factory_hives_are_bounded_deterministic_and_distinguish_unavailable(
 def test_factory_hive_cursor_limits_filters_and_revisions_are_checked(tmp_path: Path) -> None:
     provider = FactoryProvider()
 
-    async def action(client, _app):
+    async def action(client, app):
+        await _warm_directory(client, app)
         bad_limits = [
             await client.get("/api/v1/factory/hives", params={"limit": value})
             for value in (0, 201, "many")
@@ -475,16 +491,38 @@ def test_factory_hive_cursor_limits_filters_and_revisions_are_checked(tmp_path: 
             "/api/v1/factory/hives",
             params={"limit": 1, "availability": "available", "cursor": first.json()["nextCursor"]},
         )
+        # A background summary refresh changes content, never the cursor's membership scope.
+        sources = app.state.operator_feed.sources
         provider.revisions["github/beadhive/alpha"] = "alpha-2"
+        sources.hive_summaries.mark_dirty("github/beadhive/alpha")
+        await client.get("/api/v1/factory/hives")
+        assert await asyncio.to_thread(sources.hive_summaries.wait_idle, 10)
+        refreshed = await client.get(
+            "/api/v1/factory/hives",
+            params={"limit": 1, "cursor": first.json()["nextCursor"]},
+        )
+        # A registry membership change still invalidates the open cursor.
+        sources.cfg["managed_repos"].append(
+            {
+                "provider": "github",
+                "org": "beadhive",
+                "repo": "newcomer",
+                "prefix": "newcomer",
+                "kind": "org-native",
+            }
+        )
         stale = await client.get(
             "/api/v1/factory/hives",
             params={"limit": 1, "cursor": first.json()["nextCursor"]},
         )
-        return bad_limits, malformed, wrong_filter, stale
+        return bad_limits, malformed, wrong_filter, (first, refreshed), stale
 
-    bad_limits, malformed, wrong_filter, stale = _exercise(
+    bad_limits, malformed, wrong_filter, (first, refreshed), stale = _exercise(
         tmp_path, action, cfg=_factory_cfg(), provider=provider
     )
+    assert refreshed.status_code == 200
+    assert [item["id"] for item in refreshed.json()["items"]] == ["github/beadhive/beadhive"]
+    assert refreshed.json()["revision"] != first.json()["revision"]
     assert [item.status_code for item in bad_limits] == [400, 400, 400]
     assert malformed.json()["error"]["code"] == "invalid_hive_cursor"
     assert (wrong_filter.status_code, wrong_filter.json()["error"]["code"]) == (
@@ -703,3 +741,227 @@ def test_product_factory_composes_operator_state_into_daemon_core(tmp_path: Path
     assert process_scope is not None
     assert process_scope.timeout < runtime.shutdown_budget
     app.state.operator_sources.close()
+
+
+class SlowHiveProvider:
+    """A per-hive source slower than the private directory deadline until released."""
+
+    def __init__(self, *, seconds: float = 30.0) -> None:
+        self.seconds = seconds
+        self.release = threading.Event()
+        self.calls: dict[str, int] = {}
+        self.active = 0
+        self.max_active = 0
+        self._lock = threading.Lock()
+
+    def refresh(self, request):
+        with self._lock:
+            self.calls[request.hive] = self.calls.get(request.hive, 0) + 1
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        try:
+            self.release.wait(self.seconds)
+        finally:
+            with self._lock:
+                self.active -= 1
+        return state_stream.ProviderSnapshot(
+            scope="hive",
+            revision=f"{request.hive}-1",
+            as_of=NOW,
+            issues=(
+                state_stream.StreamIssue(
+                    id="bh-1",
+                    hive=request.hive,
+                    issue_type="task",
+                    status="open",
+                    priority="P1",
+                    title="Slow",
+                    updated_at=NOW,
+                ),
+            ),
+        )
+
+
+def _fleet_cfg(count: int) -> dict:
+    return {
+        "managed_repos": [
+            {
+                "provider": "github",
+                "org": "beadhive",
+                "repo": f"hive-{index:02d}",
+                "prefix": f"h{index:02d}",
+                "kind": "org-native",
+            }
+            for index in range(count)
+        ]
+    }
+
+
+def test_factory_directory_never_waits_on_slow_hive_sources(tmp_path: Path) -> None:
+    provider = SlowHiveProvider()
+    fleet = operator_sources.HIVE_REFRESH_CONCURRENCY + 4
+
+    async def action(client, app):
+        sources = app.state.operator_feed.sources
+        try:
+            started = time.monotonic()
+            reads = await asyncio.gather(
+                *(client.get("/api/v1/factory/hives", params={"limit": 200}) for _ in range(5))
+            )
+            elapsed = time.monotonic() - started
+            # Let the capped pool pick up everything it can while sources stay slow.
+            await asyncio.sleep(0.2)
+            in_flight = dict(provider.calls)
+            max_active = provider.max_active
+        finally:
+            provider.release.set()
+        assert await asyncio.to_thread(sources.hive_summaries.wait_idle, 10)
+        # Queued hives were refreshed once each after the release, never twice.
+        warm = await client.get("/api/v1/factory/hives", params={"limit": 200})
+        return reads, elapsed, in_flight, max_active, warm
+
+    reads, elapsed, in_flight, max_active, warm = _exercise(
+        tmp_path, action, cfg=_fleet_cfg(fleet), provider=provider
+    )
+
+    assert elapsed < 2.0
+    assert all(read.status_code == 200 for read in reads)
+    cold = reads[0].json()
+    assert cold["returnedCount"] == fleet
+    for item in cold["items"]:
+        assert item["freshness"] == {"state": "refreshing", "asOf": None, "expiresAt": None}
+        assert item["availability"] == {"state": "available", "reason": "summary_pending"}
+        assert item["coverage"] == {"state": "partial", "reason": "summary_pending"}
+        assert item["counts"] == {"open": None, "ready": None, "active": None, "blocked": None}
+    # Concurrent reads dedupe to one in-flight refresh per hive under a global cap.
+    assert all(count == 1 for count in in_flight.values())
+    assert max_active <= operator_sources.HIVE_REFRESH_CONCURRENCY
+    assert set(provider.calls) == {item["id"] for item in cold["items"]}
+    assert all(count == 1 for count in provider.calls.values())
+
+    assert warm.status_code == 200
+    assert {item["freshness"]["state"] for item in warm.json()["items"]} == {"fresh"}
+    assert all(item["counts"]["open"] == 1 for item in warm.json()["items"])
+    schema = operator_api.openapi_document()["components"]["schemas"]
+    validator = jsonschema.Draft202012Validator(
+        {"components": {"schemas": schema}, "$ref": "#/components/schemas/FactoryHivePage"}
+    )
+    validator.validate(cold)
+    validator.validate(warm.json())
+
+
+def test_single_hive_reads_warm_the_directory_cache(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    class CountingProvider(Provider):
+        def refresh(self, request):
+            calls.append(request.hive)
+            return super().refresh(request)
+
+    async def action(client, app):
+        snapshot = await client.get("/api/v1/hives/github%2Fbeadhive%2Fbeadhive/snapshot")
+        directory = await client.get("/api/v1/factory/hives")
+        return snapshot, directory
+
+    snapshot, directory = _exercise(tmp_path, action, provider=CountingProvider())
+
+    assert snapshot.status_code == directory.status_code == 200
+    [item] = directory.json()["items"]
+    assert item["freshness"]["state"] == "fresh"
+    assert item["revision"] == "beads-1"
+    assert item["counts"]["open"] == 1
+    # The directory served the warmed summary without scheduling another source read.
+    assert calls == [HIVE]
+
+
+def test_hive_summary_cache_expires_and_tracks_registry_membership() -> None:
+    now = [0.0]
+    refreshed: list[str] = []
+    cache: operator_sources.HiveSummaryCache
+
+    def refresh(hive):
+        refreshed.append(hive.identity)
+        cache.record(hive, {"id": hive.identity, "revision": "r"}, started=now[0])
+
+    cache = operator_sources.HiveSummaryCache(refresh, ttl=60.0, clock=lambda: now[0])
+    entry = {"provider": "github", "org": "o", "repo": "r", "prefix": "r"}
+    hive = operator_sources.ExactHive("github/o/r", entry)
+    try:
+        assert cache.read((hive,))[0]["freshness"]["state"] in {"refreshing", "unknown"}
+        assert cache.wait_idle(5)
+        assert cache.read((hive,))[0]["freshness"]["state"] == "fresh"
+        now[0] = 61.0
+        assert cache.read((hive,))[0]["freshness"]["state"] in {"refreshing", "fresh"}
+        assert cache.wait_idle(5)
+        assert refreshed == ["github/o/r", "github/o/r"]
+        # A newer observation is never replaced by an older-started one.
+        cache.record(hive, {"id": hive.identity, "revision": "old"}, started=0.0)
+        assert cache.read((hive,))[0]["revision"] == "r"
+        # Dropping the hive from the registry drops its cached summary.
+        assert cache.read(()) == []
+        cache.close()
+        [pending] = cache.read((hive,))
+        assert pending["freshness"]["state"] == "unknown"
+    finally:
+        cache.close()
+
+
+def test_gateway_and_frame_bridge_directory_relays_return_promptly_with_slow_sources(
+    tmp_path: Path,
+) -> None:
+    provider = SlowHiveProvider()
+    cfg = _fleet_cfg(operator_sources.HIVE_REFRESH_CONCURRENCY + 2)
+    cfg["managed_repos"].append(
+        {
+            "provider": "github",
+            "org": "beadhive",
+            "repo": "beadhive",
+            "prefix": "bh",
+            "kind": "org-native",
+        }
+    )
+    app = _app(tmp_path, cfg=cfg, provider=provider)
+
+    async def run():
+        async with app.router.lifespan_context(app):
+            client = httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 5000)),
+                base_url=frame_bridge_runtime.LOOPBACK_ORIGIN,
+            )
+            gateway = frame_bridge_runtime.LoopbackGatewayReadSource(
+                daemon_bearer=daemon_auth.SecretBearer("bh1.frame-bridge." + "d" * 43),
+                authorized_subjects=frozenset({frame_bridge.LOCAL_DESKTOP_SUBJECT}),
+                client=client,
+            )
+            bridge = frame_bridge_upstream.HostDaemonFrameBridgeSource(
+                daemon_bearer=daemon_auth.SecretBearer("bh1.frame-bridge." + "d" * 43),
+                instance=frame_bridge_upstream.RegisteredInstance(),
+                client=client,
+            )
+            try:
+                started = time.monotonic()
+                listed = await asyncio.wait_for(
+                    gateway.list_hives(frame_bridge.LOCAL_DESKTOP_SUBJECT, limit=50, after=None),
+                    timeout=5.0,
+                )
+                directory = await asyncio.wait_for(
+                    bridge.directory(limit=50, cursor=None), timeout=5.0
+                )
+                return time.monotonic() - started, listed, directory
+            finally:
+                provider.release.set()
+                await asyncio.to_thread(
+                    app.state.operator_feed.sources.hive_summaries.wait_idle, 10
+                )
+                await client.aclose()
+
+    elapsed, listed, directory = asyncio.run(run())
+
+    assert elapsed < 2.0
+    assert len(listed["items"]) == len(cfg["managed_repos"])
+    assert all(
+        item["availability"] == "online" and item["freshness"]["state"] == "unknown"
+        for item in listed["items"]
+    )
+    assert [item["hiveId"] for item in directory["items"]] == [HIVE]
+    assert directory["items"][0]["availability"] == "available"

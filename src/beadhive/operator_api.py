@@ -42,7 +42,6 @@ from .operator_sources import OperatorSourceError, OperatorSources, validate_can
 OPENAPI_CONTRACT = daemon_openapi.OPENAPI_CONTRACT
 DEFAULT_PAGE_LIMIT = 50
 MAX_PAGE_LIMIT = 200
-_HIVE_READ_CONCURRENCY = 8
 MAX_ACTIVITY_CURSOR_LENGTH = 85
 _CURSOR = re.compile(r"^([A-Za-z0-9._~-]{1,64}):(0|[1-9][0-9]{0,19})$")
 _EVENTS_RAW_PATH = re.compile(
@@ -474,41 +473,28 @@ class OperatorAPI:
                     status_code=409,
                 )
 
-            hives = self.sources.registered_hives()
-            semaphore = asyncio.Semaphore(_HIVE_READ_CONCURRENCY)
-
-            async def summarize(hive):
-                async with semaphore:
-                    try:
-                        snapshot = await asyncio.to_thread(self.sources.refresh_hive_state, hive)
-                    except OperatorSourceError as exc:
-                        return operator_contract.factory_hive_summary(
-                            hive.entry,
-                            None,
-                            unavailable_reason=exc.code,
-                        )
-                    except Exception:
-                        return operator_contract.factory_hive_summary(
-                            hive.entry,
-                            None,
-                            unavailable_reason="snapshot_source_unavailable",
-                        )
-                    return operator_contract.factory_hive_summary(hive.entry, snapshot)
-
-            summaries = list(await asyncio.gather(*(summarize(hive) for hive in hives)))
+            # Membership comes from the registry alone; per-hive summaries come from the
+            # shared cache, which schedules background refreshes but is never awaited here.
+            summaries = await asyncio.to_thread(self.sources.factory_hive_directory)
             summaries.sort(key=lambda item: str(item["id"]))
-            if availability is not None:
-                summaries = [
-                    item for item in summaries if item["availability"]["state"] == availability
-                ]
-            revision = operator_contract.factory_hive_page_revision(summaries)
-            if cursor is not None and cursor["revision"] != revision:
+            cursor_revision = operator_contract.factory_hive_cursor_revision(
+                [str(item["id"]) for item in summaries], availability
+            )
+            if cursor is not None and cursor["revision"] != cursor_revision:
                 raise OperatorSourceError(
                     "hive_cursor_revision_mismatch",
                     "The hive collection changed; restart pagination without a cursor.",
                     status_code=409,
                 )
+            if availability is not None:
+                # Best effort across pages: filtering applies to cached state, which may
+                # change between page reads without invalidating the cursor.
+                summaries = [
+                    item for item in summaries if item["availability"]["state"] == availability
+                ]
             offset = int(cursor["offset"]) if cursor is not None else 0
+            if availability is not None:
+                offset = min(offset, len(summaries))
             if offset > len(summaries):
                 raise OperatorSourceError(
                     "invalid_hive_cursor",
@@ -520,7 +506,7 @@ class OperatorAPI:
             truncated = next_offset < len(summaries)
             payload: dict[str, object] = {
                 "schemaVersion": operator_contract.SCHEMA_VERSION,
-                "revision": revision,
+                "revision": operator_contract.factory_hive_page_revision(summaries),
                 "generatedAt": time.time_ns() // 1_000_000,
                 "items": page_items,
                 "returnedCount": len(page_items),
@@ -528,7 +514,7 @@ class OperatorAPI:
                 "truncated": truncated,
                 "nextCursor": (
                     _encode_hive_cursor(
-                        revision=revision, availability=availability, offset=next_offset
+                        revision=cursor_revision, availability=availability, offset=next_offset
                     )
                     if truncated
                     else None
