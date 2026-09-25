@@ -12,11 +12,19 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
-from beadhive import daemon_auth, frame_bridge, frame_bridge_runtime, gateway_read
+from beadhive import (
+    daemon_auth,
+    frame_bridge,
+    frame_bridge_runtime,
+    gateway_read,
+    operator_contract,
+)
 
 EPOCH = "123e4567e89b42d3a456426614174000"
 REVISION = "sha256:" + "a" * 64
 DAEMON_BEARER = "bh1.frame-bridge." + "d" * 43
+HIVE = "github/beadhive/beadhive-app"
+HIVE_SUBSCRIPTION = operator_contract.hive_subscription_id(HIVE)
 
 
 def _live_snapshot() -> dict[str, object]:
@@ -32,7 +40,7 @@ def _live_snapshot() -> dict[str, object]:
         "revision": REVISION,
         "generatedAt": 1_787_811_221_000,
         "cursor": {
-            "subscriptionId": "hive:github/beadhive/beadhive-app",
+            "subscriptionId": HIVE_SUBSCRIPTION,
             "producerEpoch": EPOCH,
             "sequence": 7,
             "observedAt": 1_787_811_221_001,
@@ -346,7 +354,7 @@ def test_live_gateway_read_source_streams_contiguous_daemon_events() -> None:
         event = {
             "schemaVersion": 1,
             "hiveId": "github/beadhive/beadhive-app",
-            "subscriptionId": "hive:github/beadhive/beadhive-app",
+            "subscriptionId": HIVE_SUBSCRIPTION,
             "producerEpoch": EPOCH,
             "sequence": 8,
             "baseSequence": 7,
@@ -394,7 +402,7 @@ def test_live_gateway_read_source_streams_contiguous_daemon_events() -> None:
                 frame_bridge.LOCAL_DESKTOP_SUBJECT,
                 factory_id="development",
                 hive_id="github/beadhive/beadhive-app",
-                subscription="hive:github/beadhive/beadhive-app",
+                subscription=HIVE_SUBSCRIPTION,
                 after=f"{EPOCH}:7",
             )
             return [event async for event in stream]
@@ -405,7 +413,7 @@ def test_live_gateway_read_source_streams_contiguous_daemon_events() -> None:
 
     assert seen_query == {
         "cursor": f"{EPOCH}:7",
-        "subscription": "hive:github/beadhive/beadhive-app",
+        "subscription": HIVE_SUBSCRIPTION,
     }
     assert envelopes == [
         {
@@ -418,7 +426,7 @@ def test_live_gateway_read_source_streams_contiguous_daemon_events() -> None:
             "event": {
                 "schemaVersion": 1,
                 "hiveId": "github/beadhive/beadhive-app",
-                "subscriptionId": "hive:github/beadhive/beadhive-app",
+                "subscriptionId": HIVE_SUBSCRIPTION,
                 "producerEpoch": EPOCH,
                 "sequence": 8,
                 "baseSequence": 7,
@@ -443,7 +451,7 @@ def test_live_gateway_read_source_fences_a_stream_when_a_new_snapshot_is_install
         if snapshots == 2:
             payload["revision"] = "sha256:" + "b" * 64
             payload["cursor"] = {
-                "subscriptionId": "hive:github/beadhive/beadhive-app",
+                "subscriptionId": HIVE_SUBSCRIPTION,
                 "producerEpoch": "223e4567e89b42d3a456426614174000",
                 "sequence": 0,
                 "observedAt": 1_787_811_221_003,
@@ -454,7 +462,7 @@ def test_live_gateway_read_source_fences_a_stream_when_a_new_snapshot_is_install
         event = {
             "schemaVersion": 1,
             "hiveId": "github/beadhive/beadhive-app",
-            "subscriptionId": "hive:github/beadhive/beadhive-app",
+            "subscriptionId": HIVE_SUBSCRIPTION,
             "producerEpoch": EPOCH,
             "sequence": 8,
             "baseSequence": 7,
@@ -503,7 +511,7 @@ def test_live_gateway_read_source_fences_a_stream_when_a_new_snapshot_is_install
                 frame_bridge.LOCAL_DESKTOP_SUBJECT,
                 factory_id="development",
                 hive_id="github/beadhive/beadhive-app",
-                subscription="hive:github/beadhive/beadhive-app",
+                subscription=HIVE_SUBSCRIPTION,
                 after=f"{EPOCH}:7",
             )
             await source.snapshot(

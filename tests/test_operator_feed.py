@@ -11,7 +11,13 @@ from pathlib import Path
 
 import pytest
 
-from beadhive import operator_feed, operator_sources, run_journal, state_stream
+from beadhive import (
+    operator_contract,
+    operator_feed,
+    operator_sources,
+    run_journal,
+    state_stream,
+)
 from beadhive.agent_run_summary import Freshness
 from beadhive.public_readers import AgentRunSnapshot, Coverage
 
@@ -125,11 +131,20 @@ def test_snapshot_is_direct_canonical_and_same_revision_keeps_cursor(tmp_path: P
     assert first["hive"]["prefix"] == HIVE
     assert first["workItems"][0]["ref"]["hiveId"] == HIVE
     assert first["cursor"] == {
-        "subscriptionId": f"hive:{HIVE}",
+        "subscriptionId": operator_contract.hive_subscription_id(HIVE),
         "producerEpoch": first["cursor"]["producerEpoch"],
         "sequence": 0,
         "observedAt": 1000,
     }
+
+
+def test_hive_subscription_id_is_stable_opaque_and_cross_hive_isolated() -> None:
+    subscription = operator_contract.hive_subscription_id(HIVE)
+
+    assert subscription == operator_contract.hive_subscription_id(HIVE)
+    assert subscription.startswith("hive-sha256-")
+    assert ":" not in subscription and "/" not in subscription
+    assert subscription != operator_contract.hive_subscription_id("github/beadhive/second")
 
 
 def test_concurrent_change_is_old_snapshot_then_strictly_later_install(tmp_path: Path) -> None:

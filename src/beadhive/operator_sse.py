@@ -293,7 +293,10 @@ class OperatorEventRelay:
     def _state(self, hive_id: str) -> _HiveRelayState:
         return self._hives.setdefault(
             hive_id,
-            _HiveRelayState(hive_id=hive_id, subscription_id=f"hive:{hive_id}"),
+            _HiveRelayState(
+                hive_id=hive_id,
+                subscription_id=operator_contract.hive_subscription_id(hive_id),
+            ),
         )
 
     def _on_install(self, install: FeedInstall) -> None:
@@ -616,6 +619,12 @@ class OperatorEventRelay:
 
     @staticmethod
     def _validate_envelope(event: Mapping[str, object]) -> None:
+        hive_id = event.get("hiveId")
+        subscription_id = event.get("subscriptionId")
+        if not isinstance(hive_id, str) or subscription_id != (
+            operator_contract.hive_subscription_id(hive_id)
+        ):
+            raise RuntimeError("operator event subscription must match its canonical hive")
         sequence = event["sequence"]
         base = event["baseSequence"]
         if (

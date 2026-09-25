@@ -17,6 +17,7 @@ from beadhive import (
     daemon_state_broker,
     host_daemon,
     operator_api,
+    operator_contract,
     operator_feed,
     operator_sources,
     operator_sse,
@@ -27,6 +28,7 @@ from beadhive.daemon_config import HostDaemonConfig
 from beadhive.daemon_contract import AuthScope
 
 HIVE = "github/beadhive/beadhive"
+HIVE_SUBSCRIPTION = operator_contract.hive_subscription_id(HIVE)
 DIGEST = "sha256:" + "a" * 64
 
 
@@ -603,7 +605,7 @@ def test_activity_is_installed_only_after_durable_append_finishes(tmp_path: Path
     hive_snapshot = {
         "revision": "opaque:hive-1",
         "cursor": {
-            "subscriptionId": f"hive:{HIVE}",
+            "subscriptionId": HIVE_SUBSCRIPTION,
             "producerEpoch": "hive-epoch",
             "sequence": 0,
             "observedAt": 1,
@@ -637,7 +639,7 @@ def test_activity_is_installed_only_after_durable_append_finishes(tmp_path: Path
         async with app.router.lifespan_context(app):
             sse_client = app.state.operator_sse.subscribe(
                 HIVE,
-                subscription_id=f"hive:{HIVE}",
+                subscription_id=HIVE_SUBSCRIPTION,
                 cursor=operator_sse.EventCursor("hive-epoch", 0),
                 loop=asyncio.get_running_loop(),
             )

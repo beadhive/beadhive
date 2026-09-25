@@ -25,6 +25,7 @@ from beadhive import (
     daemon_state_broker,
     host_daemon,
     operator_api,
+    operator_contract,
     operator_feed,
     operator_sources,
     operator_sse,
@@ -39,6 +40,8 @@ from beadhive.public_readers import AgentRunSnapshot, Coverage
 NOW = datetime(2026, 8, 24, tzinfo=UTC).isoformat().replace("+00:00", "Z")
 HIVE = "github/beadhive/beadhive"
 HIVE_TWO = "github/beadhive/second"
+HIVE_SUBSCRIPTION = operator_contract.hive_subscription_id(HIVE)
+HIVE_TWO_SUBSCRIPTION = operator_contract.hive_subscription_id(HIVE_TWO)
 UI_OPERATOR_EVENT_FIELDS = {
     "schemaVersion",
     "hiveId",
@@ -53,7 +56,7 @@ UI_OPERATOR_EVENT_FIELDS = {
     "entity",
     "payload",
 }
-UI_CONFORMANCE_SHA256 = "0dd82547b2539bdf54deba70e1b45c4516bb848db8eff0dd5354f8fa22d813cc"
+UI_CONFORMANCE_SHA256 = "3d42f643d56db76890edad5e075c0c4d2b53575852941282a3d6494f707ce724"
 
 
 def _snapshot(revision: str, status: str, *, hive: str = HIVE) -> state_stream.ProviderSnapshot:
@@ -266,7 +269,7 @@ def test_activity_observer_publishes_named_sse_in_order_and_resets_exact_run(
     async def exercise():
         client = relay.subscribe(
             HIVE,
-            subscription_id=f"hive:{HIVE}",
+            subscription_id=HIVE_SUBSCRIPTION,
             cursor=operator_sse.EventCursor(str(snapshot["cursor"]["producerEpoch"]), 0),
             loop=asyncio.get_running_loop(),
         )
@@ -316,6 +319,8 @@ def test_activity_observer_publishes_named_sse_in_order_and_resets_exact_run(
     assert events[2]["payload"]["runId"] == "run-sse"
     assert initial_sequence == 0
     assert snapshot["cursor"]["sequence"] == 3
+    assert snapshot["cursor"]["subscriptionId"] == HIVE_SUBSCRIPTION
+    assert {event["subscriptionId"] for event in events} == {HIVE_SUBSCRIPTION}
     document = operator_api.openapi_document()
     contract_uri = "urn:beadhive:host-openapi-v1"
     registry = Registry().with_resource(
@@ -361,7 +366,7 @@ def test_activity_observer_requires_live_snapshot_consumer_and_unregisters_on_sh
     async def exercise():
         client = relay.subscribe(
             HIVE,
-            subscription_id=f"hive:{HIVE}",
+            subscription_id=HIVE_SUBSCRIPTION,
             cursor=operator_sse.EventCursor(str(snapshot["cursor"]["producerEpoch"]), 0),
             loop=asyncio.get_running_loop(),
         )
@@ -432,7 +437,7 @@ def test_exact_sse_subscription_owns_connection_and_queue_gauges_to_zero(tmp_pat
     async def exercise():
         client = relay.subscribe(
             HIVE,
-            subscription_id=f"hive:{HIVE}",
+            subscription_id=HIVE_SUBSCRIPTION,
             cursor=operator_sse.EventCursor(snapshot["cursor"]["producerEpoch"], 0),
             loop=asyncio.get_running_loop(),
         )
@@ -454,7 +459,7 @@ def test_snapshot_boundary_replays_strictly_later_entity_event(tmp_path: Path) -
     async def exercise():
         client = relay.subscribe(
             HIVE,
-            subscription_id=f"hive:{HIVE}",
+            subscription_id=HIVE_SUBSCRIPTION,
             cursor=operator_sse.EventCursor(str(epoch), 0),
             loop=asyncio.get_running_loop(),
         )
@@ -624,7 +629,7 @@ def test_heartbeat_advances_feed_cursor_and_is_replayable(tmp_path: Path) -> Non
     async def exercise():
         client = relay.subscribe(
             HIVE,
-            subscription_id=f"hive:{HIVE}",
+            subscription_id=HIVE_SUBSCRIPTION,
             cursor=operator_sse.EventCursor(epoch, 0),
             loop=asyncio.get_running_loop(),
         )
@@ -657,7 +662,7 @@ def test_relay_restart_creates_a_new_epoch_and_expires_the_old_cursor(tmp_path: 
     with pytest.raises(operator_sse.ResnapshotRequired, match="cursor_epoch_expired"):
         second_relay.subscribe(
             HIVE,
-            subscription_id=f"hive:{HIVE}",
+            subscription_id=HIVE_SUBSCRIPTION,
             cursor=operator_sse.EventCursor(old_epoch, 0),
             loop=loop,
         )
@@ -679,7 +684,7 @@ def test_discontinuity_rotates_epoch_and_reset_replaces_old_replay(tmp_path: Pat
     loop = asyncio.new_event_loop()
     client = relay.subscribe(
         HIVE,
-        subscription_id=f"hive:{HIVE}",
+        subscription_id=HIVE_SUBSCRIPTION,
         cursor=operator_sse.EventCursor(old_epoch, 0),
         loop=loop,
     )
@@ -712,7 +717,7 @@ def test_discontinuity_rotates_epoch_and_reset_replaces_old_replay(tmp_path: Pat
     with pytest.raises(operator_sse.ResnapshotRequired, match="cursor_epoch_expired"):
         relay.subscribe(
             HIVE,
-            subscription_id=f"hive:{HIVE}",
+            subscription_id=HIVE_SUBSCRIPTION,
             cursor=operator_sse.EventCursor(old_epoch, 1),
             loop=loop,
         )
@@ -728,10 +733,13 @@ def test_reset_disconnect_is_scoped_to_one_hive_subscription(tmp_path: Path) -> 
     relay = operator_sse.OperatorEventRelay(feed, host_daemon.DaemonRuntime())
     first = feed.snapshot_with_cursor(HIVE)
     second = feed.snapshot_with_cursor(HIVE_TWO)
+    assert first["cursor"]["subscriptionId"] == HIVE_SUBSCRIPTION
+    assert second["cursor"]["subscriptionId"] == HIVE_TWO_SUBSCRIPTION
+    assert HIVE_SUBSCRIPTION != HIVE_TWO_SUBSCRIPTION
     loop = asyncio.new_event_loop()
     first_client = relay.subscribe(
         HIVE,
-        subscription_id=f"hive:{HIVE}",
+        subscription_id=HIVE_SUBSCRIPTION,
         cursor=operator_sse.EventCursor(
             str(first["cursor"]["producerEpoch"]), int(first["cursor"]["sequence"])
         ),
@@ -739,7 +747,7 @@ def test_reset_disconnect_is_scoped_to_one_hive_subscription(tmp_path: Path) -> 
     )
     second_client = relay.subscribe(
         HIVE_TWO,
-        subscription_id=f"hive:{HIVE_TWO}",
+        subscription_id=HIVE_TWO_SUBSCRIPTION,
         cursor=operator_sse.EventCursor(
             str(second["cursor"]["producerEpoch"]), int(second["cursor"]["sequence"])
         ),
@@ -786,7 +794,7 @@ def test_retention_and_slow_client_are_bounded_independently(tmp_path: Path) -> 
     async def exercise():
         client = relay.subscribe(
             HIVE,
-            subscription_id=f"hive:{HIVE}",
+            subscription_id=HIVE_SUBSCRIPTION,
             cursor=operator_sse.EventCursor(str(snapshot["cursor"]["producerEpoch"]), 0),
             loop=asyncio.get_running_loop(),
         )
@@ -808,7 +816,7 @@ def test_closed_event_loop_wake_atomically_releases_client_and_queue(tmp_path: P
     loop = asyncio.new_event_loop()
     client = relay.subscribe(
         HIVE,
-        subscription_id=f"hive:{HIVE}",
+        subscription_id=HIVE_SUBSCRIPTION,
         cursor=operator_sse.EventCursor(str(snapshot["cursor"]["producerEpoch"]), 0),
         loop=loop,
     )
@@ -830,7 +838,7 @@ def test_closed_event_loop_reset_and_shutdown_leave_no_clients_queues_or_tasks(
     loop = asyncio.new_event_loop()
     reset_client = relay.subscribe(
         HIVE,
-        subscription_id=f"hive:{HIVE}",
+        subscription_id=HIVE_SUBSCRIPTION,
         cursor=operator_sse.EventCursor(str(snapshot["cursor"]["producerEpoch"]), 0),
         loop=loop,
     )
@@ -848,7 +856,7 @@ def test_closed_event_loop_reset_and_shutdown_leave_no_clients_queues_or_tasks(
     assert replacement is not None
     shutdown_client = relay.subscribe(
         HIVE,
-        subscription_id=f"hive:{HIVE}",
+        subscription_id=HIVE_SUBSCRIPTION,
         cursor=operator_sse.EventCursor(
             str(replacement["cursor"]["producerEpoch"]),
             int(replacement["cursor"]["sequence"]),
@@ -877,13 +885,13 @@ def test_slow_peer_drop_does_not_interrupt_contiguous_healthy_peer_delivery(
     loop = asyncio.new_event_loop()
     slow = relay.subscribe(
         HIVE,
-        subscription_id=f"hive:{HIVE}",
+        subscription_id=HIVE_SUBSCRIPTION,
         cursor=operator_sse.EventCursor(epoch, 0),
         loop=loop,
     )
     healthy = relay.subscribe(
         HIVE,
-        subscription_id=f"hive:{HIVE}",
+        subscription_id=HIVE_SUBSCRIPTION,
         cursor=operator_sse.EventCursor(epoch, 0),
         loop=loop,
     )
@@ -928,13 +936,13 @@ def test_global_retention_is_shared_across_hives_and_old_cursor_expires(
     with pytest.raises(operator_sse.ResnapshotRequired, match="cursor_expired"):
         relay.subscribe(
             HIVE,
-            subscription_id=f"hive:{HIVE}",
+            subscription_id=HIVE_SUBSCRIPTION,
             cursor=operator_sse.EventCursor(str(one["cursor"]["producerEpoch"]), 0),
             loop=loop,
         )
     client = relay.subscribe(
         HIVE_TWO,
-        subscription_id=f"hive:{HIVE_TWO}",
+        subscription_id=HIVE_TWO_SUBSCRIPTION,
         cursor=operator_sse.EventCursor(str(two["cursor"]["producerEpoch"]), 0),
         loop=loop,
     )
@@ -959,7 +967,7 @@ def test_byte_bounds_disconnect_slow_client_and_emit_observable_reason(
     loop = asyncio.new_event_loop()
     client = relay.subscribe(
         HIVE,
-        subscription_id=f"hive:{HIVE}",
+        subscription_id=HIVE_SUBSCRIPTION,
         cursor=operator_sse.EventCursor(str(snapshot["cursor"]["producerEpoch"]), 0),
         loop=loop,
     )
@@ -973,7 +981,7 @@ def test_byte_bounds_disconnect_slow_client_and_emit_observable_reason(
     with pytest.raises(operator_sse.ResnapshotRequired, match="cursor_expired"):
         relay.subscribe(
             HIVE,
-            subscription_id=f"hive:{HIVE}",
+            subscription_id=HIVE_SUBSCRIPTION,
             cursor=operator_sse.EventCursor(str(snapshot["cursor"]["producerEpoch"]), 0),
             loop=loop,
         )
@@ -1002,7 +1010,7 @@ def test_byte_bounds_disconnect_slow_client_and_emit_observable_reason(
     with pytest.raises(operator_sse.ResnapshotRequired, match="cursor_expired"):
         global_relay.subscribe(
             HIVE,
-            subscription_id=f"hive:{HIVE}",
+            subscription_id=HIVE_SUBSCRIPTION,
             cursor=operator_sse.EventCursor(str(global_state["hives"][HIVE]["producerEpoch"]), 0),
             loop=global_loop,
         )
@@ -1018,7 +1026,7 @@ def test_detects_retained_cursor_gap_instead_of_rewriting_continuity(tmp_path: P
     with pytest.raises(operator_sse.ResnapshotRequired, match="cursor_in_future"):
         relay.subscribe(
             HIVE,
-            subscription_id=f"hive:{HIVE}",
+            subscription_id=HIVE_SUBSCRIPTION,
             cursor=operator_sse.EventCursor(str(snapshot["cursor"]["producerEpoch"]), 4),
             loop=loop,
         )
@@ -1026,7 +1034,7 @@ def test_detects_retained_cursor_gap_instead_of_rewriting_continuity(tmp_path: P
     with pytest.raises(operator_sse.ResnapshotRequired, match="cursor_gap"):
         relay.subscribe(
             HIVE,
-            subscription_id=f"hive:{HIVE}",
+            subscription_id=HIVE_SUBSCRIPTION,
             cursor=operator_sse.EventCursor(str(snapshot["cursor"]["producerEpoch"]), 0),
             loop=loop,
         )
@@ -1045,7 +1053,7 @@ def test_close_drains_blocking_source_worker_before_removing_feed_observers(
     async def exercise() -> None:
         client = relay.subscribe(
             HIVE,
-            subscription_id=f"hive:{HIVE}",
+            subscription_id=HIVE_SUBSCRIPTION,
             cursor=operator_sse.EventCursor(
                 str(snapshot["cursor"]["producerEpoch"]),
                 int(snapshot["cursor"]["sequence"]),
@@ -1123,7 +1131,7 @@ def test_production_process_owner_terminates_blocked_backend_within_shutdown_bud
     async def exercise() -> tuple[operator_sse.EventSubscription, float]:
         client = relay.subscribe(
             HIVE,
-            subscription_id=f"hive:{HIVE}",
+            subscription_id=HIVE_SUBSCRIPTION,
             cursor=operator_sse.EventCursor(
                 str(snapshot["cursor"]["producerEpoch"]),
                 int(snapshot["cursor"]["sequence"]),
@@ -1173,7 +1181,7 @@ def test_event_route_rejects_conflicts_and_checked_resnapshot(tmp_path: Path) ->
             ) as client:
                 conflict = await client.get(
                     "/api/v1/hives/github%2Fbeadhive%2Fbeadhive/events",
-                    params={"subscription": f"hive:{HIVE}", "after": f"{epoch}:0"},
+                    params={"subscription": HIVE_SUBSCRIPTION, "after": f"{epoch}:0"},
                     headers={"Last-Event-ID": f"{epoch}:1"},
                 )
                 expired = await client.get(
@@ -1196,7 +1204,7 @@ def test_event_route_rejects_conflicts_and_checked_resnapshot(tmp_path: Path) ->
                 alias_conflict = await client.get(
                     "/api/v1/hives/github%2Fbeadhive%2Fbeadhive/events",
                     params={
-                        "subscription": f"hive:{HIVE}",
+                        "subscription": HIVE_SUBSCRIPTION,
                         "after": f"{epoch}:0",
                         "cursor": f"{epoch}:1",
                     },
@@ -1233,7 +1241,9 @@ def test_event_route_rejects_conflicts_and_checked_resnapshot(tmp_path: Path) ->
                 "method": "GET",
                 "path": f"/api/v1/hives/{HIVE}/events",
                 "raw_path": b"/api/v1/hives/github%2Fbeadhive%2Fbeadhive/events",
-                "query_string": (f"subscription=hive:{HIVE}&after={epoch}:0".encode("ascii")),
+                "query_string": (
+                    f"subscription={HIVE_SUBSCRIPTION}&after={epoch}:0".encode("ascii")
+                ),
                 "headers": [],
                 "path_params": {"hive_id": HIVE},
             }
@@ -1289,11 +1299,11 @@ def test_event_cursor_bounds_precede_integer_conversion_and_are_documented(
             ) as client:
                 query = await client.get(
                     "/api/v1/hives/github%2Fbeadhive%2Fbeadhive/events",
-                    params={"subscription": f"hive:{HIVE}", "after": huge_sequence},
+                    params={"subscription": HIVE_SUBSCRIPTION, "after": huge_sequence},
                 )
                 header = await client.get(
                     "/api/v1/hives/github%2Fbeadhive%2Fbeadhive/events",
-                    params={"subscription": f"hive:{HIVE}"},
+                    params={"subscription": HIVE_SUBSCRIPTION},
                     headers={"Last-Event-ID": huge_sequence},
                 )
                 return query, header
@@ -1396,7 +1406,7 @@ def test_configured_app_revalidates_only_the_affected_live_sse_session(
     raw_path = b"/api/v1/hives/github%2Fbeadhive%2Fbeadhive/events"
     path = "/api/v1/hives/github/beadhive/beadhive/events"
     query = (
-        f"subscription=hive:{HIVE}&after={snapshot['cursor']['producerEpoch']}:"
+        f"subscription={HIVE_SUBSCRIPTION}&after={snapshot['cursor']['producerEpoch']}:"
         f"{snapshot['cursor']['sequence']}"
     ).encode()
 
