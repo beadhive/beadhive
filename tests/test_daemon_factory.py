@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import jsonschema
@@ -634,6 +635,76 @@ def test_factory_reads_hq_dependency_without_fetching_legacy_status(
         "reasonCode": "hq_not_initialized",
     }
     assert str(hq_dir) not in json.dumps(payload)
+
+
+def test_snapshot_never_waits_on_slow_hive_sources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`FactoryDirectory.snapshot` must serve cached summaries, never a live per-hive refresh."""
+
+    def _fake_resolution(_hive_name, **_kwargs):
+        observation = SimpleNamespace(coverage="complete", coverage_reason=None, freshness="fresh")
+        summary = SimpleNamespace(observation=observation)
+        descriptor = SimpleNamespace(runtime=SimpleNamespace(summary=summary))
+        return SimpleNamespace(
+            decision=daemon_factory.source_descriptors.ResolutionDecision.AVAILABLE,
+            reasons=(),
+            descriptor=descriptor,
+        )
+
+    monkeypatch.setattr(
+        daemon_factory.source_descriptors, "resolve_named_hive_sources", _fake_resolution
+    )
+
+    class SlowProvider:
+        def __init__(self) -> None:
+            self.release = threading.Event()
+
+        def refresh(self, request):
+            self.release.wait(5.0)
+            from beadhive.state_stream import ProviderSnapshot
+
+            return ProviderSnapshot(
+                scope="hive", revision=f"{request.hive}-1", as_of="2026-09-02T00:00:00Z"
+            )
+
+    provider = SlowProvider()
+    fleet = operator_sources.HIVE_REFRESH_CONCURRENCY + 4
+    cfg = {
+        "managed_repos": [
+            {
+                "provider": "github",
+                "org": "acme",
+                "repo": f"hive-{index:02d}",
+                "prefix": f"h{index:02d}",
+                "kind": "org-native",
+            }
+            for index in range(fleet)
+        ]
+    }
+    sources = operator_sources.OperatorSources(
+        cfg=cfg, host_id="host-stable", provider=provider, journal_base=tmp_path
+    )
+    directory = daemon_factory.FactoryDirectory(
+        sources=sources,
+        host_id="host-stable",
+        service_instance_id="instance-changing",
+        started_at=1_000,
+        clock_millis=lambda: 1_500,
+    )
+    try:
+        started = time.monotonic()
+        payload = directory.snapshot(ready=True, accepting_work=True)
+        elapsed = time.monotonic() - started
+    finally:
+        provider.release.set()
+
+    assert elapsed < 2.0
+    assert len(payload["hives"]) == fleet
+    # A cold cache must not read as unavailable; genuinely failed hives still would.
+    assert {hive["readiness"] for hive in payload["hives"]} == {"ready"}
+    assert sources.hive_summaries.wait_idle(10)
+    sources.close()
 
 
 def _isolated_hq_directory(
