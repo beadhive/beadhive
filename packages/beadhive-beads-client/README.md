@@ -43,3 +43,18 @@ transport failure raises `IndeterminateWrite` and requires reconciliation by
 reading the affected issue before any retry. `require_cli` names only approved
 compatibility or administrative operations. It never retries an HTTP write
 through `bd`. Delete and sweep are absent from the session surface.
+
+The installed `operation_matrix_v1.json` is the routing authority for the
+filed `bh-bwnys.1` and `bh-sy36q.2/.3/.5` consumers. Each named operation is
+exactly one of `api-ready`, `cli-compatibility`, `administrative`, or `denied`.
+Every API-ready row names its `BeadsSession` method and real-service evidence;
+every compatibility or administrative row is accepted by `require_cli`.
+Dedicated HTTP routes are supported for comments, claim release, and metadata
+compare-and-set, while guarded issue update owns label changes.
+
+Beads v1.3 has no gate lookup, create, or resolve route. Generic issue creation
+cannot set `await_type` or atomically reproduce `bd gate create --blocks`, and
+generic close is not a proven gate resolution. Review and kickoff gate
+operations therefore remain named CLI compatibility routes. The same applies
+to renewable lease heartbeat and reclaim, merge-slot coordination, Beadhive
+state dimensions, and the unproved batch and partial-failure variants.

@@ -109,10 +109,14 @@ def test_typed_problem_and_ambiguous_write_are_distinct() -> None:
 
 
 def test_cli_compatibility_is_explicit() -> None:
-    with pytest.raises(CliCompatibilityRequired, match="gate.resolve"):
-        BeadsSession.require_cli("gate.resolve")
+    with pytest.raises(CliCompatibilityRequired, match="work.gate.resolve"):
+        BeadsSession.require_cli("work.gate.resolve")
+    with pytest.raises(CliCompatibilityRequired, match="admin.sync"):
+        BeadsSession.require_cli("admin.sync")
     with pytest.raises(ValueError, match="no approved CLI"):
         BeadsSession.require_cli("issues.delete")
+    with pytest.raises(ValueError, match="no approved CLI"):
+        BeadsSession.require_cli("work.issue.get")
 
 
 def test_local_transport_uses_same_contract_without_spawning(

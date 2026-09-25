@@ -55,14 +55,25 @@ does not spawn `bd`. The verified bearer token never appears in a process
 argument. No service topology is inferred from the endpoint URL; embedded,
 external Dolt and team service are advertised Beads deployment properties.
 
-The installed versioned matrix classifies each work/planning operation as
+The installed versioned matrix classifies every operation required by the filed
+`bh-bwnys.1` and `bh-sy36q.2/.3/.5` consumers as
 `api-ready`, `cli-compatibility`, `administrative` or `denied`. `api-ready`
 describes the transport contract, not an already switched Beadhive command.
 The selected HTTP writes require explicit trusted actor, CLI-compatible
 defaults and hook policy at the downstream command boundary. The generated
 SDK contains all source operations, but the supported session does not expose
-issue delete or sweep. Gates, state dimensions, review, merge, Dolt sync,
-backup and migration retain named CLI paths.
+issue delete or sweep. Proven session operations include comment append,
+ownership-fenced claim release, metadata compare-and-set, and labels through
+guarded update. Gates, state dimensions, renewable lease heartbeat/reclaim,
+merge slots, unproved batch variants, review, merge, Dolt sync, backup and
+migration retain named CLI paths.
+
+The handoff intentionally records a blocker for the first downstream approval
+and bounce slice: Beads v1.3 has no gate lookup/create/resolve route,
+`createIssue` cannot set `await_type`, and generic close is not a proven gate
+resolution. Those commands must consume the named CLI compatibility routes or
+be replanned; the client does not fabricate gate semantics from generic issue
+operations.
 
 ## Rollback and handoff
 

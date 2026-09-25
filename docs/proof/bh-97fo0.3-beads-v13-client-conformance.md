@@ -29,15 +29,16 @@ uv run --locked --package beadhive-beads-client \
   pytest packages/beadhive-beads-client/tests/test_real_service.py -q
 ```
 
-The final run passed **3 tests in 3.43 seconds**. It proved:
+The review-fix run passed **3 tests in 4.20 seconds**. It proved:
 
 | Contract | Observation |
 |---|---|
 | Context and credentials | Missing bearer token is refused at context; valid token reaches ready. Wrong project ID is refused before work access. |
 | Reads | Typed 404, issue detail, ready list and two-page issue traversal. Cursor pages did not repeat a row. |
-| Relationships | Add, list and remove dependency; re-add restored the blocked selection. |
-| Create and update | Three HTTP creates, guarded patch, stale revision `409 precondition_failed`, readback of changed title. |
-| Lifecycle | Claim, atomic claim-next excluding a blocked issue, guarded close and reopen. |
+| Relationships | Real-service add, list, remove and re-add dependency; re-add restored the blocked selection. |
+| Create and update | HTTP creates, guarded patch, stale revision `409 precondition_failed`, label add/remove and readback. |
+| Metadata and feedback | Metadata CAS proved a successful swap and a stale-expectation refusal; comment append proved author and body readback. |
+| Lifecycle | Claim, atomic claim-next excluding a blocked issue, ownership-fenced release, guarded close and reopen. |
 | Concurrency | Two simultaneous claims on one issue yielded exactly one success and one `already_claimed` refusal. |
 | Ambiguous response | A transport sent one real PATCH, discarded its response, and raised `ReadTimeout`. The session raised `IndeterminateWrite`, did not retry, and a detail read found the committed notes. |
 | Local supervision | A session started a fixed-port `bd serve`, negotiated context and ready, then terminated and reaped the process. |
@@ -60,9 +61,28 @@ The proof exposed two differences that downstream command cutovers must handle:
 
 In `operation_matrix_v1.json`, **api-ready means the generated transport and
 session operation have a proven wire contract**. It does not switch an existing
-`bh work` or `bh plan` command. The downstream core must preserve command
+`bh work` or `bh plan` command. The matrix has one named row for every operation
+required by `bh-bwnys.1` and `bh-sy36q.2/.3/.5`, including comments, labels,
+metadata, gates, leases, heartbeat, reclaim, release, merge-slot coordination,
+molecule polling, and batch/partial-failure variants. The downstream core must preserve command
 output, identity, hooks, validation, review gates and Git safety before a
 top-level command cutover. `batchApply`, batch lifecycle operations and
 administration stay explicit CLI paths. Delete and sweep are denied by the
 Beadhive session surface despite being present in the complete generated wire
 SDK. Reads and writes never silently fall back from HTTP to CLI.
+
+The v1.3 OpenAPI and live service expose no focused gate operation. Gate rows
+are ordinary issues on reads, but `createIssue` cannot set `await_type` or
+atomically reproduce `bd gate create --blocks`; no HTTP route implements gate
+resolution. Treating generic issue close as gate resolution would be an
+unproved semantic substitution. `work.gate.*`, `plan.gate.*`, approval, bounce,
+and kickoff transitions therefore remain explicit CLI compatibility. This is a
+downstream blocker for `bh-bwnys.1`'s desired HTTP gate mutation contract, not
+an absent detail to emulate in the client.
+
+Likewise, HTTP claim does not grant the renewable CLI lease and v1.3 has no
+heartbeat, expired-lease reclaim, or merge-slot endpoints. The dedicated HTTP
+release route is API-ready for ownership-fenced claim release, while the wider
+lease release convention remains CLI compatibility. Generated batch-create,
+batch-apply, and batch-close routes remain compatibility operations until their
+atomic and partial-failure behavior has real-service evidence.

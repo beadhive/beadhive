@@ -11,6 +11,8 @@ from .session import (
     RemoteEndpoint,
     ServiceProblem,
     SessionTimeout,
+    cli_compatibility_operations,
+    load_operation_matrix,
 )
 
 __all__ = [
@@ -24,4 +26,6 @@ __all__ = [
     "RemoteEndpoint",
     "ServiceProblem",
     "SessionTimeout",
+    "cli_compatibility_operations",
+    "load_operation_matrix",
 ]

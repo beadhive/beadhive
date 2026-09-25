@@ -24,13 +24,16 @@ from beadhive_beads_client import (
     ServiceProblem,
 )
 from beads_v1_3.models import (
+    AddCommentRequest,
     AddDependenciesRequest,
     ClaimNextRequest,
     ClaimRequest,
     CloseIssueRequest,
+    CompareAndSetMetadataRequest,
     CreateIssueRequest,
     DependencyEdge,
     IssuePatchBody,
+    ReleaseIssueRequest,
     RemoveDependencyRequest,
     ReopenIssueRequest,
     UpdateIssueRequest,
@@ -137,11 +140,61 @@ def test_real_v13_reads_mutations_and_reconciliation() -> None:
         assert conflict.value.problem.code == "precondition_failed"
         assert session.get_issue(first.id).title == f"proof changed {tag}"
 
+        labelled = session.update_issue(
+            first.id,
+            UpdateIssueRequest(
+                actor=actor,
+                patch=IssuePatchBody(add_labels=[f"proof:{tag}"]),
+                expected_version=changed.revision,
+            ),
+        )
+        assert f"proof:{tag}" in session.get_issue(first.id).labels
+        session.update_issue(
+            first.id,
+            UpdateIssueRequest(
+                actor=actor,
+                patch=IssuePatchBody(remove_labels=[f"proof:{tag}"]),
+                expected_version=labelled.revision,
+            ),
+        )
+        labels_after_remove = session.get_issue(first.id).labels
+        assert labels_after_remove is UNSET or f"proof:{tag}" not in labels_after_remove
+
+        swapped = session.compare_and_set_metadata(
+            first.id,
+            CompareAndSetMetadataRequest(actor=actor, key="proof.token", value=tag),
+        )
+        assert swapped.swapped and swapped.current == tag
+        refused = session.compare_and_set_metadata(
+            first.id,
+            CompareAndSetMetadataRequest(
+                actor=actor, key="proof.token", expected="stale", value="wrong"
+            ),
+        )
+        assert not refused.swapped and refused.current == tag
+        assert session.get_issue(first.id).metadata.to_dict()["proof.token"] == tag
+
+        comment = session.add_comment(
+            first.id,
+            AddCommentRequest(author=actor, text=f"review feedback {tag}"),
+        )
+        assert comment.issue_id == first.id and comment.author == actor
+        with_comments = session.get_issue(first.id, include_comments=True)
+        assert any(
+            row.id == comment.id and row.text == comment.text
+            for row in with_comments.comments
+        )
+
         claimed = session.claim_issue(first.id, ClaimRequest(actor=actor))
         assert claimed.issue.assignee == actor
         next_claim = session.claim_next(ClaimNextRequest(actor=actor))
         assert next_claim.claimed is not UNSET
         assert next_claim.claimed.id != second.id  # blocked by first until it closes
+
+        released = session.release_issue(first.id, ReleaseIssueRequest(actor=actor))
+        assert released.changed
+        assert released.issue.status == "open"
+        assert released.issue.assignee is UNSET
 
         revision = session.get_issue(first.id).revision
         closed = session.close_issue(

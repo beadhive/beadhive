@@ -8,6 +8,11 @@ import json
 from importlib.resources import files
 from pathlib import Path
 
+from beadhive_beads_client import (
+    BeadsSession,
+    cli_compatibility_operations,
+    load_operation_matrix,
+)
 from beads_v1_3.models import ContextResponse, IssuesPage, Problem, ReadyPage
 
 PACKAGE = Path(__file__).resolve().parents[1]
@@ -53,13 +58,108 @@ def test_package_imports_do_not_reach_root_or_legacy_implementations() -> None:
                 assert node.module.split(".")[0] not in forbidden
 
 
-def test_versioned_operation_matrix_is_shipped_without_destructive_exports() -> None:
-    matrix = json.loads(
+DOWNSTREAM_OPERATIONS = {
+    "context.verify",
+    "work.issue.get",
+    "work.issue.list",
+    "work.ready.list",
+    "work.dependencies.list",
+    "work.dependencies.add",
+    "work.dependencies.remove",
+    "work.issue.update",
+    "work.claim.acquire",
+    "work.claim-next",
+    "work.claim.release",
+    "work.issue.close",
+    "work.issue.reopen",
+    "work.feedback.comment.add",
+    "work.gate.lookup",
+    "work.gate.create",
+    "work.gate.resolve",
+    "work.review.submit",
+    "work.review.inspect",
+    "work.review.approve",
+    "work.review.bounce",
+    "work.validation.check",
+    "work.state.get",
+    "work.state.update",
+    "work.lease.acquire",
+    "work.lease.heartbeat",
+    "work.lease.reclaim",
+    "work.lease.release",
+    "work.merge-slot.check",
+    "work.merge-slot.create",
+    "work.merge-slot.acquire",
+    "work.merge-slot.release",
+    "work.merge",
+    "work.molecule.progress",
+    "work.swarm.inspect",
+    "work.dispatch.poll",
+    "work.local-loop.state",
+    "plan.issue.get",
+    "plan.issue.list",
+    "plan.issue.create",
+    "plan.issue.update",
+    "plan.dependencies.list",
+    "plan.dependencies.add",
+    "plan.dependencies.remove",
+    "plan.labels.update",
+    "plan.metadata.compare-and-set",
+    "plan.feedback.comment.add",
+    "plan.gate.lookup",
+    "plan.gate.create",
+    "plan.gate.resolve",
+    "plan.kickoff.get",
+    "plan.kickoff.update",
+    "plan.molecule.file",
+    "plan.molecule.verify",
+    "plan.molecule.repair",
+    "plan.batch-create.atomic",
+    "plan.batch-apply.atomic",
+    "plan.batch-close.partial",
+    "plan.partial-failure.reconcile",
+}
+
+
+def test_versioned_operation_matrix_covers_filed_downstream_contract() -> None:
+    installed = json.loads(
         files("beadhive_beads_client").joinpath("operation_matrix_v1.json").read_text()
     )
+    matrix = load_operation_matrix()
+    assert matrix == installed
     assert matrix["version"] == 1
     assert matrix["beads_release"] == "1.3.0"
-    categories = {row["name"]: row["classification"] for row in matrix["operations"]}
+    rows = matrix["operations"]
+    names = [row["name"] for row in rows]
+    assert len(names) == len(set(names))
+    assert DOWNSTREAM_OPERATIONS <= set(names)
+    assert {row["classification"] for row in rows} == {
+        "api-ready",
+        "cli-compatibility",
+        "administrative",
+        "denied",
+    }
+    categories = {row["name"]: row["classification"] for row in rows}
     assert categories["work.claim-next"] == "api-ready"
-    assert categories["plan.batch-apply"] == "cli-compatibility"
+    assert categories["work.gate.lookup"] == "cli-compatibility"
+    assert categories["work.gate.create"] == "cli-compatibility"
+    assert categories["work.gate.resolve"] == "cli-compatibility"
+    assert categories["plan.batch-apply.atomic"] == "cli-compatibility"
     assert categories["issues.delete"] == categories["issues.sweep"] == "denied"
+
+
+def test_matrix_api_and_cli_routes_match_the_supported_session_surface() -> None:
+    rows = load_operation_matrix()["operations"]
+    for row in rows:
+        if row["classification"] == "api-ready":
+            assert "real-service" in row["evidence"]
+            assert callable(getattr(BeadsSession, row["session_method"]))
+            assert "reason" not in row
+        else:
+            assert "session_method" not in row
+            assert row.get("reason")
+    assert cli_compatibility_operations() == {
+        row["name"]
+        for row in rows
+        if row["classification"] in {"cli-compatibility", "administrative"}
+    }

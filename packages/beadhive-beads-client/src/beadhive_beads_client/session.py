@@ -6,19 +6,24 @@ compatibility explicitly for operations whose HTTP semantics are not approved.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import time
 from dataclasses import dataclass, field
+from functools import cache
+from importlib.resources import files
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, TypeVar
 
 import httpx
 
 from beads_v1_3.api.default import (
+    add_comment,
     add_dependencies,
     claim_issue,
     claim_next_issue,
     close_issue,
+    compare_and_set_metadata,
     create_issue,
     get_context,
     get_issue,
@@ -26,12 +31,14 @@ from beads_v1_3.api.default import (
     list_dependencies,
     list_issues,
     list_ready_work,
+    release_issue,
     remove_dependency,
     reopen_issue,
     update_issue,
 )
 from beads_v1_3.client import AuthenticatedClient
 from beads_v1_3.models import (
+    AddCommentRequest,
     AddDependenciesRequest,
     AddDependenciesResponse,
     ClaimNextRequest,
@@ -40,6 +47,9 @@ from beads_v1_3.models import (
     ClaimResponse,
     CloseIssueRequest,
     CloseIssueResponse,
+    Comment,
+    CompareAndSetMetadataRequest,
+    CompareAndSetMetadataResponse,
     ContextResponse,
     CreateIssueRequest,
     DependencyEdges,
@@ -48,6 +58,8 @@ from beads_v1_3.models import (
     IssuesPage,
     Problem,
     ReadyPage,
+    ReleaseIssueRequest,
+    ReleaseIssueResponse,
     RemoveDependencyRequest,
     RemoveDependencyResponse,
     ReopenIssueRequest,
@@ -59,14 +71,22 @@ from beads_v1_3.types import Response
 
 T = TypeVar("T")
 _BASE_CAPABILITIES = frozenset({"project.enforce", "issues.get", "issues.list", "ready.list"})
-_CLI_COMPATIBILITY = {
-    "gate.resolve": "Beads v1.3 has no HTTP gate route",
-    "state.update": "Beads v1.3 has no HTTP state-dimension route",
-    "merge_slot.acquire": "Beads v1.3 has no HTTP merge-slot route",
-    "sync.push": "Beads v1.3 has no HTTP Dolt publication route",
-    "backup": "Beads v1.3 has no HTTP backup route",
-    "migration": "Beads v1.3 has no HTTP migration route",
-}
+
+
+@cache
+def load_operation_matrix() -> dict[str, Any]:
+    """Load the installed routing evidence consumed by downstream core code."""
+    payload = files("beadhive_beads_client").joinpath("operation_matrix_v1.json").read_text()
+    return json.loads(payload)
+
+
+def cli_compatibility_operations() -> frozenset[str]:
+    """Return every explicitly approved CLI or administrative operation name."""
+    return frozenset(
+        row["name"]
+        for row in load_operation_matrix()["operations"]
+        if row["classification"] in {"cli-compatibility", "administrative"}
+    )
 
 
 class IncompatibleService(RuntimeError):
@@ -281,8 +301,13 @@ class BeadsSession:
         except (httpx.TimeoutException, httpx.TransportError) as exc:
             raise IndeterminateWrite(f"Beads write outcome unknown: {capability}") from exc
 
-    def get_issue(self, issue_id: str) -> IssueDetails:
-        return self._read("issues.get", get_issue.sync_detailed, issue_id)  # type: ignore[return-value]
+    def get_issue(self, issue_id: str, *, include_comments: bool = False) -> IssueDetails:
+        return self._read(
+            "issues.get",
+            get_issue.sync_detailed,
+            issue_id,
+            include_comments=include_comments,
+        )  # type: ignore[return-value]
 
     def list_issues(self, *, limit: int = 100, cursor: str | None = None) -> IssuesPage:
         kwargs: dict[str, object] = {"limit": limit}
@@ -308,6 +333,9 @@ class BeadsSession:
     def claim_next(self, body: ClaimNextRequest) -> ClaimNextResponse:
         return self._write("issues.claimNext", claim_next_issue.sync_detailed, body=body)  # type: ignore[return-value]
 
+    def release_issue(self, issue_id: str, body: ReleaseIssueRequest) -> ReleaseIssueResponse:
+        return self._write("issues.release", release_issue.sync_detailed, issue_id, body=body)  # type: ignore[return-value]
+
     def close_issue(self, issue_id: str, body: CloseIssueRequest) -> CloseIssueResponse:
         return self._write("issues.close", close_issue.sync_detailed, issue_id, body=body)  # type: ignore[return-value]
 
@@ -320,12 +348,30 @@ class BeadsSession:
     def remove_dependency(self, body: RemoveDependencyRequest) -> RemoveDependencyResponse:
         return self._write("dependencies.remove", remove_dependency.sync_detailed, body=body)  # type: ignore[return-value]
 
+    def add_comment(self, issue_id: str, body: AddCommentRequest) -> Comment:
+        return self._write("issues.addComment", add_comment.sync_detailed, issue_id, body=body)  # type: ignore[return-value]
+
+    def compare_and_set_metadata(
+        self, issue_id: str, body: CompareAndSetMetadataRequest
+    ) -> CompareAndSetMetadataResponse:
+        return self._write(
+            "issues.casMetadata", compare_and_set_metadata.sync_detailed, issue_id, body=body
+        )  # type: ignore[return-value]
+
     @staticmethod
     def require_cli(operation: str) -> None:
         """Name an unsupported or administrative operation at its call site."""
-        if operation not in _CLI_COMPATIBILITY:
+        row = next(
+            (
+                candidate
+                for candidate in load_operation_matrix()["operations"]
+                if candidate["name"] == operation
+            ),
+            None,
+        )
+        if row is None or row["classification"] not in {"cli-compatibility", "administrative"}:
             raise ValueError(f"operation has no approved CLI compatibility path: {operation}")
-        raise CliCompatibilityRequired(f"{operation}: {_CLI_COMPATIBILITY[operation]}")
+        raise CliCompatibilityRequired(f"{operation}: {row['reason']}")
 
     def close(self) -> None:
         self.context = None
