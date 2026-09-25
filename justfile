@@ -55,11 +55,12 @@ check: check-native
 
 # Stable fast entry points. Native collects the complete non-integration core suite directly;
 # Pants retains its impact-selected developer route.
-check-native: lint lint-md license-check architecture-structural-check stateful-native beads-sdk-check
+check-native: lint lint-md license-check architecture-structural-check stateful-native beads-client-check
 
-# Compare the checked-in SDK with its pinned offline OpenAPI generation.
-beads-sdk-check:
+# Compare the checked-in SDK and exercise the package without the root app.
+beads-client-check:
     uv run --locked --offline python packages/beadhive-beads-client/regenerate.py
+    uv run --locked --offline --no-build-isolation --package beadhive-beads-client pytest packages/beadhive-beads-client/tests -m 'not real_service'
 
 check-pants: lint lint-md license-check architecture-structural-check test-changed
 

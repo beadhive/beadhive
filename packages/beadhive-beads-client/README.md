@@ -22,3 +22,24 @@ subsequent regeneration uses only local inputs and the cache.
 The generated package is the wire authority: issue summaries, details, request
 bodies, pagination, context, capabilities and RFC 9457 problems come from the
 OpenAPI source. Handwritten session policy lives in a separate import package.
+
+## Session composition
+
+`beadhive_beads_client.BeadsSession` accepts either `RemoteEndpoint(url, token)`
+or `LocalEndpoint(repo_root, fixed_port, bd_executable, token_file)`, plus an
+`ExpectedContext(project_id, database)`. A remote endpoint must use HTTPS and
+a bearer token unless it is explicitly loopback. A local endpoint starts
+`bd serve` on the requested fixed loopback port and terminates it on exit.
+The service has a bounded startup and request deadline.
+
+Startup probes `/healthz`, authenticates `/v0/beads/context`, compares the
+exact `v0` / `1.3.0` version and project/database identity, requires the
+declared capabilities, stamps `Bd-Project-Id`, then queries ready work to
+prove database readiness. A wrong context fails before any work read.
+
+The session returns generated models. `ServiceProblem.problem` retains the
+generated RFC 9457 payload. A read deadline raises `SessionTimeout`; a write
+transport failure raises `IndeterminateWrite` and requires reconciliation by
+reading the affected issue before any retry. `require_cli` names only approved
+compatibility or administrative operations. It never retries an HTTP write
+through `bd`. Delete and sweep are absent from the session surface.

@@ -10,4 +10,4 @@ requires = ["hatchling", "editables>=0.5"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/beads_v1_3"]
+packages = ["src/beads_v1_3", "src/beadhive_beads_client"]
