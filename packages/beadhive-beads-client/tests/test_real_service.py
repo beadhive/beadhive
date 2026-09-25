@@ -181,8 +181,7 @@ def test_real_v13_reads_mutations_and_reconciliation() -> None:
         assert comment.issue_id == first.id and comment.author == actor
         with_comments = session.get_issue(first.id, include_comments=True)
         assert any(
-            row.id == comment.id and row.text == comment.text
-            for row in with_comments.comments
+            row.id == comment.id and row.text == comment.text for row in with_comments.comments
         )
 
         claimed = session.claim_issue(first.id, ClaimRequest(actor=actor))
