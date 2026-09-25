@@ -106,7 +106,7 @@
       "tests/test_operator_sse.py::test_concurrent_snapshot_handoff_never_exposes_new_state_with_old_cursor"
     ],
     "sseReplayResetBackpressure": [
-      "tests/test_operator_sse.py::test_snapshot_boundary_replays_strictly_later_entity_event",
+      "tests/test_operator_sse.py::test_snapshot_boundary_replays_strictly_later_invalidation",
       "tests/test_operator_sse.py::test_discontinuity_rotates_epoch_and_reset_replaces_old_replay",
       "tests/test_operator_sse.py::test_retention_and_slow_client_are_bounded_independently"
     ],

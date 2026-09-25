@@ -42,6 +42,16 @@ def test_generated_document_is_deterministic_and_matches_checked_artifact() -> N
     )
 
 
+def test_compact_snapshot_label_bounds_are_published_in_openapi() -> None:
+    from beadhive import daemon_openapi
+
+    labels = daemon_openapi.generate_openapi_document()["components"]["schemas"][
+        "SnapshotWorkItemSummary"
+    ]["properties"]["labels"]
+    assert labels["maxItems"] == 12
+    assert labels["items"] == {"type": "string", "minLength": 1, "maxLength": 256}
+
+
 def test_generation_does_not_consume_the_artifact_it_checks(monkeypatch) -> None:
     from beadhive import daemon_openapi
 

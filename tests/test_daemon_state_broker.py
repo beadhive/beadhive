@@ -231,7 +231,8 @@ def test_broker_snapshot_delta_identity_and_transport_sequence_are_independent(
     frame, closed = broker.relay._take(client)
 
     assert first["hive"]["prefix"] == HIVE
-    assert second["workItems"][0]["ref"]["hiveId"] == HIVE
+    assert second["hive"]["prefix"] == HIVE
+    assert second["workItems"][0]["id"] == "bh-1"
     assert second["cursor"] == {
         "subscriptionId": HIVE_SUBSCRIPTION,
         "producerEpoch": epoch,
@@ -239,8 +240,10 @@ def test_broker_snapshot_delta_identity_and_transport_sequence_are_independent(
         "observedAt": 1_000,
     }
     assert frame is not None and closed is False
-    assert b'"revision":"source-revision-1000000"' in frame
-    assert b'"sequence":1' in frame
+    event = json.loads(frame.split(b"data: ", 1)[1])
+    assert event["revision"] == second["revision"]
+    assert event["payload"]["kind"] == "invalidate"
+    assert event["sequence"] == 1
     assert b'"sequence":1000000' not in frame
 
     client.close()

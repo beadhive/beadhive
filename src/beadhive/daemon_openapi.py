@@ -19,7 +19,7 @@ from .daemon_contract import NON_MCP_ROUTES, TERMINAL_PROTOCOL, RouteSpec, WireM
 from .transport_inventory import catalog_projection_extension, operator_projection
 
 OPENAPI_CONTRACT = "beadhive-host-openapi-v1.json"
-OPENAPI_COMPONENTS_SHA256 = "2faaddede747d89b03d91029e78d98d9f62f8d628e1bafd26080cb7824417231"
+OPENAPI_COMPONENTS_SHA256 = "ca8aaab8b71d4154d0bcf754121701e0107c9ca458f8012c1214480c9f5f8b34"
 
 _ERROR_RESPONSES = {
     400: "BadRequest",

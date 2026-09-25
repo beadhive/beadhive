@@ -82,16 +82,20 @@ class Source:
                 "sequence": 1,
                 "observedAt": 1_787_000_000_000,
             },
-            "coverage": {},
+            "projectionPolicy": "beadhive.snapshot-summary/v1",
+            "limits": {"maxBytes": 917_504, "maxWorkItems": 4_096},
+            "coverage": {
+                "state": "complete",
+                "generatedAt": 1_787_000_000_000,
+                "eligible": 0,
+                "returned": 0,
+                "reason": None,
+                "policy": "beadhive.snapshot-summary/v1",
+                "sourceRevision": REVISION,
+                "limits": {"maxBytes": 917_504, "maxWorkItems": 4_096},
+                "sources": {},
+            },
             "workItems": [],
-            "dependencies": [],
-            "epics": [],
-            "gates": [],
-            "agents": [],
-            "assignments": [],
-            "schedules": [],
-            "evidence": [],
-            "advertisedActions": [],
         }
 
     async def events(self, *, subscription: str, after: str | None):
@@ -540,11 +544,20 @@ def test_host_daemon_adapter_is_loopback_only_and_rejects_malformed_snapshots() 
             "sequence": 1,
             "observedAt": 1_787_000_000_000,
         },
+        "projectionPolicy": "beadhive.snapshot-summary/v1",
+        "limits": {"maxBytes": 917_504, "maxWorkItems": 4_096},
         "coverage": {
             "state": "complete",
             "generatedAt": 1_787_000_000_000,
+            "eligible": 0,
+            "returned": 0,
+            "reason": None,
+            "policy": "beadhive.snapshot-summary/v1",
+            "sourceRevision": REVISION,
+            "limits": {"maxBytes": 917_504, "maxWorkItems": 4_096},
             "sources": {},
         },
+        "workItems": [],
     }
     requests: list[httpx.Request] = []
     responses = [
@@ -803,11 +816,20 @@ def test_gateway_and_daemon_authority_do_not_cross_the_private_seam() -> None:
             "sequence": 1,
             "observedAt": 1_787_000_000_000,
         },
+        "projectionPolicy": "beadhive.snapshot-summary/v1",
+        "limits": {"maxBytes": 917_504, "maxWorkItems": 4_096},
         "coverage": {
             "state": "complete",
             "generatedAt": 1_787_000_000_000,
+            "eligible": 0,
+            "returned": 0,
+            "reason": None,
+            "policy": "beadhive.snapshot-summary/v1",
+            "sourceRevision": REVISION,
+            "limits": {"maxBytes": 917_504, "maxWorkItems": 4_096},
             "sources": {},
         },
+        "workItems": [],
     }
 
     async def daemon_snapshot_handler(request):

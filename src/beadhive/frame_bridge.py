@@ -384,15 +384,53 @@ _COMMAND_ENVELOPE_KEYS = frozenset(
     {"schemaVersion", "contractVersion", "instanceId", "command", "correlationId", "result"}
 )
 _COMMAND_RESULT_KEYS = frozenset({"status", "revision"})
-_SNAPSHOT_KEYS = frozenset({"schemaVersion", "revision", "generatedAt", "workItems", "agents"})
+_SNAPSHOT_KEYS = frozenset(
+    {
+        "schemaVersion",
+        "revision",
+        "generatedAt",
+        "projectionPolicy",
+        "limits",
+        "coverage",
+        "workItems",
+    }
+)
 _STREAM_SNAPSHOT_KEYS = _SNAPSHOT_KEYS | {"eventCursor"}
 _WORK_ITEM_KEYS = frozenset(
-    {"id", "title", "status", "issueType", "priority", "labels", "assignee", "updatedAt"}
+    {
+        "id",
+        "title",
+        "status",
+        "readiness",
+        "issueType",
+        "priority",
+        "labels",
+        "remainingLabelCount",
+        "assignee",
+        "owner",
+        "updatedAt",
+        "blockerCount",
+        "openGateCount",
+        "liveAgentCount",
+    }
 )
-_AGENT_KEYS = frozenset({"id", "state", "ownerSeat", "startedAt", "updatedAt", "endedAt"})
-_MAX_WORK_ITEMS = 1_000
-_MAX_AGENTS = 256
-_MAX_LABELS = 64
+_COVERAGE_KEYS = frozenset(
+    {
+        "state",
+        "generatedAt",
+        "eligible",
+        "returned",
+        "reason",
+        "policy",
+        "sourceRevision",
+        "limits",
+    }
+)
+_LIMIT_KEYS = frozenset({"maxBytes", "maxWorkItems"})
+_SNAPSHOT_POLICY = "beadhive.snapshot-summary/v1"
+_SNAPSHOT_MAX_BYTES = 896 * 1024
+_MAX_WORK_ITEMS = 4_096
+_MAX_LABELS = 12
 _MAX_JSON_SAFE_INTEGER = 2**53 - 1
 _MAX_COMMAND_BODY = 2_048
 _CORRELATION_ID = re.compile(
@@ -625,8 +663,10 @@ def _work_item_is_allowlisted(value: object) -> bool:
     labels = value["labels"]
     return (
         _string(value["id"], maximum=256)
-        and _string(value["title"], maximum=4_096)
-        and _string(value["status"], maximum=128)
+        and isinstance(value["title"], str)
+        and len(value["title"]) <= 4_096
+        and value["status"] in {"open", "in_progress", "blocked"}
+        and value["readiness"] in {"ready", "active", "blocked"}
         and _string(value["issueType"], maximum=128)
         and isinstance(value["priority"], int)
         and not isinstance(value["priority"], bool)
@@ -634,20 +674,48 @@ def _work_item_is_allowlisted(value: object) -> bool:
         and isinstance(labels, list)
         and len(labels) <= _MAX_LABELS
         and all(_string(label, maximum=256) for label in labels)
+        and type(value["remainingLabelCount"]) is int
+        and 0 <= value["remainingLabelCount"] <= _MAX_JSON_SAFE_INTEGER
         and _string(value["assignee"], maximum=256, optional=True)
+        and _string(value["owner"], maximum=256, optional=True)
         and _timestamp(value["updatedAt"])
+        and all(
+            type(value[name]) is int and 0 <= value[name] <= _MAX_JSON_SAFE_INTEGER
+            for name in ("blockerCount", "openGateCount", "liveAgentCount")
+        )
     )
 
 
-def _agent_is_allowlisted(value: object) -> bool:
+def _limits_are_allowlisted(value: object) -> bool:
     return (
-        _exact_keys(value, _AGENT_KEYS)
-        and _string(value["id"], maximum=256)
-        and _string(value["state"], maximum=128)
-        and _string(value["ownerSeat"], maximum=256, optional=True)
-        and _timestamp(value["startedAt"], optional=True)
-        and _timestamp(value["updatedAt"])
-        and _timestamp(value["endedAt"], optional=True)
+        _exact_keys(value, _LIMIT_KEYS)
+        and value["maxBytes"] == _SNAPSHOT_MAX_BYTES
+        and value["maxWorkItems"] == _MAX_WORK_ITEMS
+    )
+
+
+def _coverage_is_allowlisted(value: object, *, revision: object, returned: int) -> bool:
+    if not _exact_keys(value, _COVERAGE_KEYS):
+        return False
+    eligible = value["eligible"]
+    reported_returned = value["returned"]
+    reason = value["reason"]
+    state = value["state"]
+    return (
+        state in {"complete", "partial"}
+        and _timestamp(value["generatedAt"])
+        and type(eligible) is int
+        and 0 <= eligible <= _MAX_JSON_SAFE_INTEGER
+        and type(reported_returned) is int
+        and reported_returned == returned
+        and eligible >= reported_returned
+        and reason in {None, "byte_budget", "structural_cap"}
+        and (state == "partial") == (reported_returned < eligible)
+        and (reason is not None) == (reported_returned < eligible)
+        and (reason != "structural_cap" or reported_returned == _MAX_WORK_ITEMS)
+        and value["policy"] == _SNAPSHOT_POLICY
+        and value["sourceRevision"] == revision
+        and _limits_are_allowlisted(value["limits"])
     )
 
 
@@ -694,7 +762,6 @@ def frame_bridge_payload_is_allowlisted(kind: str, payload: object) -> bool:
         ):
             return False
         work_items = snapshot["workItems"]
-        agents = snapshot["agents"]
         return (
             _schema_version(payload["schemaVersion"])
             and payload["contractVersion"] == CONTRACT_VERSION
@@ -702,12 +769,14 @@ def frame_bridge_payload_is_allowlisted(kind: str, payload: object) -> bool:
             and _schema_version(snapshot["schemaVersion"])
             and _string(snapshot["revision"], maximum=256)
             and _timestamp(snapshot["generatedAt"])
+            and snapshot["projectionPolicy"] == _SNAPSHOT_POLICY
+            and _limits_are_allowlisted(snapshot["limits"])
             and isinstance(work_items, list)
             and len(work_items) <= _MAX_WORK_ITEMS
             and all(_work_item_is_allowlisted(item) for item in work_items)
-            and isinstance(agents, list)
-            and len(agents) <= _MAX_AGENTS
-            and all(_agent_is_allowlisted(item) for item in agents)
+            and _coverage_is_allowlisted(
+                snapshot["coverage"], revision=snapshot["revision"], returned=len(work_items)
+            )
             and (
                 "eventCursor" not in snapshot
                 or (
@@ -764,50 +833,43 @@ def _public_snapshot(raw: Mapping[str, object], *, with_events: bool) -> dict[st
         if not isinstance(generated_at, int) or isinstance(generated_at, bool):
             raise FrameBridgeProjectionFailed("runtime snapshot is incompatible")
         raw_work_items = raw["workItems"]
-        raw_agents = raw["agents"]
-        if (
-            not isinstance(raw_work_items, list)
-            or len(raw_work_items) > _MAX_WORK_ITEMS
-            or not isinstance(raw_agents, list)
-            or len(raw_agents) > _MAX_AGENTS
-        ):
+        if not isinstance(raw_work_items, list) or len(raw_work_items) > _MAX_WORK_ITEMS:
             raise FrameBridgeProjectionFailed("runtime snapshot is incompatible")
         work_items = []
         for item in raw_work_items:
-            record = item["record"]
-            labels = record["labels"]
+            labels = item["labels"]
             if not isinstance(labels, list) or len(labels) > _MAX_LABELS:
                 raise FrameBridgeProjectionFailed("runtime snapshot is incompatible")
             work_items.append(
                 {
-                    "id": record["id"],
-                    "title": record["title"],
-                    "status": record["status"],
-                    "issueType": record["issueType"],
-                    "priority": record["priority"],
+                    "id": item["id"],
+                    "title": item["title"],
+                    "status": item["status"],
+                    "readiness": item["readiness"],
+                    "issueType": item["issueType"],
+                    "priority": item["priority"],
                     "labels": list(labels),
-                    "assignee": record["assignee"],
+                    "remainingLabelCount": item["remainingLabelCount"],
+                    "assignee": item["assignee"],
+                    "owner": item["owner"],
                     "updatedAt": item["updatedAt"],
+                    "blockerCount": item["blockerCount"],
+                    "openGateCount": item["openGateCount"],
+                    "liveAgentCount": item["liveAgentCount"],
                 }
             )
-        agents = []
-        for item in raw_agents:
-            agents.append(
-                {
-                    "id": item["ref"]["id"],
-                    "state": item["state"],
-                    "ownerSeat": item["ownerSeat"],
-                    "startedAt": item["startedAt"],
-                    "updatedAt": item["updatedAt"],
-                    "endedAt": item["endedAt"],
-                }
-            )
+        limits = dict(raw["limits"])
+        raw_coverage = raw["coverage"]
+        coverage = {key: raw_coverage[key] for key in _COVERAGE_KEYS}
+        coverage["limits"] = dict(raw_coverage["limits"])
         public = {
             "schemaVersion": SCHEMA_VERSION,
             "revision": revision,
             "generatedAt": generated_at,
+            "projectionPolicy": raw["projectionPolicy"],
+            "limits": limits,
+            "coverage": coverage,
             "workItems": work_items,
-            "agents": agents,
         }
         if with_events:
             event_cursor = raw["eventCursor"]

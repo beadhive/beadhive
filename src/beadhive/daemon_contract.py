@@ -12,7 +12,7 @@ import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import quote, unquote_to_bytes
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -370,8 +370,8 @@ class FactoryHivePage(WireModel):
 class StreamCursor(WireModel):
     subscription_id: str
     producer_epoch: str
-    sequence: int = Field(ge=0)
-    observed_at: int = Field(ge=0)
+    sequence: int = Field(strict=True, ge=0, le=2**53 - 1)
+    observed_at: int = Field(strict=True, ge=0, le=2**53 - 1)
 
     @field_validator("subscription_id", "producer_epoch")
     @classmethod
@@ -432,18 +432,42 @@ class SourceProvenance(WireModel):
 
 class OperatorSourceCoverage(WireModel):
     state: Literal["complete", "partial", "unavailable"]
-    requested: int | None = Field(default=None, ge=0)
-    returned: int | None = Field(default=None, ge=0)
-    from_cache: int = Field(0, ge=0)
+    requested: int | None = Field(default=None, strict=True, ge=0, le=2**53 - 1)
+    returned: int | None = Field(default=None, strict=True, ge=0, le=2**53 - 1)
+    from_cache: int = Field(0, strict=True, ge=0, le=2**53 - 1)
     detail: str | None = None
-    generated_at: int = Field(ge=0)
+    generated_at: int = Field(strict=True, ge=0, le=2**53 - 1)
     provenance: SourceProvenance
 
 
+class SnapshotProjectionLimits(WireModel):
+    max_bytes: Literal[917_504]
+    max_work_items: Literal[4_096]
+
+
 class OperatorCoverage(WireModel):
-    state: Literal["complete", "partial", "unavailable"]
-    generated_at: int = Field(ge=0)
+    state: Literal["complete", "partial"]
+    generated_at: int = Field(strict=True, ge=0, le=2**53 - 1)
+    eligible: int = Field(strict=True, ge=0, le=2**53 - 1)
+    returned: int = Field(strict=True, ge=0, le=4_096)
+    reason: Literal["byte_budget", "structural_cap"] | None
+    policy: Literal["beadhive.snapshot-summary/v1"]
+    source_revision: str = Field(min_length=1)
+    limits: SnapshotProjectionLimits
     sources: dict[str, OperatorSourceCoverage]
+
+    @model_validator(mode="after")
+    def _selection_is_truthful(self) -> OperatorCoverage:
+        if self.returned > self.eligible:
+            raise ValueError("snapshot coverage returned exceeds eligible")
+        is_partial = self.returned < self.eligible
+        if (self.state == "partial") != is_partial:
+            raise ValueError("snapshot coverage state disagrees with counts")
+        if is_partial != (self.reason is not None):
+            raise ValueError("snapshot coverage reason disagrees with counts")
+        if self.reason == "structural_cap" and self.returned != self.limits.max_work_items:
+            raise ValueError("structural-cap coverage must return the structural limit")
+        return self
 
 
 class HiveInfo(WireModel):
@@ -458,24 +482,50 @@ class HiveInfo(WireModel):
         return f"{self.provider}/{self.org}/{self.repo}"
 
 
+SnapshotLabel = Annotated[str, Field(min_length=1, max_length=256)]
+
+
+class SnapshotWorkItemSummary(WireModel):
+    id: str = Field(min_length=1, max_length=256)
+    title: str = Field(max_length=4_096)
+    status: Literal["open", "in_progress", "blocked"]
+    readiness: Literal["ready", "active", "blocked"]
+    issue_type: str = Field(min_length=1, max_length=128)
+    priority: int = Field(strict=True, ge=0, le=4)
+    labels: tuple[SnapshotLabel, ...] = Field(max_length=12)
+    remaining_label_count: int = Field(strict=True, ge=0, le=2**53 - 1)
+    assignee: str | None = Field(default=None, max_length=256)
+    owner: str | None = Field(default=None, max_length=256)
+    updated_at: int = Field(strict=True, ge=0, le=2**53 - 1)
+    blocker_count: int = Field(strict=True, ge=0, le=2**53 - 1)
+    open_gate_count: int = Field(strict=True, ge=0, le=2**53 - 1)
+    live_agent_count: int = Field(strict=True, ge=0, le=2**53 - 1)
+
+
 class HiveSnapshotResponse(WireModel):
-    """Top-level UI snapshot envelope; entity bodies retain the shared UI contract."""
+    """Compact, byte-first seed snapshot for one exact hive."""
 
     schema_version: Literal[1] = WIRE_SCHEMA_VERSION
     hive: HiveInfo
     revision: str
-    generated_at: int = Field(ge=0)
+    generated_at: int = Field(strict=True, ge=0, le=2**53 - 1)
     cursor: StreamCursor | None
+    projection_policy: Literal["beadhive.snapshot-summary/v1"]
+    limits: SnapshotProjectionLimits
     coverage: OperatorCoverage
-    work_items: tuple[dict[str, Any], ...] = ()
-    dependencies: tuple[dict[str, Any], ...] = ()
-    epics: tuple[dict[str, Any], ...] = ()
-    gates: tuple[dict[str, Any], ...] = ()
-    agents: tuple[dict[str, Any], ...] = ()
-    assignments: tuple[dict[str, Any], ...] = ()
-    schedules: tuple[dict[str, Any], ...] = ()
-    evidence: tuple[dict[str, Any], ...] = ()
-    advertised_actions: tuple[dict[str, Any], ...] = ()
+    work_items: tuple[SnapshotWorkItemSummary, ...] = Field(max_length=4_096)
+
+    @model_validator(mode="after")
+    def _projection_is_consistent(self) -> HiveSnapshotResponse:
+        if self.projection_policy != self.coverage.policy:
+            raise ValueError("snapshot projection policy fields disagree")
+        if self.limits != self.coverage.limits:
+            raise ValueError("snapshot projection limit fields disagree")
+        if self.revision != self.coverage.source_revision:
+            raise ValueError("snapshot coverage source revision disagrees")
+        if len(self.work_items) != self.coverage.returned:
+            raise ValueError("snapshot work-item count disagrees with coverage")
+        return self
 
 
 class EntityUpsertPayload(WireModel):
@@ -518,9 +568,7 @@ class ActivityResetPayload(WireModel):
 
 
 OperatorEventPayload = (
-    EntityUpsertPayload
-    | EntityRemovePayload
-    | InvalidatePayload
+    InvalidatePayload
     | ResetPayload
     | HeartbeatPayload
     | ActivityEventPayload

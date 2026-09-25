@@ -17,7 +17,7 @@ import httpx
 from joserfc.jwk import KeySet
 
 from . import config as bh_config
-from . import daemon_auth, gateway_read, operator_contract, otel
+from . import daemon_auth, daemon_contract, gateway_read, operator_contract, otel
 from .frame_bridge import (
     CLOUD_APP_ORIGIN,
     CLOUD_GATEWAY_ORIGIN,
@@ -237,9 +237,13 @@ class LoopbackGatewayReadSource:
         )
         self._raise_for_status(response)
         snapshot = response.json()
-        if not isinstance(snapshot, dict) or snapshot.get("schemaVersion") != 1:
+        if not isinstance(snapshot, dict):
             raise RuntimeError("operator snapshot is incompatible")
-        if set(snapshot) != gateway_read._SNAPSHOT_REQUIRED:
+        try:
+            validated = daemon_contract.HiveSnapshotResponse.model_validate(snapshot)
+        except ValueError as exc:
+            raise RuntimeError("operator snapshot is incompatible") from exc
+        if validated.schema_version != 1:
             raise RuntimeError("operator snapshot is incompatible")
         hive = snapshot.get("hive")
         if not isinstance(hive, dict):
@@ -247,10 +251,6 @@ class LoopbackGatewayReadSource:
         identity = "/".join(_bounded_text(hive.get(name)) for name in ("provider", "org", "repo"))
         if identity != hive_id:
             raise RuntimeError("operator snapshot is incompatible")
-        for name in gateway_read._SNAPSHOT_COLLECTIONS:
-            value = snapshot.get(name)
-            if not isinstance(value, list) or len(value) > gateway_read._MAX_COLLECTION_ITEMS:
-                raise RuntimeError("operator snapshot is incompatible")
         revision = _bounded_text(snapshot.get("revision"), maximum=256)
         generated_at = _safe_timestamp(snapshot.get("generatedAt"))
         cursor = snapshot.get("cursor")
@@ -436,11 +436,10 @@ def _development_work_items(value: object) -> list[Mapping[str, object]]:
         raise RuntimeError("operator work items are incompatible")
     selected: list[Mapping[str, object]] = []
     for item in value:
-        if not isinstance(item, Mapping) or not isinstance(item.get("record"), Mapping):
+        if not isinstance(item, Mapping):
             raise RuntimeError("operator work item is incompatible")
-        record = item["record"]
-        status = record.get("status")
-        issue_type = record.get("issueType")
+        status = item.get("status")
+        issue_type = item.get("issueType")
         if not isinstance(status, str) or not isinstance(issue_type, str):
             raise RuntimeError("operator work item is incompatible")
         if status in _DEMO_STATUSES and issue_type not in _INTERNAL_WORK_ITEM_TYPES:
@@ -492,13 +491,19 @@ class LoopbackDemoRuntime:
         value = response.json()
         if not isinstance(value, dict) or not isinstance(value.get("cursor"), dict):
             raise RuntimeError("operator snapshot is incompatible")
+        try:
+            validated = daemon_contract.HiveSnapshotResponse.model_validate(value).to_wire()
+        except ValueError as exc:
+            raise RuntimeError("operator snapshot is incompatible") from exc
         return {
-            "schemaVersion": value.get("schemaVersion"),
-            "revision": value.get("revision"),
-            "generatedAt": value.get("generatedAt"),
-            "workItems": _development_work_items(value.get("workItems")),
-            "agents": value.get("agents"),
-            "eventCursor": _remote_cursor(value["cursor"]),
+            "schemaVersion": validated["schemaVersion"],
+            "revision": validated["revision"],
+            "generatedAt": validated["generatedAt"],
+            "projectionPolicy": validated["projectionPolicy"],
+            "limits": validated["limits"],
+            "coverage": validated["coverage"],
+            "workItems": _development_work_items(validated["workItems"]),
+            "eventCursor": _remote_cursor(validated["cursor"]),
         }
 
     async def refresh(self, expected_revision: str, _correlation_id: str) -> Mapping[str, object]:

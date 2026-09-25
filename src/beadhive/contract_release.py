@@ -95,7 +95,7 @@ _CATALOG_POLICY = "append-only-catalog-v1"
 _OPENAPI_POLICY = "openapi-additive-v1"
 _PUBLISHED_BASELINE_VERSION = "1.0.0"
 _PUBLISHED_BASELINE_SHA256 = (
-    "sha256:842ae163daf23f090af8bbc11f50145adcfb22c15185c5e24fec3795119d1037"
+    "sha256:ba53c093508a88636456d090f3411857a3e9881817a7aaf18e9c65e86050038d"
 )
 _MANIFEST_SCHEMA = Path("docs/schemas/wire/v1.4.0/plugin-manifest-v1.schema.json")
 _HTTP_METHODS = frozenset({"delete", "get", "head", "options", "patch", "post", "put", "trace"})

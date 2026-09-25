@@ -108,9 +108,17 @@
     "revision": "opaque:snapshot-1",
     "generatedAt": 1777000000000,
     "cursor": {"subscriptionId": "hive-bh", "producerEpoch": "epoch-1", "sequence": 0, "observedAt": 1777000000000},
+    "projectionPolicy": "beadhive.snapshot-summary/v1",
+    "limits": {"maxBytes": 917504, "maxWorkItems": 4096},
     "coverage": {
       "state": "complete",
       "generatedAt": 1777000000000,
+      "eligible": 0,
+      "returned": 0,
+      "reason": null,
+      "policy": "beadhive.snapshot-summary/v1",
+      "sourceRevision": "opaque:snapshot-1",
+      "limits": {"maxBytes": 917504, "maxWorkItems": 4096},
       "sources": {
         "beads": {
           "state": "complete",
@@ -123,15 +131,7 @@
         }
       }
     },
-    "workItems": [],
-    "dependencies": [],
-    "epics": [],
-    "gates": [],
-    "agents": [],
-    "assignments": [],
-    "schedules": [],
-    "evidence": [],
-    "advertisedActions": []
+    "workItems": []
   },
   "event": {
     "schemaVersion": 1,

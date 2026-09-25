@@ -5,6 +5,17 @@ official supported surface. The bundle is local, language-neutral, checksum veri
 not require a hosted registry or generated clients. The exact bytes ship under
 `beadhive/schemas/contracts/v1.0.0`; `inventory.json` is the entry point.
 
+## Pre-publication snapshot correction
+
+The host snapshot and its Gateway projection were corrected before any supported consumer or
+Factory release received this bundle. The canonical v1 seed is now the compact
+`beadhive.snapshot-summary/v1` shape: a deterministic, byte-bounded work-item summary list with
+truthful coverage and hive-wide invalidation events. The earlier checked rich snapshot draft was
+never shipped, so the reviewed publication decision replaced that draft in the v1 baseline and
+release bundle instead of creating a misleading alternate major or compatibility bridge. This
+is a one-time pre-publication correction; the immutability and compatibility rules below apply
+to this corrected handoff.
+
 ## Supported artifacts
 
 The inventory is authoritative for the 23 artifacts in 17 families: configuration, plugin
