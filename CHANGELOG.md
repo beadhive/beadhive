@@ -13,6 +13,63 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.18.0 (2026-09-25)
+
+### Feat
+
+- **operator**: wire directory-changed dirty signal into the SSE relay
+- **frame-bridge**: relay bounded work item reads
+- **gates**: separate native and Pants validation
+- **native**: run complete core and workspace suites
+- **pants**: provide build verification diagnostics
+- **pants**: extract impact backend plugin package
+- **packages**: enforce public import boundaries
+- **plugins**: collect build.impact backends from plugin manifests at bootstrap
+- **packages**: scaffold the packages/* uv workspace with shared glob wiring and a template package
+- **testing**: add beadhive.testing.impact conformance kit for ImpactBackend
+- **cache**: co-locate framework caches
+- **validation**: add semantic attest selection policy
+- **validation**: trivial-change policy short-circuit for attest keys.
+- **validation**: trivial-change policy short-circuit for attest keys
+
+### Fix
+
+- **operator**: serve hive directory from cached per-hive summaries
+- **contract**: emit compact byte-bounded snapshots
+- **frame-bridge**: bound daemon snapshot projection
+- **operator**: emit opaque hive subscription ids
+- **validation**: keep Pants artifact proof in Pants profile
+- **validation**: expose uv interpreter inside hermetic gate
+- **pants**: prove complete package test inventory
+- **pants**: defer verifier import for standalone scripts
+- **transport**: include manifest CLI in drift gate
+- **cli**: tolerate absent package plugins
+- **benchmark**: omit caller virtualenv for fixture installs
+- **cache**: verify locality materialization correctness
+- **test**: restore private Dolt servers after regression
+- **benchmark**: distinguish missing Dolt slot telemetry
+- **benchmark**: retain output from failed cells
+- **benchmark**: parse pytest durations and exclusions
+- **benchmark**: stream pytest output to run logs
+- **benchmark**: retain logs for incomplete pytest runs
+- **integration**: coordinate shared Dolt maintenance
+- **integration**: retry shared-server gate contention
+- **validation**: reap interrupted hermetic process groups
+- **doctor**: distinguish worktree filesystem pressure
+
+### Refactor
+
+- **work**: expose impact resolution to plugins
+- **pants**: move tooling behind plugin CLI
+
+### Perf
+
+- **benchmark**: record worker and cache resource evidence
+- **test**: reuse Dolt within exclusive slots
+- **integration**: reuse isolated Dolt server startup
+- **test**: reduce AGF real-bd work
+- **test**: expose Dolt slot queue delay
+
 ## v0.17.1 (2026-09-21)
 
 ### Fix
