@@ -66,6 +66,7 @@ def test_bh_pex_declares_the_plugin_in_its_build_closure() -> None:
     assert '"//packages/beadhive-pants/src:lib"' in pex_target
 
 
+@pytest.mark.pants_profile
 @pytest.mark.skipif(
     shutil.which("python3.11") is None,
     reason="recursive Pants artifact proof needs the repository's Python 3.11 toolchain",

@@ -242,8 +242,8 @@ def _assert_production_full_gate_wiring(repo: Path) -> None:
     selective_architecture = recipes["architecture-structural-check"]
     pants_architecture = recipes["architecture-pants-check"]
     attest_architecture = recipes["attest-architecture-contracts"]
-    check = recipes["check"]
-    check_all = recipes["check-all"]
+    check = recipes["check-pants"]
+    check_all = recipes["check-all-pants"]
     check_all_native = recipes["check-all-native"]
     assert isinstance(architecture, dict)
     assert isinstance(selective_architecture, dict)
@@ -292,6 +292,8 @@ def _assert_production_full_gate_wiring(repo: Path) -> None:
         "demo-local-loop",
         "demo-live-ingress",
     }
+    if "pants-artifact-check" in recipes:
+        full_only.add("pants-artifact-check")
     assert "architecture-structural-check" in check_dependencies & check_all_dependencies
     assert "architecture-check" not in check_dependencies | check_all_dependencies
     assert full_only.isdisjoint(check_dependencies)
@@ -318,10 +320,16 @@ def _assert_production_full_gate_wiring(repo: Path) -> None:
         return visited
 
     native_graph = recipe_closure("check-all-native")
-    assert not {"architecture-pants-check", "stateful-pants", "pants-attest"} & native_graph
+    assert (
+        not {"architecture-pants-check", "stateful-pants", "pants-attest", "pants-artifact-check"}
+        & native_graph
+    )
     for name in native_graph:
         for row in recipes[name]["body"]:
-            assert "pants" not in row[0].lower(), f"native gate launches Pants via {name}: {row[0]}"
+            assert not any(
+                invocation in row[0]
+                for invocation in ("pants_ci.py", "pants_cache.py", "scie-pants", "just _pants")
+            ), f"native gate launches Pants via {name}: {row[0]}"
 
 
 def _manifests(repo: Path) -> list[dict[str, object]]:

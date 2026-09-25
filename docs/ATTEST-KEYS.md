@@ -10,8 +10,10 @@ an opt-in optimization, and uncertainty always costs more validation rather than
 
 ## This repository's key catalog
 
-The live catalog is configured under `work.attest` in the fleet configuration. Keep it aligned
-with the recipes in `justfile`; `just check-attest-catalog` enforces that partition.
+The Pants catalog is configured under `work.attest` in the fleet configuration. Keep it aligned
+with `just check-all-pants` in `justfile`; `just check-attest-catalog` checks that partition and
+both explicit native and Pants recipe graphs. The native hive profile removes the catalog and
+uses its single explicit `work.validate_cmd` path; the catalog remains available for rollback.
 
 | Key | Opaque command | Pants selector | Covers |
 |---|---|---|---|
@@ -20,7 +22,7 @@ with the recipes in `justfile`; `just check-attest-catalog` enforces that partit
 | `stateful` | `just attest-stateful` | `attest:stateful` | Proven Pants tests plus the residual native fast suite |
 | `integration` | `just attest-integration` | `attest:integration` | Landing integration tests |
 | `architecture-contracts` | `just attest-architecture-contracts` | `attest:architecture-contracts` | Architecture, transport, wire, and proof contracts |
-| `package` | `just attest-package` | `attest:package` | Pants package attestation |
+| `package` | `just attest-package` | `attest:package` | Pants package attestation and recursive PEX proof |
 | `packages` | `just attest-packages` | `attest:packages` | Ruff and sandboxed tests for every `packages/*` distribution |
 | `demos` | `just attest-demos` | `attest:demos` | Local-loop and live-ingress operator demos |
 

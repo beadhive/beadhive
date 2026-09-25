@@ -1,8 +1,9 @@
 # Pants developer foundation
 
-Pants is an additive developer build graph. The canonical `uv.lock`, native `uv run pytest`,
-`just check`, and `just check-all` commands remain authoritative. Qualified selective routes
-are described below; uncertain changes fall back to the full gate.
+Pants remains an explicit, supported build graph profile. The canonical `uv.lock` and
+`just check-pants` / `just check-all-pants` commands remain available when the hive's primary
+profile is native. Qualified selective routes are described below; uncertain changes fall back
+to the full gate. See [VALIDATION-PROFILES.md](VALIDATION-PROFILES.md) for switching and recovery.
 
 ## Plugin commands and compatibility shims
 

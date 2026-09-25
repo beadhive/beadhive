@@ -31,15 +31,21 @@ Native mode needs none.
 ## Run tests and checks
 
 ```sh
-just check      # fast gate: ruff lint + markdown lint + unit tests — run this before pushing
-just check-all  # full gate: the above + the real-bd integration suite (needs `bd` on PATH)
+just check-native      # fast native gate: lint, contracts, every non-integration core test
+just check-pants       # fast Pants impact-selected gate
+just check-all-native  # full native gate: core, integration, packages, builds, demos
+just check-all-pants   # full Pants gate: proven partition, packages, integration, demos
+just check            # alias for the currently selected fast profile
+just check-all        # alias for the currently selected full profile
 just test       # unit tests only
 just test ""    # full suite (unit + integration; integration self-skips without a real bd)
 just lint       # ruff check
 just fmt        # ruff format
 ```
 
-`just check` is the one to have green before you open a PR. The `pre-commit` hook runs the ~3s
+The four profile-explicit commands are stable across a profile switch. `check` and `check-all`
+are convenience aliases; use the explicit command when recording a validation verdict. The
+`pre-commit` hook runs the ~3s
 `just conventions` subset, deliberately — a six-minute pre-commit gets `--no-verify`'d within a
 week.
 

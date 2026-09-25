@@ -50,8 +50,14 @@ bootstrap:
 # The enforcing seam is now the LAND itself — `work.validate.molecule` / `.merge-main` for this
 # hive point at `check-all`, so `bh work finish` / `merge` runs it from a clean checkout before
 # anything reaches main. The pre-push job stays as the belt to that braces.
-# FAST GATE (the default validate_cmd): ruff + markdown + licences + the UNIT suite
-check: lint lint-md license-check architecture-structural-check test-changed
+# Native is the selected primary; explicit Pants commands remain stable.
+check: check-native
+
+# Stable fast entry points. Native collects the complete non-integration core suite directly;
+# Pants retains its impact-selected developer route.
+check-native: lint lint-md license-check architecture-structural-check stateful-native
+
+check-pants: lint lint-md license-check architecture-structural-check test-changed
 
 # Current-candidate proof rows are generated evidence and must match the exact release tree.
 proof-digest-check:
@@ -139,10 +145,12 @@ gateway-contract-check:
 # on a gate measured in minutes. Measured rather than extrapolated — the fenced unit phase came in
 # FASTER than the unfenced one (80.07s vs 123.29s, bh-nvv66), so this buys isolation for nothing.
 # FULL GATE: ruff + markdown + licences + the COMPLETE suite + the local-loop demo — what the LAND runs
-check-all: require-bd lint lint-md license-check architecture-structural-check architecture-pants-check pants-attest stateful-pants stateful-native test-integration-land demo-local-loop demo-live-ingress packages-check
+check-all: check-all-native
+
+check-all-pants: require-bd lint lint-md license-check architecture-structural-check architecture-pants-check pants-attest pants-artifact-check stateful-pants stateful-native test-integration-land demo-local-loop demo-live-ingress packages-check
 
 # Full native validation runs every core and workspace test directly with pytest. Pants remains
-# available through check-all; this mode deliberately has no Pants engine prerequisite.
+# available through check-all-pants; this mode deliberately has no Pants engine prerequisite.
 check-all-native: require-bd lint lint-md license-check architecture-structural-check stateful-native test-integration-land demo-local-loop demo-live-ingress packages-check
 
 # Attest-key commands deliberately partition check-all. Keep this list and the fleet's
@@ -171,6 +179,7 @@ attest-architecture-contracts:
 attest-package:
     just pants-attest
     just architecture-pants-check
+    just pants-artifact-check
 
 # ONE key for every packages/* distribution (bh-3fcl0.1); Pants' CAS serves unchanged ones.
 attest-packages:
@@ -658,7 +667,13 @@ stateful_workers := "16"
 
 stateful-native:
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run pytest -n {{stateful_workers}} tests -m "{{FAST}}"
+        ./scripts/hermetic.sh uv run pytest -n {{stateful_workers}} tests -m "not integration and not pants_profile"
+
+# Recursive PEX packaging executes the Pants engine and needs its pinned artifact cache. Keep
+# this one test in the Pants full profile and outside the native collection.
+pants-artifact-check:
+    ./scripts/hermetic.sh uv run pytest -q \
+        tests/test_beadhive_pants_artifacts.py::test_bh_pex_contains_and_resolves_the_backend
 
 # Advisory module/plugin closures. These commands never replace `just check` or `just check-all`;
 # the checked impact map adds shared-contract and reverse-dependent selectors to each direct set.

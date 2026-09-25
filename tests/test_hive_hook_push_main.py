@@ -435,7 +435,7 @@ def test_the_hook_asks_bh_for_a_verdict_and_skips_the_gate_on_a_hit(tmp_path):
     res = _run_hook(tmp_path, bh="exit 0")
 
     assert res.returncode == 0
-    assert "hive hook push-main abc123 --gate just check-all" in res.stderr
+    assert "hive hook push-main abc123 --gate just check-all-native" in res.stderr
     assert "JUST-RAN" not in res.stdout  # the whole point: the gate did not run
 
 
@@ -443,7 +443,7 @@ def test_the_hook_runs_the_full_gate_when_bh_reports_a_miss(tmp_path):
     res = _run_hook(tmp_path, bh="exit 1")
 
     assert res.returncode == 0
-    assert "JUST-RAN check-all" in res.stdout
+    assert "JUST-RAN check-all-native" in res.stdout
 
 
 def test_a_bh_that_is_not_installed_runs_the_full_gate(tmp_path):
@@ -453,14 +453,14 @@ def test_a_bh_that_is_not_installed_runs_the_full_gate(tmp_path):
     res = _run_hook(tmp_path, bh=None)
 
     assert res.returncode == 0
-    assert "JUST-RAN check-all" in res.stdout
+    assert "JUST-RAN check-all-native" in res.stdout
 
 
 def test_a_bh_that_crashes_runs_the_full_gate(tmp_path):
     res = _run_hook(tmp_path, bh="echo 'Traceback (most recent call last):' >&2; exit 70")
 
     assert res.returncode == 0
-    assert "JUST-RAN check-all" in res.stdout
+    assert "JUST-RAN check-all-native" in res.stdout
 
 
 def test_a_red_gate_after_a_missed_lookup_still_fails_the_push(tmp_path):

@@ -57,7 +57,8 @@ def _run_gate(
 
 
 def test_check_all_cannot_report_green_without_bd():
-    assert "require-bd" in _recipe_deps("check-all")
+    assert _recipe_deps("check-all").strip() == "check-all-native"
+    assert "require-bd" in _recipe_deps("check-all-native")
 
 
 def test_the_fast_check_is_not_burdened_with_the_bd_requirement():
@@ -82,13 +83,13 @@ def test_the_fence_still_gets_the_ref_list_too():
 
 def test_a_main_push_runs_the_full_gate(tmp_path):
     res = _run_gate(f"refs/heads/main abc refs/heads/main {ZERO}\n", tmp_path)
-    assert "JUST-RAN check-all" in res.stdout
+    assert "JUST-RAN check-all-native" in res.stdout
 
 
 def test_a_push_of_head_to_main_from_a_side_branch_still_runs_the_full_gate(tmp_path):
     """The case lefthook's `only: {ref: main}` misses — the gate must key off the REMOTE ref."""
     res = _run_gate("HEAD abc refs/heads/main def\n", tmp_path)
-    assert "JUST-RAN check-all" in res.stdout
+    assert "JUST-RAN check-all-native" in res.stdout
 
 
 def test_a_bead_branch_push_does_not_run_the_full_gate(tmp_path):

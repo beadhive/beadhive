@@ -137,6 +137,10 @@ def test_the_wrapper_exists_and_is_executable():
     assert os.access(WRAPPER, os.X_OK), f"{WRAPPER} is not executable"
 
 
+def test_uv_managed_interpreter_is_visible_inside_fence():
+    assert ".local/share/uv/python" in WRAPPER.read_text()
+
+
 def test_the_wrapper_degrades_loudly_rather_than_silently_when_disabled():
     """BH_HERMETIC=0 is a real escape hatch, but it must announce itself: a fence that is quietly
     absent is worse than no fence, because the gate still reports green."""
@@ -200,9 +204,10 @@ def test_the_demo_is_back_on_the_check_all_line():
 
     Pinned because `check-all` losing a phase is the exact shape bh-dfz2 and bh-4kq1b were filed
     about, and it happened again anyway."""
-    line = next(
-        ln for ln in (REPO / "justfile").read_text().splitlines() if ln.startswith("check-all:")
-    )
+    justfile = (REPO / "justfile").read_text()
+    alias = next(ln for ln in justfile.splitlines() if ln.startswith("check-all:"))
+    assert alias.strip() == "check-all: check-all-native"
+    line = next(ln for ln in justfile.splitlines() if ln.startswith("check-all-native:"))
 
     assert "demo-local-loop" in line, (
         "`demo-local-loop` is off the check-all line again — that is the ONLY end-to-end proof "

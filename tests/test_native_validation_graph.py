@@ -74,3 +74,18 @@ def test_backend_neutral_structural_gate_owns_shared_contract_checks() -> None:
         "pants_ci_benchmark.py check",
     ):
         assert required in pants
+
+
+def test_recursive_pants_artifact_is_excluded_only_from_native_profile() -> None:
+    justfile = (ROOT / "justfile").read_text(encoding="utf-8")
+    native = "\n".join(_recipe_body(justfile, "stateful-native"))
+    artifact = "\n".join(_recipe_body(justfile, "pants-artifact-check"))
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    test_source = (ROOT / "tests" / "test_beadhive_pants_artifacts.py").read_text()
+
+    assert "not integration and not pants_profile" in native
+    assert "pants-artifact-check" in _dependencies(justfile, "check-all-pants")
+    assert "pants-artifact-check" not in _dependencies(justfile, "check-all-native")
+    assert "@pytest.mark.pants_profile\n@pytest.mark.skipif(" in test_source
+    assert "pants_profile: executes the Pants engine" in pyproject
+    assert "test_bh_pex_contains_and_resolves_the_backend" in artifact

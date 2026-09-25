@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# git pre-push: run the FULL gate (`just check-all`) when — and only when — the push updates
+# git pre-push: run the FULL gate (`just check-all-native`) when — and only when — the push updates
 # the integration branch, UNLESS bh already holds a green verdict for the exact tree being
 # pushed. This is the "wire at main-merge points" the justfile's `check-all` comment has always
 # asked for and nothing ever did (bh-dfz2): before this, `check-all` was a recipe you had to
@@ -61,7 +61,7 @@ zero=0000000000000000000000000000000000000000
 
 # The one command this gate runs, named once: it is both what runs below and what
 # `work.validate.push-main` must resolve to for a recorded verdict to be about THIS gate.
-gate_cmd="just check-all"
+gate_cmd="just check-all-native"
 
 # `read -r || [ -n "$line" ]` so a final line without a trailing newline is still seen.
 # `gate` holds the SHA being pushed to $target (empty = not this push's business), because the
