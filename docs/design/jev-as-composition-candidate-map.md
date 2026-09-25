@@ -178,10 +178,18 @@ candidates 1–3 rather than a competitor to them.
 
 **10. Read-only query graph** · A D E G · *no Jev content*
 
-The generalisation of `bh-yber2.2` recommendation 2, which remains unfiled: one invocation, N
-measurements, structured result, no asserted state. Measured at **4 turns → 2**, with the
-variance collapse being the durable result rather than the 1.41× median. This is the control any
-richer proposal has to beat.
+The generalisation of `bh-yber2.2` recommendation 2: one invocation, N measurements, structured
+result, no asserted state. It is tracked by Family I (`bh-r5g1b`): `bh-r5g1b.1` is the measured
+`bh release status` aggregate control, and `bh-r5g1b.4` compares a second aggregate with a general
+graph on the fleet-wide probe. The earlier **4 turns → 2** result is one scenario (n=5 per
+condition); its durable finding is lower turn variance, not a universal cost multiplier.
+
+The concrete Beads workflow — ready now, upcoming blockers/layers, and parallel scheduling without
+`bv` — has its own no-bv packet spike (`bh-ioz51`). That spike compares the current `bh`/`bd` read
+sequence with one bounded context response and decides whether a purpose-built aggregate or
+compact MCP resource is justified. Its evidence feeds the Family I graph decision, but it does not
+inherit the earlier 4-to-2 result. Jev-based bead-prose selection is a separate J-CTX extension
+(`bh-bgbiy`) and remains outside Family I.
 
 **11. Taskground-style eval harness** · — · *measurement, not composition*
 

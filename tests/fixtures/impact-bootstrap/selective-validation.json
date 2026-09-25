@@ -1,0 +1,416 @@
+{
+  "native-full": {
+    "exit": 0,
+    "ran": [
+      "just attest-demos",
+      "just attest-guide",
+      "just attest-stateful",
+      "just attest-unit"
+    ],
+    "receipt": {
+      "backend": "native-full",
+      "backend_version": "1",
+      "base_tree": "75e8432a27b68c92a351a3caa54fbf52d3af37e7",
+      "changed_paths": [
+        "src/lib.py"
+      ],
+      "digest": "sha256:a9428c305a38459413701ed8392d0b455908be471e578e9a7ccd08208feb3b1d",
+      "evidence": {
+        "demos": {
+          "reason": "native-full",
+          "units": []
+        },
+        "guide": {
+          "reason": "native-full",
+          "units": []
+        },
+        "stateful": {
+          "reason": "native-full",
+          "units": []
+        },
+        "unit": {
+          "reason": "native-full",
+          "units": []
+        }
+      },
+      "fallback_reason": "",
+      "global_inputs_hit": [],
+      "head_tree": "19163fcef1e2bd0ddb69938e83766fd8d9516d0f",
+      "invalidated_keys": [
+        "demos",
+        "guide",
+        "stateful",
+        "unit"
+      ],
+      "schema": "beadhive-impact-receipt/v1",
+      "unaffected_keys": [],
+      "unowned_paths": []
+    },
+    "stderr": ""
+  },
+  "pants-docs-only": {
+    "exit": 0,
+    "ran": [
+      "just attest-demos",
+      "just attest-stateful",
+      "just attest-unit",
+      "just attest-guide"
+    ],
+    "receipt": {
+      "backend": "pants",
+      "backend_version": "2.32.1",
+      "base_tree": "75e8432a27b68c92a351a3caa54fbf52d3af37e7",
+      "changed_paths": [
+        "manual/guide.md"
+      ],
+      "digest": "sha256:e818e025643e5181323c88e2c5881c59a125d661ed750e300e0deaa9e0b91cf3",
+      "evidence": {
+        "demos": {
+          "reason": "unaffected",
+          "units": [
+            "src:lib"
+          ]
+        },
+        "guide": {
+          "reason": "affected",
+          "units": [
+            "manual:docs"
+          ]
+        },
+        "stateful": {
+          "reason": "unaffected",
+          "units": [
+            "tests:stateful-fixtures"
+          ]
+        },
+        "unit": {
+          "reason": "unaffected",
+          "units": [
+            "tests:test_unit.py"
+          ]
+        }
+      },
+      "fallback_reason": "",
+      "global_inputs_hit": [],
+      "head_tree": "4f1dc89162c297c4e9bdf32cfe0ed401a2ca0631",
+      "invalidated_keys": [
+        "guide"
+      ],
+      "schema": "beadhive-impact-receipt/v1",
+      "unaffected_keys": [
+        "demos",
+        "stateful",
+        "unit"
+      ],
+      "unowned_paths": []
+    },
+    "stderr": ""
+  },
+  "pants-global-input": {
+    "exit": 0,
+    "ran": [
+      "just attest-demos",
+      "just attest-guide",
+      "just attest-stateful",
+      "just attest-unit"
+    ],
+    "receipt": {
+      "backend": "pants",
+      "backend_version": "2.32.1",
+      "base_tree": "75e8432a27b68c92a351a3caa54fbf52d3af37e7",
+      "changed_paths": [
+        "BUILD"
+      ],
+      "digest": "sha256:a76f7b5f743f4b13341178cad42b9b4cfb60a580faa2b43d16470a82dcf0f493",
+      "evidence": {
+        "demos": {
+          "reason": "unowned-path",
+          "units": []
+        },
+        "guide": {
+          "reason": "unowned-path",
+          "units": []
+        },
+        "stateful": {
+          "reason": "unowned-path",
+          "units": []
+        },
+        "unit": {
+          "reason": "unowned-path",
+          "units": []
+        }
+      },
+      "fallback_reason": "",
+      "global_inputs_hit": [],
+      "head_tree": "d3d67b362bb3e1325d81c8dd0cf754b9bbaf62e8",
+      "invalidated_keys": [
+        "demos",
+        "guide",
+        "stateful",
+        "unit"
+      ],
+      "schema": "beadhive-impact-receipt/v1",
+      "unaffected_keys": [],
+      "unowned_paths": [
+        "BUILD"
+      ]
+    },
+    "stderr": ""
+  },
+  "pants-peek-failure": {
+    "exit": 0,
+    "ran": [
+      "just attest-demos",
+      "just attest-guide",
+      "just attest-stateful",
+      "just attest-unit"
+    ],
+    "receipt": {
+      "backend": "native-full",
+      "backend_version": "1",
+      "base_tree": "75e8432a27b68c92a351a3caa54fbf52d3af37e7",
+      "changed_paths": [
+        "manual/guide.md"
+      ],
+      "digest": "sha256:1a90569672e13b7fc0fff86e09c93beba5d65c5a0ad47e7edd38a8977bdaf71f",
+      "evidence": {
+        "demos": {
+          "reason": "fallback",
+          "units": []
+        },
+        "guide": {
+          "reason": "fallback",
+          "units": []
+        },
+        "stateful": {
+          "reason": "fallback",
+          "units": []
+        },
+        "unit": {
+          "reason": "fallback",
+          "units": []
+        }
+      },
+      "fallback_reason": "pants: error: RuntimeError: engine unavailable",
+      "global_inputs_hit": [],
+      "head_tree": "4f1dc89162c297c4e9bdf32cfe0ed401a2ca0631",
+      "invalidated_keys": [
+        "demos",
+        "guide",
+        "stateful",
+        "unit"
+      ],
+      "schema": "beadhive-impact-receipt/v1",
+      "unaffected_keys": [],
+      "unowned_paths": []
+    },
+    "stderr": "\n!!! WARNING: IMPACT RESOLUTION FALLBACK !!!\n    pants: error: RuntimeError: engine unavailable\n    Selective carry-forward is disabled; running every attestation key.\n\n"
+  },
+  "pants-source-transitive": {
+    "exit": 0,
+    "ran": [
+      "just attest-guide",
+      "just attest-stateful",
+      "just attest-demos",
+      "just attest-unit"
+    ],
+    "receipt": {
+      "backend": "pants",
+      "backend_version": "2.32.1",
+      "base_tree": "75e8432a27b68c92a351a3caa54fbf52d3af37e7",
+      "changed_paths": [
+        "src/lib.py"
+      ],
+      "digest": "sha256:5cdb0b139c3ebd0b40bf7bc4262652d8d999417b9c1f4b5234b1c5dd31686c79",
+      "evidence": {
+        "demos": {
+          "reason": "affected",
+          "units": [
+            "src:lib"
+          ]
+        },
+        "guide": {
+          "reason": "unaffected",
+          "units": [
+            "manual:docs"
+          ]
+        },
+        "stateful": {
+          "reason": "unaffected",
+          "units": [
+            "tests:stateful-fixtures"
+          ]
+        },
+        "unit": {
+          "reason": "affected",
+          "units": [
+            "tests:test_unit.py"
+          ]
+        }
+      },
+      "fallback_reason": "",
+      "global_inputs_hit": [],
+      "head_tree": "19163fcef1e2bd0ddb69938e83766fd8d9516d0f",
+      "invalidated_keys": [
+        "demos",
+        "unit"
+      ],
+      "schema": "beadhive-impact-receipt/v1",
+      "unaffected_keys": [
+        "guide",
+        "stateful"
+      ],
+      "unowned_paths": []
+    },
+    "stderr": ""
+  },
+  "pants-unowned-path": {
+    "exit": 0,
+    "ran": [
+      "just attest-demos",
+      "just attest-guide",
+      "just attest-stateful",
+      "just attest-unit"
+    ],
+    "receipt": {
+      "backend": "pants",
+      "backend_version": "2.32.1",
+      "base_tree": "75e8432a27b68c92a351a3caa54fbf52d3af37e7",
+      "changed_paths": [
+        "notes.txt"
+      ],
+      "digest": "sha256:078d5b8a31bf0871a3a948b953abd8f276b7ac1447ef1b0bdd404383564ee7e9",
+      "evidence": {
+        "demos": {
+          "reason": "unowned-path",
+          "units": []
+        },
+        "guide": {
+          "reason": "unowned-path",
+          "units": []
+        },
+        "stateful": {
+          "reason": "unowned-path",
+          "units": []
+        },
+        "unit": {
+          "reason": "unowned-path",
+          "units": []
+        }
+      },
+      "fallback_reason": "",
+      "global_inputs_hit": [],
+      "head_tree": "55a12d5c456e441bade8ecacfb0d71981f36b713",
+      "invalidated_keys": [
+        "demos",
+        "guide",
+        "stateful",
+        "unit"
+      ],
+      "schema": "beadhive-impact-receipt/v1",
+      "unaffected_keys": [],
+      "unowned_paths": [
+        "notes.txt"
+      ]
+    },
+    "stderr": ""
+  },
+  "pants-without-pants-toml": {
+    "exit": 0,
+    "ran": [
+      "just attest-demos",
+      "just attest-guide",
+      "just attest-stateful",
+      "just attest-unit"
+    ],
+    "receipt": {
+      "backend": "native-full",
+      "backend_version": "1",
+      "base_tree": "94666ab59a4f49969d723a3e697c23d87f07f5c7",
+      "changed_paths": [
+        "src/lib.py"
+      ],
+      "digest": "sha256:e48b46f5667971b0c8baeb158e5fae5f4b6379f8f04700425204cd0a8c355b0b",
+      "evidence": {
+        "demos": {
+          "reason": "fallback",
+          "units": []
+        },
+        "guide": {
+          "reason": "fallback",
+          "units": []
+        },
+        "stateful": {
+          "reason": "fallback",
+          "units": []
+        },
+        "unit": {
+          "reason": "fallback",
+          "units": []
+        }
+      },
+      "fallback_reason": "pants: backend not available",
+      "global_inputs_hit": [],
+      "head_tree": "b16479382ecd911eca19d5b332349790156123ca",
+      "invalidated_keys": [
+        "demos",
+        "guide",
+        "stateful",
+        "unit"
+      ],
+      "schema": "beadhive-impact-receipt/v1",
+      "unaffected_keys": [],
+      "unowned_paths": []
+    },
+    "stderr": "\n!!! WARNING: IMPACT RESOLUTION FALLBACK !!!\n    pants: backend not available\n    Selective carry-forward is disabled; running every attestation key.\n\n"
+  },
+  "unknown-backend": {
+    "exit": 0,
+    "ran": [
+      "just attest-demos",
+      "just attest-guide",
+      "just attest-stateful",
+      "just attest-unit"
+    ],
+    "receipt": {
+      "backend": "native-full",
+      "backend_version": "1",
+      "base_tree": "75e8432a27b68c92a351a3caa54fbf52d3af37e7",
+      "changed_paths": [
+        "src/lib.py"
+      ],
+      "digest": "sha256:396d02c27cb97fbfef2865a38ab789eb61e184566147c982f8d74aba30c0ed17",
+      "evidence": {
+        "demos": {
+          "reason": "fallback",
+          "units": []
+        },
+        "guide": {
+          "reason": "fallback",
+          "units": []
+        },
+        "stateful": {
+          "reason": "fallback",
+          "units": []
+        },
+        "unit": {
+          "reason": "fallback",
+          "units": []
+        }
+      },
+      "fallback_reason": "bazel: backend not available",
+      "global_inputs_hit": [],
+      "head_tree": "19163fcef1e2bd0ddb69938e83766fd8d9516d0f",
+      "invalidated_keys": [
+        "demos",
+        "guide",
+        "stateful",
+        "unit"
+      ],
+      "schema": "beadhive-impact-receipt/v1",
+      "unaffected_keys": [],
+      "unowned_paths": []
+    },
+    "stderr": "\n!!! WARNING: IMPACT RESOLUTION FALLBACK !!!\n    bazel: backend not available\n    Selective carry-forward is disabled; running every attestation key.\n\n"
+  }
+}

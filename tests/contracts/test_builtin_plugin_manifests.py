@@ -8,7 +8,9 @@ from dataclasses import dataclass
 import pytest
 
 from beadhive import deps
+from beadhive.bootstrap.impact import BUILTIN_IMPACT_PROVIDERS
 from beadhive.kernel.plugins import (
+    BUILD_IMPACT,
     BUILTIN_PLUGIN_IDS,
     BuiltInManifestSource,
     ManifestDocument,
@@ -77,8 +79,10 @@ def test_manifest_inventory_matches_runtime_catalog_without_delivery_coupling():
         value["plugin_id"]: value
         for value in (json.loads(document.payload) for document in documents)
     }
+    impact = {provider.plugin_id: provider for provider in BUILTIN_IMPACT_PROVIDERS}
     assert tuple(sorted(manifests)) == BUILTIN_PLUGIN_IDS
-    assert set(manifests) == set(catalog)
+    assert set(catalog).isdisjoint(impact)
+    assert set(manifests) == set(catalog) | set(impact)
     assert tuple(entry.plugin_id for entry in PLUGIN_RUNTIME_CATALOG) == (
         "orca",
         "observaloop",
@@ -87,14 +91,20 @@ def test_manifest_inventory_matches_runtime_catalog_without_delivery_coupling():
         "repowise",
     )
     for plugin_id, manifest in manifests.items():
-        entry = catalog[plugin_id]
-        assert entry.delivery == "runtime-core"
-        assert entry.module.startswith("beadhive.")
-        assert [item["name"] for item in manifest["security"]["executables"]] == [
-            entry.external_executable
-        ]
+        if plugin_id in impact:
+            provides = [item["id"] for item in manifest["capabilities"]["provides"]]
+            assert BUILD_IMPACT.capability_id in provides
+            executable = impact[plugin_id].external_executable
+        else:
+            entry = catalog[plugin_id]
+            assert entry.delivery == "runtime-core"
+            assert entry.module.startswith("beadhive.")
+            executable = entry.external_executable
+        assert [item["name"] for item in manifest["security"]["executables"]] == [executable]
         assert manifest["configuration"]["namespace"] == f"plugins.{plugin_id}"
-        assert manifest["configuration"]["schema_artifact"].startswith(
+        artifact = manifest["configuration"]["schema_artifact"]
+        # A build-system plugin with no configuration yet declares no schema fragment.
+        assert (artifact is None and plugin_id in impact) or artifact.startswith(
             f"urn:beadhive:wire-schema:plugin-config:{plugin_id}:"
         )
 

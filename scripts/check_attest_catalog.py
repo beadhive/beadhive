@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify that named attest recipes are an exact partition of ``just check-all``."""
+"""Verify both explicit gate graphs and the Pants attest-key partition."""
 
 from __future__ import annotations
 
@@ -14,25 +14,44 @@ KEY_RECIPES = {
     "integration": ("attest-integration", ("require-bd", "test-integration-land")),
     "architecture-contracts": (
         "attest-architecture-contracts",
-        (
-            "architecture-structural-check",
-            "transport-artifact-check",
-            "wire-schema-compat",
-            "proof-digest-check",
-        ),
+        ("architecture-structural-check",),
     ),
-    "package": ("attest-package", ("pants-attest",)),
+    "package": (
+        "attest-package",
+        ("pants-attest", "architecture-pants-check", "pants-artifact-check"),
+    ),
     "demos": ("attest-demos", ("demo-local-loop", "demo-live-ingress")),
+    "packages": ("attest-packages", ("packages-check",)),
 }
 ROOT = Path(__file__).resolve().parents[1]
+NATIVE_FAST = (
+    "lint",
+    "lint-md",
+    "license-check",
+    "architecture-structural-check",
+    "stateful-native",
+)
+PANTS_FAST = ("lint", "lint-md", "license-check", "architecture-structural-check", "test-changed")
+NATIVE_FULL = (
+    "require-bd",
+    "lint",
+    "lint-md",
+    "license-check",
+    "architecture-structural-check",
+    "stateful-native",
+    "test-integration-land",
+    "demo-local-loop",
+    "demo-live-ingress",
+    "packages-check",
+)
 
 
-def _check_all_dependencies(justfile: str) -> list[str]:
-    declaration = next(line for line in justfile.splitlines() if line.startswith("check-all:"))
+def _dependencies(justfile: str, recipe: str) -> list[str]:
+    declaration = next(line for line in justfile.splitlines() if line.startswith(f"{recipe}:"))
     return [
         parenthesized or plain
         for parenthesized, plain in re.findall(r"\(([-\w]+)[^)]*\)|([-\w]+)", declaration)
-        if (parenthesized or plain) != "check-all"
+        if (parenthesized or plain) != recipe
     ]
 
 
@@ -41,13 +60,35 @@ def _recipe_body(justfile: str, recipe: str) -> list[str]:
     return match.group(1).splitlines() if match else []
 
 
-def main() -> int:
-    justfile = (ROOT / "justfile").read_text(encoding="utf-8")
-    declared = _check_all_dependencies(justfile)
+def check(justfile: str, push_hook: str | None = None) -> list[str]:
     expected = [leaf for _, leaves in KEY_RECIPES.values() for leaf in leaves]
     errors: list[str] = []
-    if sorted(declared) != sorted(expected) or len(declared) != len(set(declared)):
-        errors.append(f"check-all keys differ: expected {expected!r}, got {declared!r}")
+    for recipe, required in (
+        ("check-native", NATIVE_FAST),
+        ("check-pants", PANTS_FAST),
+        ("check-all-native", NATIVE_FULL),
+        ("check-all-pants", expected),
+    ):
+        declared = _dependencies(justfile, recipe)
+        if sorted(declared) != sorted(required) or len(declared) != len(set(declared)):
+            errors.append(f"{recipe} steps differ: expected {required!r}, got {declared!r}")
+
+    selected_profiles: dict[str, str] = {}
+    for alias in ("check", "check-all"):
+        selected = _dependencies(justfile, alias)
+        allowed = (f"{alias}-native", f"{alias}-pants")
+        if len(selected) != 1 or selected[0] not in allowed:
+            errors.append(f"{alias} must alias exactly one of {allowed!r}, got {selected!r}")
+        else:
+            selected_profiles[alias] = selected[0]
+    if len(selected_profiles) == 2 and (
+        selected_profiles["check"].split("-")[-1] != selected_profiles["check-all"].split("-")[-1]
+    ):
+        errors.append("check and check-all must select the same profile")
+    if push_hook is not None and "check-all" in selected_profiles:
+        expected_gate = f'gate_cmd="just {selected_profiles["check-all"]}"'
+        if expected_gate not in push_hook:
+            errors.append(f"push hook must name {expected_gate}")
 
     owners: dict[str, str] = {}
     for key, (recipe_name, leaves) in KEY_RECIPES.items():
@@ -60,12 +101,29 @@ def main() -> int:
             if previous != key:
                 errors.append(f"{leaf}: owned by both {previous} and {key}")
 
+    artifact = "\n".join(_recipe_body(justfile, "pants-artifact-check"))
+    if "./scripts/hermetic.sh uv run pytest" not in artifact or (
+        "tests/test_beadhive_pants_artifacts.py::test_bh_pex_contains_and_resolves_the_backend"
+        not in artifact
+    ):
+        errors.append("pants-artifact-check must run the recursive PEX proof inside the fence")
+    native = "\n".join(_recipe_body(justfile, "stateful-native"))
+    if "not integration and not pants_profile" not in native:
+        errors.append("stateful-native must exclude the Pants-only artifact proof")
+
+    return errors
+
+
+def main() -> int:
+    justfile = (ROOT / "justfile").read_text(encoding="utf-8")
+    push_hook = (ROOT / "scripts" / "main-push-gate.sh").read_text(encoding="utf-8")
+    errors = check(justfile, push_hook)
     if errors:
         print("attest-catalog: invalid", file=sys.stderr)
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
         return 1
-    print(f"attest-catalog: OK ({len(KEY_RECIPES)} keys, {len(owners)} gate steps)")
+    print(f"attest-catalog: OK ({len(KEY_RECIPES)} Pants keys, 4 explicit gates)")
     return 0
 
 

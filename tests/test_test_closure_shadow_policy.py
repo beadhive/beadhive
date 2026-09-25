@@ -411,10 +411,7 @@ def test_architecture_gate_checks_shadow_policy_without_replacing_full_gate() ->
     justfile = (ROOT / "justfile").read_text(encoding="utf-8")
 
     assert "uv run python scripts/test_closure_shadow_policy.py --check" in justfile
-    assert (
-        "check: lint lint-md license-check architecture-structural-check transport-artifact-check "
-        "wire-schema-compat proof-digest-check test" in justfile
-    )
+    assert "check-native: lint lint-md license-check architecture-structural-check" in justfile
 
 
 def test_simulation_labelled_positive_control_meets_predeclared_bar() -> None:

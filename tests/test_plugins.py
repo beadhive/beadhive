@@ -167,6 +167,22 @@ def test_compatibility_facade_projects_cli_and_typed_lifecycle(monkeypatch):
     assert report.deliveries[0].status is DeliveryStatus.SUCCEEDED
 
 
+def test_package_cli_projection_is_absent_when_optional_package_is_not_installed(
+    monkeypatch,
+) -> None:
+    original_import = plugins.import_module
+
+    def without_pants(name: str):
+        if name == "beadhive_pants.cli":
+            raise ModuleNotFoundError("No module named 'beadhive_pants'", name="beadhive_pants")
+        return original_import(name)
+
+    monkeypatch.setattr(plugins, "import_module", without_pants)
+
+    assert plugins.projected_cli_mounts() == ()
+    assert plugins.projected_cli_commands() == ()
+
+
 def test_plugin_lifecycle_delivery_uses_semantic_port_with_bounded_attribution(
     monkeypatch,
 ) -> None:
@@ -251,8 +267,10 @@ def test_compatibility_facade_delegates_builtin_metadata_and_enablement(monkeypa
         host_executables={name: "1.0.0" for name in names},
     )
 
-    assert [plugin.manifest.plugin_id for plugin in result.plugins] == list(names)
-    assert {selection.plugin_id for selection in result.capabilities} == set(names)
+    # `pants` is a built-in manifest (build.impact) with no legacy registry declaration.
+    builtins = sorted((*names, "pants"))
+    assert [plugin.manifest.plugin_id for plugin in result.plugins] == builtins
+    assert {selection.plugin_id for selection in result.capabilities} == set(builtins)
     assert result.errors == ()
 
 
@@ -279,7 +297,7 @@ def test_kernel_disablement_overrides_legacy_enablement_and_never_runs_callback(
         "plugin_kernel": {
             "enabled": {
                 plugin_id: False
-                for plugin_id in ("herdr", "hitch", "observaloop", "orca", "repowise")
+                for plugin_id in ("herdr", "hitch", "observaloop", "orca", "pants", "repowise")
             }
         }
     }

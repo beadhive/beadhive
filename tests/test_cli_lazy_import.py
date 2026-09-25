@@ -70,6 +70,7 @@ def test_lazy_entrypoint_preserves_the_complete_checked_command_tree() -> None:
         if projection is not None
         for alias in projection["aliases"]
     )
+    expected.update(app._bh_manifest_commands)
 
     assert _leaf_paths(get_command(app)) == expected
 

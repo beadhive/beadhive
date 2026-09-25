@@ -39,10 +39,11 @@ raises a clear unsupported-application error, while `adapter_for_command` return
 ordinary non-cache command; this keeps unrelated validation commands on their existing fast path.
 
 Worktree creation and verify-checkout init pass the selected environment to `uv sync` and pnpm
-rules. `scripts/pants_cache.py` applies it to Pants subprocesses. `scripts/hermetic.sh` resolves
-the host path before its private `/tmp` mount, then binds that exact cache writable after the
-mount and exports uv's controls inside the fence. The fence also binds uv's managed Python
-toolchain read only so the environment created before entry keeps its selected interpreter.
+rules. `scripts/hermetic.sh` resolves the host path before its private `/tmp` mount, then binds
+that exact cache writable after the mount and exports uv's controls inside the fence. The fence
+also binds uv's managed Python toolchain read only so the environment created before entry keeps
+its selected interpreter. Pants cache propagation is not part of this native landing: the
+package-owned Pants implementation remains unchanged, and Pants comparison is deferred.
 
 ## Trust and lifecycle
 

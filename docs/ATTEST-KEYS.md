@@ -10,8 +10,10 @@ an opt-in optimization, and uncertainty always costs more validation rather than
 
 ## This repository's key catalog
 
-The live catalog is configured under `work.attest` in the fleet configuration. Keep it aligned
-with the recipes in `justfile`; `just check-attest-catalog` enforces that partition.
+The Pants catalog is configured under `work.attest` in the fleet configuration. Keep it aligned
+with `just check-all-pants` in `justfile`; `just check-attest-catalog` checks that partition and
+both explicit native and Pants recipe graphs. The native hive profile removes the catalog and
+uses its single explicit `work.validate_cmd` path; the catalog remains available for rollback.
 
 | Key | Opaque command | Pants selector | Covers |
 |---|---|---|---|
@@ -20,8 +22,18 @@ with the recipes in `justfile`; `just check-attest-catalog` enforces that partit
 | `stateful` | `just attest-stateful` | `attest:stateful` | Proven Pants tests plus the residual native fast suite |
 | `integration` | `just attest-integration` | `attest:integration` | Landing integration tests |
 | `architecture-contracts` | `just attest-architecture-contracts` | `attest:architecture-contracts` | Architecture, transport, wire, and proof contracts |
-| `package` | `just attest-package` | `attest:package` | Pants package attestation |
+| `package` | `just attest-package` | `attest:package` | Pants package attestation and recursive PEX proof |
+| `packages` | `just attest-packages` | `attest:packages` | Ruff and sandboxed tests for every `packages/*` distribution |
 | `demos` | `just attest-demos` | `attest:demos` | Local-loop and live-ingress operator demos |
+
+`packages` is one shared key for all in-repo distributions. The template in
+`packages/_template` gives each package recursive source, resource, and test targets tagged
+`attest:packages`; `just pkg <name> check` validates one package during development, while
+`just packages-check` is the whole-tree recipe called by `just attest-packages`. Copying the
+template to a new package and running `uv lock` includes it in the workspace and Pants graph.
+Every package test runs in its own Pants sandbox. A package backend is selected through plugin
+manifest discovery and a lazy bootstrap binding; the attest key itself does not import or
+register backend implementations.
 
 Keys are policy, not test-framework plugins. `cmd` is an opaque string that Beadhive executes
 verbatim. A key is required unless configured with `policy: optional`. An optional key may be
@@ -87,7 +99,10 @@ A backend must determine:
 2. the transitive dependents of those owners; and
 3. which keys select those affected units.
 
-Pants is the implemented backend. It obtains affected targets with
+Pants is the implemented backend, supplied by the `beadhive-pants` plugin's `build.impact`
+capability. Its separate `build.verify` capability supplies build graph health diagnostics.
+Core imports their public contracts and selects their runtime bindings at bootstrap; it has no
+static dependency on the package implementation. The impact backend obtains affected targets with
 `pants --changed-since=<base> --changed-dependents=transitive peek`, maps target tags named
 `attest:<key>` to keys, and trusts test targets only after they have passed in the Pants sandbox
 with declared inputs. The sandbox-proof manifest is `scripts/pants_proven_tests.json`.
