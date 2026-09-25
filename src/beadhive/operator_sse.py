@@ -499,6 +499,17 @@ class OperatorEventRelay:
         scopes = ["snapshot"]
         if transition.previous.get("coverage") != transition.current.get("coverage"):
             scopes.append("coverage")
+        # Every transition here is a genuine authoritative change (bead mutation or Dolt
+        # revision bump) — see the source_key comparison guarding FeedInstall in
+        # OperatorFeed.snapshot_with_cursor. The factory hive directory's cached per-hive
+        # summary is always at least as fresh as this snapshot (refresh_hive_state records it
+        # synchronously before this transition is published), so any subscriber already
+        # watching this hive's event stream is exactly who the directory listing needs to
+        # nudge into re-fetching rather than waiting out the cache TTL. Reusing "invalidate"
+        # instead of adding a new payload kind keeps this additive: InvalidatePayload.scopes is
+        # an open tuple[str, ...], so an unrecognized scope value stays forward-compatible with
+        # older clients that don't know about it yet.
+        scopes.append("directory")
         return [
             (
                 "beads",

@@ -58,7 +58,7 @@ UI_OPERATOR_EVENT_FIELDS = {
     "entity",
     "payload",
 }
-UI_CONFORMANCE_SHA256 = "8c8de66bcee8c6902de1ae8a154a45b98e6e991d279f1a679c4c91b5e83d4af2"
+UI_CONFORMANCE_SHA256 = "f511554a278a9461e44cbec6a8b770859cdd2773a547ce7fa9b758df6047fbc4"
 
 
 def _snapshot(revision: str, status: str, *, hive: str = HIVE) -> state_stream.ProviderSnapshot:
@@ -476,11 +476,47 @@ def test_snapshot_boundary_replays_strictly_later_invalidation(tmp_path: Path) -
     assert (event["sequence"], event["baseSequence"]) == (1, 0)
     assert event["payload"] == {
         "kind": "invalidate",
-        "scopes": ["snapshot", "coverage"],
+        "scopes": ["snapshot", "coverage", "directory"],
         "reason": "authoritative hive snapshot changed",
     }
     assert event["entity"] is None
     assert second["cursor"]["sequence"] == 1
+
+
+def test_snapshot_transition_invalidate_directory_scope_matches_cache_warm(
+    tmp_path: Path,
+) -> None:
+    """A watched hive's real snapshot change (bh-iu6qp) both
+
+    - warms `OperatorSources.hive_summaries` synchronously (pre-existing bh-k3quf eager-warm
+      behavior, via `sources.refresh_hive` inside `OperatorFeed.snapshot_with_cursor`), and
+    - publishes an `invalidate` event whose `scopes` include `"directory"`, so an already-open
+      SSE subscriber knows to re-fetch the factory hive directory instead of waiting out its
+      cache TTL.
+
+    This asserts the two stay in lockstep: by the time the directory-scoped event is on the
+    wire, the cache it is telling clients to re-fetch is already fresh.
+    """
+
+    provider = Provider()
+    sources = _sources(tmp_path, provider)
+    feed = operator_feed.OperatorFeed(sources, now_millis=lambda: 1000)
+    relay = operator_sse.OperatorEventRelay(
+        feed, host_daemon.DaemonRuntime(), now_millis=lambda: 2000
+    )
+    feed.snapshot_with_cursor(HIVE)
+    before = dict(sources.hive_summaries.read(sources.registered_hives())[0])
+
+    provider.current = _snapshot("beads-2", "blocked")
+    feed.snapshot_with_cursor(HIVE)
+
+    after = dict(sources.hive_summaries.read(sources.registered_hives())[0])
+    assert after != before
+
+    assert len(relay._hives[HIVE].history) == 1
+    _event_id, event = _event(relay._hives[HIVE].history[0].frame)
+    assert event["payload"]["kind"] == "invalidate"
+    assert "directory" in event["payload"]["scopes"]
 
 
 def test_closing_work_removes_it_from_snapshot_and_sse_projection(tmp_path: Path) -> None:
@@ -495,7 +531,7 @@ def test_closing_work_removes_it_from_snapshot_and_sse_projection(tmp_path: Path
     assert len(relay._hives[HIVE].history) == 1
     _event_id, event = _event(relay._hives[HIVE].history[0].frame)
     assert event["payload"]["kind"] == "invalidate"
-    assert event["payload"]["scopes"] == ["snapshot", "coverage"]
+    assert event["payload"]["scopes"] == ["snapshot", "coverage", "directory"]
 
 
 def test_invalidation_transition_overflow_is_atomic_repeatable_and_recoverable(

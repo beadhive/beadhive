@@ -151,7 +151,10 @@ class HiveSummaryCache:
         self._condition = threading.Condition()
         self._entries: dict[str, _CachedSummary] = {}
         self._inflight: set[str] = set()
-        self._dirty: set[str] = set()
+        # identity -> clock() time the dirty mark was raised, so a completing refresh can tell
+        # a mark it already reflects (raised before it started reading) from one raised while it
+        # was in flight (which it cannot reflect and so must not swallow).
+        self._dirty: dict[str, float] = {}
         self._executor: concurrent.futures.ThreadPoolExecutor | None = None
         self._closed = False
 
@@ -169,14 +172,19 @@ class HiveSummaryCache:
                 observed=self.clock(),
                 observed_at=self._now_millis(),
             )
-            self._dirty.discard(hive.identity)
+            # A dirty mark raised before this refresh started is captured by its result; one
+            # raised while it was in flight (or after) is not — leave it dirty so the next read
+            # schedules a trailing refresh instead of silently losing the signal.
+            dirty_at = self._dirty.get(hive.identity)
+            if dirty_at is not None and dirty_at <= started:
+                del self._dirty[hive.identity]
             self._condition.notify_all()
 
     def mark_dirty(self, identity: str) -> None:
         """Force the next directory read to schedule a refresh for *identity*."""
 
         with self._condition:
-            self._dirty.add(identity)
+            self._dirty[identity] = self.clock()
 
     def read(self, hives: Sequence[ExactHive]) -> list[dict[str, object]]:
         """Return one summary per registered hive without awaiting any refresh."""
@@ -189,7 +197,9 @@ class HiveSummaryCache:
             for identity in tuple(self._entries):
                 if identity not in members:
                     del self._entries[identity]
-            self._dirty &= members
+            for identity in tuple(self._dirty):
+                if identity not in members:
+                    del self._dirty[identity]
             for hive in hives:
                 cached = self._entries.get(hive.identity)
                 expired = (

@@ -906,6 +906,69 @@ def test_hive_summary_cache_expires_and_tracks_registry_membership() -> None:
         cache.close()
 
 
+def test_hive_summary_cache_coalesces_dirty_storm_into_one_trailing_refresh() -> None:
+    """Repeated `mark_dirty` calls (bh-iu6qp's real-change signal) while a refresh is already
+    in flight must neither fan out into one refresh per call nor be silently swallowed by the
+    in-flight refresh's completion — exactly one trailing refresh must run afterward."""
+
+    # A monotonically increasing fake clock: `record`'s "was this dirty mark raised before or
+    # during this refresh" comparison is meaningless against a clock that never advances.
+    tick = [0.0]
+
+    def clock() -> float:
+        tick[0] += 1.0
+        return tick[0]
+
+    refresh_started = threading.Event()
+    release_refresh = threading.Event()
+    started_count = [0]
+    cache: operator_sources.HiveSummaryCache
+
+    def refresh(hive):
+        started_count[0] += 1
+        started_at = clock()
+        refresh_started.set()
+        release_refresh.wait(5)
+        cache.record(
+            hive, {"id": hive.identity, "revision": f"r{started_count[0]}"}, started=started_at
+        )
+
+    cache = operator_sources.HiveSummaryCache(refresh, ttl=60.0, clock=clock)
+    entry = {"provider": "github", "org": "o", "repo": "r", "prefix": "r"}
+    hive = operator_sources.ExactHive("github/o/r", entry)
+    try:
+        cache.read((hive,))  # schedules the first (cold-cache) refresh
+        assert refresh_started.wait(5)
+        refresh_started.clear()
+
+        # A storm of dirty marks and reads while that refresh is still blocked in-flight: none
+        # of them may schedule a second refresh while the first is still running.
+        for _ in range(5):
+            cache.mark_dirty(hive.identity)
+            cache.read((hive,))
+        assert started_count[0] == 1
+
+        release_refresh.set()
+        assert cache.wait_idle(5)
+        release_refresh.clear()
+
+        # The in-flight refresh predates the storm's dirty marks, so it must not have swallowed
+        # them: the next read schedules exactly one trailing refresh, coalescing the whole storm.
+        cache.read((hive,))
+        assert refresh_started.wait(5)
+        assert started_count[0] == 2
+        release_refresh.set()
+        assert cache.wait_idle(5)
+
+        # And with nothing dirty, a further read schedules no additional refresh.
+        cache.read((hive,))
+        assert cache.wait_idle(5)
+        assert started_count[0] == 2
+    finally:
+        release_refresh.set()
+        cache.close()
+
+
 def test_gateway_and_frame_bridge_directory_relays_return_promptly_with_slow_sources(
     tmp_path: Path,
 ) -> None:
