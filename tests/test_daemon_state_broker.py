@@ -226,7 +226,7 @@ def test_broker_snapshot_delta_identity_and_transport_sequence_are_independent(
         loop=loop,
     )
 
-    provider.current = _snapshot("source-revision-1000000", "closed")
+    provider.current = _snapshot("source-revision-1000000", "blocked")
     second = broker.snapshot_with_cursor(HIVE)
     frame, closed = broker.relay._take(client)
 

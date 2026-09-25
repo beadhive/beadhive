@@ -22,7 +22,9 @@ from starlette.requests import Request
 
 from beadhive import (
     daemon_auth,
+    daemon_contract,
     daemon_state_broker,
+    frame_bridge_runtime,
     host_daemon,
     operator_api,
     operator_contract,
@@ -56,7 +58,7 @@ UI_OPERATOR_EVENT_FIELDS = {
     "entity",
     "payload",
 }
-UI_CONFORMANCE_SHA256 = "3d42f643d56db76890edad5e075c0c4d2b53575852941282a3d6494f707ce724"
+UI_CONFORMANCE_SHA256 = "b0ad6bad0af72ab1c77d928666f9e6838971763812dce8900cbb8a18e23b348e"
 
 
 def _snapshot(revision: str, status: str, *, hive: str = HIVE) -> state_stream.ProviderSnapshot:
@@ -453,7 +455,7 @@ def test_snapshot_boundary_replays_strictly_later_entity_event(tmp_path: Path) -
     provider, feed, _runtime, relay = _relay(tmp_path)
     first = feed.snapshot_with_cursor(HIVE)
     epoch = first["cursor"]["producerEpoch"]
-    provider.current = _snapshot("beads-2", "closed")
+    provider.current = _snapshot("beads-2", "blocked")
     second = feed.snapshot_with_cursor(HIVE)
 
     async def exercise():
@@ -477,12 +479,149 @@ def test_snapshot_boundary_replays_strictly_later_entity_event(tmp_path: Path) -
     assert second["cursor"]["sequence"] == 1
 
 
+def test_closing_work_removes_it_from_snapshot_and_sse_projection(tmp_path: Path) -> None:
+    provider, feed, _runtime, relay = _relay(tmp_path)
+    first = feed.snapshot_with_cursor(HIVE)
+    provider.current = _snapshot("beads-2", "closed")
+
+    second = feed.snapshot_with_cursor(HIVE)
+
+    assert second["workItems"] == []
+    assert second["cursor"]["sequence"] == first["cursor"]["sequence"] + 1
+    assert len(relay._hives[HIVE].history) == 1
+    _event_id, event = _event(relay._hives[HIVE].history[0].frame)
+    assert event["payload"] == {
+        "kind": "entity-remove",
+        "entity": {"hiveId": HIVE, "kind": "work-item", "id": "bh-1"},
+        "revision": second["revision"],
+    }
+
+
+def test_two_event_transition_overflow_is_atomic_repeatable_and_recoverable(
+    tmp_path: Path,
+) -> None:
+    def two_items(revision: str, status: str) -> state_stream.ProviderSnapshot:
+        return state_stream.ProviderSnapshot(
+            scope="hive",
+            revision=revision,
+            as_of=NOW,
+            issues=tuple(
+                state_stream.StreamIssue(
+                    id=f"bh-{index}",
+                    hive=HIVE,
+                    issue_type="task",
+                    status=status,
+                    priority="P1",
+                    title=f"Atomic batch {index}",
+                    updated_at=NOW,
+                )
+                for index in range(2)
+            ),
+        )
+
+    provider, feed, _runtime, relay = _relay(tmp_path)
+    provider.current = two_items("beads-1", "open")
+    first = feed.snapshot_with_cursor(HIVE)
+    feed_state = feed._hives[HIVE]
+    relay_state = relay._hives[HIVE]
+    feed_state.sequence = operator_contract.DEVELOPMENT_MAX_CURSOR_SEQUENCE - 1
+    first["cursor"]["sequence"] = feed_state.sequence
+    relay_state.sequence = feed_state.sequence
+    loop = asyncio.new_event_loop()
+    client = relay.subscribe(
+        HIVE,
+        subscription_id=HIVE_SUBSCRIPTION,
+        cursor=operator_sse.EventCursor(relay_state.producer_epoch, relay_state.sequence),
+        loop=loop,
+    )
+    before = (
+        feed_state.source_key,
+        feed_state.snapshot,
+        feed_state.sequence,
+        relay_state.source_revision,
+        relay_state.sequence,
+        len(relay_state.history),
+        relay._serial,
+        len(relay._retained),
+        len(client.queue),
+    )
+    provider.current = two_items("beads-2", "blocked")
+
+    for _attempt in range(2):
+        with pytest.raises(RuntimeError, match="fit the cursor contract"):
+            feed.snapshot_with_cursor(HIVE)
+        assert (
+            feed_state.source_key,
+            feed_state.snapshot,
+            feed_state.sequence,
+            relay_state.source_revision,
+            relay_state.sequence,
+            len(relay_state.history),
+            relay._serial,
+            len(relay._retained),
+            len(client.queue),
+        ) == before
+
+    client.close()
+    loop.close()
+    feed_state.sequence = operator_contract.DEVELOPMENT_MAX_CURSOR_SEQUENCE - 2
+    first["cursor"]["sequence"] = feed_state.sequence
+    relay_state.sequence = feed_state.sequence
+    recovered = feed.snapshot_with_cursor(HIVE)
+    assert recovered["cursor"]["sequence"] == operator_contract.DEVELOPMENT_MAX_CURSOR_SEQUENCE
+    assert [event.sequence for event in relay_state.history] == [
+        operator_contract.DEVELOPMENT_MAX_CURSOR_SEQUENCE - 1,
+        operator_contract.DEVELOPMENT_MAX_CURSOR_SEQUENCE,
+    ]
+
+
+def test_relay_event_timestamps_are_json_safe_and_fail_atomically(tmp_path: Path) -> None:
+    clock = [operator_contract.DEVELOPMENT_MAX_JSON_SAFE_INTEGER]
+    provider = Provider()
+    feed = operator_feed.OperatorFeed(_sources(tmp_path, provider), now_millis=lambda: 1_000)
+    relay = operator_sse.OperatorEventRelay(
+        feed,
+        host_daemon.DaemonRuntime(),
+        now_millis=lambda: clock[0],
+    )
+    snapshot = feed.snapshot_with_cursor(HIVE)
+    feed_state = feed._hives[HIVE]
+    relay_state = relay._hives[HIVE]
+    feed_state.sequence = 1
+    snapshot["cursor"]["sequence"] = 1
+    relay_state.sequence = 1
+
+    assert feed.allocate_events(HIVE, relay._heartbeat) == 2
+    _event_id, event = _event(relay_state.history[-1].frame)
+    assert daemon_contract.OperatorEvent.model_validate(event).to_wire() == event
+    assert frame_bridge_runtime._safe_timestamp(event["observedAt"]) == clock[0]
+    assert frame_bridge_runtime._safe_timestamp(event["generatedAt"]) == clock[0]
+
+    before = (
+        feed_state.sequence,
+        snapshot["cursor"].copy(),
+        relay_state.sequence,
+        len(relay_state.history),
+        relay._serial,
+    )
+    clock[0] += 1
+    with pytest.raises(RuntimeError, match="JSON-safe timestamp"):
+        feed.allocate_events(HIVE, relay._heartbeat)
+    assert (
+        feed_state.sequence,
+        snapshot["cursor"],
+        relay_state.sequence,
+        len(relay_state.history),
+        relay._serial,
+    ) == before
+
+
 def test_concurrent_snapshot_handoff_never_exposes_new_state_with_old_cursor(
     tmp_path: Path,
 ) -> None:
     provider, feed, _runtime, relay = _relay(tmp_path)
     first = feed.snapshot_with_cursor(HIVE)
-    provider.current = _snapshot("beads-2", "closed")
+    provider.current = _snapshot("beads-2", "blocked")
     provider.block = True
     refreshed: list[dict] = []
     installed: list[dict] = []
@@ -502,8 +641,8 @@ def test_concurrent_snapshot_handoff_never_exposes_new_state_with_old_cursor(
     refresh_thread.join(1)
     read_thread.join(1)
     assert not refresh_thread.is_alive() and not read_thread.is_alive()
-    assert refreshed[0]["workItems"][0]["record"]["status"] == "closed"
-    assert installed[0]["workItems"][0]["record"]["status"] == "closed"
+    assert refreshed[0]["workItems"][0]["record"]["status"] == "blocked"
+    assert installed[0]["workItems"][0]["record"]["status"] == "blocked"
     assert refreshed[0]["cursor"] == installed[0]["cursor"]
     assert refreshed[0]["cursor"]["sequence"] == 1
     event = relay._hives[HIVE].history[0]
@@ -558,16 +697,16 @@ def test_production_polling_source_projects_a_real_change_into_sse(
         feed, host_daemon.DaemonRuntime(), now_millis=lambda: 2000
     )
     first = feed.snapshot_with_cursor(HIVE)
-    backend.records = [_raw_issue("closed")]
+    backend.records = [_raw_issue("blocked")]
     second = feed.snapshot_with_cursor(HIVE)
 
     assert first["workItems"][0]["record"]["status"] == "open"
-    assert second["workItems"][0]["record"]["status"] == "closed"
+    assert second["workItems"][0]["record"]["status"] == "blocked"
     retained = relay._hives[HIVE].history
     assert len(retained) == 1
     event_id, event = _event(retained[0].frame)
     assert event_id == f"{first['cursor']['producerEpoch']}:1"
-    assert event["payload"]["entity"]["record"]["status"] == "closed"
+    assert event["payload"]["entity"]["record"]["status"] == "blocked"
 
 
 def test_emitted_frame_matches_checked_ui_wire_schema_exactly(tmp_path: Path) -> None:
@@ -575,7 +714,7 @@ def test_emitted_frame_matches_checked_ui_wire_schema_exactly(tmp_path: Path) ->
 
     provider, feed, _runtime, relay = _relay(tmp_path)
     feed.snapshot_with_cursor(HIVE)
-    provider.current = _snapshot("beads-2", "closed")
+    provider.current = _snapshot("beads-2", "blocked")
     feed.snapshot_with_cursor(HIVE)
     event = relay._hives[HIVE].history[0].payload
     document = operator_api.openapi_document()

@@ -159,7 +159,7 @@ def test_concurrent_change_is_old_snapshot_then_strictly_later_install(tmp_path:
     worker = threading.Thread(target=lambda: responses.append(feed.snapshot_with_cursor(HIVE)))
     worker.start()
     assert captured.wait(2)
-    provider.current = _snapshot("beads-2", "closed")
+    provider.current = _snapshot("beads-2", "blocked")
     release.set()
     worker.join(2)
     assert not worker.is_alive()
@@ -168,7 +168,7 @@ def test_concurrent_change_is_old_snapshot_then_strictly_later_install(tmp_path:
     provider.captured = provider.release = None
     new = feed.snapshot_with_cursor(HIVE)
     assert old["workItems"][0]["record"]["status"] == "open"
-    assert new["workItems"][0]["record"]["status"] == "closed"
+    assert new["workItems"][0]["record"]["status"] == "blocked"
     assert old["cursor"]["sequence"] == 0
     assert new["cursor"]["sequence"] == 1
     assert installs[-1].current["cursor"]["sequence"] > old["cursor"]["sequence"]

@@ -9,11 +9,14 @@ from pathlib import Path
 
 import httpx
 import jsonschema
+import pytest
 from starlette.middleware import Middleware
 
 from beadhive import (
     daemon_contract,
     daemon_state_broker,
+    frame_bridge_runtime,
+    frame_bridge_upstream,
     host_daemon,
     operator_api,
     operator_contract,
@@ -51,7 +54,8 @@ class Provider:
         )
 
 
-def _app(tmp_path: Path, *, cfg=None, provider=None):
+def _app(tmp_path: Path, *, cfg=None, provider=None, now_millis=None):
+    now_millis = now_millis or (lambda: 1000)
     cfg = cfg or {
         "managed_repos": [
             {
@@ -83,9 +87,9 @@ def _app(tmp_path: Path, *, cfg=None, provider=None):
         journal_base=tmp_path,
         dispatch_sink_for_entry=lambda _cfg, _entry: tmp_path / "dispatch.jsonl",
     )
-    feed = operator_feed.OperatorFeed(sources, now_millis=lambda: 1000)
+    feed = operator_feed.OperatorFeed(sources, now_millis=now_millis)
     daemon_runtime = host_daemon.DaemonRuntime()
-    relay = operator_sse.OperatorEventRelay(feed, daemon_runtime)
+    relay = operator_sse.OperatorEventRelay(feed, daemon_runtime, now_millis=now_millis)
 
     async def read_snapshot(identity: str):
         return feed.snapshot_with_cursor(identity)
@@ -116,6 +120,8 @@ def _app(tmp_path: Path, *, cfg=None, provider=None):
             )
         ],
     )
+    app.state.operator_feed = feed
+    app.state.operator_relay = relay
     return app
 
 
@@ -161,6 +167,130 @@ def test_phase_one_gets_are_unauthenticated_direct_and_path_free(tmp_path: Path)
         "contract": host_daemon.CONTRACT_VERSION,
     }
     assert snapshot.headers["cache-control"] == "no-store"
+
+
+class OverloadedSnapshotProvider:
+    def refresh(self, _request):
+        return state_stream.ProviderSnapshot(
+            scope="hive",
+            revision="beads-overloaded",
+            as_of=NOW,
+            issues=tuple(
+                state_stream.StreamIssue(
+                    id=f"bh-overload-{index}",
+                    hive=HIVE,
+                    issue_type="task",
+                    status="open",
+                    priority="P1",
+                    title=f"Overloaded {index}",
+                    updated_at=NOW,
+                )
+                for index in range(operator_contract.DEVELOPMENT_WORK_ITEM_LIMIT + 1)
+            ),
+        )
+
+
+class NearLimitSnapshotProvider:
+    def refresh(self, _request):
+        return state_stream.ProviderSnapshot(
+            scope="hive",
+            revision="beads-near-limit",
+            as_of=NOW,
+            issues=tuple(
+                state_stream.StreamIssue(
+                    id=f"bh-{index}",
+                    hive=HIVE,
+                    issue_type="task",
+                    status="open",
+                    priority="P1",
+                    title="x" * (1_050 if index == 0 else 534),
+                    updated_at=NOW,
+                )
+                for index in range(operator_contract.DEVELOPMENT_WORK_ITEM_LIMIT)
+            ),
+        )
+
+
+def test_snapshot_overload_is_source_unavailable_while_health_stays_ready(tmp_path: Path) -> None:
+    async def action(client, _app):
+        snapshot = await client.get("/api/v1/hives/github%2Fbeadhive%2Fbeadhive/snapshot")
+        health = await client.get("/health")
+        return snapshot, health
+
+    snapshot, health = _exercise(tmp_path, action, provider=OverloadedSnapshotProvider())
+
+    assert snapshot.status_code == 503
+    assert snapshot.json()["error"]["code"] == "snapshot_source_unavailable"
+    assert snapshot.json()["error"]["retryable"] is True
+    assert health.status_code == 200
+    assert health.json()["ready"] is True
+
+
+def test_near_limit_host_snapshot_survives_cursor_growth_to_json_safe_maximum(
+    tmp_path: Path,
+) -> None:
+    clock = [1_000]
+
+    async def action(client, app):
+        initial = await client.get("/api/v1/hives/github%2Fbeadhive%2Fbeadhive/snapshot")
+        feed = app.state.operator_feed
+        relay = app.state.operator_relay
+        state = feed._hives[HIVE]
+
+        state.sequence = 10**15 - 1
+        state.snapshot["cursor"]["sequence"] = state.sequence
+        relay._hives[HIVE].sequence = state.sequence
+        clock[0] = operator_contract.DEVELOPMENT_MAX_CURSOR_SEQUENCE
+        assert feed.allocate_events(HIVE, relay._heartbeat) == 10**15
+        crossed = await client.get("/api/v1/hives/github%2Fbeadhive%2Fbeadhive/snapshot")
+
+        clock[0] = operator_contract.DEVELOPMENT_MAX_CURSOR_SEQUENCE + 1
+        with pytest.raises(RuntimeError, match="timestamp is outside the wire bound"):
+            feed.allocate_events(HIVE, relay._heartbeat)
+        assert relay._hives[HIVE].sequence == state.sequence == 10**15
+
+        state.sequence = operator_contract.DEVELOPMENT_MAX_CURSOR_SEQUENCE - 1
+        state.snapshot["cursor"]["sequence"] = state.sequence
+        relay._hives[HIVE].sequence = state.sequence
+        clock[0] = operator_contract.DEVELOPMENT_MAX_CURSOR_SEQUENCE
+        assert (
+            feed.allocate_events(HIVE, relay._heartbeat)
+            == operator_contract.DEVELOPMENT_MAX_CURSOR_SEQUENCE
+        )
+        maximum = await client.get("/api/v1/hives/github%2Fbeadhive%2Fbeadhive/snapshot")
+        with pytest.raises(RuntimeError, match="fit the cursor contract"):
+            feed.allocate_events(HIVE, relay._heartbeat)
+        return initial, crossed, maximum, relay._hives[HIVE].history[-1].frame
+
+    initial, crossed, maximum, last_frame = _exercise(
+        tmp_path,
+        action,
+        provider=NearLimitSnapshotProvider(),
+        now_millis=lambda: clock[0],
+    )
+
+    for response in (initial, crossed, maximum):
+        assert response.status_code == 200
+        assert len(response.content) <= operator_contract.DEVELOPMENT_SNAPSHOT_MAX_BYTES
+        payload = frame_bridge_upstream._strict_json_object(response.content)
+        validated = daemon_contract.HiveSnapshotResponse.model_validate(payload)
+        assert frame_bridge_runtime._safe_timestamp(validated.cursor.sequence) >= 0
+        assert frame_bridge_runtime._safe_timestamp(validated.cursor.observed_at) >= 0
+    assert operator_contract.DEVELOPMENT_SNAPSHOT_MAX_BYTES - len(maximum.content) < 2_048
+    assert maximum.json()["cursor"]["sequence"] == (
+        operator_contract.DEVELOPMENT_MAX_CURSOR_SEQUENCE
+    )
+    assert maximum.json()["cursor"]["observedAt"] == (
+        operator_contract.DEVELOPMENT_MAX_CURSOR_SEQUENCE
+    )
+    data = next(line for line in last_frame.splitlines() if line.startswith(b"data: "))
+    event = json.loads(data.removeprefix(b"data: "))
+    assert event["sequence"] == operator_contract.DEVELOPMENT_MAX_CURSOR_SEQUENCE
+    assert event["observedAt"] == operator_contract.DEVELOPMENT_MAX_JSON_SAFE_INTEGER
+    assert event["generatedAt"] == operator_contract.DEVELOPMENT_MAX_JSON_SAFE_INTEGER
+    assert frame_bridge_runtime._safe_timestamp(event["observedAt"]) >= 0
+    assert frame_bridge_runtime._safe_timestamp(event["generatedAt"]) >= 0
+    assert daemon_contract.OperatorEvent.model_validate(event)
 
 
 class FactoryProvider:

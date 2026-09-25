@@ -619,6 +619,12 @@ class OperatorFeed:
                         "An authoritative snapshot is required before event subscription.",
                         status_code=409,
                     )
+                observed_at = self._now_millis()
+                if (
+                    type(observed_at) is not int
+                    or not 0 <= observed_at <= operator_contract.DEVELOPMENT_MAX_JSON_SAFE_INTEGER
+                ):
+                    raise RuntimeError("operator feed cursor timestamp is outside the wire bound")
                 count = handler(
                     FeedPulse(
                         hive_id=hive.identity,
@@ -636,7 +642,7 @@ class OperatorFeed:
                 cursor = state.snapshot["cursor"]
                 assert isinstance(cursor, dict)
                 cursor["sequence"] = state.sequence
-                cursor["observedAt"] = self._now_millis()
+                cursor["observedAt"] = observed_at
                 return state.sequence
 
     def installed_snapshot(self, identity: str) -> Mapping[str, object] | None:
