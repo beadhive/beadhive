@@ -19,7 +19,7 @@ from .daemon_contract import NON_MCP_ROUTES, TERMINAL_PROTOCOL, RouteSpec, WireM
 from .transport_inventory import catalog_projection_extension, operator_projection
 
 OPENAPI_CONTRACT = "beadhive-host-openapi-v1.json"
-OPENAPI_COMPONENTS_SHA256 = "ca8aaab8b71d4154d0bcf754121701e0107c9ca458f8012c1214480c9f5f8b34"
+OPENAPI_COMPONENTS_SHA256 = "d054f98fc60a102253eeb0ef8e18a10647011867082ceb01a60cdc99626456d6"
 
 _ERROR_RESPONSES = {
     400: "BadRequest",
@@ -258,9 +258,15 @@ def _route_non_header_parameters(route: RouteSpec) -> list[dict[str, Any]]:
             ),
             _parameter("availability", "query", {"enum": ["available", "unavailable"]}),
         ]
-    if key == ("GET", "/api/v1/hives/{hive_id}/snapshot"):
+    if key in {
+        ("GET", "/api/v1/hives/{hive_id}/snapshot"),
+        ("GET", "/api/v1/hives/{hive_id}/snapshot-with-work-items"),
+    }:
         return [_hive_parameter()]
-    if key == ("GET", "/api/v1/hives/{hive_id}/work-items"):
+    if key in {
+        ("GET", "/api/v1/hives/{hive_id}/work-items"),
+        ("GET", "/api/v1/hives/{hive_id}/work-item-pages"),
+    }:
         return [
             _hive_parameter(),
             _parameter(
@@ -300,7 +306,10 @@ def _route_non_header_parameters(route: RouteSpec) -> list[dict[str, Any]]:
             _parameter("type", "query", {"type": "string"}),
             _parameter("parent", "query", {"type": "string"}),
         ]
-    if key == ("GET", "/api/v1/hives/{hive_id}/work-items/{bead_id}"):
+    if key in {
+        ("GET", "/api/v1/hives/{hive_id}/work-items/{bead_id}"),
+        ("GET", "/api/v1/hives/{hive_id}/work-item-details/{bead_id}"),
+    }:
         return [
             _hive_parameter(),
             _parameter(
@@ -410,6 +419,8 @@ def _success_response(route: RouteSpec, status: int) -> dict[str, Any] | None:
         "/api/v1/factory/hives",
         "/api/v1/hives/{hive_id}/work-items",
         "/api/v1/hives/{hive_id}/work-items/{bead_id}",
+        "/api/v1/hives/{hive_id}/work-item-pages",
+        "/api/v1/hives/{hive_id}/work-item-details/{bead_id}",
     }:
         response["headers"] = {
             "ETag": {"schema": {"type": "string"}},
@@ -445,8 +456,13 @@ def _operation(route: RouteSpec) -> dict[str, Any]:
         ("GET", "/api/v1/factory"): "operatorFactory",
         ("GET", "/api/v1/factory/hives"): "operatorFactoryHives",
         ("GET", "/api/v1/hives/{hive_id}/snapshot"): "operatorHiveSnapshot",
+        ("GET", "/api/v1/hives/{hive_id}/snapshot-with-work-items"): ("operatorRemoteHiveSnapshot"),
         ("GET", "/api/v1/hives/{hive_id}/work-items"): "operatorWorkItems",
         ("GET", "/api/v1/hives/{hive_id}/work-items/{bead_id}"): "operatorWorkItemDetail",
+        ("GET", "/api/v1/hives/{hive_id}/work-item-pages"): "operatorRemoteWorkItems",
+        ("GET", "/api/v1/hives/{hive_id}/work-item-details/{bead_id}"): (
+            "operatorRemoteWorkItemDetail"
+        ),
         ("GET", "/api/v1/hives/{hive_id}/events"): "operatorHiveEvents",
         ("GET", "/api/v1/runs/{run_id}/activity"): "operatorRunActivity",
         ("POST", "/api/v1/runs/{run_id}/activity"): "publishRunActivity",

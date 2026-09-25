@@ -143,7 +143,9 @@ def test_projection_is_compact_strict_and_counts_only_the_exact_hive() -> None:
     assert (item["id"], item["readiness"]) == ("bh-current", "blocked")
     assert (item["blockerCount"], item["openGateCount"], item["liveAgentCount"]) == (0, 1, 1)
     assert len(item["labels"]) == 12 and item["remainingLabelCount"] == 3
-    assert daemon_contract.HiveSnapshotResponse.model_validate(projected).to_wire() == projected
+    assert (
+        daemon_contract.RemoteHiveSnapshotResponse.model_validate(projected).to_wire() == projected
+    )
 
 
 def _factory_scale_snapshot(*, open_count: int) -> state_stream.ProviderSnapshot:
@@ -185,7 +187,7 @@ def test_factory_scale_1344_current_items_are_complete_and_under_target() -> Non
     assert projected["coverage"]["eligible"] == 1_344
     assert projected["coverage"]["reason"] is None
     assert len(encoded) <= operator_contract.DEVELOPMENT_SNAPSHOT_MAX_BYTES
-    daemon_contract.HiveSnapshotResponse.model_validate(projected)
+    daemon_contract.RemoteHiveSnapshotResponse.model_validate(projected)
 
 
 @pytest.mark.parametrize("count", [4_095, 4_096, 4_097])

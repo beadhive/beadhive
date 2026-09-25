@@ -31,18 +31,20 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-from . import daemon_auth, daemon_contract
+from . import daemon_auth, daemon_contract, operator_work_items
 
 UPSTREAM_CONTRACT = "frame-bridge.upstream.v1"
 GATEWAY_ISSUER = "gateway/dev/aggregate"
 _PREFIX = "/frame-bridge/upstream/v1"
 _LOOPBACK_ORIGIN = "http://127.0.0.1:8420"
 _MAX_JSON_BYTES = 1 << 20
+_MAX_QUERY_BYTES = 16 * 1024
 _REQUEST_ID = re.compile(r"req_[A-Za-z0-9_-]{22}\Z")
 _OPAQUE_ID = re.compile(r"[A-Za-z0-9._~-]{1,128}\Z")
 _KID = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
 _INSTANCE_ID = re.compile(r"[a-z0-9-]+/[a-z0-9-]+\Z")
 _HIVE_ID = re.compile(r"[A-Za-z0-9._~-]+/[A-Za-z0-9._~-]+/[A-Za-z0-9._~-]+\Z")
+_WORK_ITEM_ID = re.compile(r"[A-Za-z0-9._~-]{1,256}\Z")
 _PRINCIPAL = re.compile(r"[A-Za-z0-9_-]{1,256}\Z")
 _JTI = re.compile(r"[A-Za-z0-9_-]{22,}\Z")
 _DEFAULT_REQUEST_ID = "req_" + "0" * 22
@@ -72,6 +74,14 @@ class SourceNotFound(Exception):
 
 class ResnapshotRequired(Exception):
     """A requested source cursor or revision cannot safely continue."""
+
+
+class WorkItemDetailTooLarge(Exception):
+    """The exact source detail cannot cross the bounded disclosure seam."""
+
+
+class WorkItemPageTooLarge(Exception):
+    """The requested source page cannot cross the bounded disclosure seam."""
 
 
 class IdempotencyConflict(Exception):
@@ -353,6 +363,21 @@ class FrameBridgeUpstreamSource(Protocol):
 
     async def snapshot(self) -> Mapping[str, object]: ...
 
+    async def work_items(
+        self,
+        *,
+        view: str,
+        limit: int,
+        cursor: str | None,
+        priorities: tuple[str, ...],
+        labels: tuple[str, ...],
+        assignee: str | None,
+        issue_type: str | None,
+        parent: str | None,
+    ) -> Mapping[str, object]: ...
+
+    async def work_item_detail(self, *, bead_id: str) -> Mapping[str, object]: ...
+
     async def events(self, *, subscription: str, after: str | None) -> AsyncIterator[bytes]: ...
 
     async def refresh(
@@ -416,7 +441,7 @@ class HostDaemonFrameBridgeSource:
     async def snapshot(self) -> Mapping[str, object]:
         try:
             response = await self._client.get(
-                f"/api/v1/hives/{self._encoded_hive}/snapshot", auth=self._auth
+                f"/api/v1/hives/{self._encoded_hive}/snapshot-with-work-items", auth=self._auth
             )
         except httpx.HTTPError as exc:
             raise SourceUnavailable from exc
@@ -426,13 +451,91 @@ class HostDaemonFrameBridgeSource:
             raise SourceUnavailable
         try:
             payload = _strict_json_object(response.content)
-            daemon_contract.HiveSnapshotResponse.model_validate(payload)
+            daemon_contract.RemoteHiveSnapshotResponse.model_validate(payload)
         except (TypeError, ValueError) as exc:
             raise SourceUnavailable from exc
         hive = payload.get("hive")
         if not isinstance(hive, dict) or hive.get("prefix") != self._instance.primary_hive_id:
             raise SourceUnavailable
         return payload
+
+    async def work_items(
+        self,
+        *,
+        view: str,
+        limit: int,
+        cursor: str | None,
+        priorities: tuple[str, ...],
+        labels: tuple[str, ...],
+        assignee: str | None,
+        issue_type: str | None,
+        parent: str | None,
+    ) -> Mapping[str, object]:
+        params: list[tuple[str, str]] = [("queue", view), ("limit", str(limit))]
+        params.extend(("priority", value) for value in priorities)
+        params.extend(("label", value) for value in labels)
+        for name, value in (("assignee", assignee), ("type", issue_type), ("parent", parent)):
+            if value is not None:
+                params.append((name, value))
+        if cursor is not None:
+            params.append(("cursor", cursor))
+        try:
+            response = await self._client.get(
+                f"/api/v1/hives/{self._encoded_hive}/work-item-pages",
+                params=params,
+                auth=self._auth,
+            )
+        except httpx.HTTPError as exc:
+            raise SourceUnavailable from exc
+        if response.status_code == 404:
+            raise SourceNotFound
+        if response.status_code == 409:
+            raise ResnapshotRequired
+        if response.status_code == 413:
+            raise WorkItemPageTooLarge
+        if response.status_code != 200:
+            raise SourceUnavailable
+        try:
+            payload = _strict_json_object(response.content)
+            validated = daemon_contract.RemoteWorkItemQueue.model_validate(payload)
+        except (TypeError, ValueError) as exc:
+            raise SourceUnavailable from exc
+        if (
+            validated.hive_id != self._instance.primary_hive_id
+            or validated.queue != view
+            or validated.limit != limit
+            or validated.filters.priorities != priorities
+            or validated.filters.labels != labels
+            or validated.filters.assignee != assignee
+            or validated.filters.type != issue_type
+            or validated.filters.parent != parent
+        ):
+            raise SourceUnavailable
+        return validated.to_wire()
+
+    async def work_item_detail(self, *, bead_id: str) -> Mapping[str, object]:
+        encoded_bead = quote(bead_id, safe="-._~")
+        try:
+            response = await self._client.get(
+                f"/api/v1/hives/{self._encoded_hive}/work-item-details/{encoded_bead}",
+                auth=self._auth,
+            )
+        except httpx.HTTPError as exc:
+            raise SourceUnavailable from exc
+        if response.status_code == 404:
+            raise SourceNotFound
+        if response.status_code == 413:
+            raise WorkItemDetailTooLarge
+        if response.status_code != 200:
+            raise SourceUnavailable
+        try:
+            payload = _strict_json_object(response.content)
+            validated = daemon_contract.RemoteWorkItemDetail.model_validate(payload)
+        except (TypeError, ValueError) as exc:
+            raise SourceUnavailable from exc
+        if validated.hive_id != self._instance.primary_hive_id or validated.item.id != bead_id:
+            raise SourceUnavailable
+        return validated.to_wire()
 
     async def directory(self, *, limit: int, cursor: str | None) -> Mapping[str, object]:
         snapshot = await self.snapshot()
@@ -630,6 +733,8 @@ def _private_error(request_id: str, failure: PrivateRequestError) -> JSONRespons
         "upstream_authentication_failed": "Gateway attestation failed.",
         "upstream_authorization_failed": "Gateway request is not authorized.",
         "source_not_found": "The configured source was not found.",
+        "work_items_page_too_large": "The requested work-items page is too large.",
+        "work_item_detail_too_large": "The exact work-item detail is too large.",
         "registration_mismatch": "The private registration does not match.",
         "resnapshot_required": "A fresh snapshot is required.",
         "idempotency_conflict": "The refresh receipt conflicts.",
@@ -675,7 +780,11 @@ def _canonical_target(request: Request) -> tuple[str, list[tuple[str, str]]]:
         query = raw_query.decode("ascii")
     except UnicodeDecodeError as exc:
         raise PrivateRequestError("invalid_request", 400, False) from exc
-    if len(path) > 2048 or len(query) > 4096 or not path.startswith(_PREFIX + "/"):
+    if (
+        len(path) > 2048
+        or len(query.encode("utf-8")) > _MAX_QUERY_BYTES
+        or not path.startswith(_PREFIX + "/")
+    ):
         raise PrivateRequestError("invalid_request", 400, False)
     try:
         pairs = parse_qsl(query, keep_blank_values=True, strict_parsing=bool(query))
@@ -749,6 +858,14 @@ class _PrivateUpstreamApplication:
             return _private_error(
                 request_id, PrivateRequestError("resnapshot_required", 409, False)
             )
+        except WorkItemDetailTooLarge:
+            return _private_error(
+                request_id, PrivateRequestError("work_item_detail_too_large", 413, False)
+            )
+        except WorkItemPageTooLarge:
+            return _private_error(
+                request_id, PrivateRequestError("work_items_page_too_large", 413, False)
+            )
         except IdempotencyConflict:
             return _private_error(
                 request_id, PrivateRequestError("idempotency_conflict", 409, False)
@@ -792,6 +909,14 @@ class _PrivateUpstreamApplication:
             if query:
                 raise PrivateRequestError("invalid_request", 400, False)
             expected = ("upstream:read", "snapshot", "GET", 5_000)
+        elif path == f"{_PREFIX}/instances/{instance}/hives/{hive}/work-items":
+            self._work_items_query(query)
+            expected = ("upstream:read", "work-items", "GET", 5_000)
+        elif path.startswith(f"{_PREFIX}/instances/{instance}/hives/{hive}/work-items/"):
+            bead_id = path.rsplit("/", 1)[-1]
+            if query or _WORK_ITEM_ID.fullmatch(bead_id) is None:
+                raise PrivateRequestError("invalid_request", 400, False)
+            expected = ("upstream:read", "work-item-detail", "GET", 5_000)
         elif path == f"{_PREFIX}/instances/{instance}/hives/{hive}/events":
             self._events_query(request, query)
             expected = ("upstream:events", "events", "GET", 30_000)
@@ -832,6 +957,71 @@ class _PrivateUpstreamApplication:
         last_event = _header_values(request, b"last-event-id")
         if len(last_event) > 1 or (last_event and after is not None and last_event[0] != after):
             raise PrivateRequestError("invalid_request", 400, False)
+
+    @staticmethod
+    def _work_items_query(query: list[tuple[str, str]]) -> dict[str, object]:
+        allowed = {"view", "limit", "cursor", "priority", "label", "assignee", "type", "parent"}
+        if not query or {key for key, _ in query} - allowed:
+            raise PrivateRequestError("invalid_request", 400, False)
+        grouped: dict[str, list[str]] = {}
+        for key, value in query:
+            grouped.setdefault(key, []).append(value)
+        if any(
+            len(grouped.get(name, ())) > 1
+            for name in ("view", "limit", "cursor", "assignee", "type", "parent")
+        ):
+            raise PrivateRequestError("invalid_request", 400, False)
+        view = grouped.get("view", [""])[0]
+        if view not in operator_work_items.QUEUES:
+            raise PrivateRequestError("invalid_request", 400, False)
+        raw_limit = grouped.get("limit", [str(operator_work_items.DEFAULT_LIMIT)])[0]
+        if not raw_limit.isascii() or not raw_limit.isdecimal() or str(int(raw_limit)) != raw_limit:
+            raise PrivateRequestError("invalid_request", 400, False)
+        limit = int(raw_limit)
+        if not 1 <= limit <= operator_work_items.MAX_LIMIT:
+            raise PrivateRequestError("invalid_request", 400, False)
+        priorities = grouped.get("priority", [])
+        if (
+            len(priorities) > operator_work_items.MAX_PRIORITIES
+            or any(re.fullmatch(r"P[0-4]", value) is None for value in priorities)
+            or priorities != sorted(set(priorities))
+        ):
+            raise PrivateRequestError("invalid_request", 400, False)
+        labels = grouped.get("label", [])
+        if (
+            len(labels) > operator_work_items.MAX_LABEL_FILTERS
+            or labels != sorted(set(labels))
+            or any(
+                not value or len(value.encode("utf-8")) > operator_work_items.MAX_LABEL_FILTER_BYTES
+                for value in labels
+            )
+        ):
+            raise PrivateRequestError("invalid_request", 400, False)
+        cursor = grouped.get("cursor", [None])[0]
+        if cursor is not None and (
+            not cursor or len(cursor.encode("utf-8")) > operator_work_items.MAX_CURSOR_BYTES
+        ):
+            raise PrivateRequestError("invalid_request", 400, False)
+        scalars = {name: grouped.get(name, [None])[0] for name in ("assignee", "type", "parent")}
+        if any(
+            value is not None
+            and (
+                not value
+                or len(value.encode("utf-8")) > operator_work_items.MAX_SCALAR_FILTER_BYTES
+            )
+            for value in scalars.values()
+        ):
+            raise PrivateRequestError("invalid_request", 400, False)
+        return {
+            "view": view,
+            "limit": limit,
+            "cursor": cursor,
+            "priorities": tuple(priorities),
+            "labels": tuple(labels),
+            "assignee": scalars["assignee"],
+            "issue_type": scalars["type"],
+            "parent": scalars["parent"],
+        }
 
     @staticmethod
     def _deadline(request: Request, maximum: int) -> int:
@@ -982,6 +1172,19 @@ class _PrivateUpstreamApplication:
             )
         if operation == "snapshot":
             return _json(dict(await self._source.snapshot()))
+        if operation == "work-items":
+            normalized = self._work_items_query(query)
+            page = daemon_contract.RemoteWorkItemQueue.model_validate(
+                await self._source.work_items(**normalized)
+            ).to_wire()
+            view = page.pop("queue")
+            return _json({**page, "view": view})
+        if operation == "work-item-detail":
+            bead_id = request.url.path.rsplit("/", 1)[-1]
+            detail = daemon_contract.RemoteWorkItemDetail.model_validate(
+                await self._source.work_item_detail(bead_id=bead_id)
+            ).to_wire()
+            return _json(detail)
         if operation == "refresh":
             return await self._refresh(request)
         raise AssertionError("unreachable private operation")

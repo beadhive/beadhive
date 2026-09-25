@@ -309,9 +309,9 @@
         "check": "just transport-artifact-check",
         "artifacts": [
           {"path": "docs/schemas/wire/v1.2.0/operation-catalog-v1.json", "sha256": "8c849120cb43cf19d2d6bec9ab2cbdb28eac0246441a173c2c1f98d1c87073a8"},
-          {"path": "docs/design/transport-projection-inventory-v1.json", "sha256": "f7d202fe435c0db2d1e34ed3537c8a13281bb7e06e3436a4fff182bcb287bc77"},
-          {"path": "src/beadhive/schemas/beadhive-host-openapi-v1.json", "sha256": "b354eb9c6caf55f7e8fa2e67870749ff110f25668e064a7daf2aa9e3ab769b92"},
-          {"path": "src/beadhive/schemas/beadhive-gateway-projection-v1.json", "sha256": "743326574c8ddfd020172f48e0a2f68d2f8a4a4c6e3c082e486af523d15db27b"},
+          {"path": "docs/design/transport-projection-inventory-v1.json", "sha256": "9814c8922a432dec1c5734cb2e4f16575878ac691cefd8c1403263a17c9c7211"},
+          {"path": "src/beadhive/schemas/beadhive-host-openapi-v1.json", "sha256": "86432ddae4bfe3833a64f917a8b8576724ac2c3291f6822f3dcc434d6c5db33a"},
+          {"path": "src/beadhive/schemas/beadhive-gateway-projection-v1.json", "sha256": "a4174b200beb192c066c347b5ae5aae523695067a91f3a955637dccd722cd0ef"},
           {"path": "src/beadhive/schemas/beadhive-gateway-projection-v1.schema.json", "sha256": "6ee17992bc8e752fdb38142965e68bb1119242911eca872a844356a62bc33d78"},
           {"path": "docs/proof/bh-3qkmk.5-transport-composition.json", "sha256": "2e9aa04a50a911de0fb78e0544e5fac0f86cc52f421be8052b41b818b987eabf"}
         ]
@@ -326,7 +326,7 @@
         "artifacts": [
           {"path": "docs/schemas/telemetry-event-envelope-v1.schema.json", "sha256": "1bf34e38b60d8e9cdf7b5c60477cb93f9dd24dac970e5c89a8d3b2695cd2d3c6"},
           {"path": "docs/schemas/wire/v1.0.0/release.json", "sha256": "c69fb7f1567f16e6f76549ef1c9c53b1f32f7cfde79fc8b0d2cc652a01b727e1"},
-          {"path": "docs/proof/official-v1-contract-compatibility.json", "sha256": "c1488edffc7d68507a96f52108087d01e6b0688e48b2b79528bad51c85d8b5aa"}
+          {"path": "docs/proof/official-v1-contract-compatibility.json", "sha256": "fdfe82e323c9bd9dd438fc709c51ae1e1d0d2dca7803035c216fa564587c910b"}
         ]
       },
       "selective_ci": {
@@ -335,8 +335,8 @@
         "artifacts": [
           {"path": "docs/proof/bh-ck1t6.1-test-closure-certification.json", "sha256": "4be8cb0128b7efa300611768fa7063a05499423ed154719ae3c1b1405a26ea99"},
           {"path": "docs/proof/bh-ck1t6.3-shadow-activation.json", "sha256": "50ecf5242bb344276503b0f6ceeb51e000a0a862eee39788d1c65dd812b4a596"},
-          {"path": "docs/proof/bh-ck1t6.4-promotion-policy.json", "sha256": "983b0e21f289e990e4e08af953ce476b824aa1018f3bfc335546a5c995a07f6c"},
-          {"path": "docs/proof/bh-ck1t6.5-selective-ci-operations.json", "sha256": "326a1bd2b4e501fd3ae37a0cd312448dea28f80fb138c5ae729b688fd8d28596"}
+          {"path": "docs/proof/bh-ck1t6.4-promotion-policy.json", "sha256": "5db59e2a5552b0428cf337bdce81ddc1687a7af4fd5b0abfb0fdd011bfe2fed8"},
+          {"path": "docs/proof/bh-ck1t6.5-selective-ci-operations.json", "sha256": "efee8646a3bcd462f30c05528a7ba3d56e63dce49628007674cbc0951aec6fdd"}
         ]
       },
       "package_and_entry_point": {

@@ -11,6 +11,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+import uvicorn
 from cryptography.hazmat.primitives.asymmetric import rsa
 from joserfc import jwt
 from joserfc.jwk import RSAKey
@@ -25,8 +26,17 @@ from beadhive import (
     frame_bridge,
     frame_bridge_runtime,
     gateway_read,
+    host_daemon,
+    operator_api,
     operator_contract,
+    operator_feed,
+    operator_sources,
+    operator_sse,
+    state_stream,
 )
+from beadhive.agent_run_summary import Freshness
+from beadhive.public_readers import AgentRunSnapshot, Coverage
+from harness.world import free_port
 
 ISSUER = "https://rapid-snail-6758.clerk.accounts.dev"
 AUDIENCE = "beadhive-gateway-dev"
@@ -34,6 +44,17 @@ APP_ORIGIN = "https://app-dev.beadhive.cloud"
 GATEWAY_ORIGIN = "https://gateway-dev.beadhive.cloud"
 SUBJECT = "user_dev_demo"
 EXPERIENCE_CORPUS = Path(__file__).parent / "fixtures" / "gateway_experience_v1"
+
+
+def _retrieval(revision: str) -> dict[str, object]:
+    return {
+        "contract": "beadhive.work-items/v1",
+        "revision": revision,
+        "views": ["ready", "active", "blocked", "recent"],
+        "maxPageItems": 200,
+        "maxPageBytes": 917_504,
+        "maxDetailBytes": 917_504,
+    }
 
 
 def _keys() -> tuple[RSAKey, RSAKey]:
@@ -756,6 +777,7 @@ def test_canonical_factory_routes_alias_live_loopback_directory_snapshot_and_eve
             "policy": "beadhive.snapshot-summary/v1",
             "sourceRevision": revision,
             "limits": limits,
+            "workItemRetrieval": _retrieval(revision),
             "sources": {},
         },
         "workItems": [],
@@ -791,6 +813,154 @@ def test_canonical_factory_routes_alias_live_loopback_directory_snapshot_and_eve
         assert request.headers["authorization"] == f"Bearer {daemon_bearer}"
         return JSONResponse(snapshot)
 
+    summary = {
+        "id": "bh-1",
+        "title": "Exact item",
+        "status": "open",
+        "readiness": "ready",
+        "issueType": "task",
+        "priority": 1,
+        "labels": ["component:gateway"],
+        "remainingLabelCount": 0,
+        "assignee": None,
+        "owner": None,
+        "updatedAt": 1_787_811_221_000,
+        "blockerCount": 0,
+        "openGateCount": 0,
+        "liveAgentCount": 0,
+    }
+
+    async def daemon_work_items(request):
+        assert request.headers["authorization"] == f"Bearer {daemon_bearer}"
+        if request.query_params["queue"] == "blocked":
+            return JSONResponse(
+                {
+                    "schemaVersion": 1,
+                    "error": {
+                        "code": "work_items_page_too_large",
+                        "message": "The work-items page exceeds its disclosure limit.",
+                        "retryable": False,
+                    },
+                },
+                status_code=413,
+            )
+        assert request.query_params["queue"] == "ready"
+        return JSONResponse(
+            {
+                "schemaVersion": 1,
+                "projectionPolicy": "beadhive.snapshot-summary/v1",
+                "hiveId": hive_id,
+                "queue": "ready",
+                "revision": revision,
+                "generatedAt": 1_787_811_221_000,
+                "limits": {"maxBytes": 917_504, "maxItems": 200},
+                "filters": {
+                    "priorities": ["P1"],
+                    "labels": [],
+                    "assignee": None,
+                    "type": None,
+                    "parent": None,
+                    "ordering": "beadhive.work-items/v1",
+                },
+                "coverage": {
+                    "state": "complete",
+                    "sources": {},
+                    "eligible": 1,
+                    "returned": 1,
+                    "truncated": False,
+                    "nextCursor": None,
+                },
+                "limit": 10,
+                "returned": 1,
+                "truncated": False,
+                "nextCursor": None,
+                "items": [summary],
+                "warnings": [],
+            }
+        )
+
+    def action(action_id, capability, consequence, *, launch=False):
+        reason = {
+            "work-item.inspect": "the exact work item is present in the projection",
+            "work-item.refresh": "the exact work item can be refreshed",
+            "work-item.launch": "ready",
+        }[action_id]
+        return {
+            "id": action_id,
+            "capability": capability,
+            "target": {"hiveId": hive_id, "kind": "work-item", "id": "bh-1"},
+            "availability": "allowed",
+            "reasonCode": None,
+            "reason": reason,
+            "consequence": consequence,
+            "advertisedAt": 1_787_811_221_000,
+            "sourceRevision": revision,
+            "preconditions": {"sourceRevision": revision, "mustMatch": launch},
+            "input": {
+                "transport": "parameters" if launch else "none",
+                "required": False,
+                "schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [],
+                    "properties": {
+                        "actor": {"type": "string", "minLength": 1},
+                        "kind": {"type": "string", "minLength": 1},
+                        "direction": {"enum": ["right", "down"], "default": "right"},
+                        "focus": {"type": "boolean", "default": False},
+                        "adoptExpired": {"type": "boolean", "default": False},
+                    },
+                }
+                if launch
+                else None,
+            },
+        }
+
+    async def daemon_work_item_detail(request):
+        assert request.headers["authorization"] == f"Bearer {daemon_bearer}"
+        item = {
+            **summary,
+            "ref": {"hiveId": hive_id, "kind": "work-item", "id": "bh-1"},
+            "revision": revision,
+            "readinessReason": "ready",
+            "parentId": None,
+            "blockedDependentCount": 0,
+            "description": "Exact description",
+            "design": "",
+            "acceptanceCriteria": "",
+            "notes": "",
+            "moleculeType": None,
+            "createdBy": None,
+            "createdAt": None,
+            "closedAt": None,
+            "dueAt": None,
+            "deferUntil": None,
+            "claim": {"actor": None, "leaseExpiresAt": None},
+            "dependencies": [],
+            "dependents": [],
+            "gates": [],
+            "agents": [],
+            "advertisedActions": [
+                action("work-item.inspect", "inspect", "navigate"),
+                action("work-item.refresh", "refresh", "read"),
+                action("work-item.launch", "launch", "reversible-write", launch=True),
+            ],
+        }
+        return JSONResponse(
+            {
+                "schemaVersion": 1,
+                "projectionPolicy": "beadhive.snapshot-summary/v1",
+                "hiveId": hive_id,
+                "revision": revision,
+                "generatedAt": 1_787_811_221_000,
+                "limits": {"maxBytes": 917_504},
+                "freshness": {"state": "fresh", "asOf": 1_787_811_221_000},
+                "coverage": {"state": "complete", "sources": {}},
+                "item": item,
+                "warnings": [],
+            }
+        )
+
     async def daemon_events(request):
         assert request.headers["authorization"] == f"Bearer {daemon_bearer}"
         assert dict(request.query_params) == {
@@ -823,7 +993,12 @@ def test_canonical_factory_routes_alias_live_loopback_directory_snapshot_and_eve
     daemon_app = Starlette(
         routes=[
             Route("/api/v1/factory/hives", directory),
-            Route("/api/v1/hives/{hive_id:path}/snapshot", daemon_snapshot),
+            Route("/api/v1/hives/{hive_id:path}/snapshot-with-work-items", daemon_snapshot),
+            Route("/api/v1/hives/{hive_id:path}/work-item-pages", daemon_work_items),
+            Route(
+                "/api/v1/hives/{hive_id:path}/work-item-details/{bead_id}",
+                daemon_work_item_detail,
+            ),
             Route("/api/v1/hives/{hive_id:path}/events", daemon_events),
         ]
     )
@@ -854,6 +1029,35 @@ def test_canonical_factory_routes_alias_live_loopback_directory_snapshot_and_eve
                 canonical_snapshot = await client.get(
                     f"/v1/factories/development/hives/{encoded_hive}/snapshot", headers=headers
                 )
+                work_params = [("view", "ready"), ("limit", "10"), ("priority", "P1")]
+                bridge_work_items = await client.get(
+                    f"/v1/instances/dev/demo/hives/{encoded_hive}/work-items",
+                    params=work_params,
+                    headers=headers,
+                )
+                canonical_work_items = await client.get(
+                    f"/v1/factories/development/hives/{encoded_hive}/work-items",
+                    params=work_params,
+                    headers=headers,
+                )
+                oversized_work_items = await client.get(
+                    f"/v1/factories/development/hives/{encoded_hive}/work-items",
+                    params={"view": "blocked", "limit": "200"},
+                    headers=headers,
+                )
+                mismatched_work_items = await client.get(
+                    f"/v1/factories/development/hives/{encoded_hive}/work-items",
+                    params={"view": "ready", "limit": "10", "label": "unexpected"},
+                    headers=headers,
+                )
+                bridge_detail = await client.get(
+                    f"/v1/instances/dev/demo/hives/{encoded_hive}/work-items/bh-1",
+                    headers=headers,
+                )
+                canonical_detail = await client.get(
+                    f"/v1/factories/development/hives/{encoded_hive}/work-items/bh-1",
+                    headers=headers,
+                )
                 params = {"subscription": subscription, "after": f"{epoch}:7"}
                 bridge_events = await client.get(
                     f"/v1/instances/dev/demo/hives/{encoded_hive}/events",
@@ -870,6 +1074,12 @@ def test_canonical_factory_routes_alias_live_loopback_directory_snapshot_and_eve
                     canonical_directory,
                     bridge_snapshot,
                     canonical_snapshot,
+                    bridge_work_items,
+                    canonical_work_items,
+                    oversized_work_items,
+                    mismatched_work_items,
+                    bridge_detail,
+                    canonical_detail,
                     bridge_events,
                     canonical_events,
                 )
@@ -877,12 +1087,22 @@ def test_canonical_factory_routes_alias_live_loopback_directory_snapshot_and_eve
             await daemon_client.aclose()
 
     responses = asyncio.run(exercise())
-    assert all(response.status_code == 200 for response in responses)
+    assert all(
+        response.status_code == 200
+        for index, response in enumerate(responses)
+        if index not in {6, 7}
+    )
     (
         bridge_directory,
         canonical_directory,
         bridge_snapshot,
         canonical_snapshot,
+        bridge_work_items,
+        canonical_work_items,
+        oversized_work_items,
+        mismatched_work_items,
+        bridge_detail,
+        canonical_detail,
         bridge_events,
         canonical_events,
     ) = responses
@@ -892,6 +1112,19 @@ def test_canonical_factory_routes_alias_live_loopback_directory_snapshot_and_eve
     expected_snapshot = bridge_snapshot.json() | {}
     expected_snapshot.pop("instanceId")
     assert canonical_snapshot.json() == expected_snapshot
+    expected_work_items = bridge_work_items.json()
+    expected_work_items.pop("instanceId")
+    assert canonical_work_items.json() == expected_work_items
+    assert bridge_work_items.json()["page"]["view"] == "ready"
+    assert bridge_work_items.json()["page"]["items"] == [summary]
+    assert oversized_work_items.status_code == 413
+    assert oversized_work_items.json()["error"]["code"] == "work_items_page_too_large"
+    assert mismatched_work_items.status_code == 503
+    assert mismatched_work_items.json()["error"]["code"] == "read_plane_unavailable"
+    expected_detail = bridge_detail.json()
+    expected_detail.pop("instanceId")
+    assert canonical_detail.json() == expected_detail
+    assert bridge_detail.json()["detail"]["item"]["description"] == "Exact description"
 
     def event_data(response: httpx.Response) -> dict[str, object]:
         data = next(line for line in response.text.splitlines() if line.startswith("data: "))
@@ -901,6 +1134,285 @@ def test_canonical_factory_routes_alias_live_loopback_directory_snapshot_and_eve
     canonical_event = event_data(canonical_events)
     assert legacy_event.pop("instanceId") == "dev/demo"
     assert canonical_event == legacy_event
+
+
+def test_live_dense_host_seed_page_detail_and_single_invalidation_are_hive_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    primary = "github/beadhive/dense"
+    secondary = "github/beadhive/other"
+    encoded_primary = "github%2Fbeadhive%2Fdense"
+    encoded_secondary = "github%2Fbeadhive%2Fother"
+    now = "2026-09-25T12:00:00Z"
+
+    class DenseProvider:
+        def __init__(self) -> None:
+            self.versions = {primary: 1, secondary: 1}
+            self.calls: list[str] = []
+            self.rows = {
+                primary: tuple(
+                    state_stream.StreamIssue(
+                        id=f"bh-{index:04}",
+                        hive=primary,
+                        issue_type="task",
+                        status="open",
+                        priority=f"P{index % 5}",
+                        title=f"Dense work item {index:04}",
+                        updated_at=now,
+                        labels=("dense",),
+                        description=f"Exact dense detail {index:04}",
+                    )
+                    for index in range(1_344)
+                ),
+                secondary: tuple(
+                    state_stream.StreamIssue(
+                        id=f"other-{index:04}",
+                        hive=secondary,
+                        issue_type="task",
+                        status="open",
+                        priority="P2",
+                        title=f"Other work item {index:04}",
+                        updated_at=now,
+                    )
+                    for index in range(3)
+                ),
+            }
+
+        def refresh(self, request: state_stream.StreamRequest) -> state_stream.ProviderSnapshot:
+            assert request.hive in self.rows
+            hive_id = str(request.hive)
+            self.calls.append(hive_id)
+            return state_stream.ProviderSnapshot(
+                scope="hive",
+                revision=f"{hive_id}:v{self.versions[hive_id]}",
+                as_of=now,
+                issues=self.rows[hive_id],
+            )
+
+        def bump(self, hive_id: str) -> None:
+            self.versions[hive_id] += 1
+
+    provider = DenseProvider()
+    cfg = {
+        "managed_repos": [
+            {
+                "provider": "github",
+                "org": "beadhive",
+                "repo": "dense",
+                "prefix": primary,
+                "kind": "org-native",
+            },
+            {
+                "provider": "github",
+                "org": "beadhive",
+                "repo": "other",
+                "prefix": secondary,
+                "kind": "org-native",
+            },
+        ]
+    }
+
+    def runtime_snapshot(_path: str, host: str, source: str) -> AgentRunSnapshot:
+        return AgentRunSnapshot(
+            host_id=host,
+            source_id=source,
+            revision="runtime-v1",
+            summaries=(),
+            coverage=Coverage.COMPLETE,
+            coverage_reason=None,
+            freshness=Freshness(state="fresh", as_of=now),
+        )
+
+    sources = operator_sources.OperatorSources(
+        cfg=cfg,
+        host_id="host-dense",
+        provider=provider,
+        summary_reader=runtime_snapshot,
+        journal_base=tmp_path,
+        dispatch_sink_for_entry=lambda _cfg, entry: tmp_path / f"{entry['repo']}.jsonl",
+    )
+    runtime = host_daemon.DaemonRuntime()
+    feed = operator_feed.OperatorFeed(sources, now_millis=lambda: 1_790_337_600_000)
+    relay = operator_sse.OperatorEventRelay(
+        feed,
+        runtime,
+        now_millis=lambda: 1_790_337_600_001,
+        poll_interval=60,
+        heartbeat_interval=60,
+    )
+
+    async def read_snapshot(identity: str) -> dict[str, object]:
+        return await asyncio.to_thread(feed.snapshot_with_cursor, identity)
+
+    operator = operator_api.OperatorAPI(
+        sources=sources,
+        feed=feed,
+        host_id="host-dense",
+        instance_id="instance-dense",
+        ready=lambda: runtime.ready,
+        events=relay.events,
+        snapshot_reader=read_snapshot,
+    )
+    host_app = host_daemon.build_application(
+        runtime=runtime,
+        routes=operator.routes(),
+        components=(relay.component(),),
+    )
+    private_key, public_key = _keys()
+    daemon_bearer = "bh1.frame-bridge." + "d" * 43
+
+    async def exercise():
+        port = free_port()
+        origin = f"http://127.0.0.1:{port}"
+        monkeypatch.setattr(frame_bridge_runtime, "LOOPBACK_ORIGIN", origin)
+        server = uvicorn.Server(
+            uvicorn.Config(
+                host_app,
+                host="127.0.0.1",
+                port=port,
+                lifespan="on",
+                access_log=False,
+                log_level="critical",
+            )
+        )
+        server_task = asyncio.create_task(server.serve())
+        for _ in range(300):
+            if server.started:
+                break
+            await asyncio.sleep(0.01)
+        assert server.started
+        daemon_client = httpx.AsyncClient(base_url=origin, trust_env=False)
+        source = frame_bridge_runtime.LoopbackGatewayReadSource(
+            daemon_bearer=daemon_auth.SecretBearer(daemon_bearer),
+            authorized_subjects=frozenset({SUBJECT}),
+            client=daemon_client,
+        )
+        app = _application(public_key, source)
+        headers = _headers(_token(private_key))
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url=GATEWAY_ORIGIN
+            ) as client:
+                seed = await client.get(
+                    f"/v1/factories/development/hives/{encoded_primary}/snapshot",
+                    headers=headers,
+                )
+                second_seed = await client.get(
+                    f"/v1/factories/development/hives/{encoded_secondary}/snapshot",
+                    headers=headers,
+                )
+                first = await client.get(
+                    f"/v1/factories/development/hives/{encoded_primary}/work-items",
+                    params={"view": "ready", "limit": "200"},
+                    headers=headers,
+                )
+                first_cursor = first.json()["page"]["nextCursor"]
+                second = await client.get(
+                    f"/v1/factories/development/hives/{encoded_primary}/work-items",
+                    params={"view": "ready", "limit": "200", "cursor": first_cursor},
+                    headers=headers,
+                )
+                detail = await client.get(
+                    f"/v1/factories/development/hives/{encoded_primary}/work-items/bh-0000",
+                    headers=headers,
+                )
+                cached = await client.get(
+                    f"/v1/factories/development/hives/{encoded_primary}/work-items",
+                    params={"view": "ready", "limit": "200"},
+                    headers={**headers, "If-None-Match": first.headers["etag"]},
+                )
+                cross_cursor = await client.get(
+                    f"/v1/factories/development/hives/{encoded_secondary}/work-items",
+                    params={"view": "ready", "limit": "200", "cursor": first_cursor},
+                    headers=headers,
+                )
+                cross_detail = await client.get(
+                    f"/v1/factories/development/hives/{encoded_secondary}/work-items/bh-0000",
+                    headers=headers,
+                )
+                calls_before_unauthenticated = len(provider.calls)
+                unauthenticated = await client.get(
+                    f"/v1/factories/development/hives/{encoded_primary}/work-items",
+                    params={"view": "ready"},
+                    headers={"Origin": APP_ORIGIN},
+                )
+
+            cursor = seed.json()["snapshot"]["cursor"]
+            provider.bump(primary)
+            await asyncio.to_thread(feed.snapshot_with_cursor, primary)
+            event_stream = await source.events(
+                SUBJECT,
+                factory_id=gateway_read.FACTORY_ID,
+                hive_id=primary,
+                subscription=str(cursor["subscriptionId"]),
+                after=f"{cursor['producerEpoch']}:{cursor['sequence']}",
+            )
+            event = await asyncio.wait_for(anext(event_stream), timeout=5)
+            await event_stream.aclose()
+            with pytest.raises(gateway_read.ReadSourceResnapshotRequired):
+                await source.events(
+                    SUBJECT,
+                    factory_id=gateway_read.FACTORY_ID,
+                    hive_id=secondary,
+                    subscription=str(cursor["subscriptionId"]),
+                    after=f"{cursor['producerEpoch']}:{cursor['sequence']}",
+                )
+            return (
+                seed,
+                second_seed,
+                first,
+                second,
+                detail,
+                cached,
+                cross_cursor,
+                cross_detail,
+                unauthenticated,
+                calls_before_unauthenticated,
+                event,
+            )
+        finally:
+            await daemon_client.aclose()
+            server.should_exit = True
+            await asyncio.wait_for(server_task, timeout=5)
+            sources.close()
+
+    (
+        seed,
+        second_seed,
+        first,
+        second,
+        detail,
+        cached,
+        cross_cursor,
+        cross_detail,
+        unauthenticated,
+        calls_before_unauthenticated,
+        event,
+    ) = asyncio.run(exercise())
+
+    assert seed.status_code == second_seed.status_code == 200
+    assert seed.json()["snapshot"]["coverage"]["eligible"] == 1_344
+    assert len(seed.json()["snapshot"]["workItems"]) == 1_344
+    assert first.status_code == second.status_code == detail.status_code == 200
+    assert first.json()["page"]["returned"] == second.json()["page"]["returned"] == 200
+    assert first.json()["page"]["items"][-1]["id"] != second.json()["page"]["items"][0]["id"]
+    assert detail.json()["detail"]["item"]["description"] == "Exact dense detail 0000"
+    assert cached.status_code == 304
+    assert (cross_cursor.status_code, cross_cursor.json()["error"]["code"]) == (
+        409,
+        "resnapshot_required",
+    )
+    assert (cross_detail.status_code, cross_detail.json()["error"]["code"]) == (
+        404,
+        "resource_not_found",
+    )
+    assert (unauthenticated.status_code, unauthenticated.json()["error"]["code"]) == (
+        401,
+        "authentication_failed",
+    )
+    assert len(provider.calls) == calls_before_unauthenticated + 1
+    assert event["event"]["payload"]["kind"] == "invalidate"
+    assert event["event"]["subscriptionId"] == seed.json()["snapshot"]["cursor"]["subscriptionId"]
 
 
 def test_factory_overview_discloses_group_freshness_and_non_atomic_aggregate_coverage() -> None:

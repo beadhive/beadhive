@@ -63,10 +63,10 @@ def test_generated_cli_and_mcp_inventory_exactly_covers_the_catalog() -> None:
         counts[row.surface] = counts.get(row.surface, 0) + 1
     assert counts == {
         "cli": 213,
-        "gateway": 28,
+        "gateway": 36,
         "mcp-resource": 21,
         "mcp-tool": 10,
-        "operator-api": 13,
+        "operator-api": 16,
     }
 
     rows = {(row.surface, row.identifier): row for row in projections()}
@@ -97,7 +97,11 @@ def test_one_operation_meaning_has_promised_parity_and_explicit_transport_differ
         "catalog:work.list#parameters",
         work_list.result_schema,
     )
-    richer = next(row for row in rows if row.identifier.endswith("/work-items"))
+    richer = next(
+        row
+        for row in rows
+        if row.surface == "operator-api" and row.identifier.endswith("/work-items")
+    )
     assert (richer.surface, richer.classification, richer.operation, richer.shape) == (
         "operator-api",
         "catalog-entry",
@@ -111,6 +115,7 @@ def test_one_operation_meaning_has_promised_parity_and_explicit_transport_differ
     }
     assert {row.identifier for row in composites} == {
         "GET /api/v1/hives/{hive_id:path}/snapshot",
+        "GET /api/v1/hives/{hive_id:path}/snapshot-with-work-items",
         "GET /v1/factories/{factory_id}/hives/{hive_id:path}/snapshot",
         "GET /v1/instances/{stage}/{slug}/experience",
         "GET /v1/instances/{stage}/{slug}/hives/{hive_id:path}/snapshot",

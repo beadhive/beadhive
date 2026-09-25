@@ -84,6 +84,21 @@ Both resources return an `ETag`. Send it in `If-None-Match` to receive `304` whe
 representation is unchanged. A missing exact hive or bead is `404`. An unavailable authoritative
 source is `503` with `Retry-After`; it is never reported as an empty queue.
 
+Remote Development clients use the same flow through either
+`/v1/instances/dev/demo/hives/{hive}/work-items` or the canonical
+`/v1/factories/development/hives/{hive}/work-items` alias, replacing daemon `queue` with public
+`view`. Open a hive from the compact seed, fetch only the active pane, and lazily fetch exact
+detail when the operator opens an item. Keep one hive-wide invalidation subscription: on a new
+revision refetch the active page and any open detail. Do not build query-specific streams or merge
+pages from different hives.
+
+The remote query is deliberately finite: at most five distinct `P0`-`P4` priorities, eight
+distinct labels of at most 64 UTF-8 bytes, 256 UTF-8 bytes for assignee/type/parent, a 4 KiB opaque
+cursor, 200 rows, and 16 KiB for the complete canonical query. Unknown, duplicate scalar,
+free-form sort, regex/glob/OR, recursive graph, arbitrary field/expand, agent/session, and
+query-specific stream inputs fail closed. A stale or cross-scope cursor returns `409`; an exact
+detail that cannot fit its disclosure envelope returns stable `work_item_detail_too_large` (413).
+
 ## Advertised actions
 
 Factory hive summaries and exact work-item detail expose `advertisedActions`. The live Herdr

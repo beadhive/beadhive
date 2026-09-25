@@ -11,8 +11,8 @@
   },
   "wireContracts": [
     {
-      "$id": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:747cce0a3d6e7e326e2f9140319b08e25d8ea894b1e431758e220d166add1011",
-      "digest": "sha256:747cce0a3d6e7e326e2f9140319b08e25d8ea894b1e431758e220d166add1011",
+      "$id": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:9ca4e97c1062dbaa58323d76c8277703ee16caf2ec54e6ea4edbf2627776d059",
+      "digest": "sha256:9ca4e97c1062dbaa58323d76c8277703ee16caf2ec54e6ea4edbf2627776d059",
       "contractVersion": "gateway.read.v1",
       "schemaVersion": 1,
       "schemas": {
@@ -324,6 +324,3049 @@
                 "schemaVersion": {},
                 "workItems": {}
               }
+            }
+          }
+        },
+        "workItemsRequest": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "factoryId",
+            "hiveId",
+            "view",
+            "limit"
+          ],
+          "properties": {
+            "factoryId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "hiveId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "view": {
+              "enum": [
+                "ready",
+                "active",
+                "blocked",
+                "recent"
+              ]
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200
+            },
+            "cursor": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 4096
+            },
+            "priorities": {
+              "type": "array",
+              "maxItems": 5,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^P[0-4]$"
+              }
+            },
+            "labels": {
+              "type": "array",
+              "maxItems": 8,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              }
+            },
+            "assignee": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 256
+            },
+            "type": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 256
+            },
+            "parent": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 256
+            }
+          }
+        },
+        "workItemsResponse": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schemaVersion",
+            "contractVersion",
+            "instanceId",
+            "factoryId",
+            "hiveId",
+            "detailLevel",
+            "sourceRevision",
+            "page"
+          ],
+          "properties": {
+            "schemaVersion": {
+              "const": 1
+            },
+            "contractVersion": {
+              "const": "gateway.read.v1"
+            },
+            "instanceId": {
+              "const": "dev/demo"
+            },
+            "factoryId": {
+              "const": "development"
+            },
+            "hiveId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "detailLevel": {
+              "const": "summary-page"
+            },
+            "sourceRevision": {
+              "type": "string",
+              "minLength": 1
+            },
+            "page": {
+              "additionalProperties": false,
+              "description": "Typed envelope emitted by ``operator_work_items.queue_payload``.",
+              "properties": {
+                "schemaVersion": {
+                  "const": 1,
+                  "default": 1,
+                  "title": "Schemaversion",
+                  "type": "integer"
+                },
+                "projectionPolicy": {
+                  "const": "beadhive.snapshot-summary/v1",
+                  "title": "Projectionpolicy",
+                  "type": "string"
+                },
+                "hiveId": {
+                  "maxLength": 768,
+                  "minLength": 1,
+                  "title": "Hiveid",
+                  "type": "string"
+                },
+                "revision": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "title": "Revision",
+                  "type": "string"
+                },
+                "generatedAt": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "title": "Generatedat",
+                  "type": "integer"
+                },
+                "limits": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "maxBytes": {
+                      "const": 917504,
+                      "title": "Maxbytes",
+                      "type": "integer"
+                    },
+                    "maxItems": {
+                      "const": 200,
+                      "title": "Maxitems",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "maxBytes",
+                    "maxItems"
+                  ],
+                  "title": "RemoteWorkItemQueueLimits",
+                  "type": "object"
+                },
+                "filters": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "priorities": {
+                      "items": {
+                        "enum": [
+                          "P0",
+                          "P1",
+                          "P2",
+                          "P3",
+                          "P4"
+                        ],
+                        "type": "string"
+                      },
+                      "maxItems": 5,
+                      "title": "Priorities",
+                      "type": "array"
+                    },
+                    "labels": {
+                      "items": {
+                        "maxLength": 64,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "maxItems": 8,
+                      "title": "Labels",
+                      "type": "array"
+                    },
+                    "assignee": {
+                      "anyOf": [
+                        {
+                          "maxLength": 256,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Assignee"
+                    },
+                    "type": {
+                      "anyOf": [
+                        {
+                          "maxLength": 256,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Type"
+                    },
+                    "parent": {
+                      "anyOf": [
+                        {
+                          "maxLength": 256,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Parent"
+                    },
+                    "ordering": {
+                      "enum": [
+                        "beadhive.work-items/v1",
+                        "beadhive.ready-order/v1"
+                      ],
+                      "title": "Ordering",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "priorities",
+                    "labels",
+                    "ordering"
+                  ],
+                  "title": "RemoteWorkItemFilters",
+                  "type": "object"
+                },
+                "coverage": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "state": {
+                      "enum": [
+                        "complete",
+                        "partial",
+                        "unavailable"
+                      ],
+                      "title": "State",
+                      "type": "string"
+                    },
+                    "sources": {
+                      "additionalProperties": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "state": {
+                            "enum": [
+                              "complete",
+                              "partial",
+                              "unavailable",
+                              "degraded",
+                              "unknown"
+                            ],
+                            "title": "State",
+                            "type": "string"
+                          },
+                          "detail": {
+                            "anyOf": [
+                              {
+                                "maxLength": 4096,
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Detail"
+                          }
+                        },
+                        "required": [
+                          "state"
+                        ],
+                        "title": "RemoteProjectionSourceCoverage",
+                        "type": "object"
+                      },
+                      "maxProperties": 16,
+                      "propertyNames": {
+                        "maxLength": 128,
+                        "minLength": 1
+                      },
+                      "title": "Sources",
+                      "type": "object"
+                    },
+                    "eligible": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "title": "Eligible",
+                      "type": "integer"
+                    },
+                    "returned": {
+                      "maximum": 200,
+                      "minimum": 0,
+                      "title": "Returned",
+                      "type": "integer"
+                    },
+                    "truncated": {
+                      "title": "Truncated",
+                      "type": "boolean"
+                    },
+                    "nextCursor": {
+                      "anyOf": [
+                        {
+                          "maxLength": 4096,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Nextcursor"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "sources",
+                    "eligible",
+                    "returned",
+                    "truncated"
+                  ],
+                  "title": "RemoteWorkItemQueueCoverage",
+                  "type": "object"
+                },
+                "limit": {
+                  "maximum": 200,
+                  "minimum": 1,
+                  "title": "Limit",
+                  "type": "integer"
+                },
+                "returned": {
+                  "maximum": 200,
+                  "minimum": 0,
+                  "title": "Returned",
+                  "type": "integer"
+                },
+                "truncated": {
+                  "title": "Truncated",
+                  "type": "boolean"
+                },
+                "nextCursor": {
+                  "anyOf": [
+                    {
+                      "maxLength": 4096,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Nextcursor"
+                },
+                "items": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "title": "Id",
+                        "type": "string"
+                      },
+                      "title": {
+                        "maxLength": 4096,
+                        "title": "Title",
+                        "type": "string"
+                      },
+                      "status": {
+                        "enum": [
+                          "open",
+                          "in_progress",
+                          "blocked",
+                          "closed"
+                        ],
+                        "title": "Status",
+                        "type": "string"
+                      },
+                      "readiness": {
+                        "enum": [
+                          "ready",
+                          "active",
+                          "blocked",
+                          "completed"
+                        ],
+                        "title": "Readiness",
+                        "type": "string"
+                      },
+                      "issueType": {
+                        "maxLength": 128,
+                        "minLength": 1,
+                        "title": "Issuetype",
+                        "type": "string"
+                      },
+                      "priority": {
+                        "maximum": 4,
+                        "minimum": 0,
+                        "title": "Priority",
+                        "type": "integer"
+                      },
+                      "labels": {
+                        "items": {
+                          "maxLength": 256,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "maxItems": 12,
+                        "title": "Labels",
+                        "type": "array"
+                      },
+                      "remainingLabelCount": {
+                        "maximum": 9007199254740991,
+                        "minimum": 0,
+                        "title": "Remaininglabelcount",
+                        "type": "integer"
+                      },
+                      "assignee": {
+                        "anyOf": [
+                          {
+                            "maxLength": 256,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "title": "Assignee"
+                      },
+                      "owner": {
+                        "anyOf": [
+                          {
+                            "maxLength": 256,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "title": "Owner"
+                      },
+                      "updatedAt": {
+                        "maximum": 9007199254740991,
+                        "minimum": 0,
+                        "title": "Updatedat",
+                        "type": "integer"
+                      },
+                      "blockerCount": {
+                        "maximum": 9007199254740991,
+                        "minimum": 0,
+                        "title": "Blockercount",
+                        "type": "integer"
+                      },
+                      "openGateCount": {
+                        "maximum": 9007199254740991,
+                        "minimum": 0,
+                        "title": "Opengatecount",
+                        "type": "integer"
+                      },
+                      "liveAgentCount": {
+                        "maximum": 9007199254740991,
+                        "minimum": 0,
+                        "title": "Liveagentcount",
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "title",
+                      "status",
+                      "readiness",
+                      "issueType",
+                      "priority",
+                      "labels",
+                      "remainingLabelCount",
+                      "updatedAt",
+                      "blockerCount",
+                      "openGateCount",
+                      "liveAgentCount"
+                    ],
+                    "title": "RemoteSnapshotWorkItemSummary",
+                    "type": "object"
+                  },
+                  "maxItems": 200,
+                  "title": "Items",
+                  "type": "array"
+                },
+                "warnings": {
+                  "items": {
+                    "maxLength": 4096,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "maxItems": 16,
+                  "title": "Warnings",
+                  "type": "array"
+                },
+                "view": {
+                  "enum": [
+                    "ready",
+                    "active",
+                    "blocked",
+                    "recent"
+                  ],
+                  "title": "Queue",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "projectionPolicy",
+                "hiveId",
+                "view",
+                "revision",
+                "generatedAt",
+                "limits",
+                "filters",
+                "coverage",
+                "limit",
+                "returned",
+                "truncated",
+                "items",
+                "warnings"
+              ],
+              "title": "RemoteWorkItemQueue",
+              "type": "object"
+            }
+          }
+        },
+        "canonicalWorkItemsResponse": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schemaVersion",
+            "contractVersion",
+            "factoryId",
+            "hiveId",
+            "detailLevel",
+            "sourceRevision",
+            "page"
+          ],
+          "properties": {
+            "schemaVersion": {
+              "const": 1
+            },
+            "contractVersion": {
+              "const": "gateway.read.v1"
+            },
+            "factoryId": {
+              "const": "development"
+            },
+            "hiveId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "detailLevel": {
+              "const": "summary-page"
+            },
+            "sourceRevision": {
+              "type": "string",
+              "minLength": 1
+            },
+            "page": {
+              "additionalProperties": false,
+              "description": "Typed envelope emitted by ``operator_work_items.queue_payload``.",
+              "properties": {
+                "schemaVersion": {
+                  "const": 1,
+                  "default": 1,
+                  "title": "Schemaversion",
+                  "type": "integer"
+                },
+                "projectionPolicy": {
+                  "const": "beadhive.snapshot-summary/v1",
+                  "title": "Projectionpolicy",
+                  "type": "string"
+                },
+                "hiveId": {
+                  "maxLength": 768,
+                  "minLength": 1,
+                  "title": "Hiveid",
+                  "type": "string"
+                },
+                "revision": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "title": "Revision",
+                  "type": "string"
+                },
+                "generatedAt": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "title": "Generatedat",
+                  "type": "integer"
+                },
+                "limits": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "maxBytes": {
+                      "const": 917504,
+                      "title": "Maxbytes",
+                      "type": "integer"
+                    },
+                    "maxItems": {
+                      "const": 200,
+                      "title": "Maxitems",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "maxBytes",
+                    "maxItems"
+                  ],
+                  "title": "RemoteWorkItemQueueLimits",
+                  "type": "object"
+                },
+                "filters": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "priorities": {
+                      "items": {
+                        "enum": [
+                          "P0",
+                          "P1",
+                          "P2",
+                          "P3",
+                          "P4"
+                        ],
+                        "type": "string"
+                      },
+                      "maxItems": 5,
+                      "title": "Priorities",
+                      "type": "array"
+                    },
+                    "labels": {
+                      "items": {
+                        "maxLength": 64,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "maxItems": 8,
+                      "title": "Labels",
+                      "type": "array"
+                    },
+                    "assignee": {
+                      "anyOf": [
+                        {
+                          "maxLength": 256,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Assignee"
+                    },
+                    "type": {
+                      "anyOf": [
+                        {
+                          "maxLength": 256,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Type"
+                    },
+                    "parent": {
+                      "anyOf": [
+                        {
+                          "maxLength": 256,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Parent"
+                    },
+                    "ordering": {
+                      "enum": [
+                        "beadhive.work-items/v1",
+                        "beadhive.ready-order/v1"
+                      ],
+                      "title": "Ordering",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "priorities",
+                    "labels",
+                    "ordering"
+                  ],
+                  "title": "RemoteWorkItemFilters",
+                  "type": "object"
+                },
+                "coverage": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "state": {
+                      "enum": [
+                        "complete",
+                        "partial",
+                        "unavailable"
+                      ],
+                      "title": "State",
+                      "type": "string"
+                    },
+                    "sources": {
+                      "additionalProperties": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "state": {
+                            "enum": [
+                              "complete",
+                              "partial",
+                              "unavailable",
+                              "degraded",
+                              "unknown"
+                            ],
+                            "title": "State",
+                            "type": "string"
+                          },
+                          "detail": {
+                            "anyOf": [
+                              {
+                                "maxLength": 4096,
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Detail"
+                          }
+                        },
+                        "required": [
+                          "state"
+                        ],
+                        "title": "RemoteProjectionSourceCoverage",
+                        "type": "object"
+                      },
+                      "maxProperties": 16,
+                      "propertyNames": {
+                        "maxLength": 128,
+                        "minLength": 1
+                      },
+                      "title": "Sources",
+                      "type": "object"
+                    },
+                    "eligible": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "title": "Eligible",
+                      "type": "integer"
+                    },
+                    "returned": {
+                      "maximum": 200,
+                      "minimum": 0,
+                      "title": "Returned",
+                      "type": "integer"
+                    },
+                    "truncated": {
+                      "title": "Truncated",
+                      "type": "boolean"
+                    },
+                    "nextCursor": {
+                      "anyOf": [
+                        {
+                          "maxLength": 4096,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Nextcursor"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "sources",
+                    "eligible",
+                    "returned",
+                    "truncated"
+                  ],
+                  "title": "RemoteWorkItemQueueCoverage",
+                  "type": "object"
+                },
+                "limit": {
+                  "maximum": 200,
+                  "minimum": 1,
+                  "title": "Limit",
+                  "type": "integer"
+                },
+                "returned": {
+                  "maximum": 200,
+                  "minimum": 0,
+                  "title": "Returned",
+                  "type": "integer"
+                },
+                "truncated": {
+                  "title": "Truncated",
+                  "type": "boolean"
+                },
+                "nextCursor": {
+                  "anyOf": [
+                    {
+                      "maxLength": 4096,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Nextcursor"
+                },
+                "items": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "title": "Id",
+                        "type": "string"
+                      },
+                      "title": {
+                        "maxLength": 4096,
+                        "title": "Title",
+                        "type": "string"
+                      },
+                      "status": {
+                        "enum": [
+                          "open",
+                          "in_progress",
+                          "blocked",
+                          "closed"
+                        ],
+                        "title": "Status",
+                        "type": "string"
+                      },
+                      "readiness": {
+                        "enum": [
+                          "ready",
+                          "active",
+                          "blocked",
+                          "completed"
+                        ],
+                        "title": "Readiness",
+                        "type": "string"
+                      },
+                      "issueType": {
+                        "maxLength": 128,
+                        "minLength": 1,
+                        "title": "Issuetype",
+                        "type": "string"
+                      },
+                      "priority": {
+                        "maximum": 4,
+                        "minimum": 0,
+                        "title": "Priority",
+                        "type": "integer"
+                      },
+                      "labels": {
+                        "items": {
+                          "maxLength": 256,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "maxItems": 12,
+                        "title": "Labels",
+                        "type": "array"
+                      },
+                      "remainingLabelCount": {
+                        "maximum": 9007199254740991,
+                        "minimum": 0,
+                        "title": "Remaininglabelcount",
+                        "type": "integer"
+                      },
+                      "assignee": {
+                        "anyOf": [
+                          {
+                            "maxLength": 256,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "title": "Assignee"
+                      },
+                      "owner": {
+                        "anyOf": [
+                          {
+                            "maxLength": 256,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "title": "Owner"
+                      },
+                      "updatedAt": {
+                        "maximum": 9007199254740991,
+                        "minimum": 0,
+                        "title": "Updatedat",
+                        "type": "integer"
+                      },
+                      "blockerCount": {
+                        "maximum": 9007199254740991,
+                        "minimum": 0,
+                        "title": "Blockercount",
+                        "type": "integer"
+                      },
+                      "openGateCount": {
+                        "maximum": 9007199254740991,
+                        "minimum": 0,
+                        "title": "Opengatecount",
+                        "type": "integer"
+                      },
+                      "liveAgentCount": {
+                        "maximum": 9007199254740991,
+                        "minimum": 0,
+                        "title": "Liveagentcount",
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "title",
+                      "status",
+                      "readiness",
+                      "issueType",
+                      "priority",
+                      "labels",
+                      "remainingLabelCount",
+                      "updatedAt",
+                      "blockerCount",
+                      "openGateCount",
+                      "liveAgentCount"
+                    ],
+                    "title": "RemoteSnapshotWorkItemSummary",
+                    "type": "object"
+                  },
+                  "maxItems": 200,
+                  "title": "Items",
+                  "type": "array"
+                },
+                "warnings": {
+                  "items": {
+                    "maxLength": 4096,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "maxItems": 16,
+                  "title": "Warnings",
+                  "type": "array"
+                },
+                "view": {
+                  "enum": [
+                    "ready",
+                    "active",
+                    "blocked",
+                    "recent"
+                  ],
+                  "title": "Queue",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "projectionPolicy",
+                "hiveId",
+                "view",
+                "revision",
+                "generatedAt",
+                "limits",
+                "filters",
+                "coverage",
+                "limit",
+                "returned",
+                "truncated",
+                "items",
+                "warnings"
+              ],
+              "title": "RemoteWorkItemQueue",
+              "type": "object"
+            }
+          }
+        },
+        "workItemDetailRequest": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "factoryId",
+            "hiveId",
+            "beadId"
+          ],
+          "properties": {
+            "factoryId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "hiveId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "beadId": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._~-]{1,256}$"
+            }
+          }
+        },
+        "workItemDetailResponse": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schemaVersion",
+            "contractVersion",
+            "instanceId",
+            "factoryId",
+            "hiveId",
+            "detailLevel",
+            "sourceRevision",
+            "detail"
+          ],
+          "properties": {
+            "schemaVersion": {
+              "const": 1
+            },
+            "contractVersion": {
+              "const": "gateway.read.v1"
+            },
+            "instanceId": {
+              "const": "dev/demo"
+            },
+            "factoryId": {
+              "const": "development"
+            },
+            "hiveId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "detailLevel": {
+              "const": "exact"
+            },
+            "sourceRevision": {
+              "type": "string",
+              "minLength": 1
+            },
+            "detail": {
+              "additionalProperties": false,
+              "description": "Typed envelope emitted by ``operator_work_items.detail_payload``.",
+              "properties": {
+                "schemaVersion": {
+                  "const": 1,
+                  "default": 1,
+                  "title": "Schemaversion",
+                  "type": "integer"
+                },
+                "projectionPolicy": {
+                  "const": "beadhive.snapshot-summary/v1",
+                  "title": "Projectionpolicy",
+                  "type": "string"
+                },
+                "hiveId": {
+                  "maxLength": 768,
+                  "minLength": 1,
+                  "title": "Hiveid",
+                  "type": "string"
+                },
+                "revision": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "title": "Revision",
+                  "type": "string"
+                },
+                "generatedAt": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "title": "Generatedat",
+                  "type": "integer"
+                },
+                "limits": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "maxBytes": {
+                      "const": 917504,
+                      "title": "Maxbytes",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "maxBytes"
+                  ],
+                  "title": "RemoteWorkItemDetailLimits",
+                  "type": "object"
+                },
+                "freshness": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "state": {
+                      "const": "fresh",
+                      "title": "State",
+                      "type": "string"
+                    },
+                    "asOf": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "title": "Asof",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "asOf"
+                  ],
+                  "title": "RemoteProjectionFreshness",
+                  "type": "object"
+                },
+                "coverage": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "state": {
+                      "enum": [
+                        "complete",
+                        "partial",
+                        "unavailable"
+                      ],
+                      "title": "State",
+                      "type": "string"
+                    },
+                    "sources": {
+                      "additionalProperties": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "state": {
+                            "enum": [
+                              "complete",
+                              "partial",
+                              "unavailable",
+                              "degraded",
+                              "unknown"
+                            ],
+                            "title": "State",
+                            "type": "string"
+                          },
+                          "detail": {
+                            "anyOf": [
+                              {
+                                "maxLength": 4096,
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Detail"
+                          }
+                        },
+                        "required": [
+                          "state"
+                        ],
+                        "title": "RemoteProjectionSourceCoverage",
+                        "type": "object"
+                      },
+                      "maxProperties": 16,
+                      "propertyNames": {
+                        "maxLength": 128,
+                        "minLength": 1
+                      },
+                      "title": "Sources",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "sources"
+                  ],
+                  "title": "RemoteProjectionCoverage",
+                  "type": "object"
+                },
+                "item": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "title": "Id",
+                      "type": "string"
+                    },
+                    "title": {
+                      "maxLength": 4096,
+                      "title": "Title",
+                      "type": "string"
+                    },
+                    "status": {
+                      "enum": [
+                        "open",
+                        "in_progress",
+                        "blocked",
+                        "closed"
+                      ],
+                      "title": "Status",
+                      "type": "string"
+                    },
+                    "readiness": {
+                      "enum": [
+                        "ready",
+                        "active",
+                        "blocked",
+                        "completed"
+                      ],
+                      "title": "Readiness",
+                      "type": "string"
+                    },
+                    "issueType": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "title": "Issuetype",
+                      "type": "string"
+                    },
+                    "priority": {
+                      "maximum": 4,
+                      "minimum": 0,
+                      "title": "Priority",
+                      "type": "integer"
+                    },
+                    "labels": {
+                      "items": {
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "maxItems": 256,
+                      "title": "Labels",
+                      "type": "array"
+                    },
+                    "remainingLabelCount": {
+                      "const": 0,
+                      "title": "Remaininglabelcount",
+                      "type": "integer"
+                    },
+                    "assignee": {
+                      "anyOf": [
+                        {
+                          "maxLength": 256,
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Assignee"
+                    },
+                    "owner": {
+                      "anyOf": [
+                        {
+                          "maxLength": 256,
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Owner"
+                    },
+                    "updatedAt": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "title": "Updatedat",
+                      "type": "integer"
+                    },
+                    "blockerCount": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "title": "Blockercount",
+                      "type": "integer"
+                    },
+                    "openGateCount": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "title": "Opengatecount",
+                      "type": "integer"
+                    },
+                    "liveAgentCount": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "title": "Liveagentcount",
+                      "type": "integer"
+                    },
+                    "ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "hiveId": {
+                          "maxLength": 768,
+                          "minLength": 1,
+                          "title": "Hiveid",
+                          "type": "string"
+                        },
+                        "kind": {
+                          "const": "work-item",
+                          "title": "Kind",
+                          "type": "string"
+                        },
+                        "id": {
+                          "maxLength": 256,
+                          "minLength": 1,
+                          "title": "Id",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "hiveId",
+                        "kind",
+                        "id"
+                      ],
+                      "title": "RemoteWorkItemRef",
+                      "type": "object"
+                    },
+                    "revision": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "title": "Revision",
+                      "type": "string"
+                    },
+                    "readinessReason": {
+                      "maxLength": 4096,
+                      "title": "Readinessreason",
+                      "type": "string"
+                    },
+                    "parentId": {
+                      "anyOf": [
+                        {
+                          "maxLength": 4096,
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Parentid"
+                    },
+                    "blockedDependentCount": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "title": "Blockeddependentcount",
+                      "type": "integer"
+                    },
+                    "description": {
+                      "maxLength": 131072,
+                      "title": "Description",
+                      "type": "string"
+                    },
+                    "design": {
+                      "maxLength": 131072,
+                      "title": "Design",
+                      "type": "string"
+                    },
+                    "acceptanceCriteria": {
+                      "maxLength": 131072,
+                      "title": "Acceptancecriteria",
+                      "type": "string"
+                    },
+                    "notes": {
+                      "maxLength": 131072,
+                      "title": "Notes",
+                      "type": "string"
+                    },
+                    "moleculeType": {
+                      "anyOf": [
+                        {
+                          "maxLength": 4096,
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Moleculetype"
+                    },
+                    "createdBy": {
+                      "anyOf": [
+                        {
+                          "maxLength": 4096,
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Createdby"
+                    },
+                    "createdAt": {
+                      "anyOf": [
+                        {
+                          "maximum": 9007199254740991,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Createdat"
+                    },
+                    "closedAt": {
+                      "anyOf": [
+                        {
+                          "maximum": 9007199254740991,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Closedat"
+                    },
+                    "dueAt": {
+                      "anyOf": [
+                        {
+                          "maximum": 9007199254740991,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Dueat"
+                    },
+                    "deferUntil": {
+                      "anyOf": [
+                        {
+                          "maximum": 9007199254740991,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Deferuntil"
+                    },
+                    "claim": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "actor": {
+                          "anyOf": [
+                            {
+                              "maxLength": 4096,
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "default": null,
+                          "title": "Actor"
+                        },
+                        "leaseExpiresAt": {
+                          "anyOf": [
+                            {
+                              "maximum": 9007199254740991,
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "default": null,
+                          "title": "Leaseexpiresat"
+                        }
+                      },
+                      "title": "RemoteWorkItemClaim",
+                      "type": "object"
+                    },
+                    "dependencies": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "id": {
+                            "maxLength": 4096,
+                            "minLength": 1,
+                            "title": "Id",
+                            "type": "string"
+                          },
+                          "title": {
+                            "anyOf": [
+                              {
+                                "maxLength": 4096,
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Title"
+                          },
+                          "type": {
+                            "maxLength": 4096,
+                            "minLength": 1,
+                            "title": "Type",
+                            "type": "string"
+                          },
+                          "state": {
+                            "maxLength": 4096,
+                            "minLength": 1,
+                            "title": "State",
+                            "type": "string"
+                          },
+                          "direction": {
+                            "enum": [
+                              "prerequisite",
+                              "dependent"
+                            ],
+                            "title": "Direction",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "type",
+                          "state",
+                          "direction"
+                        ],
+                        "title": "RemoteWorkDependencyDetail",
+                        "type": "object"
+                      },
+                      "maxItems": 1024,
+                      "title": "Dependencies",
+                      "type": "array"
+                    },
+                    "dependents": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "id": {
+                            "maxLength": 4096,
+                            "minLength": 1,
+                            "title": "Id",
+                            "type": "string"
+                          },
+                          "title": {
+                            "anyOf": [
+                              {
+                                "maxLength": 4096,
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Title"
+                          },
+                          "type": {
+                            "maxLength": 4096,
+                            "minLength": 1,
+                            "title": "Type",
+                            "type": "string"
+                          },
+                          "state": {
+                            "maxLength": 4096,
+                            "minLength": 1,
+                            "title": "State",
+                            "type": "string"
+                          },
+                          "direction": {
+                            "enum": [
+                              "prerequisite",
+                              "dependent"
+                            ],
+                            "title": "Direction",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "type",
+                          "state",
+                          "direction"
+                        ],
+                        "title": "RemoteWorkDependencyDetail",
+                        "type": "object"
+                      },
+                      "maxItems": 1024,
+                      "title": "Dependents",
+                      "type": "array"
+                    },
+                    "gates": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "id": {
+                            "maxLength": 4096,
+                            "minLength": 1,
+                            "title": "Id",
+                            "type": "string"
+                          },
+                          "kind": {
+                            "maxLength": 4096,
+                            "minLength": 1,
+                            "title": "Kind",
+                            "type": "string"
+                          },
+                          "type": {
+                            "anyOf": [
+                              {
+                                "maxLength": 4096,
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Type"
+                          },
+                          "status": {
+                            "maxLength": 4096,
+                            "minLength": 1,
+                            "title": "Status",
+                            "type": "string"
+                          },
+                          "reason": {
+                            "maxLength": 131072,
+                            "title": "Reason",
+                            "type": "string"
+                          },
+                          "openedAt": {
+                            "anyOf": [
+                              {
+                                "maximum": 9007199254740991,
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Openedat"
+                          },
+                          "resolvedAt": {
+                            "anyOf": [
+                              {
+                                "maximum": 9007199254740991,
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Resolvedat"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "kind",
+                          "status",
+                          "reason"
+                        ],
+                        "title": "RemoteWorkItemGate",
+                        "type": "object"
+                      },
+                      "maxItems": 256,
+                      "title": "Gates",
+                      "type": "array"
+                    },
+                    "agents": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "id": {
+                            "maxLength": 4096,
+                            "minLength": 1,
+                            "title": "Id",
+                            "type": "string"
+                          },
+                          "state": {
+                            "maxLength": 128,
+                            "minLength": 1,
+                            "title": "State",
+                            "type": "string"
+                          },
+                          "ownerSeat": {
+                            "anyOf": [
+                              {
+                                "maxLength": 4096,
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Ownerseat"
+                          },
+                          "startedAt": {
+                            "anyOf": [
+                              {
+                                "maximum": 9007199254740991,
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Startedat"
+                          },
+                          "updatedAt": {
+                            "anyOf": [
+                              {
+                                "maximum": 9007199254740991,
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Updatedat"
+                          },
+                          "endedAt": {
+                            "anyOf": [
+                              {
+                                "maximum": 9007199254740991,
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Endedat"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "state"
+                        ],
+                        "title": "RemoteWorkItemAgent",
+                        "type": "object"
+                      },
+                      "maxItems": 256,
+                      "title": "Agents",
+                      "type": "array"
+                    },
+                    "advertisedActions": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "id": {
+                            "enum": [
+                              "work-item.inspect",
+                              "work-item.refresh",
+                              "work-item.launch"
+                            ],
+                            "title": "Id",
+                            "type": "string"
+                          },
+                          "capability": {
+                            "enum": [
+                              "inspect",
+                              "refresh",
+                              "launch"
+                            ],
+                            "title": "Capability",
+                            "type": "string"
+                          },
+                          "target": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "hiveId": {
+                                "maxLength": 768,
+                                "minLength": 1,
+                                "title": "Hiveid",
+                                "type": "string"
+                              },
+                              "kind": {
+                                "const": "work-item",
+                                "title": "Kind",
+                                "type": "string"
+                              },
+                              "id": {
+                                "maxLength": 256,
+                                "minLength": 1,
+                                "title": "Id",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "hiveId",
+                              "kind",
+                              "id"
+                            ],
+                            "title": "RemoteAdvertisedActionTarget",
+                            "type": "object"
+                          },
+                          "availability": {
+                            "enum": [
+                              "allowed",
+                              "confirmation-required",
+                              "forbidden",
+                              "unavailable"
+                            ],
+                            "title": "Availability",
+                            "type": "string"
+                          },
+                          "reasonCode": {
+                            "anyOf": [
+                              {
+                                "maxLength": 256,
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Reasoncode"
+                          },
+                          "reason": {
+                            "maxLength": 4096,
+                            "minLength": 1,
+                            "title": "Reason",
+                            "type": "string"
+                          },
+                          "consequence": {
+                            "enum": [
+                              "navigate",
+                              "read",
+                              "reversible-write"
+                            ],
+                            "title": "Consequence",
+                            "type": "string"
+                          },
+                          "advertisedAt": {
+                            "maximum": 9007199254740991,
+                            "minimum": 0,
+                            "title": "Advertisedat",
+                            "type": "integer"
+                          },
+                          "sourceRevision": {
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "title": "Sourcerevision",
+                            "type": "string"
+                          },
+                          "preconditions": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "sourceRevision": {
+                                "maxLength": 256,
+                                "minLength": 1,
+                                "title": "Sourcerevision",
+                                "type": "string"
+                              },
+                              "mustMatch": {
+                                "title": "Mustmatch",
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "sourceRevision",
+                              "mustMatch"
+                            ],
+                            "title": "RemoteAdvertisedActionPreconditions",
+                            "type": "object"
+                          },
+                          "input": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "transport": {
+                                "enum": [
+                                  "none",
+                                  "parameters"
+                                ],
+                                "title": "Transport",
+                                "type": "string"
+                              },
+                              "required": {
+                                "title": "Required",
+                                "type": "boolean"
+                              },
+                              "schema": {
+                                "anyOf": [
+                                  {
+                                    "additionalProperties": true,
+                                    "type": "object"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "title": "Schema"
+                              }
+                            },
+                            "required": [
+                              "transport",
+                              "required",
+                              "schema"
+                            ],
+                            "title": "RemoteAdvertisedActionInput",
+                            "type": "object"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "capability",
+                          "target",
+                          "availability",
+                          "reason",
+                          "consequence",
+                          "advertisedAt",
+                          "sourceRevision",
+                          "preconditions",
+                          "input"
+                        ],
+                        "title": "RemoteAdvertisedAction",
+                        "type": "object"
+                      },
+                      "maxItems": 3,
+                      "minItems": 3,
+                      "title": "Advertisedactions",
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "title",
+                    "status",
+                    "readiness",
+                    "issueType",
+                    "priority",
+                    "labels",
+                    "remainingLabelCount",
+                    "updatedAt",
+                    "blockerCount",
+                    "openGateCount",
+                    "liveAgentCount",
+                    "ref",
+                    "revision",
+                    "readinessReason",
+                    "blockedDependentCount",
+                    "description",
+                    "design",
+                    "acceptanceCriteria",
+                    "notes",
+                    "claim",
+                    "dependencies",
+                    "dependents",
+                    "gates",
+                    "agents",
+                    "advertisedActions"
+                  ],
+                  "title": "RemoteWorkItemExact",
+                  "type": "object"
+                },
+                "warnings": {
+                  "items": {
+                    "maxLength": 4096,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "maxItems": 16,
+                  "title": "Warnings",
+                  "type": "array"
+                }
+              },
+              "required": [
+                "projectionPolicy",
+                "hiveId",
+                "revision",
+                "generatedAt",
+                "limits",
+                "freshness",
+                "coverage",
+                "item",
+                "warnings"
+              ],
+              "title": "RemoteWorkItemDetail",
+              "type": "object"
+            }
+          }
+        },
+        "canonicalWorkItemDetailResponse": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schemaVersion",
+            "contractVersion",
+            "factoryId",
+            "hiveId",
+            "detailLevel",
+            "sourceRevision",
+            "detail"
+          ],
+          "properties": {
+            "schemaVersion": {
+              "const": 1
+            },
+            "contractVersion": {
+              "const": "gateway.read.v1"
+            },
+            "factoryId": {
+              "const": "development"
+            },
+            "hiveId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "detailLevel": {
+              "const": "exact"
+            },
+            "sourceRevision": {
+              "type": "string",
+              "minLength": 1
+            },
+            "detail": {
+              "additionalProperties": false,
+              "description": "Typed envelope emitted by ``operator_work_items.detail_payload``.",
+              "properties": {
+                "schemaVersion": {
+                  "const": 1,
+                  "default": 1,
+                  "title": "Schemaversion",
+                  "type": "integer"
+                },
+                "projectionPolicy": {
+                  "const": "beadhive.snapshot-summary/v1",
+                  "title": "Projectionpolicy",
+                  "type": "string"
+                },
+                "hiveId": {
+                  "maxLength": 768,
+                  "minLength": 1,
+                  "title": "Hiveid",
+                  "type": "string"
+                },
+                "revision": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "title": "Revision",
+                  "type": "string"
+                },
+                "generatedAt": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "title": "Generatedat",
+                  "type": "integer"
+                },
+                "limits": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "maxBytes": {
+                      "const": 917504,
+                      "title": "Maxbytes",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "maxBytes"
+                  ],
+                  "title": "RemoteWorkItemDetailLimits",
+                  "type": "object"
+                },
+                "freshness": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "state": {
+                      "const": "fresh",
+                      "title": "State",
+                      "type": "string"
+                    },
+                    "asOf": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "title": "Asof",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "asOf"
+                  ],
+                  "title": "RemoteProjectionFreshness",
+                  "type": "object"
+                },
+                "coverage": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "state": {
+                      "enum": [
+                        "complete",
+                        "partial",
+                        "unavailable"
+                      ],
+                      "title": "State",
+                      "type": "string"
+                    },
+                    "sources": {
+                      "additionalProperties": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "state": {
+                            "enum": [
+                              "complete",
+                              "partial",
+                              "unavailable",
+                              "degraded",
+                              "unknown"
+                            ],
+                            "title": "State",
+                            "type": "string"
+                          },
+                          "detail": {
+                            "anyOf": [
+                              {
+                                "maxLength": 4096,
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Detail"
+                          }
+                        },
+                        "required": [
+                          "state"
+                        ],
+                        "title": "RemoteProjectionSourceCoverage",
+                        "type": "object"
+                      },
+                      "maxProperties": 16,
+                      "propertyNames": {
+                        "maxLength": 128,
+                        "minLength": 1
+                      },
+                      "title": "Sources",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "sources"
+                  ],
+                  "title": "RemoteProjectionCoverage",
+                  "type": "object"
+                },
+                "item": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "title": "Id",
+                      "type": "string"
+                    },
+                    "title": {
+                      "maxLength": 4096,
+                      "title": "Title",
+                      "type": "string"
+                    },
+                    "status": {
+                      "enum": [
+                        "open",
+                        "in_progress",
+                        "blocked",
+                        "closed"
+                      ],
+                      "title": "Status",
+                      "type": "string"
+                    },
+                    "readiness": {
+                      "enum": [
+                        "ready",
+                        "active",
+                        "blocked",
+                        "completed"
+                      ],
+                      "title": "Readiness",
+                      "type": "string"
+                    },
+                    "issueType": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "title": "Issuetype",
+                      "type": "string"
+                    },
+                    "priority": {
+                      "maximum": 4,
+                      "minimum": 0,
+                      "title": "Priority",
+                      "type": "integer"
+                    },
+                    "labels": {
+                      "items": {
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "maxItems": 256,
+                      "title": "Labels",
+                      "type": "array"
+                    },
+                    "remainingLabelCount": {
+                      "const": 0,
+                      "title": "Remaininglabelcount",
+                      "type": "integer"
+                    },
+                    "assignee": {
+                      "anyOf": [
+                        {
+                          "maxLength": 256,
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Assignee"
+                    },
+                    "owner": {
+                      "anyOf": [
+                        {
+                          "maxLength": 256,
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Owner"
+                    },
+                    "updatedAt": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "title": "Updatedat",
+                      "type": "integer"
+                    },
+                    "blockerCount": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "title": "Blockercount",
+                      "type": "integer"
+                    },
+                    "openGateCount": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "title": "Opengatecount",
+                      "type": "integer"
+                    },
+                    "liveAgentCount": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "title": "Liveagentcount",
+                      "type": "integer"
+                    },
+                    "ref": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "hiveId": {
+                          "maxLength": 768,
+                          "minLength": 1,
+                          "title": "Hiveid",
+                          "type": "string"
+                        },
+                        "kind": {
+                          "const": "work-item",
+                          "title": "Kind",
+                          "type": "string"
+                        },
+                        "id": {
+                          "maxLength": 256,
+                          "minLength": 1,
+                          "title": "Id",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "hiveId",
+                        "kind",
+                        "id"
+                      ],
+                      "title": "RemoteWorkItemRef",
+                      "type": "object"
+                    },
+                    "revision": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "title": "Revision",
+                      "type": "string"
+                    },
+                    "readinessReason": {
+                      "maxLength": 4096,
+                      "title": "Readinessreason",
+                      "type": "string"
+                    },
+                    "parentId": {
+                      "anyOf": [
+                        {
+                          "maxLength": 4096,
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Parentid"
+                    },
+                    "blockedDependentCount": {
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "title": "Blockeddependentcount",
+                      "type": "integer"
+                    },
+                    "description": {
+                      "maxLength": 131072,
+                      "title": "Description",
+                      "type": "string"
+                    },
+                    "design": {
+                      "maxLength": 131072,
+                      "title": "Design",
+                      "type": "string"
+                    },
+                    "acceptanceCriteria": {
+                      "maxLength": 131072,
+                      "title": "Acceptancecriteria",
+                      "type": "string"
+                    },
+                    "notes": {
+                      "maxLength": 131072,
+                      "title": "Notes",
+                      "type": "string"
+                    },
+                    "moleculeType": {
+                      "anyOf": [
+                        {
+                          "maxLength": 4096,
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Moleculetype"
+                    },
+                    "createdBy": {
+                      "anyOf": [
+                        {
+                          "maxLength": 4096,
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Createdby"
+                    },
+                    "createdAt": {
+                      "anyOf": [
+                        {
+                          "maximum": 9007199254740991,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Createdat"
+                    },
+                    "closedAt": {
+                      "anyOf": [
+                        {
+                          "maximum": 9007199254740991,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Closedat"
+                    },
+                    "dueAt": {
+                      "anyOf": [
+                        {
+                          "maximum": 9007199254740991,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Dueat"
+                    },
+                    "deferUntil": {
+                      "anyOf": [
+                        {
+                          "maximum": 9007199254740991,
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Deferuntil"
+                    },
+                    "claim": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "actor": {
+                          "anyOf": [
+                            {
+                              "maxLength": 4096,
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "default": null,
+                          "title": "Actor"
+                        },
+                        "leaseExpiresAt": {
+                          "anyOf": [
+                            {
+                              "maximum": 9007199254740991,
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "default": null,
+                          "title": "Leaseexpiresat"
+                        }
+                      },
+                      "title": "RemoteWorkItemClaim",
+                      "type": "object"
+                    },
+                    "dependencies": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "id": {
+                            "maxLength": 4096,
+                            "minLength": 1,
+                            "title": "Id",
+                            "type": "string"
+                          },
+                          "title": {
+                            "anyOf": [
+                              {
+                                "maxLength": 4096,
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Title"
+                          },
+                          "type": {
+                            "maxLength": 4096,
+                            "minLength": 1,
+                            "title": "Type",
+                            "type": "string"
+                          },
+                          "state": {
+                            "maxLength": 4096,
+                            "minLength": 1,
+                            "title": "State",
+                            "type": "string"
+                          },
+                          "direction": {
+                            "enum": [
+                              "prerequisite",
+                              "dependent"
+                            ],
+                            "title": "Direction",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "type",
+                          "state",
+                          "direction"
+                        ],
+                        "title": "RemoteWorkDependencyDetail",
+                        "type": "object"
+                      },
+                      "maxItems": 1024,
+                      "title": "Dependencies",
+                      "type": "array"
+                    },
+                    "dependents": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "id": {
+                            "maxLength": 4096,
+                            "minLength": 1,
+                            "title": "Id",
+                            "type": "string"
+                          },
+                          "title": {
+                            "anyOf": [
+                              {
+                                "maxLength": 4096,
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Title"
+                          },
+                          "type": {
+                            "maxLength": 4096,
+                            "minLength": 1,
+                            "title": "Type",
+                            "type": "string"
+                          },
+                          "state": {
+                            "maxLength": 4096,
+                            "minLength": 1,
+                            "title": "State",
+                            "type": "string"
+                          },
+                          "direction": {
+                            "enum": [
+                              "prerequisite",
+                              "dependent"
+                            ],
+                            "title": "Direction",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "type",
+                          "state",
+                          "direction"
+                        ],
+                        "title": "RemoteWorkDependencyDetail",
+                        "type": "object"
+                      },
+                      "maxItems": 1024,
+                      "title": "Dependents",
+                      "type": "array"
+                    },
+                    "gates": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "id": {
+                            "maxLength": 4096,
+                            "minLength": 1,
+                            "title": "Id",
+                            "type": "string"
+                          },
+                          "kind": {
+                            "maxLength": 4096,
+                            "minLength": 1,
+                            "title": "Kind",
+                            "type": "string"
+                          },
+                          "type": {
+                            "anyOf": [
+                              {
+                                "maxLength": 4096,
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Type"
+                          },
+                          "status": {
+                            "maxLength": 4096,
+                            "minLength": 1,
+                            "title": "Status",
+                            "type": "string"
+                          },
+                          "reason": {
+                            "maxLength": 131072,
+                            "title": "Reason",
+                            "type": "string"
+                          },
+                          "openedAt": {
+                            "anyOf": [
+                              {
+                                "maximum": 9007199254740991,
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Openedat"
+                          },
+                          "resolvedAt": {
+                            "anyOf": [
+                              {
+                                "maximum": 9007199254740991,
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Resolvedat"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "kind",
+                          "status",
+                          "reason"
+                        ],
+                        "title": "RemoteWorkItemGate",
+                        "type": "object"
+                      },
+                      "maxItems": 256,
+                      "title": "Gates",
+                      "type": "array"
+                    },
+                    "agents": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "id": {
+                            "maxLength": 4096,
+                            "minLength": 1,
+                            "title": "Id",
+                            "type": "string"
+                          },
+                          "state": {
+                            "maxLength": 128,
+                            "minLength": 1,
+                            "title": "State",
+                            "type": "string"
+                          },
+                          "ownerSeat": {
+                            "anyOf": [
+                              {
+                                "maxLength": 4096,
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Ownerseat"
+                          },
+                          "startedAt": {
+                            "anyOf": [
+                              {
+                                "maximum": 9007199254740991,
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Startedat"
+                          },
+                          "updatedAt": {
+                            "anyOf": [
+                              {
+                                "maximum": 9007199254740991,
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Updatedat"
+                          },
+                          "endedAt": {
+                            "anyOf": [
+                              {
+                                "maximum": 9007199254740991,
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Endedat"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "state"
+                        ],
+                        "title": "RemoteWorkItemAgent",
+                        "type": "object"
+                      },
+                      "maxItems": 256,
+                      "title": "Agents",
+                      "type": "array"
+                    },
+                    "advertisedActions": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "id": {
+                            "enum": [
+                              "work-item.inspect",
+                              "work-item.refresh",
+                              "work-item.launch"
+                            ],
+                            "title": "Id",
+                            "type": "string"
+                          },
+                          "capability": {
+                            "enum": [
+                              "inspect",
+                              "refresh",
+                              "launch"
+                            ],
+                            "title": "Capability",
+                            "type": "string"
+                          },
+                          "target": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "hiveId": {
+                                "maxLength": 768,
+                                "minLength": 1,
+                                "title": "Hiveid",
+                                "type": "string"
+                              },
+                              "kind": {
+                                "const": "work-item",
+                                "title": "Kind",
+                                "type": "string"
+                              },
+                              "id": {
+                                "maxLength": 256,
+                                "minLength": 1,
+                                "title": "Id",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "hiveId",
+                              "kind",
+                              "id"
+                            ],
+                            "title": "RemoteAdvertisedActionTarget",
+                            "type": "object"
+                          },
+                          "availability": {
+                            "enum": [
+                              "allowed",
+                              "confirmation-required",
+                              "forbidden",
+                              "unavailable"
+                            ],
+                            "title": "Availability",
+                            "type": "string"
+                          },
+                          "reasonCode": {
+                            "anyOf": [
+                              {
+                                "maxLength": 256,
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "title": "Reasoncode"
+                          },
+                          "reason": {
+                            "maxLength": 4096,
+                            "minLength": 1,
+                            "title": "Reason",
+                            "type": "string"
+                          },
+                          "consequence": {
+                            "enum": [
+                              "navigate",
+                              "read",
+                              "reversible-write"
+                            ],
+                            "title": "Consequence",
+                            "type": "string"
+                          },
+                          "advertisedAt": {
+                            "maximum": 9007199254740991,
+                            "minimum": 0,
+                            "title": "Advertisedat",
+                            "type": "integer"
+                          },
+                          "sourceRevision": {
+                            "maxLength": 256,
+                            "minLength": 1,
+                            "title": "Sourcerevision",
+                            "type": "string"
+                          },
+                          "preconditions": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "sourceRevision": {
+                                "maxLength": 256,
+                                "minLength": 1,
+                                "title": "Sourcerevision",
+                                "type": "string"
+                              },
+                              "mustMatch": {
+                                "title": "Mustmatch",
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "sourceRevision",
+                              "mustMatch"
+                            ],
+                            "title": "RemoteAdvertisedActionPreconditions",
+                            "type": "object"
+                          },
+                          "input": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "transport": {
+                                "enum": [
+                                  "none",
+                                  "parameters"
+                                ],
+                                "title": "Transport",
+                                "type": "string"
+                              },
+                              "required": {
+                                "title": "Required",
+                                "type": "boolean"
+                              },
+                              "schema": {
+                                "anyOf": [
+                                  {
+                                    "additionalProperties": true,
+                                    "type": "object"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "title": "Schema"
+                              }
+                            },
+                            "required": [
+                              "transport",
+                              "required",
+                              "schema"
+                            ],
+                            "title": "RemoteAdvertisedActionInput",
+                            "type": "object"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "capability",
+                          "target",
+                          "availability",
+                          "reason",
+                          "consequence",
+                          "advertisedAt",
+                          "sourceRevision",
+                          "preconditions",
+                          "input"
+                        ],
+                        "title": "RemoteAdvertisedAction",
+                        "type": "object"
+                      },
+                      "maxItems": 3,
+                      "minItems": 3,
+                      "title": "Advertisedactions",
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "title",
+                    "status",
+                    "readiness",
+                    "issueType",
+                    "priority",
+                    "labels",
+                    "remainingLabelCount",
+                    "updatedAt",
+                    "blockerCount",
+                    "openGateCount",
+                    "liveAgentCount",
+                    "ref",
+                    "revision",
+                    "readinessReason",
+                    "blockedDependentCount",
+                    "description",
+                    "design",
+                    "acceptanceCriteria",
+                    "notes",
+                    "claim",
+                    "dependencies",
+                    "dependents",
+                    "gates",
+                    "agents",
+                    "advertisedActions"
+                  ],
+                  "title": "RemoteWorkItemExact",
+                  "type": "object"
+                },
+                "warnings": {
+                  "items": {
+                    "maxLength": 4096,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "maxItems": 16,
+                  "title": "Warnings",
+                  "type": "array"
+                }
+              },
+              "required": [
+                "projectionPolicy",
+                "hiveId",
+                "revision",
+                "generatedAt",
+                "limits",
+                "freshness",
+                "coverage",
+                "item",
+                "warnings"
+              ],
+              "title": "RemoteWorkItemDetail",
+              "type": "object"
             }
           }
         },
@@ -957,8 +4000,8 @@
           "sideEffects": "none"
         }
       ],
-      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:747cce0a3d6e7e326e2f9140319b08e25d8ea894b1e431758e220d166add1011#/schemas/hiveListRequest",
-      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:747cce0a3d6e7e326e2f9140319b08e25d8ea894b1e431758e220d166add1011#/schemas/hiveListResponse",
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:9ca4e97c1062dbaa58323d76c8277703ee16caf2ec54e6ea4edbf2627776d059#/schemas/hiveListRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:9ca4e97c1062dbaa58323d76c8277703ee16caf2ec54e6ea4edbf2627776d059#/schemas/hiveListResponse",
       "transportOwner": "gateway-contract",
       "transportPrivilege": "authenticated-development-subject",
       "sideEffects": "none",
@@ -974,8 +4017,8 @@
       "classification": "transport-mechanic",
       "shape": "transport-only",
       "canonicalContracts": [],
-      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:747cce0a3d6e7e326e2f9140319b08e25d8ea894b1e431758e220d166add1011#/schemas/eventsRequest",
-      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:747cce0a3d6e7e326e2f9140319b08e25d8ea894b1e431758e220d166add1011#/schemas/eventStreamResponse",
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:9ca4e97c1062dbaa58323d76c8277703ee16caf2ec54e6ea4edbf2627776d059#/schemas/eventsRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:9ca4e97c1062dbaa58323d76c8277703ee16caf2ec54e6ea4edbf2627776d059#/schemas/eventStreamResponse",
       "transportOwner": "gateway-contract",
       "transportPrivilege": "authenticated-development-subject",
       "sideEffects": "none",
@@ -1006,8 +4049,8 @@
           "sideEffects": "none"
         }
       ],
-      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:747cce0a3d6e7e326e2f9140319b08e25d8ea894b1e431758e220d166add1011#/schemas/snapshotRequest",
-      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:747cce0a3d6e7e326e2f9140319b08e25d8ea894b1e431758e220d166add1011#/schemas/snapshotResponse",
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:9ca4e97c1062dbaa58323d76c8277703ee16caf2ec54e6ea4edbf2627776d059#/schemas/snapshotRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:9ca4e97c1062dbaa58323d76c8277703ee16caf2ec54e6ea4edbf2627776d059#/schemas/snapshotResponse",
       "transportOwner": "gateway-contract",
       "transportPrivilege": "authenticated-development-subject",
       "sideEffects": "none",
@@ -1015,6 +4058,56 @@
       "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "reason": "bounded remote state composite"
+    },
+    {
+      "identifier": "GET /v1/instances/{stage}/{slug}/hives/{hive_id:path}/work-items",
+      "method": "GET",
+      "path": "/v1/instances/{stage}/{slug}/hives/{hive_id:path}/work-items",
+      "classification": "catalog-entry",
+      "shape": "richer",
+      "canonicalContracts": [
+        {
+          "operation": "work.list",
+          "requestSchema": "catalog:work.list#parameters",
+          "resultSchema": "urn:beadhive:wire-schema:json-value:1",
+          "privilege": "unprivileged-read",
+          "sideEffects": "none"
+        }
+      ],
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:9ca4e97c1062dbaa58323d76c8277703ee16caf2ec54e6ea4edbf2627776d059#/schemas/workItemsRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:9ca4e97c1062dbaa58323d76c8277703ee16caf2ec54e6ea4edbf2627776d059#/schemas/workItemsResponse",
+      "transportOwner": "gateway-contract",
+      "transportPrivilege": "authenticated-development-subject",
+      "sideEffects": "none",
+      "streaming": false,
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
+      "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
+      "reason": "bounded revision-pinned work-item page"
+    },
+    {
+      "identifier": "GET /v1/instances/{stage}/{slug}/hives/{hive_id:path}/work-items/{bead_id}",
+      "method": "GET",
+      "path": "/v1/instances/{stage}/{slug}/hives/{hive_id:path}/work-items/{bead_id}",
+      "classification": "catalog-entry",
+      "shape": "richer",
+      "canonicalContracts": [
+        {
+          "operation": "work.show",
+          "requestSchema": "catalog:work.show#parameters",
+          "resultSchema": "urn:beadhive:wire-schema:json-value:1",
+          "privilege": "unprivileged-read",
+          "sideEffects": "none"
+        }
+      ],
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:9ca4e97c1062dbaa58323d76c8277703ee16caf2ec54e6ea4edbf2627776d059#/schemas/workItemDetailRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:9ca4e97c1062dbaa58323d76c8277703ee16caf2ec54e6ea4edbf2627776d059#/schemas/workItemDetailResponse",
+      "transportOwner": "gateway-contract",
+      "transportPrivilege": "authenticated-development-subject",
+      "sideEffects": "none",
+      "streaming": false,
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
+      "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
+      "reason": "bounded exact work-item detail"
     },
     {
       "identifier": "GET /v1/instances/{stage}/{slug}/snapshot",
@@ -1185,6 +4278,40 @@
       "reason": "exact credentialed CORS preflight allowlist"
     },
     {
+      "identifier": "OPTIONS /v1/instances/{stage}/{slug}/hives/{hive_id:path}/work-items",
+      "method": "OPTIONS",
+      "path": "/v1/instances/{stage}/{slug}/hives/{hive_id:path}/work-items",
+      "classification": "transport-mechanic",
+      "shape": "transport-only",
+      "canonicalContracts": [],
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:10fdadf504aba68d265b024e8405698125e84c8b37436e31decc2a4ac5e121cb#/schemas/readPreflightRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:10fdadf504aba68d265b024e8405698125e84c8b37436e31decc2a4ac5e121cb#/schemas/emptyResponse",
+      "transportOwner": "gateway-contract",
+      "transportPrivilege": "network-admission",
+      "sideEffects": "none",
+      "streaming": false,
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
+      "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
+      "reason": "exact credentialed CORS preflight allowlist"
+    },
+    {
+      "identifier": "OPTIONS /v1/instances/{stage}/{slug}/hives/{hive_id:path}/work-items/{bead_id}",
+      "method": "OPTIONS",
+      "path": "/v1/instances/{stage}/{slug}/hives/{hive_id:path}/work-items/{bead_id}",
+      "classification": "transport-mechanic",
+      "shape": "transport-only",
+      "canonicalContracts": [],
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:10fdadf504aba68d265b024e8405698125e84c8b37436e31decc2a4ac5e121cb#/schemas/readPreflightRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:10fdadf504aba68d265b024e8405698125e84c8b37436e31decc2a4ac5e121cb#/schemas/emptyResponse",
+      "transportOwner": "gateway-contract",
+      "transportPrivilege": "network-admission",
+      "sideEffects": "none",
+      "streaming": false,
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
+      "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
+      "reason": "exact credentialed CORS preflight allowlist"
+    },
+    {
       "identifier": "OPTIONS /v1/instances/{stage}/{slug}/snapshot",
       "method": "OPTIONS",
       "path": "/v1/instances/{stage}/{slug}/snapshot",
@@ -1267,8 +4394,8 @@
           "sideEffects": "none"
         }
       ],
-      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:747cce0a3d6e7e326e2f9140319b08e25d8ea894b1e431758e220d166add1011#/schemas/hiveListRequest",
-      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:747cce0a3d6e7e326e2f9140319b08e25d8ea894b1e431758e220d166add1011#/schemas/factoryOverviewResponse",
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:9ca4e97c1062dbaa58323d76c8277703ee16caf2ec54e6ea4edbf2627776d059#/schemas/hiveListRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:9ca4e97c1062dbaa58323d76c8277703ee16caf2ec54e6ea4edbf2627776d059#/schemas/factoryOverviewResponse",
       "transportOwner": "gateway-contract",
       "transportPrivilege": "authenticated-development-subject",
       "sideEffects": "none",
@@ -1292,8 +4419,8 @@
           "sideEffects": "none"
         }
       ],
-      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:747cce0a3d6e7e326e2f9140319b08e25d8ea894b1e431758e220d166add1011#/schemas/hiveListRequest",
-      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:747cce0a3d6e7e326e2f9140319b08e25d8ea894b1e431758e220d166add1011#/schemas/canonicalHiveListResponse",
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:9ca4e97c1062dbaa58323d76c8277703ee16caf2ec54e6ea4edbf2627776d059#/schemas/hiveListRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:9ca4e97c1062dbaa58323d76c8277703ee16caf2ec54e6ea4edbf2627776d059#/schemas/canonicalHiveListResponse",
       "transportOwner": "gateway-contract",
       "transportPrivilege": "authenticated-development-subject",
       "sideEffects": "none",
@@ -1309,8 +4436,8 @@
       "classification": "transport-mechanic",
       "shape": "transport-only",
       "canonicalContracts": [],
-      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:747cce0a3d6e7e326e2f9140319b08e25d8ea894b1e431758e220d166add1011#/schemas/eventsRequest",
-      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:747cce0a3d6e7e326e2f9140319b08e25d8ea894b1e431758e220d166add1011#/schemas/eventStreamResponse",
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:9ca4e97c1062dbaa58323d76c8277703ee16caf2ec54e6ea4edbf2627776d059#/schemas/eventsRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:9ca4e97c1062dbaa58323d76c8277703ee16caf2ec54e6ea4edbf2627776d059#/schemas/eventStreamResponse",
       "transportOwner": "gateway-contract",
       "transportPrivilege": "authenticated-development-subject",
       "sideEffects": "none",
@@ -1341,8 +4468,8 @@
           "sideEffects": "none"
         }
       ],
-      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:747cce0a3d6e7e326e2f9140319b08e25d8ea894b1e431758e220d166add1011#/schemas/snapshotRequest",
-      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:747cce0a3d6e7e326e2f9140319b08e25d8ea894b1e431758e220d166add1011#/schemas/canonicalSnapshotResponse",
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:9ca4e97c1062dbaa58323d76c8277703ee16caf2ec54e6ea4edbf2627776d059#/schemas/snapshotRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:9ca4e97c1062dbaa58323d76c8277703ee16caf2ec54e6ea4edbf2627776d059#/schemas/canonicalSnapshotResponse",
       "transportOwner": "gateway-contract",
       "transportPrivilege": "authenticated-development-subject",
       "sideEffects": "none",
@@ -1350,6 +4477,56 @@
       "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "reason": "export-gated canonical factory-qualified hive snapshot alias"
+    },
+    {
+      "identifier": "GET /v1/factories/{factory_id}/hives/{hive_id:path}/work-items",
+      "method": "GET",
+      "path": "/v1/factories/{factory_id}/hives/{hive_id:path}/work-items",
+      "classification": "catalog-entry",
+      "shape": "richer",
+      "canonicalContracts": [
+        {
+          "operation": "work.list",
+          "requestSchema": "catalog:work.list#parameters",
+          "resultSchema": "urn:beadhive:wire-schema:json-value:1",
+          "privilege": "unprivileged-read",
+          "sideEffects": "none"
+        }
+      ],
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:9ca4e97c1062dbaa58323d76c8277703ee16caf2ec54e6ea4edbf2627776d059#/schemas/workItemsRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:9ca4e97c1062dbaa58323d76c8277703ee16caf2ec54e6ea4edbf2627776d059#/schemas/canonicalWorkItemsResponse",
+      "transportOwner": "gateway-contract",
+      "transportPrivilege": "authenticated-development-subject",
+      "sideEffects": "none",
+      "streaming": false,
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
+      "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
+      "reason": "bounded revision-pinned factory-qualified work-item page"
+    },
+    {
+      "identifier": "GET /v1/factories/{factory_id}/hives/{hive_id:path}/work-items/{bead_id}",
+      "method": "GET",
+      "path": "/v1/factories/{factory_id}/hives/{hive_id:path}/work-items/{bead_id}",
+      "classification": "catalog-entry",
+      "shape": "richer",
+      "canonicalContracts": [
+        {
+          "operation": "work.show",
+          "requestSchema": "catalog:work.show#parameters",
+          "resultSchema": "urn:beadhive:wire-schema:json-value:1",
+          "privilege": "unprivileged-read",
+          "sideEffects": "none"
+        }
+      ],
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:9ca4e97c1062dbaa58323d76c8277703ee16caf2ec54e6ea4edbf2627776d059#/schemas/workItemDetailRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:9ca4e97c1062dbaa58323d76c8277703ee16caf2ec54e6ea4edbf2627776d059#/schemas/canonicalWorkItemDetailResponse",
+      "transportOwner": "gateway-contract",
+      "transportPrivilege": "authenticated-development-subject",
+      "sideEffects": "none",
+      "streaming": false,
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
+      "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
+      "reason": "bounded factory-qualified exact work-item detail"
     },
     {
       "identifier": "OPTIONS /v1/factories/{factory_id}",
@@ -1406,6 +4583,40 @@
       "identifier": "OPTIONS /v1/factories/{factory_id}/hives/{hive_id:path}/snapshot",
       "method": "OPTIONS",
       "path": "/v1/factories/{factory_id}/hives/{hive_id:path}/snapshot",
+      "classification": "transport-mechanic",
+      "shape": "transport-only",
+      "canonicalContracts": [],
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:10fdadf504aba68d265b024e8405698125e84c8b37436e31decc2a4ac5e121cb#/schemas/readPreflightRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:10fdadf504aba68d265b024e8405698125e84c8b37436e31decc2a4ac5e121cb#/schemas/emptyResponse",
+      "transportOwner": "gateway-contract",
+      "transportPrivilege": "network-admission",
+      "sideEffects": "none",
+      "streaming": false,
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
+      "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
+      "reason": "exact credentialed CORS preflight allowlist"
+    },
+    {
+      "identifier": "OPTIONS /v1/factories/{factory_id}/hives/{hive_id:path}/work-items",
+      "method": "OPTIONS",
+      "path": "/v1/factories/{factory_id}/hives/{hive_id:path}/work-items",
+      "classification": "transport-mechanic",
+      "shape": "transport-only",
+      "canonicalContracts": [],
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:10fdadf504aba68d265b024e8405698125e84c8b37436e31decc2a4ac5e121cb#/schemas/readPreflightRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:10fdadf504aba68d265b024e8405698125e84c8b37436e31decc2a4ac5e121cb#/schemas/emptyResponse",
+      "transportOwner": "gateway-contract",
+      "transportPrivilege": "network-admission",
+      "sideEffects": "none",
+      "streaming": false,
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
+      "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
+      "reason": "exact credentialed CORS preflight allowlist"
+    },
+    {
+      "identifier": "OPTIONS /v1/factories/{factory_id}/hives/{hive_id:path}/work-items/{bead_id}",
+      "method": "OPTIONS",
+      "path": "/v1/factories/{factory_id}/hives/{hive_id:path}/work-items/{bead_id}",
       "classification": "transport-mechanic",
       "shape": "transport-only",
       "canonicalContracts": [],

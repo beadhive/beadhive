@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from importlib import resources
 from typing import Protocol
 
+from . import daemon_contract
+
 CONTRACT_VERSION = "gateway.read.v1"
 SCHEMA_VERSION = 1
 INSTANCE_ID = "dev/demo"
@@ -115,6 +117,35 @@ _EVENT_SUBSCRIPTION_MAX_LENGTH = 512
 _EVENT_AFTER_MAX_LENGTH = 512
 _EVENT_SUBSCRIPTION_PATTERN = r"^\S(?:[\s\S]*\S)?$"
 _EVENT_SUBSCRIPTION_TERMINATOR_PATTERN = r"[\r\n\u2028\u2029]$"
+WORK_ITEM_VIEWS = ("ready", "active", "blocked", "recent")
+WORK_ITEM_MAX_LIMIT = 200
+WORK_ITEM_MAX_PRIORITIES = 5
+WORK_ITEM_MAX_LABELS = 8
+WORK_ITEM_MAX_LABEL_BYTES = 64
+WORK_ITEM_MAX_SCALAR_BYTES = 256
+WORK_ITEM_MAX_CURSOR_BYTES = 4_096
+
+
+def _inline_model_schema(model: type[daemon_contract.WireModel]) -> dict[str, object]:
+    schema = model.model_json_schema(by_alias=True)
+    definitions = schema.pop("$defs", {})
+
+    def expand(value: object) -> object:
+        if isinstance(value, list):
+            return [expand(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        reference = value.get("$ref")
+        if isinstance(reference, str) and reference.startswith("#/$defs/"):
+            name = reference.rsplit("/", 1)[-1]
+            resolved = copy.deepcopy(definitions[name])
+            resolved.update({key: item for key, item in value.items() if key != "$ref"})
+            return expand(resolved)
+        return {key: expand(item) for key, item in value.items()}
+
+    expanded = expand(schema)
+    assert isinstance(expanded, dict)
+    return expanded
 
 
 def gateway_wire_schemas() -> dict[str, dict[str, object]]:
@@ -126,6 +157,14 @@ def gateway_wire_schemas() -> dict[str, dict[str, object]]:
         "factoryId": {"type": "string", "minLength": 1},
         "hiveId": {"type": "string", "minLength": 1},
     }
+    work_items_page = _inline_model_schema(daemon_contract.RemoteWorkItemQueue)
+    page_properties = work_items_page["properties"]
+    assert isinstance(page_properties, dict)
+    page_properties["view"] = page_properties.pop("queue")
+    required = work_items_page["required"]
+    assert isinstance(required, list)
+    work_items_page["required"] = ["view" if value == "queue" else value for value in required]
+    work_item_detail = _inline_model_schema(daemon_contract.RemoteWorkItemDetail)
     return {
         "hiveListRequest": {
             "type": "object",
@@ -285,6 +324,137 @@ def gateway_wire_schemas() -> dict[str, dict[str, object]]:
                 },
             },
         },
+        "workItemsRequest": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["factoryId", "hiveId", "view", "limit"],
+            "properties": {
+                **scoped_path,
+                "view": {"enum": list(WORK_ITEM_VIEWS)},
+                "limit": {"type": "integer", "minimum": 1, "maximum": WORK_ITEM_MAX_LIMIT},
+                "cursor": {"type": ["string", "null"], "maxLength": WORK_ITEM_MAX_CURSOR_BYTES},
+                "priorities": {
+                    "type": "array",
+                    "maxItems": WORK_ITEM_MAX_PRIORITIES,
+                    "uniqueItems": True,
+                    "items": {"type": "string", "pattern": "^P[0-4]$"},
+                },
+                "labels": {
+                    "type": "array",
+                    "maxItems": WORK_ITEM_MAX_LABELS,
+                    "uniqueItems": True,
+                    "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": WORK_ITEM_MAX_LABEL_BYTES,
+                    },
+                },
+                "assignee": {"type": ["string", "null"], "maxLength": WORK_ITEM_MAX_SCALAR_BYTES},
+                "type": {"type": ["string", "null"], "maxLength": WORK_ITEM_MAX_SCALAR_BYTES},
+                "parent": {"type": ["string", "null"], "maxLength": WORK_ITEM_MAX_SCALAR_BYTES},
+            },
+        },
+        "workItemsResponse": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "schemaVersion",
+                "contractVersion",
+                "instanceId",
+                "factoryId",
+                "hiveId",
+                "detailLevel",
+                "sourceRevision",
+                "page",
+            ],
+            "properties": {
+                "schemaVersion": schema_version,
+                "contractVersion": contract_version,
+                "instanceId": {"const": INSTANCE_ID},
+                "factoryId": {"const": FACTORY_ID},
+                "hiveId": {"type": "string", "minLength": 1},
+                "detailLevel": {"const": "summary-page"},
+                "sourceRevision": {"type": "string", "minLength": 1},
+                "page": work_items_page,
+            },
+        },
+        "canonicalWorkItemsResponse": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "schemaVersion",
+                "contractVersion",
+                "factoryId",
+                "hiveId",
+                "detailLevel",
+                "sourceRevision",
+                "page",
+            ],
+            "properties": {
+                "schemaVersion": schema_version,
+                "contractVersion": contract_version,
+                "factoryId": {"const": FACTORY_ID},
+                "hiveId": {"type": "string", "minLength": 1},
+                "detailLevel": {"const": "summary-page"},
+                "sourceRevision": {"type": "string", "minLength": 1},
+                "page": work_items_page,
+            },
+        },
+        "workItemDetailRequest": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["factoryId", "hiveId", "beadId"],
+            "properties": {
+                **scoped_path,
+                "beadId": {"type": "string", "pattern": "^[A-Za-z0-9._~-]{1,256}$"},
+            },
+        },
+        "workItemDetailResponse": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "schemaVersion",
+                "contractVersion",
+                "instanceId",
+                "factoryId",
+                "hiveId",
+                "detailLevel",
+                "sourceRevision",
+                "detail",
+            ],
+            "properties": {
+                "schemaVersion": schema_version,
+                "contractVersion": contract_version,
+                "instanceId": {"const": INSTANCE_ID},
+                "factoryId": {"const": FACTORY_ID},
+                "hiveId": {"type": "string", "minLength": 1},
+                "detailLevel": {"const": "exact"},
+                "sourceRevision": {"type": "string", "minLength": 1},
+                "detail": work_item_detail,
+            },
+        },
+        "canonicalWorkItemDetailResponse": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "schemaVersion",
+                "contractVersion",
+                "factoryId",
+                "hiveId",
+                "detailLevel",
+                "sourceRevision",
+                "detail",
+            ],
+            "properties": {
+                "schemaVersion": schema_version,
+                "contractVersion": contract_version,
+                "factoryId": {"const": FACTORY_ID},
+                "hiveId": {"type": "string", "minLength": 1},
+                "detailLevel": {"const": "exact"},
+                "sourceRevision": {"type": "string", "minLength": 1},
+                "detail": work_item_detail,
+            },
+        },
         "eventsRequest": {
             "type": "object",
             "additionalProperties": False,
@@ -373,6 +543,10 @@ class ReadSourceResnapshotRequired(Exception):
     """A page or source cursor cannot be proven continuous."""
 
 
+class ReadSourceTooLarge(Exception):
+    """An exact bounded read cannot be represented safely."""
+
+
 class ExperienceAuthorizationFailed(Exception):
     """An authenticated principal cannot read the selected experience."""
 
@@ -389,6 +563,26 @@ class GatewayReadSource(Protocol):
 
     async def snapshot(
         self, subject: str, *, factory_id: str, hive_id: str, detail: str
+    ) -> Mapping[str, object]: ...
+
+    async def work_items(
+        self,
+        subject: str,
+        *,
+        factory_id: str,
+        hive_id: str,
+        view: str,
+        limit: int,
+        cursor: str | None,
+        priorities: tuple[str, ...],
+        labels: tuple[str, ...],
+        assignee: str | None,
+        issue_type: str | None,
+        parent: str | None,
+    ) -> Mapping[str, object]: ...
+
+    async def work_item_detail(
+        self, subject: str, *, factory_id: str, hive_id: str, bead_id: str
     ) -> Mapping[str, object]: ...
 
     async def events(

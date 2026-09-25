@@ -38,6 +38,14 @@ def _compact_frame_snapshot(*, event_cursor: str | None = None) -> dict[str, obj
             "policy": "beadhive.snapshot-summary/v1",
             "sourceRevision": "sha256:" + "a" * 64,
             "limits": limits,
+            "workItemRetrieval": {
+                "contract": "beadhive.work-items/v1",
+                "revision": "sha256:" + "a" * 64,
+                "views": ["ready", "active", "blocked", "recent"],
+                "maxPageItems": 200,
+                "maxPageBytes": 917_504,
+                "maxDetailBytes": 917_504,
+            },
         },
         "workItems": [],
     }
@@ -402,7 +410,49 @@ def test_gateway_wire_references_resolve_to_versioned_digested_owned_contracts()
         "GET /v1/factories/{factory_id}/hives/{hive_id:path}/snapshot": (
             "canonicalSnapshotResponse"
         ),
+        "GET /v1/factories/{factory_id}/hives/{hive_id:path}/work-items": (
+            "canonicalWorkItemsResponse"
+        ),
+        "GET /v1/factories/{factory_id}/hives/{hive_id:path}/work-items/{bead_id}": (
+            "canonicalWorkItemDetailResponse"
+        ),
     }
+
+
+def test_versioned_work_item_handoff_matches_generated_gateway_surface() -> None:
+    fixture = json.loads(
+        (
+            Path(__file__).parent
+            / "fixtures"
+            / "frame_bridge_gateway_work_items_v1"
+            / "frame-bridge-work-items-v1.json"
+        ).read_text()
+    )
+    operations = {
+        operation["identifier"] for operation in gateway_contract.generate_document()["operations"]
+    }
+
+    assert fixture["handoffVersion"] == "frame-bridge-work-items/v1"
+    assert fixture["snapshotCapability"] == {
+        "contract": "beadhive.work-items/v1",
+        "revisionBinding": "coverage.sourceRevision",
+        "views": ["ready", "active", "blocked", "recent"],
+        "maxPageItems": 200,
+        "maxPageBytes": 917_504,
+        "maxDetailBytes": 917_504,
+    }
+    assert fixture["queryLimits"] == {
+        "maxCanonicalBytes": 16_384,
+        "maxPriorities": 5,
+        "maxLabels": 8,
+        "maxLabelBytes": 64,
+        "maxScalarBytes": 256,
+        "maxCursorBytes": 4_096,
+    }
+    assert all(
+        operation.replace("/{hive_id}/", "/{hive_id:path}/") in operations
+        for operation in fixture["publicOperations"]
+    )
 
 
 def test_checked_legacy_event_cursor_schema_matches_runtime_grammar() -> None:

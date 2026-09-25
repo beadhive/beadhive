@@ -22,6 +22,19 @@ from beadhive import (
 
 EPOCH = "123e4567e89b42d3a456426614174000"
 REVISION = "sha256:" + "a" * 64
+
+
+def _retrieval(revision: str) -> dict[str, object]:
+    return {
+        "contract": "beadhive.work-items/v1",
+        "revision": revision,
+        "views": ["ready", "active", "blocked", "recent"],
+        "maxPageItems": 200,
+        "maxPageBytes": 917_504,
+        "maxDetailBytes": 917_504,
+    }
+
+
 DAEMON_BEARER = "bh1.frame-bridge." + "d" * 43
 HIVE = "github/beadhive/beadhive-app"
 HIVE_SUBSCRIPTION = operator_contract.hive_subscription_id(HIVE)
@@ -57,6 +70,7 @@ def _live_snapshot() -> dict[str, object]:
             "policy": "beadhive.snapshot-summary/v1",
             "sourceRevision": REVISION,
             "limits": limits,
+            "workItemRetrieval": _retrieval(REVISION),
             "sources": {
                 "runtime": {
                     "state": "unavailable",
@@ -139,7 +153,7 @@ def _operator_app(seen_authorizations: list[str | None] | None = None) -> Starle
     return Starlette(
         routes=[
             Route("/health", health),
-            Route("/api/v1/hives/github/beadhive/beadhive/snapshot", snapshot),
+            Route("/api/v1/hives/github/beadhive/beadhive/snapshot-with-work-items", snapshot),
             Route("/api/v1/hives/github/beadhive/beadhive/events", events),
         ]
     )
@@ -286,7 +300,9 @@ def test_live_gateway_read_source_wraps_the_exact_daemon_snapshot() -> None:
 
     client = httpx.AsyncClient(
         transport=httpx.ASGITransport(
-            app=Starlette(routes=[Route("/api/v1/hives/{hive_id:path}/snapshot", snapshot)])
+            app=Starlette(
+                routes=[Route("/api/v1/hives/{hive_id:path}/snapshot-with-work-items", snapshot)]
+            )
         ),
         base_url=frame_bridge_runtime.LOOPBACK_ORIGIN,
     )
@@ -339,7 +355,9 @@ def test_live_gateway_read_source_rejects_snapshot_fields_outside_the_public_con
 
     client = httpx.AsyncClient(
         transport=httpx.ASGITransport(
-            app=Starlette(routes=[Route("/api/v1/hives/{hive_id:path}/snapshot", snapshot)])
+            app=Starlette(
+                routes=[Route("/api/v1/hives/{hive_id:path}/snapshot-with-work-items", snapshot)]
+            )
         ),
         base_url=frame_bridge_runtime.LOOPBACK_ORIGIN,
     )
@@ -398,7 +416,7 @@ def test_live_gateway_read_source_streams_contiguous_daemon_events() -> None:
 
     app = Starlette(
         routes=[
-            Route("/api/v1/hives/{hive_id:path}/snapshot", snapshot),
+            Route("/api/v1/hives/{hive_id:path}/snapshot-with-work-items", snapshot),
             Route("/api/v1/hives/{hive_id:path}/events", events),
         ]
     )
@@ -473,6 +491,7 @@ def test_live_gateway_read_source_fences_a_stream_when_a_new_snapshot_is_install
         if snapshots == 2:
             payload["revision"] = "sha256:" + "b" * 64
             payload["coverage"]["sourceRevision"] = "sha256:" + "b" * 64
+            payload["coverage"]["workItemRetrieval"]["revision"] = "sha256:" + "b" * 64
             payload["cursor"] = {
                 "subscriptionId": HIVE_SUBSCRIPTION,
                 "producerEpoch": "223e4567e89b42d3a456426614174000",
@@ -509,7 +528,7 @@ def test_live_gateway_read_source_fences_a_stream_when_a_new_snapshot_is_install
         transport=httpx.ASGITransport(
             app=Starlette(
                 routes=[
-                    Route("/api/v1/hives/{hive_id:path}/snapshot", snapshot),
+                    Route("/api/v1/hives/{hive_id:path}/snapshot-with-work-items", snapshot),
                     Route("/api/v1/hives/{hive_id:path}/events", events),
                 ]
             )

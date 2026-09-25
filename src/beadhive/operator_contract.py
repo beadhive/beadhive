@@ -389,7 +389,7 @@ def _summary_counts(
     return blocker_counts, gate_counts, live_agent_counts
 
 
-def _work_item_summary(
+def work_item_summary(
     issue: StreamIssue,
     *,
     generated_at: int,
@@ -408,6 +408,8 @@ def _work_item_summary(
         raise SnapshotProjectionUnavailable("Development work-item timestamp exceeds its bound")
     if issue.status.lower() == "in_progress":
         readiness = "active"
+    elif issue.status.lower() == "closed":
+        readiness = "completed"
     elif issue.status.lower() == "blocked" or blocker_count or open_gate_count:
         readiness = "blocked"
     elif issue.status.lower() == "open":
@@ -655,7 +657,7 @@ def hive_operator_snapshot(
         bead_state, runtime_state, hive_id, retained_issue_ids
     )
     summaries = tuple(
-        _work_item_summary(
+        work_item_summary(
             issue,
             generated_at=generated_at,
             blocker_count=blocker_counts.get(issue.id, 0),
@@ -731,6 +733,14 @@ def hive_operator_snapshot(
                 "policy": DEVELOPMENT_SNAPSHOT_POLICY,
                 "sourceRevision": revision,
                 "limits": limits,
+                "workItemRetrieval": {
+                    "contract": "beadhive.work-items/v1",
+                    "revision": revision,
+                    "views": ["ready", "active", "blocked", "recent"],
+                    "maxPageItems": 200,
+                    "maxPageBytes": 917_504,
+                    "maxDetailBytes": 917_504,
+                },
                 "sources": {"beads": beads_coverage, "runtime": runtime_coverage},
             },
             "workItems": list(summaries[:returned_count]),

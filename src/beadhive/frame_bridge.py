@@ -20,7 +20,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from joserfc import jwt
 from joserfc.jws import JWSRegistry
@@ -424,9 +424,13 @@ _COVERAGE_KEYS = frozenset(
         "policy",
         "sourceRevision",
         "limits",
+        "workItemRetrieval",
     }
 )
 _LIMIT_KEYS = frozenset({"maxBytes", "maxWorkItems"})
+_WORK_ITEM_RETRIEVAL_KEYS = frozenset(
+    {"contract", "revision", "views", "maxPageItems", "maxPageBytes", "maxDetailBytes"}
+)
 _SNAPSHOT_POLICY = "beadhive.snapshot-summary/v1"
 _SNAPSHOT_MAX_BYTES = 896 * 1024
 _MAX_WORK_ITEMS = 4_096
@@ -716,6 +720,13 @@ def _coverage_is_allowlisted(value: object, *, revision: object, returned: int) 
         and value["policy"] == _SNAPSHOT_POLICY
         and value["sourceRevision"] == revision
         and _limits_are_allowlisted(value["limits"])
+        and _exact_keys(value["workItemRetrieval"], _WORK_ITEM_RETRIEVAL_KEYS)
+        and value["workItemRetrieval"]["contract"] == "beadhive.work-items/v1"
+        and value["workItemRetrieval"]["revision"] == revision
+        and value["workItemRetrieval"]["views"] == ["ready", "active", "blocked", "recent"]
+        and value["workItemRetrieval"]["maxPageItems"] == 200
+        and value["workItemRetrieval"]["maxPageBytes"] == _SNAPSHOT_MAX_BYTES
+        and value["workItemRetrieval"]["maxDetailBytes"] == _SNAPSHOT_MAX_BYTES
     )
 
 
@@ -862,6 +873,8 @@ def _public_snapshot(raw: Mapping[str, object], *, with_events: bool) -> dict[st
         raw_coverage = raw["coverage"]
         coverage = {key: raw_coverage[key] for key in _COVERAGE_KEYS}
         coverage["limits"] = dict(raw_coverage["limits"])
+        coverage["workItemRetrieval"] = dict(raw_coverage["workItemRetrieval"])
+        coverage["workItemRetrieval"]["views"] = list(raw_coverage["workItemRetrieval"]["views"])
         public = {
             "schemaVersion": SCHEMA_VERSION,
             "revision": revision,
@@ -1154,6 +1167,152 @@ def build_development_frame_bridge_application(
         if not isinstance(hive_id, str) or hive_id != match.group(1).decode().replace("%2F", "/"):
             raise gateway_read_mod.ReadSourceInvalidRequest
         return hive_id
+
+    def work_item_query(request: Request) -> dict[str, object]:
+        raw_query = request.scope.get("query_string", b"")
+        if not isinstance(raw_query, bytes) or len(raw_query) > 16 * 1024:
+            raise gateway_read_mod.ReadSourceInvalidRequest
+        allowed = {"view", "limit", "cursor", "priority", "label", "assignee", "type", "parent"}
+        if set(request.query_params) - allowed:
+            raise gateway_read_mod.ReadSourceInvalidRequest
+        grouped = {name: request.query_params.getlist(name) for name in allowed}
+        if any(
+            len(grouped[name]) > 1
+            for name in ("view", "limit", "cursor", "assignee", "type", "parent")
+        ):
+            raise gateway_read_mod.ReadSourceInvalidRequest
+        view = grouped["view"][0] if grouped["view"] else ""
+        if view not in gateway_read_mod.WORK_ITEM_VIEWS:
+            raise gateway_read_mod.ReadSourceInvalidRequest
+        raw_limit = grouped["limit"][0] if grouped["limit"] else "50"
+        if not raw_limit.isascii() or not raw_limit.isdecimal() or str(int(raw_limit)) != raw_limit:
+            raise gateway_read_mod.ReadSourceInvalidRequest
+        limit = int(raw_limit)
+        if not 1 <= limit <= gateway_read_mod.WORK_ITEM_MAX_LIMIT:
+            raise gateway_read_mod.ReadSourceInvalidRequest
+        priorities = tuple(sorted(set(grouped["priority"])))
+        if (
+            len(grouped["priority"]) > gateway_read_mod.WORK_ITEM_MAX_PRIORITIES
+            or len(priorities) != len(grouped["priority"])
+            or any(re.fullmatch(r"P[0-4]", value) is None for value in priorities)
+        ):
+            raise gateway_read_mod.ReadSourceInvalidRequest
+        labels = tuple(sorted(set(grouped["label"])))
+        if (
+            len(grouped["label"]) > gateway_read_mod.WORK_ITEM_MAX_LABELS
+            or len(labels) != len(grouped["label"])
+            or any(
+                not value or len(value.encode("utf-8")) > gateway_read_mod.WORK_ITEM_MAX_LABEL_BYTES
+                for value in labels
+            )
+        ):
+            raise gateway_read_mod.ReadSourceInvalidRequest
+        cursor = grouped["cursor"][0] if grouped["cursor"] else None
+        if cursor is not None and (
+            not cursor or len(cursor.encode("utf-8")) > gateway_read_mod.WORK_ITEM_MAX_CURSOR_BYTES
+        ):
+            raise gateway_read_mod.ReadSourceInvalidRequest
+        scalars = {
+            name: grouped[name][0] if grouped[name] else None
+            for name in ("assignee", "type", "parent")
+        }
+        if any(
+            value is not None
+            and (
+                not value
+                or len(value.encode("utf-8")) > gateway_read_mod.WORK_ITEM_MAX_SCALAR_BYTES
+            )
+            for value in scalars.values()
+        ):
+            raise gateway_read_mod.ReadSourceInvalidRequest
+        return {
+            "view": view,
+            "limit": limit,
+            "cursor": cursor,
+            "priorities": priorities,
+            "labels": labels,
+            "assignee": scalars["assignee"],
+            "issue_type": scalars["type"],
+            "parent": scalars["parent"],
+        }
+
+    async def bridge_work_items(request: Request) -> Response:
+        try:
+            if read_source is None:
+                raise gateway_read_mod.ReadSourceNotFound
+            subject = authorize_gateway_read(request)
+            hive_id = bridge_hive_id(request, "/work-items")
+            query = work_item_query(request)
+            envelope = await rich_read_calls.call(
+                subject,
+                lambda: read_source.work_items(
+                    subject,
+                    factory_id=gateway_read_mod.FACTORY_ID,
+                    hive_id=hive_id,
+                    **query,
+                ),
+            )
+            return rich_response(request, canonical_payload(request, envelope))
+        except PermissionError:
+            return rich_error("request_denied", "The request is not allowed.", 403)
+        except AuthenticationFailed:
+            return rich_error("authentication_failed", "Authentication failed.", 401)
+        except gateway_read_mod.ReadSourceNotFound:
+            return rich_error("resource_not_found", "The resource was not found.", 404)
+        except gateway_read_mod.ReadSourceInvalidRequest:
+            return rich_error("invalid_request", "The request is not valid.", 400)
+        except gateway_read_mod.ReadSourceResnapshotRequired:
+            return rich_error("resnapshot_required", "A fresh snapshot is required.", 409)
+        except gateway_read_mod.ReadSourceTooLarge:
+            return rich_error(
+                "work_items_page_too_large", "The requested work-items page is too large.", 413
+            )
+        except RuntimeCallTimedOut:
+            return rich_error("rate_limited", "The read limit was exceeded.", 429, retryable=True)
+        except Exception:
+            return rich_error(
+                "read_plane_unavailable", "The read plane is unavailable.", 503, retryable=True
+            )
+
+    async def bridge_work_item_detail(request: Request) -> Response:
+        try:
+            if read_source is None:
+                raise gateway_read_mod.ReadSourceNotFound
+            subject = authorize_gateway_read(request)
+            if request.query_params:
+                raise gateway_read_mod.ReadSourceInvalidRequest
+            bead_id = str(request.path_params["bead_id"])
+            if re.fullmatch(r"[A-Za-z0-9._~-]{1,256}", bead_id) is None:
+                raise gateway_read_mod.ReadSourceInvalidRequest
+            hive_id = bridge_hive_id(request, f"/work-items/{quote(bead_id, safe='-._~')}")
+            envelope = await rich_read_calls.call(
+                subject,
+                lambda: read_source.work_item_detail(
+                    subject,
+                    factory_id=gateway_read_mod.FACTORY_ID,
+                    hive_id=hive_id,
+                    bead_id=bead_id,
+                ),
+            )
+            return rich_response(request, canonical_payload(request, envelope))
+        except PermissionError:
+            return rich_error("request_denied", "The request is not allowed.", 403)
+        except AuthenticationFailed:
+            return rich_error("authentication_failed", "Authentication failed.", 401)
+        except gateway_read_mod.ReadSourceNotFound:
+            return rich_error("resource_not_found", "The resource was not found.", 404)
+        except gateway_read_mod.ReadSourceInvalidRequest:
+            return rich_error("invalid_request", "The request is not valid.", 400)
+        except gateway_read_mod.ReadSourceTooLarge:
+            return rich_error(
+                "work_item_detail_too_large", "The exact work-item detail is too large.", 413
+            )
+        except RuntimeCallTimedOut:
+            return rich_error("rate_limited", "The read limit was exceeded.", 429, retryable=True)
+        except Exception:
+            return rich_error(
+                "read_plane_unavailable", "The read plane is unavailable.", 503, retryable=True
+            )
 
     async def bridge_hives(request: Request) -> Response:
         try:
@@ -1851,6 +2010,16 @@ def build_development_frame_bridge_application(
                 methods=["GET"],
             ),
             Route(
+                "/v1/factories/{factory_id}/hives/{hive_id:path}/work-items/{bead_id}",
+                bridge_work_item_detail,
+                methods=["GET"],
+            ),
+            Route(
+                "/v1/factories/{factory_id}/hives/{hive_id:path}/work-items",
+                bridge_work_items,
+                methods=["GET"],
+            ),
+            Route(
                 "/v1/factories/{factory_id}/hives/{hive_id:path}/events",
                 bridge_events,
                 methods=["GET"],
@@ -1865,6 +2034,16 @@ def build_development_frame_bridge_application(
             Route(
                 "/v1/instances/{stage}/{slug}/hives/{hive_id:path}/snapshot",
                 bridge_snapshot,
+                methods=["GET"],
+            ),
+            Route(
+                "/v1/instances/{stage}/{slug}/hives/{hive_id:path}/work-items/{bead_id}",
+                bridge_work_item_detail,
+                methods=["GET"],
+            ),
+            Route(
+                "/v1/instances/{stage}/{slug}/hives/{hive_id:path}/work-items",
+                bridge_work_items,
                 methods=["GET"],
             ),
             Route(
@@ -1885,6 +2064,16 @@ def build_development_frame_bridge_application(
                 methods=["OPTIONS"],
             ),
             Route(
+                "/v1/factories/{factory_id}/hives/{hive_id:path}/work-items/{bead_id}",
+                preflight,
+                methods=["OPTIONS"],
+            ),
+            Route(
+                "/v1/factories/{factory_id}/hives/{hive_id:path}/work-items",
+                preflight,
+                methods=["OPTIONS"],
+            ),
+            Route(
                 "/v1/factories/{factory_id}/hives/{hive_id:path}/events",
                 preflight,
                 methods=["OPTIONS"],
@@ -1897,6 +2086,16 @@ def build_development_frame_bridge_application(
             Route("/v1/instances/{stage}/{slug}/hives", preflight, methods=["OPTIONS"]),
             Route(
                 "/v1/instances/{stage}/{slug}/hives/{hive_id:path}/snapshot",
+                preflight,
+                methods=["OPTIONS"],
+            ),
+            Route(
+                "/v1/instances/{stage}/{slug}/hives/{hive_id:path}/work-items/{bead_id}",
+                preflight,
+                methods=["OPTIONS"],
+            ),
+            Route(
+                "/v1/instances/{stage}/{slug}/hives/{hive_id:path}/work-items",
                 preflight,
                 methods=["OPTIONS"],
             ),
