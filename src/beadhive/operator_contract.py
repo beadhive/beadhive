@@ -29,9 +29,19 @@ from .modules.state import (
 )
 
 SCHEMA_VERSION = 1
+DEVELOPMENT_SNAPSHOT_MAX_BYTES = 1 << 20
+DEVELOPMENT_WORK_ITEM_LIMIT = 1_000
+DEVELOPMENT_MAX_JSON_SAFE_INTEGER = 2**53 - 1
+DEVELOPMENT_MAX_CURSOR_SEQUENCE = DEVELOPMENT_MAX_JSON_SAFE_INTEGER
+_DEVELOPMENT_WORK_STATUSES = frozenset({"open", "in_progress", "blocked"})
+_INTERNAL_WORK_ITEM_TYPES = frozenset({"event", "gate"})
 _MISSING_WORK_ITEM_DETAIL = (
     "The state stream does not expose description, molecule type, or lifecycle timestamps."
 )
+
+
+class SnapshotProjectionUnavailable(RuntimeError):
+    """The Development snapshot cannot satisfy its fail-closed disclosure bounds."""
 
 
 def _millis(value: str | float | int | None, *, fallback: int = 0) -> int:
@@ -303,14 +313,22 @@ def _epics(issues: Sequence[StreamIssue], hive_id: str, revision: str) -> list[d
     return out
 
 
-def _gate(item: GateRequest, hive_id: str, revision: str, generated_at: int) -> dict:
+def _gate(
+    item: GateRequest,
+    hive_id: str,
+    revision: str,
+    generated_at: int,
+    retained_issue_ids: frozenset[str],
+) -> dict:
     status = item.status.lower().replace("_", "-")
     if status in {"open", "pending"}:
         status = "pending"
     elif status not in {"approved", "changes-requested"}:
         status = "closed"
     kind = item.gate_kind if item.gate_kind in {"review", "security", "kickoff"} else "other"
-    blocks = [_ref(hive_id, "work-item", block) for block in item.blocks]
+    blocks = [
+        _ref(hive_id, "work-item", block) for block in item.blocks if block in retained_issue_ids
+    ]
     target = blocks[0] if blocks else _ref(hive_id, "gate", item.gate_id)
     requested_at = _millis(item.opened_at, fallback=generated_at)
     return {
@@ -326,9 +344,18 @@ def _gate(item: GateRequest, hive_id: str, revision: str, generated_at: int) -> 
     }
 
 
-def _schedule(item: EpicSchedule, hive_id: str, revision: str, generated_at: int) -> dict:
+def _schedule(
+    item: EpicSchedule,
+    hive_id: str,
+    revision: str,
+    generated_at: int,
+    retained_issue_ids: frozenset[str],
+) -> dict:
     groups = []
     for index, group in enumerate(item.groups):
+        issue_ids = [value for value in group.issue_ids if value in retained_issue_ids]
+        if not issue_ids:
+            continue
         mode = "batch" if group.kind == "planner" else "single"
         groups.append(
             {
@@ -336,12 +363,14 @@ def _schedule(item: EpicSchedule, hive_id: str, revision: str, generated_at: int
                 "revision": revision,
                 "epicId": _scoped(hive_id, item.epic_id),
                 "mode": mode,
-                "workItemIds": [_scoped(hive_id, value) for value in group.issue_ids],
+                "workItemIds": [_scoped(hive_id, value) for value in issue_ids],
                 "generatedAt": generated_at,
             }
         )
     for label, values in (("single", item.singletons), ("coordinator", item.coordinators)):
         for value in values:
+            if value not in retained_issue_ids:
+                continue
             groups.append(
                 {
                     "ref": _ref(hive_id, "schedule-group", f"{item.id}:{label}:{value}"),
@@ -445,8 +474,45 @@ def hive_operator_snapshot(
     """Project independently-labelled real sources into the UI's direct snapshot contract."""
 
     hive_id = "/".join(str(entry[field]) for field in ("provider", "org", "repo"))
+    if type(sequence) is not int or not 0 <= sequence <= DEVELOPMENT_MAX_CURSOR_SEQUENCE:
+        raise SnapshotProjectionUnavailable("Development cursor sequence limit exceeded")
+    if type(observed_at) is not int or not 0 <= observed_at <= DEVELOPMENT_MAX_JSON_SAFE_INTEGER:
+        raise SnapshotProjectionUnavailable("Development cursor timestamp limit exceeded")
     generated_at = _millis(bead_state.as_of, fallback=observed_at)
     revision = _revision(bead_state.revision, runtime_state.revision)
+    retained_issues = tuple(
+        issue
+        for issue in bead_state.issues
+        if issue.hive == hive_id
+        and issue.status.lower() in _DEVELOPMENT_WORK_STATUSES
+        and issue.issue_type.lower() not in _INTERNAL_WORK_ITEM_TYPES
+    )
+    if len(retained_issues) > DEVELOPMENT_WORK_ITEM_LIMIT:
+        raise SnapshotProjectionUnavailable("Development work-item limit exceeded")
+    retained_issue_ids = frozenset(issue.id for issue in retained_issues)
+    retained_dependencies = tuple(
+        item
+        for item in bead_state.work_dependencies
+        if item.hive == hive_id
+        and item.issue_id in retained_issue_ids
+        and item.depends_on_id in retained_issue_ids
+    )
+    retained_assignments = tuple(
+        item
+        for item in bead_state.assignments
+        if item.hive == hive_id and item.issue_id in retained_issue_ids
+    )
+    retained_gates = tuple(
+        item
+        for item in bead_state.gate_requests
+        if item.hive == hive_id and retained_issue_ids.intersection(item.blocks)
+    )
+    retained_schedules = tuple(
+        item
+        for item in bead_state.epic_schedules
+        if item.hive == hive_id and item.epic_id in retained_issue_ids
+    )
+
     bead_detail = _MISSING_WORK_ITEM_DETAIL
     if bead_state.partial_reason:
         bead_detail = f"{bead_state.partial_reason}; {bead_detail}"
@@ -477,14 +543,14 @@ def hive_operator_snapshot(
     )
     assignments = [
         _state_assignment(item, hive_id, bead_state.revision, generated_at)
-        for item in bead_state.assignments
+        for item in retained_assignments
     ]
     assignments.extend(
         _runtime_assignment(summary, hive_id, runtime_state.revision, generated_at)
         for summary in runtime_state.summaries
-        if summary.bead
+        if summary.bead in retained_issue_ids
     )
-    return {
+    snapshot = {
         "schemaVersion": SCHEMA_VERSION,
         "hive": hive_info(entry, canonical_prefix=True),
         "revision": revision,
@@ -501,17 +567,22 @@ def hive_operator_snapshot(
             "sources": {"beads": beads_coverage, "runtime": runtime_coverage},
         },
         "workItems": [
-            _work_item(item, hive_id, bead_state.revision, generated_at)
-            for item in bead_state.issues
+            _work_item(item, hive_id, bead_state.revision, generated_at) for item in retained_issues
         ],
         "dependencies": [
             _dependency(item, hive_id, bead_state.revision, generated_at)
-            for item in bead_state.work_dependencies
+            for item in retained_dependencies
         ],
-        "epics": _epics(bead_state.issues, hive_id, bead_state.revision),
+        "epics": _epics(retained_issues, hive_id, bead_state.revision),
         "gates": [
-            _gate(item, hive_id, bead_state.revision, generated_at)
-            for item in bead_state.gate_requests
+            _gate(
+                item,
+                hive_id,
+                bead_state.revision,
+                generated_at,
+                retained_issue_ids,
+            )
+            for item in retained_gates
         ],
         "agents": [
             _agent(item, hive_id, runtime_state.revision, generated_at)
@@ -519,12 +590,32 @@ def hive_operator_snapshot(
         ],
         "assignments": assignments,
         "schedules": [
-            _schedule(item, hive_id, bead_state.revision, generated_at)
-            for item in bead_state.epic_schedules
+            _schedule(
+                item,
+                hive_id,
+                bead_state.revision,
+                generated_at,
+                retained_issue_ids,
+            )
+            for item in retained_schedules
         ],
         "evidence": [],
         "advertisedActions": [],
     }
+    sizing_snapshot = dict(snapshot)
+    sizing_cursor = dict(snapshot["cursor"])
+    sizing_cursor["sequence"] = DEVELOPMENT_MAX_CURSOR_SEQUENCE
+    sizing_cursor["observedAt"] = DEVELOPMENT_MAX_JSON_SAFE_INTEGER
+    sizing_snapshot["cursor"] = sizing_cursor
+    encoded = json.dumps(
+        sizing_snapshot,
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(encoded) > DEVELOPMENT_SNAPSHOT_MAX_BYTES:
+        raise SnapshotProjectionUnavailable("Development snapshot byte limit exceeded")
+    return snapshot
 
 
 def _activity_kind(name: str) -> str:

@@ -87,7 +87,7 @@ def generate(path: Path) -> None:
                 now_millis=lambda: 2000,
             )
             feed.snapshot_with_cursor(HIVE)
-            provider.current = snapshot("beads-ui-conformance", "closed")
+            provider.current = snapshot("beads-ui-conformance", "blocked")
             feed.snapshot_with_cursor(HIVE)
             frame = relay._hives[HIVE].history[0].frame
     path.write_bytes(frame)

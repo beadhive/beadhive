@@ -359,21 +359,31 @@ class OperatorEventRelay:
 
     def _publish_activity_locked(self, state: _HiveRelayState, install: ActivityInstall) -> int:
         if install.reset_reason is not None:
+            now = self._now_millis()
+            events = [
+                (
+                    "runtime",
+                    install.source_revision,
+                    None,
+                    {
+                        "kind": "activity-reset",
+                        "runId": install.run_id,
+                        "producerEpoch": install.producer_epoch,
+                        "reason": install.reset_reason,
+                    },
+                )
+            ]
+            self._preflight_batch(state, events, observed_at=now, generated_at=now)
             if self.telemetry is not None:
                 self.telemetry.record_reset("source_discontinuity")
             self._append_locked(
                 state,
-                source="runtime",
-                revision=install.source_revision,
-                observed_at=self._now_millis(),
-                generated_at=self._now_millis(),
-                entity=None,
-                payload={
-                    "kind": "activity-reset",
-                    "runId": install.run_id,
-                    "producerEpoch": install.producer_epoch,
-                    "reason": install.reset_reason,
-                },
+                source=events[0][0],
+                revision=events[0][1],
+                observed_at=now,
+                generated_at=now,
+                entity=events[0][2],
+                payload=events[0][3],
             )
             return 1
         if install.added_records is not None:
@@ -395,19 +405,36 @@ class OperatorEventRelay:
             added = activities[previous_count:]
         if not added:
             raise RuntimeError("activity install must add an event or carry an explicit reset")
-        for activity in added:
-            self._append_locked(
-                state,
-                source="runtime",
-                revision=str(activity["sourceRevision"]),
-                observed_at=int(activity["occurredAt"]),
-                generated_at=self._now_millis(),
-                entity=None,
-                payload={
+        generated_at = self._now_millis()
+        events = [
+            (
+                "runtime",
+                str(activity["sourceRevision"]),
+                None,
+                {
                     "kind": "activity",
                     "runId": install.run_id,
                     "activity": activity,
                 },
+            )
+            for activity in added
+        ]
+        observed_times = [int(activity["occurredAt"]) for activity in added]
+        self._preflight_batch(
+            state,
+            events,
+            observed_at=observed_times,
+            generated_at=generated_at,
+        )
+        for event, observed_at in zip(events, observed_times, strict=True):
+            self._append_locked(
+                state,
+                source=event[0],
+                revision=event[1],
+                observed_at=observed_at,
+                generated_at=generated_at,
+                entity=event[2],
+                payload=event[3],
             )
         return len(added)
 
@@ -417,6 +444,24 @@ class OperatorEventRelay:
             if self._closed:
                 return 1
             if transition.reset_reason is not None:
+                observed_at = self._now_millis()
+                generated_at = int(transition.current.get("generatedAt", observed_at))
+                events = [
+                    (
+                        "beads",
+                        transition.source_revision,
+                        None,
+                        {"kind": "reset", "reason": transition.reset_reason},
+                    )
+                ]
+                self._preflight_batch(
+                    state,
+                    events,
+                    observed_at=observed_at,
+                    generated_at=generated_at,
+                    base_sequence=0,
+                    producer_epoch=transition.producer_epoch,
+                )
                 if self.telemetry is not None:
                     self.telemetry.record_reset("source_discontinuity")
                 self._clear_history_locked(state)
@@ -428,12 +473,12 @@ class OperatorEventRelay:
                 state.sequence = 0
                 self._append_locked(
                     state,
-                    source="beads",
-                    revision=transition.source_revision,
-                    observed_at=self._now_millis(),
-                    generated_at=int(transition.current.get("generatedAt", self._now_millis())),
-                    entity=None,
-                    payload={"kind": "reset", "reason": transition.reset_reason},
+                    source=events[0][0],
+                    revision=events[0][1],
+                    observed_at=observed_at,
+                    generated_at=generated_at,
+                    entity=events[0][2],
+                    payload=events[0][3],
                 )
                 # The reset is the last frame an old-epoch subscription may consume.  Detach
                 # those clients from live publication without clearing the just-enqueued reset;
@@ -443,24 +488,34 @@ class OperatorEventRelay:
                     self._retire_after_drain_locked(client, "resnapshot_required")
                 return 1
 
-            if not state.initialized:
-                state.producer_epoch = transition.producer_epoch
-                state.sequence = transition.base_sequence
-                state.initialized = True
-            if (state.producer_epoch, state.sequence) != (
+            if state.initialized and (state.producer_epoch, state.sequence) != (
                 transition.producer_epoch,
                 transition.base_sequence,
             ):
                 raise RuntimeError("feed transition does not continue the relay cursor")
 
             events = self._diff_events(transition)
+            observed_at = self._now_millis()
+            generated_at = int(transition.current.get("generatedAt", observed_at))
+            self._preflight_batch(
+                state,
+                events,
+                observed_at=observed_at,
+                generated_at=generated_at,
+                base_sequence=transition.base_sequence,
+                producer_epoch=transition.producer_epoch,
+            )
+            if not state.initialized:
+                state.producer_epoch = transition.producer_epoch
+                state.sequence = transition.base_sequence
+                state.initialized = True
             for source, revision, entity, payload in events:
                 self._append_locked(
                     state,
                     source=source,
                     revision=revision,
-                    observed_at=self._now_millis(),
-                    generated_at=int(transition.current.get("generatedAt", self._now_millis())),
+                    observed_at=observed_at,
+                    generated_at=generated_at,
                     entity=entity,
                     payload=payload,
                 )
@@ -558,12 +613,13 @@ class OperatorEventRelay:
                 pulse.base_sequence,
             ):
                 raise RuntimeError("heartbeat does not continue the installed snapshot cursor")
+            now = self._now_millis()
             self._append_locked(
                 state,
                 source="supervisor",
                 revision=pulse.source_revision,
-                observed_at=self._now_millis(),
-                generated_at=self._now_millis(),
+                observed_at=now,
+                generated_at=now,
                 entity=None,
                 payload={"kind": "heartbeat"},
             )
@@ -580,22 +636,19 @@ class OperatorEventRelay:
         entity: dict | None,
         payload: dict[str, object],
     ) -> RelayEvent:
-        sequence = state.sequence + 1
-        envelope: dict[str, object] = {
-            "schemaVersion": 1,
-            "hiveId": state.hive_id,
-            "subscriptionId": state.subscription_id,
-            "producerEpoch": state.producer_epoch,
-            "sequence": sequence,
-            "baseSequence": state.sequence,
-            "observedAt": observed_at,
-            "generatedAt": generated_at,
-            "source": source,
-            "revision": revision,
-            "entity": entity,
-            "payload": payload,
-        }
+        envelope = self._event_envelope(
+            state,
+            source=source,
+            revision=revision,
+            observed_at=observed_at,
+            generated_at=generated_at,
+            entity=entity,
+            payload=payload,
+            base_sequence=state.sequence,
+            producer_epoch=state.producer_epoch,
+        )
         self._validate_envelope(envelope)
+        sequence = int(envelope["sequence"])
         event_id = f"{state.producer_epoch}:{sequence}"
         encoded = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
         frame = f"event: {EVENT_NAME}\nid: {event_id}\ndata: {encoded}\n\n".encode()
@@ -618,6 +671,71 @@ class OperatorEventRelay:
         return event
 
     @staticmethod
+    def _event_envelope(
+        state: _HiveRelayState,
+        *,
+        source: str,
+        revision: str,
+        observed_at: int,
+        generated_at: int,
+        entity: dict | None,
+        payload: dict[str, object],
+        base_sequence: int,
+        producer_epoch: str,
+    ) -> dict[str, object]:
+        return {
+            "schemaVersion": 1,
+            "hiveId": state.hive_id,
+            "subscriptionId": state.subscription_id,
+            "producerEpoch": producer_epoch,
+            "sequence": base_sequence + 1,
+            "baseSequence": base_sequence,
+            "observedAt": observed_at,
+            "generatedAt": generated_at,
+            "source": source,
+            "revision": revision,
+            "entity": entity,
+            "payload": payload,
+        }
+
+    def _preflight_batch(
+        self,
+        state: _HiveRelayState,
+        events: list[tuple[str, str, dict | None, dict[str, object]]],
+        *,
+        observed_at: int | list[int],
+        generated_at: int,
+        base_sequence: int | None = None,
+        producer_epoch: str | None = None,
+    ) -> None:
+        if not events:
+            raise RuntimeError("operator event batch must not be empty")
+        observed_times = (
+            observed_at if isinstance(observed_at, list) else [observed_at] * len(events)
+        )
+        if len(observed_times) != len(events):
+            raise RuntimeError("operator event batch timestamps disagree")
+        base = state.sequence if base_sequence is None else base_sequence
+        epoch = state.producer_epoch if producer_epoch is None else producer_epoch
+        for offset, (event, event_observed_at) in enumerate(
+            zip(events, observed_times, strict=True)
+        ):
+            source, revision, entity, payload = event
+            envelope = self._event_envelope(
+                state,
+                source=source,
+                revision=revision,
+                observed_at=event_observed_at,
+                generated_at=generated_at,
+                entity=entity,
+                payload=payload,
+                base_sequence=base + offset,
+                producer_epoch=epoch,
+            )
+            self._validate_envelope(envelope)
+            json.dumps(envelope, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+
+    @staticmethod
     def _validate_envelope(event: Mapping[str, object]) -> None:
         hive_id = event.get("hiveId")
         subscription_id = event.get("subscriptionId")
@@ -630,10 +748,22 @@ class OperatorEventRelay:
         if (
             type(sequence) is not int
             or sequence < 1
+            or sequence > operator_contract.DEVELOPMENT_MAX_CURSOR_SEQUENCE
             or type(base) is not int
             or base != sequence - 1
         ):
-            raise RuntimeError("operator event sequence must be positive and continue baseSequence")
+            raise RuntimeError(
+                "operator event sequence must fit the cursor contract and continue baseSequence"
+            )
+        for timestamp_field in ("observedAt", "generatedAt"):
+            timestamp = event[timestamp_field]
+            if (
+                type(timestamp) is not int
+                or not 0 <= timestamp <= operator_contract.DEVELOPMENT_MAX_JSON_SAFE_INTEGER
+            ):
+                raise RuntimeError(
+                    f"operator event {timestamp_field} must be a JSON-safe timestamp"
+                )
         entity = event["entity"]
         payload = event["payload"]
         if not isinstance(payload, Mapping):
