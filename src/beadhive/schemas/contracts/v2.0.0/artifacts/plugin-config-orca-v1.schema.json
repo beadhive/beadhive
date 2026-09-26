@@ -1,0 +1,65 @@
+{
+  "$defs": {
+    "OrcaWorktreesConfig": {
+      "additionalProperties": false,
+      "description": "``orca.worktrees`` in its expanded (mapping) form.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Whether orca worktree delegation is flagged on.",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "fallback": {
+          "default": false,
+          "description": "Whether orca falls back gracefully when its runtime is down.",
+          "title": "Fallback",
+          "type": "boolean"
+        }
+      },
+      "title": "OrcaWorktreesConfig",
+      "type": "object"
+    }
+  },
+  "$id": "urn:beadhive:wire-schema:plugin-config:orca:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "orca — repo registry integration (first plugin).",
+  "properties": {
+    "data_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Path to orca's on-disk state (orca-data.json).",
+      "title": "Data Path"
+    },
+    "enabled": {
+      "default": false,
+      "description": "Whether orca (repo registry integration) is on.",
+      "title": "Enabled",
+      "type": "boolean"
+    },
+    "worktrees": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "$ref": "#/$defs/OrcaWorktreesConfig"
+        }
+      ],
+      "default": false,
+      "description": "Bare bool, or {enabled, fallback} for the expanded form.",
+      "title": "Worktrees"
+    }
+  },
+  "title": "OrcaConfig",
+  "type": "object",
+  "version": 2
+}

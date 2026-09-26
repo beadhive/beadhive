@@ -20,6 +20,7 @@ import beadhive.contract_release as contract_release
 from beadhive import gateway_wire_contracts
 from beadhive.contract_release import (
     OFFICIAL_V1_FAMILIES,
+    RELEASE_MAJOR,
     RELEASE_VERSION,
     build_release,
     compatibility_errors,
@@ -97,7 +98,7 @@ def test_bundle_inventory_is_complete_canonical_and_source_owned() -> None:
     inventory = json.loads(rendered[Path("inventory.json")])
     fixtures = json.loads(rendered[Path("conformance.json")])
 
-    assert RELEASE_VERSION == "1.0.0"
+    assert RELEASE_VERSION == "2.0.0"
     assert OFFICIAL_V1_FAMILIES == EXPECTED_FAMILIES
     assert {row["family"] for row in inventory["artifacts"]} == EXPECTED_FAMILIES
     assert len({row["id"] for row in inventory["artifacts"]}) == len(inventory["artifacts"])
@@ -111,10 +112,10 @@ def test_bundle_inventory_is_complete_canonical_and_source_owned() -> None:
         path = Path(row["path"])
         payload = rendered[path]
         document = json.loads(payload)
-        assert row["version"] == 1
+        assert row["version"] == RELEASE_MAJOR
         if row["kind"] == "json-schema":
             assert document["$id"] == row["id"]
-            assert document["version"] == 1
+            assert document["version"] == RELEASE_MAJOR
         elif "$id" in document:
             assert document["$id"] == row["id"]
         assert row["source_owner"].startswith("beadhive.") or row["source_owner"].startswith(

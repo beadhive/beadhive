@@ -1,4 +1,4 @@
-"""Offline assembly and integrity checking for the official v1 contract bundle.
+"""Offline assembly and integrity checking for the official contract bundle.
 
 The domain modules named by ``source_owner`` remain the contract authorities.  This module is a
 publication boundary: it snapshots their deterministic projections, gives every artifact a
@@ -66,8 +66,8 @@ from .modules.config.application.schema_artifacts import (
     plugin_fragment_artifacts,
 )
 
-RELEASE_VERSION = "1.0.0"
-RELEASE_MAJOR = 1
+RELEASE_VERSION = "2.0.0"
+RELEASE_MAJOR = 2
 OFFICIAL_V1_FAMILIES = frozenset(
     {
         "config",
@@ -93,13 +93,11 @@ OFFICIAL_V1_FAMILIES = frozenset(
 _SCHEMA_POLICY = "json-schema-additive-v1"
 _CATALOG_POLICY = "append-only-catalog-v1"
 _OPENAPI_POLICY = "openapi-additive-v1"
-# The executable compatibility baseline is the bundle as published with wire release 1.5.0, the
-# supported-contract floor (bh-bwnys.5).  Earlier baselines were dropped with every pre-1.5.0
-# wire release; nothing compares against them.  The directory is named for that wire release,
-# while its inventory keeps this bundle's own ``RELEASE_VERSION``.
-_PUBLISHED_BASELINE_VERSION = "1.5.0"
+# The executable compatibility baseline advances only at an explicit official contract major.
+# v2 establishes the post-override CLI shapes; later same-major changes compare against it.
+_PUBLISHED_BASELINE_VERSION = "2.0.0"
 _PUBLISHED_BASELINE_SHA256 = (
-    "sha256:1c744d0544310db7bcebd456144757db60c855e8e262859da50844f52efc45ae"
+    "sha256:4b57329492a367d16be40e957fb5bbc5d5de244df70e9484c0cc92d9796f2cc6"
 )
 _MANIFEST_SCHEMA = Path("docs/schemas/wire/v1.5.0/plugin-manifest-v1.schema.json")
 _HTTP_METHODS = frozenset({"delete", "get", "head", "options", "patch", "post", "put", "trace"})
@@ -1027,6 +1025,7 @@ def _integrity_errors(
     snapshot: _ReleaseSnapshot,
     *,
     expected_release_version: str = RELEASE_VERSION,
+    expected_release_major: int = RELEASE_MAJOR,
     enforce_current_inventory: bool = True,
 ) -> list[str]:
     errors: list[str] = []
@@ -1144,8 +1143,8 @@ def _integrity_errors(
         family = row.get("family")
         if family not in OFFICIAL_V1_FAMILIES:
             errors.append(f"{label}.family: unknown official-v1 family")
-        if row.get("version") != RELEASE_MAJOR:
-            errors.append(f"{label}.version: expected {RELEASE_MAJOR}")
+        if row.get("version") != expected_release_major:
+            errors.append(f"{label}.version: expected {expected_release_major}")
         kind = row.get("kind")
         expected_policy = {
             "json-schema": _SCHEMA_POLICY,
@@ -1279,6 +1278,7 @@ def _load_release_snapshot(
     *,
     expected_digest: str | None = None,
     expected_release_version: str = RELEASE_VERSION,
+    expected_release_major: int = RELEASE_MAJOR,
     enforce_current_inventory: bool = True,
 ) -> dict[str, Any]:
     snapshot, errors = _read_release_snapshot(root)
@@ -1286,6 +1286,7 @@ def _load_release_snapshot(
         _integrity_errors(
             snapshot,
             expected_release_version=expected_release_version,
+            expected_release_major=expected_release_major,
             enforce_current_inventory=enforce_current_inventory,
         )
     )
@@ -1315,6 +1316,7 @@ def load_published_baseline() -> dict[str, Any]:
         published_baseline_root(),
         expected_digest=_PUBLISHED_BASELINE_SHA256,
         expected_release_version=RELEASE_VERSION,
+        expected_release_major=RELEASE_MAJOR,
         enforce_current_inventory=False,
     )
 
@@ -2680,7 +2682,11 @@ def compatibility_errors(old: dict[str, Any], candidate: dict[str, Any]) -> list
 
 
 def _published_compatibility_errors(candidate: dict[str, Any]) -> list[str]:
-    return compatibility_errors(load_published_baseline(), candidate)
+    baseline = load_published_baseline()
+    baseline_major = int(str(baseline.get("release_version", "0")).split(".", 1)[0])
+    if baseline_major != RELEASE_MAJOR:
+        return []
+    return compatibility_errors(baseline, candidate)
 
 
 def main(argv: list[str] | None = None) -> int:

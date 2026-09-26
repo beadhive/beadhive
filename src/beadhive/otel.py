@@ -1125,6 +1125,19 @@ def count_validation_bypass(attributes: dict[str, Any] | None = None) -> None:
     ).add(1, attrs)
 
 
+def record_validation_bypass_event(attributes: dict[str, Any]) -> None:
+    """Attach the full bypass audit payload to the active span as a structured event.
+
+    Actor, reason, command, and candidate hashes are deliberately kept off metric labels.
+    """
+    if not _initialized:
+        return
+    span = get_current_span()
+    if not span.is_recording():
+        return
+    span.add_event("bh.validation.bypassed", attributes)
+
+
 def record_validation_queue_wait(seconds: float, attributes: dict[str, Any] | None = None) -> None:
     """Histogram of host-wide validation-admission queue time.
 

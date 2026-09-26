@@ -1,0 +1,100 @@
+{
+  "$defs": {
+    "Harness": {
+      "enum": [
+        "codex",
+        "claude",
+        "opencode"
+      ],
+      "title": "Harness",
+      "type": "string"
+    }
+  },
+  "$id": "urn:beadhive:wire-schema:agent-launch-profile:1",
+  "additionalProperties": false,
+  "description": "Version 1 request for launching one named Beadhive seat.",
+  "properties": {
+    "available_seats": {
+      "anyOf": [
+        {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Available Seats"
+    },
+    "bead": {
+      "anyOf": [
+        {
+          "pattern": "^[a-z][a-z0-9-]*-[a-z0-9]+(?:\\.[a-z0-9]+)*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Bead"
+    },
+    "effort": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Effort"
+    },
+    "harness": {
+      "$ref": "#/$defs/Harness"
+    },
+    "initial_seat": {
+      "minLength": 1,
+      "title": "Initial Seat",
+      "type": "string"
+    },
+    "managed_bead": {
+      "title": "Managed Bead",
+      "type": "boolean"
+    },
+    "model": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Model"
+    },
+    "version": {
+      "const": "1",
+      "default": "1",
+      "title": "Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "managed_bead",
+    "initial_seat",
+    "harness"
+  ],
+  "title": "AgentLaunchProfile",
+  "type": "object",
+  "version": 2
+}

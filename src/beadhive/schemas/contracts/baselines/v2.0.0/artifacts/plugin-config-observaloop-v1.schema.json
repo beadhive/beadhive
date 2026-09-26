@@ -1,0 +1,35 @@
+{
+  "$id": "urn:beadhive:wire-schema:plugin-config:observaloop:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Observaloop integration — telemetry routing + per-hive profile management. Requires\notel.enabled: true; no-op otherwise.",
+  "properties": {
+    "command": {
+      "default": "observaloop",
+      "description": "Override the observaloop CLI command.",
+      "title": "Command",
+      "type": "string"
+    },
+    "enabled": {
+      "default": false,
+      "description": "Enable observaloop routing (requires otel.enabled).",
+      "title": "Enabled",
+      "type": "boolean"
+    },
+    "per_worktree_container": {
+      "default": false,
+      "description": "Reserved for Mode-2 (one container per worktree); not yet active.",
+      "title": "Per Worktree Container",
+      "type": "boolean"
+    },
+    "profile": {
+      "default": "",
+      "description": "Observaloop profile stamped onto the Resource (BH_OBSERVALOOP_PROFILE wins).",
+      "title": "Profile",
+      "type": "string"
+    }
+  },
+  "title": "ObservaloopConfig",
+  "type": "object",
+  "version": 2
+}

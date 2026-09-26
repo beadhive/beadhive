@@ -3,7 +3,8 @@
 
 The live catalog (``beadhive.operation_catalog.document()``) always tracks ``index.json``
 ``latest``. When the catalog changes -- typically because a CLI verb was registered -- this
-command cuts the next minor release: it copies the latest release directory, renders the live
+command cuts the next minor release. ``--major`` explicitly cuts the next major when an existing
+published operation shape changes. It copies the latest release directory, renders the live
 catalog into it, bumps the manifest and conformance ``release_version`` and appends the release
 to ``index.json``. Published releases are never edited.
 
@@ -114,8 +115,9 @@ def publish(
     *,
     catalog: dict[str, Any] | None = None,
     base_ref: str | None = None,
+    major_release: bool = False,
 ) -> PublishResult:
-    """Make ``index.json`` latest carry the live catalog, cutting a minor release if needed."""
+    """Make ``index.json`` latest carry the live catalog, cutting a minor or major release."""
     base_ref = base_ref or os.environ.get("BH_WIRE_SCHEMA_BASE_REF", "main")
     rendered = render_catalog(catalog)
     index = _load_index(root)
@@ -135,7 +137,14 @@ def publish(
         return PublishResult(latest, "current")
 
     major, minor, _patch = _semver(latest)
-    version = f"{major}.{minor + 1}.0"
+    target_major = major + 1 if major_release else major
+    version = f"{target_major}.0.0" if major_release else f"{major}.{minor + 1}.0"
+    catalog_major = _semver(str(json.loads(rendered).get("catalog_version", "")))[0]
+    if catalog_major != target_major:
+        raise ValueError(
+            f"catalog_version major {catalog_major} does not match target release major "
+            f"{target_major}"
+        )
     if any(row["version"] == version for row in index["releases"]):
         raise ValueError(f"wire release {version} is already listed in {INDEX}")
     release_dir = root / WIRE / f"v{version}"
@@ -147,11 +156,14 @@ def publish(
         raise ValueError(f"{latest_dir.relative_to(root)}/release.json: expected {latest!r}")
     manifest["release_version"] = version
     manifest.pop("deprecated", None)
+    if major_release:
+        for artifact in manifest.get("artifacts", []):
+            artifact["contract_version"] = target_major
     _write_json(release_dir / "release.json", manifest)
     _bump_release_version(release_dir / str(manifest["conformance_fixtures"]), latest, version)
     (release_dir / CATALOG).write_text(rendered, encoding="utf-8")
     index["releases"].append(
-        {"version": version, "major": major, "manifest": f"v{version}/release.json"}
+        {"version": version, "major": target_major, "manifest": f"v{version}/release.json"}
     )
     index["latest"] = version
     _write_json(root / INDEX, index)
@@ -160,9 +172,14 @@ def publish(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.parse_args(argv)
+    parser.add_argument(
+        "--major",
+        action="store_true",
+        help="cut the next major release for an intentional published-shape change",
+    )
+    args = parser.parse_args(argv)
     try:
-        result = publish()
+        result = publish(major_release=args.major)
     except (OSError, ValueError, KeyError, StopIteration) as exc:
         print(f"wire-publish: {exc}")
         return 1

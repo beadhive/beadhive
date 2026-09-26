@@ -290,11 +290,20 @@ def impl__guard_fork_remote(api, entry, remote):
         raise api.typer.Exit(1)
 
 
-def impl_submit(api, bead, as_, hive, group):
+def impl_submit(api, bead, as_, hive, group, override_validation="", override_actor=""):
     cfg = api.config.load()
     api.guard.guard_primary(hive, cfg=cfg, verb="work submit")
+    if override_actor and not override_validation:
+        api.typer.echo("✗ --override-as requires --override-validation REASON", err=True)
+        raise api.typer.Exit(1)
     group = api.work_logic.opt_str(group)
     if group:
+        if override_validation:
+            api.typer.echo(
+                "✗ one-shot validation override requires one exact bead; --group is unsupported",
+                err=True,
+            )
+            raise api.typer.Exit(1)
         if bead:
             api.typer.echo("✗ pass either <id> or --group, not both", err=True)
             raise api.typer.Exit(1)
@@ -313,7 +322,23 @@ def impl_submit(api, bead, as_, hive, group):
     api._guard_claim_fence(cfg, entry, target, hive)
     base = api._guard_submit_ready(entry, target, branch, bead, cfg, data)
     api._warn_submit_release_hint(bead, main, entry, branch, base, data)
-    api._validate_submit_checkout(entry, branch, cfg, bead=bead)
+    override = None
+    if override_validation:
+        sha = api.worktree._branch_sha(entry, branch)
+        tree = api.validation_ledger.tree_of(entry, sha)
+        try:
+            override = validation_bypass.bind_override(
+                actor=override_actor,
+                bead=bead,
+                phase="submit",
+                reason=override_validation,
+                sha=sha,
+                tree=tree,
+            )
+        except validation_bypass.OverrideRefused as exc:
+            api.typer.echo(f"✗ {exc}", err=True)
+            raise api.typer.Exit(1) from None
+    api._validate_submit_checkout(entry, branch, cfg, bead=bead, override=override)
     sha = api.worktree.head_sha(target)
     api._record_submit_commits(bead, main, entry, branch, base)
     gate, reuse = api._open_submit_gate(cfg, entry, bead, branch, main, sha)
@@ -433,12 +458,37 @@ def impl__warn_submit_release_hint(api, bead, main, entry, branch, base, data=No
         api.typer.echo(f"⚠ {warn}", err=True)
 
 
-def impl__validate_submit_checkout(api, entry, branch, cfg, bead=None):
+def impl__validate_submit_checkout(api, entry, branch, cfg, bead=None, override=None):
     main = api.registry.hive_dir(entry)
     sha = api.worktree._branch_sha(entry, branch)
     tree = api.validation_ledger.tree_of(entry, sha)
     command = api.config.validate_cmd(cfg, entry, "submit")
     command_hash = api.validation_ledger.cmd_hash(command)
+    if override is not None:
+        v_start = api.time.perf_counter()
+        try:
+            validation_bypass.record_override(
+                cfg,
+                entry,
+                override,
+                sha=sha,
+                tree=tree,
+                command=command,
+                branch=branch,
+                audit=lambda event: validation_bypass.write_bead_event(api.bd, main, event),
+            )
+        except (validation_bypass.OverrideRefused, validation_bypass.BypassAuditError) as exc:
+            api.typer.echo(f"✗ {exc} — nothing submitted", err=True)
+            raise api.typer.Exit(1) from None
+        api.otel.record_validation_duration(
+            api.time.perf_counter() - v_start,
+            {
+                "bh.work.phase": "submit",
+                "bh.validation.result": "bypassed",
+                "bh.hive": api._hive(entry),
+            },
+        )
+        return
     if validation_bypass.enabled(cfg, entry):
         v_start = api.time.perf_counter()
         rc = api.worktree.clean_checkout(

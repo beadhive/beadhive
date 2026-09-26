@@ -46,6 +46,11 @@ release in place instead of cutting another minor. When a rebase finds that the 
 same version in the meantime, drop your release directory and its `index.json` entry, keep the
 base's, and re-run `just wire-publish` to cut the next minor.
 
+Changing an existing published operation shape is a breaking catalog change. After reviewing that
+compatibility decision, run `uv run python scripts/publish_wire_release.py --major`, followed by
+the remaining derived-artifact generators in `just wire-publish`. The new major carries the live
+catalog while every earlier release directory remains unchanged.
+
 Do not edit a published release by hand. `just wire-schema-compat` rejects any in-place change to
 a 1.5.0-or-later release. It also rejects a new release that removes or changes an operation, an
 artifact, or a schema constraint that the previous supported release published.
