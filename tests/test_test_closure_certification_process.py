@@ -268,6 +268,7 @@ def _assert_production_full_gate_wiring(repo: Path) -> None:
     ]
     selective_body = [row[0] for row in selective_architecture["body"]]
     assert selective_body == [
+        "uv run python scripts/check_native_impact_map.py",
         "uv run python scripts/check_import_boundaries.py",
         "uv run python scripts/check_package_imports.py",
         "uv run python scripts/test_closure_certification.py --check-structural",

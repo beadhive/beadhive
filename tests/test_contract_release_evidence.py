@@ -121,14 +121,23 @@ def test_report_classifies_each_nonidentical_comparison_with_policy_evidence() -
             assert row["candidate_sha256"] is None
             assert row["policy_errors"] == []
 
-    # Pre-1.5.0 releases are deprecated and never compared (bh-bwnys.5); the supported
-    # releases carry the live operation catalog without policy divergence.
-    assert not [
+    # Pre-1.5.0 releases are deprecated and never compared (bh-bwnys.5). The supported
+    # 1.x operation catalogs retain their explicit version-policy divergence from 2.x.
+    catalog_divergences = [
         row
         for row in comparisons
         if row["artifact_id"] == "urn:beadhive:wire-catalog:operations:1"
         and row["classification"] == "policy-divergence-retained"
     ]
+    assert {row["historical_release"] for row in catalog_divergences} == {"1.5.0", "1.6.0"}
+    assert all(
+        row["policy_errors"]
+        == [
+            "urn:beadhive:wire-catalog:operations:1.catalog_version: append-only catalog "
+            "value changed or members were reordered"
+        ]
+        for row in catalog_divergences
+    )
 
 
 def test_checked_compatibility_report_is_canonical_and_current() -> None:

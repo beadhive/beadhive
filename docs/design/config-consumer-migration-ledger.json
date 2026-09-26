@@ -16,7 +16,7 @@
     "successor_contracts": "beadhive.modules.config.contracts"
   },
   "current": {
-    "config_patch_point_count": 274,
+    "config_patch_point_count": 277,
     "config_patch_points": [
       {
         "facade_target": "beadhive.config.save_fleet",
@@ -1601,6 +1601,27 @@
         "target": "beadhive.config.load"
       },
       {
+        "facade_target": "beadhive.config.load_fleet",
+        "kind": "direct-facade",
+        "line": 100,
+        "path": "tests/test_validation_bypass.py",
+        "target": "beadhive.config.load_fleet"
+      },
+      {
+        "facade_target": "beadhive.config.save_fleet",
+        "kind": "direct-facade",
+        "line": 101,
+        "path": "tests/test_validation_bypass.py",
+        "target": "beadhive.config.save_fleet"
+      },
+      {
+        "facade_target": "beadhive.config._write_transaction",
+        "kind": "direct-facade",
+        "line": 102,
+        "path": "tests/test_validation_bypass.py",
+        "target": "beadhive.config._write_transaction"
+      },
+      {
         "facade_target": "beadhive.config.load",
         "kind": "indirect-adapter",
         "line": 52,
@@ -1610,77 +1631,77 @@
       {
         "facade_target": "beadhive.config.work_identity",
         "kind": "direct-facade",
-        "line": 1015,
+        "line": 1025,
         "path": "tests/test_work.py",
         "target": "beadhive.config.work_identity"
       },
       {
         "facade_target": "beadhive.config.work_identity",
         "kind": "direct-facade",
-        "line": 1035,
+        "line": 1045,
         "path": "tests/test_work.py",
         "target": "beadhive.config.work_identity"
       },
       {
         "facade_target": "beadhive.config.review_gate",
         "kind": "direct-facade",
-        "line": 1524,
+        "line": 1630,
         "path": "tests/test_work.py",
         "target": "beadhive.config.review_gate"
       },
       {
         "facade_target": "beadhive.config.validate_cmd",
         "kind": "direct-facade",
-        "line": 1699,
+        "line": 1805,
         "path": "tests/test_work.py",
         "target": "beadhive.config.validate_cmd"
       },
       {
         "facade_target": "beadhive.config.validate_cmd",
         "kind": "direct-facade",
-        "line": 2064,
+        "line": 2170,
         "path": "tests/test_work.py",
         "target": "beadhive.config.validate_cmd"
       },
       {
         "facade_target": "beadhive.config.validation_mode",
         "kind": "direct-facade",
-        "line": 2142,
+        "line": 2248,
         "path": "tests/test_work.py",
         "target": "beadhive.config.validation_mode"
       },
       {
         "facade_target": "beadhive.config.work_value",
         "kind": "direct-facade",
-        "line": 2224,
+        "line": 2330,
         "path": "tests/test_work.py",
         "target": "beadhive.config.work_value"
       },
       {
         "facade_target": "beadhive.config.validate_cmd",
         "kind": "direct-facade",
-        "line": 2376,
+        "line": 2482,
         "path": "tests/test_work.py",
         "target": "beadhive.config.validate_cmd"
       },
       {
         "facade_target": "beadhive.config.work_value",
         "kind": "direct-facade",
-        "line": 2407,
+        "line": 2513,
         "path": "tests/test_work.py",
         "target": "beadhive.config.work_value"
       },
       {
         "facade_target": "beadhive.config.validation_mode",
         "kind": "direct-facade",
-        "line": 4924,
+        "line": 5128,
         "path": "tests/test_work.py",
         "target": "beadhive.config.validation_mode"
       },
       {
         "facade_target": "beadhive.config.max_commits",
         "kind": "direct-facade",
-        "line": 6101,
+        "line": 6305,
         "path": "tests/test_work.py",
         "target": "beadhive.config.max_commits"
       },
@@ -2410,7 +2431,7 @@
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       }
     ],
-    "test_config_importer_count": 142,
+    "test_config_importer_count": 143,
     "test_config_importers": [
       "tests/contracts/test_config_contract_compatibility.py",
       "tests/contracts/test_config_resolution_compatibility.py",
@@ -2545,6 +2566,7 @@
       "tests/test_suite_hermeticity.py",
       "tests/test_sync_remote.py",
       "tests/test_toolchain.py",
+      "tests/test_validation_bypass.py",
       "tests/test_work.py",
       "tests/test_work_next.py",
       "tests/test_work_reads.py",

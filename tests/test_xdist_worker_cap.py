@@ -32,14 +32,20 @@ def test_live_integration_recipe_uses_its_measured_fixed_worker_bound() -> None:
     text = JUSTFILE.read_text()
 
     assert 'integration_workers := "16"' in text
-    assert 'pytest -n {{integration_workers}} tests -m "integration"' in text
+    assert (
+        'python scripts/pytest_with_report.py -n {{integration_workers}} tests -m "integration"'
+        in text
+    )
 
 
 def test_stateful_recipe_uses_its_measured_fixed_worker_bound() -> None:
     text = JUSTFILE.read_text()
 
     assert 'stateful_workers := "16"' in text
-    assert 'pytest -n {{stateful_workers}} tests -m "not integration and not pants_profile"' in text
+    assert (
+        "python scripts/pytest_with_report.py -n {{stateful_workers}} tests "
+        '-m "not integration and not pants_profile"' in text
+    )
 
 
 def test_just_exports_default_and_override_xdist_ceiling() -> None:

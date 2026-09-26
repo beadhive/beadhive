@@ -148,7 +148,7 @@ def _operation(catalog: dict, name: str) -> dict:
 def test_catalog_compatibility_allows_a_unique_additive_operation() -> None:
     old = _catalog()
     candidate = deepcopy(old)
-    candidate["catalog_version"] = "1.1.0"
+    candidate["catalog_version"] = f"{_MAJOR}.{_MINOR + 1}.0"
     added = deepcopy(_operation(candidate, "probe.health"))
     added["name"] = "probe.version"
     added["surfaces"]["mcp"]["resource"] = "beadhive://probe/version"
@@ -494,7 +494,7 @@ def test_actual_gate_cli_rejects_same_major_not_mutations(
     index = json.loads((wire / "index.json").read_text())
     index["latest"] = NEXT_PATCH
     index["releases"].append(
-        {"version": NEXT_PATCH, "major": 1, "manifest": f"v{NEXT_PATCH}/release.json"}
+        {"version": NEXT_PATCH, "major": _MAJOR, "manifest": f"v{NEXT_PATCH}/release.json"}
     )
     (wire / "index.json").write_text(json.dumps(index, indent=2) + "\n")
 
@@ -559,13 +559,13 @@ def _catalog_gate_candidate(tmp_path: Path, mutation: str) -> tuple[Path, str, s
     index = json.loads((wire / "index.json").read_text())
     index["latest"] = NEXT_PATCH
     index["releases"].append(
-        {"version": NEXT_PATCH, "major": 1, "manifest": f"v{NEXT_PATCH}/release.json"}
+        {"version": NEXT_PATCH, "major": _MAJOR, "manifest": f"v{NEXT_PATCH}/release.json"}
     )
     (wire / "index.json").write_text(json.dumps(index, indent=2) + "\n")
 
     catalog_path = candidate_release / "operation-catalog-v1.json"
     catalog = json.loads(catalog_path.read_text())
-    catalog["catalog_version"] = "1.1.0"
+    catalog["catalog_version"] = f"{_MAJOR}.{_MINOR + 1}.0"
     probe = _operation(catalog, "probe.health")
     if mutation == "add":
         added = deepcopy(probe)
