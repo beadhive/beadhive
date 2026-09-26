@@ -78,7 +78,8 @@ done
 # ── THE ONLY THING BETWEEN HERE AND THE GATE, AND IT CAN ONLY EVER REMOVE WORK (bh-ku9n9.5) ──
 # `push-main` is a named validation phase like every other point (`work.validate.push-main`),
 # so a land-time run that already tested this exact TREE under this exact command counts. Exit
-# 0 = that verdict exists, fresh and green, for this tree: nothing to re-prove, push in ms.
+# 0 = that verdict exists, fresh and green, OR this hive's audited emergency validation bypass
+# is active. The command's output says `BYPASSED` for the latter and no attestation is created.
 #
 # EVERY OTHER OUTCOME IS NON-ZERO AND FALLS THROUGH TO THE FULL GATE BELOW — a miss, a stale or
 # malformed record, an unconfigured/mismatched phase, no ledger, a `bh` that is not installed

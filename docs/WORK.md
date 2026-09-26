@@ -315,6 +315,29 @@ change it. `BH_VALIDATION_SLOTS` overrides the configured value for one invocati
 [WORKTREES.md](WORKTREES.md#host-wide-admission-and-duplicate-coalescing) for safe tuning,
 coalescing, xdist fan-out, and the separate Dolt fixture semaphore.
 
+### Emergency validation bypass
+
+When a hive's gates are broken or causing host thrash, an operator can bypass every validation
+phase for that hive with one fleet-scoped toggle:
+
+```sh
+bh config set hives.<hive>.work.validation_bypass true --scope fleet
+bh config show                         # hive row says: VALIDATION BYPASSED
+# perform only the recovery work that cannot wait for the gates
+bh config set hives.<hive>.work.validation_bypass false --scope fleet
+```
+
+The configured `validate_cmd` and every `work.validate.<phase>` override remain unchanged, so the
+last command restores normal validation immediately. While enabled, check, submit, merge,
+molecule, union, postland, and push-main print `BYPASSED`, emit telemetry, and append a durable
+audit record under the hive's private validation store. A bypass is never stored or reused as a
+green receipt and never satisfies an attestation. Review approval, history, topology, dirty-tree,
+freshness, merge-slot, and conflict guards still run.
+
+This mode permits unvalidated code to land and push. Keep it scoped to the affected hive, inspect
+the audit records after recovery, disable it as soon as the gate is usable, then run the restored
+configured validation before treating the resulting tree as green.
+
 `submit` only **pushes** the branch when `review_gate` is `gh:run`/`gh:pr` (CI must
 see it); a purely local reviewer sharing the object store needs no push.
 

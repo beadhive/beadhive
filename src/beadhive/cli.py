@@ -2813,9 +2813,9 @@ def hive_hook_pre_push(
 
 @hive_hook_app.command(
     "push-main",
-    help="git pre-push (integration branch): exit 0 ONLY when a fresh green `push-main` "
-    "verdict already exists for REV's exact tree. Every other outcome — miss, stale, "
-    "invalid, error — is non-zero and MEANS RUN THE FULL GATE.",
+    help="git pre-push (integration branch): exit 0 when a fresh green `push-main` verdict "
+    "exists for REV's exact tree, or when the hive's audited emergency validation bypass is "
+    "active. Every other outcome is non-zero and means run the full gate.",
 )
 def hive_hook_push_main(
     rev: str = typer.Argument(
@@ -2838,9 +2838,11 @@ def hive_hook_push_main(
     stays one line and cannot drift from bh's own notion of the gate (bh-smcj,
     `docs/design/hooks-as-functionality-adr.md`).
 
-    Exit 0 says one thing only: a real, confirming run already exercised the exact tree this
-    push would land, under the exact command this gate would otherwise run, recently enough to
-    trust. **Non-zero is not an error — it is the normal answer**, and it means the caller runs
+    Exit 0 normally says a real, confirming run already exercised the exact tree this push would
+    land under the exact command this gate would otherwise run, recently enough to trust. The
+    explicit emergency validation bypass is the only other exit-0 path; it prints `BYPASSED`,
+    writes a durable audit record, and creates no attestation. **Non-zero is not an error — it is
+    the normal answer**, and it means the caller runs
     the full gate inline exactly as it did before this verb existed. A miss, a stale entry, a
     red or malformed record, an unconfigured `work.validate.push-main`, a phase that names a
     different command, no hive, no clone, an unresolvable rev, a corrupt config, an exception of

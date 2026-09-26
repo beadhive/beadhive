@@ -228,9 +228,15 @@ def impl__open_molecule_pr(api, cfg, entry, main, epic, epic_data, mol_branch, b
     same terms as the local-land path (`_validate_molecule_checkout`)."""
     if mode != "loose":
         rc = api.worktree.clean_checkout(
-            entry, mol_branch, api.config.validate_cmd(cfg, entry, "molecule"), reuse=True
+            entry,
+            mol_branch,
+            api.config.validate_cmd(cfg, entry, "molecule"),
+            cfg=cfg,
+            reuse=True,
+            phase="molecule",
         )
-        api.otel.count_validation(rc == 0, {"bh.work.phase": "molecule"})
+        if not getattr(rc, "bypassed", False):
+            api.otel.count_validation(rc == 0, {"bh.work.phase": "molecule"})
         if rc != 0:
             api.typer.echo(f"✗ molecule validation failed (exit {rc}) — no PR opened", err=True)
             raise api.typer.Exit(rc)
@@ -252,7 +258,16 @@ def impl__validate_molecule_checkout(api, entry, mol_branch, cfg, mode):
     if mode == "loose":
         return
     v_start = api.time.perf_counter()
-    if api.selective_validation.configured(cfg, entry):
+    if api.config.validation_bypass_enabled(cfg, entry):
+        rc = api.worktree.clean_checkout(
+            entry,
+            mol_branch,
+            api.config.validate_cmd(cfg, entry, "molecule"),
+            cfg=cfg,
+            reuse=False,
+            phase="molecule",
+        )
+    elif api.selective_validation.configured(cfg, entry):
         base = api.config.integration_branch(cfg, entry)
         rc = api.selective_validation.run(
             entry,
@@ -261,12 +276,17 @@ def impl__validate_molecule_checkout(api, entry, mol_branch, cfg, mode):
             head_rev=mol_branch,
             repo_path=str(api.worktree.clone_for_branch(entry, mol_branch)),
             runner=lambda key_cmd: api.worktree.clean_checkout(
-                entry, mol_branch, key_cmd, reuse=True
+                entry, mol_branch, key_cmd, cfg=cfg, reuse=True, phase="molecule"
             ),
         )
     else:
         rc = api.worktree.clean_checkout(
-            entry, mol_branch, api.config.validate_cmd(cfg, entry, "molecule"), reuse=True
+            entry,
+            mol_branch,
+            api.config.validate_cmd(cfg, entry, "molecule"),
+            cfg=cfg,
+            reuse=True,
+            phase="molecule",
         )
     api.otel.record_validation_duration(
         api.time.perf_counter() - v_start,
@@ -276,7 +296,8 @@ def impl__validate_molecule_checkout(api, entry, mol_branch, cfg, mode):
             "bh.hive": api._hive(entry),
         },
     )
-    api.otel.count_validation(rc == 0, {"bh.work.phase": "molecule"})
+    if not getattr(rc, "bypassed", False):
+        api.otel.count_validation(rc == 0, {"bh.work.phase": "molecule"})
     if rc != 0:
         api.typer.echo(f"✗ molecule validation failed (exit {rc}) — nothing landed", err=True)
         raise api.typer.Exit(rc)
@@ -294,9 +315,15 @@ def impl__postland_revalidate_molecule(
     above is exactly the case where the base MOVED, so that tree is new and the lookup misses."""
     if mode == "conservative" or (mode != "loose" and stale):
         vrc = api.worktree.clean_checkout(
-            entry, base, api.config.validate_cmd(cfg, entry, "postland"), reuse=True
+            entry,
+            base,
+            api.config.validate_cmd(cfg, entry, "postland"),
+            cfg=cfg,
+            reuse=True,
+            phase="postland",
         )
-        api.otel.count_validation(vrc == 0, {"bh.work.phase": "postland"})
+        if not getattr(vrc, "bypassed", False):
+            api.otel.count_validation(vrc == 0, {"bh.work.phase": "postland"})
         if vrc != 0:
             if api._rollback_or_keep(entry, main, base, pre, slot_attrs):
                 api.typer.echo(
@@ -852,20 +879,39 @@ def impl__postland_revalidate_bead(api, cfg, entry, main, base, pre, bead, slot_
     the branch tip submit already validated, so there is no combination to test — that is ADR
     Decision 4 (bh-ku9n9.17), and the ledger key is the entire test for it (see
     `_validate_molecule_checkout` for why no second tree comparison exists)."""
-    if api.selective_validation.configured(cfg, entry):
+    if api.config.validation_bypass_enabled(cfg, entry):
+        vrc = api.worktree.clean_checkout(
+            entry,
+            base,
+            api.config.validate_cmd(cfg, entry, "merge", main_gate=on_main),
+            cfg=cfg,
+            reuse=False,
+            bead=bead,
+            phase="merge",
+        )
+    elif api.selective_validation.configured(cfg, entry):
         vrc = api.selective_validation.run(
             entry,
             cfg,
             base_rev=pre,
             head_rev=base,
             repo_path=str(api.worktree.clone_for_branch(entry, base)),
-            runner=lambda key_cmd: api.worktree.clean_checkout(entry, base, key_cmd, reuse=True),
+            runner=lambda key_cmd: api.worktree.clean_checkout(
+                entry, base, key_cmd, cfg=cfg, reuse=True, bead=bead, phase="merge"
+            ),
         )
     else:
         vrc = api.worktree.clean_checkout(
-            entry, base, api.config.validate_cmd(cfg, entry, "merge", main_gate=on_main), reuse=True
+            entry,
+            base,
+            api.config.validate_cmd(cfg, entry, "merge", main_gate=on_main),
+            cfg=cfg,
+            reuse=True,
+            bead=bead,
+            phase="merge",
         )
-    api.otel.count_validation(vrc == 0, {"bh.work.phase": "merge"})
+    if not getattr(vrc, "bypassed", False):
+        api.otel.count_validation(vrc == 0, {"bh.work.phase": "merge"})
     if vrc == 0:
         return
     rolled = api._rollback_or_keep(entry, main, base, pre, slot_attrs)

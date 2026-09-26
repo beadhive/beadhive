@@ -62,7 +62,9 @@ def validate(api, parts: list[str], value) -> list[dict]:
             )
         )
         literal_checked = True
-    if parts[-1] == "enabled" and not isinstance(value, bool):
+    if (parts[-1] == "enabled" or dotted == "work.validation_bypass") and not isinstance(
+        value, bool
+    ):
         problems.append(problem("error", f"{dotted} must be a boolean (true|false), got {value!r}"))
     if dotted == "archive.window_days" and (not isinstance(value, int) or value <= 0):
         problems.append(
@@ -208,11 +210,63 @@ def _set_in(api, dotted: str, raw: str, as_json: bool, cfg, *, persist: bool, sc
 
 def set_value(api, dotted: str, raw: str, as_json: bool = False, cfg=None, scope=None) -> dict:
     persist = cfg is None
+    parts = api._split_key(dotted)
+    if persist and len(parts) > 2 and parts[0] == "hives":
+        if scope not in (None, api.SCOPE_FLEET):
+            return {
+                "ok": False,
+                "problems": [
+                    api._problem(
+                        "error", "hives.<id> overrides are fleet-owned; use --scope fleet"
+                    )
+                ],
+                "old": None,
+                "new": None,
+            }
+        return set_hive_value(api, parts[1], ".".join(parts[2:]), raw, as_json)
     scope = scope or api.SCOPE_HOST
     if not persist:
         return _set_in(api, dotted, raw, as_json, cfg, persist=False, scope=scope)
     with api._write_transaction(scope):
         return _set_in(api, dotted, raw, as_json, None, persist=True, scope=scope)
+
+
+def set_hive_value(api, hive_id: str, dotted: str, raw: str, as_json: bool = False) -> dict:
+    """Set one schema-backed value on a managed hive entry in a single fleet mutation."""
+    from . import registry
+
+    with api._write_transaction(api.SCOPE_FLEET):
+        cfg = api.load_fleet()
+        try:
+            api._assert_mutable_schema_version(cfg, api.SCOPE_FLEET)
+        except api.ConfigError as exc:
+            return {
+                "ok": False,
+                "problems": [api._problem("error", str(exc))],
+                "old": None,
+                "new": None,
+            }
+        try:
+            entry = registry.resolve_hive(cfg, hive_id)
+        except (KeyError, ValueError) as exc:
+            return {
+                "ok": False,
+                "problems": [api._problem("error", str(exc))],
+                "old": None,
+                "new": None,
+            }
+        result = _set_in(
+            api,
+            dotted,
+            raw,
+            as_json,
+            entry,
+            persist=False,
+            scope=api.SCOPE_FLEET,
+        )
+        if result["ok"]:
+            api.save_fleet(cfg)
+        return result
 
 
 def _unset_in(api, dotted: str, cfg, *, persist: bool, scope: str) -> dict:

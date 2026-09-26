@@ -340,12 +340,17 @@ def _legacy_review(
             )
         else:
             rc = worktree.clean_checkout(entry, branch, cmd, reuse=not fresh)
-        typer.echo(f"— validate exit {rc}")
+        if getattr(rc, "bypassed", False):
+            typer.echo("— validate BYPASSED")
+        else:
+            typer.echo(f"— validate exit {rc}")
     if demo:
         cmd = config.demo_cmd(cfg, entry)
         if cmd:
             typer.echo(f"\n## Demo ({cmd})")
-            typer.echo(f"— demo exit {worktree.clean_checkout(entry, branch, cmd)}")
+            typer.echo(
+                f"— demo exit {worktree.clean_checkout(entry, branch, cmd, phase='demo')}"
+            )
         else:
             typer.echo("\n## Demo\n  no demo_cmd configured (set work.demo_cmd)")
 

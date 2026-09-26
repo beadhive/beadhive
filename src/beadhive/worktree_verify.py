@@ -30,6 +30,7 @@ from . import (
     test_report,
     triage_store,
     validation_admission,
+    validation_bypass,
     validation_ledger,
     validation_records,
 )
@@ -1088,10 +1089,35 @@ def impl_clean_checkout(
             cfg = config.load()
         except FileNotFoundError:
             cfg = {}
+    sha = _branch_sha(entry, branch)
+    tree = validation_ledger.tree_of(entry, sha)
+    bypass_requested = validation_bypass.enabled(cfg, entry) and (
+        phase in validation_bypass.VALIDATION_PHASES
+    )
+    if bypass_requested and (not sha or not tree):
+        typer.echo(
+            f"✗ refusing validation bypass [{phase}]: candidate {branch!r} does not resolve "
+            "to an exact commit and tree",
+            err=True,
+        )
+        return 1
+    try:
+        if validation_bypass.maybe_record(
+            cfg,
+            entry,
+            phase=phase,
+            command=cmd,
+            bead=bead,
+            sha=sha,
+            tree=tree,
+            branch=branch,
+        ):
+            return validation_bypass.BYPASSED_EXIT
+    except validation_bypass.BypassAuditError as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        return 2
     if permit is not None:
-        sha = _branch_sha(entry, branch)
         main = registry.hive_dir(entry)
-        tree = validation_ledger.tree_of(entry, sha)
         command_hash = validation_ledger.cmd_hash(cmd)
         # The caller already owns host admission for the enclosing validation lifecycle. Keep
         # exact-key serialization, but do not request a second permit and deadlock parallel
@@ -1120,9 +1146,7 @@ def impl_clean_checkout(
                 permit=permit,
             )
 
-    sha = _branch_sha(entry, branch)
     main = registry.hive_dir(entry)
-    tree = validation_ledger.tree_of(entry, sha)
     command_hash = validation_ledger.cmd_hash(cmd)
     prior = validation_records.latest_run(main, tree=tree, command_hash=command_hash)
     prior_id = prior.get("run_id") if prior else None

@@ -558,6 +558,38 @@ def record_use(
     return None
 
 
+def record_bypass(hive: str | Path, value: dict) -> dict | None:
+    """Persist one validation bypass decision without creating a run or verdict pointer.
+
+    Bypasses are gate decisions, not executions.  Their own directory makes that distinction
+    structural: readers looking for reusable runs never see these records, while operators retain
+    a durable audit trail even though no command or checkout was started.
+    """
+    root = _validation_root(hive, create=True)
+    if root is None:
+        return None
+    for _ in range(16):
+        bypass_id = _new_id("bypass")
+        path = root / "bypasses" / f"{bypass_id}.json"
+        record = {
+            "schema": 1,
+            "bypass_id": bypass_id,
+            "status": "BYPASSED",
+            **value,
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("x") as stream:
+                json.dump(record, stream, sort_keys=True)
+                stream.write("\n")
+        except FileExistsError:
+            continue
+        except OSError:
+            return None
+        return record
+    return None
+
+
 def signal_name(number: int) -> str:
     try:
         return signal.Signals(number).name

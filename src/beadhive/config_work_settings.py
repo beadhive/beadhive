@@ -106,6 +106,18 @@ def validate_cmd_is_configured(cfg, entry) -> bool:
     return layered(cfg, entry, "work", "validate_cmd", unset) is not unset
 
 
+def validation_bypass_enabled(cfg, entry) -> bool:
+    """Whether this hive is in explicit emergency validation-bypass mode.
+
+    This emergency control is intentionally hive-only: unlike ordinary work settings, it never
+    inherits from the global ``work`` section. Strict boolean comparison also keeps a hand-edited
+    string such as ``"false"`` from enabling the mode accidentally.
+    """
+    del cfg
+    work = (entry or {}).get("work") or {}
+    return isinstance(work, dict) and work.get("validation_bypass") is True
+
+
 def validation_mode(cfg, entry):
     """Which merge boundaries re-validate the integration tip:
     relaxed (default — today: submit + assembled-mol pre-land only) |
@@ -547,6 +559,7 @@ __all__ = [
     "routing_tiers",
     "validate_cmd",
     "validate_cmd_is_configured",
+    "validation_bypass_enabled",
     "validation_mode",
     "demo_cmd",
     "review_gate",

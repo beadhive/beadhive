@@ -21,7 +21,7 @@ from contextlib import contextmanager
 
 import typer
 
-from . import host, identity, otel, worktree
+from . import host, identity, otel, validation_bypass, worktree
 from .config_consumer_ports import work_settings as config
 
 BATCH_PREFIX = "batch/"  # a work-group's shared worktree branch is wt/batch/<group>
@@ -411,8 +411,15 @@ def submit_group(cfg, hive, group_arg, as_):
         typer.echo(f"✗ {msg} — self-refine before submitting the batch", err=True)
         raise typer.Exit(1)
 
-    rc = worktree.clean_checkout(entry, branch, config.validate_cmd(cfg, entry, "submit"))
-    otel.count_validation(rc == 0, {"bh.batch": group, "bh.work.phase": "submit"})
+    rc = worktree.clean_checkout(
+        entry,
+        branch,
+        config.validate_cmd(cfg, entry, "submit"),
+        cfg=cfg,
+        phase="submit",
+    )
+    if not validation_bypass.is_bypassed(rc):
+        otel.count_validation(rc == 0, {"bh.batch": group, "bh.work.phase": "submit"})
     if rc != 0:
         typer.echo(f"✗ clean-checkout validation failed (exit {rc}) — nothing submitted", err=True)
         raise typer.Exit(rc)
@@ -586,8 +593,16 @@ def merge_group(cfg, group_arg, hive, rm):
         # keyed on (TREE, cmd_hash), so a hit here means this exact content already passed this
         # exact command — the batch branch is unchanged since its submit. Anything else (a
         # rebase onto a moved base, a changed command, a stale or red entry) misses and runs.
-        rc = worktree.clean_checkout(entry, branch, config.validate_cmd(cfg, entry), reuse=True)
-        otel.count_validation(rc == 0, {"bh.batch": group, "bh.work.phase": "batch"})
+        rc = worktree.clean_checkout(
+            entry,
+            branch,
+            config.validate_cmd(cfg, entry, "merge"),
+            cfg=cfg,
+            reuse=True,
+            phase="merge",
+        )
+        if not validation_bypass.is_bypassed(rc):
+            otel.count_validation(rc == 0, {"bh.batch": group, "bh.work.phase": "batch"})
         if rc != 0:
             typer.echo(f"✗ batch validation failed (exit {rc}) — nothing landed", err=True)
             raise typer.Exit(rc)

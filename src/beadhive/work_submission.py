@@ -9,11 +9,15 @@ from __future__ import annotations
 import contextlib
 from pathlib import Path
 
+from . import validation_bypass
+
 
 def impl_check(api, bead, hive):
     """Resolve the target, then hold admission across its entire validation lifecycle."""
     cfg = api.config.load()
     entry, _main, _target, _branch = api.worktree.locate(cfg, hive, bead)
+    if validation_bypass.enabled(cfg, entry):
+        return _impl_check_unadmitted(api, bead, hive, permit=None)
     with api.validation_admission.host_slot(cfg, entry, phase="check") as permit:
         return _impl_check_unadmitted(api, bead, hive, permit=permit)
 
@@ -40,6 +44,22 @@ def _impl_check_unadmitted(api, bead, hive, *, permit=None):
     cmd = api.config.validate_cmd(cfg, entry)
     sha = api.worktree.head_full_sha(target)
     clean_sha = api._checked_sha(target)
+    tree = api.validation_ledger.tree_of(entry, clean_sha) if clean_sha else ""
+    try:
+        if validation_bypass.maybe_record(
+            cfg,
+            entry,
+            phase="check",
+            command=cmd,
+            bead=bead,
+            sha=sha,
+            tree=tree,
+            branch=_branch,
+        ):
+            return
+    except validation_bypass.BypassAuditError as exc:
+        api.typer.echo(f"✗ {exc}", err=True)
+        raise api.typer.Exit(2) from None
     if clean_sha and api.selective_validation.configured(cfg, entry):
         base = api.worktree.integration_base(entry, bead, api.config.integration_branch(cfg, entry))
         rc = api.selective_validation.run(
@@ -62,7 +82,6 @@ def _impl_check_unadmitted(api, bead, hive, *, permit=None):
         if rc:
             raise api.typer.Exit(rc)
         return
-    tree = api.validation_ledger.tree_of(entry, clean_sha) if clean_sha else ""
     artifact_root_config = api.config.work_value(cfg, entry, "validation_artifact_root", "")
     try:
         api.validation_records.artifact_root(main, artifact_root_config)
@@ -420,6 +439,31 @@ def impl__validate_submit_checkout(api, entry, branch, cfg, bead=None):
     tree = api.validation_ledger.tree_of(entry, sha)
     command = api.config.validate_cmd(cfg, entry, "submit")
     command_hash = api.validation_ledger.cmd_hash(command)
+    if validation_bypass.enabled(cfg, entry):
+        v_start = api.time.perf_counter()
+        rc = api.worktree.clean_checkout(
+            entry,
+            branch,
+            command,
+            cfg=cfg,
+            reuse=False,
+            bead=bead,
+            phase="submit",
+        )
+        api.otel.record_validation_duration(
+            api.time.perf_counter() - v_start,
+            {
+                "bh.work.phase": "submit",
+                "bh.validation.result": api._vres(rc),
+                "bh.hive": api._hive(entry),
+            },
+        )
+        if rc != 0:
+            api.typer.echo(
+                f"✗ validation bypass failed (exit {rc}) — nothing submitted", err=True
+            )
+            raise api.typer.Exit(1)
+        return
     observed_active_run_id = None
     for active in api.validation_records.running_runs(main, bead=bead, tree=tree):
         owner = active.get("owner") or {}
@@ -490,7 +534,8 @@ def impl__validate_submit_checkout(api, entry, branch, cfg, bead=None):
             "bh.hive": api._hive(entry),
         },
     )
-    api.otel.count_validation(rc == 0, {"bh.work.phase": "submit"})
+    if not validation_bypass.is_bypassed(rc):
+        api.otel.count_validation(rc == 0, {"bh.work.phase": "submit"})
     if rc == api.RETRYABLE_VALIDATION_EXIT:
         api.typer.echo(
             f"⚠ validation could not complete (exit {rc}) — a network dependency was "

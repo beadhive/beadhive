@@ -2203,6 +2203,12 @@
           "title": "Validation Artifact Root",
           "type": "string"
         },
+        "validation_bypass": {
+          "default": false,
+          "description": "Emergency per-hive switch that bypasses validation command execution without changing configured commands or creating green attestations.",
+          "title": "Validation Bypass",
+          "type": "boolean"
+        },
         "validation_protocol": {
           "default": "none",
           "description": "Explicit opt-in typed runner result protocol. v1 exports BH_VALIDATION_RESULT_PATH; absent/invalid output remains ordinary process semantics.",

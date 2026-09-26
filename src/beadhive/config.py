@@ -359,6 +359,10 @@ def set_value(
     return _config_edit.set_value(_facade(), dotted, raw, as_json, cfg, scope)
 
 
+def set_hive_value(hive_id: str, dotted: str, raw: str, as_json: bool = False) -> dict:
+    return _config_edit.set_hive_value(_facade(), hive_id, dotted, raw, as_json)
+
+
 def unset_value(dotted: str, cfg=None, scope: str | None = None) -> dict:
     return _config_edit.unset_value(_facade(), dotted, cfg, scope)
 
