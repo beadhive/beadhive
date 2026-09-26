@@ -14,7 +14,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-GATE = "just check-all"
 RELEASE_FILES = {
     "CHANGELOG.md",
     "pyproject.toml",
@@ -189,7 +188,10 @@ def _cz(*args: str) -> None:
 
 def _preflight(gate: str) -> None:
     command = shlex.split(os.environ.get("BH_EXEC", "bh"))
-    _run(*command, "release", "preflight", "--gate", gate)
+    args = [*command, "release", "preflight"]
+    if gate:
+        args.extend(("--gate", gate))
+    _run(*args)
 
 
 def _rollback(start: str, tag: str) -> None:
@@ -272,7 +274,11 @@ def main() -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     bump_parser = commands.add_parser("bump", help="create a verified local bump commit and tag")
     bump_parser.add_argument("expected")
-    bump_parser.add_argument("--gate", default=GATE)
+    bump_parser.add_argument(
+        "--gate",
+        default="",
+        help="optional expected gate; defaults to the hive's work.validate.push-main command",
+    )
     verify_parser = commands.add_parser("verify", help="verify the local release commit and tag")
     verify_parser.add_argument("expected")
     verify_parser.add_argument("--tag", default="")

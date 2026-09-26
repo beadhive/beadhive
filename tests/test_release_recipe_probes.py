@@ -31,6 +31,24 @@ HANDOFF = ROOT / "docs" / "proof" / "bh-g7pq2.7-v0.16.2-candidate.md"
 needs_just = pytest.mark.skipif(shutil.which("just") is None, reason="needs just")
 
 
+@needs_just
+@pytest.mark.parametrize(
+    "recipe",
+    ["_await-bump-gate", "_refuse-if-bump-pending", "attest", "bump", "release-preview"],
+)
+def test_release_recipes_defer_gate_selection_to_push_main_config(recipe):
+    """The fleet's push-main phase is the source of truth; recipes must not copy its command."""
+    shown = subprocess.run(
+        ["just", "-f", str(JUSTFILE), "--show", recipe],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+    assert "--gate" not in shown
+
+
 def _stub_bh(
     tmp_path: Path, *, has_if_needed: bool = True, has_preview: bool = True, has_next: bool = True
 ) -> Path:
@@ -88,7 +106,8 @@ def test_attest_on_a_current_bh_runs_the_verb_unchanged(tmp_path):
     head = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True
     ).stdout.strip()
-    assert f"RAN: release attest {head} --if-needed --gate just check-all" in res.stdout
+    assert f"RAN: release attest {head} --if-needed" in res.stdout
+    assert "--gate" not in res.stdout
 
 
 @needs_just
@@ -125,7 +144,8 @@ def test_release_preview_passes_flags_through(tmp_path):
     res = _run(_stub_bh(tmp_path), "release-preview", "--next")
 
     assert res.returncode == 0, res.stderr
-    assert "RAN: release preview --gate just check-all --next" in res.stdout
+    assert "RAN: release preview --next" in res.stdout
+    assert "--gate" not in res.stdout
 
 
 @needs_just

@@ -234,6 +234,18 @@ def test_bump_creates_one_exact_signed_commit_and_tag_without_churning_proof(
         )
     )
     assert report == before
+    assert (tmp_path / "bh.log").read_text().splitlines() == ["release preflight"]
+
+
+def test_explicit_gate_override_is_forwarded_to_preflight(tmp_path: Path) -> None:
+    release_repo = _release_repo(tmp_path)
+
+    result = release_repo.transaction("bump", "0.16.2", "--gate", "just custom-gate")
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "bh.log").read_text().splitlines() == [
+        "release preflight --gate just custom-gate"
+    ]
 
 
 def test_expected_version_mismatch_refuses_before_mutation(tmp_path: Path) -> None:
