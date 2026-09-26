@@ -51,38 +51,17 @@ _CONTRIB_PREFIX = "contrib/"
 # policy-as-code — is opened alongside the review gate and blocks the merge in PARALLEL with review
 # (the generic open-gate check already refuses a merge while ANY gate naming the bead is open, so a
 # change lands only when BOTH the review AND the security gate clear). Only a **warden** seat may
-# RESOLVE a security gate — it owns the security + policy verdict; provenance stays with the
-# contributor seat.
-_WARDEN_PREFIX = "warden/"
-
-# A security gate is identified by a `security:` marker in its bd-gate reason (parallel to how the
-# review gate is matched on `reason: review`), so it is distinguishable from review/kickoff gates.
+# RESOLVE a security gate; that seat policy lives with `bh work approve` in `beadhive_core.review`
+# (bh-bwnys.1). A security gate is identified by a `security:` marker in its bd-gate reason
+# (parallel to how the review gate is matched on `reason: review`).
 SECURITY_GATE_MARKER = "security:"
-
-
-def is_warden(actor: str) -> bool:
-    """Whether `actor` names a warden seat (warden/<name>) — the only seat allowed to resolve a
-    security:* gate (mirrors the seat prefixes in work.py)."""
-    return actor.startswith(_WARDEN_PREFIX)
-
 
 # Release plane (bh-k2j8): a `release-hold:` gate holds a `release:breaking` bead out of the current
 # release window — filed at planning time when `release.enforce_hold` is on (plan.py), classified
 # `release-hold` by `work_logic._gate_kind`, and (like every open gate) blocking the merge. Only a
-# **releaser** seat may RESOLVE it, so a breaking change can't slip into a patch/minor window
-# without the release owner's sign-off. Advisory ordering (release_order.py) is the soft
-# counterpart; this gate is the hard one.
-_RELEASER_PREFIX = "releaser/"
-
-# A release-hold gate is identified by the `release-hold:` marker in its bd-gate reason (parallel to
-# the security gate's `security:` marker), so it is distinguishable from review/kickoff/security.
+# **releaser** seat may RESOLVE it (enforced by `beadhive_core.review`). Advisory ordering
+# (release_order.py) is the soft counterpart; this gate is the hard one.
 RELEASE_HOLD_GATE_MARKER = "release-hold:"
-
-
-def is_releaser(actor: str) -> bool:
-    """Whether `actor` names a releaser seat (releaser/<name>) — the only seat allowed to resolve a
-    release-hold: gate (mirrors the seat prefixes in work.py)."""
-    return actor.startswith(_RELEASER_PREFIX)
 
 
 def is_release_hold_gate(gate) -> bool:
@@ -96,24 +75,6 @@ def is_release_hold_gate(gate) -> bool:
     return RELEASE_HOLD_GATE_MARKER in reason or f"reason: {RELEASE_HOLD_GATE_MARKER}" in desc
 
 
-def guard_release_hold_gate_resolution(gate, actor: str) -> None:
-    """Release RBAC: only a releaser (releaser/<name>) may RESOLVE a `release-hold:` gate — so a
-    breaking change can't be self-released into the wrong version window. A no-op for a
-    non-release-hold gate and for a releaser actor; raises `typer.Exit(1)` when a non-releaser
-    targets one."""
-    if not is_release_hold_gate(gate) or is_releaser(actor):
-        return
-    gate_id = str(gate.get("id") or "?")
-    typer.echo(
-        f"✗ release-hold gate {gate_id} is releaser-only to resolve — {actor!r} is not a releaser "
-        "(releaser/<name>).\n"
-        "  The release-hold: gate holds a release:breaking change out of the current release "
-        "window; only the releaser seat clears it for merge.",
-        err=True,
-    )
-    raise typer.Exit(1)
-
-
 def is_security_gate(gate) -> bool:
     """True when a bd gate dict is an Assurance `security:*` gate — matched on the `security:`
     marker in its reason/description (parallel to the review gate's `reason: review`). Tolerant of
@@ -123,24 +84,6 @@ def is_security_gate(gate) -> bool:
     reason = str(gate.get("reason") or "").lower()
     desc = str(gate.get("description") or "").lower()
     return SECURITY_GATE_MARKER in reason or f"reason: {SECURITY_GATE_MARKER}" in desc
-
-
-def guard_security_gate_resolution(gate, actor: str) -> None:
-    """Assurance RBAC: only a warden (warden/<name>) may RESOLVE a `security:*` gate — so the
-    security + policy verdict can't be self-cleared by the author/reviewer, and the merge stays
-    blocked until the warden signs off. A no-op for non-security gates (review/kickoff/…) and for a
-    warden actor; raises `typer.Exit(1)` when a non-warden targets a security gate."""
-    if not is_security_gate(gate) or is_warden(actor):
-        return
-    gate_id = str(gate.get("id") or "?")
-    typer.echo(
-        f"✗ security gate {gate_id} is warden-only to resolve — {actor!r} is not a warden "
-        "(warden/<name>).\n"
-        "  The security:* gate is the Assurance verdict (secret-scan / SBOM / policy-as-code); it "
-        "blocks the merge in parallel with review until a warden clears it.",
-        err=True,
-    )
-    raise typer.Exit(1)
 
 
 # Control-plane HQ-registry write partitioning (roles/RBAC matrix §2.1, bead .36). The Head Office

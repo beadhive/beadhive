@@ -5,11 +5,8 @@ from __future__ import annotations
 from beadhive.modules.work import (
     AbandonRequest,
     AbandonResult,
-    ApprovalRequest,
-    ApprovalResult,
     AssignmentRequest,
     AssignmentResult,
-    BounceRequest,
     CheckRequest,
     CheckResult,
     ClaimRequest,
@@ -52,14 +49,6 @@ class FakeBeads:
     def schedule(self, request):
         self.requests.append(request)
         return ScheduleResult(request.epic, {"groups": (), "singletons": ()})
-
-    def approve(self, request):
-        self.requests.append(request)
-        return ApprovalResult(request.bead)
-
-    def bounce(self, request):
-        self.requests.append(request)
-        return ApprovalResult(request.bead)
 
     def abandon(self, request):
         self.requests.append(request)
@@ -158,21 +147,15 @@ def test_execution_and_review_paths_keep_typed_subjects() -> None:
     assert [event[0] for event in notifier.events] == ["check", "submit", "review", "merge"]
 
 
-def test_schedule_review_decisions_and_abandon_use_bead_store_port() -> None:
+def test_schedule_and_abandon_use_bead_store_port() -> None:
     service, beads, _, _, _, notifier = _service()
 
     plan = service.schedule(ScheduleRequest("bh-epic"))
-    service.approve(ApprovalRequest("bh-3"))
-    service.bounce(BounceRequest("bh-4", "fix the gate"))
     service.abandon(AbandonRequest("bh-5", remove_worktree=True))
 
     assert plan.plan["groups"] == ()
-    assert beads.requests[1].actor == "dev/approve"
-    assert beads.requests[2].actor == "dev/bounce"
     assert [event[0] for event in notifier.events] == [
         "schedule",
-        "approve",
-        "bounce",
         "abandon",
     ]
 

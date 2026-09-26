@@ -3,11 +3,8 @@
 from .models import (
     AbandonRequest,
     AbandonResult,
-    ApprovalRequest,
-    ApprovalResult,
     AssignmentRequest,
     AssignmentResult,
-    BounceRequest,
     CheckRequest,
     CheckResult,
     ClaimRequest,
@@ -27,11 +24,8 @@ from .models import (
 __all__ = [
     "AbandonRequest",
     "AbandonResult",
-    "ApprovalRequest",
-    "ApprovalResult",
     "AssignmentRequest",
     "AssignmentResult",
-    "BounceRequest",
     "CheckRequest",
     "CheckResult",
     "ClaimRequest",
