@@ -60,7 +60,7 @@ check-native: lint lint-md license-check architecture-structural-check stateful-
 # Compare the checked-in SDK and exercise the package without the root app.
 beads-client-check:
     uv run --locked --offline python packages/beadhive-beads-client/regenerate.py
-    uv run --locked --offline --no-build-isolation --package beadhive-beads-client pytest packages/beadhive-beads-client/tests -m 'not real_service'
+    uv run --locked --offline --no-build-isolation --package beadhive-beads-client python scripts/pytest_with_report.py packages/beadhive-beads-client/tests -m 'not real_service'
 
 check-pants: lint lint-md license-check architecture-structural-check test-changed
 
@@ -402,7 +402,7 @@ bench-read-path:
 # convention gate (~3s): ruff + the naming-convention tests — what lefthook's pre-commit runs
 conventions:
     uv run ruff check
-    uv run pytest tests/test_naming_conventions.py -q
+    uv run python scripts/pytest_with_report.py tests/test_naming_conventions.py -q
 
 # install lefthook's git hooks (see lefthook.yml + docs/design/git-hooks-entrypoint-adr.md).
 # --reset-hooks-path clears any core.hooksPath a previous tool claimed; lefthook installs into
@@ -670,7 +670,7 @@ integration_workers := "16"
 # run the suite for a marker selection — fenced and parallel (default: the fast unit-only set)
 test set=FAST:
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run pytest -n auto tests {{ if set == "" { "" } else { "-m " + quote(set) } }}
+        ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n auto tests {{ if set == "" { "" } else { "-m " + quote(set) } }}
 
 # Developer feedback: query from the integration merge-base and execute only affected proven
 # Pants targets. Affected unproven tests route to the native residual; global, unowned, or failed
@@ -689,12 +689,12 @@ stateful_workers := "16"
 
 stateful-native:
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run pytest -n {{stateful_workers}} tests -m "not integration and not pants_profile"
+        ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{stateful_workers}} tests -m "not integration and not pants_profile"
 
 # Recursive PEX packaging executes the Pants engine and needs its pinned artifact cache. Keep
 # this one test in the Pants full profile and outside the native collection.
 pants-artifact-check:
-    ./scripts/hermetic.sh uv run pytest -q \
+    ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -q \
         tests/test_beadhive_pants_artifacts.py::test_bh_pex_contains_and_resolves_the_backend
 
 # Advisory module/plugin closures. These commands never replace `just check` or `just check-all`;
@@ -761,7 +761,7 @@ packages-check:
     # Keep workspace builds deterministic when the package index is temporarily unavailable.
     ./scripts/hermetic.sh uv sync --locked --offline --all-packages
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run --locked --all-packages pytest -n auto packages/*/tests
+        ./scripts/hermetic.sh uv run --locked --all-packages python scripts/pytest_with_report.py -n auto packages/*/tests
     ./scripts/hermetic.sh uv build --all-packages --no-build-isolation
     just release-smoke-check
 
@@ -813,7 +813,7 @@ test-system-smoke:
 # the LAND gate's complete integration pass — fenced and parallel
 test-integration-land:
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run pytest -n {{integration_workers}} tests -m "integration"
+        ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{integration_workers}} tests -m "integration"
 
 # PERIODIC ONLY: compare explicit xdist worker counts for both pytest land partitions. This does
 # not feed `PYTEST_XDIST_AUTO_NUM_WORKERS` back into contract tests or any validation recipe.
@@ -836,13 +836,13 @@ benchmark-xdist workers="6,12,18,24" repetitions="3" output="xdist-benchmark.jso
 # from a real baseline rather than asserting a number nobody has looked at.
 # test coverage over src/beadhive, unit set only — periodic, deliberately NOT part of `check`
 cov:
-    uv run pytest -n auto -m 'not integration' --cov=src/beadhive --cov-report=term-missing
+    uv run python scripts/pytest_with_report.py -n auto -m 'not integration' --cov=src/beadhive --cov-report=term-missing
 
 # run the harness and render each git history (mode=all) or only divergent ones (mode=diff)
 # streams live per-bead progress; -v shows which test is running
 # run the integration harness and render each bead's git history (mode=all | diff)
 render-int mode="all":
-    AGF_RENDER={{mode}} uv run pytest -m integration -s -v
+    AGF_RENDER={{mode}} uv run python scripts/pytest_with_report.py -m integration -s -v
 
 # demo the bh CLI against the real app (used by `bh work review --demo`); extend per feature
 demo:
@@ -1423,7 +1423,7 @@ image-cross target="default": image-builder image-qemu
 # After running, check your collector for service.name=ws spans/metrics/logs.
 # live OTel verification: export real traces+metrics+logs to a running collector
 otel-verify endpoint="http://localhost:4317":
-    WS_OTEL_VERIFY=1 OTEL_EXPORTER_OTLP_ENDPOINT={{endpoint}} uv run pytest tests/test_otel_verify.py -v -s
+    WS_OTEL_VERIFY=1 OTEL_EXPORTER_OTLP_ENDPOINT={{endpoint}} uv run python scripts/pytest_with_report.py tests/test_otel_verify.py -v -s
 
 # Explicit compatibility gate: create a temporary environment at the declared OTel floor and
 # prove fractional env timeout parsing + bounded dead-collector daemon shutdown with zero workers.
@@ -1447,4 +1447,4 @@ otel-minimum-check:
 # live metrics-usability verification against a running collector + Prometheus
 metrics-verify endpoint="http://localhost:4317" prom="http://localhost:9090":
     WS_METRICS_VERIFY=1 OTEL_EXPORTER_OTLP_ENDPOINT={{endpoint}} WS_OTEL_VERIFY_PROM={{prom}} \
-        uv run pytest tests/test_metrics_verify.py -v -s
+        uv run python scripts/pytest_with_report.py tests/test_metrics_verify.py -v -s

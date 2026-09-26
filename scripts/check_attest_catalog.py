@@ -104,7 +104,7 @@ def check(justfile: str, push_hook: str | None = None) -> list[str]:
                 errors.append(f"{leaf}: owned by both {previous} and {key}")
 
     artifact = "\n".join(_recipe_body(justfile, "pants-artifact-check"))
-    if "./scripts/hermetic.sh uv run pytest" not in artifact or (
+    if "./scripts/hermetic.sh uv run python scripts/pytest_with_report.py" not in artifact or (
         "tests/test_beadhive_pants_artifacts.py::test_bh_pex_contains_and_resolves_the_backend"
         not in artifact
     ):

@@ -19,9 +19,10 @@ directory and reads what the hive's own command left there.
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
-from beadhive import config_schema, host, test_report, validation_ledger, worktree
+from beadhive import config_schema, host, test_report, triage_store, validation_ledger, worktree
 from harness.validation_state import runs as validation_runs
 
 # A pytest-shaped JUnit report claiming a clean sweep. Deliberately all-green: it is the payload
@@ -279,6 +280,32 @@ def test_ingest_classifies_cases_in_otel_vocabulary(tmp_path):
     assert by_name["crate::mod::bad"] == "failed"
     assert by_name["crate::mod::broke"] == "error"
     assert by_name["unclassed"] == "skipped"  # classname absent — the id is just the name
+
+    failed = next(c for c in report["cases"] if c["test.case.name"] == "crate::mod::bad")
+    assert failed["test.case.result.message"] == "boom"
+
+
+def test_repo_pytest_launcher_populates_a_red_validation_manifest(tmp_path, monkeypatch):
+    entry, repo = _hive(tmp_path, monkeypatch)
+    case = tmp_path / "test_intentional_failure.py"
+    case.write_text('def test_intentional_failure():\n    assert False, "expected detail"\n')
+    launcher = Path(__file__).resolve().parents[1] / "scripts/pytest_with_report.py"
+    cmd = f"{sys.executable} {launcher} -q {case}"
+
+    assert worktree.clean_checkout(entry, "main", cmd) == 1
+
+    (manifest,) = _entries(repo)
+    assert manifest["summary"]["counts"] == {
+        "tests": 1,
+        "passed": 0,
+        "failures": 1,
+        "errors": 0,
+        "skipped": 0,
+    }
+    (run,) = triage_store.runs(entry, "main")
+    (failed,) = run["cases"]
+    assert failed["test.case.result.status"] == "failed"
+    assert "expected detail" in failed["test.case.result.message"]
 
 
 def test_export_leaves_the_rest_of_the_environment_untouched(tmp_path):
