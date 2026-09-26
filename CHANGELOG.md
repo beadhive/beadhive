@@ -13,6 +13,13 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.18.1 (2026-09-26)
+
+### Fix
+
+- **release**: make beadhive-pants an optional extra, not a hard dependency
+- **operator**: serve herdr picker and factory snapshot from cached hive summaries
+
 ## v0.18.0 (2026-09-25)
 
 ### Feat
