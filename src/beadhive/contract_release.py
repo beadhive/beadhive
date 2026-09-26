@@ -93,11 +93,15 @@ OFFICIAL_V1_FAMILIES = frozenset(
 _SCHEMA_POLICY = "json-schema-additive-v1"
 _CATALOG_POLICY = "append-only-catalog-v1"
 _OPENAPI_POLICY = "openapi-additive-v1"
-_PUBLISHED_BASELINE_VERSION = "1.0.0"
+# The executable compatibility baseline is the bundle as published with wire release 1.5.0, the
+# supported-contract floor (bh-bwnys.5).  Earlier baselines were dropped with every pre-1.5.0
+# wire release; nothing compares against them.  The directory is named for that wire release,
+# while its inventory keeps this bundle's own ``RELEASE_VERSION``.
+_PUBLISHED_BASELINE_VERSION = "1.5.0"
 _PUBLISHED_BASELINE_SHA256 = (
-    "sha256:ba53c093508a88636456d090f3411857a3e9881817a7aaf18e9c65e86050038d"
+    "sha256:1c744d0544310db7bcebd456144757db60c855e8e262859da50844f52efc45ae"
 )
-_MANIFEST_SCHEMA = Path("docs/schemas/wire/v1.4.0/plugin-manifest-v1.schema.json")
+_MANIFEST_SCHEMA = Path("docs/schemas/wire/v1.5.0/plugin-manifest-v1.schema.json")
 _HTTP_METHODS = frozenset({"delete", "get", "head", "options", "patch", "post", "put", "trace"})
 _INVENTORY_KEYS = frozenset(
     {
@@ -1310,7 +1314,7 @@ def load_published_baseline() -> dict[str, Any]:
     return _load_release_snapshot(
         published_baseline_root(),
         expected_digest=_PUBLISHED_BASELINE_SHA256,
-        expected_release_version=_PUBLISHED_BASELINE_VERSION,
+        expected_release_version=RELEASE_VERSION,
         enforce_current_inventory=False,
     )
 
@@ -1739,6 +1743,59 @@ def _schema_compatibility_errors(
         errors.append(f"{path}.dependentRequired: dependency assertions changed")
 
 
+# Top-level catalog collections whose members carry a stable identity.  Their generators emit
+# them in name order, so a newly registered operation/projection lands mid-list; members are
+# matched by identity (order-insensitive additions) rather than position.  Removing or changing
+# an existing member still fails.  Other catalog lists remain positional.
+_KEYED_CATALOG_COLLECTIONS: dict[str, tuple[str, ...]] = {
+    "operations": ("name",),
+    "cli_parents": ("path",),
+    "exclusions": ("surface", "name"),
+    "projections": ("surface", "identifier"),
+}
+
+
+def _catalog_member_identities(
+    members: list[object], fields: tuple[str, ...]
+) -> list[tuple[object, ...]] | None:
+    identities: list[tuple[object, ...]] = []
+    for member in members:
+        if not isinstance(member, dict) or any(
+            not isinstance(member.get(field), str) for field in fields
+        ):
+            return None
+        identities.append(tuple(member[field] for field in fields))
+    return identities if len(set(identities)) == len(identities) else None
+
+
+def _keyed_append_only_errors(
+    old: list[object],
+    candidate: list[object],
+    fields: tuple[str, ...],
+    path: str,
+    errors: list[str],
+) -> bool:
+    """Compare identity-keyed catalog members; return False when either side is not keyed."""
+
+    old_ids = _catalog_member_identities(old, fields)
+    candidate_ids = _catalog_member_identities(candidate, fields)
+    if old_ids is None or candidate_ids is None:
+        return False
+    candidate_by_id = dict(zip(candidate_ids, candidate, strict=True))
+    for identity, old_member in zip(old_ids, old, strict=True):
+        label = f"{path}[{'/'.join(str(part) for part in identity)}]"
+        if identity not in candidate_by_id:
+            errors.append(f"{label}: append-only catalog member was removed")
+            continue
+        _append_only_errors(old_member, candidate_by_id[identity], label, errors)
+    known = set(old_ids)
+    for identity, member in zip(candidate_ids, candidate, strict=True):
+        if identity not in known:
+            label = f"{path}[{'/'.join(str(part) for part in identity)}]"
+            _extension_tree_presence_errors(member, label, "added", errors)
+    return True
+
+
 def _append_only_errors(
     old: object,
     candidate: object,
@@ -1746,6 +1803,7 @@ def _append_only_errors(
     errors: list[str],
     *,
     extension_key_context: bool = True,
+    catalog_root: bool = False,
 ) -> None:
     if isinstance(old, dict):
         if not isinstance(candidate, dict):
@@ -1801,6 +1859,20 @@ def _append_only_errors(
                     )
                 elif not _same_json(old[key], candidate[key]):
                     errors.append(f"{path}.{key}: extension metadata changed")
+            elif (
+                catalog_root
+                and key in _KEYED_CATALOG_COLLECTIONS
+                and isinstance(old[key], list)
+                and isinstance(candidate[key], list)
+                and _keyed_append_only_errors(
+                    old[key],
+                    candidate[key],
+                    _KEYED_CATALOG_COLLECTIONS[key],
+                    f"{path}.{key}",
+                    errors,
+                )
+            ):
+                continue
             else:
                 _append_only_errors(
                     old[key],
@@ -2571,7 +2643,7 @@ def compatibility_errors(old: dict[str, Any], candidate: dict[str, Any]) -> list
         elif policy == _OPENAPI_POLICY:
             _openapi_compatibility_errors(old_document, new_document, artifact_id, errors)
         elif policy == _CATALOG_POLICY:
-            _append_only_errors(old_document, new_document, artifact_id, errors)
+            _append_only_errors(old_document, new_document, artifact_id, errors, catalog_root=True)
         else:
             errors.append(f"{artifact_id}: unsupported compatibility policy {policy!r}")
         if old_row["family"] == "operation-catalog":

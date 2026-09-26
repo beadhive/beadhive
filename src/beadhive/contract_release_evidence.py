@@ -1,10 +1,11 @@
 """Deterministic compatibility evidence for the official v1 contract release.
 
-The report deliberately treats the manifests under ``docs/schemas/wire`` as the complete
-historical publication ledger.  It compares every manifest-declared artifact observation with
-the package-owned candidate, without network access or runtime service composition.  Historical
-artifacts that are not promoted into the new bundle remain explicitly retained rather than being
-misreported as removals.
+The report treats the supported manifests under ``docs/schemas/wire`` as the publication
+ledger.  It compares every artifact observation declared by a supported (non-deprecated) release
+with the package-owned candidate, without network access or runtime service composition.
+Releases marked ``"deprecated": true`` in ``index.json`` (every release below 1.5.0) are kept
+for history only and are not compared.  Artifacts that are not promoted into the new bundle
+remain explicitly retained rather than being misreported as removals.
 """
 
 from __future__ import annotations
@@ -156,7 +157,7 @@ def _policy_comparison(old_document: object, candidate_row: dict[str, Any]) -> l
 
 
 def build_compatibility_report(root: Path | None = None) -> dict[str, Any]:
-    """Compare the candidate with every manifest-declared checked-in wire artifact."""
+    """Compare the candidate with every artifact a supported wire release declares."""
 
     repository = _repository_root() if root is None else root.resolve()
     wire_root = repository / "docs" / "schemas" / "wire"
@@ -188,6 +189,8 @@ def build_compatibility_report(root: Path | None = None) -> dict[str, Any]:
         for release_entry in releases:
             if not isinstance(release_entry, dict):
                 raise ValueError("historical index: release entries must be objects")
+            if release_entry.get("deprecated") is True:
+                continue
             version = release_entry.get("version")
             manifest_value = release_entry.get("manifest")
             if not isinstance(version, str):
@@ -284,6 +287,10 @@ def build_compatibility_report(root: Path | None = None) -> dict[str, Any]:
         "historical_index": index_path.as_posix(),
         "candidate_inventory": f"src/beadhive/schemas/contracts/v{RELEASE_VERSION}/inventory.json",
         "policy": {
+            "deprecated_releases": (
+                "Wire releases marked deprecated in the index are retained for history only and "
+                "are not compared."
+            ),
             "historical_absence": (
                 "An artifact absent from the candidate remains supported only in its immutable "
                 "docs/schemas/wire release; absence is not silently classified as removal."

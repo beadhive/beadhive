@@ -7,11 +7,8 @@ from typing import Any, Protocol
 from ..domain import (
     AbandonRequest,
     AbandonResult,
-    ApprovalRequest,
-    ApprovalResult,
     AssignmentRequest,
     AssignmentResult,
-    BounceRequest,
     CheckRequest,
     CheckResult,
     ClaimRequest,
@@ -35,10 +32,6 @@ class BeadStore(Protocol):
     def assign(self, request: AssignmentRequest) -> AssignmentResult: ...
 
     def schedule(self, request: ScheduleRequest) -> ScheduleResult: ...
-
-    def approve(self, request: ApprovalRequest) -> ApprovalResult: ...
-
-    def bounce(self, request: BounceRequest) -> ApprovalResult: ...
 
     def abandon(self, request: AbandonRequest) -> AbandonResult: ...
 

@@ -61,7 +61,7 @@
       "id": "urn:beadhive:wire-catalog:cli-projections:1",
       "kind": "catalog",
       "path": "artifacts/cli-projections-v1.json",
-      "sha256": "sha256:b2d38d11dd1b8e9b7eeb7f00c3a8fd25a439d51f9d8b4d2c3b6d5f5e0eabb604",
+      "sha256": "sha256:84d044b55d8372b50e8e3145c5d99e3b720471267cfa687df13bf9db8636e809",
       "source_owner": "beadhive.transport_inventory.document",
       "version": 1
     },
@@ -152,7 +152,7 @@
       "id": "urn:beadhive:wire-catalog:operations:1",
       "kind": "catalog",
       "path": "artifacts/operation-catalog-v1.json",
-      "sha256": "sha256:8c849120cb43cf19d2d6bec9ab2cbdb28eac0246441a173c2c1f98d1c87073a8",
+      "sha256": "sha256:096a7b9bfcf73d6f2f578abce8ebc50b347653f0db1573c225b5d41a4a75177d",
       "source_owner": "beadhive.kernel.operations.document",
       "version": 1
     },
@@ -231,7 +231,7 @@
       "kind": "json-schema",
       "path": "artifacts/plugin-manifest-v1.schema.json",
       "sha256": "sha256:5984e0fdf433758e71494f2d08054078bdefcddc4abd480ed11bceaa349a644b",
-      "source_owner": "docs/schemas/wire/v1.4.0/plugin-manifest-v1.schema.json",
+      "source_owner": "docs/schemas/wire/v1.5.0/plugin-manifest-v1.schema.json",
       "version": 1
     },
     {

@@ -63,6 +63,8 @@ def _published_rows() -> list[tuple[str, dict[str, object]]]:
     index = json.loads((wire_root / "index.json").read_bytes())
     rows: list[tuple[str, dict[str, object]]] = []
     for release in index["releases"]:
+        if release.get("deprecated") is True:
+            continue
         manifest = json.loads((wire_root / release["manifest"]).read_bytes())
         rows.extend((release["version"], row) for row in manifest["artifacts"])
     return rows
@@ -75,7 +77,10 @@ def test_compatibility_report_accounts_for_every_published_and_candidate_artifac
 
     assert report["format_version"] == 1
     assert report["release_version"] == "1.0.0"
-    assert report["summary"]["historical_artifact_observations"] == len(published) == 50
+    assert report["summary"]["historical_artifact_observations"] == len(published) >= 17
+    # Only supported (>= 1.5.0) releases are observed; deprecated history is never compared.
+    assert "1.5.0" in {version for version, _row in published}
+    assert all(tuple(map(int, version.split("."))) >= (1, 5, 0) for version, _row in published)
     assert report["summary"]["candidate_artifacts"] == len(candidate) == 23
     assert len(report["historical_comparisons"]) == len(published)
     assert len(report["candidate_artifacts"]) == len(candidate)
@@ -116,13 +121,14 @@ def test_report_classifies_each_nonidentical_comparison_with_policy_evidence() -
             assert row["candidate_sha256"] is None
             assert row["policy_errors"] == []
 
-    operation_divergence = [
+    # Pre-1.5.0 releases are deprecated and never compared (bh-bwnys.5); the supported
+    # releases carry the live operation catalog without policy divergence.
+    assert not [
         row
         for row in comparisons
         if row["artifact_id"] == "urn:beadhive:wire-catalog:operations:1"
         and row["classification"] == "policy-divergence-retained"
     ]
-    assert {row["historical_release"] for row in operation_divergence} == {"1.3.0", "1.4.0"}
 
 
 def test_checked_compatibility_report_is_canonical_and_current() -> None:

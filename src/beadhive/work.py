@@ -65,6 +65,7 @@ from . import (
     work_next,  # noqa: F401 - injected lifecycle collaborator
     work_reads,
     work_refine,
+    work_review,
     work_services,
     work_show,
     work_submission,
@@ -177,10 +178,6 @@ _review_pending_at = work_metrics.review_pending_at
 _clear_review_label = work_metrics.clear_review_label
 _strip_review_pending = work_metrics.strip_review_pending
 backfill_stale_review_labels = work_metrics.backfill_stale_review_labels
-_open_gates = work_metrics.open_gates
-_match_gate = work_metrics.match_gate
-_security_gate = work_metrics.security_gate
-_release_hold_gate = work_metrics.release_hold_gate
 _stage_recorder = work_metrics.stage_recorder
 _emit_cycle = work_metrics.emit_cycle
 _emit_bead_flow = work_metrics.emit_bead_flow
@@ -1102,26 +1099,6 @@ def _open_submit_gate(cfg, entry, bead, branch, main, sha) -> tuple[str, bool]:
     )
 
 
-def _person_of(name: str) -> str:
-    """The person part of a seat identity ('dev/alice' -> 'alice'); a bare name maps to itself. Used
-    to spot a cross-seat self-review — the SAME person wearing both an author and a reviewer hat."""
-    return work_submission.impl__person_of(sys.modules[__name__], name)
-
-
-def _guard_self_review(cfg, entry, data, actor, bead) -> None:
-    """Reviewer cross-seat policy (roles/RBAC matrix §3, bead .39; default flipped by bh-e5kv):
-    approving a `type:human` review gate on a bead you authored is a rubber-stamp risk — the same
-    leak whether the approver is a human wearing two hats or an agent self-approving its own
-    dispatched work. Under `hard` (the default) this BLOCKS deterministically, so the human
-    sign-off a `type:human` gate exists for can't be skipped by self-approval; under `advise`
-    (explicit opt-out) it only WARNS and lets the approval through. Self-review is judged by
-    PERSON, not seat — dev/alice authoring and rev/alice (or dev/alice) approving both count.
-    No-op when the approver differs from the author, or either is unknown."""
-    return work_submission.impl__guard_self_review(
-        sys.modules[__name__], cfg, entry, data, actor, bead
-    )
-
-
 def approve(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
     """Reviewer/coordinator: resolve a submitted bead's HUMAN review gate through the bh
     convention layer — the first-class approve step that replaces the gated
@@ -1141,62 +1118,9 @@ def approve(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
     Release (bh-k2j8): an open `release-hold:` gate is the releaser's to clear — resolved here when
     run as a releaser (`--as releaser/<name>`) and refused for any other seat, so a release:breaking
     change can't be self-released into the wrong version window."""
-    return (
-        work_services.work_lifecycle_service(
-            approve=lambda item: work_submission.impl_approve(
-                sys.modules[__name__], item.bead, item.actor, item.hive
-            )
-        )
-        .approve(work_capability.ApprovalRequest(bead, as_, hive))
-        .value
-    )
-
-
-def _approve_security_gate(gates, bead, main, actor, open_review) -> bool:
-    """Assurance (bead .33): a security:* gate is warden-only to resolve and runs in PARALLEL with
-    review. Resolved here when a warden is clearing it, or when it's the only open gate (so a
-    non-warden targeting it hits the warden-only refusal, not a misleading "no review gate").
-    Returns True iff it handled (and reported) the approve — the caller returns immediately."""
-    return work_submission.impl__approve_security_gate(
-        sys.modules[__name__], gates, bead, main, actor, open_review
-    )
-
-
-def _approve_release_hold_gate(gates, bead, main, actor, open_review) -> bool:
-    """Release (bh-k2j8): a release-hold: gate is releaser-only to resolve and blocks the merge
-    like any open gate. Resolved here when a releaser is clearing it, or when it's the only open
-    gate (so a non-releaser targeting it hits the releaser-only refusal, not a misleading "no
-    review gate"). Mirrors `_approve_security_gate`. Returns True iff it handled the approve."""
-    return work_submission.impl__approve_release_hold_gate(
-        sys.modules[__name__], gates, bead, main, actor, open_review
-    )
-
-
-def _guard_human_review_gate(open_review, bead) -> None:
-    """Refuse when `bead`'s open review gate is out-of-process (`gh:*`/`timer`) — resolve those
-    through their own channel (CI / PR merge), not `bh work approve`."""
-    return work_submission.impl__guard_human_review_gate(sys.modules[__name__], open_review, bead)
-
-
-def _resolve_review_gates(open_review, bead, main, actor) -> list[str]:
-    """Resolve EVERY open review gate — never first-match a possibly-stale one (bh-c3il): a
-    duplicate left by an older submit would otherwise deadlock approve against merge. `bd gate
-    resolve` only ever takes ONE gate id, so this stays a per-gate spawn (not batchable). Returns
-    the resolved gate ids."""
-    return work_submission.impl__resolve_review_gates(
-        sys.modules[__name__], open_review, bead, main, actor
-    )
-
-
-def _clear_stale_review_state(bead, data, main, actor) -> None:
-    """Clear a stale review=changes-requested left by a raw `bd set-state` bounce (bh-n5z3.6): once
-    the gate is resolved, an approval must also flip the review state out of changes-requested,
-    else `_merge_bead` refuses forever. review=approved is a new value nothing reads (merge only
-    refuses changes-requested), so this is a pure unblock. Otherwise drop the stale
-    review:pending label — review passed."""
-    return work_submission.impl__clear_stale_review_state(
-        sys.modules[__name__], bead, data, main, actor
-    )
+    # Served by the API-first `beadhive_core` review handlers through the one `work_review`
+    # composition seam (bh-bwnys.1); this docstring is the public `--help` contract.
+    return work_review.approve(bead, as_, hive)
 
 
 def bounce(bead: str = _BEAD, message: str = _BOUNCE_MSG, as_: str = _AS, hive: str = _HIVE):
@@ -1205,15 +1129,9 @@ def bounce(bead: str = _BEAD, message: str = _BOUNCE_MSG, as_: str = _AS, hive: 
     review=changes-requested. With no open gate it warns and still records the bounce. Points the
     developer at `bh work resume`. Batch behavior falls out free — the one batch gate names every
     member, so bouncing any member resolves it and blocks `merge --group` (bh-n5z3.6)."""
-    return (
-        work_services.work_lifecycle_service(
-            bounce=lambda item: work_submission.impl_bounce(
-                sys.modules[__name__], item.bead, item.reason, item.actor, item.hive
-            )
-        )
-        .bounce(work_capability.BounceRequest(bead, message, as_, hive))
-        .value
-    )
+    # Served by the API-first `beadhive_core` review handlers through the one `work_review`
+    # composition seam (bh-bwnys.1), which also records the feedback as a bead comment.
+    return work_review.bounce(bead, message, as_, hive)
 
 
 def _delete_branch(main, branch) -> None:

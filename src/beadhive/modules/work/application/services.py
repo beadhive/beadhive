@@ -16,11 +16,8 @@ from ..contracts import (
 from ..domain import (
     AbandonRequest,
     AbandonResult,
-    ApprovalRequest,
-    ApprovalResult,
     AssignmentRequest,
     AssignmentResult,
-    BounceRequest,
     CheckRequest,
     CheckResult,
     ClaimRequest,
@@ -78,14 +75,6 @@ class WorkLifecycleService:
 
     def review(self, request: ReviewRequest) -> ReviewResult:
         return self._complete("review", request.bead, self._evidence.review(request))
-
-    def approve(self, request: ApprovalRequest) -> ApprovalResult:
-        request = self._resolved(request, "approve")
-        return self._complete("approve", request.bead, self._beads.approve(request))
-
-    def bounce(self, request: BounceRequest) -> ApprovalResult:
-        request = self._resolved(request, "bounce")
-        return self._complete("bounce", request.bead, self._beads.bounce(request))
 
     def merge(self, request: MergeRequest) -> MergeResult:
         return self._complete("merge", request.subject, self._execution.merge(request))

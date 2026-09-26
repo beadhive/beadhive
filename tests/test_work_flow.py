@@ -565,35 +565,6 @@ def test_provisioning_failure_produces_a_dispatch_cause_not_a_review_bounce_coun
     assert work_next.attempt_count(events, "resume") == 0
 
 
-def test_approve_cannot_resolve_a_prefix_siblings_security_or_release_hold_gate():
-    """bh-1vvdp, THIRD mirror. `_match_gate` feeds `_security_gate` / `_release_hold_gate`, and
-    `bh work approve` RESOLVES whatever they return — so an unanchored match let `<epic>.1`
-    resolve `<epic>.10`'s security gate, removing a merge-integrity boundary the warden owns,
-    and let an epic resolve a child's (the absorbed bh-bhki7 symptom: approving the parent
-    tripped the warden-only guard on a CHILD's gate).
-
-    Uses the real description template this hive emits for ad-hoc gates."""
-    sec_ten = {
-        "id": "g-sec-10",
-        "description": "Ad-hoc gate blocking bh-baml-m76.10\n\nReason: security: warden scan",
-        "status": "open",
-    }
-    hold_child = {
-        "id": "g-hold-child",
-        "description": "Ad-hoc gate blocking bh-epic.3\n\nReason: release-hold: awaiting legal",
-        "status": "open",
-    }
-
-    # The prefix sibling owns neither.
-    assert work._security_gate([sec_ten], "bh-baml-m76.1") is None
-    assert work._release_hold_gate([hold_child], "bh-epic.3.1") is None
-    # The parent epic does not own its child's.
-    assert work._release_hold_gate([hold_child], "bh-epic") is None
-    # ...and the real owners still find theirs, or approve would silently stop working.
-    assert work._security_gate([sec_ten], "bh-baml-m76.10") is sec_ten
-    assert work._release_hold_gate([hold_child], "bh-epic.3") is hold_child
-
-
 # ---- the finish guard itself, not just the helper under it (bh-89mrf) -------------------------
 
 

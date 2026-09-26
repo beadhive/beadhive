@@ -240,8 +240,23 @@ architecture-pants-check:
     uv run python scripts/pants_ci.py verify
     uv run python scripts/pants_ci_benchmark.py check
 
+# Publish the live operation catalog (e.g. after registering a CLI verb) and regenerate every
+# artifact derived from it. Cuts the next minor wire release, or refreshes the one this branch
+# already cut; see docs/schemas/wire/README.md ("Add a CLI verb").
+# publish the live operation catalog as the next wire release and regenerate derived artifacts
+wire-publish:
+    uv run python scripts/publish_wire_release.py
+    uv run python scripts/render_transport_inventory.py
+    uv run python scripts/generate_contract_release.py --write
+    uv run python scripts/generate_contract_release_evidence.py --write
+    uv run python scripts/test_closure_promotion_policy.py > docs/proof/.promotion-policy.json.tmp
+    mv docs/proof/.promotion-policy.json.tmp docs/proof/bh-ck1t6.4-promotion-policy.json
+    uv run python scripts/test_closure_operational_report.py --write
+    uv run python scripts/refresh_modularization_closeout.py --write
+
 # Compare the candidate wire release with the target branch and validate its shared fixtures.
 # CI may set BH_WIRE_SCHEMA_BASE_REF to its actual target ref; local work defaults to main.
+# Releases below 1.5.0 are deprecated history and are neither loaded nor compared.
 # reject same-major wire breaks and in-place edits to already-published releases
 wire-schema-compat:
     uv run python scripts/render_telemetry_schema.py --check

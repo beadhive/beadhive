@@ -34,6 +34,13 @@ from beadhive.contract_release import (
     write_release,
 )
 
+KEYED_COLLECTIONS = frozenset(
+    {
+        ("operation-catalog", "operations"),
+        ("cli", "projections"),
+        ("mcp", "projections"),
+    }
+)
 EXPECTED_FAMILIES = frozenset(
     {
         "config",
@@ -244,9 +251,10 @@ def test_published_baseline_is_distinct_complete_and_digest_pinned(
 ) -> None:
     baseline = published_baseline_root()
     assert baseline != release_root()
+    # The baseline was rebased onto the bundle published with wire release 1.5.0 (bh-bwnys.5).
+    assert baseline.name == "v1.5.0"
     published = load_published_baseline()
     candidate = build_release()
-    assert published != candidate
     assert compatibility_errors(published, candidate) == []
 
     substituted = tmp_path / "baseline"
@@ -655,7 +663,47 @@ def test_append_only_catalog_policy_rejects_member_removal_and_reorder(
     reordered = deepcopy(old)
     members = _artifact(reordered, family)["document"][collection]
     members[0], members[1] = members[1], members[0]
-    assert any("append-only" in error for error in compatibility_errors(old, reordered))
+    errors = compatibility_errors(old, reordered)
+    if (family, collection) in KEYED_COLLECTIONS:
+        # Identity-keyed catalogs are order-insensitive: generators emit them sorted, so a new
+        # member lands mid-list (bh-bwnys.5).  Removal still fails above.
+        assert errors == []
+    else:
+        assert any("append-only" in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    "family,collection,identity",
+    [
+        ("operation-catalog", "operations", "name"),
+        ("operation-catalog", "cli_parents", "path"),
+        ("cli", "projections", "identifier"),
+        ("mcp", "projections", "identifier"),
+    ],
+)
+def test_keyed_catalog_policy_allows_mid_list_addition_and_rejects_member_change(
+    family: str, collection: str, identity: str
+) -> None:
+    old = build_release()
+
+    inserted = deepcopy(old)
+    members = _artifact(inserted, family)["document"][collection]
+    added = deepcopy(members[1])
+    added[identity] = f"{added[identity]}-mid-list-additive"
+    members.insert(2, added)
+    assert compatibility_errors(old, inserted) == []
+
+    changed = deepcopy(old)
+    member = _artifact(changed, family)["document"][collection][1]
+    field = next(key for key, value in sorted(member.items()) if isinstance(value, bool | str))
+    if field == identity:
+        field = next(
+            key
+            for key, value in sorted(member.items())
+            if key != identity and isinstance(value, bool | str)
+        )
+    member[field] = (not member[field]) if isinstance(member[field], bool) else "changed"
+    assert any("append-only" in error for error in compatibility_errors(old, changed))
 
 
 @pytest.mark.parametrize(

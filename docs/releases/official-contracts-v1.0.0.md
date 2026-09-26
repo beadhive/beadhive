@@ -30,6 +30,10 @@ generated [compatibility report](../proof/official-v1-contract-compatibility.jso
 every manifest-declared historical artifact, classifies exact and compatible matches, and records
 policy divergences that remain pinned to their historical release.
 
+Update (2026-09-26, bh-bwnys.5): wire releases 1.0.0–1.4.0 are now deprecated. Their files are
+kept, but the compatibility report and every gate compare only against supported releases (1.5.0
+and later). The package's executable baseline moved from `baselines/v1.0.0` to `baselines/v1.5.0`.
+
 ## Version negotiation
 
 Consumers must pin the package version, `release_version` from `inventory.json`, and the stable

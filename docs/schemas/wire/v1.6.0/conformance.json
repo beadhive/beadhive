@@ -1,0 +1,198 @@
+{
+  "format_version": 1,
+  "release_version": "1.6.0",
+  "cases": [
+    {
+      "name": "factory-snapshot-valid",
+      "artifact_id": "urn:beadhive:wire-schema:factory.snapshot:1",
+      "schema_valid": true,
+      "decoder_result": {"ok": true},
+      "input": {
+        "schemaVersion": 1,
+        "hives": [
+          {"prefix": "bh", "provider": "github", "org": "beadhive", "repo": "beadhive", "kind": "org-native"}
+        ],
+        "worktrees": [],
+        "edges": [],
+        "workspaceRoot": null,
+        "generatedAt": 1756591200,
+        "coverage": {
+          "hives": {"state": "complete", "requested": 1, "returned": 1, "fromCache": 0, "detail": null},
+          "worktrees": {"state": "unavailable", "requested": null, "returned": null, "fromCache": 0, "detail": "not exposed"},
+          "hubIssues": {"state": "complete", "requested": 0, "returned": 0, "fromCache": 0, "detail": null},
+          "hubDeps": {"state": "partial", "requested": 2, "returned": 1, "fromCache": 1, "detail": "one source unavailable"}
+        }
+      }
+    },
+    {
+      "name": "factory-snapshot-version-mismatch-wins",
+      "artifact_id": "urn:beadhive:wire-schema:factory.snapshot:1",
+      "schema_valid": false,
+      "decoder_result": {"ok": false, "reason": "schema-mismatch", "expected": 1, "received": 2},
+      "input": {"schemaVersion": 2, "hives": "hostile", "coverage": false}
+    },
+    {
+      "name": "factory-snapshot-unknown-member-is-ignored",
+      "artifact_id": "urn:beadhive:wire-schema:factory.snapshot:1",
+      "schema_valid": true,
+      "decoder_result": {"ok": true},
+      "input": {
+        "schemaVersion": 1,
+        "hives": [],
+        "worktrees": [],
+        "edges": [],
+        "workspaceRoot": null,
+        "generatedAt": 0,
+        "coverage": {
+          "hives": {"state": "complete", "requested": 0, "returned": 0, "fromCache": 0, "detail": null},
+          "worktrees": {"state": "complete", "requested": 0, "returned": 0, "fromCache": 0, "detail": null},
+          "hubIssues": {"state": "complete", "requested": 0, "returned": 0, "fromCache": 0, "detail": null},
+          "hubDeps": {"state": "complete", "requested": 0, "returned": 0, "fromCache": 0, "detail": null}
+        },
+        "futureOptionalField": {"oldConsumers": "ignore this"}
+      }
+    },
+    {
+      "name": "factory-snapshot-closed-union-rejects-unknown",
+      "artifact_id": "urn:beadhive:wire-schema:factory.snapshot:1",
+      "schema_valid": false,
+      "decoder_result": {"ok": false, "reason": "invalid"},
+      "input": {
+        "schemaVersion": 1,
+        "hives": [],
+        "worktrees": [],
+        "edges": [{"from": "bh", "to": "external", "kind": "future-kind", "details": []}],
+        "workspaceRoot": null,
+        "generatedAt": 0,
+        "coverage": {
+          "hives": {"state": "complete", "requested": 0, "returned": 0, "fromCache": 0, "detail": null},
+          "worktrees": {"state": "complete", "requested": 0, "returned": 0, "fromCache": 0, "detail": null},
+          "hubIssues": {"state": "complete", "requested": 0, "returned": 0, "fromCache": 0, "detail": null},
+          "hubDeps": {"state": "complete", "requested": 0, "returned": 0, "fromCache": 0, "detail": null}
+        }
+      }
+    },
+    {
+      "name": "bead-node-open-status-allows-unknown",
+      "artifact_id": "urn:beadhive:wire-schema:factory.bead-node:1",
+      "schema_valid": true,
+      "decoder_result": {"ok": true},
+      "input": {
+        "id": "bh-123", "title": "Example", "description": "", "molType": null,
+        "status": "future-state", "issueType": "feature", "priority": 2, "labels": [],
+        "assignee": null, "createdAt": 1, "startedAt": null, "closedAt": null
+      }
+    },
+    {
+      "name": "bead-node-invalid",
+      "artifact_id": "urn:beadhive:wire-schema:factory.bead-node:1",
+      "schema_valid": false,
+      "decoder_result": {"ok": false, "reason": "invalid"},
+      "input": {"id": "bh-123"}
+    },
+    {
+      "name": "plugin-manifest-valid",
+      "artifact_id": "urn:beadhive:wire-schema:plugin-manifest:1",
+      "schema_valid": true,
+      "decoder_result": {"ok": true},
+      "input": {
+        "capabilities": {
+          "provides": [
+            {"api_version": 1, "id": "workspace.provision"}
+          ]
+        },
+        "compatibility": {
+          "beadhive": {"maximum_exclusive": "2.0.0", "minimum_inclusive": "0.9.0"},
+          "plugin_kernel": {"maximum_exclusive": "2.0.0", "minimum_inclusive": "1.0.0"}
+        },
+        "configuration": {
+          "legacy_namespaces": ["repowise"],
+          "namespace": "plugins.repowise",
+          "schema_artifact": null
+        },
+        "lifecycle": {
+          "subscriptions": [
+            {
+              "compensation": {"action_id": null, "mode": "none"},
+              "criticality": "best-effort",
+              "event": "worktree.created",
+              "id": "repowise.index-worktree",
+              "idempotency": "required",
+              "order": 100,
+              "retry": {"backoff_seconds": 1, "max_attempts": 2},
+              "timeout_seconds": 30
+            }
+          ]
+        },
+        "manifest_version": 1,
+        "plugin_id": "repowise",
+        "plugin_version": "1.0.0",
+        "presentation": {
+          "cli": [
+            {"capability_id": "workspace.provision", "command": "plugin repowise"}
+          ]
+        },
+        "security": {
+          "credentials": [
+            {
+              "id": "repowise-api",
+              "purpose": "authenticate the optional remote analysis adapter",
+              "required": false,
+              "sources": [
+                {"kind": "environment-variable", "name": "REPOWISE_API_TOKEN"}
+              ]
+            }
+          ],
+          "executables": [
+            {
+              "name": "repowise",
+              "required": true,
+              "version": {"maximum_exclusive": "2.0.0", "minimum_inclusive": "1.0.0"}
+            }
+          ],
+          "permissions": [
+            {"id": "filesystem.workspace.read", "purpose": "analyze repository sources", "required": true}
+          ]
+        }
+      }
+    },
+    {
+      "name": "plugin-manifest-secret-value-invalid",
+      "artifact_id": "urn:beadhive:wire-schema:plugin-manifest:1",
+      "schema_valid": false,
+      "decoder_result": {"ok": false, "reason": "invalid"},
+      "input": {
+        "capabilities": {"provides": []},
+        "compatibility": {
+          "beadhive": {"maximum_exclusive": "2.0.0", "minimum_inclusive": "0.9.0"},
+          "plugin_kernel": {"maximum_exclusive": "2.0.0", "minimum_inclusive": "1.0.0"}
+        },
+        "configuration": {
+          "legacy_namespaces": [],
+          "namespace": "plugins.example",
+          "schema_artifact": null
+        },
+        "lifecycle": {"subscriptions": []},
+        "manifest_version": 1,
+        "plugin_id": "example",
+        "plugin_version": "1.0.0",
+        "presentation": {"cli": []},
+        "security": {
+          "credentials": [
+            {
+              "id": "example-token",
+              "purpose": "prove that values are forbidden",
+              "required": true,
+              "secret_value": "must-not-be-published",
+              "sources": [
+                {"kind": "environment-variable", "name": "EXAMPLE_TOKEN"}
+              ]
+            }
+          ],
+          "executables": [],
+          "permissions": []
+        }
+      }
+    }
+  ]
+}

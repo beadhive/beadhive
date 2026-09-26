@@ -69,8 +69,6 @@ def test_work_dtos_and_public_module_exclude_transport_vocabulary() -> None:
         work.CheckRequest,
         work.SubmissionRequest,
         work.ReviewRequest,
-        work.ApprovalRequest,
-        work.BounceRequest,
         work.MergeRequest,
         work.ResumeRequest,
         work.AbandonRequest,

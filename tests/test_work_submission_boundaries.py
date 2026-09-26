@@ -24,15 +24,6 @@ SUBMISSION_OPERATIONS = (
     "_warn_submit_release_hint",
     "_validate_submit_checkout",
     "_open_submit_gate",
-    "_person_of",
-    "_guard_self_review",
-    "approve",
-    "_approve_security_gate",
-    "_approve_release_hold_gate",
-    "_guard_human_review_gate",
-    "_resolve_review_gates",
-    "_clear_stale_review_state",
-    "bounce",
 )
 
 
@@ -75,8 +66,6 @@ def test_existing_policy_and_ledger_boundaries_remain_executable_owners():
     assert "api.work_logic.ensure_review_gate" in inspect.getsource(
         work_submission.impl__open_submit_gate
     )
-    assert "api.work_logic.review_gates" in inspect.getsource(work_submission.impl_approve)
-    assert "api.work_logic.review_gates" in inspect.getsource(work_submission.impl_bounce)
 
 
 def test_submit_shares_one_authoritative_pre_mutation_bead_read_across_policy_checks():

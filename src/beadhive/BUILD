@@ -6,6 +6,19 @@ python_sources(
     name="lib",
     sources=["*.py"],
     tags=["category:code", "attest:package", "owner:root", "role:migration-debt"],
+    overrides={
+        # The supervised Beads service owner resolves the Beads client package by name
+        # (bh-bwnys.4); Pants cannot infer that edge, so it is declared here.
+        "host_beads.py": {"dependencies": ["//packages/beadhive-beads-client/src:lib"]},
+        # The review composition seam resolves the API-first core by name (bh-bwnys.1); Pants
+        # cannot infer that edge, so it is declared here.
+        "work_review.py": {
+            "dependencies": [
+                "//packages/beadhive-core/src:lib",
+                "//packages/beadhive-beads-client/src:lib",
+            ],
+        },
+    },
 )
 
 resources(
@@ -64,6 +77,8 @@ pex_binary(
         ":sources",
         ":package-data",
         "//packages/beadhive-pants/src:lib",
+        "//packages/beadhive-core/src:lib",
+        "//packages/beadhive-beads-client/src:lib",
     ],
     output_path="bh.pex",
     tags=["category:code", "attest:demos", "attest:package"],

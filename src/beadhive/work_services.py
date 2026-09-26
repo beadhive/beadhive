@@ -13,11 +13,8 @@ from typing import Any
 from .modules.work import (
     AbandonRequest,
     AbandonResult,
-    ApprovalRequest,
-    ApprovalResult,
     AssignmentRequest,
     AssignmentResult,
-    BounceRequest,
     CheckRequest,
     CheckResult,
     ClaimRequest,
@@ -52,14 +49,10 @@ class CallbackBeadStore:
         *,
         assign: Operation = _unbound,
         schedule: Operation = _unbound,
-        approve: Operation = _unbound,
-        bounce: Operation = _unbound,
         abandon: Operation = _unbound,
     ) -> None:
         self._assign = assign
         self._schedule = schedule
-        self._approve = approve
-        self._bounce = bounce
         self._abandon = abandon
 
     def assign(self, request: AssignmentRequest) -> AssignmentResult:
@@ -69,12 +62,6 @@ class CallbackBeadStore:
         value = self._schedule(request)
         plan = value if isinstance(value, Mapping) else {}
         return ScheduleResult(request.epic, plan)
-
-    def approve(self, request: ApprovalRequest) -> ApprovalResult:
-        return ApprovalResult(request.bead, self._approve(request))
-
-    def bounce(self, request: BounceRequest) -> ApprovalResult:
-        return ApprovalResult(request.bead, self._bounce(request))
 
     def abandon(self, request: AbandonRequest) -> AbandonResult:
         return AbandonResult(request.bead, self._abandon(request))
@@ -150,8 +137,6 @@ def work_lifecycle_service(
     check: Operation = _unbound,
     submit: Operation = _unbound,
     review: Operation = _unbound,
-    approve: Operation = _unbound,
-    bounce: Operation = _unbound,
     merge: Operation = _unbound,
     resume: Operation = _unbound,
     abandon: Operation = _unbound,
@@ -164,8 +149,6 @@ def work_lifecycle_service(
         beads=CallbackBeadStore(
             assign=assign,
             schedule=schedule,
-            approve=approve,
-            bounce=bounce,
             abandon=abandon,
         ),
         worktrees=CallbackWorktreeLifecycle(claim=claim, resume=resume),

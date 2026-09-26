@@ -14,6 +14,7 @@ resolution-markers = [
 members = [
     "beadhive",
     "beadhive-beads-client",
+    "beadhive-core",
     "beadhive-package-template",
     "beadhive-pants",
 ]
@@ -106,6 +107,7 @@ name = "beadhive"
 version = "0.18.1"
 source = { editable = "." }
 dependencies = [
+    { name = "attrs" },
     { name = "fastmcp" },
     { name = "httpx" },
     { name = "joserfc" },
@@ -128,6 +130,10 @@ pants = [
 ]
 
 [package.dev-dependencies]
+core = [
+    { name = "beadhive-beads-client" },
+    { name = "beadhive-core" },
+]
 dev = [
     { name = "commitizen" },
     { name = "editables" },
@@ -145,6 +151,7 @@ pants = [
 
 [package.metadata]
 requires-dist = [
+    { name = "attrs", specifier = ">=23" },
     { name = "beadhive-pants", marker = "extra == 'pants'", editable = "packages/beadhive-pants" },
     { name = "fastmcp", specifier = ">=3.4,<4" },
     { name = "httpx", specifier = ">=0.28,<1" },
@@ -162,6 +169,10 @@ requires-dist = [
 provides-extras = ["mcp", "otel", "pants"]
 
 [package.metadata.requires-dev]
+core = [
+    { name = "beadhive-beads-client", editable = "packages/beadhive-beads-client" },
+    { name = "beadhive-core", editable = "packages/beadhive-core" },
+]
 dev = [
     { name = "commitizen", specifier = ">=4.16.4" },
     { name = "editables", specifier = ">=0.5" },
@@ -189,6 +200,17 @@ requires-dist = [
     { name = "attrs", specifier = ">=23" },
     { name = "httpx", specifier = ">=0.28,<1" },
 ]
+
+[[package]]
+name = "beadhive-core"
+version = "0.1.0"
+source = { editable = "packages/beadhive-core" }
+dependencies = [
+    { name = "beadhive-beads-client" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "beadhive-beads-client", editable = "packages/beadhive-beads-client" }]
 
 [[package]]
 name = "beadhive-package-template"

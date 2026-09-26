@@ -1284,6 +1284,15 @@ def build_product_application(
         ),
         state_broker.component(),
     ]
+    if settings is not None:
+        # Host-daemon child ownership of each hive's supervised Beads API service (bh-bwnys.4).
+        # Only hives with a `bh host beads enable` intent are supervised; none by default.
+        from .host_beads import DaemonBeadsSupervision, runtime_root
+
+        bh_home = Path(
+            control_record.bh_home if control_record is not None else DaemonKey.current().bh_home
+        )
+        product_components.append(DaemonBeadsSupervision(runtime_root(bh_home)).component())
     network_policy = None
     credential_sessions = None
     mcp_sessions = None

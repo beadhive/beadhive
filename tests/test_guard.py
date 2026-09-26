@@ -209,14 +209,7 @@ def test_guard_bd_contributor_gated_push_allowed():
     guard.guard_bd(["github", "push", "--issues=bc-1"], "contrib/ann")  # =form too
 
 
-# ---- warden-only security:* gate resolution (Assurance, bead .33) ------------
-
-
-def test_is_warden():
-    assert guard.is_warden("warden/sec")
-    assert not guard.is_warden("dev/dev")
-    assert not guard.is_warden("disp/lead")
-    assert not guard.is_warden("brian")
+# ---- security:* gate classification (Assurance, bead .33) ---------------------
 
 
 @pytest.mark.parametrize(
@@ -234,32 +227,7 @@ def test_is_security_gate(gate, expected):
     assert guard.is_security_gate(gate) is expected
 
 
-def test_guard_security_gate_resolution_refuses_non_warden(capsys):
-    """A non-warden resolving a security:* gate is refused with a warden-only pointer."""
-    gate = {"id": "sec0", "reason": "security:secret-scan"}
-    for actor in ("dev/dev", "disp/lead", "rev/r", "brian", ""):
-        with pytest.raises(typer.Exit) as exc:
-            guard.guard_security_gate_resolution(gate, actor)
-        assert exc.value.exit_code == 1
-    err = capsys.readouterr().err
-    assert "warden-only" in err
-    assert "warden/<name>" in err
-
-
-def test_guard_security_gate_resolution_allows_warden_and_noops_non_security():
-    """A warden may resolve a security gate; and a non-security gate is a no-op for any actor."""
-    guard.guard_security_gate_resolution({"id": "sec0", "reason": "security:sbom"}, "warden/sec")
-    guard.guard_security_gate_resolution({"id": "g0", "reason": "review abc"}, "dev/dev")
-
-
-# ---- releaser-only release-hold: gate resolution (Release, bh-k2j8) ----------
-
-
-def test_is_releaser():
-    assert guard.is_releaser("releaser/rel")
-    assert not guard.is_releaser("dev/dev")
-    assert not guard.is_releaser("warden/sec")
-    assert not guard.is_releaser("brian")
+# ---- release-hold: gate classification (Release, bh-k2j8) --------------------
 
 
 @pytest.mark.parametrize(
@@ -276,26 +244,6 @@ def test_is_releaser():
 )
 def test_is_release_hold_gate(gate, expected):
     assert guard.is_release_hold_gate(gate) is expected
-
-
-def test_guard_release_hold_gate_resolution_refuses_non_releaser(capsys):
-    """A non-releaser resolving a release-hold: gate is refused with a releaser-only pointer."""
-    gate = {"id": "rh0", "reason": "release-hold: bc-epic — release:breaking held"}
-    for actor in ("dev/dev", "disp/lead", "warden/sec", "brian", ""):
-        with pytest.raises(typer.Exit) as exc:
-            guard.guard_release_hold_gate_resolution(gate, actor)
-        assert exc.value.exit_code == 1
-    err = capsys.readouterr().err
-    assert "releaser-only" in err
-    assert "releaser/<name>" in err
-
-
-def test_guard_release_hold_gate_resolution_allows_releaser_and_noops_non_hold():
-    """A releaser may resolve a release-hold gate; a non-hold gate is a no-op for any actor."""
-    guard.guard_release_hold_gate_resolution(
-        {"id": "rh0", "reason": "release-hold: bc-epic"}, "releaser/rel"
-    )
-    guard.guard_release_hold_gate_resolution({"id": "g0", "reason": "review abc"}, "dev/dev")
 
 
 # ---- control-plane HQ-registry write partitioning (§2.1, bead .36) -----------

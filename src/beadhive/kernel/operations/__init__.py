@@ -110,6 +110,12 @@ hive sync peers|hive:string:o,all_hives:boolean:o,peer:string:o,strategy:string:
 hive sync remotes|hive:string:o,all_hives:boolean:o,remote:string:o,pull:boolean:o,push:boolean:o,dry_run:boolean:o,force:boolean:o,verbose:boolean:o
 hive sync-remote|all_hives:boolean:o,dry_run:boolean:o,verbose:boolean:o
 host adopt|hive:string:r,force:boolean:o
+host beads disable|hive:string:o,as_json:boolean:o
+host beads enable|hive:string:o,as_json:boolean:o
+host beads run|hive:string:o
+host beads start|hive:string:o,as_json:boolean:o
+host beads status|hive:string:o,all_hives:boolean:o,as_json:boolean:o
+host beads stop|hive:string:o,as_json:boolean:o
 host daemon install|as_json:boolean:o
 host daemon remove|as_json:boolean:o
 host daemon rm|as_json:boolean:o
@@ -270,6 +276,7 @@ _READ_PATHS = {
     "hive ready",
     "hive status",
     "hive survey",
+    "host beads status",
     "host daemon status",
     "host dispatch logs",
     "host dispatch runs",
@@ -351,6 +358,7 @@ hive contrib-profile|false|
 hive hook|false|
 hive sync|false|Hive
 host|false|Fleet / HQ
+host beads|false|
 host daemon|false|
 host dispatch|false|
 host lease|false|
