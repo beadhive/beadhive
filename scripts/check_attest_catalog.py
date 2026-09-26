@@ -21,7 +21,7 @@ KEY_RECIPES = {
         ("pants-attest", "architecture-pants-check", "pants-artifact-check"),
     ),
     "demos": ("attest-demos", ("demo-local-loop", "demo-live-ingress")),
-    "packages": ("attest-packages", ("packages-check",)),
+    "packages": ("attest-packages", ("packages-check", "beads-client-check")),
 }
 ROOT = Path(__file__).resolve().parents[1]
 NATIVE_FAST = (
@@ -30,6 +30,7 @@ NATIVE_FAST = (
     "license-check",
     "architecture-structural-check",
     "stateful-native",
+    "beads-client-check",
 )
 PANTS_FAST = ("lint", "lint-md", "license-check", "architecture-structural-check", "test-changed")
 NATIVE_FULL = (
@@ -39,6 +40,7 @@ NATIVE_FULL = (
     "license-check",
     "architecture-structural-check",
     "stateful-native",
+    "beads-client-check",
     "test-integration-land",
     "demo-local-loop",
     "demo-live-ingress",

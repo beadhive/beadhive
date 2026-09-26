@@ -21,6 +21,7 @@ Runner = Callable[[str], int]
 # (1=refuse, 2=route/half-done, 3=unmeasurable). 76 is sysexits EX_PROTOCOL: the configured
 # impact-analysis protocol did not produce an answer strict mode may act on.
 UNRESOLVED_IMPACT_EXIT = 76
+FULL_GATE_PHASES = ("molecule", "merge-main", "push-main", "postland")
 
 
 def warn_impact_fallback(reason: str) -> None:
@@ -63,6 +64,30 @@ def all_keys_green(entry, cfg, rev: str) -> bool:
         )
         for verdict in verdicts.values()
     )
+
+
+def record_full_gate_keys(entry, cfg, rev: str, cmd: str, rc: int) -> None:
+    """Expand one successful configured full-gate run into current verdicts for its key catalog.
+
+    The catalog recipes are checked as an exact partition of the full gate.  Recording their
+    opaque commands here lets later path receipts carry unchanged keys without rerunning them.
+    Red runs and ordinary fast/submission commands never create per-key proof.
+    """
+    if rc != 0:
+        return
+    attest = config.attest_config(cfg, entry)
+    keys = attest_keys(attest)
+    if not keys:
+        return
+    validation = (entry.get("work") or {}).get("validate") or {}
+    full_commands = {
+        str(validation[phase]).strip() for phase in FULL_GATE_PHASES if phase in validation
+    }
+    if cmd.strip() not in full_commands:
+        return
+    for key in keys:
+        if not key.is_disabled():
+            validation_ledger.record(entry, rev, key.cmd, 0, cfg=cfg, phase="full-gate-key")
 
 
 #: Three-way triage verdicts, matching the vocabulary this codebase already uses for an
@@ -380,10 +405,12 @@ def run(
 
 
 __all__ = [
+    "FULL_GATE_PHASES",
     "UNRESOLVED_IMPACT_EXIT",
     "all_keys_green",
     "configured",
     "error_unresolved_impact",
     "run",
+    "record_full_gate_keys",
     "warn_impact_fallback",
 ]

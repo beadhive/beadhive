@@ -256,6 +256,59 @@ def test_invalidated_key_reuses_qualifying_exact_tree_verdict(monkeypatch, capsy
     assert "selective validation total:" in out
 
 
+def test_green_full_gate_records_every_active_key(monkeypatch) -> None:
+    attest = _attest(
+        {"name": "docs", "cmd": "just attest-docs"},
+        {"name": "unit", "cmd": "just attest-unit"},
+        {
+            "name": "paused",
+            "cmd": "just attest-paused",
+            "enabled": False,
+            "disabled_reason": "maintenance",
+        },
+    )
+    recorded = []
+    monkeypatch.setattr(selective_validation.config, "attest_config", lambda *_: attest)
+    monkeypatch.setattr(
+        selective_validation.config,
+        "validate_cmd",
+        lambda *_a, phase=None, **_k: "just check-all-native" if phase else "just check-native",
+    )
+    monkeypatch.setattr(
+        selective_validation.validation_ledger,
+        "record",
+        lambda _entry, rev, cmd, rc, **kwargs: recorded.append((rev, cmd, rc, kwargs)),
+    )
+
+    entry = {"work": {"validate": {"merge-main": "just check-all-native"}}}
+    selective_validation.record_full_gate_keys(entry, {}, "head", "just check-all-native", 0)
+
+    assert [(rev, cmd, rc) for rev, cmd, rc, _kwargs in recorded] == [
+        ("head", "just attest-docs", 0),
+        ("head", "just attest-unit", 0),
+    ]
+    assert all(kwargs["phase"] == "full-gate-key" for *_rest, kwargs in recorded)
+
+
+def test_fast_or_red_gate_does_not_record_key_verdicts(monkeypatch) -> None:
+    attest = _attest({"name": "unit", "cmd": "just attest-unit"})
+    monkeypatch.setattr(selective_validation.config, "attest_config", lambda *_: attest)
+    monkeypatch.setattr(
+        selective_validation.config,
+        "validate_cmd",
+        lambda *_a, phase=None, **_k: "just check-all-native" if phase else "just check-native",
+    )
+    monkeypatch.setattr(
+        selective_validation.validation_ledger,
+        "record",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("must not record")),
+    )
+
+    entry = {"work": {"validate": {"merge-main": "just check-all-native"}}}
+    selective_validation.record_full_gate_keys(entry, {}, "head", "just check-native", 0)
+    selective_validation.record_full_gate_keys(entry, {}, "head", "just check-all-native", 1)
+
+
 def test_unresolved_impact_defaults_to_byte_compatible_fallback(monkeypatch, capsys) -> None:
     key = {"name": "unit", "cmd": "just unit"}
 

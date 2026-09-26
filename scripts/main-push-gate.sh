@@ -119,6 +119,10 @@ if [ "$rc" -ne 0 ]; then
   echo "✗ gate FAILED (exit $rc) — nothing was pushed. Fix the suite, not the transport." >&2
   exit "$rc"
 fi
+# This gate runs outside bh's clean-checkout runner. Persist the aggregate verdict and its
+# checked native-key partition after success; a recording failure only forfeits future reuse.
+uv run python scripts/record_full_gate.py "$gate" "$gate_cmd" --phase push-main ||
+  echo "⚠ gate passed, but its attestation receipt could not be recorded" >&2
 echo "" >&2
 echo "✓ gate GREEN — AND THE PUSH HAS NOT HAPPENED YET. git now writes to the connection it" >&2
 echo "  opened before this hook started. If the next thing you see is 'failed to push some" >&2

@@ -55,7 +55,7 @@ check: check-native
 
 # Stable fast entry points. Native collects the complete non-integration core suite directly;
 # Pants retains its impact-selected developer route.
-check-native: lint lint-md license-check architecture-structural-check stateful-native
+check-native: lint lint-md license-check architecture-structural-check stateful-native beads-client-check
 
 # Compare the checked-in SDK and exercise the package without the root app.
 beads-client-check:
@@ -152,11 +152,11 @@ gateway-contract-check:
 # FULL GATE: ruff + markdown + licences + the COMPLETE suite + the local-loop demo — what the LAND runs
 check-all: check-all-native
 
-check-all-pants: require-bd lint lint-md license-check architecture-structural-check architecture-pants-check pants-attest pants-artifact-check stateful-pants stateful-native test-integration-land demo-local-loop demo-live-ingress packages-check
+check-all-pants: require-bd lint lint-md license-check architecture-structural-check architecture-pants-check pants-attest pants-artifact-check stateful-pants stateful-native test-integration-land demo-local-loop demo-live-ingress packages-check beads-client-check
 
 # Full native validation runs every core and workspace test directly with pytest. Pants remains
 # available through check-all-pants; this mode deliberately has no Pants engine prerequisite.
-check-all-native: require-bd lint lint-md license-check architecture-structural-check stateful-native test-integration-land demo-local-loop demo-live-ingress packages-check
+check-all-native: require-bd lint lint-md license-check architecture-structural-check stateful-native beads-client-check test-integration-land demo-local-loop demo-live-ingress packages-check
 
 # Attest-key commands deliberately partition check-all. Keep this list and the fleet's
 # work.attest.keys catalog aligned; check-attest-catalog verifies the recipe graph so adding a
@@ -189,6 +189,7 @@ attest-package:
 # ONE key for every packages/* distribution (bh-3fcl0.1); Pants' CAS serves unchanged ones.
 attest-packages:
     just packages-check
+    just beads-client-check
 
 # The demos execute declared application and fixture inputs, and config owners carry the same
 # selector. They therefore run for graph-implicated code/config changes without taxing docs-only
@@ -223,6 +224,7 @@ architecture-check:
 # This explicit entry point checks the same structural evidence and freshness invariants for
 # check, check-all, and selective CI. architecture-check remains the explicit post-receipt audit.
 architecture-structural-check:
+    uv run python scripts/check_native_impact_map.py
     uv run python scripts/check_import_boundaries.py
     uv run python scripts/check_package_imports.py
     uv run python scripts/test_closure_certification.py --check-structural
@@ -688,7 +690,6 @@ stateful_workers := "16"
 stateful-native:
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
         ./scripts/hermetic.sh uv run pytest -n {{stateful_workers}} tests -m "not integration and not pants_profile"
-    just beads-client-check
 
 # Recursive PEX packaging executes the Pants engine and needs its pinned artifact cache. Keep
 # this one test in the Pants full profile and outside the native collection.
