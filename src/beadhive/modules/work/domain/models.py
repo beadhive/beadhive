@@ -91,28 +91,6 @@ class ReviewRequest:
 
 
 @dataclass(frozen=True, slots=True)
-class ApprovalRequest:
-    bead: str
-    actor: str = ""
-    hive: str = ""
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "bead", _required(self.bead, "bead"))
-
-
-@dataclass(frozen=True, slots=True)
-class BounceRequest:
-    bead: str
-    reason: str
-    actor: str = ""
-    hive: str = ""
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "bead", _required(self.bead, "bead"))
-        object.__setattr__(self, "reason", _required(self.reason, "reason"))
-
-
-@dataclass(frozen=True, slots=True)
 class MergeRequest:
     bead: str = ""
     hive: str = ""
@@ -177,12 +155,6 @@ class SubmissionResult:
 
 @dataclass(frozen=True, slots=True)
 class ReviewResult:
-    bead: str
-    value: Any = None
-
-
-@dataclass(frozen=True, slots=True)
-class ApprovalResult:
     bead: str
     value: Any = None
 

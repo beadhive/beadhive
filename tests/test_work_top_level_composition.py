@@ -117,7 +117,7 @@ def _wrap_reviewed_side_that_absorbed_advanced_main(hive, fakebd, *, epic: str):
         cwd=child_seat,
     )
     work.submit(bead=child, as_="dev/reconcile", hive="myrepo")
-    work.approve(bead=child, as_="review/main-ancestry-audit", hive="myrepo")
+    fakebd.resolve_review(child)
     work.merge(bead=child, hive="myrepo", rm=False, molecule=False)
     reviewed_tip = _git("rev-parse", branch, cwd=hive.main).stdout.strip()
 

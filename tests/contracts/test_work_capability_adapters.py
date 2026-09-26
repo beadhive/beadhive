@@ -5,9 +5,7 @@ from __future__ import annotations
 from beadhive import work_services
 from beadhive.modules.work import (
     AbandonRequest,
-    ApprovalRequest,
     AssignmentRequest,
-    BounceRequest,
     CheckRequest,
     ClaimRequest,
     MergeRequest,
@@ -34,8 +32,6 @@ def test_callback_adapters_forward_every_typed_lifecycle_request() -> None:
         check=capture,
         submit=capture,
         review=capture,
-        approve=capture,
-        bounce=capture,
         merge=capture,
         resume=capture,
         abandon=capture,
@@ -48,14 +44,12 @@ def test_callback_adapters_forward_every_typed_lifecycle_request() -> None:
         service.check(CheckRequest("bh-1")),
         service.submit(SubmissionRequest(bead="bh-1")),
         service.review(ReviewRequest("bh-1")),
-        service.approve(ApprovalRequest("bh-1")),
-        service.bounce(BounceRequest("bh-1", "fix")),
         service.merge(MergeRequest(bead="bh-1")),
         service.resume(ResumeRequest("bh-1")),
         service.abandon(AbandonRequest("bh-1")),
     )
 
-    assert len(calls) == 11
+    assert len(calls) == 9
     assert results[2].plan["max_depth"] == 1
     assert all(getattr(result, "value", "legacy-result") == "legacy-result" for result in results)
 

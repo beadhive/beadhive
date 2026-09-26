@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime
 import re
 
-from . import bd, guard, otel, state, work_logic, work_next
+from . import bd, otel, state, work_logic, work_next
 from .work_guards import first
 
 
@@ -162,26 +162,6 @@ def backfill_stale_review_labels(main, actor="") -> int:
     if not isinstance(rows, list):
         return 0
     return sum(strip_review_pending(row, main, actor) for row in rows)
-
-
-def open_gates(cwd) -> list:
-    gates = bd.json(["gate", "list", "--all", "--limit", "0"], cwd)
-    return gates if isinstance(gates, list) else []
-
-
-def match_gate(gates, bead, matcher):
-    return next(
-        (gate for gate in gates if bd.names_bead(gate.get("description"), bead) and matcher(gate)),
-        None,
-    )
-
-
-def security_gate(gates, bead):
-    return match_gate(gates, bead, guard.is_security_gate)
-
-
-def release_hold_gate(gates, bead):
-    return match_gate(gates, bead, guard.is_release_hold_gate)
 
 
 def stage_recorder(stage):

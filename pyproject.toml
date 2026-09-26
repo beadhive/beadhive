@@ -32,7 +32,7 @@ dependencies = [
     #. Already resolved transitively via fastmcp/pydantic; pinned direct
     # since config.py now depends on its API, not just whatever fastmcp happens to pull in.
     "pydantic-settings>=2.11",
-    # Runtime dependency of the vendored Beads v1.3 client (generated attrs models, bh-bwnys.4).
+    # Runtime dependency of the vendored Beads v1.3 client (generated attrs models, bh-bwnys.4, bh-bwnys.1).
     "attrs>=23",
 ]
 
@@ -80,15 +80,17 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 # `bh host beads` supervises the per-hive Beads API service through the Beads client package
-# (bh-bwnys.4), so the installed compatibility shell must carry it. The package is not published
-# yet, and a hard dependency on an unpublished member is exactly the v0.18.0 standalone-install
-# failure (bh-mxjoy). The wheel therefore ships its import packages from their own source roots
-# (an editable install maps the same directories, never a copy); `attrs` above is the client's
-# only runtime dependency the root does not already declare. Development resolves the editable
-# workspace member through the `core` dependency group.
+# (bh-bwnys.4), and the API-first core serves `bh work approve` / `bounce` (bh-bwnys.1), so the
+# installed compatibility shell must carry both. Neither package is published yet, and a hard
+# dependency on an unpublished member is exactly the v0.18.0 standalone-install failure
+# (bh-mxjoy). The wheel therefore ships their import packages from their own source roots (an
+# editable install maps the same directories, never a copy); `attrs` above is the client's only
+# runtime dependency the root does not already declare. Development resolves the editable
+# workspace members through the `core` dependency group.
 [tool.hatch.build.targets.wheel]
 packages = [
     "src/beadhive",
+    "packages/beadhive-core/src/beadhive_core",
     "packages/beadhive-beads-client/src/beadhive_beads_client",
     "packages/beadhive-beads-client/src/beads_v1_3",
 ]
@@ -101,6 +103,7 @@ members = ["packages/*"]
 
 [tool.uv.sources]
 beadhive-pants = { workspace = true }
+beadhive-core = { workspace = true }
 beadhive-beads-client = { workspace = true }
 
 # Both groups are installed by plain `uv sync` (see `[tool.uv] default-groups` below), so dev
@@ -115,9 +118,9 @@ default-groups = ["dev", "pants", "core"]
 # never hard-requires an unpublished package. `beadhive[pants]` (the extra, above) is the
 # separate public spelling for once `beadhive-pants` ships to PyPI (bh-9mfg8).
 pants = ["beadhive-pants"]
-# The Beads client, editable from the workspace for dev/CI (bh-bwnys.4). The published wheel
-# vendors its import packages instead (see the wheel packages above).
-core = ["beadhive-beads-client"]
+# The API-first core and its Beads client, editable from the workspace for dev/CI (bh-bwnys.4,
+# bh-bwnys.1). The published wheel vendors their import packages instead (see the wheel packages).
+core = ["beadhive-core", "beadhive-beads-client"]
 dev = [
     "editables>=0.5",
     # Exact offline-capable generator for the checked-in Beads v1.3 SDK.
