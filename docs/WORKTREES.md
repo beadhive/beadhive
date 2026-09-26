@@ -370,6 +370,25 @@ Three properties, binding:
    be read as this one's result. It is a drop zone, never a durable store.
 3. **A missing or malformed report is not a failure** — it degrades to an rc-only verdict.
 
+This repository's `scripts/pytest_with_report.py` opts every pytest recipe into the drop zone.
+For a completed run, rank its slowest files and cases directly from the retained JUnit files:
+
+```bash
+uv run python scripts/report_timings.py <run-artifact-directory>/reports --limit 25
+```
+
+Set `BH_TEST_COVERAGE=1` on `bh work check` (or another Beadhive validation command) to add
+pytest-cov XML beside that invocation's JUnit XML. Coverage is opt-in because collecting it under
+xdist adds measurable cost; its files stay in the run artifact directory and never enter the
+checkout. An unavailable report directory emits one warning, while pytest's exit code remains
+authoritative.
+
+Raw artifacts have no time-based expiry. They remain until an explicit CI upload handoff marks
+them eligible for pruning. Even after that handoff, a running run, the run referenced by the
+current exact-tree verdict, and the newest run for a tree with red or retry history are retained;
+only superseded eligible directories are removed. The small control manifests remain as the
+durable execution history after raw reports are pruned.
+
 A fourth property belongs to the *ledger*, not the drop zone, and is the one an implementer is
 most likely to get backwards: **an attestation only ever comes from a full, clean run.** A hive
 that sets `work.validate_subset` gets a failure-scoped re-run loop in `bh work check`
