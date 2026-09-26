@@ -24,6 +24,8 @@ from ..adapters.impact_git import GitTreeDiff
 from ..kernel.plugins import (
     BUILD_IMPACT,
     CapabilityKey,
+    DiagnosticCode,
+    DiagnosticSeverity,
     ManifestSource,
     PluginDiagnostic,
     PluginKernelConfig,
@@ -46,6 +48,11 @@ _KERNEL_VERSION = "1.0.0"
 # Constructing a backend reads its build configuration (e.g. ``pants.toml``). These failures
 # mean "not available on this checkout" and degrade to ``native-full`` with a fallback reason.
 _UNAVAILABLE = (OSError, KeyError, ValueError)
+
+# ``beadhive-pants`` (and any future ``build.impact`` provider package) is an optional extra
+# (bh-mxjoy) — a selected manifest can outlive the package it names when the extra was never
+# installed. Caught separately from ``_UNAVAILABLE`` so the diagnostic can name the fix.
+_MISSING_PACKAGE = (ModuleNotFoundError,)
 
 
 @dataclass(frozen=True)
@@ -135,6 +142,19 @@ def collect_impact_backends(
         return ImpactBackends(diagnostics=discovery.errors)
     try:
         backend = provider.load(repo)
+    except _MISSING_PACKAGE as exc:
+        hint = (
+            f"{provider.plugin_id}: build.impact plugin package is not installed ({exc}); "
+            f"install 'beadhive[{provider.plugin_id}]' to enable it"
+        )
+        diagnostic = PluginDiagnostic(
+            DiagnosticCode.BUILD_ATTEST_TAGS,
+            DiagnosticSeverity.WARNING,
+            hint,
+            plugin_id=provider.plugin_id,
+            capability=BUILD_IMPACT,
+        )
+        return ImpactBackends(diagnostics=(*discovery.errors, diagnostic))
     except _UNAVAILABLE:
         return ImpactBackends(diagnostics=discovery.errors)
     # Key by the backend's own name; select_resolver re-checks the port and the name before

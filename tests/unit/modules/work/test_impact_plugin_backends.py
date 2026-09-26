@@ -153,6 +153,34 @@ def test_backend_that_cannot_be_built_for_this_checkout_is_not_available(tmp_pat
     assert reason == "pants: backend not available"
 
 
+def test_absent_plugin_package_degrades_with_an_install_hint_not_a_crash(monkeypatch, tmp_path):
+    """``beadhive-pants`` is an optional extra (bh-mxjoy): a checkout that selects the ``pants``
+    manifest but never installed the package must degrade to no backend + an actionable
+    diagnostic, not raise ``ModuleNotFoundError`` out of ``collect_impact_backends``."""
+
+    def missing(name: str):
+        raise ModuleNotFoundError(f"No module named {name!r}", name="beadhive_pants")
+
+    monkeypatch.setattr(bootstrap_impact, "import_module", missing)
+
+    collected = collect_impact_backends(str(_pants_repo(tmp_path)))
+
+    assert dict(collected.backends) == {}
+    (diagnostic,) = collected.diagnostics
+    assert diagnostic.code is DiagnosticCode.BUILD_ATTEST_TAGS
+    assert diagnostic.severity is DiagnosticSeverity.WARNING
+    assert diagnostic.plugin_id == "pants"
+    assert diagnostic.capability == BUILD_IMPACT
+    assert "not installed" in diagnostic.detail
+    assert "beadhive[pants]" in diagnostic.detail
+    reason = (
+        select_resolver("pants", tree_diff=Trees(), backends=collected.backends)
+        .resolve("/r", "b", "h", KEYS)
+        .fallback_reason
+    )
+    assert reason == "pants: backend not available"
+
+
 def test_two_build_impact_providers_without_owner_selection_fail_closed(tmp_path):
     loaded: list[str] = []
     collected = collect_impact_backends(

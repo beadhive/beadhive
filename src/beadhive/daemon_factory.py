@@ -13,7 +13,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +24,7 @@ from . import (
     dolt_health,
     host_lease,
     hosts,
+    operator_contract,
     registry,
     source_descriptors,
     store_locator,
@@ -199,6 +200,7 @@ class FactoryDirectory:
         self.service_instance_id = service_instance_id
         self.started_at = started_at
         self.clock_millis = clock_millis
+        self._uses_default_describe_hive = describe_hive is None
         self._describe_hive = describe_hive or self._default_describe_hive
         self._load_run_directory = load_run_directory or self._default_run_directory
         self._load_assignment = load_assignment or self._default_assignment
@@ -244,7 +246,18 @@ class FactoryDirectory:
             )
         return FactoryCapability(name="activity-publish", available=True)
 
-    def _default_describe_hive(self, hive) -> HiveSourceObservation:
+    def _default_describe_hive(
+        self, hive, hive_summary: Mapping[str, object] | None = None
+    ) -> HiveSourceObservation:
+        """Derive readiness from the cached per-hive summary; never awaits a live refresh.
+
+        ``hive_summary`` is the entry the shared :class:`~.operator_sources.HiveSummaryCache`
+        already holds for this hive (looked up once per :meth:`snapshot` call).  A cold or
+        refreshing cache entry is not evidence the hive is unavailable, so it maps to
+        ``ready``/``partial`` rather than ``unavailable`` — only a source resolution failure or
+        a cached, *observed* refresh failure does that.
+        """
+
         resolution = source_descriptors.resolve_named_hive_sources(
             hive.identity,
             cfg=self.sources.cfg,
@@ -253,20 +266,28 @@ class FactoryDirectory:
         if resolution.decision is not source_descriptors.ResolutionDecision.AVAILABLE:
             reason = resolution.reasons[0].value if resolution.reasons else "source_unavailable"
             return HiveSourceObservation("unavailable", "unavailable", reason)
-        try:
-            self.sources.refresh_hive_state(hive)
-        except Exception as exc:
-            reason = getattr(exc, "code", "bead_state_unavailable")
+        if hive_summary is None:
+            # No batch cache read was handed in (a caller invoking this directly rather than
+            # through `snapshot`) — treat it as never-observed without touching the cache, so
+            # a single-hive lookup here can never evict another hive's cached summary.
+            hive_summary = operator_contract.factory_hive_pending_summary(hive.entry)
+        availability = dict(hive_summary.get("availability") or {})
+        if availability.get("reason") == operator_contract.FACTORY_HIVE_PENDING_REASON:
+            # Cold or actively refreshing: the cache has no observed summary yet. That is not
+            # evidence the hive is unavailable.
+            return HiveSourceObservation("ready", "partial", "summary_pending")
+        if availability.get("state") == "unavailable":
+            reason = availability.get("reason") or "bead_state_unavailable"
             return HiveSourceObservation("unavailable", "unavailable", str(reason))
         descriptor = resolution.descriptor
         if descriptor is None:
             return HiveSourceObservation("unavailable", "unavailable", "source_unavailable")
-        summary = descriptor.runtime.summary.observation
-        if summary.coverage in {"partial", "degraded", "unknown"}:
+        runtime_summary = descriptor.runtime.summary.observation
+        if runtime_summary.coverage in {"partial", "degraded", "unknown"}:
             return HiveSourceObservation(
-                "ready", "partial", summary.coverage_reason or "runtime_coverage_unknown"
+                "ready", "partial", runtime_summary.coverage_reason or "runtime_coverage_unknown"
             )
-        if summary.freshness == "stale":
+        if runtime_summary.freshness == "stale":
             return HiveSourceObservation("degraded", "partial", "stale_data")
         return HiveSourceObservation("ready", "complete")
 
@@ -462,7 +483,18 @@ class FactoryDirectory:
     ) -> dict[str, object]:
         generated_at = self.clock_millis()
         hives = self.sources.registered_hives()
-        observations = tuple(self._describe_hive(hive) for hive in hives)
+        if self._uses_default_describe_hive:
+            # One batch cache read for every hive, matched to the *same* membership the
+            # cache prunes against; never call the cache per hive here (a single-hive read
+            # would evict every other hive's cached summary).
+            cached_summaries = self.sources.hive_summaries.read(hives)
+            summary_by_id = {str(item["id"]): item for item in cached_summaries}
+            observations = tuple(
+                self._default_describe_hive(hive, summary_by_id.get(hive.identity))
+                for hive in hives
+            )
+        else:
+            observations = tuple(self._describe_hive(hive) for hive in hives)
         inventory = self._load_run_directory(hives)
         hive_dependency = self._aggregate_hives(observations)
         journal_state, journal_reason, journal_dependency = self._journal_status(

@@ -747,6 +747,26 @@ packages-check:
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
         ./scripts/hermetic.sh uv run --locked --all-packages pytest -n auto packages/*/tests
     ./scripts/hermetic.sh uv build --all-packages --no-build-isolation
+    just release-smoke-check
+
+# Reproduces .github/workflows/release.yml's build + smoke test (bh-mxjoy). A plain `uv build`
+# here builds the ROOT distribution ONLY — no `--all-packages`, so uv resolves
+# `[project].dependencies` with no workspace member in scope, exactly like the release job. Not
+# run through scripts/hermetic.sh: `--isolated --no-project --with` installs into a throwaway
+# env and needs the network the same way the release job does; the fence would just make it
+# fail differently.
+#
+# v0.18.0 shipped a wheel that could not install standalone — `beadhive-pants`, an unpublished
+# `[tool.uv.workspace]` member, had leaked into `[project].dependencies` as a hard dependency,
+# and every OTHER gate resolves workspace members so none of them caught it (the tag was not
+# moved; see docs/AGF.md's release-rollback note and bh-mxjoy). This step is wired into
+# `packages-check` — the gate `just bump` / `bh release attest` run via `just check-all` — so
+# the same regression fails here before a tag exists, not after one has shipped.
+release-smoke-check:
+    rm -rf dist/release-smoke
+    uv build --out-dir dist/release-smoke
+    uv run --isolated --no-project --with dist/release-smoke/*.whl python -c "import beadhive"
+    uv run --isolated --no-project --with dist/release-smoke/*.whl bh --version
 
 test-kernel:
     just test-closure kernel

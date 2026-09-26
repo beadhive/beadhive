@@ -1,11 +1,10 @@
 [project]
 name = "beadhive"
-version = "0.17.1"
+version = "0.18.1"
 description = "Beadhive CLI"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "beadhive-pants",
     "typer>=0.12",
     "ruamel.yaml>=0.18",
     # Logging foundation: structlog drives dual-mode output (rich/ANSI on a TTY,
@@ -58,6 +57,15 @@ otel = [
     "opentelemetry-exporter-otlp>=1.37,<2",
     "structlog>=24",
 ]
+# `beadhive[pants]` — the Pants build-impact/verify backend plugin (bh-3fcl0.2). Split out of
+# [project].dependencies (was a hard `uv workspace` dependency never published to PyPI — the
+# v0.18.0 release smoke test failed resolving it: bh-mxjoy) so the root wheel installs
+# standalone. Still a workspace member (`[tool.uv.sources]` below) so `uv sync`/dev/CI keep
+# getting it via the `pants` dependency group (see `[dependency-groups]`); this extra is the
+# public, PyPI-resolvable name for it once `beadhive-pants` itself is published (bh-9mfg8).
+# Core code (bootstrap/impact.py, bootstrap/build_verify.py, plugins.py) tolerates its absence:
+# no import crash, an actionable "install beadhive[pants]" hint, degrade to native-full.
+pants = ["beadhive-pants"]
 
 [project.scripts]
 bh = "beadhive.bootstrap.cli:main"
@@ -81,7 +89,18 @@ members = ["packages/*"]
 [tool.uv.sources]
 beadhive-pants = { workspace = true }
 
+# Both groups are installed by plain `uv sync` (see `[tool.uv] default-groups` below), so dev
+# and CI checkouts keep resolving `beadhive-pants` from the workspace exactly as before this
+# bead — only the PUBLISHED wheel's hard-dependency graph changed.
+[tool.uv]
+default-groups = ["dev", "pants"]
+
 [dependency-groups]
+# The workspace member, for dev/CI only (bh-mxjoy): kept OUT of [project.optional-dependencies]'s
+# install graph implications by being a group, not a base dependency, so the published wheel
+# never hard-requires an unpublished package. `beadhive[pants]` (the extra, above) is the
+# separate public spelling for once `beadhive-pants` ships to PyPI (bh-9mfg8).
+pants = ["beadhive-pants"]
 dev = [
     "editables>=0.5",
     # Exact offline-capable generator for the checked-in Beads v1.3 SDK.

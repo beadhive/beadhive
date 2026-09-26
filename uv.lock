@@ -103,10 +103,9 @@ wheels = [
 
 [[package]]
 name = "beadhive"
-version = "0.17.1"
+version = "0.18.1"
 source = { editable = "." }
 dependencies = [
-    { name = "beadhive-pants" },
     { name = "fastmcp" },
     { name = "httpx" },
     { name = "joserfc" },
@@ -124,6 +123,9 @@ otel = [
     { name = "opentelemetry-sdk" },
     { name = "structlog" },
 ]
+pants = [
+    { name = "beadhive-pants" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -137,10 +139,13 @@ dev = [
     { name = "pytest-xdist" },
     { name = "ruff" },
 ]
+pants = [
+    { name = "beadhive-pants" },
+]
 
 [package.metadata]
 requires-dist = [
-    { name = "beadhive-pants", editable = "packages/beadhive-pants" },
+    { name = "beadhive-pants", marker = "extra == 'pants'", editable = "packages/beadhive-pants" },
     { name = "fastmcp", specifier = ">=3.4,<4" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "joserfc", specifier = ">=1.7,<2" },
@@ -154,7 +159,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.12" },
     { name = "uvicorn", specifier = ">=0.34,<1" },
 ]
-provides-extras = ["mcp", "otel"]
+provides-extras = ["mcp", "otel", "pants"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -168,6 +173,7 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3" },
     { name = "ruff", specifier = ">=0.6" },
 ]
+pants = [{ name = "beadhive-pants", editable = "packages/beadhive-pants" }]
 
 [[package]]
 name = "beadhive-beads-client"
