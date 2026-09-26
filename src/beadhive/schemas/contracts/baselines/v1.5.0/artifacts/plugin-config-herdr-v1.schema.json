@@ -1,0 +1,24 @@
+{
+  "$id": "urn:beadhive:wire-schema:plugin-config:herdr:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Optional Herdr agent-pane defaults.\n\nHerdr, rather than Beadhive, owns the installed agent-kind vocabulary.  This\nschema consequently validates only that an operator supplied a non-empty\nstring; the Herdr launch boundary checks it against the live supported list.",
+  "properties": {
+    "kind": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Preferred Herdr agent kind (for example claude or codex). The installed Herdr CLI validates supported values when a pane is launched.",
+      "title": "Kind"
+    }
+  },
+  "title": "HerdrConfig",
+  "type": "object",
+  "version": 1
+}

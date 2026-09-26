@@ -1,28 +1,40 @@
 #!/usr/bin/env python3
-"""Render the canonical Python operation declaration as language-neutral JSON."""
+"""Check that the wire release index.json names as latest carries the live operation catalog.
+
+Published wire releases are immutable, so a stale catalog is never rewritten in place. Without
+``--check`` this delegates to ``publish_wire_release.py``, which cuts the next minor release;
+the full publish chain is `just wire-publish` (see docs/schemas/wire/README.md).
+"""
 
 from __future__ import annotations
 
 import argparse
-import json
+import sys
 from pathlib import Path
 
-from beadhive.operation_catalog import document
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-ROOT = Path(__file__).resolve().parents[1]
-TARGET = ROOT / "docs" / "schemas" / "wire" / "v1.2.0" / "operation-catalog-v1.json"
+import publish_wire_release  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check", action="store_true")
+    parser.add_argument(
+        "--check", action="store_true", help="fail when the latest release catalog is stale"
+    )
     args = parser.parse_args(argv)
-    rendered = json.dumps(document(), indent=2, sort_keys=True) + "\n"
-    if args.check:
-        if not TARGET.is_file() or TARGET.read_text(encoding="utf-8") != rendered:
-            parser.error(f"{TARGET.relative_to(ROOT)} is stale; render it without --check")
-        return 0
-    TARGET.write_text(rendered, encoding="utf-8")
+    if not args.check:
+        return publish_wire_release.main([])
+    root = publish_wire_release.ROOT
+    target = publish_wire_release.latest_release_dir(root) / publish_wire_release.CATALOG
+    if (
+        not target.is_file()
+        or target.read_text(encoding="utf-8") != publish_wire_release.render_catalog()
+    ):
+        parser.error(
+            f"{target.relative_to(root)} does not carry the live operation catalog; "
+            "publish it with `just wire-publish`"
+        )
     return 0
 
 

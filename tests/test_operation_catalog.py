@@ -8,12 +8,8 @@ import contextlib
 import inspect
 import io
 import json
-import os
 import re
-import shutil
 import subprocess
-import sys
-from copy import deepcopy
 from pathlib import Path
 
 from click import Context
@@ -27,7 +23,11 @@ from beadhive.mcp import build_server
 from beadhive.operation_catalog import document, operations
 
 ROOT = Path(__file__).resolve().parents[1]
-WIRE = ROOT / "docs" / "schemas" / "wire" / "v1.2.0"
+_WIRE_ROOT = ROOT / "docs" / "schemas" / "wire"
+_WIRE_INDEX = json.loads((_WIRE_ROOT / "index.json").read_text())
+# The live catalog tracks whichever release index.json names as latest (bh-bwnys.5).
+_LATEST = next(row for row in _WIRE_INDEX["releases"] if row["version"] == _WIRE_INDEX["latest"])
+WIRE = (_WIRE_ROOT / _LATEST["manifest"]).parent
 RETIRED_SURFACE_TOKEN = re.compile(r"(?<![a-z0-9])(?P<token>ws|rig)(?![a-z0-9])", re.I)
 MANIFEST_CLI_COMMANDS = frozenset(app._bh_manifest_commands)
 MANIFEST_CLI_PARENTS = frozenset(app._bh_manifest_parents)
@@ -607,58 +607,3 @@ def test_convention_8_scans_every_live_description_probe_and_test_filename() -> 
         if descriptor not in RETIRED_SURFACE_EXCLUSIONS and _retired_tokens(text)
     }
     assert findings == {}
-
-
-def test_v12_passes_the_real_compatibility_cli_against_an_isolated_v11_base(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "catalog-compat"
-    wire = repo / "docs" / "schemas" / "wire"
-    scripts = repo / "scripts"
-    shutil.copytree(ROOT / "docs" / "schemas" / "wire", wire)
-    scripts.mkdir()
-    shutil.copy2(ROOT / "scripts" / "check_wire_schema_compat.py", scripts)
-
-    repository_index = json.loads((wire / "index.json").read_text())
-    candidate_index = {
-        **repository_index,
-        "latest": "1.2.0",
-        "releases": [
-            row
-            for row in repository_index["releases"]
-            if row["version"] in {"1.0.0", "1.1.0", "1.2.0"}
-        ],
-    }
-    candidate_v12 = tmp_path / "candidate-v1.2.0"
-    shutil.copytree(wire / "v1.2.0", candidate_v12)
-    for row in repository_index["releases"]:
-        if row["version"] not in {"1.0.0", "1.1.0"}:
-            shutil.rmtree(wire / Path(row["manifest"]).parent)
-    baseline_index = deepcopy(candidate_index)
-    baseline_index["latest"] = "1.1.0"
-    baseline_index["releases"] = [
-        row for row in baseline_index["releases"] if row["version"] != "1.2.0"
-    ]
-    (wire / "index.json").write_text(json.dumps(baseline_index, indent=2) + "\n")
-
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "Catalog Test"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "catalog@example.invalid"], cwd=repo, check=True)
-    subprocess.run(["git", "add", "."], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-qm", "v1.1 integration base"], cwd=repo, check=True)
-    subprocess.run(["git", "branch", "integration-base"], cwd=repo, check=True)
-
-    (wire / "index.json").write_text(json.dumps(candidate_index, indent=2) + "\n")
-    shutil.copytree(candidate_v12, wire / "v1.2.0")
-    env = {**os.environ, "BH_WIRE_SCHEMA_BASE_REF": "integration-base"}
-    result = subprocess.run(
-        [sys.executable, "scripts/check_wire_schema_compat.py"],
-        cwd=repo,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "1.1.0 -> 1.2.0 is fully compatible" in result.stdout

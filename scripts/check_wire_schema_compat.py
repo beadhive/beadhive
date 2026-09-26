@@ -2,10 +2,15 @@
 """Validate published wire releases and reject same-major compatibility breaks.
 
 The candidate is the working tree. The baseline is the merge base with the CI target branch
-(`BH_WIRE_SCHEMA_BASE_REF`, default `main`). Published release directories present at the base
+(`BH_WIRE_SCHEMA_BASE_REF`, default `main`). Supported release directories present at the base
 are immutable; a new release is compared with the base's latest release when both share a major.
 JSON Schema artifacts use full schema compatibility; operation-catalog data uses append-only
 semantic compatibility after validation against its separately manifested schema.
+
+Releases below ``SUPPORTED_FLOOR`` (1.5.0) are deprecated history: the candidate must mark them
+``"deprecated": true`` in both ``index.json`` and their manifest, and they are otherwise neither
+loaded nor compared. A base with no supported release (the tree before 1.5.0 was cut) yields no
+baseline, so the candidate's first supported release is validated as the new baseline.
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ from jsonschema import Draft202012Validator
 
 WIRE_INDEX = Path("docs/schemas/wire/index.json")
 SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+SUPPORTED_FLOOR = (1, 5, 0)
 SCHEMA_ARTIFACT_PREFIX = "urn:beadhive:wire-schema:"
 OPERATION_CATALOG_ARTIFACT_ID = "urn:beadhive:wire-catalog:operations:1"
 OPERATION_CATALOG_SCHEMA_ID = "urn:beadhive:wire-schema:operation-catalog:1"
@@ -83,7 +89,7 @@ class Release:
 
 @dataclass(frozen=True)
 class RepositoryRelease:
-    latest: Release
+    latest: Release | None
     releases: dict[str, Release]
 
 
@@ -102,7 +108,13 @@ def _artifact_type(artifact_id: str) -> str:
     raise ValueError(f"unsupported artifact id/type: {artifact_id!r}")
 
 
-def load_repository(reader: Reader) -> RepositoryRelease:
+def load_repository(reader: Reader, *, require_deprecation_marks: bool = True) -> RepositoryRelease:
+    """Load every supported release; deprecated (pre-floor) releases are skipped unread.
+
+    ``require_deprecation_marks`` applies to the candidate: each release below the supported
+    floor must carry ``"deprecated": true`` in both its index entry and its manifest. A baseline
+    read from git history predates those marks, so it only skips pre-floor releases.
+    """
     index = _load_json(reader, WIRE_INDEX)
     if index.get("format_version") != 1:
         raise ValueError("wire index format_version must be 1")
@@ -111,6 +123,7 @@ def load_repository(reader: Reader) -> RepositoryRelease:
         raise ValueError("wire index must contain at least one release")
 
     releases: dict[str, Release] = {}
+    deprecated: set[str] = set()
     for entry in entries:
         version = str(entry.get("version", ""))
         match = SEMVER.fullmatch(version)
@@ -119,14 +132,23 @@ def load_repository(reader: Reader) -> RepositoryRelease:
         major = int(match.group(1))
         if entry.get("major") != major:
             raise ValueError(f"release {version}: major does not match semver")
-        if version in releases:
+        if version in releases or version in deprecated:
             raise ValueError(f"duplicate release version: {version}")
         manifest_path = WIRE_INDEX.parent / str(entry.get("manifest", ""))
+        if _semver_tuple(version) < SUPPORTED_FLOOR or entry.get("deprecated") is True:
+            if require_deprecation_marks:
+                _require_deprecation_marks(reader, entry, manifest_path, version)
+            deprecated.add(version)
+            continue
+        if "deprecated" in entry:
+            raise ValueError(f"release {version}: deprecated must be true when present")
         manifest = _load_json(reader, manifest_path)
         if manifest.get("format_version") != 1:
             raise ValueError(f"{manifest_path}: format_version must be 1")
         if manifest.get("release_version") != version:
             raise ValueError(f"{manifest_path}: release_version must be {version}")
+        if "deprecated" in manifest:
+            raise ValueError(f"{manifest_path}: supported release manifest must not be deprecated")
 
         release_dir = manifest_path.parent
         artifacts: dict[str, Artifact] = {}
@@ -189,11 +211,30 @@ def load_repository(reader: Reader) -> RepositoryRelease:
         releases[version] = Release(version, major, manifest_path, tuple(files), artifacts)
 
     latest_version = str(index.get("latest", ""))
+    if not releases:
+        if require_deprecation_marks:
+            raise ValueError("wire index must contain at least one supported release")
+        return RepositoryRelease(None, releases)
+    if latest_version in deprecated:
+        raise ValueError("wire index latest must name a supported (non-deprecated) release")
     if latest_version not in releases:
         raise ValueError("wire index latest must name a listed release")
-    if _semver_tuple(latest_version) != max(map(_semver_tuple, releases)):
+    if _semver_tuple(latest_version) != max(map(_semver_tuple, (*releases, *deprecated))):
         raise ValueError("wire index latest must name the greatest listed semver")
     return RepositoryRelease(releases[latest_version], releases)
+
+
+def _require_deprecation_marks(
+    reader: Reader, entry: dict[str, Any], manifest_path: Path, version: str
+) -> None:
+    if entry.get("deprecated") is not True:
+        raise ValueError(
+            f"release {version} is below the supported floor "
+            f"{'.'.join(map(str, SUPPORTED_FLOOR))} and must be marked deprecated in index.json"
+        )
+    manifest = _load_json(reader, manifest_path)
+    if manifest.get("release_version") != version or manifest.get("deprecated") is not True:
+        raise ValueError(f"{manifest_path}: deprecated release manifest must mark deprecated")
 
 
 def _validate_fixtures(
@@ -789,7 +830,13 @@ def main() -> int:
             return 0
 
         baseline_reader = GitReader(root, base_commit)
-        baseline = load_repository(baseline_reader)
+        baseline = load_repository(baseline_reader, require_deprecation_marks=False)
+        if baseline.latest is None:
+            print(
+                f"wire-schema-compat: {candidate.latest.version} validated as the new supported "
+                f"baseline; no supported release at {base_ref!r}"
+            )
+            return 0
         errors: list[str] = []
         for version, old_release in baseline.releases.items():
             new_release = candidate.releases.get(version)

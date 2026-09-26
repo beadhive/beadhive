@@ -19,7 +19,7 @@ from beadhive import config, hive, hive_ready, onboard, registry
 from beadhive.cli import app
 
 ROOT = Path(__file__).resolve().parents[1]
-WIRE = ROOT / "docs" / "schemas" / "wire" / "v1.1.0"
+WIRE = ROOT / "docs" / "schemas" / "wire" / "v1.5.0"
 runner = CliRunner()
 
 
