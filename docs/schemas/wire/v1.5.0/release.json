@@ -1,7 +1,6 @@
 {
   "format_version": 1,
-  "release_version": "1.2.0",
-  "deprecated": true,
+  "release_version": "1.5.0",
   "schema_draft": "https://json-schema.org/draft/2020-12/schema",
   "artifacts": [
     {
@@ -23,6 +22,11 @@
       "id": "urn:beadhive:wire-schema:bh.hive-survey:1",
       "contract_version": 1,
       "path": "bh-hive-survey-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:config:1",
+      "contract_version": 1,
+      "path": "config-v1.schema.json"
     },
     {
       "id": "urn:beadhive:wire-schema:factory.bead-node:1",
@@ -48,6 +52,36 @@
       "id": "urn:beadhive:wire-schema:operation-catalog:1",
       "contract_version": 1,
       "path": "operation-catalog-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:plugin-manifest:1",
+      "contract_version": 1,
+      "path": "plugin-manifest-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:plugin-config:herdr:1",
+      "contract_version": 1,
+      "path": "plugin-config-herdr-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:plugin-config:hitch:1",
+      "contract_version": 1,
+      "path": "plugin-config-hitch-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:plugin-config:observaloop:1",
+      "contract_version": 1,
+      "path": "plugin-config-observaloop-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:plugin-config:orca:1",
+      "contract_version": 1,
+      "path": "plugin-config-orca-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:plugin-config:repowise:1",
+      "contract_version": 1,
+      "path": "plugin-config-repowise-v1.schema.json"
     },
     {
       "id": "urn:beadhive:wire-catalog:operations:1",

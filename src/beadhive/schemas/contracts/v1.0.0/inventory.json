@@ -231,7 +231,7 @@
       "kind": "json-schema",
       "path": "artifacts/plugin-manifest-v1.schema.json",
       "sha256": "sha256:5984e0fdf433758e71494f2d08054078bdefcddc4abd480ed11bceaa349a644b",
-      "source_owner": "docs/schemas/wire/v1.4.0/plugin-manifest-v1.schema.json",
+      "source_owner": "docs/schemas/wire/v1.5.0/plugin-manifest-v1.schema.json",
       "version": 1
     },
     {

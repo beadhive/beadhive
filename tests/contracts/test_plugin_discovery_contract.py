@@ -14,7 +14,7 @@ from beadhive.kernel.plugins import (
     discover_plugins,
 )
 
-CONFORMANCE = Path(__file__).parents[2] / "docs/schemas/wire/v1.3.0/conformance.json"
+CONFORMANCE = Path(__file__).parents[2] / "docs/schemas/wire/v1.5.0/conformance.json"
 
 
 def _case(name: str) -> bytes:

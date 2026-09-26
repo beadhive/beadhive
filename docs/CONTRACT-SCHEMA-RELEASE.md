@@ -8,7 +8,9 @@ external plugins, or generate client code.
 The [v1.0.0 release notes](releases/official-contracts-v1.0.0.md) define support, negotiation,
 deprecation, redaction, upgrades, and next-version ownership. The generated
 [compatibility report](proof/official-v1-contract-compatibility.json) accounts for every artifact
-declared by the five earlier checked-in wire releases as well as every package candidate artifact.
+declared by a supported wire release, and for every package candidate artifact. Supported means
+1.5.0 or later. Wire releases below 1.5.0 are deprecated and are not compared (see the
+[wire README](schemas/wire/README.md)).
 
 ## Install and look up an artifact
 
@@ -54,7 +56,9 @@ JSON Schema artifacts use the `json-schema-additive-v1` policy. Catalogs are app
 v1, and OpenAPI changes must be additive. Removal or rename, new required fields, closed-union
 drift, operation-identity drift, and projection-privilege drift require a new major release.
 The executable policy baseline is the pinned, package-owned bundle at
-`beadhive/schemas/contracts/baselines/v1.0.0`. It is deliberately separate from both the
+`beadhive/schemas/contracts/baselines/v1.5.0`. It is this bundle as published with wire release
+1.5.0, the supported baseline. The earlier `baselines/v1.0.0` snapshot was dropped together with
+the deprecated wire releases (bh-bwnys.5). The baseline is deliberately separate from both the
 generated release directory and current source owners: ordinary generation never rewrites it,
 and its complete snapshot digest is fixed in `beadhive.contract_release`. Advancing that
 baseline is a publication decision and must be reviewed explicitly.
@@ -70,10 +74,13 @@ uv run python scripts/generate_contract_release.py --check
 
 Both `--check` and `--write` first compare current canonical-owner output with that immutable
 prior-published baseline. The gate applies the inventory row's declared policy: JSON Schema
-shape cannot be removed or narrowed, catalog mappings and lists are append-only without reorder,
-and OpenAPI routes, methods, parameters, request bodies, responses, media types, and schemas
-cannot be removed or narrowed. Optional schema properties, catalog tail entries, and new OpenAPI
-routes/methods remain compatible additive changes. `--check` is read-only and is part of
+shape cannot be removed or narrowed, and catalog mappings and lists are append-only without
+reorder. The exception is the name-sorted top-level collections (`operations`, `cli_parents`,
+`exclusions`, and the CLI/MCP `projections`). These are matched by identity, so a new member may
+land mid-list. OpenAPI routes, methods, parameters, request bodies, responses, media types, and
+schemas cannot be removed or narrowed. Optional schema properties, new catalog entries (at the
+tail, or anywhere in an identity-matched collection), and new OpenAPI routes/methods remain
+compatible additive changes. `--check` is read-only and is part of
 `just wire-schema-compat`. Two clean `--write` runs must produce byte-identical files.
 OpenAPI access metadata follows the same rule at document, path, and operation scope: anonymous
 access cannot become restricted, named security schemes or required scopes cannot be tightened,
