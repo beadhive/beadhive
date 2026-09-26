@@ -26,6 +26,8 @@ from pathlib import Path
 
 import pytest
 
+from beadhive import test_report
+
 REPO = Path(__file__).resolve().parent.parent
 WRAPPER = REPO / "scripts" / "hermetic.sh"
 
@@ -73,6 +75,30 @@ def test_selected_uv_cache_and_outer_interpreter_are_available_inside_fence():
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == expected
+
+
+@pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap is Linux-only")
+def test_report_drop_zone_outside_checkout_is_writable_inside_fence(tmp_path):
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    result = subprocess.run(
+        [
+            str(WRAPPER),
+            str(REPO / ".venv/bin/python"),
+            str(REPO / "scripts/pytest_with_report.py"),
+            "-q",
+            "tests/test_pytest_with_report.py::test_unset_environment_preserves_pytest_arguments_byte_for_byte",
+        ],
+        env={**os.environ, "BH_TEST_REPORT_DIR": str(reports)},
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stderr
+    report = test_report.ingest(reports, result.returncode)
+    assert report is not None
+    assert report["tests"] == 1
 
 
 # ---- the boundary itself (fenced runs only) --------------------------------------------------

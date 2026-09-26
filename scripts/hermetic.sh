@@ -153,6 +153,22 @@ args=(
     --chdir "${REPO}"
 )
 
+# The validation runner allocates one fresh reports directory outside the checkout and exports
+# it as BH_TEST_REPORT_DIR. Both /tmp and $HOME are overlaid above, so the host directory is
+# hidden or read-only. Recreate the destination after those overlays and bind only that
+# already-existing directory writable.
+if [ -n "${BH_TEST_REPORT_DIR:-}" ] && [ -d "${BH_TEST_REPORT_DIR}" ]; then
+    REPORT_DIR="$(cd "${BH_TEST_REPORT_DIR}" && pwd -P)"
+    REPORT_DEST=""
+    IFS='/' read -r -a REPORT_COMPONENTS <<< "${REPORT_DIR#/}"
+    for REPORT_COMPONENT in "${REPORT_COMPONENTS[@]}"; do
+        [ -z "${REPORT_COMPONENT}" ] && continue
+        REPORT_DEST="${REPORT_DEST}/${REPORT_COMPONENT}"
+        args+=(--dir "${REPORT_DEST}")
+    done
+    args+=(--bind "${REPORT_DIR}" "${REPORT_DIR}")
+fi
+
 # Resolve the package cache before bwrap overlays /tmp and $HOME. A selected host tmpfs cache
 # must be rebound after that overlay or the framework sees an empty private /tmp and the locality
 # guarantee disappears only inside the authoritative validation fence.
