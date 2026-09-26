@@ -103,6 +103,12 @@ in `github/beadhive/beadhive` as uppercase `%2F` when inserting the canonical hi
 The terminal routes intentionally return `terminal.unavailable` with
 `code=pty_verdict_pending` and `verdictBead=bh-lx6e.3`. Do not manufacture terminal availability.
 
+## Beads service supervision
+
+When a hive is enabled with `bh host beads enable`, the daemon also supervises that hive's
+`bd serve`. Commands, files, measured cost, and shared-Dolt connection limits are in
+[Beads service](BEADS-SERVICE.md).
+
 ## Daemon-down behavior
 
 Direct CLI and MCP stdio continue against their configured stores. MCP HTTP, operator REST and

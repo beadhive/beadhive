@@ -80,8 +80,8 @@ def test_migration_inventory_names_every_catalog_group() -> None:
 def test_assembled_tree_is_entirely_catalog_derived_and_idempotent() -> None:
     declarations = command_declarations()
     parents = parent_declarations()
-    assert len(declarations) == 213
-    assert len(parents) == 36
+    assert len(declarations) == 219
+    assert len(parents) == 37
     assert cli.CLI_PROJECTION.paths == tuple(row.path for row in declarations)
     assert cli.CLI_PROJECTION.operations == tuple(row.operation for row in declarations)
     assert cli.CLI_PROJECTION.parents == tuple(row.path for row in parents)

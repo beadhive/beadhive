@@ -64,6 +64,9 @@ Measured on one machine, 2026-08-03 — full method and caveats in the ADR and i
 | cold 306 MB clone from the production remote | hung past 240 s | 10 s |
 | fleet disk (22 hives × `.beads/embeddeddolt`) | ~2.8 GB | reclaimed |
 
+Each hive running a Beads service (`bd serve`) also draws connections from this shared server; see
+[Beads service](BEADS-SERVICE.md#database-connections-under-load) before enabling many.
+
 ## The optional central server
 
 A standalone Dolt SQL server you can run locally under compose (module: `dolt.py`). It is

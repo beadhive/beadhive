@@ -249,7 +249,12 @@ def test_releases_below_the_supported_floor_must_be_marked_deprecated(repo: Path
 
 def test_a_base_without_a_supported_release_validates_the_new_baseline(repo: Path) -> None:
     index = _index(repo)
-    index["releases"] = [row for row in index["releases"] if row["version"] != "1.5.0"]
+    supported = [
+        row["version"]
+        for row in index["releases"]
+        if tuple(map(int, row["version"].split("."))) >= (1, 5, 0)
+    ]
+    index["releases"] = [row for row in index["releases"] if row["version"] not in supported]
     for row in index["releases"]:
         row.pop("deprecated", None)
     index["latest"] = index["releases"][-1]["version"]
@@ -265,4 +270,4 @@ def test_a_base_without_a_supported_release_validates_the_new_baseline(repo: Pat
     gate = _wire_gate(repo)
 
     assert gate.returncode == 0, gate.stdout + gate.stderr
-    assert "1.5.0 validated as the new supported baseline" in gate.stdout
+    assert f"{supported[-1]} validated as the new supported baseline" in gate.stdout

@@ -12,6 +12,8 @@ python_requirement(name="starlette", requirements=["starlette>=0.47,<2"])
 python_requirement(name="uvicorn", requirements=["uvicorn>=0.34,<1"])
 python_requirement(name="joserfc", requirements=["joserfc>=1.7,<2"])
 python_requirement(name="httpx", requirements=["httpx>=0.28,<1"])
+# Generated Beads v1.3 client models (beadhive-beads-client, vendored into the root wheel).
+python_requirement(name="attrs", requirements=["attrs>=23"])
 python_requirement(name="mcp", requirements=["mcp>=1.30,<2"], modules=["mcp"])
 python_requirement(name="platformdirs", requirements=["platformdirs>=4"])
 python_requirement(name="pydantic", requirements=["pydantic>=2"], modules=["pydantic"])
