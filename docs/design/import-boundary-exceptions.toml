@@ -71,11 +71,11 @@ last_verified_commit = "bh-3qkmk.5"
 expiry_trigger = "Move the released Development Frame Bridge runtime behind adapters/frame_bridge after its compatibility consumers reach zero."
 
 [cycle_snapshot]
-sha256 = "f60b8e61436c0a28909f9d20ce9c3d1e500fe6961c76c54caae1c1e9969f7b09"
+sha256 = "90093e3225b651fdb3aa17337e8c9f8cd6ae69113ffb2e4158f2186f741b4b32"
 components = 8
-modules = 59
-edges = 155
-symbols = 172
+modules = 60
+edges = 157
+symbols = 174
 
 [[cycle_exception]]
 id = "cycle-edge-001"
