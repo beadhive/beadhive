@@ -11,7 +11,9 @@ import subprocess
 import sys
 from collections import Counter
 from copy import deepcopy
+from functools import cache
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from jsonschema import Draft202012Validator
@@ -63,6 +65,23 @@ EXPECTED_FAMILIES = frozenset(
         "receipt",
     }
 )
+
+
+@cache
+def _cached_release() -> dict:
+    """Build one pristine contract release per pytest worker process."""
+    return build_release()
+
+
+def _release_document() -> dict:
+    """Give a policy test an isolated copy of the worker's cached release."""
+    return deepcopy(_cached_release())
+
+
+def _write_release_document(root: Path) -> None:
+    """Exercise the writer with an isolated copy when generation is not under test."""
+    with patch.object(contract_release, "build_release", _release_document):
+        write_release(root)
 
 
 def _files(root: Path) -> dict[str, bytes]:
@@ -255,7 +274,7 @@ def test_published_baseline_is_distinct_complete_and_digest_pinned(
     # The baseline tracks the bundle published with the current wire release.
     assert baseline.name == "v2.0.0"
     published = load_published_baseline()
-    candidate = build_release()
+    candidate = _release_document()
     assert compatibility_errors(published, candidate) == []
 
     substituted = tmp_path / "baseline"
@@ -278,20 +297,20 @@ def test_published_baseline_is_distinct_complete_and_digest_pinned(
 
 def test_loader_has_stable_valid_control(tmp_path: Path) -> None:
     root = tmp_path / "release"
-    write_release(root)
+    _write_release_document(root)
 
     first = load_release(root)
     second = load_release(root)
 
-    assert first == second == build_release()
+    assert first == second == _release_document()
 
 
 def test_installed_loader_does_not_regenerate_from_source_owners(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "release"
-    write_release(root)
-    expected = build_release()
+    _write_release_document(root)
+    expected = _release_document()
 
     def forbidden(*_args, **_kwargs):
         raise AssertionError("installed lookup attempted source-owner regeneration")
@@ -308,7 +327,7 @@ def test_loader_uses_validated_inventory_snapshot_when_later_read_substitutes_pa
     substituted_path: str,
 ) -> None:
     root = tmp_path / "release"
-    write_release(root)
+    _write_release_document(root)
     inventory_path = root / "inventory.json"
     outside_path = tmp_path / "outside.json"
     _write_json(outside_path, {"outside": True})
@@ -330,14 +349,14 @@ def test_loader_uses_validated_inventory_snapshot_when_later_read_substitutes_pa
 
     monkeypatch.setattr(Path, "read_bytes", substitute_on_second_read)
 
-    assert load_release(root) == build_release()
+    assert load_release(root) == _release_document()
 
 
 def test_loader_uses_validated_conformance_snapshot_when_later_read_reorders_cases(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "release"
-    write_release(root)
+    _write_release_document(root)
     conformance_path = root / "conformance.json"
     original_read_bytes = Path.read_bytes
     conformance_reads = 0
@@ -355,14 +374,14 @@ def test_loader_uses_validated_conformance_snapshot_when_later_read_reorders_cas
 
     monkeypatch.setattr(Path, "read_bytes", substitute_on_second_read)
 
-    assert load_release(root) == build_release()
+    assert load_release(root) == _release_document()
 
 
 def test_loader_uses_validated_artifact_snapshot_when_later_read_substitutes_bytes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "release"
-    write_release(root)
+    _write_release_document(root)
     inventory, _ = _release_documents(root)
     artifact_path = root / inventory["artifacts"][0]["path"]
     original_read_bytes = Path.read_bytes
@@ -379,13 +398,13 @@ def test_loader_uses_validated_artifact_snapshot_when_later_read_substitutes_byt
 
     monkeypatch.setattr(Path, "read_bytes", substitute_on_third_read)
 
-    assert load_release(root) == build_release()
+    assert load_release(root) == _release_document()
 
 
 @pytest.mark.parametrize("filename", ["inventory.json", "conformance.json"])
 def test_loader_rejects_symlinked_release_metadata(tmp_path: Path, filename: str) -> None:
     root = tmp_path / "release"
-    write_release(root)
+    _write_release_document(root)
     path = root / filename
     external = tmp_path / f"external-{filename}"
     external.write_bytes(path.read_bytes())
@@ -403,7 +422,7 @@ def test_loader_rejects_noncanonical_release_entry_order(
     tmp_path: Path, document_name: str, collection: str
 ) -> None:
     root = tmp_path / "release"
-    write_release(root)
+    _write_release_document(root)
     path = root / document_name
     document = json.loads(path.read_bytes())
     document[collection].reverse()
@@ -415,7 +434,7 @@ def test_loader_rejects_noncanonical_release_entry_order(
 
 def test_loader_rejects_self_consistent_missing_official_entry(tmp_path: Path) -> None:
     root = tmp_path / "release"
-    write_release(root)
+    _write_release_document(root)
     inventory, conformance = _release_documents(root)
     family_counts = Counter(row["family"] for row in inventory["artifacts"])
     removed = next(row for row in inventory["artifacts"] if family_counts[row["family"]] > 1)
@@ -432,7 +451,7 @@ def test_loader_rejects_self_consistent_missing_official_entry(tmp_path: Path) -
 
 def test_loader_rejects_self_consistent_extra_official_entry(tmp_path: Path) -> None:
     root = tmp_path / "release"
-    write_release(root)
+    _write_release_document(root)
     inventory, conformance = _release_documents(root)
     source = deepcopy(inventory["artifacts"][0])
     source_document = json.loads((root / source["path"]).read_bytes())
@@ -466,7 +485,7 @@ def test_loader_rejects_self_consistent_extra_official_entry(tmp_path: Path) -> 
 )
 def test_loader_rejects_duplicate_release_entries(tmp_path: Path, duplicate: str) -> None:
     root = tmp_path / "release"
-    write_release(root)
+    _write_release_document(root)
     inventory, conformance = _release_documents(root)
     if duplicate == "artifact-id":
         inventory["artifacts"][1]["id"] = inventory["artifacts"][0]["id"]
@@ -501,7 +520,7 @@ def test_loader_rejects_release_entry_shape_drift(
     tmp_path: Path, document_name: str, collection: str | None, mutation: str
 ) -> None:
     root = tmp_path / "release"
-    write_release(root)
+    _write_release_document(root)
     path = root / document_name
     document = json.loads(path.read_bytes())
     target = document if collection is None else document[collection][0]
@@ -517,7 +536,7 @@ def test_loader_rejects_release_entry_shape_drift(
 
 def test_consumer_lookup_fails_closed_before_returning_tampered_bytes(tmp_path: Path) -> None:
     root = tmp_path / "release"
-    write_release(root)
+    _write_release_document(root)
     inventory = json.loads((root / "inventory.json").read_text())
     row = inventory["artifacts"][0]
     artifact_path = root / row["path"]
@@ -528,7 +547,7 @@ def test_consumer_lookup_fails_closed_before_returning_tampered_bytes(tmp_path: 
 
 def test_integrity_gate_rejects_path_escape_symlink_and_metadata_drift(tmp_path: Path) -> None:
     root = tmp_path / "release"
-    write_release(root)
+    _write_release_document(root)
 
     inventory_path = root / "inventory.json"
     inventory = json.loads(inventory_path.read_text())
@@ -536,7 +555,7 @@ def test_integrity_gate_rejects_path_escape_symlink_and_metadata_drift(tmp_path:
     inventory_path.write_text(json.dumps(inventory, indent=2, sort_keys=True) + "\n")
     assert any("path escapes release root" in error for error in validate_release(root))
 
-    write_release(root)
+    _write_release_document(root)
     artifact_path = root / json.loads(inventory_path.read_text())["artifacts"][0]["path"]
     artifact_path.unlink()
     artifact_path.symlink_to(root / "inventory.json")
@@ -544,14 +563,14 @@ def test_integrity_gate_rejects_path_escape_symlink_and_metadata_drift(tmp_path:
     artifact_path.unlink()
 
     for field in ("source_owner", "compatibility_policy", "examples", "sha256"):
-        write_release(root)
+        _write_release_document(root)
         inventory = json.loads(inventory_path.read_text())
         row = inventory["artifacts"][0]
         row[field] = [] if field == "examples" else "drift"
         inventory_path.write_text(json.dumps(inventory, indent=2, sort_keys=True) + "\n")
         assert any(field in error for error in validate_release(root))
 
-    write_release(root)
+    _write_release_document(root)
     inventory = json.loads(inventory_path.read_text())
     artifact_path = root / inventory["artifacts"][0]["path"]
     artifact_path.write_text('{"version":1,"$id":"non-canonical"}\n')
@@ -564,7 +583,7 @@ def test_writer_refuses_root_symlink_and_atomically_replaces_nested_symlink(
     target = tmp_path / "linked"
     target.symlink_to(tmp_path / "elsewhere")
     with pytest.raises(ValueError, match="symlink"):
-        write_release(target)
+        _write_release_document(target)
 
     release = tmp_path / "release"
     release.mkdir()
@@ -575,7 +594,7 @@ def test_writer_refuses_root_symlink_and_atomically_replaces_nested_symlink(
     (release / "artifacts").symlink_to(elsewhere, target_is_directory=True)
 
     assert any("symlink" in error for error in validate_release(release))
-    write_release(release)
+    _write_release_document(release)
 
     assert validate_release(release) == ()
     assert (release / "artifacts").is_dir()
@@ -584,7 +603,11 @@ def test_writer_refuses_root_symlink_and_atomically_replaces_nested_symlink(
 
 
 def test_compatibility_gate_rejects_removal_rename_and_requiredness() -> None:
-    old = build_release()
+    old = _release_document()
+
+    isolated = _release_document()
+    isolated["artifacts"].pop()
+    assert _release_document() == old
 
     removed = deepcopy(old)
     removed["artifacts"].pop()
@@ -617,7 +640,7 @@ def test_compatibility_gate_rejects_removal_rename_and_requiredness() -> None:
 
 
 def test_compatibility_gate_rejects_closed_unions_operation_identity_and_privilege() -> None:
-    old = build_release()
+    old = _release_document()
 
     union_drift = deepcopy(old)
     telemetry = _artifact(union_drift, "telemetry")["document"]
@@ -655,7 +678,7 @@ def test_compatibility_gate_rejects_closed_unions_operation_identity_and_privile
 def test_append_only_catalog_policy_rejects_member_removal_and_reorder(
     family: str, collection: str
 ) -> None:
-    old = build_release()
+    old = _release_document()
 
     removed = deepcopy(old)
     _artifact(removed, family)["document"][collection].pop()
@@ -685,7 +708,7 @@ def test_append_only_catalog_policy_rejects_member_removal_and_reorder(
 def test_keyed_catalog_policy_allows_mid_list_addition_and_rejects_member_change(
     family: str, collection: str, identity: str
 ) -> None:
-    old = build_release()
+    old = _release_document()
 
     inserted = deepcopy(old)
     members = _artifact(inserted, family)["document"][collection]
@@ -721,7 +744,7 @@ def test_keyed_catalog_policy_allows_mid_list_addition_and_rejects_member_change
 def test_append_only_catalog_policy_allows_tail_member_addition(
     family: str, collection: str
 ) -> None:
-    old = build_release()
+    old = _release_document()
     additive = deepcopy(old)
     members = _artifact(additive, family)["document"][collection]
     added = deepcopy(members[-1])
@@ -740,7 +763,7 @@ def test_append_only_catalog_policy_allows_tail_member_addition(
 
 
 def test_openapi_policy_rejects_route_method_request_response_and_schema_breaks() -> None:
-    old = build_release()
+    old = _release_document()
 
     route_removed = deepcopy(old)
     _artifact(route_removed, "openapi")["document"]["paths"].pop("/health")
@@ -797,7 +820,7 @@ def _restrict_health_access(release: dict) -> None:
 
 
 def test_openapi_policy_rejects_public_operation_access_narrowing() -> None:
-    old = build_release()
+    old = _release_document()
     restricted = deepcopy(old)
     _restrict_health_access(restricted)
 
@@ -807,7 +830,7 @@ def test_openapi_policy_rejects_public_operation_access_narrowing() -> None:
 def test_write_release_rejects_public_operation_access_narrowing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    restricted = build_release()
+    restricted = _release_document()
     _restrict_health_access(restricted)
     monkeypatch.setattr(contract_release, "build_release", lambda: deepcopy(restricted))
 
@@ -818,7 +841,7 @@ def test_write_release_rejects_public_operation_access_narrowing(
 def test_validate_release_rejects_public_operation_access_narrowing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    restricted = build_release()
+    restricted = _release_document()
     _restrict_health_access(restricted)
     target = tmp_path / "restricted"
     for relative, payload in render_release(restricted).items():
@@ -853,7 +876,7 @@ def test_validate_release_rejects_public_operation_access_narrowing(
     ],
 )
 def test_openapi_policy_rejects_access_narrowing_at_every_level(mutation: str) -> None:
-    old = build_release()
+    old = _release_document()
     candidate = deepcopy(old)
     old_document = _artifact(old, "openapi")["document"]
     new_document = _artifact(candidate, "openapi")["document"]
@@ -931,7 +954,7 @@ def test_openapi_policy_rejects_access_narrowing_at_every_level(mutation: str) -
     ],
 )
 def test_openapi_policy_allows_provable_access_loosenings(relaxation: str) -> None:
-    old = build_release()
+    old = _release_document()
     candidate = deepcopy(old)
     old_document = _artifact(old, "openapi")["document"]
     new_document = _artifact(candidate, "openapi")["document"]
@@ -1000,7 +1023,7 @@ def test_openapi_policy_allows_provable_access_loosenings(relaxation: str) -> No
 def test_append_only_projection_policy_rejects_new_access_requirement_on_existing_member(
     family: str, collection: str
 ) -> None:
-    old = build_release()
+    old = _release_document()
     restricted = deepcopy(old)
     member = _artifact(restricted, family)["document"][collection][0]
     member["x-beadhive-required-scope"] = "operator:read"
@@ -1017,7 +1040,7 @@ def test_append_only_projection_policy_rejects_new_access_requirement_on_existin
 def test_append_only_projection_policy_allows_unrestricted_access_annotation(
     family: str, collection: str
 ) -> None:
-    old = build_release()
+    old = _release_document()
     annotated = deepcopy(old)
     member = _artifact(annotated, family)["document"][collection][0]
     member["x-beadhive-required-scope"] = None
@@ -1058,7 +1081,7 @@ def _existing_extension_target(release: dict, target: str) -> dict:
 def test_existing_public_members_fail_closed_for_unknown_extension_metadata(
     target: str, extension: str
 ) -> None:
-    old = build_release()
+    old = _release_document()
     candidate = deepcopy(old)
     actual_target = target.removesuffix("-change")
     if target.endswith("-change"):
@@ -1076,7 +1099,7 @@ def _add_unknown_health_access_extension(release: dict) -> None:
 def test_write_release_rejects_unknown_access_extension_on_existing_operation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    restricted = build_release()
+    restricted = _release_document()
     _add_unknown_health_access_extension(restricted)
     monkeypatch.setattr(contract_release, "build_release", lambda: deepcopy(restricted))
 
@@ -1087,7 +1110,7 @@ def test_write_release_rejects_unknown_access_extension_on_existing_operation(
 def test_validate_release_rejects_unknown_access_extension_on_existing_operation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    restricted = build_release()
+    restricted = _release_document()
     _add_unknown_health_access_extension(restricted)
     target = tmp_path / "restricted-extension"
     for relative, payload in render_release(restricted).items():
@@ -1106,7 +1129,7 @@ def test_validate_release_rejects_unknown_access_extension_on_existing_operation
     "extension", ["x-required-auth", "x-required-scope", "x-required-privilege"]
 )
 def test_unknown_access_looking_extensions_are_exact_not_semantic(extension: str) -> None:
-    old = build_release()
+    old = _release_document()
     candidate = deepcopy(old)
     _existing_extension_target(candidate, "openapi-operation")[extension] = "administrator"
 
@@ -1116,7 +1139,7 @@ def test_unknown_access_looking_extensions_are_exact_not_semantic(extension: str
 @pytest.mark.parametrize("mutation", ["add", "change", "remove"])
 @pytest.mark.parametrize("target", ["openapi-operation", "cli", "mcp", "gateway"])
 def test_extension_maps_fail_closed_for_add_change_and_remove(target: str, mutation: str) -> None:
-    old = build_release()
+    old = _release_document()
     if mutation != "add":
         _existing_extension_target(old, target)["x-contract-policy"] = {"role": "reader"}
     candidate = deepcopy(old)
@@ -1136,7 +1159,7 @@ def test_extension_maps_fail_closed_for_add_change_and_remove(target: str, mutat
 
 @pytest.mark.parametrize("target", ["cli", "mcp", "gateway"])
 def test_catalog_extension_maps_apply_known_access_semantics(target: str) -> None:
-    old = build_release()
+    old = _release_document()
     old_extension = {
         "x-beadhive-required-scope": None,
         "description": "stable extension metadata",
@@ -1172,12 +1195,12 @@ def test_catalog_extension_maps_apply_known_access_semantics(target: str) -> Non
 def test_known_access_extensions_keep_semantic_tightening_and_loosening(
     key: str, restricted: object, unrestricted: object
 ) -> None:
-    baseline = build_release()
+    baseline = _release_document()
     tightened = deepcopy(baseline)
     _existing_extension_target(tightened, "openapi-operation")[key] = restricted
     assert any("access metadata" in error for error in compatibility_errors(baseline, tightened))
 
-    old_restricted = build_release()
+    old_restricted = _release_document()
     _existing_extension_target(old_restricted, "openapi-operation")[key] = restricted
     loosened = deepcopy(old_restricted)
     _existing_extension_target(loosened, "openapi-operation")[key] = unrestricted
@@ -1197,7 +1220,7 @@ def test_known_access_extensions_keep_semantic_tightening_and_loosening(
     ],
 )
 def test_standard_descriptive_metadata_remains_additive(target: str, field: str) -> None:
-    old = build_release()
+    old = _release_document()
     described = deepcopy(old)
     if field == "info-description":
         _artifact(described, "openapi")["document"]["info"]["description"] = "clarified"
@@ -1209,7 +1232,7 @@ def test_standard_descriptive_metadata_remains_additive(target: str, field: str)
 
 @pytest.mark.parametrize("equivalence", ["alternative-order", "anonymous-spelling"])
 def test_openapi_security_equivalence_is_order_independent(equivalence: str) -> None:
-    old = build_release()
+    old = _release_document()
     candidate = deepcopy(old)
     old_health = _existing_extension_target(old, "openapi-operation")
     new_health = _existing_extension_target(candidate, "openapi-operation")
@@ -1224,7 +1247,7 @@ def test_openapi_security_equivalence_is_order_independent(equivalence: str) -> 
 
 
 def test_extension_compatibility_errors_have_deterministic_key_order() -> None:
-    old = build_release()
+    old = _release_document()
     left = deepcopy(old)
     right = deepcopy(old)
     left_target = _existing_extension_target(left, "openapi-operation")
@@ -1256,7 +1279,7 @@ def test_extension_compatibility_errors_have_deterministic_key_order() -> None:
 def test_nested_security_in_catalog_projection_is_exact_extension_metadata(
     security: object,
 ) -> None:
-    old = build_release()
+    old = _release_document()
     candidate = deepcopy(old)
     projection = _existing_extension_target(candidate, "openapi-operation")[
         "x-beadhive-catalog-projection"
@@ -1283,7 +1306,7 @@ def test_nested_security_in_catalog_projection_is_exact_extension_metadata(
 def test_hidden_extension_like_keys_in_new_ordinary_containers_fail_closed(
     target: str, extension: str
 ) -> None:
-    old = build_release()
+    old = _release_document()
     candidate = deepcopy(old)
     _existing_extension_target(candidate, target)["policy"] = {
         "rules": [{extension: "administrator"}]
@@ -1297,7 +1320,7 @@ def test_hidden_extension_like_keys_in_new_ordinary_containers_fail_closed(
 def test_hidden_extension_metadata_changes_and_removals_fail_closed(
     target: str, mutation: str
 ) -> None:
-    old = build_release()
+    old = _release_document()
     _existing_extension_target(old, target)["policy"] = {"rules": [{"x-required-role": "reader"}]}
     candidate = deepcopy(old)
     candidate_target = _existing_extension_target(candidate, target)
@@ -1313,7 +1336,7 @@ def test_hidden_extension_metadata_changes_and_removals_fail_closed(
 def test_noncanonical_extension_like_keys_are_rejected_without_normalizing(
     extension: str,
 ) -> None:
-    old = build_release()
+    old = _release_document()
     candidate = deepcopy(old)
     _existing_extension_target(candidate, "openapi-operation")[extension] = "administrator"
 
@@ -1336,7 +1359,7 @@ def test_noncanonical_extension_like_keys_are_rejected_without_normalizing(
 def test_additional_confusable_extension_prefixes_fail_closed(
     target: str, placement: str, extension: str
 ) -> None:
-    old = build_release()
+    old = _release_document()
     candidate = deepcopy(old)
     candidate_target = _existing_extension_target(candidate, target)
     if placement == "direct":
@@ -1366,7 +1389,7 @@ def _add_nested_minus_sign_extension(release: dict) -> None:
 def test_write_release_rejects_minus_sign_extension_bypasses(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutate
 ) -> None:
-    restricted = build_release()
+    restricted = _release_document()
     mutate(restricted)
     monkeypatch.setattr(contract_release, "build_release", lambda: deepcopy(restricted))
 
@@ -1380,7 +1403,7 @@ def test_write_release_rejects_minus_sign_extension_bypasses(
 def test_validate_release_rejects_minus_sign_extension_bypasses(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutate
 ) -> None:
-    restricted = build_release()
+    restricted = _release_document()
     mutate(restricted)
     target = tmp_path / "minus-sign-extension"
     for relative, payload in render_release(restricted).items():
@@ -1396,7 +1419,7 @@ def test_validate_release_rejects_minus_sign_extension_bypasses(
 
 
 def test_standard_http_header_and_json_schema_property_names_are_not_extensions() -> None:
-    old = build_release()
+    old = _release_document()
     candidate = deepcopy(old)
     openapi = _artifact(candidate, "openapi")["document"]
     response_headers = openapi["paths"]["/health"]["get"]["responses"]["200"].setdefault(
@@ -1429,7 +1452,7 @@ def _add_hidden_projection_extension(release: dict) -> None:
 def test_write_release_rejects_nested_extension_bypasses(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutate
 ) -> None:
-    restricted = build_release()
+    restricted = _release_document()
     mutate(restricted)
     monkeypatch.setattr(contract_release, "build_release", lambda: deepcopy(restricted))
 
@@ -1443,7 +1466,7 @@ def test_write_release_rejects_nested_extension_bypasses(
 def test_validate_release_rejects_nested_extension_bypasses(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutate
 ) -> None:
-    restricted = build_release()
+    restricted = _release_document()
     mutate(restricted)
     target = tmp_path / "nested-extension"
     for relative, payload in render_release(restricted).items():
@@ -1460,7 +1483,7 @@ def test_validate_release_rejects_nested_extension_bypasses(
 
 @pytest.mark.parametrize("mutation", ["array-member", "type-change"])
 def test_existing_extension_trees_are_exact_across_arrays_and_types(mutation: str) -> None:
-    old = build_release()
+    old = _release_document()
     extension = {"rules": [{"role": "reader"}], "enabled": True}
     _existing_extension_target(old, "openapi-operation")["x-contract-policy"] = extension
     candidate = deepcopy(old)
@@ -1474,7 +1497,7 @@ def test_existing_extension_trees_are_exact_across_arrays_and_types(mutation: st
 
 
 def test_websocket_security_remains_semantic_at_its_actual_access_object() -> None:
-    old = build_release()
+    old = _release_document()
     candidate = deepcopy(old)
     old_websocket = _artifact(old, "openapi")["document"]["paths"]["/ws/terminal"][
         "x-beadhive-websocket"
@@ -1489,7 +1512,7 @@ def test_websocket_security_remains_semantic_at_its_actual_access_object() -> No
 
 
 def test_json_schema_policy_rejects_narrowing_and_closed_union_breaks() -> None:
-    old = build_release()
+    old = _release_document()
 
     type_narrowed = deepcopy(old)
     config = _artifact(type_narrowed, "config")["document"]
@@ -1515,7 +1538,7 @@ def test_json_schema_policy_rejects_narrowing_and_closed_union_breaks() -> None:
 
 @pytest.fixture(scope="module")
 def compatibility_release_template() -> dict:
-    return build_release()
+    return _release_document()
 
 
 def _synthetic_schema_compatibility_errors(
@@ -1724,7 +1747,7 @@ def test_json_schema_policy_allows_provable_relaxations(
 
 
 def test_release_compatibility_allows_documented_additive_changes() -> None:
-    old = build_release()
+    old = _release_document()
     additive = deepcopy(old)
 
     config = _artifact(additive, "config")["document"]
@@ -1754,7 +1777,7 @@ def test_release_compatibility_allows_documented_additive_changes() -> None:
 def test_release_write_and_check_paths_enforce_compatibility_baseline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    old = build_release()
+    old = _release_document()
     breaking = deepcopy(old)
     _artifact(breaking, "openapi")["document"]["paths"].pop("/health")
     monkeypatch.setattr(contract_release, "build_release", lambda: deepcopy(breaking))
@@ -1773,7 +1796,7 @@ def test_release_write_and_check_paths_enforce_compatibility_baseline(
 def test_release_write_and_check_paths_accept_additive_evolution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    additive = build_release()
+    additive = _release_document()
     config = _artifact(additive, "config")["document"]
     config["properties"]["future_optional"] = {"type": "string"}
     monkeypatch.setattr(contract_release, "build_release", lambda: deepcopy(additive))
@@ -1798,7 +1821,7 @@ def test_schema_policy_rejects_standard_assertion_narrowing_in_real_write_path(
     keyword: str,
     value: object,
 ) -> None:
-    old = build_release()
+    old = _release_document()
     narrowed = deepcopy(old)
     config = _artifact(narrowed, "config")["document"]
     config["$defs"][definition]["properties"][property_name][keyword] = value
@@ -1817,9 +1840,9 @@ def test_writer_failure_leaves_existing_target_byte_identical(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target = tmp_path / "release"
-    write_release(target)
+    _write_release_document(target)
     before = _files(target)
-    old = build_release()
+    old = _release_document()
     candidate = deepcopy(old)
     candidate["artifacts"][0]["document"]["description"] = "new additive annotation"
     monkeypatch.setattr(contract_release, "build_release", lambda: deepcopy(candidate))
@@ -1846,7 +1869,7 @@ def test_validate_uses_candidate_exact_tree_and_write_removes_stale_target_entri
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "release"
-    write_release(target)
+    _write_release_document(target)
     stale = target / "artifacts" / "stale-unlisted.json"
     stale.write_text("{}\n")
     inventory = json.loads((target / "inventory.json").read_bytes())
@@ -1858,7 +1881,7 @@ def test_validate_uses_candidate_exact_tree_and_write_removes_stale_target_entri
 
     assert any("unlisted release entry" in error for error in validate_release(target))
 
-    write_release(target)
+    _write_release_document(target)
     assert not stale.exists()
     assert validate_release(target) == ()
 
@@ -1874,7 +1897,7 @@ def test_every_staged_file_write_failure_preserves_existing_release(
     target = tmp_path / "release"
     shutil.copytree(release_root(), target)
     before = _files(target)
-    candidate = build_release()
+    candidate = _release_document()
     candidate["artifacts"][0]["document"]["description"] = "new additive annotation"
     monkeypatch.setattr(contract_release, "build_release", lambda: deepcopy(candidate))
     original_write_bytes = Path.write_bytes
@@ -1913,7 +1936,7 @@ def test_staging_creation_or_validation_failure_preserves_prior_state(
         lambda *_args, **_kwargs: ("injected staged validation failure",),
     )
     with pytest.raises(ValueError, match="injected staged validation"):
-        write_release(target)
+        _write_release_document(target)
 
     assert (_files(target) if target.exists() else None) == before
     assert _staging_siblings(target) == []
@@ -1942,7 +1965,7 @@ def test_every_publish_swap_failure_rolls_back_or_leaves_target_absent(
 
     monkeypatch.setattr(contract_release, "_atomic_replace", fail_selected_replace)
     with pytest.raises(OSError, match=f"injected atomic replace {failed_replace}"):
-        write_release(target)
+        _write_release_document(target)
 
     assert (_files(target) if target.exists() else None) == before
     assert _staging_siblings(target) == []
@@ -1960,7 +1983,7 @@ def test_staging_directory_creation_failure_preserves_existing_release(
 
     monkeypatch.setattr(contract_release.tempfile, "mkdtemp", fail_mkdtemp)
     with pytest.raises(OSError, match="injected staging directory"):
-        write_release(target)
+        _write_release_document(target)
 
     assert _files(target) == before
     assert _staging_siblings(target) == []
@@ -2010,8 +2033,10 @@ def test_stale_file_directory_and_symlink_are_rejected_then_atomically_removed(
         for error in validate_release(target)
     )
 
-    write_release(target)
-    expected = {path.as_posix(): payload for path, payload in render_release().items()}
+    _write_release_document(target)
+    expected = {
+        path.as_posix(): payload for path, payload in render_release(_release_document()).items()
+    }
     assert _files(target) == expected
     assert validate_release(target) == ()
     assert sentinel.read_text() == '{"outside":true}\n'
