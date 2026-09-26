@@ -21,6 +21,7 @@ from types import MappingProxyType
 from typing import cast
 
 from ..adapters.impact_git import GitTreeDiff
+from ..adapters.impact_paths import PATHS_BACKEND, PathsImpactBackend
 from ..kernel.plugins import (
     BUILD_IMPACT,
     CapabilityKey,
@@ -182,8 +183,11 @@ def impact_resolver(
     does not depend back on the legacy configuration facade.
     """
     attest = attest if attest is not None else AttestConfig()
-    if backends is None and repo is not None and attest.impact.backend != NATIVE_FULL:
-        backends = collect_impact_backends(repo, plugin_kernel=plugin_kernel).backends
+    if backends is None:
+        available: dict[str, ImpactBackend] = {PATHS_BACKEND: PathsImpactBackend()}
+        if repo is not None and attest.impact.backend not in {NATIVE_FULL, PATHS_BACKEND}:
+            available.update(collect_impact_backends(repo, plugin_kernel=plugin_kernel).backends)
+        backends = available
     return select_resolver(
         attest.impact.backend,
         tree_diff=tree_diff if tree_diff is not None else GitTreeDiff(),

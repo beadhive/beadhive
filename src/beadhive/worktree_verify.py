@@ -1032,6 +1032,11 @@ def _impl_clean_checkout_unadmitted(
             branch=branch,
             worktree=tmp,
         )
+        # A configured full gate covers the checked attest-key partition.  Materialize those
+        # per-key verdicts so path-selected descendants can inherit unchanged proof.
+        from . import selective_validation
+
+        selective_validation.record_full_gate_keys(entry, cfg, validated_sha, cmd, rc)
         # A clean checkout running the phase WHOLE is the confirming run — the only kind of run
         # that may attest (bh-ku9n9.8). It never converges and never consults
         # `work.validate_subset`; all it does here is read the tree's retry history back and say
