@@ -1,0 +1,111 @@
+{
+  "$defs": {
+    "AdapterOutcome": {
+      "enum": [
+        "committed",
+        "refused",
+        "failed"
+      ],
+      "title": "AdapterOutcome",
+      "type": "string"
+    },
+    "JsonValue": {}
+  },
+  "$id": "urn:beadhive:wire-schema:adapter-commit-result:1",
+  "additionalProperties": false,
+  "properties": {
+    "adapter_kind": {
+      "title": "Adapter Kind",
+      "type": "string"
+    },
+    "allocation_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Allocation Id"
+    },
+    "binding_digest": {
+      "title": "Binding Digest",
+      "type": "string"
+    },
+    "commit_operation_id": {
+      "title": "Commit Operation Id",
+      "type": "string"
+    },
+    "error_code": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Error Code"
+    },
+    "generation": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Generation"
+    },
+    "launch_id": {
+      "title": "Launch Id",
+      "type": "string"
+    },
+    "outcome": {
+      "$ref": "#/$defs/AdapterOutcome"
+    },
+    "portable_receipt": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Portable Receipt"
+    },
+    "type": {
+      "const": "beadhive.adapter-commit-result",
+      "default": "beadhive.adapter-commit-result",
+      "title": "Type",
+      "type": "string"
+    },
+    "version": {
+      "const": "1",
+      "default": "1",
+      "title": "Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "launch_id",
+    "commit_operation_id",
+    "binding_digest",
+    "adapter_kind",
+    "outcome"
+  ],
+  "title": "AdapterCommitResultV1",
+  "type": "object",
+  "version": 2
+}

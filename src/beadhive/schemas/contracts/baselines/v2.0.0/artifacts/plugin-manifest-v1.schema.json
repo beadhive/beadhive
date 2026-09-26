@@ -1,0 +1,412 @@
+{
+  "$defs": {
+    "Capability": {
+      "additionalProperties": false,
+      "properties": {
+        "api_version": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "id": {
+          "$ref": "#/$defs/CapabilityId"
+        }
+      },
+      "required": [
+        "id",
+        "api_version"
+      ],
+      "type": "object"
+    },
+    "CapabilityId": {
+      "pattern": "^[a-z][a-z0-9-]*(?:\\.[a-z][a-z0-9-]*)+$",
+      "type": "string"
+    },
+    "CliProjection": {
+      "additionalProperties": false,
+      "description": "A presentation projection over a capability; it does not grant capability ownership.",
+      "properties": {
+        "capability_id": {
+          "$ref": "#/$defs/CapabilityId"
+        },
+        "command": {
+          "minLength": 1,
+          "pattern": "^[a-z0-9-]+(?: [a-z0-9-]+)*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "capability_id",
+        "command"
+      ],
+      "type": "object"
+    },
+    "Compensation": {
+      "additionalProperties": false,
+      "properties": {
+        "action_id": {
+          "pattern": "^[a-z][a-z0-9-]*(?:\\.[a-z][a-z0-9-]*)+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mode": {
+          "enum": [
+            "none",
+            "required"
+          ],
+          "x-beadhive-closed-union": true
+        }
+      },
+      "required": [
+        "mode",
+        "action_id"
+      ],
+      "type": "object"
+    },
+    "Credential": {
+      "additionalProperties": false,
+      "description": "Credential metadata and lookup names only. Secret values are not part of PluginManifest.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/LocalId"
+        },
+        "purpose": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "sources": {
+          "items": {
+            "$ref": "#/$defs/CredentialSource"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "id",
+        "required",
+        "purpose",
+        "sources"
+      ],
+      "type": "object"
+    },
+    "CredentialSource": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "environment-variable",
+            "file-reference",
+            "keyring",
+            "oauth-profile"
+          ],
+          "x-beadhive-closed-union": true
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "name"
+      ],
+      "type": "object"
+    },
+    "Executable": {
+      "additionalProperties": false,
+      "description": "An executable prerequisite by basename and compatibility range, never an argv or shell command.",
+      "properties": {
+        "name": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$",
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "version": {
+          "$ref": "#/$defs/VersionRange"
+        }
+      },
+      "required": [
+        "name",
+        "required",
+        "version"
+      ],
+      "type": "object"
+    },
+    "LifecycleSubscription": {
+      "additionalProperties": false,
+      "description": "Declarative observation policy bound to a typed subscriber at bootstrap; no callback reference is stored here.",
+      "properties": {
+        "compensation": {
+          "$ref": "#/$defs/Compensation"
+        },
+        "criticality": {
+          "enum": [
+            "best-effort",
+            "blocking"
+          ],
+          "x-beadhive-closed-union": true
+        },
+        "event": {
+          "$ref": "#/$defs/CapabilityId"
+        },
+        "id": {
+          "$ref": "#/$defs/CapabilityId"
+        },
+        "idempotency": {
+          "enum": [
+            "not-applicable",
+            "required"
+          ],
+          "x-beadhive-closed-union": true
+        },
+        "order": {
+          "type": "integer"
+        },
+        "retry": {
+          "$ref": "#/$defs/RetryPolicy"
+        },
+        "timeout_seconds": {
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "event",
+        "order",
+        "timeout_seconds",
+        "criticality",
+        "idempotency",
+        "retry",
+        "compensation"
+      ],
+      "type": "object"
+    },
+    "LocalId": {
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "type": "string"
+    },
+    "Permission": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/CapabilityId"
+        },
+        "purpose": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "required",
+        "purpose"
+      ],
+      "type": "object"
+    },
+    "RetryPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "backoff_seconds": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_attempts": {
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_attempts",
+        "backoff_seconds"
+      ],
+      "type": "object"
+    },
+    "Semver": {
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "type": "string"
+    },
+    "VersionRange": {
+      "additionalProperties": false,
+      "description": "A half-open semantic-version range [minimum_inclusive, maximum_exclusive).",
+      "properties": {
+        "maximum_exclusive": {
+          "$ref": "#/$defs/Semver"
+        },
+        "minimum_inclusive": {
+          "$ref": "#/$defs/Semver"
+        }
+      },
+      "required": [
+        "minimum_inclusive",
+        "maximum_exclusive"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "urn:beadhive:wire-schema:plugin-manifest:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "capabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "provides": {
+          "items": {
+            "$ref": "#/$defs/Capability"
+          },
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "provides"
+      ],
+      "type": "object"
+    },
+    "compatibility": {
+      "additionalProperties": false,
+      "properties": {
+        "beadhive": {
+          "$ref": "#/$defs/VersionRange"
+        },
+        "plugin_kernel": {
+          "$ref": "#/$defs/VersionRange"
+        }
+      },
+      "required": [
+        "beadhive",
+        "plugin_kernel"
+      ],
+      "type": "object"
+    },
+    "configuration": {
+      "additionalProperties": false,
+      "properties": {
+        "legacy_namespaces": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "namespace": {
+          "pattern": "^plugins\\.[a-z][a-z0-9-]*$",
+          "type": "string"
+        },
+        "schema_artifact": {
+          "pattern": "^urn:beadhive:wire-schema:",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "namespace",
+        "legacy_namespaces",
+        "schema_artifact"
+      ],
+      "type": "object"
+    },
+    "lifecycle": {
+      "additionalProperties": false,
+      "properties": {
+        "subscriptions": {
+          "items": {
+            "$ref": "#/$defs/LifecycleSubscription"
+          },
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "subscriptions"
+      ],
+      "type": "object"
+    },
+    "manifest_version": {
+      "const": 1
+    },
+    "plugin_id": {
+      "$ref": "#/$defs/LocalId"
+    },
+    "plugin_version": {
+      "$ref": "#/$defs/Semver"
+    },
+    "presentation": {
+      "additionalProperties": false,
+      "properties": {
+        "cli": {
+          "items": {
+            "$ref": "#/$defs/CliProjection"
+          },
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "cli"
+      ],
+      "type": "object"
+    },
+    "security": {
+      "additionalProperties": false,
+      "properties": {
+        "credentials": {
+          "items": {
+            "$ref": "#/$defs/Credential"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "executables": {
+          "items": {
+            "$ref": "#/$defs/Executable"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "permissions": {
+          "items": {
+            "$ref": "#/$defs/Permission"
+          },
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "permissions",
+        "executables",
+        "credentials"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "manifest_version",
+    "plugin_id",
+    "plugin_version",
+    "compatibility",
+    "capabilities",
+    "lifecycle",
+    "configuration",
+    "presentation",
+    "security"
+  ],
+  "title": "Beadhive PluginManifest v1",
+  "type": "object",
+  "version": 2
+}

@@ -338,6 +338,33 @@ This mode permits unvalidated code to land and push. Keep it scoped to the affec
 the audit records after recovery, disable it as soon as the gate is usable, then run the restored
 configured validation before treating the resulting tree as green.
 
+For one exceptional boundary, a supervised operator can leave hive policy unchanged and authorize
+one exact candidate instead:
+
+```sh
+bh work submit bh-123 --as dev/alice \
+  --override-validation "gate service unavailable; reviewed evidence in incident 456" \
+  --override-as "Alice Operator"
+bh work merge bh-123 \
+  --override-validation "repeat merge gate is blocked by incident 456" \
+  --override-as "Alice Operator"
+bh work finish bh-epic \
+  --override-validation "assembled molecule evidence reviewed in incident 456" \
+  --override-as "Alice Operator"
+```
+
+`--override-validation` is the required non-empty audit reason. `--override-as` is a separate
+supervised human identity: submit's ordinary `--as` still names the developer who holds the claim,
+and named agent seats cannot authorize an override. Submit binds the decision to its exact branch
+SHA/tree and `submit` phase; merge binds it to the exact landed candidate and `merge` phase; finish
+binds it to the exact container SHA/tree and `molecule` phase. Candidate drift refuses the override.
+
+Each use appends a machine-readable `bh:validation-override` bead comment, a separate durable
+`BYPASSED` validation record, and a structured telemetry event. It never changes config, creates
+or reuses a green receipt, or satisfies push-main attestation. Review, clean target, history,
+topology, merge slot, freshness, dirty tree, and conflict guards still run. The option is rejected
+for grouped operations because one authorization must name exactly one bead.
+
 `submit` only **pushes** the branch when `review_gate` is `gh:run`/`gh:pr` (CI must
 see it); a purely local reviewer sharing the object store needs no push.
 

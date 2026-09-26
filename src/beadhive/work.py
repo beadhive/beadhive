@@ -274,6 +274,22 @@ _AS = typer.Option("", "--as", help="dev/<name> identity (default: config/$BH_DE
 _GROUP = typer.Option(
     "", "--group", help="batch mode: comma-separated member ids sharing a batch:<group> label"
 )
+_ValidationOverride = Annotated[
+    str,
+    typer.Option(
+        "--override-validation",
+        metavar="REASON",
+        help=(
+            "operator-only: bypass this invocation's validation gate with a durable audit reason"
+        ),
+    ),
+]
+_OverrideActor = Annotated[
+    str,
+    typer.Option(
+        "--override-as", help="supervised human identity authorizing the validation override"
+    ),
+]
 _COLLAPSE = typer.Option(
     "", "--collapse", help="collapsed mode: <epic> — run its ready children as one grouped session"
 )
@@ -998,7 +1014,14 @@ def _guard_fork_remote(entry, remote) -> None:
     return work_submission.impl__guard_fork_remote(sys.modules[__name__], entry, remote)
 
 
-def submit(bead: str = _BEAD_OPT, as_: str = _AS, hive: str = _HIVE, group: str = _GROUP):
+def submit(
+    bead: str = _BEAD_OPT,
+    as_: str = _AS,
+    hive: str = _HIVE,
+    group: str = _GROUP,
+    override_validation: _ValidationOverride = "",
+    override_as: _OverrideActor = "",
+):
     """Hand off to async review: verify the branch is clean conventional digests, validate the
     proposed hash from a clean checkout, (publish for out-of-process review,) then open a gate.
     Not 'done' — leaves the worktree intact and returns immediately.
@@ -1009,7 +1032,13 @@ def submit(bead: str = _BEAD_OPT, as_: str = _AS, hive: str = _HIVE, group: str 
     return (
         work_services.work_lifecycle_service(
             submit=lambda item: work_submission.impl_submit(
-                sys.modules[__name__], item.bead, item.actor, item.hive, item.group
+                sys.modules[__name__],
+                item.bead,
+                item.actor,
+                item.hive,
+                item.group,
+                override_validation,
+                override_as,
             )
         )
         .submit(work_capability.SubmissionRequest(bead, as_, hive, group))
@@ -1076,7 +1105,7 @@ def _warn_submit_release_hint(bead, main, entry, branch, base, data=None) -> Non
     )
 
 
-def _validate_submit_checkout(entry, branch, cfg, bead=None) -> None:
+def _validate_submit_checkout(entry, branch, cfg, bead=None, override=None) -> None:
     """Clean-checkout validation — the result must not depend on dirty local state. Submit is
     the trusted-local opt-in to the verdict ledger (bh-dfx0): a fresh green verdict for this
     exact (TREE, cmd) skips the redundant checkout, so a re-submit of an unchanged sha is a
@@ -1084,7 +1113,7 @@ def _validate_submit_checkout(entry, branch, cfg, bead=None) -> None:
     batch land) reuse on the same key — an exact tree match, ADR Decision 4 — which is what makes
     THIS verdict the one a `--no-ff` land onto an unmoved base gets to ride."""
     return work_submission.impl__validate_submit_checkout(
-        sys.modules[__name__], entry, branch, cfg, bead
+        sys.modules[__name__], entry, branch, cfg, bead, override
     )
 
 
@@ -1223,18 +1252,20 @@ def _guard_molecule_land_base(entry, epic, integration) -> str:
     )
 
 
-def _open_molecule_pr(cfg, entry, main, epic, epic_data, mol_branch, base, mode) -> None:
+def _open_molecule_pr(
+    cfg, entry, main, epic, epic_data, mol_branch, base, mode, override=None
+) -> None:
     """PR-only-main landing (work.landing: pr): a molecule landing onto the SHARED integration
     branch publishes as a PR instead of local-merging. The assembled molecule is still validated
     from a clean checkout first (a red molecule never reaches the PR either); the
     postland/combined validation role passes to CI on the PR. Reuses an exact-tree verdict on the
     same terms as the local-land path (`_validate_molecule_checkout`)."""
     return work_merge.impl__open_molecule_pr(
-        sys.modules[__name__], cfg, entry, main, epic, epic_data, mol_branch, base, mode
+        sys.modules[__name__], cfg, entry, main, epic, epic_data, mol_branch, base, mode, override
     )
 
 
-def _validate_molecule_checkout(entry, mol_branch, cfg, mode) -> None:
+def _validate_molecule_checkout(entry, mol_branch, cfg, mode, override=None) -> None:
     """Validate the ASSEMBLED molecule from a clean checkout before landing — the land must not
     depend on dirty local state, and a red molecule never reaches the integration line. `loose`
     trusts the per-bead submits and skips even this. Raises on a red result.
@@ -1247,7 +1278,7 @@ def _validate_molecule_checkout(entry, mol_branch, cfg, mode) -> None:
     one source of truth for "same bytes", and it is the lookup. The last bead to land onto
     mol/<epic> already validated this exact tree; re-running it here proves nothing new."""
     return work_merge.impl__validate_molecule_checkout(
-        sys.modules[__name__], entry, mol_branch, cfg, mode
+        sys.modules[__name__], entry, mol_branch, cfg, mode, override
     )
 
 
@@ -1301,13 +1332,15 @@ def _reconcile_landed_molecule(cfg, entry, main, epic, epic_data, mol_branch, ba
     )
 
 
-def _merge_molecule(cfg, epic, hive):
+def _merge_molecule(cfg, epic, hive, override_reason="", override_actor=""):
     """The molecule wrap-up / land: collapse a whole assembled `mol/<epic>` onto the hive
     integration branch as ONE `--no-ff` bubble (the bead merges live inside it). Guards the
     molecule is complete (every child closed) + clean, holds the hive merge slot, validates the
     assembled branch from a clean checkout, lands it, closes the epic, and deletes the branch.
     On conflict / validation failure it aborts and releases the slot — never drops work."""
-    return work_merge.impl__merge_molecule(sys.modules[__name__], cfg, epic, hive)
+    return work_merge.impl__merge_molecule(
+        sys.modules[__name__], cfg, epic, hive, override_reason, override_actor
+    )
 
 
 def start(epic: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
@@ -1353,12 +1386,19 @@ def start(epic: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
     )
 
 
-def finish(epic: str = _BEAD, hive: str = _HIVE):
+def finish(
+    epic: str = _BEAD,
+    hive: str = _HIVE,
+    override_validation: _ValidationOverride = "",
+    override_as: _OverrideActor = "",
+):
     """Coordinator/merger wrap-up: land a whole assembled molecule. Epic-only alias of
     `merge --molecule` — guards the bead is an epic, then validates the assembled `mol/<epic>`,
     lands it onto the integration branch as ONE `--no-ff` bubble, closes the epic, and deletes the
     branch. `merge --molecule <epic>` remains the equivalent."""
-    return work_merge.impl_finish(sys.modules[__name__], epic, hive)
+    return work_merge.impl_finish(
+        sys.modules[__name__], epic, hive, override_validation, override_as
+    )
 
 
 def land(bead: str = _BEAD, hive: str = _HIVE):
@@ -1422,6 +1462,8 @@ def merge(
         False, "--molecule", help="land the whole molecule mol/<epic> (arg is the epic id)"
     ),
     group: str = _GROUP,
+    override_validation: _ValidationOverride = "",
+    override_as: _OverrideActor = "",
 ):
     """Merger-only: serialize integration of an *approved* bead onto the integration branch.
     Holds the hive merge slot, re-verifies a small clean conventional history, merges `--no-ff`
@@ -1445,6 +1487,8 @@ def merge(
                 item.remove_worktree,
                 item.molecule,
                 item.group,
+                override_validation,
+                override_as,
             )
         )
         .merge(work_capability.MergeRequest(bead, hive, rm, molecule, group))
@@ -1536,7 +1580,18 @@ def _merge_bead_no_ff(entry, branch, base, target, cfg, bead, main, slot_attrs) 
     )
 
 
-def _postland_revalidate_bead(cfg, entry, main, base, pre, bead, slot_attrs, on_main) -> None:
+def _postland_revalidate_bead(
+    cfg,
+    entry,
+    main,
+    base,
+    pre,
+    bead,
+    slot_attrs,
+    on_main,
+    override_reason="",
+    override_actor="",
+) -> None:
     """Re-test the integration tip after a clean bead merge — green in isolation at submit, but
     the COMBINATION with what's already on the tip may be red. Still holding the slot, so on red
     we reset a safe-to-rewrite tip (the private mol/<epic>, or an unpushed main) to its pre-merge
@@ -1550,7 +1605,17 @@ def _postland_revalidate_bead(cfg, entry, main, base, pre, bead, slot_attrs, on_
     Decision 4 (bh-ku9n9.17), and the ledger key is the entire test for it (see
     `_validate_molecule_checkout` for why no second tree comparison exists)."""
     return work_merge.impl__postland_revalidate_bead(
-        sys.modules[__name__], cfg, entry, main, base, pre, bead, slot_attrs, on_main
+        sys.modules[__name__],
+        cfg,
+        entry,
+        main,
+        base,
+        pre,
+        bead,
+        slot_attrs,
+        on_main,
+        override_reason,
+        override_actor,
     )
 
 
@@ -1565,12 +1630,14 @@ def _record_merge_commit(bead, main, base) -> None:
     return work_merge.impl__record_merge_commit(sys.modules[__name__], bead, main, base)
 
 
-def _merge_bead(cfg, bead, hive, rm):
+def _merge_bead(cfg, bead, hive, rm, override_reason="", override_actor=""):
     """Serialize the land of a single approved bead onto its integration base: guard open + review
     resolved + a small clean conventional history, hold the merge slot, rebase-retry merge
     `--no-ff`, re-validate the combined tip on a main-gate, close the bead. The single-bead
     sibling of `_merge_molecule` / `merge_group`; `merge` is the thin 3-way dispatch over them."""
-    return work_merge.impl__merge_bead(sys.modules[__name__], cfg, bead, hive, rm)
+    return work_merge.impl__merge_bead(
+        sys.modules[__name__], cfg, bead, hive, rm, override_reason, override_actor
+    )
 
 
 def _legacy_resume(

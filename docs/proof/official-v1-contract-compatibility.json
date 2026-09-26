@@ -6,7 +6,7 @@
       "compatibility_policy": "json-schema-additive-v1",
       "family": "abort",
       "path": "artifacts/abort-receipt-v1.schema.json",
-      "sha256": "sha256:8d6a54c6ae74851b090610c968735f431fa97836d860caf039460a16fca792cf",
+      "sha256": "sha256:a1aec88e3c7d268d5e45aa2faf045da8aeac99171b41b12fcf948c6ad246fc4f",
       "source_owner": "beadhive.modules.agents.domain.transaction.AbortReceiptV1"
     },
     {
@@ -15,7 +15,7 @@
       "compatibility_policy": "json-schema-additive-v1",
       "family": "commit",
       "path": "artifacts/adapter-commit-result-v1.schema.json",
-      "sha256": "sha256:3a3c63cdafdcd8e2b1104bf774250407d3e3c5e25af289450fd4e0f5ca92f794",
+      "sha256": "sha256:cbb552d7b410b3f5341e6f631b1be601497b1f67f7e5d66726e08e4bd141dfb0",
       "source_owner": "beadhive.modules.agents.domain.transaction.AdapterCommitResultV1"
     },
     {
@@ -24,7 +24,7 @@
       "compatibility_policy": "json-schema-additive-v1",
       "family": "launch",
       "path": "artifacts/agent-launch-profile-v1.schema.json",
-      "sha256": "sha256:fc06ef3b343c79d83f1605fee3f3c1e0eac8f2c17c3f946d3b6637222c1e9551",
+      "sha256": "sha256:0298fbec8c0f60d9d439dde2f4a83fedf02243fa1fe27707d34f58465451fc78",
       "source_owner": "beadhive.modules.agents.domain.profile.AgentLaunchProfile"
     },
     {
@@ -33,7 +33,7 @@
       "compatibility_policy": "json-schema-additive-v1",
       "family": "receipt",
       "path": "artifacts/agent-launch-receipt-v1.schema.json",
-      "sha256": "sha256:230ea6d62eb1db584065ec3911efda561f808201ab1fd42dd2f9485605110f43",
+      "sha256": "sha256:c1a951e3e38cbee54baf75fc3f6e7c7f3c53c131f61ba7475acb7b6b1bca1baf",
       "source_owner": "beadhive.modules.agents.domain.profile.AgentLaunchReceipt"
     },
     {
@@ -42,7 +42,7 @@
       "compatibility_policy": "append-only-catalog-v1",
       "family": "cli",
       "path": "artifacts/cli-projections-v1.json",
-      "sha256": "sha256:84d044b55d8372b50e8e3145c5d99e3b720471267cfa687df13bf9db8636e809",
+      "sha256": "sha256:be39e8317e9304151c44c644c44395d2aac55d8de24bf31f4be6791441c0e4a4",
       "source_owner": "beadhive.transport_inventory.document"
     },
     {
@@ -51,7 +51,7 @@
       "compatibility_policy": "json-schema-additive-v1",
       "family": "config",
       "path": "artifacts/config-v1.schema.json",
-      "sha256": "sha256:501d96d60045864ded4ce8c194e3e3aeb2bc8492d089eb276c8f139887f6c387",
+      "sha256": "sha256:9a9a099db01139c37f3f987aa5924ad32615abf4fa7aab6ecf13cdfbc42c35e0",
       "source_owner": "beadhive.modules.config.application.schema_artifacts.generate_config_json_schema"
     },
     {
@@ -60,7 +60,7 @@
       "compatibility_policy": "append-only-catalog-v1",
       "family": "gateway",
       "path": "artifacts/gateway-contracts-v1.json",
-      "sha256": "sha256:a52ed7b89ea8598d362694e2eb43ba2478fb4824fe0231ce3ec5c03f22e436de",
+      "sha256": "sha256:0c8996f80988fe778032e8f830bed00115f7bd5dfdbe0708408205beffd02055",
       "source_owner": "beadhive.gateway_wire_contracts.documents"
     },
     {
@@ -78,7 +78,7 @@
       "compatibility_policy": "json-schema-additive-v1",
       "family": "receipt",
       "path": "artifacts/launch-receipt-v1.schema.json",
-      "sha256": "sha256:4aa15a3993c80e4c9efe34dcbba0663e9d355fa5df5d4acf300598ab84a322e7",
+      "sha256": "sha256:a6c5c8e2a0b35026f321f6918aec0f1ea6fcfed5caae8340890464913d0eaffd",
       "source_owner": "beadhive.modules.agents.domain.transaction.LaunchReceiptV1"
     },
     {
@@ -87,7 +87,7 @@
       "compatibility_policy": "append-only-catalog-v1",
       "family": "lifecycle",
       "path": "artifacts/lifecycle-events-v1.json",
-      "sha256": "sha256:44d743917b2d68ee27faf3ce7baa1cf7e2596b3da119836c84ca188a10d616cc",
+      "sha256": "sha256:527cf60ff66f11fee8136a0e5d934c77551a140fd8467774f6f9d788d71cac7b",
       "source_owner": "beadhive.kernel.lifecycle.contracts.ALL_LIFECYCLE_EVENTS"
     },
     {
@@ -96,7 +96,7 @@
       "compatibility_policy": "append-only-catalog-v1",
       "family": "mcp",
       "path": "artifacts/mcp-projections-v1.json",
-      "sha256": "sha256:e8f243229b92613e8b1a70de53657b0f2a1338b1c4d031698afdfb06162f0d4c",
+      "sha256": "sha256:360527bd587c268dbff551542aa394ba770e1dcbcc7d7124032ad1e8c407b57d",
       "source_owner": "beadhive.transport_inventory.document"
     },
     {
@@ -105,7 +105,7 @@
       "compatibility_policy": "append-only-catalog-v1",
       "family": "operation-catalog",
       "path": "artifacts/operation-catalog-v1.json",
-      "sha256": "sha256:096a7b9bfcf73d6f2f578abce8ebc50b347653f0db1573c225b5d41a4a75177d",
+      "sha256": "sha256:74a51b77c8d7a5f1476176c5f8236f4600156c4ec2ff30968f26a808655040e8",
       "source_owner": "beadhive.kernel.operations.document"
     },
     {
@@ -114,7 +114,7 @@
       "compatibility_policy": "json-schema-additive-v1",
       "family": "plugin-fragment",
       "path": "artifacts/plugin-config-herdr-v1.schema.json",
-      "sha256": "sha256:14fd1dd6739ab7d637259ccb3174884a7a815dba359841764165a0e574a2c565",
+      "sha256": "sha256:595f35c6044e3a99b36bc853f64d976b81c5e504839143770bb6e0107aaca1a8",
       "source_owner": "beadhive.modules.config.application.schema_artifacts.plugin_fragment_artifacts"
     },
     {
@@ -123,7 +123,7 @@
       "compatibility_policy": "json-schema-additive-v1",
       "family": "plugin-fragment",
       "path": "artifacts/plugin-config-hitch-v1.schema.json",
-      "sha256": "sha256:a36483cda7101dfc29d4f6757e15b5604bef940c19f242a6ebd9f577ff35f119",
+      "sha256": "sha256:5b303363ee383e1c63f9b86e1e63527eab2f2f57153cd98cdf606b262ea7d6fc",
       "source_owner": "beadhive.modules.config.application.schema_artifacts.plugin_fragment_artifacts"
     },
     {
@@ -132,7 +132,7 @@
       "compatibility_policy": "json-schema-additive-v1",
       "family": "plugin-fragment",
       "path": "artifacts/plugin-config-observaloop-v1.schema.json",
-      "sha256": "sha256:e7b434e50b256cddf20d71a4474a61c61f1af0d5441b86326275ecb2389eb817",
+      "sha256": "sha256:d4b4428de5b6f54ad8608703507e3ca7abb9f43e5dcfede1b1509487eb18ef7c",
       "source_owner": "beadhive.modules.config.application.schema_artifacts.plugin_fragment_artifacts"
     },
     {
@@ -141,7 +141,7 @@
       "compatibility_policy": "json-schema-additive-v1",
       "family": "plugin-fragment",
       "path": "artifacts/plugin-config-orca-v1.schema.json",
-      "sha256": "sha256:b1e40e259a65c5e5fc58e910772708e0a5b9c784e457d5164480794c7432a238",
+      "sha256": "sha256:080e4c6bfca5be306c9bcdbc6ced3b53f5c802a245b41bbd00d1dac0ddcabaae",
       "source_owner": "beadhive.modules.config.application.schema_artifacts.plugin_fragment_artifacts"
     },
     {
@@ -150,7 +150,7 @@
       "compatibility_policy": "json-schema-additive-v1",
       "family": "plugin-fragment",
       "path": "artifacts/plugin-config-repowise-v1.schema.json",
-      "sha256": "sha256:3efbf7d6f96a8bb85224ea33edadae2bbfae38bdac0d2e98eee05781241ddc1b",
+      "sha256": "sha256:5bd7769fd5e7cb56948e5886d60a77d7399fbf9c027b8c819367ec547f3d0b8f",
       "source_owner": "beadhive.modules.config.application.schema_artifacts.plugin_fragment_artifacts"
     },
     {
@@ -159,7 +159,7 @@
       "compatibility_policy": "json-schema-additive-v1",
       "family": "plugin-manifest",
       "path": "artifacts/plugin-manifest-v1.schema.json",
-      "sha256": "sha256:5984e0fdf433758e71494f2d08054078bdefcddc4abd480ed11bceaa349a644b",
+      "sha256": "sha256:0e7e8d64663ae9fd5b03559f288bc709f5be8b35b105c8e038d3e5c51b3ce94b",
       "source_owner": "docs/schemas/wire/v1.5.0/plugin-manifest-v1.schema.json"
     },
     {
@@ -168,7 +168,7 @@
       "compatibility_policy": "json-schema-additive-v1",
       "family": "prepared",
       "path": "artifacts/prepared-launch-v1.schema.json",
-      "sha256": "sha256:bf3c6e0d250fa21b6558c822150b27555fb228269342e8f93d57a5c4ab8f532c",
+      "sha256": "sha256:5e318e31644c5e1c12c40e194f48072dff8de084eb7f383e0f030bf4406d5c96",
       "source_owner": "beadhive.modules.agents.domain.transaction.PreparedLaunchV1"
     },
     {
@@ -177,7 +177,7 @@
       "compatibility_policy": "append-only-catalog-v1",
       "family": "seat",
       "path": "artifacts/seat-contracts-v1.json",
-      "sha256": "sha256:d1a16e8aa06709a02264550993fd8a2c86ad09e1e4eb109114ec830262462c0a",
+      "sha256": "sha256:98aacbf6cc8e9d59336ad0e4a32727c90f8f89afb6e9feb7ef62cf6bdb6cd07a",
       "source_owner": "beadhive.modules.agents.domain.seat.seat_contract"
     },
     {
@@ -186,7 +186,7 @@
       "compatibility_policy": "json-schema-additive-v1",
       "family": "telemetry",
       "path": "artifacts/telemetry-event-envelope-v1.schema.json",
-      "sha256": "sha256:794560e03a8c3ded22a49e59a81fe09fadae448a5f44d81b8768ed747009b4a2",
+      "sha256": "sha256:7e01ee9c6808cbb448b7559ca10c5af3a6bfd8ff4c2ccd5010ce138cbf51b8fa",
       "source_owner": "beadhive.kernel.telemetry.event_envelope_schema"
     },
     {
@@ -195,7 +195,7 @@
       "compatibility_policy": "json-schema-additive-v1",
       "family": "workspace",
       "path": "artifacts/workspace-binding-v1.schema.json",
-      "sha256": "sha256:93bd454bf6376516f6361bef04bae5146d8324de0b29f2cd78ce5798270f66a3",
+      "sha256": "sha256:d6b15d67f74ffa2934154f7b2eaffece22f50751f952df2290051fa6ad18e29a",
       "source_owner": "beadhive.modules.agents.domain.transaction.WorkspaceBindingV1"
     },
     {
@@ -204,11 +204,11 @@
       "compatibility_policy": "json-schema-additive-v1",
       "family": "workspace",
       "path": "artifacts/workspace-target-v1.schema.json",
-      "sha256": "sha256:fc1f2b833d3d88e9f0a0288cd617aaade78d5f5a75a378a7705a666fbf2b4ec4",
+      "sha256": "sha256:790d4107cea08a7dbe5e570a4b92a72172f6faabdebe04fd52d2784eee120a72",
       "source_owner": "beadhive.modules.agents.domain.transaction.WorkspaceTargetV1"
     }
   ],
-  "candidate_inventory": "src/beadhive/schemas/contracts/v1.0.0/inventory.json",
+  "candidate_inventory": "src/beadhive/schemas/contracts/v2.0.0/inventory.json",
   "format_version": 1,
   "historical_comparisons": [
     {
@@ -277,7 +277,7 @@
     },
     {
       "artifact_id": "urn:beadhive:wire-schema:config:1",
-      "candidate_sha256": "sha256:501d96d60045864ded4ce8c194e3e3aeb2bc8492d089eb276c8f139887f6c387",
+      "candidate_sha256": "sha256:9a9a099db01139c37f3f987aa5924ad32615abf4fa7aab6ecf13cdfbc42c35e0",
       "classification": "compatible-additive",
       "differences": [
         {
@@ -313,6 +313,16 @@
         {
           "kind": "added",
           "path": "/$defs/WorkConfig/properties/attest"
+        },
+        {
+          "kind": "added",
+          "path": "/$defs/WorkConfig/properties/validation_bypass"
+        },
+        {
+          "after_sha256": "sha256:53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3",
+          "before_sha256": "sha256:4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+          "kind": "value-changed",
+          "path": "/version"
         }
       ],
       "historical_manifest": "docs/schemas/wire/v1.5.0/release.json",
@@ -403,7 +413,7 @@
     },
     {
       "artifact_id": "urn:beadhive:wire-schema:plugin-manifest:1",
-      "candidate_sha256": "sha256:5984e0fdf433758e71494f2d08054078bdefcddc4abd480ed11bceaa349a644b",
+      "candidate_sha256": "sha256:0e7e8d64663ae9fd5b03559f288bc709f5be8b35b105c8e038d3e5c51b3ce94b",
       "classification": "compatible-additive",
       "differences": [
         {
@@ -419,9 +429,16 @@
     },
     {
       "artifact_id": "urn:beadhive:wire-schema:plugin-config:herdr:1",
-      "candidate_sha256": "sha256:14fd1dd6739ab7d637259ccb3174884a7a815dba359841764165a0e574a2c565",
-      "classification": "identical",
-      "differences": [],
+      "candidate_sha256": "sha256:595f35c6044e3a99b36bc853f64d976b81c5e504839143770bb6e0107aaca1a8",
+      "classification": "compatible-additive",
+      "differences": [
+        {
+          "after_sha256": "sha256:53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3",
+          "before_sha256": "sha256:4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+          "kind": "value-changed",
+          "path": "/version"
+        }
+      ],
       "historical_manifest": "docs/schemas/wire/v1.5.0/release.json",
       "historical_path": "docs/schemas/wire/v1.5.0/plugin-config-herdr-v1.schema.json",
       "historical_release": "1.5.0",
@@ -430,9 +447,16 @@
     },
     {
       "artifact_id": "urn:beadhive:wire-schema:plugin-config:hitch:1",
-      "candidate_sha256": "sha256:a36483cda7101dfc29d4f6757e15b5604bef940c19f242a6ebd9f577ff35f119",
-      "classification": "identical",
-      "differences": [],
+      "candidate_sha256": "sha256:5b303363ee383e1c63f9b86e1e63527eab2f2f57153cd98cdf606b262ea7d6fc",
+      "classification": "compatible-additive",
+      "differences": [
+        {
+          "after_sha256": "sha256:53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3",
+          "before_sha256": "sha256:4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+          "kind": "value-changed",
+          "path": "/version"
+        }
+      ],
       "historical_manifest": "docs/schemas/wire/v1.5.0/release.json",
       "historical_path": "docs/schemas/wire/v1.5.0/plugin-config-hitch-v1.schema.json",
       "historical_release": "1.5.0",
@@ -441,9 +465,16 @@
     },
     {
       "artifact_id": "urn:beadhive:wire-schema:plugin-config:observaloop:1",
-      "candidate_sha256": "sha256:e7b434e50b256cddf20d71a4474a61c61f1af0d5441b86326275ecb2389eb817",
-      "classification": "identical",
-      "differences": [],
+      "candidate_sha256": "sha256:d4b4428de5b6f54ad8608703507e3ca7abb9f43e5dcfede1b1509487eb18ef7c",
+      "classification": "compatible-additive",
+      "differences": [
+        {
+          "after_sha256": "sha256:53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3",
+          "before_sha256": "sha256:4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+          "kind": "value-changed",
+          "path": "/version"
+        }
+      ],
       "historical_manifest": "docs/schemas/wire/v1.5.0/release.json",
       "historical_path": "docs/schemas/wire/v1.5.0/plugin-config-observaloop-v1.schema.json",
       "historical_release": "1.5.0",
@@ -452,9 +483,16 @@
     },
     {
       "artifact_id": "urn:beadhive:wire-schema:plugin-config:orca:1",
-      "candidate_sha256": "sha256:b1e40e259a65c5e5fc58e910772708e0a5b9c784e457d5164480794c7432a238",
-      "classification": "identical",
-      "differences": [],
+      "candidate_sha256": "sha256:080e4c6bfca5be306c9bcdbc6ced3b53f5c802a245b41bbd00d1dac0ddcabaae",
+      "classification": "compatible-additive",
+      "differences": [
+        {
+          "after_sha256": "sha256:53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3",
+          "before_sha256": "sha256:4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+          "kind": "value-changed",
+          "path": "/version"
+        }
+      ],
       "historical_manifest": "docs/schemas/wire/v1.5.0/release.json",
       "historical_path": "docs/schemas/wire/v1.5.0/plugin-config-orca-v1.schema.json",
       "historical_release": "1.5.0",
@@ -463,9 +501,16 @@
     },
     {
       "artifact_id": "urn:beadhive:wire-schema:plugin-config:repowise:1",
-      "candidate_sha256": "sha256:3efbf7d6f96a8bb85224ea33edadae2bbfae38bdac0d2e98eee05781241ddc1b",
-      "classification": "identical",
-      "differences": [],
+      "candidate_sha256": "sha256:5bd7769fd5e7cb56948e5886d60a77d7399fbf9c027b8c819367ec547f3d0b8f",
+      "classification": "compatible-additive",
+      "differences": [
+        {
+          "after_sha256": "sha256:53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3",
+          "before_sha256": "sha256:4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+          "kind": "value-changed",
+          "path": "/version"
+        }
+      ],
       "historical_manifest": "docs/schemas/wire/v1.5.0/release.json",
       "historical_path": "docs/schemas/wire/v1.5.0/plugin-config-repowise-v1.schema.json",
       "historical_release": "1.5.0",
@@ -474,9 +519,15 @@
     },
     {
       "artifact_id": "urn:beadhive:wire-catalog:operations:1",
-      "candidate_sha256": "sha256:096a7b9bfcf73d6f2f578abce8ebc50b347653f0db1573c225b5d41a4a75177d",
-      "classification": "compatible-additive",
+      "candidate_sha256": "sha256:74a51b77c8d7a5f1476176c5f8236f4600156c4ec2ff30968f26a808655040e8",
+      "classification": "policy-divergence-retained",
       "differences": [
+        {
+          "after_sha256": "sha256:505525571b8eb297680e2b95ddf7cbe598de5aaaef8e7c67dc5f440b84abb531",
+          "before_sha256": "sha256:30faf2bf5a6b4da77a52f9f054eff455f12e00216c3fe8965dbf86309ed4e200",
+          "kind": "value-changed",
+          "path": "/catalog_version"
+        },
         {
           "after_items": 37,
           "after_sha256": "sha256:b7016fbc7e00738c84b7d3f78c88107d5a6ab93327c18d303c8b7a9891a93769",
@@ -487,7 +538,7 @@
         },
         {
           "after_items": 206,
-          "after_sha256": "sha256:3a260c3e8413605d5c81ce408ca77c61b055bf7a03d4108a775acac3f956b514",
+          "after_sha256": "sha256:a519e8d8b0dc0a4962142b1a02095c2abae838aec94341a8dade59814daefb7e",
           "before_items": 200,
           "before_sha256": "sha256:63079f0c815fe84b966d71aae7539fbaa37a679a767c9e39f8b7376a20d53fb7",
           "kind": "sequence-changed",
@@ -498,7 +549,9 @@
       "historical_path": "docs/schemas/wire/v1.5.0/operation-catalog-v1.json",
       "historical_release": "1.5.0",
       "historical_sha256": "sha256:8c849120cb43cf19d2d6bec9ab2cbdb28eac0246441a173c2c1f98d1c87073a8",
-      "policy_errors": []
+      "policy_errors": [
+        "urn:beadhive:wire-catalog:operations:1.catalog_version: append-only catalog value changed or members were reordered"
+      ]
     },
     {
       "artifact_id": "urn:beadhive:wire-schema:bh.hive-onboard:1",
@@ -566,7 +619,7 @@
     },
     {
       "artifact_id": "urn:beadhive:wire-schema:config:1",
-      "candidate_sha256": "sha256:501d96d60045864ded4ce8c194e3e3aeb2bc8492d089eb276c8f139887f6c387",
+      "candidate_sha256": "sha256:9a9a099db01139c37f3f987aa5924ad32615abf4fa7aab6ecf13cdfbc42c35e0",
       "classification": "compatible-additive",
       "differences": [
         {
@@ -602,6 +655,16 @@
         {
           "kind": "added",
           "path": "/$defs/WorkConfig/properties/attest"
+        },
+        {
+          "kind": "added",
+          "path": "/$defs/WorkConfig/properties/validation_bypass"
+        },
+        {
+          "after_sha256": "sha256:53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3",
+          "before_sha256": "sha256:4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+          "kind": "value-changed",
+          "path": "/version"
         }
       ],
       "historical_manifest": "docs/schemas/wire/v1.6.0/release.json",
@@ -692,7 +755,7 @@
     },
     {
       "artifact_id": "urn:beadhive:wire-schema:plugin-manifest:1",
-      "candidate_sha256": "sha256:5984e0fdf433758e71494f2d08054078bdefcddc4abd480ed11bceaa349a644b",
+      "candidate_sha256": "sha256:0e7e8d64663ae9fd5b03559f288bc709f5be8b35b105c8e038d3e5c51b3ce94b",
       "classification": "compatible-additive",
       "differences": [
         {
@@ -708,9 +771,16 @@
     },
     {
       "artifact_id": "urn:beadhive:wire-schema:plugin-config:herdr:1",
-      "candidate_sha256": "sha256:14fd1dd6739ab7d637259ccb3174884a7a815dba359841764165a0e574a2c565",
-      "classification": "identical",
-      "differences": [],
+      "candidate_sha256": "sha256:595f35c6044e3a99b36bc853f64d976b81c5e504839143770bb6e0107aaca1a8",
+      "classification": "compatible-additive",
+      "differences": [
+        {
+          "after_sha256": "sha256:53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3",
+          "before_sha256": "sha256:4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+          "kind": "value-changed",
+          "path": "/version"
+        }
+      ],
       "historical_manifest": "docs/schemas/wire/v1.6.0/release.json",
       "historical_path": "docs/schemas/wire/v1.6.0/plugin-config-herdr-v1.schema.json",
       "historical_release": "1.6.0",
@@ -719,9 +789,16 @@
     },
     {
       "artifact_id": "urn:beadhive:wire-schema:plugin-config:hitch:1",
-      "candidate_sha256": "sha256:a36483cda7101dfc29d4f6757e15b5604bef940c19f242a6ebd9f577ff35f119",
-      "classification": "identical",
-      "differences": [],
+      "candidate_sha256": "sha256:5b303363ee383e1c63f9b86e1e63527eab2f2f57153cd98cdf606b262ea7d6fc",
+      "classification": "compatible-additive",
+      "differences": [
+        {
+          "after_sha256": "sha256:53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3",
+          "before_sha256": "sha256:4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+          "kind": "value-changed",
+          "path": "/version"
+        }
+      ],
       "historical_manifest": "docs/schemas/wire/v1.6.0/release.json",
       "historical_path": "docs/schemas/wire/v1.6.0/plugin-config-hitch-v1.schema.json",
       "historical_release": "1.6.0",
@@ -730,9 +807,16 @@
     },
     {
       "artifact_id": "urn:beadhive:wire-schema:plugin-config:observaloop:1",
-      "candidate_sha256": "sha256:e7b434e50b256cddf20d71a4474a61c61f1af0d5441b86326275ecb2389eb817",
-      "classification": "identical",
-      "differences": [],
+      "candidate_sha256": "sha256:d4b4428de5b6f54ad8608703507e3ca7abb9f43e5dcfede1b1509487eb18ef7c",
+      "classification": "compatible-additive",
+      "differences": [
+        {
+          "after_sha256": "sha256:53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3",
+          "before_sha256": "sha256:4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+          "kind": "value-changed",
+          "path": "/version"
+        }
+      ],
       "historical_manifest": "docs/schemas/wire/v1.6.0/release.json",
       "historical_path": "docs/schemas/wire/v1.6.0/plugin-config-observaloop-v1.schema.json",
       "historical_release": "1.6.0",
@@ -741,9 +825,16 @@
     },
     {
       "artifact_id": "urn:beadhive:wire-schema:plugin-config:orca:1",
-      "candidate_sha256": "sha256:b1e40e259a65c5e5fc58e910772708e0a5b9c784e457d5164480794c7432a238",
-      "classification": "identical",
-      "differences": [],
+      "candidate_sha256": "sha256:080e4c6bfca5be306c9bcdbc6ced3b53f5c802a245b41bbd00d1dac0ddcabaae",
+      "classification": "compatible-additive",
+      "differences": [
+        {
+          "after_sha256": "sha256:53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3",
+          "before_sha256": "sha256:4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+          "kind": "value-changed",
+          "path": "/version"
+        }
+      ],
       "historical_manifest": "docs/schemas/wire/v1.6.0/release.json",
       "historical_path": "docs/schemas/wire/v1.6.0/plugin-config-orca-v1.schema.json",
       "historical_release": "1.6.0",
@@ -752,9 +843,16 @@
     },
     {
       "artifact_id": "urn:beadhive:wire-schema:plugin-config:repowise:1",
-      "candidate_sha256": "sha256:3efbf7d6f96a8bb85224ea33edadae2bbfae38bdac0d2e98eee05781241ddc1b",
-      "classification": "identical",
-      "differences": [],
+      "candidate_sha256": "sha256:5bd7769fd5e7cb56948e5886d60a77d7399fbf9c027b8c819367ec547f3d0b8f",
+      "classification": "compatible-additive",
+      "differences": [
+        {
+          "after_sha256": "sha256:53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3",
+          "before_sha256": "sha256:4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+          "kind": "value-changed",
+          "path": "/version"
+        }
+      ],
       "historical_manifest": "docs/schemas/wire/v1.6.0/release.json",
       "historical_path": "docs/schemas/wire/v1.6.0/plugin-config-repowise-v1.schema.json",
       "historical_release": "1.6.0",
@@ -763,13 +861,347 @@
     },
     {
       "artifact_id": "urn:beadhive:wire-catalog:operations:1",
-      "candidate_sha256": "sha256:096a7b9bfcf73d6f2f578abce8ebc50b347653f0db1573c225b5d41a4a75177d",
-      "classification": "identical",
-      "differences": [],
+      "candidate_sha256": "sha256:74a51b77c8d7a5f1476176c5f8236f4600156c4ec2ff30968f26a808655040e8",
+      "classification": "policy-divergence-retained",
+      "differences": [
+        {
+          "after_sha256": "sha256:505525571b8eb297680e2b95ddf7cbe598de5aaaef8e7c67dc5f440b84abb531",
+          "before_sha256": "sha256:30faf2bf5a6b4da77a52f9f054eff455f12e00216c3fe8965dbf86309ed4e200",
+          "kind": "value-changed",
+          "path": "/catalog_version"
+        },
+        {
+          "after_items": 206,
+          "after_sha256": "sha256:a519e8d8b0dc0a4962142b1a02095c2abae838aec94341a8dade59814daefb7e",
+          "before_items": 206,
+          "before_sha256": "sha256:3a260c3e8413605d5c81ce408ca77c61b055bf7a03d4108a775acac3f956b514",
+          "kind": "sequence-changed",
+          "path": "/operations"
+        }
+      ],
       "historical_manifest": "docs/schemas/wire/v1.6.0/release.json",
       "historical_path": "docs/schemas/wire/v1.6.0/operation-catalog-v1.json",
       "historical_release": "1.6.0",
       "historical_sha256": "sha256:096a7b9bfcf73d6f2f578abce8ebc50b347653f0db1573c225b5d41a4a75177d",
+      "policy_errors": [
+        "urn:beadhive:wire-catalog:operations:1.catalog_version: append-only catalog value changed or members were reordered"
+      ]
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:bh.hive-onboard:1",
+      "candidate_sha256": null,
+      "classification": "legacy-only-retained",
+      "differences": [
+        {
+          "kind": "not-promoted",
+          "path": ""
+        }
+      ],
+      "historical_manifest": "docs/schemas/wire/v2.0.0/release.json",
+      "historical_path": "docs/schemas/wire/v2.0.0/bh-hive-onboard-v1.schema.json",
+      "historical_release": "2.0.0",
+      "historical_sha256": "sha256:16596efbb56d6d4bc834dd3f58cab06ccf1a735965eec3b4ab98b94a67e66aa7",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:bh.hive-ready:1",
+      "candidate_sha256": null,
+      "classification": "legacy-only-retained",
+      "differences": [
+        {
+          "kind": "not-promoted",
+          "path": ""
+        }
+      ],
+      "historical_manifest": "docs/schemas/wire/v2.0.0/release.json",
+      "historical_path": "docs/schemas/wire/v2.0.0/bh-hive-ready-v1.schema.json",
+      "historical_release": "2.0.0",
+      "historical_sha256": "sha256:d1abb3c0eb0a0e81f920aa6fb83a1d9d94e314b0acee039bd4231b7059f5ec4c",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:bh.hive-status:1",
+      "candidate_sha256": null,
+      "classification": "legacy-only-retained",
+      "differences": [
+        {
+          "kind": "not-promoted",
+          "path": ""
+        }
+      ],
+      "historical_manifest": "docs/schemas/wire/v2.0.0/release.json",
+      "historical_path": "docs/schemas/wire/v2.0.0/bh-hive-status-v1.schema.json",
+      "historical_release": "2.0.0",
+      "historical_sha256": "sha256:87d0ce863338ff135f455aebf5513771ec39773f0995d1d244c6e5789fde8993",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:bh.hive-survey:1",
+      "candidate_sha256": null,
+      "classification": "legacy-only-retained",
+      "differences": [
+        {
+          "kind": "not-promoted",
+          "path": ""
+        }
+      ],
+      "historical_manifest": "docs/schemas/wire/v2.0.0/release.json",
+      "historical_path": "docs/schemas/wire/v2.0.0/bh-hive-survey-v1.schema.json",
+      "historical_release": "2.0.0",
+      "historical_sha256": "sha256:a8e8f8f15e9c71a40859144d854defe0eef7f306400d553dab253cd63c0ae323",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:config:1",
+      "candidate_sha256": "sha256:9a9a099db01139c37f3f987aa5924ad32615abf4fa7aab6ecf13cdfbc42c35e0",
+      "classification": "compatible-additive",
+      "differences": [
+        {
+          "kind": "added",
+          "path": "/$defs/AttestConfig"
+        },
+        {
+          "kind": "added",
+          "path": "/$defs/AttestImpactConfig"
+        },
+        {
+          "kind": "added",
+          "path": "/$defs/AttestKeyConfig"
+        },
+        {
+          "kind": "added",
+          "path": "/$defs/AttestSemanticConfig"
+        },
+        {
+          "kind": "added",
+          "path": "/$defs/AttestTrivialConfig"
+        },
+        {
+          "kind": "added",
+          "path": "/$defs/AlertsConfig/properties/worktree_filesystem_free_floor_mb"
+        },
+        {
+          "after_sha256": "sha256:c6706f288f9d2005ce3f95821a5441b7bfbcccdc041a16e3e789238932217395",
+          "before_sha256": "sha256:fce2c6d09d45392bb68028df4426a9a8836023d2c7dbd923ef2656b1e30ebc6f",
+          "kind": "value-changed",
+          "path": "/$defs/AlertsConfig/properties/disk_free_floor_mb/description"
+        },
+        {
+          "kind": "added",
+          "path": "/$defs/WorkConfig/properties/attest"
+        },
+        {
+          "kind": "added",
+          "path": "/$defs/WorkConfig/properties/validation_bypass"
+        },
+        {
+          "after_sha256": "sha256:53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3",
+          "before_sha256": "sha256:4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+          "kind": "value-changed",
+          "path": "/version"
+        }
+      ],
+      "historical_manifest": "docs/schemas/wire/v2.0.0/release.json",
+      "historical_path": "docs/schemas/wire/v2.0.0/config-v1.schema.json",
+      "historical_release": "2.0.0",
+      "historical_sha256": "sha256:a6db5e41fe2a3d3ca4954c7e5f4c3118a5b4c24c89a041b5a5553f006dba4a88",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:factory.bead-node:1",
+      "candidate_sha256": null,
+      "classification": "legacy-only-retained",
+      "differences": [
+        {
+          "kind": "not-promoted",
+          "path": ""
+        }
+      ],
+      "historical_manifest": "docs/schemas/wire/v2.0.0/release.json",
+      "historical_path": "docs/schemas/wire/v2.0.0/factory-bead-node-v1.schema.json",
+      "historical_release": "2.0.0",
+      "historical_sha256": "sha256:2a4f13aa523255c3f677cc9586d0e5b450ed493965a6daaa450761b4cc40666f",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:factory.hive-info:1",
+      "candidate_sha256": null,
+      "classification": "legacy-only-retained",
+      "differences": [
+        {
+          "kind": "not-promoted",
+          "path": ""
+        }
+      ],
+      "historical_manifest": "docs/schemas/wire/v2.0.0/release.json",
+      "historical_path": "docs/schemas/wire/v2.0.0/factory-hive-info-v1.schema.json",
+      "historical_release": "2.0.0",
+      "historical_sha256": "sha256:c6ff66bc584d87228438177487316f21b03b94297b0444d0f587a594dd65d509",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:factory.snapshot:1",
+      "candidate_sha256": null,
+      "classification": "legacy-only-retained",
+      "differences": [
+        {
+          "kind": "not-promoted",
+          "path": ""
+        }
+      ],
+      "historical_manifest": "docs/schemas/wire/v2.0.0/release.json",
+      "historical_path": "docs/schemas/wire/v2.0.0/factory-snapshot-v1.schema.json",
+      "historical_release": "2.0.0",
+      "historical_sha256": "sha256:6dc08fe293763ac0aa542206b45be2c9a8121b726ed43eff6013b45395b360fe",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:json-value:1",
+      "candidate_sha256": null,
+      "classification": "legacy-only-retained",
+      "differences": [
+        {
+          "kind": "not-promoted",
+          "path": ""
+        }
+      ],
+      "historical_manifest": "docs/schemas/wire/v2.0.0/release.json",
+      "historical_path": "docs/schemas/wire/v2.0.0/json-value-v1.schema.json",
+      "historical_release": "2.0.0",
+      "historical_sha256": "sha256:024f52b7f65986cba3f356ddabe33b7d4be48fd0c6d87250155be607c8986447",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:operation-catalog:1",
+      "candidate_sha256": null,
+      "classification": "legacy-only-retained",
+      "differences": [
+        {
+          "kind": "not-promoted",
+          "path": ""
+        }
+      ],
+      "historical_manifest": "docs/schemas/wire/v2.0.0/release.json",
+      "historical_path": "docs/schemas/wire/v2.0.0/operation-catalog-v1.schema.json",
+      "historical_release": "2.0.0",
+      "historical_sha256": "sha256:e371894a2622a1e49ac4285da34c841bda0bb6229d8c848cfed02fc1a7d1ad97",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:plugin-manifest:1",
+      "candidate_sha256": "sha256:0e7e8d64663ae9fd5b03559f288bc709f5be8b35b105c8e038d3e5c51b3ce94b",
+      "classification": "compatible-additive",
+      "differences": [
+        {
+          "kind": "added",
+          "path": "/version"
+        }
+      ],
+      "historical_manifest": "docs/schemas/wire/v2.0.0/release.json",
+      "historical_path": "docs/schemas/wire/v2.0.0/plugin-manifest-v1.schema.json",
+      "historical_release": "2.0.0",
+      "historical_sha256": "sha256:18d2401fc261b47619c96d0ee058f2c5edb228e92af9b959e462d4b844f4aefc",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:plugin-config:herdr:1",
+      "candidate_sha256": "sha256:595f35c6044e3a99b36bc853f64d976b81c5e504839143770bb6e0107aaca1a8",
+      "classification": "compatible-additive",
+      "differences": [
+        {
+          "after_sha256": "sha256:53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3",
+          "before_sha256": "sha256:4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+          "kind": "value-changed",
+          "path": "/version"
+        }
+      ],
+      "historical_manifest": "docs/schemas/wire/v2.0.0/release.json",
+      "historical_path": "docs/schemas/wire/v2.0.0/plugin-config-herdr-v1.schema.json",
+      "historical_release": "2.0.0",
+      "historical_sha256": "sha256:14fd1dd6739ab7d637259ccb3174884a7a815dba359841764165a0e574a2c565",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:plugin-config:hitch:1",
+      "candidate_sha256": "sha256:5b303363ee383e1c63f9b86e1e63527eab2f2f57153cd98cdf606b262ea7d6fc",
+      "classification": "compatible-additive",
+      "differences": [
+        {
+          "after_sha256": "sha256:53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3",
+          "before_sha256": "sha256:4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+          "kind": "value-changed",
+          "path": "/version"
+        }
+      ],
+      "historical_manifest": "docs/schemas/wire/v2.0.0/release.json",
+      "historical_path": "docs/schemas/wire/v2.0.0/plugin-config-hitch-v1.schema.json",
+      "historical_release": "2.0.0",
+      "historical_sha256": "sha256:a36483cda7101dfc29d4f6757e15b5604bef940c19f242a6ebd9f577ff35f119",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:plugin-config:observaloop:1",
+      "candidate_sha256": "sha256:d4b4428de5b6f54ad8608703507e3ca7abb9f43e5dcfede1b1509487eb18ef7c",
+      "classification": "compatible-additive",
+      "differences": [
+        {
+          "after_sha256": "sha256:53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3",
+          "before_sha256": "sha256:4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+          "kind": "value-changed",
+          "path": "/version"
+        }
+      ],
+      "historical_manifest": "docs/schemas/wire/v2.0.0/release.json",
+      "historical_path": "docs/schemas/wire/v2.0.0/plugin-config-observaloop-v1.schema.json",
+      "historical_release": "2.0.0",
+      "historical_sha256": "sha256:e7b434e50b256cddf20d71a4474a61c61f1af0d5441b86326275ecb2389eb817",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:plugin-config:orca:1",
+      "candidate_sha256": "sha256:080e4c6bfca5be306c9bcdbc6ced3b53f5c802a245b41bbd00d1dac0ddcabaae",
+      "classification": "compatible-additive",
+      "differences": [
+        {
+          "after_sha256": "sha256:53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3",
+          "before_sha256": "sha256:4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+          "kind": "value-changed",
+          "path": "/version"
+        }
+      ],
+      "historical_manifest": "docs/schemas/wire/v2.0.0/release.json",
+      "historical_path": "docs/schemas/wire/v2.0.0/plugin-config-orca-v1.schema.json",
+      "historical_release": "2.0.0",
+      "historical_sha256": "sha256:b1e40e259a65c5e5fc58e910772708e0a5b9c784e457d5164480794c7432a238",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:plugin-config:repowise:1",
+      "candidate_sha256": "sha256:5bd7769fd5e7cb56948e5886d60a77d7399fbf9c027b8c819367ec547f3d0b8f",
+      "classification": "compatible-additive",
+      "differences": [
+        {
+          "after_sha256": "sha256:53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3",
+          "before_sha256": "sha256:4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+          "kind": "value-changed",
+          "path": "/version"
+        }
+      ],
+      "historical_manifest": "docs/schemas/wire/v2.0.0/release.json",
+      "historical_path": "docs/schemas/wire/v2.0.0/plugin-config-repowise-v1.schema.json",
+      "historical_release": "2.0.0",
+      "historical_sha256": "sha256:3efbf7d6f96a8bb85224ea33edadae2bbfae38bdac0d2e98eee05781241ddc1b",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-catalog:operations:1",
+      "candidate_sha256": "sha256:74a51b77c8d7a5f1476176c5f8236f4600156c4ec2ff30968f26a808655040e8",
+      "classification": "identical",
+      "differences": [],
+      "historical_manifest": "docs/schemas/wire/v2.0.0/release.json",
+      "historical_path": "docs/schemas/wire/v2.0.0/operation-catalog-v1.json",
+      "historical_release": "2.0.0",
+      "historical_sha256": "sha256:74a51b77c8d7a5f1476176c5f8236f4600156c4ec2ff30968f26a808655040e8",
       "policy_errors": []
     }
   ],
@@ -779,15 +1211,16 @@
     "historical_absence": "An artifact absent from the candidate remains supported only in its immutable docs/schemas/wire release; absence is not silently classified as removal.",
     "policy_divergence": "A shared identity that fails its candidate policy is retained in its historical release and must not be treated as superseded by the candidate."
   },
-  "release_version": "1.0.0",
+  "release_version": "2.0.0",
   "summary": {
     "candidate_artifacts": 23,
     "classifications": {
-      "compatible-additive": 5,
-      "identical": 11,
-      "legacy-only-retained": 18
+      "compatible-additive": 21,
+      "identical": 1,
+      "legacy-only-retained": 27,
+      "policy-divergence-retained": 2
     },
-    "historical_artifact_observations": 34,
-    "historical_releases": 2
+    "historical_artifact_observations": 51,
+    "historical_releases": 3
   }
 }

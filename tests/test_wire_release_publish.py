@@ -172,6 +172,33 @@ def test_iterating_on_an_unpublished_release_refreshes_it_in_place(
     assert _wire_gate(repo).returncode == 0
 
 
+def test_changing_an_existing_operation_can_publish_an_explicit_major_release(
+    repo: Path,
+    catalog_rows: Callable[[str], None],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    latest = _index(repo)["latest"]
+    major = int(latest.split(".")[0])
+    next_major = major + 1
+    submit = next(
+        row for row in operations._CLI_ROWS.splitlines() if row.startswith("work submit|")
+    )
+    catalog_rows(
+        operations._CLI_ROWS.replace(submit, submit + ",fixture_override:string:o")
+    )
+    monkeypatch.setattr(operations, "CATALOG_VERSION", f"{next_major}.0.0")
+
+    result = PUBLISH.publish(repo, major_release=True)
+
+    assert (result.version, result.action) == (f"{next_major}.0.0", "cut")
+    manifest = json.loads(
+        (repo / WIRE / f"v{next_major}.0.0" / "release.json").read_text()
+    )
+    assert all(row["contract_version"] == next_major for row in manifest["artifacts"])
+    gate = _wire_gate(repo)
+    assert gate.returncode == 0, gate.stdout + gate.stderr
+
+
 @pytest.mark.parametrize(
     "mutation, diagnostic",
     [

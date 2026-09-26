@@ -15,6 +15,7 @@ from typing import Any
 CATALOG_SCHEMA_ARTIFACT_ID = "urn:beadhive:wire-schema:operation-catalog:1"
 CATALOG_INSTANCE_ARTIFACT_ID = "urn:beadhive:wire-catalog:operations:1"
 JSON_VALUE_ARTIFACT_ID = "urn:beadhive:wire-schema:json-value:1"
+CATALOG_VERSION = "2.0.0"
 HIVE_STATUS_ARTIFACT_ID = "urn:beadhive:wire-schema:bh.hive-status:1"
 HIVE_SURVEY_ARTIFACT_ID = "urn:beadhive:wire-schema:bh.hive-survey:1"
 HIVE_ONBOARD_ARTIFACT_ID = "urn:beadhive:wire-schema:bh.hive-onboard:1"
@@ -226,13 +227,13 @@ work bounce|bead:string:r,message:string:o,as_:string:o,hive:string:o
 work brief|bead:string:r,hive:string:o
 work check|bead:string:r,hive:string:o
 work claim|bead:string:o,as_:string:o,group:string:o,collapse:string:o,hive:string:o,preview:boolean:o,as_json:boolean:o
-work finish|epic:string:r,hive:string:o
+work finish|epic:string:r,hive:string:o,override_validation:string:o,override_as:string:o
 work intake|hive:string:o,source:string:o,as_json:boolean:o,no_dupes:boolean:o
 work issue|bead:string:r,hive:string:o
 work land|bead:string:r,hive:string:o
 work list|hive:string:o
 work loop|epic:string:r,as_:string:o,hive:string:o,passes:integer:o,as_json:boolean:o,dry_run:boolean:o,seat_binary:string:o,harness:string:o,baml_required:boolean:o
-work merge|bead:string:o,hive:string:o,rm:boolean:o,molecule:boolean:o,group:string:o
+work merge|bead:string:o,hive:string:o,rm:boolean:o,molecule:boolean:o,group:string:o,override_validation:string:o,override_as:string:o
 work next|as_:string:o,hive:string:o,as_json:boolean:o,epic:string:o
 work promote|bead:string:r,as_:string:o,hive:string:o
 work readiness|molecule:string:r,hive:string:o,as_json:boolean:o
@@ -245,7 +246,7 @@ work review|bead:string:r,run_validate:boolean:o,demo:boolean:o,fresh:boolean:o,
 work schedule|epic:string:r,hive:string:o,as_json:boolean:o
 work show|bead:string:r,view:array:o,as_json:boolean:o,hive:string:o
 work start|epic:string:r,as_:string:o,hive:string:o
-work submit|bead:string:o,as_:string:o,hive:string:o,group:string:o
+work submit|bead:string:o,as_:string:o,hive:string:o,group:string:o,override_validation:string:o,override_as:string:o
 worktree add|hive:string:o,bead:string:o,branch:string:o,dry_run:boolean:o,as_json:boolean:o
 worktree init|path:string:r
 worktree list|as_json:boolean:o,hive:string:o,state:string:o,limit:integer:o,cursor:string:o
@@ -1129,7 +1130,7 @@ def document() -> dict[str, Any]:
         operation_rows.append(row)
     return {
         "format_version": 1,
-        "catalog_version": "1.0.0",
+        "catalog_version": CATALOG_VERSION,
         "$id": CATALOG_INSTANCE_ARTIFACT_ID,
         "artifact_id": CATALOG_INSTANCE_ARTIFACT_ID,
         "policy": {

@@ -1,0 +1,17 @@
+{
+  "$id": "urn:beadhive:wire-schema:plugin-config:repowise:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "repowise — optional local codebase index integration.",
+  "properties": {
+    "enabled": {
+      "default": false,
+      "description": "Enable the repowise index integration.",
+      "title": "Enabled",
+      "type": "boolean"
+    }
+  },
+  "title": "RepowiseConfig",
+  "type": "object",
+  "version": 2
+}

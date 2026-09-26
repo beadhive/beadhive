@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from beadhive.contract_release import build_release, load_release, release_root
+from beadhive.contract_release import RELEASE_VERSION, build_release, load_release, release_root
 from beadhive.contract_release_evidence import (
     COMPATIBILITY_REPORT_PATH,
     RELEASE_NOTES_PATH,
@@ -246,7 +246,7 @@ def test_wheel_contains_the_exact_checksum_verified_release(tmp_path: Path) -> N
 
     with zipfile.ZipFile(wheel) as archive:
         names = set(archive.namelist())
-        prefix = "beadhive/schemas/contracts/v1.0.0/"
+        prefix = f"beadhive/schemas/contracts/v{RELEASE_VERSION}/"
         assert prefix + "inventory.json" in names
         assert prefix + "conformance.json" in names
         for row in inventory["artifacts"]:

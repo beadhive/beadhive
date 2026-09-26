@@ -1474,6 +1474,66 @@ def test_submit_bypass_records_audit_without_green_and_keeps_review_gate(hive, f
         work.merge(bead="mr-bypass", hive="myrepo", rm=False, molecule=False)
 
 
+def test_submit_one_shot_override_keeps_dev_claim_and_audits_human_operator(
+    hive, fakebd, capsys
+):
+    fakebd.seed("mr-override", title="t")
+    work.claim(bead="mr-override", as_="dev/alice", hive="myrepo")
+    _commit(_wt(hive, "mr-override"), "feat: emergency fix")
+
+    work.submit(
+        bead="mr-override",
+        as_="dev/alice",
+        hive="myrepo",
+        group="",
+        override_validation="gate infrastructure is broken",
+        override_as="Alice Operator",
+    )
+
+    assert "BYPASSED validation [submit]" in capsys.readouterr().out
+    assert fakebd.states["mr-override"]["review"] == "pending"
+    audit_calls = [
+        (actor, args)
+        for actor, args in fakebd.calls
+        if args[:3] == ["comments", "add", "mr-override"]
+    ]
+    assert len(audit_calls) == 1
+    actor, args = audit_calls[0]
+    assert actor == "Alice Operator"
+    event = json.loads(args[3].removeprefix("bh:validation-override "))
+    assert event["reason"] == "gate infrastructure is broken"
+    assert event["phase"] == "submit"
+    assert event["sha"] and event["tree"]
+    root = validation_records._validation_root(hive.main)
+    [record] = (root / "bypasses").glob("*.json")
+    stored = json.loads(record.read_text())
+    assert stored["source"] == "one-shot-operator-override"
+    assert stored["actor"] == "Alice Operator"
+    assert not (root / "verdicts").exists()
+
+
+def test_submit_one_shot_override_rejects_agent_as_operator_after_claim_guard(
+    hive, fakebd, capsys
+):
+    fakebd.seed("mr-override-agent", title="t")
+    work.claim(bead="mr-override-agent", as_="dev/alice", hive="myrepo")
+    _commit(_wt(hive, "mr-override-agent"), "feat: emergency fix")
+
+    with pytest.raises(typer.Exit):
+        work.submit(
+            bead="mr-override-agent",
+            as_="dev/alice",
+            hive="myrepo",
+            group="",
+            override_validation="gate infrastructure is broken",
+            override_as="dev/alice",
+        )
+
+    assert "operator-only" in capsys.readouterr().err
+    assert not fakebd.did("comments", "add", "mr-override-agent")
+    assert "review" not in fakebd.states.get("mr-override-agent", {})
+
+
 def test_submit_reports_network_failure_as_retryable_not_a_failed_verdict(
     hive, fakebd, monkeypatch, capsys
 ):
@@ -2664,6 +2724,54 @@ def test_merge_refuses_open_gate(hive, fakebd):
         work.merge(bead="mr-11", hive="myrepo", rm=False, molecule=False)
     assert _git("rev-parse", "HEAD", cwd=hive.main).stdout.strip() == before  # main untouched
     assert fakebd.beads["mr-11"]["status"] != "closed"
+
+
+def test_merge_one_shot_override_cannot_bypass_review_gate(hive, fakebd):
+    fakebd.seed("mr-override-review", title="t")
+    work.claim(bead="mr-override-review", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-override-review"), "feat: x")
+    work.submit(bead="mr-override-review", hive="myrepo")
+    before = _git("rev-parse", "HEAD", cwd=hive.main).stdout.strip()
+
+    with pytest.raises(typer.Exit):
+        work.merge(
+            bead="mr-override-review",
+            hive="myrepo",
+            rm=False,
+            molecule=False,
+            override_validation="gate infrastructure is broken",
+            override_as="Alice Operator",
+        )
+
+    assert _git("rev-parse", "HEAD", cwd=hive.main).stdout.strip() == before
+    root = validation_records._validation_root(hive.main)
+    assert not (root / "bypasses").exists()
+
+
+def test_merge_one_shot_override_records_exact_landed_candidate(hive, fakebd, capsys):
+    fakebd.seed("mr-override-merge", title="t")
+    _take_to_approved(hive, fakebd, "mr-override-merge")
+
+    work.merge(
+        bead="mr-override-merge",
+        hive="myrepo",
+        rm=False,
+        molecule=False,
+        override_validation="combined gate is unavailable",
+        override_as="Alice Operator",
+    )
+
+    assert "BYPASSED validation [merge]" in capsys.readouterr().out
+    sha = _git("rev-parse", "HEAD", cwd=hive.main).stdout.strip()
+    tree = _git("rev-parse", "HEAD^{tree}", cwd=hive.main).stdout.strip()
+    root = validation_records._validation_root(hive.main)
+    [record] = (root / "bypasses").glob("*.json")
+    stored = json.loads(record.read_text())
+    assert stored["bead"] == "mr-override-merge"
+    assert stored["phase"] == "merge"
+    assert stored["sha"] == sha
+    assert stored["tree"] == tree
+    assert fakebd.beads["mr-override-merge"]["status"] == "closed"
 
 
 def test_merge_refusal_enumerates_open_gates_by_kind(hive, fakebd, capsys):
@@ -4215,12 +4323,37 @@ def test_epic_finish_rechecks_and_rejects_missing_child_linkage(hive, fakebd, ca
     main_before = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
 
     with pytest.raises(typer.Exit):
-        work.finish(epic=epic, hive="myrepo")
+        work.finish(
+            epic=epic,
+            hive="myrepo",
+            override_validation="gate infrastructure is broken",
+            override_as="Alice Operator",
+        )
 
     err = capsys.readouterr().err
     assert "linked" in err and f"{epic}.1" in err
     assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == main_before
     assert fakebd.beads[epic]["status"] != "closed"
+
+
+def test_finish_one_shot_override_cannot_bypass_clean_target_guard(hive, fakebd):
+    _land_two_bead_molecule(hive, fakebd, "mr-1")
+    fakebd.beads["mr-1"]["issue_type"] = "epic"
+    dirty = hive.main / "operator-dirty.txt"
+    dirty.write_text("uncommitted")
+    main_before = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
+
+    with pytest.raises(typer.Exit):
+        work.finish(
+            epic="mr-1",
+            hive="myrepo",
+            override_validation="gate infrastructure is broken",
+            override_as="Alice Operator",
+        )
+
+    assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == main_before
+    root = validation_records._validation_root(hive.main)
+    assert not (root / "bypasses").exists()
 
 
 def test_epic_submit_rejects_landed_direct_child_without_integration(hive, fakebd, capsys):
@@ -4946,6 +5079,31 @@ def test_finish_lands_molecule_like_merge_molecule(hive, fakebd):
     )
     assert fakebd.beads["mr-1"]["status"] == "closed"
     assert not worktree._branch_exists(hive.main, "wt/bead/epic/mr-1")
+
+
+def test_finish_one_shot_override_is_molecule_phase_and_exact_container(hive, fakebd, capsys):
+    _land_two_bead_molecule(hive, fakebd, "mr-1")
+    fakebd.beads["mr-1"]["issue_type"] = "epic"
+    branch = "wt/bead/epic/mr-1"
+    sha = worktree._branch_sha(config.managed_repos(config.load())[0], branch)
+    tree = validation_ledger.tree_of(config.managed_repos(config.load())[0], sha)
+
+    work.finish(
+        epic="mr-1",
+        hive="myrepo",
+        override_validation="assembled gate is unavailable",
+        override_as="Alice Operator",
+    )
+
+    assert "BYPASSED validation [molecule]" in capsys.readouterr().out
+    root = validation_records._validation_root(hive.main)
+    [record] = (root / "bypasses").glob("*.json")
+    stored = json.loads(record.read_text())
+    assert stored["bead"] == "mr-1"
+    assert stored["phase"] == "molecule"
+    assert stored["sha"] == sha
+    assert stored["tree"] == tree
+    assert fakebd.beads["mr-1"]["status"] == "closed"
 
 
 def test_finish_rejects_non_epic(hive, fakebd):

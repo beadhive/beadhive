@@ -7,6 +7,8 @@ policy modules.
 
 from __future__ import annotations
 
+from . import validation_bypass
+
 
 def impl__delete_branch(api, main, branch):
     """Best-effort delete of a landed molecule branch. The molecule already landed, so a failure
@@ -220,21 +222,45 @@ def impl__guard_molecule_land_base(api, entry, epic, integration):
     return base
 
 
-def impl__open_molecule_pr(api, cfg, entry, main, epic, epic_data, mol_branch, base, mode):
+def impl__open_molecule_pr(
+    api, cfg, entry, main, epic, epic_data, mol_branch, base, mode, override=None
+):
     """PR-only-main landing (work.landing: pr): a molecule landing onto the SHARED integration
     branch publishes as a PR instead of local-merging. The assembled molecule is still validated
     from a clean checkout first (a red molecule never reaches the PR either); the
     postland/combined validation role passes to CI on the PR. Reuses an exact-tree verdict on the
     same terms as the local-land path (`_validate_molecule_checkout`)."""
-    if mode != "loose":
-        rc = api.worktree.clean_checkout(
-            entry,
-            mol_branch,
-            api.config.validate_cmd(cfg, entry, "molecule"),
-            cfg=cfg,
-            reuse=True,
-            phase="molecule",
+    if mode == "loose" and override is not None:
+        api.typer.echo(
+            "✗ validation override requested, but molecule validation is disabled by "
+            "work.validation=loose",
+            err=True,
         )
+        raise api.typer.Exit(1)
+    if mode != "loose":
+        command = api.config.validate_cmd(cfg, entry, "molecule")
+        if override is not None:
+            sha = api.worktree._branch_sha(entry, mol_branch)
+            tree = api.validation_ledger.tree_of(entry, sha)
+            try:
+                validation_bypass.record_override(
+                    cfg,
+                    entry,
+                    override,
+                    sha=sha,
+                    tree=tree,
+                    command=command,
+                    branch=mol_branch,
+                    audit=lambda event: validation_bypass.write_bead_event(api.bd, main, event),
+                )
+            except (validation_bypass.OverrideRefused, validation_bypass.BypassAuditError) as exc:
+                api.typer.echo(f"✗ {exc} — no PR opened", err=True)
+                raise api.typer.Exit(1) from None
+            rc = validation_bypass.BYPASSED_EXIT
+        else:
+            rc = api.worktree.clean_checkout(
+                entry, mol_branch, command, cfg=cfg, reuse=True, phase="molecule"
+            )
         if not getattr(rc, "bypassed", False):
             api.otel.count_validation(rc == 0, {"bh.work.phase": "molecule"})
         if rc != 0:
@@ -243,7 +269,7 @@ def impl__open_molecule_pr(api, cfg, entry, main, epic, epic_data, mol_branch, b
     api._open_landing_pr(cfg, entry, main, epic, epic_data, mol_branch, base)
 
 
-def impl__validate_molecule_checkout(api, entry, mol_branch, cfg, mode):
+def impl__validate_molecule_checkout(api, entry, mol_branch, cfg, mode, override=None):
     """Validate the ASSEMBLED molecule from a clean checkout before landing — the land must not
     depend on dirty local state, and a red molecule never reaches the integration line. `loose`
     trusts the per-bead submits and skips even this. Raises on a red result.
@@ -256,13 +282,41 @@ def impl__validate_molecule_checkout(api, entry, mol_branch, cfg, mode):
     one source of truth for "same bytes", and it is the lookup. The last bead to land onto
     mol/<epic> already validated this exact tree; re-running it here proves nothing new."""
     if mode == "loose":
+        if override is not None:
+            api.typer.echo(
+                "✗ validation override requested, but molecule validation is disabled by "
+                "work.validation=loose",
+                err=True,
+            )
+            raise api.typer.Exit(1)
         return
     v_start = api.time.perf_counter()
-    if api.config.validation_bypass_enabled(cfg, entry):
+    command = api.config.validate_cmd(cfg, entry, "molecule")
+    if override is not None:
+        sha = api.worktree._branch_sha(entry, mol_branch)
+        tree = api.validation_ledger.tree_of(entry, sha)
+        try:
+            validation_bypass.record_override(
+                cfg,
+                entry,
+                override,
+                sha=sha,
+                tree=tree,
+                command=command,
+                branch=mol_branch,
+                audit=lambda event: validation_bypass.write_bead_event(
+                    api.bd, api.registry.hive_dir(entry), event
+                ),
+            )
+        except (validation_bypass.OverrideRefused, validation_bypass.BypassAuditError) as exc:
+            api.typer.echo(f"✗ {exc} — nothing landed", err=True)
+            raise api.typer.Exit(1) from None
+        rc = validation_bypass.BYPASSED_EXIT
+    elif api.config.validation_bypass_enabled(cfg, entry):
         rc = api.worktree.clean_checkout(
             entry,
             mol_branch,
-            api.config.validate_cmd(cfg, entry, "molecule"),
+            command,
             cfg=cfg,
             reuse=False,
             phase="molecule",
@@ -399,7 +453,7 @@ def impl__reconcile_landed_molecule(api, cfg, entry, main, epic, epic_data, mol_
     )
 
 
-def impl__merge_molecule(api, cfg, epic, hive):
+def impl__merge_molecule(api, cfg, epic, hive, override_reason="", override_actor=""):
     """The molecule wrap-up / land: collapse a whole assembled `mol/<epic>` onto the hive
     integration branch as ONE `--no-ff` bubble (the bead merges live inside it). Guards the
     molecule is complete (every child closed) + clean, holds the hive merge slot, validates the
@@ -419,6 +473,13 @@ def impl__merge_molecule(api, cfg, epic, hive):
     integration = api.config.integration_branch(cfg, entry)
     base = api._guard_molecule_land_base(entry, epic, integration)
     if api.already_landed(entry, mol_branch, base):
+        if override_reason:
+            api.typer.echo(
+                "✗ validation override requested, but the molecule is already landed and has no "
+                "validation boundary",
+                err=True,
+            )
+            raise api.typer.Exit(1)
         api._reconcile_landed_molecule(cfg, entry, main, epic, epic_data, mol_branch, base, hive)
         return
     policy = api.work_logic.epic_history_policy(
@@ -455,13 +516,37 @@ def impl__merge_molecule(api, cfg, epic, hive):
     )
     api._guard_signed_history(entry, mol_branch, base, cfg)
     mode = api.config.validation_mode(cfg, entry)
+    override = None
+    if override_reason:
+        sha = api.worktree._branch_sha(entry, mol_branch)
+        tree = api.validation_ledger.tree_of(entry, sha)
+        try:
+            override = validation_bypass.bind_override(
+                actor=override_actor,
+                bead=epic,
+                phase="molecule",
+                reason=override_reason,
+                sha=sha,
+                tree=tree,
+            )
+        except validation_bypass.OverrideRefused as exc:
+            api.typer.echo(f"✗ {exc}", err=True)
+            raise api.typer.Exit(1) from None
     if base == integration and api.config.work_landing(cfg, entry) == "pr":
-        api._open_molecule_pr(cfg, entry, main, epic, epic_data, mol_branch, base, mode)
+        if override is not None:
+            api._open_molecule_pr(
+                cfg, entry, main, epic, epic_data, mol_branch, base, mode, override
+            )
+        else:
+            api._open_molecule_pr(cfg, entry, main, epic, epic_data, mol_branch, base, mode)
         return
     slot_attrs = {"bh.merge.kind": "molecule", "bh.hive": api._hive(entry)}
     started = api.time.perf_counter()
     with api.work_group.merge_slot(main, slot_attrs):
-        api._validate_molecule_checkout(entry, mol_branch, cfg, mode)
+        if override is not None:
+            api._validate_molecule_checkout(entry, mol_branch, cfg, mode, override)
+        else:
+            api._validate_molecule_checkout(entry, mol_branch, cfg, mode)
         pre = api.worktree._ref_sha(main, base)
         stale = api.worktree.base_of(entry, mol_branch, base) != pre
         prof = api.config.work_identity(cfg, entry)
@@ -515,20 +600,37 @@ def impl__merge_molecule(api, cfg, epic, hive):
     api.typer.echo(f"✓ landed molecule {epic} ({mol_branch} --no-ff → {base}); closed {epic}")
 
 
-def impl_finish(api, epic, hive):
+def impl_finish(api, epic, hive, override_validation="", override_actor=""):
     """Coordinator/merger wrap-up: land a whole assembled molecule. Epic-only alias of
     `merge --molecule` — guards the bead is an epic, then validates the assembled `mol/<epic>`,
     lands it onto the integration branch as ONE `--no-ff` bubble, closes the epic, and deletes the
     branch. `merge --molecule <epic>` remains the equivalent."""
     api.otel.set_bead(epic)
     cfg = api.config.load()
-    _entry, main, _target, _branch = api.worktree.locate(cfg, hive, epic)
+    if override_actor and not override_validation:
+        api.typer.echo("✗ --override-as requires --override-validation REASON", err=True)
+        raise api.typer.Exit(1)
+    entry, main, _target, _branch = api.worktree.locate(cfg, hive, epic)
     data = api.bd.show(epic, main)
     api._guard_open(data, epic)
     if not api._is_epic(data):
         api.typer.echo(f"✗ {epic} is not an epic — nothing to finish", err=True)
         raise api.typer.Exit(1)
-    api._merge_molecule(cfg, epic, hive)
+    if override_validation:
+        try:
+            validation_bypass.authorize_override(
+                actor=override_actor,
+                bead=epic,
+                phase="molecule",
+                reason=override_validation,
+            )
+        except validation_bypass.OverrideRefused as exc:
+            api.typer.echo(f"✗ {exc}", err=True)
+            raise api.typer.Exit(1) from None
+    if override_validation:
+        api._merge_molecule(cfg, epic, hive, override_validation, override_actor)
+    else:
+        api._merge_molecule(cfg, epic, hive)
 
 
 def impl_land(api, bead, hive):
@@ -634,7 +736,7 @@ def impl__close_land_origin_reports(api, bead, main):
         api.typer.echo(f"⚠ landed but failed to close origin report(s) {', '.join(ids)}", err=True)
 
 
-def impl_merge(api, bead, hive, rm, molecule, group):
+def impl_merge(api, bead, hive, rm, molecule, group, override_validation="", override_actor=""):
     """Merger-only: serialize integration of an *approved* bead onto the integration branch.
     Holds the hive merge slot, re-verifies a small clean conventional history, merges `--no-ff`
     (history preserved, never squashed at the boundary), closes the bead, releases the slot.
@@ -650,8 +752,17 @@ def impl_merge(api, bead, hive, rm, molecule, group):
     inside, so it stays bisectable), then close every member — release the slot either way."""
     cfg = api.config.load()
     api.guard.guard_primary(hive, cfg=cfg, verb="work merge")
+    if override_actor and not override_validation:
+        api.typer.echo("✗ --override-as requires --override-validation REASON", err=True)
+        raise api.typer.Exit(1)
     group = api.work_logic.opt_str(group)
     if group:
+        if override_validation:
+            api.typer.echo(
+                "✗ one-shot validation override requires one exact bead; --group is unsupported",
+                err=True,
+            )
+            raise api.typer.Exit(1)
         if bead:
             api.typer.echo(
                 f"✗ pass either <id> or --group, not both (got <id>={bead}, "
@@ -671,10 +782,25 @@ def impl_merge(api, bead, hive, rm, molecule, group):
         api.typer.echo("✗ pass a bead <id> (or --group <ids> / --molecule <epic>)", err=True)
         raise api.typer.Exit(1)
     api.otel.set_bead(bead)
+    if override_validation:
+        phase = "molecule" if molecule else "merge"
+        try:
+            validation_bypass.authorize_override(
+                actor=override_actor, bead=bead, phase=phase, reason=override_validation
+            )
+        except validation_bypass.OverrideRefused as exc:
+            api.typer.echo(f"✗ {exc}", err=True)
+            raise api.typer.Exit(1) from None
     if molecule:
-        api._merge_molecule(cfg, bead, hive)
+        if override_validation:
+            api._merge_molecule(cfg, bead, hive, override_validation, override_actor)
+        else:
+            api._merge_molecule(cfg, bead, hive)
         return
-    api._merge_bead(cfg, bead, hive, rm)
+    if override_validation:
+        api._merge_bead(cfg, bead, hive, rm, override_validation, override_actor)
+    else:
+        api._merge_bead(cfg, bead, hive, rm)
 
 
 def impl__guard_bead_merge_gates(api, bead, main, landing_pr):
@@ -866,7 +992,19 @@ def impl__merge_bead_no_ff(api, entry, branch, base, target, cfg, bead, main, sl
     return how
 
 
-def impl__postland_revalidate_bead(api, cfg, entry, main, base, pre, bead, slot_attrs, on_main):
+def impl__postland_revalidate_bead(
+    api,
+    cfg,
+    entry,
+    main,
+    base,
+    pre,
+    bead,
+    slot_attrs,
+    on_main,
+    override_reason="",
+    override_actor="",
+):
     """Re-test the integration tip after a clean bead merge — green in isolation at submit, but
     the COMBINATION with what's already on the tip may be red. Still holding the slot, so on red
     we reset a safe-to-rewrite tip (the private mol/<epic>, or an unpushed main) to its pre-merge
@@ -879,11 +1017,41 @@ def impl__postland_revalidate_bead(api, cfg, entry, main, base, pre, bead, slot_
     the branch tip submit already validated, so there is no combination to test — that is ADR
     Decision 4 (bh-ku9n9.17), and the ledger key is the entire test for it (see
     `_validate_molecule_checkout` for why no second tree comparison exists)."""
-    if api.config.validation_bypass_enabled(cfg, entry):
+    command = api.config.validate_cmd(cfg, entry, "merge", main_gate=on_main)
+    if override_reason:
+        sha = api.worktree._branch_sha(entry, base)
+        tree = api.validation_ledger.tree_of(entry, sha)
+        try:
+            override = validation_bypass.bind_override(
+                actor=override_actor,
+                bead=bead,
+                phase="merge",
+                reason=override_reason,
+                sha=sha,
+                tree=tree,
+            )
+            current_sha = api.worktree._branch_sha(entry, base)
+            current_tree = api.validation_ledger.tree_of(entry, current_sha)
+            validation_bypass.record_override(
+                cfg,
+                entry,
+                override,
+                sha=current_sha,
+                tree=current_tree,
+                command=command,
+                branch=base,
+                audit=lambda event: validation_bypass.write_bead_event(api.bd, main, event),
+            )
+        except (validation_bypass.OverrideRefused, validation_bypass.BypassAuditError) as exc:
+            api.typer.echo(f"✗ {exc}", err=True)
+            vrc = 1
+        else:
+            vrc = validation_bypass.BYPASSED_EXIT
+    elif api.config.validation_bypass_enabled(cfg, entry):
         vrc = api.worktree.clean_checkout(
             entry,
             base,
-            api.config.validate_cmd(cfg, entry, "merge", main_gate=on_main),
+            command,
             cfg=cfg,
             reuse=False,
             bead=bead,
@@ -977,7 +1145,7 @@ def _record_rebased_commits(api, bead, main, entry, branch, base_before, how):
         api.typer.echo(f"⚠ failed to record post-rebase commit linkage for {bead}: {exc}", err=True)
 
 
-def impl__merge_bead(api, cfg, bead, hive, rm):
+def impl__merge_bead(api, cfg, bead, hive, rm, override_reason="", override_actor=""):
     """Serialize the land of a single approved bead onto its integration base: guard open + review
     resolved + a small clean conventional history, hold the merge slot, rebase-retry merge
     `--no-ff`, re-validate the combined tip on a main-gate, close the bead. The single-bead
@@ -999,22 +1167,59 @@ def impl__merge_bead(api, cfg, bead, hive, rm):
         main=main,
         bead_data=bead_data,
     ):
+        if override_reason:
+            api.typer.echo(
+                "✗ validation override requested, but the bead is already landed and has no "
+                "validation boundary",
+                err=True,
+            )
+            raise api.typer.Exit(1)
         api._reconcile_landed_bead(cfg, entry, main, bead, bead_data, branch, base, hive, rm)
         return
     api._guard_signed_history(entry, branch, base, cfg)
     if base == integration and landing_pr:
+        if override_reason:
+            api.typer.echo(
+                "✗ validation override requested, but PR landing has no local merge validation "
+                "boundary",
+                err=True,
+            )
+            raise api.typer.Exit(1)
         api._open_landing_pr(cfg, entry, main, bead, bead_data, branch, base)
         return
     slot_attrs = {"bh.merge.kind": "bead", "bh.hive": api._hive(entry)}
     mode = api.config.validation_mode(cfg, entry)
     on_main = base == integration
     revalidate = mode == "conservative" or (on_main and mode != "loose")
+    if override_reason and not revalidate:
+        api.typer.echo(
+            "✗ validation override requested, but this merge has no validation boundary under "
+            f"work.validation={mode}",
+            err=True,
+        )
+        raise api.typer.Exit(1)
     pre = api.worktree._ref_sha(main, base) if revalidate else ""
     with api.work_group.merge_slot(main, slot_attrs):
         base_before = api.worktree._ref_sha(main, base)
         how = api._merge_bead_no_ff(entry, branch, base, target, cfg, bead, main, slot_attrs)
         if revalidate:
-            api._postland_revalidate_bead(cfg, entry, main, base, pre, bead, slot_attrs, on_main)
+            if override_reason:
+                api._postland_revalidate_bead(
+                    cfg,
+                    entry,
+                    main,
+                    base,
+                    pre,
+                    bead,
+                    slot_attrs,
+                    on_main,
+                    override_reason,
+                    override_actor,
+                )
+            else:
+                api._postland_revalidate_bead(
+                    cfg, entry, main, base, pre, bead, slot_attrs, on_main
+                )
         _record_rebased_commits(api, bead, main, entry, branch, base_before, how)
         api._record_merge_commit(bead, main, base)
         api.otel.count_merge_outcome({**slot_attrs, "bh.merge.how": how})
