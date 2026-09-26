@@ -62,6 +62,23 @@ def collect_build_verify_diagnostics(
     try:
         verifier = provider.loader(selectors)
         return (*discovery.errors, *verifier.verify(repo))
+    except ModuleNotFoundError as exc:
+        from ..kernel.plugins import DiagnosticCode, DiagnosticSeverity
+
+        # The verifier's plugin package is an optional extra (bh-mxjoy): a selected manifest
+        # can outlive the package it names when the extra was never installed. A warning, not
+        # an ERROR like the branch below — this is "not installed", not "installed but broken".
+        return (
+            *discovery.errors,
+            PluginDiagnostic(
+                DiagnosticCode.BUILD_ATTEST_TAGS,
+                DiagnosticSeverity.WARNING,
+                f"{provider.plugin_id}: build.impact plugin package is not installed ({exc}); "
+                f"install 'beadhive[{provider.plugin_id}]' to enable it",
+                plugin_id=provider.plugin_id,
+                capability=BUILD_VERIFY,
+            ),
+        )
     except (OSError, RuntimeError, ValueError) as exc:
         from ..kernel.plugins import DiagnosticCode, DiagnosticSeverity
 
