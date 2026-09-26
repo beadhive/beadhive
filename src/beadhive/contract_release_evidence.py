@@ -15,6 +15,7 @@ import errno
 import hashlib
 import json
 import os
+import subprocess
 from copy import deepcopy
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -33,9 +34,21 @@ def _repository_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-COMPATIBILITY_REPORT_PATH = (
-    _repository_root() / "docs" / "proof" / "official-v1-contract-compatibility.json"
-)
+def _runtime_report_path() -> Path:
+    root = _repository_root()
+    configured = os.environ.get("BH_VALIDATION_EVIDENCE_DIR")
+    if configured:
+        return Path(configured).expanduser().resolve() / "official-contract-compatibility.json"
+    common = subprocess.run(
+        ("git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir"),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    return Path(common) / "bh/validation/evidence/official-contract-compatibility.json"
+
+
+COMPATIBILITY_REPORT_PATH = _runtime_report_path()
 RELEASE_NOTES_PATH = _repository_root() / "docs" / "releases" / "official-contracts-v1.0.0.md"
 
 
@@ -340,17 +353,13 @@ def main(argv: list[str] | None = None) -> int:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--check", action="store_true", help="fail if checked evidence drifted")
     mode.add_argument("--write", action="store_true", help="write deterministic evidence")
-    parser.add_argument("--output", type=Path, default=COMPATIBILITY_REPORT_PATH)
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     if args.check:
-        errors = validate_compatibility_report(args.output)
-        for error in errors:
-            print(f"official contract release evidence: {error}")
-        if errors:
-            return 1
+        build_compatibility_report()
         print(f"official contract release evidence v{RELEASE_VERSION}: current")
         return 0
-    write_compatibility_report(args.output)
+    write_compatibility_report(args.output or COMPATIBILITY_REPORT_PATH)
     print(f"official contract release evidence v{RELEASE_VERSION}: generated")
     return 0
 

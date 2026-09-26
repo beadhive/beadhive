@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import importlib.util
-import json
 import sys
 from pathlib import Path
 
@@ -16,13 +15,42 @@ assert SPEC and SPEC.loader
 shadow = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = shadow
 SPEC.loader.exec_module(shadow)
-PAYLOAD = json.loads(shadow.EVIDENCE.read_text(encoding="utf-8"))
+PAYLOAD = {
+    "schema_version": 1,
+    "status": "active",
+    "inputs": {},
+    "observations": [
+        {
+            "mutation": mutation,
+            "selector_reason": "synthetic unit fixture",
+            "fallback_reason": None,
+            "executed_count": 1,
+            "avoided_count": 1,
+            "cache_served_count": 0,
+            "edit_to_result_seconds": 1.0,
+            "pants_result": "green",
+            "native_result": "green",
+        }
+        for mutation in sorted(shadow.REQUIRED_MUTATIONS)
+    ],
+    "metrics": {
+        "warm_repeatable": True,
+        "unrelated_test_avoided": True,
+        "warm_seconds": 1.0,
+        "cold_seconds": 2.0,
+    },
+    "promotion": {
+        "selected_green_native_red_escapes": 0,
+        "activation_eligible": True,
+        "promoted_pants_routes": 0,
+        "fallback_observations": 7,
+        "production_activation": False,
+    },
+}
 
 
-def test_checked_shadow_evidence_is_current_and_complete() -> None:
+def test_shadow_evidence_validator_accepts_complete_runtime_payload() -> None:
     assert shadow.validate(PAYLOAD) == []
-    assert PAYLOAD["status"] == "superseded"
-    assert "ImpactResolver" in PAYLOAD["superseded_by"]
 
 
 def test_selected_green_native_red_escape_blocks_activation() -> None:
@@ -52,5 +80,7 @@ def test_operational_volume_and_attest_handoff_are_explicit() -> None:
 
 def test_superseded_evidence_cannot_activate_a_route() -> None:
     payload = copy.deepcopy(PAYLOAD)
+    payload["status"] = "superseded"
+    payload["superseded_by"] = "synthetic replacement"
     payload["promotion"]["activation_eligible"] = True
     assert "superseded evidence cannot promote or activate a route" in shadow.validate(payload)

@@ -21,8 +21,25 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUTPUT = ROOT / "docs" / "proof" / "bh-ck1t6.1-test-closure-certification.json"
-EVIDENCE_RELATIVE_PATH = DEFAULT_OUTPUT.relative_to(ROOT).as_posix()
+
+
+def _runtime_evidence_path(root: Path = ROOT) -> Path:
+    """Return the repo-private generated certification path shared by all worktrees."""
+    configured = os.environ.get("BH_VALIDATION_EVIDENCE_DIR")
+    if configured:
+        return Path(configured).expanduser().resolve() / "test-closure-certification.json"
+    completed = subprocess.run(
+        ("git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir"),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    common = Path(completed.stdout.strip())
+    return common / "bh" / "validation" / "evidence" / "test-closure-certification.json"
+
+
+DEFAULT_OUTPUT = _runtime_evidence_path()
+EVIDENCE_RELATIVE_PATH = "<git-common-dir>/bh/validation/evidence/test-closure-certification.json"
 SCHEMA_VERSION = 2
 CERTIFIER_VERSION = "bh-test-closure-prerequisites-v2"
 FULL_GATE_COMMAND = "just check"
@@ -32,14 +49,7 @@ RELEASE_GATE_COMMAND_HASH = hashlib.sha256(RELEASE_GATE_COMMAND.encode()).hexdig
 # Certification and its generated downstream views cannot identity-bind one another without a
 # digest cycle.  Each dependent remains independently generator-checked; exclude only those
 # outputs while keeping their generators, policy inputs, and every product/test source bound.
-CHECKOUT_IDENTITY_EXCLUDES = (
-    EVIDENCE_RELATIVE_PATH,
-    "docs/proof/bh-ck1t6.3-shadow-activation.json",
-    "docs/proof/bh-ck1t6.4-promotion-policy.json",
-    "docs/proof/bh-ck1t6.5-selective-ci-operations.json",
-    "docs/SELECTIVE-CI-OPERATIONS.md",
-    "docs/proof/bh-j5uyb.1-modularization-closeout.json",
-)
+CHECKOUT_IDENTITY_EXCLUDES = ("docs/SELECTIVE-CI-OPERATIONS.md",)
 REQUIRED_RELATIONSHIPS = (
     "import",
     "reverse-dependency",
@@ -936,113 +946,56 @@ def validate_full_gate_receipt(evidence: dict[str, Any], root: Path = ROOT) -> t
 
 
 def current_applicability(evidence: dict[str, Any], root: Path = ROOT) -> dict[str, dict[str, Any]]:
-    """Compare immutable certification material and closure-local inputs with current state."""
-    snapshot, historical_evidence = _historical_evidence(root)
-    historical_rows = {
-        str(record["id"]): record
-        for record in historical_evidence.get("closures", ())
-        if isinstance(record, dict) and "id" in record
-    }
-    supplied_rows = {
-        str(record["id"]): record
-        for record in evidence.get("closures", ())
-        if isinstance(record, dict) and "id" in record
-    }
-    historical_registry_bytes = _git_file_at(root, snapshot, "tests/closures.toml")
-    if historical_registry_bytes is None:
-        raise RuntimeError("historical certification snapshot has no closure registry")
-    historical_registry = test_closures.loads_registry(historical_registry_bytes.decode())
-    historical_definition = test_closures.registry_definition(historical_registry)
-    historical_registry_digest = _object_digest(historical_definition)
-    current_definition: dict[str, object] | None = None
-    current_registry_error: str | None = None
+    """Compare generated certification rows with the current checkout.
+
+    The evidence is runtime control state, not a checked historical snapshot. Any source,
+    registry, or certification-material drift fails closed to the full gate.
+    """
     try:
-        current_registry = test_closures.load_registry(root / "tests" / "closures.toml")
-        current_definition = test_closures.registry_definition(current_registry)
+        expected_rows = current_records(root)
+        registry = test_closures.load_registry(root / "tests" / "closures.toml")
+        registry_digest = _object_digest(test_closures.registry_definition(registry))
     except (OSError, UnicodeDecodeError, ValueError) as exc:
-        current_registry_error = str(exc)
-    current_registry_digest = _object_digest(current_definition)
-    registry_drift = current_definition != historical_definition
-    historical_ids = tuple(closure.id for closure in historical_registry.closures)
-    current_ids = (
-        tuple(str(row["id"]) for row in current_definition["closures"])
-        if current_definition is not None
-        else ()
-    )
-    shape_current = current_ids == tuple(sorted(historical_ids))
-
-    def material(record: dict[str, Any] | None) -> dict[str, Any] | None:
-        if record is None:
-            return None
-        return {key: value for key, value in record.items() if key != "current_applicability"}
-
-    def applicability_inputs(record: dict[str, Any]) -> tuple[str, ...]:
-        paths = {
-            *record.get("implementation_boundary", ()),
-            *record.get("public_ports", ()),
-            *record.get("mandatory_boundary_tests", ()),
-            *record.get("real_adapter_tests", ()),
-            *record.get("reverse_dependent_tests", ()),
-            *(
-                selector.split("::", 1)[0]
-                for selector in (record.get("coverage_mapping") or {}).get("selectors", ())
-            ),
-        }
-        for shared_id in record.get("shared_contracts", ()):
-            shared = historical_rows.get(str(shared_id), {})
-            paths.update(shared.get("implementation_boundary", ()))
-            paths.update(shared.get("public_ports", ()))
-        return tuple(sorted(str(path) for path in paths))
-
-    def applicability_metadata(record: dict[str, Any]) -> dict[str, Any]:
         return {
-            "algorithm": "bh-closure-applicability-v1",
-            "id": record.get("id"),
-            "kind": record.get("kind"),
-            "dependency_direction": record.get("dependency_direction"),
-            "relationships": record.get("relationships"),
-            "reverse_dependents": record.get("reverse_dependents"),
-            "shared_contracts": record.get("shared_contracts"),
+            str(row.get("id")): {
+                "recorded_input_digest": row.get("input_digest"),
+                "observed_input_digest": None,
+                "recorded_registry_digest": None,
+                "observed_registry_digest": None,
+                "recorded_material_digest": _object_digest(row),
+                "observed_material_digest": None,
+                "registry_error": str(exc),
+                "applicable": False,
+                "fallback_reasons": ["registry-definition-drift"],
+            }
+            for row in evidence.get("closures", ())
+            if isinstance(row, dict)
         }
-
-    def historical_digest(metadata: dict[str, Any], paths: tuple[str, ...]) -> str:
-        digest = hashlib.sha256()
-        digest.update(json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode())
-        for relative in paths:
-            digest.update(b"\0path\0" + relative.encode() + b"\0")
-            content = _git_file_at(root, snapshot, relative)
-            digest.update(content if content is not None else b"<missing>")
-        return "sha256:" + digest.hexdigest()
-
+    supplied = {
+        str(row.get("id")): row
+        for row in evidence.get("closures", ())
+        if isinstance(row, dict) and row.get("id")
+    }
     result: dict[str, dict[str, Any]] = {}
-    for closure_id, recorded in historical_rows.items():
-        paths = applicability_inputs(recorded)
-        metadata = applicability_metadata(recorded)
-        recorded_digest = historical_digest(metadata, paths)
-        observed_digest = _digest(root, metadata, paths)
-        recorded_material = material(recorded)
-        observed_material = material(supplied_rows.get(closure_id))
+    for closure_id in sorted(set(supplied) | set(expected_rows)):
+        recorded = supplied.get(closure_id)
+        observed = expected_rows.get(closure_id)
+        recorded_digest = recorded.get("input_digest") if recorded else None
+        observed_digest = observed.get("input_digest") if observed else None
         reasons: list[str] = []
-        if not shape_current:
+        if recorded is None or observed is None:
             reasons.append("registry-shape-change")
-        if registry_drift:
-            reasons.append("registry-definition-drift")
-        if observed_material != recorded_material:
-            reasons.append("certification-material-drift")
-        if observed_digest != recorded_digest:
+        if recorded_digest != observed_digest:
             reasons.append("input-digest-mismatch")
+        if recorded != observed:
+            reasons.append("certification-material-drift")
         result[closure_id] = {
             "recorded_input_digest": recorded_digest,
             "observed_input_digest": observed_digest,
-            "recorded_registry_digest": historical_registry_digest,
-            "observed_registry_digest": current_registry_digest,
-            "recorded_material_digest": _object_digest(recorded_material),
-            "observed_material_digest": _object_digest(observed_material),
-            **(
-                {"registry_error": current_registry_error}
-                if current_registry_error is not None
-                else {}
-            ),
+            "recorded_registry_digest": registry_digest,
+            "observed_registry_digest": registry_digest,
+            "recorded_material_digest": _object_digest(recorded),
+            "observed_material_digest": _object_digest(observed),
             "applicable": not reasons,
             "fallback_reasons": reasons,
         }
@@ -1052,23 +1005,19 @@ def current_applicability(evidence: dict[str, Any], root: Path = ROOT) -> dict[s
 def validate_evidence(
     evidence: dict[str, Any], root: Path = ROOT, *, verify_receipt: bool = False
 ) -> tuple[str, ...]:
+    """Validate runtime certification against executable current-checkout invariants."""
     errors: list[str] = []
     try:
-        snapshot_commit, expected_evidence = _historical_evidence(root)
-        recorded_identity = expected_evidence.get("certification_input_identity") or {}
-        snapshot_identity = checkout_input_identity_at(
-            root,
-            snapshot_commit,
-            str(recorded_identity.get("certifier", "")),
-            tuple(str(path) for path in recorded_identity.get("excluded_paths", ())),
-        )
-    except (KeyError, OSError, RuntimeError, ValueError) as exc:
-        return (f"certification historical snapshot is unavailable: {exc}",)
-    if evidence.get("schema_version") != SCHEMA_VERSION:
-        errors.append("certification evidence has the wrong schema version")
-    if set(evidence) != set(expected_evidence):
-        errors.append("certification evidence top-level fields drifted")
-    derived_top_level = (
+        expected = build_evidence(root)
+    except (OSError, RuntimeError, ValueError) as exc:
+        return (f"cannot derive current certification: {exc}",)
+    if evidence != expected:
+        errors.append("certification evidence drifted from the current checkout")
+    if evidence.get("source_revision") != expected["source_revision"]:
+        errors.append("certification source revision drifted from the current checkout")
+    if evidence.get("source_tree") != expected["source_tree"]:
+        errors.append("certification source tree drifted from the current checkout")
+    for field in (
         "scope",
         "refresh_provenance",
         "policy",
@@ -1077,106 +1026,63 @@ def validate_evidence(
         "recertification",
         "required_relationship_classes",
         "global_certification_inputs",
-    )
-    for field in derived_top_level:
-        if evidence.get(field) != expected_evidence[field]:
-            errors.append(f"{field} drifted from the candidate checkout")
-    expected_rows = expected_evidence["closures"]
-    expected_ids = [record["id"] for record in expected_rows]
-    current = {record["id"]: record for record in expected_rows}
-    rows = evidence.get("closures")
-    if not isinstance(rows, list):
-        return ("certification evidence closures must be a list",)
+    ):
+        if evidence.get(field) != expected[field]:
+            errors.append(f"{field} drifted from the current checkout")
+    rows = evidence.get("closures", ())
+    if not isinstance(rows, list) or not rows:
+        errors.append("certification evidence has no closure records")
+        rows = ()
+    expected_rows = expected["closures"]
     if len(rows) != len(expected_rows):
         errors.append("certification evidence closure row cardinality drifted")
-    if not all(isinstance(row, dict) for row in rows):
-        errors.append("certification evidence closure rows must be objects")
     object_rows = [row for row in rows if isinstance(row, dict)]
     row_ids = [str(row.get("id")) for row in object_rows]
-    duplicate_ids = sorted(
-        closure_id for closure_id in set(row_ids) if row_ids.count(closure_id) > 1
-    )
-    if duplicate_ids:
-        errors.append(f"certification evidence has duplicate closure ids: {duplicate_ids}")
+    expected_ids = [str(row["id"]) for row in expected_rows]
+    duplicates = sorted(closure_id for closure_id in set(row_ids) if row_ids.count(closure_id) > 1)
+    if duplicates:
+        errors.append(f"certification evidence has duplicate closure ids: {duplicates}")
     if set(row_ids) != set(expected_ids):
         errors.append("certification evidence closure ids drifted from the registry")
     if row_ids != expected_ids:
         errors.append("certification evidence closures drifted from canonical registry order")
-    by_id = {str(row.get("id")): row for row in object_rows}
-    immutable = (
-        "kind",
-        "status",
-        "owner",
-        "public_ports",
-        "enforceable_port",
-        "implementation_boundary",
-        "dependency_direction",
-        "input_digest",
-        "command",
-        "mandatory_boundary_tests",
-        "real_adapter_tests",
-        "shared_contracts",
-        "reverse_dependents",
-        "reverse_dependent_tests",
-        "relationships",
-        "relationship_evidence",
-        "fallback_triggers",
-        "timing",
-        "confidence",
-        "independence_tests",
-        "coverage_mapping",
-        "certification",
-    )
-    for closure_id, expected in current.items():
-        actual = by_id.get(closure_id)
+    actual_by_id = {str(row.get("id")): row for row in object_rows}
+    for expected_row in expected_rows:
+        closure_id = str(expected_row["id"])
+        actual = actual_by_id.get(closure_id)
         if actual is None:
             continue
-        if set(actual) != set(expected):
-            errors.append(f"closure {closure_id} fields drifted")
-        for field in immutable:
-            if actual.get(field) != expected[field]:
-                errors.append(f"closure {closure_id} {field} drifted")
-        collection = actual.get("collection") or {}
-        expected_collection = expected.get("collection") or {}
-        if set(collection) != {"count", "kind", "nodeid_digest", "shared_universe"}:
-            errors.append(f"closure {closure_id} collection fields drifted")
-        count = collection.get("count")
-        if type(count) is not int or count < 1:
-            errors.append(f"closure {closure_id} has no collected tests")
-        if collection.get("kind") != "current-pytest-nodeids":
-            errors.append(f"closure {closure_id} collection kind drifted")
-        nodeid_digest = collection.get("nodeid_digest")
-        if (
-            not isinstance(nodeid_digest, str)
-            or not nodeid_digest.startswith("sha256:")
-            or len(nodeid_digest) != len("sha256:") + 64
-        ):
-            errors.append(f"closure {closure_id} collection nodeid_digest is invalid")
-        if collection.get("shared_universe") is not expected_collection.get("shared_universe"):
-            errors.append(f"closure {closure_id} collection shared_universe drifted")
-        for field in ("count", "kind", "nodeid_digest"):
-            if collection.get(field) != expected_collection.get(field):
-                errors.append(f"closure {closure_id} collection {field} drifted")
+        for field, expected_value in expected_row.items():
+            if actual.get(field) != expected_value:
+                if field == "collection" and isinstance(actual.get(field), dict):
+                    if set(actual[field]) != set(expected_value):
+                        errors.append(f"closure {closure_id} collection fields drifted")
+                    for collection_field, collection_value in expected_value.items():
+                        if actual[field].get(collection_field) != collection_value:
+                            errors.append(
+                                f"closure {closure_id} collection {collection_field} drifted"
+                            )
+                else:
+                    errors.append(f"closure {closure_id} {field} drifted")
         if actual.get("observed_input_digest") != actual.get("input_digest"):
             errors.append(f"closure {closure_id} evidence is stale")
     observed = {
-        relationship for row in object_rows for relationship in row.get("relationships", ())
+        relationship
+        for row in rows
+        if isinstance(row, dict)
+        for relationship in row.get("relationships", ())
     }
     missing = set(REQUIRED_RELATIONSHIPS) - observed
     if missing:
         errors.append(f"relationship inventory is incomplete: {sorted(missing)}")
-    policy = evidence.get("policy") or {}
-    if policy.get("activation") != "disabled":
-        errors.append("bh-ck1t6.1 must not activate selective validation")
-    if evidence.get("source_revision") != snapshot_identity["revision"]:
-        errors.append("certification source revision does not match the historical snapshot")
-    if evidence.get("source_tree") != snapshot_identity["tree"]:
-        errors.append("certification source tree does not match the historical snapshot")
-    if evidence.get("certification_input_identity") != snapshot_identity:
-        errors.append("certification input identity does not match the historical snapshot")
+    if (evidence.get("policy") or {}).get("activation") != "disabled":
+        errors.append("test-closure certification must not activate selective validation")
+    identity = checkout_input_identity(root)
+    if evidence.get("certification_input_identity") != identity:
+        errors.append("certification input identity does not match the current checkout")
     oracle = evidence.get("same_tree_full_gate_oracle") or {}
-    if oracle.get("input_identity") != snapshot_identity:
-        errors.append("same-tree oracle input identity does not match the historical snapshot")
+    if oracle.get("input_identity") != identity:
+        errors.append("same-tree oracle input identity does not match the current checkout")
     if oracle.get("receipt_provenance") != _expected_receipt_provenance():
         errors.append("same-tree oracle receipt provenance does not match the full gate")
     if verify_receipt and not errors:

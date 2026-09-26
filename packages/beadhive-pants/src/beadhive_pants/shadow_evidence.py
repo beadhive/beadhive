@@ -11,7 +11,6 @@ from pathlib import Path
 from .repository import find_repository
 
 ROOT = find_repository()
-EVIDENCE = ROOT / "docs/proof/bh-70ewe.5-pants-shadow.json"
 REQUIRED_MUTATIONS = {
     "source",
     "test",
@@ -84,7 +83,7 @@ def validate(payload: dict, root: Path = ROOT) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--evidence", type=Path, default=EVIDENCE)
+    parser.add_argument("--evidence", type=Path, required=True)
     options = parser.parse_args()
     payload = json.loads(options.evidence.read_text(encoding="utf-8"))
     errors = validate(payload)

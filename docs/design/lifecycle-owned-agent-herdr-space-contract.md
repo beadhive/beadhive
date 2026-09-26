@@ -13,7 +13,7 @@ The overall implementation verdict is **GO**.
 
 The exact-seat implementation now supplies canonical Claude and Codex authority, and all six
 installed transport rows plus both provider process-tree cancellation shapes pass; see
-[`herdr-managed-seat-matrix-2026-08-30.md`](../proof/herdr-managed-seat-matrix-2026-08-30.md).
+the retired 2026-08-30 managed-seat matrix.
 The release gate is satisfied because Herdr server restart is explicitly an Agent-termination
 boundary, not a live-process adoption boundary. Durable Beadhive work remains in progress and a
 new generation is launched in the same exact seat/worktree.

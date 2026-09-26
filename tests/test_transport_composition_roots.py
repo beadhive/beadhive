@@ -110,7 +110,7 @@ def test_checked_inventory_names_every_installed_composition_root() -> None:
             assert "tests/test_transport_inventory.py" in row["test_closure"]
 
 
-def test_checked_before_after_evidence_is_current_and_closes_every_root() -> None:
+def test_live_composition_evidence_is_current_and_closes_every_root() -> None:
     result = subprocess.run(
         ["uv", "run", "python", "scripts/render_transport_composition_evidence.py", "--check"],
         cwd=ROOT,
@@ -123,7 +123,9 @@ def test_checked_before_after_evidence_is_current_and_closes_every_root() -> Non
     from scripts import render_transport_composition_evidence as composition_evidence
 
     evidence = json.loads(composition_evidence.render())
-    assert evidence["integration_base"] == "6461a048c1b81ae2e3cf9071cb9384d8579f9ac2"
+    assert evidence["format_version"] == 1
+    assert evidence["validation_cadence"] == "strict"
+    assert evidence["artifact_drift_gate"] == "just transport-artifact-check"
     assert {row["surface"] for row in evidence["roots"]} == set(ROOTS)
     for row in evidence["roots"]:
         drift = row["registration_drift"]
@@ -141,10 +143,10 @@ def test_checked_before_after_evidence_is_current_and_closes_every_root() -> Non
         else:
             assert exclusions == []
             assert drift["comparison"]["projection_declaration_count"] == len(drift["declared"])
-    assert all(not row["after"]["cycle_member"] for row in evidence["roots"])
+    assert all(not row["current_shape"]["cycle_member"] for row in evidence["roots"])
 
 
-def test_before_after_evidence_does_not_require_an_unreachable_git_object(tmp_path) -> None:
+def test_live_composition_evidence_does_not_require_an_unreachable_git_object(tmp_path) -> None:
     fake_git = tmp_path / "git"
     fake_git.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
     fake_git.chmod(0o755)

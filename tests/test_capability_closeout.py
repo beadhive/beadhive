@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
-import json
-import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/capability_closeout.py"
-OUTPUT = ROOT / "docs/proof/bh-bptze.7-capability-closeout.json"
 
 
 def _module():
@@ -24,18 +21,12 @@ def _module():
 
 
 def test_capability_closeout_is_reproducible() -> None:
-    completed = subprocess.run(
-        [sys.executable, str(SCRIPT), "--check"],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert completed.returncode == 0, completed.stdout + completed.stderr
+    module = _module()
+    assert module.build_proof() == module.build_proof()
 
 
 def test_capability_closeout_proves_every_acceptance_boundary() -> None:
-    data = json.loads(OUTPUT.read_text(encoding="utf-8"))
+    data = _module().build_proof()
     assert data["measured_source_revision"] == _module().SOURCE_REVISION
     current = data["repository_history"][-1]
     assert (

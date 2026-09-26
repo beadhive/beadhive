@@ -54,7 +54,6 @@ def main() -> int:
     coordinator = [sys.executable, "scripts/pants_cache.py", "run", "--", pants, "--no-pantsd"]
     steps = [
         [*coordinator, "version"],
-        [sys.executable, "scripts/pants_shadow_evidence.py"],
         [*coordinator, "package", "src/beadhive:bh"],
         [sys.executable, "scripts/pants_ci.py", "verify"],
     ]

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import subprocess
@@ -14,7 +13,6 @@ ROOT = Path(__file__).resolve().parents[1]
 TRANSACTION_SCRIPTS = (
     "next-version.sh",
     "prepare-release-version.sh",
-    "refresh_modularization_closeout.py",
     "release_transaction.py",
 )
 
@@ -58,10 +56,8 @@ class ReleaseRepo:
 def _release_repo(tmp_path: Path, *, generator_fails: bool = False) -> ReleaseRepo:
     repo = tmp_path / "repo"
     scripts = repo / "scripts"
-    proof = repo / "docs/proof"
     binary = tmp_path / "bin"
     scripts.mkdir(parents=True)
-    proof.mkdir(parents=True)
     binary.mkdir()
     for name in TRANSACTION_SCRIPTS:
         shutil.copy2(ROOT / "scripts" / name, scripts / name)
@@ -92,19 +88,6 @@ pre_bump_hooks = ["scripts/prepare-release-version.sh $CZ_PRE_NEW_VERSION"]
     )
     (repo / "uv.lock").write_text('version = "0.16.1"\n')
     (repo / "CHANGELOG.md").write_text("# Changelog\n")
-    report = proof / "bh-j5uyb.1-modularization-closeout.json"
-    report.write_text(
-        json.dumps(
-            {
-                "evidence_inventory": {
-                    "current_candidate": {"package": {"path": "pyproject.toml", "sha256": "0" * 64}}
-                }
-            },
-            indent=2,
-        )
-        + "\n"
-    )
-
     uv = binary / "uv"
     uv.write_text(
         "#!/bin/sh\n"
@@ -135,11 +118,6 @@ pre_bump_hooks = ["scripts/prepare-release-version.sh $CZ_PRE_NEW_VERSION"]
         ("tag.gpgsign", "false"),
     ):
         _must_git(repo, "config", key_name, value)
-    subprocess.run(
-        [sys.executable, "scripts/refresh_modularization_closeout.py", "--write"],
-        cwd=repo,
-        check=True,
-    )
     _must_git(repo, "add", "-A")
     _must_git(repo, "commit", "-qm", "chore: seed release fixture")
     _must_git(repo, "tag", "-a", "v0.16.1", "-m", "v0.16.1")
@@ -201,7 +179,7 @@ def _install_git_wrapper(
     wrapper.chmod(0o755)
 
 
-def test_bump_creates_one_exact_signed_commit_and_tag_without_churning_proof(
+def test_bump_creates_one_exact_signed_commit_and_tag_without_generated_artifact_churn(
     tmp_path: Path,
 ) -> None:
     release_repo = _release_repo(tmp_path)
@@ -223,17 +201,6 @@ def test_bump_creates_one_exact_signed_commit_and_tag_without_churning_proof(
     assert _must_git(release_repo.root, "cat-file", "-t", "v0.16.2") == "tag"
     assert _must_git(release_repo.root, "rev-parse", "v0.16.2^{commit}") == head
     assert release_repo.transaction("verify", "0.16.2", "--tag", "v0.16.2").returncode == 0
-    report = json.loads(
-        (release_repo.root / "docs/proof/bh-j5uyb.1-modularization-closeout.json").read_text()
-    )
-    before = json.loads(
-        _must_git(
-            release_repo.root,
-            "show",
-            f"{release_repo.start}:docs/proof/bh-j5uyb.1-modularization-closeout.json",
-        )
-    )
-    assert report == before
     assert (tmp_path / "bh.log").read_text().splitlines() == ["release preflight"]
 
 

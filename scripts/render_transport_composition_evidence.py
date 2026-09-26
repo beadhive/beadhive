@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Render exact before/after evidence for the installed transport composition roots."""
+"""Render live evidence for the installed transport composition roots."""
 
 from __future__ import annotations
 
 import argparse
 import ast
 import asyncio
-import hashlib
 import json
 from functools import cache
 from pathlib import Path
@@ -30,42 +29,12 @@ from beadhive.transport_inventory import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-TARGET = ROOT / "docs" / "proof" / "bh-3qkmk.5-transport-composition.json"
-BASELINE = ROOT / "docs" / "proof" / "bh-3qkmk.5-transport-composition-baseline.json"
-BASELINE_SHA256 = "054358a2ab3abc4ce90abff5db72e7bf7777506be388b92b882e1d1b83846051"
-INTEGRATION_BASE = "6461a048c1b81ae2e3cf9071cb9384d8579f9ac2"
-BEFORE_MODULES = {
-    "cli": "beadhive.cli",
-    # Historical baseline at INTEGRATION_BASE, before the Frame Bridge rename.
-    "gateway": "beadhive.remote_gateway_runtime",
-    "mcp": "beadhive.mcp",
-    "operator-api": "beadhive.host_daemon_entrypoint",
-}
 REGISTRATION_OBSERVATION = {
     "cli": "live Typer command tree",
     "gateway": "live Starlette route table",
     "mcp": "live FastMCP tools, resources, and resource templates",
     "operator-api": "live Starlette route table",
 }
-
-
-def _baseline_shapes() -> dict[str, dict[str, Any]]:
-    """Read the content-addressed historical facts shipped with every clone."""
-    encoded = BASELINE.read_bytes()
-    if hashlib.sha256(encoded).hexdigest() != BASELINE_SHA256:
-        raise RuntimeError("transport composition baseline digest does not match its pin")
-    value = json.loads(encoded)
-    if (
-        not isinstance(value, dict)
-        or set(value) != {"format_version", "integration_base", "roots"}
-        or value["format_version"] != 1
-        or value["integration_base"] != INTEGRATION_BASE
-        or not isinstance(value["roots"], dict)
-        or set(value["roots"]) != set(BEFORE_MODULES)
-        or any(not isinstance(shape, dict) for shape in value["roots"].values())
-    ):
-        raise RuntimeError("transport composition baseline shape is incompatible")
-    return value["roots"]
 
 
 def _shape(source_root: Path, module: str) -> dict[str, Any]:
@@ -235,7 +204,6 @@ def document() -> dict[str, Any]:
     current_source = ROOT / "src"
     declared = _declared_registration_sets()
     observed = _observed_registration_sets()
-    baseline = _baseline_shapes()
     roots = []
     for root in composition_roots():
         drift = registration_drift(root.surface, declared[root.surface], observed[root.surface])
@@ -243,8 +211,7 @@ def document() -> dict[str, Any]:
         roots.append(
             {
                 "surface": root.surface,
-                "before": baseline[root.surface],
-                "after": _shape(current_source, root.module),
+                "current_shape": _shape(current_source, root.module),
                 "test_closure": list(root.test_closure),
                 "registration_drift": drift
                 | {
@@ -260,7 +227,6 @@ def document() -> dict[str, Any]:
     return {
         "format_version": 1,
         "bead": "bh-3qkmk.5",
-        "integration_base": INTEGRATION_BASE,
         "validation_cadence": "strict",
         "north_star": (
             "installed bootstrap depends outward-to-inward on transport adapters and the "
@@ -303,14 +269,18 @@ def render() -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     rendered = render()
     if args.check:
-        # ``document()`` performs the live semantic validation.  The checked-in report is a
-        # historical closeout artifact, not mutable current-tree state: comparing volatile graph
-        # counts against it made every new import edge dirty release evidence in ``docs/proof``.
+        # ``document()`` performs the live semantic validation. Runtime reports are optional
+        # diagnostics, so check mode does not depend on a stored generated artifact.
         return 0
-    TARGET.write_text(rendered, encoding="utf-8")
+    if args.output is None:
+        print(rendered, end="")
+    else:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(rendered, encoding="utf-8")
     return 0
 
 

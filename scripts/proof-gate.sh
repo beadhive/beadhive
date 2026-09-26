@@ -5,7 +5,7 @@
 # WHY THIS EXISTS AS A SCRIPT. The gate's design asked for "a shell script plus that matrix, not
 # a test framework". The matrix alone is a transcription of someone's session — nobody can re-run
 # it, and a stale row looks identical to a fresh one. This makes the gate reproducible: you run
-# it, it reports, and docs/proof/bh-pc2a.17-image-proof.md is the record of a run rather than a
+# it, it reports, and Git-private validation state is the record of a run rather than a
 # claim about one.
 #
 # Scope is the COMBINATION. A component reporting --version proves nothing about whether bh can
@@ -245,4 +245,4 @@ if [ "$SKIP" -gt 0 ]; then
 else
     echo "✓ proof gate PASSED — every layer ran and passed."
 fi
-echo "  Record the result in docs/proof/bh-pc2a.17-image-proof.md."
+echo "  Runtime evidence remains under Git-private validation control state."

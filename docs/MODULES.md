@@ -478,8 +478,7 @@ availability.
 The first extraction keeps filesystem, process, Dolt, and transport behavior in outer adapters.
 Immutable validation facts, stream/cursor policy, activity/query models, storage/clock/notification
 ports, and read-side application services live in `beadhive.modules.state`; compatibility facades
-preserve the released imports. Exact boundary and closure evidence is recorded in
-[`docs/proof/bh-bptze.6-state-module.md`](proof/bh-bptze.6-state-module.md).
+preserve the released imports. Executable import-boundary and closure checks enforce this split.
 
 ### `adapters/cli`
 
@@ -774,9 +773,7 @@ Use the merged launch work as the first complete vertical module:
 
 This epic depends on the plugin/lifecycle kernel and the shared testing harness.
 
-The measured reference-extraction proof, including independent closure counts, import/cycle
-evidence, statement coverage, recent defect characterization, and explicit non-claims, is
-published in `docs/proof/bh-5wuc0.6-agent-extraction.md`.
+Executable closure and import-boundary checks preserve the extraction boundary.
 
 ### Epic 5 — configuration module and plugin schema fragments
 

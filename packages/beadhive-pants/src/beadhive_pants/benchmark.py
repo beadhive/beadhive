@@ -15,7 +15,6 @@ from pathlib import Path
 from .repository import find_repository
 
 ROOT = find_repository()
-DEFAULT_EVIDENCE = ROOT / "docs/proof/bh-t8t7r-ci-benchmark.json"
 CHANGE_CATEGORIES = ("build-system", "code", "config", "docs", "test-only")
 LEGACY_CHANGE_CLASS_MAP = {
     "global-input": "build-system",
@@ -101,7 +100,7 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     sub = result.add_subparsers(dest="action", required=True)
     check = sub.add_parser("check")
-    check.add_argument("path", nargs="?", type=Path, default=DEFAULT_EVIDENCE)
+    check.add_argument("path", type=Path)
     sample = sub.add_parser("sample")
     sample.add_argument(
         "--change-class",

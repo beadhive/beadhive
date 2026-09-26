@@ -356,7 +356,7 @@ issues:
     native Linux install of the toolchain — record what it shows against bh-0gpn, whichever way
     it goes.
   design: |
-    Record it as a proof artifact under docs/proof/ in the shape scripts/proof-gate.sh's
+    Record it as a runtime validation artifact in Git-private control state using the shape from scripts/proof-gate.sh's
     existing results use, so it is comparable with the container plane's evidence rather than
     being a one-off note.
 

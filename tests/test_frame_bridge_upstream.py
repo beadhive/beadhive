@@ -1074,12 +1074,6 @@ def test_pinned_gateway_case_matrix_is_immutable_and_covered() -> None:
     )
     raw = fixture.read_bytes()
     matrix = json.loads(raw)
-    proof = json.loads(
-        (Path(__file__).parents[1] / "docs/proof/bh-bh6w3.3-gateway-conformance.json").read_text(
-            encoding="utf-8"
-        )
-    )
-
     assert hashlib.sha256(raw).hexdigest() == GATEWAY_CONTRACT_CASES_SHA256
     assert matrix["schemaVersion"] == 1
     assert matrix["contractVersion"] == upstream.UPSTREAM_CONTRACT
@@ -1277,29 +1271,6 @@ def test_pinned_gateway_case_matrix_is_immutable_and_covered() -> None:
     assert all(test.startswith("tests/") for test in operation_coverage.values())
     assert all(test.startswith("tests/") for test in case_test_index.values())
     assert case_test_index["registration-drift"] == registration_test
-    assert proof["aggregateGateway"]["commit"] == GATEWAY_REVISION
-    assert proof["aggregateGateway"]["contractCasesSha256"] == GATEWAY_CONTRACT_CASES_SHA256
-    assert proof["aggregateGateway"]["matrixCoverage"] == {
-        "operations": {"localExecuted": len(operation_coverage), "gatewayOwnedUnexecuted": 0},
-        "negativeCases": {
-            "localExecuted": len(local_executed),
-            "gatewayOwnedUnexecuted": len(gateway_owned_unexecuted),
-        },
-        "registrationDrift": (
-            "local pinned e482 admission in "
-            "test_pinned_aggregate_gateway_reads_over_factory_unix_socket"
-        ),
-    }
-    assert proof["aggregateGateway"]["gatewayRuntime"] == {
-        "status": "unavailable",
-        "reason": (
-            "the Go executable is absent; Gateway-owned cases are verified only by the immutable "
-            "e482 fixture"
-        ),
-        "gatewayOwnedCasesClaimedExecuted": False,
-    }
-    assert "counterpartRegistrationMismatchTest" not in proof["aggregateGateway"]
-    assert "counterpartTestExecution" not in proof["aggregateGateway"]
 
 
 def test_private_directory_serves_cached_daemon_summaries_with_slow_hive_sources(

@@ -20,15 +20,26 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+try:
+    from scripts.validation_artifacts import evidence_path
+except ModuleNotFoundError:  # direct `python scripts/...` execution
+    from validation_artifacts import evidence_path
+
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "tests" / "selective-ci-policy.toml"
 REGISTRY_PATH = ROOT / "tests" / "closures.toml"
-CERTIFICATION_PATH = ROOT / "docs" / "proof" / "bh-ck1t6.1-test-closure-certification.json"
-SHADOW_PATH = ROOT / "docs" / "proof" / "bh-ck1t6.3-shadow-activation.json"
-EVIDENCE_PATH = ROOT / "docs" / "proof" / "bh-ck1t6.4-promotion-policy.json"
+
+
+def _runtime_path(name: str, root: Path = ROOT) -> Path:
+    return evidence_path(root, name)
+
+
+CERTIFICATION_PATH = _runtime_path("test-closure-certification.json")
+SHADOW_PATH = _runtime_path("test-closure-shadow-policy.json")
+EVIDENCE_PATH = _runtime_path("test-closure-promotion-policy.json")
 SELECTOR_PATH = ROOT / "scripts" / "test_impact_selector.py"
 VERIFIER_PATH = ROOT / "scripts" / "test_closure_shadow_verifier.py"
-TELEMETRY_RELEASE_PATH = ROOT / "docs" / "proof" / "official-v1-contract-compatibility.json"
+TELEMETRY_RELEASE_PATH = ROOT / "src/beadhive/schemas/contracts/v2.0.0/conformance.json"
 
 SCHEMA_VERSION = 1
 POLICY_VERSION = "bh-test-closure-promotion-v1"
@@ -391,8 +402,10 @@ def _telemetry_evidence(root: Path) -> dict[str, Any]:
 
 def build_checked_evidence(root: Path = ROOT) -> dict[str, Any]:
     policy = load_policy(root / CONFIG_PATH.relative_to(ROOT))
-    certification = _read_json(root / CERTIFICATION_PATH.relative_to(ROOT))
-    shadow = _read_json(root / SHADOW_PATH.relative_to(ROOT))
+    certification_path = _runtime_path("test-closure-certification.json", root)
+    shadow_path = _runtime_path("test-closure-shadow-policy.json", root)
+    certification = _read_json(certification_path)
+    shadow = _read_json(shadow_path)
     telemetry = _telemetry_evidence(root)
     eligible = sorted(
         str(row["id"])
@@ -402,8 +415,8 @@ def build_checked_evidence(root: Path = ROOT) -> dict[str, Any]:
     inputs = {
         "config": _digest_bytes((root / CONFIG_PATH.relative_to(ROOT)).read_bytes()),
         "registry": _digest_bytes((root / REGISTRY_PATH.relative_to(ROOT)).read_bytes()),
-        "certification": _digest_bytes((root / CERTIFICATION_PATH.relative_to(ROOT)).read_bytes()),
-        "shadow": _digest_bytes((root / SHADOW_PATH.relative_to(ROOT)).read_bytes()),
+        "certification": _digest_bytes(certification_path.read_bytes()),
+        "shadow": _digest_bytes(shadow_path.read_bytes()),
         "selector": _digest_bytes((root / SELECTOR_PATH.relative_to(ROOT)).read_bytes()),
         "verifier": _digest_bytes((root / VERIFIER_PATH.relative_to(ROOT)).read_bytes()),
         "policy": _digest_bytes(Path(__file__).read_bytes()),
@@ -479,7 +492,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     evidence = build_checked_evidence(ROOT)
     if args.check:
-        errors = validate_checked_evidence(_read_json(EVIDENCE_PATH), ROOT)
+        errors = validate_checked_evidence(evidence, ROOT)
         for error in errors:
             print(f"error: {error}")
         if not errors:

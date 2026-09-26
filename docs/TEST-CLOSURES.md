@@ -4,8 +4,8 @@ Beadhive's module-local commands are advisory developer feedback. They do not re
 authoritative `just check` submit gate or the `just check-all` land/release gate. A green local
 closure must not be reported as either full-gate verdict.
 
-The checked prerequisite certification is
-[`docs/proof/bh-ck1t6.1-test-closure-certification.json`](proof/bh-ck1t6.1-test-closure-certification.json).
+The prerequisite certification is generated under
+`<git-common-dir>/bh/validation/evidence/test-closure-certification.json`.
 It binds every closure to the content of its owned implementation, public port, mandatory tests,
 shared-contract inputs, and certification tooling. Each record carries the current pytest
 collection count and digest, the best available selector-to-source map, known reverse dependents,
@@ -142,8 +142,7 @@ escape thresholds, rollback, and any provisional local leaf activation.
 
 ## Shadow policy and current activation state
 
-The checked shadow-policy evidence is
-[`docs/proof/bh-ck1t6.3-shadow-activation.json`](proof/bh-ck1t6.3-shadow-activation.json).
+The shadow-policy evidence is generated under Git-private validation control state.
 It binds the prerequisite artifact, selector source/version, and pure policy source. The policy
 does not execute tests, write observations, mutate configuration, or replace a lifecycle command.
 It evaluates already-recorded, exact-tree selected/full observations and resolves uncertainty to
@@ -207,7 +206,7 @@ gate still runs or reuses the authoritative full gate because the candidate set 
 
 The provisioned promotion policy is
 [`tests/selective-ci-policy.toml`](../tests/selective-ci-policy.toml), with its digest-bound result
-in [`docs/proof/bh-ck1t6.4-promotion-policy.json`](proof/bh-ck1t6.4-promotion-policy.json). It adds
+generated under Git-private validation control state. It adds
 two possible production boundaries—ordinary `commit` validation and explicitly eligible
 `main-integration` validation—but it does not turn advisory evidence into authority. A route must
 first pass the existing trusted Git/receipt verifier and the selector must return exactly one

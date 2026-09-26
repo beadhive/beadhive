@@ -7,7 +7,7 @@ external plugins, or generate client code.
 
 The [v1.0.0 release notes](releases/official-contracts-v1.0.0.md) define support, negotiation,
 deprecation, redaction, upgrades, and next-version ownership. The generated
-[compatibility report](proof/official-v1-contract-compatibility.json) accounts for every artifact
+The executable compatibility checker accounts for every artifact
 declared by a supported wire release, and for every package candidate artifact. Supported means
 1.5.0 or later. Wire releases below 1.5.0 are deprecated and are not compared (see the
 [wire README](schemas/wire/README.md)).

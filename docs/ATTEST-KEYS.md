@@ -75,10 +75,8 @@ Developer checks query changed targets and transitive dependents from the integr
 base. A proven-only impact runs only those Pants tests; affected unproven tests run the native
 residual, while global inputs and uncertain or unowned executable changes fail closed to both
 complete partitions. Submit/merge attestation always runs the complete proven closure plus the
-native residual from a clean checkout. `just pants-ci-benchmark-check` verifies the raw sample
-counts and percentile claims in `docs/proof/bh-t8t7r-ci-benchmark.json`. That proof retains the
-former selectorless floor as historical before evidence; there is no after-floor command because
-the floor was removed rather than made smaller.
+native residual from a clean checkout. `just pants-ci-benchmark-check PATH` verifies an explicitly
+supplied runtime benchmark report. Benchmark samples remain local validation artifacts.
 
 ## Receipt and backend contract
 

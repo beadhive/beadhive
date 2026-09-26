@@ -33,7 +33,7 @@ the pinned OpenAPI source and fails on SHA or code drift. After one locked
 dependency install, `just beads-client-check` performs that comparison and
 package-local policy tests offline. The real-service conformance result and
 parity findings are in
-[`bh-97fo0.3-beads-v13-client-conformance.md`](../proof/bh-97fo0.3-beads-v13-client-conformance.md).
+the retired bh-97fo0.3 client conformance record.
 
 ## Endpoint contract
 

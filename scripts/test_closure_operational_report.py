@@ -16,14 +16,25 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+try:
+    from scripts.validation_artifacts import evidence_path
+except ModuleNotFoundError:  # direct `python scripts/...` execution
+    from validation_artifacts import evidence_path
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = ROOT / "scripts" / "test_closure_operational_report.py"
-CERTIFICATION_PATH = ROOT / "docs" / "proof" / "bh-ck1t6.1-test-closure-certification.json"
-SHADOW_PATH = ROOT / "docs" / "proof" / "bh-ck1t6.3-shadow-activation.json"
-PROMOTION_PATH = ROOT / "docs" / "proof" / "bh-ck1t6.4-promotion-policy.json"
+
+
+def _runtime_path(name: str, root: Path = ROOT) -> Path:
+    return evidence_path(root, name)
+
+
+CERTIFICATION_PATH = _runtime_path("test-closure-certification.json")
+SHADOW_PATH = _runtime_path("test-closure-shadow-policy.json")
+PROMOTION_PATH = _runtime_path("test-closure-promotion-policy.json")
 REGISTRY_PATH = ROOT / "tests" / "closures.toml"
 REGISTRY_TOOL_PATH = ROOT / "scripts" / "test_closures.py"
-EVIDENCE_PATH = ROOT / "docs" / "proof" / "bh-ck1t6.5-selective-ci-operations.json"
+EVIDENCE_PATH = _runtime_path("test-closure-operational-report.json")
 REPORT_PATH = ROOT / "docs" / "SELECTIVE-CI-OPERATIONS.md"
 
 SCHEMA_VERSION = 1
@@ -107,9 +118,9 @@ def _unavailable_measurements() -> dict[str, Any]:
 
 
 def build_checked_evidence(root: Path = ROOT) -> dict[str, Any]:
-    certification_path = root / CERTIFICATION_PATH.relative_to(ROOT)
-    shadow_path = root / SHADOW_PATH.relative_to(ROOT)
-    promotion_path = root / PROMOTION_PATH.relative_to(ROOT)
+    certification_path = _runtime_path("test-closure-certification.json", root)
+    shadow_path = _runtime_path("test-closure-shadow-policy.json", root)
+    promotion_path = _runtime_path("test-closure-promotion-policy.json", root)
     registry_path = root / REGISTRY_PATH.relative_to(ROOT)
     registry_tool_path = root / REGISTRY_TOOL_PATH.relative_to(ROOT)
     certification = _read_json(certification_path)
@@ -364,7 +375,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"wrote {EVIDENCE_PATH.relative_to(ROOT)}")
         print(f"wrote {REPORT_PATH.relative_to(ROOT)}")
         return 0
-    evidence = _read_json(EVIDENCE_PATH)
+    evidence = build_checked_evidence()
     errors = list(validate_checked_evidence(evidence))
     if REPORT_PATH.read_text(encoding="utf-8") != render_report(evidence):
         errors.append("checked operational Markdown report differs from derived evidence")

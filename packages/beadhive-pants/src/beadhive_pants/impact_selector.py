@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Iterable, Mapping, Sequence
@@ -20,7 +21,22 @@ from typing import Any, Protocol
 from .repository import find_repository
 
 ROOT = find_repository()
-DEFAULT_EVIDENCE = ROOT / "docs" / "proof" / "bh-ck1t6.1-test-closure-certification.json"
+
+
+def _default_evidence() -> Path:
+    configured = os.environ.get("BH_VALIDATION_EVIDENCE_DIR")
+    if configured:
+        return Path(configured).expanduser().resolve() / "test-closure-certification.json"
+    common = subprocess.run(
+        ("git", "-C", str(ROOT), "rev-parse", "--path-format=absolute", "--git-common-dir"),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    return Path(common) / "bh/validation/evidence/test-closure-certification.json"
+
+
+DEFAULT_EVIDENCE = _default_evidence()
 SELECTOR_VERSION = "bh-test-impact-selector-v1"
 PLAN_SCHEMA_VERSION = 1
 FULL_GATE = "just check"

@@ -60,18 +60,16 @@ def test_backend_neutral_structural_gate_owns_shared_contract_checks() -> None:
         "test_closure_operational_report.py --check",
         "transport-artifact-check",
         "wire-schema-compat",
-        "proof-digest-check",
+        "validation-evidence-refresh",
     ):
         assert required in neutral
     assert "pants" not in neutral.lower()
 
     pants = "\n".join(_recipe_body(justfile, "architecture-pants-check"))
     for required in (
-        "pants_shadow_evidence.py",
         "check_pants_ownership.py",
         "check_pants_proven.py",
         "pants_ci.py verify",
-        "pants_ci_benchmark.py check",
     ):
         assert required in pants
 

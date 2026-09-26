@@ -18,9 +18,20 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+try:
+    from scripts.validation_artifacts import evidence_path
+except ModuleNotFoundError:  # direct `python scripts/...` execution
+    from validation_artifacts import evidence_path
+
 ROOT = Path(__file__).resolve().parents[1]
-CERTIFICATION_PATH = ROOT / "docs" / "proof" / "bh-ck1t6.1-test-closure-certification.json"
-EVIDENCE_PATH = ROOT / "docs" / "proof" / "bh-ck1t6.3-shadow-activation.json"
+
+
+def _runtime_path(name: str, root: Path = ROOT) -> Path:
+    return evidence_path(root, name)
+
+
+CERTIFICATION_PATH = _runtime_path("test-closure-certification.json")
+EVIDENCE_PATH = _runtime_path("test-closure-shadow-policy.json")
 SELECTOR_PATH = ROOT / "scripts" / "test_impact_selector.py"
 VERIFIER_PATH = ROOT / "scripts" / "test_closure_shadow_verifier.py"
 
@@ -725,7 +736,7 @@ def route_validation(
 
 
 def build_checked_evidence(root: Path = ROOT) -> dict[str, Any]:
-    certification_path = root / CERTIFICATION_PATH.relative_to(ROOT)
+    certification_path = _runtime_path("test-closure-certification.json", root)
     selector_path = root / SELECTOR_PATH.relative_to(ROOT)
     verifier_path = root / VERIFIER_PATH.relative_to(ROOT)
     policy_path = root / Path(__file__).resolve().relative_to(ROOT)
@@ -743,7 +754,7 @@ def build_checked_evidence(root: Path = ROOT) -> dict[str, Any]:
     eligible = sorted(item["id"] for item in decisions if item["eligible"])
     inputs = {
         "certification_artifact": {
-            "path": CERTIFICATION_PATH.relative_to(ROOT).as_posix(),
+            "path": "<git-common-dir>/bh/validation/evidence/test-closure-certification.json",
             "digest": _digest_bytes(certification_path.read_bytes()),
         },
         "selector": {
@@ -817,7 +828,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--check", action="store_true", help="verify the checked evidence")
     args = parser.parse_args(argv)
     if args.check:
-        errors = validate_checked_evidence(_load_json(EVIDENCE_PATH), ROOT)
+        evidence = build_checked_evidence(ROOT)
+        errors = validate_checked_evidence(evidence, ROOT)
         for error in errors:
             print(f"error: {error}")
         if not errors:
