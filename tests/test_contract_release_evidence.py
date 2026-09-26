@@ -76,7 +76,7 @@ def test_compatibility_report_accounts_for_every_published_and_candidate_artifac
     candidate = build_release()["artifacts"]
 
     assert report["format_version"] == 1
-    assert report["release_version"] == "1.0.0"
+    assert report["release_version"] == "2.0.0"
     assert report["summary"]["historical_artifact_observations"] == len(published) >= 17
     # Only supported (>= 1.5.0) releases are observed; deprecated history is never compared.
     assert "1.5.0" in {version for version, _row in published}

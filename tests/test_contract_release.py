@@ -252,8 +252,8 @@ def test_published_baseline_is_distinct_complete_and_digest_pinned(
 ) -> None:
     baseline = published_baseline_root()
     assert baseline != release_root()
-    # The baseline was rebased onto the bundle published with wire release 1.5.0 (bh-bwnys.5).
-    assert baseline.name == "v1.5.0"
+    # The baseline tracks the bundle published with the current wire release.
+    assert baseline.name == "v2.0.0"
     published = load_published_baseline()
     candidate = build_release()
     assert compatibility_errors(published, candidate) == []
