@@ -48,7 +48,7 @@ bootstrap:
 # `bh work merge` / `finish`: local main sat 44 commits ahead of origin/main when this was
 # found. Four integration tests were red on main for a whole molecule with every gate green.
 # The enforcing seam is now the LAND itself — `work.validate.molecule` / `.merge-main` for this
-# hive point at `check-all`, so `bh work finish` / `merge` runs it from a clean checkout before
+# hive point at `check-all-native`, so `bh work finish` / `merge` runs it from a clean checkout before
 # anything reaches main. The pre-push job stays as the belt to that braces.
 # Native is the selected primary; explicit Pants commands remain stable.
 check: check-native
@@ -455,7 +455,7 @@ push remote="origin" branch="main":
 # recipe exactly as it should.
 _await-bump-gate:
     @if ${BH_EXEC:-bh} release --help 2>/dev/null | grep -q await; then \
-        ${BH_EXEC:-bh} release await --gate "just check-all" --if-pending; \
+        ${BH_EXEC:-bh} release await --if-pending; \
     else \
         just _require "release await" bh-ku9n9.7 warn "a PENDING BUMP GATE IS NOT CHECKED"; \
     fi
@@ -471,7 +471,7 @@ _await-bump-gate:
 # or one for a different tree as exit 1 (not pending) — this recipe only refuses on its exit 0.
 _refuse-if-bump-pending:
     @if ${BH_EXEC:-bh} release --help 2>/dev/null | grep -q pending; then \
-        if ${BH_EXEC:-bh} release pending --gate "just check-all" >/dev/null 2>&1; then \
+        if ${BH_EXEC:-bh} release pending >/dev/null 2>&1; then \
             echo "✗ a bump gate is pending for this tree — use \`just release\` (or \`bh release recover\` to see where you are)" >&2; \
             exit 1; \
         fi; \
@@ -775,8 +775,9 @@ packages-check:
 # `[tool.uv.workspace]` member, had leaked into `[project].dependencies` as a hard dependency,
 # and every OTHER gate resolves workspace members so none of them caught it (the tag was not
 # moved; see docs/AGF.md's release-rollback note and bh-mxjoy). This step is wired into
-# `packages-check` — the gate `just bump` / `bh release attest` run via `just check-all` — so
-# the same regression fails here before a tag exists, not after one has shipped.
+# `packages-check` — part of the configured `work.validate.push-main` gate that `just bump` /
+# `bh release attest` resolve — so the same regression fails here before a tag exists, not after
+# one has shipped.
 release-smoke-check:
     rm -rf dist/release-smoke
     uv build --out-dir dist/release-smoke
@@ -882,11 +883,12 @@ demo-live-ingress:
 #   just release-preview  is the path clear? (--next: what would bump write?)   read-only
 #   just release          main + tag, atomic. CI publishes.          ONE-WAY DOOR
 
-# prove THIS tree green under `just check-all` and stamp the verdict every other release command
-# reads. IDEMPOTENT: `--if-needed` is `clean_checkout(reuse=True)` — a fresh green verdict for
-# this exact (tree, command) short-circuits the run, and only a miss pays the full gate. Two runs
-# in a row therefore cost the gate once, and "warm this tree deliberately" is finally something
-# you can type instead of a side effect of whatever `bh work merge` last happened to run.
+# prove THIS tree green under the hive's configured `work.validate.push-main` command and stamp
+# the verdict every other release command reads. IDEMPOTENT: `--if-needed` is
+# `clean_checkout(reuse=True)` — a fresh green verdict for this exact (tree, command)
+# short-circuits the run, and only a miss pays the full gate. Two runs in a row therefore cost
+# the gate once, and "warm this tree deliberately" is finally something you can type instead of
+# a side effect of whatever `bh work merge` last happened to run.
 #
 # NOTHING ELSE CALLS THIS, deliberately. `just push` already IS attest-if-needed — its pre-push
 # hook does the same lookup and falls back to the full gate inline, so calling attest first would
@@ -912,7 +914,7 @@ demo-live-ingress:
 # prove this tree green and stamp the verdict — idempotent, so it's cheap on an already-proven tree
 attest:
     @if ${BH_EXEC:-bh} release attest --help 2>/dev/null | grep -q -- --if-needed; then \
-        ${BH_EXEC:-bh} release attest "$(git rev-parse HEAD)" --if-needed --gate "just check-all"; \
+        ${BH_EXEC:-bh} release attest "$(git rev-parse HEAD)" --if-needed; \
     else \
         just _require "release attest --if-needed" bh-0jndj fail "NOTHING WAS ATTESTED"; \
     fi
@@ -953,8 +955,8 @@ bump-preview:
 # worst. Set BH_EXEC='uv run bh' to use this tree's bh.
 # BUMP: version + changelog + uv.lock + signed LOCAL tag. Nothing leaves this machine.
 bump expected_version:
-    python3 scripts/release_transaction.py bump "{{ expected_version }}" --gate "just check-all"
-    ${BH_EXEC:-bh} release attest --if-needed --gate "just check-all"
+    python3 scripts/release_transaction.py bump "{{ expected_version }}"
+    ${BH_EXEC:-bh} release attest --if-needed
 
 # is the release path clear? READ-ONLY, and a SUPERSET of `bump-preview` above rather than its
 # sibling (bh-k5te9): `--next` runs that recipe's own scripts/next-version.sh for the number, then
@@ -994,7 +996,7 @@ release-preview *flags:
     if [ -n "$missing" ]; then \
         just _require "$missing" "$since" fail "NOTHING WAS CHECKED"; \
     else \
-        ${BH_EXEC:-bh} release preview --gate "just check-all" {{ flags }}; \
+        ${BH_EXEC:-bh} release preview {{ flags }}; \
     fi
 
 # publish the release: main AND its tag, in ONE atomic push, after the bump tree's gate is green.
