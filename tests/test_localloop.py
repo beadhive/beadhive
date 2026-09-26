@@ -1223,7 +1223,9 @@ async def test_shutdown_terminates_children_through_the_group_and_unclaims(tmp_p
 def test_local_runtime_schedules_observes_and_is_idempotent(tmp_path):
     from beadhive import runtime as runtime_mod
 
-    inst = _instructions(tmp_path, "i", "STUB_STATUS=done")
+    # Idempotency only applies while the first run is live. Keep the stub alive until the
+    # runtime context cancels it so process scheduling cannot decide the assertion's meaning.
+    inst = _instructions(tmp_path, "i", "STUB_HANG=true")
     with localloop.LocalRuntime(seat_command=f"{sys.executable} {STUB_SEAT}") as rt:
         assert isinstance(rt, runtime_mod.Runtime)
 
@@ -1236,14 +1238,23 @@ def test_local_runtime_schedules_observes_and_is_idempotent(tmp_path):
         assert again.session_id == handle.session_id == "s1", (
             "a second schedule is not a second run"
         )
+        assert rt.observe(handle).status == "running"
 
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline:
-            outcome = rt.observe(handle)
-            if outcome.status != "running":
-                break
-            time.sleep(0.05)
-        assert outcome.status == "done"
+
+def test_local_runtime_reschedules_a_finished_run_with_a_new_identity(tmp_path):
+    inst = _instructions(tmp_path, "finished", "STUB_STATUS=done")
+    with localloop.LocalRuntime(seat_command=f"{sys.executable} {STUB_SEAT}") as rt:
+        first = rt.schedule(
+            "b1", "developer", workspace=str(tmp_path), instructions=str(inst), session_id="s1"
+        )
+        assert rt._submit(rt._runs["b1"].wait_exit(15)), "control the completion boundary"
+        assert rt.observe(first).status == "done"
+
+        second = rt.schedule(
+            "b1", "developer", workspace=str(tmp_path), instructions=str(inst), session_id="s2"
+        )
+
+        assert second.session_id == "s2", "a finished run is eligible to be scheduled again"
 
 
 @pytest.mark.parametrize(
