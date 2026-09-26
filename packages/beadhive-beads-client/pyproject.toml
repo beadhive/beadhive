@@ -1,0 +1,13 @@
+[project]
+name = "beadhive-beads-client"
+version = "0.1.0"
+description = "Pinned Beads v1.3 HTTP SDK and Beadhive session"
+requires-python = ">=3.11"
+dependencies = ["attrs>=23", "httpx>=0.28,<1"]
+
+[build-system]
+requires = ["hatchling", "editables>=0.5"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/beads_v1_3", "src/beadhive_beads_client"]

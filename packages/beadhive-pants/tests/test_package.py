@@ -55,15 +55,19 @@ def test_verifier_implements_the_public_build_verify_contract() -> None:
     assert ExportedPantsBuildVerifier is PantsBuildVerifier
 
 
-def test_proven_manifest_explicitly_lists_every_package_test() -> None:
+def _package_manifest_tests() -> dict[str, dict[str, object]]:
     manifest = json.loads(
         (resources.files("beadhive_pants.data") / "proven_tests.json").read_text(encoding="utf-8")
     )
-    proven_package_tests = {
-        path
+    return {
+        path: evidence
         for path, evidence in manifest["tests"].items()
-        if path.startswith("packages/") and evidence["status"] == "proven"
+        if path.startswith("packages/")
     }
+
+
+def test_proven_manifest_explicitly_declares_every_package_test() -> None:
+    declared = _package_manifest_tests()
     workspace_package_tests = {
         path.as_posix()
         for package in Path("packages").iterdir()
@@ -71,14 +75,15 @@ def test_proven_manifest_explicitly_lists_every_package_test() -> None:
         for path in package.glob("tests/**/test_*.py")
     }
 
-    assert proven_package_tests >= workspace_package_tests
+    assert set(declared) >= workspace_package_tests
+    # An unproven package test keeps `packages` on the native route; it must say why.
+    for path, evidence in declared.items():
+        assert evidence["status"] in {"proven", "unproven"}, path
+        if evidence["status"] == "unproven":
+            assert evidence.get("reason"), path
 
 
-def test_backend_reports_packages_proven_for_the_current_inventory(tmp_path, monkeypatch) -> None:
-    manifest = json.loads(
-        (resources.files("beadhive_pants.data") / "proven_tests.json").read_text(encoding="utf-8")
-    )
-    package_tests = sorted(path for path in manifest["tests"] if path.startswith("packages/"))
+def _analyze_package_inventory(tmp_path, monkeypatch, package_tests: list[str]):
     graph = [
         {
             "address": "packages/example/src:lib",
@@ -108,7 +113,7 @@ def test_backend_reports_packages_proven_for_the_current_inventory(tmp_path, mon
         manifest=resources.files("beadhive_pants.data") / "proven_tests.json",
         query=lambda _repo, args, _timeout: graph if tuple(args) == ("peek", "::") else graph[:1],
     )
-    result = backend.analyze(
+    return backend.analyze(
         ImpactRequest(
             repo=str(tmp_path),
             base_tree="base-tree",
@@ -127,8 +132,30 @@ def test_backend_reports_packages_proven_for_the_current_inventory(tmp_path, mon
         )
     )
 
+
+def test_backend_reports_packages_proven_for_the_proven_inventory(tmp_path, monkeypatch) -> None:
+    package_tests = sorted(
+        path
+        for path, evidence in _package_manifest_tests().items()
+        if evidence["status"] == "proven"
+    )
+
+    result = _analyze_package_inventory(tmp_path, monkeypatch, package_tests)
+
     assert package_tests
     assert result.proven_keys == frozenset({"packages"})
+
+
+def test_backend_keeps_packages_native_when_a_package_test_is_unproven(
+    tmp_path, monkeypatch
+) -> None:
+    package_tests = sorted(_package_manifest_tests())
+    if all(evidence["status"] == "proven" for evidence in _package_manifest_tests().values()):
+        package_tests.append("packages/example/tests/test_undeclared.py")
+
+    result = _analyze_package_inventory(tmp_path, monkeypatch, package_tests)
+
+    assert "packages" not in result.proven_keys
 
 
 def test_cli_projects_the_runner_partition_without_reimplementing_it(monkeypatch) -> None:
