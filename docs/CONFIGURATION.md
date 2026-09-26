@@ -173,7 +173,7 @@ managed_repos:
 | `bh config path` | print the resolved `config.yaml` path |
 | `bh config show` | pretty-print the resolved config (doctor overview + extras, including per-key [provenance](#scope)) |
 | `bh config get <key> [--scope fleet\|host]` | read a dotted config key |
-| `bh config set <key> <value> [--json] [--scope fleet\|host]` | set a dotted config key (bool/int coercion) |
+| `bh config set <key> <value> [--json] [--scope fleet\|host]` | set a dotted config key (bool/int coercion); `hives.<id>.<key>` writes one managed hive's fleet-owned override |
 | `bh config unset <key> [--scope fleet\|host]` | delete a dotted config key |
 | `bh config split [--dry-run]` | one-time migration: split a flat `config.yaml` into `fleet.yaml` + a reduced host config — see [Migration](#config-split) |
 
@@ -214,6 +214,7 @@ bh config set otel.enabled true
 bh config set otel.endpoint http://localhost:4317
 bh config set otel.protocol http/protobuf        # validated
 bh config set work.max_commits 8
+bh config set hives.bh.work.validation_bypass true --scope fleet  # emergency: this hive only
 bh config set my.list '[1,2,3]' --json           # list via JSON
 bh config set my.map '{"a":1}' --json            # map via JSON
 ```

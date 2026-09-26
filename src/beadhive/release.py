@@ -502,6 +502,25 @@ def attest(
         typer.echo(f"✗ cannot resolve {rev!r} to a commit in {main} — nothing to attest", err=True)
         raise typer.Exit(REFUSED)
 
+    from . import validation_bypass
+
+    cfg = config.load()
+    if validation_bypass.enabled(cfg, entry):
+        try:
+            validation_bypass.record(
+                cfg,
+                entry,
+                phase="push-main",
+                command=cmd,
+                sha=sha,
+                tree=validation_ledger.tree_of(entry, sha),
+                branch=rev,
+            )
+        except validation_bypass.BypassAuditError as exc:
+            typer.echo(f"✗ {exc}", err=True)
+            raise typer.Exit(REFUSED) from None
+        raise typer.Exit(0)
+
     if not background:
         if if_needed:
             from . import config_work_settings, selective_validation
@@ -514,7 +533,7 @@ def attest(
                 check=False,
             )
             parent = parent_result.stdout.strip() if parent_result.returncode == 0 else ""
-            selective = selective_validation.configured(cfg := config.load(), entry)
+            selective = selective_validation.configured(cfg, entry)
             keys = attest_keys(config_work_settings.attest_config(cfg, entry))
             release_receipt = (
                 _release_metadata_receipt(entry, main, parent, sha, keys) if parent else None

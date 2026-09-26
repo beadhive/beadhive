@@ -209,6 +209,7 @@ def _data_hives(cfg) -> list[dict]:
             "org": e["org"],
             "repo": e["repo"],
             "kind": e["kind"],
+            "validation_bypass": config.validation_bypass_enabled(cfg, e),
         }
         for e in hives
     ]
@@ -217,7 +218,10 @@ def _data_hives(cfg) -> list[dict]:
 def _render_hives(items: list[dict]) -> None:
     typer.echo(f"\n# Hives ({len(items)})")
     for e in items:
-        typer.echo(f"  {e['prefix']}\t{e['provider']}/{e['org']}/{e['repo']} ({e['kind']})")
+        bypass = "  ⚠ VALIDATION BYPASSED" if e.get("validation_bypass") else ""
+        typer.echo(
+            f"  {e['prefix']}\t{e['provider']}/{e['org']}/{e['repo']} ({e['kind']}){bypass}"
+        )
 
 
 def _overview(cfg, root):

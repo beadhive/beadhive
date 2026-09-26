@@ -684,6 +684,13 @@ class WorkConfig(_Section):
     validate_cmd: str = Field(
         "just check", description="Default validation command for any boundary without an override."
     )
+    validation_bypass: bool = Field(
+        False,
+        description=(
+            "Emergency per-hive switch that bypasses validation command execution without "
+            "changing configured commands or creating green attestations."
+        ),
+    )
     validation_slots: int = Field(
         1,
         ge=0,

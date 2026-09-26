@@ -96,6 +96,7 @@ work_settings = CapabilitySettings(
         "routing_tiers",
         "union_globs",
         "validate_cmd",
+        "validation_bypass_enabled",
         "validation_mode",
         "work_identity",
         "work_landing",

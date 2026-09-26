@@ -175,7 +175,7 @@ def _try_union_tier(
         return rc, dout + out, "conflict"
 
     if validate_cmd:
-        vrc = worktree.clean_checkout(entry, base, validate_cmd)
+        vrc = worktree.clean_checkout(entry, base, validate_cmd, phase="union")
         if vrc != 0:
             worktree.reset_hard(main, pre_union)  # never land a union result that fails validation
             worktree.reset_hard(target, backup)

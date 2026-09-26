@@ -67,7 +67,7 @@ import datetime
 import shlex
 from pathlib import Path
 
-from . import config, guard, host_fence, registry, validation_ledger
+from . import config, guard, host_fence, registry, validation_bypass, validation_ledger
 from .run import run
 
 HOOK_FILENAME = "pre-push"
@@ -292,11 +292,13 @@ def push_main_cmd(cfg, entry, gate_cmd: str = "") -> tuple[str, str]:
 def check_push_main(
     rev: str, hive_id: str = "", gate_cmd: str = "", on_miss: str = "gate runs"
 ) -> tuple[bool, str]:
-    """`(ok, detail)` for "has the tree at `rev` already been proved green by the `push-main`
-    gate?" — the main-push gate's lookup (bh-ku9n9.5, `docs/design/attested-green-adr.md`).
+    """`(ok, detail)` for the main-push gate's lookup (bh-ku9n9.5,
+    `docs/design/attested-green-adr.md`).
 
-    `ok=True` means, and only ever means: the ledger holds a FRESH GREEN verdict for the EXACT
-    tree this push would land, earned under the exact command this gate would otherwise run.
+    Normally `ok=True` means the ledger holds a FRESH GREEN verdict for the EXACT tree this push
+    would land, earned under the exact command this gate would otherwise run. Emergency
+    `work.validation_bypass=true` is the sole second case: it returns true with an unmistakable
+    `BYPASSED` detail and a durable audit record, without reading or writing an attestation.
     The caller may then skip that command. **Every other outcome is `ok=False`, which means run
     the full gate inline exactly as before this function existed** — a miss, a stale entry, a
     red verdict, an invalid record, an unconfigured phase, no hive, no clone, a corrupt config,
@@ -342,6 +344,24 @@ def check_push_main(
         entry = registry.resolve_hive(cfg, hive_id) if hive_id else registry.current_hive(cfg)
         if not entry:
             return False, f"• no managed hive for this push ({hive_id or 'cwd'}) — {on_miss}"
+        if validation_bypass.enabled(cfg, entry):
+            cmd = config.validate_cmd(cfg, entry, phase=PUSH_MAIN_PHASE)
+            tree = validation_ledger.tree_of(entry, rev)
+            if not tree:
+                return False, (
+                    f"• validation bypass refused: {rev!r} does not resolve to an exact tree — "
+                    f"{on_miss}"
+                )
+            bypassed = validation_bypass.record(
+                cfg,
+                entry,
+                phase=PUSH_MAIN_PHASE,
+                command=cmd,
+                sha=rev,
+                tree=tree,
+                emit=False,
+            )
+            return True, bypassed.message
         cmd, refusal = push_main_cmd(cfg, entry, gate_cmd)
         if refusal:
             return False, f"{refusal} ({on_miss})"

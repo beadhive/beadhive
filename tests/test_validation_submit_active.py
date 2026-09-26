@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from beadhive import work_submission, worktree_verify
+from beadhive import validation_bypass, work_submission, worktree_verify
 
 
 class Exit(Exception):
@@ -85,6 +85,29 @@ def test_submit_reaps_dead_owner_before_replacement(monkeypatch):
     assert abandoned and abandoned[0][0][-1] == "run-dead"
     assert checkout_kwargs[0]["observed_active_run_id"] is None
     assert any("run-dead" in message and "abandoned" in message for message in api.messages)
+
+
+def test_submit_bypass_never_waits_for_or_reuses_an_active_validation(monkeypatch):
+    api = _api([])
+    api.validation_records.running_runs = lambda *a, **k: pytest.fail("consulted active runs")
+    calls = []
+    api.worktree.clean_checkout = lambda *a, **k: calls.append(k) or validation_bypass.BYPASSED_EXIT
+    api.time = SimpleNamespace(perf_counter=lambda: 0)
+    api.otel = SimpleNamespace(record_validation_duration=lambda *a: None)
+    api._vres = lambda rc: "bypassed"
+    api._hive = lambda entry: "hive"
+    monkeypatch.setattr(work_submission.validation_bypass, "enabled", lambda *a: True)
+
+    work_submission.impl__validate_submit_checkout(api, {}, "branch", {}, bead="bh-x")
+
+    assert calls == [
+        {
+            "cfg": {},
+            "reuse": False,
+            "bead": "bh-x",
+            "phase": "submit",
+        }
+    ]
 
 
 def test_submit_reaps_zombie_owner_before_replacement():

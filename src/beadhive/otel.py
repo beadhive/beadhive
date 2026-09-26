@@ -1112,6 +1112,19 @@ def count_validation_reuse(attributes: dict[str, Any] | None = None) -> None:
     ).add(1, attributes or {})
 
 
+def count_validation_bypass(attributes: dict[str, Any] | None = None) -> None:
+    """Count explicit validation bypass decisions separately from passes and receipt reuse."""
+    attrs = {"bh.validation.result": "bypassed"}
+    if attributes:
+        attrs.update(attributes)
+    _instrument(
+        "counter",
+        "bh.work.validation.bypassed",
+        unit="1",
+        description="validation gates bypassed by explicit operator policy",
+    ).add(1, attrs)
+
+
 def record_validation_queue_wait(seconds: float, attributes: dict[str, Any] | None = None) -> None:
     """Histogram of host-wide validation-admission queue time.
 

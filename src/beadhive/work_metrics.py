@@ -19,6 +19,8 @@ def hive(entry) -> str:
 
 
 def validation_result(rc: int, retryable_exit: int = 75) -> str:
+    if getattr(rc, "bypassed", False):
+        return "bypassed"
     if rc == 0:
         return "pass"
     if rc == retryable_exit:

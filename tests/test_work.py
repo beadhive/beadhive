@@ -29,6 +29,7 @@ from beadhive import bd as bd_mod
 from beadhive import (
     claim_authority,
     config,
+    config_store,
     ghpr,
     git_linkage,
     host,
@@ -490,6 +491,15 @@ def _remote_has(hive, branch):
     cmd = ["git", "branch", "--list", branch]
     out = real_run(cmd, cwd=str(hive.remote), check=False, capture=True, env=_CLEAN_ENV).stdout
     return bool((out or "").strip())
+
+
+def _enable_validation_bypass(hive):
+    text = hive.cfg_path.read_text().replace(
+        "prefix: mr, kind: personal}",
+        "prefix: mr, kind: personal, work: {validation_bypass: true}}",
+    )
+    hive.cfg_path.write_text(text)
+    config_store.clear_load_cache()
 
 
 # ---- the history guard (ponytail self-check) -------------------------------
@@ -1422,6 +1432,46 @@ def test_submit_rejects_noisy_history(hive, fakebd):
         work.submit(bead="mr-3", hive="myrepo")
     assert "review" not in fakebd.states.get("mr-3", {})  # no state change
     assert not fakebd.did("set-state", "mr-3")
+
+
+def test_submit_bypass_preserves_history_and_dirty_tree_guards(hive, fakebd, capsys):
+    _enable_validation_bypass(hive)
+    fakebd.seed("mr-bypass-guards", title="t")
+    work.claim(bead="mr-bypass-guards", as_="", hive="myrepo")
+    seat = _wt(hive, "mr-bypass-guards")
+    _commit(seat, "wip junk")
+
+    with pytest.raises(typer.Exit):
+        work.submit(bead="mr-bypass-guards", hive="myrepo")
+    assert "BYPASSED" not in capsys.readouterr().out
+    assert not fakebd.did("set-state", "mr-bypass-guards")
+
+    _git("commit", "--amend", "-qm", "feat: clean history", cwd=seat)
+    (seat / "dirty.txt").write_text("uncommitted")
+    with pytest.raises(typer.Exit):
+        work.submit(bead="mr-bypass-guards", hive="myrepo")
+    assert "BYPASSED" not in capsys.readouterr().out
+    assert not fakebd.did("set-state", "mr-bypass-guards")
+
+
+def test_submit_bypass_records_audit_without_green_and_keeps_review_gate(hive, fakebd, capsys):
+    _enable_validation_bypass(hive)
+    fakebd.seed("mr-bypass", title="t")
+    work.claim(bead="mr-bypass", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-bypass"), "feat: emergency fix")
+
+    work.submit(bead="mr-bypass", hive="myrepo")
+
+    assert "BYPASSED validation [submit]" in capsys.readouterr().out
+    assert fakebd.states["mr-bypass"]["review"] == "pending"
+    assert fakebd.did("gate", "create", "--blocks", "mr-bypass")
+    root = validation_records._validation_root(hive.main)
+    assert list((root / "bypasses").glob("*.json"))
+    assert not (root / "verdicts").exists()
+
+    # Review approval remains a separate mandatory guard even in emergency mode.
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-bypass", hive="myrepo", rm=False, molecule=False)
 
 
 def test_submit_reports_network_failure_as_retryable_not_a_failed_verdict(
