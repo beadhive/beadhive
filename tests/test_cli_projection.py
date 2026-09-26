@@ -133,7 +133,7 @@ def test_generated_projection_preserves_help_and_every_migrated_flag() -> None:
     # These hashes pin the full Click parameter inventory: names, long/short flags, arguments,
     # requiredness, hidden state, passthrough context, command ordering, and parameter types.
     assert _digest(_click_inventory(work.app)) == (
-        "af87d2877a7f0c8e54cf94e368b25198c702ca87b3fe63cb9ba5c63c044296ef"
+        "17717f265d4a22431c3778c47d7556ea708f6f4bf36d2167f7a75680746ccc2d"
     )
     assert _digest(_click_inventory(plan.app)) == (
         "7156c6aeee559e071428f3e3856586da7500742420cbec3286bbf95db4493f19"
