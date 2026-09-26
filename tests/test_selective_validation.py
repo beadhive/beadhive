@@ -9,6 +9,10 @@ from beadhive.modules.config.contracts import AttestConfig
 from beadhive.modules.work.domain.impact import ImpactReceipt, KeyEvidence
 
 
+def _without_durations(output: str) -> str:
+    return re.sub(r"\d+\.\d{3}s", "<elapsed>", output)
+
+
 def test_impact_fallback_warning_is_prominent_and_sent_to_stderr(capsys) -> None:
     selective_validation.warn_impact_fallback(
         "pants: error: RuntimeError: Pants peek failed after retry"
@@ -264,7 +268,13 @@ def test_unresolved_impact_defaults_to_byte_compatible_fallback(monkeypatch, cap
             fallback_reason="pants: unavailable",
         )
         captured = capsys.readouterr()
-        return rc, resolver.seen, calls, captured.out, captured.err
+        return (
+            rc,
+            resolver.seen,
+            calls,
+            _without_durations(captured.out),
+            _without_durations(captured.err),
+        )
 
     default = once(_attest(key))
     explicit = once(
@@ -361,7 +371,7 @@ def test_enable_disable_enable_restores_identical_execution(monkeypatch, capsys)
     def once(key):
         calls = []
         rc, resolver = _run(monkeypatch, _attest(key), lambda cmd: calls.append(cmd) or 0)
-        output = re.sub(r"\d+\.\d{3}s", "<elapsed>", capsys.readouterr().out)
+        output = _without_durations(capsys.readouterr().out)
         return rc, resolver.seen, calls, output
 
     before = once(base)
