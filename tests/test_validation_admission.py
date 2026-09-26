@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from beadhive import validation_admission, worktree_verify
+from beadhive import validation_admission, work_submission, worktree_verify
 from harness.processes import process_context
 
 
@@ -14,6 +14,49 @@ def _hold(root, entered, release):
     with validation_admission.host_slot({}, root=root):
         entered.set()
         release.wait(5)
+
+
+def _parallel_check_worker(slot_root, hive_root, cohort, results):
+    """Run the selective-validation shape with real host and identity flocks."""
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    os.environ["BH_VALIDATION_SLOT_ROOT"] = str(slot_root)
+    cfg = {"work": {"validation_slots": 2}}
+    entry = {"prefix": "proof"}
+    target = Path(hive_root)
+    target.mkdir(parents=True, exist_ok=True)
+    worktree_verify._branch_sha = lambda *_args: "a" * 40
+    worktree_verify.registry.hive_dir = lambda *_args: target
+    worktree_verify.validation_ledger.tree_of = lambda *_args: "tree"
+    worktree_verify._impl_clean_checkout_unadmitted = lambda *args, **kwargs: 0
+
+    def run_selective(*_args, runner, **_kwargs):
+        cohort.wait(5)
+        return runner("true")
+
+    api = SimpleNamespace(
+        config=SimpleNamespace(
+            load=lambda: cfg,
+            validate_cmd=lambda *_args: "true",
+            integration_branch=lambda *_args: "main",
+        ),
+        worktree=SimpleNamespace(
+            locate=lambda *_args: (entry, target, target, "wt/bead/issue/proof"),
+            in_bead_worktree=lambda *_args: True,
+            head_full_sha=lambda *_args: "a" * 40,
+            clean_checkout=worktree_verify.impl_clean_checkout,
+            integration_base=lambda *_args: "main",
+        ),
+        validation_admission=validation_admission,
+        validation_ledger=worktree_verify.validation_ledger,
+        selective_validation=SimpleNamespace(configured=lambda *_args: True, run=run_selective),
+        otel=SimpleNamespace(set_bead=lambda *_args: None),
+        _batch_worktree=lambda *_args: (None, None),
+        _checked_sha=lambda *_args: "a" * 40,
+        typer=SimpleNamespace(echo=lambda *_args, **_kwargs: None),
+    )
+    results.put(work_submission.impl_check(api, "proof", None))
 
 
 def _exact_caller_worker(
@@ -255,6 +298,70 @@ def test_reusable_gate_takes_identity_before_host(monkeypatch, tmp_path):
     monkeypatch.setattr(worktree_verify, "_impl_clean_checkout_unadmitted", lambda *a, **k: 0)
     assert worktree_verify.impl_clean_checkout({}, "main", "true", cfg={}, reuse=True) == 0
     assert order == ["identity-enter", "host-enter", "host-exit", "identity-exit"]
+
+
+def test_clean_checkout_under_parent_permit_keeps_identity_without_second_slot(
+    monkeypatch, tmp_path
+):
+    order = []
+    parent = validation_admission.Permit(slot=1, queue_seconds=0.25)
+
+    @validation_admission.contextlib.contextmanager
+    def identity(*args, **kwargs):
+        order.append("identity-enter")
+        yield
+        order.append("identity-exit")
+
+    monkeypatch.setattr(worktree_verify, "_branch_sha", lambda *_: "a" * 40)
+    monkeypatch.setattr(worktree_verify.registry, "hive_dir", lambda *_: tmp_path)
+    monkeypatch.setattr(worktree_verify.validation_ledger, "tree_of", lambda *a: "tree")
+    monkeypatch.setattr(validation_admission, "identity_lock", identity)
+    monkeypatch.setattr(
+        validation_admission,
+        "host_slot",
+        lambda *a, **k: pytest.fail("a nested validation must inherit its parent's permit"),
+    )
+    monkeypatch.setattr(
+        worktree_verify,
+        "_impl_clean_checkout_unadmitted",
+        lambda *a, **k: order.append(("run", k["permit"])) or 0,
+    )
+
+    assert (
+        worktree_verify.impl_clean_checkout({}, "main", "true", cfg={}, reuse=False, permit=parent)
+        == 0
+    )
+    assert order == ["identity-enter", ("run", parent), "identity-exit"]
+
+
+def test_two_parallel_selective_checks_share_their_outer_permits(tmp_path, monkeypatch):
+    """Both checks hold the two host slots before their key runners enter clean checkout."""
+    monkeypatch.setenv("BH_VALIDATION_SLOT_ROOT", str(tmp_path / "slots"))
+    ctx = process_context()
+    cohort = ctx.Barrier(2)
+    results = ctx.Queue()
+    workers = [
+        ctx.Process(
+            target=_parallel_check_worker,
+            args=(tmp_path / "slots", tmp_path / "hive", cohort, results),
+        )
+        for _ in range(2)
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(5)
+    try:
+        assert all(not worker.is_alive() for worker in workers), (
+            "parallel checks deadlocked while nested clean checkouts waited for second host slots"
+        )
+        assert [worker.exitcode for worker in workers] == [0, 0]
+        assert [results.get(timeout=1) for _ in workers] == [None, None]
+    finally:
+        for worker in workers:
+            if worker.is_alive():
+                worker.kill()
+                worker.join(3)
 
 
 @pytest.mark.parametrize(

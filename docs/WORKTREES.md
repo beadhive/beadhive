@@ -225,6 +225,9 @@ for a separately-contained CI host. The safe first tuning step on a host with me
 I/O headroom is `BH_VALIDATION_SLOTS=2 bh work check <bead>` (or set the host config to `2`), then
 observe peak memory, load and queue time before making that persistent. Slots are uniform in this
 initial implementation: a gate consumes one slot regardless of its estimated CPU or memory cost.
+Selective validation keys run beneath the enclosing check's permit, so they do not consume extra
+slots. Parallel checks therefore need capacity for the checks themselves only; increasing
+`BH_VALIDATION_SLOTS` to cover both checks and their nested keys is unnecessary.
 
 The queue is visible (`queued for validation slot`, followed by `admitted ... executing`). Exact
 concurrent `(hive, tree, command-hash)` requests serialize ahead of host admission, so followers
