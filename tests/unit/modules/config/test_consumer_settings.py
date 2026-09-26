@@ -47,7 +47,12 @@ def test_worktree_safety_settings_are_exposed_by_the_narrow_work_port():
 
 
 def test_host_daemon_settings_are_exposed_by_the_narrow_daemon_port():
-    assert set(daemon_settings.allowed_names) == {"home", "load", "otel_flush_timeout"}
+    assert set(daemon_settings.allowed_names) == {
+        "BINARY_ALIAS",
+        "home",
+        "load",
+        "otel_flush_timeout",
+    }
 
 
 def test_patching_a_consumer_port_replaces_the_legacy_facade_name(monkeypatch):

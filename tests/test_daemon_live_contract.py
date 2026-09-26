@@ -1213,6 +1213,7 @@ def _assert_live_server_cleanup(cleanup: dict[str, Any]) -> None:
         ("fastmcp-http", "completed"),
         ("daemon-state-broker", "completed"),
         ("daemon-telemetry", "completed"),
+        ("beads-service-supervision", "completed"),
     }
 
 

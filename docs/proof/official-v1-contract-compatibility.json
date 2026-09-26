@@ -42,7 +42,7 @@
       "compatibility_policy": "append-only-catalog-v1",
       "family": "cli",
       "path": "artifacts/cli-projections-v1.json",
-      "sha256": "sha256:b2d38d11dd1b8e9b7eeb7f00c3a8fd25a439d51f9d8b4d2c3b6d5f5e0eabb604",
+      "sha256": "sha256:84d044b55d8372b50e8e3145c5d99e3b720471267cfa687df13bf9db8636e809",
       "source_owner": "beadhive.transport_inventory.document"
     },
     {
@@ -105,7 +105,7 @@
       "compatibility_policy": "append-only-catalog-v1",
       "family": "operation-catalog",
       "path": "artifacts/operation-catalog-v1.json",
-      "sha256": "sha256:8c849120cb43cf19d2d6bec9ab2cbdb28eac0246441a173c2c1f98d1c87073a8",
+      "sha256": "sha256:096a7b9bfcf73d6f2f578abce8ebc50b347653f0db1573c225b5d41a4a75177d",
       "source_owner": "beadhive.kernel.operations.document"
     },
     {
@@ -474,13 +474,302 @@
     },
     {
       "artifact_id": "urn:beadhive:wire-catalog:operations:1",
-      "candidate_sha256": "sha256:8c849120cb43cf19d2d6bec9ab2cbdb28eac0246441a173c2c1f98d1c87073a8",
-      "classification": "identical",
-      "differences": [],
+      "candidate_sha256": "sha256:096a7b9bfcf73d6f2f578abce8ebc50b347653f0db1573c225b5d41a4a75177d",
+      "classification": "compatible-additive",
+      "differences": [
+        {
+          "after_items": 37,
+          "after_sha256": "sha256:b7016fbc7e00738c84b7d3f78c88107d5a6ab93327c18d303c8b7a9891a93769",
+          "before_items": 36,
+          "before_sha256": "sha256:52e885cea198543392418a27d3584d1667332a32e9c256ce72dcc87f5ef2b8ff",
+          "kind": "sequence-changed",
+          "path": "/cli_parents"
+        },
+        {
+          "after_items": 206,
+          "after_sha256": "sha256:3a260c3e8413605d5c81ce408ca77c61b055bf7a03d4108a775acac3f956b514",
+          "before_items": 200,
+          "before_sha256": "sha256:63079f0c815fe84b966d71aae7539fbaa37a679a767c9e39f8b7376a20d53fb7",
+          "kind": "sequence-changed",
+          "path": "/operations"
+        }
+      ],
       "historical_manifest": "docs/schemas/wire/v1.5.0/release.json",
       "historical_path": "docs/schemas/wire/v1.5.0/operation-catalog-v1.json",
       "historical_release": "1.5.0",
       "historical_sha256": "sha256:8c849120cb43cf19d2d6bec9ab2cbdb28eac0246441a173c2c1f98d1c87073a8",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:bh.hive-onboard:1",
+      "candidate_sha256": null,
+      "classification": "legacy-only-retained",
+      "differences": [
+        {
+          "kind": "not-promoted",
+          "path": ""
+        }
+      ],
+      "historical_manifest": "docs/schemas/wire/v1.6.0/release.json",
+      "historical_path": "docs/schemas/wire/v1.6.0/bh-hive-onboard-v1.schema.json",
+      "historical_release": "1.6.0",
+      "historical_sha256": "sha256:16596efbb56d6d4bc834dd3f58cab06ccf1a735965eec3b4ab98b94a67e66aa7",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:bh.hive-ready:1",
+      "candidate_sha256": null,
+      "classification": "legacy-only-retained",
+      "differences": [
+        {
+          "kind": "not-promoted",
+          "path": ""
+        }
+      ],
+      "historical_manifest": "docs/schemas/wire/v1.6.0/release.json",
+      "historical_path": "docs/schemas/wire/v1.6.0/bh-hive-ready-v1.schema.json",
+      "historical_release": "1.6.0",
+      "historical_sha256": "sha256:d1abb3c0eb0a0e81f920aa6fb83a1d9d94e314b0acee039bd4231b7059f5ec4c",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:bh.hive-status:1",
+      "candidate_sha256": null,
+      "classification": "legacy-only-retained",
+      "differences": [
+        {
+          "kind": "not-promoted",
+          "path": ""
+        }
+      ],
+      "historical_manifest": "docs/schemas/wire/v1.6.0/release.json",
+      "historical_path": "docs/schemas/wire/v1.6.0/bh-hive-status-v1.schema.json",
+      "historical_release": "1.6.0",
+      "historical_sha256": "sha256:87d0ce863338ff135f455aebf5513771ec39773f0995d1d244c6e5789fde8993",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:bh.hive-survey:1",
+      "candidate_sha256": null,
+      "classification": "legacy-only-retained",
+      "differences": [
+        {
+          "kind": "not-promoted",
+          "path": ""
+        }
+      ],
+      "historical_manifest": "docs/schemas/wire/v1.6.0/release.json",
+      "historical_path": "docs/schemas/wire/v1.6.0/bh-hive-survey-v1.schema.json",
+      "historical_release": "1.6.0",
+      "historical_sha256": "sha256:a8e8f8f15e9c71a40859144d854defe0eef7f306400d553dab253cd63c0ae323",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:config:1",
+      "candidate_sha256": "sha256:501d96d60045864ded4ce8c194e3e3aeb2bc8492d089eb276c8f139887f6c387",
+      "classification": "compatible-additive",
+      "differences": [
+        {
+          "kind": "added",
+          "path": "/$defs/AttestConfig"
+        },
+        {
+          "kind": "added",
+          "path": "/$defs/AttestImpactConfig"
+        },
+        {
+          "kind": "added",
+          "path": "/$defs/AttestKeyConfig"
+        },
+        {
+          "kind": "added",
+          "path": "/$defs/AttestSemanticConfig"
+        },
+        {
+          "kind": "added",
+          "path": "/$defs/AttestTrivialConfig"
+        },
+        {
+          "kind": "added",
+          "path": "/$defs/AlertsConfig/properties/worktree_filesystem_free_floor_mb"
+        },
+        {
+          "after_sha256": "sha256:c6706f288f9d2005ce3f95821a5441b7bfbcccdc041a16e3e789238932217395",
+          "before_sha256": "sha256:fce2c6d09d45392bb68028df4426a9a8836023d2c7dbd923ef2656b1e30ebc6f",
+          "kind": "value-changed",
+          "path": "/$defs/AlertsConfig/properties/disk_free_floor_mb/description"
+        },
+        {
+          "kind": "added",
+          "path": "/$defs/WorkConfig/properties/attest"
+        }
+      ],
+      "historical_manifest": "docs/schemas/wire/v1.6.0/release.json",
+      "historical_path": "docs/schemas/wire/v1.6.0/config-v1.schema.json",
+      "historical_release": "1.6.0",
+      "historical_sha256": "sha256:a6db5e41fe2a3d3ca4954c7e5f4c3118a5b4c24c89a041b5a5553f006dba4a88",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:factory.bead-node:1",
+      "candidate_sha256": null,
+      "classification": "legacy-only-retained",
+      "differences": [
+        {
+          "kind": "not-promoted",
+          "path": ""
+        }
+      ],
+      "historical_manifest": "docs/schemas/wire/v1.6.0/release.json",
+      "historical_path": "docs/schemas/wire/v1.6.0/factory-bead-node-v1.schema.json",
+      "historical_release": "1.6.0",
+      "historical_sha256": "sha256:2a4f13aa523255c3f677cc9586d0e5b450ed493965a6daaa450761b4cc40666f",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:factory.hive-info:1",
+      "candidate_sha256": null,
+      "classification": "legacy-only-retained",
+      "differences": [
+        {
+          "kind": "not-promoted",
+          "path": ""
+        }
+      ],
+      "historical_manifest": "docs/schemas/wire/v1.6.0/release.json",
+      "historical_path": "docs/schemas/wire/v1.6.0/factory-hive-info-v1.schema.json",
+      "historical_release": "1.6.0",
+      "historical_sha256": "sha256:c6ff66bc584d87228438177487316f21b03b94297b0444d0f587a594dd65d509",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:factory.snapshot:1",
+      "candidate_sha256": null,
+      "classification": "legacy-only-retained",
+      "differences": [
+        {
+          "kind": "not-promoted",
+          "path": ""
+        }
+      ],
+      "historical_manifest": "docs/schemas/wire/v1.6.0/release.json",
+      "historical_path": "docs/schemas/wire/v1.6.0/factory-snapshot-v1.schema.json",
+      "historical_release": "1.6.0",
+      "historical_sha256": "sha256:6dc08fe293763ac0aa542206b45be2c9a8121b726ed43eff6013b45395b360fe",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:json-value:1",
+      "candidate_sha256": null,
+      "classification": "legacy-only-retained",
+      "differences": [
+        {
+          "kind": "not-promoted",
+          "path": ""
+        }
+      ],
+      "historical_manifest": "docs/schemas/wire/v1.6.0/release.json",
+      "historical_path": "docs/schemas/wire/v1.6.0/json-value-v1.schema.json",
+      "historical_release": "1.6.0",
+      "historical_sha256": "sha256:024f52b7f65986cba3f356ddabe33b7d4be48fd0c6d87250155be607c8986447",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:operation-catalog:1",
+      "candidate_sha256": null,
+      "classification": "legacy-only-retained",
+      "differences": [
+        {
+          "kind": "not-promoted",
+          "path": ""
+        }
+      ],
+      "historical_manifest": "docs/schemas/wire/v1.6.0/release.json",
+      "historical_path": "docs/schemas/wire/v1.6.0/operation-catalog-v1.schema.json",
+      "historical_release": "1.6.0",
+      "historical_sha256": "sha256:e371894a2622a1e49ac4285da34c841bda0bb6229d8c848cfed02fc1a7d1ad97",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:plugin-manifest:1",
+      "candidate_sha256": "sha256:5984e0fdf433758e71494f2d08054078bdefcddc4abd480ed11bceaa349a644b",
+      "classification": "compatible-additive",
+      "differences": [
+        {
+          "kind": "added",
+          "path": "/version"
+        }
+      ],
+      "historical_manifest": "docs/schemas/wire/v1.6.0/release.json",
+      "historical_path": "docs/schemas/wire/v1.6.0/plugin-manifest-v1.schema.json",
+      "historical_release": "1.6.0",
+      "historical_sha256": "sha256:18d2401fc261b47619c96d0ee058f2c5edb228e92af9b959e462d4b844f4aefc",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:plugin-config:herdr:1",
+      "candidate_sha256": "sha256:14fd1dd6739ab7d637259ccb3174884a7a815dba359841764165a0e574a2c565",
+      "classification": "identical",
+      "differences": [],
+      "historical_manifest": "docs/schemas/wire/v1.6.0/release.json",
+      "historical_path": "docs/schemas/wire/v1.6.0/plugin-config-herdr-v1.schema.json",
+      "historical_release": "1.6.0",
+      "historical_sha256": "sha256:14fd1dd6739ab7d637259ccb3174884a7a815dba359841764165a0e574a2c565",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:plugin-config:hitch:1",
+      "candidate_sha256": "sha256:a36483cda7101dfc29d4f6757e15b5604bef940c19f242a6ebd9f577ff35f119",
+      "classification": "identical",
+      "differences": [],
+      "historical_manifest": "docs/schemas/wire/v1.6.0/release.json",
+      "historical_path": "docs/schemas/wire/v1.6.0/plugin-config-hitch-v1.schema.json",
+      "historical_release": "1.6.0",
+      "historical_sha256": "sha256:a36483cda7101dfc29d4f6757e15b5604bef940c19f242a6ebd9f577ff35f119",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:plugin-config:observaloop:1",
+      "candidate_sha256": "sha256:e7b434e50b256cddf20d71a4474a61c61f1af0d5441b86326275ecb2389eb817",
+      "classification": "identical",
+      "differences": [],
+      "historical_manifest": "docs/schemas/wire/v1.6.0/release.json",
+      "historical_path": "docs/schemas/wire/v1.6.0/plugin-config-observaloop-v1.schema.json",
+      "historical_release": "1.6.0",
+      "historical_sha256": "sha256:e7b434e50b256cddf20d71a4474a61c61f1af0d5441b86326275ecb2389eb817",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:plugin-config:orca:1",
+      "candidate_sha256": "sha256:b1e40e259a65c5e5fc58e910772708e0a5b9c784e457d5164480794c7432a238",
+      "classification": "identical",
+      "differences": [],
+      "historical_manifest": "docs/schemas/wire/v1.6.0/release.json",
+      "historical_path": "docs/schemas/wire/v1.6.0/plugin-config-orca-v1.schema.json",
+      "historical_release": "1.6.0",
+      "historical_sha256": "sha256:b1e40e259a65c5e5fc58e910772708e0a5b9c784e457d5164480794c7432a238",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:plugin-config:repowise:1",
+      "candidate_sha256": "sha256:3efbf7d6f96a8bb85224ea33edadae2bbfae38bdac0d2e98eee05781241ddc1b",
+      "classification": "identical",
+      "differences": [],
+      "historical_manifest": "docs/schemas/wire/v1.6.0/release.json",
+      "historical_path": "docs/schemas/wire/v1.6.0/plugin-config-repowise-v1.schema.json",
+      "historical_release": "1.6.0",
+      "historical_sha256": "sha256:3efbf7d6f96a8bb85224ea33edadae2bbfae38bdac0d2e98eee05781241ddc1b",
+      "policy_errors": []
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-catalog:operations:1",
+      "candidate_sha256": "sha256:096a7b9bfcf73d6f2f578abce8ebc50b347653f0db1573c225b5d41a4a75177d",
+      "classification": "identical",
+      "differences": [],
+      "historical_manifest": "docs/schemas/wire/v1.6.0/release.json",
+      "historical_path": "docs/schemas/wire/v1.6.0/operation-catalog-v1.json",
+      "historical_release": "1.6.0",
+      "historical_sha256": "sha256:096a7b9bfcf73d6f2f578abce8ebc50b347653f0db1573c225b5d41a4a75177d",
       "policy_errors": []
     }
   ],
@@ -494,11 +783,11 @@
   "summary": {
     "candidate_artifacts": 23,
     "classifications": {
-      "compatible-additive": 2,
-      "identical": 6,
-      "legacy-only-retained": 9
+      "compatible-additive": 5,
+      "identical": 11,
+      "legacy-only-retained": 18
     },
-    "historical_artifact_observations": 17,
-    "historical_releases": 1
+    "historical_artifact_observations": 34,
+    "historical_releases": 2
   }
 }

@@ -130,6 +130,16 @@ daemon_app = typer.Typer(
 )
 app.add_typer(daemon_app, name="daemon")
 
+# `bh host beads <verb>` (bh-bwnys.4) — the host runtime's ownership of ONE supervised loopback
+# `bd serve` per server-mode hive (docs/spikes/bh-ie41e.5-bd-serve-adoption-decision.md). Hive-
+# scoped like `host dispatch` (`--hive`, cwd default); `--all` only on the aggregate `status`
+# read. Implementation in `beadhive.host_beads`, which resolves the Beads client lazily.
+beads_app = typer.Typer(
+    no_args_is_help=True,
+    help="the supervised Beads API service (bd serve): one per server-mode hive, loopback only.",
+)
+app.add_typer(beads_app, name="beads")
+
 
 _cli_telemetry_initializer: Callable[[], None] | None = None
 _cli_command_instrumenter: Callable[..., None] | None = None
@@ -345,6 +355,228 @@ def daemon_remove(
     as_json: bool = typer.Option(False, "--json", help="machine-readable supervisor state"),
 ) -> None:
     _daemon_lifecycle("remove", as_json=as_json)
+
+
+# ---- `bh host beads` ----------------------------------------------------------
+
+_BEADS_HIVE = typer.Option("", "--hive", help="hive id (defaults to cwd's hive)")
+
+
+def _beads_spec(hive: str):
+    """The hive's service spec, or a clean ``✗`` exit for a hive this path cannot serve."""
+    from . import host_beads
+
+    try:
+        return host_beads.spec_for_hive(config.load(), hive)
+    except (host_beads.HiveNotServable, KeyError, ValueError) as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(1) from None
+
+
+def _beads_fail(exc: Exception) -> typer.Exit:
+    typer.echo(f"✗ {exc}", err=True)
+    return typer.Exit(1)
+
+
+def _beads_record_line(record) -> str:
+    return (
+        f"{record.url} (pid {record.pid}, bd {record.bd_version or '?'}, "
+        f"supervisor {record.supervisor}, since {record.started_at})"
+    )
+
+
+@beads_app.command("start", help="start the hive's bd serve if not already verified running.")
+@otel.trace_verb("host.beads.start")
+def beads_start_cmd(hive: str = _BEADS_HIVE, as_json: bool = _AS_JSON) -> None:
+    """Idempotent: a verified running service is reported, never duplicated. The service is
+    detached (it outlives this command); ``bh host beads stop`` ends it. Readiness is proven by
+    the same context negotiation every client performs before the record is published."""
+    from . import host_beads
+
+    spec = _beads_spec(hive)
+    service = host_beads.service_module()
+    try:
+        outcome = service.start(spec)
+    except (service.ServiceError, OSError, ValueError) as exc:
+        raise _beads_fail(exc) from None
+    if as_json:
+        jsonout.emit(
+            {
+                "hive": spec.workspace,
+                "started": outcome.started,
+                "readiness_seconds": round(outcome.readiness_seconds, 3),
+                "record": outcome.record.payload(),
+            }
+        )
+        return
+    if outcome.started:
+        typer.echo(
+            f"✓ bd serve for {spec.workspace} ready in {outcome.readiness_seconds:.2f}s at "
+            f"{_beads_record_line(outcome.record)}"
+        )
+    else:
+        typer.echo(
+            f"✓ bd serve for {spec.workspace} already running at "
+            f"{_beads_record_line(outcome.record)}"
+        )
+
+
+@beads_app.command("stop", help="SIGTERM the hive's bd serve and retract its endpoint record.")
+@otel.trace_verb("host.beads.stop")
+def beads_stop_cmd(hive: str = _BEADS_HIVE, as_json: bool = _AS_JSON) -> None:
+    """Idempotent. A service kept alive by the host daemon is refused with the command that
+    releases it (``disable``); a foreground ``run`` supervisor is signalled instead of its child
+    so it does not restart it."""
+    from . import host_beads
+
+    spec = _beads_spec(hive)
+    service = host_beads.service_module()
+    try:
+        outcome = service.stop(spec)
+    except service.ServiceOwned as exc:
+        typer.echo(
+            f"✗ {exc}; release it with `{config.BINARY_ALIAS} host beads disable "
+            f"--hive {spec.workspace}`",
+            err=True,
+        )
+        raise typer.Exit(1) from None
+    except (service.ServiceError, OSError) as exc:
+        raise _beads_fail(exc) from None
+    if as_json:
+        jsonout.emit(
+            {
+                "hive": spec.workspace,
+                "state_before": outcome.state_before,
+                "pid": outcome.pid,
+                "signalled": outcome.signalled,
+                "detail": outcome.detail,
+            }
+        )
+        return
+    typer.echo(f"✓ {spec.workspace}: {outcome.detail}")
+
+
+@beads_app.command(
+    "status", help="absent / stale / mismatch / unready / running (context-verified) per hive."
+)
+@otel.trace_verb("host.beads.status")
+def beads_status_cmd(
+    hive: str = _BEADS_HIVE,
+    all_hives: bool = typer.Option(
+        False, "--all", help="every hive with a published service or intent (status only)"
+    ),
+    as_json: bool = _AS_JSON,
+) -> None:
+    """Exit 0 only when every reported service is verified running; 1 otherwise, so scripts
+    and health checks can gate on it."""
+    from . import host_beads
+
+    cfg = config.load()
+    if all_hives:
+        hives = list(host_beads.iter_published(host_beads.runtime_root()))
+    else:
+        try:
+            hives = [host_beads.locate(cfg, hive)[1]]
+        except (host_beads.HiveNotServable, KeyError, ValueError) as exc:
+            raise _beads_fail(exc) from None
+    rows: list[dict] = []
+    for key in hives:
+        try:
+            spec = host_beads.spec_for_hive(cfg, key)
+        except (host_beads.HiveNotServable, KeyError, ValueError) as exc:
+            rows.append({"hive": key, "state": "unservable", "detail": str(exc), "record": None})
+            continue
+        current = host_beads.service_module().status(spec)
+        rows.append(
+            {"hive": key, "supervised_by_daemon": host_beads.is_enabled(spec), **current.payload()}
+        )
+    healthy = bool(rows) and all(row["state"] == "running" for row in rows)
+    if as_json:
+        jsonout.emit({"hives": rows} if all_hives else rows[0])
+    elif not rows:
+        typer.echo("(no Beads API services published on this host)")
+    else:
+        for row in rows:
+            supervised = " [daemon-supervised]" if row.get("supervised_by_daemon") else ""
+            typer.echo(f"{row['hive']:40} {row['state']:10} {row['detail']}{supervised}")
+            if row["state"] != "running" and row["state"] != "unservable":
+                typer.echo(f"  start it with `{host_beads.start_command(row['hive'])}`")
+    if not healthy:
+        raise typer.Exit(1)
+
+
+@beads_app.command(
+    "run", help="foreground supervisor: keep the hive's bd serve alive until SIGTERM."
+)
+@otel.trace_verb("host.beads.run")
+def beads_run_cmd(hive: str = _BEADS_HIVE) -> None:
+    """The owner shape any service manager can run as its main process: starts (or adopts) the
+    service, restarts it with bounded exponential backoff after a crash, gives up after five
+    consecutive failures (exit 1), and on SIGTERM/SIGINT/SIGHUP stops its child gracefully and
+    retracts the endpoint record (exit 0)."""
+    import signal
+    import threading
+
+    from . import host_beads
+
+    spec = _beads_spec(hive)
+    service = host_beads.service_module()
+    supervisor = service.ServiceSupervisor(spec, kind="foreground")
+    stopping = threading.Event()
+
+    def _request_stop(_signum, _frame) -> None:
+        stopping.set()
+
+    for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(signum, _request_stop)
+    last = ""
+    try:
+        while not stopping.is_set():
+            snapshot = supervisor.tick()
+            if snapshot.detail != last:
+                typer.echo(f"{spec.workspace}: {snapshot.state} — {snapshot.detail}", err=True)
+                last = snapshot.detail
+            if snapshot.state == "failed":
+                raise typer.Exit(1)
+            stopping.wait(1.0)
+    finally:
+        supervisor.shutdown()
+    typer.echo(f"{spec.workspace}: stopped", err=True)
+
+
+@beads_app.command(
+    "enable", help="have the host daemon supervise the hive's bd serve (durable intent)."
+)
+@otel.trace_verb("host.beads.enable")
+def beads_enable_cmd(hive: str = _BEADS_HIVE, as_json: bool = _AS_JSON) -> None:
+    """Idempotent. A running host daemon picks the intent up within seconds and starts (or
+    adopts) the service as its child, restarting it with bounded backoff; a daemon started later
+    honors it at startup. No ``--all``: switching services on fleet-wide is a per-hive choice."""
+    from . import host_beads
+
+    spec = _beads_spec(hive)
+    intent = host_beads.enable(spec)
+    if as_json:
+        jsonout.emit({"hive": spec.workspace, "enabled": True, "intent": str(intent)})
+        return
+    typer.echo(f"✓ host daemon will supervise bd serve for {spec.workspace} ({intent})")
+
+
+@beads_app.command("disable", help="withdraw host-daemon supervision; the daemon stops it.")
+@otel.trace_verb("host.beads.disable")
+def beads_disable_cmd(hive: str = _BEADS_HIVE, as_json: bool = _AS_JSON) -> None:
+    """Idempotent. A running daemon stops its child (SIGTERM) on its next pass."""
+    from . import host_beads
+
+    spec = _beads_spec(hive)
+    existed = host_beads.disable(spec)
+    if as_json:
+        jsonout.emit({"hive": spec.workspace, "enabled": False, "changed": existed})
+        return
+    typer.echo(
+        f"✓ host daemon supervision {'withdrawn' if existed else 'was not enabled'} for "
+        f"{spec.workspace}"
+    )
 
 
 # ---- local machine facts -----------------------------------------------------

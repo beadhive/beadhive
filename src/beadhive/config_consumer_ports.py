@@ -40,6 +40,7 @@ _SOURCE = _LegacyFacadeSource()
 daemon_settings = CapabilitySettings(
     "host-daemon",
     {
+        "BINARY_ALIAS",
         "home",
         "load",
         "otel_flush_timeout",

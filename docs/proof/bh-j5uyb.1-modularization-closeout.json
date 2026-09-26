@@ -308,8 +308,8 @@
       "transport_composition": {
         "check": "just transport-artifact-check",
         "artifacts": [
-          {"path": "src/beadhive/schemas/contracts/v1.0.0/artifacts/operation-catalog-v1.json", "sha256": "8c849120cb43cf19d2d6bec9ab2cbdb28eac0246441a173c2c1f98d1c87073a8"},
-          {"path": "docs/design/transport-projection-inventory-v1.json", "sha256": "9814c8922a432dec1c5734cb2e4f16575878ac691cefd8c1403263a17c9c7211"},
+          {"path": "src/beadhive/schemas/contracts/v1.0.0/artifacts/operation-catalog-v1.json", "sha256": "096a7b9bfcf73d6f2f578abce8ebc50b347653f0db1573c225b5d41a4a75177d"},
+          {"path": "docs/design/transport-projection-inventory-v1.json", "sha256": "6919862e80d72cfb9deddbc2bc24b8a8062957f050b68930355856ca6d51ea04"},
           {"path": "src/beadhive/schemas/beadhive-host-openapi-v1.json", "sha256": "9c42157488ca83acfa9ccd4a7ccddbc753e10037c3bb2ee5d5aaf1943d9cc806"},
           {"path": "src/beadhive/schemas/beadhive-gateway-projection-v1.json", "sha256": "a4174b200beb192c066c347b5ae5aae523695067a91f3a955637dccd722cd0ef"},
           {"path": "src/beadhive/schemas/beadhive-gateway-projection-v1.schema.json", "sha256": "6ee17992bc8e752fdb38142965e68bb1119242911eca872a844356a62bc33d78"},
@@ -325,8 +325,8 @@
         "check": "just wire-schema-compat",
         "artifacts": [
           {"path": "docs/schemas/telemetry-event-envelope-v1.schema.json", "sha256": "1bf34e38b60d8e9cdf7b5c60477cb93f9dd24dac970e5c89a8d3b2695cd2d3c6"},
-          {"path": "docs/schemas/wire/index.json", "sha256": "fd0630601836d4d87f17f2d09d237a15b6cbfb43c0b147e3311c504fb4e1b452"},
-          {"path": "docs/proof/official-v1-contract-compatibility.json", "sha256": "cd5864b9ed0311faa75099704ada15a00459f7a39b33690c3eb778d7ef399d1d"}
+          {"path": "docs/schemas/wire/index.json", "sha256": "e8b06e4fa0a806e9bc68da82021f156d965e13454c927dc2df05ae5b50a17219"},
+          {"path": "docs/proof/official-v1-contract-compatibility.json", "sha256": "36de3a29a62c790f01ce1d54cdbf8b572c7f963e43f4bcc520c9f7cb28c00d4d"}
         ]
       },
       "selective_ci": {
@@ -335,12 +335,12 @@
         "artifacts": [
           {"path": "docs/proof/bh-ck1t6.1-test-closure-certification.json", "sha256": "4be8cb0128b7efa300611768fa7063a05499423ed154719ae3c1b1405a26ea99"},
           {"path": "docs/proof/bh-ck1t6.3-shadow-activation.json", "sha256": "50ecf5242bb344276503b0f6ceeb51e000a0a862eee39788d1c65dd812b4a596"},
-          {"path": "docs/proof/bh-ck1t6.4-promotion-policy.json", "sha256": "f7c7c239ee913db6263b8a87429360121ab01cba589157eca96fad679aeb3d13"},
-          {"path": "docs/proof/bh-ck1t6.5-selective-ci-operations.json", "sha256": "db0b775601a718a8b8b486e778c56099e0eaf9fd75b231dfa68b615fab7ac2dd"}
+          {"path": "docs/proof/bh-ck1t6.4-promotion-policy.json", "sha256": "c37bc291487c7c7d739946604a280f13f3791f723df451824a0fb23ce4381d80"},
+          {"path": "docs/proof/bh-ck1t6.5-selective-ci-operations.json", "sha256": "cb12492e33d1addbc19982147b6b7b7c18c5dd71e9c65b125535b42db545b953"}
         ]
       },
       "package_and_entry_point": {
-        "manifest": {"path": "pyproject.toml", "sha256": "3b3528d711953955f41f44042410f83752abc69d7b94285ec4f2dade9902cb94"},
+        "manifest": {"path": "pyproject.toml", "sha256": "8a829c9e8815d1985175f751817e7c4ca17edb030c2489341ea773a6effd4c3b"},
         "wheel_test": "tests/test_frame_bridge_handoff.py::test_wheel_contains_only_the_frame_bridge_core_entry_point",
         "console_script": "beadhive-frame-bridge = beadhive.bootstrap.frame_bridge:main",
         "packaged_modules": ["beadhive/bootstrap/frame_bridge.py", "beadhive/frame_bridge.py", "beadhive/frame_bridge_runtime.py"],
