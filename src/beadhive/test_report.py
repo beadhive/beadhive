@@ -131,21 +131,33 @@ def ingest(drop: Path, rc: int) -> dict | None:
         except (OSError, ET.ParseError):
             continue
         for case in root.iter("testcase"):
-            status = next((s for tag, s in _STATUS.items() if case.find(tag) is not None), PASSED)
+            outcome = next(
+                (
+                    (node, status)
+                    for tag, status in _STATUS.items()
+                    if (node := case.find(tag)) is not None
+                ),
+                None,
+            )
+            status = outcome[1] if outcome is not None else PASSED
             report["tests"] += 1
             report[{"failed": "failures", "error": "errors"}.get(status, status)] += 1
-            report["cases"].append(
-                {
-                    "test.case.name": "::".join(
-                        p for p in (case.get("classname"), case.get("name", "")) if p
-                    ),
-                    "test.case.result.status": status,
-                    # No OTel attribute names a case's wall time (it is the span's duration
-                    # there), so this stays in the same `test.case.*` namespace rather than
-                    # opening a second vocabulary. `None` when the runner emits no `time=`.
-                    "test.case.duration": _seconds(case.get("time")),
-                }
-            )
+            item = {
+                "test.case.name": "::".join(
+                    p for p in (case.get("classname"), case.get("name", "")) if p
+                ),
+                "test.case.result.status": status,
+                # No OTel attribute names a case's wall time (it is the span's duration
+                # there), so this stays in the same `test.case.*` namespace rather than
+                # opening a second vocabulary. `None` when the runner emits no `time=`.
+                "test.case.duration": _seconds(case.get("time")),
+            }
+            if outcome is not None:
+                node = outcome[0]
+                message = node.get("message") or (node.text or "").strip()
+                if message:
+                    item["test.case.result.message"] = message
+            report["cases"].append(item)
     if not report["tests"]:
         return None
     if rc != 0 and not report["failures"] and not report["errors"]:
