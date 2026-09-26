@@ -79,6 +79,12 @@ beadhive-frame-bridge = "beadhive.bootstrap.frame_bridge:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# A sandboxed local install may place UV_TOOL_DIR in this checkout. Its generated nested
+# .gitignore keeps Git clean, but Hatch still discovers the environment while assembling the
+# source distribution unless the build boundary excludes it explicitly.
+[tool.hatch.build]
+exclude = ["/.uv-tools"]
+
 # `bh host beads` supervises the per-hive Beads API service through the Beads client package
 # (bh-bwnys.4), and the API-first core serves `bh work approve` / `bounce` (bh-bwnys.1), so the
 # installed compatibility shell must carry both. Neither package is published yet, and a hard

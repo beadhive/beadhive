@@ -13,6 +13,7 @@ backup/
 
 # Python / bh build + tooling
 .venv/
+.uv-tools/
 __pycache__/
 *.egg-info/
 dist/
