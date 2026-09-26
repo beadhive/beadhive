@@ -1474,9 +1474,7 @@ def test_submit_bypass_records_audit_without_green_and_keeps_review_gate(hive, f
         work.merge(bead="mr-bypass", hive="myrepo", rm=False, molecule=False)
 
 
-def test_submit_one_shot_override_keeps_dev_claim_and_audits_human_operator(
-    hive, fakebd, capsys
-):
+def test_submit_one_shot_override_keeps_dev_claim_and_audits_human_operator(hive, fakebd, capsys):
     fakebd.seed("mr-override", title="t")
     work.claim(bead="mr-override", as_="dev/alice", hive="myrepo")
     _commit(_wt(hive, "mr-override"), "feat: emergency fix")
@@ -1512,9 +1510,7 @@ def test_submit_one_shot_override_keeps_dev_claim_and_audits_human_operator(
     assert not (root / "verdicts").exists()
 
 
-def test_submit_one_shot_override_rejects_agent_as_operator_after_claim_guard(
-    hive, fakebd, capsys
-):
+def test_submit_one_shot_override_rejects_agent_as_operator_after_claim_guard(hive, fakebd, capsys):
     fakebd.seed("mr-override-agent", title="t")
     work.claim(bead="mr-override-agent", as_="dev/alice", hive="myrepo")
     _commit(_wt(hive, "mr-override-agent"), "feat: emergency fix")

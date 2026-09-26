@@ -216,9 +216,7 @@ def set_value(api, dotted: str, raw: str, as_json: bool = False, cfg=None, scope
             return {
                 "ok": False,
                 "problems": [
-                    api._problem(
-                        "error", "hives.<id> overrides are fleet-owned; use --scope fleet"
-                    )
+                    api._problem("error", "hives.<id> overrides are fleet-owned; use --scope fleet")
                 ],
                 "old": None,
                 "new": None,

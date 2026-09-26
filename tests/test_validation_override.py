@@ -148,8 +148,9 @@ def test_override_telemetry_event_carries_full_audit(monkeypatch):
 def test_bead_event_is_machine_readable_and_attributed():
     calls = []
     bd = SimpleNamespace(
-        run=lambda args, main, actor="": calls.append((args, main, actor))
-        or SimpleNamespace(returncode=0)
+        run=lambda args, main, actor="": (
+            calls.append((args, main, actor)) or SimpleNamespace(returncode=0)
+        )
     )
     event = {
         "event": "validation_override",

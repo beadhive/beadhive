@@ -38,12 +38,14 @@ def test_validation_bypass_is_schema_backed_layered_and_strict():
     assert parsed.managed_repos[0].work.validation_bypass is True
     assert config.validation_bypass_enabled({}, _entry(True)) is True
     assert config.validation_bypass_enabled({}, _entry(False)) is False
-    assert config.validation_bypass_enabled(
-        {"work": {"validation_bypass": True}}, _entry(False)
-    ) is False
-    assert config.validation_bypass_enabled(
-        {"work": {"validation_bypass": True}}, {"work": {}}
-    ) is False
+    assert (
+        config.validation_bypass_enabled({"work": {"validation_bypass": True}}, _entry(False))
+        is False
+    )
+    assert (
+        config.validation_bypass_enabled({"work": {"validation_bypass": True}}, {"work": {}})
+        is False
+    )
     assert config.validation_bypass_enabled({}, {"work": {"validation_bypass": "true"}}) is False
 
 
@@ -99,9 +101,7 @@ def test_one_config_set_operation_targets_only_one_hive(monkeypatch):
     monkeypatch.setattr(config, "save_fleet", lambda value: saved.append(value))
     monkeypatch.setattr(config, "_write_transaction", lambda _scope: nullcontext())
 
-    result = config.set_value(
-        "hives.app.work.validation_bypass", "true", scope=config.SCOPE_FLEET
-    )
+    result = config.set_value("hives.app.work.validation_bypass", "true", scope=config.SCOPE_FLEET)
 
     assert result["ok"] is True
     assert first["work"]["validation_bypass"] is True

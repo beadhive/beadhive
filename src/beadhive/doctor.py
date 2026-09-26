@@ -219,9 +219,7 @@ def _render_hives(items: list[dict]) -> None:
     typer.echo(f"\n# Hives ({len(items)})")
     for e in items:
         bypass = "  ⚠ VALIDATION BYPASSED" if e.get("validation_bypass") else ""
-        typer.echo(
-            f"  {e['prefix']}\t{e['provider']}/{e['org']}/{e['repo']} ({e['kind']}){bypass}"
-        )
+        typer.echo(f"  {e['prefix']}\t{e['provider']}/{e['org']}/{e['repo']} ({e['kind']}){bypass}")
 
 
 def _overview(cfg, root):

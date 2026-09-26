@@ -509,9 +509,7 @@ def impl__validate_submit_checkout(api, entry, branch, cfg, bead=None, override=
             },
         )
         if rc != 0:
-            api.typer.echo(
-                f"✗ validation bypass failed (exit {rc}) — nothing submitted", err=True
-            )
+            api.typer.echo(f"✗ validation bypass failed (exit {rc}) — nothing submitted", err=True)
             raise api.typer.Exit(1)
         return
     observed_active_run_id = None

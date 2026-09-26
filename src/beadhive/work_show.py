@@ -348,9 +348,7 @@ def _legacy_review(
         cmd = config.demo_cmd(cfg, entry)
         if cmd:
             typer.echo(f"\n## Demo ({cmd})")
-            typer.echo(
-                f"— demo exit {worktree.clean_checkout(entry, branch, cmd, phase='demo')}"
-            )
+            typer.echo(f"— demo exit {worktree.clean_checkout(entry, branch, cmd, phase='demo')}")
         else:
             typer.echo("\n## Demo\n  no demo_cmd configured (set work.demo_cmd)")
 
