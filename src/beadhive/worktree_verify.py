@@ -1070,6 +1070,7 @@ def impl_clean_checkout(
     bead=None,
     phase="validation",
     observed_active_run_id=None,
+    permit=None,
 ) -> int:
     """Canonical clean-checkout gate, bounded by host-wide validation admission.
 
@@ -1082,6 +1083,25 @@ def impl_clean_checkout(
             cfg = config.load()
         except FileNotFoundError:
             cfg = {}
+    if permit is not None:
+        sha = _branch_sha(entry, branch)
+        main = registry.hive_dir(entry)
+        tree = validation_ledger.tree_of(entry, sha)
+        command_hash = validation_ledger.cmd_hash(cmd)
+        # The caller already owns host admission for the enclosing validation lifecycle. Keep
+        # exact-key serialization, but do not request a second permit and deadlock parallel
+        # checks whose outer lifecycles consume every available host slot.
+        with validation_admission.identity_lock(main, tree, command_hash):
+            return _impl_clean_checkout_unadmitted(
+                entry,
+                branch,
+                cmd,
+                cfg=cfg,
+                reuse=False,
+                bead=bead,
+                phase=phase,
+                permit=permit,
+            )
     if not reuse:
         with validation_admission.host_slot(cfg, entry, phase=phase) as permit:
             return _impl_clean_checkout_unadmitted(

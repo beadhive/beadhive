@@ -49,7 +49,14 @@ def _impl_check_unadmitted(api, bead, hive, *, permit=None):
             head_rev=sha,
             repo_path=str(target),
             runner=lambda key_cmd: api.worktree.clean_checkout(
-                entry, sha, key_cmd, reuse=False, bead=bead, phase="check"
+                entry,
+                sha,
+                key_cmd,
+                cfg=cfg,
+                reuse=False,
+                bead=bead,
+                phase="check",
+                permit=permit,
             ),
         )
         if rc:
