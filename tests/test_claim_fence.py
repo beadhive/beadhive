@@ -477,6 +477,4 @@ def test_both_claim_paths_stamp_the_token():
     assert "record_claim(bead, actor, checkout)" in inspect.getsource(LifecycleCommands.claim)
     assert "record_claim(bead, actor, checkout)" in inspect.getsource(LifecycleCommands.resume)
     assert "_work()._issue_claim(" in inspect.getsource(work_lifecycle.ShellWorkspace.record_claim)
-    assert "api._claim_fence(cfg, hive)" in inspect.getsource(
-        work_assignment.impl__issue_claim
-    )
+    assert "api._claim_fence(cfg, hive)" in inspect.getsource(work_assignment.impl__issue_claim)

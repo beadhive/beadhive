@@ -1093,9 +1093,7 @@ def _validate_submit_checkout(entry, branch, cfg, bead=None, override=None) -> N
     )
 
 
-def _open_submit_gate(
-    cfg, entry, bead, branch, main, sha, actor="", hive=""
-) -> tuple[str, bool]:
+def _open_submit_gate(cfg, entry, bead, branch, main, sha, actor="", hive="") -> tuple[str, bool]:
     """Publish + open (or reuse) the review gate: push BEFORE set-state so a failed push blocks
     the gate too (no half-submitted bead) — out-of-process reviewers (GitHub CI) can't see a
     branch we don't push, and a `kind=external` (contribution) hive always pushes to its fork

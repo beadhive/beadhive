@@ -259,6 +259,47 @@ identical reason.
 | `--hive` | local/administrative | resolves which hive directory `bh` targets — not a Beads operation |
 | `--json` | local/administrative | output-format switch over the already-computed payload |
 
+## Lifecycle: assign, claim, resume, abandon and submit state (bh-sy36q.1)
+
+`beadhive_core.LifecycleCommands` (`beadhive_core/lifecycle.py`) owns the policy of `bh work
+assign`, `claim`, `resume`, `abandon`, the bead-state half of `submit` (the claim-holder admission
+read and the `review=pending` transition), and the claim / verify / provision / release steps
+`bh work next`'s CLI-compatibility loop shares: the orchestrator-only, seat, not-other and open
+guards; "a claim is believed only on a re-read" (`claim_won`); release-on-failed-provisioning
+only while a re-read proves the actor still holds the claim; abandon's re-read (`claim_residue`,
+bh-0mckw); and every operator line. The root shell composes it at one seam,
+`src/beadhive/work_lifecycle.py`.
+
+Every Beads operation takes one named route from the matrix:
+
+| Operation | Route | Served by |
+|---|---|---|
+| `work.issue.get` | `api-ready` | `SessionIssues` over `BeadsSession` (guard reads, claim re-verification, abandon's re-read, submit's admission) |
+| `work.issue.update` | `api-ready` | `SessionIssues.assign` — a guarded update (`expected_version` from the guard read), so a bead that moved after the guard is refused (`409`), never overwritten |
+| `work.lease.acquire` / `work.lease.release` | `cli-compatibility` | `Leases` port → shell `CliLeases` (`bd update --claim` / reopen+unassign): `issues.claim` does not grant the renewable lease |
+| `work.state.get` / `work.state.update` | `cli-compatibility` | `StateReads` / `StateOperations` → `bd state` / `bd set-state` (review, dispatch dimensions) |
+| `work.gate.lookup` / `work.gate.resolve` | `cli-compatibility` | `GateOperations` (resume's orphaned-review-gate GC) |
+
+Route selection for the two api-ready rows is made **before the first Beads operation of a
+command** (the `beadhive.work_queue` rule): when the hive's supervised service cannot be used — not
+running, an embedded-Dolt hive Beads 1.3 cannot serve, a missing capability — the shell selects
+`bd show` / `bd assign` for that command instead. These verbs are the start of every developer
+loop and the recovery path for stalled work, so they do not fail closed on hives the API cannot
+serve. Once the API route is selected, a failing call is reported, never replayed through `bd`.
+
+Worktree, identity, claim-record and state-sync effects are root-supplied capabilities behind the
+`Workspace` port. The shell realises worktree mechanics through `worktree.ensure` /
+`worktree.remove`, which bind the selected `worktrees.manager` (`beadhive-worktrees`, bh-055ot);
+the core therefore does not depend on `beadhive-worktrees` directly. `beadhive-worktrees` declares
+no bead-state port (only `WorktreeCreateObserver`, `BranchInspector`, `WorktreeInventory`), and
+none of these verbs need one, so no BeadsSession adapter for such a port is supplied here.
+
+Retained in the shell, named for bh-sy36q.6: the `--group` / `--collapse` batch claim and
+`submit --group` (`work_group`), `start` (the epic seat claim), `--preview`, review-feedback
+rendering (`bd comments`' markdown renderer is the operator contract and is not reproducible from
+typed comment rows), and submit's gate creation, validation and Git handoff (`work.review.submit`
+is `cli-compatibility`).
+
 ## Tests
 
 - `test_core_routing_policy.py` — every matrix row resolves to exactly one typed route; capability
@@ -302,3 +343,16 @@ identical reason.
   down itself, reaping BOTH the Dolt SQL server AND the `bd db-proxy-child` TCP proxy `bd init
   --server` also spawns (the second process bh-l5sxi.2's own contention test left running; see
   `_reap_owned_scratch_hive`'s docstring).
+- `test_core_lifecycle_policy.py` (bh-sy36q.1) — assign / claim / resume / abandon / submit-state
+  policy over a generated-client transport fixture (the api-ready issue route) and fake ports for
+  the lease, state, gate and workspace capabilities; route classification of every operation the
+  cohort touches. No Beads state emulator.
+- `test_core_lifecycle_real_service.py` — opt-in (`BEADS_LIFECYCLE_SCRATCH=1 ... -m real_service`)
+  proof, against a disposable OWNED-mode scratch hive it creates and reaps, that assign's guarded
+  update is attributed to the orchestrator and refuses a stale read after a competing real claim,
+  and that the CLI lease is verified by the HTTP re-read (claim, a refused steal, abandon, and a
+  foreign-actor release refused by bd's anti-steal fence and reported, not ✓).
+- `tests/test_work_lifecycle_shell.py` (`beadhive` package) — the shell's `bd` compatibility routes
+  and their argv, pre-execution route selection, and the `bh work assign` / `claim` / `abandon` /
+  `resume` command contract over a transport-fixture session (claim output is byte-identical on
+  both routes).
