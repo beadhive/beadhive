@@ -138,6 +138,16 @@ the `bh plugin pants` command tree, and keeps legacy `scripts/pants_*.py` paths 
 This extraction is limited to build plugins; the capability modules under
 `src/beadhive/modules/` remain inside the core distribution.
 
+> **2026-09-27 amendment.** The direction above (`packages/*` depends on root; root imports
+> package code only lazily) describes **plugin packages** only. A second class, **library
+> packages** (`beadhive-plugins`, `beadhive-worktrees`, `beadhive-beads-client`), inverts it:
+> a library package never imports `beadhive` at all, and root (and other packages) may import
+> it statically through its public `__all__` surface. `scripts/check_package_imports.py` now
+> enforces both classes by manifest presence. See
+> [`package-class-library-vs-plugin-adr.md`](design/package-class-library-vs-plugin-adr.md)
+> for the full decision, including the enforcement rule and why the lazy-import rule applies
+> only to plugin packages.
+
 ## Architectural principles
 
 1. **Capability cohesion over layer-only grouping.** Top-level modules represent reasons to
@@ -160,6 +170,12 @@ This extraction is limited to build plugins; the capability modules under
    test patch points remain forwarding facades until consumers migrate.
 9. **No premature distribution split.** Modules remain packages in the existing distribution
    until dependency and test isolation demonstrate that separate packages would help.
+   *2026-09-27 amendment:* this demonstration has now been made for two modules — the plugin
+   capability/lifecycle contracts and the worktree seam — which extract into the **library**
+   package class (`beadhive-plugins`, `beadhive-worktrees`) defined in
+   [`package-class-library-vs-plugin-adr.md`](design/package-class-library-vs-plugin-adr.md).
+   The principle still holds as a default; it is not overturned, only rebutted for these two
+   named cases ahead of the API-first replacement (`bh-bwnys`, `bh-sy36q`).
 10. **Test selection follows dependency evidence.** Directory-based selection is insufficient;
     shared contracts, reverse dependencies, and integration seams must participate in closure.
 
