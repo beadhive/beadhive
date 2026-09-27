@@ -36,9 +36,7 @@ _UNIT_TEST_FIELDS = dict(
         (
             "unit/integrations/test_herdr_adapter.py",
             "unit/integrations/test_herdr_agent_lifecycle_adapter.py",
-            "unit/kernel/lifecycle/test_contracts.py",
             "unit/kernel/lifecycle/test_dispatcher.py",
-            "unit/kernel/plugins/test_binding.py",
             "unit/kernel/plugins/test_discovery.py",
             "unit/kernel/telemetry/test_instrumentation.py",
             "unit/modules/agents/test_agent_contracts.py",

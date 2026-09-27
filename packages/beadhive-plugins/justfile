@@ -1,0 +1,23 @@
+# Package-local recipes. From the repo root: `just pkg <name> <recipe>`; or run `just` here.
+# Every recipe delegates to the root justfile so Pants always runs from the build root through
+# the shared cache coordinator. `name` is this directory's name, so a copied package needs no
+# edits to this file.
+
+root := justfile_directory() / ".." / ".."
+name := file_name(justfile_directory())
+
+# list this package's recipes
+default:
+    @just --justfile {{ quote(justfile()) }} --list
+
+# run this package's tests in the Pants sandbox
+test:
+    just --justfile {{ quote(root / "justfile") }} _pants test {{ quote("packages/" + name + "::") }}
+
+# lint this package with the root ruff configuration
+lint:
+    cd {{ quote(root) }} && uv run ruff check {{ quote("packages/" + name) }}
+    cd {{ quote(root) }} && uv run ruff format --check {{ quote("packages/" + name) }}
+
+# lint + sandboxed tests for this package
+check: lint test

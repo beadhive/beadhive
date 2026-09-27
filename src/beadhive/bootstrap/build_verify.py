@@ -6,15 +6,15 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from importlib import import_module
 
-from ..kernel.plugins import (
+from beadhive_plugins.contracts import (
     BUILD_VERIFY,
     BuildVerifier,
     ManifestSource,
     PluginDiagnostic,
     PluginKernelConfig,
-    builtin_manifest_source,
-    discover_plugins,
 )
+
+from ..kernel.plugins import builtin_manifest_source, discover_plugins
 from ..modules.config.contracts import AttestConfig
 
 _BEADHIVE_VERSION = "0.15.1"
@@ -63,7 +63,7 @@ def collect_build_verify_diagnostics(
         verifier = provider.loader(selectors)
         return (*discovery.errors, *verifier.verify(repo))
     except ModuleNotFoundError as exc:
-        from ..kernel.plugins import DiagnosticCode, DiagnosticSeverity
+        from beadhive_plugins.contracts import DiagnosticCode, DiagnosticSeverity
 
         # The verifier's plugin package is an optional extra (bh-mxjoy): a selected manifest
         # can outlive the package it names when the extra was never installed. A warning, not
@@ -80,7 +80,7 @@ def collect_build_verify_diagnostics(
             ),
         )
     except (OSError, RuntimeError, ValueError) as exc:
-        from ..kernel.plugins import DiagnosticCode, DiagnosticSeverity
+        from beadhive_plugins.contracts import DiagnosticCode, DiagnosticSeverity
 
         return (
             *discovery.errors,

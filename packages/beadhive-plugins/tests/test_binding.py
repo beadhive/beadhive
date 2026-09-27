@@ -7,7 +7,7 @@ from typing import Protocol, runtime_checkable
 
 import pytest
 
-from beadhive.kernel.plugins import (
+from beadhive_plugins import (
     CapabilityBindingError,
     CapabilityKey,
     CapabilityRef,

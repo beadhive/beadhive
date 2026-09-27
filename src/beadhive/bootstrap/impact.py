@@ -20,9 +20,7 @@ from importlib import import_module
 from types import MappingProxyType
 from typing import cast
 
-from ..adapters.impact_git import GitTreeDiff
-from ..adapters.impact_paths import PATHS_BACKEND, PathsImpactBackend
-from ..kernel.plugins import (
+from beadhive_plugins.contracts import (
     BUILD_IMPACT,
     CapabilityKey,
     DiagnosticCode,
@@ -30,9 +28,11 @@ from ..kernel.plugins import (
     ManifestSource,
     PluginDiagnostic,
     PluginKernelConfig,
-    builtin_manifest_source,
-    discover_plugins,
 )
+
+from ..adapters.impact_git import GitTreeDiff
+from ..adapters.impact_paths import PATHS_BACKEND, PathsImpactBackend
+from ..kernel.plugins import builtin_manifest_source, discover_plugins
 from ..modules.config.contracts import AttestConfig
 from ..modules.work.application.impact import select_resolver
 from ..modules.work.contracts.impact import ImpactBackend, ImpactResolver, TreeDiffPort
