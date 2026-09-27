@@ -1,47 +1,65 @@
-"""Outbound ports for worktree creation and removal effects."""
+"""Outbound ports for worktree mechanics, observation, and inventory.
+
+The ``worktree.manager`` and ``workspace.binding`` slots themselves are declared on
+``beadhive-plugins`` (``beadhive_plugins.worktree_slots``, bh-055ot.1); this module binds their
+generic method shapes to this package's concrete :class:`WorktreeSpec` / :class:`WorktreeHandle`
+/ :class:`WorktreeRemoved` and re-exports the slot identities for existing importers.
+"""
 
 from __future__ import annotations
 
-from typing import Protocol, TypeVar, runtime_checkable
+from pathlib import Path
+from typing import Protocol, TypeAlias, TypeVar
 
-from beadhive_plugins.contracts import CapabilityKey, CapabilityRef
+from beadhive_plugins.contracts import CapabilityKey
+from beadhive_plugins.worktree_slots import (
+    WORKSPACE_BINDING,
+    WORKTREE_MANAGER,
+    WorkspaceBinding,
+    WorktreeManager,
+)
 
 from ..domain import (
-    CreateWorktreeRequest,
     ManagedWorktree,
-    ProvisioningResult,
-    RemoveWorktreeRequest,
+    WorktreeHandle,
     WorktreeInventoryRequest,
+    WorktreeRemoved,
+    WorktreeSpec,
     WorktreeStatusRequest,
 )
 
 StatusRowT_co = TypeVar("StatusRowT_co", covariant=True)
 
-#: Exactly one configured manager per hive
-#: (docs/design/bh-mr9tk.2-worktree-manager-herdr-binding-adr.md). Native Git is the built-in
-#: default provider; root composition binds the selected provider to this slot with
-#: ``beadhive_plugins.binding.bind_application_port`` and injects the resulting port — this
-#: package never selects or binds its own provider.
-WORKTREE_MANAGER = CapabilityRef("worktree.manager", 1)
+#: The ``worktree.manager`` port specialised to this package's spec/handle/receipt types.
+WorktreeManagerPort: TypeAlias = WorktreeManager[WorktreeSpec, WorktreeHandle, WorktreeRemoved]
 
-
-@runtime_checkable
-class WorktreeProvisioner(Protocol):
-    """One adapter participating in the five lifecycle phases."""
-
-    def prepare(self, request: CreateWorktreeRequest) -> None: ...
-
-    def create(self, request: CreateWorktreeRequest) -> ProvisioningResult: ...
-
-    def created(self, request: CreateWorktreeRequest, result: ProvisioningResult) -> None: ...
-
-    def remove(self, request: RemoveWorktreeRequest) -> ProvisioningResult: ...
-
-    def removed(self, request: RemoveWorktreeRequest, result: ProvisioningResult) -> None: ...
-
+#: The ``workspace.binding`` port specialised to this package's handle type.
+WorkspaceBindingPort: TypeAlias = WorkspaceBinding[WorktreeHandle]
 
 #: Typed application-port request for :data:`WORKTREE_MANAGER`, paired at composition time.
-WORKTREE_MANAGER_KEY = CapabilityKey(WORKTREE_MANAGER, WorktreeProvisioner)
+#: Exactly one configured manager per hive; root composition binds the selected provider with
+#: ``beadhive_plugins.binding.bind_application_port`` — this package never selects or binds one.
+WORKTREE_MANAGER_KEY = CapabilityKey(WORKTREE_MANAGER, WorktreeManager)
+
+
+class WorktreeCreateObserver(Protocol):
+    """Cross-cutting create notifications, decoupled from the manager/binding contract.
+
+    ``creating`` fires once the target's parent exists and before the manager runs; ``created``
+    fires only after the manager succeeded. Observation never owns mechanics.
+    """
+
+    def creating(self, spec: WorktreeSpec) -> None: ...
+
+    def created(self, handle: WorktreeHandle) -> None: ...
+
+
+class BranchInspector(Protocol):
+    """Read-only branch facts for Beadhive's own attach pre-check (E37)."""
+
+    def tip(self, main: Path, branch: str) -> str: ...
+
+    def contains(self, main: Path, branch: str, base: str) -> bool: ...
 
 
 class WorktreeInventory(Protocol[StatusRowT_co]):
@@ -50,3 +68,15 @@ class WorktreeInventory(Protocol[StatusRowT_co]):
     def inventory(self, request: WorktreeInventoryRequest) -> tuple[ManagedWorktree, ...]: ...
 
     def status(self, request: WorktreeStatusRequest) -> tuple[StatusRowT_co, ...]: ...
+
+
+__all__ = [
+    "WORKSPACE_BINDING",
+    "WORKTREE_MANAGER",
+    "WORKTREE_MANAGER_KEY",
+    "BranchInspector",
+    "WorkspaceBindingPort",
+    "WorktreeCreateObserver",
+    "WorktreeInventory",
+    "WorktreeManagerPort",
+]

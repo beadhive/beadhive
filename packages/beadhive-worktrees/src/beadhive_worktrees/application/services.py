@@ -1,16 +1,19 @@
-"""Worktree lifecycle sequencing over replaceable provisioner adapters."""
+"""Worktree lifecycle sequencing over exactly one selected ``worktree.manager``."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Generic, TypeVar
 
-from ..contracts import WorktreeInventory, WorktreeProvisioner
+from ..contracts import BranchInspector, WorktreeCreateObserver, WorktreeInventory
+from ..contracts.ports import WorktreeManagerPort
 from ..domain import (
-    CreateWorktreeRequest,
-    ProvisioningResult,
-    RemoveWorktreeRequest,
+    WorktreeHandle,
     WorktreeInventoryRequest,
     WorktreeInventoryResult,
+    WorktreeManagerError,
+    WorktreeRemoved,
+    WorktreeSpec,
     WorktreeStatusRequest,
     WorktreeStatusResult,
 )
@@ -18,39 +21,81 @@ from ..domain import (
 StatusRowT = TypeVar("StatusRowT")
 
 
+class _NoObserver:
+    def creating(self, spec: WorktreeSpec) -> None:
+        del spec
+
+    def created(self, handle: WorktreeHandle) -> None:
+        del handle
+
+
+def _ignore_warning(_message: str) -> None:
+    return None
+
+
 class WorktreeLifecycleService:
-    """Preserve plugin-first fallback while keeping native effects available."""
+    """Sequence create/attach/remove through the ONE selected manager (bh-055ot.1).
+
+    There is no plugin-first fallback and no registry-order race: the manager handed in at
+    composition is the only thing that ever executes worktree mechanics. Create observers are a
+    separate, cross-cutting list that never owns mechanics. Beadhive — not the manager — guards
+    attach's start-point intent (E37): when the spec names a ``base``, the branch tip is read
+    before and after the manager runs, and a moved tip is refused.
+    """
 
     def __init__(
         self,
         *,
-        native: WorktreeProvisioner,
-        plugin: WorktreeProvisioner,
+        manager: WorktreeManagerPort,
+        observer: WorktreeCreateObserver | None = None,
+        branches: BranchInspector | None = None,
+        warn: Callable[[str], None] = _ignore_warning,
     ) -> None:
-        self._native = native
-        self._plugin = plugin
+        self._manager = manager
+        self._observer = observer or _NoObserver()
+        self._branches = branches
+        self._warn = warn
 
-    def create(self, request: CreateWorktreeRequest) -> ProvisioningResult:
-        # Native preparation owns the target parent. Observers have historically run only after
-        # that parent exists, before either delegated or native creation.
-        self._native.prepare(request)
-        self._plugin.prepare(request)
-        result = self._plugin.create(request)
-        if not result.handled:
-            result = self._native.create(request)
-        if result.succeeded:
-            self._plugin.created(request, result)
-            self._native.created(request, result)
-        return result
+    @property
+    def manager(self) -> WorktreeManagerPort:
+        return self._manager
 
-    def remove(self, request: RemoveWorktreeRequest) -> ProvisioningResult:
-        result = self._plugin.remove(request)
-        if not result.handled:
-            result = self._native.remove(request)
-        if result.succeeded:
-            self._plugin.removed(request, result)
-            self._native.removed(request, result)
-        return result
+    def create(self, spec: WorktreeSpec) -> WorktreeHandle:
+        return self._provision(spec, self._manager.create)
+
+    def attach(self, spec: WorktreeSpec) -> WorktreeHandle:
+        if not spec.base or self._branches is None:
+            return self._provision(spec, self._manager.attach)
+        before = self._branches.tip(spec.main, spec.branch)
+        if before and not self._branches.contains(spec.main, spec.branch, spec.base):
+            self._warn(
+                f"attach keeps {spec.branch} at {before[:12]}: base {spec.base} has diverged "
+                "and is recorded as intent only (attach never moves a branch tip)"
+            )
+        handle = self._provision(spec, self._manager.attach)
+        after = self._branches.tip(spec.main, spec.branch)
+        if after != before:
+            raise WorktreeManagerError(
+                spec.path,
+                1,
+                f"worktree manager moved {spec.branch} from {before or '?'} to {after or '?'} "
+                "on attach — attach must never move an existing branch tip",
+            )
+        return handle
+
+    def remove(self, handle: WorktreeHandle, *, force: bool = False) -> WorktreeRemoved:
+        return self._manager.remove(handle, force)
+
+    def _provision(
+        self, spec: WorktreeSpec, execute: Callable[[WorktreeSpec], WorktreeHandle]
+    ) -> WorktreeHandle:
+        # Beadhive computed the exact path, so it owns the parent directory. Observers have
+        # historically run only after that parent exists, before the manager executes.
+        spec.path.parent.mkdir(parents=True, exist_ok=True)
+        self._observer.creating(spec)
+        handle = execute(spec)
+        self._observer.created(handle)
+        return handle
 
 
 class WorktreeInventoryService(Generic[StatusRowT]):

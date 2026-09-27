@@ -56,9 +56,14 @@ def test_public_surface_exposes_naming_policy_contracts_and_the_native_adapter()
         "WT_PREFIX",
         "WORKTREE_MANAGER",
         "WORKTREE_MANAGER_KEY",
-        "WorktreeProvisioner",
+        "WORKSPACE_BINDING",
+        "WorktreeManagerPort",
+        "WorkspaceBindingPort",
+        "WorktreeSpec",
+        "WorktreeHandle",
+        "WorktreeManagerCapabilities",
         "WorktreeInventory",
-        "NativeGitWorktreeProvisioner",
+        "NativeGitWorktreeManager",
         "native_worktree_manager_provider_binding",
         "WorktreeLifecycleService",
         "bind_worktree",
@@ -69,3 +74,12 @@ def test_public_surface_exposes_naming_policy_contracts_and_the_native_adapter()
 def test_typed_marker_ships_and_no_stateful_fixture_plugin_is_loaded() -> None:
     assert (resources.files(beadhive_worktrees) / "py.typed").is_file()
     assert "stateful_fixtures" not in sys.modules
+
+
+def test_slot_declarations_come_from_beadhive_plugins_not_this_package() -> None:
+    import beadhive_plugins
+
+    assert beadhive_worktrees.WORKTREE_MANAGER is beadhive_plugins.WORKTREE_MANAGER
+    assert beadhive_worktrees.WORKSPACE_BINDING is beadhive_plugins.WORKSPACE_BINDING
+    assert beadhive_worktrees.WORKTREE_MANAGER_KEY.port_type is beadhive_plugins.WorktreeManager
+    assert not hasattr(beadhive_worktrees, "PluginWorktreeProvisioner")

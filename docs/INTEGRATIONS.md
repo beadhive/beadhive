@@ -124,16 +124,12 @@ hive-ready lifecycle, so nothing about orca is hardcoded into those flows.
 orca:
   enabled: true
   # data_path: ~/.config/orca/orca-data.json   # default: platform-aware, see below
-  # worktrees: true                            # opt in to worktree delegation (see below)
-  # worktrees:
-  #   enabled: true
-  #   fallback: false                          # true = degrade to native git when orca fails
 ```
 
-Per-hive overrides live on the `managed_repos` entry (`orca: {enabled: true, worktrees: true}`) and
-the `enabled` flag is set with the generic feature-flag verbs: `bh hive enable orca <hive>` /
-`bh hive disable orca <hive>`. A hive entry's `orca.worktrees` wins over the global `orca.worktrees`
-(bare bool or `{enabled, fallback}` mapping); `orca.worktrees.fallback` itself is global-only.
+Per-hive overrides live on the `managed_repos` entry (`orca: {enabled: true}`) and the `enabled`
+flag is set with the generic feature-flag verbs: `bh hive enable orca <hive>` /
+`bh hive disable orca <hive>`. `orca.worktrees` is **retired** — see
+[Orca worktree delegation retired](#orca-worktree-delegation-retired).
 
 ### What it reads
 
@@ -144,14 +140,11 @@ and **`bh` only ever reads/writes the `repos` list and the `settings` object dir
 
 - `repos` — a list of registered repos; each entry carries a `path`. `bh` lists them via
   `orca repo list --json` when the orca CLI is on `PATH`, else by reading `orca-data.json` directly.
-- `settings.autoRenameBranchFromWork` — a **global**, UI-only setting (see
-  [Worktree delegation](#worktree-delegation) below); `bh` parses it read-only except through the
-  dedicated `fix-settings` verb.
+- `settings.autoRenameBranchFromWork` — a **global**, UI-only setting; `bh` only ever writes it
+  through the dedicated `fix-settings` verb (below).
 
-`bh` never reads `projects` / `projectHostSetups` directly, and never touches any orchestration
-database. The one deliberate exception is CLI-only: worktree-delegation wiring drives
-`orca project setups` / `setup-update` (never the data file's `projects`/`projectHostSetups`
-keys) to point a repo's project-setup at bh's shadow worktree dir — see below.
+`bh` never reads or writes `projects` / `projectHostSetups`, and never touches any orchestration
+database.
 
 ### What it unlocks
 
@@ -160,58 +153,38 @@ keys) to point a repo's project-setup at bh's shadow worktree dir — see below.
 - **`bh plugin orca sync`** — walks the real on-disk clones exactly three levels under
   `$GIT_WORKSPACE` (`provider/org/repo` dirs containing `.git`) and registers any not yet known to
   orca. Idempotent: a second run adds nothing. `--dry-run` previews without writing.
-- **`bh hive ready`** — shows an `orca` readiness line (registered / not registered, or the
-  worktree-delegation readiness states below) when enabled.
+- **`bh hive ready`** — shows an `orca` readiness line (registered / not registered) when
+  enabled; a hive that still sets the retired `orca.worktrees` reads `warn`, naming the fix.
+- **`bh plugin orca fix-settings`** — flips `settings.autoRenameBranchFromWork` to `false` in
+  `orca-data.json`, but *only* while `orca status` shows the runtime down — a safe write window
+  where the live app isn't holding the file open. It refuses (exit 1, with an instruction to use
+  Orca's Settings UI) when the runtime is up, and preserves every other key when it writes
+  (atomic temp-file + rename).
 
-### Worktree delegation
+### Orca worktree delegation retired
 
-With `orca.worktrees` on for a hive, `bh worktree` hands new-branch **create** and **remove**
-(`bh worktree rm` / `prune`) to `orca worktree create` / `orca worktree rm` instead of plain
-`git worktree`, so the tree shows up managed in Orca's desktop/mobile UI at bh's own
-`wt/bead/<type>/<id>` path + branch convention.
+Orca used to take over worktree **create** and **remove** (`orca worktree create` /
+`orca worktree rm`) when `orca.worktrees` was set, through the generic `wt_create` / `wt_remove`
+plugin hooks. That made Orca a second owner of worktree mechanics, which the worktree-manager ADR
+([bh-mr9tk.2](design/bh-mr9tk.2-worktree-manager-herdr-binding-adr.md)) forbids: **exactly one
+configured `worktrees.manager` creates, attaches, and removes worktrees** — native git, the default
+and only legal value (see [WORKTREES.md](WORKTREES.md#the-worktree-manager)). bh-055ot.1 retired the
+delegation, the `wt_create` / `wt_remove` hooks themselves, the `orca.worktrees.fallback` knob, and
+the onboard/sync `worktree-base-path` wiring.
 
-- **Delegation policy — hard fail by default.** If a delegated create/remove fails (orca down, a
-  bad result, a path/branch mismatch), `bh` raises rather than silently falling through to native
-  git — a silently-broken delegation must never masquerade as success. Set
-  `orca.worktrees.fallback: true` to relax this to warn-and-fall-back-to-native instead.
-- **Attach and `verify-` trees are never delegated.** Only the *new-branch* create path can be
-  taken over by orca; re-attaching an existing branch into a fresh dir always stays native (a
-  warning is printed if a delegating plugin is enabled), and the ephemeral `verify-*`
-  clean-checkout worktrees used by `bh work check`/`submit` bypass the delegation seam entirely —
-  they're not a durable seat.
-- **`keep_branch` semantics on remove.** orca's `worktree rm` deletes the tree's checked-out
-  branch outright, even without `--force`. `bh worktree rm` (the durable-branch path) detaches
-  HEAD first so the branch survives; `bh worktree prune` (already-merged, disposable branches)
-  skips the detach so orca's delete matches native prune's own branch cleanup.
-- **Readiness states** (`bh hive ready`, once `orca.worktrees` is on): `ok` when the orca runtime
-  is reachable (`orca status --json`) and `settings.autoRenameBranchFromWork` is off; `warn`
-  otherwise, naming every problem (runtime down — delegation will hard-fail or fall back per the
-  `fallback` knob; or auto-rename is on).
-- **Onboard/sync worktree-base-path wiring.** When `orca.worktrees` is on, `bh hive onboard` and
-  `bh plugin orca sync` best-effort point the hive's orca project-setup `worktree-base-path` at
-  `config.worktrees_root()/<provider>/<org>` (orca appends `<repo-displayName>/<leaf>` itself
-  under its default `nestWorkspaces: true`, landing delegated trees exactly at bh's own worktree
-  dir). This is onboarding bookkeeping, not the hard-failing hooks above — it warns and
-  continues on any failure (missing CLI, no matching project-setup, a failing `setup-update`).
-- **Auto-Rename Branch From Work.** `settings.autoRenameBranchFromWork` is a **global**, UI-only
-  orca setting (default ON) that renames branches after agent startup — left on, it fights bh's
-  `wt/bead/...` naming convention. There's no per-repo CLI override, so:
-  - onboard/sync print an operator instruction to disable it by hand in Orca's Settings UI
-    whenever it's on and worktree delegation is enabled;
-  - **`bh plugin orca fix-settings`** flips it to `false` directly in `orca-data.json`, but
-    *only* while `orca status` shows the runtime down — a safe write window where the live app
-    isn't holding the file open. It refuses (exit 1, same Settings-UI instruction) when the
-    runtime is up, and preserves every other key when it writes (atomic temp-file + rename).
+Setting `orca.worktrees` (globally or on a `managed_repos` entry) **no longer changes anything
+about worktrees**. It is not silently ignored either: every `bh` invocation logs an
+`orca_worktrees_retired` config warning naming each scope that still sets it, and `bh hive ready`
+shows the orca line as `warn`. Remove `orca.worktrees` from your config to clear both.
 
 ### Scope & gating
 
-- **repos + settings only** (plus the CLI-only project-setup exception above). `bh` confines
-  itself to orca's `repos` list and the `settings` object — `projects` / `projectHostSetups`
-  and any orchestration DB stay out of scope, by design.
+- **repos + settings only.** `bh` confines itself to orca's `repos` list and the `settings`
+  object — `projects` / `projectHostSetups` and any orchestration DB stay out of scope, by design.
 - **Gating.** orca's own `enabled` flag is the only gate (bh-hsus.4 removed the old AND-gate on
   `git_workspace.enabled` — git-workspace is a required dep now, always present, so there was
-  nothing left for it to test). Worktree delegation (`orca_worktrees_enabled`) is still
-  AND-gated on `orca_enabled`.
+  nothing left for it to test). The retired-`orca.worktrees` warning is likewise AND-gated on
+  `orca_enabled`.
 - **Retire names the de-registration verb, WARN-only.** `orca project setup-delete --setup <id>`
   does de-register a repo — but retire only *prints* the command (with `orca project setups
   --json` for finding `<id>`) rather than running it, since auto-deleting a project-setup on
@@ -283,12 +256,14 @@ retry, no silent fallback to ambient `~/.claude` or to `bh role`.
 ### `wt_create` is deliberately NOT used for provisioning
 
 Evaluated and rejected (recorded per bh-og0q.5's acceptance bar, which asks this to be decided
-explicitly rather than defaulted): `wt_create`'s contract is delegating the **git worktree
+explicitly rather than defaulted): `wt_create`'s contract was delegating the **git worktree
 create subprocess itself** (return the created path, or `None` to fall through to native `git
 worktree add`) — hitch never creates a git worktree, so it would always return `None`, and the
-generic `_consult_wt_create` fence treats any other exception as best-effort (warn + fall
+generic `_consult_wt_create` fence treated any other exception as best-effort (warn + fall
 through), which would silently mask exactly the preflight failures this integration must fail
-loudly on. Build/launch happens only inside the explicit `up` verb, matching hitch's own
+loudly on. (bh-055ot.1 has since retired `wt_create` altogether — a plugin declaring it is now
+refused — so the decision stands for a stronger reason.) Build/launch happens only inside the
+explicit `up` verb, matching hitch's own
 already-implemented "build if absent, launch" idiom — see `hitch_plugin.py`'s module docstring
 for the full reasoning.
 

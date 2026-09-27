@@ -131,3 +131,59 @@ def test_worktrees_fallback_true_when_set():
 def test_worktrees_fallback_false_when_worktrees_is_bare_bool():
     cfg = {"orca": {"worktrees": True}}
     assert config.orca_worktrees_fallback(cfg) is False
+
+
+# ---- retired orca worktree delegation (bh-055ot.1) ---------------------------
+
+
+def test_retired_scopes_empty_when_the_flag_is_off():
+    assert config.orca_worktrees_retired_scopes({"orca": {"enabled": True}}) == []
+
+
+def test_retired_scopes_name_the_global_flag():
+    cfg = {"orca": {"enabled": True, "worktrees": {"enabled": True}}}
+    assert config.orca_worktrees_retired_scopes(cfg) == ["orca.worktrees"]
+
+
+def test_retired_scopes_name_a_per_hive_override():
+    entry = {"prefix": "api", "orca": {"enabled": True, "worktrees": True}}
+    cfg = {"managed_repos": [entry]}
+    assert config.orca_worktrees_retired_scopes(cfg) == ["managed_repos[api].orca.worktrees"]
+
+
+def test_retired_message_is_clear_and_actionable():
+    message = config.orca_worktrees_retired_message(["orca.worktrees"])
+    assert "orca.worktrees" in message
+    assert "retired" in message
+    assert "worktrees.manager" in message
+    assert "Remove orca.worktrees" in message
+
+
+def test_warn_retired_orca_worktrees_emits_one_config_load_warning(monkeypatch):
+    from structlog.testing import capture_logs
+
+    from beadhive import log
+
+    cfg = {"orca": {"enabled": True, "worktrees": {"enabled": True, "fallback": True}}}
+    monkeypatch.setattr(config, "load", lambda: cfg)
+    log.get_logger("warmup")
+    with capture_logs() as captured:
+        config.warn_retired_orca_worktrees_if_needed()
+
+    warnings = [e for e in captured if e["event"] == config.ORCA_WORKTREES_RETIRED_EVENT]
+    assert len(warnings) == 1
+    assert warnings[0]["scopes"] == ["orca.worktrees"]
+    assert "retired" in warnings[0]["hint"]
+
+
+def test_warn_retired_orca_worktrees_is_silent_without_the_flag(monkeypatch):
+    from structlog.testing import capture_logs
+
+    from beadhive import log
+
+    monkeypatch.setattr(config, "load", lambda: {"orca": {"enabled": True}})
+    log.get_logger("warmup")
+    with capture_logs() as captured:
+        config.warn_retired_orca_worktrees_if_needed()
+
+    assert not [e for e in captured if e["event"] == config.ORCA_WORKTREES_RETIRED_EVENT]

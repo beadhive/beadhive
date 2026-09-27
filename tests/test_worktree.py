@@ -29,6 +29,7 @@ from beadhive import (
     worktree,
     wt_status,
 )
+from beadhive.modules.worktrees import WorktreeSpec
 from beadhive.run import run
 
 UTC = datetime.UTC
@@ -2744,93 +2745,25 @@ def test_the_ttl_comes_from_config_as_an_iso8601_duration(tmp_path, monkeypatch)
     assert validation_ledger.green_verdict(entry, "main", cmd, cfg=cfg) is not None
 
 
-# ---- worktree delegation seam: _consult_wt_create / _consult_wt_remove ------
+# ---- worktree manager selection + create observers (bh-055ot.1) -------------------------------
 #
-# The generic seam _do_add/remove/prune wire into: the first ENABLED plugin defining the hook
-# wins; None/False => not handled => native. A typer.Exit raised by a hook is the plugin's own
-# hard-fail policy and PROPAGATES; any other exception warns (stderr) and falls through, mirroring
-# retire.py's plugin-notify fence.
+# Exactly one configured ``worktrees.manager`` (native git; the default and only legal value)
+# executes worktree mechanics. No plugin is consulted in registry order to create or remove a
+# worktree; ``wt_creating``/``wt_created`` remain a separate, best-effort observer list.
 
 
-def _fake_plugin(
-    name, *, enabled=True, wt_create=None, wt_remove=None, wt_creating=None, wt_created=None
-):
+def _fake_plugin(name, *, enabled=True, wt_creating=None, wt_created=None):
     # Runtime projections are manifest-authoritative.  Use the built-in IDs that actually
-    # declare the exercised capability/event while retaining ``name`` only as a case label.
+    # declare the exercised event while retaining ``name`` only as a case label.
     del name
     plugin_id = "repowise" if wt_creating is not None or wt_created is not None else "orca"
     return plugins.Plugin(
         name=plugin_id,
         cli=typer.Typer(),
         enabled=lambda cfg, entry: enabled,
-        wt_create=wt_create,
-        wt_remove=wt_remove,
         wt_creating=wt_creating,
         wt_created=wt_created,
     )
-
-
-def test_consult_wt_create_none_when_no_plugin_defines_hook(monkeypatch):
-    monkeypatch.setattr(plugins, "registry", lambda: [_fake_plugin("noop")])
-    result = worktree._consult_wt_create(
-        {}, {}, main=Path("/main"), branch="b", target=Path("/t"), start_point=""
-    )
-    assert result is None
-
-
-def test_consult_wt_create_hook_wins_over_native(monkeypatch):
-    created = Path("/created")
-    plugin = _fake_plugin("p", wt_create=lambda cfg, entry, **kw: created)
-    monkeypatch.setattr(plugins, "registry", lambda: [plugin])
-    result = worktree._consult_wt_create(
-        {}, {}, main=Path("/main"), branch="b", target=Path("/t"), start_point=""
-    )
-    assert result == created
-
-
-def test_consult_wt_create_skips_disabled_plugin(monkeypatch):
-    plugin = _fake_plugin("p", enabled=False, wt_create=lambda cfg, entry, **kw: Path("/x"))
-    monkeypatch.setattr(plugins, "registry", lambda: [plugin])
-    result = worktree._consult_wt_create(
-        {}, {}, main=Path("/main"), branch="b", target=Path("/t"), start_point=""
-    )
-    assert result is None
-
-
-def test_consult_wt_create_first_enabled_plugin_with_hook_wins(monkeypatch):
-    no_hook = _fake_plugin("no-hook")  # enabled but defines nothing → skipped
-    first = _fake_plugin("first", wt_create=lambda cfg, entry, **kw: Path("/first"))
-    second = _fake_plugin("second", wt_create=lambda cfg, entry, **kw: Path("/second"))
-    monkeypatch.setattr(plugins, "registry", lambda: [no_hook, first, second])
-    result = worktree._consult_wt_create(
-        {}, {}, main=Path("/main"), branch="b", target=Path("/t"), start_point=""
-    )
-    assert result == Path("/first")
-
-
-def test_consult_wt_create_typer_exit_propagates(monkeypatch):
-    def boom(cfg, entry, **kw):
-        raise typer.Exit(3)
-
-    monkeypatch.setattr(plugins, "registry", lambda: [_fake_plugin("boom", wt_create=boom)])
-    with pytest.raises(typer.Exit) as exc:
-        worktree._consult_wt_create(
-            {}, {}, main=Path("/main"), branch="b", target=Path("/t"), start_point=""
-        )
-    assert exc.value.exit_code == 3
-
-
-def test_consult_wt_create_other_exception_warns_and_falls_through(monkeypatch, capsys):
-    def boom(cfg, entry, **kw):
-        raise RuntimeError("kaboom")
-
-    ok = _fake_plugin("ok", wt_create=lambda cfg, entry, **kw: Path("/ok"))
-    monkeypatch.setattr(plugins, "registry", lambda: [_fake_plugin("boom", wt_create=boom), ok])
-    result = worktree._consult_wt_create(
-        {}, {}, main=Path("/main"), branch="b", target=Path("/t"), start_point=""
-    )
-    assert result == Path("/ok")  # fell through to the next plugin
-    assert "kaboom" in capsys.readouterr().err
 
 
 def test_notify_wt_created_continues_after_a_raising_plugin(monkeypatch, capsys):
@@ -2855,90 +2788,7 @@ def test_notify_wt_created_continues_after_a_raising_plugin(monkeypatch, capsys)
     assert "kaboom" in capsys.readouterr().err
 
 
-def test_consult_wt_remove_false_when_no_plugin_defines_hook(monkeypatch):
-    monkeypatch.setattr(plugins, "registry", lambda: [_fake_plugin("noop")])
-    result = worktree._consult_wt_remove(
-        {}, {}, main=Path("/main"), target=Path("/t"), force=True, keep_branch=True
-    )
-    assert result is False
-
-
-def test_consult_wt_remove_hook_wins_when_true(monkeypatch):
-    plugin = _fake_plugin("p", wt_remove=lambda cfg, entry, **kw: True)
-    monkeypatch.setattr(plugins, "registry", lambda: [plugin])
-    result = worktree._consult_wt_remove(
-        {}, {}, main=Path("/main"), target=Path("/t"), force=True, keep_branch=True
-    )
-    assert result is True
-
-
-def test_consult_wt_remove_false_falls_through_to_next_plugin(monkeypatch):
-    first = _fake_plugin("first", wt_remove=lambda cfg, entry, **kw: False)
-    second = _fake_plugin("second", wt_remove=lambda cfg, entry, **kw: True)
-    monkeypatch.setattr(plugins, "registry", lambda: [first, second])
-    result = worktree._consult_wt_remove(
-        {}, {}, main=Path("/main"), target=Path("/t"), force=True, keep_branch=False
-    )
-    assert result is True
-
-
-def test_consult_wt_remove_typer_exit_propagates(monkeypatch):
-    def boom(cfg, entry, **kw):
-        raise typer.Exit(4)
-
-    monkeypatch.setattr(plugins, "registry", lambda: [_fake_plugin("boom", wt_remove=boom)])
-    with pytest.raises(typer.Exit) as exc:
-        worktree._consult_wt_remove(
-            {}, {}, main=Path("/main"), target=Path("/t"), force=True, keep_branch=False
-        )
-    assert exc.value.exit_code == 4
-
-
-def test_consult_wt_remove_other_exception_warns_and_falls_through(monkeypatch, capsys):
-    def boom(cfg, entry, **kw):
-        raise RuntimeError("kaboom")
-
-    monkeypatch.setattr(plugins, "registry", lambda: [_fake_plugin("boom", wt_remove=boom)])
-    result = worktree._consult_wt_remove(
-        {}, {}, main=Path("/main"), target=Path("/t"), force=True, keep_branch=False
-    )
-    assert result is False  # no other plugin picked it up → native fallback
-    assert "boom" in capsys.readouterr().err
-
-
-# ---- delegation wiring: _do_add (new-branch create only; attach stays native) -----------------
-
-
-def test_do_add_new_branch_delegates_to_plugin_hook(tmp_path, monkeypatch):
-    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
-    target = worktree.wt_dir(entry, "deleg-1")
-    branch = "wt/bead/issue/deleg-1"
-
-    native_add_calls = []
-    real_run_git = worktree._run_git
-
-    def spy(args, **kw):
-        if "worktree" in args and "add" in args:
-            native_add_calls.append(args)
-        return real_run_git(args, **kw)
-
-    monkeypatch.setattr(worktree, "_run_git", spy)
-
-    def fake_wt_create(cfg, entry, *, main, branch, target, start_point):
-        # Simulate an external tool creating the worktree directly — a real delegate (e.g. orca)
-        # shells out on its own, bypassing bh's _run_git entirely.
-        target.parent.mkdir(parents=True, exist_ok=True)
-        run(["git", "-C", str(main), "worktree", "add", "-b", branch, str(target)], check=True)
-        return target
-
-    plugin = _fake_plugin("fake", wt_create=fake_wt_create)
-    monkeypatch.setattr(plugins, "registry", lambda: [plugin])
-
-    worktree._do_add(cfg, entry, repo, branch, target, new_branch=True)
-
-    assert target.exists()
-    assert worktree._branch_exists(repo, branch)
-    assert native_add_calls == []  # the native git worktree add subprocess never ran
+# ---- _do_add: explicit create/attach routing through the selected manager ---------------------
 
 
 def test_do_add_notifies_before_and_after_native_create(tmp_path, monkeypatch):
@@ -2992,18 +2842,13 @@ def test_do_add_uses_one_plugin_snapshot_across_every_create_phase(tmp_path, mon
 
         return enabled
 
-    def create(_cfg, _entry, **_kwargs):
-        phase_calls.append("create")
-        target.mkdir(parents=True)
-        return target
-
     def before(_cfg, _entry, **_kwargs):
         phase_calls.append("before")
 
     def after(_cfg, _entry, **_kwargs):
         phase_calls.append("after")
 
-    orca = _fake_plugin("orca", wt_create=create)
+    orca = _fake_plugin("orca")
     repowise = _fake_plugin("repowise", wt_creating=before, wt_created=after)
     orca = plugins.Plugin(
         **{**orca.__dict__, "enabled": mutable_enabled("orca")},
@@ -3018,129 +2863,139 @@ def test_do_add_uses_one_plugin_snapshot_across_every_create_phase(tmp_path, mon
 
     worktree._do_add(cfg, entry, repo, branch, target, new_branch=True)
 
-    assert phase_calls == ["before", "create", "after"]
+    assert phase_calls == ["before", "after"]
+    assert target.exists()  # the native manager created it between the two observer phases
     assert predicate_calls == ["orca", "repowise"]
     assert source_calls == [True]
 
 
-def test_do_add_new_branch_falls_through_to_native_when_hook_returns_none(tmp_path, monkeypatch):
+def _diverged_branch(repo, branch):
+    """E37 fixture: `branch` carries one commit on the old main tip, then main moves past it."""
+    _git("branch", branch, cwd=repo)
+    _git("checkout", "-q", branch, cwd=repo)
+    (repo / "b.txt").write_text("bead work")
+    _git("add", "b.txt", cwd=repo)
+    _git("commit", "-qm", "bead work", cwd=repo)
+    _git("checkout", "-q", "main", cwd=repo)
+    (repo / "m.txt").write_text("unrelated main work")
+    _git("add", "m.txt", cwd=repo)
+    _git("commit", "-qm", "main moves on", cwd=repo)
+    return run(["git", "-C", str(repo), "rev-parse", branch], capture=True, env=_CLEAN_ENV).stdout
+
+
+def test_attach_never_moves_a_branch_tip_when_its_base_has_diverged(tmp_path, monkeypatch, capsys):
+    """E37: attaching an existing branch whose recorded base (`main`) has since moved past it
+    keeps the branch at its own tip — no merge, rebase, or fast-forward — and Beadhive's own
+    pre-check names the divergence instead of trusting the manager to honour `base`."""
     cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
-    target = worktree.wt_dir(entry, "native-1")
-    branch = "wt/bead/issue/native-1"
+    branch = "wt/bead/issue/b-2"
+    before = _diverged_branch(repo, branch)
+    target = worktree.wt_dir(entry, "b-2")
 
-    plugin = _fake_plugin("noop", wt_create=lambda cfg, entry, **kw: None)
-    monkeypatch.setattr(plugins, "registry", lambda: [plugin])
+    handle = worktree._worktree_lifecycle_service(cfg, entry).attach(
+        WorktreeSpec(repo, branch, target, "main")
+    )
 
-    worktree._do_add(cfg, entry, repo, branch, target, new_branch=True)
+    after = run(["git", "-C", str(repo), "rev-parse", branch], capture=True, env=_CLEAN_ENV)
+    head = run(["git", "-C", str(target), "rev-parse", "HEAD"], capture=True, env=_CLEAN_ENV)
+    assert after.stdout == before
+    assert head.stdout == before
+    assert not (target / "m.txt").exists()  # main's newer commit was NOT pulled in
+    assert (handle.path, handle.branch, handle.base) == (target, branch, "main")
+    assert "never moves a branch tip" in capsys.readouterr().err
+
+
+def test_do_add_attach_routes_to_the_manager_attach_and_keeps_the_tip(tmp_path, monkeypatch):
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    branch = "wt/bead/issue/attach-1"
+    before = _diverged_branch(repo, branch)
+    target = worktree.wt_dir(entry, "attach-1")
+    git_calls = []
+    real_run_git = worktree._run_git
+
+    def spy(args, **kw):
+        git_calls.append(args)
+        return real_run_git(args, **kw)
+
+    monkeypatch.setattr(worktree, "_run_git", spy)
+
+    worktree._do_add(cfg, entry, repo, branch, target, new_branch=False, start_point="ignored")
+
+    after = run(["git", "-C", str(repo), "rev-parse", branch], capture=True, env=_CLEAN_ENV)
+    assert after.stdout == before
+    assert target.exists()
+    worktree_calls = [c for c in git_calls if "worktree" in c]
+    assert worktree_calls[:2] == [
+        ["git", "-C", str(repo), "worktree", "prune"],
+        ["git", "-C", str(repo), "worktree", "add", str(target), branch],
+    ]
+
+
+def test_do_add_never_consults_orca_even_with_orca_worktrees_enabled(tmp_path, monkeypatch):
+    """The retired Orca delegation (bh-055ot.1): `orca.worktrees` no longer changes worktree
+    mechanics — `ensure()` creates natively, never shells out to `orca`, and still runs init."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    cfg["orca"] = {"enabled": True, "worktrees": {"enabled": True}}
+    cfg["worktrees"] = {"init": [{"run": "touch native.marker"}]}
+    monkeypatch.setattr(plugins, "registry", lambda: [orca.PLUGIN])
+
+    def no_orca(cmd, **kw):
+        raise AssertionError(f"orca must not be consulted for worktree mechanics: {cmd}")
+
+    monkeypatch.setattr(orca.run, "run", no_orca)
+
+    _entry, target, branch = worktree.ensure(cfg, "mr", bead="native-1")
 
     assert target.exists()
     assert worktree._branch_exists(repo, branch)
+    assert (target / "native.marker").exists()
 
 
-def test_do_add_attach_never_delegates_and_warns_when_plugin_enabled(tmp_path, monkeypatch, capsys):
+def test_do_add_refuses_a_non_native_worktree_manager(tmp_path, monkeypatch, capsys):
     cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
-    branch = "wt/bead/issue/attach-1"
-    _git("branch", branch, cwd=repo)  # existing branch to attach; dir doesn't exist yet
-    target = worktree.wt_dir(entry, "attach-1")
-
-    calls = []
-
-    def hook(cfg, entry, **kw):
-        calls.append(kw)
-        return Path("/should-not-be-used")
-
-    plugin = _fake_plugin("fake", wt_create=hook)
-    monkeypatch.setattr(plugins, "registry", lambda: [plugin])
-
-    worktree._do_add(cfg, entry, repo, branch, target, new_branch=False)
-
-    assert calls == []  # attach never calls the hook, even though a delegating plugin is enabled
-    assert target.exists()
-    assert "attach stays native" in capsys.readouterr().err
-
-
-def test_do_add_typer_exit_from_hook_propagates(tmp_path, monkeypatch):
-    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
-    target = worktree.wt_dir(entry, "exit-1")
-    branch = "wt/bead/issue/exit-1"
-
-    def boom(cfg, entry, **kw):
-        raise typer.Exit(7)
-
-    plugin = _fake_plugin("boom", wt_create=boom)
-    monkeypatch.setattr(plugins, "registry", lambda: [plugin])
+    cfg["worktrees"] = {"manager": "herdr"}
+    target = worktree.wt_dir(entry, "refused-1")
+    branch = "wt/bead/issue/refused-1"
 
     with pytest.raises(typer.Exit) as exc:
         worktree._do_add(cfg, entry, repo, branch, target, new_branch=True)
-    assert exc.value.exit_code == 7
-    assert not target.exists()  # native create never ran either
+
+    assert exc.value.exit_code == 1
+    err = capsys.readouterr().err
+    assert "worktrees.manager = 'herdr' is not supported" in err
+    assert "native" in err
+    assert not target.exists()
     assert not worktree._branch_exists(repo, branch)
 
 
-def test_do_add_other_exception_from_hook_falls_through_to_native(tmp_path, monkeypatch, capsys):
+def test_failed_native_create_exits_with_git_code_and_skips_created_observers(
+    tmp_path, monkeypatch
+):
     cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
-    target = worktree.wt_dir(entry, "fallback-1")
-    branch = "wt/bead/issue/fallback-1"
-
-    def boom(cfg, entry, **kw):
-        raise RuntimeError("plugin exploded")
-
-    plugin = _fake_plugin("boom", wt_create=boom)
-    monkeypatch.setattr(plugins, "registry", lambda: [plugin])
-
-    worktree._do_add(cfg, entry, repo, branch, target, new_branch=True)
-
-    assert target.exists()  # fell through to native create
-    assert worktree._branch_exists(repo, branch)
-    assert "plugin exploded" in capsys.readouterr().err
-
-
-# ---- end-to-end: ensure on the REAL orca plugin -----------------------
-
-
-def test_ensure_delegated_to_real_orca_plugin_still_runs_run_init(tmp_path, monkeypatch):
-    """`ensure()` -> `_do_add` -> `_consult_wt_create` -> the real `orca.create_worktree` (not a
-    fake plugin stand-in): only the `orca worktree create --json` subprocess is faked (there's no
-    live orca runtime in CI); it shells out to a REAL `git worktree add` under the hood, so the
-    git-level fixup (rename the sanitized leaf branch to bh's `wt/...` branch) runs for real too.
-    Proves run_init still fires on the delegated path — the whole point of `_do_add` running it
-    unconditionally after either branch of the create."""
-    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
-    cfg["git_workspace"] = {"enabled": True}
-    cfg["orca"] = {"enabled": True, "worktrees": {"enabled": True}}
-    cfg["worktrees"] = {"init": [{"run": "touch delegated.marker"}]}
-    monkeypatch.setattr(plugins, "registry", lambda: [orca.PLUGIN])
-
-    bead = "deleg-1"
-    branch = f"wt/bead/issue/{bead}"
-    leaf = bead
-    target = worktree.wt_dir(entry, leaf)
-
-    real_run = orca.run.run
-
-    def fake_run(cmd, **kw):
-        if cmd[0] == "orca":
-            assert cmd[1:3] == ["worktree", "create"], f"unexpected orca call: {cmd}"
-            real_run(
-                ["git", "-C", str(repo), "worktree", "add", "-b", leaf, str(target)], check=True
+    branch = "wt/bead/issue/dup-1"
+    _git("branch", branch, cwd=repo)  # `worktree add -b` onto an existing branch fails
+    target = worktree.wt_dir(entry, "dup-1")
+    calls = []
+    monkeypatch.setattr(
+        plugins,
+        "registry",
+        lambda: [
+            _fake_plugin(
+                "observer",
+                wt_creating=lambda cfg, entry, **kw: calls.append("before"),
+                wt_created=lambda cfg, entry, **kw: calls.append("after"),
             )
-            payload = json.dumps({"ok": True, "result": {"worktree": {"path": str(target)}}})
-            return SimpleNamespace(returncode=0, stdout=payload)
-        return real_run(cmd, **kw)  # real git — actually exercises the branch-rename fixup
+        ],
+    )
 
-    monkeypatch.setattr(orca.run, "run", fake_run)
+    with pytest.raises(typer.Exit) as exc:
+        worktree._do_add(cfg, entry, repo, branch, target, new_branch=True)
 
-    result_entry, result_target, result_branch = worktree.ensure(cfg, "mr", bead=bead)
-
-    assert result_target == target
-    assert result_branch == branch
-    assert target.exists()
-    assert worktree._branch_exists(repo, branch)  # the fixup renamed leaf -> the bh branch
-    assert not worktree._branch_exists(repo, leaf)  # sanitized leaf branch no longer exists
-    assert (target / "delegated.marker").exists()  # run_init ran on the delegated path
+    assert exc.value.exit_code != 0
+    assert calls == ["before"]
 
 
-# ---- delegation wiring: remove() (keep_branch=True — the branch is durable) -------------------
+# ---- remove(): the selected manager only; the branch is durable ------------------------------
 
 
 def _add_real_worktree(repo, entry, leaf, branch):
@@ -3157,7 +3012,7 @@ def _store_answers(monkeypatch, status="closed"):
     These fixtures stand up a real git repo and NO bead store, which after bh-167s0 is a
     legitimate UNKNOWN — `rm` refuses rather than removing a worktree whose contents bh cannot
     describe. That refusal has its own tests further down; here it would only mask the
-    delegation wiring these tests exist to pin.
+    removal wiring these tests exist to pin.
     """
 
     def fake_json(args, cwd, **kw):
@@ -3170,31 +3025,27 @@ def _store_answers(monkeypatch, status="closed"):
     monkeypatch.setattr(worktree.bd, "json", fake_json)
 
 
-def test_remove_delegates_with_keep_branch_true(tmp_path, monkeypatch):
+def test_remove_runs_the_native_manager_and_keeps_the_branch(tmp_path, monkeypatch):
     cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     branch = "wt/bead/issue/rm-1"
     target = _add_real_worktree(repo, entry, "rm-1", branch)
     monkeypatch.setattr(config, "load", lambda: cfg)
     _store_answers(monkeypatch)
+    removes = []
+    real_run_git = worktree._run_git
 
-    calls = []
+    def spy(args, **kw):
+        if "worktree" in args and "remove" in args:
+            removes.append(args)
+        return real_run_git(args, **kw)
 
-    def hook(cfg, entry, **kw):
-        calls.append(kw)
-        run(
-            ["git", "-C", str(repo), "worktree", "remove", "--force", str(kw["target"])],
-            check=True,
-        )
-        return True
-
-    plugin = _fake_plugin("fake", wt_remove=hook)
-    monkeypatch.setattr(plugins, "registry", lambda: [plugin])
+    monkeypatch.setattr(worktree, "_run_git", spy)
 
     worktree.remove("mr", "rm-1")
 
     assert not target.exists()
-    assert calls[0]["keep_branch"] is True
-    assert worktree._branch_exists(repo, branch)  # keep_branch semantics honored by the hook
+    assert removes == [["git", "-C", str(repo), "worktree", "remove", str(target)]]
+    assert worktree._branch_exists(repo, branch)  # a manager's remove never deletes the branch
 
 
 def test_remove_json_reports_op_hive_path_removed(tmp_path, monkeypatch, capsys):
@@ -3218,56 +3069,7 @@ def test_remove_json_reports_op_hive_path_removed(tmp_path, monkeypatch, capsys)
     assert not target.exists()
 
 
-def test_remove_falls_through_to_native_when_hook_returns_false(tmp_path, monkeypatch):
-    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
-    branch = "wt/bead/issue/rm-2"
-    target = _add_real_worktree(repo, entry, "rm-2", branch)
-    monkeypatch.setattr(config, "load", lambda: cfg)
-    _store_answers(monkeypatch)
-
-    plugin = _fake_plugin("fake", wt_remove=lambda cfg, entry, **kw: False)
-    monkeypatch.setattr(plugins, "registry", lambda: [plugin])
-
-    worktree.remove("mr", "rm-2")
-
-    assert not target.exists()  # native remove ran
-
-
-def test_remove_never_runs_native_after_successful_delegated_removal(tmp_path, monkeypatch):
-    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
-    branch = "wt/bead/issue/rm-3"
-    target = _add_real_worktree(repo, entry, "rm-3", branch)
-    monkeypatch.setattr(config, "load", lambda: cfg)
-    _store_answers(monkeypatch)
-
-    native_remove_calls = []
-    real_run_git = worktree._run_git
-
-    def spy(args, **kw):
-        if "worktree" in args and "remove" in args:
-            native_remove_calls.append(args)
-        return real_run_git(args, **kw)
-
-    monkeypatch.setattr(worktree, "_run_git", spy)
-
-    def hook(cfg, entry, **kw):
-        # Simulate an external tool removing the worktree directly (bypassing bh's _run_git).
-        run(
-            ["git", "-C", str(repo), "worktree", "remove", "--force", str(kw["target"])],
-            check=True,
-        )
-        return True
-
-    plugin = _fake_plugin("fake", wt_remove=hook)
-    monkeypatch.setattr(plugins, "registry", lambda: [plugin])
-
-    worktree.remove("mr", "rm-3")
-
-    assert not target.exists()
-    assert native_remove_calls == []  # the native git worktree remove subprocess never ran
-
-
-# ---- delegation wiring + native/delegated parity: prune() (keep_branch=False) -----------------
+# ---- prune(): native removal of SAFE rows, then the merged branch is deleted ------------------
 
 
 def _active_status_for_hive(hive: str) -> wt_status.WtStatus:
@@ -3486,81 +3288,6 @@ def _prune_hive(tmp_path, monkeypatch):
     return entry, repo, target, branch
 
 
-def test_prune_delegates_with_keep_branch_false(tmp_path, monkeypatch):
-    entry, repo, target, branch = _prune_hive(tmp_path, monkeypatch)
-
-    calls = []
-
-    def hook(cfg, entry, **kw):
-        calls.append(kw)
-        run(
-            ["git", "-C", str(repo), "worktree", "remove", "--force", str(kw["target"])],
-            check=True,
-        )
-        return True
-
-    plugin = _fake_plugin("fake", wt_remove=hook)
-    monkeypatch.setattr(plugins, "registry", lambda: [plugin])
-
-    worktree.prune(hive="mr")
-
-    assert not target.exists()
-    assert calls[0]["keep_branch"] is False
-    assert calls[0]["force"] is True
-
-
-def test_prune_wires_through_real_orca_plugin_keep_branch_false(tmp_path, monkeypatch):
-    """End-to-end wiring (the real orca.PLUGIN, not a fake): prune()'s SAFE removal flows
-    through the generic seam into orca.remove_worktree(), which skips the keep_branch=True
-    detach and drives 'orca worktree rm' (its subprocess is faked; the fake performs the same
-    real-git-removal side effect orca's own rm would)."""
-    import json
-    from types import SimpleNamespace
-
-    from beadhive import orca
-
-    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
-    cfg["git_workspace"] = {"enabled": True}
-    cfg["orca"] = {"enabled": True, "worktrees": {"enabled": True, "fallback": False}}
-    branch = "wt/bead/issue/orca-safe-1"
-    target = _add_real_worktree(repo, entry, "orca-safe-1", branch)
-    monkeypatch.setattr(config, "load", lambda: cfg)
-
-    st = wt_status.WtStatus(
-        hive="mr",
-        leaf="orca-safe-1",
-        branch=branch,
-        path=str(target),
-        bead_id="orca-safe-1",
-        classification=wt_status.WtClassification.SAFE,
-        merged=True,
-        dirty=False,
-        safe=True,
-    )
-    monkeypatch.setattr(worktree, "managed", lambda cfg: [("mr", str(target), branch)])
-    monkeypatch.setattr(worktree, "_classify_entry", lambda entry, rows, cfg: [st])
-    monkeypatch.setattr(plugins, "registry", lambda: [orca.PLUGIN])
-
-    calls: list[list[str]] = []
-
-    def fake_run(cmd, **k):
-        calls.append(cmd)
-        if cmd[:3] == ["orca", "worktree", "rm"]:
-            run(["git", "-C", str(repo), "worktree", "remove", "--force", str(target)], check=True)
-            return SimpleNamespace(
-                returncode=0, stdout=json.dumps({"ok": True, "result": {"removed": True}})
-            )
-        raise AssertionError(f"unexpected orca subprocess call: {cmd}")
-
-    monkeypatch.setattr(orca.run, "run", fake_run)
-
-    worktree.prune(hive="mr")
-
-    assert not target.exists()
-    assert calls  # orca was actually consulted
-    assert calls[0][:3] == ["orca", "worktree", "rm"]  # keep_branch=False: no detach call first
-
-
 def test_prune_native_deletes_merged_branch_after_removal(tmp_path, monkeypatch):
     """Design delta: native prune ALSO deletes the merged branch of a SAFE tree (git branch -D)
     once the worktree is gone — the one deliberate native-behavior change (native/delegated
@@ -3631,29 +3358,6 @@ def test_prune_removes_clean_merged_worktree_with_bd_backup_artifacts(
 
     assert not target.exists()
     assert "✓ pruned 1 SAFE worktree(s)" in capsys.readouterr().out
-
-
-def test_prune_delegated_removal_skips_native_branch_delete(tmp_path, monkeypatch):
-    """A delegated removal owns its own branch cleanup — native prune must NOT also run
-    `git branch -D` (never native removal — including branch cleanup — after a successful
-    delegated removal)."""
-    entry, repo, target, branch = _prune_hive(tmp_path, monkeypatch)
-
-    def hook(cfg, entry, **kw):
-        # Deliberately does NOT delete the branch, to prove the seam doesn't do it either.
-        run(
-            ["git", "-C", str(repo), "worktree", "remove", "--force", str(kw["target"])],
-            check=True,
-        )
-        return True
-
-    plugin = _fake_plugin("fake", wt_remove=hook)
-    monkeypatch.setattr(plugins, "registry", lambda: [plugin])
-
-    worktree.prune(hive="mr")
-
-    assert not target.exists()
-    assert worktree._branch_exists(repo, branch) is True  # native branch -D never ran
 
 
 def test_prune_reaps_stale_admin_entries_even_when_no_row_is_safe(tmp_path, monkeypatch):

@@ -16,7 +16,7 @@
     "successor_contracts": "beadhive.modules.config.contracts"
   },
   "current": {
-    "config_patch_point_count": 279,
+    "config_patch_point_count": 264,
     "config_patch_points": [
       {
         "facade_target": "beadhive.config.save_fleet",
@@ -404,11 +404,32 @@
         "target": "beadhive.config.gh_login"
       },
       {
+        "facade_target": "beadhive.config.load",
+        "kind": "direct-facade",
+        "line": 168,
+        "path": "tests/test_config_orca.py",
+        "target": "beadhive.config.load"
+      },
+      {
+        "facade_target": "beadhive.config.load",
+        "kind": "direct-facade",
+        "line": 184,
+        "path": "tests/test_config_orca.py",
+        "target": "beadhive.config.load"
+      },
+      {
         "facade_target": "beadhive.config.migrate_hive_keys_if_needed",
         "kind": "direct-facade",
         "line": 59,
         "path": "tests/test_config_validate_cli.py",
         "target": "beadhive.config.migrate_hive_keys_if_needed"
+      },
+      {
+        "facade_target": "beadhive.config.load",
+        "kind": "direct-facade",
+        "line": 45,
+        "path": "tests/test_config_worktrees_manager.py",
+        "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.cache_dir",
@@ -1153,114 +1174,9 @@
         "target": "beadhive.orca.config.orca_data_path"
       },
       {
-        "facade_target": "beadhive.config.orca_worktrees_enabled",
-        "kind": "indirect-adapter",
-        "line": 685,
-        "path": "tests/test_orca.py",
-        "target": "beadhive.orca.config.orca_worktrees_enabled"
-      },
-      {
-        "facade_target": "beadhive.config.orca_worktrees_enabled",
-        "kind": "indirect-adapter",
-        "line": 696,
-        "path": "tests/test_orca.py",
-        "target": "beadhive.orca.config.orca_worktrees_enabled"
-      },
-      {
-        "facade_target": "beadhive.config.orca_worktrees_enabled",
-        "kind": "indirect-adapter",
-        "line": 715,
-        "path": "tests/test_orca.py",
-        "target": "beadhive.orca.config.orca_worktrees_enabled"
-      },
-      {
-        "facade_target": "beadhive.config.orca_worktrees_enabled",
-        "kind": "indirect-adapter",
-        "line": 730,
-        "path": "tests/test_orca.py",
-        "target": "beadhive.orca.config.orca_worktrees_enabled"
-      },
-      {
-        "facade_target": "beadhive.config.orca_worktrees_fallback",
-        "kind": "indirect-adapter",
-        "line": 731,
-        "path": "tests/test_orca.py",
-        "target": "beadhive.orca.config.orca_worktrees_fallback"
-      },
-      {
-        "facade_target": "beadhive.config.orca_worktrees_enabled",
-        "kind": "indirect-adapter",
-        "line": 744,
-        "path": "tests/test_orca.py",
-        "target": "beadhive.orca.config.orca_worktrees_enabled"
-      },
-      {
-        "facade_target": "beadhive.config.orca_worktrees_fallback",
-        "kind": "indirect-adapter",
-        "line": 745,
-        "path": "tests/test_orca.py",
-        "target": "beadhive.orca.config.orca_worktrees_fallback"
-      },
-      {
-        "facade_target": "beadhive.config.orca_worktrees_enabled",
-        "kind": "indirect-adapter",
-        "line": 759,
-        "path": "tests/test_orca.py",
-        "target": "beadhive.orca.config.orca_worktrees_enabled"
-      },
-      {
-        "facade_target": "beadhive.config.orca_worktrees_fallback",
-        "kind": "indirect-adapter",
-        "line": 760,
-        "path": "tests/test_orca.py",
-        "target": "beadhive.orca.config.orca_worktrees_fallback"
-      },
-      {
-        "facade_target": "beadhive.config.orca_worktrees_enabled",
-        "kind": "indirect-adapter",
-        "line": 773,
-        "path": "tests/test_orca.py",
-        "target": "beadhive.orca.config.orca_worktrees_enabled"
-      },
-      {
-        "facade_target": "beadhive.config.orca_worktrees_fallback",
-        "kind": "indirect-adapter",
-        "line": 774,
-        "path": "tests/test_orca.py",
-        "target": "beadhive.orca.config.orca_worktrees_fallback"
-      },
-      {
-        "facade_target": "beadhive.config.orca_worktrees_enabled",
-        "kind": "indirect-adapter",
-        "line": 790,
-        "path": "tests/test_orca.py",
-        "target": "beadhive.orca.config.orca_worktrees_enabled"
-      },
-      {
-        "facade_target": "beadhive.config.orca_worktrees_enabled",
-        "kind": "indirect-adapter",
-        "line": 804,
-        "path": "tests/test_orca.py",
-        "target": "beadhive.orca.config.orca_worktrees_enabled"
-      },
-      {
-        "facade_target": "beadhive.config.orca_worktrees_fallback",
-        "kind": "indirect-adapter",
-        "line": 805,
-        "path": "tests/test_orca.py",
-        "target": "beadhive.orca.config.orca_worktrees_fallback"
-      },
-      {
-        "facade_target": "beadhive.config.worktrees_root",
-        "kind": "indirect-adapter",
-        "line": 877,
-        "path": "tests/test_orca.py",
-        "target": "beadhive.orca.config.worktrees_root"
-      },
-      {
         "facade_target": "beadhive.config.orca_data_path",
         "kind": "indirect-adapter",
-        "line": 1039,
+        "line": 446,
         "path": "tests/test_orca.py",
         "target": "beadhive.orca.config.orca_data_path"
       },
@@ -1302,7 +1218,7 @@
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 365,
+        "line": 361,
         "path": "tests/test_plugins.py",
         "target": "beadhive.config.load"
       },
@@ -1778,140 +1694,119 @@
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 350,
+        "line": 351,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 1046,
+        "line": 1047,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 1060,
+        "line": 1061,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "indirect-adapter",
-        "line": 1235,
+        "line": 1236,
         "path": "tests/test_worktree.py",
         "target": "beadhive.worktree.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3177,
+        "line": 3032,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3206,
+        "line": 3057,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3225,
+        "line": 3193,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3240,
+        "line": 3224,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3391,
+        "line": 3253,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3422,
+        "line": 3273,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3451,
-        "path": "tests/test_worktree.py",
-        "target": "beadhive.config.load"
-      },
-      {
-        "facade_target": "beadhive.config.load",
-        "kind": "direct-facade",
-        "line": 3471,
-        "path": "tests/test_worktree.py",
-        "target": "beadhive.config.load"
-      },
-      {
-        "facade_target": "beadhive.config.load",
-        "kind": "direct-facade",
-        "line": 3527,
-        "path": "tests/test_worktree.py",
-        "target": "beadhive.config.load"
-      },
-      {
-        "facade_target": "beadhive.config.load",
-        "kind": "direct-facade",
-        "line": 3598,
+        "line": 3325,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.integration_branch",
         "kind": "indirect-adapter",
-        "line": 3609,
+        "line": 3336,
         "path": "tests/test_worktree.py",
         "target": "beadhive.worktree.config.integration_branch"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3669,
+        "line": 3373,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 4113,
+        "line": 3817,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 4133,
+        "line": 3837,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 4150,
+        "line": 3854,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 4164,
+        "line": 3868,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
@@ -2445,7 +2340,7 @@
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       }
     ],
-    "test_config_importer_count": 143,
+    "test_config_importer_count": 144,
     "test_config_importers": [
       "tests/contracts/test_config_contract_compatibility.py",
       "tests/contracts/test_config_resolution_compatibility.py",
@@ -2484,6 +2379,7 @@
       "tests/test_config_validate_cli.py",
       "tests/test_config_work.py",
       "tests/test_config_worktrees.py",
+      "tests/test_config_worktrees_manager.py",
       "tests/test_conflict_estimator.py",
       "tests/test_contributor.py",
       "tests/test_converge.py",
@@ -2591,7 +2487,7 @@
       "tests/unit/modules/config/test_consumer_settings.py",
       "tests/unit/test_pure_module_independence.py"
     ],
-    "test_config_schema_importer_count": 23,
+    "test_config_schema_importer_count": 24,
     "test_config_schema_importers": [
       "tests/contracts/test_config_contract_compatibility.py",
       "tests/test_attestation_provider.py",
@@ -2607,6 +2503,7 @@
       "tests/test_config_schema_drift.py",
       "tests/test_config_validate.py",
       "tests/test_config_worktrees.py",
+      "tests/test_config_worktrees_manager.py",
       "tests/test_daemon_contract.py",
       "tests/test_daemon_platform_lifecycle.py",
       "tests/test_deps_characterization.py",

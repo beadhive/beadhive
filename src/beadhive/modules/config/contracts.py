@@ -167,6 +167,13 @@ class WorktreesConfig(_Section):
     path: str | None = Field(
         None, description="Persistent worktree root (ephemeral=false only); $BH_WORKTREES wins."
     )
+    manager: Literal["native"] = Field(
+        "native",
+        description=(
+            "The one worktree manager that creates/attaches/removes this fleet's worktrees. "
+            "native (git) is the default and only value; anything else is refused."
+        ),
+    )
     bead_branch: str = Field(
         "bead/{kind}/{id}",
         description="Branch suffix template for a bead worktree ({kind}=epic|issue, {id}=bead id).",

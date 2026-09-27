@@ -74,6 +74,19 @@ class Plugin:
     wt_creating: Callable[..., None] | None = None
     wt_created: Callable[..., None] | None = None
 
+    def __post_init__(self) -> None:
+        # The wt_create/wt_remove delegation seam is retired (bh-055ot.1): exactly one
+        # configured ``worktrees.manager`` executes worktree mechanics, so no plugin may take
+        # over create/remove in registry order. The fields stay in the constructor surface only
+        # so a declaration that still sets one fails loudly here instead of being ignored.
+        retired = [hook for hook in ("wt_create", "wt_remove") if getattr(self, hook) is not None]
+        if retired:
+            raise ValueError(
+                f"plugin {self.name!r} declares {', '.join(retired)}, but worktree delegation "
+                "hooks are retired: the configured worktrees.manager owns worktree "
+                "create/attach/remove. Observe creation with wt_creating/wt_created instead."
+            )
+
 
 def registry() -> list[Plugin]:
     """Return optional built-ins in stable compatibility order.
@@ -480,71 +493,6 @@ class WorktreeCreateRequest:
     branch: str
     target: Path
     start_point: str
-
-
-@dataclass(frozen=True)
-class WorktreeRemoveRequest:
-    main: Path
-    target: Path
-    force: bool
-    keep_branch: bool
-
-
-@dataclass(frozen=True)
-class WorktreeCreatePort:
-    plugin_id: str
-    _create: Callable[..., Path | None]
-
-    def create(self, cfg: Any, entry: Any, request: WorktreeCreateRequest) -> Path | None:
-        return self._create(
-            cfg,
-            entry,
-            main=request.main,
-            branch=request.branch,
-            target=request.target,
-            start_point=request.start_point,
-        )
-
-
-@dataclass(frozen=True)
-class WorktreeRemovePort:
-    plugin_id: str
-    _remove: Callable[..., bool]
-
-    def remove(self, cfg: Any, entry: Any, request: WorktreeRemoveRequest) -> bool:
-        return bool(
-            self._remove(
-                cfg,
-                entry,
-                main=request.main,
-                target=request.target,
-                force=request.force,
-                keep_branch=request.keep_branch,
-            )
-        )
-
-
-def worktree_create_ports(
-    cfg: Any,
-    entry: Any,
-    *,
-    composition: _CompatibilityComposition | None = None,
-) -> tuple[WorktreeCreatePort, ...]:
-    composition = composition or _compose(cfg, entry)
-    return tuple(
-        WorktreeCreatePort(plugin.name, plugin.wt_create)
-        for plugin in composition.declarations
-        if plugin.name in composition.selected_plugin_ids and plugin.wt_create is not None
-    )
-
-
-def worktree_remove_ports(cfg: Any, entry: Any) -> tuple[WorktreeRemovePort, ...]:
-    composition = _compose(cfg, entry)
-    return tuple(
-        WorktreeRemovePort(plugin.name, plugin.wt_remove)
-        for plugin in composition.declarations
-        if plugin.name in composition.selected_plugin_ids and plugin.wt_remove is not None
-    )
 
 
 @dataclass(frozen=True)

@@ -21,14 +21,17 @@ config-dir builder read or write it) and it is never read by this module either.
 **wt_create is deliberately NOT used for provisioning (bh-og0q.5's explicit decision).** The
 bead's design note evaluates it as the seam ("a seat's config directory is the same shape of
 per-seat resource as its worktree, and wt_create already fires at exactly the moment a seat is
-provisioned") — considered and rejected, for three reasons:
+provisioned") — considered and rejected, for three reasons. (bh-055ot.1 has since retired the
+``wt_create``/``wt_remove`` delegation hooks outright — a plugin declaring one is refused, and the
+one configured ``worktrees.manager`` owns worktree mechanics — so the decision now also follows
+from that; the reasoning is kept as recorded.)
 
 1. **Contract mismatch.** ``wt_create`` delegates the *git worktree creation subprocess itself*
    — it must return the created worktree ``Path`` to "win" (skip native ``git worktree add``) or
    ``None`` to fall through. hitch never creates a git worktree; it would always return ``None``,
    making the hook a confusing place to hang an unrelated side effect (build a Config Directory)
    that the hook's own contract doesn't model.
-2. **Wrong failure mode.** ``worktree._consult_wt_create`` treats any non-``typer.Exit`` exception
+2. **Wrong failure mode.** ``worktree._consult_wt_create`` treated any non-``typer.Exit`` exception
    from a hook as best-effort — warn, then fall through to native worktree creation. Wiring a
    hitch build in there would inherit that silent-degrade behavior, directly contradicting this
    bead's own acceptance bar: "when hitch is ENABLED and preflight fails, the launch fails

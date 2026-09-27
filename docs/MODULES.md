@@ -353,8 +353,8 @@ bus. Three kinds of extension are distinct:
 
 1. **Host lifecycle components**: configure/start/ready/drain/stop phases, informed by the
    existing host-daemon startup and shutdown ordering.
-2. **Capability strategies**: typed ports such as `WorktreeProvisioner` or `AgentLauncher` that
-   may take ownership of one operation.
+2. **Capability strategies**: typed ports such as the `worktree.manager` slot or `AgentLauncher`
+   that own one operation, selected explicitly (never raced in registry order).
 3. **Lifecycle observers/participants**: typed notifications around hive, worktree, launch, and
    plugin events.
 
@@ -468,9 +468,9 @@ module imports.
 ### `modules/worktrees`
 
 Owns workspace binding, branch/worktree identity, creation/removal policy, inventory, status,
-cleanup, and merge-related worktree mechanics. It declares a `WorktreeProvisioner` port so native
-Git and plugin-mediated provisioning implement the same contract. Existing facade and test patch
-points remain supported.
+cleanup, and merge-related worktree mechanics. Exactly one configured `worktrees.manager` (native
+Git) implements the `worktree.manager` slot declared on `beadhive-plugins`; plugin-mediated
+provisioning is retired (bh-055ot.1). Existing facade and test patch points remain supported.
 
 ### `modules/agents`
 
