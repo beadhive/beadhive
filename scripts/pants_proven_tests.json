@@ -84,6 +84,8 @@
     "packages/beadhive-core/tests/test_core_review_real_service.py": {"status": "unproven", "reason": "requires live disposable Beads service"},
     "packages/beadhive-core/tests/test_core_routing_policy.py": {"status": "proven", "dependencies": ["packages/beadhive-core/src:lib", "packages/beadhive-beads-client/src:lib"]},
     "packages/beadhive-core/tests/test_core_routing_real_service.py": {"status": "unproven", "reason": "spawns a real bd subprocess against a scratch hive"},
+    "packages/beadhive-core/tests/test_core_dispatch_policy.py": {"status": "proven", "dependencies": ["packages/beadhive-core/src:lib", "packages/beadhive-beads-client/src:lib"]},
+    "packages/beadhive-core/tests/test_core_dispatch_real_service.py": {"status": "unproven", "reason": "spawns a real bd server-mode subprocess against a scratch hive"},
     "packages/beadhive-plugins/tests/test_binding.py": {"status": "proven", "dependencies": ["packages/beadhive-plugins/src:lib"]},
     "packages/beadhive-plugins/tests/test_lifecycle.py": {"status": "proven", "dependencies": ["packages/beadhive-plugins/src:lib"]},
     "packages/beadhive-plugins/tests/test_package_boundary.py": {"status": "proven", "dependencies": ["packages/beadhive-plugins/src:lib"]},
