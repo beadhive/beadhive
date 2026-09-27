@@ -402,6 +402,7 @@ def test_real_cli_is_byte_identical_and_preserves_every_clone_path(
     for relative in (
         "scripts/test_impact_selector.py",
         "scripts/test_closure_certification.py",
+        "scripts/validation_artifacts.py",  # sibling dependency: tree-scoped evidence (bh-vi4ob.1)
         "scripts/test_closures.py",
         "tests/closures.toml",
     ):
