@@ -7,6 +7,19 @@ supplies the narrow ports (gates, state dimensions) that Beads v1.3 does not exp
 
 from __future__ import annotations
 
+from .queue import (
+    DECLINE_EMPTY_QUEUE,
+    DECLINE_NONE_ELIGIBLE,
+    DECLINES,
+    QUEUE_CAPABILITIES,
+    ClaimNextOutcome,
+    QueueCommands,
+    by_parent,
+    decline,
+    eligible,
+    ready_row,
+    ready_rows,
+)
 from .review import (
     APPROVED,
     CHANGES_REQUESTED,
@@ -48,10 +61,15 @@ __all__ = [
     "APPROVED",
     "CHANGES_REQUESTED",
     "COORDINATION_OPERATIONS",
+    "DECLINE_EMPTY_QUEUE",
+    "DECLINE_NONE_ELIGIBLE",
+    "DECLINES",
     "GATE_ROUTES",
+    "QUEUE_CAPABILITIES",
     "REVIEW_CAPABILITIES",
     "STATE_ROUTES",
     "ApiRoute",
+    "ClaimNextOutcome",
     "CompatibilityRoute",
     "DeniedRoute",
     "Gate",
@@ -62,6 +80,7 @@ __all__ = [
     "NullObserver",
     "NullRoutingObserver",
     "OperationDenied",
+    "QueueCommands",
     "ReviewCommands",
     "ReviewFailed",
     "ReviewObserver",
@@ -76,5 +95,10 @@ __all__ = [
     "StateOperations",
     "StateUpdateFailed",
     "UnknownOperation",
+    "by_parent",
+    "decline",
     "default_table",
+    "eligible",
+    "ready_row",
+    "ready_rows",
 ]
