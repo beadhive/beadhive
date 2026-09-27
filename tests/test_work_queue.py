@@ -25,7 +25,7 @@ import pytest
 import typer
 
 from beadhive import bd as bd_mod
-from beadhive import guard, work, work_queue
+from beadhive import guard, work, work_dispatch, work_queue
 from beadhive_beads_client import BeadsSession, ExpectedContext, RemoteEndpoint
 from beadhive_beads_client.service import ServiceUnavailable
 from beadhive_core import QUEUE_CAPABILITIES
@@ -381,40 +381,56 @@ def test_open_children_falls_back_to_none_when_the_service_is_unavailable(monkey
     assert work_queue.open_children(Path("/fake/main"), {"prefix": "mr"}, "ep-1") is None
 
 
-def test_schedule_payload_prefers_the_api_route_and_never_shells_out_to_bd(monkeypatch):
-    """The pre-execution route selection for `bh work schedule`'s children fetch: when the API
-    route succeeds, `bd` is never invoked at all — proving the selection happens BEFORE execution,
-    not as a fallback after a `bd` attempt."""
-    fixture = FakeQueueService(
-        rows=[],
-        children_rows=[_row("mr-1", parent="mr-epic"), _row("mr-2", parent="mr-epic")],
+def test_open_children_is_the_only_fetch_impl_schedule_payload_tries_before_bd(monkeypatch):
+    """`impl_schedule_payload`'s wiring (`work_dispatch.py`) is a 3-line pre-execution selection —
+    try `open_children`, fall back to `api.bd.children` only when it returns `None` — proven at the
+    `open_children` layer above (both directions). This confirms the wiring calls `open_children`
+    with the exact epic/entry/main it was given, so `bd` is reached only on a real `None`, without
+    re-running `work.schedule_payload`'s full config/model-routing pipeline here (already covered
+    by `tests/test_mcp_work_schedule_resource.py`) or adding new `beadhive.config` monkeypatch call
+    sites for `tests/unit/modules/config/test_dependency_ledger.py` to track."""
+    calls: list[tuple] = []
+
+    def _open_children(main, entry, epic):
+        calls.append((main, entry, epic))
+        return [_row("mr-1"), _row("mr-2")]
+
+    def _forbidden_bd_children(*_args, **_kw):
+        raise AssertionError("bd.children must never be invoked when open_children succeeds")
+
+    fake_api = SimpleNamespace(
+        work_queue=SimpleNamespace(open_children=_open_children),
+        bd=SimpleNamespace(children=_forbidden_bd_children),
     )
-    monkeypatch.setattr(work_queue, "session_factory", _api_session_factory(fixture))
-
-    def _forbidden_bd(cmd, **_kw):
-        raise AssertionError(f"bd must never be invoked when the API route succeeds: {cmd}")
-
-    monkeypatch.setattr(bd_mod, "_run", _forbidden_bd)
-    from beadhive import config as config_mod
-    from beadhive.config_schema import RoutingTierConfig
-
-    monkeypatch.setattr(config_mod, "load", lambda: {})
-    monkeypatch.setattr(config_mod, "dispatch_mode", lambda cfg, entry: "fanout")
-    monkeypatch.setattr(config_mod, "batch_max_size", lambda cfg, entry: 5)
-    monkeypatch.setattr(config_mod, "dispatch_max_depth", lambda cfg, entry: 2)
-    monkeypatch.setattr(config_mod, "dispatch_auto_budget", lambda cfg, entry: 8)
-    monkeypatch.setattr(config_mod, "dispatch_max_beads_per_session", lambda cfg, entry: 8)
-    monkeypatch.setattr(
-        config_mod,
-        "routing_tiers",
-        lambda cfg, entry: [RoutingTierConfig(model="anthropic/claude-opus-4-1")],
-    )
-    monkeypatch.setattr(config_mod, "routing_policy", lambda cfg, entry: "loose")
-    monkeypatch.setattr(config_mod, "harness_name", lambda cfg, entry: "claude")
-
     entry = {"provider": "github", "org": "myorg", "repo": "myrepo", "prefix": "mr"}
-    result = work.schedule_payload("mr-epic", {}, entry, Path("/fake/main"))
-    assert sorted(row["id"] for row in result["singletons"]) == ["mr-1", "mr-2"]
+    main = Path("/fake/main")
+    children = work_dispatch._impl_schedule_children(fake_api, "mr-epic", entry, main)
+
+    assert calls == [(main, entry, "mr-epic")]
+    assert sorted(row["id"] for row in children) == ["mr-1", "mr-2"]
+
+
+def test_impl_schedule_children_falls_back_to_bd_when_open_children_declines(monkeypatch):
+    """The other direction: `open_children` reporting `None` (service/capability unavailable)
+    selects `bd.children` — the CLI-compatibility route `impl_schedule_payload` always had."""
+    bd_calls: list[tuple] = []
+
+    def _forbidden_open_children(*_args, **_kw):
+        return None
+
+    def _bd_children(epic, main):
+        bd_calls.append((epic, main))
+        return [_row("mr-3")]
+
+    fake_api = SimpleNamespace(
+        work_queue=SimpleNamespace(open_children=_forbidden_open_children),
+        bd=SimpleNamespace(children=_bd_children),
+    )
+    main = Path("/fake/main")
+    children = work_dispatch._impl_schedule_children(fake_api, "mr-epic", {"prefix": "mr"}, main)
+
+    assert bd_calls == [("mr-epic", main)]
+    assert [row["id"] for row in children] == ["mr-3"]
 
 
 # ---- real-service: the seat-mismatch release path (bh-mu5yb.1 closes bh-l5sxi.2's gap) --------
