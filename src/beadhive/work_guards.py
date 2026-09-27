@@ -86,29 +86,8 @@ def guard_seat(data, name, bead, *, verb):
     raise typer.Exit(1)
 
 
-def is_orchestrator(name: str) -> bool:
-    if name.startswith(DISP_PREFIX) or name.startswith(DIRECTOR_PREFIX):
-        return True
-    return any(
-        name.startswith(prefix) and seat == "dispatcher"
-        for prefix, (seat, _) in LEGACY_SEAT_PREFIXES.items()
-    )
-
-
 def names_a_seat(name: str) -> bool:
     return any(name.startswith(prefix) for prefix in KNOWN_SEAT_PREFIXES)
-
-
-def guard_orchestrator(actor, bead):
-    if is_orchestrator(actor) or not names_a_seat(actor):
-        return
-    typer.echo(
-        f"✗ {bead}: `{config.BINARY_ALIAS} work assign` is orchestrator-only — "
-        "only a dispatcher (disp/<name>) or "
-        f"director (dir/<name>) may assign work, not {actor!r}.",
-        err=True,
-    )
-    raise typer.Exit(1)
 
 
 def epic_of(data, bead) -> str:

@@ -11,21 +11,12 @@ from ..contracts import (
     IdentityProvider,
     ValidationEvidenceStore,
     WorkNotifier,
-    WorktreeLifecyclePort,
 )
 from ..domain import (
-    AbandonRequest,
-    AbandonResult,
-    AssignmentRequest,
-    AssignmentResult,
     CheckRequest,
     CheckResult,
-    ClaimRequest,
-    ClaimResult,
     MergeRequest,
     MergeResult,
-    ResumeRequest,
-    ResumeResult,
     ReviewRequest,
     ReviewResult,
     ScheduleRequest,
@@ -42,26 +33,16 @@ class WorkLifecycleService:
         self,
         *,
         beads: BeadStore,
-        worktrees: WorktreeLifecyclePort,
         execution: ExecutionPort,
         evidence: ValidationEvidenceStore,
         identity: IdentityProvider,
         notifier: WorkNotifier,
     ) -> None:
         self._beads = beads
-        self._worktrees = worktrees
         self._execution = execution
         self._evidence = evidence
         self._identity = identity
         self._notifier = notifier
-
-    def assign(self, request: AssignmentRequest) -> AssignmentResult:
-        request = self._resolved(request, "assign")
-        return self._complete("assign", request.bead, self._beads.assign(request))
-
-    def claim(self, request: ClaimRequest) -> ClaimResult:
-        request = self._resolved(request, "claim", subject=request.subject)
-        return self._complete("claim", request.subject, self._worktrees.claim(request))
 
     def schedule(self, request: ScheduleRequest) -> ScheduleResult:
         return self._complete("schedule", request.epic, self._beads.schedule(request))
@@ -78,13 +59,6 @@ class WorkLifecycleService:
 
     def merge(self, request: MergeRequest) -> MergeResult:
         return self._complete("merge", request.subject, self._execution.merge(request))
-
-    def resume(self, request: ResumeRequest) -> ResumeResult:
-        request = self._resolved(request, "resume")
-        return self._complete("resume", request.bead, self._worktrees.resume(request))
-
-    def abandon(self, request: AbandonRequest) -> AbandonResult:
-        return self._complete("abandon", request.bead, self._beads.abandon(request))
 
     def _resolved(self, request: Any, action: str, *, subject: str = "") -> Any:
         actor = self._identity.resolve(
