@@ -4,7 +4,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from beadhive.kernel.lifecycle import (
+from beadhive_plugins import (
     ALL_LIFECYCLE_EVENTS,
     CompensationMode,
     CompensationPolicy,

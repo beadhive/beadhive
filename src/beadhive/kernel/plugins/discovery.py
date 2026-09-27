@@ -10,16 +10,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
 
-from ..lifecycle.contracts import (
-    EVENTS_BY_ID,
-    CompensationMode,
-    CompensationPolicy,
-    Criticality,
-    DeliveryPolicy,
-    Idempotency,
-    RetryPolicy,
-)
-from .contracts import (
+from beadhive_plugins.contracts import (
     CapabilityRef,
     CapabilitySelection,
     CliProjection,
@@ -43,6 +34,15 @@ from .contracts import (
     SourceRead,
     Version,
     VersionRange,
+)
+from beadhive_plugins.lifecycle import (
+    EVENTS_BY_ID,
+    CompensationMode,
+    CompensationPolicy,
+    Criticality,
+    DeliveryPolicy,
+    Idempotency,
+    RetryPolicy,
 )
 
 _LOCAL_ID = re.compile(r"^[a-z][a-z0-9-]*$")

@@ -20,8 +20,7 @@ from beadhive.kernel.telemetry.contracts import (
     TelemetryObservation,
     activate_non_fatal,
 )
-
-from .contracts import (
+from beadhive_plugins.lifecycle import (
     EVENTS_BY_ID,
     CompensationMode,
     Criticality,
