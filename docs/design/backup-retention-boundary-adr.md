@@ -28,8 +28,9 @@ mechanisms writing backups, none aware of the others, none pruning:
    event. One run: 744 MB (`hq-embeddeddolt.tar.gz` 743,894,216B + `hq-issues.jsonl`
    5,504,318B).
 2. bd's own Dolt-native backup → `<hive>/.beads/backup/` — a real Dolt/noms content-addressed
-   store, synced on `backup.interval` (default 15m when a git remote exists). 171 `.darc`
-   table files / 185 MB in this hive alone, growing with every commit.
+   store, synced on `backup.interval` when explicitly enabled. bd's shared-server default is OFF;
+   Beadhive onboarding and storage migration leave it off unless an operator opted in. 171
+   `.darc` table files / 185 MB in this hive alone, growing with every commit.
 3. `bh backup` → a JSONL mirror, previously defaulting to `./backup` **relative to cwd**.
 
 "Keep all three" was the leading hypothesis going in (bh-cmqp's own epic description calls
@@ -42,7 +43,7 @@ no retention" — that part this ADR fixes.
 | # | root | writer | trigger | protects against | consumed by |
 |---|---|---|---|---|---|
 | 1 | `$BH_HOME/backups/hq/<instant>/` | `hq._take_backup` (`bh`) | once, before HQ's first remote push (a one-way schema-migration decision) | a broken/lost HQ store at the single highest-stakes moment in its lifecycle | `bh hq restore` (bh-cmqp.1) |
-| 2 | `<hive>/.beads/backup/` | `bd`'s own Dolt-native backup | periodic, `backup.interval` (bd's own daemon-less timer, driven by hive activity) | ordinary hardware/disk loss on a machine that's been actively used — off-machine recovery for the *live working database* | `bd backup restore` |
+| 2 | `<hive>/.beads/backup/` | `bd`'s own Dolt-native backup | periodic when explicitly enabled, `backup.interval` (bd's own daemon-less timer, driven by hive activity) | ordinary hardware/disk loss on a machine that's been actively used — off-machine recovery for the *live working database* | `bd backup restore` |
 | 3 | `$BH_HOME/backups/mirrors/<triplet>/` (`bh backup export`) | `bh backup` (operator-invoked) | manual, ad hoc | nothing automatically — it is a portable interchange snapshot for migration, handoff, or "let me have a copy of this before I do something risky by hand" | whatever the operator hands it to; **not** a `bh`/`bd` restore source |
 | 4 | `$BH_HOME/backups/migrate/<triplet>/<instant>/` | `storage_migrate.take_backup` (`bh`) | once per hive, immediately before `bh hive migrate-storage` touches anything | a storage-mode migration that loses or corrupts a hive's corpus — the *only* copy taken from the live embedded store before the mechanism runs | `bd backup restore` (the set's `dolt-native/`); `bd import` (its `issues.jsonl` floor) |
 

@@ -2095,7 +2095,7 @@
           "type": "string"
         },
         "junk_globs": {
-          "description": "Disposable paths excluded before stat/walk (per-hive replaces global).",
+          "description": "Disposable paths excluded before stat/walk (per-hive replaces global); bd's live and rotated backup stores remain excluded regardless of overrides.",
           "items": {
             "type": "string"
           },

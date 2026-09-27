@@ -855,9 +855,11 @@ def _act_bd_init(ctx: Ctx) -> None:
     if (ctx.base / ".beads").exists():
         # ponytail: idempotent — skip bd init so re-runs (e.g. to add --skills) never abort.
         # Never touches dolt_mode: an already-initialized hive (embedded or otherwise) is left
-        # exactly as it is, so this can never silently convert an existing hive. A FAILED
+        # in its current storage mode; only the local backup-artifact ignore rules are healed.
+        # A FAILED
         # mint never leaves `.beads/` behind to be misread here — see `_run_bd_mint`.
         typer.echo("ℹ beads already initialized — skipping bd init.")
+        hive._ensure_bd_backup_gitignored(ctx.base)
         _configure_auto_export(ctx)
         return
     env = dict(os.environ, BD_NON_INTERACTIVE="1")
@@ -917,12 +919,12 @@ def _act_bd_init(ctx: Ctx) -> None:
         # Same reasoning as the furnished branch above: a bare `bd init` mints a fresh store.
         _bypass_gh2455_dirty_config(ctx)
     # One call site for all three fresh-mint paths above (never reached by the existing-hive
-    # skip branch): constraint 1 (persist dolt_mode for real) + constraint 4 (backup.enabled
-    # must not regress vs. what embedded would have defaulted to).
+    # skip branch): persist dolt_mode for real. Automatic Dolt backup stays at bd's shared-server
+    # default (off); opting into a backup is an explicit operator decision.
     _ensure_server_mode_persisted(ctx)
+    hive._ensure_bd_backup_gitignored(ctx.base)
     _configure_auto_export(ctx)
     _guard_beads_remote(ctx)
-    _enable_backup_if_remote(ctx)
 
 
 def _ensure_server_mode_persisted(ctx: Ctx) -> None:
@@ -953,29 +955,6 @@ def _ensure_server_mode_persisted(ctx: Ctx) -> None:
             err=True,
         )
     bd_mod.run(["config", "set", SHARED_SERVER_CONFIG_KEY, "true"], ctx.base)
-
-
-def _repo_has_git_remote(base: Path) -> bool:
-    """Whether `base`'s git repo has at least one remote configured — the SAME condition bd's
-    own auto-backup default checks for embedded mode (see `_enable_backup_if_remote`)."""
-    from . import hive
-
-    res = hive.run(["git", "remote"], cwd=str(base), check=False, capture=True)
-    return bool((getattr(res, "stdout", "") or "").strip())
-
-
-def _enable_backup_if_remote(ctx: Ctx) -> None:
-    """Constraint 4 (`docs/design/dolt-server-mode-adr.md` Consequence 1, `bd backup --help`):
-    auto-backup defaults ON in embedded mode when a git remote exists, and OFF in sql-server /
-    shared-server mode, always — upstream's own anti-storm reasoning, not a bug to route
-    around. A hive minted straight onto server mode must not be born LESS durable than an
-    equivalent embedded one would have been: set `backup.enabled=true` under exactly the same
-    condition embedded's own default uses (a git remote present) rather than unconditionally —
-    a remote-less prototype would have defaulted OFF in embedded too, so leave bd's own default
-    alone there instead of manufacturing a difference that was never real."""
-    if not _repo_has_git_remote(ctx.base):
-        return
-    bd_mod.run(["config", "set", "backup.enabled", "true"], ctx.base)
 
 
 # GH#2455 dirty-config bypass (bh-areg.2) — ONE named unit, removable without archaeology.

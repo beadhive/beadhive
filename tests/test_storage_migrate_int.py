@@ -5,7 +5,8 @@ Proves the two things a mock can't: (1) `bd init --shared-server --reinit-local`
 leave `.beads/metadata.json`'s `dolt_mode` at "embedded" (the exact drift constraint 1 exists
 to close, measured here rather than merely asserted in a docstring); (2) `migrate_hive` closes
 that drift and the issue data survives the mode change intact (same count, same content), with
-`backup.enabled` explicitly turned back on (constraint 2) and a second run a clean no-op.
+`backup.enabled` left at bd's shared-server default unless the operator had explicitly set it,
+and a second run a clean no-op.
 
 ALSO proves bh-oa225's own measurement: the shape EVERY hive on the real fleet is actually in —
 a LIVE embedded store whose git `origin` already carries `refs/dolt/data` (because pushing bead
@@ -184,9 +185,9 @@ def test_embedded_to_shared_server_real_round_trip(world, isolated_shared_server
     # the actual round trip: content came back, not just a green status.
     assert _titles(hive_dir) == live_titles
 
-    # constraint 2: backup.enabled explicitly turned back on (defaults OFF in shared-server
-    # mode even though it was ON in embedded, per `bd backup --help`).
-    assert _config_get(hive_dir, "backup.enabled").get("value") is True
+    # Migration doesn't manufacture an opt-in. The real backup/restore above protects the move;
+    # future scheduled backups remain off unless the operator explicitly enabled them.
+    assert _config_get(hive_dir, "backup.enabled").get("value") is not True
 
     # re-running is a clean no-op, not an error.
     result2 = storage_migrate.migrate_hive(entry, cfg, dry_run=False, actor="test")
@@ -399,7 +400,7 @@ def test_bootstrap_migration_survives_a_live_embedded_store_with_unpushed_change
     # status (bh-00cq's own lesson, restated for the bootstrap mechanism specifically).
     assert _titles(hive_dir) == live_titles
 
-    assert _config_get(hive_dir, "backup.enabled").get("value") is True
+    assert _config_get(hive_dir, "backup.enabled").get("value") is not True
 
     # re-running is a clean no-op, not an error, and stays off the reinit/bootstrap fork
     # entirely (already-migrated hives short-circuit before mechanism selection).

@@ -88,7 +88,9 @@ DEFAULT_PRECIOUS_GLOBS: tuple[str, ...] = (
     "*.pem",
     "*.key",
 )
+BD_BACKUP_STORE_GLOBS: tuple[str, ...] = (".beads/backup/**", ".beads/backup.*/**")
 DEFAULT_JUNK_GLOBS: tuple[str, ...] = (
+    *BD_BACKUP_STORE_GLOBS,
     "node_modules/**",
     ".venv/**",
     "__pycache__/**",
@@ -813,7 +815,10 @@ class WorkConfig(_Section):
     )
     junk_globs: list[str] = Field(
         default_factory=lambda: list(DEFAULT_JUNK_GLOBS),
-        description="Disposable paths excluded before stat/walk (per-hive replaces global).",
+        description=(
+            "Disposable paths excluded before stat/walk (per-hive replaces global); bd's live "
+            "and rotated backup stores remain excluded regardless of overrides."
+        ),
     )
     precious_min_bytes: int = Field(
         DEFAULT_PRECIOUS_MIN_BYTES,

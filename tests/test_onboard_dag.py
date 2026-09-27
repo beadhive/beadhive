@@ -406,7 +406,8 @@ def test_furnish_unstealths_and_commits_leaving_clean_tree(world, synced, monkey
     plan = onboard.run_onboard(ctx)
 
     # The stealth exclusion is gone (other exclude lines untouched) …
-    assert ".beads/" not in (target / ".git" / "info" / "exclude").read_text()
+    exclude_lines = (target / ".git" / "info" / "exclude").read_text().splitlines()
+    assert ".beads/" not in exclude_lines
     # … the scaffolding is committed with the conventional subject …
     subject = git("log", "-1", "--format=%s", cwd=target).stdout.strip()
     assert subject == "chore(agf): hive scaffolding (beads + agent config)"
@@ -505,7 +506,7 @@ def test_scaffold_preserves_host_local_excludes(world, synced, monkeypatch):
     text = exclude.read_text()
     assert ".claude/settings.local.json" in text  # host-local entries survive
     assert ".ws/" in text
-    assert ".beads/" not in text
+    assert ".beads/" not in text.splitlines()
 
 
 def test_scaffold_skips_forks_keeping_stealth(world, synced, monkeypatch):

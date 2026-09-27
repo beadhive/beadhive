@@ -1,7 +1,7 @@
 # Dolt server mode ADR — the fleet runs bd's shared server; embedded is retired
 
 **Status:** accepted · **Date:** 2026-08-03 · **Decision bead:** `bh-ukit.4` ·
-**Supersedes:** nothing · **Amends:** no other ADR
+**Supersedes:** nothing · **Amends:** Consequence 1, by `bh-eu0oi` (2026-09-27)
 **Related:** [multi-host-model-adr.md](multi-host-model-adr.md) (whose LOCAL REPLICA premise this
 touches but does not yet change — see Consequence 5),
 [bead-backend-abstraction.md](bead-backend-abstraction.md),
@@ -102,14 +102,15 @@ So, stated precisely and to be carried into every doc that touches this:
 
 ## Consequences
 
-**1. Auto-backup silently turns OFF on migration — a durability regression that must be handled.**
-Per `bd backup --help`: *"When backup.enabled is unset, auto-backup turns ON in embedded mode if a
-git remote exists, and stays OFF in sql-server / shared-server mode."* The reason is sound — many
-clients sharing one server would each register a server-side backup remote under the same name and
-full-sync, "a self-amplifying storm." But the effect is that migrating this fleet turns off
-automatic backups on every hive that had them, silently, unless `backup.enabled=true` is set
-explicitly. **`bh-areg.4` must set it as part of migrating, and `bh-areg.3` should report a hive in
-server mode with auto-backup unset.** Nothing had recorded this before this ADR.
+**1. Automatic backups remain opt-in on shared-server hives (amended by `bh-eu0oi`).** Per
+`bd backup --help`, an unset `backup.enabled` is OFF in shared-server mode. This is intentional:
+many clients sharing one server would each register a server-side backup remote under the same
+name and full-sync, creating a "self-amplifying storm." Onboarding and storage migration leave
+the setting alone; they do not turn scheduled backups on. Migration still takes and verifies its
+one-time safety backup before moving the store. An operator who opts into recurring backups must
+use an intentional destination: bd's `.beads/backup/` store is gitignored, and worktree safety
+scanning excludes it from dirty/held/prune decisions because it is a regenerable artifact, not
+source data.
 
 **2. Each hive needs a single designated migrator.** `bd migrate` refuses in-place migration on a
 remote-backed database (upstream #4259): *"migrating two clones independently forks the schema so

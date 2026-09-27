@@ -287,7 +287,10 @@ worktrees:
 #     - outputs/**
 #     - "*.pem"
 #     - "*.key"
-#   junk_globs:                    # dropped before stat or directory traversal
+#   junk_globs:                    # dropped before stat or directory traversal; bd backup paths
+#                                  # stay excluded even when this list is customized
+#     - .beads/backup/**
+#     - .beads/backup.*/**
 #     - node_modules/**
 #     - .venv/**
 #     - __pycache__/**
