@@ -291,9 +291,10 @@ def test_an_unreleasable_binding_is_reported_and_the_remove_still_runs(tmp_path)
     handle = WorktreeHandle.for_removal(tmp_path / "main", tmp_path / "wts" / "b")
 
     gaps = service.release(handle)
-    service.remove(handle, force=False)
+    removed = service.remove(handle, force=False)
 
     assert gaps == (BindingGap("herdr", "release", "server down", "server_not_running"),)
+    assert removed.gaps == gaps and removed.handle == handle
     assert calls == ["herdr.release", "herdr.release", "manager.remove(force=False)"]
     assert len(warnings) == 2
 

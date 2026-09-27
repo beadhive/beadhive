@@ -70,7 +70,7 @@ class BindingStore:
 
     def read(self, path: str | Path) -> dict[str, BindingRecord]:
         """Every presenter binding recorded for the worktree at ``path`` (empty if none)."""
-        if not Path(path).is_dir():
+        if not Path(path).is_dir() or not self._may_have_records(Path(path)):
             return {}
         result = self._git(
             [
@@ -102,6 +102,29 @@ class BindingStore:
             )
             for presenter in sorted(set(sessions) | set(references))
         }
+
+    @staticmethod
+    def _may_have_records(path: Path) -> bool:
+        """Cheap pre-filter: skip the Git call when this worktree's own config file cannot hold
+        a binding record (the common case — status reads this for every managed worktree)."""
+        dot_git = path / ".git"
+        try:
+            if dot_git.is_file():
+                line = dot_git.read_text(encoding="utf-8").strip()
+                if not line.startswith("gitdir:"):
+                    return True
+                git_dir = Path(line.removeprefix("gitdir:").strip())
+                git_dir = git_dir if git_dir.is_absolute() else (path / git_dir)
+            elif dot_git.is_dir():
+                git_dir = dot_git
+            else:
+                return True
+            config_file = git_dir / "config.worktree"
+            if not config_file.is_file():
+                return False
+            return '[beadhive "binding' in config_file.read_text(encoding="utf-8").lower()
+        except (OSError, UnicodeDecodeError):
+            return True
 
     def record_intent(self, path: str | Path, presenter: str, session: str) -> bool:
         """Durably note that ``presenter`` should be bound, before the bind is attempted."""

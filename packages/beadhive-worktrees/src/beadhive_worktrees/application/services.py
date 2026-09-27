@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from dataclasses import replace
 from typing import Generic, TypeVar
 
 from ..contracts import BranchInspector, WorktreeCreateObserver, WorktreeInventory
@@ -140,8 +141,9 @@ class WorktreeLifecycleService:
         binding (presenter down) is reported and the native remove still runs — mechanics are
         never held hostage to presentation.
         """
-        self.release(handle)
-        return self._manager.remove(handle, force)
+        gaps = self.release(handle)
+        removed = self._manager.remove(handle, force)
+        return replace(removed, gaps=gaps) if gaps else removed
 
     def _gap(
         self, presenter: str, action: str, handle: WorktreeHandle, exc: WorkspaceBindingError

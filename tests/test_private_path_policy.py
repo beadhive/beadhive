@@ -476,6 +476,7 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     | _owned("worktree.py", "add", ".git")
     | _owned("worktree.py", "preview", ".git")
     | _owned("worktree.py", "ensure", ".git")
+    | _owned("worktree_bindings.py", "_may_have_records", ".git")
     | _owned("worktree_inventory.py", "impl__managed_for_entry", ".git")
     | _owned("worktree_inventory.py", "impl_unregistered_worktrees", ".git")
     | _owned("worktree_merge.py", "merge_with_union", ".git")

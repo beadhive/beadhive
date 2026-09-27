@@ -178,9 +178,14 @@ class WorktreeHandle:
 
 @dataclass(frozen=True, slots=True)
 class WorktreeRemoved:
-    """Receipt for a removed linked worktree; the branch is never deleted by a manager."""
+    """Receipt for a removed linked worktree; the branch is never deleted by a manager.
+
+    ``gaps`` names any composed binding the lifecycle service could not release before the
+    remove (a presenter outage) — reported, repairable, and never a reason to keep the worktree.
+    """
 
     handle: WorktreeHandle
+    gaps: tuple[BindingGap, ...] = ()
 
 
 class WorkspaceBindingError(RuntimeError):
