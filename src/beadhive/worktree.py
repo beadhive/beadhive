@@ -730,6 +730,14 @@ def clone_for_branch(entry, branch: str) -> Path:
     return main
 
 
+def binding_store():
+    """The per-worktree presentation-binding record (``worktree_bindings.STORE``), exposed on
+    the facade so integrations reach it through their ``worktree`` composition port."""
+    from . import worktree_bindings
+
+    return worktree_bindings.STORE
+
+
 def locate(cfg, hive, bead="", branch="", kind=""):
     """Resolve (entry, main, target, branch) for a managed worktree — no side effects. Keys on a
     single `bead` (`wt/bead/<type>/<id>`) or a raw `branch` suffix (`wt/<name>`, e.g. a batch

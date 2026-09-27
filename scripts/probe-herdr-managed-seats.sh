@@ -12,12 +12,20 @@ fi
   exit 2
 }
 
-root_json=$(herdr --session "$session" workspace create \
-  --cwd "$proof_cwd" --label "bh-proof-managed-seats" --no-focus)
+# Bind the exact checkout the way Beadhive launch does (bh-cb4jo.1): `worktree open --path`, with
+# the repository's main checkout as the source, never a plain `workspace create --cwd`.
+common_dir=$(git -C "$proof_cwd" rev-parse --path-format=absolute --git-common-dir)
+source_cwd=$(dirname "$common_dir")
+root_json=$(herdr --session "$session" worktree open --cwd "$source_cwd" \
+  --path "$proof_cwd" --label "bh-proof-managed-seats" --no-focus)
 root_pane=$(jq -er '.result.root_pane.pane_id' <<<"$root_json")
 
 cleanup_workspace() {
   local workspace
+  # Close only a workspace this probe opened; an already-bound one is not the probe's to close.
+  if [[ "$(jq -r '.result.already_open // false' <<<"$root_json")" == true ]]; then
+    return
+  fi
   workspace=$(jq -er '.result.workspace.workspace_id' <<<"$root_json")
   herdr --session "$session" workspace close "$workspace" >/dev/null 2>&1 || true
 }

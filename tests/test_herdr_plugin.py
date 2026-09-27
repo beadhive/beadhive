@@ -13,7 +13,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from beadhive import guard, herdr_plugin, herdr_views, plugins, registry, work
+from beadhive import guard, herdr_plugin, herdr_views, plugins, registry, work, worktree_bindings
 from beadhive.cli import app
 from beadhive.herdr_launch_profile import consume_herdr_launch_receipt
 from beadhive.integrations.herdr import application_runtime as herdr_runtime
@@ -824,10 +824,70 @@ def test_integrate_fences_missing_binary_without_subprocess(monkeypatch):
     assert "herdr CLI not on PATH" in result.output
 
 
+def _worktree_opened(workspace="w1", pane="w1:p1", *, path="/wt", already_open=False):
+    """A fake ``herdr worktree open --path`` response (the Herdr 0.9 ``worktree_opened`` shape)."""
+    return _result(
+        stdout=json.dumps(
+            {
+                "id": "cli:worktree:open",
+                "result": {
+                    "already_open": already_open,
+                    "root_pane": {"pane_id": pane, "workspace_id": workspace},
+                    "type": "worktree_opened",
+                    "workspace": {
+                        "workspace_id": workspace,
+                        "label": "bh:h",
+                        "worktree": {"checkout_path": path},
+                    },
+                    "worktree": {"open_workspace_id": workspace, "path": path},
+                },
+            }
+        )
+    )
+
+
+class MemoryBindingStore(worktree_bindings.BindingStore):
+    """The per-worktree binding record held in memory instead of Git config."""
+
+    def __init__(self):
+        super().__init__(git=lambda _args: None)
+        self.records: dict[str, dict[str, worktree_bindings.BindingRecord]] = {}
+        self.events: list[tuple] = []
+
+    def read(self, path):
+        return dict(self.records.get(str(path), {}))
+
+    def record_intent(self, path, presenter, session):
+        self.events.append(("intent", str(path), presenter, session))
+        self.records.setdefault(str(path), {})[presenter] = worktree_bindings.BindingRecord(
+            presenter, session
+        )
+        return True
+
+    def record(self, path, presenter, session, reference):
+        self.events.append(("record", str(path), presenter, session, reference))
+        self.records.setdefault(str(path), {})[presenter] = worktree_bindings.BindingRecord(
+            presenter, session, reference
+        )
+        return True
+
+    def clear(self, path, presenter):
+        self.events.append(("clear", str(path), presenter))
+        self.records.get(str(path), {}).pop(presenter, None)
+        return True
+
+
+def _memory_store(monkeypatch) -> MemoryBindingStore:
+    store = MemoryBindingStore()
+    monkeypatch.setattr(herdr_plugin, "_binding_store", lambda: store)
+    return store
+
+
 def _spawn_worktree(tmp_path, monkeypatch):
     target = tmp_path / "bh-1"
     target.mkdir()
     (target / ".git").write_text("gitdir: /tmp/nowhere\n")
+    _memory_store(monkeypatch)
     monkeypatch.setattr(herdr_plugin.config, "load", lambda: {})
     monkeypatch.setattr(herdr_plugin, "supported_kinds", lambda: ["claude", "codex"])
     monkeypatch.setattr(
@@ -949,13 +1009,8 @@ def test_spawn_uses_bh_worktree_names_pane_and_verifies_warmup(tmp_path, monkeyp
                 stdout='{"id":"cli:api:snapshot","result":{"snapshot":'
                 '{"workspaces":[],"layouts":[],"panes":[]},"type":"session_snapshot"}}'
             )
-        if "workspace" in argv and "create" in argv:
-            return _result(
-                stdout='{"id":"cli:workspace:create","result":'
-                '{"workspace":{"workspace_id":"w1"},'
-                '"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p1"},'
-                '"type":"workspace_created"}}'
-            )
+        if "worktree" in argv and "open" in argv:
+            return _worktree_opened()
         if "split" in argv:
             return _result(
                 stdout='{"id":"cli:pane:split","result":'
@@ -1000,27 +1055,88 @@ def test_spawn_uses_bh_worktree_names_pane_and_verifies_warmup(tmp_path, monkeyp
         "prompt" in call and any("BH_HERDR_WARMUP_OK" in item for item in call) for call in calls
     )
     assert "target=bh-bh-1" in result.output
-    assert not any("worktree" in call for call in calls)
+    # E48: the worktree is bound with `worktree open --path <exact>`, never a plain
+    # `workspace create --cwd`, and Herdr never creates or removes the worktree itself.
+    assert [
+        "herdr",
+        "--session",
+        "default",
+        "worktree",
+        "open",
+        "--cwd",
+        str(target),
+        "--path",
+        str(target),
+        "--label",
+        "bh:github/beadhive/beadhive",
+        "--no-focus",
+    ] in calls
+    assert not any("workspace" in call and "create" in call for call in calls)
+    assert not any("worktree" in call and ("create" in call or "remove" in call) for call in calls)
 
 
-def test_spawn_reuses_snapshot_workspace_and_its_actual_pane(tmp_path, monkeypatch):
+def test_spawn_records_the_bound_workspace_id_after_the_intent(tmp_path, monkeypatch):
     target = _spawn_worktree(tmp_path, monkeypatch)
+    store = herdr_plugin._binding_store()
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+
+    def fake_run(argv, **kwargs):
+        if "worktree" in argv and "open" in argv:
+            return _worktree_opened("w4", "w4:p1", path=str(target))
+        if "split" in argv:
+            return _result(stdout='{"pane":{"pane_id":"w4:p2"}}')
+        if "read" in argv:
+            return _result(stdout="assistant: BH_HERDR_WARMUP_OK")
+        return _result(stdout="{}")
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    result = runner.invoke(
+        app, ["plugin", "herdr", "spawn", "--hive", "h", "--bead", "bh-1", "--kind", "codex"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert store.events == [
+        ("intent", str(target), "herdr", "default"),
+        ("record", str(target), "herdr", "default", "w4"),
+    ]
+    assert store.read(target)["herdr"].reference == "w4"
+
+
+def test_spawn_reuses_the_stored_binding_and_its_actual_pane(tmp_path, monkeypatch):
+    """The stored workspace id is read first and reused when Herdr still binds it to exactly
+    this checkout — no `worktree open` round trip, and never a `workspace create`."""
+    target = _spawn_worktree(tmp_path, monkeypatch)
+    herdr_plugin._binding_store().record(target, "herdr", "default", "w9")
     monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
     calls = []
+    snapshot = json.dumps(
+        {
+            "id": "cli:api:snapshot",
+            "result": {
+                "snapshot": {
+                    "session": "default",
+                    "revision": "r1",
+                    "workspaces": [
+                        {
+                            "label": "bh:h",
+                            "workspace_id": "w9",
+                            "worktree": {"checkout_path": str(target)},
+                        }
+                    ],
+                    "layouts": [{"workspace_id": "w9", "focused_pane_id": "w9:p7"}],
+                    "panes": [{"workspace_id": "w9", "pane_id": "w9:p7"}],
+                },
+                "type": "session_snapshot",
+            },
+        }
+    )
 
     def fake_run(argv, **kwargs):
         calls.append(argv)
         if argv == ["herdr", "status"]:
             return _result()
         if argv[-2:] == ["api", "snapshot"]:
-            return _result(
-                stdout='{"id":"cli:api:snapshot","result":{"snapshot":'
-                '{"session":"default","revision":"r1",'
-                '"workspaces":[{"label":"bh:h","workspace_id":"w9"}],'
-                '"layouts":[{"workspace_id":"w9","focused_pane_id":"w9:p7"}],'
-                '"panes":[{"workspace_id":"w9","pane_id":"w9:p7"}]},'
-                '"type":"session_snapshot"}}'
-            )
+            return _result(stdout=snapshot)
         if "split" in argv:
             return _result(
                 stdout='{"id":"cli:pane:split","result":'
@@ -1037,6 +1153,7 @@ def test_spawn_reuses_snapshot_workspace_and_its_actual_pane(tmp_path, monkeypat
 
     assert result.exit_code == 0, result.output
     assert not any("workspace" in call and "create" in call for call in calls)
+    assert not any("worktree" in call and "open" in call for call in calls)
     assert [
         "herdr",
         "--session",
@@ -1065,9 +1182,9 @@ def test_spawn_rejects_structured_create_without_root_pane_id(tmp_path, monkeypa
             return _result()
         if argv[-2:] == ["api", "snapshot"]:
             return _result(stdout='{"id":"cli:api:snapshot","result":{"snapshot":{}}}')
-        if "workspace" in argv and "create" in argv:
+        if "worktree" in argv and "open" in argv:
             return _result(
-                stdout='{"id":"cli:workspace:create","result":'
+                stdout='{"id":"cli:worktree:open","result":'
                 '{"workspace":{"workspace_id":"w1"},"root_pane":{}}}'
             )
         raise AssertionError(argv)
@@ -1078,7 +1195,8 @@ def test_spawn_rejects_structured_create_without_root_pane_id(tmp_path, monkeypa
     )
 
     assert result.exit_code == 1
-    assert "workspace create failed: response missing pane_id" in result.output
+    assert "worktree open response is missing root_pane.pane_id" in result.output
+    assert "retained unbound" in result.output
     assert not any("split" in call for call in calls)
 
 
@@ -1093,8 +1211,8 @@ def test_spawn_rejects_structured_split_without_pane_id(tmp_path, monkeypatch):
             return _result()
         if argv[-2:] == ["api", "snapshot"]:
             return _result(stdout="{}")
-        if "workspace" in argv and "create" in argv:
-            return _result(stdout="w1")
+        if "worktree" in argv and "open" in argv:
+            return _worktree_opened()
         if "split" in argv:
             return _result(stdout='{"id":"cli:pane:split","result":{"pane":{}}}')
         raise AssertionError(argv)
@@ -1121,8 +1239,8 @@ def test_spawn_retries_after_first_run_dialog_and_refuses_unreadable_prompt(tmp_
             return _result()
         if argv[-2:] == ["api", "snapshot"]:
             return _result(stdout="{}")
-        if "workspace" in argv and "create" in argv:
-            return _result(stdout="w1")
+        if "worktree" in argv and "open" in argv:
+            return _worktree_opened()
         if "split" in argv:
             return _result(stdout="w1:p2")
         if "read" in argv:
@@ -1152,8 +1270,8 @@ def test_spawn_closes_new_pane_when_setup_fails(tmp_path, monkeypatch):
             return _result()
         if argv[-2:] == ["api", "snapshot"]:
             return _result(stdout="{}")
-        if "workspace" in argv and "create" in argv:
-            return _result(stdout="w1")
+        if "worktree" in argv and "open" in argv:
+            return _worktree_opened()
         if "split" in argv:
             return _result(stdout="w1:p2")
         if "rename" in argv:
@@ -1181,12 +1299,8 @@ def test_spawn_closes_pane_when_agent_start_fails(tmp_path, monkeypatch):
             return _result()
         if argv[-2:] == ["api", "snapshot"]:
             return _result(stdout="{}")
-        if "workspace" in argv and "create" in argv:
-            return _result(
-                stdout='{"id":"cli:workspace:create","result":'
-                '{"workspace":{"workspace_id":"w1"},'
-                '"root_pane":{"pane_id":"w1:p1"}}}'
-            )
+        if "worktree" in argv and "open" in argv:
+            return _worktree_opened()
         if "split" in argv:
             return _result(stdout='{"id":"cli:pane:split","result":{"pane":{"pane_id":"w1:p2"}}}')
         if "start" in argv:
@@ -1226,8 +1340,8 @@ def test_spawn_refuses_terminal_or_blocked_startup_and_closes_exact_pane(
             return _result()
         if argv[-2:] == ["api", "snapshot"]:
             return _result(stdout="{}")
-        if "workspace" in argv and "create" in argv:
-            return _result(stdout="w1")
+        if "worktree" in argv and "open" in argv:
+            return _worktree_opened()
         if "split" in argv:
             return _result(stdout="w1:p2")
         if "read" in argv:
@@ -1280,8 +1394,8 @@ def test_spawn_cleanup_failure_retains_exact_pane_receipt(tmp_path, monkeypatch)
             return _result()
         if argv[-2:] == ["api", "snapshot"]:
             return _result(stdout="{}")
-        if "workspace" in argv and "create" in argv:
-            return _result(stdout="w1")
+        if "worktree" in argv and "open" in argv:
+            return _worktree_opened()
         if "split" in argv:
             return _result(stdout="w1:p2")
         if "read" in argv:
@@ -4355,3 +4469,226 @@ def test_launch_startup_failure_closes_created_pane_and_keeps_native_resources(
     assert "stage=startup" in result.output
     assert str(claim.worktree) in result.output
     assert closed == ["w1:p2"]
+
+
+def _binding_launch(tmp_path, monkeypatch, responses):
+    """Drive a real launch through the real `_workspace` binding with a fake Herdr CLI."""
+    _entry, claim = _launch_fixture(monkeypatch, tmp_path)
+    store = _memory_store(monkeypatch)
+    calls = []
+    monkeypatch.setattr(herdr_plugin, "_strict_live_target", lambda *_args: None)
+    monkeypatch.setattr(herdr_plugin, "_launch_warm", lambda _target: (True, ""))
+
+    def command(*args, **_kwargs):
+        calls.append(args)
+        for prefix, response in responses.items():
+            if args[: len(prefix)] == prefix:
+                return response() if callable(response) else response
+        if args[:2] == ("pane", "split"):
+            return _result(stdout='{"pane":{"pane_id":"w4:p2"}}')
+        return _result()
+
+    monkeypatch.setattr(herdr_plugin, "_command", command)
+    return claim, store, calls
+
+
+def _launch_json():
+    return runner.invoke(app, ["plugin", "herdr", "launch", "widget-1", "--json"])
+
+
+def _bound_snapshot(workspace_id, path, *, label="bh:github/acme/widgets"):
+    return _result(
+        stdout=json.dumps(
+            {
+                "result": {
+                    "snapshot": {
+                        "workspaces": [
+                            {
+                                "workspace_id": workspace_id,
+                                "label": label,
+                                "worktree": {"checkout_path": str(path)},
+                            }
+                        ],
+                        "panes": [{"workspace_id": workspace_id, "pane_id": f"{workspace_id}:p1"}],
+                    }
+                }
+            }
+        )
+    )
+
+
+def test_launch_binds_the_exact_claimed_worktree_with_open_path(tmp_path, monkeypatch):
+    """E48: launch binds with `worktree open --path <exact>` and records the returned id."""
+    target = tmp_path / "widget-1"
+    claim, store, calls = _binding_launch(
+        tmp_path,
+        monkeypatch,
+        {("worktree", "open"): _worktree_opened("w4", "w4:p1", path=str(target))},
+    )
+
+    result = _launch_json()
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["workspace"] == "w4"
+    assert (
+        "worktree",
+        "open",
+        "--cwd",
+        str(claim.main),
+        "--path",
+        str(claim.worktree),
+        "--label",
+        "bh:github/acme/widgets",
+        "--no-focus",
+    ) in calls
+    assert not any(call[:2] == ("workspace", "create") for call in calls)
+    assert any(call[:4] == ("pane", "split", "--pane", "w4:p1") for call in calls)
+    assert store.read(target)["herdr"] == worktree_bindings.BindingRecord("herdr", "default", "w4")
+
+
+def test_launch_with_herdr_down_at_bind_retains_the_claim_and_reports_the_gap(
+    tmp_path, monkeypatch
+):
+    """E33: Herdr unavailable at bind time never rolls back the native claim; the missing
+    binding is recorded as a pending intent and reported with its repair route."""
+    target = tmp_path / "widget-1"
+    down = _result(
+        1,
+        stdout=json.dumps(
+            {
+                "id": "cli:worktree:open",
+                "error": {"code": "server_not_running", "message": "no herdr server is running"},
+            }
+        ),
+    )
+    _claim, store, calls = _binding_launch(tmp_path, monkeypatch, {("worktree", "open"): down})
+
+    result = _launch_json()
+
+    assert result.exit_code == 1
+    assert "stage=workspace" in result.output
+    assert "binding gap" in result.output and "no herdr server is running" in result.output
+    assert "retained: bead=widget-1 claim=claimed" in result.output
+    assert "bh worktree rebind" in result.output
+    assert target.is_dir()  # the native worktree is untouched
+    assert store.read(target)["herdr"].pending
+    assert not any(call[:2] == ("pane", "split") for call in calls)
+
+
+def test_launch_after_a_crash_between_create_and_bind_rebinds_idempotently(tmp_path, monkeypatch):
+    """E34: a pending intent (crash after create, before bind) is re-bound by the next launch
+    with the same `open --path` primitive; a repeat bind returns the same reference."""
+    target = tmp_path / "widget-1"
+    opens = iter(
+        [
+            _worktree_opened("w3", "w3:p1", path=str(target)),
+            _worktree_opened("w3", "w3:p1", path=str(target), already_open=True),
+        ]
+    )
+    _claim, store, calls = _binding_launch(
+        tmp_path, monkeypatch, {("worktree", "open"): lambda: next(opens)}
+    )
+    store.record_intent(target, "herdr", "default")
+    (target / "work-in-progress.txt").write_text("kept")
+
+    first = _launch_json()
+    store.record_intent(target, "herdr", "default")  # the record is lost again
+    second = _launch_json()
+
+    assert first.exit_code == 0, first.output
+    assert second.exit_code == 0, second.output
+    assert json.loads(first.stdout)["workspace"] == json.loads(second.stdout)["workspace"] == "w3"
+    assert store.read(target)["herdr"].reference == "w3"
+    assert (target / "work-in-progress.txt").read_text() == "kept"
+    assert sum(call[:2] == ("worktree", "open") for call in calls) == 2
+
+
+def test_launch_reuses_a_live_stored_binding_before_re_deriving(tmp_path, monkeypatch):
+    target = tmp_path / "widget-1"
+    _claim, store, calls = _binding_launch(
+        tmp_path, monkeypatch, {("api", "snapshot"): _bound_snapshot("w7", target)}
+    )
+    store.record(target, "herdr", "default", "w7")
+
+    result = _launch_json()
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["workspace"] == "w7"
+    assert not any(call[:2] == ("worktree", "open") for call in calls)
+    assert any(call[:4] == ("pane", "split", "--pane", "w7:p1") for call in calls)
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [
+        lambda target: _bound_snapshot("w2", target.parent / "someone-else"),
+        lambda target: _bound_snapshot("w2", target, label="bh:github/acme/widgets (deleted)"),
+        lambda _target: _result(stdout='{"result":{"snapshot":{"workspaces":[]}}}'),
+    ],
+    ids=["reused-id-for-another-checkout", "orphaned-deleted", "gone"],
+)
+def test_launch_rebinds_a_stale_stored_reference(tmp_path, monkeypatch, snapshot):
+    """A stored id is only a cache (E35): workspace ids are reused after a close, so a stored id
+    that Herdr no longer binds to exactly this checkout is re-derived with `open --path`."""
+    target = tmp_path / "widget-1"
+    _claim, store, calls = _binding_launch(
+        tmp_path,
+        monkeypatch,
+        {
+            ("api", "snapshot"): snapshot(target),
+            ("worktree", "open"): _worktree_opened("w5", "w5:p1", path=str(target)),
+        },
+    )
+    store.record(target, "herdr", "default", "w2")
+
+    result = _launch_json()
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["workspace"] == "w5"
+    assert store.read(target)["herdr"].reference == "w5"
+    assert not any(call[:2] == ("workspace", "close") for call in calls)
+
+
+def test_launch_ignores_a_binding_recorded_for_another_herdr_session(tmp_path, monkeypatch):
+    target = tmp_path / "widget-1"
+    _claim, store, calls = _binding_launch(
+        tmp_path,
+        monkeypatch,
+        {
+            ("api", "snapshot"): _bound_snapshot("w7", target),
+            ("worktree", "open"): _worktree_opened("w1", "w1:p1", path=str(target)),
+        },
+    )
+    store.record(target, "herdr", "other-session", "w7")
+
+    result = _launch_json()
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["workspace"] == "w1"
+    assert store.read(target)["herdr"] == worktree_bindings.BindingRecord("herdr", "default", "w1")
+
+
+def test_launch_never_composes_a_second_binding_when_the_manager_binds_herdr(tmp_path, monkeypatch):
+    """The ADR composition rule at the launch seam: a manager declaring ``binds: ["herdr"]``
+    already produced the workspace, so launch must not bind (or create) another one."""
+
+    class HerdrBindingManager:
+        binds = ("herdr",)
+        remove_releases_bindings = True
+
+    target = tmp_path / "widget-1"
+    _claim, store, calls = _binding_launch(
+        tmp_path,
+        monkeypatch,
+        {("worktree", "open"): _worktree_opened("w4", "w4:p1", path=str(target))},
+    )
+    monkeypatch.setattr(
+        herdr_plugin.worktree, "_selected_worktree_manager", lambda _cfg: HerdrBindingManager()
+    )
+
+    result = _launch_json()
+
+    assert result.exit_code == 1
+    assert "without a live Herdr binding" in result.output
+    assert not any(call[:2] in {("worktree", "open"), ("workspace", "create")} for call in calls)
+    assert store.events == []

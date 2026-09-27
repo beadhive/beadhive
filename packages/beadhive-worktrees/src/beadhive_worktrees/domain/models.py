@@ -170,12 +170,55 @@ class WorktreeHandle:
     def with_binding(self, presenter: str, reference: str) -> WorktreeHandle:
         return replace(self, bindings={**self.bindings, presenter: reference})
 
+    def without_binding(self, presenter: str) -> WorktreeHandle:
+        return replace(
+            self, bindings={key: ref for key, ref in self.bindings.items() if key != presenter}
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class WorktreeRemoved:
     """Receipt for a removed linked worktree; the branch is never deleted by a manager."""
 
     handle: WorktreeHandle
+
+
+class WorkspaceBindingError(RuntimeError):
+    """A ``workspace.binding`` could not bind or release one worktree (bh-cb4jo).
+
+    Always a presentation-layer gap, never a mechanics-layer one: the lifecycle service reports
+    it and carries on (a native claim is never rolled back, a native remove is never blocked).
+    ``code`` is the presenter's own machine-readable failure code when it supplied one (for
+    example Herdr's ``server_not_running``).
+    """
+
+    def __init__(self, presenter: str, detail: str, *, code: str = "") -> None:
+        super().__init__(detail or f"{presenter} binding failed")
+        self.presenter = presenter
+        self.detail = detail
+        self.code = code
+
+
+@dataclass(frozen=True, slots=True)
+class BindingGap:
+    """One binding step that did not happen: a worktree left unbound or a binding unreleased.
+
+    ``action`` is ``"bind"`` or ``"release"``. A gap is always re-bindable/re-closable later
+    through the presenter's single reconciliation primitive; it is never a reason to undo work.
+    """
+
+    presenter: str
+    action: str
+    detail: str
+    code: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class BoundWorktree:
+    """Result of binding one handle: the (possibly re-referenced) handle plus any gaps."""
+
+    handle: WorktreeHandle
+    gaps: tuple[BindingGap, ...] = ()
 
 
 class WorktreeManagerError(RuntimeError):
