@@ -16,9 +16,11 @@ from .queue import (
     QueueCommands,
     by_parent,
     decline,
+    direct_children,
     eligible,
     ready_row,
     ready_rows,
+    to_bd_json,
 )
 from .review import (
     APPROVED,
@@ -98,7 +100,9 @@ __all__ = [
     "by_parent",
     "decline",
     "default_table",
+    "direct_children",
     "eligible",
     "ready_row",
     "ready_rows",
+    "to_bd_json",
 ]

@@ -3,6 +3,17 @@
 The public command names remain registered and importable from :mod:`beadhive.work`.  This module
 owns forwarding, readiness payload construction, truncation handling, and release-aware ordering;
 all payload schemas, stream bytes, ordering, telemetry, and exit codes are compatibility contracts.
+
+``bh work ready`` stays on the CLI-compatibility route unconditionally (bh-mu5yb.1 investigated
+routing it through :class:`beadhive_core.queue.QueueCommands` and deliberately did not wire it in
+here — see ``packages/beadhive-core/README.md``'s "bh work ready" section for the full mapping and
+the reason: the narrowing flags all have a real, tested API equivalent now, but composing a session
+for this command means resolving an entry from ambient ``cwd`` the same way
+:func:`beadhive.work_queue.claim_next` does for `bh work next`, and doing that safely in THIS
+module's existing tests needs the same ``$GIT_WORKSPACE`` isolation :mod:`tests.test_work_next`'s
+fixture already uses — not yet retrofitted here). ``bh work schedule``'s children fetch, which
+already threads an explicit ``entry``/``main`` through :func:`beadhive.worktree.locate`, IS routed
+this way — see :func:`beadhive.work_dispatch.impl_schedule_payload`.
 """
 
 from __future__ import annotations

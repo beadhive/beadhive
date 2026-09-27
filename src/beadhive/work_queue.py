@@ -1,4 +1,5 @@
-"""Top-level adapter selecting the atomic ``work.claim-next`` route for `bh work next` (bh-l5sxi.2).
+"""Top-level adapter selecting the atomic ``work.claim-next`` route for `bh work next` (bh-l5sxi.2)
+and the ``work.issue.list`` children route for `bh work schedule` (bh-mu5yb.1).
 
 The composition seam for this cohort, on the same pattern as :mod:`beadhive.work_review`
 (bh-bwnys.1): it resolves the hive's one supervised Beads v1.3 service
@@ -7,16 +8,20 @@ failure and retrying through `bd` — the "missing-capability fallback" the epic
 ``beadhive_core`` is resolved lazily by name; ``src/beadhive`` never imports a workspace package
 statically (``scripts/check_package_imports.py``).
 
-Two things make the atomic route inapplicable up front, not on failure, so this module refuses to
-even try the API and reports ``None`` (meaning: run the existing CLI-compatibility pick/claim/
-re-verify loop in :mod:`beadhive.work_dispatch`) for both:
+Two things make the atomic ``work.claim-next`` route inapplicable up front, not on failure, so
+this module refuses to even try the API and reports ``None`` (meaning: run the existing
+CLI-compatibility pick/claim/re-verify loop in :mod:`beadhive.work_dispatch`) for both:
 
-* **``--epic`` scoping.** ``work.claim-next`` has no recursive molecule-membership filter — Beads'
-  ``parent`` query parameter is the direct parent-child edge only, one level (see
-  :mod:`beadhive_core.queue`'s module docstring), where the CLI-compatibility path's
-  ``bd children --include-infra --all`` walk is recursive. Approximating that over HTTP would risk
-  claiming a bead outside the intended molecule, so epic-scoped claims stay on the named CLI route
-  unconditionally.
+* **``--epic`` scoping.** ``work.claim-next``'s ``parent`` filter is not used for this: the CLI
+  path's ``bd children --include-infra --all`` recursive walk has no HTTP equivalent that also
+  narrows to durable-vs-ephemeral / infra inclusion the way that flag combination does, so
+  epic-scoped claims stay on the named CLI route unconditionally. (CORRECTION, bh-mu5yb.1: an
+  earlier revision of this docstring claimed Beads' `parent` QUERY PARAMETER was the direct
+  parent-child edge only, one level — that is false; the pinned v1.3 OpenAPI spec documents it,
+  and a real disposable-hive probe confirms it, as "restrict to recursive descendants of this
+  issue" on both `GET /v0/beads/ready` and `work.claim-next`. See
+  :mod:`beadhive_core.queue`'s module docstring and `packages/beadhive-core/README.md` for the
+  full correction and what was and was not re-evaluated as a result.)
 * **An undeclared (bare) actor.** Which seat-prefix an actor auto-resolves to
   (``dev/<name>`` vs ``disp/<name>``) depends on the TYPE of the bead actually claimed
   (:func:`beadhive.work_guards.kind_of`) — and the atomic claim commits its ``actor`` string in the
@@ -27,6 +32,11 @@ re-verify loop in :mod:`beadhive.work_dispatch`) for both:
   outcome the CLI path's pre-claim seat check produces, reached by a compensating release instead
   of a pre-check. A bare actor has no such fixed point to verify against, so it stays CLI-compatible
   too, where `_next_seat_actor` resolves the prefix from the CANDIDATE's type before ever claiming.
+
+:func:`open_children` (bh-mu5yb.1) is the analogous seam for `bh work schedule`'s epic-children
+fetch: it has no such carve-outs (no actor, no seat ambiguity — a read), so the only reason to
+fall back is the service/capability being genuinely unavailable, exactly the same set of
+exceptions :func:`claim_next` already catches.
 """
 
 from __future__ import annotations
@@ -58,13 +68,21 @@ def hive_session(main: Path, entry: Any) -> Any:
 
     Never starts ``bd serve``: an absent or stale service (or a hive that cannot be served at
     all) raises the client's ``ServiceUnavailable`` / ``beadhive_core.SessionUnavailable``, both
-    of which :func:`claim_next` catches to select the CLI-compatibility route instead — always
-    before any write is attempted, never as a retry after one fails.
+    of which :func:`claim_next` / :func:`open_children` catch to select the CLI-compatibility
+    route instead — always before any write or read is attempted, never as a retry after one
+    fails. A caller carrying a minimal/synthesized ``entry`` missing the registry triplet (several
+    read-only surfaces pass ``{"prefix": "..."}`` deliberately, to prove a `bd`-absent failure is
+    reported honestly rather than misattributed — see `tests/test_mcp_strict_bd_reads.py`) is the
+    same "cannot even address this hive" condition as `HiveNotServable`, not a bug in this seam.
     """
     try:
         return host_beads.resolve_session(main, _core().QUEUE_CAPABILITIES, entry=entry)
     except host_beads.HiveNotServable as exc:
         raise _core().SessionUnavailable(str(exc)) from exc
+    except (KeyError, TypeError) as exc:
+        raise _core().SessionUnavailable(
+            f"cannot address hive from entry {entry!r}: {exc}"
+        ) from exc
 
 
 #: The session seam: ``(main, entry)`` -> an unopened ``BeadsSession``. Tests substitute a
@@ -120,6 +138,39 @@ def claim_next(main: Path, entry: Any, actor: str) -> ApiNextResult | None:
             otel.set_bead(bead)
             otel.count_bead_transition("claimed")
             return ApiNextResult(claimed=bead, row=row)
+    except (
+        core.RouteMismatch,
+        core.OperationDenied,
+        core.UnknownOperation,
+        OSError,
+        ValueError,
+    ) as exc:
+        log.get_logger("beadhive.work").info("queue_route_fallback", detail=str(exc))
+        return None
+    except _incompatible_service_errors() as exc:
+        log.get_logger("beadhive.work").info("queue_route_fallback", detail=str(exc))
+        return None
+
+
+def open_children(main: Path, entry: Any, epic: str) -> list[dict] | None:
+    """Attempt the ``work.issue.list`` route for one epic's DIRECT open children (`bh work
+    schedule`'s fetch — every non-closed child, not just the unblocked ones ``work.ready.list``
+    would report).
+
+    Returns ``None`` to mean "select the CLI-compatibility route instead"
+    (:func:`beadhive.bd.children`): an unavailable service or capability, decided before any Beads
+    read is attempted — the same fallback set :func:`claim_next` already catches, since this is a
+    read with none of that function's actor/seat carve-outs. Once the route IS selected, a genuine
+    read failure propagates to the caller to report fail-closed, never silently retried through
+    `bd`.
+    """
+    core = _core()
+    observer = TelemetryRoutingObserver()
+    try:
+        session_cm = session_factory(main, entry)
+        with session_cm as session:
+            commands = core.QueueCommands()
+            return commands.list_children(session, epic, observer=observer)
     except (
         core.RouteMismatch,
         core.OperationDenied,
