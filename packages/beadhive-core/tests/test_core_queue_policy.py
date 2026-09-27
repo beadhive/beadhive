@@ -22,8 +22,10 @@ from beadhive_core import (
     RoutingTable,
     by_parent,
     decline,
+    direct_children,
     eligible,
     ready_rows,
+    to_bd_json,
 )
 
 PROJECT = "proj"
@@ -73,17 +75,101 @@ def test_by_parent_is_direct_edge_only_not_recursive():
     assert by_parent(rows, "") == rows
 
 
+# ---- pure policy: direct_children (bh-mu5yb.1) -----------------------------------------------
+
+
+def test_direct_children_trusts_top_level_parent_field():
+    rows = [_row("bh-1", parent="ep-1"), _row("bh-2", parent="ep-2"), _row("bh-3")]
+    assert [row["id"] for row in direct_children(rows, "ep-1")] == ["bh-1"]
+    assert direct_children(rows, "") == rows
+
+
+def test_direct_children_also_trusts_the_dependencies_representation():
+    """A row can carry the edge ONLY as a `parent-child` dependency entry (e.g. a closed parent —
+    Beads omits the top-level `parent` field then) — `by_parent` alone would miss it."""
+    rows = [
+        _row("bh-1", dependencies=[{"type": "parent-child", "depends_on_id": "ep-1"}]),
+        _row("bh-2", dependencies=[{"type": "blocks", "depends_on_id": "ep-1"}]),  # wrong edge type
+        _row("bh-3"),
+    ]
+    assert [row["id"] for row in direct_children(rows, "ep-1")] == ["bh-1"]
+    assert by_parent(rows, "ep-1") == []  # the field-only check misses it — the gap this closes
+
+
+def test_direct_children_excludes_a_recursive_grandchild():
+    """The row a `parent=<epic>` HTTP fetch returns for a GRANDCHILD (the query parameter is
+    documented as recursive-descendant, unlike this row-level check) is excluded: its own `parent`
+    names the intermediate child, not the top-level epic."""
+    rows = [
+        _row("bh-1", parent="ep-1"),  # direct child
+        _row("bh-1.1", parent="bh-1"),  # grandchild — recursively under ep-1, but not direct
+    ]
+    assert [row["id"] for row in direct_children(rows, "ep-1")] == ["bh-1"]
+
+
+# ---- pure policy: to_bd_json (bh-mu5yb.1) --------------------------------------------------
+
+
+def test_to_bd_json_matches_a_captured_real_bd_sample():
+    """Frozen fixture captured verbatim from `bd ready --json` against a real disposable `bd
+    serve` 1.3.0 (f45b249ce) scratch hive as part of verifying this bead — see
+    `packages/beadhive-core/README.md`. Guards the encoder against regressing on the two
+    Go/Python JSON divergences (HTML-escaping, non-ASCII) it exists to reconcile."""
+    rows = [
+        {
+            "id": "shp-00h.1",
+            "title": 'emoji \U0001f600 title <tag> & "quote" café line sep',
+            "status": "open",
+            "priority": 2,
+            "issue_type": "task",
+            "created_at": "2026-09-27T09:00:00Z",
+            "created_by": "Brian Cripe",
+            "updated_at": "2026-09-27T09:00:00Z",
+            "dependency_count": 0,
+            "dependent_count": 0,
+            "comment_count": 0,
+        }
+    ]
+    expected = (
+        "[\n"
+        "  {\n"
+        '    "id": "shp-00h.1",\n'
+        '    "title": "emoji \U0001f600 title \\u003ctag\\u003e \\u0026 \\"quote\\" '
+        'café line\\u2028sep",\n'
+        '    "status": "open",\n'
+        '    "priority": 2,\n'
+        '    "issue_type": "task",\n'
+        '    "created_at": "2026-09-27T09:00:00Z",\n'
+        '    "created_by": "Brian Cripe",\n'
+        '    "updated_at": "2026-09-27T09:00:00Z",\n'
+        '    "dependency_count": 0,\n'
+        '    "dependent_count": 0,\n'
+        '    "comment_count": 0\n'
+        "  }\n"
+        "]\n"
+    )
+    assert to_bd_json(rows) == expected
+
+
+def test_to_bd_json_empty_list_matches_bd_ready_empty_output():
+    assert to_bd_json([]) == "[]\n"
+
+
 # ---- transport fixture: a real BeadsSession over httpx.MockTransport ------------------------
 
 
 @dataclass
 class FakeQueue:
-    """Serves ``/v0/beads/ready`` and ``/v0/beads/issues:claimNext`` from a fixed row set."""
+    """Serves ``/v0/beads/ready``, ``/v0/beads/issues``, and ``/v0/beads/issues:claimNext`` from a
+    fixed row set. ``seen_params`` records the last query string per path, so a test can assert a
+    caller's narrowing flags actually reached the request."""
 
     rows: list[dict] = field(default_factory=list)
+    children_rows: list[dict] = field(default_factory=list)
     claim_calls: list[str] = field(default_factory=list)
     claimed_id: str | None = None
     capabilities: frozenset[str] = field(default_factory=lambda: QUEUE_CAPABILITIES)
+    seen_params: dict[str, httpx.QueryParams] = field(default_factory=dict)
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -104,10 +190,15 @@ class FakeQueue:
                 },
             )
         if path == "/v0/beads/ready":
+            self.seen_params[path] = request.url.params
             limit = int(request.url.params.get("limit", "100"))
+            rows = self.rows[:limit] if limit else self.rows
             return httpx.Response(
-                200, json={"items": self.rows[:limit], "has_more": len(self.rows) > limit}
+                200, json={"items": rows, "has_more": bool(limit) and len(self.rows) > limit}
             )
+        if path == "/v0/beads/issues" and request.method == "GET":
+            self.seen_params[path] = request.url.params
+            return httpx.Response(200, json={"items": self.children_rows, "has_more": False})
         if path == "/v0/beads/issues:claimNext" and request.method == "POST":
             import json as _json
 
@@ -137,6 +228,85 @@ def test_list_ready_returns_rows_in_bd_ready_json_shape():
         page = commands.list_ready(session, limit=50)
     assert [row["id"] for row in ready_rows(page)] == ["bh-1", "bh-2"]
     assert ready_rows(page)[0]["issue_type"] == "task"
+
+
+def test_list_ready_forwards_every_narrowing_flag_to_the_request():
+    """Every `bh work ready` narrowing flag this bead routes lands on the wire exactly once,
+    under the name `GET /v0/beads/ready` (and `bd ready`) both use."""
+    fixture = FakeQueue(rows=[_row("bh-1")])
+    commands = QueueCommands()
+    with _session(fixture) as session:
+        commands.list_ready(
+            session,
+            limit=0,
+            assignee="dev/alice",
+            unassigned=True,
+            type_="task",
+            exclude_type=["gate", "event"],
+            label=["size:l"],
+            label_any=["model:opus", "model:sonnet"],
+            exclude_label=["blocked"],
+            priority=2,
+            parent="ep-1",
+            has_metadata_key="spec_id",
+            metadata_field=["team=core"],
+        )
+    seen = fixture.seen_params["/v0/beads/ready"]
+    assert seen["limit"] == "0"
+    assert seen["assignee"] == "dev/alice"
+    assert seen["unassigned"] == "true"
+    assert seen["type"] == "task"
+    assert seen.get_list("exclude_type") == ["gate", "event"]
+    assert seen.get_list("label") == ["size:l"]
+    assert seen.get_list("label_any") == ["model:opus", "model:sonnet"]
+    assert seen.get_list("exclude_label") == ["blocked"]
+    assert seen["priority"] == "2"
+    assert seen["parent"] == "ep-1"
+    assert seen["has_metadata_key"] == "spec_id"
+    assert seen.get_list("metadata_field") == ["team=core"]
+
+
+def test_list_ready_omits_unset_narrowing_flags_entirely():
+    """A caller that passes nothing beyond `limit` sends nothing beyond the generated client's
+    OWN unconditional defaults (`sort=priority`, the three off-by-default booleans) — none of
+    `bh work ready`'s optional narrowing flags (assignee, label, parent, ...) ride along unasked,
+    an explicit empty/false value never confused with "not asked for"."""
+    fixture = FakeQueue(rows=[_row("bh-1")])
+    commands = QueueCommands()
+    with _session(fixture) as session:
+        commands.list_ready(session, limit=50)
+    seen = fixture.seen_params["/v0/beads/ready"]
+    assert set(seen.keys()) == {"limit", "sort", "brief", "include_ephemeral", "include_deferred"}
+    assert seen["sort"] == "priority"
+
+
+# ---- transport fixture: list_children (bh-mu5yb.1) -------------------------------------------
+
+
+def test_list_children_narrows_a_recursive_fetch_to_the_direct_edge():
+    fixture = FakeQueue(
+        children_rows=[
+            _row("ep-1.2", parent="ep-1", priority=1),
+            _row("ep-1.1.1", parent="ep-1.1"),  # grandchild the recursive fetch also returns
+            _row("ep-1.1", parent="ep-1", issue_type="epic", priority=0),
+        ]
+    )
+    commands = QueueCommands()
+    with _session(fixture) as session:
+        children = commands.list_children(session, "ep-1")
+    assert [row["id"] for row in children] == ["ep-1.2", "ep-1.1"]  # grandchild excluded
+    seen = fixture.seen_params["/v0/beads/issues"]
+    assert seen["parent"] == "ep-1"
+    assert seen["sort"] == "priority"
+    assert seen["limit"] == "0"
+
+
+def test_list_children_empty_parent_returns_every_row_unfiltered():
+    fixture = FakeQueue(children_rows=[_row("bh-1"), _row("bh-2")])
+    commands = QueueCommands()
+    with _session(fixture) as session:
+        children = commands.list_children(session, "")
+    assert [row["id"] for row in children] == ["bh-1", "bh-2"]
 
 
 def test_claim_next_returns_the_claimed_row_and_carries_the_actor():

@@ -9,9 +9,15 @@ across test modules.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
+import signal
+import socket
 import subprocess
+import time
 from collections import namedtuple
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -142,14 +148,17 @@ def _row(bead_id, **kw):
 
 
 class FakeQueueService:
-    """Serves `/v0/beads/ready` and `/v0/beads/issues:claimNext` for one fixed row set,
-    exactly the transport fixture `packages/beadhive-core`'s own policy tests use."""
+    """Serves `/v0/beads/ready`, `/v0/beads/issues`, and `/v0/beads/issues:claimNext` for one
+    fixed row set, exactly the transport fixture `packages/beadhive-core`'s own policy tests use.
+    """
 
-    def __init__(self, rows, claimed_id=None):
+    def __init__(self, rows, claimed_id=None, children_rows=None):
         self.rows = rows
         self.claimed_id = claimed_id
+        self.children_rows = children_rows if children_rows is not None else []
         self.claim_calls: list[str] = []
         self.release_calls: list[str] = []
+        self.children_calls: list[str] = []
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -171,6 +180,9 @@ class FakeQueueService:
             )
         if path == "/v0/beads/ready":
             return httpx.Response(200, json={"items": self.rows, "has_more": False})
+        if path == "/v0/beads/issues" and request.method == "GET":
+            self.children_calls.append(str(request.url.params.get("parent", "")))
+            return httpx.Response(200, json={"items": self.children_rows, "has_more": False})
         if path == "/v0/beads/issues:claimNext" and request.method == "POST":
             import json as _json
 
@@ -334,3 +346,218 @@ def test_next_reports_empty_queue_when_the_atomic_route_finds_nothing(
     assert code == work.NEXT_DECLINE_EXIT
     out = capsys.readouterr().out
     assert '"reason": "empty_queue"' in out
+
+
+# ---- open_children: the `bh work schedule` composition seam (bh-mu5yb.1) ---------------------
+
+
+def test_open_children_routes_through_the_api_and_narrows_to_direct_edge(nexthive, monkeypatch):
+    """`open_children` asks for every recursive descendant under `parent` and narrows the result
+    to the direct edge locally — a grandchild the recursive fetch also returns must not leak into
+    a schedule plan for the epic that isn't its direct parent."""
+    fixture = FakeQueueService(
+        rows=[],
+        children_rows=[
+            _row("ep-1.2", parent="ep-1", priority=1),
+            _row("ep-1.1.1", parent="ep-1.1"),  # grandchild — excluded
+            _row("ep-1.1", parent="ep-1", issue_type="epic", priority=0),
+        ],
+    )
+    monkeypatch.setattr(work_queue, "session_factory", _api_session_factory(fixture))
+
+    entry = {"provider": "github", "org": "myorg", "repo": "myrepo", "prefix": "mr"}
+    children = work_queue.open_children(nexthive.main, entry, "ep-1")
+
+    assert children is not None
+    assert [row["id"] for row in children] == ["ep-1.2", "ep-1.1"]
+    assert fixture.children_calls == ["ep-1"]
+
+
+def test_open_children_falls_back_to_none_when_the_service_is_unavailable(monkeypatch):
+    def factory(_main, _entry):
+        raise ServiceUnavailable("no service", state="absent", start_command="bh host beads start")
+
+    monkeypatch.setattr(work_queue, "session_factory", factory)
+    assert work_queue.open_children(Path("/fake/main"), {"prefix": "mr"}, "ep-1") is None
+
+
+def test_schedule_payload_prefers_the_api_route_and_never_shells_out_to_bd(monkeypatch):
+    """The pre-execution route selection for `bh work schedule`'s children fetch: when the API
+    route succeeds, `bd` is never invoked at all — proving the selection happens BEFORE execution,
+    not as a fallback after a `bd` attempt."""
+    fixture = FakeQueueService(
+        rows=[],
+        children_rows=[_row("mr-1", parent="mr-epic"), _row("mr-2", parent="mr-epic")],
+    )
+    monkeypatch.setattr(work_queue, "session_factory", _api_session_factory(fixture))
+
+    def _forbidden_bd(cmd, **_kw):
+        raise AssertionError(f"bd must never be invoked when the API route succeeds: {cmd}")
+
+    monkeypatch.setattr(bd_mod, "_run", _forbidden_bd)
+    from beadhive import config as config_mod
+    from beadhive.config_schema import RoutingTierConfig
+
+    monkeypatch.setattr(config_mod, "load", lambda: {})
+    monkeypatch.setattr(config_mod, "dispatch_mode", lambda cfg, entry: "fanout")
+    monkeypatch.setattr(config_mod, "batch_max_size", lambda cfg, entry: 5)
+    monkeypatch.setattr(config_mod, "dispatch_max_depth", lambda cfg, entry: 2)
+    monkeypatch.setattr(config_mod, "dispatch_auto_budget", lambda cfg, entry: 8)
+    monkeypatch.setattr(config_mod, "dispatch_max_beads_per_session", lambda cfg, entry: 8)
+    monkeypatch.setattr(
+        config_mod,
+        "routing_tiers",
+        lambda cfg, entry: [RoutingTierConfig(model="anthropic/claude-opus-4-1")],
+    )
+    monkeypatch.setattr(config_mod, "routing_policy", lambda cfg, entry: "loose")
+    monkeypatch.setattr(config_mod, "harness_name", lambda cfg, entry: "claude")
+
+    entry = {"provider": "github", "org": "myorg", "repo": "myrepo", "prefix": "mr"}
+    result = work.schedule_payload("mr-epic", {}, entry, Path("/fake/main"))
+    assert sorted(row["id"] for row in result["singletons"]) == ["mr-1", "mr-2"]
+
+
+# ---- real-service: the seat-mismatch release path (bh-mu5yb.1 closes bh-l5sxi.2's gap) --------
+#
+# `test_next_releases_and_refuses_a_seat_mismatched_atomic_claim` above proves the same outcome
+# against a MOCK transport. This proves it against a genuine, disposable `bd serve` 1.3.0: the
+# atomic claim really commits, the release really lands, and the row is really left unclaimed in
+# the real store afterward — not just in a fixture's in-memory model of one.
+
+
+def _bd_real(*args: str, cwd: Path) -> dict:
+    result = subprocess.run(
+        ["bd", *args, "--json"], cwd=cwd, check=True, capture_output=True, text=True
+    )
+    return json.loads(result.stdout)
+
+
+def _init_owned_scratch_hive(path: Path) -> None:
+    """An OWNED-mode (`bd init --server`) scratch hive: `bd serve` refuses embedded Dolt, so the
+    default `bd init` shape cannot serve HTTP at all. Mirrors
+    `packages/beadhive-core/tests/test_core_queue_real_service.py`'s fixture of the same name."""
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=path, check=True)
+    subprocess.run(
+        ["bd", "init", "--server", "--prefix", "smx", "--non-interactive"],
+        cwd=path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _reap_owned_scratch_hive(beads_dir: Path) -> None:
+    """Terminate BOTH long-lived processes an OWNED-mode scratch hive can leave behind: the Dolt
+    SQL server (`dolt-server.pid`, a bare pid) AND the per-rootDir `bd db-proxy-child` TCP proxy
+    `bd init --server` also spawns (`dolt/proxy.pid`, a JSON record whose `pid` field is the one
+    that matters here) — `bd`'s own child, fork+exec'd detached, with an unbounded idle timeout
+    by default, so it outlives this test's own `bd serve` subprocess entirely if not reaped
+    explicitly. bh-l5sxi.2's contention test leaked exactly this second process; this reaps both."""
+    for pid_file, is_json in (
+        (beads_dir / "dolt-server.pid", False),
+        (beads_dir / "dolt" / "proxy.pid", True),
+    ):
+        if not pid_file.is_file():
+            continue
+        with contextlib.suppress(OSError, ValueError, json.JSONDecodeError, KeyError):
+            text = pid_file.read_text().strip()
+            pid = int(json.loads(text)["pid"]) if is_json else int(text)
+            with contextlib.suppress(OSError):
+                os.kill(pid, signal.SIGTERM)
+                for _ in range(50):
+                    time.sleep(0.1)
+                    os.kill(pid, 0)
+                os.kill(pid, signal.SIGKILL)
+
+
+def _free_tcp_port() -> int:
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        return reservation.getsockname()[1]
+
+
+@pytest.mark.real_service
+def test_next_releases_and_refuses_a_seat_mismatch_against_a_real_service(tmp_path):
+    """A declared `dev/` seat that atomically wins an EPIC via a genuine `bd serve` is released
+    back in the SAME session and reported as refused — never left claimed — and the epic is
+    genuinely unclaimed (open, unassigned) in the real store afterward.
+
+    Opt-in via `BEADS_QUEUE_SCRATCH=1`, the same convention
+    `test_core_queue_real_service.py` uses::
+
+        BEADS_QUEUE_SCRATCH=1 \\
+        uv run --locked --all-packages pytest tests/test_work_queue.py -m real_service
+    """
+    if not os.environ.get("BEADS_QUEUE_SCRATCH"):
+        pytest.skip("set BEADS_QUEUE_SCRATCH=1 to run the real-bd scratch-hive proof")
+
+    _init_owned_scratch_hive(tmp_path)
+    try:
+        port = _free_tcp_port()
+        proc = subprocess.Popen(
+            ["bd", "serve", "--addr", f"127.0.0.1:{port}"],
+            cwd=tmp_path,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        try:
+            base = f"http://127.0.0.1:{port}"
+            for _ in range(100):
+                with contextlib.suppress(httpx.HTTPError):
+                    if httpx.get(base + "/healthz", timeout=1).status_code == 200:
+                        break
+                time.sleep(0.1)
+            else:
+                out = proc.stdout.read() if proc.stdout else ""
+                raise RuntimeError(f"bd serve never became healthy: {out}")
+
+            context = _bd_real("context", cwd=tmp_path)
+            epic = _bd_real(
+                "create",
+                "--title",
+                "epic under test",
+                "--type",
+                "epic",
+                "--priority",
+                "1",
+                cwd=tmp_path,
+            )
+            epic_id = epic["id"]
+
+            def factory(_main, _entry):
+                return BeadsSession(
+                    RemoteEndpoint(base),
+                    ExpectedContext(
+                        context["project_id"],
+                        context["database"],
+                        required_capabilities=QUEUE_CAPABILITIES,
+                        repo_root=tmp_path,
+                    ),
+                )
+
+            import beadhive.work_queue as work_queue_mod
+
+            old_factory = work_queue_mod.session_factory
+            work_queue_mod.session_factory = factory
+            try:
+                result = work_queue_mod.claim_next(tmp_path, {}, "dev/alice")
+            finally:
+                work_queue_mod.session_factory = old_factory
+
+            assert result is not None, "a declared dev/ actor must try the atomic route"
+            assert result.claimed == ""
+            assert result.refused == (epic_id,)
+
+            shown = _bd_real("show", epic_id, cwd=tmp_path)
+            final = shown[0] if isinstance(shown, list) else shown
+            assert final["status"] == "open"
+            assert not final.get("assignee")
+        finally:
+            proc.send_signal(signal.SIGTERM)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=10)
+            if proc.poll() is None:
+                proc.kill()
+    finally:
+        _reap_owned_scratch_hive(tmp_path / ".beads")

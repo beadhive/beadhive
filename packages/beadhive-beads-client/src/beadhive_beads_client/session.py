@@ -56,6 +56,7 @@ from beads_v1_3.models import (
     Issue,
     IssueDetails,
     IssuesPage,
+    ListIssuesSort,
     Problem,
     ReadyPage,
     ReleaseIssueRequest,
@@ -309,14 +310,75 @@ class BeadsSession:
             include_comments=include_comments,
         )  # type: ignore[return-value]
 
-    def list_issues(self, *, limit: int = 100, cursor: str | None = None) -> IssuesPage:
+    def list_issues(
+        self,
+        *,
+        limit: int = 100,
+        cursor: str | None = None,
+        parent: str | None = None,
+        sort: str | None = None,
+    ) -> IssuesPage:
+        """``GET /v0/beads/issues``. ``parent`` restricts to RECURSIVE descendants of the named
+        issue (the OpenAPI spec's own wording — not the direct one-level edge ``IssueWithCounts``
+        reports on each row); a caller that wants direct children only must narrow the returned
+        rows itself (see ``beadhive_core.queue.direct_children``). ``sort`` is the closed
+        ``created``/``priority`` vocabulary this operation publishes — absent, it defaults to
+        ``created``, NOT ``bd list``'s flagless ``priority`` ordering, so a caller reproducing
+        `bd list` output must pass ``sort="priority"`` explicitly."""
         kwargs: dict[str, object] = {"limit": limit}
         if cursor is not None:
             kwargs["cursor"] = cursor
+        if parent is not None:
+            kwargs["parent"] = parent
+        if sort is not None:
+            kwargs["sort"] = ListIssuesSort(sort)
         return self._read("issues.list", list_issues.sync_detailed, **kwargs)  # type: ignore[return-value]
 
-    def list_ready(self, *, limit: int = 100) -> ReadyPage:
-        return self._read("ready.list", list_ready_work.sync_detailed, limit=limit)  # type: ignore[return-value]
+    def list_ready(
+        self,
+        *,
+        limit: int = 100,
+        assignee: str | None = None,
+        unassigned: bool | None = None,
+        type_: str | None = None,
+        exclude_type: list[str] | None = None,
+        label: list[str] | None = None,
+        label_any: list[str] | None = None,
+        exclude_label: list[str] | None = None,
+        priority: int | None = None,
+        parent: str | None = None,
+        has_metadata_key: str | None = None,
+        metadata_field: list[str] | None = None,
+    ) -> ReadyPage:
+        """``GET /v0/beads/ready``, the same predicate ``bd ready`` and `work.claim-next` share.
+        ``parent`` restricts to RECURSIVE descendants of the named issue (the OpenAPI spec's own
+        wording), unlike the direct one-level edge ``IssueWithCounts.parent`` reports on each row.
+        Every other parameter here is optional and omitted (not sent) when left ``None``, matching
+        the generated client's own UNSET-by-default contract."""
+        kwargs: dict[str, object] = {"limit": limit}
+        if assignee is not None:
+            kwargs["assignee"] = assignee
+        if unassigned is not None:
+            kwargs["unassigned"] = unassigned
+        if type_ is not None:
+            kwargs["type_"] = type_
+        if exclude_type is not None:
+            kwargs["exclude_type"] = exclude_type
+        if label is not None:
+            kwargs["label"] = label
+        if label_any is not None:
+            kwargs["label_any"] = label_any
+        if exclude_label is not None:
+            kwargs["exclude_label"] = exclude_label
+        if priority is not None:
+            kwargs["priority"] = priority
+        if parent is not None:
+            kwargs["parent"] = parent
+        if has_metadata_key is not None:
+            kwargs["has_metadata_key"] = has_metadata_key
+        if metadata_field is not None:
+            kwargs["metadata_field"] = metadata_field
+        return self._read("ready.list", list_ready_work.sync_detailed, **kwargs)  # type: ignore[return-value]
 
     def list_dependencies(self, issue_id: str) -> DependencyEdges:
         return self._read("dependencies.list", list_dependencies.sync_detailed, issue_id=[issue_id])  # type: ignore[return-value]
