@@ -8,12 +8,16 @@ from .ports import (
     WorktreeInventory,
     WorktreeManagerPort,
 )
+from .state_ports import BeadStateLookup, ClaimRecords, MergeEvidence
 
 __all__ = [
     "WORKSPACE_BINDING",
     "WORKTREE_MANAGER",
     "WORKTREE_MANAGER_KEY",
+    "BeadStateLookup",
     "BranchInspector",
+    "ClaimRecords",
+    "MergeEvidence",
     "WorkspaceBindingPort",
     "WorktreeCreateObserver",
     "WorktreeInventory",

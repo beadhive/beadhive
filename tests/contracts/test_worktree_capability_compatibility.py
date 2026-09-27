@@ -63,7 +63,10 @@ def test_cli_and_mcp_keep_rendering_and_payload_ownership() -> None:
 def test_remove_and_prune_keep_compensation_outside_the_module() -> None:
     remove_source = inspect.getsource(worktree_cleanup.impl_remove)
     prune_source = inspect.getsource(worktree_cleanup.impl__prune_remove_one)
-    assert "claim_authority.remove_record_path" in remove_source
+    # bh-qdezo.5: the claim_authority record-path bookkeeping moved behind the `ClaimRecords`
+    # port (beadhive.worktree_state_adapters.ClaimAuthorityRecords) rather than importing
+    # claim_authority directly; the compensation itself still runs right here.
+    assert "_CLAIM_RECORDS.remove_record_path" in remove_source
     assert "_rmdir_empty_parents" in remove_source
     assert '"branch", "-D"' in prune_source
     assert "claim_authority" not in inspect.getsource(worktrees.WorktreeLifecycleService)
