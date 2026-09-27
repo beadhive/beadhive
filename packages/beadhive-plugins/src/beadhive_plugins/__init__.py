@@ -7,6 +7,10 @@ the host, or imports an integration. Discovery, the lifecycle dispatcher, and te
 ``src/beadhive`` — composition machinery that binds concrete providers to the contracts here,
 not part of the contracts themselves.
 
+The ``worktree.manager`` and ``workspace.binding`` slots (:mod:`.worktree_slots`, bh-055ot.1)
+are declared here too; their concrete spec/handle types and the native manager live in
+``beadhive-worktrees``, which depends on this package.
+
 Root keeps forwarding facades at ``beadhive.kernel.plugins.contracts``,
 ``beadhive.kernel.plugins.binding``, and ``beadhive.kernel.lifecycle.contracts`` so existing
 consumers keep working unchanged; every name here resolves identically through those facades.
@@ -85,6 +89,13 @@ from .lifecycle import (
     WorktreeLifecycleContext,
     WorktreeLifecyclePhase,
 )
+from .worktree_slots import (
+    WORKSPACE_BINDING,
+    WORKTREE_MANAGER,
+    WorkspaceBinding,
+    WorktreeManager,
+    binding_composes,
+)
 
 __all__ = [
     "AGENT_LAUNCH_EVENTS",
@@ -95,7 +106,9 @@ __all__ = [
     "HIVE_EVENTS",
     "HOST_EVENTS",
     "PLUGIN_EVENTS",
+    "WORKSPACE_BINDING",
     "WORKTREE_EVENTS",
+    "WORKTREE_MANAGER",
     "AgentLaunchLifecycleContext",
     "AgentLaunchLifecyclePhase",
     "BuildVerifier",
@@ -153,5 +166,8 @@ __all__ = [
     "VersionRange",
     "WorktreeLifecycleContext",
     "WorktreeLifecyclePhase",
+    "WorktreeManager",
+    "WorkspaceBinding",
     "bind_application_port",
+    "binding_composes",
 ]

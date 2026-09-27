@@ -14,7 +14,7 @@ import typer
 
 from . import registry, wt_status
 from .config_consumer_ports import work_settings as config
-from .modules.worktrees import RemoveWorktreeRequest
+from .modules.worktrees import WorktreeHandle, WorktreeManagerError
 
 
 def _facade():
@@ -69,10 +69,6 @@ def _prune_remove_all(*args, **kwargs):
 
 def prune(*args, **kwargs):
     return _call_facade("prune", *args, **kwargs)
-
-
-def _consult_wt_remove(*args, **kwargs):
-    return _call_facade("_consult_wt_remove", *args, **kwargs)
 
 
 def _worktree_lifecycle_service(*args, **kwargs):
@@ -186,11 +182,11 @@ def impl__refuse_unknown_removal(cfg, entry, target: Path, *, force: bool) -> No
 
 
 def impl_remove(hive, ref, force=False, as_json=False):
-    """Remove one managed worktree. The branch is the durable artifact here (a bead's history
-    lives on it), so a delegating plugin's `wt_remove` hook is consulted with `keep_branch=True`
-    — never call this for a disposable prune removal (see `prune`). `as_json` (bh-73rz.4) emits
-    the same `{op, hive, path, removed}` machine-readable shape an external orchestrator's
-    preview→create→…→remove flow parses, mirroring `add --json`."""
+    """Remove one managed worktree through the selected ``worktrees.manager``. The branch is the
+    durable artifact here (a bead's history lives on it) and a manager's ``remove`` never
+    deletes it — never call this for a disposable prune removal (see `prune`). `as_json`
+    (bh-73rz.4) emits the same `{op, hive, path, removed}` machine-readable shape an external
+    orchestrator's preview→create→…→remove flow parses, mirroring `add --json`."""
     cfg = config.load()
     entry = _resolve_entry(cfg, hive)
     main = registry.hive_dir(entry)
@@ -204,14 +200,15 @@ def impl_remove(hive, ref, force=False, as_json=False):
     hive = str(entry.get("prefix", ""))
     _refuse_unknown_removal(cfg, entry, target, force=force)
     started = time.monotonic()
-    result = _worktree_lifecycle_service(cfg, entry).remove(
-        RemoveWorktreeRequest(main, target, force=force, keep_branch=True)
-    )
-    if not result.succeeded:
+    try:
+        _worktree_lifecycle_service(cfg, entry).remove(
+            WorktreeHandle.for_removal(main, target), force=force
+        )
+    except WorktreeManagerError as exc:
         elapsed = time.monotonic() - started
         _record_wt_event("remove", "error", hive=hive, leaf=target.name)
         _record_wt_op_duration("remove", elapsed, "error", hive=hive, leaf=target.name)
-        raise typer.Exit(result.returncode)
+        raise typer.Exit(exc.returncode) from None
     elapsed = time.monotonic() - started
     claim_authority.remove_record_path(claim_path)
     _rmdir_empty_parents(target, cfg)
@@ -311,43 +308,39 @@ def impl__prune_report_skipped(skipped: list) -> None:
 
 
 def impl__prune_remove_one(cfg, entries_by_prefix: dict, main: Path, st) -> bool:
-    """Remove one SAFE worktree (delegated plugin first, native `git worktree remove` fallback),
-    recording telemetry and native/delegated branch-deletion parity. Returns True iff removal
-    succeeded (outcome == "ok")."""
+    """Remove one SAFE worktree through the selected ``worktrees.manager``, recording telemetry
+    and deleting the now-merged branch afterwards. Returns True iff removal succeeded
+    (outcome == "ok")."""
     prefix = st.hive
     entry = entries_by_prefix.get(prefix)
     from . import claim_authority
 
     claim_path = claim_authority.record_path(st.path)
     started = time.monotonic()
-    # SAFE (closed + merged + clean) → the branch is disposable, so keep_branch=False: a
-    # delegating plugin owns branch cleanup for its own removals (mirrors the native
-    # git-branch-D parity step below).
-    result = (
-        _worktree_lifecycle_service(cfg, entry).remove(
-            RemoveWorktreeRequest(main, Path(st.path), force=True, keep_branch=False)
-        )
-        if entry is not None
-        else None
-    )
-    if result is None:
+    # SAFE (closed + merged + clean) → the branch is disposable; the manager removes only the
+    # linked worktree and the `git branch -D` step below retires the branch.
+    if entry is None:
         res = _run_git(
             ["git", "-C", str(main), "worktree", "remove", "--force", st.path],
             check=False,
         )
         outcome = "ok" if res.returncode == 0 else "error"
-        delegated = False
         error = res.stderr or ""
     else:
-        outcome = "ok" if result.succeeded else "error"
-        delegated = result.delegated
-        error = result.error
+        try:
+            _worktree_lifecycle_service(cfg, entry).remove(
+                WorktreeHandle.for_removal(main, Path(st.path), st.branch), force=True
+            )
+        except WorktreeManagerError as exc:
+            outcome, error = "error", exc.error
+        else:
+            outcome, error = "ok", ""
     elapsed = time.monotonic() - started
     if outcome == "ok":
         typer.echo(f"  removed {st.path}  [{st.branch}]")
     else:
-        # Delegated success remains terminal. A native failure retains its captured stderr when
-        # the facade runner supplied it; this line also prevents a misleading "removed" claim.
+        # A failure retains its captured stderr when the facade runner supplied it; this line
+        # also prevents a misleading "removed" claim.
         typer.echo(
             f"  failed to remove {st.path}  [{st.branch}]: {error or 'git worktree remove failed'}"
         )
@@ -357,11 +350,9 @@ def impl__prune_remove_one(cfg, entries_by_prefix: dict, main: Path, st) -> bool
         return False
     claim_authority.remove_record_path(claim_path)
     _rmdir_empty_parents(st.path, cfg)
-    if not delegated:
-        # Native/delegated parity (design delta): a SAFE tree is already merged, so once its
-        # worktree is gone the branch is dead weight — delete it the same way a delegated remove
-        # would. Best-effort: a stray branch never blocks the prune loop.
-        _run_git(["git", "-C", str(main), "branch", "-D", st.branch], check=False)
+    # A SAFE tree is already merged, so once its worktree is gone the branch is dead weight.
+    # Best-effort: a stray branch never blocks the prune loop.
+    _run_git(["git", "-C", str(main), "branch", "-D", st.branch], check=False)
     return True
 
 
@@ -407,10 +398,8 @@ def impl_prune(hive=""):
     Do NOT add per-worktree or per-prune observaloop teardown here; doing so would break the
     shared-profile contract and stop telemetry routing for any remaining worktrees or processes.
 
-    Removal is consulted through a delegating plugin's `wt_remove` hook (`keep_branch=False` —
-    SAFE means merged, so the branch is disposable); when no plugin handles it, native removal
-    also deletes the now-merged branch (`git branch -D`) for native/delegated parity — the one
-    deliberate behavior change over pre-delegation prune.
+    Removal runs through the selected ``worktrees.manager`` (native git) and then deletes the
+    now-merged branch (`git branch -D`) — SAFE means merged, so the branch is disposable.
     """
     cfg = config.load()
     want = str(registry.resolve_hive(cfg, hive)["prefix"]) if hive else None

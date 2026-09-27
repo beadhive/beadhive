@@ -61,6 +61,30 @@ def worktrees_cfg(cfg=None):
     return cfg.get("worktrees", {}) or {}
 
 
+#: Legal ``worktrees.manager`` values. Exactly one manager per hive executes worktree mechanics
+#: (docs/design/bh-mr9tk.2-worktree-manager-herdr-binding-adr.md "Selection"); native Git is the
+#: default and, until a re-evaluation adopts another manager, the only one.
+WORKTREE_MANAGERS: tuple[str, ...] = ("native",)
+DEFAULT_WORKTREE_MANAGER = "native"
+
+
+def worktrees_manager(cfg=None) -> str:
+    """The selected ``worktrees.manager`` (default ``native``), refusing any other value.
+
+    Raises ``ConfigError`` rather than falling back: a hive that asked for a manager bh cannot
+    provide must not silently get native mechanics instead (no auto-detection, no fallback)."""
+    raw = worktrees_cfg(cfg).get("manager")
+    if raw is None or raw == DEFAULT_WORKTREE_MANAGER:
+        return DEFAULT_WORKTREE_MANAGER
+    allowed = "|".join(WORKTREE_MANAGERS)
+    raise _config.ConfigError(
+        f"worktrees.manager = {raw!r} is not supported (allowed: {allowed}). Exactly one "
+        "worktree manager runs per hive and native git is the only one bh ships; worktree "
+        "create/attach/remove refuse until this is fixed. Remove the key or run "
+        f"`{_config.BINARY_ALIAS} config set worktrees.manager native` (see docs/WORKTREES.md)."
+    )
+
+
 def managed_repos(cfg=None):
     """The list of managed hive entries (`managed_repos`), or [] — handles a missing key / None
     cfg so callers (e.g. otel hive derivation) can iterate without their own load()/guard."""
@@ -552,6 +576,50 @@ def orca_worktrees_enabled(cfg, entry=None) -> bool:
     return False
 
 
+ORCA_WORKTREES_RETIRED_EVENT = "orca_worktrees_retired"
+
+
+def orca_worktrees_retired_scopes(cfg=None) -> list[str]:
+    """Where ``orca.worktrees`` is still switched on: ``orca.worktrees`` for the global flag,
+    ``managed_repos[<prefix>].orca.worktrees`` per hive. Empty when nothing asks for it.
+
+    Orca's ``wt_create``/``wt_remove`` delegation was retired (bh-055ot.1): the single selected
+    ``worktrees.manager`` owns worktree mechanics, so this flag no longer changes anything."""
+    cfg = cfg if cfg is not None else load()
+    scopes = ["orca.worktrees"] if orca_worktrees_enabled(cfg) else []
+    for entry in managed_repos(cfg):
+        if ((entry or {}).get("orca") or {}).get("worktrees") is not None and (
+            orca_worktrees_enabled(cfg, entry)
+        ):
+            scopes.append(f"managed_repos[{entry.get('prefix', '?')}].orca.worktrees")
+    return scopes
+
+
+def orca_worktrees_retired_message(scopes) -> str:
+    where = ", ".join(scopes)
+    return (
+        f"config: {where} is set, but Orca worktree delegation is retired — worktrees are "
+        "always created and removed by the configured worktrees.manager (native git), and "
+        "Orca no longer runs `orca worktree create/rm` for bh. Remove orca.worktrees from your "
+        "config to silence this (see docs/INTEGRATIONS.md, 'Orca worktree delegation "
+        "retired')."
+    )
+
+
+def warn_retired_orca_worktrees_if_needed() -> None:
+    """Config-load nudge: name every scope still setting the retired ``orca.worktrees``."""
+    try:
+        scopes = orca_worktrees_retired_scopes()
+    except FileNotFoundError:
+        return
+    if scopes:
+        _config._warning(
+            ORCA_WORKTREES_RETIRED_EVENT,
+            scopes=scopes,
+            hint=orca_worktrees_retired_message(scopes),
+        )
+
+
 def orca_worktrees_fallback(cfg=None) -> bool:
     """Global ``orca.worktrees.fallback`` — default False (HARD FAIL when the runtime is down)."""
     glob = orca_cfg(cfg).get("worktrees")
@@ -823,6 +891,9 @@ __all__ = [
     "beads_cfg",
     "beads_engine",
     "worktrees_cfg",
+    "WORKTREE_MANAGERS",
+    "DEFAULT_WORKTREE_MANAGER",
+    "worktrees_manager",
     "managed_repos",
     "managed_repo_path",
     "hq_cfg",
@@ -878,6 +949,10 @@ __all__ = [
     "orca_enabled",
     "orca_worktrees_enabled",
     "orca_worktrees_fallback",
+    "ORCA_WORKTREES_RETIRED_EVENT",
+    "orca_worktrees_retired_scopes",
+    "orca_worktrees_retired_message",
+    "warn_retired_orca_worktrees_if_needed",
     "orca_data_path",
     "repowise_cfg",
     "repowise_enabled",

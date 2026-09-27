@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Generic, TypeVar
+
+from beadhive_plugins.worktree_slots import binding_composes
 
 WT_PREFIX = "wt/"
 BATCH_BRANCH_PREFIX = "batch/"
@@ -120,47 +122,94 @@ def bind_worktree(suffix: str) -> WorktreeBinding:
 
 
 @dataclass(frozen=True, slots=True)
-class CreateWorktreeRequest:
+class WorktreeSpec:
+    """What Beadhive policy decided; the selected manager only executes it (bh-055ot.1).
+
+    ``path`` and ``branch`` are exact — a manager never chooses either. ``base`` is the start
+    point intent: the fork point for ``create``; for ``attach`` it is recorded on the handle
+    only and never moves an existing branch tip (E37). ``identity`` is the bead/worktree
+    correlation id and defaults to the path leaf.
+    """
+
     main: Path
     branch: str
-    target: Path
-    new_branch: bool
-    start_point: str = ""
+    path: Path
+    base: str = ""
+    identity: str = ""
+
+    @property
+    def correlation(self) -> str:
+        return self.identity or self.path.name
 
 
 @dataclass(frozen=True, slots=True)
-class RemoveWorktreeRequest:
+class WorktreeHandle:
+    """One created or attached worktree as the manager left it.
+
+    ``bindings`` maps a presenter to its binding reference (for example ``{"herdr": "w4"}``),
+    filled by whichever component performed the bind. It is a cache of a fact re-derivable from
+    the presenter's own inventory, never its sole source of truth. ``branch`` may be empty on a
+    handle re-derived for removal when the caller does not know it; removal never needs it.
+    """
+
+    identity: str
     main: Path
-    target: Path
-    force: bool = False
-    keep_branch: bool = True
+    path: Path
+    branch: str
+    base: str = ""
+    bindings: dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def of(cls, spec: WorktreeSpec) -> WorktreeHandle:
+        return cls(spec.correlation, spec.main, spec.path, spec.branch, spec.base)
+
+    @classmethod
+    def for_removal(cls, main: Path, path: Path, branch: str = "") -> WorktreeHandle:
+        return cls(path.name, main, path, branch)
+
+    def with_binding(self, presenter: str, reference: str) -> WorktreeHandle:
+        return replace(self, bindings={**self.bindings, presenter: reference})
 
 
 @dataclass(frozen=True, slots=True)
-class ProvisioningResult:
-    """One adapter outcome; ``handled=False`` requests the native fallback."""
+class WorktreeRemoved:
+    """Receipt for a removed linked worktree; the branch is never deleted by a manager."""
 
-    target: Path
-    handled: bool
-    succeeded: bool
-    returncode: int = 0
-    delegated: bool = False
-    error: str = ""
+    handle: WorktreeHandle
+
+
+class WorktreeManagerError(RuntimeError):
+    """A manager could not execute a spec; carries the effect's exit code and stderr."""
+
+    def __init__(self, path: Path, returncode: int, error: str = "") -> None:
+        super().__init__(error or f"worktree operation failed for {path} (exit {returncode})")
+        self.path = path
+        self.returncode = returncode
+        self.error = error
+
+
+@dataclass(frozen=True, slots=True)
+class WorktreeManagerCapabilities:
+    """The ADR's capability declarations for one ``worktree.manager`` provider.
+
+    ``binds`` lists presenters the manager binds as a side effect of create/attach;
+    ``remove_releases_bindings`` says whether its remove also releases them.
+    """
+
+    binds: tuple[str, ...] = ()
+    remove_releases_bindings: bool = False
 
     @classmethod
-    def unhandled(cls, target: Path) -> ProvisioningResult:
-        return cls(target, handled=False, succeeded=False)
-
-    @classmethod
-    def success(cls, target: Path, *, delegated: bool) -> ProvisioningResult:
-        return cls(target, handled=True, succeeded=True, delegated=delegated)
-
-    @classmethod
-    def failure(cls, target: Path, returncode: int, error: str = "") -> ProvisioningResult:
+    def of(cls, manager: object) -> WorktreeManagerCapabilities:
         return cls(
-            target,
-            handled=True,
-            succeeded=False,
-            returncode=returncode,
-            error=error,
+            tuple(getattr(manager, "binds", ())),
+            bool(getattr(manager, "remove_releases_bindings", False)),
         )
+
+    def composes_binding(self, presenter: str) -> bool:
+        """Compose a separate ``WorkspaceBinding`` only for a presenter not already bound."""
+        return binding_composes(self.binds, presenter)
+
+
+#: Native Git binds nothing and has no binding concept to release.
+NATIVE_CAPABILITIES = WorktreeManagerCapabilities(binds=(), remove_releases_bindings=False)
