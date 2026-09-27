@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify both explicit gate graphs and the Pants attest-key partition."""
+"""Verify both explicit gate graphs and that the attest keys partition the native gate."""
 
 from __future__ import annotations
 
@@ -10,15 +10,11 @@ from pathlib import Path
 KEY_RECIPES = {
     "docs": ("attest-docs", ("lint-md",)),
     "unit": ("attest-unit", ("lint", "license-check")),
-    "stateful": ("attest-stateful", ("stateful-pants", "stateful-native")),
+    "stateful": ("attest-stateful", ("stateful-native",)),
     "integration": ("attest-integration", ("require-bd", "test-integration-land")),
     "architecture-contracts": (
         "attest-architecture-contracts",
         ("architecture-structural-check",),
-    ),
-    "package": (
-        "attest-package",
-        ("pants-attest", "architecture-pants-check", "pants-artifact-check"),
     ),
     "demos": ("attest-demos", ("demo-local-loop", "demo-live-ingress")),
     "packages": ("attest-packages", ("packages-check", "beads-client-check")),
@@ -30,6 +26,23 @@ NATIVE_FAST = (
     "license-check",
     "architecture-structural-check",
     "stateful-native",
+    "beads-client-check",
+)
+PANTS_FULL = (
+    "require-bd",
+    "lint",
+    "lint-md",
+    "license-check",
+    "architecture-structural-check",
+    "architecture-pants-check",
+    "pants-attest",
+    "pants-artifact-check",
+    "stateful-pants",
+    "stateful-native",
+    "test-integration-land",
+    "demo-local-loop",
+    "demo-live-ingress",
+    "packages-check",
     "beads-client-check",
 )
 PANTS_FAST = ("lint", "lint-md", "license-check", "architecture-structural-check", "test-changed")
@@ -65,11 +78,16 @@ def _recipe_body(justfile: str, recipe: str) -> list[str]:
 def check(justfile: str, push_hook: str | None = None) -> list[str]:
     expected = [leaf for _, leaves in KEY_RECIPES.values() for leaf in leaves]
     errors: list[str] = []
+    if sorted(expected) != sorted(NATIVE_FULL):
+        errors.append(
+            f"attest keys must partition check-all-native: expected {sorted(NATIVE_FULL)!r}, "
+            f"got {sorted(expected)!r}"
+        )
     for recipe, required in (
         ("check-native", NATIVE_FAST),
         ("check-pants", PANTS_FAST),
         ("check-all-native", NATIVE_FULL),
-        ("check-all-pants", expected),
+        ("check-all-pants", PANTS_FULL),
     ):
         declared = _dependencies(justfile, recipe)
         if sorted(declared) != sorted(required) or len(declared) != len(set(declared)):
@@ -125,7 +143,7 @@ def main() -> int:
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
         return 1
-    print(f"attest-catalog: OK ({len(KEY_RECIPES)} Pants keys, 4 explicit gates)")
+    print(f"attest-catalog: OK ({len(KEY_RECIPES)} native keys, 4 explicit gates)")
     return 0
 
 

@@ -154,9 +154,11 @@ check-all-pants: require-bd lint lint-md license-check architecture-structural-c
 # available through check-all-pants; this mode deliberately has no Pants engine prerequisite.
 check-all-native: require-bd lint lint-md license-check architecture-structural-check stateful-native beads-client-check test-integration-land demo-local-loop demo-live-ingress packages-check
 
-# Attest-key commands deliberately partition check-all. Keep this list and the fleet's
-# work.attest.keys catalog aligned; check-attest-catalog verifies the recipe graph so adding a
-# new full-gate step cannot silently fall out of selective CI (bh-1j3ei.5).
+# Attest-key commands deliberately partition check-all-native, the push gate. Pants steps belong
+# only to the optional check-all-pants profile, never to a key (native is the primary framework;
+# the keep/demote/retire decision is bh-ahm6x). Keep this list and the fleet's work.attest.keys
+# catalog aligned; check-attest-catalog verifies the recipe graph so adding a new full-gate step
+# cannot silently fall out of selective CI (bh-1j3ei.5).
 attest-docs:
     just lint-md
 
@@ -165,7 +167,6 @@ attest-unit:
     just license-check
 
 attest-stateful:
-    just stateful-pants
     just stateful-native
 
 attest-integration:
@@ -176,11 +177,6 @@ attest-integration:
 
 attest-architecture-contracts:
     just architecture-structural-check
-
-attest-package:
-    just pants-attest
-    just architecture-pants-check
-    just pants-artifact-check
 
 # ONE key for every packages/* distribution (bh-3fcl0.1); Pants' CAS serves unchanged ones.
 attest-packages:
