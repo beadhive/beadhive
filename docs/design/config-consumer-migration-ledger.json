@@ -16,7 +16,7 @@
     "successor_contracts": "beadhive.modules.config.contracts"
   },
   "current": {
-    "config_patch_point_count": 265,
+    "config_patch_point_count": 267,
     "config_patch_points": [
       {
         "facade_target": "beadhive.config.save_fleet",
@@ -1624,70 +1624,84 @@
       {
         "facade_target": "beadhive.config.load",
         "kind": "indirect-adapter",
-        "line": 48,
+        "line": 109,
         "path": "tests/test_work_reads.py",
         "target": "beadhive.work.config.load"
       },
       {
         "facade_target": "beadhive.config.release_value",
         "kind": "indirect-adapter",
-        "line": 81,
+        "line": 142,
         "path": "tests/test_work_reads.py",
         "target": "beadhive.work.config.release_value"
       },
       {
         "facade_target": "beadhive.config.release_conflict_estimator",
         "kind": "indirect-adapter",
-        "line": 86,
+        "line": 147,
         "path": "tests/test_work_reads.py",
         "target": "beadhive.work.config.release_conflict_estimator"
       },
       {
         "facade_target": "beadhive.config.release_fix_churn_budget",
         "kind": "indirect-adapter",
-        "line": 112,
+        "line": 173,
         "path": "tests/test_work_reads.py",
         "target": "beadhive.work.config.release_fix_churn_budget"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "indirect-adapter",
-        "line": 414,
+        "line": 411,
+        "path": "tests/test_work_reads.py",
+        "target": "beadhive.work.config.load"
+      },
+      {
+        "facade_target": "beadhive.config.load",
+        "kind": "indirect-adapter",
+        "line": 428,
+        "path": "tests/test_work_reads.py",
+        "target": "beadhive.work.config.load"
+      },
+      {
+        "facade_target": "beadhive.config.load",
+        "kind": "indirect-adapter",
+        "line": 690,
         "path": "tests/test_work_reads.py",
         "target": "beadhive.work.config.load"
       },
       {
         "facade_target": "beadhive.config.integration_branch",
         "kind": "direct-facade",
-        "line": 428,
+        "line": 704,
         "path": "tests/test_work_reads.py",
         "target": "beadhive.config.integration_branch"
       },
       {
         "facade_target": "beadhive.config.max_commits",
         "kind": "direct-facade",
-        "line": 429,
+        "line": 705,
         "path": "tests/test_work_reads.py",
         "target": "beadhive.config.max_commits"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "indirect-adapter",
-        "line": 518,
+        "line": 794,
         "path": "tests/test_work_reads.py",
         "target": "beadhive.work.config.load"
       },
       {
         "facade_target": "beadhive.config.release_value",
         "kind": "indirect-adapter",
-        "line": 519,
+        "line": 795,
         "path": "tests/test_work_reads.py",
         "target": "beadhive.work.config.release_value"
       },
       {
         "facade_target": "beadhive.config.release_fix_churn_budget",
         "kind": "indirect-adapter",
-        "line": 524,
+        "line": 800,
         "path": "tests/test_work_reads.py",
         "target": "beadhive.work.config.release_fix_churn_budget"
       },

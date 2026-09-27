@@ -199,7 +199,7 @@ payload was never byte-compared to raw `bd` bytes to begin with (`impl_schedule_
 re-serializes/re-shapes into `{groups, singletons, coordinators, max_depth}`), so the row-shape
 proof only needed to cover field content and order, not JSON formatting.
 
-### `bh work ready`: the reusable API surface exists; the CLI composition is not switched over
+### `bh work ready`: wired for an unbounded `--json` read (bh-p76tk.1)
 
 `beadhive_core.queue.QueueCommands.list_ready` (and `BeadsSession.list_ready`) are widened to
 accept every one of `bh work ready`'s narrowing flags that `GET /v0/beads/ready` also accepts —
@@ -221,37 +221,66 @@ previously looked like they might not survive round-tripping through Python's `j
   against real `bd` output for a title containing an emoji, `<tag>`, `&`, a quoted/newlined
   description, and a U+2028 line separator together.
 
-This is real, tested, reusable infrastructure — but this bead does NOT wire it into
-`beadhive.work_reads.ready`'s composition. The reason is a demonstrated, not hypothetical, hazard:
-`bh work ready` (unlike `bh work schedule` / `bh work next`) never threads an explicit `entry`
-through `worktree.locate` — it resolves `cwd` via `registry.hive_dir_for(cfg, hive)` and would need
-`registry.entry_for_dir(cfg, cwd)` to build a session, exactly the AMBIENT-cwd resolution
-`beadhive.work_queue.claim_next` already uses for `bh work next`. That resolution does not consult
-`cfg` at all in its "shadow worktree path" branch — it synthesizes a hive triplet purely from
-`cwd`'s OWN path segments, live in production and unmockable by faking `config.load`. Run from
-inside a real bead worktree of THIS hive (`bh-mu5yb.1`'s own dev environment, mid-bead, right now),
-`registry.entry_for_dir({}, Path.cwd())` resolves to the REAL `github/beadhive/beadhive` entry —
-and this hive has a genuinely running, `bh host beads status`-verified `bd serve` at the time this
-was checked. `beadhive.work_next` / `beadhive.work_queue`'s existing test suite avoids this
-because its `nexthive` fixture isolates `$GIT_WORKSPACE` (and `$WS_WORKTREES`, `$HOME`) to a
-throwaway `tmp_path`, so `entry_for_dir` resolves against an isolated, inert path instead —
-`tests/test_work_reads.py`'s ~30 existing `ready`-related tests carry no such isolation today (they
-never needed it: the old code never called `entry_for_dir` or opened a session at all). Retrofitting
-that isolation safely across an existing, unrelated-in-most-cases test file is a properly-scoped
-follow-up, not a same-bead addition bolted on to avoid a real, currently-live cross-test hazard on
-shared/dev machines. Until that follow-up lands, EVERY flag of `bh work ready` — narrowing,
-`--gated`, `--mol`/`--mol-type`, and plain — resolves to the CLI-compatibility route, selected
-unconditionally and explicitly (not by catching an API failure): `beadhive.work_reads.ready` and
-its helpers are unchanged by this bead. `beadhive://work/ready`'s MCP resource is unchanged for the
-identical reason.
+bh-mu5yb.1 stopped short of wiring this into `beadhive.work_reads.ready`'s composition, for a
+demonstrated, not hypothetical, hazard: `bh work ready` (unlike `bh work schedule` / `bh work
+next`) never threads an explicit `entry` through `worktree.locate` — it resolves `cwd` via
+`registry.hive_dir_for(cfg, hive)` and would need `registry.entry_for_dir(cfg, cwd)` to build a
+session, exactly the AMBIENT-cwd resolution `beadhive.work_queue.claim_next` already uses for `bh
+work next`. bh-p76tk.1 retrofits that isolation (`tests/test_work_reads.py`'s
+`_isolate_ambient_hive_resolution`, autouse for the whole module — pointing `$BH_WORKTREES` at a
+scratch `tmp_path` closes the SAME shadow-worktree-root branch `$GIT_WORKSPACE` alone does not,
+proven directly against this hive: `registry.entry_for_dir({}, Path.cwd())` resolved to the REAL
+`github/beadhive/beadhive` entry from inside this bead's own worktree with only `$GIT_WORKSPACE`
+faked) and wires `beadhive.work_reads.ready`'s `--json` composition through
+`beadhive.work_queue.open_ready` — but only for the ONE shape that can be reproduced byte-for-byte
+without a second-guess: an UNBOUNDED read (`--limit 0`, explicit or auto-widened by
+`widen_narrowed_ready_args` for any narrowing flag) whose narrowing flags all have a typed
+`list_ready` equivalent. `ReadyPage` carries no total-count field, so it cannot reproduce bd's own
+"Showing X of Y ready issues" truncation notice byte-for-byte — a CAPPED read (bd's own default, or
+an explicit non-zero `--limit`) therefore stays CLI-compatibility unconditionally, a pre-execution
+route choice rather than a fallback. `beadhive://work/ready`'s MCP resource is unchanged (out of
+this bead's stated scope: `bh work ready` / `bh work schedule`'s CLI composition only).
 
 | `bh work ready` flag | Route | Why |
 |---|---|---|
-| `-a/--assignee`, `-u/--unassigned`, `-t/--type`, `--exclude-type`, `-l/--label`, `--label-any`, `--exclude-label`, `-p/--priority`, `--parent`, `--has-metadata-key`, `--metadata-field` | `cli-compatibility` (unconditional) | `QueueCommands.list_ready` accepts every one of these today (see above) — not wired into the CLI composition seam pending the `entry`-threading follow-up above |
+| `-a/--assignee`, `-u/--unassigned`, `-t/--type`, `--exclude-type`, `-l/--label`, `--label-any`, `--exclude-label`, `-p/--priority`, `--parent`, `--has-metadata-key`, `--metadata-field` (with `--json` AND a resolved `--limit 0`) | `api-ready` (`work.ready.list`, pre-execution selection) | `QueueCommands.list_ready` accepts every one of these (see above); falls back to `cli-compatibility` only when the service/capability is genuinely unavailable, decided before any Beads read is attempted |
+| any narrowing flag above, with `--json` but a CAPPED (non-zero, including bd's own default) `--limit` | `cli-compatibility` (unconditional) | `ReadyPage` has no total-count field to reproduce bd's truncation notice byte-for-byte — never attempted over the API at all, not a fallback |
 | `--mol`, `--mol-type` | `cli-compatibility` (unconditional) | genuinely no HTTP equivalent — re-verified, see the gap list above |
-| `--gated` | `cli-compatibility` (unconditional) | composes `release_order.merge_sequence` locally; not re-plumbed to API-sourced rows this bead |
-| `-n/--limit`, `--sort`, `--label-pattern`, `--label-regex`, `--include-ephemeral`, `--include-deferred`, `--brief`, `--claim`, `--explain`, `--plain`, `--pretty`, `--max-rows`, every `bd` global flag | `cli-compatibility` (unconditional) | forwarded verbatim; `bh` never specially interprets these today, narrowing or otherwise |
+| `--gated` | `cli-compatibility` (unconditional) | composes `release_order.merge_sequence` locally over whatever rows it is handed — orthogonal to their source, not re-plumbed here |
+| `--sort`, `--label-pattern`, `--label-regex`, `--include-ephemeral`, `--include-deferred`, `--brief`, `--claim`, `--explain`, `--plain`, `--pretty`, `--max-rows`, every `bd` global flag | `cli-compatibility` (unconditional) | `bh` never specially interprets these today, narrowing or otherwise; `_api_ready_kwargs` treats any of them as "select CLI instead" |
 | (no `--json`) human table rendering | `cli-compatibility` (unconditional) | bd's own terminal rendering has no typed-data equivalent |
+
+No argv construction or test became dead code from this wiring: the CLI-compatibility forward
+(`beadhive.bd.run`/`beadhive.bd.json` inside `forward_ready_plain` / `forward_ready_ordered` /
+`emit_start_gated_ready`) is the fallback IMPLEMENTATION itself for every capped, gated, `--mol`,
+and human-mode read, and for a genuinely unavailable service on the unbounded shape too — never a
+duplicate of logic the API route now owns outright (unlike bh-sy36q.1's assign/claim/resume/
+abandon, where the OLD Python-side pick/claim/re-verify implementations were fully replaced and
+so were deletable). `tests/test_work_reads.py`'s existing ~40 tests are unchanged and still cover
+that fallback path exactly as before; the new `work.ready.list` route and its pre-execution
+carve-outs (`--mol`, a capped limit) are covered by new tests alongside them.
+
+**`work.claim-next --epic` carve-out, re-evaluated (bh-p76tk.1).** `beadhive.work_dispatch.
+impl__molecule_members` (the epic-scoped candidate set `work_queue.claim_next`'s `--epic` guard
+falls back to) calls `beadhive.bd.children(epic, main, ["--include-infra", "--all"])` — needing
+`bd list --parent`'s rows including INFRA types (gate/event) and CLOSED beads, narrowed to the
+direct parent edge. The now-confirmed-recursive `parent` query parameter does not, by itself,
+close this gap: `BeadsSession.list_issues` (the method `QueueCommands.list_children` already routes
+`bh work schedule` through) forwards only `limit`/`cursor`/`parent`/`sort` — even though the pinned
+OpenAPI spec's `listIssues` operation itself also publishes `all`, `include_infra`,
+`include_gates`, and `include_templates` query parameters, none of them are surfaced by the
+GENERATED CLIENT WRAPPER yet. Moving `--epic`'s carve-out to the API would need widening
+`BeadsSession.list_issues` (a `beadhive-beads-client` change with its own tests), a new/extended
+`QueueCommands` method, rewiring `work_queue.claim_next`'s guard, and — because this is a WRITE
+path (claiming work), not a read — a dedicated real-service test proving exact set parity with `bd
+children --include-infra --all` (recursive membership, infra inclusion, closed inclusion
+together), not just a mocked-transport policy test. That is a second, materially larger unit of
+work than this bead's stated ready/schedule scope, so it is NOT acted on here — recorded as a
+finding and recommended as its own follow-up bead. (Separately, and unrelated to routing:
+`beadhive.bd.children`'s own CLI implementation already narrows whatever `bd list --parent`
+returns down to the DIRECT parent edge locally, so `impl__molecule_members`'s candidate set today
+is direct children of the epic plus the epic itself, not a multi-level recursive descendant set —
+worth flagging on its own terms, but out of scope here too.)
 
 | `bh work schedule` flag | Route | Why |
 |---|---|---|
@@ -343,6 +372,14 @@ is `cli-compatibility`).
   down itself, reaping BOTH the Dolt SQL server AND the `bd db-proxy-child` TCP proxy `bd init
   --server` also spawns (the second process bh-l5sxi.2's own contention test left running; see
   `_reap_owned_scratch_hive`'s docstring).
+- `tests/test_work_reads.py` (bh-p76tk.1 additions, `beadhive` package) — `_isolate_ambient_hive_
+  resolution` (autouse) and its guard test proving `registry.current_hive`/`entry_for_dir` report
+  "no hive here" from this process's own real cwd once isolated; `_api_ready_kwargs` mapping every
+  narrowing flag and rejecting `--mol`/`--mol-type`/any unrecognized flag; `ready_via_api` routing
+  an unbounded (`--limit 0`, explicit or auto-widened) `--json` read through the API (mock
+  transport, byte-identical `to_bd_json` output) and falling back to CLI-compatibility when the
+  service is unavailable, when `--mol` is present (never even opening a session), or when the
+  resolved limit is capped (never attempted over the API at all).
 - `test_core_lifecycle_policy.py` (bh-sy36q.1) — assign / claim / resume / abandon / submit-state
   policy over a generated-client transport fixture (the api-ready issue route) and fake ports for
   the lease, state, gate and workspace capabilities; route classification of every operation the
