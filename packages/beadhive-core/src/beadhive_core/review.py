@@ -11,6 +11,12 @@ Beads v1.3 has no gate lookup/create/resolve route and no state-dimension route 
 and :class:`StateOperations` — that the compatibility shell implements over its named CLI routes.
 Gate semantics are never fabricated from generic issue operations: no generic close stands in
 for a gate resolution, and nothing here creates a gate.
+
+``GATE_ROUTES`` and ``STATE_ROUTES`` are resolved through :mod:`beadhive_core.routing`'s explicit
+table (bh-l5sxi.1) rather than as bare literals: selecting each name through
+:meth:`~beadhive_core.routing.RoutingTable.select_cli` fails at import time if the installed
+matrix ever reclassifies one of these operations away from ``cli-compatibility`` — the day that
+happens, this module's ports are the wrong seam, not a silently stale constant.
 """
 
 from __future__ import annotations
@@ -37,10 +43,14 @@ from beads_v1_3.models import (
 )
 from beads_v1_3.types import UNSET
 
+from .routing import default_table
+
 #: Operation-matrix rows the ports stand in for. Every one must stay a named CLI route; a test
 #: fails if the installed matrix ever reclassifies one (the port would then be the wrong seam).
-GATE_ROUTES = ("work.gate.lookup", "work.gate.resolve")
-STATE_ROUTES = ("work.state.update",)
+GATE_ROUTES = tuple(
+    default_table().select_cli(name).name for name in ("work.gate.lookup", "work.gate.resolve")
+)
+STATE_ROUTES = tuple(default_table().select_cli(name).name for name in ("work.state.update",))
 
 #: Capabilities a review session must negotiate before any read or write is attempted.
 REVIEW_CAPABILITIES = frozenset(
