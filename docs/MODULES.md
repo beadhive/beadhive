@@ -140,13 +140,16 @@ This extraction is limited to build plugins; the capability modules under
 
 > **2026-09-27 amendment.** The direction above (`packages/*` depends on root; root imports
 > package code only lazily) describes **plugin packages** only. A second class, **library
-> packages** (`beadhive-plugins`, `beadhive-worktrees`, `beadhive-beads-client`), inverts it:
-> a library package never imports `beadhive` at all, and root (and other packages) may import
-> it statically through its public `__all__` surface. `scripts/check_package_imports.py` now
-> enforces both classes by manifest presence. See
+> packages** (`beadhive-plugins`, `beadhive-worktrees`, `beadhive-beads-client`, and the
+> already-landed `beadhive-core`), inverts it: a library package never imports `beadhive` at
+> all, and root (and other packages, including plugin packages) may import it statically
+> through its public `__all__` surface. `packages/_template` is a library package by default
+> (no manifest); adding a `plugin.json` and catalog entry is the one step that makes a copy a
+> plugin package instead. `scripts/check_package_imports.py` now enforces both classes by
+> manifest presence. See
 > [`package-class-library-vs-plugin-adr.md`](design/package-class-library-vs-plugin-adr.md)
-> for the full decision, including the enforcement rule and why the lazy-import rule applies
-> only to plugin packages.
+> for the full decision, its 2026-09-27 amendment (`bh-xh8ku.1`), including the enforcement
+> rule and why the lazy-import rule applies only to plugin packages.
 
 ## Architectural principles
 

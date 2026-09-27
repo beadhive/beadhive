@@ -216,12 +216,6 @@ requires-dist = [{ name = "beadhive-beads-client", editable = "packages/beadhive
 name = "beadhive-package-template"
 version = "0.0.0"
 source = { editable = "packages/_template" }
-dependencies = [
-    { name = "beadhive" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "beadhive", editable = "." }]
 
 [[package]]
 name = "beadhive-pants"

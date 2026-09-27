@@ -11,6 +11,14 @@
 - **Amends:** [`docs/MODULES.md`](../MODULES.md), [`docs/PLUGIN-AUTHORING.md`](../PLUGIN-AUTHORING.md),
   and [`beads-api-first-parallel-replacement-adr.md`](beads-api-first-parallel-replacement-adr.md)
   — each carries a dated note pointing back here.
+- **Amended:** 2026-09-27 (`bh-xh8ku.1`), while implementing the enforcement checker this ADR
+  specifies. Four corrections, each marked inline where it applies: Section 1 now lists
+  `beadhive-core` as an existing library package and states `packages/_template`'s default
+  class; Section 2 makes plugin-to-library imports explicit and drops the rule rejecting a
+  manifest-carrying package that imports nothing from `beadhive`; the Consequences section
+  restates the `beadhive-core` ordering rationale now that it already exists; Section 7 replaces
+  the undefined "strict validation profile" phrase with the concrete requirement. This does not
+  reopen the two-class decision.
 
 ## Context
 
@@ -51,13 +59,20 @@ the built-in catalog, and are resolved lazily after plugin manifest selection; r
 imports them statically. This is the shape `docs/design/build-plugins-and-scripts-modularization-proposal.md`
 already defined and `beadhive-pants` already implements. Nothing about that shape changes.
 
-**Library packages** (`beadhive-plugins`, `beadhive-worktrees`, and `beadhive-beads-client`)
-never import `beadhive`, carry no plugin manifest, and may be imported statically by root and
-by other packages through their public `__all__` surface. This is a new class.
+**Library packages** (`beadhive-plugins`, `beadhive-worktrees`, `beadhive-beads-client`, and
+`beadhive-core`) never import `beadhive`, carry no plugin manifest, and may be imported
+statically by root and by other packages through their public `__all__` surface. This is a new
+class.
+
+> **2026-09-27 amendment (`bh-xh8ku.1`).** `beadhive-core` and `beadhive-beads-client` already
+> exist (`bh-bwnys`, `bh-l5sxi`) as library packages under this definition — neither carries a
+> `plugin.json`, and neither imports `beadhive`. The original wording below listed them only as
+> future extractions this ADR schedules; `beadhive-plugins` and `beadhive-worktrees` are the two
+> that are still scheduled, not yet built.
 
 | | Plugin package | Library package |
 | --- | --- | --- |
-| Example | `beadhive-pants` | `beadhive-plugins`, `beadhive-worktrees`, `beadhive-beads-client` |
+| Example | `beadhive-pants` | `beadhive-plugins`, `beadhive-worktrees`, `beadhive-beads-client`, `beadhive-core` |
 | May import `beadhive`? | Yes — through the existing allowlist (`beadhive.kernel.*.contracts`, `beadhive.modules.*.contracts`, `beadhive.testing`) | No — never, under any name |
 | Carries a plugin manifest? | Yes (`plugin.json`, named in the built-in catalog) | No |
 | May `beadhive` import it? | Only lazily, by name, after manifest selection — never a static import | Yes — statically, at module load time, like any other dependency |
@@ -68,6 +83,12 @@ The two classes are duals of each other along the same axis (who may import whom
 statically or lazily), not two independent rule sets. A package is exactly one class; nothing
 is both.
 
+`packages/_template` — the copy-from starting point for a new package (`docs/PLUGIN-AUTHORING.md`)
+— is a **library package by default**: the checked-in template carries no `plugin.json` and
+depends on nothing from `beadhive`. Turning a copy into a plugin package is one explicit,
+additional step: add a `plugin.json` manifest under `src/<import_name>/` and its catalog entry.
+Nothing about the template itself implies either class ahead of that step.
+
 ### 2. Enforcement
 
 `scripts/check_package_imports.py` (invoked by `just architecture-structural-check`) is
@@ -77,7 +98,10 @@ matching rule set:
 
 - **Plugin package:** may import only `beadhive.kernel.*.contracts`, `beadhive.modules.*.contracts`,
   and `beadhive.testing` from root; may not import root's `application`/`adapters` internals or
-  any other package. Unchanged from today.
+  any other plugin package. It **may** import a library package through that library's public
+  `__all__` surface — the same static-dependency rule root itself gets, since a library package
+  is not part of root's manifest-selection bootstrap and there is nothing to defer. Unchanged
+  from today except for this explicit permission.
 - **Library package:** must import nothing from the `beadhive` distribution at all — no
   contracts, no `beadhive.testing`, nothing. It may import other library packages through
   their public `__all__` surface. A library package importing `beadhive` under any path is a
@@ -85,12 +109,22 @@ matching rule set:
 - **Root (`src/beadhive`):** may statically import a library package's public `__all__`
   surface. It may only import a plugin package's module lazily, after manifest selection,
   exactly as today.
+- **Any package** (plugin or library), or root, importing another package's *private*
+  (non-`__all__`) module is a checker failure regardless of class — the public `__all__`
+  surface is the only contract between distributions.
 
-This is one checker with two classification branches, not two checkers. A package that
-carries a `plugin.json` and also imports nothing from `beadhive` is contradictory (a plugin
-package with no manifest consumer would degrade to a library, and a library with a manifest
-would invite root to statically bind a "plugin" ID); the checker rejects that combination
-rather than silently picking a class.
+This is one checker with two classification branches, not two checkers. Classification is a
+single signal — `plugin.json` presence under `src/<import_name>/` — nothing else.
+
+> **2026-09-27 amendment (`bh-xh8ku.1`).** This paragraph originally continued: "A package that
+> carries a `plugin.json` and also imports nothing from `beadhive` is contradictory ... the
+> checker rejects that combination rather than silently picking a class." That rejection is
+> removed. A plugin package that imports nothing from `beadhive` is not contradictory — it is a
+> plugin built entirely on a library package's contracts (most naturally `beadhive-plugins`),
+> with no need to reach into root at all. That is a legitimate outcome, and the intended
+> migration path off root's compatibility facades as packages adopt library-package contracts
+> instead of `beadhive.kernel.*.contracts` / `beadhive.modules.*.contracts`. The checker
+> implements the two classification branches above without this extra rejection.
 
 ### 3. Why the lazy-import rule applies only to plugin packages
 
@@ -179,20 +213,32 @@ that moves as part of this decision.
 
 ### 7. Validation profile
 
-Both `beadhive-plugins` and `beadhive-worktrees` extractions run the **strict** validation
-profile: full `check-native` on every bead, not a reduced or package-scoped subset. This is
-risk-derived — worktree removal safety guards user work, so a partial-coverage validation
-profile is not an acceptable trade here, unlike lower-risk isolated package work.
+Both `beadhive-plugins` and `beadhive-worktrees` extractions run full `check-native` on every
+bead of the extraction — not a reduced or package-scoped subset. This is risk-derived —
+worktree removal safety guards user work, so a partial-coverage validation profile is not an
+acceptable trade here, unlike lower-risk isolated package work.
+
+> **2026-09-27 amendment (`bh-xh8ku.1`).** The original text named this a "strict" validation
+> profile without defining the term. This section now states the concrete requirement — full
+> `check-native` on every bead — directly, rather than naming an undefined profile.
 
 ## Consequences
 
 - `scripts/check_package_imports.py` grows a second, library-package rule branch; a package's
   presence or absence of a `plugin.json` manifest is now load-bearing for which rule applies
   to it, not just discovery metadata.
-- `beadhive-core` (once `bh-bwnys`/`bh-sy36q` land) can depend on `beadhive-plugins` and
-  `beadhive-worktrees` directly, without depending on root — the reason this ordering was
-  chosen: extract the library packages *before* `beadhive-core` exists, so `beadhive-core` is
-  built against the packages, not against root with a promise to migrate later.
+- `beadhive-core` already exists (`bh-bwnys`, `bh-l5sxi`) as a library package that depends on
+  `beadhive-beads-client` and never imports root. It migrates onto `beadhive-plugins` and
+  `beadhive-worktrees` directly as those two extractions land, and must not grow its own copies
+  of the slot or lifecycle contracts those packages own in the meantime — that duplication, not
+  extraction ordering, is the risk this decision heads off.
+
+  > **2026-09-27 amendment (`bh-xh8ku.1`).** The original wording here read: "the reason this
+  > ordering was chosen: extract the library packages *before* `beadhive-core` exists, so
+  > `beadhive-core` is built against the packages, not against root with a promise to migrate
+  > later." That assumed `beadhive-core` did not exist yet; it landed first (`bh-bwnys`,
+  > `bh-l5sxi`), so the ordering argument no longer applies. The real constraint — no duplicate
+  > contracts while `beadhive-core` migrates onto the new packages — is stated directly above.
 - Root's compatibility facades at the old `beadhive.kernel.*.contracts` paths mean this is not
   a breaking change for existing first-party plugins or tests; they keep working against the
   forwarding import paths until they migrate.

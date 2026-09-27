@@ -7,13 +7,12 @@ name = "beadhive-package-template"
 version = "0.0.0"
 description = "Template for an in-repo packages/* distribution; never published"
 requires-python = ">=3.11"
-# A package reaches beadhive only through its public surfaces (kernel/module contracts and
-# beadhive.testing). The workspace source keeps this an editable, in-tree dependency.
-dependencies = ["beadhive"]
+# This template is a library package by default: it carries no plugin.json and depends on
+# nothing from beadhive (docs/design/package-class-library-vs-plugin-adr.md). To turn a copy
+# into a plugin package instead, add "beadhive" here (workspace source, as below) alongside a
+# plugin.json manifest and catalog entry.
+dependencies = []
 classifiers = ["Private :: Do Not Upload"]
-
-[tool.uv.sources]
-beadhive = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
