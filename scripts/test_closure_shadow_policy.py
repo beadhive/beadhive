@@ -754,7 +754,9 @@ def build_checked_evidence(root: Path = ROOT) -> dict[str, Any]:
     eligible = sorted(item["id"] for item in decisions if item["eligible"])
     inputs = {
         "certification_artifact": {
-            "path": "<git-common-dir>/bh/validation/evidence/test-closure-certification.json",
+            "path": (
+                "<git-common-dir>/bh/validation/evidence/<tree>/test-closure-certification.json"
+            ),
             "digest": _digest_bytes(certification_path.read_bytes()),
         },
         "selector": {

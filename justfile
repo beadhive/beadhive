@@ -235,11 +235,14 @@ architecture-pants-check:
     uv run python scripts/check_pants_proven.py
     uv run python scripts/pants_ci.py verify
 
-# Rebuild derived test-closure evidence in git-private validation control state.
+# Rebuild derived test-closure evidence in git-private validation control state. Every worktree
+# shares one physical .git, so this directory is content-scoped (bh-vi4ob.1, scripts/
+# validation_artifacts.py's checkout_tree_scope()): two worktrees validating different checkouts
+# then never read or clobber each other's evidence. Derive the directory from the certification
+# script's own printed path rather than recomputing the scope here, so this can never drift from
+# where its writer actually resolved it.
 validation-evidence-refresh:
-    uv run python scripts/test_closure_certification.py
-    uv run python scripts/test_closure_shadow_policy.py > "$(git rev-parse --path-format=absolute --git-common-dir)/bh/validation/evidence/test-closure-shadow-policy.json"
-    uv run python scripts/test_closure_promotion_policy.py > "$(git rev-parse --path-format=absolute --git-common-dir)/bh/validation/evidence/test-closure-promotion-policy.json"
+    path="$(uv run python scripts/test_closure_certification.py)"; echo "$path"; dir="$(dirname "$path")"; uv run python scripts/test_closure_shadow_policy.py > "$dir/test-closure-shadow-policy.json"; uv run python scripts/test_closure_promotion_policy.py > "$dir/test-closure-promotion-policy.json"
 
 # Publish the live operation catalog (e.g. after registering a CLI verb) and regenerate every
 # artifact derived from it. Cuts the next minor wire release, or refreshes the one this branch

@@ -19,22 +19,15 @@ from pathlib import Path
 
 import pytest
 from scripts.pants_launcher import launcher as pants_launcher
+from scripts.validation_artifacts import evidence_path
 
 from beadhive import host, validation_ledger, validation_records
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "test_closure_certification.py"
-EVIDENCE = (
-    Path(
-        subprocess.run(
-            ("git", "-C", str(ROOT), "rev-parse", "--path-format=absolute", "--git-common-dir"),
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-    )
-    / "bh/validation/evidence/test-closure-certification.json"
-)
+# Tree-scoped (bh-vi4ob.1): resolve through the same helper the writer uses rather than
+# reimplementing it, so this test can never drift from where evidence actually lands.
+EVIDENCE = evidence_path(ROOT, "test-closure-certification.json")
 MISSING_AUTHORITY = "candidate checkout has no authoritative matching full-gate receipt"
 PROCESS_TIMEOUT_SECONDS = 30.0
 TERMINATION_GRACE_SECONDS = 2.0

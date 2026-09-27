@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from scripts import validation_artifacts
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "test_closure_certification.py"
@@ -991,3 +992,74 @@ def test_evidence_keeps_selection_and_activation_out_of_this_leaf() -> None:
     }
     assert evidence["recertification"]["unrelated_closure_digests_remain_valid"] is True
     assert evidence["recertification"]["affected_stale_or_unenforceable_gate"] == "just check"
+
+
+def _init_commit(repo: Path) -> None:
+    subprocess.run(("git", "init", "--quiet", str(repo)), check=True, capture_output=True)
+    subprocess.run(
+        (
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "user.name=Foreign Worktree",
+            "-c",
+            "user.email=foreign@example.test",
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            "foreign commit",
+        ),
+        check=True,
+        capture_output=True,
+    )
+
+
+def test_concurrent_different_tree_evidence_does_not_clobber_this_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """bh-xh8ku.1: this checkout's evidence must survive a concurrent write for another tree.
+
+    Every worktree on the host shares one physical ``.git``, so a key verdict that is reused or
+    carried for THIS tree (skipping a re-run of ``attest-architecture-contracts``) must still see
+    ITS OWN evidence even if another worktree/land concurrently runs the writer fresh for a
+    different commit in between. That reproduces the exact bh-xh8ku.1 sequence: a green ``bh work
+    check`` followed by a ``bh work submit`` that failed only because a foreign tree's fresh run
+    had clobbered the one shared evidence file. Scoping the path by the checked-out tree
+    (bh-vi4ob.1) makes the collision structurally impossible rather than merely unlikely.
+
+    Redirects the evidence root to a writable ``tmp_path`` via ``BH_VALIDATION_EVIDENCE_DIR``
+    instead of writing into the real, git-private evidence directory: a validation run of this
+    very test can execute inside a hermetic sandbox where the real checkout's ``.git`` is
+    read-only, and this test's own concern (tree-scoped isolation) does not depend on that
+    directory being the real one.
+    """
+    monkeypatch.setenv("BH_VALIDATION_EVIDENCE_DIR", str(tmp_path / "evidence"))
+    own_evidence = certification.build_evidence(ROOT)
+    own_path = certification._runtime_evidence_path(ROOT)
+    own_path.parent.mkdir(parents=True, exist_ok=True)
+    own_path.write_text(json.dumps(own_evidence), encoding="utf-8")
+
+    # Simulate a second worktree validating a genuinely different commit concurrently, landing its
+    # own fresh evidence into the same shared, git-private evidence root.
+    foreign_repo = tmp_path / "foreign-worktree"
+    _init_commit(foreign_repo)
+    foreign_tree = validation_artifacts.checkout_tree_scope(foreign_repo)
+    assert foreign_tree != validation_artifacts.checkout_tree_scope(ROOT)
+    foreign_path = own_path.parent.parent / foreign_tree / own_path.name
+    foreign_path.parent.mkdir(parents=True, exist_ok=True)
+    foreign_evidence = {
+        **own_evidence,
+        "source_tree": "sha256:" + "1" * 64,
+        "source_revision": "sha256:" + "2" * 64,
+    }
+    foreign_path.write_text(json.dumps(foreign_evidence), encoding="utf-8")
+
+    # This checkout's own path is untouched by the foreign worktree's write, so a reused/carried
+    # verdict for this tree still resolves to genuine, current-checkout evidence.
+    reread = json.loads(own_path.read_text(encoding="utf-8"))
+    assert reread == own_evidence
+    assert certification.validate_evidence(reread, ROOT) == ()
