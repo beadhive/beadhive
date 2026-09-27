@@ -39,6 +39,14 @@ from pathlib import Path
 
 import typer
 
+from beadhive_plugins.binding import bind_application_port
+from beadhive_plugins.contracts import CapabilitySelection, DiscoveryResult
+from beadhive_worktrees import (
+    WORKTREE_MANAGER,
+    WORKTREE_MANAGER_KEY,
+    native_worktree_manager_provider_binding,
+)
+
 from . import (
     bd,
     converge,  # noqa: F401 - compatibility patch seam
@@ -633,7 +641,18 @@ def _worktree_lifecycle_service(cfg, entry, *, composition=None) -> WorktreeLife
         ),
         warn=lambda message: typer.echo(f"⚠ {message}", err=True),
     )
-    native = NativeGitWorktreeProvisioner(_run_git)
+    # The native adapter is a built-in default, not a discovered plugin: compose the one-entry
+    # discovery result that selects it and obtain the port through the declared worktree.manager
+    # slot with bind_application_port, mirroring how compose_application() binds the built-in
+    # agent.session@1 provider (beadhive/integrations/herdr/cli.py) — no ad hoc injection of the
+    # adapter into the lifecycle service.
+    native_adapter = NativeGitWorktreeProvisioner(_run_git)
+    native_discovery = DiscoveryResult((), (CapabilitySelection(WORKTREE_MANAGER, "native"),), ())
+    native = bind_application_port(
+        WORKTREE_MANAGER_KEY,
+        native_discovery,
+        (native_worktree_manager_provider_binding(native_adapter),),
+    )
     return WorktreeLifecycleService(native=native, plugin=plugin)
 
 

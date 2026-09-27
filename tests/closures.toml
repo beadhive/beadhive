@@ -293,10 +293,11 @@ kind = "module"
 status = "present"
 owner_path = "src/beadhive/modules/worktrees"
 source_paths = ["src/beadhive/modules/worktrees/**/*.py"]
+# The naming policy, request/result types, contracts, and native adapter themselves moved to
+# packages/beadhive-worktrees (bh-xh8ku.3); their own tests moved with them and run under the
+# packages attest key, out of this src/beadhive-scoped registry's reach (test selectors here
+# must be under tests/). This closure's remaining test covers the forwarding facade left in root.
 tests = [
-  "tests/unit/modules/worktrees/test_policy.py",
-  "tests/unit/modules/worktrees/test_services.py",
-  "tests/unit/modules/worktrees/test_adapters.py",
   "tests/unit/modules/worktrees/test_worktrees_independence.py",
 ]
 shared_contracts = ["contracts", "kernel.lifecycle"]
