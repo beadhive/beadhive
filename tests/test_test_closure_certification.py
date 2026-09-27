@@ -1019,7 +1019,7 @@ def _init_commit(repo: Path) -> None:
 
 
 def test_concurrent_different_tree_evidence_does_not_clobber_this_checkout(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """bh-xh8ku.1: this checkout's evidence must survive a concurrent write for another tree.
 
@@ -1030,9 +1030,16 @@ def test_concurrent_different_tree_evidence_does_not_clobber_this_checkout(
     check`` followed by a ``bh work submit`` that failed only because a foreign tree's fresh run
     had clobbered the one shared evidence file. Scoping the path by the checked-out tree
     (bh-vi4ob.1) makes the collision structurally impossible rather than merely unlikely.
+
+    Redirects the evidence root to a writable ``tmp_path`` via ``BH_VALIDATION_EVIDENCE_DIR``
+    instead of writing into the real, git-private evidence directory: a validation run of this
+    very test can execute inside a hermetic sandbox where the real checkout's ``.git`` is
+    read-only, and this test's own concern (tree-scoped isolation) does not depend on that
+    directory being the real one.
     """
+    monkeypatch.setenv("BH_VALIDATION_EVIDENCE_DIR", str(tmp_path / "evidence"))
     own_evidence = certification.build_evidence(ROOT)
-    own_path = certification.DEFAULT_OUTPUT
+    own_path = certification._runtime_evidence_path(ROOT)
     own_path.parent.mkdir(parents=True, exist_ok=True)
     own_path.write_text(json.dumps(own_evidence), encoding="utf-8")
 
