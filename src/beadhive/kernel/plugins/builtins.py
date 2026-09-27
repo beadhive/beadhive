@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from importlib import resources
 
-from .contracts import ManifestDocument, ManifestProvenance
+from beadhive_plugins.contracts import ManifestDocument, ManifestProvenance
+
 from .discovery import BuiltInManifestSource
 
 BUILTIN_PLUGIN_IDS = ("herdr", "hitch", "observaloop", "orca", "pants", "repowise")

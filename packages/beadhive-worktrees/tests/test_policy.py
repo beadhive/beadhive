@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from beadhive.modules.worktrees import (
+from beadhive_worktrees import (
     WorktreeBinding,
     WorktreeBranchPolicy,
     bind_worktree,

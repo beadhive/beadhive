@@ -5,7 +5,15 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from beadhive_plugins.contracts import ProviderBinding, ProviderKey
+
+from ..contracts.ports import WORKTREE_MANAGER
 from ..domain import CreateWorktreeRequest, ProvisioningResult, RemoveWorktreeRequest
+
+#: Plugin id native Git registers under for the built-in default binding of
+#: :data:`beadhive_worktrees.contracts.WORKTREE_MANAGER` (root composition is the only caller —
+#: this package never selects or binds its own provider).
+NATIVE_PROVIDER_ID = "native"
 
 
 class NativeGitWorktreeProvisioner:
@@ -63,3 +71,11 @@ class NativeGitWorktreeProvisioner:
 
     def removed(self, request: RemoveWorktreeRequest, result: ProvisioningResult) -> None:
         del request, result
+
+
+def native_worktree_manager_provider_binding(
+    provisioner: NativeGitWorktreeProvisioner,
+) -> ProviderBinding[object]:
+    """Wrap the built-in native adapter for ``bind_application_port`` at root composition."""
+
+    return ProviderBinding(ProviderKey(NATIVE_PROVIDER_ID, WORKTREE_MANAGER), provisioner)

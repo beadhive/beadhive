@@ -48,12 +48,8 @@ def test_cli_and_mcp_keep_rendering_and_payload_ownership() -> None:
     assert "worktree.remove(" in inspect.getsource(cli.wt_rm)
     assert "worktree.status_cmd(" in inspect.getsource(cli.wt_status)
     assert "worktree.status_rows()" in inspect.getsource(mcp._register_read_resources)
-    module_source = "\n".join(
-        path.read_text()
-        for path in sorted(
-            (Path(__file__).parents[2] / "src/beadhive/modules/worktrees").rglob("*.py")
-        )
-    )
+    worktrees_src = Path(__file__).parents[2] / "packages/beadhive-worktrees/src/beadhive_worktrees"
+    module_source = "\n".join(path.read_text() for path in sorted(worktrees_src.rglob("*.py")))
     for presentation_name in ("typer", "jsonout", "as_json", "exit_code", "render"):
         assert presentation_name not in module_source
 

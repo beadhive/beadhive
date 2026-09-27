@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from beadhive.modules.worktrees import (
+from beadhive_worktrees import (
     CreateWorktreeRequest,
     NativeGitWorktreeProvisioner,
     PluginWorktreeProvisioner,

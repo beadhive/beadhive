@@ -36,9 +36,7 @@ _UNIT_TEST_FIELDS = dict(
         (
             "unit/integrations/test_herdr_adapter.py",
             "unit/integrations/test_herdr_agent_lifecycle_adapter.py",
-            "unit/kernel/lifecycle/test_contracts.py",
             "unit/kernel/lifecycle/test_dispatcher.py",
-            "unit/kernel/plugins/test_binding.py",
             "unit/kernel/plugins/test_discovery.py",
             "unit/kernel/telemetry/test_instrumentation.py",
             "unit/modules/agents/test_agent_contracts.py",
@@ -56,9 +54,6 @@ _UNIT_TEST_FIELDS = dict(
             "unit/modules/work/test_impact_pants.py",
             "unit/modules/work/test_work_independence.py",
             "unit/modules/work/test_work_lifecycle_services.py",
-            "unit/modules/worktrees/test_adapters.py",
-            "unit/modules/worktrees/test_policy.py",
-            "unit/modules/worktrees/test_services.py",
             "unit/testing/test_conformance_testkit.py",
             "unit/testing/test_impact_conformance_kit.py",
         ): {
