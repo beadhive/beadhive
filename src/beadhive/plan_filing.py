@@ -35,13 +35,21 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from beads_v1_3.types import UNSET
-
 from . import adopt, bd, config, host_beads, log, molecule, registry
 from .identity import workspace_identity
 from .modules.planning import PlanningError
 
 _CORE_MODULE = "beadhive_core"
+
+
+def _unset() -> Any:
+    """The ``beads_v1_3.types.UNSET`` sentinel, imported lazily: ``src/beadhive`` must import
+    without ``beadhive-beads-client`` installed (``tests/test_demo_live_ingress_matrix.py``'s
+    no-venv parity check), and this module's own top-level import chain (``beadhive.cli`` ->
+    ``beadhive.plan`` -> here) must not force that dependency just to define the CLI-
+    compatibility molecule-filing fallback, which only runs when filing actually happens."""
+    return importlib.import_module("beads_v1_3.types").UNSET
+
 
 #: The kickoff-gate contract's authoritative marker (see ``create_kickoff_gate``). Matched by
 #: ``plan._names_kickoff_for`` — the description format must never drift from this literal.
@@ -85,14 +93,16 @@ class CliMoleculeFiler:
         ids: dict[str, str] = {}
 
         def resolved(ref: Any) -> str:
-            if ref.id is not UNSET and ref.id:
+            # `Unset.__bool__` is False, so a plain truthiness check already excludes an unset
+            # `ref.id` exactly like an explicit `is not UNSET` would — no import needed here.
+            if ref.id:
                 return str(ref.id)
             return ids[ref.key]
 
         for item in compiled.items:
             if item.kind.value == "create":
                 new_id = self._create(item.create, actor)
-                if item.create.key is not UNSET and item.create.key:
+                if item.create.key:
                     ids[item.create.key] = new_id
             else:
                 dep = item.dep_add
@@ -109,19 +119,21 @@ class CliMoleculeFiler:
     def _create(self, create: Any, actor: str) -> str:
         core = _core()
         args = [str(create.title)]
-        if create.issue_type is not UNSET and create.issue_type:
+        if create.issue_type:
             args += ["--type", str(create.issue_type)]
-        if create.priority is not UNSET:
+        # `priority` may legitimately be 0 (P0/critical) — falsy but SET — so this is the one
+        # field that needs the real sentinel rather than a truthiness check.
+        if create.priority is not _unset():
             args += ["-p", str(create.priority)]
-        if create.description is not UNSET and create.description:
+        if create.description:
             args += ["-d", str(create.description)]
-        if create.design is not UNSET and create.design:
+        if create.design:
             args += ["--design", str(create.design)]
-        if create.acceptance_criteria is not UNSET and create.acceptance_criteria:
+        if create.acceptance_criteria:
             args += ["--acceptance", str(create.acceptance_criteria)]
-        if create.external_ref is not UNSET and create.external_ref:
+        if create.external_ref:
             args += ["--external-ref", str(create.external_ref)]
-        if create.labels is not UNSET and create.labels:
+        if create.labels:
             args += ["-l", ",".join(create.labels)]
         result = bd.run(["create", *args, "--silent"], self._main, actor=actor, capture=True)
         new_id = (result.stdout or "").strip().splitlines()[-1].strip() if result.stdout else ""
