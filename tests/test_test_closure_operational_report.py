@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import importlib.util
-import json
 import sys
 from copy import deepcopy
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "test_closure_operational_report.py"
-EVIDENCE = ROOT / "docs" / "proof" / "bh-ck1t6.5-selective-ci-operations.json"
 REPORT = ROOT / "docs" / "SELECTIVE-CI-OPERATIONS.md"
 SPEC = importlib.util.spec_from_file_location("test_closure_operational_report", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
@@ -20,7 +18,7 @@ SPEC.loader.exec_module(operations)
 
 
 def _evidence() -> dict[str, object]:
-    return json.loads(EVIDENCE.read_text(encoding="utf-8"))
+    return operations.build_checked_evidence(ROOT)
 
 
 def test_checked_report_accounts_for_every_current_closure_without_inventing_savings() -> None:

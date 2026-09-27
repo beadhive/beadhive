@@ -24,7 +24,17 @@ from beadhive import host, validation_ledger, validation_records
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "test_closure_certification.py"
-EVIDENCE = ROOT / "docs" / "proof" / "bh-ck1t6.1-test-closure-certification.json"
+EVIDENCE = (
+    Path(
+        subprocess.run(
+            ("git", "-C", str(ROOT), "rev-parse", "--path-format=absolute", "--git-common-dir"),
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
+    / "bh/validation/evidence/test-closure-certification.json"
+)
 MISSING_AUTHORITY = "candidate checkout has no authoritative matching full-gate receipt"
 PROCESS_TIMEOUT_SECONDS = 30.0
 TERMINATION_GRACE_SECONDS = 2.0
@@ -175,12 +185,25 @@ def _record_untrusted_green_receipts(repo: Path, command: str) -> None:
 def _architecture_check(
     repo: Path, *, executable: str = "just", timeout: float = PROCESS_TIMEOUT_SECONDS
 ) -> subprocess.CompletedProcess[str]:
+    environment = os.environ.copy()
+    if executable == PRODUCTION_JUST:
+        environment["PATH"] = f"{Path(executable).parent}{os.pathsep}{environment['PATH']}"
     return _bounded_run(
         (executable, "--justfile", str(repo / "justfile"), "architecture-check"),
         cwd=repo,
-        env=os.environ.copy(),
+        env=environment,
         timeout=timeout,
     )
+
+
+def _refresh_closure_evidence(repo: Path) -> None:
+    """Materialize current checkout evidence in the clone's Git-private state."""
+    refreshed = _bounded_run(
+        (sys.executable, "scripts/test_closure_certification.py"),
+        cwd=repo,
+        env=os.environ.copy(),
+    )
+    assert refreshed.returncode == 0, refreshed.stdout + refreshed.stderr
 
 
 def _clean_checkout(
@@ -254,20 +277,20 @@ def _assert_production_full_gate_wiring(repo: Path) -> None:
     assert isinstance(check_all_native, dict)
     architecture_body = [row[0] for row in architecture["body"]]
     assert architecture_body == [
+        "just validation-evidence-refresh",
         "uv run python scripts/check_import_boundaries.py",
         "uv run python scripts/check_package_imports.py",
         "uv run python scripts/test_closure_certification.py --check",
         "uv run python scripts/test_closure_shadow_policy.py --check",
         "uv run python scripts/test_closure_promotion_policy.py --check",
         "uv run python scripts/test_closure_operational_report.py --check",
-        "uv run python scripts/pants_shadow_evidence.py",
         "uv run python scripts/check_pants_ownership.py",
         "uv run python scripts/check_pants_proven.py",
         "uv run python scripts/pants_ci.py verify",
-        "uv run python scripts/pants_ci_benchmark.py check",
     ]
     selective_body = [row[0] for row in selective_architecture["body"]]
     assert selective_body == [
+        "just validation-evidence-refresh",
         "uv run python scripts/check_native_impact_map.py",
         "uv run python scripts/check_import_boundaries.py",
         "uv run python scripts/check_package_imports.py",
@@ -277,10 +300,13 @@ def _assert_production_full_gate_wiring(repo: Path) -> None:
         "uv run python scripts/test_closure_operational_report.py --check",
         "just transport-artifact-check",
         "just wire-schema-compat",
-        "just proof-digest-check",
     ]
     pants_body = [row[0] for row in pants_architecture["body"]]
-    assert pants_body == architecture_body[6:]
+    assert pants_body == [
+        "uv run python scripts/check_pants_ownership.py",
+        "uv run python scripts/check_pants_proven.py",
+        "uv run python scripts/pants_ci.py verify",
+    ]
     attest_body = [row[0] for row in attest_architecture["body"]]
     assert "just architecture-structural-check" in attest_body
     assert "just architecture-check" not in attest_body
@@ -443,6 +469,7 @@ def test_real_gate_receipts_authorize_only_their_exact_candidate_process(
         monkeypatch.setenv(key, value)
     check_log = _install_recipe_probe(tmp_path / "check-probe", monkeypatch)
     _record_untrusted_green_receipts(check_repo, "just check")
+    _refresh_closure_evidence(check_repo)
     rejected = _architecture_check(check_repo)
     assert rejected.returncode == 1
     assert MISSING_AUTHORITY in rejected.stdout
@@ -508,6 +535,7 @@ def test_real_gate_receipts_authorize_only_their_exact_candidate_process(
         monkeypatch.setenv(key, value)
     release_log = _install_recipe_probe(tmp_path / "release-probe", monkeypatch)
     _record_untrusted_green_receipts(release_repo, "just check-all")
+    _refresh_closure_evidence(release_repo)
     rejected = _architecture_check(release_repo)
     assert rejected.returncode == 1
     assert MISSING_AUTHORITY in rejected.stdout

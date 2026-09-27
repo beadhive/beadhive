@@ -42,7 +42,7 @@ distribution mechanism.
 ### What "proven" means
 
 An image is proven when it passes the component matrix in
-[`proof/bh-pc2a.17-image-proof.md`](proof/bh-pc2a.17-image-proof.md) — presence and version of
+Git-private runtime validation evidence records the presence and version of
 every component cross-checked against the image manifest, `bh` actually driving `bd`, the Dolt
 store surviving a recreate, and authenticated git/gh/git-workspace against a real remote. Scope is
 the *combination*: a component reporting `--version` proves nothing about whether `bh` can drive

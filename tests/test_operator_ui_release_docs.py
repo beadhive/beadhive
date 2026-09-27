@@ -19,7 +19,6 @@ ROOT = Path(__file__).resolve().parents[1]
 JUSTFILE = ROOT / "justfile"
 DOC = ROOT / "docs" / "OPERATOR-UI.md"
 ADR = ROOT / "docs" / "design" / "unified-host-daemon-adr.md"
-PROOF = ROOT / "docs" / "proof" / "operator-loopback-ui-release-2026-08-25.md"
 
 CORE_COMMAND = (
     "BH_OPERATOR_UI_ORIGIN=http://127.0.0.1:3000 bh host daemon serve --host 127.0.0.1 --port 8420"
@@ -132,21 +131,6 @@ def test_adr_records_a_narrow_exception_without_erasing_phase_two_auth():
     assert "Authentication and authorization remain mandatory phase-two prerequisites" in amendment
     assert "bh-xw03t" in amendment
     assert "does not authorize" in amendment
-
-
-def test_proof_pins_exact_cross_repo_sources_result_and_cleanup():
-    text = PROOF.read_text()
-
-    for value in (
-        "038df72459140330624bffc637d32bfcdc8005c4",
-        "9dccd355eff8488649bbe81f62e395137c685ea0",
-        "aee7df29afd2291d01d24296ea8b724207788c4c",
-        "0f450299dfc4a97f35b0e46fb82b9dfc27082ec5",
-        "pass 1",
-        "fail 0",
-        "asserted no\ndescendant remained",
-    ):
-        assert value in text
 
 
 def test_cross_repo_proof_stays_out_of_routine_gates():

@@ -16,12 +16,12 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "test_closure_shadow_policy.py"
 VERIFIER_SCRIPT = ROOT / "scripts" / "test_closure_shadow_verifier.py"
-EVIDENCE = ROOT / "docs" / "proof" / "bh-ck1t6.3-shadow-activation.json"
 SPEC = importlib.util.spec_from_file_location("test_closure_shadow_policy", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 shadow = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = shadow
 SPEC.loader.exec_module(shadow)
+EVIDENCE = shadow.EVIDENCE_PATH
 VERIFIER_SPEC = importlib.util.spec_from_file_location(
     "test_closure_shadow_verifier", VERIFIER_SCRIPT
 )

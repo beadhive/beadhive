@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the checked capability-boundary closeout for bh-bptze.7."""
+"""Generate runtime capability-boundary diagnostics for bh-bptze.7."""
 
 from __future__ import annotations
 
@@ -33,7 +33,15 @@ AGENTS_BASE_REVISION = "5e4a76700e85b4bdda97640eeec5c2bbac632b46"
 CONFIG_BASE_REVISION = "5e47c61107a67a26676fc5890a89f0fd0b715c78"
 CHURN_SINCE = "2026-06-03T00:00:00Z"
 MEASURED_AT = "2026-09-02T00:00:00Z"
-DEFAULT_OUTPUT = ROOT / "docs/proof/bh-bptze.7-capability-closeout.json"
+_COMMON_DIR = Path(
+    subprocess.run(
+        ("git", "-C", str(ROOT), "rev-parse", "--path-format=absolute", "--git-common-dir"),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+)
+DEFAULT_OUTPUT = _COMMON_DIR / "bh/validation/evidence/capability-closeout.json"
 LEDGER_PATH = "docs/design/import-boundary-exceptions.toml"
 
 MODULES = ("agents", "config", "hives", "planning", "state", "work", "worktrees")
@@ -479,7 +487,7 @@ def build_proof() -> dict[str, Any]:
                 "largest_scc": 65,
                 "cyclic_edges": 288,
                 "cyclic_symbols": 318,
-                "provenance": "docs/proof/bh-inqwc.6-modular-baseline.md",
+                "provenance": "historical bh-inqwc.6 baseline (retired)",
             },
             {
                 "label": "capability pre-migration",
@@ -503,9 +511,7 @@ def build_proof() -> dict[str, Any]:
                 "largest_scc": 64,
                 "cyclic_edges": 272,
                 "cyclic_symbols": 298,
-                "provenance": (
-                    "docs/proof/bh-bptze.14-plugin-runtime-registry.md and exact AST rerun"
-                ),
+                "provenance": ("historical bh-bptze.14 registry review and exact AST rerun"),
             },
             {"label": "closeout source", "revision": SOURCE_REVISION, **graph},
         ],

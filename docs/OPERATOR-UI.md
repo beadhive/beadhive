@@ -191,4 +191,4 @@ just check-operator-release /path/to/beadhive-ui
 The core recipe delegates to the UI-owned browser proof. It is intentionally absent from
 `just check` and `just check-all`: the UI repository owns its install/build prerequisites,
 Chromium, product bundle, browser adapters, process groups, and proof assertions. See the
-[dated evidence report](proof/operator-loopback-ui-release-2026-08-25.md).
+retired 2026-08-25 release record.

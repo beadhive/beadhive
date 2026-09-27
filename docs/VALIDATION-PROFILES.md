@@ -28,15 +28,8 @@ The Pants selective catalog is `work.attest.keys` in the fleet's beadhive entry.
 single-command validation sets `keys: []`, so ordinary validation executes `work.validate_cmd`
 directly. The remaining `attest.impact`, `semantic`, and `trivial` settings are inert without
 keys. The active live strings are `just check-native` for ordinary phases and
-`just check-all-native` for main-boundary phases; activation evidence is recorded in
-`docs/proof/bh-2ygs4-native-activation.md`.
-
-The exact fleet transition is recorded in
-`docs/proof/bh-2ygs4-native-fleet.patch`. The reverse profile patch,
-`docs/proof/bh-2ygs4-pants-profile.patch`, restores the saved Pants keys and explicitly sets
-ordinary commands to `just check-pants` and main-boundary commands to `just check-all-pants`.
-Apply it only against the matching active native fleet file, then switch the two aliases and
-the push hook's `gate_cmd` to the same Pants profile in a reviewed tree. Run
+`just check-all-native` for main-boundary phases. To switch profiles, update the fleet config,
+the two aliases, and the push hook's `gate_cmd` in one reviewed change. Run
 `just check-attest-catalog` and `just check-all-pants` before relying on new Pants verdicts.
 The full Pants comparison was deferred to `bh-ahm6x`; no Pants execution is required to
 activate this native profile. Distinct command hashes ensure a native verdict is not reused as

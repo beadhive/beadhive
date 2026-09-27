@@ -12,7 +12,8 @@ seconds. The receipt identifies Pants 2.32.1, experimental uv, the disposable wo
 shared-immutable/isolated-mutable cache topology. These are development measurements, not claims
 about full-suite savings.
 
-`uv run python scripts/pants_shadow_evidence.py` verifies the input digests, complete mutation
+`uv run python scripts/pants_shadow_evidence.py --evidence PATH` verifies an explicitly supplied
+runtime report's input digests, complete mutation
 matrix, result/count fields, useful warm result, unrelated-test avoidance, and zero correctness
 escapes. Any missing, stale, incompatible, or selected-green/native-red evidence makes the command
 red and requires native/full routing. The operational volume is one activation-eligible Pants

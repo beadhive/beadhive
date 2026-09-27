@@ -26,7 +26,7 @@ major version, compatibility policy, conformance case, package-relative path, an
 
 The older `docs/schemas/wire` releases remain immutable supported snapshots. This release does
 not delete or silently supersede an artifact that was not promoted into the package bundle. The
-generated [compatibility report](../proof/official-v1-contract-compatibility.json) accounts for
+executable compatibility checker accounts for
 every manifest-declared historical artifact, classifies exact and compatible matches, and records
 policy divergences that remain pinned to their historical release.
 

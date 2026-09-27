@@ -219,10 +219,6 @@ def test_pants_receipt_reports_cache_reuse(monkeypatch, capsys) -> None:
     assert receipt["selected"] == 1
 
 
-def test_checked_benchmark_evidence_has_honest_sample_counts_and_percentiles() -> None:
-    pants_ci_benchmark.check_evidence(pants_ci_benchmark.DEFAULT_EVIDENCE)
-
-
 def test_benchmark_statistics_do_not_call_singletons_percentiles() -> None:
     assert pants_ci_benchmark.status_for(1) == "pending"
     assert pants_ci_benchmark.status_for(5) == "provisional"

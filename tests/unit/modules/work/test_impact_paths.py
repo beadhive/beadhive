@@ -25,10 +25,10 @@ def _key(name: str, *patterns: str) -> AttestKey:
 def test_paths_backend_partitions_keys_and_keeps_cross_cutting_matches() -> None:
     keys = (
         _key("docs", "*.md"),
-        _key("unit", "src/*", "docs/proof/*.json"),
-        _key("architecture", "docs/proof/*"),
+        _key("unit", "src/*", "validation/evidence/*.json"),
+        _key("architecture", "validation/evidence/*"),
     )
-    resolver = FailClosedResolver(PathsImpactBackend(), _Diff("docs/proof/result.json"))
+    resolver = FailClosedResolver(PathsImpactBackend(), _Diff("validation/evidence/result.json"))
 
     receipt = resolver.resolve("/repo", "base", "head", keys)
 

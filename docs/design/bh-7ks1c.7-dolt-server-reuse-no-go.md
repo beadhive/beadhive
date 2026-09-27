@@ -22,7 +22,7 @@ The operator-provided three-run comparison reports:
 | One-worker diagnostic | Still slow |
 
 The wall-time and slot-hold regressions outweigh the startup-time reduction. The earlier
-profile in `docs/proof/bh-7ks1c.7-server-startup-profile.json` remains historical evidence for
+the retired server-startup profile remains historical context for
 the prototype and is superseded for the adoption decision by these later measurements.
 
 ## Decision

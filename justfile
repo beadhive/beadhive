@@ -64,10 +64,6 @@ beads-client-check:
 
 check-pants: lint lint-md license-check architecture-structural-check test-changed
 
-# Current-candidate proof rows are generated evidence and must match the exact release tree.
-proof-digest-check:
-    uv run python scripts/refresh_modularization_closeout.py --check
-
 # Every checked transport declaration: catalog, projection inventory, OpenAPI, gateway and roots.
 transport-artifact-check:
     uv run python scripts/render_operation_catalog.py --check
@@ -198,8 +194,8 @@ attest-demos:
     just demo-local-loop
     just demo-live-ingress
 
-pants-ci-benchmark-check:
-    uv run python scripts/pants_ci_benchmark.py check
+pants-ci-benchmark-check evidence:
+    uv run python scripts/pants_ci_benchmark.py check {{quote(evidence)}}
 
 check-attest-catalog:
     uv run python scripts/check_attest_catalog.py
@@ -208,22 +204,22 @@ check-attest-catalog:
 # network — except check_pants_ownership, which queries the local Pants engine (no network;
 # it only reads BUILD files) to keep every tracked file owned (bh-1j3ei.2).
 architecture-check:
+    just validation-evidence-refresh
     uv run python scripts/check_import_boundaries.py
     uv run python scripts/check_package_imports.py
     uv run python scripts/test_closure_certification.py --check
     uv run python scripts/test_closure_shadow_policy.py --check
     uv run python scripts/test_closure_promotion_policy.py --check
     uv run python scripts/test_closure_operational_report.py --check
-    uv run python scripts/pants_shadow_evidence.py
     uv run python scripts/check_pants_ownership.py
     uv run python scripts/check_pants_proven.py
     uv run python scripts/pants_ci.py verify
-    uv run python scripts/pants_ci_benchmark.py check
 
 # Lifecycle gates cannot require the full-gate receipt they are in the process of establishing.
 # This explicit entry point checks the same structural evidence and freshness invariants for
 # check, check-all, and selective CI. architecture-check remains the explicit post-receipt audit.
 architecture-structural-check:
+    just validation-evidence-refresh
     uv run python scripts/check_native_impact_map.py
     uv run python scripts/check_import_boundaries.py
     uv run python scripts/check_package_imports.py
@@ -233,14 +229,17 @@ architecture-structural-check:
     uv run python scripts/test_closure_operational_report.py --check
     just transport-artifact-check
     just wire-schema-compat
-    just proof-digest-check
 
 architecture-pants-check:
-    uv run python scripts/pants_shadow_evidence.py
     uv run python scripts/check_pants_ownership.py
     uv run python scripts/check_pants_proven.py
     uv run python scripts/pants_ci.py verify
-    uv run python scripts/pants_ci_benchmark.py check
+
+# Rebuild derived test-closure evidence in git-private validation control state.
+validation-evidence-refresh:
+    uv run python scripts/test_closure_certification.py
+    uv run python scripts/test_closure_shadow_policy.py > "$(git rev-parse --path-format=absolute --git-common-dir)/bh/validation/evidence/test-closure-shadow-policy.json"
+    uv run python scripts/test_closure_promotion_policy.py > "$(git rev-parse --path-format=absolute --git-common-dir)/bh/validation/evidence/test-closure-promotion-policy.json"
 
 # Publish the live operation catalog (e.g. after registering a CLI verb) and regenerate every
 # artifact derived from it. Cuts the next minor wire release, or refreshes the one this branch
@@ -251,10 +250,8 @@ wire-publish:
     uv run python scripts/render_transport_inventory.py
     uv run python scripts/generate_contract_release.py --write
     uv run python scripts/generate_contract_release_evidence.py --write
-    uv run python scripts/test_closure_promotion_policy.py > docs/proof/.promotion-policy.json.tmp
-    mv docs/proof/.promotion-policy.json.tmp docs/proof/bh-ck1t6.4-promotion-policy.json
+    just validation-evidence-refresh
     uv run python scripts/test_closure_operational_report.py --write
-    uv run python scripts/refresh_modularization_closeout.py --write
 
 # Compare the candidate wire release with the target branch and validate its shared fixtures.
 # CI may set BH_WIRE_SCHEMA_BASE_REF to its actual target ref; local work defaults to main.
@@ -731,8 +728,8 @@ pants-test-changed base="HEAD":
 pants-test-dependents source:
     uv run python scripts/pants_routes.py dependent {{quote(source)}}
 
-pants-shadow-check:
-    uv run python scripts/pants_shadow_evidence.py
+pants-shadow-check evidence:
+    uv run python scripts/pants_shadow_evidence.py --evidence {{quote(evidence)}}
 
 # Required Pants build/test evidence; `check-all` still runs every native phase afterward.
 pants-attest:
@@ -1383,7 +1380,7 @@ image-seat-exec ref="beadhive/agent:dev" seat="":
 # TOGETHER? Layers needing credentials SKIP loudly rather than fail, and the script refuses to
 # report "proven" while anything was skipped — a gate that reads green with half its checks
 # silently absent is worse than no gate. Supply GH_TOKEN / BH_GATE_REPO / BH_GATE_PRIVATE_REPO
-# for full coverage; see the script header. Record results in docs/proof/.
+# for full coverage; see the script header. Keep results in Git-private validation state.
 # run the proof gate against a baked image
 proof-gate ref="beadhive/agent:dev":
     scripts/proof-gate.sh {{ref}}

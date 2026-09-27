@@ -436,7 +436,7 @@ epic `bh-xw03t`; the exception must not be used to close, bypass, or imply compl
 work. Phase-one launch instructions and troubleshooting live in
 [`docs/OPERATOR-UI.md`](../OPERATOR-UI.md), and the exact cross-repository browser evidence is
 recorded in
-[`docs/proof/operator-loopback-ui-release-2026-08-25.md`](../proof/operator-loopback-ui-release-2026-08-25.md).
+the retired 2026-08-25 operator loopback UI release record.
 
 ## Consequences
 

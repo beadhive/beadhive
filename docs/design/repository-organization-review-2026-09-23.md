@@ -591,7 +591,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_closures.py check
 [modular-adr]: https://github.com/beadhive/beadhive/blob/40f3b23a5d1b0afb07f27e263193d7a9f0d549bf/docs/design/modular-dependency-and-test-closure-adr.md
 [capability-map]: https://github.com/beadhive/beadhive/blob/40f3b23a5d1b0afb07f27e263193d7a9f0d549bf/docs/design/capability-module-boundaries.md
 [structural-baseline]: https://github.com/beadhive/beadhive/blob/40f3b23a5d1b0afb07f27e263193d7a9f0d549bf/docs/design/structural-quality-baseline.md#compatibility-matrix
-[old-closeout]: https://github.com/beadhive/beadhive/blob/40f3b23a5d1b0afb07f27e263193d7a9f0d549bf/docs/proof/bh-j5uyb.1-modularization-closeout.md
+[old-closeout]: https://github.com/beadhive/beadhive/commit/40f3b23a5d1b0afb07f27e263193d7a9f0d549bf
 [modules-phase-one]: https://github.com/beadhive/beadhive/blob/cd80d16f80a1ea630c3186ed58f7dbc71c586827/docs/MODULES.md
 [modules-main]: https://github.com/beadhive/beadhive/blob/40f3b23a5d1b0afb07f27e263193d7a9f0d549bf/docs/MODULES.md
 [jev-proposal]: https://github.com/beadhive/beadhive/blob/40f3b23a5d1b0afb07f27e263193d7a9f0d549bf/docs/design/jev-adoption-tracks-proposal.md#4-track-a--a-judgment-envelope-for-closed-vocabulary-decisions

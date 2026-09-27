@@ -169,7 +169,6 @@ def test_immutable_evidence_is_narrowly_excluded_and_untouched():
     immutable = {
         ROOT / "docs/design/0.7.0-release-readiness.md",
         ROOT / "docs/design/gsex3-bug-triage-2026-08-21.md",
-        ROOT / "docs/proof/operator-sse-ui-conformance.md",
         ROOT / "docs/releases/official-contracts-v1.0.0.md",
         ROOT / "docs/spikes/bh-ykyi.1-name-registry.md",
         ROOT / "docs/upstream/bv-custom-id-pattern.md",

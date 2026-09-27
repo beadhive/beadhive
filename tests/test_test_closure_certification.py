@@ -13,24 +13,23 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "test_closure_certification.py"
-EVIDENCE = ROOT / "docs" / "proof" / "bh-ck1t6.1-test-closure-certification.json"
 SPEC = importlib.util.spec_from_file_location("test_closure_certification_script", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 certification = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = certification
 SPEC.loader.exec_module(certification)
+EVIDENCE = certification.DEFAULT_OUTPUT
 
 
-def test_checked_certification_evidence_is_a_valid_historical_snapshot() -> None:
-    evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
+def test_generated_certification_evidence_is_valid_for_current_checkout() -> None:
+    evidence = certification.build_evidence(ROOT)
 
     assert certification.validate_evidence(evidence, ROOT) == ()
 
 
-def test_checked_source_identity_is_recomputed_from_historical_git_objects() -> None:
-    evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
-    snapshot = certification._historical_snapshot_commit(ROOT)
-    identity = certification.checkout_input_identity_at(ROOT, snapshot)
+def test_generated_source_identity_is_recomputed_from_current_checkout() -> None:
+    evidence = certification.build_evidence(ROOT)
+    identity = certification.checkout_input_identity(ROOT)
 
     assert evidence["certification_input_identity"] == identity
     assert evidence["source_revision"] == identity["revision"]
@@ -39,14 +38,7 @@ def test_checked_source_identity_is_recomputed_from_historical_git_objects() -> 
 
 
 def test_checkout_identity_excludes_only_certification_generated_outputs() -> None:
-    assert certification.CHECKOUT_IDENTITY_EXCLUDES == (
-        "docs/proof/bh-ck1t6.1-test-closure-certification.json",
-        "docs/proof/bh-ck1t6.3-shadow-activation.json",
-        "docs/proof/bh-ck1t6.4-promotion-policy.json",
-        "docs/proof/bh-ck1t6.5-selective-ci-operations.json",
-        "docs/SELECTIVE-CI-OPERATIONS.md",
-        "docs/proof/bh-j5uyb.1-modularization-closeout.json",
-    )
+    assert certification.CHECKOUT_IDENTITY_EXCLUDES == ("docs/SELECTIVE-CI-OPERATIONS.md",)
 
     tracked = {
         relative for relative, _mode, _content in certification._tracked_checkout_entries(ROOT)
@@ -56,14 +48,12 @@ def test_checkout_identity_excludes_only_certification_generated_outputs() -> No
     assert "scripts/test_closure_promotion_policy.py" in tracked
 
 
-def test_unrelated_descendant_does_not_invalidate_the_historical_snapshot() -> None:
-    evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
-    snapshot = certification._historical_snapshot_commit(ROOT)
-
-    assert snapshot != certification._git(ROOT, "rev-parse", "HEAD")
+def test_current_applicability_accepts_fresh_generated_evidence() -> None:
+    evidence = certification.build_evidence(ROOT)
     assert certification.validate_evidence(evidence, ROOT) == ()
     applicability = certification.current_applicability(evidence, ROOT)
     assert set(applicability) == {row["id"] for row in evidence["closures"]}
+    assert all(row["applicable"] for row in applicability.values())
 
 
 def test_receipt_reader_rejects_manifest_outside_its_run_identity(

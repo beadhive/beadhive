@@ -8,12 +8,21 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-REPORT = ROOT / "docs/proof/bh-j5uyb.1-modularization-closeout.json"
+_COMMON_DIR = Path(
+    subprocess.run(
+        ("git", "-C", str(ROOT), "rev-parse", "--path-format=absolute", "--git-common-dir"),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+)
+REPORT = _COMMON_DIR / "bh/validation/evidence/modularization-closeout.json"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 

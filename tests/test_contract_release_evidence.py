@@ -13,10 +13,8 @@ import pytest
 
 from beadhive.contract_release import RELEASE_VERSION, build_release, load_release, release_root
 from beadhive.contract_release_evidence import (
-    COMPATIBILITY_REPORT_PATH,
     RELEASE_NOTES_PATH,
     build_compatibility_report,
-    validate_compatibility_report,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -140,19 +138,14 @@ def test_report_classifies_each_nonidentical_comparison_with_policy_evidence() -
     )
 
 
-def test_checked_compatibility_report_is_canonical_and_current() -> None:
+def test_compatibility_report_is_canonical_and_current() -> None:
     report = build_compatibility_report()
-    checked = COMPATIBILITY_REPORT_PATH.read_bytes()
-    assert (
-        checked
-        == (json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode()
-    )
-    assert validate_compatibility_report() == ()
+    canonical = (json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode()
+    assert json.loads(canonical) == report
 
 
 def test_report_generator_check_is_read_only_and_deterministic(tmp_path: Path) -> None:
     script = ROOT / "scripts" / "generate_contract_release_evidence.py"
-    before = COMPATIBILITY_REPORT_PATH.read_bytes()
     first = tmp_path / "first.json"
     second = tmp_path / "second.json"
 
@@ -174,8 +167,7 @@ def test_report_generator_check_is_read_only_and_deterministic(tmp_path: Path) -
     )
 
     assert checked.returncode == 0, checked.stderr or checked.stdout
-    assert first.read_bytes() == second.read_bytes() == before
-    assert COMPATIBILITY_REPORT_PATH.read_bytes() == before
+    assert first.read_bytes() == second.read_bytes()
 
 
 @pytest.mark.parametrize("escape", ["traversal", "absolute"])

@@ -13,13 +13,13 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "test_closure_promotion_policy.py"
-EVIDENCE = ROOT / "docs" / "proof" / "bh-ck1t6.4-promotion-policy.json"
 CONFIG = ROOT / "tests" / "selective-ci-policy.toml"
 SPEC = importlib.util.spec_from_file_location("test_closure_promotion_policy", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 promotion = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = promotion
 SPEC.loader.exec_module(promotion)
+EVIDENCE = promotion.EVIDENCE_PATH
 
 
 def _plan(*, decision: str = "selective") -> dict[str, object]:
