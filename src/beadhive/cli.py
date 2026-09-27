@@ -3204,6 +3204,25 @@ def wt_rm(
 
 
 @wt_app.command(
+    "rebind",
+    help=(
+        "repair presentation-binding gaps: re-bind worktrees through `herdr worktree open "
+        "--path` and close orphaned `(deleted)` Herdr workspaces."
+    ),
+)
+def wt_rebind(
+    ref: str = typer.Argument("", help="bead id, branch, or leaf (default: every bound worktree)"),
+    bead: str = typer.Option("", "--bead", help="resolve by bead id"),
+    hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive or all hives)"),
+    session: str = typer.Option("", "--session", help="Herdr session (default: the recorded one)"),
+    as_json: bool = typer.Option(False, "--json", help="emit {op, rebound, closed, failed} JSON"),
+):
+    from . import worktree
+
+    worktree.rebind(hive=hive, ref=bead or ref, session=session, as_json=as_json)
+
+
+@wt_app.command(
     "status",
     help=(
         "show per-worktree classification (SAFE / ACTIVE / DIRTY / …) for one hive or all hives."

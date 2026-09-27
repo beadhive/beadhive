@@ -1108,6 +1108,8 @@ def impl__status_tags(st) -> str:
         tags += f"  reason={st.disposition_reason}"
     if getattr(st, "citing_bead", ""):
         tags += f"  citing={st.citing_bead}"
+    if getattr(st, "binding_gaps", ()):
+        tags += f"  binding-gap={','.join(st.binding_gaps)}"
     return tags
 
 
@@ -1241,7 +1243,51 @@ def _read_status_rows(hive: str = "") -> list:
 
 def impl_status_rows(hive: str = "") -> list:
     result = _inventory_service().status(WorktreeStatusRequest(hive))
-    return list(result.rows)
+    return impl__with_bindings(list(result.rows))
+
+
+def impl__with_bindings(statuses: list, cache: dict | None = None) -> list:
+    """Attach each row's verified presentation-binding state (bh-cb4jo.2).
+
+    Only rows with a recorded binding cost a presenter call; the rest read one local Git config
+    key and stay ``bindings=()``. Binding state is reported, never folded into classification.
+    ``cache`` (keyed by path) lets one command verify each worktree once.
+    """
+    from . import worktree_binding_reconcile
+
+    cache = {} if cache is None else cache
+    rows = []
+    for st in statuses:
+        if st.path not in cache:
+            cache[st.path] = worktree_binding_reconcile.binding_states(st.path)
+        states = cache[st.path]
+        rows.append(replace(st, bindings=states) if states else st)
+    return rows
+
+
+def impl__warn_binding_gaps(statuses: list) -> None:
+    """Name every worktree whose presentation binding needs repair, and the one repair route."""
+    gapped = [s for s in statuses if getattr(s, "binding_gaps", ())]
+    unverified = [
+        s
+        for s in statuses
+        if any(item.state == "unverified" for item in getattr(s, "bindings", ()))
+    ]
+    if gapped:
+        typer.echo(
+            f"\n⚠ {len(gapped)} worktree(s) have a presentation-binding gap "
+            f"(present-but-unbound, bound-but-missing, or stale) — repair with "
+            f"`{config.BINARY_ALIAS} worktree rebind` (the next herdr launch also re-binds):",
+            err=True,
+        )
+        for s in gapped:
+            typer.echo(f"    {s.hive}  {s.leaf}  {', '.join(s.binding_gaps)}", err=True)
+    if unverified:
+        typer.echo(
+            f"⚠ {len(unverified)} worktree binding(s) could not be verified — the presenter is "
+            "unavailable; their state is unknown, not bound.",
+            err=True,
+        )
 
 
 def impl__warn_unregistered(unreg) -> None:
@@ -1297,11 +1343,13 @@ def impl_status_cmd(hive: str = "", as_json: bool = False) -> None:
     ]
     stream_multi = not as_json and len(populated_entries) > 1
 
+    binding_cache: dict = {}
+
     def render_completed_hive(prefix: str, statuses: list) -> None:
         # Render a complete one-hive tree immediately.  The standalone tree deliberately uses
         # the same renderer and therefore keeps its hierarchy, UNKNOWN marking, and SAFE tags;
         # only section order now follows completion order.
-        _render_status_multi({prefix: statuses})
+        _render_status_multi({prefix: impl__with_bindings(statuses, binding_cache)})
 
     statuses_by_prefix = _classify_entries(
         cfg,
@@ -1309,7 +1357,9 @@ def impl_status_cmd(hive: str = "", as_json: bool = False) -> None:
         rows_by_prefix,
         on_complete=render_completed_hive if stream_multi else None,
     )
-    all_statuses = _ordered_statuses(entries, statuses_by_prefix)
+    all_statuses = impl__with_bindings(
+        _ordered_statuses(entries, statuses_by_prefix), binding_cache
+    )
     unreg = unregistered_worktrees(cfg) if not hive else []
 
     if as_json:
@@ -1318,6 +1368,7 @@ def impl_status_cmd(hive: str = "", as_json: bool = False) -> None:
         # "unknown"` and its `unknown_reason`, but a consumer that only counts `active` sees a
         # plausible answer either way — the same shape bh-fzh4h closed for the MCP surface.
         _warn_untrustworthy(all_statuses)
+        impl__warn_binding_gaps(all_statuses)
         if unreg:
             _warn_unregistered(unreg)
         return
@@ -1346,6 +1397,7 @@ def impl_status_cmd(hive: str = "", as_json: bool = False) -> None:
             _render_status_multi(by_hive)
 
     _warn_untrustworthy(all_statuses)
+    impl__warn_binding_gaps(all_statuses)
 
     if unreg:
         _warn_unregistered(unreg)

@@ -112,6 +112,67 @@ worktrees:
 The slots themselves (`worktree.manager`, `workspace.binding`) are declared on
 `beadhive-plugins`; the spec/handle types and the native manager live in `beadhive-worktrees`.
 
+## Presentation bindings (Herdr)
+
+A presenter such as Herdr never creates or removes a worktree. It is a **workspace binding**:
+zero or one per presenter, composed next to the one manager only when that manager does not
+already bind the presenter itself (native binds nothing, so Herdr's binding is always composed;
+a manager declaring `binds: ["herdr"]` would get no second binding). See the
+[ADR](design/bh-mr9tk.2-worktree-manager-herdr-binding-adr.md) for the contract.
+
+| Step | Herdr primitive | When |
+|---|---|---|
+| bind | `herdr worktree open --cwd <main> --path <exact> --label bh:<hive> --no-focus` | `bh plugin herdr launch` / `spawn`, after the native claim created or attached the worktree |
+| release | `herdr workspace close <id>` | every Beadhive removal, **before** the native `git worktree remove` |
+
+**The record.** Each bound worktree keeps its binding in its own Git per-worktree config
+(`beadhive.bindingsession.herdr` = session, `beadhive.binding.herdr` = workspace id), so the
+record follows the worktree and disappears with it. The session is written *before* the bind is
+attempted: it is the durable "this worktree should be presented" intent. The workspace id is only
+a cache — `herdr worktree list` re-derives it (`open_workspace_id`) — and it is re-verified
+against Herdr before use, because Herdr reuses workspace ids after a close.
+
+**Release order.** `bh worktree rm`, SAFE `prune`, and the merge/abandon/retire teardowns that
+call them all remove through one lifecycle call that releases every recorded binding first and
+only then runs the native remove, so a native remove without a prior release is not reachable
+through Beadhive. The teardown saga order (stop agents → verify the final lease → close the
+Space → classify → remove) and every classification outcome are unchanged: a binding never feeds
+classification. Worktrees with no recorded binding never touch Herdr at all.
+
+**Failure policy.** Herdr is presentation, never mechanics. Herdr unavailable at bind time leaves
+the claim and worktree in place, keeps the intent recorded as a gap, and fails the launch at
+`stage=workspace` with the repair route — nothing is rolled back. Herdr unavailable at teardown is
+reported and the native remove still runs; the workspace Herdr keeps becomes an orphan labelled
+`"bh:<hive> (deleted)"`.
+
+**Status and repair.** `bh worktree status` verifies every recorded binding against Herdr and
+reports gaps next to (never inside) the classification: human rows gain a
+`binding-gap=herdr:<state>` tag and a summary line on stderr; each JSON row gains `bindings`
+(`{"herdr": {"session", "reference", "live", "state", "detail"}}`) and `binding_gaps`
+(`["herdr:<state>"]`).
+
+| State | Meaning | Gap? |
+|---|---|---|
+| `bound` | Herdr binds the recorded workspace to exactly this checkout | No |
+| `unbound` | present but unbound — the intent is recorded, no bind ever landed (crash between create and bind, or Herdr down at bind time) | Yes |
+| `missing` | bound but missing — the recorded workspace is gone | Yes |
+| `stale` | Herdr binds this checkout to a different workspace than recorded | Yes |
+| `unrecorded` | Herdr binds it, but the id was never recorded | Yes |
+| `unverified` | Herdr could not be reached; the state is unknown, not bound | — |
+
+Every gap has one repair, the idempotent `herdr worktree open --path` re-bind (a repeat returns
+the same workspace id). `bh plugin herdr launch` runs it automatically; the explicit operator
+command is:
+
+```text
+bh worktree rebind [-r HIVE] [--bead ID | REF] [--session NAME] [--json]
+```
+
+Without a target it re-binds every worktree in scope that has a recorded binding (never one
+nobody asked to present), then closes Beadhive-labelled orphaned `"(deleted)"` workspaces with
+`herdr workspace close` — never a forced native remove of a worktree that is already gone. With a
+target it binds that one worktree even without a record. It exits 1 if any step failed.
+
 ## Batch worktrees — `wt/batch/<group>` and `batch:<epic>` synthesis
 
 A **batch** (or collapsed) run puts several beads in ONE shared worktree instead of one each.
@@ -604,7 +665,8 @@ bh worktree list [--json [--hive HIVE] [--state STATE] [--limit N] [--cursor TOK
                                                                       # managed only
 bh worktree path   [-r HIVE] [--bead ID | REF]                        # abs path (for scripts)
 bh worktree init   PATH                                               # re-run init ops
-bh worktree rm     [-r HIVE] [--bead ID | REF] [--force] [--json]
+bh worktree rm     [-r HIVE] [--bead ID | REF] [--force] [--json]      # releases bindings first
+bh worktree rebind [-r HIVE] [--bead ID | REF] [--session NAME] [--json]  # repair binding gaps
 bh worktree status [-r HIVE] [--json]                                  # classification pre-flight
 bh worktree prune  [-r HIVE]                                           # SAFE-set only (no confirm)
 bh worktree mark-landed [-r HIVE] (BEAD | BRANCH)                      # assert out-of-band landing
