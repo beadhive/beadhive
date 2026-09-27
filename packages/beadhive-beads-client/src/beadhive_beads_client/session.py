@@ -320,6 +320,9 @@ class BeadsSession:
         cursor: str | None = None,
         parent: str | None = None,
         sort: str | None = None,
+        status: list[str] | None = None,
+        all_: bool = False,
+        include_infra: bool = False,
     ) -> IssuesPage:
         """``GET /v0/beads/issues``. ``parent`` restricts to RECURSIVE descendants of the named
         issue (the OpenAPI spec's own wording — not the direct one-level edge ``IssueWithCounts``
@@ -327,7 +330,19 @@ class BeadsSession:
         rows itself (see ``beadhive_core.queue.direct_children``). ``sort`` is the closed
         ``created``/``priority`` vocabulary this operation publishes — absent, it defaults to
         ``created``, NOT ``bd list``'s flagless ``priority`` ordering, so a caller reproducing
-        `bd list` output must pass ``sort="priority"`` explicitly."""
+        `bd list` output must pass ``sort="priority"`` explicitly.
+
+        ``status`` / ``all_`` / ``include_infra`` (bh-sy36q.5) reproduce ``bd list``'s own
+        ``--all`` / ``--include-infra`` override of its default exclusions: with all three left
+        at their defaults this operation drops closed/done/frozen-status, template, gate and
+        configured-infra rows exactly as `bd list` does unflagged, so a caller that needs a
+        molecule's full RESTARTABLE membership — closed children and infra rows (gate/event
+        beads) included, the same set ``bd list --parent <epic> --include-infra --all`` returns
+        — must ask for them explicitly. ``all_=True`` drops the default status exclusions
+        (``bd``'s ``--all``); ``include_infra=True`` admits the configured infrastructure issue
+        types (``bd``'s ``--include-infra``); ``status`` is a narrower alternative to ``all_``
+        when only specific statuses are wanted, matching this operation's own ``status`` query
+        parameter (repeatable, replaces rather than adds to the default exclusions)."""
         kwargs: dict[str, object] = {"limit": limit}
         if cursor is not None:
             kwargs["cursor"] = cursor
@@ -335,6 +350,12 @@ class BeadsSession:
             kwargs["parent"] = parent
         if sort is not None:
             kwargs["sort"] = ListIssuesSort(sort)
+        if status is not None:
+            kwargs["status"] = status
+        if all_:
+            kwargs["all_"] = True
+        if include_infra:
+            kwargs["include_infra"] = True
         return self._read("issues.list", list_issues.sync_detailed, **kwargs)  # type: ignore[return-value]
 
     def list_ready(

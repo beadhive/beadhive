@@ -384,6 +384,72 @@ child issues, every parent-child and declared-dependency edge, and any adopted-r
 compiles into the ONE BatchApply request that follows, addressing the epic by the id `bd import`
 returned rather than a request-local key.
 
+## Molecule progress, swarm inspection, dispatch polling, and local-loop bead-state access (bh-sy36q.5)
+
+`beadhive_core.dispatch` (`DispatchCommands`) serves the bh-97fo0.3 matrix's four named routes for
+the `local` work-runtime tier's poll loop (`beadhive.localloop.LocalLoop`) and its `--epic`
+molecule-scoping (`beadhive.work_dispatch.impl__molecule_members`) — nothing here is a generic
+"read a bead" abstraction; each route is a distinct call site, attributed separately in routing
+telemetry, even where two share one underlying capability:
+
+| Operation | Capability / session method | Served by | Existing call site |
+|---|---|---|---|
+| `work.molecule.progress` | `issues.get` / `get_issue` | `DispatchCommands.molecule_progress` | `LocalLoop.load_molecule`'s epic-row read |
+| `work.local-loop.state` | `issues.get` / `get_issue` | `DispatchCommands.local_loop_state` | `LocalLoop._default_routing`'s per-bead read |
+| `work.swarm.inspect` | `issues.list` / `list_issues` | `DispatchCommands.swarm_members` / `.event_rows` | `LocalLoop.load_molecule`'s children + per-child event-stream reads; `work_dispatch.impl__molecule_members`'s `--epic` scoping |
+| `work.dispatch.poll` | `ready.list` / `list_ready` | `DispatchCommands.poll_ready` | `LocalLoop.claimable_now`'s ready-set poll |
+
+`BeadsSession.list_issues` is widened (bh-sy36q.5) with `status` / `all_` / `include_infra`
+kwargs, reproducing `bd list`'s own `--all` / `--include-infra` override of its default
+status/infra exclusions — the generated `list_issues.sync_detailed` call already accepted them
+(`all_`, `include_infra`), only the wrapper method didn't expose them yet. Without this, a
+molecule's full RESTARTABLE membership (closed children, so finished work reads as finished; infra
+rows such as event beads, so the loop-breaker's `attempt_count` and the escalation latch see their
+history) would be unreachable over the API at all.
+
+`DispatchCommands.swarm_members` fetches `GET /v0/beads/issues?parent=<epic>&all=true
+&include_infra=true&sort=priority&limit=0` and narrows to the direct parent edge with
+`beadhive_core.queue.direct_children` — the same `list_children` pattern `bh work schedule` uses,
+with the fuller default-exclusion override this cohort's callers need. **Measured against a real
+disposable `bd serve` 1.3.0 (f45b249ce) while proving this bead** (`test_core_dispatch_real_service.py`):
+unlike `GET /v0/beads/ready?parent=<epic>` (proven recursive-descendant in bh-mu5yb.1's own probe),
+`GET /v0/beads/issues?parent=<epic>` returned ONLY the direct child in a three-level epic → child-epic
+→ grandchild-leaf tree — the two operations' `parent` query parameters, despite identical OpenAPI
+wording ("restrict to recursive descendants of this issue"), do not behave identically on this
+server build. This does not change any Beadhive behavior (`direct_children`'s narrowing is a no-op
+safety net either way, and `load_molecule`'s own children fetch never needed more than direct
+membership), but it corrects an assumption a future caller of `list_issues(parent=...)` should not
+inherit from `list_ready`'s own proof.
+
+`DispatchCommands.event_rows` fetches the SAME shape for one bead's own dotted-id stream
+(`parent=<bead>`, not narrowed to the direct edge — mirrors `beadhive.bd.child_rows` exactly: an
+old event bead can retain bd's historical prefix match even without a `parent` edge, and narrowing
+here would silently turn populated history into an empty one).
+
+A gate bead is **not** reachable through either of `swarm_members` / `event_rows`: an ad-hoc gate
+(`bd gate create --blocks <id>`) carries no `parent-child` edge to anything (confirmed against the
+real service), so it is invisible to a `parent`-scoped `list_issues` fetch regardless of
+`include_infra`. `LocalLoop` does not need it to be — gating is read through the ready predicate
+(`poll_ready`) and the CLI-compatibility `bd gate check`, unaffected by this bead.
+
+Route selection is the composition seam `beadhive.dispatch_state` (mirrors `work_queue` /
+`work_lifecycle` exactly): each of the four fetches is tried independently, before execution,
+falling back to its own named `bd` forward on a genuinely unavailable service or capability — one
+route being unreachable does not force the others onto the CLI path too. Process scheduling and
+role execution (spawning a seat, the CANCEL ladder, process-group reaping) are untouched: this
+cohort owns only the bead-state reads those flows depend on. Polling is the whole mechanism; event
+streaming is explicitly a later, out-of-scope optimization (design note, bh-sy36q.5).
+
+**Narrowed out of this bead** (left on the pre-existing `bd`-read implementation, with reason,
+recorded in the bead's NOTES): the hive-level dispatch picker
+(`beadhive.dispatch_hive_run.kicked_off_ready_epics`, `bh host dispatch run`'s `bd ready --limit 0`
+poll) — a distinct, deliberately-dumb supervisor-level picker that takes only a bare `hive_dir`,
+not a registry `entry`; `bh work readiness` (`beadhive.work_reads.molecule_readiness_payload`) and
+`bh plan swarm` (`beadhive.plan`'s `bd swarm list` / `bd swarm status` reader) — neither is named
+by any `work.*` route in the bh-97fo0.3 matrix, and `bh plan swarm` reads a DIFFERENT Beads
+construct (`bd swarm`, a `type:molecule`/`mol_type:swarm` tracking bead) than Beadhive's own
+epic-parented molecule this cohort's four routes serve.
+
 ## Tests
 
 - `test_core_routing_policy.py` — every matrix row resolves to exactly one typed route; capability
@@ -467,3 +533,40 @@ returned rather than a request-local key.
   linking including the native-`source_system` `bd import` birth); one test proves the shell
   selects the api-ready route instead when a session opens, submitting the whole molecule in one
   `BatchApply` request while gates/kickoff still go through the same `bd` route either way.
+- `test_core_dispatch_policy.py` (bh-sy36q.5) — every route name traced to the installed matrix;
+  `molecule_progress` / `local_loop_state` each re-derived per call (never cached) and attributed
+  as distinct named routes even though both call `get_issue`; `swarm_members` narrowing a
+  recursive fetch to the direct edge and keeping closed/infra rows; `event_rows` NOT narrowing to
+  the direct edge; `poll_ready` re-derived per call and honoring `parent` scoping; capability
+  gating refuses before any request reaches the transport. Generated-client transport fixtures
+  only — no FakeBd, no Beads state emulator.
+- `test_core_dispatch_real_service.py` — opt-in (`BEADS_DISPATCH_SCRATCH=1 ... -m real_service`)
+  proof, against a disposable OWNED-mode scratch hive it creates and reaps: a read taken after an
+  external `bd` write (standing in for a restart) sees the new state immediately; a closed child
+  and a closed infra event row are visible only once `all_`/`include_infra` are asked for; a
+  dependent bead moves from absent to present in `poll_ready`'s result the instant its blocker
+  closes; two independently-opened sessions polling concurrently observe the identical
+  transition. This is also where the `list_issues(parent=...)` non-recursion finding (see the
+  section above) was measured.
+- `packages/beadhive-beads-client/tests/test_session.py` (bh-sy36q.5 addition) —
+  `list_issues`'s widened `status` / `all_` / `include_infra` kwargs land on the wire under
+  `GET /v0/beads/issues`'s own parameter names, and stay at their bd-compatible defaults
+  (`all=false`, `include_infra=false`) when omitted.
+- `tests/test_dispatch_state.py` (new, `beadhive` package) — the composition seam itself:
+  `open_molecule_progress` / `open_local_loop_state` / `open_swarm_members` (narrowing a recursive
+  fetch to the direct edge, mock-transport) / `open_event_rows` (NOT narrowed) / `open_poll_ready`
+  (forwarding `parent`) each route through the API when a session opens and fall back to `None`
+  when it does not — the same pre-execution-selection discipline `tests/test_work_queue.py` proves
+  for `open_children` / `open_ready`.
+- `tests/test_localloop.py` (`beadhive` package) — the EXISTING `FakeBd`-backed fixtures keep
+  passing unmodified (the new route attempt reliably fails to open — no real Beads service in the
+  isolated test environment — and falls through to the same CLI-compatibility forward those tests
+  already exercised); new additions prove `load_molecule` / `claimable_now` / `_default_routing`
+  each try their named `dispatch_state.open_*` route BEFORE reaching `bd` (mocked to answer, `bd`
+  never invoked) and that one routed fetch answering does not force the other two onto the CLI
+  path, nor the reverse. `tests/test_localloop_int.py` (unmodified) re-proves restart-is-a-no-op
+  against a REAL `bd` process with the routed reads wired in underneath it.
+- `tests/test_work_next.py` (`beadhive` package) — one addition proving `_molecule_members`
+  (the `--epic`-scoping read `bh work next --epic` and the loop share) selects
+  `dispatch_state.open_swarm_members` before `bd children`, and that a successful routed answer
+  means `bd` is never reached for it at all.

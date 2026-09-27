@@ -224,6 +224,52 @@ def test_list_issues_forwards_parent_and_sort() -> None:
     assert params["sort"] == "priority"
 
 
+def test_list_issues_forwards_status_all_and_include_infra() -> None:
+    """bh-sy36q.5: widened so a restartable molecule/swarm read can ask for the SAME full
+    membership `bd list --parent <epic> --include-infra --all` returns — closed children and
+    infra rows included, not just the default-exclusion view."""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path == "/healthz":
+            return httpx.Response(200, json={"status": "ok"})
+        if request.url.path == "/v0/beads/context":
+            return httpx.Response(200, json=context())
+        return httpx.Response(200, json={"items": [], "has_more": False})
+
+    with BeadsSession(
+        RemoteEndpoint("http://127.0.0.1:8080"),
+        ExpectedContext("expected", "scratch"),
+        transport=httpx.MockTransport(handler),
+    ) as session:
+        session.list_issues(limit=0, parent="ep-1", all_=True, include_infra=True)
+    params = seen[-1].url.params
+    assert params["all"] == "true"
+    assert params["include_infra"] == "true"
+
+    del seen[:]
+    with BeadsSession(
+        RemoteEndpoint("http://127.0.0.1:8080"),
+        ExpectedContext("expected", "scratch"),
+        transport=httpx.MockTransport(handler),
+    ) as session:
+        session.list_issues(limit=0)
+    params = seen[-1].url.params
+    assert params["all"] == "false"
+    assert params["include_infra"] == "false"
+
+    del seen[:]
+    with BeadsSession(
+        RemoteEndpoint("http://127.0.0.1:8080"),
+        ExpectedContext("expected", "scratch"),
+        transport=httpx.MockTransport(handler),
+    ) as session:
+        session.list_issues(limit=0, status=["closed", "open"])
+    params = seen[-1].url.params
+    assert params.get_list("status") == ["closed", "open"]
+
+
 def test_list_issues_rejects_an_unrecognized_sort_value() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/healthz":

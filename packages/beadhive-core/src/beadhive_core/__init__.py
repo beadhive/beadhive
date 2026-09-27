@@ -7,6 +7,15 @@ supplies the narrow ports (gates, state dimensions) that Beads v1.3 does not exp
 
 from __future__ import annotations
 
+from .dispatch import (
+    DISPATCH_CAPABILITIES,
+    DISPATCH_POLL_ROUTE,
+    DISPATCH_ROUTES,
+    LOCAL_LOOP_STATE_ROUTE,
+    MOLECULE_PROGRESS_ROUTE,
+    SWARM_INSPECT_ROUTE,
+    DispatchCommands,
+)
 from .lifecycle import (
     DISPATCH_DIMENSION,
     ISSUE_ROUTES,
@@ -125,7 +134,10 @@ __all__ = [
     "DECLINES",
     "DECLINE_EMPTY_QUEUE",
     "DECLINE_NONE_ELIGIBLE",
+    "DISPATCH_CAPABILITIES",
     "DISPATCH_DIMENSION",
+    "DISPATCH_POLL_ROUTE",
+    "DISPATCH_ROUTES",
     "EPIC_KEY",
     "GATE_ROUTES",
     "ISSUE_ROUTES",
@@ -133,6 +145,8 @@ __all__ = [
     "LIFECYCLE_CAPABILITIES",
     "LIFECYCLE_ROUTES",
     "LIFECYCLE_STATE_ROUTES",
+    "LOCAL_LOOP_STATE_ROUTE",
+    "MOLECULE_PROGRESS_ROUTE",
     "PARENT_CHILD_EDGE",
     "PLANNING_CAPABILITIES",
     "PLANNING_GATE_ROUTES",
@@ -141,6 +155,7 @@ __all__ = [
     "QUEUE_CAPABILITIES",
     "REVIEW_CAPABILITIES",
     "STATE_ROUTES",
+    "SWARM_INSPECT_ROUTE",
     "AbandonOutcome",
     "ApiRoute",
     "AssignOutcome",
@@ -149,6 +164,7 @@ __all__ = [
     "CompatibilityRoute",
     "CompiledMolecule",
     "DeniedRoute",
+    "DispatchCommands",
     "FileOutcome",
     "FilingOutcome",
     "Gate",

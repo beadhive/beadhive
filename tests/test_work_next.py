@@ -893,3 +893,26 @@ def test_next_epic_scope_reads_membership_one_level_matching_the_loop_s_own_mole
         "exactly ONE membership read: `_molecule_members` shells out to `bd`, so resolving it "
         "per candidate row would spawn a subprocess per ready bead"
     )
+
+
+def test_next_epic_scope_tries_the_swarm_inspect_route_before_bd(nexthive, monkeypatch, capsys):
+    """bh-sy36q.5: `_molecule_members` selects `dispatch_state.open_swarm_members` (the
+    `work.swarm.inspect` route) before execution; when it succeeds `bd children` is never
+    reached at all — the fallback is a pre-execution choice, not a retry after one fails."""
+    fake = _molecule_hive(monkeypatch)
+
+    from beadhive import dispatch_state
+
+    calls: list[tuple] = []
+
+    def fake_open_swarm_members(main, entry, epic):
+        calls.append((main, entry, epic))
+        return [{"id": "e1.2"}]  # only the takeable member — proves this row set is what's used
+
+    monkeypatch.setattr(dispatch_state, "open_swarm_members", fake_open_swarm_members)
+
+    code, payload = _run_next(capsys, epic="e1")
+
+    assert calls and calls[0][2] == "e1"
+    assert fake.list_args == [], "bd children must not be reached when the API route answers"
+    assert (code, payload["bead"]) == (0, "e1.2")
