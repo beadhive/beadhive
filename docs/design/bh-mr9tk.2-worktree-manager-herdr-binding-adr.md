@@ -95,12 +95,12 @@ truth, so a lost/stale handle is always repairable by re-reading inventory.
 
 - **`binds: list[str]`** — presenters a `WorktreeManager` binds as a side effect of its own
   `create`/`attach`. Native declares `binds: []`. A Herdr `WorktreeManager` (Option B, deferred)
-  would declare `binds: ["herdr"]`, because its `create` call already returns a `workspace_id` inline
-  with no separate bind step (E36).
+  would declare `binds: ["herdr"]`, because its `create` call already returns a `workspace_id`
+  inline with no separate bind step (E36).
 - **`remove_releases_bindings: bool`** — whether the manager's `remove` also performs the
   binding release as a side effect. Native declares `false` (it has no binding concept). A Herdr
-  `WorktreeManager` (Option B, deferred) would declare `true`, because `herdr worktree remove` fuses close-and-remove into
-  one call (E13, reconfirmed E39).
+  `WorktreeManager` (Option B, deferred) would declare `true`, because `herdr worktree remove`
+  fuses close-and-remove into one call (E13, reconfirmed E39).
 
 ### Composition rule
 
@@ -189,8 +189,9 @@ order is correct **as written, unmodified, for Option A** — release (Herdr's `
 and the native `remove` are two independent effects, so classification has a real gap to sit in
 between them.
 
-**Amendment, applicable only if Option B is ever adopted:** `herdr worktree remove` fuses close-and-remove into one
-call (`remove_releases_bindings: true`). E39 shows this is not a style question — once that call
+**Amendment, applicable only if Option B is ever adopted:** `herdr worktree remove` fuses
+close-and-remove into one call (`remove_releases_bindings: true`). E39 shows this is not a style
+question — once that call
 returns, the working tree is gone and a `git status --porcelain`-based classification of it
 becomes **permanently unobtainable**, not merely stale (`UNKNOWN (path unreadable)` in the
 probe). A "close → classify → remove" order is therefore structurally impossible for Option B.

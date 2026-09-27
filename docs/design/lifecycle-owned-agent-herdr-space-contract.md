@@ -11,6 +11,8 @@
 > remove` instead, with `remove` performing the close as a side effect. See the linked ADR's
 > "Teardown saga variant" section; no other part of this document changes.
 
+<!-- -->
+
 > Status: **GO, refreshed** (2026-08-30). This decision incorporates the amended `bh-4bhs7.4`
 > managed-seat proof run in addition to spike epic `bh-2m1yw`.
 > Core launch transactions, worktree-scoped Herdr allocation/recovery, and authoritative teardown
