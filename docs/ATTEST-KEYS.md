@@ -10,19 +10,20 @@ an opt-in optimization, and uncertainty always costs more validation rather than
 
 ## This repository's key catalog
 
-The Pants catalog is configured under `work.attest` in the fleet configuration. Keep it aligned
-with `just check-all-pants` in `justfile`; `just check-attest-catalog` checks that partition and
-both explicit native and Pants recipe graphs. The native hive profile removes the catalog and
-uses its single explicit `work.validate_cmd` path; the catalog remains available for rollback.
+The key catalog is configured under `work.attest` in the fleet configuration. The keys partition
+`just check-all-native`, the push gate, and run only the native framework; Pants steps live only
+in the optional `just check-all-pants` profile (whether Pants stays is bh-ahm6x).
+`just check-attest-catalog` checks that partition and both explicit native and Pants recipe
+graphs. The native hive profile removes the catalog and uses its single explicit
+`work.validate_cmd` path; the catalog remains available for rollback.
 
 | Key | Opaque command | Pants selector | Covers |
 |---|---|---|---|
 | `docs` | `just attest-docs` | `attest:docs` | Markdown lint |
 | `unit` | `just attest-unit` | `attest:unit` | Ruff and licence policy |
-| `stateful` | `just attest-stateful` | `attest:stateful` | Proven Pants tests plus the residual native fast suite |
+| `stateful` | `just attest-stateful` | `attest:stateful` | Native stateful suite (hermetic fence) |
 | `integration` | `just attest-integration` | `attest:integration` | Landing integration tests |
 | `architecture-contracts` | `just attest-architecture-contracts` | `attest:architecture-contracts` | Architecture, transport, wire, and proof contracts |
-| `package` | `just attest-package` | `attest:package` | Pants package attestation and recursive PEX proof |
 | `packages` | `just attest-packages` | `attest:packages` | Ruff and sandboxed tests for every `packages/*` distribution |
 | `demos` | `just attest-demos` | `attest:demos` | Local-loop and live-ingress operator demos |
 
