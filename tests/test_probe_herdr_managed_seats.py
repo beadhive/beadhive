@@ -17,7 +17,7 @@ def _fake_herdr(path: Path) -> Path:
 set -euo pipefail
 echo "$*" >>"$BH_PROBE_LOG"
 case "$*" in
-  *"workspace create"*)
+  *"worktree open"*)
     printf '%s\n' '{"result":{"root_pane":{"pane_id":"pane-root"},'\
 '"workspace":{"workspace_id":"workspace-proof"}}}' ;;
   *"pane split"*)

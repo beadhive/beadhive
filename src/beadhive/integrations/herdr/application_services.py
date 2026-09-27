@@ -63,6 +63,7 @@ from beadhive.modules.agents.domain import (
     AgentLaunchReceipt as CoreAgentLaunchReceipt,
 )
 from beadhive.modules.agents.domain.transaction import ObserveLaunchRequest
+from beadhive_worktrees import WorktreeHandle, WorktreeLifecycleService
 
 from . import application_runtime as runtime
 from .agent_adapter import (
@@ -115,6 +116,7 @@ from .transport import (
     invoke_command,
 )
 from .transport_types import HerdrResult
+from .workspace_binding import DELETED_SUFFIX, PRESENTER, HerdrWorkspaceBinding
 
 _LEGACY_DEPENDENCY_NAMES = frozenset(
     {
@@ -1429,8 +1431,13 @@ def _required_id(result, action: str, record: str, *keys: str) -> str:
     return identifier
 
 
-def _workspace_from_snapshot(label: str) -> tuple[str, str] | None:
-    """Find a previously-created bh workspace by its visible label, if snapshot is usable."""
+def _bound_workspace_from_snapshot(workspace_id: str, path: Path) -> tuple[str, str] | None:
+    """Prove a *stored* binding reference is still live for exactly ``path``, and find its pane.
+
+    Workspace ids are reused after a close, so the stored id only counts when Herdr's own record
+    for it is bound to this exact checkout and is not an orphaned ``(deleted)`` workspace (E31).
+    Anything short of that returns ``None`` and the caller re-binds with ``open --path``.
+    """
     result = _command("api", "snapshot")
     if result is None or result.returncode != 0:
         return None
@@ -1439,19 +1446,23 @@ def _workspace_from_snapshot(label: str) -> tuple[str, str] | None:
         data = data["snapshot"]
     if not isinstance(data, dict):
         return None
-
     workspaces = data.get("workspaces")
     if not isinstance(workspaces, list):
         return None
     workspace = next(
-        (item for item in workspaces if isinstance(item, dict) and item.get("label") == label),
+        (
+            item
+            for item in workspaces
+            if isinstance(item, dict) and _string_field(item, "workspace_id", "id") == workspace_id
+        ),
         None,
     )
-    if workspace is None:
+    if workspace is None or str(workspace.get("label") or "").endswith(DELETED_SUFFIX):
         return None
-    workspace_id = _string_field(workspace, "workspace_id", "id")
-    if workspace_id is None:
-        _response_error("workspace lookup", "workspace_id")
+    bound = workspace.get("worktree")
+    checkout = _string_field(bound, "checkout_path")
+    if checkout is None or not _same_path(checkout, path):
+        return None
 
     pane_id = _string_field(workspace, "root_pane_id", "focused_pane_id", "pane_id")
     layouts = data.get("layouts")
@@ -1476,33 +1487,69 @@ def _workspace_from_snapshot(label: str) -> tuple[str, str] | None:
             None,
         )
         pane_id = _string_field(pane, "pane_id", "id")
-    if pane_id is None:
-        _response_error("workspace lookup", "pane_id")
-    return workspace_id, pane_id
+    return (workspace_id, pane_id) if pane_id is not None else None
 
 
-def _workspace(hive: str, cwd: Path) -> tuple[str, str]:
-    """Reuse the hive's isolated workspace, or create it without focusing the operator's TTY."""
-    label = f"bh:{hive}"
-    if existing := _workspace_from_snapshot(label):
-        return existing
-    result = _command("workspace", "create", "--cwd", str(cwd), "--label", label, "--no-focus")
-    output = _require(result, "workspace create")
-    decoded = _decoded(result)
-    if isinstance(decoded, str):
-        return output, f"{output}:p1"
-    payload = _result_payload(decoded)
-    workspace = payload.get("workspace") if isinstance(payload, dict) else None
-    root_pane = payload.get("root_pane") if isinstance(payload, dict) else None
-    if root_pane is None and isinstance(payload, dict):
-        root_pane = payload.get("pane")
-    workspace_id = _string_field(workspace, "workspace_id", "id")
-    pane_id = _string_field(root_pane, "pane_id", "id")
-    if workspace_id is None:
-        _response_error("workspace create", "workspace_id")
-    if pane_id is None:
-        _response_error("workspace create", "pane_id")
-    return workspace_id, pane_id
+def _binding_store():
+    """The durable per-worktree binding record, reached through the ``worktree`` composition
+    port (``beadhive.worktree_bindings.STORE``); a monkeypatch seam for tests."""
+    return worktree.binding_store()
+
+
+def _herdr_binding(hive: str) -> HerdrWorkspaceBinding:
+    """The Herdr ``workspace.binding`` for the active session, labelled ``bh:<hive>``."""
+    return HerdrWorkspaceBinding(lambda *args: _command(*args), label=f"bh:{hive}")
+
+
+def _binding_service(binding: HerdrWorkspaceBinding) -> WorktreeLifecycleService:
+    """Compose the Herdr binding against the ONE selected manager by the ADR rule.
+
+    The binding is dropped when the manager already binds Herdr itself (``binds`` contains
+    ``"herdr"``); for the native manager it is always composed.
+    """
+    manager = worktree._selected_worktree_manager(config.load())
+    return WorktreeLifecycleService(manager=manager, bindings=(binding,))
+
+
+class HerdrBindingGap(RuntimeError):
+    """Herdr could not bind a managed worktree; the claim and worktree are retained (E33)."""
+
+
+def _workspace(hive: str, cwd: Path, main: Path | None = None) -> tuple[str, str]:
+    """Bind the exact worktree ``cwd`` to a Herdr workspace and return ``(workspace, pane)``.
+
+    Stored binding first: the workspace id recorded for this worktree is reused when Herdr still
+    holds it bound to exactly this checkout. Otherwise the worktree is (re-)bound with the one
+    reconciliation primitive, ``herdr worktree open --path <exact>`` (E48) — idempotent, so a
+    crash between create and bind, a stale id, or a lost record all converge on the same bound
+    workspace (E34, E35). The bind intent is recorded *before* the open so an outage leaves a
+    visible, repairable gap rather than silence; a failure raises :class:`HerdrBindingGap` and
+    never touches the native claim (E33). No path here issues ``workspace create --cwd``.
+    """
+    store = _binding_store()
+    session = _active_session().name
+    record = store.read(cwd).get(PRESENTER)
+    if record is not None and record.reference and record.session == session:
+        if live := _bound_workspace_from_snapshot(record.reference, cwd):
+            return live
+    binding = _herdr_binding(hive)
+    service = _binding_service(binding)
+    if service.binding(PRESENTER) is None:
+        # The selected manager binds Herdr itself (``binds`` contains "herdr"): its own
+        # reference is the only binding; never compose a second, redundant one.
+        raise HerdrBindingGap(f"the worktree manager left {cwd} without a live Herdr binding")
+    store.record_intent(cwd, PRESENTER, session)
+    main = main or store.main_checkout(cwd) or cwd
+    bound = service.bind(WorktreeHandle(cwd.name, main, cwd, ""))
+    opened = binding.last_opened
+    if bound.gaps or opened is None:
+        detail = bound.gaps[0].detail if bound.gaps else "worktree open returned no workspace"
+        raise HerdrBindingGap(
+            f"binding gap: {detail}; the claim and worktree {cwd} are retained unbound — the "
+            f"next launch re-binds it, or repair now with `bh worktree rebind --hive {hive}`"
+        )
+    store.record(cwd, PRESENTER, session, opened.workspace_id)
+    return opened.workspace_id, opened.root_pane_id
 
 
 class _ManagedWorktreeRefusal(ValueError):
@@ -2556,7 +2603,9 @@ def _launch_provider_effect(
         root_pane = create.after_pane_id
     else:
         try:
-            workspace, root_pane = _workspace(resolved_hive, claim.worktree)
+            workspace, root_pane = _workspace(
+                resolved_hive, claim.worktree, getattr(claim, "main", None)
+            )
         except Exception as exc:  # noqa: BLE001 - optional provider failure is stage-labelled
             _launch_fail("workspace", str(exc) or "workspace unavailable", claim=claim)
 
@@ -4114,7 +4163,11 @@ def _spawn_cmd(
                         True,
                     )
                 )
-            workspace, root_pane = _workspace(canonical_hive, cwd)
+            try:
+                workspace, root_pane = _workspace(canonical_hive, cwd)
+            except HerdrBindingGap as exc:
+                runtime.notice(f"✗ herdr {exc}", err=True)
+                raise runtime.Stop(1) from None
             split = _command(
                 "pane",
                 "split",

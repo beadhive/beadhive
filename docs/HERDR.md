@@ -118,7 +118,7 @@ sets the ownership line so this remains an optional interactive surface, not a p
 | `bh plugin herdr add --local PATH` | `herdr plugin link PATH --enabled` | Explicitly link the validated `beadhive.herdr` package during private development; `--managed-ref REF --yes` installs the known GitHub source after release |
 | `bh plugin herdr integrate <kind>` | `herdr integration install <kind>` | Explicit opt-in per agent kind — do not auto-install every kind on onboard |
 | `bh plugin herdr launch <bead-id>` | exact hive lookup → native `bh work claim` → live reuse or warm agent creation | High-level get-or-create path: the bead ID is the only required input; returns the session, target, and retained native worktree |
-| `bh plugin herdr spawn --hive <id> --bead <id> --kind claude` | existing worktree → `workspace create` (or reuse) → `pane split` → `agent start` → warm-up pass | Low-level escape hatch when the caller intentionally prepared the claim and worktree itself; accepts the same explicit session selection as `launch` |
+| `bh plugin herdr spawn --hive <id> --bead <id> --kind claude` | existing worktree → stored binding or `worktree open --path` → `pane split` → `agent start` → warm-up pass | Low-level escape hatch when the caller intentionally prepared the claim and worktree itself; accepts the same explicit session selection as `launch` |
 | `bh plugin herdr dispatch <target> "<prompt>"` | metadata-backed ownership proof → local socket or legacy `agent prompt` → bounded readback | Safe stdin/file input uses Herdr's structured socket acknowledgement; the legacy positional form additionally requires a new exact prompt occurrence in visible pane content |
 | `bh plugin herdr watch <target>` | `agent wait --until blocked` | For a dispatcher polling loop: block until an agent needs input or finishes |
 | `bh plugin herdr ps` | `agent list` / `api snapshot` | Fleet view: every live herdr-managed agent, its hive/bead if tagged, and its lifecycle state — the natural `bh hive status`-style dashboard row |
@@ -136,8 +136,25 @@ sets the ownership line so this remains an optional interactive surface, not a p
   installed, for `bh hive ready`.
 - `wt_create` / `wt_remove` — **retired for every plugin** (bh-055ot.1): the one configured
   `worktrees.manager` (native `git worktree`) owns worktree mechanics, and a plugin declaring
-  either hook is refused. herdr's future role is a `workspace.binding` (presentation only), never
-  a second worktree owner.
+  either hook is refused. Herdr is a `workspace.binding` (presentation only, bh-cb4jo), never a
+  second worktree owner — see "Workspace binding" below and
+  [WORKTREES.md](WORKTREES.md#presentation-bindings-herdr).
+
+### Workspace binding
+
+Herdr presents each managed worktree in its own workspace, bound to the exact checkout with
+`herdr worktree open --cwd <main> --path <exact> --label bh:<hive> --no-focus` — never a plain
+`workspace create --cwd`, which would be an unbound workspace Herdr cannot relate to the
+worktree (E48). The bind is composed only because the native manager binds nothing itself
+(`binds: []`); a manager that already binds Herdr gets no second binding.
+
+`launch` and `spawn` read the worktree's recorded workspace id first and reuse it when Herdr
+still holds it bound to exactly that checkout; otherwise they re-bind with the same idempotent
+`open --path` (a repeat returns the same `workspace_id`, E34) and record the new id. The id is
+only a cache: `herdr worktree list` re-derives it (`open_workspace_id`, E35). If Herdr is
+unavailable at bind time the native claim and worktree are retained, the bind intent stays
+recorded as a gap, and the launch fails at `stage=workspace` with the repair route — nothing is
+rolled back (E33).
 
 ### Launch one bead
 
@@ -166,8 +183,8 @@ name, `bh:<hive>` workspace, live state, pane, and exact worktree cwd all match.
 conflict is refused. Herdr's unique agent-name boundary fences concurrent launches: a loser
 closes only the pane it created and returns the proven winner. Later startup or warm-up failure
 also closes only that new pane; the successful native claim and worktree are retained and the
-error prints status, attach, and retry guidance. No path invokes `herdr worktree create`, `open`,
-or `remove`.
+error prints status, attach, and retry guidance. No path invokes `herdr worktree create` or
+`remove`; `herdr worktree open --path` is used only to bind the already-claimed worktree.
 
 Exact managed profiles provide canonical developer, dispatcher, and planner seat authority for
 both Claude and Codex. After a Beadhive/plugin/client restart, `launch` adopts only an exact
