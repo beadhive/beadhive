@@ -752,6 +752,44 @@ def _relocate_bd_gitignore(base=None) -> bool:
     return True
 
 
+def _ensure_bd_backup_gitignored(base=None) -> bool:
+    """Ignore bd's live and rotated Dolt backup stores in every newly initialized hive.
+
+    bd's generated `.beads/.gitignore` covers `backup/`, but bh's retention command also creates
+    sibling `backup.<timestamp>/` generations. Those stores are regenerable artifacts and must
+    not make an otherwise clean worktree dirty. Furnished hives keep the rules in their tracked
+    `.beads/.gitignore`; zero-footprint hives keep them in the common Git exclude file.
+    """
+    base = _base(base)
+    patterns = ("backup/", "backup.*/")
+    gitignore = base / ".beads/.gitignore"
+    if gitignore.is_file():
+        existing = gitignore.read_text()
+        lines = existing.splitlines()
+        additions = [pattern for pattern in patterns if pattern not in lines]
+        if not additions:
+            return False
+        separator = "" if not existing or existing.endswith("\n") else "\n"
+        gitignore.write_text(existing + separator + "\n".join(additions) + "\n")
+        return True
+
+    exclude = base / ".git/info/exclude"
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    existing = exclude.read_text() if exclude.exists() else ""
+    # Keep these narrower rules even when `.beads/` is currently stealth-excluded: furnishing
+    # later removes that broad rule, while the backup stores must remain ignored.
+    entries = ("/.beads/backup/", "/.beads/backup.*/")
+    additions = [pattern for pattern in entries if pattern not in existing.splitlines()]
+    if not additions:
+        return False
+    separator = "" if not existing or existing.endswith("\n") else "\n"
+    block = "# bd Dolt backup stores (bh-eu0oi)\n" + "\n".join(additions) + "\n"
+    if existing:
+        block = "\n" + block
+    exclude.write_text(existing + separator + block)
+    return True
+
+
 def cleanup_failed_bd_init(base=None) -> None:
     """Undo whatever a FAILED, fresh `bd init`/`bd bootstrap` left behind, so a retry starts
     genuinely clean instead of tripping over wreckage (bh-areg.7's own review finding: a

@@ -17,6 +17,7 @@ from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from .modules.config.contracts import (
+    BD_BACKUP_STORE_GLOBS,
     DEFAULT_JUNK_GLOBS,
     DEFAULT_PRECIOUS_GLOBS,
     DEFAULT_PRECIOUS_MIN_BYTES,
@@ -183,7 +184,10 @@ def scan_precious(
         capture=True,
     )
     precious_patterns = tuple(str(item) for item in precious_globs)
-    junk_patterns = tuple(str(item) for item in junk_globs)
+    # bd's native backup is a regenerable artifact, never user data the worktree retention
+    # scanner should hold. Keep this mandatory even when a per-hive junk_globs override replaces
+    # the normal defaults; an operator opting into backups should not make every seat unprunable.
+    junk_patterns = tuple(dict.fromkeys((*map(str, junk_globs), *BD_BACKUP_STORE_GLOBS)))
     found: list[PreciousFile] = []
 
     for relative in _status_paths(result.stdout or ""):

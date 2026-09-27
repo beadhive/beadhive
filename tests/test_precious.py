@@ -75,6 +75,40 @@ def test_scan_precious_classifies_ignored_and_untracked_content(tmp_path, monkey
     assert not [path for path in by_path if path.startswith("node_modules")]
 
 
+def test_bd_backup_store_is_always_excluded_even_with_custom_taxonomy(tmp_path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    beads_ignore = repo / ".beads" / ".gitignore"
+    beads_ignore.parent.mkdir()
+    beads_ignore.write_text("backup/\nbackup.*/\n")
+    _git(repo, "add", ".beads/.gitignore")
+    _git(
+        repo,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-qm",
+        "test: ignore bd backup store",
+    )
+    for name in ("backup", "backup.20260927T120000Z"):
+        store = repo / ".beads" / name
+        store.mkdir(parents=True)
+        (store / "table.darc").write_bytes(b"x" * (2 * 1024 * 1024))
+
+    assert (
+        scan_precious(
+            repo,
+            precious_globs=[".beads/backup/**"],
+            junk_globs=[],
+            min_bytes=1,
+        )
+        == []
+    )
+
+
 def test_junk_is_rejected_before_any_filesystem_measurement(monkeypatch, tmp_path) -> None:
     result = subprocess.CompletedProcess(
         args=["git"], returncode=0, stdout="!! node_modules/\0!! .env\0", stderr=""

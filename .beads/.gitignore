@@ -59,6 +59,7 @@ dolt-pprof/
 
 # Backup data (auto-exported JSONL, local-only)
 backup/
+backup.*/
 
 # bd's own backup bookkeeping — dolt-backup.json holds an ABSOLUTE machine-local
 # path, so committing it publishes this host's layout to every clone (bh-aef0f).

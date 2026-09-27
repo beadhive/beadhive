@@ -489,6 +489,12 @@ commits the scaffold as `chore(agf): hive scaffolding (beads + agent config)` (r
 if unpushed, or commit as `chore(agf): hive scaffolding repair`). External hives (forks /
 distinct-upstream repos) can never be furnished.
 
+Recurring Dolt backups are opt-in for shared-server hives; onboarding does not enable them based
+on a Git remote. If you explicitly enable bd's filesystem backup, keep its destination at the
+gitignored `.beads/backup/` path (or outside the checkout). Onboarding also ignores rotated
+`.beads/backup.<timestamp>/` stores. Worktree status and prune treat these generated backup
+stores as artifacts, so they do not make an otherwise clean seat dirty or held.
+
 ---
 
 ## Phase 6 — Hive onboarding

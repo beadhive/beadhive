@@ -7,9 +7,8 @@ mock of `hive.run`. Proves the three things a hermetic test can't:
      `BEADS_DOLT_SHARED_SERVER` env var auto-starts one transparently. This is the empirical
      basis for shipping this as the DEFAULT rather than opt-in (see the bead's own report):
      a brand-new user never has to know a server exists, let alone start one.
-  2. `backup.enabled` really lands True when a git remote is present (constraint 4), and is
-     left at bd's own default otherwise — never manufacturing a durability difference that
-     was never real.
+  2. `backup.enabled` is not turned on by onboarding even when a git remote is present, and
+     bd's live and rotated `.beads/backup` stores are ignored by Git.
   3. An EXISTING embedded hive is genuinely untouched by re-running onboard (constraint 2):
      install, "upgrade" (re-run onboard), verify `dolt_mode` is unchanged on disk and every
      verb still works.
@@ -138,7 +137,9 @@ def _ctx(target, *, furnish: bool) -> onboard.Ctx:
 # ---------------------------------------------------------------------------
 
 
-def test_furnished_path_lands_on_server_mode_with_backup_on(tmp_path, isolated_shared_server):
+def test_furnished_path_leaves_auto_backup_off_and_ignores_backup_store(
+    tmp_path, isolated_shared_server
+):
     remote = tmp_path / "origin.git"
     remote.mkdir()
     git("init", "-q", "--bare", "-b", "main", cwd=remote)
@@ -150,9 +151,21 @@ def test_furnished_path_lands_on_server_mode_with_backup_on(tmp_path, isolated_s
         metadata = json.loads((target / ".beads" / "metadata.json").read_text())
         assert metadata["dolt_mode"] == "server"
         assert bd_json("config", "get", "dolt.shared-server", cwd=target).get("value") == "true"
-        # constraint 4: a git remote is present, so backup.enabled must land True — a hive
-        # minted straight onto server mode must not be born less durable than embedded.
-        assert bd_json("config", "get", "backup.enabled", cwd=target).get("value") is True
+        # Shared-server backup stays opt-in even for a remote-backed hive; per-worktree copies
+        # otherwise multiply the same Dolt store. An explicit backup and its rotated generations
+        # are ignored so they do not dirty the hive.
+        assert bd_json("config", "get", "backup.enabled", cwd=target).get("value") is not True
+        status_before_backup = git("status", "--porcelain", cwd=target).stdout
+        backup_paths = (
+            (".beads/backup/probe.json", "ignored live backup artifact\n"),
+            (".beads/backup.20260927T120000Z/probe.json", "ignored rotated backup artifact\n"),
+        )
+        for relative, contents in backup_paths:
+            backup_probe = target / relative
+            backup_probe.parent.mkdir(parents=True, exist_ok=True)
+            backup_probe.write_text(contents)
+            assert git("check-ignore", "-q", relative, cwd=target).returncode == 0
+        assert git("status", "--porcelain", cwd=target).stdout == status_before_backup
         # bd verbs work against the freshly-minted store (not just "the command exited 0").
         assert create(target, "smoke test issue")
     finally:

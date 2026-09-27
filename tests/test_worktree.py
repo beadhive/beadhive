@@ -3574,6 +3574,65 @@ def test_prune_native_deletes_merged_branch_after_removal(tmp_path, monkeypatch)
     assert worktree._branch_exists(repo, branch) is False
 
 
+def test_prune_removes_clean_merged_worktree_with_bd_backup_artifacts(
+    tmp_path, monkeypatch, capsys
+):
+    """An ignored bd backup store is neither dirty nor precious, so it cannot hold a SAFE seat."""
+    from beadhive import metadata
+
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    ignore = repo / ".beads" / ".gitignore"
+    ignore.parent.mkdir()
+    ignore.write_text("backup/\nbackup.*/\n")
+    _git("add", ".beads/.gitignore", cwd=repo)
+    _git("commit", "-qm", "test: ignore bd backup store", cwd=repo)
+
+    branch = "wt/bead/issue/backup-only"
+    target = _add_real_worktree(repo, entry, "backup-only", branch)
+    for backup_name in ("backup", "backup.20260927T120000Z"):
+        backup_file = target / ".beads" / backup_name / "store" / "table.darc"
+        backup_file.parent.mkdir(parents=True)
+        backup_file.write_bytes(b"x" * (2 * 1024 * 1024))
+
+    row = ("mr", str(target), branch)
+    monkeypatch.setattr(config, "load", lambda: cfg)
+    monkeypatch.setattr(worktree.registry, "resolve_hive", lambda _cfg, _hive: entry)
+    monkeypatch.setattr(
+        worktree,
+        "_prune_load_entries",
+        lambda _cfg: ({"mr": repo}, {"mr": "github/myorg/myrepo"}, {"mr": entry}),
+    )
+    monkeypatch.setattr(worktree, "_prune_sweep_orphans", lambda _entries, _want: 0)
+    monkeypatch.setattr(worktree, "managed", lambda _cfg: [row])
+    monkeypatch.setattr(worktree.registry, "hive_key", lambda _entry: "github/myorg/myrepo")
+    monkeypatch.setattr(metadata, "read_fleet", lambda _cfg, _keys, ttl: {})
+    monkeypatch.setattr(worktree.config, "integration_branch", lambda _cfg, _entry: "main")
+    monkeypatch.setattr(
+        worktree,
+        "_bead_statuses_for_entry",
+        lambda _entry, _rows: ({"backup-only": "closed"}, {"backup-only": "merged"}, {}, ""),
+    )
+    monkeypatch.setattr(worktree, "_bead_disposition_relations_for_entry", lambda *_args: {})
+    monkeypatch.setattr(
+        worktree,
+        "bead_and_parent",
+        lambda _entry, _path, _integration, _branch: ("backup-only", "main"),
+    )
+    monkeypatch.setattr(worktree, "is_merged", lambda _entry, _branch, _base: True)
+    monkeypatch.setattr(plugins, "registry", lambda: [])
+
+    [status] = worktree._classify_entry(entry, [row], cfg)
+    assert status.classification is wt_status.WtClassification.SAFE
+    assert status.dirty is False
+    assert status.precious == ()
+    assert status.safe is True
+
+    worktree.prune(hive="mr")
+
+    assert not target.exists()
+    assert "✓ pruned 1 SAFE worktree(s)" in capsys.readouterr().out
+
+
 def test_prune_delegated_removal_skips_native_branch_delete(tmp_path, monkeypatch):
     """A delegated removal owns its own branch cleanup — native prune must NOT also run
     `git branch -D` (never native removal — including branch cleanup — after a successful
