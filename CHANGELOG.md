@@ -13,6 +13,41 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.19.0 (2026-09-27)
+
+### Feat
+
+- **validation**: add audited one-shot override
+- **validation**: add audited per-hive bypass
+- **validation**: emit per-invocation junit reports
+- **attest**: add native path key selection
+- **work**: serve approve and bounce from beadhive-core
+- **core**: add beadhive-core with API-first approve and bounce handlers
+- **host**: own one supervised bd serve per hive via bh host beads and the host daemon
+- **beads-client**: supervise one loopback bd serve per workspace with a verified resolver
+- **wire**: cut v1.5.0 as the supported wire baseline and deprecate v1.0.0-v1.4.0
+- **beads-client**: compose verified local and remote sessions
+- **beads-client**: pin and generate Beads v1.3 SDK
+
+### Fix
+
+- **packaging**: exclude local uv tools from sdist
+- **validation**: preserve fenced test reports
+- **test**: keep schedule idempotency run live
+- **release**: resolve gate from fleet config
+- **validation**: reuse outer check permit
+- **packages**: give the Beads client package test a unique basename
+- **beads-client**: complete downstream operation routing
+- **beads-client**: keep SDK checks inside attested native step
+
+### Refactor
+
+- **validation**: retire checked proof artifacts
+
+### Perf
+
+- **test**: cache contract release per worker
+
 ## v0.18.1 (2026-09-26)
 
 ### Fix
