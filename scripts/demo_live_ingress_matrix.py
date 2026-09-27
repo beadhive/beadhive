@@ -355,6 +355,13 @@ def parity(root: Path, *, python_executable: str | None = None) -> dict:
         source / "packages" / "beadhive-plugins" / "src" / "beadhive_plugins",
         site / "beadhive_plugins",
     )
+    # beadhive.worktree composition resolves the worktree.manager slot through beadhive_worktrees
+    # (bh-xh8ku.3, depends only on beadhive_plugins) and is imported eagerly from beadhive.cli's
+    # top-level import chain too, so the isolated site needs it vendored the same way.
+    shutil.copytree(
+        source / "packages" / "beadhive-worktrees" / "src" / "beadhive_worktrees",
+        site / "beadhive_worktrees",
+    )
     bootstrap = f"import site,sys;sys.path.insert(0,{str(site)!r});site.addsitedir({str(site)!r});"
     bh = bin_dir / "bh"
     bh_program = bootstrap + "sys.argv[0]='bh';from beadhive.cli import app;app()"

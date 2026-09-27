@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from beadhive.modules.worktrees import (
+from beadhive_worktrees import (
     CallbackWorktreeInventory,
     CreateWorktreeRequest,
     ManagedWorktree,

@@ -18,6 +18,7 @@ members = [
     "beadhive-package-template",
     "beadhive-pants",
     "beadhive-plugins",
+    "beadhive-worktrees",
 ]
 
 [[package]]
@@ -152,6 +153,9 @@ pants = [
 plugins = [
     { name = "beadhive-plugins" },
 ]
+worktrees = [
+    { name = "beadhive-worktrees" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -190,6 +194,7 @@ dev = [
 ]
 pants = [{ name = "beadhive-pants", editable = "packages/beadhive-pants" }]
 plugins = [{ name = "beadhive-plugins", editable = "packages/beadhive-plugins" }]
+worktrees = [{ name = "beadhive-worktrees", editable = "packages/beadhive-worktrees" }]
 
 [[package]]
 name = "beadhive-beads-client"
@@ -237,6 +242,17 @@ requires-dist = [{ name = "beadhive", editable = "." }]
 name = "beadhive-plugins"
 version = "0.1.0"
 source = { editable = "packages/beadhive-plugins" }
+
+[[package]]
+name = "beadhive-worktrees"
+version = "0.1.0"
+source = { editable = "packages/beadhive-worktrees" }
+dependencies = [
+    { name = "beadhive-plugins" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "beadhive-plugins", editable = "packages/beadhive-plugins" }]
 
 [[package]]
 name = "beartype"

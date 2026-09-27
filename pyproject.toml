@@ -86,15 +86,17 @@ build-backend = "hatchling.build"
 exclude = ["/.uv-tools"]
 
 # `bh host beads` supervises the per-hive Beads API service through the Beads client package
-# (bh-bwnys.4), the API-first core serves `bh work approve` / `bounce` (bh-bwnys.1), and the
-# plugin kernel's slot/binding/lifecycle contracts (bh-xh8ku.2) are the stdlib-only package root
-# discovery, the lifecycle dispatcher, and bootstrap import statically — so the installed
-# compatibility shell must carry all three. None of them is published yet, and a hard dependency
-# on an unpublished member is exactly the v0.18.0 standalone-install failure (bh-mxjoy). The
-# wheel therefore ships their import packages from their own source roots (an editable install
-# maps the same directories, never a copy); `attrs` above is the client's only runtime dependency
-# the root does not already declare. Development resolves the editable workspace members through
-# the `core` and `plugins` dependency groups.
+# (bh-bwnys.4), the API-first core serves `bh work approve` / `bounce` (bh-bwnys.1), the
+# plugin kernel's slot/binding/lifecycle contracts (bh-xh8ku.2), and the managed-worktree
+# naming/contracts/native-adapter package (bh-xh8ku.3) are the stdlib-and-plugins-only package
+# root discovery, the lifecycle dispatcher, and bootstrap (plus `beadhive.worktree` composition)
+# import statically — so the installed compatibility shell must carry all four. None of them is
+# published yet, and a hard dependency on an unpublished member is exactly the v0.18.0
+# standalone-install failure (bh-mxjoy). The wheel therefore ships their import packages from
+# their own source roots (an editable install maps the same directories, never a copy); `attrs`
+# above is the client's only runtime dependency the root does not already declare. Development
+# resolves the editable workspace members through the `core`, `plugins`, and `worktrees`
+# dependency groups.
 [tool.hatch.build.targets.wheel]
 packages = [
     "src/beadhive",
@@ -102,6 +104,7 @@ packages = [
     "packages/beadhive-beads-client/src/beadhive_beads_client",
     "packages/beadhive-beads-client/src/beads_v1_3",
     "packages/beadhive-plugins/src/beadhive_plugins",
+    "packages/beadhive-worktrees/src/beadhive_worktrees",
 ]
 
 # In-repo packages (bh-3fcl0.1): every packages/<name>/ is its own distribution and import name.
@@ -115,12 +118,13 @@ beadhive-pants = { workspace = true }
 beadhive-core = { workspace = true }
 beadhive-beads-client = { workspace = true }
 beadhive-plugins = { workspace = true }
+beadhive-worktrees = { workspace = true }
 
 # Both groups are installed by plain `uv sync` (see `[tool.uv] default-groups` below), so dev
 # and CI checkouts keep resolving `beadhive-pants` from the workspace exactly as before this
 # bead — only the PUBLISHED wheel's hard-dependency graph changed.
 [tool.uv]
-default-groups = ["dev", "pants", "core", "plugins"]
+default-groups = ["dev", "pants", "core", "plugins", "worktrees"]
 
 [dependency-groups]
 # The workspace member, for dev/CI only (bh-mxjoy): kept OUT of [project.optional-dependencies]'s
@@ -136,6 +140,11 @@ core = ["beadhive-core", "beadhive-beads-client"]
 # packages above) since discovery, the lifecycle dispatcher, and bootstrap depend on it
 # unconditionally, not as an optional extra.
 plugins = ["beadhive-plugins"]
+# The managed-worktree naming/contracts/native-adapter package (bh-xh8ku.3), depending only on
+# beadhive-plugins, editable from the workspace for dev/CI. The published wheel vendors this
+# import package too (see the wheel packages above) since `beadhive.worktree` composition binds
+# its native provider unconditionally, not as an optional extra.
+worktrees = ["beadhive-worktrees"]
 dev = [
     "editables>=0.5",
     # Exact offline-capable generator for the checked-in Beads v1.3 SDK.

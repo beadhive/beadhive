@@ -83,6 +83,10 @@
     "packages/beadhive-plugins/tests/test_binding.py": {"status": "proven", "dependencies": ["packages/beadhive-plugins/src:lib"]},
     "packages/beadhive-plugins/tests/test_lifecycle.py": {"status": "proven", "dependencies": ["packages/beadhive-plugins/src:lib"]},
     "packages/beadhive-plugins/tests/test_package_boundary.py": {"status": "proven", "dependencies": ["packages/beadhive-plugins/src:lib"]},
+    "packages/beadhive-worktrees/tests/test_adapters.py": {"status": "proven", "dependencies": ["packages/beadhive-worktrees/src:lib"]},
+    "packages/beadhive-worktrees/tests/test_worktrees_package_boundary.py": {"status": "proven", "dependencies": ["packages/beadhive-worktrees/src:lib"]},
+    "packages/beadhive-worktrees/tests/test_policy.py": {"status": "proven", "dependencies": ["packages/beadhive-worktrees/src:lib"]},
+    "packages/beadhive-worktrees/tests/test_services.py": {"status": "proven", "dependencies": ["packages/beadhive-worktrees/src:lib"]},
     "packages/beadhive-pants/tests/test_impact_conformance.py": {"status": "proven", "dependencies": ["beadhive.testing impact conformance kit", "beadhive-pants:lib"]},
     "packages/beadhive-pants/tests/test_package.py": {"status": "proven", "dependencies": ["beadhive-pants packaged resources", "beadhive public contracts"]},
     "packages/beadhive-pants/tests/test_verify.py": {"status": "proven", "dependencies": ["beadhive-pants:lib", "beadhive build verification contracts"]},
@@ -104,9 +108,6 @@
     "tests/unit/modules/state/test_state_services.py": {"status": "proven", "partition": "pants", "dependencies": ["Pants-inferred source dependencies", "tests:root-conftest"]},
     "tests/unit/modules/work/test_work_independence.py": {"status": "proven", "partition": "pants", "dependencies": ["Pants-inferred source dependencies", "tests:root-conftest"]},
     "tests/unit/modules/work/test_work_lifecycle_services.py": {"status": "proven", "partition": "pants", "dependencies": ["Pants-inferred source dependencies", "tests:root-conftest"]},
-    "tests/unit/modules/worktrees/test_adapters.py": {"status": "proven", "partition": "pants", "dependencies": ["Pants-inferred source dependencies", "tests:root-conftest"]},
-    "tests/unit/modules/worktrees/test_policy.py": {"status": "proven", "partition": "pants", "dependencies": ["Pants-inferred source dependencies", "tests:root-conftest"]},
-    "tests/unit/modules/worktrees/test_services.py": {"status": "proven", "partition": "pants", "dependencies": ["Pants-inferred source dependencies", "tests:root-conftest"]},
     "tests/unit/testing/test_conformance_testkit.py": {"status": "proven", "partition": "pants", "dependencies": ["Pants-inferred source dependencies", "tests:root-conftest"]},
     "tests/unit/testing/test_impact_conformance_kit.py": {"status": "proven", "partition": "pants", "dependencies": ["Pants-inferred source dependencies", "tests:root-conftest"]}
   }
