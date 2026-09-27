@@ -58,13 +58,24 @@ def impl__next_payload(
     )
 
 
-def impl_next_(api, as_, hive, as_json, epic):
-    cfg = api.config.load()
-    api.guard.guard_primary(hive, cfg=cfg, verb="work next")
-    main = api.registry.hive_dir_for(cfg, hive)
-    entry = api.registry.entry_for_dir(cfg, main) or {}
-    actor = api.identity.resolve_actor(as_, api.config.work_identity(cfg, entry)["name"] or "")
-    api._pull_state(cfg, main)
+def _next_via_api(api, cfg, hive, main, actor, api_result):
+    """Translate one `work_queue.claim_next` verdict into this verb's own vocabulary.
+
+    The atomic route already decided claimed/refused/reason; this only provisions the worktree
+    for a win, exactly the same `_provision_claim` every other route uses."""
+    claimed = api_result.claimed
+    worktree_path, ident = ("", None)
+    if claimed:
+        worktree_path, ident = api._provision_claim(cfg, hive, main, claimed, actor)
+    return claimed, list(api_result.refused), worktree_path, ident, api_result.reason
+
+
+def _next_via_cli(api, cfg, hive, main, actor, epic):
+    """The CLI-compatibility pick/claim/re-verify loop: `bd ready`, then optimistically claim and
+    re-verify each eligible candidate in ready order, retrying the next one on a lost race.
+
+    Selected explicitly (never as a retry after the atomic route fails) whenever the atomic route
+    does not apply up front — see `work_queue`'s module docstring for exactly when and why."""
     rows = [r for r in api.bd.json(["ready", "--limit", "0"], main) or [] if isinstance(r, dict)]
     if epic:
         members = api._molecule_members(epic, main)
@@ -89,12 +100,51 @@ def impl_next_(api, as_, hive, as_json, epic):
             api.otel.count_bead_transition("claimed")
             worktree_path, ident = api._provision_claim(cfg, hive, main, bead, actor)
             break
+    reason = "" if claimed else api.work_next.decline(rows, tried)
+    return claimed, claim_actor, refused, tried, rows, worktree_path, ident, reason
+
+
+def impl_next_(api, as_, hive, as_json, epic):
+    cfg = api.config.load()
+    api.guard.guard_primary(hive, cfg=cfg, verb="work next")
+    main = api.registry.hive_dir_for(cfg, hive)
+    entry = api.registry.entry_for_dir(cfg, main) or {}
+    actor = api.identity.resolve_actor(as_, api.config.work_identity(cfg, entry)["name"] or "")
+    api._pull_state(cfg, main)
+
+    # Pre-execution route selection (never a retry after an API failure): `--epic` scoping and an
+    # undeclared actor stay on the CLI-compatibility path unconditionally — see `work_queue`'s
+    # module docstring for exactly why. Otherwise, try the atomic `work.claim-next` route; it
+    # returns `None` to mean "select CLI instead" (service absent or a capability missing),
+    # decided before any Beads write is attempted.
+    api_result = None if epic else api.work_queue.claim_next(main, entry, actor)
+    rows: list = []
+    tried: list[str] = []
+    if api_result is not None:
+        claimed, refused, worktree_path, ident, reason = _next_via_api(
+            api, cfg, hive, main, actor, api_result
+        )
+        claim_actor = actor
+        if claimed:
+            tried = [claimed]
+    else:
+        (
+            claimed,
+            claim_actor,
+            refused,
+            tried,
+            rows,
+            worktree_path,
+            ident,
+            reason,
+        ) = _next_via_cli(api, cfg, hive, main, actor, epic)
+
     if claimed:
-        status, reason = ("claimed", "")
+        status = "claimed"
     elif refused and (not tried):
         status, reason = ("refused", "seat_mismatch")
     else:
-        status, reason = ("declined", api.work_next.decline(rows, tried))
+        status = "declined"
     if as_json:
         api.jsonout.emit(
             api._next_payload(

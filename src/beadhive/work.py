@@ -63,6 +63,7 @@ from . import (
     work_merge,
     work_metrics,
     work_next,  # noqa: F401 - injected lifecycle collaborator
+    work_queue,  # noqa: F401 - injected lifecycle collaborator
     work_reads,
     work_refine,
     work_review,
