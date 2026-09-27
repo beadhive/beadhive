@@ -70,6 +70,14 @@ just pkg beadhive-example-build check
 just packages-check
 ```
 
+`packages/_template` is a **library package by default**: the copy above produces a library
+package (no manifest, no dependency on `beadhive`) until you take one further, explicit step.
+To make the copy a **plugin package** instead, add a `plugin.json` manifest under
+`src/beadhive_example_build/` (see the manifest steps later in this section) and its entry in
+the built-in catalog (`BUILTIN_PLUGIN_IDS` in `kernel/plugins/builtins.py`), and add `beadhive`
+to the copied `pyproject.toml`'s `dependencies`. Nothing about the template implies either
+class ahead of that step.
+
 Keep the three copied BUILD files at the package root, `src/`, and `tests/`. Their recursive
 globs cover new Python modules, tests, and declared package data without a BUILD edit. Add any
 new resource suffix to `src/BUILD`'s `resources` glob, since `python_sources` depends on that
@@ -87,11 +95,17 @@ the root workspace installs the package editably.
 > **2026-09-27 amendment.** This section's authoring guidance and import rule are for the
 > **plugin package** class specifically (a package that depends on `beadhive`, carries a
 > `plugin.json` manifest, and is resolved lazily). A second class, **library packages**
-> (`beadhive-plugins`, `beadhive-worktrees`, `beadhive-beads-client`), has the reverse
-> dependency shape: it never imports `beadhive` at all, carries no manifest, and root may
-> import it statically like any other dependency. See
+> (`beadhive-plugins`, `beadhive-worktrees`, `beadhive-beads-client`, `beadhive-core`), has the
+> reverse dependency shape: it never imports `beadhive` at all, carries no manifest, and root
+> may import it statically like any other dependency. A plugin package may import a library
+> package through that library's public `__all__` surface — the checker allows this
+> permission, and a plugin package that imports nothing from `beadhive` at all (built entirely
+> on a library package's contracts) is legitimate, not an error. `packages/_template` is a
+> **library package by default** (see the next section): copying it does not, by itself,
+> produce a plugin package. See
 > [`package-class-library-vs-plugin-adr.md`](design/package-class-library-vs-plugin-adr.md)
-> for the full decision and why the lazy-import rule above applies only to plugin packages.
+> for the full decision, its 2026-09-27 amendment (`bh-xh8ku.1`), and why the lazy-import rule
+> above applies only to plugin packages.
 
 For a `build.verify` provider, implement the runtime-checkable `BuildVerifier` port from
 `beadhive.kernel.plugins.contracts`. `verify(repo: str)` returns a tuple of
