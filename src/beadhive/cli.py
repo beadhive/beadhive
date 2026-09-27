@@ -388,6 +388,20 @@ def _warn_literal_violations_best_effort(ctx: typer.Context) -> None:
         pass
 
 
+def _warn_retired_orca_worktrees_best_effort(ctx: typer.Context) -> None:
+    """Say out loud, once per invocation, that ``orca.worktrees`` no longer does anything
+    (bh-055ot.1): Orca's worktree delegation is retired and the configured
+    ``worktrees.manager`` owns worktree mechanics, so a hive still setting the flag must not
+    believe Orca is creating its worktrees. Same placement rule and same `--help`/completion
+    exemption as the schema-staleness nudge above."""
+    if _is_help_or_completion_invocation(ctx):
+        return
+    try:
+        config.warn_retired_orca_worktrees_if_needed()
+    except Exception:
+        pass
+
+
 def _init_telemetry_best_effort() -> None:
     """Eager telemetry init: this callback runs before every subcommand, so it's the one place
     that activates OTel for a real `ws` command path (otherwise is_active() is forever False
@@ -484,6 +498,7 @@ def _root(
     _warn_stale_schema_version_best_effort(ctx)
     _warn_missing_fleet_config_best_effort(ctx)
     _warn_literal_violations_best_effort(ctx)
+    _warn_retired_orca_worktrees_best_effort(ctx)
     # ``host daemon serve`` owns a daemon-scoped provider for its entire outer lifespan.  Defer
     # generic CLI telemetry through the nested host/daemon callbacks so that supported entrypoint
     # does not consume the process-global SDK first.  Every other command still initializes the

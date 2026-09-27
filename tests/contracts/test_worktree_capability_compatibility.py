@@ -31,16 +31,22 @@ def test_legacy_inventory_keeps_tuple_and_status_object_shapes(monkeypatch) -> N
 
 
 def test_facade_composes_adapters_over_dynamic_patch_points() -> None:
-    source = inspect.getsource(worktree._worktree_lifecycle_service)
-    for seam in (
-        "_run_git",
-        "_notify_wt_create",
-        "_consult_wt_create",
-        "_consult_wt_remove",
-    ):
+    source = "\n".join(
+        inspect.getsource(obj)
+        for obj in (
+            worktree._worktree_lifecycle_service,
+            worktree._selected_worktree_manager,
+            worktree._PluginCreateObserver,
+        )
+    )
+    for seam in ("_run_git", "_notify_wt_create", "config.worktrees_manager"):
         assert seam in source
-    assert "NativeGitWorktreeProvisioner" in source
-    assert "PluginWorktreeProvisioner" in source
+    assert "NativeGitWorktreeManager" in source
+    assert "bind_application_port" in source
+    # bh-055ot.1: one selected manager — no plugin delegation seam, no plugin-first fallback.
+    for retired in ("_consult_wt_create", "_consult_wt_remove", "PluginWorktreeProvisioner"):
+        assert retired not in source
+        assert not hasattr(worktree, retired)
 
 
 def test_cli_and_mcp_keep_rendering_and_payload_ownership() -> None:

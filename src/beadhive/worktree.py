@@ -72,11 +72,13 @@ from .modules.worktrees import (
 )
 from .modules.worktrees import (
     WT_PREFIX,
-    CreateWorktreeRequest,
-    NativeGitWorktreeProvisioner,
-    PluginWorktreeProvisioner,
+    NativeGitBranchInspector,
+    NativeGitWorktreeManager,
     WorktreeBranchPolicy,
+    WorktreeHandle,
     WorktreeLifecycleService,
+    WorktreeManagerError,
+    WorktreeSpec,
     bind_worktree,
     branch_suffix,
     leaf_for_branch,
@@ -513,38 +515,6 @@ def _record_wt_op_duration(
         pass
 
 
-def _consult_wt_create(
-    cfg,
-    entry,
-    *,
-    main: Path,
-    branch: str,
-    target: Path,
-    start_point: str,
-    composition=None,
-) -> Path | None:
-    """Generic delegation seam for a worktree *create*: the first enabled plugin (registry
-    order) defining ``wt_create`` wins. ``None`` (or no enabled plugin defining the hook) means
-    "not handled" — the native `git worktree add` runs instead. A ``typer.Exit`` raised by the
-    hook is the plugin's own hard-fail policy and PROPAGATES; any other exception is best-effort
-    (warn + fall through to native), mirroring retire.py's plugin-notify fence."""
-    request = plugins.WorktreeCreateRequest(main, branch, target, start_point)
-    for port in plugins.worktree_create_ports(cfg, entry, composition=composition):
-        try:
-            result = port.create(cfg, entry, request)
-        except typer.Exit:
-            raise
-        except Exception as exc:  # noqa: BLE001 - defensive fence: a plugin never aborts create
-            typer.echo(
-                f"⚠ plugin {port.plugin_id} wt_create failed, falling back to native: {exc}",
-                err=True,
-            )
-            continue
-        if result is not None:
-            return result
-    return None
-
-
 def _notify_wt_create(
     hook: str,
     cfg,
@@ -572,88 +542,70 @@ def _notify_wt_create(
             )
 
 
-def _consult_wt_remove(
-    cfg, entry, *, main: Path, target: Path, force: bool, keep_branch: bool
-) -> bool:
-    """Generic delegation seam for a worktree *remove*: the first enabled plugin (registry
-    order) defining ``wt_remove`` wins. ``False`` (or no enabled plugin defining the hook) means
-    "not handled" — the native `git worktree remove` runs instead. Same propagation contract as
-    ``_consult_wt_create``: a ``typer.Exit`` PROPAGATES, any other exception warns and falls
-    through to native."""
-    request = plugins.WorktreeRemoveRequest(main, target, force, keep_branch)
-    for port in plugins.worktree_remove_ports(cfg, entry):
-        try:
-            result = port.remove(cfg, entry, request)
-        except typer.Exit:
-            raise
-        except Exception as exc:  # noqa: BLE001 - defensive fence: a plugin never aborts remove
-            typer.echo(
-                f"⚠ plugin {port.plugin_id} wt_remove failed, falling back to native: {exc}",
-                err=True,
-            )
-            continue
-        if result:
-            return True
-    return False
+class _PluginCreateObserver:
+    """Adapt the ``wt_creating``/``wt_created`` plugin observer list to the lifecycle service.
+
+    Observation only: these hooks never own worktree mechanics (that is the one selected
+    ``worktrees.manager``), and one failing observer never blocks the create or a later
+    observer (see ``_notify_wt_create``)."""
+
+    def __init__(self, cfg, entry, composition) -> None:
+        self._cfg = cfg
+        self._entry = entry
+        self._composition = composition
+
+    def creating(self, spec: WorktreeSpec) -> None:
+        _notify_wt_create(
+            "wt_creating",
+            self._cfg,
+            self._entry,
+            main=spec.main,
+            branch=spec.branch,
+            target=spec.path,
+            start_point=spec.base,
+            composition=self._composition,
+        )
+
+    def created(self, handle: WorktreeHandle) -> None:
+        _notify_wt_create(
+            "wt_created",
+            self._cfg,
+            self._entry,
+            main=handle.main,
+            branch=handle.branch,
+            target=handle.path,
+            composition=self._composition,
+        )
+
+
+def _selected_worktree_manager(cfg):
+    """Bind the ONE configured ``worktrees.manager`` through the declared ``worktree.manager``
+    slot (bh-055ot.1). No plugin is consulted in registry order and nothing falls back: the
+    selection is explicit config, ``native`` is the default and the only legal value, and any
+    other value is refused here with the config error's own message."""
+    try:
+        selected = config.worktrees_manager(cfg)
+    except ValueError as exc:  # config.ConfigError — refuse loudly, never fall back to native
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(1) from None
+    # Native is a built-in default, not a discovered plugin: compose the one-entry discovery
+    # result that selects it and obtain the port through the declared worktree.manager slot with
+    # bind_application_port, mirroring how compose_application() binds the built-in
+    # agent.session@1 provider (beadhive/integrations/herdr/cli.py).
+    discovery = DiscoveryResult((), (CapabilitySelection(WORKTREE_MANAGER, selected),), ())
+    providers = (native_worktree_manager_provider_binding(NativeGitWorktreeManager(_run_git)),)
+    return bind_application_port(WORKTREE_MANAGER_KEY, discovery, providers)
 
 
 def _worktree_lifecycle_service(cfg, entry, *, composition=None) -> WorktreeLifecycleService:
-    """Compose typed adapters over the facade's established dynamic patch seams."""
-    plugin = PluginWorktreeProvisioner(
-        preparing=lambda request: _notify_wt_create(
-            "wt_creating",
-            cfg,
-            entry,
-            main=request.main,
-            branch=request.branch,
-            target=request.target,
-            start_point=request.start_point,
-            composition=composition,
-        ),
-        create_delegate=lambda request: _consult_wt_create(
-            cfg,
-            entry,
-            main=request.main,
-            branch=request.branch,
-            target=request.target,
-            start_point=request.start_point,
-            composition=composition,
-        ),
-        created_observer=lambda request, result: _notify_wt_create(
-            "wt_created",
-            cfg,
-            entry,
-            main=request.main,
-            branch=request.branch,
-            target=result.target,
-            composition=composition,
-        ),
-        remove_delegate=lambda request: _consult_wt_remove(
-            cfg,
-            entry,
-            main=request.main,
-            target=request.target,
-            force=request.force,
-            keep_branch=request.keep_branch,
-        ),
-        supports_create=lambda: bool(
-            plugins.worktree_create_ports(cfg, entry, composition=composition)
-        ),
+    """Compose the selected manager, the create-observer list, and the E37 attach guard over
+    the facade's established dynamic patch seams (``_run_git``, ``_notify_wt_create``)."""
+    return WorktreeLifecycleService(
+        manager=_selected_worktree_manager(cfg),
+        observer=_PluginCreateObserver(cfg, entry, composition),
+        branches=NativeGitBranchInspector(_run_git),
         warn=lambda message: typer.echo(f"⚠ {message}", err=True),
     )
-    # The native adapter is a built-in default, not a discovered plugin: compose the one-entry
-    # discovery result that selects it and obtain the port through the declared worktree.manager
-    # slot with bind_application_port, mirroring how compose_application() binds the built-in
-    # agent.session@1 provider (beadhive/integrations/herdr/cli.py) — no ad hoc injection of the
-    # adapter into the lifecycle service.
-    native_adapter = NativeGitWorktreeProvisioner(_run_git)
-    native_discovery = DiscoveryResult((), (CapabilitySelection(WORKTREE_MANAGER, "native"),), ())
-    native = bind_application_port(
-        WORKTREE_MANAGER_KEY,
-        native_discovery,
-        (native_worktree_manager_provider_binding(native_adapter),),
-    )
-    return WorktreeLifecycleService(native=native, plugin=plugin)
 
 
 def _do_add(
@@ -663,29 +615,33 @@ def _do_add(
     Attaching an existing branch prunes stale admin entries first, so a worktree whose dir
     was deleted out-of-band (not via `worktree remove`) doesn't block re-attach.
     `start_point` is only honoured for new-branch creation — it sets the commit the branch
-    forks from (e.g. `wt/bead/epic/<epic>` so the bead sees intra-molecule merged work).
+    forks from (e.g. `wt/bead/epic/<epic>` so the bead sees intra-molecule merged work); an
+    attach never moves the existing branch tip (E37).
 
-    Delegation seam: only the new-branch path may be taken over by a plugin's `wt_create` hook
-    (see `_consult_wt_create`) — attach stays native even when a delegating plugin is enabled
-    (bh's `wt/` branch conventions are authoritative for an existing branch; there's no naming
-    decision left to delegate), with a one-line warning noting the fallthrough."""
+    Mechanics route explicitly to the selected ``worktrees.manager``'s ``create`` or
+    ``attach`` (bh-055ot.1) — there is no plugin delegation seam any more; ``wt_creating`` /
+    ``wt_created`` observers still fire around either."""
     hive = str(entry.get("prefix", ""))
     started = time.monotonic()
     composition = plugins.action_composition(cfg, entry)
     service = _worktree_lifecycle_service(cfg, entry, composition=composition)
-    request = CreateWorktreeRequest(main, br, target, new_branch, start_point)
-    result = service.create(request)
-
-    # Time + tag the create. The error path used to raise BEFORE any emission (always-"ok" gap), so
-    # a failed create recorded nothing — now both the events counter AND the op.duration histogram
-    # fire with outcome=error before the re-raise. Best-effort + gated (verify- trees never reach
-    # this chokepoint; clean_checkout bypasses _do_add entirely).
-    if not result.succeeded:
+    try:
+        if new_branch:
+            handle = service.create(WorktreeSpec(main, br, target, start_point))
+        else:
+            handle = service.attach(WorktreeSpec(main, br, target))
+    except WorktreeManagerError as exc:
+        # Time + tag the create. The error path used to raise BEFORE any emission (always-"ok"
+        # gap), so a failed create recorded nothing — now both the events counter AND the
+        # op.duration histogram fire with outcome=error before the re-raise. Best-effort + gated
+        # (verify- trees never reach this chokepoint; clean_checkout bypasses _do_add entirely).
         elapsed = time.monotonic() - started
         _record_wt_event("create", "error", hive=hive, leaf=target.name)
         _record_wt_op_duration("create", elapsed, "error", hive=hive, leaf=target.name)
-        raise typer.Exit(result.returncode)
-    target = result.target
+        if exc.error:  # native git already streamed its own stderr; name anything else
+            typer.echo(f"✗ {exc.error}", err=True)
+        raise typer.Exit(exc.returncode) from None
+    target = handle.path
     elapsed = time.monotonic() - started
     _record_wt_op_duration("create", elapsed, "ok", hive=hive, leaf=target.name)
     if run_init(cfg, entry, target):

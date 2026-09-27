@@ -81,6 +81,37 @@ The session fallback uses `ts` = UTC `YYYYMMDDTHHMMSSZ` (fixed-width, so a plain
 chronologically) plus a 4-hex-char random suffix for same-second collisions. `-r/--hive` is
 optional — omitted, the hive is derived from the current directory.
 
+## The worktree manager
+
+Exactly **one** configured worktree manager executes worktree mechanics — `create` (a new branch
+at the exact path bh computed), `attach` (an existing branch at the exact path), and `remove` (the
+linked worktree only; the branch always survives). bh's own policy computes every branch name and
+path; the manager never chooses either
+([ADR](design/bh-mr9tk.2-worktree-manager-herdr-binding-adr.md)).
+
+```yaml
+worktrees:
+  manager: native   # the default, and the only legal value
+```
+
+- **Explicit selection, no fallback.** `worktrees.manager` names the manager; there is no
+  auto-detection and no plugin is ever consulted in registry order to create or remove a
+  worktree. Any value other than `native` is refused: `bh config set` rejects it, every
+  invocation logs a `config_literal_value_invalid` warning, and worktree create/attach/remove
+  exit 1 with the reason instead of silently falling back to native git.
+- **Attach never moves a branch tip.** Re-attaching an existing branch never merges, rebases, or
+  fast-forwards it — even when its recorded base has since moved on. bh checks this itself rather
+  than trusting a manager's `--base`-style flag: it reads the tip before and after the attach, warns
+  when the base has diverged, and refuses if a manager ever moved the tip.
+- **Observers stay separate.** Plugins still observe creation through `wt_creating` /
+  `wt_created` (Repowise seeds its index this way); observers never own mechanics, and one failing
+  observer never blocks a create. The old `wt_create` / `wt_remove` delegation hooks are retired —
+  a plugin declaring either is refused — and Orca's delegation with them (see
+  [INTEGRATIONS.md](INTEGRATIONS.md#orca-worktree-delegation-retired)).
+
+The slots themselves (`worktree.manager`, `workspace.binding`) are declared on
+`beadhive-plugins`; the spec/handle types and the native manager live in `beadhive-worktrees`.
+
 ## Batch worktrees — `wt/batch/<group>` and `batch:<epic>` synthesis
 
 A **batch** (or collapsed) run puts several beads in ONE shared worktree instead of one each.
@@ -584,9 +615,9 @@ bh worktree mark-abandoned [-r HIVE] (BEAD | BRANCH) --reason REASON  # record n
 
 The commands above are also a **stable porcelain** for an external orchestrator (an agent
 harness like Orca, or any script) that wants to drive bh worktrees from *outside* a `bh`
-process — the inverse of the plugin seam (`wt_create`/`wt_remove`, see
-[Non-goals](#non-goals) and `src/beadhive/plugins.py`) that lets a plugin take *over* bh's
-own worktree creation. `add`, `path`, `rm`, and `status` each speak `--json` (or, for
+process. (The inverse — a plugin taking *over* bh's own worktree creation through
+`wt_create`/`wt_remove` — is retired; see [The worktree manager](#the-worktree-manager).)
+`add`, `path`, `rm`, and `status` each speak `--json` (or, for
 `path`, a script-stable plain-text form), so a driver never has to scrape human-formatted
 output.
 

@@ -2289,6 +2289,13 @@
           "title": "Init",
           "type": "array"
         },
+        "manager": {
+          "const": "native",
+          "default": "native",
+          "description": "The one worktree manager that creates/attaches/removes this fleet's worktrees. native (git) is the default and only value; anything else is refused.",
+          "title": "Manager",
+          "type": "string"
+        },
         "path": {
           "anyOf": [
             {

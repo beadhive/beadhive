@@ -287,8 +287,6 @@ def test_kernel_disablement_overrides_legacy_enablement_and_never_runs_callback(
         on_onboard=callback,
         on_retire=callback,
         readiness=callback,
-        wt_create=callback,
-        wt_remove=callback,
         wt_creating=callback,
         wt_created=callback,
     )
@@ -324,8 +322,6 @@ def test_kernel_disablement_overrides_legacy_enablement_and_never_runs_callback(
     assert readiness.enabled() is False
     assert readiness.probe(cfg, {}) is None
     assert plugins.retire_observers(cfg, {}) == ()
-    assert plugins.worktree_create_ports(cfg, {}) == ()
-    assert plugins.worktree_remove_ports(cfg, {}) == ()
     assert plugins.worktree_observers("wt_creating", cfg, {}) == ()
     assert plugins.worktree_observers("wt_created", cfg, {}) == ()
     assert calls == []
@@ -492,17 +488,38 @@ def test_worktree_hooks_default_to_none():
     assert p.onboard_requires_opt_in is False
 
 
-def test_worktree_hooks_are_settable():
+def test_worktree_observer_hooks_are_settable():
     p = plugins.Plugin(
         name="x",
         cli=typer.Typer(),
         enabled=lambda cfg, entry: True,
-        wt_create=lambda cfg, entry, **kw: None,
-        wt_remove=lambda cfg, entry, **kw: False,
         wt_creating=lambda cfg, entry, **kw: None,
         wt_created=lambda cfg, entry, **kw: None,
     )
-    assert p.wt_create is not None
-    assert p.wt_remove is not None
     assert p.wt_creating is not None
     assert p.wt_created is not None
+
+
+@pytest.mark.parametrize("hook", ["wt_create", "wt_remove"])
+def test_retired_worktree_delegation_hooks_are_refused_at_declaration(hook):
+    """bh-055ot.1: exactly one configured worktrees.manager owns worktree mechanics, so a plugin
+    declaring the retired delegation hooks fails loudly instead of being consulted (or silently
+    ignored) in registry order."""
+    with pytest.raises(ValueError, match="worktree delegation hooks are retired"):
+        plugins.Plugin(
+            name="x",
+            cli=typer.Typer(),
+            enabled=lambda cfg, entry: True,
+            **{hook: lambda cfg, entry, **kw: None},
+        )
+
+
+def test_no_worktree_delegation_ports_remain():
+    for name in (
+        "worktree_create_ports",
+        "worktree_remove_ports",
+        "WorktreeCreatePort",
+        "WorktreeRemovePort",
+        "WorktreeRemoveRequest",
+    ):
+        assert not hasattr(plugins, name)

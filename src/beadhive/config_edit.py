@@ -127,6 +127,13 @@ def literal_violations(api, cfg=None) -> list[dict]:
     return violations
 
 
+#: Literal keys whose out-of-range value is REFUSED at use rather than replaced by the default,
+#: so the load-time nudge must not claim the default is in effect.
+REFUSED_LITERALS = {
+    "worktrees.manager": "worktree create/attach/remove refuse until it is fixed",
+}
+
+
 def warn_literal_violations(api) -> None:
     try:
         cfg = api.load()
@@ -146,7 +153,11 @@ def warn_literal_violations(api) -> None:
             effective=item["default"],
             hint=(
                 f"config: {item['key']} = {item['value']!r} is not one of {allowed} "
-                f"(using default {item['default']!r})"
+                + (
+                    f"({REFUSED_LITERALS[item['key']]})"
+                    if item["key"] in REFUSED_LITERALS
+                    else f"(using default {item['default']!r})"
+                )
             ),
         )
 

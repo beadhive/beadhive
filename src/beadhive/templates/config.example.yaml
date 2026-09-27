@@ -159,6 +159,7 @@ worktrees:
   # expected to dispose of worktrees promptly.
   ephemeral: true
   # path: ~/.beadhive/worktrees   # persistent root (ephemeral=false only). $BH_WORKTREES overrides.
+  # manager: native   # the ONE worktree manager (create/attach/remove); native is the only value.
   # Branch suffixes — every managed branch is auto-prefixed `wt/` (so `--branch foo` -> wt/foo,
   # bead -> wt/bead/<type>/<id>, session -> wt/session/<ts>-<rand>). Set the suffix only.
   # {kind} is the bead's type (epic|issue); {id} is the bead id.
