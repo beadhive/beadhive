@@ -599,7 +599,9 @@ def test_migrate_hive_skips_a_checkout_with_no_beads_dir(tmp_path, monkeypatch):
     assert result.status == "skipped"
 
 
-def test_migrate_hive_already_migrated_is_a_noop_but_heals_config(tmp_path, monkeypatch):
+def test_migrate_hive_already_migrated_is_a_noop_without_enabling_auto_backup(
+    tmp_path, monkeypatch
+):
     hive_dir = tmp_path / "hive"
     _write_metadata(hive_dir, dolt_mode="server")
     monkeypatch.setattr(registry, "hive_dir", lambda entry: hive_dir)
@@ -617,7 +619,7 @@ def test_migrate_hive_already_migrated_is_a_noop_but_heals_config(tmp_path, monk
     assert result.status == "already-migrated"
     assert result.dolt_mode == "server"
     joined = [" ".join(c) for c in healed]
-    assert any("backup.enabled" in c for c in joined)
+    assert not any("backup.enabled" in c for c in joined)
     assert any("dolt.shared-server" in c for c in joined)
 
 
@@ -839,7 +841,6 @@ def test_migrate_hive_leaves_dolt_database_repointed_after_a_successful_bootstra
     # (the repoint decision is made and never undone once the mechanism itself reports success),
     # so neutralize it rather than fight it.
     monkeypatch.setattr(storage_migrate, "_persist_shared_server_config", lambda hd, actor: None)
-    monkeypatch.setattr(storage_migrate, "_persist_backup_enabled", lambda hd, actor: None)
     monkeypatch.setattr(
         storage_migrate.dolt_health,
         "probe_raw_schema_version",

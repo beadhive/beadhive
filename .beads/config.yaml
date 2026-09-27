@@ -73,7 +73,7 @@ export:
 dolt:
     shared-server: true
 backup:
-    enabled: true
+    enabled: false
 external_projects:
     beadhive-ui: ../beadhive-ui
     beadhive-gateway: ../beadhive-gateway

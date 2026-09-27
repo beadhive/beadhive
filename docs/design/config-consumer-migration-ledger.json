@@ -16,7 +16,7 @@
     "successor_contracts": "beadhive.modules.config.contracts"
   },
   "current": {
-    "config_patch_point_count": 277,
+    "config_patch_point_count": 279,
     "config_patch_points": [
       {
         "facade_target": "beadhive.config.save_fleet",
@@ -1309,7 +1309,7 @@
       {
         "facade_target": "beadhive.config.layered",
         "kind": "direct-facade",
-        "line": 202,
+        "line": 236,
         "path": "tests/test_precious.py",
         "target": "beadhive.config.layered"
       },
@@ -1869,35 +1869,49 @@
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3610,
+        "line": 3598,
+        "path": "tests/test_worktree.py",
+        "target": "beadhive.config.load"
+      },
+      {
+        "facade_target": "beadhive.config.integration_branch",
+        "kind": "indirect-adapter",
+        "line": 3609,
+        "path": "tests/test_worktree.py",
+        "target": "beadhive.worktree.config.integration_branch"
+      },
+      {
+        "facade_target": "beadhive.config.load",
+        "kind": "direct-facade",
+        "line": 3669,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 4054,
+        "line": 4113,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 4074,
+        "line": 4133,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 4091,
+        "line": 4150,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 4105,
+        "line": 4164,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },

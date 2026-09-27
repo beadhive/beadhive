@@ -14,11 +14,10 @@ Four things pinned down here:
      ensure_server_mode_persisted` for the metadata write, always re-asserts the
      `dolt.shared-server` config key, and warns visibly (never silently) when it had to fix a
      drift.
-  3. `_enable_backup_if_remote` (constraint 4) — `backup.enabled=true` iff a git remote exists,
-     mirroring embedded mode's own default condition exactly rather than turning it on
-     unconditionally.
-  4. The idempotent existing-hive skip path (`.beads` already present) NEVER reaches any of the
-     above — an existing hive (embedded or otherwise) is untouched by re-running onboard.
+  3. Automatic backups remain disabled on a freshly minted shared-server hive even when a Git
+     remote exists; enabling them is an operator choice.
+  4. The idempotent existing-hive skip path (`.beads` already present) NEVER reaches server-mode
+     wiring — an existing hive (embedded or otherwise) is untouched by re-running onboard.
 """
 
 from __future__ import annotations
@@ -75,6 +74,7 @@ def _patch_neighbors(monkeypatch):
     monkeypatch.setattr(onboard, "_configure_auto_export", lambda ctx: None)
     monkeypatch.setattr(onboard, "_guard_beads_remote", lambda ctx: None)
     monkeypatch.setattr(onboard, "_bypass_gh2455_dirty_config", lambda ctx: None)
+    monkeypatch.setattr(hive, "_ensure_bd_backup_gitignored", lambda base: False)
 
 
 def _patch_runs(monkeypatch, fake_run):
@@ -173,41 +173,52 @@ def test_ensure_server_mode_persisted_warns_visibly_when_it_had_to_fix_drift(
 
 
 # ---------------------------------------------------------------------------
-# _enable_backup_if_remote (constraint 4)
+# Automatic Dolt backups remain opt-in
 # ---------------------------------------------------------------------------
 
 
-def test_enable_backup_sets_it_when_a_git_remote_exists(tmp_path, monkeypatch):
+def test_onboarding_does_not_enable_backup_when_a_git_remote_exists(tmp_path, monkeypatch):
+    """A remote does not opt a new shared-server hive into per-worktree backup copies."""
     calls, fake_run = _fake_run_factory(git_remote_stdout="origin\n")
     _patch_runs(monkeypatch, fake_run)
 
-    onboard._enable_backup_if_remote(_ctx(tmp_path, furnish=True))
+    monkeypatch.setattr(store_locator, "ensure_server_mode_persisted", lambda base: False)
+    _patch_neighbors(monkeypatch)
+    onboard._act_bd_init(_ctx(tmp_path, furnish=True))
 
-    assert any(call[-4:] == ["config", "set", "backup.enabled", "true"] for call in calls)
-
-
-def test_enable_backup_leaves_default_alone_without_a_remote(tmp_path, monkeypatch):
-    """A remote-less prototype would have defaulted OFF in embedded too — never manufacture a
-    difference that was never real by turning it on unconditionally."""
-    calls, fake_run = _fake_run_factory(git_remote_stdout="")
-    _patch_runs(monkeypatch, fake_run)
-
-    onboard._enable_backup_if_remote(_ctx(tmp_path, furnish=True))
-
-    assert not any(c[:4] == ["bd", "config", "set", "backup.enabled"] for c in calls)
+    assert not any(call[:4] == ["bd", "config", "set", "backup.enabled"] for call in calls)
 
 
-@pytest.mark.parametrize("stdout", ["origin\n", "origin\nupstream\n", "  origin  \n"])
-def test_repo_has_git_remote_true_shapes(tmp_path, monkeypatch, stdout):
-    _, fake_run = _fake_run_factory(git_remote_stdout=stdout)
-    _patch_runs(monkeypatch, fake_run)
-    assert onboard._repo_has_git_remote(tmp_path) is True
+def test_ensure_bd_backup_gitignored_adds_rotated_store_rule_for_furnished_hive(tmp_path):
+    beads = tmp_path / ".beads"
+    beads.mkdir()
+    gitignore = beads / ".gitignore"
+    gitignore.write_text("backup/\n")
+
+    assert hive._ensure_bd_backup_gitignored(tmp_path) is True
+    assert gitignore.read_text() == "backup/\nbackup.*/\n"
+    assert hive._ensure_bd_backup_gitignored(tmp_path) is False
 
 
-def test_repo_has_git_remote_false_when_empty(tmp_path, monkeypatch):
-    _, fake_run = _fake_run_factory(git_remote_stdout="")
-    _patch_runs(monkeypatch, fake_run)
-    assert onboard._repo_has_git_remote(tmp_path) is False
+def test_ensure_bd_backup_gitignored_uses_git_exclude_for_zero_footprint_hive(tmp_path):
+    git_info = tmp_path / ".git" / "info"
+    git_info.mkdir(parents=True)
+    exclude = git_info / "exclude"
+    exclude.write_text(
+        "# Beads fork protection (bd init)\n.beads/\n**/RECOVERY*.md\n**/SESSION*.md\n.ws/\n"
+    )
+
+    assert hive._ensure_bd_backup_gitignored(tmp_path) is True
+    contents = exclude.read_text()
+    assert "/.beads/backup/" in contents
+    assert "/.beads/backup.*/" in contents
+    assert hive._remove_stealth_exclude(tmp_path) is True
+    contents = exclude.read_text().splitlines()
+    assert ".beads/" not in contents
+    assert "/.beads/backup/" in contents
+    assert "/.beads/backup.*/" in contents
+    assert ".ws/" in contents
+    assert hive._ensure_bd_backup_gitignored(tmp_path) is False
 
 
 # ---------------------------------------------------------------------------
@@ -217,15 +228,17 @@ def test_repo_has_git_remote_false_when_empty(tmp_path, monkeypatch):
 
 def test_existing_hive_skip_path_never_calls_server_mode_wiring(tmp_path, monkeypatch):
     """The idempotent `.beads`-exists skip must return before `bd init`, before
-    `_ensure_server_mode_persisted`, and before `_enable_backup_if_remote` — an operator on an
-    embedded hive must stay embedded across an upgrade (bh-areg.7's own constraint 2)."""
+    `_ensure_server_mode_persisted` — an operator on an embedded hive must stay embedded across
+    an upgrade (bh-areg.7's own constraint 2)."""
     (tmp_path / ".beads").mkdir()
     persisted_calls = []
-    backup_calls = []
+    ignore_calls = []
     monkeypatch.setattr(
         onboard, "_ensure_server_mode_persisted", lambda ctx: persisted_calls.append(ctx)
     )
-    monkeypatch.setattr(onboard, "_enable_backup_if_remote", lambda ctx: backup_calls.append(ctx))
+    monkeypatch.setattr(
+        hive, "_ensure_bd_backup_gitignored", lambda base: ignore_calls.append(base)
+    )
     monkeypatch.setattr(onboard, "_configure_auto_export", lambda ctx: None)
     calls, fake_run = _fake_run_factory()
     monkeypatch.setattr(hive, "run", fake_run)
@@ -234,7 +247,7 @@ def test_existing_hive_skip_path_never_calls_server_mode_wiring(tmp_path, monkey
 
     assert calls == []  # no bd init, no bd bootstrap — nothing ran at all
     assert persisted_calls == []
-    assert backup_calls == []
+    assert ignore_calls == [tmp_path]
 
 
 def test_existing_hive_skip_path_leaves_dolt_mode_untouched_on_disk(tmp_path, monkeypatch):

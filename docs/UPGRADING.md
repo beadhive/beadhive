@@ -314,6 +314,12 @@ correcting that would quietly leave a hive less durable than it was found, so th
 `backup.enabled: true` explicitly as part of migrating — including on hives it finds already
 migrated, which is how a partially-applied earlier run gets healed.
 
+**Policy update (`bh-eu0oi`, 2026-09-27):** that behavior was reversed after per-worktree backup
+stores caused large duplicate copies and blocked safe worktree pruning. Current onboarding and
+storage migration do not enable scheduled backups. An existing explicit `backup.enabled: true`
+is preserved; a new shared-server hive remains at bd's OFF default. The migration's one-time
+verified safety backup is unchanged.
+
 ### 7. What it buys, and what the numbers actually say
 
 All measured on one machine, 2026-08-03. Quote them with their caveats or not at all:

@@ -34,12 +34,10 @@ THREE CONSTRAINTS, added to this bead after filing, that shape the migrate step 
    via env/config while metadata still says embedded) is surfaced as a finding — bd itself only
    warns about it.
 
-2. **``backup.enabled=true`` is set as part of migrating.** Per ``bd backup --help``: auto-backup
-   defaults ON in embedded mode when a git remote exists, and OFF in sql-server/shared-server mode
-   (upstream's own reasoning: many clients on one shared server each registering a same-named
-   backup remote and full-syncing would be "a self-amplifying storm"). Left alone, migrating
-   silently disables automatic backups on every hive that had them — this fleet's migration must
-   not leave it less durable than it found it.
+2. **Automatic backups are not enabled by migration.** bd's shared-server default is OFF because
+   many clients on one shared server registering the same-named backup remote and full-syncing
+   would be "a self-amplifying storm." Migration takes and verifies its own safety backup; any
+   `backup.enabled` value already explicitly stored by the operator remains untouched.
 
 3. **Serialized per hive; never two clones of one hive concurrently.** ``bd migrate`` (a
    different, unrelated bd subcommand than what this module drives) refuses in-place migration on
@@ -613,13 +611,6 @@ def _persist_shared_server_config(hive_dir: Path, actor: str) -> None:
     _bd(["config", "set", SHARED_SERVER_CONFIG_KEY, "true"], hive_dir, actor=actor)
 
 
-def _persist_backup_enabled(hive_dir: Path, actor: str) -> None:
-    """Constraint 2: `backup.enabled` defaults OFF in server/shared-server mode even when it was
-    ON in embedded — set it explicitly so migrating never leaves a hive less durable than it
-    found it (docs/design/dolt-server-mode-adr.md Consequence 1)."""
-    _bd(["config", "set", "backup.enabled", "true"], hive_dir, actor=actor)
-
-
 # bh-aef0f: `bd backup add`/`bd backup sync` (both `take_backup`'s own call above, and this
 # module's own re-point once verification passes) write two bookkeeping files straight into
 # `.beads/`: `dolt-backup.json` (an ABSOLUTE, machine-local path — MUST NEVER be committed,
@@ -886,7 +877,7 @@ def migrate_hive(
 ) -> HiveMigrationResult:
     """One hive's full lifecycle: back up (VERIFIED before anything destructive) -> migrate ->
     verify -> report. Idempotent — a hive already off embedded is a no-op (but still heals a
-    partially-applied prior run: `backup.enabled`/`dolt.shared-server` get re-asserted, a bd
+    partially-applied prior run: `dolt.shared-server` gets re-asserted, an explicitly configured
     backup registration dangling/mis-pointed into a migrate root gets re-pointed back to
     `.beads/backup`, and a furnished hive's `.gitignore` gets bd's own backup bookkeeping files
     covered if it doesn't already — bh-ypfnu/bh-aef0f, all cheap and safe either way).
@@ -933,7 +924,6 @@ def migrate_hive(
         result.status = "already-migrated"
         result.dolt_mode = mode or "unknown"
         if not dry_run:
-            _persist_backup_enabled(hive_dir, actor)
             _persist_shared_server_config(hive_dir, actor)
 
             # bh-ypfnu: heal a dangling/mis-pointed bd backup registration left by a migration
@@ -1066,8 +1056,6 @@ def migrate_hive(
             # "corrected" onto a name its store isn't under.
             store_locator.ensure_server_database_persisted(hive_dir, db_name)
             _persist_shared_server_config(hive_dir, actor)
-            _persist_backup_enabled(hive_dir, actor)
-
             native_dir = next(
                 (Path(t.path) for t in plan.targets if t.name == "dolt-native-backup"), None
             )
