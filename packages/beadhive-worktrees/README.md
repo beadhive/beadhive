@@ -3,30 +3,34 @@
 The provider- and transport-neutral managed-worktree capability described in
 [the package-class ADR](../../docs/design/package-class-library-vs-plugin-adr.md) (section 5)
 and the [worktree manager / Herdr binding ADR](../../docs/design/bh-mr9tk.2-worktree-manager-herdr-binding-adr.md).
-This package depends only on `beadhive-plugins` — for the `CapabilityRef` / `CapabilityKey` /
-`bind_application_port` capability-slot machinery it uses to declare its own `worktree.manager`
-slot — never on the root `beadhive` distribution.
+This package depends only on `beadhive-plugins` — for the capability-slot machinery and the
+`worktree.manager` / `workspace.binding` slot declarations (`beadhive_plugins.worktree_slots`) it
+implements — never on the root `beadhive` distribution.
 
-Importing it describes branch/leaf naming policy, typed request/result contracts, ports, and
-the native Git adapter; it never selects or binds a provider itself. Selection and binding are
-root composition's job exclusively, through `beadhive_plugins.binding.bind_application_port`.
+Importing it describes branch/leaf naming policy, the `WorktreeSpec` / `WorktreeHandle` contract,
+the manager capability flags, ports, and the native Git manager; it never selects or binds a
+provider itself. Selection (`worktrees.manager`, native only) and binding are root composition's
+job exclusively, through `beadhive_plugins.binding.bind_application_port`.
 
 ## Modules
 
 - `beadhive_worktrees.domain` — branch/leaf naming policy (`WT_PREFIX`, `bind_worktree`,
-  `branch_suffix`, `leaf_for_branch`, `sanitize_leaf`) and the typed request/result contracts
-  (`CreateWorktreeRequest`, `RemoveWorktreeRequest`, `ProvisioningResult`, `ManagedWorktree`,
-  and the inventory/status request and result types).
-- `beadhive_worktrees.contracts` — the outbound ports (`WorktreeProvisioner`,
-  `WorktreeInventory`) and the `worktree.manager` capability declaration (`WORKTREE_MANAGER`,
-  `WORKTREE_MANAGER_KEY`) — exactly one configured manager per hive, with native Git as the
-  built-in default provider.
-- `beadhive_worktrees.application` — lifecycle sequencing over replaceable provisioner adapters
-  (`WorktreeLifecycleService`) and the typed inventory query boundary
-  (`WorktreeInventoryService`), preserving the plugin-first fallback seam unchanged.
-- `beadhive_worktrees.adapters` — the native Git provisioner
-  (`NativeGitWorktreeProvisioner`) plus `native_worktree_manager_provider_binding`, the plugin
-  fallback adapter (`PluginWorktreeProvisioner`), and the inventory callback adapter
+  `branch_suffix`, `leaf_for_branch`, `sanitize_leaf`); the manager contract types
+  (`WorktreeSpec`, `WorktreeHandle` with its `bindings` map, `WorktreeRemoved`,
+  `WorktreeManagerError`); the capability flags (`WorktreeManagerCapabilities` with `binds` and
+  `remove_releases_bindings`, `NATIVE_CAPABILITIES`); and the inventory/status types.
+- `beadhive_worktrees.contracts` — the slot ports specialised to those types
+  (`WorktreeManagerPort`, `WorkspaceBindingPort`, `WORKTREE_MANAGER_KEY`), re-exports of the
+  slot identities (`WORKTREE_MANAGER`, `WORKSPACE_BINDING`), the create-observer port
+  (`WorktreeCreateObserver`), the attach pre-check port (`BranchInspector`), and
+  `WorktreeInventory`.
+- `beadhive_worktrees.application` — `WorktreeLifecycleService`, which sequences
+  create/attach/remove through exactly one selected manager (no plugin-first fallback), runs
+  create observers around it, and guards attach's start-point intent (an attach never moves a
+  branch tip); and the typed inventory query boundary (`WorktreeInventoryService`).
+- `beadhive_worktrees.adapters` — the native Git manager (`NativeGitWorktreeManager`, with
+  separate `create` / `attach` / `remove`), `NativeGitBranchInspector`,
+  `native_worktree_manager_provider_binding`, and the inventory callback adapter
   (`CallbackWorktreeInventory`).
 
 ## Root compatibility facade

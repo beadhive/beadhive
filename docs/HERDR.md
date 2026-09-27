@@ -134,9 +134,10 @@ sets the ownership line so this remains an optional interactive surface, not a p
   onboarding never spawns terminal panes or installs per-agent lifecycle hooks.
 - `readiness(cfg, entry)` — report whether this hive's agent kind has its herdr integration
   installed, for `bh hive ready`.
-- `wt_create` / `wt_remove` — **leave unclaimed.** herdr's `worktree create/open` and `bh`'s own
-  worktree management would otherwise double-book the same directories. Native `git worktree`
-  remains authoritative, so these hooks stay `None`, as they do for `hitch` and `observaloop`.
+- `wt_create` / `wt_remove` — **retired for every plugin** (bh-055ot.1): the one configured
+  `worktrees.manager` (native `git worktree`) owns worktree mechanics, and a plugin declaring
+  either hook is refused. herdr's future role is a `workspace.binding` (presentation only), never
+  a second worktree owner.
 
 ### Launch one bead
 

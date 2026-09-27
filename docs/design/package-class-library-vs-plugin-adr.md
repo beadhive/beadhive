@@ -182,6 +182,17 @@ principle 8, compatibility facades are deliberate migration tools).
 
 - Naming policy, `WorktreeSpec` and handle types.
 - The `worktree.manager` capability slot, with native Git as the built-in default provider.
+
+  > **2026-09-27 amendment (`bh-055ot.1`).** Superseded for the slot *declaration* by the later
+  > worktree-manager ADR ([`bh-mr9tk.2`](bh-mr9tk.2-worktree-manager-herdr-binding-adr.md),
+  > "Placement") and `bh-055ot`'s design: the `worktree.manager` and `workspace.binding` slots —
+  > their `CapabilityRef`s and generic `Protocol` method shapes (create/attach/remove,
+  > bind/release) — are declared on `beadhive-plugins` (`beadhive_plugins.worktree_slots`).
+  > `beadhive-worktrees` keeps the concrete `WorktreeSpec` / `WorktreeHandle` / `WorktreeRemoved`
+  > types, the `binds` / `remove_releases_bindings` capability flags, and the native Git manager,
+  > and binds the slot's generic shapes to those types. Because `beadhive-plugins` depends on
+  > nothing, its ports are generic over the spec/handle types, so the dependency still runs only
+  > `beadhive-worktrees -> beadhive-plugins`.
 - The safety classifier.
 - Inventory, status, cleanup, and prune services.
 - Inbound ports: `BeadStateLookup`, `ClaimRecords`, `MergeEvidence`, config values, a command
