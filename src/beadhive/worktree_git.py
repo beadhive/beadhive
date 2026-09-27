@@ -15,9 +15,14 @@ from pathlib import Path
 
 import typer
 
-from . import ghpr, registry
+from . import ghpr, registry  # noqa: F401 - ghpr is a compatibility patch seam
 from .config_consumer_ports import work_settings as config
 from .run import retry_on_index_lock
+from .worktree_state_adapters import GhprMergeEvidence
+
+#: The one root-supplied `MergeEvidence` adapter today (bh-qdezo.5) — `ghpr.merged_pr_for`,
+#: the squash-proof last resort in the `is_landed` cascade.
+_MERGE_EVIDENCE = GhprMergeEvidence()
 
 UPSTREAM_REMOTE = "upstream"
 BEAD_KINDS = ("epic", "issue")
@@ -738,7 +743,7 @@ def impl_is_landed(entry, branch: str, parent: str, close_reason: str = "") -> b
         return True
     if _all_cherry_landed(entry, branch, parent):
         return True
-    return ghpr.merged_pr_for(entry, branch) is not None
+    return _MERGE_EVIDENCE.merged_pr(entry, branch) is not None
 
 
 def impl_bead_and_parent(

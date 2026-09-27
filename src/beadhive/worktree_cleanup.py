@@ -15,6 +15,11 @@ import typer
 from . import registry, wt_status
 from .config_consumer_ports import work_settings as config
 from .modules.worktrees import WorktreeManagerError
+from .worktree_state_adapters import ClaimAuthorityRecords
+
+#: The one root-supplied `ClaimRecords` adapter today (bh-qdezo.5) — `claim_authority`'s
+#: record-path bookkeeping.
+_CLAIM_RECORDS = ClaimAuthorityRecords()
 
 
 def _facade():
@@ -195,11 +200,10 @@ def impl_remove(hive, ref, force=False, as_json=False):
     entry = _resolve_entry(cfg, hive)
     main = registry.hive_dir(entry)
     target = wt_dir(entry, _leaf(ref))
-    from . import claim_authority
 
     # Git removes linked-worktree admin metadata as part of its operation, so
     # resolve this private record before removal and delete it only on success.
-    claim_path = claim_authority.record_path(target)
+    claim_path = _CLAIM_RECORDS.record_path(target)
     hive_key = registry.hive_key(entry)
     hive = str(entry.get("prefix", ""))
     _refuse_unknown_removal(cfg, entry, target, force=force)
@@ -213,7 +217,7 @@ def impl_remove(hive, ref, force=False, as_json=False):
         _record_wt_op_duration("remove", elapsed, "error", hive=hive, leaf=target.name)
         raise typer.Exit(exc.returncode) from None
     elapsed = time.monotonic() - started
-    claim_authority.remove_record_path(claim_path)
+    _CLAIM_RECORDS.remove_record_path(claim_path)
     _rmdir_empty_parents(target, cfg)
     _record_wt_op_duration("remove", elapsed, "ok", hive=hive, leaf=target.name)
     _record_wt_event("remove", hive=hive, leaf=target.name)
@@ -316,9 +320,8 @@ def impl__prune_remove_one(cfg, entries_by_prefix: dict, main: Path, st) -> bool
     (outcome == "ok")."""
     prefix = st.hive
     entry = entries_by_prefix.get(prefix)
-    from . import claim_authority
 
-    claim_path = claim_authority.record_path(st.path)
+    claim_path = _CLAIM_RECORDS.record_path(st.path)
     started = time.monotonic()
     # SAFE (closed + merged + clean) → the branch is disposable; the manager removes only the
     # linked worktree and the `git branch -D` step below retires the branch. A row whose hive
@@ -342,7 +345,7 @@ def impl__prune_remove_one(cfg, entries_by_prefix: dict, main: Path, st) -> bool
     _record_wt_op_duration("prune", elapsed, outcome, hive=prefix, leaf=st.leaf)
     if outcome != "ok":
         return False
-    claim_authority.remove_record_path(claim_path)
+    _CLAIM_RECORDS.remove_record_path(claim_path)
     _rmdir_empty_parents(st.path, cfg)
     # A SAFE tree is already merged, so once its worktree is gone the branch is dead weight.
     # Best-effort: a stray branch never blocks the prune loop.

@@ -17,7 +17,15 @@ from pathlib import Path
 
 import typer
 
-from . import bd, jsonout, precious, registry, wt_status
+from beadhive_worktrees.policy import bead_state
+
+from . import (  # noqa: F401 - bd is a compatibility patch seam
+    bd,
+    jsonout,
+    precious,
+    registry,
+    wt_status,
+)
 from .config_consumer_ports import work_settings as config
 from .identity import workspace_identity
 from .modules.worktrees import (
@@ -26,6 +34,12 @@ from .modules.worktrees import (
     WorktreeInventoryService,
     WorktreeStatusRequest,
 )
+from .worktree_state_adapters import ArgvBeadStateLookup
+
+#: The one root-supplied `BeadStateLookup` adapter today (bh-qdezo.5) — argv-era `bd.json` /
+#: `bd.show` reads. A `BeadsSession`-backed adapter is a later, additive swap (bh-sy36q.6) that
+#: replaces only this composition, never the classification policy it feeds.
+_BEAD_STATE_LOOKUP = ArgvBeadStateLookup()
 
 
 def _facade():
@@ -816,21 +830,12 @@ def impl__store_readable(main: Path) -> str:
 
 def impl__probe_store(main: Path) -> str:
     """The uncached probe itself — split out so the memo above is obviously a memo and nothing
-    more, and so a test can count invocations of the thing that actually shells out."""
-    issues = bd.json(["list"], str(main))
-    if issues is None:
-        return (
-            f"the bead store at {main} could not be READ (bd exited non-zero or returned "
-            "no JSON) — bd absent, a schema-fork guard refusing to open the database, or a "
-            "store engine that is down; try `bh bd list` there to see bd's own error"
-        )
-    if isinstance(issues, list) and not issues:
-        return (
-            f"the bead store at {main} answered with ZERO issues — an empty hive, or a store "
-            "bd is refusing to read (its schema-fork guard reports no issues rather than an "
-            "error: `bd migrate schema --inspect` reports the real version skew)"
-        )
-    return ""
+    more, and so a test can count invocations of the thing that actually shells out.
+
+    The read itself and its message texts are :func:`beadhive_worktrees.policy.bead_state.
+    store_reason` (bh-qdezo.5) — this wrapper supplies the one argv-era ``BeadStateLookup``
+    adapter (:mod:`beadhive.worktree_state_adapters`) at composition time."""
+    return bead_state.store_reason(_BEAD_STATE_LOOKUP, main)
 
 
 def impl__bead_statuses_for_entry(
@@ -839,10 +844,12 @@ def impl__bead_statuses_for_entry(
 ) -> tuple[dict[str, str], dict[str, str], dict[str, str], str]:
     """Fetch bead statuses and close_reasons for every bead id in ``rows`` for this entry.
 
-    Uses the same ``bd show`` seam as ``doctor._orphan_container_branches`` (bd.show).  The
-    bead id is parsed from the real ``wt/bead/<type>/<id>`` branch ref in each row via
+    The bead id is parsed from the real ``wt/bead/<type>/<id>`` branch ref in each row via
     :func:`_bead_id_from_branch` — this preserves dots that the sanitized directory leaf converts
-    to dashes (the same fix as ``bead_and_parent``).  Non-bead worktrees are skipped.
+    to dashes (the same fix as ``bead_and_parent``).  Non-bead worktrees are skipped.  Resolving
+    ids from branch names is naming policy that stays here; the per-id store read itself is
+    :func:`beadhive_worktrees.policy.bead_state.bead_states` (bh-qdezo.5), behind the
+    ``BeadStateLookup`` port.
 
     Returns ``(statuses, close_reasons, unknown_reasons, store_reason)``.  ``close_reasons``
     holds the AGF lifecycle close_reason (e.g. ``"merged"``, ``"molecule landed"``) — used by
@@ -850,35 +857,18 @@ def impl__bead_statuses_for_entry(
 
     ``unknown_reasons`` / ``store_reason`` are bh-167s0: an id that does not resolve is reported
     WITH ITS REASON rather than silently becoming an empty status the classifier reads as "open".
-    The reason has to be built HERE because this is the only layer that knows both what was
-    asked and what came back; the classifier is pure and would have to guess.
     """
 
     main = registry.hive_dir(entry)
     store_reason = _store_readable(main)
-    statuses: dict[str, str] = {}
-    close_reasons: dict[str, str] = {}
-    unknown_reasons: dict[str, str] = {}
+    bead_ids: list[str] = []
+    seen: set[str] = set()
     for _, _path, branch in rows:
         bead_id = _bead_id_from_branch(branch)
-        if not bead_id or bead_id in statuses:
-            continue
-        bead = bd.show(bead_id, str(main))
-        statuses[bead_id] = (bead or {}).get("status", "")
-        close_reasons[bead_id] = (bead or {}).get("close_reason", "")
-        if not statuses[bead_id] and not store_reason:
-            # The store answers, and this ONE id is not in it.  Measured cause on the hive that
-            # produced this bead: a retired bead PREFIX.  The store held 96 `ag-run-*` beads and
-            # zero `ag-rt-*`, while 21 of 28 worktree branches were named `wt/bead/issue/ag-rt-*`
-            # — the ids exist, under a name no longer derivable from the branch, and every one of
-            # those beads was CLOSED.  `bh hive repair` reconciles registry<->database and stops,
-            # so nothing renames the branches; the row is unclassifiable until something does.
-            unknown_reasons[bead_id] = (
-                f"the store answers, but bead {bead_id} is not in it — the branch names an id "
-                "that no longer exists (a retired bead prefix leaves every worktree created "
-                "under the old one unresolvable), or the bead was deleted"
-            )
-    return statuses, close_reasons, unknown_reasons, store_reason
+        if bead_id and bead_id not in seen:
+            seen.add(bead_id)
+            bead_ids.append(bead_id)
+    return bead_state.bead_states(_BEAD_STATE_LOOKUP, main, bead_ids, store_reason)
 
 
 def impl__bead_disposition_relations_for_entry(
@@ -887,46 +877,17 @@ def impl__bead_disposition_relations_for_entry(
 ) -> dict[str, frozenset[tuple[str, str]]]:
     """Read the graph edges promised by authoritative terminal-disposition records.
 
-    Storage uses Beads' existing relation vocabulary and direction: a retained bead points
-    *down* to its consumer via ``relates-to``; a replacement points *down* to the old bead via
-    ``supersedes``.  The pure classifier receives normalized ``(state, citing_bead)`` pairs and
-    therefore never needs a database dependency.
+    The policy — parsing the close_reason codec and matching the promised dependency edge — is
+    :mod:`beadhive_worktrees.policy.bead_state` (bh-qdezo.5), behind the ``BeadStateLookup``
+    port. Resolving this entry's ``main`` clone path is deferred until there is at least one
+    disposition to confirm, preserving the argv-era short-circuit that skips it entirely when
+    ``bead_close_reasons`` carries no retained/superseded record.
     """
-    dispositions = {
-        bead_id: disposition
-        for bead_id, close_reason in bead_close_reasons.items()
-        if (disposition := wt_status.parse_disposition(str(close_reason or ""))) is not None
-        and disposition.state != "stale"
-    }
+    dispositions = bead_state.dispositions_needing_evidence(bead_close_reasons)
     if not dispositions:
         return {}
-
     main = registry.hive_dir(entry)
-    result: dict[str, frozenset[tuple[str, str]]] = {}
-    for bead_id, disposition in dispositions.items():
-        if disposition.state == "retained":
-            source_id, target_id, relation_type = (
-                bead_id,
-                disposition.citing_bead,
-                "relates-to",
-            )
-        else:
-            source_id, target_id, relation_type = (
-                disposition.citing_bead,
-                bead_id,
-                "supersedes",
-            )
-        source = bd.show(source_id, str(main)) or {}
-        dependencies = source.get("dependencies") or []
-        matched = any(
-            isinstance(dep, dict)
-            and str(dep.get("type") or dep.get("dependency_type") or "") == relation_type
-            and str(dep.get("depends_on_id") or dep.get("id") or "") == target_id
-            for dep in dependencies
-        )
-        if matched:
-            result[bead_id] = frozenset({(disposition.state, disposition.citing_bead)})
-    return result
+    return bead_state.disposition_relations(_BEAD_STATE_LOOKUP, main, dispositions)
 
 
 def _batch_evidence_for_entry(
@@ -952,7 +913,7 @@ def _batch_evidence_for_entry(
         return {}
 
     main = registry.hive_dir(entry)
-    issues = bd.json(["list", "--all", "--include-infra", "--limit", "0"], str(main))
+    issues = _BEAD_STATE_LOOKUP.all_issues(main)
     if not isinstance(issues, list):
         return {}
 
