@@ -1,5 +1,7 @@
-"""`bh work next`'s composition seam: the atomic `work.claim-next` route, selected before
-execution, and the explicit fallback to the CLI-compatibility loop this cohort leaves in place.
+"""`beadhive.work_queue`'s composition seams: the atomic `work.claim-next` route for `bh work
+next`, and (bh-mu5yb.1) the `work.issue.list` children route for `bh work schedule` — both
+selected before execution, with an explicit fallback to the CLI-compatibility path this cohort
+leaves in place.
 
 The CLI-compatibility half of each scenario here fakes `bd` at the same `bd._run` seam
 `test_work_next.py` uses, over a real (committed) git repo `worktree.ensure` can fork a claim's
