@@ -37,7 +37,7 @@ from typing import Any
 
 import typer
 
-from . import bd, host_beads, log, otel
+from . import bd, beads_routing, log, otel
 from .config_consumer_ports import work_settings as config
 from .work_review import CliGateOperations, CliStateOperations
 
@@ -112,15 +112,10 @@ class TelemetryRoutingObserver:
 
 
 def hive_session(main: Path, entry: Any) -> Any:
-    """An unopened session against the hive's one supervised Beads service. Never starts one."""
-    try:
-        return host_beads.resolve_session(main, _core().LIFECYCLE_CAPABILITIES, entry=entry)
-    except host_beads.HiveNotServable as exc:
-        raise _core().SessionUnavailable(str(exc)) from exc
-    except (KeyError, TypeError) as exc:
-        raise _core().SessionUnavailable(
-            f"cannot address hive from entry {entry!r}: {exc}"
-        ) from exc
+    """An unopened session for this cohort's ``LIFECYCLE_CAPABILITIES`` — see
+    :func:`beadhive.beads_routing.hive_session` (the one composition decision, including the
+    ``BH_BEADS_ROUTE=cli`` rollback)."""
+    return beads_routing.hive_session(main, entry, _core().LIFECYCLE_CAPABILITIES)
 
 
 #: The session seam: ``(main, entry)`` -> an unopened ``BeadsSession``. Tests substitute a
@@ -129,15 +124,7 @@ session_factory: Callable[[Path, Any], Any] = hive_session
 
 
 def _unavailable_errors() -> tuple[type[BaseException], ...]:
-    client = importlib.import_module("beadhive_beads_client")
-    service = importlib.import_module("beadhive_beads_client.service")
-    return (
-        client.IncompatibleService,
-        service.ServiceError,
-        _core().SessionUnavailable,
-        OSError,
-        ValueError,
-    )
+    return (*beads_routing.unavailable_errors(), OSError, ValueError)
 
 
 class SelectedIssues:
