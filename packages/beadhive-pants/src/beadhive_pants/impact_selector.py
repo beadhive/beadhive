@@ -23,17 +23,63 @@ from .repository import find_repository
 ROOT = find_repository()
 
 
-def _default_evidence() -> Path:
-    configured = os.environ.get("BH_VALIDATION_EVIDENCE_DIR")
-    if configured:
-        return Path(configured).expanduser().resolve() / "test-closure-certification.json"
-    common = subprocess.run(
-        ("git", "-C", str(ROOT), "rev-parse", "--path-format=absolute", "--git-common-dir"),
+# Mirrors scripts/validation_artifacts.py's _SELF_REFERENTIAL_EXCLUDES: the operational report is
+# generated FROM this evidence, so it must not feed back into the key that locates it.
+_SELF_REFERENTIAL_EXCLUDES = frozenset({"docs/SELECTIVE-CI-OPERATIONS.md"})
+
+
+def _checkout_tree_scope() -> str:
+    """A content-addressed key for the exact checkout currently under validation.
+
+    Every worktree in this repo shares one physical ``.git``, so the evidence directory below is
+    shared by every worktree on the host. This hashes real on-disk bytes for every tracked path --
+    never the Git index's blob ids, so an uncommitted edit is never mistaken for its last-staged
+    content -- purely to partition that shared directory (bh-vi4ob.1): two worktrees validating
+    different content can never read or clobber each other's evidence, including two worktrees on
+    the very same commit but with different uncommitted edits, which a cheaper key such as
+    ``git rev-parse HEAD^{tree}`` cannot guard against. This package cannot import the ``scripts``
+    module (a separate distribution), so the same logic as
+    ``scripts/validation_artifacts.py:checkout_tree_scope`` is recomputed here rather than shared.
+    """
+    completed = subprocess.run(
+        ("git", "-C", str(ROOT), "ls-files", "--stage", "-z"),
         check=True,
         capture_output=True,
-        text=True,
-    ).stdout.strip()
-    return Path(common) / "bh/validation/evidence/test-closure-certification.json"
+    )
+    digest = hashlib.sha256()
+    for raw in completed.stdout.split(b"\0"):
+        if not raw:
+            continue
+        header, encoded_path = raw.split(b"\t", 1)
+        mode, _object_id, stage = header.decode().split()
+        relative = encoded_path.decode()
+        if stage != "0" or relative in _SELF_REFERENTIAL_EXCLUDES:
+            continue
+        path = ROOT / relative
+        content = os.readlink(path).encode() if path.is_symlink() else path.read_bytes()
+        blob = hashlib.sha256(content).hexdigest()
+        digest.update(f"{mode}\0{relative}\0sha256:{blob}\n".encode())
+    return digest.hexdigest()
+
+
+def _default_evidence() -> Path:
+    configured = os.environ.get("BH_VALIDATION_EVIDENCE_DIR")
+    base = (
+        Path(configured).expanduser().resolve()
+        if configured
+        else Path(
+            subprocess.run(
+                ("git", "-C", str(ROOT), "rev-parse", "--path-format=absolute", "--git-common-dir"),
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        )
+        / "bh"
+        / "validation"
+        / "evidence"
+    )
+    return base / _checkout_tree_scope() / "test-closure-certification.json"
 
 
 DEFAULT_EVIDENCE = _default_evidence()

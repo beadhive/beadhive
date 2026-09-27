@@ -22,24 +22,28 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 
+try:
+    from scripts.validation_artifacts import evidence_path
+except ModuleNotFoundError:  # direct `python scripts/...` execution
+    from validation_artifacts import evidence_path
+
 
 def _runtime_evidence_path(root: Path = ROOT) -> Path:
-    """Return the repo-private generated certification path shared by all worktrees."""
-    configured = os.environ.get("BH_VALIDATION_EVIDENCE_DIR")
-    if configured:
-        return Path(configured).expanduser().resolve() / "test-closure-certification.json"
-    completed = subprocess.run(
-        ("git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir"),
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    common = Path(completed.stdout.strip())
-    return common / "bh" / "validation" / "evidence" / "test-closure-certification.json"
+    """Return this checkout's tree-scoped certification path (bh-vi4ob.1).
+
+    Every worktree in this repo shares one physical ``.git``, so a flat filename here used to be
+    one file shared by every worktree on the host: a key-verdict reuse or carry that skipped
+    re-running this key left a worktree trusting whichever tree last wrote that shared file, not
+    necessarily its own. :func:`validation_artifacts.evidence_path` partitions the path by the
+    checked-out content so that can no longer happen.
+    """
+    return evidence_path(root, "test-closure-certification.json")
 
 
 DEFAULT_OUTPUT = _runtime_evidence_path()
-EVIDENCE_RELATIVE_PATH = "<git-common-dir>/bh/validation/evidence/test-closure-certification.json"
+EVIDENCE_RELATIVE_PATH = (
+    "<git-common-dir>/bh/validation/evidence/<tree>/test-closure-certification.json"
+)
 SCHEMA_VERSION = 2
 CERTIFIER_VERSION = "bh-test-closure-prerequisites-v2"
 FULL_GATE_COMMAND = "just check"

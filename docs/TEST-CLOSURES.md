@@ -5,7 +5,15 @@ authoritative `just check` submit gate or the `just check-all` land/release gate
 closure must not be reported as either full-gate verdict.
 
 The prerequisite certification is generated under
-`<git-common-dir>/bh/validation/evidence/test-closure-certification.json`.
+`<git-common-dir>/bh/validation/evidence/<tree-scope>/test-closure-certification.json`, where
+`<tree-scope>` is a content hash over every tracked file's real on-disk bytes for the checkout
+that generated it (`scripts/validation_artifacts.py`'s `checkout_tree_scope`). Every worktree in a
+repo shares one physical `.git`, so this path is scoped by that content (bh-vi4ob.1): two
+worktrees validating different checkouts — including two on the very same commit with different
+uncommitted edits — read and write distinct files and can never clobber each other's evidence,
+even when a key verdict is reused or carried and its underlying command is skipped.
+`test-closure-shadow-policy.json` and `test-closure-promotion-policy.json` live alongside it under
+the same scoped directory.
 It binds every closure to the content of its owned implementation, public port, mandatory tests,
 shared-contract inputs, and certification tooling. Each record carries the current pytest
 collection count and digest, the best available selector-to-source map, known reverse dependents,
