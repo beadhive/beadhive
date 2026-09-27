@@ -10,7 +10,7 @@ Sources: `gastownhall/gastown` and `gastownhall/gascity` design docs (initial co
 
 > **Command spelling:** Beadhive's concept skill brands the CLI `bdry`; the live repo skills/docs
 > use **`bh`** (rename in progress). This document uses the real `bh …` verb names.
-
+>
 > **Current baseline (2026-09-27):** Gas City v1.4.2 is the latest stable release and is explicitly
 > tested with Beads v1.3.0.
 > Its current controller, formula graph, and Orders make it a more direct bead-work execution and
