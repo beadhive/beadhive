@@ -178,12 +178,27 @@ class WtStatus:
     legacy_root: bool = False
     """True when Git registers this worktree outside the currently configured worktree root."""
 
+    bindings: tuple = ()
+    """Verified presentation bindings (``worktree_binding_reconcile.BindingState``, bh-cb4jo.2).
+
+    Orthogonal to :attr:`classification` and never an input to it: a binding gap never changes
+    what prune or teardown may remove. Empty for a worktree with no recorded binding — only
+    recorded bindings are ever checked against the presenter."""
+
+    @property
+    def binding_gaps(self) -> tuple[str, ...]:
+        """``<presenter>:<state>`` for every binding that needs a repair."""
+        return tuple(f"{item.presenter}:{item.state}" for item in self.bindings if item.gap)
+
     def as_dict(self) -> dict:
         """JSON-serializable dict with ``classification`` / ``underlying`` as strings and
-        ``safe`` as a bool — suitable for ``--json`` emission."""
+        ``safe`` as a bool — suitable for ``--json`` emission. ``bindings`` maps each recorded
+        presenter to its verified state and ``binding_gaps`` lists the ones needing repair."""
         d = asdict(self)
         d["classification"] = str(self.classification)
         d["underlying"] = str(self.underlying) if self.underlying else None
+        d["bindings"] = {item.presenter: item.as_dict() for item in self.bindings}
+        d["binding_gaps"] = list(self.binding_gaps)
         return d
 
 

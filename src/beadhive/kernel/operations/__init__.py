@@ -254,6 +254,7 @@ worktree mark-abandoned|ref:string:r,reason:string:r,retained_for:string:o,super
 worktree mark-landed|ref:string:r,hive:string:o
 worktree path|ref:string:o,bead:string:o,hive:string:o
 worktree prune|hive:string:o
+worktree rebind|ref:string:o,bead:string:o,hive:string:o,session:string:o,as_json:boolean:o
 worktree rm|ref:string:o,bead:string:o,hive:string:o,force:boolean:o,as_json:boolean:o
 worktree status|hive:string:o,as_json:boolean:o
 """.strip()
@@ -414,6 +415,7 @@ _CLI_ALIAS_TARGETS: dict[str, tuple[str, dict[str, Any], str]] = {
             "mark-landed",
             "path",
             "prune",
+            "rebind",
             "rm",
             "status",
         )

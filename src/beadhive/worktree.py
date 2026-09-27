@@ -597,15 +597,40 @@ def _selected_worktree_manager(cfg):
     return bind_application_port(WORKTREE_MANAGER_KEY, discovery, providers)
 
 
-def _worktree_lifecycle_service(cfg, entry, *, composition=None) -> WorktreeLifecycleService:
-    """Compose the selected manager, the create-observer list, and the E37 attach guard over
-    the facade's established dynamic patch seams (``_run_git``, ``_notify_wt_create``)."""
+def _worktree_lifecycle_service(
+    cfg, entry, *, composition=None, bindings=()
+) -> WorktreeLifecycleService:
+    """Compose the selected manager, the create-observer list, the E37 attach guard, and any
+    candidate ``workspace.binding`` (kept only when the manager does not bind that presenter
+    itself) over the facade's established dynamic patch seams (``_run_git``,
+    ``_notify_wt_create``)."""
     return WorktreeLifecycleService(
         manager=_selected_worktree_manager(cfg),
         observer=_PluginCreateObserver(cfg, entry, composition),
         branches=NativeGitBranchInspector(_run_git),
+        bindings=bindings,
         warn=lambda message: typer.echo(f"⚠ {message}", err=True),
     )
+
+
+def _remove_worktree(cfg, entry, main: Path, path: Path, branch: str = "", *, force: bool):
+    """The ONE Beadhive removal effect: release every recorded presentation binding, then let
+    the selected manager remove the worktree (E30, bh-cb4jo.2).
+
+    ``bh worktree rm``, SAFE prune, and every teardown that calls them route here, so a native
+    remove without a prior release is not reachable through Beadhive. An unreleasable binding
+    (presenter down) is reported and the remove still runs; the resulting orphan is repaired by
+    ``bh worktree rebind`` with ``workspace close`` (E31), never a forced native remove."""
+    handle, bindings = _binding_reconcile.recorded_handle(main, path, branch)
+    removed = _worktree_lifecycle_service(cfg, entry or {}, bindings=bindings).remove(
+        handle, force=force
+    )
+    if removed.gaps:
+        typer.echo(
+            f"  → close the orphaned presentation later: {config.BINARY_ALIAS} worktree rebind",
+            err=True,
+        )
+    return removed
 
 
 def _do_add(
@@ -728,6 +753,14 @@ def clone_for_branch(entry, branch: str) -> Path:
             if br == branch and path:
                 return Path(path)
     return main
+
+
+def binding_store():
+    """The per-worktree presentation-binding record (``worktree_bindings.STORE``), exposed on
+    the facade so integrations reach it through their ``worktree`` composition port."""
+    from . import worktree_bindings
+
+    return worktree_bindings.STORE
 
 
 def locate(cfg, hive, bead="", branch="", kind=""):
@@ -1425,6 +1458,59 @@ def path_of(hive, ref):
     typer.echo(str(target))
 
 
+def rebind(hive: str = "", ref: str = "", session: str = "", as_json: bool = False) -> None:
+    """Repair presentation-binding gaps (bh-cb4jo.2): the explicit form of what launch does.
+
+    With ``ref`` the one named worktree is (re-)bound even if it never had a binding. Without
+    it, every managed worktree in scope (``--hive``, the cwd's hive, or all hives) that carries
+    a recorded binding is re-bound through ``herdr worktree open --path`` (idempotent), and
+    Beadhive-labelled orphaned ``"(deleted)"`` workspaces are closed with ``workspace close`` —
+    never a forced native remove (E31). Exit 1 when any step could not be completed."""
+    cfg = config.load()
+    if ref:
+        entry = _resolve_entry(cfg, hive)
+        target = wt_dir(entry, _leaf(ref))
+        if not target.exists():
+            typer.echo(f"✗ no managed worktree: {target}", err=True)
+            raise typer.Exit(1)
+        targets = [
+            _binding_reconcile.RebindTarget(
+                target, registry.hive_dir(entry), registry.hive_key(entry)
+            )
+        ]
+    else:
+        entries = {str(e["prefix"]): e for e in cfg.get("managed_repos", []) or []}
+        want = str(_resolve_entry(cfg, hive)["prefix"]) if hive else None
+        targets = [
+            _binding_reconcile.RebindTarget(
+                Path(path), registry.hive_dir(entries[prefix]), registry.hive_key(entries[prefix])
+            )
+            for prefix, path, _branch in managed(cfg)
+            if prefix in entries and (want is None or prefix == want)
+        ]
+    report = _binding_reconcile.rebind(targets, session=session, explicit=bool(ref))
+    if as_json:
+        typer.echo(json.dumps(report.as_dict(), indent=2))
+    else:
+        for row in report.rebound:
+            was = (
+                f" (was {row['previous']})" if row["previous"] not in ("", row["workspace"]) else ""
+            )
+            state = "already bound" if row["already_open"] == "true" else "bound"
+            typer.echo(f"✓ {state} {row['path']} → herdr {row['session']}/{row['workspace']}{was}")
+        for row in report.closed:
+            typer.echo(
+                f"✓ closed orphaned workspace {row['session']}/{row['workspace']} ({row['label']})"
+            )
+        for row in report.failed:
+            where = row.get("path") or f"session {row['session']}"
+            typer.echo(f"✗ {where}: {row['error']}", err=True)
+        if not (report.rebound or report.closed or report.failed):
+            typer.echo("no presentation bindings to repair")
+    if not report.ok:
+        raise typer.Exit(1)
+
+
 def init_existing(path):
     cfg = config.load()
     p = Path(path)
@@ -1794,3 +1880,4 @@ _worktree_git = importlib.import_module(".worktree_git", __package__)
 _worktree_verify = importlib.import_module(".worktree_verify", __package__)
 _worktree_inventory = importlib.import_module(".worktree_inventory", __package__)
 _worktree_cleanup = importlib.import_module(".worktree_cleanup", __package__)
+_binding_reconcile = importlib.import_module(".worktree_binding_reconcile", __package__)

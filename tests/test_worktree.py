@@ -27,10 +27,14 @@ from beadhive import (
     validation_ledger,
     validation_records,
     worktree,
+    worktree_binding_reconcile,
+    worktree_bindings,
     wt_status,
 )
+from beadhive.integrations.herdr.workspace_binding import HerdrWorkspaceBinding
 from beadhive.modules.worktrees import WorktreeSpec
 from beadhive.run import run
+from harness.fake_herdr_cli import FakeHerdrCli
 
 UTC = datetime.UTC
 
@@ -3873,3 +3877,211 @@ def test_the_rm_preflight_never_turns_an_ordinary_removal_into_a_crash(
     monkeypatch.setattr(worktree, "_classify_entry", boom)
     worktree.remove("mr", "rm-boom")
     assert not target.exists()
+
+
+# ---- presentation bindings: release before remove, status gaps, rebind (bh-cb4jo.2) ----------
+
+
+def _binding_hive(tmp_path, monkeypatch):
+    """A real hive whose config every `worktree` verb below loads."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    monkeypatch.setattr(config, "load", lambda: cfg)
+    return entry, repo
+
+
+def _fake_herdr(monkeypatch, order: list[str]) -> FakeHerdrCli:
+    """Route every composed Herdr binding to one stateful fake CLI, logging call order."""
+    herdr = FakeHerdrCli()
+
+    def binding(session, *, label=""):
+        def run(*args):
+            order.append(f"herdr {session} " + " ".join(args[:2]))
+            return herdr(*args)
+
+        return HerdrWorkspaceBinding(run, label=label)
+
+    monkeypatch.setattr(worktree_binding_reconcile, "herdr_binding", binding)
+    return herdr
+
+
+def _spy_removes(monkeypatch, order: list[str]) -> None:
+    real_run_git = worktree._run_git
+
+    def spy(args, **kw):
+        if "worktree" in args and "remove" in args:
+            order.append("git worktree remove")
+        return real_run_git(args, **kw)
+
+    monkeypatch.setattr(worktree, "_run_git", spy)
+
+
+def _bind(herdr: FakeHerdrCli, repo: Path, target: Path, session="default") -> str:
+    opened = HerdrWorkspaceBinding(herdr, label="bh:github/myorg/myrepo").open(target, source=repo)
+    worktree_bindings.STORE.record(target, "herdr", session, opened.workspace_id)
+    return opened.workspace_id
+
+
+def test_rm_releases_the_herdr_binding_before_the_native_remove(tmp_path, monkeypatch):
+    """E30: `bh worktree rm` closes the bound workspace, THEN git removes the worktree."""
+    entry, repo = _binding_hive(tmp_path, monkeypatch)
+    target = _add_real_worktree(repo, entry, "rm-b", "wt/bead/issue/rm-b")
+    _store_answers(monkeypatch)
+    order: list[str] = []
+    herdr = _fake_herdr(monkeypatch, order)
+    workspace = _bind(herdr, repo, target)
+    _spy_removes(monkeypatch, order)
+
+    worktree.remove("mr", "rm-b")
+
+    assert not target.exists()
+    assert order == [
+        "herdr default workspace list",
+        "herdr default workspace close",
+        "git worktree remove",
+    ]
+    assert workspace not in herdr.workspaces
+    assert worktree._branch_exists(repo, "wt/bead/issue/rm-b")
+
+
+def test_rm_of_an_unbound_worktree_never_calls_herdr(tmp_path, monkeypatch):
+    entry, repo = _binding_hive(tmp_path, monkeypatch)
+    target = _add_real_worktree(repo, entry, "rm-u", "wt/bead/issue/rm-u")
+    _store_answers(monkeypatch)
+    order: list[str] = []
+    herdr = _fake_herdr(monkeypatch, order)
+
+    worktree.remove("mr", "rm-u")
+
+    assert not target.exists()
+    assert herdr.calls == [] and order == []
+
+
+def test_prune_releases_the_herdr_binding_before_the_native_remove(tmp_path, monkeypatch):
+    _entry, repo, target, _branch = _prune_hive(tmp_path, monkeypatch)
+    monkeypatch.setattr(plugins, "registry", lambda: [])
+    order: list[str] = []
+    herdr = _fake_herdr(monkeypatch, order)
+    _bind(herdr, repo, target, session="ops")
+    _spy_removes(monkeypatch, order)
+
+    worktree.prune(hive="mr")
+
+    assert not target.exists()
+    assert order[:3] == [
+        "herdr ops workspace list",
+        "herdr ops workspace close",
+        "git worktree remove",
+    ]
+    assert herdr.workspaces == {}
+
+
+def test_a_herdr_outage_at_teardown_still_removes_and_names_the_repair(
+    tmp_path, monkeypatch, capsys
+):
+    """Herdr down never blocks native mechanics; the unreleased workspace is reported and later
+    repaired by `workspace close` via `bh worktree rebind` (E31), never a forced remove."""
+    entry, repo = _binding_hive(tmp_path, monkeypatch)
+    target = _add_real_worktree(repo, entry, "rm-d", "wt/bead/issue/rm-d")
+    _store_answers(monkeypatch)
+    order: list[str] = []
+    herdr = _fake_herdr(monkeypatch, order)
+    workspace = _bind(herdr, repo, target)
+    herdr.down()
+
+    worktree.remove("mr", "rm-d")
+
+    assert not target.exists()
+    err = capsys.readouterr().err
+    assert "binding gap" in err and "worktree rebind" in err
+
+    herdr.up()
+    worktree.rebind(hive="mr")
+
+    assert workspace not in herdr.workspaces  # the "(deleted)" orphan was closed
+    assert ("workspace", "close", workspace) in herdr.calls
+
+
+def test_status_reports_binding_gaps_in_json_and_human_views(tmp_path, monkeypatch, capsys):
+    """Present-but-unbound (intent recorded, never bound), bound-but-missing (the workspace is
+    gone), and a healthy binding — each reported, never folded into classification."""
+    entry, repo = _binding_hive(tmp_path, monkeypatch)
+    _store_answers(monkeypatch, status="open")
+    order: list[str] = []
+    herdr = _fake_herdr(monkeypatch, order)
+    bound = _add_real_worktree(repo, entry, "st-bound", "wt/bead/issue/st-bound")
+    unbound = _add_real_worktree(repo, entry, "st-unbound", "wt/bead/issue/st-unbound")
+    missing = _add_real_worktree(repo, entry, "st-missing", "wt/bead/issue/st-missing")
+    plain = _add_real_worktree(repo, entry, "st-plain", "wt/bead/issue/st-plain")
+    _bind(herdr, repo, bound)
+    worktree_bindings.STORE.record_intent(unbound, "herdr", "default")  # crash before bind
+    herdr.workspaces.pop(_bind(herdr, repo, missing))  # the workspace vanished
+
+    worktree.status_cmd(hive="mr", as_json=True)
+    captured = capsys.readouterr()
+    rows = {row["leaf"]: row for row in json.loads(captured.out)}
+
+    assert rows["st-bound"]["bindings"]["herdr"]["state"] == "bound"
+    assert rows["st-bound"]["binding_gaps"] == []
+    assert rows["st-unbound"]["binding_gaps"] == ["herdr:unbound"]
+    assert rows["st-missing"]["binding_gaps"] == ["herdr:missing"]
+    assert rows["st-plain"]["bindings"] == {} and rows["st-plain"]["binding_gaps"] == []
+    # Binding state never feeds classification: identical beads classify identically.
+    assert len({row["classification"] for row in rows.values()}) == 1
+    assert "2 worktree(s) have a presentation-binding gap" in captured.err
+    assert not any(str(plain) in call for call in order)
+
+    worktree.status_cmd(hive="mr")
+    human = capsys.readouterr().out
+    assert "st-unbound" in human and "binding-gap=herdr:unbound" in human
+
+
+def test_rebind_repairs_a_present_but_unbound_worktree_idempotently(tmp_path, monkeypatch, capsys):
+    """E34: a crash between create and bind leaves an intent; one `open --path` re-binds it, and
+    running the repair again returns the same reference (no second workspace)."""
+    entry, repo = _binding_hive(tmp_path, monkeypatch)
+    herdr = _fake_herdr(monkeypatch, [])
+    target = _add_real_worktree(repo, entry, "rb-1", "wt/bead/issue/rb-1")
+    other = _add_real_worktree(repo, entry, "rb-2", "wt/bead/issue/rb-2")
+    worktree_bindings.STORE.record_intent(target, "herdr", "default")
+    (target / "notes.txt").write_text("keep me")
+
+    worktree.rebind(hive="mr", as_json=True)
+    first = json.loads(capsys.readouterr().out)
+    worktree.rebind(hive="mr", as_json=True)
+    second = json.loads(capsys.readouterr().out)
+
+    assert [row["path"] for row in first["rebound"]] == [str(target)]
+    assert first["rebound"][0]["workspace"] == second["rebound"][0]["workspace"]
+    assert second["rebound"][0]["already_open"] == "true"
+    assert (
+        worktree_bindings.STORE.read(target)["herdr"].reference == first["rebound"][0]["workspace"]
+    )
+    assert herdr.bound(other) is None  # never binds a worktree nobody asked to present
+    assert (target / "notes.txt").read_text() == "keep me"
+    assert ("worktree", "open", "--cwd", str(repo), "--path", str(target)) == herdr.calls[0][:6]
+
+
+def test_rebind_of_one_named_worktree_binds_it_even_without_a_record(tmp_path, monkeypatch, capsys):
+    entry, repo = _binding_hive(tmp_path, monkeypatch)
+    herdr = _fake_herdr(monkeypatch, [])
+    target = _add_real_worktree(repo, entry, "rb-3", "wt/bead/issue/rb-3")
+
+    worktree.rebind(hive="mr", ref="rb-3")
+
+    assert herdr.bound(target) == worktree_bindings.STORE.read(target)["herdr"].reference
+    assert "✓ bound" in capsys.readouterr().out
+
+
+def test_rebind_with_herdr_down_fails_loudly_and_keeps_the_intent(tmp_path, monkeypatch):
+    entry, repo = _binding_hive(tmp_path, monkeypatch)
+    herdr = _fake_herdr(monkeypatch, [])
+    herdr.down()
+    target = _add_real_worktree(repo, entry, "rb-4", "wt/bead/issue/rb-4")
+    worktree_bindings.STORE.record_intent(target, "herdr", "default")
+
+    with pytest.raises(typer.Exit) as exc:
+        worktree.rebind(hive="mr")
+
+    assert exc.value.exit_code == 1
+    assert worktree_bindings.STORE.read(target)["herdr"].pending
+    assert target.is_dir()

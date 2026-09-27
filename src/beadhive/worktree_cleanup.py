@@ -14,7 +14,7 @@ import typer
 
 from . import registry, wt_status
 from .config_consumer_ports import work_settings as config
-from .modules.worktrees import WorktreeHandle, WorktreeManagerError
+from .modules.worktrees import WorktreeManagerError
 
 
 def _facade():
@@ -73,6 +73,10 @@ def prune(*args, **kwargs):
 
 def _worktree_lifecycle_service(*args, **kwargs):
     return _call_facade("_worktree_lifecycle_service", *args, **kwargs)
+
+
+def _remove_worktree(*args, **kwargs):
+    return _call_facade("_remove_worktree", *args, **kwargs)
 
 
 def _leaf(*args, **kwargs):
@@ -201,9 +205,8 @@ def impl_remove(hive, ref, force=False, as_json=False):
     _refuse_unknown_removal(cfg, entry, target, force=force)
     started = time.monotonic()
     try:
-        _worktree_lifecycle_service(cfg, entry).remove(
-            WorktreeHandle.for_removal(main, target), force=force
-        )
+        # Releases any recorded presentation binding before the native remove (E30).
+        _remove_worktree(cfg, entry, main, target, force=force)
     except WorktreeManagerError as exc:
         elapsed = time.monotonic() - started
         _record_wt_event("remove", "error", hive=hive, leaf=target.name)
@@ -318,23 +321,14 @@ def impl__prune_remove_one(cfg, entries_by_prefix: dict, main: Path, st) -> bool
     claim_path = claim_authority.record_path(st.path)
     started = time.monotonic()
     # SAFE (closed + merged + clean) → the branch is disposable; the manager removes only the
-    # linked worktree and the `git branch -D` step below retires the branch.
-    if entry is None:
-        res = _run_git(
-            ["git", "-C", str(main), "worktree", "remove", "--force", st.path],
-            check=False,
-        )
-        outcome = "ok" if res.returncode == 0 else "error"
-        error = res.stderr or ""
+    # linked worktree and the `git branch -D` step below retires the branch. A row whose hive
+    # left managed_repos still goes through the same release-then-remove effect (E30).
+    try:
+        _remove_worktree(cfg, entry, main, Path(st.path), st.branch, force=True)
+    except WorktreeManagerError as exc:
+        outcome, error = "error", exc.error
     else:
-        try:
-            _worktree_lifecycle_service(cfg, entry).remove(
-                WorktreeHandle.for_removal(main, Path(st.path), st.branch), force=True
-            )
-        except WorktreeManagerError as exc:
-            outcome, error = "error", exc.error
-        else:
-            outcome, error = "ok", ""
+        outcome, error = "ok", ""
     elapsed = time.monotonic() - started
     if outcome == "ok":
         typer.echo(f"  removed {st.path}  [{st.branch}]")

@@ -5,8 +5,11 @@ from pathlib import Path
 import pytest
 
 from beadhive_worktrees import (
+    BindingGap,
+    BoundWorktree,
     CallbackWorktreeInventory,
     ManagedWorktree,
+    WorkspaceBindingError,
     WorktreeHandle,
     WorktreeInventoryRequest,
     WorktreeInventoryService,
@@ -174,3 +177,143 @@ def test_inventory_and_status_cross_one_typed_query_port_without_rendering(capsy
         ("status", "github/beadhive/beadhive"),
     ]
     assert capsys.readouterr() == ("", "")
+
+
+class RecordingBinding:
+    """A fake ``workspace.binding`` recording every call into the shared ordering log."""
+
+    def __init__(self, calls: list[str], presenter: str = "herdr", *, fails: str = ""):
+        self.calls = calls
+        self.presenter = presenter
+        self.fails = fails
+
+    def bind(self, handle):
+        self.calls.append(f"{self.presenter}.bind")
+        if self.fails == "bind":
+            raise WorkspaceBindingError(self.presenter, "server down", code="server_not_running")
+        return handle.with_binding(self.presenter, handle.bindings.get(self.presenter) or "w4")
+
+    def release(self, handle):
+        self.calls.append(f"{self.presenter}.release")
+        if self.fails == "release":
+            raise WorkspaceBindingError(self.presenter, "server down", code="server_not_running")
+
+
+class HerdrBindingManager(RecordingManager):
+    """A manager that binds Herdr itself as a side effect (the deferred Option B shape)."""
+
+    binds: tuple[str, ...] = ("herdr",)
+    remove_releases_bindings = True
+
+
+def test_binding_is_composed_for_a_manager_that_does_not_bind_the_presenter(tmp_path) -> None:
+    calls: list[str] = []
+    binding = RecordingBinding(calls)
+    service = WorktreeLifecycleService(manager=RecordingManager(calls), bindings=(binding,))
+
+    bound = service.bind(WorktreeHandle.of(_spec(tmp_path)))
+
+    assert service.bindings == (binding,)
+    assert service.binding("herdr") is binding
+    assert bound.handle.bindings == {"herdr": "w4"}
+    assert bound.gaps == ()
+    assert calls == ["herdr.bind"]
+
+
+def test_no_separate_binding_is_composed_when_the_manager_already_binds_it(tmp_path) -> None:
+    """The ADR composition rule: ``binds: ["herdr"]`` means no second, redundant binding."""
+    calls: list[str] = []
+    service = WorktreeLifecycleService(
+        manager=HerdrBindingManager(calls), bindings=(RecordingBinding(calls),)
+    )
+    handle = WorktreeHandle.of(_spec(tmp_path))
+
+    assert service.bindings == ()
+    assert service.binding("herdr") is None
+    assert service.bind(handle) == BoundWorktree(handle)
+    service.remove(handle, force=False)
+    assert calls == ["manager.remove(force=False)"]
+
+
+def test_bind_is_idempotent_and_returns_the_same_reference(tmp_path) -> None:
+    """E34: a repeated bind on an already-bound handle returns the same reference."""
+    service = WorktreeLifecycleService(
+        manager=RecordingManager([]), bindings=(RecordingBinding([]),)
+    )
+
+    first = service.bind(WorktreeHandle.of(_spec(tmp_path))).handle
+    second = service.bind(first).handle
+
+    assert first.bindings == second.bindings == {"herdr": "w4"}
+
+
+def test_a_failed_bind_is_a_reported_gap_that_never_touches_the_worktree(tmp_path) -> None:
+    """E33: the presenter being down leaves the worktree unbound, reported, never rolled back."""
+    calls: list[str] = []
+    warnings: list[str] = []
+    service = WorktreeLifecycleService(
+        manager=RecordingManager(calls),
+        bindings=(RecordingBinding(calls, fails="bind"),),
+        warn=warnings.append,
+    )
+    handle = service.create(_spec(tmp_path))
+
+    bound = service.bind(handle)
+
+    assert bound.handle == handle
+    assert bound.gaps == (BindingGap("herdr", "bind", "server down", "server_not_running"),)
+    assert calls == ["manager.create", "herdr.bind"]
+    assert len(warnings) == 1 and "binding gap" in warnings[0]
+
+
+def test_remove_releases_every_composed_binding_before_the_manager_removes(tmp_path) -> None:
+    """E30: release, then remove — two ordered effects, never a remove without a release."""
+    calls: list[str] = []
+    service = WorktreeLifecycleService(
+        manager=RecordingManager(calls),
+        bindings=(RecordingBinding(calls), RecordingBinding(calls, "other")),
+    )
+    handle = WorktreeHandle.for_removal(tmp_path / "main", tmp_path / "wts" / "b")
+
+    service.remove(handle.with_binding("herdr", "w4"), force=True)
+
+    assert calls == ["herdr.release", "other.release", "manager.remove(force=True)"]
+
+
+def test_an_unreleasable_binding_is_reported_and_the_remove_still_runs(tmp_path) -> None:
+    calls: list[str] = []
+    warnings: list[str] = []
+    service = WorktreeLifecycleService(
+        manager=RecordingManager(calls),
+        bindings=(RecordingBinding(calls, fails="release"),),
+        warn=warnings.append,
+    )
+    handle = WorktreeHandle.for_removal(tmp_path / "main", tmp_path / "wts" / "b")
+
+    gaps = service.release(handle)
+    removed = service.remove(handle, force=False)
+
+    assert gaps == (BindingGap("herdr", "release", "server down", "server_not_running"),)
+    assert removed.gaps == gaps and removed.handle == handle
+    assert calls == ["herdr.release", "herdr.release", "manager.remove(force=False)"]
+    assert len(warnings) == 2
+
+
+def test_the_release_still_precedes_a_remove_the_manager_refuses(tmp_path) -> None:
+    calls: list[str] = []
+    service = WorktreeLifecycleService(
+        manager=RecordingManager(calls, succeeds=False), bindings=(RecordingBinding(calls),)
+    )
+
+    with pytest.raises(WorktreeManagerError):
+        service.remove(WorktreeHandle.for_removal(tmp_path, tmp_path / "b"), force=False)
+
+    assert calls == ["herdr.release", "manager.remove(force=False)"]
+
+
+def test_handle_binding_references_can_be_added_and_dropped(tmp_path) -> None:
+    handle = WorktreeHandle.of(_spec(tmp_path)).with_binding("herdr", "w4")
+
+    assert handle.bindings == {"herdr": "w4"}
+    assert handle.without_binding("herdr").bindings == {}
+    assert handle.bindings == {"herdr": "w4"}

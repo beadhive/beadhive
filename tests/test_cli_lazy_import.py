@@ -11,6 +11,8 @@ from pathlib import Path
 from click import Context
 from typer.main import get_command
 
+from beadhive.contract_release import RELEASE_VERSION
+
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = (
     ROOT
@@ -18,7 +20,7 @@ CATALOG = (
     / "beadhive"
     / "schemas"
     / "contracts"
-    / "v1.0.0"
+    / f"v{RELEASE_VERSION}"  # the current contract release tracks the live catalog
     / "artifacts"
     / "operation-catalog-v1.json"
 )
