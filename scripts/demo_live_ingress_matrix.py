@@ -348,6 +348,13 @@ def parity(root: Path, *, python_executable: str | None = None) -> dict:
     require(dependency_paths, "isolated parity could not locate runtime dependencies")
     (site / "_beadhive_parity_dependencies.pth").write_text("\n".join(dependency_paths) + "\n")
     shutil.copytree(source / "src" / "beadhive", site / "beadhive")
+    # beadhive.kernel.lifecycle/plugins resolve their contracts through beadhive_plugins (a
+    # workspace library package the published wheel also vendors, bh-xh8ku.2) and are imported
+    # eagerly from beadhive.cli's top-level import chain, so the isolated site needs it too.
+    shutil.copytree(
+        source / "packages" / "beadhive-plugins" / "src" / "beadhive_plugins",
+        site / "beadhive_plugins",
+    )
     bootstrap = f"import site,sys;sys.path.insert(0,{str(site)!r});site.addsitedir({str(site)!r});"
     bh = bin_dir / "bh"
     bh_program = bootstrap + "sys.argv[0]='bh';from beadhive.cli import app;app()"

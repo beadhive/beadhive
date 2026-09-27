@@ -22,8 +22,11 @@ kind = "kernel"
 status = "present"
 owner_path = "src/beadhive/kernel/lifecycle"
 source_paths = ["src/beadhive/kernel/lifecycle/**/*.py"]
+# The lifecycle event contracts themselves moved to packages/beadhive-plugins (bh-xh8ku.2);
+# their own tests moved with them and run under the packages attest key, out of this
+# src/beadhive-scoped registry's reach (test selectors here must be under tests/). This
+# closure's remaining tests cover the forwarding facade and the dispatcher left in root.
 tests = [
-  "tests/unit/kernel/lifecycle/test_contracts.py",
   "tests/unit/kernel/lifecycle/test_dispatcher.py",
   "tests/unit/kernel/lifecycle/test_independence.py",
 ]
@@ -38,8 +41,11 @@ kind = "kernel"
 status = "present"
 owner_path = "src/beadhive/kernel/plugins"
 source_paths = ["src/beadhive/kernel/plugins/**/*.py", "src/beadhive/kernel/plugins/manifests/*.json"]
+# The capability-slot and binding contracts themselves moved to packages/beadhive-plugins
+# (bh-xh8ku.2); their own tests moved with them and run under the packages attest key, out of
+# this src/beadhive-scoped registry's reach (test selectors here must be under tests/). This
+# closure's remaining test covers discovery, left in root.
 tests = [
-  "tests/unit/kernel/plugins/test_binding.py",
   "tests/unit/kernel/plugins/test_discovery.py",
 ]
 shared_contracts = ["contracts"]
@@ -263,9 +269,12 @@ tests = [
   "tests/unit/modules/work/test_work_independence.py",
 ]
 shared_contracts = ["contracts", "kernel.lifecycle"]
+# The lifecycle contract's own tests moved to packages/beadhive-plugins (bh-xh8ku.2, out of
+# this registry's tests/-only reach); the dispatcher test exercises the same contract types
+# (SubscriberBinding, LifecycleEvent, DeliveryPolicy) through the root closure that remains.
 shared_contract_tests = [
   "tests/contracts/test_work_capability_adapters.py",
-  "tests/unit/kernel/lifecycle/test_contracts.py",
+  "tests/unit/kernel/lifecycle/test_dispatcher.py",
 ]
 reverse_dependencies = ["adapters", "system-smoke"]
 reverse_dependency_tests = [
@@ -291,9 +300,12 @@ tests = [
   "tests/unit/modules/worktrees/test_worktrees_independence.py",
 ]
 shared_contracts = ["contracts", "kernel.lifecycle"]
+# The lifecycle contract's own tests moved to packages/beadhive-plugins (bh-xh8ku.2, out of
+# this registry's tests/-only reach); the dispatcher test exercises the same contract types
+# (SubscriberBinding, LifecycleEvent, DeliveryPolicy) through the root closure that remains.
 shared_contract_tests = [
   "tests/contracts/test_worktree_capability_compatibility.py",
-  "tests/unit/kernel/lifecycle/test_contracts.py",
+  "tests/unit/kernel/lifecycle/test_dispatcher.py",
 ]
 reverse_dependencies = ["module.hives", "system-smoke"]
 reverse_dependency_tests = [
