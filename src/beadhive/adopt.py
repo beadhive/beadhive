@@ -12,7 +12,7 @@ Two provenance facets carry through to the filed epic (see ``ws/state.py``):
   * **System-of-record** — the NATIVE ``source_system`` + ``external_ref`` pair (e.g. github /
     ``gh-9``) survives onto the epic so a GitHub-sourced request stays traceable. ``source_system``
     is settable only at bead birth, so an adopted epic that carries it is born via ``bd import``
-    (``plan._create_epic``); ``bd create``/``update`` expose no flag for it.
+    (``plan_filing.import_epic``); ``bd create``/``update`` expose no flag for it.
   * **Originating link** — on ``ws plan file`` each origin report is linked as CHILD-OF the epic
     (report depends-on epic, ``parent-child``). The epic OWNS the report, never the reverse — so
     the report is NEVER a blocker of the epic (it can't wrongly gate the molecule on an open

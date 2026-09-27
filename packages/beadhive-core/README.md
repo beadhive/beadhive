@@ -300,6 +300,61 @@ rendering (`bd comments`' markdown renderer is the operator contract and is not 
 typed comment rows), and submit's gate creation, validation and Git handoff (`work.review.submit`
 is `cli-compatibility`).
 
+## Molecule filing (bh-sy36q.2)
+
+`beadhive_core.planning` owns molecule filing: compiling a validated Beadhive spec into ONE Beads
+`BatchApply` request and orchestrating the gate/kickoff/swarm conventions that request cannot
+carry. `beadhive.plan_filing` is the one composition seam (`bh plan file`, and `plan_file`'s MCP
+tool via `beadhive.plan.file_molecule`).
+
+`compile_molecule` is a PURE function: given a spec, the identity/dimension labels, and (when
+filing links an adopted report or the epic already exists) the adopted report ids / existing epic
+id, it always returns the same `CompiledMolecule` — every issue create carries a stable
+request-local key derived from its handle (`issue_key`), and the epic-parent edge plus every
+declared dependency is a `dep_add` item in the SAME ordered list, so `--dry-run` preview and a real
+filing share the exact lowering. `items` over the 100-entry cap raises `MoleculeTooLarge` before
+anything is sent — refused outright, never chunked into multiple non-atomic requests.
+
+| Operation | Route | Served by |
+|---|---|---|
+| `plan.batch-apply.atomic` | **api-ready** (bh-sy36q.2: reclassified from `cli-compatibility` — see `test_core_planning_real_service.py`) | `SessionMoleculeFiler` over `BeadsSession.batch_apply` |
+| `plan.gate.create` / `plan.kickoff.update` | `cli-compatibility` (no v1.3 HTTP route for either) | `PlanningGates` port → shell `CliPlanningGates` (`bd gate create` / `bd set-state kickoff=pending`) |
+
+Route selection follows the same pre-execution rule as `work_queue` / `work_lifecycle`: when the
+hive's supervised Beads service can be reached, `plan_filing._filer` opens it and selects
+`SessionMoleculeFiler`; otherwise (no service running, an embedded-Dolt hive Beads 1.3 cannot
+serve, a missing capability) it selects `CliMoleculeFiler` — a thin interpreter of the SAME
+compiled item list, walking it one `bd create` / `bd dep add` at a time rather than reimplementing
+the molecule contract a second way. Selection happens once, before the first Beads operation of
+the command; a failure after that point is reported, never silently retried on the other route.
+
+`PlanningCommands.file` composes both: compile once, submit once (`MoleculeFiler.apply`, resolving
+every key to the id it was bound to), then `create_swarm` / `create_kickoff_gate` per root /
+`set_kickoff_pending`, and `create_release_hold_gate` for every `release:breaking` bead when the
+hive's `release.enforce_hold` is on. `CliPlanningGates` is the ONE authoritative implementation of
+the kickoff-gate contract (moved here from `beadhive.plan`'s `_create_swarm` /
+`_create_kickoff_gate` / `_set_kickoff_pending` / `_create_release_hold_gate`): `bh plan repair`
+calls the SAME methods, so the gate description format the read-side convention checks
+(`plan._names_kickoff_for`) cannot drift between the two callers.
+
+**Narrowed out of this bead** (left on the pre-existing `bd`-read implementation, unchanged):
+molecule verification (`plan.verify_epic` / `_verify_loaded`) and repair's convention-checking
+reads (`plan.repair_epic`) stay in `beadhive.plan` — both are already-correct `cli-compatibility`
+reads per the matrix (`plan.molecule.verify` / `plan.molecule.repair`), and reimplementing their
+~275 lines of accumulated edge-case policy (nested-epic gating, satisfied-vs-genuine roots,
+closed-dimension checks — each with its own historical-bug citation) as core policy would be a
+large, high-regression-risk mechanical port for no routing benefit, since nothing about them moves
+to `BeadsSession`. `show` / `status` / `adopt`'s frame-seeding also stay as-is (read-only rendering
+and pure spec shaping, no Beads write). See the bead's NOTES for the full narrowing rationale.
+
+An epic carrying native `source_system` provenance (an adopted report with a system-of-record,
+not just an `external_ref`) is still born via `bd import` (`plan_filing.import_epic`):
+`ApplyCreateItem` has no member for `source_system` — settable only at bead creation — so this is
+the one piece of filing BatchApply genuinely cannot express. Every other molecule primitive (the
+child issues, every parent-child and declared-dependency edge, and any adopted-report link) still
+compiles into the ONE BatchApply request that follows, addressing the epic by the id `bd import`
+returned rather than a request-local key.
+
 ## Tests
 
 - `test_core_routing_policy.py` — every matrix row resolves to exactly one typed route; capability
@@ -356,3 +411,22 @@ is `cli-compatibility`).
   and their argv, pre-execution route selection, and the `bh work assign` / `claim` / `abandon` /
   `resume` command contract over a transport-fixture session (claim output is byte-identical on
   both routes).
+- `test_core_planning_policy.py` (bh-sy36q.2) — the pure compiler (keyed creates then edges, label
+  lowering, an existing-epic-id molecule with no epic create, the 100-item cap refusal, preview
+  and apply sharing one lowering); `PlanningCommands.file` over a generated-client transport
+  fixture (the api-ready BatchApply route) and a fake `PlanningGates`, including the refused/
+  indeterminate-write mapping to `MoleculeFilingFailed`. No Beads state emulator.
+- `test_core_planning_real_service.py` — opt-in (`BEADS_PLANNING_SCRATCH=1 ... -m real_service`)
+  proof, against a disposable OWNED-mode scratch hive it creates and reaps, that one molecule
+  (epic + two issues + their parent-child and declared-dependency edges) lands atomically in ONE
+  request with its keys resolved to real ids, and that a request refused partway (an id collision)
+  writes NOTHING — no orphaned epic or issue to reconcile.
+- `packages/beadhive-beads-client/tests/test_session.py` (bh-sy36q.2 addition) —
+  `BeadsSession.batch_apply` posts `issues:batchApply` verbatim and returns the generated
+  `ApplyBatchResponse` (key-to-id map + per-item results) untouched.
+- `tests/test_plan.py` (`beadhive` package) — the CLI-compatibility fallback exercised end to end
+  against a real git hive (identity-triplet resolution, complexity/dimension labels, declared
+  deps and epic-parent edges as separate `dep add` calls, release-hold gates, and adopted-report
+  linking including the native-`source_system` `bd import` birth); one test proves the shell
+  selects the api-ready route instead when a session opens, submitting the whole molecule in one
+  `BatchApply` request while gates/kickoff still go through the same `bd` route either way.

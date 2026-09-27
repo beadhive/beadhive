@@ -1,17 +1,19 @@
-"""Pure planning application tests over fake outbound ports."""
+"""Pure planning application tests over fake outbound ports.
+
+Molecule filing is no longer part of this boundary (bh-sy36q.2): it moved to
+``beadhive_core.planning.PlanningCommands`` (policy tests in
+``packages/beadhive-core/tests/test_core_planning_policy.py``) composed by
+``beadhive.plan_filing`` (shell tests in ``tests/test_plan_filing_shell.py``). This module keeps
+validate/approve/verify/repair coverage only.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from beadhive.modules.planning import (
-    FilingRequest,
-    FilingResult,
     KickoffRequest,
     KickoffResult,
-    PlanningError,
     PlanningService,
     RepairRequest,
     RepairResult,
@@ -20,15 +22,6 @@ from beadhive.modules.planning import (
     VerificationRequest,
     VerificationResult,
 )
-
-SPEC = {
-    "epic": {"title": "Capability"},
-    "issues": [
-        {"handle": "build", "title": "Build", "deps": ["design"]},
-        {"handle": "design", "title": "Design"},
-        {"handle": "docs", "title": "Document"},
-    ],
-}
 
 
 class FakeValidator:
@@ -39,15 +32,6 @@ class FakeValidator:
     def validate(self, request):
         self.requests.append(request)
         return ValidationResult(self.problems)
-
-
-class FakeFiler:
-    def __init__(self):
-        self.calls = []
-
-    def file(self, request, graph):
-        self.calls.append((request, graph))
-        return FilingResult("bh-new", len(graph.order), len(graph.roots), 1)
 
 
 class FakeKickoff:
@@ -67,43 +51,30 @@ class FakeRepairer:
 
 def _service(problems=()):
     validator = FakeValidator(problems)
-    filer = FakeFiler()
     return (
         PlanningService(
             validator=validator,
-            filer=filer,
             kickoff=FakeKickoff(),
             verifier=FakeVerifier(),
             repairer=FakeRepairer(),
         ),
         validator,
-        filer,
     )
 
 
-def test_file_validates_then_passes_stable_dag_to_filing_port() -> None:
-    service, validator, filer = _service()
-    request = FilingRequest(SPEC, Path("/hive"), "planner", {})
+def test_validate_records_the_request_and_returns_the_configured_problems() -> None:
+    service, validator = _service(("missing acceptance",))
+    spec = {"epic": {"title": "Capability"}, "issues": []}
 
-    result = service.file(request)
+    result = service.validate(ValidationRequest(spec, {}))
 
-    assert validator.requests == [ValidationRequest(SPEC, {})]
-    assert filer.calls[0][1].order == ("design", "docs", "build")
-    assert filer.calls[0][1].roots == ("design", "docs")
-    assert result == FilingResult("bh-new", 3, 2, 1)
-
-
-def test_invalid_spec_never_reaches_filing_port() -> None:
-    service, _, filer = _service(("missing acceptance",))
-
-    with pytest.raises(PlanningError, match="missing acceptance"):
-        service.file(FilingRequest(SPEC, Path("/hive"), "planner", {}))
-
-    assert filer.calls == []
+    assert validator.requests == [ValidationRequest(spec, {})]
+    assert result.problems == ("missing acceptance",)
+    assert not result.valid
 
 
 def test_kickoff_verification_and_repair_keep_epic_identity() -> None:
-    service, _, _ = _service()
+    service, _ = _service()
 
     assert service.approve(KickoffRequest("bh-1", Path("/hive"), "planner", {})).resolved_gates == 2
     assert service.verify(VerificationRequest("bh-1", Path("/hive"), {})).valid

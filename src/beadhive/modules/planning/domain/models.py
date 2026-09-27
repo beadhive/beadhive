@@ -35,25 +35,6 @@ class ValidationResult:
 
 
 @dataclass(frozen=True, slots=True)
-class FilingRequest:
-    spec: dict[str, Any]
-    workspace: Path
-    actor: str
-    config: Any
-
-
-@dataclass(frozen=True, slots=True)
-class FilingResult:
-    epic_id: str
-    issue_count: int
-    root_count: int
-    adopt_count: int = 0
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "epic_id", _required(self.epic_id, "epic_id"))
-
-
-@dataclass(frozen=True, slots=True)
 class KickoffRequest:
     epic_id: str
     workspace: Path
