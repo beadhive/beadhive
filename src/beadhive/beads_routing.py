@@ -44,6 +44,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+import typer
+
 from . import host_beads
 
 #: The one rollback switch. See the module docstring for its bounded lifetime.
@@ -53,18 +55,24 @@ ROUTE_CLI = "cli"
 _ROUTES = (ROUTE_API, ROUTE_CLI)
 
 
-class BeadsRouteInvalid(RuntimeError):
-    """``BH_BEADS_ROUTE`` names neither ``api`` nor ``cli``.
+class BeadsRouteInvalid(typer.Exit):
+    """``BH_BEADS_ROUTE`` names neither ``api`` nor ``cli``: the command stops with exit 2.
 
-    Deliberately not a ``ValueError`` / ``OSError``: the seams map those onto their
-    CLI-compatibility route, and a mistyped switch must fail the command, not reroute it.
+    Raised by :func:`selected_route` after it renders the one ``✗`` diagnostic. Deliberately not
+    one of the errors the seams map onto their CLI-compatibility route (``SessionUnavailable``,
+    ``ServiceError``, ``IncompatibleService``, ``OSError``, ``ValueError``): a mistyped switch
+    must fail the command, never silently reroute it.
     """
 
     def __init__(self, value: str) -> None:
-        super().__init__(
+        super().__init__(code=2)
+        self.message = (
             f"{ROUTE_ENV}={value!r} is not a Beads route; use {ROUTE_API!r} (default) or "
             f"{ROUTE_CLI!r} (rollback to the CLI-compatibility route)"
         )
+
+    def __str__(self) -> str:
+        return self.message
 
 
 def _core() -> Any:
@@ -77,7 +85,9 @@ def selected_route() -> str:
     if not value:
         return ROUTE_API
     if value not in _ROUTES:
-        raise BeadsRouteInvalid(value)
+        refusal = BeadsRouteInvalid(value)
+        typer.echo(f"✗ {refusal}", err=True)
+        raise refusal
     return value
 
 

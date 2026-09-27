@@ -961,11 +961,6 @@ class FakeBdApprove(FakeBd):
         if args and len(args) > 1 and args[0] == "gate" and args[1] == "list":
             # bd gate list --json → return configured gates as JSON
             return _CP(0, json.dumps(self._gates) + "\n", "")
-        if args and args[0] == "create":
-            self._n += 1
-            new_id = f"mr-{self._n}"
-            self.created.append((new_id, args[1:]))
-            return _CP(0, new_id + "\n", "")
         return _CP(0, "", "")
 
 
