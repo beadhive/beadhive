@@ -322,8 +322,22 @@ def impl__merged_batch_groups(api, cfg, entry, main, beads):
     return merged
 
 
+def _impl_schedule_children(api, epic, entry, main):
+    """`bh work schedule`'s one fetch: an epic's direct, non-closed children.
+
+    Pre-execution route selection (never a retry after an API failure): try the `work.issue.list`
+    route first; it returns `None` to mean "select CLI instead" (service absent or a capability
+    missing), decided before any Beads read is attempted — see `work_queue.open_children`'s
+    docstring. Split out from `impl_schedule_payload` so this ONE decision is testable without the
+    batching/model-routing pipeline downstream of it."""
+    children = api.work_queue.open_children(main, entry, epic)
+    if children is None:
+        children = api.bd.children(epic, main)
+    return children
+
+
 def impl_schedule_payload(api, epic, cfg, entry, main):
-    children = api.bd.children(epic, main)
+    children = _impl_schedule_children(api, epic, entry, main)
     if not isinstance(children, list):
         raise ValueError(f"cannot list children of {epic} — is it an epic in this hive?")
     beads = [c for c in children if str(c.get("status", "")) != "closed"]
