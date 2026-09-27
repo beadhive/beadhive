@@ -21,8 +21,10 @@ implementation molecule can be filed next.
 Beadhive splits worktree lifecycle into two independently composable roles instead of one fused
 "provider": a **WorktreeManager** (exactly one per hive: `create`/`attach`/`remove`) and a
 **WorkspaceBinding** (zero or one: `bind`/`release`), with **native Git as the default and only
-built-in `WorktreeManager`**, and **Herdr composable only as a `WorkspaceBinding`** unless and
-until a proven Option B molecule promotes it to manager.
+built-in `WorktreeManager`**, and **Herdr composable only as a `WorkspaceBinding`**. Herdr is
+deferred, not scheduled, as a `WorktreeManager` (Option B): promoting it to manager is
+re-evaluated only if Option A shows problems that were not anticipated here — see "Sequencing:
+Option A now, Option B deferred" below.
 
 ### Why GO
 
@@ -62,8 +64,9 @@ Exactly one configured manager per hive. Beadhive policy — never the manager �
 | `remove` | `remove(handle: WorktreeHandle, force: bool) -> WorktreeRemoved` | Removes the linked worktree only; never deletes the branch (E14, native `git worktree remove` semantics). `force` bypasses the dirty refusal (E23/E32); dirty refusal without `force` is the default (E32). |
 
 Native Git is the built-in default `WorktreeManager`, implemented in `beadhive-worktrees`. A
-Herdr `WorktreeManager` (Option B) is a distinct, later-filed adapter that must pass the same
-interface plus the `bh-qdezo.9` conformance kit before it may be selected.
+Herdr `WorktreeManager` (Option B) would be a distinct adapter, filed only if a later
+re-evaluation adopts Option B (see "Sequencing: Option A now, Option B deferred" below), and it
+must pass the same interface plus the `bh-qdezo.9` conformance kit before it may be selected.
 
 ### WorkspaceBinding (capability slot, zero or one)
 
@@ -204,41 +207,37 @@ is a small, clearly-marked note added below (see "Amendment applied" at the end 
 the file's dense narrative structure is otherwise left untouched, since Option B does not exist
 yet and the base saga (Option A, and non-Herdr hives) is unaffected.
 
-## Sequencing: Option A first, Option B only after proof
+## Sequencing: Option A now, Option B deferred
 
 File the **Option A implementation molecule now** (native manager in `beadhive-worktrees`, Herdr
 binding replacing `_workspace()`'s `workspace create --cwd` call in launch, per `bh-mr9tk.1`
-Recommendation items 1–5). File the **Option B molecule only after** Option A ships and meets the
-following proof criterion.
+Recommendation items 1–5).
 
-**Proof criterion for Option A (concrete, falsifiable):** at least **20 worktree lifecycles**
-(create-or-attach through remove) completed through Option A in real dispatch, spanning at least
-**10 calendar days**, with:
+**Option B is deferred, not sequenced.** There is no numeric proof bar and no molecule scheduled
+or planned for it. Option B is re-evaluated only if Option A shows problems that were not
+anticipated in this decision — for example, if the E31-shaped orphaned-binding reconciliation or
+the E34-shaped crash-recovery path from the "Partial failure, crash recovery, and rollback"
+section above turns out not to hold up under real dispatch. Absent such a trigger, Option A is
+the whole worktree-manager story indefinitely; nobody owes a follow-up planning pass on a timer
+or a lifecycle count.
 
-1. **zero** operator-manual interventions to reconcile a stale or orphaned Herdr workspace (i.e.,
-   zero E31-shaped incidents that reach an operator instead of being repaired automatically by
-   the release-before-remove ordering and the `open --path` reconciliation primitive), and
-2. the crash-recovery path (an E34-shaped bind gap: native worktree present, binding missing)
-   exercised at least once in real dispatch — not just in the spike — recovering cleanly with no
-   data loss.
-
-If either count is not met after 10 days, the window extends until it is; Option A is not
-"proven" by elapsed time alone, only by the observed absence of manual recovery plus at least one
-real crash-recovery exercise. Only once this holds may a planner file the Option B molecule
-(Herdr as exclusive manager, implicit binding, the `classify → remove` saga variant above).
+If that re-evaluation is ever opened, it starts from the Option B contract already recorded in
+this ADR — the method shapes, the refusal-when-Herdr-unavailable policy, the no-silent-fallback /
+no-mixed-manager-hive rule, and the `classify → remove` saga variant above — rather than
+re-deriving them from scratch.
 
 ## Bead disposition
 
 | Bead(s) | Status | Disposition under this decision |
 | --- | --- | --- |
-| `bh-7oo93.4`, `bh-7oo93.14`, `bh-7oo93.20`, `bh-7oo93.23` | closed | **Confirmed superseded, stay closed.** Each was already closed with a note flagging it as an "expected SUPERSEDE candidate" pending this ADR, because moving worktree mechanics behind the legacy `modules/worktrees` boundary first would have been a double move ahead of the `beadhive-worktrees` package extraction. This ADR confirms that judgment: the two-role contract lands in `beadhive-worktrees` directly (via `bh-xh8ku.3`/`bh-qdezo`'s later phases), so nothing in these four beads needs to be reopened or redone. |
+| `bh-7oo93.4`, `bh-7oo93.14`, `bh-7oo93.20`, `bh-7oo93.23` | closed | **Confirmed superseded, stay closed.** Each was already closed with a note flagging it as an "expected SUPERSEDE candidate" pending this ADR, because moving worktree mechanics behind the legacy `modules/worktrees` boundary first would have been a double move ahead of the `beadhive-worktrees` package extraction. This ADR confirms that judgment: the two-role contract lands in `beadhive-worktrees` directly (via `bh-xh8ku`/`bh-qdezo`'s later phases), so nothing in these four beads needs to be reopened or redone. |
 | `bh-ym56t` (epic) | open | **Partially unblocked.** Its own note says Herdr implementation work was blocked on this decision so it would not encode the now-superseded "Herdr always owns mechanics" assumption. Non-worktree transport/bootstrap consolidation (below) is unblocked immediately; the two worktree-touching children need the amendment noted against them. |
 | `bh-ym56t.1` | open | **Unblocked, informed.** Its note ties Herdr worktree compatibility to this decision; it should now assume native-default + Herdr-as-binding-only (Option A), not Herdr-as-mechanics-owner. |
-| `bh-ym56t.5` | open | **Unblocked, amend.** Its note forbids decomposing Herdr worktree ownership before this decision. It may now proceed, but must decompose Herdr's worktree-adjacent code around the `WorkspaceBinding` role (bind/release) only — Herdr does not get a manager role unless/until an Option B molecule ships. |
+| `bh-ym56t.5` | open | **Unblocked, amend.** Its note forbids decomposing Herdr worktree ownership before this decision. It may now proceed, but must decompose Herdr's worktree-adjacent code around the `WorkspaceBinding` role (bind/release) only — Herdr does not get a manager role unless a later Option B re-evaluation adopts it. |
 | `bh-ym56t.17` | open | **Confirmed amend** (already tagged "expected AMEND" in its own note). Replace `_workspace()`'s `workspace create --cwd` call with `herdr worktree open --path <exact>` and thread the returned `workspace_id` onto `WorktreeHandle.bindings["herdr"]` (E48; `bh-mr9tk.1` Recommendation item 1). This edit belongs to the Option A implementation molecule filed from this decision, not to this ADR. |
 | `bh-ym56t.2`, `.3`, `.4`, `.6`–`.16` (excl. `.5`), `.18`, `.19` | open | **Unblocked, unaffected.** Pure CLI/MCP/host-daemon/Frame Bridge transport and bootstrap consolidation with no worktree-mechanics content; proceed independently of this decision. |
 | `bh-sy36q.1` | open | **Unblocked.** Its note already anticipates consuming "the beadhive-worktrees library package" as its worktree capability; this decision is exactly that selection (WorktreeManager + WorkspaceBinding, native default). It may proceed once its own dependency chain (`bh-l5sxi`, etc.) clears — no longer gated on an undecided worktree contract. |
-| `bh-qdezo.4` | **closed, but not as merged/scaffolded** | **Correction to this bead's own acceptance-criteria assumption.** `bh-qdezo.4` was closed 2026-09-27 as *superseded*, not landed: the operator's 2026-09-27 replan of `bh-qdezo` split its scope into sub-epics, and `bh-xh8ku.3` ("Scaffold beadhive-worktrees with the pure worktree domain, the manager slot, and the native provider") carries **identical title, description, design, and acceptance criteria** and is still **open**. The real Option A dependency is **`bh-xh8ku.3`** (or `bh-xh8ku` as a whole), not `bh-qdezo.4`. Good news: `bh-xh8ku`'s own blocking dependency, the phase-0a package ADR sub-epic `bh-qo63b`, has already landed on `main` (see `chore(merge): molecule bh-qo63b` / `chore(merge): bead bh-qo63b.1` in this repo's recent history) — so `bh-xh8ku` is unblocked and ready to start. |
+| `bh-qdezo.4` | **closed, but not as merged/scaffolded** | **Correction to this bead's own acceptance-criteria assumption.** `bh-qdezo.4` was closed 2026-09-27 as *superseded*, not landed: the operator's 2026-09-27 replan of `bh-qdezo` split its scope into sub-epics, and `bh-xh8ku.3` ("Scaffold beadhive-worktrees with the pure worktree domain, the manager slot, and the native provider") carries **identical title, description, design, and acceptance criteria** and is still **open**. The real Option A dependency is **`bh-xh8ku`** (which superseded `bh-qdezo.4`), not `bh-qdezo.4` itself. Good news: `bh-xh8ku`'s own blocking dependency, the phase-0a package ADR sub-epic `bh-qo63b`, has already landed on `main` (see `chore(merge): molecule bh-qo63b` / `chore(merge): bead bh-qo63b.1` in this repo's recent history) — so `bh-xh8ku` is unblocked and ready to start. |
 | `bh-qdezo.9` | open | **Dependency still to land, but can proceed independently.** The conformance kit (exact path, exact branch, attach, remove-keeps-branch, dirty refusal, handle round trip) exercises exactly the methods this ADR fixes, so its shape needs no amendment. It does not itself depend on this ADR's verdict and can be built in parallel with `bh-xh8ku.3`, but every Option A/B adapter (the native provider first, a future Herdr adapter later) must pass it before being considered conformant — sequence it to land at or before the point the Option A molecule's native manager is exercised in CI. |
 | `bh-xh8ku` (epic), `bh-xh8ku.3` | open | **Matches this ADR's placement, ready to start.** `bh-xh8ku.3`'s existing acceptance criteria (worktree domain in `beadhive-worktrees`, `worktree.manager` slot on `beadhive-plugins`, native provider as built-in default, `beadhive.modules.worktrees` becomes a forwarding facade) already match this decision's placement exactly. Its note that "the plugin-first fallback seam... replacing it belongs to bh-mr9tk.2" is now resolved: replace it, per the Selection and Composition sections above and `bh-mr9tk.1` Recommendation item 2. No amendment to `bh-xh8ku.3`'s own shape is needed. |
 
@@ -251,9 +250,9 @@ the native Git manager — lives in **`beadhive-worktrees`**, which depends only
 `beadhive-plugins`. This matches the epic's `bh-qdezo` amendment and introduces no additional
 provider-framework package and no generic event bus, per the epic design's explicit prohibition.
 
-The Option A implementation molecule depends on `bh-xh8ku.3` landing the scaffold (see Bead
+The Option A implementation molecule depends on `bh-xh8ku` landing the scaffold (see Bead
 disposition above — the dependency named in this bead's original acceptance criteria,
-`bh-qdezo.4`, was itself superseded by `bh-xh8ku.3`). Every Option A and, later, Option B adapter
+`bh-qdezo.4`, was itself superseded by `bh-xh8ku`). Every Option A and, later, Option B adapter
 must pass the `bh-qdezo.9` conformance kit before it is considered conformant; that kit can be
 built in parallel and does not block on this ADR's verdict.
 

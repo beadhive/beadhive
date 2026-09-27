@@ -4,11 +4,12 @@
 > [worktree manager and Herdr binding ADR](bh-mr9tk.2-worktree-manager-herdr-binding-adr.md)).
 > The saga below (`space_closed -> cleanup_classified -> remove`) is the accepted order for
 > Option A (native `WorktreeManager` + Herdr `WorkspaceBinding`) and for non-Herdr hives, and is
-> unchanged. It does not hold for a future Option B (Herdr as the exclusive `WorktreeManager`):
-> `herdr worktree remove` fuses close-and-remove into one call, so classification cannot happen
-> between them — Option B's saga is `classify -> remove` instead, with `remove` performing the
-> close as a side effect. See the linked ADR's "Teardown saga variant" section; Option B does not
-> exist yet, so no other part of this document changes.
+> unchanged. Option B (Herdr as the exclusive `WorktreeManager`) is deferred, not scheduled — it
+> is re-evaluated only if Option A shows problems that were not anticipated. This note applies
+> **only if Option B is ever adopted**: `herdr worktree remove` fuses close-and-remove into one
+> call, so classification cannot happen between them — Option B's saga would be `classify ->
+> remove` instead, with `remove` performing the close as a side effect. See the linked ADR's
+> "Teardown saga variant" section; no other part of this document changes.
 
 > Status: **GO, refreshed** (2026-08-30). This decision incorporates the amended `bh-4bhs7.4`
 > managed-seat proof run in addition to spike epic `bh-2m1yw`.
