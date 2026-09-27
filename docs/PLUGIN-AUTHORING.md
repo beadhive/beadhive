@@ -84,6 +84,15 @@ core implementation, bootstrap, or transport modules. Conversely, `src/beadhive`
 statically import a package's Python module. This keeps the distribution boundary real while
 the root workspace installs the package editably.
 
+> **2026-09-27 amendment.** This section's authoring guidance and import rule are for the
+> **plugin package** class specifically (a package that depends on `beadhive`, carries a
+> `plugin.json` manifest, and is resolved lazily). A second class, **library packages**
+> (`beadhive-plugins`, `beadhive-worktrees`, `beadhive-beads-client`), has the reverse
+> dependency shape: it never imports `beadhive` at all, carries no manifest, and root may
+> import it statically like any other dependency. See
+> [`package-class-library-vs-plugin-adr.md`](design/package-class-library-vs-plugin-adr.md)
+> for the full decision and why the lazy-import rule above applies only to plugin packages.
+
 For a `build.verify` provider, implement the runtime-checkable `BuildVerifier` port from
 `beadhive.kernel.plugins.contracts`. `verify(repo: str)` returns a tuple of
 `PluginDiagnostic` findings; an empty tuple means healthy. Findings are data, not exceptions.

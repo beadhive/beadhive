@@ -95,6 +95,17 @@ The exact worktree contract will be selected by a bounded spike because Worktrun
 paths may not satisfy Beadhive's current exact-path convention without an adapter or a deliberate
 naming-policy adjustment.
 
+> **2026-09-27 amendment.** "Beadhive core" above is superseded in one respect: the
+> `worktree.manager` capability slot and the native Git manager move out of `beadhive-core`
+> into a new library package, `beadhive-worktrees`, which `beadhive-core` depends on (rather
+> than `beadhive-core` implementing the slot itself). The capability-slot and lifecycle
+> contracts these depend on move to a second library package, `beadhive-plugins`, which
+> `beadhive-worktrees` depends on and `beadhive-core` will also depend on directly. Provider
+> selection, binding (`bind_application_port`), and composition remain root/`beadhive-core`
+> responsibilities; only the contract and the native manager move. See
+> [`package-class-library-vs-plugin-adr.md`](package-class-library-vs-plugin-adr.md) for the
+> package-class decision and the full scope of both packages.
+
 ## Parallel-replacement boundary
 
 The following can be built and validated without importing the legacy root application:
@@ -105,6 +116,12 @@ The following can be built and validated without importing the legacy root appli
 - thin work/planning command handlers and their policy tests;
 - plugin capability selection and the worktree-manager request/result contract;
 - native worktree provider behavior and provider contract tests.
+
+*2026-09-27 amendment:* the worktree-manager request/result contract and native worktree
+provider items above now live in the `beadhive-worktrees` library package (depending on
+`beadhive-plugins`), not in `beadhive-core` itself; `beadhive-core` depends on both packages
+rather than containing this code. See
+[`package-class-library-vs-plugin-adr.md`](package-class-library-vs-plugin-adr.md).
 
 The following remain in the compatibility shell initially and are adapted into the new core:
 
