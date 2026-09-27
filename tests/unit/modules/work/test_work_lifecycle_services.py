@@ -3,18 +3,10 @@
 from __future__ import annotations
 
 from beadhive.modules.work import (
-    AbandonRequest,
-    AbandonResult,
-    AssignmentRequest,
-    AssignmentResult,
     CheckRequest,
     CheckResult,
-    ClaimRequest,
-    ClaimResult,
     MergeRequest,
     MergeResult,
-    ResumeRequest,
-    ResumeResult,
     ReviewRequest,
     ReviewResult,
     ScheduleRequest,
@@ -42,30 +34,9 @@ class FakeBeads:
     def __init__(self):
         self.requests = []
 
-    def assign(self, request):
-        self.requests.append(request)
-        return AssignmentResult(request.bead)
-
     def schedule(self, request):
         self.requests.append(request)
         return ScheduleResult(request.epic, {"groups": (), "singletons": ()})
-
-    def abandon(self, request):
-        self.requests.append(request)
-        return AbandonResult(request.bead)
-
-
-class FakeWorktrees:
-    def __init__(self):
-        self.requests = []
-
-    def claim(self, request):
-        self.requests.append(request)
-        return ClaimResult(request.subject)
-
-    def resume(self, request):
-        self.requests.append(request)
-        return ResumeResult(request.bead)
 
 
 class FakeExecution:
@@ -96,46 +67,35 @@ class FakeEvidence:
 
 def _service():
     beads = FakeBeads()
-    worktrees = FakeWorktrees()
     execution = FakeExecution()
     evidence = FakeEvidence()
     notifier = FakeNotifier()
     return (
         WorkLifecycleService(
             beads=beads,
-            worktrees=worktrees,
             execution=execution,
             evidence=evidence,
             identity=FakeIdentity(),
             notifier=notifier,
         ),
         beads,
-        worktrees,
         execution,
         evidence,
         notifier,
     )
 
 
-def test_assignment_claim_and_resume_resolve_actor_before_effects() -> None:
-    service, beads, worktrees, _, _, notifier = _service()
+def test_submission_resolves_actor_before_effects() -> None:
+    service, _, execution, _, notifier = _service()
 
-    service.assign(AssignmentRequest("bh-1", "dev/alice"))
-    service.claim(ClaimRequest(bead="bh-1"))
-    service.resume(ResumeRequest("bh-1"))
+    service.submit(SubmissionRequest(bead="bh-1"))
 
-    assert beads.requests[0].actor == "dev/assign"
-    assert worktrees.requests[0].actor == "dev/claim"
-    assert worktrees.requests[1].actor == "dev/resume"
-    assert [event[:2] for event in notifier.events] == [
-        ("assign", "bh-1"),
-        ("claim", "bh-1"),
-        ("resume", "bh-1"),
-    ]
+    assert execution.requests[0].actor == "dev/submit"
+    assert [event[:2] for event in notifier.events] == [("submit", "bh-1")]
 
 
 def test_execution_and_review_paths_keep_typed_subjects() -> None:
-    service, _, _, execution, evidence, notifier = _service()
+    service, _, execution, evidence, notifier = _service()
 
     service.check(CheckRequest("bh-2"))
     service.submit(SubmissionRequest(group="bh-batch"))
@@ -147,25 +107,21 @@ def test_execution_and_review_paths_keep_typed_subjects() -> None:
     assert [event[0] for event in notifier.events] == ["check", "submit", "review", "merge"]
 
 
-def test_schedule_and_abandon_use_bead_store_port() -> None:
-    service, beads, _, _, _, notifier = _service()
+def test_schedule_uses_bead_store_port() -> None:
+    service, _, _, _, notifier = _service()
 
     plan = service.schedule(ScheduleRequest("bh-epic"))
-    service.abandon(AbandonRequest("bh-5", remove_worktree=True))
 
     assert plan.plan["groups"] == ()
-    assert [event[0] for event in notifier.events] == [
-        "schedule",
-        "abandon",
-    ]
+    assert [event[0] for event in notifier.events] == ["schedule"]
 
 
 def test_service_rejects_port_identity_drift_before_notification() -> None:
-    service, beads, _, _, _, notifier = _service()
-    beads.assign = lambda request: AssignmentResult("other")
+    service, _, execution, _, notifier = _service()
+    execution.submit = lambda request: SubmissionResult("other")
 
     try:
-        service.assign(AssignmentRequest("bh-1", "dev/alice"))
+        service.submit(SubmissionRequest(bead="bh-1"))
     except ValueError as exc:
         assert "changed the requested bead identity" in str(exc)
     else:
@@ -174,7 +130,6 @@ def test_service_rejects_port_identity_drift_before_notification() -> None:
 
 
 def test_selector_contracts_retain_empty_values_for_legacy_command_diagnostics() -> None:
-    assert ClaimRequest().subject == ""
-    assert ClaimRequest(collapse="bh-epic", group=object()).subject == "bh-epic"
     assert SubmissionRequest().subject == ""
+    assert SubmissionRequest(group="bh-batch", bead=object()).subject == "bh-batch"
     assert MergeRequest().subject == ""

@@ -63,15 +63,11 @@ def test_work_dtos_and_public_module_exclude_transport_vocabulary() -> None:
     from beadhive.modules import work
 
     dto_types = (
-        work.AssignmentRequest,
-        work.ClaimRequest,
         work.ScheduleRequest,
         work.CheckRequest,
         work.SubmissionRequest,
         work.ReviewRequest,
         work.MergeRequest,
-        work.ResumeRequest,
-        work.AbandonRequest,
     )
     forbidden = {"as_json", "payload", "text", "stream", "exit_code", "render"}
     for dto_type in dto_types:

@@ -964,63 +964,6 @@ def test_fresh_claim_still_refuses_a_malformed_epic(hive, fakebd, monkeypatch):
     assert not fakebd.did("update", "mr-epic", "--claim")
 
 
-def test_structured_claim_rejects_a_lost_claim_after_provisioning(hive, fakebd, monkeypatch):
-    """A reassignment between claim and the post-provision reread never returns success."""
-    fakebd.seed("mr-1", title="t")
-    original_show = work.bd.show
-    reads = {"count": 0}
-
-    def lose_after_provision(bead, cwd):
-        data = original_show(bead, cwd)
-        reads["count"] += 1
-        if reads["count"] == 3:
-            fakebd.beads[bead]["assignee"] = "dev/other"
-            data["assignee"] = "dev/other"
-        return data
-
-    monkeypatch.setattr(work.bd, "show", lose_after_provision)
-    with pytest.raises(typer.Exit):
-        work._claim_single_bead(config.load(), "myrepo", "mr-1", "")
-    assert fakebd.beads["mr-1"]["status"] == "in_progress"
-    assert fakebd.beads["mr-1"]["assignee"] == "dev/other"
-
-
-def test_structured_claim_releases_owned_claim_on_provisioning_failure(hive, fakebd, monkeypatch):
-    fakebd.seed("mr-1", title="t")
-
-    def fail(*args, **kwargs):
-        raise OSError("disk full")
-
-    monkeypatch.setattr(work.worktree, "ensure", fail)
-    with pytest.raises(OSError):
-        work._claim_single_bead(config.load(), "myrepo", "mr-1", "")
-    assert fakebd.beads["mr-1"]["status"] == "open"
-    assert fakebd.beads["mr-1"]["assignee"] == ""
-
-
-def test_structured_claim_preserves_concurrent_winner_on_provisioning_failure(
-    hive, fakebd, monkeypatch
-):
-    fakebd.seed("mr-1", title="t")
-
-    def fail_after_reassign(*args, **kwargs):
-        fakebd.beads["mr-1"]["assignee"] = "dev/other"
-        raise OSError("disk full")
-
-    monkeypatch.setattr(work.worktree, "ensure", fail_after_reassign)
-    with pytest.raises(OSError):
-        work._claim_single_bead(config.load(), "myrepo", "mr-1", "")
-    assert fakebd.beads["mr-1"]["status"] == "in_progress"
-    assert fakebd.beads["mr-1"]["assignee"] == "dev/other"
-
-
-def test_claim_refuses_other_actor(hive, fakebd):
-    fakebd.seed("mr-1", title="t", assignee="dev/bob")
-    with pytest.raises(typer.Exit):
-        work.claim(bead="mr-1", as_="dev/alice", hive="myrepo")
-    assert not _wt(hive, "mr-1").exists()  # refused before provisioning
-
-
 def test_claim_signing_config_when_key_set(hive, fakebd, monkeypatch):
     monkeypatch.setattr(
         config,
@@ -1282,81 +1225,10 @@ def test_assign_preview_json_reports_provisioning_and_to_identity_with_no_side_e
 
 
 # ---- seat enforcement: epic->coordinator, issue->developer ------------------
-
-
-def test_assign_epic_only_to_coordinator(hive, fakebd):
-    """An epic (container) may only be assigned to a dispatcher (disp/<name>); a developer
-    target is refused before any provisioning. A dispatcher target is accepted."""
-    fakebd.seed("mr-epic", title="e", issue_type="epic")
-    with pytest.raises(typer.Exit):
-        work.assign(bead="mr-epic", to="dev/dev", as_="disp/lead", hive="myrepo")
-    assert not _wt(hive, "mr-epic").exists()  # rejected before provisioning
-    work.assign(bead="mr-epic", to="disp/lead", as_="disp/lead", hive="myrepo")
-    assert fakebd.beads["mr-epic"]["assignee"] == "disp/lead"
-
-
-def test_assign_issue_only_to_developer(hive, fakebd):
-    """A non-epic (leaf) bead may only be assigned to a developer (dev/<name>), not a
-    dispatcher."""
-    fakebd.seed("mr-7", title="t")  # no issue_type -> leaf
-    with pytest.raises(typer.Exit):
-        work.assign(bead="mr-7", to="disp/lead", as_="disp/lead", hive="myrepo")
-    assert not _wt(hive, "mr-7").exists()
-
-
-# ---- assign orchestrator-only hard gate (bead .38) --------------------------
-
-
-def test_assign_denied_from_developer_seat(hive, fakebd, capsys):
-    """assign is orchestrator-only: a developer (dev/) acting seat is hard-denied before any
-    bd write or worktree provisioning — a leaf worker cannot dispatch work."""
-    fakebd.seed("mr-7", title="t")
-    with pytest.raises(typer.Exit):
-        work.assign(bead="mr-7", to="dev/carol", as_="dev/alice", hive="myrepo")
-    assert "orchestrator-only" in capsys.readouterr().err
-    assert not _wt(hive, "mr-7").exists()  # denied before provisioning
-    assert not fakebd.did("assign", "mr-7", "dev/carol")
-
-
-def test_assign_denied_from_reviewer_seat(hive, fakebd):
-    """A reviewer (rev/) — a recognized non-orchestrator seat — is also denied from assigning."""
-    fakebd.seed("mr-7", title="t")
-    with pytest.raises(typer.Exit):
-        work.assign(bead="mr-7", to="dev/carol", as_="rev/rob", hive="myrepo")
-    assert not fakebd.did("assign", "mr-7", "dev/carol")
-
-
-def test_assign_allowed_from_director_seat(hive, fakebd):
-    """A director (dir/) is an orchestrator seat and may assign work."""
-    fakebd.seed("mr-7", title="t")
-    work.assign(bead="mr-7", to="dev/carol", as_="dir/dana", hive="myrepo")
-    assert fakebd.beads["mr-7"]["assignee"] == "dev/carol"
-
-
-def test_assign_allowed_from_legacy_coord_seat(hive, fakebd):
-    """The legacy coord/ prefix still resolves to a dispatcher, so it may assign (back-compat)."""
-    fakebd.seed("mr-7", title="t")
-    work.assign(bead="mr-7", to="dev/carol", as_="coord/lead", hive="myrepo")
-    assert fakebd.beads["mr-7"]["assignee"] == "dev/carol"
-
-
-def test_assign_exempts_bare_human(hive, fakebd):
-    """A bare human/supervised operator (no recognized seat prefix) is exempt — existing
-    supervised flows are unaffected by the orchestrator gate."""
-    fakebd.seed("mr-7", title="t")
-    work.assign(bead="mr-7", to="dev/carol", as_="brian", hive="myrepo")
-    assert fakebd.beads["mr-7"]["assignee"] == "dev/carol"
-
-
-def test_claim_epic_only_by_coordinator(hive, fakebd):
-    """Claiming an epic requires acting as a dispatcher; a developer identity is refused, a
-    dispatcher identity is accepted."""
-    fakebd.seed("mr-epic", title="e", issue_type="epic")
-    with pytest.raises(typer.Exit):
-        work.claim(bead="mr-epic", as_="dev/dev", hive="myrepo")
-    assert not _wt(hive, "mr-epic").exists()
-    work.claim(bead="mr-epic", as_="disp/lead", hive="myrepo")
-    assert fakebd.beads["mr-epic"]["status"] == "in_progress"
+#
+# The seat, orchestrator-only (bead .38) and legacy-prefix guards of assign/claim are served by
+# beadhive_core.lifecycle and covered by packages/beadhive-core/tests/test_core_lifecycle_policy.py
+# (bh-sy36q.1). `work_guards.seat_of` below stays shell code: `start` and `next` still use it.
 
 
 def test_legacy_seat_prefixes_still_resolve():
@@ -1368,17 +1240,6 @@ def test_legacy_seat_prefixes_still_resolve():
     assert work._seat_of("disp/lead") == "dispatcher"
     assert work._seat_of("dev/dev") == "developer"
     assert work._seat_of("brian") == ""
-
-
-def test_legacy_prefix_seat_enforcement_still_applies(hive, fakebd):
-    """A legacy coord/ identity satisfies the epic (dispatcher) seat guard; a legacy crew/
-    identity satisfies the leaf (developer) guard — so in-flight sessions keep working."""
-    fakebd.seed("mr-epic", title="e", issue_type="epic")
-    work.claim(bead="mr-epic", as_="coord/lead", hive="myrepo")  # coord/ -> dispatcher, epic ok
-    assert fakebd.beads["mr-epic"]["status"] == "in_progress"
-    fakebd.seed("mr-7", title="t")  # leaf
-    work.claim(bead="mr-7", as_="crew/dev", hive="myrepo")  # crew/ -> developer, leaf ok
-    assert fakebd.beads["mr-7"]["status"] == "in_progress"
 
 
 def test_assign_emits_genai_dispatch_span(hive, fakebd, monkeypatch):
@@ -1645,34 +1506,6 @@ def test_submit_epic_accepts_gate_despite_dep_refusal(hive, fakebd):
     work.submit(bead="mr-90", as_="disp/alice", hive="myrepo")
     assert fakebd.states["mr-90"]["review"] == "pending"
     assert any(g["status"] == "open" and "mr-90" in g["description"] for g in fakebd.gates)
-
-
-def test_submit_refuses_when_claim_abandoned(hive, fakebd):
-    """A submit from an agent whose claim was released (assignee cleared) refuses — no review
-    gate opened, no review:pending set — so `abandon` is authoritative against a still-running
-    agent that can't be signalled to stop."""
-    fakebd.seed("mr-80", title="t")
-    work.claim(bead="mr-80", as_="", hive="myrepo")
-    _commit(_wt(hive, "mr-80"), "feat: the change")
-    fakebd.beads["mr-80"]["assignee"] = ""  # abandon released the claim mid-flight
-    with pytest.raises(typer.Exit):
-        work.submit(bead="mr-80", hive="myrepo")
-    assert "review" not in fakebd.states.get("mr-80", {})
-    assert not fakebd.did("gate", "create", "--blocks", "mr-80")
-    assert not fakebd.did("set-state", "mr-80")
-
-
-def test_submit_refuses_when_reassigned_to_other(hive, fakebd):
-    """Submit refuses when the bead was reassigned to a different actor — the stale agent
-    can't open a review gate on a bead it no longer holds."""
-    fakebd.seed("mr-81", title="t")
-    work.claim(bead="mr-81", as_="", hive="myrepo")
-    _commit(_wt(hive, "mr-81"), "feat: x")
-    fakebd.beads["mr-81"]["assignee"] = "dev/someone-else"
-    with pytest.raises(typer.Exit):
-        work.submit(bead="mr-81", hive="myrepo")
-    assert not fakebd.did("gate", "create", "--blocks", "mr-81")
-    assert "review" not in fakebd.states.get("mr-81", {})
 
 
 # ---- claim authority seam: submit defaults to the recorded claim holder (bh-ejlq) ----
@@ -5451,13 +5284,6 @@ def test_resume_reprovisions_after_worktree_removed(hive, fakebd):
     assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=wt).stdout.strip() == "wt/bead/issue/mr-6"
 
 
-def test_resume_refuses_wrong_state(hive, fakebd):
-    fakebd.seed("mr-6", title="t")
-    work.claim(bead="mr-6", as_="", hive="myrepo")
-    with pytest.raises(typer.Exit):  # not changes-requested
-        work.resume(bead="mr-6", as_="", hive="myrepo")
-
-
 def test_resume_pulls_state_first(hive, fakebd):
     """bh-dw3e.6: `resume` pulls the hive's Dolt state before acting, so bounce feedback
     recorded from another host is seen."""
@@ -5565,64 +5391,8 @@ def test_abandon_rm_removes_worktree(hive, fakebd):
     assert fakebd.beads["mr-7"]["assignee"] == ""
 
 
-# ---- abandon RE-VERIFIES the release (bh-0mckw) -----------------------------
-#
-# It reported an unqualified ✓ off two exit codes and nothing else. An operator cleaning up
-# after a runaway loop abandoned eight beads that all came back `in_progress` and still
-# assigned — so the only net effect was an `abandoned` review marker sitting on work that was
-# still held, which is strictly worse than having left them alone. `bd update --claim` is not a
-# compare-and-swap in either direction, and `work_next.claim_won` already re-reads on the way in.
-
-
-def test_abandon_refuses_to_report_success_while_the_bead_is_still_claimed(
-    hive, fakebd, monkeypatch, capsys
-):
-    fakebd.seed("mr-30", title="t")
-    work.claim(bead="mr-30", as_="dev/carol", hive="myrepo")
-    # The measured shape: both writes exit 0 and the store does not actually move.
-    monkeypatch.setattr(
-        work.bd,
-        "show",
-        lambda *_a, **_k: {"id": "mr-30", "status": "in_progress", "assignee": "dev/carol"},
-    )
-
-    with pytest.raises(typer.Exit) as excinfo:
-        work.abandon(bead="mr-30", hive="myrepo", rm=False)
-
-    assert excinfo.value.exit_code == 1, "a still-held bead is not a success"
-    err = capsys.readouterr().err
-    assert "NOT released" in err
-    assert "still assigned to dev/carol" in err, "say WHAT survived, not just that something did"
-    assert "reclaim" in err, "name the remaining step (the bead's acceptance criterion)"
-
-
-def test_abandon_still_reports_success_when_the_release_took(hive, fakebd, capsys):
-    """The happy path stays a plain ✓ — the re-read must not make the ordinary case noisy."""
-    fakebd.seed("mr-31", title="t")
-    work.claim(bead="mr-31", as_="dev/carol", hive="myrepo")
-
-    work.abandon(bead="mr-31", hive="myrepo", rm=False)
-
-    out = capsys.readouterr().out
-    assert "✓ abandoned mr-31" in out
-    assert "NOT released" not in out
-
-
-def test_claim_residue_names_each_surviving_half_separately():
-    """status and assignee are independent halves — a bead reopened but left assigned is still
-    unclaimable by anyone else, and reporting only one of them would hide the other."""
-    assert work._claim_residue({"status": "open", "assignee": ""}) == ""
-    assert work._claim_residue({"status": "open", "assignee": None}) == ""
-    assert "still assigned to dev/x" in work._claim_residue({"status": "open", "assignee": "dev/x"})
-    assert "status is still in_progress" in work._claim_residue(
-        {"status": "in_progress", "assignee": ""}
-    )
-
-
-def test_a_bead_that_cannot_be_re_read_is_not_reported_as_released():
-    """No re-read, no vouching. Treating an unreadable bead as free would reintroduce exactly
-    the unqualified ✓ this check exists to stop."""
-    assert "could not be re-read" in work._claim_residue(None)
+# abandon's re-verified release (bh-0mckw) is core policy now: see
+# packages/beadhive-core/tests/test_core_lifecycle_policy.py (bh-sy36q.1).
 
 
 # ---- lifecycle transitions (assigned / claimed / abandoned) -----------------

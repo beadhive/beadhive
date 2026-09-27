@@ -6,7 +6,6 @@ from .ports import (
     IdentityProvider,
     ValidationEvidenceStore,
     WorkNotifier,
-    WorktreeLifecyclePort,
 )
 
 __all__ = [
@@ -15,5 +14,4 @@ __all__ = [
     "IdentityProvider",
     "ValidationEvidenceStore",
     "WorkNotifier",
-    "WorktreeLifecyclePort",
 ]

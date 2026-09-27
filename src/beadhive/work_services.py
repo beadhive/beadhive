@@ -11,18 +11,10 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from .modules.work import (
-    AbandonRequest,
-    AbandonResult,
-    AssignmentRequest,
-    AssignmentResult,
     CheckRequest,
     CheckResult,
-    ClaimRequest,
-    ClaimResult,
     MergeRequest,
     MergeResult,
-    ResumeRequest,
-    ResumeResult,
     ReviewRequest,
     ReviewResult,
     ScheduleRequest,
@@ -44,41 +36,13 @@ def _unbound(request: Any) -> Any:
 class CallbackBeadStore:
     """Bind bead authority operations to live legacy callbacks."""
 
-    def __init__(
-        self,
-        *,
-        assign: Operation = _unbound,
-        schedule: Operation = _unbound,
-        abandon: Operation = _unbound,
-    ) -> None:
-        self._assign = assign
+    def __init__(self, *, schedule: Operation = _unbound) -> None:
         self._schedule = schedule
-        self._abandon = abandon
-
-    def assign(self, request: AssignmentRequest) -> AssignmentResult:
-        return AssignmentResult(request.bead, self._assign(request))
 
     def schedule(self, request: ScheduleRequest) -> ScheduleResult:
         value = self._schedule(request)
         plan = value if isinstance(value, Mapping) else {}
         return ScheduleResult(request.epic, plan)
-
-    def abandon(self, request: AbandonRequest) -> AbandonResult:
-        return AbandonResult(request.bead, self._abandon(request))
-
-
-class CallbackWorktreeLifecycle:
-    """Bind claim/resume while the legacy adapter consumes the worktrees capability."""
-
-    def __init__(self, *, claim: Operation = _unbound, resume: Operation = _unbound) -> None:
-        self._claim = claim
-        self._resume = resume
-
-    def claim(self, request: ClaimRequest) -> ClaimResult:
-        return ClaimResult(request.subject, self._claim(request))
-
-    def resume(self, request: ResumeRequest) -> ResumeResult:
-        return ResumeResult(request.bead, self._resume(request))
 
 
 class CallbackExecution:
@@ -131,27 +95,18 @@ class CallbackWorkNotifier:
 
 def work_lifecycle_service(
     *,
-    assign: Operation = _unbound,
-    claim: Operation = _unbound,
     schedule: Operation = _unbound,
     check: Operation = _unbound,
     submit: Operation = _unbound,
     review: Operation = _unbound,
     merge: Operation = _unbound,
-    resume: Operation = _unbound,
-    abandon: Operation = _unbound,
     resolve_identity: IdentityResolver | None = None,
     notify: CompletionNotifier | None = None,
 ) -> WorkLifecycleService:
     """Construct one uncached service with the currently live compatibility callbacks."""
 
     return WorkLifecycleService(
-        beads=CallbackBeadStore(
-            assign=assign,
-            schedule=schedule,
-            abandon=abandon,
-        ),
-        worktrees=CallbackWorktreeLifecycle(claim=claim, resume=resume),
+        beads=CallbackBeadStore(schedule=schedule),
         execution=CallbackExecution(check=check, submit=submit, merge=merge),
         evidence=CallbackValidationEvidence(review),
         identity=CallbackIdentityProvider(resolve_identity),

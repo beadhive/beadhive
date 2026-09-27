@@ -1,18 +1,10 @@
 """Domain contracts for the work capability."""
 
 from .models import (
-    AbandonRequest,
-    AbandonResult,
-    AssignmentRequest,
-    AssignmentResult,
     CheckRequest,
     CheckResult,
-    ClaimRequest,
-    ClaimResult,
     MergeRequest,
     MergeResult,
-    ResumeRequest,
-    ResumeResult,
     ReviewRequest,
     ReviewResult,
     ScheduleRequest,
@@ -22,18 +14,10 @@ from .models import (
 )
 
 __all__ = [
-    "AbandonRequest",
-    "AbandonResult",
-    "AssignmentRequest",
-    "AssignmentResult",
     "CheckRequest",
     "CheckResult",
-    "ClaimRequest",
-    "ClaimResult",
     "MergeRequest",
     "MergeResult",
-    "ResumeRequest",
-    "ResumeResult",
     "ReviewRequest",
     "ReviewResult",
     "ScheduleRequest",

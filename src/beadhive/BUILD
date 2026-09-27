@@ -18,6 +18,13 @@ python_sources(
                 "//packages/beadhive-beads-client/src:lib",
             ],
         },
+        # The lifecycle composition seam (bh-sy36q.1) resolves the core the same way.
+        "work_lifecycle.py": {
+            "dependencies": [
+                "//packages/beadhive-core/src:lib",
+                "//packages/beadhive-beads-client/src:lib",
+            ],
+        },
     },
 )
 

@@ -5,18 +5,10 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from ..domain import (
-    AbandonRequest,
-    AbandonResult,
-    AssignmentRequest,
-    AssignmentResult,
     CheckRequest,
     CheckResult,
-    ClaimRequest,
-    ClaimResult,
     MergeRequest,
     MergeResult,
-    ResumeRequest,
-    ResumeResult,
     ReviewRequest,
     ReviewResult,
     ScheduleRequest,
@@ -29,19 +21,7 @@ from ..domain import (
 class BeadStore(Protocol):
     """Persist and query lifecycle authority held by the bead store."""
 
-    def assign(self, request: AssignmentRequest) -> AssignmentResult: ...
-
     def schedule(self, request: ScheduleRequest) -> ScheduleResult: ...
-
-    def abandon(self, request: AbandonRequest) -> AbandonResult: ...
-
-
-class WorktreeLifecyclePort(Protocol):
-    """Provision or reattach worktrees without exposing Git/filesystem mechanics."""
-
-    def claim(self, request: ClaimRequest) -> ClaimResult: ...
-
-    def resume(self, request: ResumeRequest) -> ResumeResult: ...
 
 
 class ExecutionPort(Protocol):

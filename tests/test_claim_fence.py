@@ -463,12 +463,18 @@ def test_submit_verifies_the_fence_after_resolving_the_seat():
 
 
 def test_both_claim_paths_stamp_the_token():
-    """`claim` and `resume` are the two verbs that mint a record; neither may skip the token."""
+    """`claim` and `resume` are the two verbs that mint a record; neither may skip the token.
+
+    Both reach the claim-authority record only through the shell's `record_claim` capability,
+    which mints through `work._issue_claim` (and so `_claim_fence`)."""
     import inspect
 
-    claim_facade = inspect.getsource(work._claim_single_bead)
-    claim_impl = inspect.getsource(work_assignment.impl__claim_single_bead)
+    from beadhive import work_lifecycle
+    from beadhive_core import LifecycleCommands
 
-    assert "work_assignment.impl__claim_single_bead" in claim_facade
-    assert "api._issue_claim(cfg, entry, bead, actor, target, hive)" in claim_impl
-    assert "_issue_claim(cfg, entry, bead, actor, target, hive)" in inspect.getsource(work.resume)
+    assert "work_lifecycle.claim_single_bead" in inspect.getsource(work._claim_single_bead)
+    assert "work_lifecycle.resume" in inspect.getsource(work.resume)
+    assert "record_claim(bead, actor, checkout)" in inspect.getsource(LifecycleCommands.claim)
+    assert "record_claim(bead, actor, checkout)" in inspect.getsource(LifecycleCommands.resume)
+    assert "_work()._issue_claim(" in inspect.getsource(work_lifecycle.ShellWorkspace.record_claim)
+    assert "api._claim_fence(cfg, hive)" in inspect.getsource(work_assignment.impl__issue_claim)
