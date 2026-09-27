@@ -5,11 +5,8 @@ from __future__ import annotations
 from typing import Protocol
 
 from ..domain import (
-    FilingRequest,
-    FilingResult,
     KickoffRequest,
     KickoffResult,
-    MoleculeGraph,
     RepairRequest,
     RepairResult,
     ValidationRequest,
@@ -21,10 +18,6 @@ from ..domain import (
 
 class SpecValidator(Protocol):
     def validate(self, request: ValidationRequest) -> ValidationResult: ...
-
-
-class MoleculeFiler(Protocol):
-    def file(self, request: FilingRequest, graph: MoleculeGraph) -> FilingResult: ...
 
 
 class KickoffStore(Protocol):

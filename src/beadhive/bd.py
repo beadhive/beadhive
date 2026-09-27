@@ -630,10 +630,11 @@ _ITEM_FLAGS = {
 def create_args_from_item(item: dict) -> list[str]:
     """Translate one structured bead item into `bd create` positional/flag args.
 
-    Mirrors the flag taxonomy `plan._create_issue` uses. The identity triplet is NOT added here —
-    `create` appends it, so both transports inherit the same triplet + label gate. Values go into
-    an argv LIST, which `run` passes to `subprocess` without a shell, so no character in the prose
-    is ever interpreted. Assumes `title` is present (`create_items` checks first)."""
+    Mirrors the flag taxonomy `plan_filing.CliMoleculeFiler` uses. The identity triplet is NOT
+    added here — `create` appends it, so both transports inherit the same triplet + label gate.
+    Values go into an argv LIST, which `run` passes to `subprocess` without a shell, so no
+    character in the prose is ever interpreted. Assumes `title` is present (`create_items` checks
+    first)."""
     args: list[str] = [str(item["title"]).strip()]
     for field, flag in _ITEM_FLAGS.items():
         value = item.get(field)

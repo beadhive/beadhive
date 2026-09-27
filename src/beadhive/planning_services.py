@@ -9,11 +9,8 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from .modules.planning import (
-    FilingRequest,
-    FilingResult,
     KickoffRequest,
     KickoffResult,
-    MoleculeGraph,
     PlanningService,
     RepairRequest,
     RepairResult,
@@ -34,20 +31,6 @@ class CallbackSpecValidator:
 
     def validate(self, request: ValidationRequest) -> ValidationResult:
         return ValidationResult(tuple(self._callback(request)))
-
-
-class CallbackMoleculeFiler:
-    def __init__(self, callback: Callable = _unbound) -> None:
-        self._callback = callback
-
-    def file(self, request: FilingRequest, graph: MoleculeGraph) -> FilingResult:
-        value = self._callback(request, graph)
-        return FilingResult(
-            value.epic_id,
-            value.issue_count,
-            value.root_count,
-            getattr(value, "adopt_count", 0),
-        )
 
 
 class CallbackKickoffStore:
@@ -78,16 +61,19 @@ class CallbackMoleculeRepairer:
 def planning_service(
     *,
     validate: Callable = _unbound,
-    file: Callable = _unbound,
     approve: Callable = _unbound,
     verify: Callable = _unbound,
     repair: Callable = _unbound,
 ) -> PlanningService:
-    """Construct one uncached planning service from the currently live callbacks."""
+    """Construct one uncached planning service from the currently live callbacks.
+
+    Molecule filing is not a callback here (bh-sy36q.2): see
+    :func:`beadhive.plan_filing.file`, which composes ``beadhive_core.planning.PlanningCommands``
+    directly instead of routing through this validate/approve/verify/repair callback shape.
+    """
 
     return PlanningService(
         validator=CallbackSpecValidator(validate),
-        filer=CallbackMoleculeFiler(file),
         kickoff=CallbackKickoffStore(approve),
         verifier=CallbackMoleculeVerifier(verify),
         repairer=CallbackMoleculeRepairer(repair),

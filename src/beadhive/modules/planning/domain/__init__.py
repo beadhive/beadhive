@@ -1,8 +1,6 @@
 """Public domain types for the planning capability."""
 
 from .models import (
-    FilingRequest,
-    FilingResult,
     KickoffRequest,
     KickoffResult,
     MoleculeGraph,
@@ -16,8 +14,6 @@ from .models import (
 )
 
 __all__ = [
-    "FilingRequest",
-    "FilingResult",
     "KickoffRequest",
     "KickoffResult",
     "MoleculeGraph",

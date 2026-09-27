@@ -342,8 +342,10 @@
     },
     {
       "name": "plan.batch-apply.atomic",
-      "classification": "cli-compatibility",
-      "reason": "issues.batchApply is generated but lacks the required real-service atomicity and end-gate proof"
+      "classification": "api-ready",
+      "capability": "issues.batchApply",
+      "session_method": "batch_apply",
+      "evidence": "real-service atomic create+dep_add proof (all-or-nothing precondition refusal, key-to-id resolution, parent-child and blocks edges) — bh-sy36q.2"
     },
     {
       "name": "plan.batch-close.partial",

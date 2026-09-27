@@ -5,45 +5,27 @@ from __future__ import annotations
 from collections import namedtuple
 from pathlib import Path
 
-from beadhive import plan, planning_services
-from beadhive.modules.planning import FilingRequest, FilingResult, KickoffRequest, KickoffResult
-
-
-def test_callback_filing_receives_validated_stable_dag() -> None:
-    calls = []
-    spec = {
-        "epic": {"title": "Extract planning"},
-        "issues": [
-            {"handle": "implement", "deps": ["design"]},
-            {"handle": "design", "deps": []},
-        ],
-    }
-
-    def file_adapter(request, graph):
-        calls.append((request, graph))
-        return FilingResult("bh-plan", 2, 1)
-
-    result = planning_services.planning_service(
-        validate=lambda _request: [], file=file_adapter
-    ).file(FilingRequest(spec, Path("/hive"), "planner", {}))
-
-    assert result == FilingResult("bh-plan", 2, 1)
-    assert calls[0][1].order == ("design", "implement")
-    assert calls[0][1].roots == ("design",)
+from beadhive import plan_filing, planning_services
+from beadhive.modules.planning import KickoffRequest, KickoffResult
 
 
 def test_kickoff_adapter_preserves_exact_gate_write_contract(monkeypatch) -> None:
+    """``plan_filing.CliPlanningGates.create_kickoff_gate`` — moved here from
+    ``plan._create_kickoff_gate`` (bh-sy36q.2) so `bh plan file` and `bh plan repair` share ONE
+    implementation of the kickoff-gate contract."""
     completed = namedtuple("Completed", "returncode stdout stderr")
     writes = []
     monkeypatch.setattr(
-        plan.bd,
+        plan_filing.bd,
         "run",
         lambda args, cwd, actor="", **_kwargs: (
             writes.append((args, cwd, actor)) or completed(0, "", "")
         ),
     )
 
-    plan._create_kickoff_gate("bh-epic.1", "bh-epic", Path("/hive"), "planner")
+    plan_filing.CliPlanningGates(Path("/hive")).create_kickoff_gate(
+        "bh-epic.1", "bh-epic", actor="planner"
+    )
 
     assert writes == [
         (

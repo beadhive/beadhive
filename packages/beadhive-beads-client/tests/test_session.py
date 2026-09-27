@@ -17,7 +17,16 @@ from beadhive_beads_client import (
     RemoteEndpoint,
     ServiceProblem,
 )
-from beads_v1_3.models import CreateIssueRequest, IssuesPage
+from beads_v1_3.models import (
+    ApplyBatchRequest,
+    ApplyCreateItem,
+    ApplyDepAddItem,
+    ApplyItem,
+    ApplyItemKind,
+    CreateIssueRequest,
+    IssuesPage,
+    Ref,
+)
 
 CAPABILITIES = [
     "project.enforce",
@@ -230,3 +239,73 @@ def test_list_issues_rejects_an_unrecognized_sort_value() -> None:
     ) as session:
         with pytest.raises(ValueError):
             session.list_issues(sort="not-a-real-sort")
+
+
+def test_batch_apply_posts_the_ordered_plan_and_resolves_keys() -> None:
+    """bh-sy36q.2: ``BeadsSession.batch_apply`` posts ``issues:batchApply`` verbatim and returns
+    the generated ``ApplyBatchResponse`` (key->id map + per-item results) untouched — the seam
+    :mod:`beadhive_core.planning` builds its request/response handling over."""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path == "/healthz":
+            return httpx.Response(200, json={"status": "ok"})
+        if request.url.path == "/v0/beads/context":
+            ctx = context()
+            ctx["capabilities"] = [*CAPABILITIES, "issues.batchApply"]
+            return httpx.Response(200, json=ctx)
+        if request.url.path == "/v0/beads/ready":
+            return httpx.Response(200, json={"items": [], "has_more": False})
+        assert request.url.path == "/v0/beads/issues:batchApply"
+        assert request.method == "POST"
+        return httpx.Response(
+            200,
+            json={
+                "keys": {"epic": "bh-1", "issue:root": "bh-1.1"},
+                "items": [
+                    {"kind": "create", "issue_id": "bh-1", "changed": True, "revision": "1"},
+                    {"kind": "create", "issue_id": "bh-1.1", "changed": True, "revision": "1"},
+                    {
+                        "kind": "dep_add",
+                        "issue_id": "bh-1.1",
+                        "changed": True,
+                        "revision": "0",
+                        "depends_on_id": "bh-1",
+                    },
+                ],
+            },
+        )
+
+    body = ApplyBatchRequest(
+        actor="dev/alice",
+        items=[
+            ApplyItem(
+                kind=ApplyItemKind.CREATE,
+                create=ApplyCreateItem(title="epic", key="epic", issue_type="epic"),
+            ),
+            ApplyItem(
+                kind=ApplyItemKind.CREATE,
+                create=ApplyCreateItem(title="root", key="issue:root", issue_type="task"),
+            ),
+            ApplyItem(
+                kind=ApplyItemKind.DEP_ADD,
+                dep_add=ApplyDepAddItem(
+                    source=Ref(key="issue:root"), target=Ref(key="epic"), type_="parent-child"
+                ),
+            ),
+        ],
+    )
+    with BeadsSession(
+        RemoteEndpoint("http://127.0.0.1:8080"),
+        ExpectedContext("expected", "scratch"),
+        transport=httpx.MockTransport(handler),
+    ) as session:
+        response = session.batch_apply(body)
+    assert dict(response.keys.to_dict()) == {"epic": "bh-1", "issue:root": "bh-1.1"}
+    assert [item.issue_id for item in response.items if item.kind.value == "create"] == [
+        "bh-1",
+        "bh-1.1",
+    ]
+    posted = seen[-1]
+    assert posted.headers["Content-Type"] == "application/json"

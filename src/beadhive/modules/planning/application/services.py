@@ -4,17 +4,13 @@ from __future__ import annotations
 
 from ..contracts import (
     KickoffStore,
-    MoleculeFiler,
     MoleculeRepairer,
     MoleculeVerifier,
     SpecValidator,
 )
 from ..domain import (
-    FilingRequest,
-    FilingResult,
     KickoffRequest,
     KickoffResult,
-    MoleculeGraph,
     PlanningError,
     RepairRequest,
     RepairResult,
@@ -26,35 +22,29 @@ from ..domain import (
 
 
 class PlanningService:
-    """Coordinate planning policy while infrastructure remains behind explicit ports."""
+    """Coordinate planning policy while infrastructure remains behind explicit ports.
+
+    Molecule FILING is not this boundary's concern (bh-sy36q.2): it moved to
+    ``beadhive_core.planning.PlanningCommands`` + ``beadhive.plan_filing``, which compile and
+    submit the molecule through a single Beads BatchApply request instead of this callback-per-
+    operation shape. This service still coordinates validate/approve/verify/repair.
+    """
 
     def __init__(
         self,
         *,
         validator: SpecValidator,
-        filer: MoleculeFiler,
         kickoff: KickoffStore,
         verifier: MoleculeVerifier,
         repairer: MoleculeRepairer,
     ) -> None:
         self._validator = validator
-        self._filer = filer
         self._kickoff = kickoff
         self._verifier = verifier
         self._repairer = repairer
 
     def validate(self, request: ValidationRequest) -> ValidationResult:
         return self._validator.validate(request)
-
-    def file(self, request: FilingRequest) -> FilingResult:
-        validation = self.validate(ValidationRequest(request.spec, request.config))
-        if not validation.valid:
-            raise PlanningError("invalid molecule spec: " + "; ".join(validation.problems))
-        graph = MoleculeGraph.from_issues(request.spec.get("issues") or ())
-        result = self._filer.file(request, graph)
-        if result.issue_count != len(graph.order) or result.root_count != len(graph.roots):
-            raise PlanningError("filing result does not match the validated molecule graph")
-        return result
 
     def approve(self, request: KickoffRequest) -> KickoffResult:
         result = self._kickoff.approve(request)

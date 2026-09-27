@@ -20,6 +20,7 @@ import httpx
 from beads_v1_3.api.default import (
     add_comment,
     add_dependencies,
+    apply_batch,
     claim_issue,
     claim_next_issue,
     close_issue,
@@ -41,6 +42,8 @@ from beads_v1_3.models import (
     AddCommentRequest,
     AddDependenciesRequest,
     AddDependenciesResponse,
+    ApplyBatchRequest,
+    ApplyBatchResponse,
     ClaimNextRequest,
     ClaimNextResponse,
     ClaimRequest,
@@ -406,6 +409,12 @@ class BeadsSession:
 
     def add_dependencies(self, body: AddDependenciesRequest) -> AddDependenciesResponse:
         return self._write("dependencies.add", add_dependencies.sync_detailed, body=body)  # type: ignore[return-value]
+
+    def batch_apply(self, body: ApplyBatchRequest) -> ApplyBatchResponse:
+        """``POST /v0/beads/issues:batchApply`` — an ordered, all-or-nothing plan of creates and
+        dependency edges. See :mod:`beadhive_core.planning` for the pure compiler that builds
+        ``body`` from a validated Beadhive molecule spec."""
+        return self._write("issues.batchApply", apply_batch.sync_detailed, body=body)  # type: ignore[return-value]
 
     def remove_dependency(self, body: RemoveDependencyRequest) -> RemoveDependencyResponse:
         return self._write("dependencies.remove", remove_dependency.sync_detailed, body=body)  # type: ignore[return-value]
