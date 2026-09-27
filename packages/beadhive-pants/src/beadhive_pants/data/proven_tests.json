@@ -76,6 +76,8 @@
     "packages/beadhive-core/tests/test_core_package_boundary.py": {"status": "proven", "dependencies": ["packages/beadhive-core/src:lib", "packages/beadhive-beads-client/src:lib"]},
     "packages/beadhive-core/tests/test_core_review_policy.py": {"status": "proven", "dependencies": ["packages/beadhive-core/src:lib", "packages/beadhive-beads-client/src:lib"]},
     "packages/beadhive-core/tests/test_core_review_real_service.py": {"status": "unproven", "reason": "requires live disposable Beads service"},
+    "packages/beadhive-core/tests/test_core_routing_policy.py": {"status": "proven", "dependencies": ["packages/beadhive-core/src:lib", "packages/beadhive-beads-client/src:lib"]},
+    "packages/beadhive-core/tests/test_core_routing_real_service.py": {"status": "unproven", "reason": "spawns a real bd subprocess against a scratch hive"},
     "packages/beadhive-pants/tests/test_impact_conformance.py": {"status": "proven", "dependencies": ["beadhive.testing impact conformance kit", "beadhive-pants:lib"]},
     "packages/beadhive-pants/tests/test_package.py": {"status": "proven", "dependencies": ["beadhive-pants packaged resources", "beadhive public contracts"]},
     "packages/beadhive-pants/tests/test_verify.py": {"status": "proven", "dependencies": ["beadhive-pants:lib", "beadhive build verification contracts"]},
