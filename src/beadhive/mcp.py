@@ -85,7 +85,6 @@ from . import (
     triage,
     validate,
     work,
-    work_services,
     work_show,
     worktree,
 )
@@ -98,7 +97,6 @@ from .modules.hives import (
     OnboardHiveRequest,
     RegisterHiveRequest,
 )
-from .modules.work import ScheduleRequest
 
 
 def install_hint() -> str:
@@ -1218,13 +1216,7 @@ def _register_read_resources(_mcp, tool, resource):
         cfg = config.load()
         entry, main, _target, _branch = worktree.locate(cfg, "", epic)
         try:
-            return (
-                work_services.work_lifecycle_service(
-                    schedule=lambda request: work.schedule_payload(request.epic, cfg, entry, main)
-                )
-                .schedule(ScheduleRequest(epic))
-                .plan
-            )
+            return work.schedule_payload(epic, cfg, entry, main)
         except ValueError as exc:
             raise ResourceError(str(exc)) from exc
 

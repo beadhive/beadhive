@@ -114,7 +114,6 @@
     "tests/unit/modules/hives/test_hive_services.py": {"status": "proven", "partition": "pants", "dependencies": ["Pants-inferred source dependencies", "tests:root-conftest"]},
     "tests/unit/modules/state/test_state_services.py": {"status": "proven", "partition": "pants", "dependencies": ["Pants-inferred source dependencies", "tests:root-conftest"]},
     "tests/unit/modules/work/test_work_independence.py": {"status": "proven", "partition": "pants", "dependencies": ["Pants-inferred source dependencies", "tests:root-conftest"]},
-    "tests/unit/modules/work/test_work_lifecycle_services.py": {"status": "proven", "partition": "pants", "dependencies": ["Pants-inferred source dependencies", "tests:root-conftest"]},
     "tests/unit/testing/test_conformance_testkit.py": {"status": "proven", "partition": "pants", "dependencies": ["Pants-inferred source dependencies", "tests:root-conftest"]},
     "tests/unit/testing/test_impact_conformance_kit.py": {"status": "proven", "partition": "pants", "dependencies": ["Pants-inferred source dependencies", "tests:root-conftest"]}
   }

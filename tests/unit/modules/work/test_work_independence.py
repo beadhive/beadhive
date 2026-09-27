@@ -25,7 +25,6 @@ def test_work_module_import_has_no_outer_runtime_or_effects(monkeypatch) -> None
         "beadhive.config",
         "beadhive.plugins",
         "beadhive.work",
-        "beadhive.work_services",
     )
     for name in tuple(sys.modules):
         if name.startswith(("beadhive.modules.work", *forbidden_imports)):
@@ -53,21 +52,23 @@ def test_work_module_import_has_no_outer_runtime_or_effects(monkeypatch) -> None
     monkeypatch.setattr(os, "fork", forbidden("process fork"))
     monkeypatch.setattr(threading.Thread, "start", forbidden("runtime thread start"))
     try:
-        module = importlib.import_module("beadhive.modules.work")
-        assert module.WorkLifecycleService.__module__.startswith("beadhive.modules.work")
+        importlib.import_module("beadhive.modules.work")
+        module = importlib.import_module("beadhive.modules.work.contracts.impact_resolution")
+        assert module.FailClosedResolver.__module__.startswith("beadhive.modules.work")
     finally:
         sys.meta_path.remove(finder)
 
 
 def test_work_dtos_and_public_module_exclude_transport_vocabulary() -> None:
-    from beadhive.modules import work
+    from beadhive.modules.work.domain import impact
 
     dto_types = (
-        work.ScheduleRequest,
-        work.CheckRequest,
-        work.SubmissionRequest,
-        work.ReviewRequest,
-        work.MergeRequest,
+        impact.AttestKey,
+        impact.ChangedPath,
+        impact.ImpactRequest,
+        impact.BackendImpact,
+        impact.KeyEvidence,
+        impact.ImpactReceipt,
     )
     forbidden = {"as_json", "payload", "text", "stream", "exit_code", "render"}
     for dto_type in dto_types:

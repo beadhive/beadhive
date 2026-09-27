@@ -316,7 +316,7 @@ PORTS: dict[str, tuple[str, ...]] = {
     "module.hives": ("src/beadhive/modules/hives/contracts/ports.py",),
     "module.planning": ("src/beadhive/modules/planning/contracts/ports.py",),
     "module.state": ("src/beadhive/modules/state/contracts/ports.py",),
-    "module.work": ("src/beadhive/modules/work/contracts/ports.py",),
+    "module.work": ("src/beadhive/modules/work/contracts/impact.py",),
     "module.worktrees": ("src/beadhive/modules/worktrees/contracts/ports.py",),
     "adapters": ("src/beadhive/state_stream.py",),
     "plugin.herdr": (

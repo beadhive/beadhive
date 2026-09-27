@@ -265,7 +265,6 @@ status = "present"
 owner_path = "src/beadhive/modules/work"
 source_paths = ["src/beadhive/modules/work/**/*.py"]
 tests = [
-  "tests/unit/modules/work/test_work_lifecycle_services.py",
   "tests/unit/modules/work/test_work_independence.py",
 ]
 shared_contracts = ["contracts", "kernel.lifecycle"]
@@ -273,7 +272,6 @@ shared_contracts = ["contracts", "kernel.lifecycle"]
 # this registry's tests/-only reach); the dispatcher test exercises the same contract types
 # (SubscriberBinding, LifecycleEvent, DeliveryPolicy) through the root closure that remains.
 shared_contract_tests = [
-  "tests/contracts/test_work_capability_adapters.py",
   "tests/unit/kernel/lifecycle/test_dispatcher.py",
 ]
 reverse_dependencies = ["adapters", "system-smoke"]
