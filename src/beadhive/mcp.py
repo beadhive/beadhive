@@ -773,7 +773,7 @@ def _register_plan_tools(_mcp, tool, resource):
         acceptance text starting 'STUB:' is visible debt (a warning, never an error).
         """
         decisions = plan.compile_complexity_labels(spec)
-        problems = list(plan.validate_molecule(spec, config.load()).problems)
+        problems = plan.validate_molecule(spec, config.load())
         summary = molecule.acceptance_summary(spec.get("issues"))
         return {
             "valid": not problems,
@@ -798,9 +798,9 @@ def _register_plan_tools(_mcp, tool, resource):
         cwd = registry.hive_dir_for(cfg, hive)
         try:
             decisions = plan.compile_complexity_labels(spec)
-            validation = plan.validate_molecule(spec, cfg)
-            if not validation.valid:
-                raise molecule.MoleculeError(list(validation.problems))
+            problems = plan.validate_molecule(spec, cfg)
+            if problems:
+                raise molecule.MoleculeError(problems)
         except molecule.MoleculeError as exc:
             raise ToolError("invalid molecule spec: " + "; ".join(exc.problems)) from exc
 

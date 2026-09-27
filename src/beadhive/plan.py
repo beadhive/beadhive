@@ -28,29 +28,35 @@ from . import (
     guard,
     molecule,
     plan_filing,
-    planning_services,
     registry,
     state,
     validate,
 )
 from .identity import resolve_actor, workspace_identity
-from .modules.planning import (
-    KickoffRequest,
-    KickoffResult,
-    MoleculeGraph,
-    PlanningError,
-    RepairRequest,
-    ValidationRequest,
-    VerificationRequest,
-)
-from .modules.planning import (
-    RepairResult as PlanningRepairResult,
-)
 
 app = typer.Typer(no_args_is_help=True, help="Plan a molecule → swarm (planning plane).")
 
 
-PlanError = PlanningError
+PlanError = plan_filing.PlanError
+
+
+@dataclass(frozen=True)
+class KickoffResult:
+    """What `approve` reconciled: how many open kickoff gates it resolved, or that the epic was
+    already at the approved fixpoint."""
+
+    epic_id: str
+    resolved_gates: int
+    already_approved: bool = False
+
+
+@dataclass(frozen=True)
+class RepairOutcome:
+    """What `repair` backfilled, and the verification problems still left afterwards."""
+
+    epic_id: str
+    fixes: tuple[str, ...] = ()
+    problems: tuple[str, ...] = ()
 
 
 @dataclass
@@ -213,18 +219,13 @@ def _filed_complexity_decisions(
 def _topo_order(issues: list[dict]) -> list[dict]:
     """Issues in dependency order (deps before dependents). The spec is a validated DAG, so a
     stable Kahn sort terminates; it preserves spec order among independent issues."""
-    return list(MoleculeGraph.from_issues(issues).ordered_issues(issues))
+    return list(plan_filing.molecule_graph(issues).ordered_issues(issues))
 
 
 def _roots(issues: list[dict]) -> list[dict]:
     """Issues with no deps — the molecule's kickoff-gated entry points."""
-    roots = set(MoleculeGraph.from_issues(issues).roots)
+    roots = set(plan_filing.molecule_graph(issues).roots)
     return [issue for issue in issues if issue["handle"] in roots]
-
-
-def _opt(flag: str, value) -> list[str]:
-    """`[flag, str(value)]` when value is set, else [] — for optional `bd create` flags."""
-    return [flag, str(value)] if value not in (None, "") else []
 
 
 def _abort(msg: str):
@@ -235,11 +236,9 @@ def _abort(msg: str):
 # ---- core (Typer-free; shared by the CLI verbs and the future MCP entrypoint) -
 
 
-def validate_molecule(data: dict, cfg):
-    """Validate one structured molecule through the planning application boundary."""
-    return planning_services.planning_service(
-        validate=lambda request: molecule.validate_spec(request.spec, request.config)
-    ).validate(ValidationRequest(data, cfg))
+def validate_molecule(data: dict, cfg) -> list[str]:
+    """Validate one structured molecule; return its problem list ([] ⇒ valid). Typer-free."""
+    return molecule.validate_spec(data, cfg)
 
 
 def check_spec(spec: str, cfg) -> list[str]:
@@ -249,7 +248,7 @@ def check_spec(spec: str, cfg) -> list[str]:
     file). This is the standalone validation `check` exposes and `file` runs inline."""
     data = molecule.load_spec(spec)
     compile_complexity_labels(data)
-    return list(validate_molecule(data, cfg).problems)
+    return validate_molecule(data, cfg)
 
 
 # ---- kickoff plumbing (shared by `file` and `repair`) -------------------------
@@ -288,7 +287,7 @@ def file_molecule(data: dict, cwd: Path, actor: str, cfg=None) -> FileResult:
     for the hive, also opens a hard `release-hold:` gate on every `release:breaking` bead.
     Validation and DAG policy execute before the first mutation."""
     cfg = cfg if cfg is not None else config.load()
-    problems = validate_molecule(data, cfg).problems
+    problems = validate_molecule(data, cfg)
     if problems:
         raise PlanError("invalid molecule spec: " + "; ".join(problems))
     result = plan_filing.file(data, cwd, actor, cfg)
@@ -776,31 +775,19 @@ def _check_coordinator_children(
     return problems
 
 
-def _verify_epic(request: VerificationRequest) -> list[str]:
-    """Concrete Beads reader for the typed verification operation."""
-    epic_id = request.epic_id
-    cfg = request.config
-    cwd = request.workspace
-    loaded = _epic_molecule(epic_id, cwd)
-    if loaded is None:
-        return [f"could not retrieve epic {epic_id} or its children — does it exist in this hive?"]
-    epic_data, issues, origin_reports = loaded
-    return _verify_loaded(epic_id, epic_data, issues, cfg, cwd, origin_reports=origin_reports)
-
-
 def verify_epic(epic_id: str, cfg, cwd) -> list[str]:
-    """Verify a filed molecule through the typed planning boundary. Typer-free, read-only.
+    """Verify a filed molecule. Typer-free, read-only.
 
     Layers molecule.validate_spec (structural: epic + title, handles, acceptance, deps, acyclic DAG)
     over filed-bead assertions with no other home: the bead is an epic, a bd swarm exists, every
     root has a kickoff gate, kickoff state is set, and every child carries the identity triplet +
     valid closed-dimension labels.
     """
-    return list(
-        planning_services.planning_service(verify=_verify_epic)
-        .verify(VerificationRequest(epic_id, Path(cwd), cfg))
-        .problems
-    )
+    loaded = _epic_molecule(epic_id, Path(cwd))
+    if loaded is None:
+        return [f"could not retrieve epic {epic_id} or its children — does it exist in this hive?"]
+    epic_data, issues, origin_reports = loaded
+    return _verify_loaded(epic_id, epic_data, issues, cfg, Path(cwd), origin_reports=origin_reports)
 
 
 def _verify_loaded(
@@ -996,7 +983,7 @@ def check(
         except (FileNotFoundError, molecule.MoleculeError) as e:
             _abort(str(e))
         decisions = compile_complexity_labels(data)
-        problems = list(validate_molecule(data, cfg).problems)
+        problems = validate_molecule(data, cfg)
         issues = data.get("issues")
     else:
         cwd = registry.hive_dir_for(cfg, hive)
@@ -1005,15 +992,7 @@ def check(
             _abort(f"could not retrieve epic {ref} or its children — does it exist in this hive?")
         epic_data, issues, origin_reports = loaded
         decisions = _filed_complexity_decisions(ref, epic_data, issues)
-        problems = list(
-            planning_services.planning_service(
-                verify=lambda _request: _verify_loaded(
-                    ref, epic_data, issues, cfg, cwd, origin_reports=origin_reports
-                )
-            )
-            .verify(VerificationRequest(ref, cwd, cfg))
-            .problems
-        )
+        problems = _verify_loaded(ref, epic_data, issues, cfg, cwd, origin_reports=origin_reports)
 
     summary = molecule.acceptance_summary(issues)
     if as_json:
@@ -1066,15 +1045,7 @@ def verify(
         )
         raise typer.Exit(1)
     epic_data, issues, origin_reports = loaded
-    problems = list(
-        planning_services.planning_service(
-            verify=lambda _request: _verify_loaded(
-                epic, epic_data, issues, cfg, cwd, origin_reports=origin_reports
-            )
-        )
-        .verify(VerificationRequest(epic, cwd, cfg))
-        .problems
-    )
+    problems = _verify_loaded(epic, epic_data, issues, cfg, cwd, origin_reports=origin_reports)
     warnings = molecule.acceptance_summary(issues)["warnings"]
     for problem in problems:
         typer.echo(f"  - {problem}", err=True)
@@ -1086,12 +1057,8 @@ def verify(
     typer.echo(f"✓ verified {epic}: molecule conventions satisfied{stub_note}")
 
 
-def _approve_kickoff(request: KickoffRequest) -> KickoffResult:
-    """Concrete Beads adapter for kickoff reconciliation."""
-    epic = request.epic_id
-    cwd = request.workspace
-    actor = request.actor
-    cfg = request.config
+def _approve_kickoff(epic: str, cwd, actor: str, cfg) -> KickoffResult:
+    """Reconcile one epic's kickoff over its named `bd` routes (gate list/resolve, set-state)."""
     current = bd.state(epic, "kickoff", cwd)
 
     # Discover open kickoff gates for this epic (description contract:
@@ -1154,9 +1121,7 @@ def approve(
     cwd = registry.hive_dir_for(cfg, hive)
     actor = resolve_actor("", "", cwd=cwd)
     try:
-        result = planning_services.planning_service(approve=_approve_kickoff).approve(
-            KickoffRequest(epic, cwd, actor, cfg)
-        )
+        result = _approve_kickoff(epic, cwd, actor, cfg)
     except PlanError as exc:
         _abort(str(exc))
     if result.already_approved:
@@ -1252,12 +1217,10 @@ def status(
 _IDENTITY_FIELDS = ("provider", "org", "repo")
 
 
-def _repair_epic(request: RepairRequest) -> PlanningRepairResult:
-    """Concrete Beads adapter for idempotent planning repair."""
-    epic_id = request.epic_id
-    cwd = request.workspace
-    actor = request.actor
-    cfg = request.config
+def repair_epic(epic_id: str, cfg, cwd, actor: str) -> RepairOutcome:
+    """Idempotently backfill a filed molecule's plumbing (swarm, root kickoff gates, kickoff
+    state, identity labels) over its named `bd` routes, then re-verify it. Typer-free."""
+    cwd = Path(cwd)
     gates = plan_filing.CliPlanningGates(cwd)
     loaded = _epic_molecule(epic_id, cwd)
     if loaded is None:
@@ -1306,14 +1269,7 @@ def _repair_epic(request: RepairRequest) -> PlanningRepairResult:
                     raise PlanError(f"`bd label add {child_id} {label}` failed — inspect the hive")
                 fixes.append(f"added label {label} to {child_id}")
 
-    return PlanningRepairResult(epic_id, tuple(fixes), tuple(verify_epic(epic_id, cfg, cwd)))
-
-
-def repair_epic(epic_id: str, cfg, cwd, actor: str) -> PlanningRepairResult:
-    """Repair a filed molecule through the typed planning application boundary."""
-    return planning_services.planning_service(repair=_repair_epic).repair(
-        RepairRequest(epic_id, Path(cwd), actor, cfg)
-    )
+    return RepairOutcome(epic_id, tuple(fixes), tuple(verify_epic(epic_id, cfg, cwd)))
 
 
 def repair(

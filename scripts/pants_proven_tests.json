@@ -64,7 +64,6 @@
     "tests/test_worktree.py": {"status": "unproven", "reason": "requires git metadata"},
     "tests/unit/modules/config/test_module_evidence.py": {"status": "unproven", "reason": "pure target still shares generated target dependencies"},
     "tests/unit/modules/config/test_schema_artifacts.py": {"status": "unproven", "reason": "pure target still shares generated target dependencies"},
-    "tests/unit/modules/planning/test_planning_services.py": {"status": "proven", "partition": "pants", "dependencies": ["Pants-inferred source dependencies", "tests:root-conftest"]},
     "tests/unit/modules/work/test_impact.py": {"status": "unproven", "reason": "pure target still shares generated target dependencies"},
     "tests/unit/modules/work/test_impact_paths.py": {"status": "unproven", "reason": "pure target still shares generated target dependencies"},
     "tests/unit/modules/work/test_impact_pants.py": {"status": "proven", "partition": "pants", "dependencies": ["Pants-inferred source dependencies", "tests:root-conftest"]},

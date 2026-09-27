@@ -37,7 +37,6 @@ from typing import Any
 
 from . import adopt, bd, beads_routing, config, log, molecule, registry
 from .identity import workspace_identity
-from .modules.planning import PlanningError
 
 _CORE_MODULE = "beadhive_core"
 
@@ -61,6 +60,26 @@ _RELEASE_HOLD_MARKER = "release-hold:"
 
 def _core() -> Any:
     return importlib.import_module(_CORE_MODULE)
+
+
+class PlanError(Exception):
+    """A planning operation could not satisfy its contract (``beadhive.plan.PlanError``).
+
+    Defined here, not in :mod:`beadhive.plan`, because ``plan`` imports this module; the retired
+    ``beadhive.modules.planning.PlanningError`` it replaces was the same plain exception
+    (bh-sy36q.6)."""
+
+
+def molecule_graph(issues: Any) -> Any:
+    """The spec's dependency order and roots — :class:`beadhive_core.MoleculeGraph`, the ONE
+    implementation the compiler also lowers through, so `bh plan show` / `--dry-run` / the
+    `plan_file` preview can never order a molecule differently than filing does (bh-sy36q.6
+    retired the root-side duplicate). A malformed graph raises ``ValueError``, as it always has."""
+    core = _core()
+    try:
+        return core.MoleculeGraph.from_issues(issues)
+    except core.PlanningError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 class TelemetryRoutingObserver:
@@ -284,9 +303,7 @@ def import_epic(epic: dict, dimension_fields: tuple[str, ...], cwd: Path, actor:
     data = json.loads(result.stdout or "null") if result.returncode == 0 and result.stdout else None
     ids = data.get("ids") if isinstance(data, dict) else None
     if result.returncode != 0 or not ids:
-        raise PlanningError(
-            f"bd import failed ({(result.stderr or '').strip() or 'no id returned'})"
-        )
+        raise PlanError(f"bd import failed ({(result.stderr or '').strip() or 'no id returned'})")
     return str(ids[0])
 
 
@@ -294,7 +311,7 @@ def file(spec: dict, cwd: Path, actor: str, cfg: Any) -> Any:
     """File one validated molecule spec: compile once, submit once, then open the gate/kickoff/
     swarm conventions the compiled request could not carry. Returns a ``beadhive_core.FileOutcome``.
 
-    Raises :class:`~beadhive.modules.planning.PlanningError` (``plan.py``'s ``PlanError``) on any
+    Raises :class:`PlanError` (``plan.py``'s ``PlanError``) on any
     refusal — the compiled request over the 100-item cap, a refused/indeterminate BatchApply
     submission, or a failed gate/kickoff/swarm convention — so the CLI and MCP callers' existing
     ``except PlanError`` handling covers this path unchanged.
@@ -329,4 +346,4 @@ def file(spec: dict, cwd: Path, actor: str, cfg: Any) -> Any:
                 release_breaking_handles=release_breaking_handles,
             )
     except (core.PlanningError, core.MoleculeFilingFailed, core.GateCreateFailed) as exc:
-        raise PlanningError(str(exc)) from exc
+        raise PlanError(str(exc)) from exc

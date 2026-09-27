@@ -939,12 +939,14 @@ def test_one_collection_universe_projects_file_and_parameterized_node_selectors(
 def test_module_and_adapter_records_preserve_isolation_and_real_boundary_proof() -> None:
     evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
     records = {record["id"]: record for record in evidence["closures"]}
+    # Retired in the beadhive-core cutover (bh-sy36q.6): no port, no selectors, nothing to isolate.
+    assert records["module.planning"]["status"] == "absent"
+    assert records["module.planning"]["public_ports"] == []
 
     for closure_id in (
         "module.agents",
         "module.config",
         "module.hives",
-        "module.planning",
         "module.state",
         "module.work",
         "module.worktrees",
