@@ -1,5 +1,6 @@
-"""Top-level adapter selecting the atomic ``work.claim-next`` route for `bh work next` (bh-l5sxi.2)
-and the ``work.issue.list`` children route for `bh work schedule` (bh-mu5yb.1).
+"""Top-level adapter selecting the atomic ``work.claim-next`` route for `bh work next` (bh-l5sxi.2),
+the ``work.issue.list`` children route for `bh work schedule` (bh-mu5yb.1), and the
+``work.ready.list`` route for `bh work ready`'s unbounded `--json` reads (bh-p76tk.1).
 
 The composition seam for this cohort, on the same pattern as :mod:`beadhive.work_review`
 (bh-bwnys.1): it resolves the hive's one supervised Beads v1.3 service
@@ -33,10 +34,16 @@ CLI-compatibility pick/claim/re-verify loop in :mod:`beadhive.work_dispatch`) fo
   of a pre-check. A bare actor has no such fixed point to verify against, so it stays CLI-compatible
   too, where `_next_seat_actor` resolves the prefix from the CANDIDATE's type before ever claiming.
 
-:func:`open_children` (bh-mu5yb.1) is the analogous seam for `bh work schedule`'s epic-children
-fetch: it has no such carve-outs (no actor, no seat ambiguity — a read), so the only reason to
-fall back is the service/capability being genuinely unavailable, exactly the same set of
-exceptions :func:`claim_next` already catches.
+:func:`open_children` (bh-mu5yb.1) and :func:`open_ready` (bh-p76tk.1) are the analogous seams for
+`bh work schedule`'s epic-children fetch and `bh work ready`'s unbounded `--json` reads: neither
+has an actor/seat carve-out (both are reads), so the only reason to fall back is the
+service/capability being genuinely unavailable, exactly the same set of exceptions
+:func:`claim_next` already catches. `bh work ready`'s CAPPED reads (bd's own default, or an
+explicit non-zero `--limit`) stay CLI-compatible unconditionally instead — not a fallback,
+a pre-execution route choice: :class:`beadhive_beads_client.ReadyPage` carries no total-count
+field to reproduce bd's own "Showing X of Y ready issues" truncation notice byte-for-byte, so
+only a `limit=0` (fully unbounded) read is asked of :func:`open_ready` at all — see
+:mod:`beadhive.work_reads` and `packages/beadhive-core/README.md`.
 """
 
 from __future__ import annotations
@@ -183,6 +190,55 @@ def open_children(main: Path, entry: Any, epic: str) -> list[dict] | None:
     except _incompatible_service_errors() as exc:
         log.get_logger("beadhive.work").info("queue_route_fallback", detail=str(exc))
         return None
+
+
+def open_ready(main: Path, entry: Any, **kwargs: Any) -> list[dict] | None:
+    """Attempt the ``work.ready.list`` route for one `bh work ready --json` read (bh-p76tk.1):
+    every keyword is one of :meth:`beadhive_core.queue.QueueCommands.list_ready`'s typed
+    narrowing parameters, forwarded verbatim.
+
+    Returns ``None`` to mean "select the CLI-compatibility route instead" (:mod:`beadhive.bd`'s
+    forward through `bd ready`): an unavailable service or capability, decided before any Beads
+    read is attempted — the same fallback set :func:`claim_next` / :func:`open_children` already
+    catch, since this is a read with none of :func:`claim_next`'s actor/seat carve-outs. Once the
+    route IS selected, a genuine read failure propagates to the caller to report fail-closed,
+    never silently retried through `bd`.
+
+    :mod:`beadhive.work_reads` selects this seam only for a read whose truncation cannot silently
+    diverge from `bd ready`'s own byte-for-byte report: :class:`beadhive_beads_client.ReadyPage`
+    carries no total-count field to reproduce bd's "Showing X of Y ready issues" text, so an
+    UNBOUNDED read (``limit=0``) is the only shape asked for here — see
+    `packages/beadhive-core/README.md`'s "bh work ready" section for the full reasoning and the
+    narrowing flags that still stay CLI-compatibility unconditionally (`--mol`/`--mol-type`,
+    `--gated`, and every other non-narrowing `bd ready` flag `bh` forwards verbatim).
+    """
+    core = _core()
+    observer = TelemetryRoutingObserver()
+    try:
+        session_cm = session_factory(main, entry)
+        with session_cm as session:
+            commands = core.QueueCommands()
+            page = commands.list_ready(session, observer=observer, **kwargs)
+            return core.ready_rows(page)
+    except (
+        core.RouteMismatch,
+        core.OperationDenied,
+        core.UnknownOperation,
+        OSError,
+        ValueError,
+    ) as exc:
+        log.get_logger("beadhive.work").info("queue_route_fallback", detail=str(exc))
+        return None
+    except _incompatible_service_errors() as exc:
+        log.get_logger("beadhive.work").info("queue_route_fallback", detail=str(exc))
+        return None
+
+
+def encode_ready_rows(rows: list[dict[str, Any]]) -> str:
+    """`bd ready --json`-byte-identical encoding for :func:`open_ready`'s rows — a thin forward to
+    :func:`beadhive_core.to_bd_json`, kept here so `work_reads` never imports `beadhive_core`
+    statically (this module already resolves it lazily by name; see the module docstring)."""
+    return _core().to_bd_json(rows)
 
 
 def _incompatible_service_errors() -> tuple[type[BaseException], ...]:

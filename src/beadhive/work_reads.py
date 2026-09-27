@@ -4,16 +4,27 @@ The public command names remain registered and importable from :mod:`beadhive.wo
 owns forwarding, readiness payload construction, truncation handling, and release-aware ordering;
 all payload schemas, stream bytes, ordering, telemetry, and exit codes are compatibility contracts.
 
-``bh work ready`` stays on the CLI-compatibility route unconditionally (bh-mu5yb.1 investigated
-routing it through :class:`beadhive_core.queue.QueueCommands` and deliberately did not wire it in
-here — see ``packages/beadhive-core/README.md``'s "bh work ready" section for the full mapping and
-the reason: the narrowing flags all have a real, tested API equivalent now, but composing a session
-for this command means resolving an entry from ambient ``cwd`` the same way
-:func:`beadhive.work_queue.claim_next` does for `bh work next`, and doing that safely in THIS
-module's existing tests needs the same ``$GIT_WORKSPACE`` isolation :mod:`tests.test_work_next`'s
-fixture already uses — not yet retrofitted here). ``bh work schedule``'s children fetch, which
-already threads an explicit ``entry``/``main`` through :func:`beadhive.worktree.locate`, IS routed
-this way — see :func:`beadhive.work_dispatch.impl_schedule_payload`.
+``bh work ready --json`` now selects the ``work.ready.list`` API route (bh-p76tk.1, finishing what
+bh-mu5yb.1 built and byte-proved but did not wire: see ``packages/beadhive-core/README.md``'s
+"bh work ready" section) for exactly the one shape that can be reproduced byte-for-byte without a
+second-guess: an UNBOUNDED read (``--limit 0``, explicit or auto-widened by
+:func:`widen_narrowed_ready_args` for any narrowing flag) whose narrowing flags all have a typed
+`QueueCommands.list_ready` equivalent (see :func:`_api_ready_kwargs`). Every other shape stays a
+named CLI-compatibility route, selected before execution, never as a retry after an API call:
+human (non-``--json``) output (bd's own terminal rendering has no typed-data equivalent),
+``--mol``/``--mol-type`` narrowing (genuinely no HTTP equivalent), ``--gated`` (composes
+`release_order.merge_sequence` locally over whatever rows it is handed — orthogonal to their
+source, not re-plumbed here), and a CAPPED read (bd's own default limit, or an explicit non-zero
+``--limit``): :class:`beadhive_beads_client.ReadyPage` carries no total-count field to reproduce
+bd's own "Showing X of Y ready issues" truncation notice byte-for-byte, so a capped read is never
+attempted over the API at all. :func:`beadhive.work_queue.open_ready` is the composition seam
+(mirroring :func:`beadhive.work_queue.claim_next` / :func:`beadhive.work_queue.open_children`
+exactly): it resolves the hive's one supervised Beads v1.3 service and reports ``None`` to mean
+"select the CLI-compatibility forward instead" whenever the service or a required capability is
+genuinely unavailable, decided before any Beads read is attempted. ``bh work schedule``'s children
+fetch, which already threads an explicit ``entry``/``main`` through
+:func:`beadhive.worktree.locate`, is routed the same way — see
+:func:`beadhive.work_dispatch.impl_schedule_payload`.
 """
 
 from __future__ import annotations
@@ -21,10 +32,11 @@ from __future__ import annotations
 import json
 import re
 import sys
+from typing import Any
 
 import typer
 
-from . import bd, otel, registry, release_order, work_guards, worktree
+from . import bd, otel, registry, release_order, work_guards, work_queue, worktree
 from . import schedule as schedule_mod
 from .config_consumer_ports import work_settings as config
 
@@ -52,6 +64,33 @@ READY_NARROWING_FLAGS = {
 }
 READY_SHOWING_RE = re.compile(r"Showing (\d+) of (\d+) ready issues")
 READY_TRUNCATED_EXIT = 3
+
+#: `bh work ready` narrowing flags mapped to their `QueueCommands.list_ready` keyword — every flag
+#: in `READY_NARROWING_FLAGS` except `--mol`/`--mol-type`, which genuinely have no HTTP equivalent
+#: (see `packages/beadhive-core/README.md`'s "bh work ready" table) and so are absent here on
+#: purpose: :func:`_api_ready_kwargs` treats an unmapped flag as "select CLI instead".
+_READY_FLAG_KWARG = {
+    "-l": "label",
+    "--label": "label",
+    "--label-any": "label_any",
+    "--exclude-label": "exclude_label",
+    "-t": "type_",
+    "--type": "type_",
+    "--exclude-type": "exclude_type",
+    "-p": "priority",
+    "--priority": "priority",
+    "-a": "assignee",
+    "--assignee": "assignee",
+    "--parent": "parent",
+    "--has-metadata-key": "has_metadata_key",
+    "--metadata-field": "metadata_field",
+}
+#: Repeatable narrowing flags: every occurrence accumulates into one list kwarg.
+_READY_MULTI_KWARGS = frozenset(
+    {"label", "label_any", "exclude_label", "exclude_type", "metadata_field"}
+)
+#: `-u`/`--unassigned` takes no value — a bare boolean flag, unlike every other narrowing flag.
+_READY_BOOL_FLAGS = frozenset({"-u", "--unassigned"})
 
 
 class MoleculeReadinessError(Exception):
@@ -235,6 +274,91 @@ def ready_truncated_exit(args, result, *, as_json: bool) -> int:
     return result.returncode
 
 
+def _api_ready_kwargs(args: list[str]) -> dict[str, Any] | None:
+    """Translate `bh work ready`'s CLI argv into `QueueCommands.list_ready` kwargs, or ``None`` to
+    mean "select the CLI-compatibility route instead" — decided from the parsed args alone,
+    before any Beads call is attempted, never as a retry after one.
+
+    ``None`` whenever any token is not one of ``--json``, one of the limit flags, or one of
+    :data:`_READY_FLAG_KWARG`'s narrowing flags — in particular `--mol`/`--mol-type` (no HTTP
+    equivalent) and every other `bd ready` flag `bh` forwards verbatim today (`--sort`,
+    `--explain`, `--brief`, `--claim`, `--plain`, `--pretty`, `--max-rows`,
+    `--include-ephemeral`, `--include-deferred`, `--label-pattern`, `--label-regex`, any `bd`
+    global flag). ``--gated`` is accepted here (skipped, like ``--json``) only because callers
+    never pass it in practice — `ready()` only calls this on the non-``--gated`` branch — kept
+    tolerant rather than a caller-ordering trap.
+    """
+    kwargs: dict[str, Any] = {}
+    multi: dict[str, list[str]] = {}
+    i = 0
+    n = len(args)
+    while i < n:
+        token = args[i]
+        name, has_eq, inline = token.partition("=")
+        if name in ("--json", "--gated"):
+            i += 1
+            continue
+        if name in _READY_BOOL_FLAGS:
+            kwargs["unassigned"] = True
+            i += 1
+            continue
+        if has_eq:
+            value = inline
+            i += 1
+        else:
+            if i + 1 >= n:
+                return None
+            value = args[i + 1]
+            i += 2
+        if name in READY_LIMIT_FLAGS:
+            try:
+                kwargs["limit"] = int(value)
+            except ValueError:
+                return None
+            continue
+        kw = _READY_FLAG_KWARG.get(name)
+        if kw is None:
+            return None
+        if kw == "priority":
+            try:
+                kwargs["priority"] = int(value)
+            except ValueError:
+                return None
+        elif kw in _READY_MULTI_KWARGS:
+            multi.setdefault(kw, []).append(value)
+        else:
+            kwargs[kw] = value
+    for key, values in multi.items():
+        kwargs[key] = values
+    return kwargs
+
+
+def ready_via_api(cwd, entry, args: list[str]) -> bool:
+    """Attempt the `work.ready.list` route for an UNBOUNDED `bh work ready --json` read
+    (bh-p76tk.1) — pre-execution selection, decided from ``args`` alone before any Beads call:
+
+    * :func:`_api_ready_kwargs` returning ``None`` (an unmapped flag) or a resolved ``limit``
+      other than ``0`` (a capped read bd's own truncation notice can't be reproduced for, see the
+      module docstring) both mean "select the CLI-compatibility forward instead", decided here,
+      never by catching an API failure.
+    * Once the shape qualifies, :func:`beadhive.work_queue.open_ready` is tried; it returns
+      ``None`` for the same service/capability-unavailable fallback set every other queue seam
+      uses, in which case this also selects CLI-compatibility.
+
+    Returns ``False`` to mean "select the CLI-compatibility forward instead"; on success this
+    writes the byte-identical response itself and raises the exit, so a caller never falls
+    through to the CLI forward after a successful API read.
+    """
+    kwargs = _api_ready_kwargs(args)
+    if kwargs is None or kwargs.get("limit", 100) != 0:
+        return False
+    rows = work_queue.open_ready(cwd, entry, **kwargs)
+    if rows is None:
+        return False
+    sys.stdout.write(work_queue.encode_ready_rows(rows))
+    raise typer.Exit(0)
+
+
 def forward_ready_plain(args, cwd) -> None:
     result = bd.run(["ready", *args], cwd, capture=True)
     if result.stdout:
@@ -277,9 +401,11 @@ def ready(ctx: typer.Context, hive: str = ""):
     cwd = registry.hive_dir_for(cfg, hive)
     args = widen_narrowed_ready_args(list(ctx.args))
     if "--json" in args and "--gated" not in args:
-        entry = registry.entry_for_dir(cfg, cwd)
+        entry = registry.entry_for_dir(cfg, cwd) or {}
         if str(config.release_value(cfg, entry, "strategy", "") or ""):
             emit_start_gated_ready(cfg, entry, cwd, args)
+            return
+        if ready_via_api(cwd, entry, args):
             return
     if "--gated" in args:
         entry = registry.entry_for_dir(cfg, cwd)
