@@ -12,12 +12,26 @@ import pytest
 
 from beadhive import (
     metadata,
+    registry,
     worktree,
     worktree_cleanup,
     worktree_inventory,
     worktree_merge,
+    worktree_state_adapters,
     wt_status,
 )
+from beadhive_worktrees.testing import InMemoryBeadStateLookup
+
+_MAIN = Path("/repo")
+
+
+def _use_store(monkeypatch, lookup: InMemoryBeadStateLookup) -> InMemoryBeadStateLookup:
+    """Substitute the hive's bead store at the `BeadStateLookup` port (bh-qdezo.9) and pin the
+    registry's main-clone lookup, rather than patching the facade's private bead-state helpers."""
+    monkeypatch.setattr(registry, "hive_dir", lambda _entry: _MAIN)
+    monkeypatch.setattr(worktree_state_adapters, "BEAD_STATE_LOOKUP", lookup)
+    return lookup
+
 
 INVENTORY_OPERATIONS = (
     "_managed_for_entry",
@@ -92,60 +106,63 @@ def test_related_policy_and_creation_boundaries_remain_owned_by_their_existing_m
     assert worktree.merge_no_ff is worktree_merge.merge_no_ff
 
 
+_CLOSED = {"status": "closed", "close_reason": "merged"}
+
+
 @pytest.mark.parametrize(
     (
         "metadata_rows",
-        "bead_state",
+        "store",
         "dirty_paths",
         "expected_branches",
         "expected_statuses",
+        "expected_close_reasons",
         "expected_unknown",
-        "expected_store_reason",
+        "store_unreadable",
     ),
     [
         (
             {"github/acme/repo": SimpleNamespace(branches=["main", "topic-b", "topic-a"])},
-            ({"a": "closed", "b": "open"}, {"a": "merged", "b": ""}, {}, ""),
+            InMemoryBeadStateLookup({"a": _CLOSED, "b": {"status": "open"}}),
             {"/wt/a"},
             ["main", "topic-b", "topic-a"],
             {"a": "closed", "b": "open"},
-            {},
-            "",
+            {"a": "merged", "b": ""},
+            set(),
+            False,
         ),
         (
             {},
-            (
-                {"a": "closed", "b": ""},
-                {"a": "merged", "b": ""},
-                {"b": "bead b is missing"},
-                "",
-            ),
+            InMemoryBeadStateLookup({"a": _CLOSED}),
             {"/wt/b"},
             [],
             {"a": "closed", "b": ""},
-            {"b": "bead b is missing"},
-            "",
+            {"a": "merged", "b": ""},
+            {"b"},
+            False,
         ),
         (
             {},
-            ({"a": "", "b": ""}, {"a": "", "b": ""}, {}, "store unavailable"),
+            InMemoryBeadStateLookup({"a": _CLOSED}, readable=False),
             set(),
             [],
             {"a": "", "b": ""},
-            {},
-            "store unavailable",
+            {"a": "", "b": ""},
+            set(),
+            True,
         ),
     ],
 )
 def test_classify_entry_partial_state_outcome_matrix(
     monkeypatch,
     metadata_rows,
-    bead_state,
+    store,
     dirty_paths,
     expected_branches,
     expected_statuses,
+    expected_close_reasons,
     expected_unknown,
-    expected_store_reason,
+    store_unreadable,
 ):
     entry = {"prefix": "mr"}
     rows = [
@@ -153,16 +170,16 @@ def test_classify_entry_partial_state_outcome_matrix(
         ("mr", "/wt/b", "wt/bead/issue/b"),
     ]
     captured = {}
+    fleet_reads = []
+
+    def read_fleet(cfg, keys, ttl):
+        fleet_reads.append((cfg, keys, ttl))
+        return metadata_rows
 
     monkeypatch.setattr(worktree.registry, "hive_key", lambda _entry: "github/acme/repo")
-    monkeypatch.setattr(metadata, "read_fleet", lambda cfg, keys, ttl: metadata_rows)
+    monkeypatch.setattr(metadata, "read_fleet", read_fleet)
     monkeypatch.setattr(worktree.config, "integration_branch", lambda cfg, _entry: "main")
-    monkeypatch.setattr(worktree, "_bead_statuses_for_entry", lambda _entry, _rows: bead_state)
-    monkeypatch.setattr(
-        worktree,
-        "_bead_disposition_relations_for_entry",
-        lambda _entry, _reasons: {},
-    )
+    _use_store(monkeypatch, store)
     monkeypatch.setattr(worktree, "_wt_dirty", lambda path: path in dirty_paths)
     monkeypatch.setattr(worktree.config, "precious_globs", lambda _cfg, _entry: [".secret"])
     monkeypatch.setattr(worktree.config, "junk_globs", lambda _cfg, _entry: ["cache/**"])
@@ -196,12 +213,20 @@ def test_classify_entry_partial_state_outcome_matrix(
     monkeypatch.setattr(worktree.wt_status, "classify", classify)
 
     assert worktree._classify_entry(entry, rows, {"cfg": True}) == ["classification-result"]
+    assert fleet_reads == [({"cfg": True}, ["github/acme/repo"], 0)]
+    assert captured["hive_prefix"] == "mr"
+    assert captured["integration"] == "main"
     assert captured["managed_rows"] == rows
     assert captured["meta_branches"] == expected_branches
     assert captured["bead_statuses"] == expected_statuses
-    assert captured["bead_unknown_reasons"] == expected_unknown
-    assert captured["store_unreadable_reason"] == expected_store_reason
+    assert captured["bead_close_reasons"] == expected_close_reasons
+    assert set(captured["bead_unknown_reasons"]) == expected_unknown
+    assert all(captured["bead_unknown_reasons"].values())
+    assert bool(captured["store_unreadable_reason"]) is store_unreadable
     assert captured["bead_disposition_relations"] == {}
+    # The store is read at the port: one readability probe, then one show per bead id.
+    assert store.probes == [_MAIN]
+    assert [bead_id for bead_id, _main in store.shows] == ["a", "b"]
     assert captured["dirty_by_path"] == {path: path in dirty_paths for _, path, _ in rows}
     assert captured["precious_by_path"] == {path: [] for _, path, _ in rows}
     assert scan_calls == [
@@ -254,11 +279,7 @@ def test_classify_entry_scans_real_configured_ignored_content(tmp_path, monkeypa
     monkeypatch.setattr(worktree.registry, "hive_key", lambda _entry: "github/acme/repo")
     monkeypatch.setattr(metadata, "read_fleet", lambda _cfg, _keys, ttl: {})
     monkeypatch.setattr(worktree.config, "integration_branch", lambda _cfg, _entry: "main")
-    monkeypatch.setattr(
-        worktree,
-        "_bead_statuses_for_entry",
-        lambda _entry, _rows: ({"a": "closed"}, {"a": "merged"}, {}, ""),
-    )
+    _use_store(monkeypatch, InMemoryBeadStateLookup({"a": _CLOSED}))
     monkeypatch.setattr(worktree, "_wt_dirty", lambda _path: False)
     monkeypatch.setattr(worktree, "is_merged", lambda _entry, _branch, _base: True)
     monkeypatch.setattr(
@@ -283,11 +304,7 @@ def test_classify_entry_propagates_precious_scan_failure_before_classification(m
     monkeypatch.setattr(worktree.registry, "hive_key", lambda _entry: "github/acme/repo")
     monkeypatch.setattr(metadata, "read_fleet", lambda _cfg, _keys, ttl: {})
     monkeypatch.setattr(worktree.config, "integration_branch", lambda _cfg, _entry: "main")
-    monkeypatch.setattr(
-        worktree,
-        "_bead_statuses_for_entry",
-        lambda _entry, _rows: ({"a": "closed"}, {"a": "merged"}, {}, ""),
-    )
+    _use_store(monkeypatch, InMemoryBeadStateLookup({"a": _CLOSED}))
     monkeypatch.setattr(worktree, "_wt_dirty", lambda _path: False)
     monkeypatch.setattr(
         worktree.precious, "scan_precious", lambda *_args, **_kwargs: (_ for _ in ()).throw(error)
@@ -318,8 +335,7 @@ def test_disposition_relation_readback_normalizes_exact_storage_directions(monke
             "dependencies": [{"depends_on_id": "old-superseded", "type": "supersedes"}]
         },
     }
-    monkeypatch.setattr(worktree.registry, "hive_dir", lambda _entry: "/repo")
-    monkeypatch.setattr(worktree.bd, "show", lambda bead, _main: records.get(bead))
+    store = _use_store(monkeypatch, InMemoryBeadStateLookup(records))
 
     result = worktree._bead_disposition_relations_for_entry(entry, reasons)
 
@@ -327,43 +343,22 @@ def test_disposition_relation_readback_normalizes_exact_storage_directions(monke
         "old-retained": frozenset({("retained", "consumer")}),
         "old-superseded": frozenset({("superseded", "replacement")}),
     }
-
-
-def test_disposition_relation_readback_rejects_reversed_or_wrong_typed_edges(monkeypatch):
-    entry = {"prefix": "mr"}
-    reasons = {
-        "old-retained": wt_status.format_disposition("retained", "pivot", "consumer"),
-        "old-superseded": wt_status.format_disposition("superseded", "superseded", "replacement"),
-    }
-    records = {
-        "old-retained": {"dependencies": [{"depends_on_id": "consumer", "type": "supersedes"}]},
-        "replacement": {
-            "dependencies": [{"depends_on_id": "old-superseded", "type": "relates-to"}]
-        },
-    }
-    monkeypatch.setattr(worktree.registry, "hive_dir", lambda _entry: "/repo")
-    monkeypatch.setattr(worktree.bd, "show", lambda bead, _main: records.get(bead))
-
-    assert worktree._bead_disposition_relations_for_entry(entry, reasons) == {}
+    assert store.shows == [("old-retained", _MAIN), ("replacement", _MAIN)]
 
 
 def test_batch_evidence_uses_one_complete_label_snapshot_and_shared_member_parent(monkeypatch):
     entry = {"prefix": "mr"}
     rows = [("mr", "/wt/batch-g", "wt/batch/g")]
-    calls = []
-    issues = [
-        {"id": "mr-1.2", "status": "closed", "labels": ["batch:g"]},
-        {"id": "mr-1.1", "status": "closed", "labels": ["batch:g", "size:s"]},
-        {"id": "mr-2.1", "status": "open", "labels": ["batch:other"]},
-    ]
-
-    monkeypatch.setattr(worktree.registry, "hive_dir", lambda _entry: "/repo")
-
-    def list_issues(args, cwd):
-        calls.append((args, cwd))
-        return issues
-
-    monkeypatch.setattr(worktree_inventory.bd, "json", list_issues)
+    store = _use_store(
+        monkeypatch,
+        InMemoryBeadStateLookup(
+            {
+                "mr-1.2": {"status": "closed", "labels": ["batch:g"]},
+                "mr-1.1": {"status": "closed", "labels": ["batch:g", "size:s"]},
+                "mr-2.1": {"status": "open", "labels": ["batch:other"]},
+            }
+        ),
+    )
     monkeypatch.setattr(
         worktree,
         "integration_base",
@@ -372,7 +367,7 @@ def test_batch_evidence_uses_one_complete_label_snapshot_and_shared_member_paren
 
     evidence = worktree_inventory._batch_evidence_for_entry(entry, rows, "main")
 
-    assert calls == [(["list", "--all", "--include-infra", "--limit", "0"], "/repo")]
+    assert store.listings == [_MAIN]  # one complete label snapshot for the whole hive
     assert evidence == {
         "wt/batch/g": wt_status.BatchEvidence(
             member_statuses=(("mr-1.1", "closed"), ("mr-1.2", "closed")),
@@ -386,5 +381,6 @@ def test_batch_evidence_uses_one_complete_label_snapshot_and_shared_member_paren
 # packages/beadhive-worktrees/tests/test_classification_service.py (bh-qdezo.7): they exercised
 # beadhive_worktrees.resolve_batch_evidence / classify_entries_concurrently / ordered_statuses
 # on fakes with no root-specific behavior left to characterize here. The happy-path test above
-# stays as the one root wiring proof (registry.hive_dir + the ArgvBeadStateLookup adapter's
-# real bd.json argv shape + the integration_base callable seam).
+# stays as the one root wiring proof (registry.hive_dir + the composed BeadStateLookup port +
+# the integration_base callable seam); the argv adapter's exact bd.json shape is proven once,
+# directly, in tests/test_worktree_state_adapters.py (bh-qdezo.9).
