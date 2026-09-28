@@ -688,6 +688,42 @@ The cutover removed no stateful tests because nothing stateful was redundant. Ev
 test left in the root suite exercises a retained `bd` route or real topology (worktrees,
 onboarding, doctor, hub), not superseded bead-access code.
 
+### Measured (bh-fqsp2 / bh-yp5e9)
+
+Measured on the final tree of the bh-fqsp2 delivery (work.beads.route replacing the automatic
+per-verb `bd` fallback; bh-m36pc, bh-o3xuf, bh-vq34o, bh-yp5e9) against the bh-sy36q.6 baseline
+recorded in the table above, on a 32-core host, same PATH-shim method (`bd` / `dolt` shims
+logging `$PYTEST_CURRENT_TEST`, first on `PATH` inside the hermetic fence, full root selection).
+
+| Measure | Before (bh-sy36q.6) | After (bh-yp5e9, fork tip 357a8a60) |
+|---|---|---|
+| Root selected suite (`not integration and not pants_profile`) | 9,541 | 9,557 |
+| Root selected tests that spawn a real `bd` / `dolt` process | 188 | 189 |
+| Root selected real-`bd`/`dolt` spawns (total process invocations) | 515 | 516 |
+| `packages/beadhive-bd-cli` suite (`just bd-cli-check`) | — | 55 tests, 55 passed |
+| `packages/beadhive-bd-cli` suite wall time (`-n auto`/16 workers, hermetic) | — | 21.5 s pytest call (`just bd-cli-check` end to end ≈ 29 s incl. ruff + `uv sync`) |
+| Full gate `bh work check bh-yp5e9` (`just check-all-native`) | — | in bh-yp5e9's NOTES ¹ |
+
+¹ Same caveat as bh-sy36q.6's table: the gate validates this exact tree, so its wall time is
+recorded on the bead instead of here.
+
+**The root real-`bd`/`dolt` spawn count did NOT drop.** The design expected it to fall
+materially once the migrated adapters' FakeBd/real-bd tests moved into
+`packages/beadhive-bd-cli` (bh-o3xuf). Measured reality: it is flat (188 → 189 distinct tests,
+515 → 516 spawns) — within noise of one test. The reason: the tests that moved were already
+FakeBd-backed or pure-port tests in the root suite (bh-sy36q.6's own table already measured zero
+of the 40 tests it added there as real-`bd` spawners); the 188/515 baseline was always the
+*retained* CLI administration/compatibility/topology surface (`test_cli.py`, `test_doctor*.py`,
+`test_hub*.py`, `test_onboard*.py`, `test_daemon_mcp_http.py`, the transport-parity spikes, …),
+which bh-o3xuf's scope explicitly did not touch (see its "Explicitly OUT of scope" list). Moving
+adapters that never spawned real `bd` in root cannot reduce a count that was never theirs.
+`packages/beadhive-bd-cli`'s OWN suite, by contrast, DOES spawn real `bd` deliberately —
+`test_coordination_int.py` and `test_ports_real_bd.py` exist specifically to prove the moved CLI
+adapters against a real `bd` process — that is a different, expected axis (its own sandboxed
+suite, run only by the `bd-cli` attest key) from "root's real-process spawn count," and is not a
+regression from the "0 real bd/dolt" packages-suite convention documented above (that convention
+describes `packages-check`'s shared key, from which `beadhive-bd-cli` is explicitly excluded).
+
 ## Tests
 
 - `test_core_routing_policy.py` — every matrix row resolves to exactly one typed route; capability
