@@ -1,5 +1,6 @@
 """Top-level adapter selecting the atomic ``work.claim-next`` route for `bh work next` (bh-l5sxi.2),
-the ``work.issue.list`` children route for `bh work schedule` (bh-mu5yb.1), and the
+the epic-scoped guarded-claim route for `bh work next --epic` (bh-7ip8t), the ``work.issue.list``
+children route for `bh work schedule` (bh-mu5yb.1), and the
 ``work.ready.list`` route for `bh work ready`'s unbounded `--json` reads (bh-p76tk.1).
 
 The composition seam for this cohort, on the same pattern as :mod:`beadhive.work_review`
@@ -9,20 +10,18 @@ failure and retrying through `bd` — the "missing-capability fallback" the epic
 ``beadhive_core`` is resolved lazily by name; ``src/beadhive`` never imports a workspace package
 statically (``scripts/check_package_imports.py``).
 
-Two things make the atomic ``work.claim-next`` route inapplicable up front, not on failure, so
-this module refuses to even try the API and reports ``None`` (meaning: run the existing
-CLI-compatibility pick/claim/re-verify loop in :mod:`beadhive.work_dispatch`) for both:
+Two things make the atomic ``work.claim-next`` route inapplicable up front, not on failure. The
+first has its own API route; the second stays CLI-compatibility:
 
-* **``--epic`` scoping.** ``work.claim-next``'s ``parent`` filter is not used for this: the CLI
-  path's ``bd children --include-infra --all`` recursive walk has no HTTP equivalent that also
-  narrows to durable-vs-ephemeral / infra inclusion the way that flag combination does, so
-  epic-scoped claims stay on the named CLI route unconditionally. (CORRECTION, bh-mu5yb.1: an
-  earlier revision of this docstring claimed Beads' `parent` QUERY PARAMETER was the direct
-  parent-child edge only, one level — that is false; the pinned v1.3 OpenAPI spec documents it,
-  and a real disposable-hive probe confirms it, as "restrict to recursive descendants of this
-  issue" on both `GET /v0/beads/ready` and `work.claim-next`. See
-  :mod:`beadhive_core.queue`'s module docstring and `packages/beadhive-core/README.md` for the
-  full correction and what was and was not re-evaluated as a result.)
+* **``--epic`` scoping** (bh-7ip8t) selects :func:`claim_in_epic` instead — the epic-scoped
+  guarded-claim route (:meth:`beadhive_core.queue.QueueCommands.claim_next_in_epic`), not the
+  atomic op. The molecule is the epic plus its DIRECT children, closed and infra rows included
+  (one level, deliberately — bh-sh6yt), and ``work.claim-next``'s ``parent`` filter is recursive
+  (bh-mu5yb.1), so it cannot express that scope; the epic route fetches the scoped candidates and
+  takes them through the ``issues.claim`` compare-and-set instead. It is selected before
+  execution exactly like :func:`claim_next`, and — when no capable session opens — returns
+  ``None`` to mean "run the named CLI-compatibility pick/claim/re-verify loop in
+  :mod:`beadhive.work_dispatch`", gated by ``work.beads.route`` like every other seam here.
 * **An undeclared (bare) actor.** Which seat-prefix an actor auto-resolves to
   (``dev/<name>`` vs ``disp/<name>``) depends on the TYPE of the bead actually claimed
   (:func:`beadhive.work_guards.kind_of`) — and the atomic claim commits its ``actor`` string in the
@@ -31,8 +30,10 @@ CLI-compatibility pick/claim/re-verify loop in :mod:`beadhive.work_dispatch`) fo
   either way, and :func:`claim_next` verifies the claimed bead's type against the declared seat
   afterward, releasing (never leaving claimed) and reporting a refusal on a mismatch — the same
   outcome the CLI path's pre-claim seat check produces, reached by a compensating release instead
-  of a pre-check. A bare actor has no such fixed point to verify against, so it stays CLI-compatible
-  too, where `_next_seat_actor` resolves the prefix from the CANDIDATE's type before ever claiming.
+  of a pre-check. A bare actor has no such fixed point to verify against, so an UNSCOPED bare-actor
+  claim stays CLI-compatible, where `_next_seat_actor` resolves the prefix from the CANDIDATE's
+  type before ever claiming (the ``--epic`` route resolves it the same way, per candidate, before
+  its compare-and-set — so it needs no such carve-out).
 
 :func:`open_children` (bh-mu5yb.1) and :func:`open_ready` (bh-p76tk.1) are the analogous seams for
 `bh work schedule`'s epic-children fetch and `bh work ready`'s unbounded `--json` reads: neither
@@ -52,7 +53,8 @@ unbounded) read is asked of :func:`open_ready` at all — see :mod:`beadhive.wor
 from __future__ import annotations
 
 import importlib
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -147,6 +149,49 @@ def claim_next(main: Path, entry: Any, actor: str) -> ApiNextResult | None:
         beads_routing.allow_cli_route(entry, exc)
         log.get_logger("beadhive.work").info("queue_route_fallback", detail=str(exc))
         return None
+
+
+def claim_in_epic(
+    main: Path,
+    entry: Any,
+    epic: str,
+    actor: str,
+    seat_actor: Callable[[Mapping[str, Any]], str | None],
+) -> Any | None:
+    """Attempt the epic-scoped guarded-claim route for `bh work next --epic <epic>` (bh-7ip8t):
+    :meth:`beadhive_core.queue.QueueCommands.claim_next_in_epic`, with ``seat_actor`` (the
+    shell's one seat rule) resolving each candidate's seat before any write — so, unlike
+    :func:`claim_next`, an undeclared actor needs no carve-out here.
+
+    Returns the core ``EpicClaimOutcome``, or ``None`` to mean "select the CLI-compatibility route
+    instead" — decided while OPENING the session (no service, a missing capability, an
+    unaddressable hive), before any Beads read or write, and only when
+    :func:`beadhive.beads_routing.allow_cli_route` permits it. Once the session is open the route
+    is selected: any failure after that propagates fail-closed and is never replayed through
+    `bd` — a scoped pass may already have claimed a bead by then.
+    """
+    core = _core()
+    with ExitStack() as stack:
+        try:
+            session = stack.enter_context(session_factory(main, entry))
+        except (
+            core.RouteMismatch,
+            core.OperationDenied,
+            core.UnknownOperation,
+            OSError,
+            ValueError,
+            *_incompatible_service_errors(),
+        ) as exc:
+            beads_routing.allow_cli_route(entry, exc)
+            log.get_logger("beadhive.work").info("queue_route_fallback", detail=str(exc))
+            return None
+        outcome = core.QueueCommands().claim_next_in_epic(
+            session, epic, actor, seat_actor=seat_actor, observer=TelemetryRoutingObserver()
+        )
+    if outcome.claimed:
+        otel.set_bead(outcome.claimed)
+        otel.count_bead_transition("claimed")
+    return outcome
 
 
 def open_children(main: Path, entry: Any, epic: str) -> list[dict] | None:
