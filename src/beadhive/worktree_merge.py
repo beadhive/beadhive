@@ -14,9 +14,15 @@ The lower-level git/worktree helpers these tiers compose (``_run_git``, ``is_cle
 
 from __future__ import annotations
 
-import fnmatch
 import os
 from pathlib import Path
+
+from beadhive_worktrees import (
+    all_union_eligible,
+    is_zero_delta_rebase,
+    parse_conflict_paths,
+    union_attributes_text,
+)
 
 from . import registry, worktree
 
@@ -115,17 +121,22 @@ def merge_conflict_paths(entry, branch, base) -> tuple[list[str], str]:
         check=False,
         capture=True,
     )
-    paths = [p for p in (ures.stdout or "").splitlines() if p.strip()]
+    # Parsing is `beadhive_worktrees.parse_conflict_paths` (bh-qdezo.8, moved verbatim); the
+    # probe merge and its abort are git-plumbing mechanics that stay here.
+    paths = parse_conflict_paths(ures.stdout or "")
     worktree._run_git(["git", "-C", str(main), "merge", "--abort"], check=False, capture=True)
     return paths, (res.stdout or "") + (res.stderr or "")
 
 
 def _all_union_eligible(paths, union_globs) -> bool:
     """True iff EVERY path matches at least one glob in `union_globs` (fnmatch). An empty
-    `paths` is not eligible — there is nothing for the union driver to resolve."""
-    if not paths:
-        return False
-    return all(any(fnmatch.fnmatch(p, g) for g in union_globs) for p in paths)
+    `paths` is not eligible — there is nothing for the union driver to resolve.
+
+    Thin forwarding wrapper: the algorithm itself is
+    ``beadhive_worktrees.all_union_eligible`` (bh-qdezo.8, moved verbatim). Kept as a private
+    module-level name since callers/tests still reach it as ``worktree_merge._all_union_eligible``.
+    """
+    return all_union_eligible(paths, union_globs)
 
 
 def merge_with_union(entry, branch, base, union_globs, **idkw) -> tuple[int, str]:
@@ -140,7 +151,9 @@ def merge_with_union(entry, branch, base, union_globs, **idkw) -> tuple[int, str
     had = attrs.exists()
     saved = attrs.read_text() if had else None
     try:
-        attrs.write_text("\n".join(f"{g} merge=union" for g in union_globs) + "\n")
+        # Rendering is `beadhive_worktrees.union_attributes_text` (bh-qdezo.8, moved
+        # verbatim); writing the transient file and the merge itself stay git-plumbing mechanics.
+        attrs.write_text(union_attributes_text(union_globs))
         return merge_no_ff(entry, branch, base, **idkw)
     finally:
         if had:
@@ -260,7 +273,9 @@ def try_merge_rebase(
     # "Already up to date" and creates no child integration bubble at all.  Treat that as a
     # conflict-shaped, recoverable bounce: the merger cannot close a child whose reviewed history
     # has no distinct commit left to attribute, and must restore the submitted branch unchanged.
-    if not worktree.commit_shas(entry, branch, base):
+    # Recognising the drop-everything outcome is `beadhive_worktrees.is_zero_delta_rebase`
+    # (bh-qdezo.8, moved verbatim); reading the commit shas is git-plumbing mechanics.
+    if is_zero_delta_rebase(worktree.commit_shas(entry, branch, base)):
         worktree.reset_hard(target, backup)
         return (
             1,

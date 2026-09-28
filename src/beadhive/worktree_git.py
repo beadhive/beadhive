@@ -15,7 +15,11 @@ from pathlib import Path
 
 import typer
 
-from . import ghpr, registry
+from . import (  # noqa: F401 - ghpr is a compatibility patch seam
+    ghpr,
+    registry,
+    worktree_state_adapters,
+)
 from .config_consumer_ports import work_settings as config
 from .run import retry_on_index_lock
 
@@ -738,7 +742,7 @@ def impl_is_landed(entry, branch: str, parent: str, close_reason: str = "") -> b
         return True
     if _all_cherry_landed(entry, branch, parent):
         return True
-    return ghpr.merged_pr_for(entry, branch) is not None
+    return worktree_state_adapters.MERGE_EVIDENCE.merged_pr(entry, branch) is not None
 
 
 def impl_bead_and_parent(

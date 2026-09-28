@@ -117,7 +117,7 @@ inventory is inherited from the
 | --- | --- | --- | --- |
 | `beadhive.work` | `work_*`, migrating to `modules/work` | `tests/test_structural_facade_contracts.py`, `tests/test_work_reads.py`, and `tests/test_work.py` | The work-capability migration; until then, the work facade steward. |
 | `beadhive.config` | `config_*`, migrating to `modules/config` | `tests/test_structural_facade_contracts.py` and `tests/test_config.py` | The config-capability migration; until then, the config facade steward. |
-| `beadhive.worktree` | `worktree_*`, migrating to `modules/worktrees` | `tests/test_structural_facade_contracts.py`, `tests/test_worktree.py`, and `tests/test_wt_status.py` | The worktree-capability migration; until then, the worktree facade steward. |
+| `beadhive.worktree` | `worktree_*`, migrating to `modules/worktrees` | `tests/test_structural_facade_contracts.py`, `tests/test_worktree.py`, and `packages/beadhive-worktrees/tests/test_classification.py` | The worktree-capability migration; until then, the worktree facade steward. |
 
 The baseline's symbol and patch-point matrix is authoritative for these three entries; this ADR
 does not abbreviate that compatibility surface to importability alone. A planned facade, such as

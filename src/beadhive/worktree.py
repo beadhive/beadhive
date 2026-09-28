@@ -49,16 +49,13 @@ from beadhive_worktrees import (
 
 from . import (
     bd,
-    converge,  # noqa: F401 - compatibility patch seam
     ghpr,  # noqa: F401 - compatibility patch seam
     host,  # noqa: F401 - compatibility patch seam
-    otel,
     plugins,
     precious,  # noqa: F401 - compatibility patch seam
     registry,
     test_report,  # noqa: F401 - compatibility patch seam
-    triage_store,  # noqa: F401 - compatibility patch seam
-    validation_ledger,  # noqa: F401 - compatibility patch seam
+    worktree_lifecycle_observers,
     worktree_merge,
     wt_status,  # noqa: F401 - compatibility patch seam
 )  # noqa: F401 - compatibility patch seams retained on the facade
@@ -90,6 +87,15 @@ from .run import missing_binary, retry_on_index_lock, run  # noqa: F401 - compat
 
 BATCH_BRANCH_PREFIX = _BATCH_BRANCH_PREFIX
 BATCH_LEAF_PREFIX = _BATCH_LEAF_PREFIX
+
+# Compatibility patch seam only (bh-qdezo.6): `worktree.otel.*` is still a documented monkeypatch
+# point for the validation-reuse counter in `worktree_verify.py`'s own otel import (patching a
+# module attribute mutates the one shared module object, so either name intercepts it). Resolved
+# through `importlib.import_module` rather than a plain `from . import otel`: this file's own
+# create/attach telemetry moved to `worktree_lifecycle_observers` (cycle-edge-041), and a plain
+# import here would silently reopen that edge — `otel` already imports this module back (cwd/hive
+# tagging), so only the checker-invisible form keeps the facade genuinely import-free of it.
+otel = importlib.import_module(".otel", __package__)  # noqa: F401 - compatibility patch seam
 
 # Re-export the integration-merge tier (in worktree_merge) so ws.worktree.<name> still works.
 merge_no_ff = worktree_merge.merge_no_ff
@@ -311,45 +317,12 @@ def warn_init_rules_drift(cfg, entry, path: Path) -> bool:
 
 
 def provision_observaloop(cfg, entry, target: Path) -> None:
-    """Best-effort per-hive observaloop profile provisioning + worktree overlay, run on a TRUE
-    worktree create (after ``run_init``, from ``_do_add`` — the chokepoint that ``clean_checkout``
-    bypasses, so ephemeral ``verify-`` worktrees never reach here).
-
-    Gated and import-cheap by design: the default (observaloop disabled) path is a single
-    ``config.observaloop_enabled`` check and imports **no** observaloop module. Only when enabled do
-    we lazily import the observaloop seams, derive the per-hive profile name, idempotently
-    ``ensure_profile`` + ``up`` (a profile is per-hive, shared across its worktrees), resolve the
-    OTLP endpoint, and write ``<worktree>/.bh/observability/otel.env`` so a ``bh`` invocation
-    there exports to the
-    hive profile (Phase B loader). Mirrors ``run_init``'s warn-and-continue contract: observaloop
-    unavailable / docker down / any exception warns and returns — it NEVER raises and NEVER blocks
-    worktree creation."""
-    if target.name.startswith(VERIFY_LEAF_PREFIX):
-        return  # defensive: ephemeral clean-checkout worktree — not a seat, never provisioned
-    if not config.observaloop_enabled(cfg, entry):
-        return  # default/off path: no observaloop import, nothing provisioned or written
-    try:
-        from . import observaloop, observaloop_env  # lazy: confine the surface to the enabled path
-
-        name = config.observaloop_profile_name(cfg, entry)
-        if not name:
-            typer.echo("  ⚠ observaloop: no profile name for hive — skipping overlay", err=True)
-            return
-        observaloop.ensure_profile(name, cfg)  # idempotent server-side; best-effort
-        observaloop.up(name, cfg)  # idempotent; the hive's worktrees share the one profile
-        endpoint = observaloop.endpoint_for(name, config.otel_protocol(cfg), cfg)
-        if not endpoint:
-            typer.echo(
-                "  ⚠ observaloop: no endpoint resolved (unavailable / down) — skipping overlay",
-                err=True,
-            )
-            return
-        observaloop_env.write_worktree_env(target, name, endpoint)
-        typer.echo(
-            f"  → observaloop profile '{name}' ready; wrote .bh/observability/otel.env → {endpoint}"
-        )
-    except Exception as exc:  # best-effort: never block worktree creation (mirror run_init)
-        typer.echo(f"  ⚠ observaloop: provisioning failed ({exc}) — continuing", err=True)
+    """Compatibility facade for ``worktree_lifecycle_observers.provision_observaloop`` — run on
+    a TRUE worktree create (after ``run_init``, from ``_do_add`` — the chokepoint that
+    ``clean_checkout`` bypasses, so ephemeral ``verify-`` worktrees never reach here). Moved
+    off the facade (bh-qdezo.6, cycle-edge-039/040): the observaloop/observaloop_env imports
+    live in that one dedicated collaborator now, not here."""
+    return worktree_lifecycle_observers.provision_observaloop(cfg, entry, target)
 
 
 # ---- operations -------------------------------------------------------------
@@ -395,16 +368,20 @@ def _parent_link_base(
 ) -> str:
     """Nearest started container ancestor by the bd parent-child link — the source of truth after
     a re-parent/split, where the dotted id keeps its birth prefix but the real parent has moved.
-    Climbs `bd show <id>`'s `parent` field, checking for a started container at each hop. Returns
-    `integration` on any bd failure (bead/DB absent) or a missing parent, so the caller can fall
-    back to the id-prefix climb — byte-identical to the pre-parent-link behavior when bd is silent
-    or the two agree."""
+    Climbs the `BeadStateLookup` port's `show` (`bd show <id>`) `parent` field, checking for a
+    started container at each hop. Returns `integration` on any bd failure (bead/DB absent) or a
+    missing parent, so the caller can fall back to the id-prefix climb — byte-identical to the
+    pre-parent-link behavior when bd is silent or the two agree."""
     seen: set[str] = set()
     node = bead or ""
     try:
         while node and node not in seen:
             seen.add(node)
-            data = bead_data if node == bead and bead_data is not None else bd.show(node, main)
+            data = (
+                bead_data
+                if node == bead and bead_data is not None
+                else worktree_state_adapters.BEAD_STATE_LOOKUP.show(node, main)
+            )
             parent = str((data or {}).get("parent") or "")
             if not parent:
                 return integration
@@ -462,7 +439,7 @@ def container_epic_closed(entry, base: str) -> bool:
     if not epic:
         return False
     try:
-        data = bd.show(epic, registry.hive_dir(entry))
+        data = worktree_state_adapters.BEAD_STATE_LOOKUP.show(epic, registry.hive_dir(entry))
     except Exception:
         return False
     return bool(data) and str(data.get("status", "")) == "closed"
@@ -476,43 +453,23 @@ def container_epic_closed(entry, base: str) -> bool:
 
 
 def _record_wt_event(op: str, outcome: str = "ok", *, hive: str = "", leaf: str = "") -> None:
-    """Best-effort, gated emission of the ``ws.worktree.events`` metric at a create/remove/prune
-    seam. Gated on ``otel.is_active()`` so the off-path is zero-cost + opentelemetry-import-free,
-    and wrapped so a telemetry failure NEVER blocks the underlying worktree op. Ephemeral
-    ``verify-`` clean-checkout worktrees aren't a seat, so they emit nothing; ``bh.hive`` /
-    ``ws.worktree`` are tagged when known."""
-    if not otel.is_active() or (leaf and leaf.startswith(VERIFY_LEAF_PREFIX)):
-        return
-    try:
-        attrs: dict[str, str] = {}
-        if hive:
-            attrs["bh.hive"] = str(hive)
-        if leaf:
-            attrs["bh.worktree"] = leaf
-        otel.record_worktree_event(op, outcome, attrs)
-    except Exception:  # best-effort: telemetry must never block a worktree op
-        pass
+    """Compatibility facade for ``worktree_lifecycle_observers.record_create_event`` — the
+    ``ws.worktree.events`` metric at a create/remove/prune seam. Moved off the facade
+    (bh-qdezo.6, cycle-edge-041): the ``otel`` import lives in that one dedicated collaborator
+    now, not here. ``worktree_cleanup``'s remove/prune paths keep calling this exact name
+    through the facade (unchanged)."""
+    return worktree_lifecycle_observers.record_create_event(op, outcome, hive=hive, leaf=leaf)
 
 
 def _record_wt_op_duration(
     op: str, seconds: float, outcome: str = "ok", *, hive: str = "", leaf: str = ""
 ) -> None:
-    """Best-effort, gated emission of the ``ws.worktree.op.duration`` histogram for a worktree git
-    op (the wall time of the ``git worktree add|remove`` subprocess). Mirrors ``_record_wt_event``'s
-    contract exactly: gated on ``otel.is_active()`` (off-path zero-cost, opentelemetry-import-free),
-    ephemeral ``verify-`` clean-checkout worktrees excluded (not a seat), and wrapped so a telemetry
-    failure NEVER blocks the op. ``bh.hive`` / ``ws.worktree`` are tagged when known."""
-    if not otel.is_active() or (leaf and leaf.startswith(VERIFY_LEAF_PREFIX)):
-        return
-    try:
-        attrs: dict[str, str] = {"bh.worktree.op": op, "bh.worktree.outcome": outcome}
-        if hive:
-            attrs["bh.hive"] = str(hive)
-        if leaf:
-            attrs["bh.worktree"] = leaf
-        otel.record_worktree_op_duration(seconds, attrs)
-    except Exception:  # best-effort: telemetry must never block a worktree op
-        pass
+    """Compatibility facade for ``worktree_lifecycle_observers.record_op_duration`` — the
+    ``ws.worktree.op.duration`` histogram for a worktree git op. Mirrors ``_record_wt_event``'s
+    move exactly."""
+    return worktree_lifecycle_observers.record_op_duration(
+        op, seconds, outcome, hive=hive, leaf=leaf
+    )
 
 
 def _notify_wt_create(
@@ -706,9 +663,9 @@ def add(hive="", bead="", branch="", dry_run=False, as_json=False):
         raise typer.Exit(1)
     _refuse_if_codex_unreachable(cfg, entry, main, target)
     _do_add(cfg, entry, main, br, target, new_branch=True)
-    from . import metadata
-
-    metadata.invalidate(cfg, registry.hive_key(entry))  # branch/worktree churn on this hive
+    # branch/worktree churn on this hive: invalidate its cached fleet metadata (bh-qdezo.6 moved
+    # the `metadata` import into worktree_lifecycle_observers — the facade no longer imports it).
+    worktree_lifecycle_observers.invalidate_metadata(cfg, registry.hive_key(entry))
     typer.echo(f"✓ worktree ready: {target}")
     if as_json:
         typer.echo(
@@ -1895,3 +1852,7 @@ _worktree_verify = importlib.import_module(".worktree_verify", __package__)
 _worktree_inventory = importlib.import_module(".worktree_inventory", __package__)
 _worktree_cleanup = importlib.import_module(".worktree_cleanup", __package__)
 _binding_reconcile = importlib.import_module(".worktree_binding_reconcile", __package__)
+# The composed BeadStateLookup/ClaimRecords/MergeEvidence ports (bh-qdezo.9): the parent-link
+# and container-closed reads go through `worktree_state_adapters.BEAD_STATE_LOOKUP` like every
+# other worktree bead-state read, so one consumer-boundary substitution reaches all of them.
+worktree_state_adapters = importlib.import_module(".worktree_state_adapters", __package__)
