@@ -54,8 +54,8 @@ from .modules.worktrees import (
 def _bead_state_lookup():
     """The composed `BeadStateLookup` (bh-qdezo.5), read at call time so a consumer-boundary
     substitution of `worktree_state_adapters.BEAD_STATE_LOOKUP` reaches every read (bh-qdezo.9).
-    A `BeadsSession`-backed adapter is a later, additive swap that replaces only that
-    composition, never the classification policy it feeds."""
+    The routed `BeadsSession` adapter and its explicitly configured argv fallback replace only
+    that composition, never the classification policy they feed."""
     return worktree_state_adapters.BEAD_STATE_LOOKUP
 
 
