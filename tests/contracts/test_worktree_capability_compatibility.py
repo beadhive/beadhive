@@ -20,6 +20,21 @@ from beadhive import (
 from beadhive.modules import worktrees
 
 
+def test_legacy_module_path_is_a_documented_forwarding_only_facade() -> None:
+    source = Path(worktrees.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    assert not any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        for node in tree.body
+    )
+
+    ledger = (
+        Path(__file__).parents[2] / "docs/design/worktree-compatibility-removal-ledger.md"
+    ).read_text(encoding="utf-8")
+    missing = [name for name in worktrees.__all__ if f"`{name}`" not in ledger]
+    assert missing == []
+
+
 def test_legacy_branch_helpers_keep_patchable_facades_over_module_policy() -> None:
     assert worktree.apply_prefix.__module__ == "beadhive.worktree"
     assert worktree._leaf.__module__ == "beadhive.worktree"

@@ -6,6 +6,7 @@
     "tests/test_docs_role_vocabulary.py": {"status": "proven", "dependencies": ["//docs:docs-root", "//:root-config"]},
     "tests/contracts/test_agent_launch_compatibility.py": {"status": "unproven", "reason": "not yet isolated from stateful target"},
     "tests/contracts/test_plugin_discovery_contract.py": {"status": "unproven", "reason": "not yet isolated from stateful target"},
+    "tests/contracts/test_worktree_capability_compatibility.py": {"status": "unproven", "reason": "not yet isolated from stateful target"},
     "tests/spikes/test_bh_u562_3_unified_host_transport.py": {"status": "unproven", "reason": "spike requires host integration fixtures"},
     "tests/test_bh.py": {"status": "unproven", "reason": "requires CLI and stateful fixtures"},
     "tests/test_capability_closeout.py": {"status": "unproven", "reason": "not yet isolated from stateful target"},

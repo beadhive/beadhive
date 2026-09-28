@@ -3,10 +3,11 @@ merge-evidence facts (bh-qdezo.5).
 
 Isolating these three narrow reads is the whole point: the package's classification policy
 (``beadhive_worktrees.policy``) never imports ``bd``, ``claim_authority``, ``ghpr``, or
-``subprocess`` — it depends only on these ``Protocol`` shapes. Root supplies the one argv-era
-adapter per port today (``bd.json``/``bd.show`` reads, ``claim_authority`` record paths,
-``ghpr.merged_pr_for``); a ``BeadsSession``-backed adapter is a later, additive swap
-(bh-sy36q.6) that touches only the adapter, never the policy.
+``subprocess`` — it depends only on these ``Protocol`` shapes. Root supplies the adapters:
+``claim_authority`` record paths, ``ghpr.merged_pr_for``, and a ``BeadsSession`` implementation
+composed through the shared route selector. The former ``bd.json`` / ``bd.show`` implementation
+remains only as the explicitly configured fallback (bh-e7s80); that swap touches only the
+adapter, never the policy.
 """
 
 from __future__ import annotations
