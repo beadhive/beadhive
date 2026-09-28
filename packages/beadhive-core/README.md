@@ -656,22 +656,34 @@ superseded code, so none were deleted.
 >   rollback transaction stay together;
 > - `engine.py` is the transport beneath `beadhive-bd-cli`; routing it back through the package
 >   would invert the dependency;
-> - `cli.py` owns the explicit `bh bd` passthrough dispatch and `deps.py` probes the installed bd
->   dependency version; both must address the executable itself rather than an application route;
+> - `cli.py` owns the explicit `bh bd` passthrough dispatch and the operator-requested
+>   `bh backup export --all` corpus snapshot; `deps.py` probes the installed bd dependency
+>   version. These must address the executable or preserve backup administration policy rather
+>   than present an application route. Its `("bd", "git")` tuple is command-name vocabulary in
+>   `_resolve_hive_routing_mode`, not process argv, and only that function is checker-exempt;
+> - `backup.py::_bd`, `hq.py::_bd`, and `hq.py::_bd_version` are timeout-aware runners for backup,
+>   HQ bootstrap, and HQ diagnostics. Their callable-import aliases are checker-visible and only
+>   these named administrative scopes are retained;
+> - `storage_migrate.py` is one-shot store administration. Its status/config verification probes
+>   and process-cwd-pinned migration runner stay together with the backup, mode switch, rollback,
+>   and verification transaction they protect;
 > - `validate.py`, `registry.py`, and `fleet.py` use cycle-safe low-level reads documented at
 >   their call sites; `safety.py` owns scrubbed-environment probes; `dolt_health.py` owns bootstrap
->   and health processes. These are infrastructure probes, not application routes.
+>   and health processes. These are infrastructure probes, not application routes. The boundary
+>   checker permits only the named `cli.py` and `storage_migrate.py` function scopes above, so a
+>   new `bd_mod.run` / `bd_mod.json` elsewhere in either module still fails.
 >
 > Measured collection counts (same locked environment and selectors on both trees):
 >
 > | Suite | Before (`c5104bf3`) | After |
 > |---|---:|---:|
-> | Root selected (`not integration and not pants_profile`) | 9,509 | 9,509 |
-> | Root total / deselected | 9,579 / 70 | 9,579 / 70 |
+> | Root selected (`not integration and not pants_profile`) | 9,509 | 9,512 |
+> | Root total / deselected | 9,579 / 70 | 9,582 / 70 |
 > | `beadhive-bd-cli` package | 55 | 60 |
 >
-> Root stays level because the new structural guard replaces the now-redundant adapter argv-shape
-> test in `test_worktree_state_adapters.py`. Five package tests cover the moved semantic routes.
+> The structural guard replaces the now-redundant adapter argv-shape test in
+> `test_worktree_state_adapters.py`; its module-alias, callable/assignment-alias, and raw-literal
+> scope regressions add three root tests. Five package tests cover the moved semantic routes.
 
 In the root package, over named `bd` routes:
 

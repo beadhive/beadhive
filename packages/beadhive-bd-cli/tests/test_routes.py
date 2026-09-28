@@ -35,6 +35,7 @@ def test_named_read_routes_own_every_argv_shape() -> None:
 
     routes.issue_list(label="x", status="closed", all_=True, include_infra=True, limit=0)
     routes.issue_show_raw("bh-1")
+    routes.ready_all()
     routes.gate_list(include_resolved=True)
     routes.gate_list_raw(include_resolved=True)
     routes.dependency_list("bh-1", direction="up", type_="relates-to")
@@ -60,6 +61,7 @@ def test_named_read_routes_own_every_argv_shape() -> None:
             False,
         ),  # fmt: skip
         ("json", ["show", "bh-1"], Path("/hive"), False),
+        ("json", ["ready", "--limit", "0"], Path("/hive"), False),
         ("json", ["gate", "list", "--limit", "0", "--all"], Path("/hive"), False),
         (
             "run",
@@ -91,6 +93,7 @@ def test_named_issue_routes_keep_actor_capture_and_optional_fields() -> None:
     routes = CliRoutes(bd, "/hive")
 
     routes.issue_claim("bh-1", actor="dev/a")
+    routes.issue_release_claim("bh-1", actor="dev/a", capture=True)
     routes.issue_update_fields("bh-1", issue_type="bug", priority="1", actor="dir/a", capture=True)
     routes.issue_assign("bh-1", "dev/b", actor="disp/a", capture=True)
     routes.issue_close(["bh-1", "bh-2"], reason="landed", actor="merge/a", force=True)
@@ -107,6 +110,7 @@ def test_named_issue_routes_keep_actor_capture_and_optional_fields() -> None:
     argv = [call[1] for call in bd.calls]
     assert argv == [
         ["update", "bh-1", "--claim"],
+        ["update", "bh-1", "--status", "open", "--assignee", ""],
         ["update", "bh-1", "--type", "bug", "--priority", "1"],
         ["assign", "bh-1", "dev/b"],
         ["close", "bh-1", "bh-2", "--reason", "landed", "--force"],

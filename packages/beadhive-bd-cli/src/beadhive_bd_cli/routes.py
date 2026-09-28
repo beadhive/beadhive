@@ -62,6 +62,10 @@ class CliRoutes:
         """The un-normalized ``bd show --json`` shape (object or one-element list)."""
         return self._bd.json(["show", bead], self._cwd)
 
+    def ready_all(self) -> Any:
+        """Every ready issue in bd's dependency order, without its default 100-row cap."""
+        return self._bd.json(["ready", "--limit", "0"], self._cwd)
+
     def forward(self, args: Iterable[str], *, capture: bool = True) -> Any:
         """A named byte-forward route for shell commands whose flags are intentionally opaque."""
         return self._bd.run(list(args), self._cwd, capture=capture)
@@ -109,6 +113,15 @@ class CliRoutes:
 
     def issue_claim(self, bead: str, *, actor: str = "") -> Any:
         return self._bd.run(["update", bead, "--claim"], self._cwd, actor=actor)
+
+    def issue_release_claim(self, bead: str, *, actor: str = "", capture: bool = False) -> Any:
+        """Return a deliberately cancelled claim to the immediately dispatchable open state."""
+        return self._bd.run(
+            ["update", bead, "--status", "open", "--assignee", ""],
+            self._cwd,
+            actor=actor,
+            capture=capture,
+        )
 
     def issue_update_fields(
         self,

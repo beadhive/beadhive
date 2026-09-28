@@ -53,3 +53,11 @@ key via `just packages-check` (a dedicated key is bh-vq34o):
 ```sh
 uv run --locked --all-packages pytest packages/beadhive-bd-cli/tests
 ```
+
+## Post-rebase integration note
+
+TODO after `bh-3quwp` lands: rebase this branch and confirm its root-composition selector owns
+`packages/beadhive-bd-cli/**`, including `tests/test_routes.py` and the root boundary guard. The
+pre-`bh-3quwp` proven-tests manifest rejects that new package test, while `bh-3quwp` deliberately
+removes that manifest requirement in favor of the narrow root-composition key. Re-run the full
+gate only after that selector change is present.
