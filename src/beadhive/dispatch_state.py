@@ -12,8 +12,10 @@ Every function here returns ``None`` to mean "select the CLI-compatibility route
 (:mod:`beadhive.bd`'s `show` / `children` / `child_rows` / `json(["ready", ...])` forwards, still
 the fallback IMPLEMENTATION itself for a hive with no capable Beads service — including
 `bh work loop`'s local no-server tier, which must keep working): an unavailable service or
-capability, decided before any Beads read is attempted, never as a retry after one fails. Once a
-route IS selected, a genuine read failure propagates to the caller to report fail-closed.
+capability, decided before any Beads read is attempted, never as a retry after one fails — and
+only when the hive's ``work.beads.route`` allows it (:func:`beadhive.beads_routing.allow_cli_route`,
+bh-m36pc); under the default ``api`` route the command fails closed instead. Once a route IS
+selected, a genuine read failure propagates to the caller to report fail-closed.
 
 Restart-as-a-no-op (the property :mod:`beadhive.localloop` requires) is preserved either way:
 neither this module nor :mod:`beadhive_core.dispatch` caches anything between calls — every
@@ -47,7 +49,7 @@ class TelemetryRoutingObserver:
 def hive_session(main: Path, entry: Any) -> Any:
     """An unopened session for this cohort's ``DISPATCH_CAPABILITIES`` — see
     :func:`beadhive.beads_routing.hive_session` (the one composition decision, including the
-    ``BH_BEADS_ROUTE=cli`` rollback)."""
+    ``work.beads.route`` cli route)."""
     return beads_routing.hive_session(main, entry, _core().DISPATCH_CAPABILITIES)
 
 
@@ -78,9 +80,11 @@ def open_molecule_progress(main: Path, entry: Any, bead: str) -> dict[str, Any] 
             commands = core.DispatchCommands()
             return commands.molecule_progress(session, bead, observer=observer)
     except _route_fallback_errors(core) as exc:
+        beads_routing.allow_cli_route(entry, exc)
         log.get_logger(_LOGGER_NAME).info("dispatch_route_fallback", detail=str(exc))
         return None
     except _incompatible_service_errors() as exc:
+        beads_routing.allow_cli_route(entry, exc)
         log.get_logger(_LOGGER_NAME).info("dispatch_route_fallback", detail=str(exc))
         return None
 
@@ -99,9 +103,11 @@ def open_local_loop_state(main: Path, entry: Any, bead: str) -> dict[str, Any] |
             commands = core.DispatchCommands()
             return commands.local_loop_state(session, bead, observer=observer)
     except _route_fallback_errors(core) as exc:
+        beads_routing.allow_cli_route(entry, exc)
         log.get_logger(_LOGGER_NAME).info("dispatch_route_fallback", detail=str(exc))
         return None
     except _incompatible_service_errors() as exc:
+        beads_routing.allow_cli_route(entry, exc)
         log.get_logger(_LOGGER_NAME).info("dispatch_route_fallback", detail=str(exc))
         return None
 
@@ -123,9 +129,11 @@ def open_swarm_members(main: Path, entry: Any, epic: str) -> list[dict[str, Any]
             commands = core.DispatchCommands()
             return commands.swarm_members(session, epic, observer=observer)
     except _route_fallback_errors(core) as exc:
+        beads_routing.allow_cli_route(entry, exc)
         log.get_logger(_LOGGER_NAME).info("dispatch_route_fallback", detail=str(exc))
         return None
     except _incompatible_service_errors() as exc:
+        beads_routing.allow_cli_route(entry, exc)
         log.get_logger(_LOGGER_NAME).info("dispatch_route_fallback", detail=str(exc))
         return None
 
@@ -146,9 +154,11 @@ def open_event_rows(main: Path, entry: Any, bead: str) -> list[dict[str, Any]] |
             commands = core.DispatchCommands()
             return commands.event_rows(session, bead, observer=observer)
     except _route_fallback_errors(core) as exc:
+        beads_routing.allow_cli_route(entry, exc)
         log.get_logger(_LOGGER_NAME).info("dispatch_route_fallback", detail=str(exc))
         return None
     except _incompatible_service_errors() as exc:
+        beads_routing.allow_cli_route(entry, exc)
         log.get_logger(_LOGGER_NAME).info("dispatch_route_fallback", detail=str(exc))
         return None
 
@@ -169,8 +179,10 @@ def open_poll_ready(
             commands = core.DispatchCommands()
             return commands.poll_ready(session, parent=parent, observer=observer)
     except _route_fallback_errors(core) as exc:
+        beads_routing.allow_cli_route(entry, exc)
         log.get_logger(_LOGGER_NAME).info("dispatch_route_fallback", detail=str(exc))
         return None
     except _incompatible_service_errors() as exc:
+        beads_routing.allow_cli_route(entry, exc)
         log.get_logger(_LOGGER_NAME).info("dispatch_route_fallback", detail=str(exc))
         return None

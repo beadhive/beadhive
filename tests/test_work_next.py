@@ -388,6 +388,7 @@ providers: [github]
 work:
   validate_cmd: "true"
   review_gate: "human"
+  beads: {route: "api+cli-fallback"}  # FakeBd-backed: opt into the bd route (bh-m36pc)
   identity: {mode: agent, name: "dev/next", email: "agents@test.dev"}
 managed_repos:
   - {provider: github, org: myorg, repo: myrepo, prefix: mr, kind: personal}

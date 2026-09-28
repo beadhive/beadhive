@@ -38,12 +38,15 @@ CLI-compatibility pick/claim/re-verify loop in :mod:`beadhive.work_dispatch`) fo
 `bh work schedule`'s epic-children fetch and `bh work ready`'s unbounded `--json` reads: neither
 has an actor/seat carve-out (both are reads), so the only reason to fall back is the
 service/capability being genuinely unavailable, exactly the same set of exceptions
-:func:`claim_next` already catches. `bh work ready`'s CAPPED reads (bd's own default, or an
-explicit non-zero `--limit`) stay CLI-compatible unconditionally instead — not a fallback,
-a pre-execution route choice: :class:`beadhive_beads_client.ReadyPage` carries no total-count
-field to reproduce bd's own "Showing X of Y ready issues" truncation notice byte-for-byte, so
-only a `limit=0` (fully unbounded) read is asked of :func:`open_ready` at all — see
-:mod:`beadhive.work_reads` and `packages/beadhive-core/README.md`.
+:func:`claim_next` already catches. Every such error-driven fallback is gated by the hive's
+``work.beads.route`` (:func:`beadhive.beads_routing.allow_cli_route`, bh-m36pc): under the
+default ``api`` route it fails the command closed instead of selecting `bd`. `bh work ready`'s
+CAPPED reads (bd's own default, or an explicit non-zero `--limit`) stay CLI-compatible
+unconditionally instead — not a fallback, a pre-execution route choice:
+:class:`beadhive_beads_client.ReadyPage` carries no total-count field to reproduce bd's own
+"Showing X of Y ready issues" truncation notice byte-for-byte, so only a `limit=0` (fully
+unbounded) read is asked of :func:`open_ready` at all — see :mod:`beadhive.work_reads` and
+`packages/beadhive-core/README.md`.
 """
 
 from __future__ import annotations
@@ -73,7 +76,7 @@ class TelemetryRoutingObserver:
 def hive_session(main: Path, entry: Any) -> Any:
     """An unopened session for this cohort's ``QUEUE_CAPABILITIES`` — see
     :func:`beadhive.beads_routing.hive_session` (the one composition decision, including the
-    ``BH_BEADS_ROUTE=cli`` rollback)."""
+    ``work.beads.route`` cli route)."""
     return beads_routing.hive_session(main, entry, _core().QUEUE_CAPABILITIES)
 
 
@@ -137,9 +140,11 @@ def claim_next(main: Path, entry: Any, actor: str) -> ApiNextResult | None:
         OSError,
         ValueError,
     ) as exc:
+        beads_routing.allow_cli_route(entry, exc)
         log.get_logger("beadhive.work").info("queue_route_fallback", detail=str(exc))
         return None
     except _incompatible_service_errors() as exc:
+        beads_routing.allow_cli_route(entry, exc)
         log.get_logger("beadhive.work").info("queue_route_fallback", detail=str(exc))
         return None
 
@@ -170,9 +175,11 @@ def open_children(main: Path, entry: Any, epic: str) -> list[dict] | None:
         OSError,
         ValueError,
     ) as exc:
+        beads_routing.allow_cli_route(entry, exc)
         log.get_logger("beadhive.work").info("queue_route_fallback", detail=str(exc))
         return None
     except _incompatible_service_errors() as exc:
+        beads_routing.allow_cli_route(entry, exc)
         log.get_logger("beadhive.work").info("queue_route_fallback", detail=str(exc))
         return None
 
@@ -212,9 +219,11 @@ def open_ready(main: Path, entry: Any, **kwargs: Any) -> list[dict] | None:
         OSError,
         ValueError,
     ) as exc:
+        beads_routing.allow_cli_route(entry, exc)
         log.get_logger("beadhive.work").info("queue_route_fallback", detail=str(exc))
         return None
     except _incompatible_service_errors() as exc:
+        beads_routing.allow_cli_route(entry, exc)
         log.get_logger("beadhive.work").info("queue_route_fallback", detail=str(exc))
         return None
 

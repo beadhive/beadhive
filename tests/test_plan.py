@@ -34,6 +34,8 @@ _CP = namedtuple("CP", "returncode stdout stderr")
 
 CONFIG_YAML = """\
 providers: [github]
+work:
+  beads: {route: "api+cli-fallback"}  # FakeBd-backed: opt into the bd route (bh-m36pc)
 managed_repos:
   - {provider: github, org: myorg, repo: myrepo, prefix: mr, kind: personal}
 dimensions:
@@ -2313,41 +2315,6 @@ def test_check_epic_unretrievable_aborts(hive, monkeypatch):
 
 # ---- shared kickoff-gate contract and molecule ordering (moved from the retired planning
 # capability's contract tests, bh-sy36q.6) ------------------------------------------------------
-
-
-def test_kickoff_gate_write_contract_is_the_exact_bd_call(monkeypatch):
-    """``plan_filing.CliPlanningGates.create_kickoff_gate`` — moved here from
-    ``plan._create_kickoff_gate`` (bh-sy36q.2) so `bh plan file` and `bh plan repair` share ONE
-    implementation of the kickoff-gate contract."""
-    completed = namedtuple("Completed", "returncode stdout stderr")
-    writes = []
-    monkeypatch.setattr(
-        plan_filing.bd,
-        "run",
-        lambda args, cwd, actor="", **_kwargs: (
-            writes.append((args, cwd, actor)) or completed(0, "", "")
-        ),
-    )
-
-    plan_filing.CliPlanningGates(Path("/hive")).create_kickoff_gate(
-        "bh-epic.1", "bh-epic", actor="planner"
-    )
-
-    assert writes == [
-        (
-            [
-                "gate",
-                "create",
-                "--type=human",
-                "--blocks",
-                "bh-epic.1",
-                "--reason",
-                "kickoff bh-epic",
-            ],
-            Path("/hive"),
-            "planner",
-        )
-    ]
 
 
 def test_preview_ordering_is_the_filing_compilers_graph():

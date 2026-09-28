@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pytest
 
-from beadhive import localloop
+from beadhive import beads_routing, localloop
 from beadhive.run import run
 from beadhive.state import CAUSE_RUN_BLOCKED, CAUSE_RUN_CANCELLED, DISPATCH_DIM
 from harness.beads import bd, bd_json, init_embedded, skip_if_no_bd
@@ -44,6 +44,16 @@ DISPATCH_CANCELLED_LABEL = f"{DISPATCH_DIM}:{CAUSE_RUN_CANCELLED}"
 DISPATCH_BLOCKED_LABEL = f"{DISPATCH_DIM}:{CAUSE_RUN_BLOCKED}"
 
 STUB_SEAT = Path(__file__).parent / "fixtures" / "stub_seat.py"
+
+
+@pytest.fixture(autouse=True)
+def _bd_cli_fallback_route(monkeypatch):
+    """These hives are unregistered embedded-Dolt stores with no Beads service: opt into the bd
+    CLI route exactly as a hive would with ``work.beads.route: api+cli-fallback`` (bh-m36pc); the
+    default ``api`` route fails closed."""
+    monkeypatch.setattr(
+        beads_routing, "configured_route", lambda *_a, **_k: beads_routing.ROUTE_API_CLI_FALLBACK
+    )
 
 
 def async_test(fn):

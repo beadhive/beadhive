@@ -89,7 +89,7 @@ def _free_port() -> int:
 
 
 class RealLeases:
-    """The ``work.lease.*`` CLI routes, run for real (the shell's ``CliLeases`` argv)."""
+    """The ``work.lease.*`` CLI routes, run for real (``beadhive_bd_cli.CliLeases``'s argv)."""
 
     def __init__(self, cwd: Path) -> None:
         self._cwd = cwd

@@ -41,6 +41,7 @@ providers: [github]
 work:
   validate_cmd: "true"
   review_gate: "human"
+  beads: {route: "api+cli-fallback"}  # FakeBd-backed: opt into the bd route (bh-m36pc)
   identity: {mode: agent, name: "dev/next", email: "agents@test.dev"}
 managed_repos:
   - {provider: github, org: myorg, repo: myrepo, prefix: mr, kind: personal}
@@ -373,7 +374,9 @@ def test_open_children_falls_back_to_none_when_the_service_is_unavailable(monkey
         raise ServiceUnavailable("no service", state="absent", start_command="bh host beads start")
 
     monkeypatch.setattr(work_queue, "session_factory", factory)
-    assert work_queue.open_children(Path("/fake/main"), {"prefix": "mr"}, "ep-1") is None
+    # Only a hive opted into the bd route selects it (bh-m36pc); the default fails closed.
+    entry = {"prefix": "mr", "work": {"beads": {"route": "api+cli-fallback"}}}
+    assert work_queue.open_children(Path("/fake/main"), entry, "ep-1") is None
 
 
 def test_open_children_is_the_only_fetch_impl_schedule_payload_tries_before_bd(monkeypatch):

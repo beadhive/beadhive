@@ -140,7 +140,9 @@ def test_schedule_payload_stops_blaming_the_epic_for_the_missing_binary(monkeypa
 
     with pytest.raises(bd_mod.BinaryMissing):
         with bd_mod.strict_reads():
-            work_mod.schedule_payload("bh-epic", {}, {"prefix": "bh"}, tmp_path)
+            # The hive opts into the bd route (bh-m36pc): the missing binary is what is under test.
+            entry = {"prefix": "bh", "work": {"beads": {"route": "api+cli-fallback"}}}
+            work_mod.schedule_payload("bh-epic", {}, entry, tmp_path)
 
 
 def test_worktree_statuses_raise_instead_of_classifying_from_an_empty_status(monkeypatch, tmp_path):

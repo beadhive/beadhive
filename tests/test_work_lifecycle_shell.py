@@ -1,10 +1,12 @@
 """The compatibility shell's lifecycle composition seam (bh-sy36q.1).
 
-Covers only what the shell owns: the named ``bd`` compatibility routes (claim lease, issue
-read/assign, state), the pre-execution selection between the api-ready issue route and its ``bd``
-compatibility route, and the top-level ``bh work assign`` / ``claim`` / ``abandon`` / ``resume``
-composition over the real worktree capabilities (real git, a faked ``bd``). Lifecycle policy is
-proven package-locally in ``packages/beadhive-core/tests/test_core_lifecycle_policy.py``.
+Covers only what the shell owns: the pre-execution selection between the api-ready issue route
+and its ``bd`` compatibility route, and the top-level ``bh work assign`` / ``claim`` /
+``abandon`` / ``resume`` composition over the real worktree capabilities (real git, a faked
+``bd``). Lifecycle policy is proven package-locally in
+``packages/beadhive-core/tests/test_core_lifecycle_policy.py``; the named ``bd`` routes
+themselves (claim lease, issue read/assign, state) in ``packages/beadhive-bd-cli/tests``
+(bh-o3xuf).
 """
 
 from __future__ import annotations
@@ -68,37 +70,6 @@ def _argv(call):
     return actor, args
 
 
-# ---- named CLI-compatibility routes --------------------------------------------------------
-
-
-def test_lease_routes_keep_the_claim_and_release_argv_attributed_to_the_actor(recorded):
-    runner = recorded()
-    leases = work_lifecycle.CliLeases(MAIN)
-    leases.acquire("mr-1", actor="dev/a")
-    leases.release("mr-1", actor="dev/a")
-    assert [_argv(c) for c in runner.calls] == [
-        ("dev/a", ["update", "mr-1", "--claim"]),
-        ("dev/a", ["update", "mr-1", "--status", "open", "--assignee", ""]),
-    ]
-
-
-def test_lease_and_assign_failures_carry_the_exit_code_without_repeating_bd(recorded):
-    recorded(fail={"update mr-1": 4, "assign mr-1": 6})
-    with pytest.raises(core.WriteFailed) as acquire:
-        work_lifecycle.CliLeases(MAIN).acquire("mr-1", actor="dev/a")
-    with pytest.raises(core.WriteFailed) as assign:
-        work_lifecycle.CliIssues(MAIN).assign("mr-1", "dev/b", actor="disp/x", read={})
-    assert (acquire.value.exit_code, acquire.value.detail) == (4, "")
-    assert (assign.value.exit_code, assign.value.detail) == (6, "")
-
-
-def test_issue_and_state_compatibility_routes_read_through_bd(recorded):
-    runner = recorded(show={"id": "mr-1", "status": "open"})
-    assert work_lifecycle.CliIssues(MAIN).get("mr-1") == {"id": "mr-1", "status": "open"}
-    assert work_lifecycle.CliStateReads(MAIN).get_state("mr-1", "review") == "changes-requested"
-    assert [_argv(c)[1][:2] for c in runner.calls] == [["show", "mr-1"], ["state", "mr-1"]]
-
-
 # ---- pre-execution route selection ---------------------------------------------------------
 
 
@@ -109,7 +80,9 @@ def test_an_unservable_hive_selects_the_bd_route_before_any_beads_operation(reco
         raise core.SessionUnavailable("embedded Dolt cannot be served")
 
     monkeypatch.setattr(work_lifecycle, "session_factory", unavailable)
-    with work_lifecycle.commands({}, "", MAIN, {}) as lifecycle:
+    # Only a hive opted into the bd route selects it (bh-m36pc); the default fails closed.
+    entry = {"work": {"beads": {"route": "api+cli-fallback"}}}
+    with work_lifecycle.commands({}, "", MAIN, entry) as lifecycle:
         assert lifecycle._issues.route == "cli-compatibility"
         assert lifecycle._issues.get("mr-1")["id"] == "mr-1"
     assert _argv(runner.calls[-1])[1][:2] == ["show", "mr-1"]
