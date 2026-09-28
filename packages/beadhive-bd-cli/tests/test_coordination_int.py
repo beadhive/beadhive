@@ -1,5 +1,6 @@
-"""Integration: `coordination.py`'s wrappers against a REAL `bd` binary (bh-c6dk.3) — the
-properties runtime tiers actually depend on, which a mocked `bd._run` cannot prove:
+"""Integration: :mod:`beadhive_bd_cli.coordination`'s wrappers against a REAL `bd` binary
+(bh-c6dk.3; moved with the package by bh-o3xuf) — the properties runtime tiers actually depend
+on, which a FakeBd transport cannot prove:
 
   - merge-slot acquire is genuinely EXCLUSIVE under concurrency: two simultaneous acquires
     against the same real store yield exactly one holder and one queued waiter — proven with
@@ -15,34 +16,92 @@ properties runtime tiers actually depend on, which a mocked `bd._run` cannot pro
     reachable in server mode — embedded mode refuses `bd sql`) rather than faking `bd`'s own
     judgment; `bd reclaim` still makes the real staleness call.
 
-Marked `integration` (spins up real `bd`/Dolt) + self-skips without a `bd` binary on PATH, per
-this repo's marker convention.
+Every wrapper runs over the package's own :class:`beadhive_bd_cli.SubprocessBd` transport. Marked
+`integration` (spins up real `bd`/Dolt) and self-skips without a `bd` binary on PATH. The
+fixtures are local to this package: it never imports the root test harness.
 """
 
 from __future__ import annotations
 
+import contextlib
+import json
+import os
+import shutil
+import signal
+import subprocess
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
-from beadhive import coordination as coord
-from beadhive.run import run
-from harness.beads import bd, bd_json, create, init_embedded, skip_if_no_bd
-from harness.world import reap_dolt_server
+from beadhive_bd_cli import SubprocessBd
+from beadhive_bd_cli import coordination as coord
 
-# `dolt_server`: the reclaim test runs an owned-mode store (`bd init --server`), i.e. a REAL
-# sql-server, so it holds one of the run-wide slots `conftest._bound_concurrent_dolt_servers`
-# hands out (bh-wa3ch). File-level: the embedded cases pay only the marker lookup.
-pytestmark = [pytest.mark.integration, pytest.mark.dolt_server, skip_if_no_bd]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(shutil.which("bd") is None, reason="bd not installed"),
+]
 
 _TIMEOUT = 60
+
+# Strip every shared-server control so an embedded fixture cannot inherit a caller's deliberate
+# shared-server setup or its endpoint (the root harness's `embedded_env`, kept local here).
+_SHARED_SERVER_ENV = frozenset(
+    {"BEADS_DOLT_SHARED_SERVER", "BEADS_SHARED_SERVER_DIR", "BEADS_DOLT_SERVER_PORT"}
+)
+_ENV = {key: value for key, value in os.environ.items() if key not in _SHARED_SERVER_ENV}
+
+BD = SubprocessBd(timeout=_TIMEOUT, env=_ENV)
+
+
+def bd(*args, cwd: Path, capture: bool = False):
+    res = BD.run([str(a) for a in args], cwd, capture=True)
+    if res.returncode != 0:
+        raise AssertionError(f"bd {' '.join(map(str, args))} → {res.returncode}\n{res.stderr}")
+    return res
+
+
+def bd_json(*args, cwd: Path):
+    return BD.json([str(a) for a in args], cwd)
+
+
+def create(repo: Path, title: str) -> str:
+    """Create a bead, return its id (quick-capture emits only the id)."""
+    res = bd("q", title, cwd=repo)
+    return (res.stdout or "").strip().splitlines()[-1].strip()
 
 
 def _init(path, prefix):
     path.mkdir(parents=True, exist_ok=True)
-    run(["git", "init", "-q", "-b", "main"], cwd=str(path), check=True, capture=True)
-    init_embedded(path, prefix)
+    subprocess.run(
+        ["git", "init", "-q", "-b", "main"], cwd=str(path), check=True, capture_output=True
+    )
+    subprocess.run(
+        ["bd", "init", "--prefix", prefix, "--quiet"],
+        cwd=str(path),
+        check=True,
+        capture_output=True,
+        env=_ENV,
+        timeout=_TIMEOUT,
+    )
+
+
+def _reap_dolt_server(server_dir: Path) -> None:
+    """Terminate the dolt sql-server an owned-mode store started, via the pidfile bd writes
+    under ``server_dir`` — keyed on this test's own dir, never a process-name match (see the
+    root harness's ``reap_dolt_server`` for why ``bd dolt stop`` cannot do this job)."""
+    pid_file = server_dir / "dolt-server.pid"
+    if not pid_file.is_file():
+        return
+    with contextlib.suppress(OSError, ValueError, json.JSONDecodeError):
+        pid = int(pid_file.read_text().strip())
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGTERM)
+            for _ in range(50):
+                time.sleep(0.1)
+                os.kill(pid, 0)
+            os.kill(pid, signal.SIGKILL)
 
 
 # ---- merge-slot: exclusivity under real concurrency ------------------------------------------
@@ -50,12 +109,12 @@ def _init(path, prefix):
 
 def test_merge_slot_acquire_is_exclusive_under_concurrency(tmp_path):
     _init(tmp_path, "cc")
-    assert coord.merge_slot_create(tmp_path) is True
+    assert coord.merge_slot_create(BD, tmp_path) is True
 
     outcomes: dict[str, coord.SlotAcquireResult] = {}
 
     def go(name):
-        outcomes[name] = coord.merge_slot_acquire(tmp_path, name, wait=True)
+        outcomes[name] = coord.merge_slot_acquire(BD, tmp_path, name, wait=True)
 
     t1 = threading.Thread(target=go, args=("agentA",))
     t2 = threading.Thread(target=go, args=("agentB",))
@@ -72,7 +131,7 @@ def test_merge_slot_acquire_is_exclusive_under_concurrency(tmp_path):
     assert loser.waiting is True  # the loser queued, it wasn't just refused
     assert loser.position == 1
 
-    status = coord.merge_slot_check(tmp_path)
+    status = coord.merge_slot_check(BD, tmp_path)
     assert status.held is True
     assert status.holder == winners[0]
     assert status.waiters == (losers[0],)  # EXACTLY one queued waiter, no duplicates/drops
@@ -80,20 +139,20 @@ def test_merge_slot_acquire_is_exclusive_under_concurrency(tmp_path):
 
 def test_merge_slot_release_wrong_holder_fails_for_real(tmp_path):
     _init(tmp_path, "cc")
-    coord.merge_slot_create(tmp_path)
-    won = coord.merge_slot_acquire(tmp_path, "real-holder")
+    coord.merge_slot_create(BD, tmp_path)
+    won = coord.merge_slot_acquire(BD, tmp_path, "real-holder")
     assert won.acquired is True
 
-    refused = coord.merge_slot_release(tmp_path, holder="impostor")
+    refused = coord.merge_slot_release(BD, tmp_path, holder="impostor")
     assert refused.ok is False
     assert "real-holder" in refused.error  # names the ACTUAL holder, not a generic refusal
 
     # the slot is provably still held — the failed release changed nothing
-    assert coord.merge_slot_check(tmp_path).holder == "real-holder"
+    assert coord.merge_slot_check(BD, tmp_path).holder == "real-holder"
 
-    released = coord.merge_slot_release(tmp_path, holder="real-holder")
+    released = coord.merge_slot_release(BD, tmp_path, holder="real-holder")
     assert released.ok is True
-    assert coord.merge_slot_check(tmp_path).held is False
+    assert coord.merge_slot_check(BD, tmp_path).held is False
 
 
 # ---- gate: check resolves timer/bead, leaves human open ---------------------------------------
@@ -107,14 +166,14 @@ def test_gate_check_resolves_timer_and_bead_gates_leaves_human_open(tmp_path):
     watched = create(tmp_path, "the watched bead")
     bd("close", watched, cwd=tmp_path, capture=True)  # so the bead gate's condition is already met
 
-    human = coord.gate_create(tmp_path, blocks=human_target, gate_type="human", reason="review")
-    timer = coord.gate_create(tmp_path, blocks=timer_target, gate_type="timer", timeout="1ns")
-    beadg = coord.gate_create(tmp_path, blocks=bead_target, gate_type="bead", await_id=watched)
+    human = coord.gate_create(BD, tmp_path, blocks=human_target, gate_type="human", reason="review")
+    timer = coord.gate_create(BD, tmp_path, blocks=timer_target, gate_type="timer", timeout="1ns")
+    beadg = coord.gate_create(BD, tmp_path, blocks=bead_target, gate_type="bead", await_id=watched)
     assert human.ok and timer.ok and beadg.ok
 
     time.sleep(1)  # let the 1ns timer actually elapse in wall-clock terms
 
-    result = coord.gate_check(tmp_path)
+    result = coord.gate_check(BD, tmp_path)
     assert result.ok is True
     assert result.resolved == 2  # timer + bead, NOT human
 
@@ -130,10 +189,10 @@ def test_gate_check_resolves_timer_and_bead_gates_leaves_human_open(tmp_path):
 def test_gate_resolve_already_resolved_is_a_noop_not_an_error(tmp_path):
     _init(tmp_path, "gg")
     target = create(tmp_path, "gated bead")
-    g = coord.gate_create(tmp_path, blocks=target, gate_type="human", reason="first reason")
+    g = coord.gate_create(BD, tmp_path, blocks=target, gate_type="human", reason="first reason")
     assert g.ok
 
-    first = coord.gate_resolve(tmp_path, g.gate_id, reason="first reason")
+    first = coord.gate_resolve(BD, tmp_path, g.gate_id, reason="first reason")
     assert first.ok is True
 
     def _gate_row():
@@ -142,7 +201,7 @@ def test_gate_resolve_already_resolved_is_a_noop_not_an_error(tmp_path):
 
     before = _gate_row()
 
-    second = coord.gate_resolve(tmp_path, g.gate_id, reason="a completely different reason")
+    second = coord.gate_resolve(BD, tmp_path, g.gate_id, reason="a completely different reason")
     assert second.ok is True  # failure mode: NOT an error to resolve twice
 
     after = _gate_row()
@@ -154,11 +213,12 @@ def test_gate_resolve_already_resolved_is_a_noop_not_an_error(tmp_path):
 
 def _init_server(path, prefix):
     path.mkdir(parents=True, exist_ok=True)
-    run(
+    subprocess.run(
         ["bd", "init", "--server", "--prefix", prefix, "--non-interactive"],
         cwd=str(path),
         check=True,
-        capture=True,
+        capture_output=True,
+        text=True,
         timeout=_TIMEOUT,
     )
 
@@ -179,11 +239,11 @@ def server_store(tmp_path):
     bd for owned mode — the same file name shared mode puts under `BEADS_SHARED_SERVER_DIR`), so
     it can never name anything but this test's own server."""
     yield tmp_path
-    reap_dolt_server(tmp_path / ".beads")
+    _reap_dolt_server(tmp_path / ".beads")
 
 
 def _backdate_lease(path, bead_id, sql_timestamp):
-    res = run(
+    res = subprocess.run(
         [
             "bd",
             "-C",
@@ -192,7 +252,8 @@ def _backdate_lease(path, bead_id, sql_timestamp):
             f"UPDATE leases SET lease_expires_at = '{sql_timestamp}' WHERE issue_id = '{bead_id}'",
         ],
         check=True,
-        capture=True,
+        capture_output=True,
+        text=True,
         timeout=_TIMEOUT,
     )
     return res
@@ -211,10 +272,10 @@ def test_reclaim_reverts_stale_lease_and_leaves_a_heartbeated_one_untouched(serv
     # server mode) rather than waiting out a real TTL — `bd reclaim` still makes the call.
     _backdate_lease(tmp_path, stale, "2000-01-01 00:00:00")
     # the live holder heartbeats right before reclaim runs, exactly like a real worker would
-    hb = coord.heartbeat(tmp_path, live)
+    hb = coord.heartbeat(BD, tmp_path, live)
     assert hb.ok is True
 
-    got = coord.reclaim(tmp_path, older_than="0s")
+    got = coord.reclaim(BD, tmp_path, older_than="0s")
 
     assert got.ok is True
     assert got.reclaimed_ids == (stale,)  # EXACTLY the stale one

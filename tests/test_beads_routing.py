@@ -26,6 +26,7 @@ import pytest
 import typer.main
 from typer.testing import CliRunner
 
+import beadhive_bd_cli
 import beadhive_core as core
 from beadhive import (
     beads_routing,
@@ -173,7 +174,7 @@ def test_rollback_selects_the_cli_molecule_filer(monkeypatch, resolved):
     monkeypatch.setenv(beads_routing.ROUTE_ENV, "cli")
 
     with plan_filing._filer(MAIN, ENTRY) as filer:
-        assert isinstance(filer, plan_filing.CliMoleculeFiler)
+        assert isinstance(filer, beadhive_bd_cli.CliMoleculeFiler)
     assert resolved == []
 
 
@@ -552,7 +553,7 @@ def test_an_opted_in_hive_selects_the_cli_molecule_filer_and_issues_port(monkeyp
     monkeypatch.setattr(work_lifecycle, "session_factory", _no_session(error))
 
     with plan_filing._filer(MAIN, _entry(key)) as filer:
-        assert isinstance(filer, plan_filing.CliMoleculeFiler)
+        assert isinstance(filer, beadhive_bd_cli.CliMoleculeFiler)
     with ExitStack() as stack:
         issues = work_lifecycle.SelectedIssues(MAIN, _entry(key), stack)
         assert issues.route == "cli-compatibility"
@@ -566,7 +567,7 @@ def test_a_cli_route_key_selects_every_cohort_cli_route_without_resolving(resolv
     assert work_queue.claim_next(MAIN, entry, "dev/alice") is None
     assert dispatch_state.open_poll_ready(MAIN, entry) is None
     with plan_filing._filer(MAIN, entry) as filer:
-        assert isinstance(filer, plan_filing.CliMoleculeFiler)
+        assert isinstance(filer, beadhive_bd_cli.CliMoleculeFiler)
     with ExitStack() as stack:
         assert work_lifecycle.SelectedIssues(MAIN, entry, stack).route == "cli-compatibility"
     assert resolved == []

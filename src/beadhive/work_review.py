@@ -2,7 +2,9 @@
 
 The one composition seam for this cohort: it resolves the shell-owned inputs (config, hive,
 actor, operator policy), opens a verified Beads v1.3 session for the hive, supplies the
-``beadhive_core`` ports over the existing named ``bd`` CLI compatibility routes, and renders the
+``beadhive_core`` ports over the named ``bd`` CLI routes (``beadhive-bd-cli``'s
+``CliGateOperations`` / ``CliStateOperations``, resolved lazily by name through
+:mod:`beadhive.bd_cli`, bh-o3xuf), and renders the
 core's operator notices. It never starts ``bd serve``: the session comes from the hive's one
 supervised service (``bh host beads``, :mod:`beadhive.host_beads`). ``beadhive_core`` is
 resolved lazily by name — ``src/beadhive`` never imports a workspace package statically
@@ -18,7 +20,7 @@ from typing import Any
 
 import typer
 
-from . import bd, host_beads, identity, log, otel, worktree
+from . import bd_cli, host_beads, identity, log, otel, worktree
 from .config_consumer_ports import work_settings as config
 from .work_logic import opt_str
 
@@ -27,54 +29,6 @@ _CORE_MODULE = "beadhive_core"
 
 def _core() -> Any:
     return importlib.import_module(_CORE_MODULE)
-
-
-class CliGateOperations:
-    """``GateOperations`` over the named ``work.gate.lookup`` / ``work.gate.resolve`` routes.
-
-    Lookup is the same ``bd gate list --limit 0 --all`` read the review-gate selector has always
-    used (``--limit 0`` defeats bd's 50-row window, bh-pwi2), narrowed with the anchored
-    ``bd.names_bead`` match (bh-1vvdp). Unlike that selector, a failed read raises instead of
-    reading as "no gates", so approve and bounce fail closed on it.
-    """
-
-    def __init__(self, main: Path) -> None:
-        self._main = main
-
-    def gates_for(self, bead: str) -> list[Any]:
-        core = _core()
-        rows = bd.json(["gate", "list", "--limit", "0", "--all"], self._main)
-        if not isinstance(rows, list):
-            raise core.GateLookupFailed("`bd gate list` failed or returned no JSON list")
-        return [
-            core.Gate(
-                id=str(row.get("id") or ""),
-                status=str(row.get("status") or ""),
-                description=str(row.get("description") or ""),
-                reason=str(row.get("reason") or ""),
-                await_type=str(row.get("await_type") or ""),
-            )
-            for row in rows
-            if isinstance(row, dict) and bd.names_bead(row.get("description"), bead)
-        ]
-
-    def resolve(self, gate_id: str, *, reason: str, actor: str) -> None:
-        result = bd.run(["gate", "resolve", gate_id, "--reason", reason], self._main, actor=actor)
-        if result.returncode != 0:
-            raise _core().GateResolveFailed(gate_id, result.returncode, bd.err_line(result))
-
-
-class CliStateOperations:
-    """``StateOperations`` over the named ``work.state.update`` route (``bd set-state``)."""
-
-    def __init__(self, main: Path) -> None:
-        self._main = main
-
-    def set_state(self, bead: str, dimension: str, value: str, *, reason: str, actor: str) -> None:
-        args = ["set-state", bead, f"{dimension}={value}", "--reason", reason]
-        result = bd.run(args, self._main, actor=actor)
-        if result.returncode != 0:
-            raise _core().StateUpdateFailed(result.returncode, bd.err_line(result))
 
 
 class TelemetryReviewObserver:
@@ -121,8 +75,8 @@ def review_commands(main: Path, cfg: Any, entry: Any) -> Any:
     )
     return core.ReviewCommands(
         lambda: session_factory(main, entry),
-        CliGateOperations(main),
-        CliStateOperations(main),
+        bd_cli.gate_operations(main),
+        bd_cli.state_operations(main),
         observer=TelemetryReviewObserver(),
         policy=policy,
     )

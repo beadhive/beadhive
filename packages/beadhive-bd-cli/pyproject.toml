@@ -1,0 +1,21 @@
+[project]
+name = "beadhive-bd-cli"
+version = "0.1.0"
+description = "The bd CLI argv routes behind Beadhive's beadhive-core ports (compatibility and no-API operations)"
+requires-python = ">=3.11"
+# A LIBRARY package (docs/design/package-class-library-vs-plugin-adr.md): no plugin.json, never
+# imports root `beadhive`. It implements beadhive-core's ports, so it depends on the core (and,
+# through it, the pinned Beads client) only.
+dependencies = ["beadhive-core", "beadhive-beads-client"]
+classifiers = ["Private :: Do Not Upload"]
+
+[tool.uv.sources]
+beadhive-core = { workspace = true }
+beadhive-beads-client = { workspace = true }
+
+[build-system]
+requires = ["hatchling", "editables>=0.5"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/beadhive_bd_cli"]

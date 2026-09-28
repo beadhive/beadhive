@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from beadhive import bd, plan, plan_filing, work
+from beadhive import bd, plan, work
 
 Completed = namedtuple("Completed", "returncode stdout stderr")
 
@@ -84,21 +84,6 @@ def test_check_spec_valid_spec_returns_empty(tmp_path):
 def test_check_spec_missing_file_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         plan.check_spec(str(tmp_path / "nope.yaml"), {})
-
-
-# ---- plan: file_molecule raises a Typer-free PlanError ---------------------
-
-
-def test_cli_molecule_filer_raises_molecule_filing_failed_on_bd_create_failure(monkeypatch):
-    """bh-sy36q.2: molecule filing's CLI-compatibility fallback (``plan_filing.CliMoleculeFiler``,
-    superseding ``plan._create_one``) reports a failed ``bd create`` the same way — a raised
-    error, not a silently-empty id."""
-    import beadhive_core
-
-    monkeypatch.setattr(plan_filing.bd, "run", lambda *a, **k: Completed(1, "", "boom"))
-    filer = plan_filing.CliMoleculeFiler(Path("."))
-    with pytest.raises(beadhive_core.MoleculeFilingFailed):
-        filer._create(beadhive_core.planning.ApplyCreateItem(title="title"), actor="")
 
 
 # ---- work: refine_branch raises a Typer-free WorkError ---------------------
