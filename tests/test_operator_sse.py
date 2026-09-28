@@ -134,17 +134,29 @@ class BlockingCommandBackend:
 
     name = "controlled-blocking"
 
-    def __init__(self, started_path: Path) -> None:
+    def __init__(self, started_path: Path, *, publication_gate: Path | None = None) -> None:
         self.started_path = started_path
+        self.publication_gate = publication_gate
         self.block = False
 
     def stream_export_command(self, _cwd, out_path):
         if self.block:
-            source = (
-                "import os,pathlib,time; "
-                f"pathlib.Path({str(self.started_path)!r}).write_text(str(os.getpid())); "
-                "time.sleep(300)"
-            )
+            statements = [
+                "import os,pathlib,time",
+                f"target=pathlib.Path({str(self.started_path)!r})",
+                "temporary=target.with_name(target.name+'.'+str(os.getpid())+'.tmp')",
+                "temporary.write_text(str(os.getpid()))",
+            ]
+            if self.publication_gate is not None:
+                statements.extend(
+                    (
+                        f"gate=pathlib.Path({str(self.publication_gate)!r})",
+                        "while not gate.exists():",
+                        "    time.sleep(0.001)",
+                    )
+                )
+            statements.extend(("os.replace(temporary,target)", "time.sleep(300)"))
+            source = "\n".join(statements)
         else:
             record = json.dumps(_raw_issue("open"))
             source = (
@@ -154,6 +166,30 @@ class BlockingCommandBackend:
 
     def stream_gate_list_command(self, _cwd):
         return [sys.executable, "-c", "print('[]')"]
+
+
+def test_blocking_backend_pid_handoff_is_atomic(tmp_path: Path) -> None:
+    started_path = tmp_path / "blocked-backend.pid"
+    publication_gate = tmp_path / "publish"
+    backend = BlockingCommandBackend(started_path, publication_gate=publication_gate)
+    backend.block = True
+    process = subprocess.Popen(backend.stream_export_command(tmp_path, tmp_path / "export.jsonl"))
+
+    try:
+        deadline = time.monotonic() + 2
+        while not tuple(tmp_path.glob("blocked-backend.pid.*.tmp")):
+            assert time.monotonic() < deadline, "backend did not stage its PID"
+            time.sleep(0.001)
+
+        assert not started_path.exists()
+        publication_gate.touch()
+        while not started_path.exists():
+            assert time.monotonic() < deadline, "backend did not publish its PID"
+            time.sleep(0.001)
+        assert int(started_path.read_text()) == process.pid
+    finally:
+        process.terminate()
+        process.wait(timeout=2)
 
 
 def _raw_issue(status: str) -> dict:
