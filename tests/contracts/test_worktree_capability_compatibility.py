@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import inspect
 from pathlib import Path
 
@@ -158,3 +159,95 @@ def test_lifecycle_observers_reach_concrete_implementations_only_dynamically() -
     for name in ("otel", "observaloop", "observaloop_env", "metadata"):
         assert f'importlib.import_module(".{name}"' in observers_source
         assert f"from . import {name}" not in observers_source
+
+
+_WORKTREE_FAMILY = frozenset(
+    {
+        "worktree",
+        "worktree_cleanup",
+        "worktree_git",
+        "worktree_inventory",
+        "worktree_merge",
+        "worktree_verify",
+        "wt_status",
+    }
+)
+#: Reads the `BeadStateLookup` / `ClaimRecords` / `MergeEvidence` ports own (bh-qdezo.5). A root
+#: test substitutes the composed port (`worktree_state_adapters.BEAD_STATE_LOOKUP`, ...) rather
+#: than one of these seams reached through a worktree module (bh-qdezo.9).
+_PORT_BACKED_SEAMS = frozenset(
+    {
+        "bd",
+        "ghpr",
+        "claim_authority",
+        "_probe_store",
+        "_bead_statuses_for_entry",
+        "_bead_disposition_relations_for_entry",
+    }
+)
+
+
+def _port_backed_patches(path: Path) -> list[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "beadhive":
+            aliases.update({alias.asname or alias.name: alias.name for alias in node.names})
+
+    def dotted(node: ast.AST) -> list[str] | None:
+        if isinstance(node, ast.Name):
+            return [node.id]
+        if isinstance(node, ast.Attribute):
+            base = dotted(node.value)
+            return [*base, node.attr] if base else None
+        return None
+
+    found: list[str] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and node.args):
+            continue
+        func = dotted(node.func) or []
+        if not func or func[-1] not in {"setattr", "delattr", "patch", "object"}:
+            continue
+        first = node.args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            parts = first.value.split(".")
+            parts = parts[1:] if parts[0] == "beadhive" else []
+        else:
+            parts = dotted(first) or []
+            parts = [aliases.get(parts[0], ""), *parts[1:]] if parts else []
+            if len(node.args) > 1 and isinstance(node.args[1], ast.Constant):
+                parts.append(str(node.args[1].value))
+        if len(parts) >= 2 and parts[0] in _WORKTREE_FAMILY and parts[1] in _PORT_BACKED_SEAMS:
+            found.append(f"{path.name}:{node.lineno} {'.'.join(parts)}")
+    return found
+
+
+def test_root_tests_substitute_state_ports_not_worktree_module_seams() -> None:
+    """bh-qdezo.9: bead-state, claim, and merge-evidence reads are substituted at the composed
+    port, never by patching `bd`/`ghpr`/`claim_authority` through a worktree module or the
+    facade's private bead-state helpers."""
+    tests_root = Path(__file__).parents[1]
+    offenders = [
+        hit for path in sorted(tests_root.rglob("test_*.py")) for hit in _port_backed_patches(path)
+    ]
+    assert offenders == []
+
+
+def test_every_worktree_state_read_goes_through_the_composed_ports() -> None:
+    from beadhive import worktree_git, worktree_state_adapters
+
+    assert "worktree_state_adapters.BEAD_STATE_LOOKUP" in inspect.getsource(
+        worktree_inventory._bead_state_lookup
+    )
+    assert "worktree_state_adapters.BEAD_STATE_LOOKUP.show" in inspect.getsource(
+        worktree._parent_link_base
+    )
+    assert "worktree_state_adapters.CLAIM_RECORDS" in inspect.getsource(worktree_cleanup)
+    assert "worktree_state_adapters.MERGE_EVIDENCE" in inspect.getsource(worktree_git)
+    assert "bd.show(" not in inspect.getsource(worktree._parent_link_base)
+    assert set(worktree_state_adapters.__all__) >= {
+        "BEAD_STATE_LOOKUP",
+        "CLAIM_RECORDS",
+        "MERGE_EVIDENCE",
+    }

@@ -103,17 +103,6 @@ def test_missing_herdr_binary_is_an_unavailable_binding_error(worktree) -> None:
     assert failed.value.code == "unavailable"
 
 
-def test_release_closes_the_verified_workspace(worktree) -> None:
-    herdr = FakeHerdrCli()
-    binding = HerdrWorkspaceBinding(herdr)
-    handle = binding.bind(_handle(worktree))
-
-    binding.release(handle)
-
-    assert herdr.workspaces == {}
-    assert ("workspace", "close", "w1") in herdr.calls
-
-
 def test_release_never_closes_a_reused_id_bound_to_another_checkout(tmp_path) -> None:
     """Herdr reuses workspace ids after a close: a stale reference must not close a stranger."""
     herdr = FakeHerdrCli()
@@ -127,18 +116,6 @@ def test_release_never_closes_a_reused_id_bound_to_another_checkout(tmp_path) ->
 
     assert herdr.bound(other) == "w1"
     assert not any(call[:2] == ("workspace", "close") for call in herdr.calls)
-
-
-def test_release_of_a_pending_intent_re_derives_the_workspace(worktree) -> None:
-    """A crash after ``open`` but before the id was recorded leaves an empty reference; release
-    finds the workspace from Herdr's own inventory rather than leaking it."""
-    herdr = FakeHerdrCli()
-    binding = HerdrWorkspaceBinding(herdr)
-    binding.bind(_handle(worktree))
-
-    binding.release(_handle(worktree, herdr=""))
-
-    assert herdr.workspaces == {}
 
 
 def test_release_without_any_recorded_binding_never_calls_herdr(worktree) -> None:

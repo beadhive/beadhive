@@ -14,9 +14,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from beadhive import config, worktree
+from beadhive import config, worktree, worktree_state_adapters
 from beadhive.retire import TeardownResult, teardown_worktrees
 from beadhive.run import run
+from beadhive_worktrees.testing import InMemoryBeadStateLookup
 
 _CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
 
@@ -25,23 +26,27 @@ def _git(*args, cwd):
     run(["git", *args], cwd=str(cwd), check=True, capture=True, env=_CLEAN_ENV)
 
 
-def _store_answers(monkeypatch, status="closed"):
-    """Make this hive's bead store answer.
+def _use_store(monkeypatch, lookup: InMemoryBeadStateLookup) -> InMemoryBeadStateLookup:
+    """Substitute the hive's bead store at the `BeadStateLookup` port (bh-qdezo.9)."""
+    monkeypatch.setattr(worktree_state_adapters, "BEAD_STATE_LOOKUP", lookup)
+    return lookup
+
+
+def _store_answers(monkeypatch, *bead_ids, status="closed"):
+    """Make this hive's bead store answer for ``bead_ids``.
 
     These fixtures stand up a real git repo and NO bead store, which after bh-167s0 is an
     UNKNOWN row — `worktree.remove` refuses it rather than deleting a worktree whose contents
     bh cannot describe, and teardown records that as `failed`. That path has its own test at the
     bottom of this file; the three scenarios these fixtures exist for are clean/dirty/dry-run.
     """
+    record = {"status": status, "close_reason": "merged"}
+    issues = {"seed": record, **{bead_id: record for bead_id in bead_ids}}
+    return _use_store(monkeypatch, InMemoryBeadStateLookup(issues))
 
-    def fake_json(args, cwd, **kw):
-        if args[:1] == ["list"]:
-            return [{"id": "seed"}]
-        if args[:1] == ["show"]:
-            return {"id": args[1], "status": status, "close_reason": "merged"}
-        return None
 
-    monkeypatch.setattr(worktree.bd, "json", fake_json)
+def _unreadable_store(monkeypatch) -> InMemoryBeadStateLookup:
+    return _use_store(monkeypatch, InMemoryBeadStateLookup(readable=False))
 
 
 def _retire_hive(tmp_path, monkeypatch):
@@ -90,7 +95,7 @@ def test_teardown_clean_worktree_removes_it(tmp_path, monkeypatch):
     """A clean managed worktree is removed and its path appears in result.removed."""
     cfg, _entry, _repo = _retire_hive(tmp_path, monkeypatch)
     _, target, _ = worktree.ensure(cfg, "mr", "retire-test")
-    _store_answers(monkeypatch)
+    _store_answers(monkeypatch, "retire-test")
 
     result = teardown_worktrees("mr")
 
@@ -105,7 +110,7 @@ def test_teardown_clean_worktree_reclaims_empty_dirs(tmp_path, monkeypatch):
     reclaimed and reported in result.reclaimed_dirs."""
     cfg, _entry, _repo = _retire_hive(tmp_path, monkeypatch)
     _, target, _ = worktree.ensure(cfg, "mr", "retire-test")
-    _store_answers(monkeypatch)
+    _store_answers(monkeypatch, "retire-test")
 
     # Confirm the shadow root exists before teardown.
     wts_root = config.worktrees_root().resolve()
@@ -246,7 +251,7 @@ def test_teardown_records_a_worktree_whose_bead_could_not_be_resolved_as_failed(
     silently proceeding to delete a clone a live worktree references"."""
     cfg, _entry, _repo = _retire_hive(tmp_path, monkeypatch)
     _, target, _ = worktree.ensure(cfg, "mr", "retire-unknown")
-    monkeypatch.setattr(worktree.bd, "json", lambda args, cwd, **kw: None)
+    _unreadable_store(monkeypatch)
 
     result = teardown_worktrees("mr")
 
@@ -270,25 +275,13 @@ def test_teardown_probes_the_store_once_for_the_hive_not_once_per_worktree(tmp_p
     """
     cfg, _entry, _repo = _retire_hive(tmp_path, monkeypatch)
     targets = [worktree.ensure(cfg, "mr", f"retire-{i}")[1] for i in range(4)]
-
-    probes: list[str] = []
-    shows: list[str] = []
-
-    def fake_json(args, cwd, **kw):
-        if args[:1] == ["list"]:
-            probes.append(str(cwd))
-            return [{"id": "seed"}]
-        if args[:1] == ["show"]:
-            shows.append(args[1])
-            return {"id": args[1], "status": "closed", "close_reason": "merged"}
-        return None
-
-    monkeypatch.setattr(worktree.bd, "json", fake_json)
+    store = _store_answers(monkeypatch, *(target.name for target in targets))
 
     result = teardown_worktrees("mr")
 
     assert len(result.removed) == len(targets)
     # THE criterion: O(1) store probes for the hive, not O(N).
+    probes, shows = store.probes, [bead_id for bead_id, _main in store.shows]
     assert len(probes) == 1, f"{len(probes)} store probes for {len(targets)} worktrees: {probes}"
     # The per-BEAD lookups are genuinely per row and stay O(N) — each row asks about a DIFFERENT
     # bead, so there is no hive-level fact to hoist. Bounded here rather than pinned exactly:
@@ -305,7 +298,7 @@ def test_the_refusal_is_unchanged_by_the_cache(tmp_path, monkeypatch):
     and the memo must not turn one probe into one permission."""
     cfg, _entry, _repo = _retire_hive(tmp_path, monkeypatch)
     targets = [worktree.ensure(cfg, "mr", f"refuse-{i}")[1] for i in range(3)]
-    monkeypatch.setattr(worktree.bd, "json", lambda args, cwd, **kw: None)
+    _unreadable_store(monkeypatch)
 
     result = teardown_worktrees("mr")
 
@@ -318,8 +311,7 @@ def test_the_store_probe_cache_does_not_outlive_the_command(tmp_path, monkeypatc
     """A CONTEXT, not a process-lifetime memo. `worktree status`'s own help promises "the
     pre-flight never uses stale data"; a memo that outlived the command would break exactly that
     inside a long-lived process — `bh mcp serve` holds one for days."""
-    probes: list[str] = []
-    monkeypatch.setattr(worktree, "_probe_store", lambda main: probes.append(str(main)) or "")
+    probes = _store_answers(monkeypatch).probes
 
     worktree._store_readable(tmp_path)
     worktree._store_readable(tmp_path)
@@ -337,12 +329,11 @@ def test_the_store_probe_cache_does_not_outlive_the_command(tmp_path, monkeypatc
 def test_the_cache_is_keyed_per_hive(tmp_path, monkeypatch):
     """Two hives are two facts. A memo that collapsed them would report one hive's readability
     for another's — the same class of confident wrong answer this batch exists to remove."""
-    calls: list[str] = []
-    monkeypatch.setattr(worktree, "_probe_store", lambda main: calls.append(str(main)) or "")
+    calls = _store_answers(monkeypatch).probes
 
     with worktree.store_probe_cache():
         worktree._store_readable(tmp_path / "a")
         worktree._store_readable(tmp_path / "b")
         worktree._store_readable(tmp_path / "a")
 
-    assert calls == [str(tmp_path / "a"), str(tmp_path / "b")]
+    assert calls == [tmp_path / "a", tmp_path / "b"]

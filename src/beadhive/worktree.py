@@ -368,16 +368,20 @@ def _parent_link_base(
 ) -> str:
     """Nearest started container ancestor by the bd parent-child link — the source of truth after
     a re-parent/split, where the dotted id keeps its birth prefix but the real parent has moved.
-    Climbs `bd show <id>`'s `parent` field, checking for a started container at each hop. Returns
-    `integration` on any bd failure (bead/DB absent) or a missing parent, so the caller can fall
-    back to the id-prefix climb — byte-identical to the pre-parent-link behavior when bd is silent
-    or the two agree."""
+    Climbs the `BeadStateLookup` port's `show` (`bd show <id>`) `parent` field, checking for a
+    started container at each hop. Returns `integration` on any bd failure (bead/DB absent) or a
+    missing parent, so the caller can fall back to the id-prefix climb — byte-identical to the
+    pre-parent-link behavior when bd is silent or the two agree."""
     seen: set[str] = set()
     node = bead or ""
     try:
         while node and node not in seen:
             seen.add(node)
-            data = bead_data if node == bead and bead_data is not None else bd.show(node, main)
+            data = (
+                bead_data
+                if node == bead and bead_data is not None
+                else worktree_state_adapters.BEAD_STATE_LOOKUP.show(node, main)
+            )
             parent = str((data or {}).get("parent") or "")
             if not parent:
                 return integration
@@ -435,7 +439,7 @@ def container_epic_closed(entry, base: str) -> bool:
     if not epic:
         return False
     try:
-        data = bd.show(epic, registry.hive_dir(entry))
+        data = worktree_state_adapters.BEAD_STATE_LOOKUP.show(epic, registry.hive_dir(entry))
     except Exception:
         return False
     return bool(data) and str(data.get("status", "")) == "closed"
@@ -1848,3 +1852,7 @@ _worktree_verify = importlib.import_module(".worktree_verify", __package__)
 _worktree_inventory = importlib.import_module(".worktree_inventory", __package__)
 _worktree_cleanup = importlib.import_module(".worktree_cleanup", __package__)
 _binding_reconcile = importlib.import_module(".worktree_binding_reconcile", __package__)
+# The composed BeadStateLookup/ClaimRecords/MergeEvidence ports (bh-qdezo.9): the parent-link
+# and container-closed reads go through `worktree_state_adapters.BEAD_STATE_LOOKUP` like every
+# other worktree bead-state read, so one consumer-boundary substitution reaches all of them.
+worktree_state_adapters = importlib.import_module(".worktree_state_adapters", __package__)

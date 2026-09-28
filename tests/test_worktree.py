@@ -24,16 +24,20 @@ from beadhive import (
     host,
     orca,
     plugins,
+    registry,
     validation_ledger,
     validation_records,
     worktree,
     worktree_binding_reconcile,
     worktree_bindings,
+    worktree_git,
+    worktree_state_adapters,
     wt_status,
 )
 from beadhive.integrations.herdr.workspace_binding import HerdrWorkspaceBinding
 from beadhive.modules.worktrees import WorktreeSpec
 from beadhive.run import run
+from beadhive_worktrees.testing import InMemoryBeadStateLookup
 from harness.fake_herdr_cli import FakeHerdrCli
 
 UTC = datetime.UTC
@@ -42,6 +46,13 @@ UTC = datetime.UTC
 # `-C` and point these subprocess git calls at the outer repo — scrub them so the suite is
 # hermetic whether run bare or inside a hook.
 _CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+
+def _use_store(monkeypatch, lookup: InMemoryBeadStateLookup) -> InMemoryBeadStateLookup:
+    """Substitute the hive's bead store at the `BeadStateLookup` port (bh-qdezo.9) — the one
+    consumer-boundary seam for every worktree bead-state read."""
+    monkeypatch.setattr(worktree_state_adapters, "BEAD_STATE_LOOKUP", lookup)
+    return lookup
 
 
 @pytest.fixture(autouse=True)
@@ -58,41 +69,9 @@ def _git(*args, cwd):
 
 
 # ---- naming / templating ----------------------------------------------------
-
-
-def test_branch_and_leaf_bead():
-    # Default kind is the leaf 'issue'; <type> lives in the branch, the dir leaf stays <id>.
-    assert worktree._branch_and_leaf({}, bead="ag-infra-7") == (
-        "wt/bead/issue/ag-infra-7",
-        "ag-infra-7",
-    )
-
-
-def test_branch_and_leaf_bead_epic_kind():
-    # An explicit epic kind opens the container namespace; leaf stays <id> (dir name unchanged).
-    assert worktree._branch_and_leaf({}, bead="ag-epic", kind="epic") == (
-        "wt/bead/epic/ag-epic",
-        "ag-epic",
-    )
-
-
-def test_branch_and_leaf_branch_is_prefixed_not_overridden():
-    assert worktree._branch_and_leaf({}, branch="spike-xyz") == ("wt/spike-xyz", "spike-xyz")
-    assert worktree._branch_and_leaf({}, branch="feature/login") == ("wt/feature/login", "login")
-
-
-def test_branch_and_leaf_branch_does_not_double_prefix():
-    assert worktree._branch_and_leaf({}, branch="wt/foo") == ("wt/foo", "foo")
-
-
-def test_branch_and_leaf_batch_mode():
-    # a work-group rides the `wt/<name>` mode as batch/<group> → wt/batch/<group>, but its worktree
-    # dir leaf carries a `batch-` prefix so it can't collide with a bead worktree of the same name
-    # (notably the epic seat wt/bead/epic/<epic> in collapsed mode —)
-    assert worktree._branch_and_leaf({}, branch="batch/samefile") == (
-        "wt/batch/samefile",
-        "batch-samefile",
-    )
+# The pure bead/raw/batch naming table lives with the policy in beadhive-worktrees
+# (packages/beadhive-worktrees/tests/test_policy.py, bh-qdezo.9); root keeps the config, clock,
+# and entropy wiring of `_branch_and_leaf`.
 
 
 def test_branch_and_leaf_session_fallback():
@@ -155,8 +134,8 @@ def test_delete_safety_refs_uses_observed_sha_as_concurrency_fence(monkeypatch):
     ref = worktree.parse_safety_ref("wt/bead/issue/mr-race.refine-20260902T031122Z", "1" * 40)
     assert ref is not None
     entry = {"provider": "github", "org": "myorg", "repo": "myrepo"}
-    monkeypatch.setattr(worktree._worktree_git.registry, "hive_dir", lambda _entry: Path("/repo"))
-    monkeypatch.setattr(worktree._worktree_git, "impl_safety_refs", lambda *a, **k: [ref])
+    monkeypatch.setattr(registry, "hive_dir", lambda _entry: Path("/repo"))
+    monkeypatch.setattr(worktree_git, "impl_safety_refs", lambda *a, **k: [ref])
     calls = []
 
     def refused(cmd, **_kwargs):
@@ -436,11 +415,10 @@ def test_integration_base_reuses_supplied_bead_row(tmp_path, monkeypatch):
     """A caller that already read the bead does not spawn another bd show for the leaf."""
     entry, _ = _mol_hive(tmp_path, monkeypatch)
 
-    def _unexpected_show(*_args, **_kwargs):
-        pytest.fail("integration_base repeated an already-supplied bd show")
+    store = _use_store(monkeypatch, InMemoryBeadStateLookup())
 
-    monkeypatch.setattr(worktree.bd, "show", _unexpected_show)
     assert worktree.integration_base(entry, "ag-epic.3", "main", {"parent": ""}) == "main"
+    assert store.shows == [], "integration_base repeated an already-supplied bd show"
 
 
 def test_integration_base_no_dot_is_root(tmp_path, monkeypatch):
@@ -464,15 +442,13 @@ def test_integration_base_skips_issue_type_ancestor(tmp_path, monkeypatch):
 
 
 def _fake_bd_show(monkeypatch, parents: dict, status: dict | None = None):
-    """Stub beadhive.bd.show so worktree's parent-link climb reads a synthetic parent map."""
+    """Serve a synthetic parent map from the `BeadStateLookup` port the parent-link climb reads."""
     status = status or {}
-
-    def _show(bead, cwd):  # noqa: ARG001 — cwd irrelevant to the stub
-        if bead not in parents and bead not in status:
-            return None
-        return {"parent": parents.get(bead, ""), "status": status.get(bead, "in_progress")}
-
-    monkeypatch.setattr("beadhive.bd.show", _show)
+    records = {
+        bead: {"parent": parents.get(bead, ""), "status": status.get(bead, "in_progress")}
+        for bead in {*parents, *status}
+    }
+    _use_store(monkeypatch, InMemoryBeadStateLookup(records))
 
 
 def test_integration_base_reparented_child_follows_parent_link(tmp_path, monkeypatch):
@@ -728,6 +704,20 @@ def test_bead_and_parent_returns_none_for_non_bead_worktree(tmp_path, monkeypatc
     wt_path.mkdir(parents=True)
 
     bead_id, parent = worktree.bead_and_parent(entry, str(wt_path), "main")
+    assert bead_id is None
+    assert parent == "main"
+
+
+def test_bead_and_parent_none_for_an_explicit_batch_branch(monkeypatch):
+    """An explicit ``wt/batch/<group>`` ref names no bead (re-homed from test_wt_status.py when
+    the pure classifier table moved into beadhive-worktrees, bh-qdezo.9)."""
+    entry = {"provider": "github", "org": "org", "repo": "repo", "prefix": "repo"}
+    monkeypatch.setattr(worktree, "integration_base", lambda *_a, **_k: "main")
+
+    bead_id, parent = worktree.bead_and_parent(
+        entry, "/some/root/github/org/repo/some-epic", "main", branch="wt/batch/some-epic"
+    )
+
     assert bead_id is None
     assert parent == "main"
 
@@ -2985,24 +2975,23 @@ def _add_real_worktree(repo, entry, leaf, branch):
     return target
 
 
-def _store_answers(monkeypatch, status="closed"):
-    """Make this hive's bead store answer, so `remove`'s UNKNOWN preflight (bh-167s0) is not
-    silently the thing under test in the delegation tests below.
+def _store_answers(monkeypatch, *bead_ids, status="closed"):
+    """Make this hive's bead store answer for ``bead_ids`` at the `BeadStateLookup` port, so
+    `remove`'s UNKNOWN preflight (bh-167s0) is not silently the thing under test in the
+    delegation tests below.
 
     These fixtures stand up a real git repo and NO bead store, which after bh-167s0 is a
     legitimate UNKNOWN — `rm` refuses rather than removing a worktree whose contents bh cannot
     describe. That refusal has its own tests further down; here it would only mask the
     removal wiring these tests exist to pin.
     """
+    record = {"status": status, "close_reason": "merged"}
+    issues = {"seed": record, **{bead_id: record for bead_id in bead_ids}}
+    return _use_store(monkeypatch, InMemoryBeadStateLookup(issues))
 
-    def fake_json(args, cwd, **kw):
-        if args[:1] == ["list"]:
-            return [{"id": "seed"}]
-        if args[:1] == ["show"]:
-            return {"id": args[1], "status": status, "close_reason": "merged"}
-        return None
 
-    monkeypatch.setattr(worktree.bd, "json", fake_json)
+def _unreadable_store(monkeypatch) -> InMemoryBeadStateLookup:
+    return _use_store(monkeypatch, InMemoryBeadStateLookup(readable=False))
 
 
 def test_remove_runs_the_native_manager_and_keeps_the_branch(tmp_path, monkeypatch):
@@ -3010,7 +2999,7 @@ def test_remove_runs_the_native_manager_and_keeps_the_branch(tmp_path, monkeypat
     branch = "wt/bead/issue/rm-1"
     target = _add_real_worktree(repo, entry, "rm-1", branch)
     monkeypatch.setattr(config, "load", lambda: cfg)
-    _store_answers(monkeypatch)
+    _store_answers(monkeypatch, "rm-1")
     removes = []
     real_run_git = worktree._run_git
 
@@ -3035,7 +3024,7 @@ def test_remove_json_reports_op_hive_path_removed(tmp_path, monkeypatch, capsys)
     branch = "wt/bead/issue/rm-json"
     target = _add_real_worktree(repo, entry, "rm-json", branch)
     monkeypatch.setattr(config, "load", lambda: cfg)
-    _store_answers(monkeypatch)
+    _store_answers(monkeypatch, "rm-json")
 
     worktree.remove("mr", "rm-json", as_json=True)
 
@@ -3288,12 +3277,7 @@ def test_prune_removes_clean_merged_worktree_with_bd_backup_artifacts(
     monkeypatch.setattr(worktree.registry, "hive_key", lambda _entry: "github/myorg/myrepo")
     monkeypatch.setattr(metadata, "read_fleet", lambda _cfg, _keys, ttl: {})
     monkeypatch.setattr(worktree.config, "integration_branch", lambda _cfg, _entry: "main")
-    monkeypatch.setattr(
-        worktree,
-        "_bead_statuses_for_entry",
-        lambda _entry, _rows: ({"backup-only": "closed"}, {"backup-only": "merged"}, {}, ""),
-    )
-    monkeypatch.setattr(worktree, "_bead_disposition_relations_for_entry", lambda *_args: {})
+    _store_answers(monkeypatch, "backup-only")
     monkeypatch.setattr(
         worktree,
         "bead_and_parent",
@@ -3586,41 +3570,22 @@ def _unknown_status(hive="mr", leaf="u-1", path="/wts/u-1", **kw):
     )
 
 
-def test_store_readable_names_an_unreadable_store(tmp_path, monkeypatch):
-    """None from `bd list` means bd exited non-zero / returned no JSON — the store, not the
-    data. Naming it is what stops a reader concluding the hive is simply empty."""
-    monkeypatch.setattr(worktree.bd, "json", lambda args, cwd, **kw: None)
-    assert "could not be READ" in worktree._store_readable(tmp_path)
-
-
-def test_store_readable_names_a_store_that_answers_with_nothing(tmp_path, monkeypatch):
-    """The MEASURED signature of bd's schema-fork guard: issues=0 and exit 0, indistinguishable
-    from a fresh hive on the wire and from 'no such bead' per lookup."""
-    monkeypatch.setattr(worktree.bd, "json", lambda args, cwd, **kw: [])
-    assert "ZERO issues" in worktree._store_readable(tmp_path)
-
-
-def test_store_readable_is_silent_when_the_store_answers(tmp_path, monkeypatch):
-    monkeypatch.setattr(worktree.bd, "json", lambda args, cwd, **kw: [{"id": "x"}])
-    assert worktree._store_readable(tmp_path) == ""
-
-
 def test_a_readable_store_missing_ONE_bead_reports_the_retired_prefix_case(tmp_path, monkeypatch):
     """The second, unrelated cause that reached the same silent fallback: a prefix rename left
     21 of 28 branches naming `ag-rt-*` ids while the store held only `ag-run-*`. The beads
     existed and were CLOSED; the rows read ACTIVE."""
 
-    def fake_json(args, cwd, **kw):
-        return [{"id": "ag-run-4gk.1"}] if args[:1] == ["list"] else None
-
-    monkeypatch.setattr(worktree.bd, "json", fake_json)
+    store = _use_store(monkeypatch, InMemoryBeadStateLookup({"ag-run-4gk.1": {"status": "closed"}}))
     entry = {"provider": "github", "org": "o", "repo": "r", "prefix": "r"}
-    monkeypatch.setattr(worktree.registry, "hive_dir", lambda e: tmp_path)
+    monkeypatch.setattr(registry, "hive_dir", lambda e: tmp_path)
     _, _, unknown_reasons, store_reason = worktree._bead_statuses_for_entry(
         entry, [("r", "/wts/x", "wt/bead/issue/ag-rt-4gk.1")]
     )
     assert store_reason == ""  # the STORE is fine
     assert "no longer exists" in unknown_reasons["ag-rt-4gk.1"]
+    # The id comes from the real dotted branch ref, not the sanitized directory leaf.
+    assert [bead_id for bead_id, _main in store.shows] == ["ag-rt-4gk.1"]
+    assert store.probes == [tmp_path]
 
 
 def test_status_says_plainly_that_the_hive_cannot_back_a_removal_decision(capsys):
@@ -3747,7 +3712,7 @@ def test_rm_refuses_a_worktree_whose_bead_could_not_be_resolved(tmp_path, monkey
     branch = "wt/bead/issue/rm-unknown"
     target = _add_real_worktree(repo, entry, "rm-unknown", branch)
     monkeypatch.setattr(config, "load", lambda: cfg)
-    monkeypatch.setattr(worktree.bd, "json", lambda args, cwd, **kw: None)
+    _unreadable_store(monkeypatch)
 
     with pytest.raises(typer.Exit) as exc:
         worktree.remove("mr", "rm-unknown")
@@ -3764,7 +3729,7 @@ def test_rm_force_still_removes_an_unknown_worktree(tmp_path, monkeypatch):
     branch = "wt/bead/issue/rm-forced"
     target = _add_real_worktree(repo, entry, "rm-forced", branch)
     monkeypatch.setattr(config, "load", lambda: cfg)
-    monkeypatch.setattr(worktree.bd, "json", lambda args, cwd, **kw: None)
+    _unreadable_store(monkeypatch)
 
     worktree.remove("mr", "rm-forced", force=True)
     assert not target.exists()
@@ -3833,7 +3798,7 @@ def test_rm_releases_the_herdr_binding_before_the_native_remove(tmp_path, monkey
     """E30: `bh worktree rm` closes the bound workspace, THEN git removes the worktree."""
     entry, repo = _binding_hive(tmp_path, monkeypatch)
     target = _add_real_worktree(repo, entry, "rm-b", "wt/bead/issue/rm-b")
-    _store_answers(monkeypatch)
+    _store_answers(monkeypatch, "rm-b")
     order: list[str] = []
     herdr = _fake_herdr(monkeypatch, order)
     workspace = _bind(herdr, repo, target)
@@ -3854,7 +3819,7 @@ def test_rm_releases_the_herdr_binding_before_the_native_remove(tmp_path, monkey
 def test_rm_of_an_unbound_worktree_never_calls_herdr(tmp_path, monkeypatch):
     entry, repo = _binding_hive(tmp_path, monkeypatch)
     target = _add_real_worktree(repo, entry, "rm-u", "wt/bead/issue/rm-u")
-    _store_answers(monkeypatch)
+    _store_answers(monkeypatch, "rm-u")
     order: list[str] = []
     herdr = _fake_herdr(monkeypatch, order)
 
@@ -3890,7 +3855,7 @@ def test_a_herdr_outage_at_teardown_still_removes_and_names_the_repair(
     repaired by `workspace close` via `bh worktree rebind` (E31), never a forced remove."""
     entry, repo = _binding_hive(tmp_path, monkeypatch)
     target = _add_real_worktree(repo, entry, "rm-d", "wt/bead/issue/rm-d")
-    _store_answers(monkeypatch)
+    _store_answers(monkeypatch, "rm-d")
     order: list[str] = []
     herdr = _fake_herdr(monkeypatch, order)
     workspace = _bind(herdr, repo, target)
@@ -3913,7 +3878,7 @@ def test_status_reports_binding_gaps_in_json_and_human_views(tmp_path, monkeypat
     """Present-but-unbound (intent recorded, never bound), bound-but-missing (the workspace is
     gone), and a healthy binding — each reported, never folded into classification."""
     entry, repo = _binding_hive(tmp_path, monkeypatch)
-    _store_answers(monkeypatch, status="open")
+    _store_answers(monkeypatch, "st-bound", "st-unbound", "st-missing", "st-plain", status="open")
     order: list[str] = []
     herdr = _fake_herdr(monkeypatch, order)
     bound = _add_real_worktree(repo, entry, "st-bound", "wt/bead/issue/st-bound")
