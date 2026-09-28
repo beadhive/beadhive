@@ -128,6 +128,15 @@ def _bounded_hq_readiness(
                 return DependencyObservation("unavailable", "hq_status_cancelled")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                # The final bounded communicate may have observed its own deadline just as the
+                # child exited.  Prefer that already-terminal result without granting the probe
+                # any extra runtime; a child still alive here remains a timeout.
+                if process.poll() is not None:
+                    try:
+                        output, _stderr = process.communicate(input=pending_input, timeout=0)
+                        break
+                    except subprocess.TimeoutExpired:
+                        pass
                 _stop_probe(process)
                 return DependencyObservation("unavailable", "hq_status_timeout")
             try:

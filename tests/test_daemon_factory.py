@@ -747,10 +747,10 @@ def _isolated_hq_directory(
 
 
 @pytest.mark.parametrize(
-    ("probe_code", "expected_reason"),
+    ("probe_code", "expected_reason", "timeout"),
     [
-        ("import time; time.sleep(60)", "hq_status_timeout"),
-        ("raise SystemExit(3)", "hq_status_unavailable"),
+        ("import time; time.sleep(60)", "hq_status_timeout", 0.05),
+        ("raise SystemExit(3)", "hq_status_unavailable", 0.5),
     ],
 )
 def test_factory_hq_probe_is_bounded_redacted_and_reaps_the_child(
@@ -758,8 +758,9 @@ def test_factory_hq_probe_is_bounded_redacted_and_reaps_the_child(
     monkeypatch: pytest.MonkeyPatch,
     probe_code: str,
     expected_reason: str,
+    timeout: float,
 ) -> None:
-    directory = _isolated_hq_directory(tmp_path, monkeypatch, timeout=0.05)
+    directory = _isolated_hq_directory(tmp_path, monkeypatch, timeout=timeout)
     children: list[subprocess.Popen[str]] = []
     real_popen = subprocess.Popen
 
@@ -788,6 +789,40 @@ def test_factory_hq_probe_is_bounded_redacted_and_reaps_the_child(
     }
     assert children and all(child.poll() is not None for child in children)
     assert "sleep" not in json.dumps(payload)
+
+
+def test_factory_hq_probe_prefers_an_already_terminal_result_at_the_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FinishedAtDeadline:
+        returncode: int | None = None
+
+        def communicate(self, input=None, timeout=None):
+            if self.returncode is None:
+                self.returncode = 3
+                raise subprocess.TimeoutExpired(("hq-probe",), timeout)
+            return "", None
+
+        def poll(self):
+            return self.returncode
+
+    process = FinishedAtDeadline()
+    ticks = iter((10.0, 10.0, 10.06))
+    monkeypatch.setattr(daemon_factory.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(daemon_factory.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(
+        daemon_factory,
+        "_stop_probe",
+        lambda _process: pytest.fail("an already-terminal probe must not be killed as a timeout"),
+    )
+
+    observed = daemon_factory._bounded_hq_readiness(
+        tmp_path,
+        timeout=0.05,
+        cancellation_event=None,
+    )
+
+    assert observed == daemon_factory.DependencyObservation("unavailable", "hq_status_unavailable")
 
 
 def test_cancelled_factory_request_reaps_slow_hq_probe_before_returning(
