@@ -37,7 +37,6 @@ def test_work_extraction_compatibility_matrix_keeps_historical_imports():
             "_first": work_guards.first,
             "_is_epic": work_guards.is_epic,
             "_guard_seat": work_guards.guard_seat,
-            "_guard_orchestrator": work_guards.guard_orchestrator,
             "_guard_conventions": work_guards.guard_conventions,
             "_print_brief": work_guards.print_brief,
         },

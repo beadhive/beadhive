@@ -1482,12 +1482,20 @@ class LocalLoop:
         return str(path)
 
     def _default_routing(self, bead: str, role: str) -> model_routing.ModelDecision | None:
-        """Read current bead/config facts and call the same pure resolver as schedule advice."""
-        from . import registry
+        """Read current bead/config facts and call the same pure resolver as schedule advice.
+
+        Pre-execution route selection (bh-sy36q.5, never a retry after an API failure): tries the
+        ``work.local-loop.state`` route (:mod:`beadhive.dispatch_state`) first; it returns
+        ``None`` to mean "select the CLI-compatibility forward instead" (`bd show`, strict),
+        decided before any Beads read is attempted.
+        """
+        from . import dispatch_state, registry
 
         cfg = config.load()
         entry = registry.entry_for_dir(cfg, self.hive_dir) or {}
-        data = bd_mod.show(bead, self.hive_dir, strict=True)
+        data = dispatch_state.open_local_loop_state(self.hive_dir, entry, bead)
+        if data is None:
+            data = bd_mod.show(bead, self.hive_dir, strict=True)
         routes = config.routing_tiers(cfg, entry)
         # Empty routing config means the feature is not enabled, preserving the established
         # harness-default launch. An explicit model preference still asks routing to decide and
@@ -1527,6 +1535,15 @@ class LocalLoop:
 
     # ---- molecule ------------------------------------------------------------------------
 
+    def _hive_entry(self) -> dict:
+        """The registry entry for this loop's hive — static per-hive metadata (not bead state),
+        re-resolved rather than cached across passes for the same reason :meth:`_default_routing`
+        already does: it is cheap, and caching bead-adjacent lookups is exactly the kind of
+        execution memory this tier's restart-as-a-no-op contract forbids."""
+        from . import registry
+
+        return registry.entry_for_dir(config.load(), self.hive_dir) or {}
+
     def claimable_now(self, decision: work_next.Decision) -> tuple[str, ...]:
         """Of the beads *decision* names, the ones `bd` agrees are ready RIGHT NOW (bh-sh6yt).
 
@@ -1538,10 +1555,19 @@ class LocalLoop:
 
         Only meaningful for a `dispatch` action — every other action names beads the loop already
         holds, where there is no claim to be allowed or refused.
+
+        Pre-execution route selection (bh-sy36q.5, never a retry after an API failure): tries the
+        ``work.dispatch.poll`` route (:mod:`beadhive.dispatch_state`) first; it returns ``None``
+        to mean "select the CLI-compatibility forward instead" (`bd ready --limit 0`), decided
+        before any Beads read is attempted.
         """
         if decision.action != "dispatch" or not decision.beads:
             return ()
-        rows = bd_mod.json(["ready", "--limit", "0"], self.hive_dir) or []
+        from . import dispatch_state
+
+        rows = dispatch_state.open_poll_ready(self.hive_dir, self._hive_entry())
+        if rows is None:
+            rows = bd_mod.json(["ready", "--limit", "0"], self.hive_dir) or []
         ready = {str(r.get("id") or "") for r in rows if isinstance(r, dict)}
         return tuple(b for b in decision.beads if b in ready)
 
@@ -1561,21 +1587,36 @@ class LocalLoop:
         * The decision table derives "which beads are ready" from which of the molecule's
           dependencies are CLOSED, so dropping closed children would make finished work look
           unfinished and hold the ready set back.
+
+        Pre-execution route selection (bh-sy36q.5, never a retry after an API failure): the epic
+        row, the children fetch, and each child's event-stream fetch each try their named
+        `work.molecule.progress` / `work.swarm.inspect` route (:mod:`beadhive.dispatch_state`)
+        independently before falling back to the `bd` forward — one route being unavailable does
+        not force the others onto the CLI path too.
         """
-        epic_row = bd_mod.show(self.epic, self.hive_dir) or {}
-        rows = bd_mod.children(self.epic, self.hive_dir, ["--include-infra", "--all"])
+        from . import dispatch_state
+
+        entry = self._hive_entry()
+        epic_row = dispatch_state.open_molecule_progress(self.hive_dir, entry, self.epic)
+        if epic_row is None:
+            epic_row = bd_mod.show(self.epic, self.hive_dir) or {}
+        rows = dispatch_state.open_swarm_members(self.hive_dir, entry, self.epic)
+        if rows is None:
+            rows = bd_mod.children(self.epic, self.hive_dir, ["--include-infra", "--all"])
         rows = [r for r in (rows or []) if isinstance(r, dict)]
         children = [r for r in rows if str(r.get("issue_type") or "") not in work_next.INFRA_TYPES]
         events: dict[str, list[dict]] = {}
         for child in children:
             bead = str(child.get("id") or "")
             # Deliberate prefix read: event history is keyed by the child's dotted-id stream.
-            child_rows = bd_mod.child_rows(
-                bead,
-                self.hive_dir,
-                ["--include-infra"],
-                include_closed=True,
-            )
+            child_rows = dispatch_state.open_event_rows(self.hive_dir, entry, bead)
+            if child_rows is None:
+                child_rows = bd_mod.child_rows(
+                    bead,
+                    self.hive_dir,
+                    ["--include-infra"],
+                    include_closed=True,
+                )
             events[bead] = work_next.chronological_rows(
                 r
                 for r in (child_rows or [])

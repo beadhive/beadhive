@@ -192,6 +192,12 @@ scores guide the migration; they do not waive the explicit blockers in the overl
   ownership strong but movement risk high. Rejected: treating native Git and plugin provision as
   separate capabilities, or moving cleanup before live classifier/safety owners land.
 
+> **2026-09-27 (bh-sy36q.6).** The `WorkLifecycleService` and `PlanningService` boundaries named
+> below were deleted in the beadhive-core cutover: both were callback pass-throughs over the
+> shell's own implementations. Bead-state policy is `packages/beadhive-core`, composed at
+> `beadhive.beads_routing`; `modules/planning` is retired and `modules/work` keeps only impact
+> resolution. See [`MODULES.md`](../MODULES.md) and `packages/beadhive-core/README.md`.
+
 ### Work — score 10/14 (`2,1,1,2,2,1,1`)
 
 - Inbound use cases: assignment, claim, scheduling, check, submission, review, approve/bounce,

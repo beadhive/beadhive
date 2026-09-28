@@ -63,16 +63,24 @@ def test_existing_policy_and_ledger_boundaries_remain_executable_owners():
         work_submission.impl__record_check_verdict
     )
     assert "reuse=True" in inspect.getsource(work_submission.impl__validate_submit_checkout)
-    assert "api.work_logic.ensure_review_gate" in inspect.getsource(
-        work_submission.impl__open_submit_gate
+    open_gate = inspect.getsource(work_submission.impl__open_submit_gate)
+    assert "api.work_logic.ensure_review_gate" in open_gate
+    # review=pending only after the gate is open, through the core's submit-state transition.
+    assert open_gate.index("ensure_review_gate") < open_gate.index(
+        "api.work_lifecycle.mark_submitted"
     )
+    assert "set-state" not in open_gate
 
 
 def test_submit_shares_one_authoritative_pre_mutation_bead_read_across_policy_checks():
     implementation = inspect.getsource(work_submission.impl_submit)
+    resolve = inspect.getsource(work_submission.impl__resolve_submit_actor)
 
-    assert implementation.count("api.bd.show(") == 1
-    assert "api._resolve_submit_actor(cfg, entry, target, bead, main, as_, data)" in implementation
+    # The one read is the core's claim-holder admission (bh-sy36q.1), reached from actor resolution.
+    assert "api.bd.show(" not in implementation
+    assert "actor, data = api._resolve_submit_actor(" in implementation
+    assert resolve.count("api.work_lifecycle.admit_submission(") == 1
+    assert "api.bd.show(" not in resolve
     assert "api._guard_submit_ready(entry, target, branch, bead, cfg, data)" in implementation
     assert "api._warn_submit_release_hint(bead, main, entry, branch, base, data)" in implementation
     guard = inspect.getsource(work_submission.impl__guard_submit_ready)

@@ -144,7 +144,7 @@ def test_versioned_operation_matrix_covers_filed_downstream_contract() -> None:
     assert categories["work.gate.lookup"] == "cli-compatibility"
     assert categories["work.gate.create"] == "cli-compatibility"
     assert categories["work.gate.resolve"] == "cli-compatibility"
-    assert categories["plan.batch-apply.atomic"] == "cli-compatibility"
+    assert categories["plan.batch-apply.atomic"] == "api-ready"  # bh-sy36q.2: real-service proven
     assert categories["issues.delete"] == categories["issues.sweep"] == "denied"
 
 

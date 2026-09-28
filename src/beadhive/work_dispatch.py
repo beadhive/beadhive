@@ -19,7 +19,14 @@ def impl__next_seat_actor(api, actor, data):
 
 
 def impl__molecule_members(api, epic, main):
-    rows = api.bd.children(epic, main, ["--include-infra", "--all"]) or []
+    """Pre-execution route selection (bh-sy36q.5, never a retry after an API failure): tries the
+    ``work.swarm.inspect`` route (:mod:`beadhive.dispatch_state`) first; it returns ``None`` to
+    mean "select the CLI-compatibility forward instead" (`bd children --include-infra --all`),
+    decided before any Beads read is attempted."""
+    entry = api.registry.entry_for_dir(api.config.load(), main) or {}
+    rows = api.dispatch_state.open_swarm_members(main, entry, epic)
+    if rows is None:
+        rows = api.bd.children(epic, main, ["--include-infra", "--all"]) or []
     members = {str(r.get("id") or "") for r in rows if isinstance(r, dict)}
     members.add(epic)
     members.discard("")

@@ -446,24 +446,25 @@ request/result contracts and `HiveRegistry`, `WorkspaceRealizer`, `DependencyPro
 
 ### `modules/work`
 
-Owns bead-workflow policy and use cases: assignment, claim, scheduling, validation, submission,
-review, approval, merge, resume, and abandonment. It depends on explicit ports for bead storage,
-worktrees, execution, validation evidence, and identity. Existing `beadhive.work` facade behavior
-and patch points remain stable until consumers migrate.
+Owns build-system-agnostic impact resolution for the Attested Green validation ledger: the
+`AttestKey` / `ImpactRequest` / `ImpactReceipt` domain, the `ImpactResolver` / `ImpactBackend` /
+`TreeDiffPort` ports, and the fail-closed resolver policy (`contracts/impact_resolution.py`).
 
-The implemented public boundary is `beadhive.modules.work.WorkLifecycleService`, with immutable,
-command-specific request/result contracts and `BeadStore`, `WorktreeLifecyclePort`,
-`ExecutionPort`, `ValidationEvidenceStore`, `IdentityProvider`, and `WorkNotifier` ports. The
-uncached production composition in `beadhive.work_services` keeps the established facade patch
-points live; its claim/resume adapter continues through the adopted `modules/worktrees` lifecycle
-composition instead of introducing another Git or filesystem implementation.
+Bead-workflow policy no longer lives here. The beadhive-core cutover (bh-sy36q.6) deleted the
+callback-shaped `WorkLifecycleService`, its `BeadStore` / `ExecutionPort` /
+`ValidationEvidenceStore` / `IdentityProvider` / `WorkNotifier` ports, its request/result DTOs, and
+the `beadhive.work_services` composition: every one was a pass-through over the shell's own
+`impl_*` functions. Assignment, claim, resume, abandon, ready/claim-next, schedule, dispatch reads,
+approve and bounce are `beadhive_core` handlers (`packages/beadhive-core`) composed at
+`beadhive.beads_routing`; check, submit, review and merge are called directly by the
+`beadhive.work` facade.
 
-### `modules/planning`
+### `modules/planning` (retired)
 
-Owns molecule validation, decomposition contracts, dependency-DAG policy, filing, kickoff gates,
-verification, and repair. It may consume work read models but does not own dispatch execution.
-Plan, report, and triage cycles should be broken with request/result contracts rather than mutual
-module imports.
+Deleted in the beadhive-core cutover (bh-sy36q.6). Molecule filing and the dependency-DAG policy
+(`MoleculeGraph`) are `beadhive_core.planning`, composed by `beadhive.plan_filing`; validation,
+verification, kickoff approval and repair are plain functions in `beadhive.plan`. The
+`module.planning` test closure is declared `absent`.
 
 ### `modules/worktrees`
 

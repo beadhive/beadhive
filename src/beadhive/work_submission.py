@@ -315,10 +315,9 @@ def impl_submit(api, bead, as_, hive, group, override_validation="", override_ac
     api.otel.set_bead(bead)
     entry, main, target, branch = api.worktree.locate(cfg, hive, bead)
     api._guard_submit_worktree(bead, main, target)
-    # Submit's three policy checks all inspect the same pre-mutation bead. Read it once: a real
-    # bd process is materially expensive, and no state transition occurs until the gate opens.
-    data = api.bd.show(bead, main)
-    actor = api._resolve_submit_actor(cfg, entry, target, bead, main, as_, data)
+    # Submit's policy checks all inspect the same pre-mutation bead, read ONCE by the core's
+    # claim-holder admission (bh-sy36q.1); no state transition occurs until the gate opens.
+    actor, data = api._resolve_submit_actor(cfg, entry, target, bead, main, as_, hive)
     api._guard_claim_fence(cfg, entry, target, hive)
     base = api._guard_submit_ready(entry, target, branch, bead, cfg, data)
     api._warn_submit_release_hint(bead, main, entry, branch, base, data)
@@ -341,7 +340,7 @@ def impl_submit(api, bead, as_, hive, group, override_validation="", override_ac
     api._validate_submit_checkout(entry, branch, cfg, bead=bead, override=override)
     sha = api.worktree.head_sha(target)
     api._record_submit_commits(bead, main, entry, branch, base)
-    gate, reuse = api._open_submit_gate(cfg, entry, bead, branch, main, sha)
+    gate, reuse = api._open_submit_gate(cfg, entry, bead, branch, main, sha, actor, hive)
     # The gate + local review state above are submit's acceptance boundary. Reap before the
     # best-effort remote state push so a remote warning cannot retain already-accepted backups.
     _reap_accepted_safety_refs(api, entry, branch, labels=("refine",), boundary="submit")
@@ -383,7 +382,7 @@ def impl__guard_submit_worktree(api, bead, main, target):
     raise api.typer.Exit(1)
 
 
-def impl__resolve_submit_actor(api, cfg, entry, target, bead, main, as_, data=None):
+def impl__resolve_submit_actor(api, cfg, entry, target, bead, main, as_, hive=""):
     authority = api.claim_authority.get_authority(api.config.claim_authority(cfg, entry))
     record = authority.read(target)
     claim_holder = record.seat if authority.verify(record, "submit", "") else ""
@@ -391,14 +390,14 @@ def impl__resolve_submit_actor(api, cfg, entry, target, bead, main, as_, data=No
         api.work_logic.opt_str(as_),
         claim_holder or api.config.work_identity(cfg, entry)["name"] or "",
     )
-    api._guard_holds_claim(data if data is not None else api.bd.show(bead, main), actor, bead)
+    data = api.work_lifecycle.admit_submission(cfg, hive, entry, main, bead, actor)
     if not api.worktree.in_bead_worktree(target):
         api.typer.echo(
             "WARNING: cwd is not the bead worktree — ensure all changes are committed.\n"
             f'  → cd "{target}"  # work happens in the worktree, NOT the main clone',
             err=True,
         )
-    return actor
+    return actor, data
 
 
 def impl__guard_claim_fence(api, cfg, entry, target, hive):
@@ -599,7 +598,7 @@ def impl__validate_submit_checkout(api, entry, branch, cfg, bead=None, override=
         raise api.typer.Exit(1)
 
 
-def impl__open_submit_gate(api, cfg, entry, bead, branch, main, sha):
+def impl__open_submit_gate(api, cfg, entry, bead, branch, main, sha, actor="", hive=""):
     gate = api.config.review_gate(cfg, entry)
     if gate.startswith("gh:") or str(entry.get("kind", "")) == "external":
         remote = api.config.push_remote(cfg, entry)
@@ -608,8 +607,5 @@ def impl__open_submit_gate(api, cfg, entry, bead, branch, main, sha):
             api.typer.echo("✗ failed to push branch for review — nothing submitted", err=True)
             raise api.typer.Exit(1)
     reuse = api.work_logic.ensure_review_gate(main, bead, sha, gate)
-    sres = api.bd.run(["set-state", bead, "review=pending", "--reason", f"submitted {sha}"], main)
-    if sres.returncode != 0:
-        api.typer.echo("✗ failed to set review state — nothing submitted", err=True)
-        raise api.typer.Exit(1)
+    api.work_lifecycle.mark_submitted(cfg, hive, entry, main, bead, sha, actor)
     return (gate, reuse)

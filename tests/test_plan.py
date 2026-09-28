@@ -16,14 +16,16 @@ from collections import namedtuple
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 import typer
 from typer.testing import CliRunner
 
 from beadhive import bd as bd_mod
-from beadhive import plan, state
+from beadhive import plan, plan_filing, state
 from beadhive.cli import app
 from beadhive.run import run as real_run
+from beadhive_beads_client import BeadsSession, ExpectedContext, RemoteEndpoint
 
 _runner = CliRunner()
 
@@ -238,22 +240,30 @@ def test_file_creates_full_swarm(hive, fakebd):
 
     # epic first, then issues in dependency order (a before b) → mr-1, mr-2, mr-3
     epic_args = fakebd.create_args(title="Add widgets")
-    assert epic_args is not None and "--type=epic" in epic_args
+    assert epic_args is not None
+    assert "--type" in epic_args and epic_args[epic_args.index("--type") + 1] == "epic"
     assert any("complexity:MEDIUM" in tok for tok in epic_args)
     assert fakebd.created[0][0] == "mr-1"  # epic is the first create
 
-    # children parented to the epic; identity triplet injected onto every issue
+    # identity triplet injected onto every issue; --parent is NOT used (bh-sy36q.2: the
+    # epic-parent edge is now an explicit `dep add ... -t parent-child` item, not `bd create
+    # --parent`, so preview and apply share the exact BatchApply-compiled lowering)
     triplet = "provider:github,org:myorg,repo:myrepo"
     a_args = fakebd.create_args(title="scaffold")
-    assert "--parent" in a_args and a_args[a_args.index("--parent") + 1] == "mr-1"
+    assert "--parent" not in a_args
     assert "--acceptance" in a_args  # accuracy field carried (--graph drops it; per-issue keeps)
     assert any(triplet in tok and "component:runtime" in tok for tok in a_args)
     assert any("complexity:MEDIUM" in tok for tok in a_args)
 
-    # dependent issue b carries --deps pointing at a's real id (mr-2)
+    # dependent issue b carries no --deps flag either; the blocks edge is a separate dep add
     b_args = fakebd.create_args(title="wire it")
-    assert "--deps" in b_args and b_args[b_args.index("--deps") + 1] == "mr-2"
+    assert "--deps" not in b_args
     assert any("complexity:MEDIUM" in tok for tok in b_args)
+
+    # every issue-to-epic ownership edge + the declared dependency, wired as explicit dep adds
+    assert fakebd.did("dep", "add", "mr-2", "mr-1", "-t", "parent-child")  # a -> epic
+    assert fakebd.did("dep", "add", "mr-3", "mr-1", "-t", "parent-child")  # b -> epic
+    assert fakebd.did("dep", "add", "mr-3", "mr-2", "-t", "blocks")  # b -> a (declared dep)
 
     # swarm built on the epic; kickoff gate blocks the ROOT (a=mr-2), not the dependent
     assert fakebd.did("swarm", "create", "mr-1")
@@ -421,12 +431,13 @@ def test_file_spike_molecule_labels_land_with_zero_manual_calls(hive, fakebd):
     assert any("tag:decision" in tok for tok in decide_args)
     assert not any("tag:spike" in tok for tok in decide_args)
 
-    # `bd create --parent` inherits the parent's labels by default (bd's `--no-inherit-labels`
-    # flag documents this) — every child must opt out, or a tag:decision bead parented under a
-    # tag:spike epic would silently inherit tag:spike too (confirmed against a real `bd` in
-    # manual end-to-end verification for bh-0a6g).
+    # bh-sy36q.2: filing no longer creates a child with `bd create --parent` at all (the
+    # epic-parent edge is a separate `dep add ... -t parent-child` item) — so there is no
+    # `--parent`-driven label inheritance left to opt out of; each child's label set is already
+    # the full authoritative one `create -l` carries.
     for child_args in (spike_a_args, spike_b_args, decide_args):
-        assert "--no-inherit-labels" in child_args
+        assert "--parent" not in child_args
+        assert "--no-inherit-labels" not in child_args
 
     # No manual label-fixup call of any kind rode along — every label was carried by `create`.
     assert not any(args[:2] == ["label", "add"] for _actor, args in fakebd.calls)
@@ -497,6 +508,99 @@ def test_file_no_release_hold_gate_when_enforce_hold_off(hive, fakebd):
     assert _release_hold_blocks(fakebd) == []
 
 
+# ---- file: the api-ready BatchApply route (bh-sy36q.2) --------------------
+#
+# Everything above exercises the CLI-compatibility fallback (this hive has no supervised Beads
+# service, so `plan_filing._filer` always selects it) — proven package-locally against the exact
+# BatchApply compiler output in packages/beadhive-core/tests/test_core_planning_policy.py. What
+# ISN'T proven there is that the shell actually selects the api-ready route when a session opens,
+# and composes it with the SAME CliPlanningGates convention calls the CLI route uses — that is
+# what this one test covers (composition/integration coverage, not the compiler's own logic).
+
+
+class _BatchApplyService:
+    """Mints sequential ids for every create item and echoes a well-formed response, so the
+    shell's route-selection plumbing (not the compiler) is what's under test here."""
+
+    def __init__(self):
+        self.next_id = 1
+        self.requests = []
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/healthz":
+            return httpx.Response(200, json={"status": "ok"})
+        if path == "/v0/beads/context":
+            return httpx.Response(
+                200,
+                json={
+                    "api_version": "v0",
+                    "bd_version": "1.3.0",
+                    "schema_version": 1,
+                    "backend": "dolt",
+                    "dolt_mode": "server",
+                    "database": "bh",
+                    "project_id": "proj",
+                    "capabilities": sorted(plan_filing._core().PLANNING_CAPABILITIES),
+                },
+            )
+        if path == "/v0/beads/ready":
+            return httpx.Response(200, json={"items": [], "has_more": False})
+        assert path == "/v0/beads/issues:batchApply"
+        body = json.loads(request.content or b"{}")
+        self.requests.append(body)
+        keys: dict[str, str] = {}
+        items = []
+        for item in body["items"]:
+            if item["kind"] == "create":
+                new_id = f"bh-{self.next_id}"
+                self.next_id += 1
+                if "key" in item["create"]:
+                    keys[item["create"]["key"]] = new_id
+                items.append(
+                    {"kind": "create", "issue_id": new_id, "changed": True, "revision": "1"}
+                )
+            else:
+                items.append(
+                    {
+                        "kind": "dep_add",
+                        "issue_id": "n/a",
+                        "changed": True,
+                        "revision": "0",
+                        "depends_on_id": "n/a",
+                    }
+                )
+        return httpx.Response(200, json={"keys": keys, "items": items})
+
+
+def test_file_selects_the_api_ready_route_when_the_session_opens(hive, fakebd, monkeypatch):
+    """When the hive's Beads service CAN be reached, filing submits ONE BatchApply request over
+    it instead of the CLI-compatibility per-issue walk — the gate/kickoff/swarm conventions still
+    go through the same `bd` route either way (`CliPlanningGates`, unaffected by which filer
+    route was selected)."""
+    service = _BatchApplyService()
+    session = BeadsSession(
+        RemoteEndpoint("http://127.0.0.1:8080"),
+        ExpectedContext(
+            "proj", "bh", required_capabilities=plan_filing._core().PLANNING_CAPABILITIES
+        ),
+        transport=httpx.MockTransport(service.handle),
+    )
+    monkeypatch.setattr(plan_filing, "session_factory", lambda main, entry: session)
+
+    spec = _write_spec(hive)
+    plan.file(spec=str(spec), dry_run=False, save="", hive="myrepo")
+
+    assert len(service.requests) == 1  # the whole molecule in one request
+    kinds = [item["kind"] for item in service.requests[0]["items"]]
+    assert kinds.count("create") == 3  # epic + 2 issues
+    assert kinds.count("dep_add") == 3  # 2 parent-child + 1 declared "blocks"
+    assert not fakebd.created  # no `bd create` at all — the API route did every create
+    # Gates/kickoff/swarm are still the named CLI route, over the bead ids BatchApply minted.
+    assert fakebd.did("swarm", "create", "bh-1")
+    assert fakebd.did("set-state", "bh-1", "kickoff=pending")
+
+
 # ---- adopt: file-time report↔epic linking + provenance survival ------------
 #
 # The planning-plane ADOPT path (bead). A frame carries `adopts` + native
@@ -532,11 +636,16 @@ class FakeBdAdopt(FakeBd):
         )
 
 
-def _dep_add_args(fb):
-    """The positional args of the first `bd dep add …` call (order carries the edge DIRECTION:
-    `dep add <dependent> <depended-on>`), or None."""
+def _dep_add_args(fb, source="rep-1"):
+    """The positional args of the `bd dep add <source> …` call naming `source` as the dependent
+    (order carries the edge DIRECTION: `dep add <dependent> <depended-on>`), or None.
+
+    bh-sy36q.2: filing now issues one `dep add` per issue-to-epic ownership edge and per declared
+    dependency too (previously only the adopted-report link used `dep add` at all — every other
+    edge rode in on `bd create --parent`/`--deps`), so a caller must name which edge it wants
+    rather than assume the first `dep add` recorded is the report link."""
     for _actor, args in fb.calls:
-        if args[:2] == ["dep", "add"]:
+        if args[:2] == ["dep", "add"] and len(args) > 2 and args[2] == source:
             return args
     return None
 
@@ -852,11 +961,6 @@ class FakeBdApprove(FakeBd):
         if args and len(args) > 1 and args[0] == "gate" and args[1] == "list":
             # bd gate list --json → return configured gates as JSON
             return _CP(0, json.dumps(self._gates) + "\n", "")
-        if args and args[0] == "create":
-            self._n += 1
-            new_id = f"mr-{self._n}"
-            self.created.append((new_id, args[1:]))
-            return _CP(0, new_id + "\n", "")
         return _CP(0, "", "")
 
 
@@ -2205,3 +2309,61 @@ def test_check_epic_unretrievable_aborts(hive, monkeypatch):
     result = _runner.invoke(app, ["plan", "check", "epic-zzz", "--hive", "myrepo"])
     assert result.exit_code != 0
     assert "could not retrieve epic" in result.output
+
+
+# ---- shared kickoff-gate contract and molecule ordering (moved from the retired planning
+# capability's contract tests, bh-sy36q.6) ------------------------------------------------------
+
+
+def test_kickoff_gate_write_contract_is_the_exact_bd_call(monkeypatch):
+    """``plan_filing.CliPlanningGates.create_kickoff_gate`` — moved here from
+    ``plan._create_kickoff_gate`` (bh-sy36q.2) so `bh plan file` and `bh plan repair` share ONE
+    implementation of the kickoff-gate contract."""
+    completed = namedtuple("Completed", "returncode stdout stderr")
+    writes = []
+    monkeypatch.setattr(
+        plan_filing.bd,
+        "run",
+        lambda args, cwd, actor="", **_kwargs: (
+            writes.append((args, cwd, actor)) or completed(0, "", "")
+        ),
+    )
+
+    plan_filing.CliPlanningGates(Path("/hive")).create_kickoff_gate(
+        "bh-epic.1", "bh-epic", actor="planner"
+    )
+
+    assert writes == [
+        (
+            [
+                "gate",
+                "create",
+                "--type=human",
+                "--blocks",
+                "bh-epic.1",
+                "--reason",
+                "kickoff bh-epic",
+            ],
+            Path("/hive"),
+            "planner",
+        )
+    ]
+
+
+def test_preview_ordering_is_the_filing_compilers_graph():
+    """`bh plan show` / `--dry-run` / the `plan_file` preview order a molecule through the SAME
+    ``beadhive_core.MoleculeGraph`` the filing compiler lowers through (bh-sy36q.6 retired the
+    root-side duplicate), and a malformed graph still raises ``ValueError``."""
+    issues = [
+        {"handle": "c", "deps": ["a", "b"]},
+        {"handle": "a"},
+        {"handle": "b", "deps": ["a"]},
+    ]
+
+    assert [issue["handle"] for issue in plan._topo_order(issues)] == ["a", "b", "c"]
+    assert [issue["handle"] for issue in plan._roots(issues)] == ["a"]
+    assert type(plan_filing.molecule_graph(issues)) is plan_filing._core().MoleculeGraph
+    with pytest.raises(ValueError, match="cycle"):
+        plan._topo_order([{"handle": "a", "deps": ["b"]}, {"handle": "b", "deps": ["a"]}])
+    with pytest.raises(ValueError, match="unknown handles"):
+        plan._topo_order([{"handle": "a", "deps": ["ghost"]}])

@@ -218,23 +218,13 @@ reverse_dependency_tests = [
 [[closures]]
 id = "module.planning"
 kind = "module"
-status = "present"
+# Retired in the beadhive-core cutover (bh-sy36q.6): the callback-per-operation PlanningService,
+# its ports, request/result DTOs and the duplicate MoleculeGraph were deleted. Molecule filing is
+# beadhive_core.planning (packages/beadhive-core, its own package tests); verify/approve/repair
+# are plain functions in beadhive.plan, covered by tests/test_plan.py and tests/test_plan_repair.py.
+status = "absent"
 owner_path = "src/beadhive/modules/planning"
 source_paths = ["src/beadhive/modules/planning/**/*.py"]
-tests = [
-  "tests/unit/modules/planning/test_planning_services.py",
-  "tests/unit/modules/planning/test_planning_independence.py",
-]
-shared_contracts = ["contracts"]
-shared_contract_tests = ["tests/contracts/test_planning_capability_adapters.py"]
-reverse_dependencies = ["adapters", "system-smoke"]
-reverse_dependency_tests = [
-  "tests/test_plan.py",
-  "tests/test_plan_repair.py",
-  "tests/test_cli_projection.py",
-  "tests/test_mcp.py",
-  "tests/test_mcp_plans_resources.py",
-]
 
 [[closures]]
 id = "module.state"
@@ -265,7 +255,6 @@ status = "present"
 owner_path = "src/beadhive/modules/work"
 source_paths = ["src/beadhive/modules/work/**/*.py"]
 tests = [
-  "tests/unit/modules/work/test_work_lifecycle_services.py",
   "tests/unit/modules/work/test_work_independence.py",
 ]
 shared_contracts = ["contracts", "kernel.lifecycle"]
@@ -273,7 +262,6 @@ shared_contracts = ["contracts", "kernel.lifecycle"]
 # this registry's tests/-only reach); the dispatcher test exercises the same contract types
 # (SubscriberBinding, LifecycleEvent, DeliveryPolicy) through the root closure that remains.
 shared_contract_tests = [
-  "tests/contracts/test_work_capability_adapters.py",
   "tests/unit/kernel/lifecycle/test_dispatcher.py",
 ]
 reverse_dependencies = ["adapters", "system-smoke"]
