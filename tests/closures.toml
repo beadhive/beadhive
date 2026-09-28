@@ -304,7 +304,7 @@ reverse_dependency_tests = [
   "tests/test_worktree_boundaries.py",
   "tests/test_worktree_inventory_boundaries.py",
   "tests/test_worktree_inventory_json.py",
-  "tests/test_wt_status.py",
+  "tests/test_worktree_state_adapters.py",
   "tests/test_mcp.py",
 ]
 
