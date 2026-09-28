@@ -30,6 +30,15 @@ def test_both_explicit_profiles_fail_closed_on_missing_steps() -> None:
         assert any(recipe in error for error in MODULE.check(changed))
 
 
+def test_recipe_body_is_checked_when_recipe_has_dependencies() -> None:
+    source = (ROOT / "justfile").read_text()
+    assert "root-composition-validate" in MODULE._dependencies(source, "stateful-native")
+    assert any(
+        "not integration and not pants_profile" in line
+        for line in MODULE._recipe_body(source, "stateful-native")
+    )
+
+
 def test_aliases_select_one_explicit_profile() -> None:
     source = (ROOT / "justfile").read_text()
     changed = source.replace("check: check-native", "check: check-pants check-native", 1)

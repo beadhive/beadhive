@@ -11,7 +11,10 @@ KEY_RECIPES = {
     "docs": ("attest-docs", ("lint-md",)),
     "unit": ("attest-unit", ("lint", "license-check")),
     "stateful": ("attest-stateful", ("stateful-native",)),
-    "root-composition": ("attest-root-composition", ("root-composition-native",)),
+    "root-composition": (
+        "attest-root-composition",
+        ("root-composition-native", "root-workspace-check"),
+    ),
     "integration": ("attest-integration", ("require-bd", "test-integration-land")),
     "architecture-contracts": (
         "attest-architecture-contracts",
@@ -43,6 +46,7 @@ PANTS_FULL = (
     "stateful-pants",
     "stateful-native",
     "root-composition-native",
+    "root-workspace-check",
     "test-integration-land",
     "demo-local-loop",
     "demo-live-ingress",
@@ -59,6 +63,7 @@ NATIVE_FULL = (
     "architecture-structural-check",
     "stateful-native",
     "root-composition-native",
+    "root-workspace-check",
     "beads-client-check",
     "test-integration-land",
     "demo-local-loop",
@@ -78,7 +83,7 @@ def _dependencies(justfile: str, recipe: str) -> list[str]:
 
 
 def _recipe_body(justfile: str, recipe: str) -> list[str]:
-    match = re.search(rf"(?m)^{re.escape(recipe)}:\n((?:    .*\n)+)", justfile)
+    match = re.search(rf"(?m)^{re.escape(recipe)}:[^\n]*\n((?:    .*\n)+)", justfile)
     return match.group(1).splitlines() if match else []
 
 

@@ -29,12 +29,14 @@ falls back to the complete key set.
 | `bd-cli` | `just attest-bd-cli` | `attest:bd-cli` | Ruff and sandboxed tests for `packages/beadhive-bd-cli` only |
 | `demos` | `just attest-demos` | `attest:demos` | Local-loop and live-ingress operator demos |
 
-`packages` is the shared key for every in-repo distribution except `beadhive-bd-cli`. The
+`packages` owns the template, Beads client, core, plugins, and worktrees distributions. The
 template in `packages/_template` gives each package recursive source, resource, and test
 targets tagged `attest:packages`; `just pkg <name> check` validates one package during
 development, while `just packages-check` is the whole-tree recipe called by
 `just attest-packages`. Copying the template to a new package and running `uv lock` includes it
-in the workspace and Pants graph. Every package test runs in its own Pants sandbox. A package
+in the workspace and Pants graph. The native catalog lists current package directories
+explicitly so a new package remains uncovered until its validation ownership is reviewed. Every
+package test runs in its own Pants sandbox. A package
 backend is selected through plugin manifest discovery and a lazy bootstrap binding; the attest
 key itself does not import or register backend implementations.
 
@@ -42,10 +44,22 @@ key itself does not import or register backend implementations.
 `beadhive-core`'s ports and changes far more often than the rest of `packages/*`, so folding it
 into the shared `packages` key would invalidate every other distribution's proof on every touch.
 Its targets carry `attest:bd-cli` rather than `attest:packages`, and `just bd-cli-check` — not
-`just packages-check` — is its whole-package recipe, called by `just attest-bd-cli`.
+`just packages-check` — is its whole-package recipe, called by `just attest-bd-cli`. The native
+`bd-cli` selector also includes `beadhive-core`, `beadhive-beads-client`, `pyproject.toml`, and
+`uv.lock`, because its proof depends on those package APIs and the resolved dependency graph.
+
+Both native package keys select `justfile` and `scripts/*`. Those paths cover the recipe bodies,
+the hermetic fence, watchdog, pytest report wrapper, and package test-path discovery instead of
+maintaining a second fragile list of runner helpers. Both also select `pyproject.toml` and
+`uv.lock` for Ruff, workspace, build, and resolution inputs. Direct `beadhive-bd-cli` paths remain
+excluded from `packages`, while its core and Beads-client dependency inputs select both keys.
+Every package sync and build is package scoped: `packages` validates the template, core, plugins,
+and worktrees; its Beads-client leaf owns that distribution; and `bd-cli` owns its distribution.
 
 The native `@root-composition` selector expands to workspace distributions consumed by the root
-project. A package-only change selects its package key and `root-composition`; it does not select
+project. Consumption is derived from direct and optional project requirements, every dependency
+group (including included groups), and workspace package source roots vendored into the root
+wheel. A package-only change selects its package key and `root-composition`; it does not select
 the complete stateful, integration, or demo keys. `scripts/root_composition_tests.py` registers
 the root tests for each consumed package and always includes `tests/contracts`. The ordinary and
 full native profiles run `stateful-native` and `root-composition-native` as disjoint pytest file
@@ -53,8 +67,33 @@ partitions, so this optimization removes work only from selective package gates.
 change selects both partitions and the other root keys. An unknown path or an impact backend
 error still falls back to every key.
 
+`root-composition` also owns `root-workspace-check`: the Pants package tests/build and the root
+release smoke artifact. Pants directly imports the root distribution, while the root wheel vendors
+five workspace libraries including bd-cli, so those operations cannot belong to either isolated
+package key. The full native and Pants gates list this leaf exactly once. Its native selector
+includes `src/*`, `README.md`, `scripts/*`, root metadata, every derived consumed package, and
+`docs/design/*.md`; the last pattern covers the compatibility ledger read by a contract test.
+
+The key command receives no changed-path or package argument. It therefore runs the deduplicated
+union of every registered package's root tests, rather than claiming per-package command
+narrowing. On the final bh-3quwp tree, that conservative union is 27 files and 700 items: the root
+pytest leaf took 34.740 seconds, while the complete key took 49.530 seconds for 734 items after its
+34-test Pants/root-artifact leaf. The impact backend requires every derived root workspace
+dependency to have a `PACKAGE_TESTS` entry; a missing entry makes resolution fail closed to all
+keys instead of silently omitting an unknown root test closure. It also scans direct imports in
+root tests and requires each package consumer to appear in that mapping or the registered contract
+set.
+
 The Pants proven-tests manifest remains an optional Pants-profile concern. Native architecture
 and lifecycle gates do not require an edit to that manifest when a new package test is added.
+`scripts/native_package_tests.py` discovers native package test roots directly from the workspace;
+its behavioral contract executes a newly created package test while both Pants manifests remain
+byte-identical. Because the recipe passes its output through shell command substitution, discovery
+rejects path names containing shell metacharacters or whitespace before emitting the raw argv.
+The root-composition renderer applies the same validation to registered root tests and discovered
+contract tests before emitting raw paths or `--ignore` arguments. Its standalone validation
+recipe runs before either consumer performs command substitution, so an invalid render cannot
+degrade into pytest's default full-tree collection.
 
 Keys are policy, not test-framework plugins. `cmd` is an opaque string that Beadhive executes
 verbatim. A key is required unless configured with `policy: optional`. An optional key may be

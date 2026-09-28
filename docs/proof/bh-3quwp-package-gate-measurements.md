@@ -1,15 +1,26 @@
 # bh-3quwp package gate measurements
 
-Measured on 2026-09-28 UTC on the shared 32-core release host. Native pytest recipes used their
-configured 16-worker bound and warm dependency caches. The host was running other v0.20.0 wave
-work concurrently, so the successful validation manifests below are the stable before samples;
-the overloaded after-state observations are reported as red and are not presented as speedup
-proof.
+Measured on 2026-09-28 UTC on the final implementation tree based on
+`f79080157a536f6220c555bfde9f00be6067b66c`, including the catalog-parser dependency fix and its
+regression. Only this numeric proof record changed after the timed commands. Each measurement ran
+alone on CPUs 0-7 of the shared 32-core release host at
+nice +10, with Pants local parallelism capped at four, warm dependency caches, and the normal
+host `TMPDIR`:
+
+```text
+taskset -c 0-7 nice -n 10 env PANTS_PROCESS_EXECUTION_LOCAL_PARALLELISM=4 \
+  bash -c 'time -p just attest-packages'
+taskset -c 0-7 nice -n 10 env PANTS_PROCESS_EXECUTION_LOCAL_PARALLELISM=4 \
+  bash -c 'time -p just attest-root-composition'
+```
+
+The component timings used the same wrapper around `just root-composition-native` and
+`just root-workspace-check`. No proof or gate workload overlapped these commands.
 
 ## Selection
 
 The old live catalog expanded `@root-workspace-packages` into `stateful`, `integration`, and
-`demos`. For a change under `packages/beadhive-worktrees`, the old selected set was therefore:
+`demos`. For a change under `packages/beadhive-worktrees`, the old selected set was:
 
 ```text
 packages, stateful, integration, demos
@@ -22,6 +33,18 @@ change selects:
 packages, root-composition
 ```
 
+Attest commands are opaque strings and receive no changed-package argument. The shared
+`root-composition` command intentionally runs the deduplicated union of registered root tests for
+all root workspace dependencies; it does not claim per-package command narrowing. The final-tree
+bound is 27 root files and 700 root pytest items. The accompanying Pants/root-artifact leaf adds
+34 Pants-package items, for 734 test items across the complete key.
+
+Impact resolution rejects any derived root dependency without a `PACKAGE_TESTS` mapping and falls
+back to the full key set. Its dependency closure unions direct requirements, optional
+requirements, dependency groups, and workspace source roots vendored into the root wheel. Direct
+root test imports are checked against the same mapping so a newly added root consumer cannot be
+silently omitted. The repository regression resolves all six current consumed distributions.
+
 `tests/test_native_impact_map.py` also proves that a `src/beadhive` change selects every root key
 (`unit`, `stateful`, `root-composition`, `integration`, `architecture-contracts`, and `demos`) and
 that an unresolvable composition expansion falls back to all keys.
@@ -29,9 +52,9 @@ that an unresolvable composition expansion falls back to all keys.
 ## Package-only before and after
 
 The before total is the sum of successful native-key run manifests for the commands the old
-catalog selected. The after total combines the most recent successful `packages` component with
-the directly measured new component. Key execution is serial in the selective consumer, so the
-component sum is the gate execution time excluding common resolver and clean-checkout setup.
+catalog selected. The after total is the wall time of the two exact final-tree attest commands.
+Key execution is serial in the selective consumer; neither total includes common resolver or
+clean-checkout setup.
 
 | Catalog | Component | Tests recorded | Wall seconds | Evidence |
 | --- | --- | ---: | ---: | --- |
@@ -40,31 +63,31 @@ component sum is the gate execution time excluding common resolver and clean-che
 | before | `integration` | 72 | 328.981 | green manifest ending 2026-09-27 06:01:16 UTC |
 | before | `demos` | not reported | 180.069 | green manifest ending 2026-09-28 16:04:55 UTC |
 | **before total** | four selected keys | at least 9,943 | **881.544** | successful components |
-| after | `packages` | 367 | 32.153 | same unchanged component |
-| after | `root-composition` | 682 collected; 681 passed, 1 skipped | 33.715 | green direct run at `e1348ed7` |
-| **after total** | two selected keys | 1,049 collected | **65.868** | successful components |
+| after | `packages` | 411 collected; 392 passed, 16 skipped, 3 deselected; five builds green | **24.220** | exact final-tree command above |
+| after | `root-composition` | 734 items; 733 passed, 1 skipped; Pants/root wheel smoke green | **49.530** | exact final-tree command above |
+| **after total** | two selected keys | 1,145 items | **73.750** | successful final-tree commands |
 
-This component comparison removes 815.676 seconds (92.5%) from the package-only selection. It is
-not a claim about end-to-end submit latency because checkout, impact resolution, and carry lookup
-were not included in either total.
+The measured package-only selection removes 807.794 seconds (91.6%). This is a gate-command
+comparison rather than an end-to-end submit latency claim.
 
-## Root-change before and after
+## Root-change partition
 
 A root change retains the existing root keys and adds `root-composition`; `stateful-native`
-excludes the same 25 registered files that `root-composition-native` owns. The pre-split successful
-component sum was 939.531 seconds: unit 2.451, stateful 340.341, integration 328.981,
-architecture-contracts 87.689, and demos 180.069 seconds.
+excludes exactly the registered files that `root-composition-native` owns. The optimization moves
+those tests into a separately selectable partition for package-only changes. It does not omit
+either partition for a root change.
 
-The after-state reduced stateful partition collected 8,831 tests. Its release-wave observation
-took 850.615 seconds and ended red (8,787 passed, 11 skipped, 27 failed, 6 setup errors). Failures
-were dominated by host saturation: 10-second `git config` and `ps` subprocess timeouts, HTTP and
-process fixtures that could not start, and concurrent validation receipt interference. Adding the
-green 33.715-second root-composition component produces a measured after observation of 884.330
-seconds for the two test partitions, or 1,483.520 seconds with the other root-key samples. It is
-**not a valid green root-gate timing**. The
-authoritative `just check-native` run must be taken after the concurrent certification-flake bead
-lands and the release host is below saturation.
+The exact final-tree root-composition measurement breaks down as follows:
 
-The count partition is deterministic despite that load: 8,831 stateful items plus 682 composition
-items equals the pre-split 9,513-item collection. Package-only gates pay only the 682-item
-composition side; root changes still pay both sides.
+| Component | Selection and result | Wall seconds |
+| --- | --- | ---: |
+| `root-composition-native` | 27 files; 700 items; 699 passed, 1 skipped | **34.740** |
+| `root-workspace-check` | 34 Pants-package items passed; Pants package and root wheel builds plus isolated smoke green | **16.510** |
+| complete `attest-root-composition` | both components, including recipe overhead | **49.530** |
+
+Before the split, a root change selected `unit`, `stateful`, `integration`,
+`architecture-contracts`, and `demos`; the recorded successful component sum was 939.531 seconds
+(2.451 + 340.341 + 328.981 + 87.689 + 180.069). After the split, a root change selects those same
+keys plus the measured 49.530-second root-composition key, while the 27-file root selection is
+removed from `stateful`. The table reports the exact added partition cost and ownership boundary;
+it does not combine that final-tree measurement with a stateful timing from a different tree.

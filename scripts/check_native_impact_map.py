@@ -11,6 +11,7 @@ from beadhive import config, config_work_settings, registry
 from beadhive.adapters.impact_paths import (
     PATHS_BACKEND,
     ROOT_COMPOSITION,
+    UnresolvedRootComposition,
     expanded_selector_patterns,
     matches_path,
     root_composition_package_patterns,
@@ -33,9 +34,12 @@ def tracked_files(repo: Path) -> tuple[str, ...]:
 def check(repo: Path, attest: AttestConfig, paths: tuple[str, ...] | None = None) -> list[str]:
     errors: list[str] = []
     keys = attest_keys(attest)
-    rules = {
-        key.name: expanded_selector_patterns(repo, key.selector(PATHS_BACKEND)) for key in keys
-    }
+    try:
+        rules = {
+            key.name: expanded_selector_patterns(repo, key.selector(PATHS_BACKEND)) for key in keys
+        }
+    except UnresolvedRootComposition as exc:
+        return [f"root-composition impact is unresolved: {exc}"]
     if attest.impact.backend != PATHS_BACKEND:
         errors.append(f"impact backend must be {PATHS_BACKEND!r}, got {attest.impact.backend!r}")
     for name, patterns in rules.items():
