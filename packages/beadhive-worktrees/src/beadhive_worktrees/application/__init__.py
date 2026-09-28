@@ -10,6 +10,12 @@ from .inventory_payload import (
     build_inventory_payload,
     compute_digest,
 )
+from .merge_tiers import (
+    all_union_eligible,
+    is_zero_delta_rebase,
+    parse_conflict_paths,
+    union_attributes_text,
+)
 from .prune_selection import split_safe_skipped, withhold_untrustworthy
 from .removal_service import RemovalOutcome, execute_removal, reclaim_empty_parents
 from .services import WorktreeInventoryService, WorktreeLifecycleService
@@ -22,15 +28,19 @@ __all__ = [
     "RemovalOutcome",
     "WorktreeInventoryService",
     "WorktreeLifecycleService",
+    "all_union_eligible",
     "build_inventory_payload",
     "flag_legacy_root",
     "classify_entries_concurrently",
     "compute_digest",
     "execute_removal",
+    "is_zero_delta_rebase",
     "ordered_statuses",
+    "parse_conflict_paths",
     "reclaim_empty_parents",
     "resolve_batch_evidence",
     "split_safe_skipped",
     "status_tags",
+    "union_attributes_text",
     "withhold_untrustworthy",
 ]
