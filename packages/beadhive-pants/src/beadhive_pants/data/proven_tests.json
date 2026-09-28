@@ -99,6 +99,7 @@
     "packages/beadhive-worktrees/tests/test_prune_selection.py": {"status": "proven", "dependencies": ["packages/beadhive-worktrees/src:lib"]},
     "packages/beadhive-worktrees/tests/test_removal_service.py": {"status": "proven", "dependencies": ["packages/beadhive-worktrees/src:lib"]},
     "packages/beadhive-worktrees/tests/test_status_presentation.py": {"status": "proven", "dependencies": ["packages/beadhive-worktrees/src:lib"]},
+    "packages/beadhive-worktrees/tests/test_merge_tiers.py": {"status": "proven", "dependencies": ["packages/beadhive-worktrees/src:lib"]},
     "packages/beadhive-pants/tests/test_impact_conformance.py": {"status": "proven", "dependencies": ["beadhive.testing impact conformance kit", "beadhive-pants:lib"]},
     "packages/beadhive-pants/tests/test_package.py": {"status": "proven", "dependencies": ["beadhive-pants packaged resources", "beadhive public contracts"]},
     "packages/beadhive-pants/tests/test_verify.py": {"status": "proven", "dependencies": ["beadhive-pants:lib", "beadhive build verification contracts"]},
