@@ -1,3 +1,4 @@
+from .init_ports import CommandRunner
 from .ports import (
     WORKSPACE_BINDING,
     WORKTREE_MANAGER,
@@ -17,6 +18,7 @@ __all__ = [
     "BeadStateLookup",
     "BranchInspector",
     "ClaimRecords",
+    "CommandRunner",
     "MergeEvidence",
     "WorkspaceBindingPort",
     "WorktreeCreateObserver",

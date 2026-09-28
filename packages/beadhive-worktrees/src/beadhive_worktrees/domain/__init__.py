@@ -1,3 +1,4 @@
+from .init_models import CommandOutcome
 from .models import (
     BATCH_BRANCH_PREFIX,
     BATCH_LEAF_PREFIX,
@@ -32,6 +33,7 @@ __all__ = [
     "WT_PREFIX",
     "BindingGap",
     "BoundWorktree",
+    "CommandOutcome",
     "ManagedWorktree",
     "WorkspaceBindingError",
     "WorktreeBinding",
