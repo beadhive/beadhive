@@ -47,11 +47,7 @@ Two behaviors, decided per command before its first Beads operation:
   value stops the command with exit 2. The `bd` route is never a retry: once a command has selected
   the API, a failing call is reported, not replayed through `bd`.
 
-**Rollback (one release window).** `BH_BEADS_ROUTE`, when set, still wins over `work.beads.route`
-with its bh-sy36q.6 meaning: `cli` forces the `bd` compatibility route for every cutover command at
-once, without stopping the service; `api` is the API with the automatic `bd` route
-(`api+cli-fallback`). Any other value stops the command with exit 2. It is removed once the config
-path is proven (bh-fqsp2). Details: `packages/beadhive-core/README.md`, "CLI composition cutover".
+  Details: `packages/beadhive-core/README.md`, "CLI composition cutover".
 
 ## Commands
 

@@ -470,14 +470,11 @@ resolve-and-map-errors body, and of the "which errors mean select the `bd` route
 - **Pre-execution `bd` compatibility route (kept, see the decision below).** No capable session
   means `SessionUnavailable` / `ServiceError` / `IncompatibleService` before the first Beads
   operation, and the seam selects its named `bd` route for the whole command. It is never a retry.
-- **Bounded rollback: `BH_BEADS_ROUTE=cli`.** Makes `hive_session` refuse before resolving
-  anything, so every cutover command takes its `bd` route at once, with the service still
-  running. Unset, empty or `api` selects the default. Any other value renders one `✗` line and
-  exits 2 (`BeadsRouteInvalid`, a `typer.Exit` subclass). It is deliberately not one of the
-  errors the seams map to the `bd` route, so a typo cannot silently reroute a command or silently
-  fail to. The switch ships with the release that first carries this cutover and is removed in
-  the release after it. The follow-up that deletes it has to touch only `selected_route` and its
-  tests.
+- **Bounded rollback env var (removed, bh-yp5e9).** For one release window a rollback switch made
+  `hive_session` refuse before resolving anything, so every cutover command took its `bd` route at
+  once, with the service still running. It shipped with the release that first carried this
+  cutover, and was deleted once `work.beads.route` (bh-m36pc) proved the config path — see
+  "Removed" below.
 
 The audit found that the per-verb pre-execution selection already was the only second path. No
 verb had a separate old Python implementation left to switch to: bh-sy36q.1 and bh-sy36q.2 had
@@ -520,12 +517,18 @@ The automatic selection is kept, but only as a named per-hive opt-in, the `work.
   `ValueError` branch. Pre-execution CLI routes that are not a fallback (`claim_next`'s bare
   actor, `--epic` scoping, capped `ready` reads) are unchanged.
 - `api+cli-fallback`: exactly the automatic selection described above.
-- `cli`: `hive_session` refuses before resolving anything, exactly like `BH_BEADS_ROUTE=cli`.
+- `cli`: `hive_session` refuses before resolving anything.
 
 An unknown value renders one `✗` line and exits 2 (`BeadsRouteConfigInvalid`); the config
 schema (`WorkConfig.beads.route`, a `Literal`) refuses it at `bh config set` and `validate`
-time too. `BH_BEADS_ROUTE`, while it exists, still wins with its old meaning (`api` there is
-`api+cli-fallback`). Embedded-Dolt hives, which Beads 1.3 cannot serve, must opt in explicitly.
+time too. Embedded-Dolt hives, which Beads 1.3 cannot serve, must opt in explicitly.
+
+### Removed: the bounded rollback env var (bh-yp5e9)
+
+The bounded rollback env var above is gone. `work.beads.route` (bh-m36pc) is now the sole
+mechanism, proven by the package move (bh-o3xuf) and its own attest key (bh-vq34o). `route(entry,
+cfg)` calls `configured_route(entry, cfg)` directly; there is no env-precedence branch left in
+`beadhive.beads_routing`.
 
 ### What was already cut over, and what this bead changed
 
@@ -607,7 +610,7 @@ In the root package, over named `bd` routes:
    - unbounded `ready --json` (`bd ready` forward)
    - `plan file` (`CliMoleculeFiler`)
    - the local loop's molecule, swarm, event and poll reads
-2. **The bounded rollback**, `BH_BEADS_ROUTE=cli`, for one release.
+2. **The bounded rollback env var**, forcing `cli`, for one release (removed, bh-yp5e9).
 3. **Matrix `cli-compatibility` operations with no v1.3 HTTP route**, always on `bd`:
    - `work.lease.acquire` / `release`
    - `work.state.get` / `update`
@@ -684,6 +687,42 @@ The "before" spawn count is the measured after-count adjusted by the tests that 
 The cutover removed no stateful tests because nothing stateful was redundant. Every real-`bd`
 test left in the root suite exercises a retained `bd` route or real topology (worktrees,
 onboarding, doctor, hub), not superseded bead-access code.
+
+### Measured (bh-fqsp2 / bh-yp5e9)
+
+Measured on the final tree of the bh-fqsp2 delivery (work.beads.route replacing the automatic
+per-verb `bd` fallback; bh-m36pc, bh-o3xuf, bh-vq34o, bh-yp5e9) against the bh-sy36q.6 baseline
+recorded in the table above, on a 32-core host, same PATH-shim method (`bd` / `dolt` shims
+logging `$PYTEST_CURRENT_TEST`, first on `PATH` inside the hermetic fence, full root selection).
+
+| Measure | Before (bh-sy36q.6) | After (bh-yp5e9, fork tip 357a8a60) |
+|---|---|---|
+| Root selected suite (`not integration and not pants_profile`) | 9,541 | 9,557 |
+| Root selected tests that spawn a real `bd` / `dolt` process | 188 | 189 |
+| Root selected real-`bd`/`dolt` spawns (total process invocations) | 515 | 516 |
+| `packages/beadhive-bd-cli` suite (`just bd-cli-check`) | — | 55 tests, 55 passed |
+| `packages/beadhive-bd-cli` suite wall time (`-n auto`/16 workers, hermetic) | — | 21.5 s pytest call (`just bd-cli-check` end to end ≈ 29 s incl. ruff + `uv sync`) |
+| Full gate `bh work check bh-yp5e9` (`just check-all-native`) | — | in bh-yp5e9's NOTES ¹ |
+
+¹ Same caveat as bh-sy36q.6's table: the gate validates this exact tree, so its wall time is
+recorded on the bead instead of here.
+
+**The root real-`bd`/`dolt` spawn count did NOT drop.** The design expected it to fall
+materially once the migrated adapters' FakeBd/real-bd tests moved into
+`packages/beadhive-bd-cli` (bh-o3xuf). Measured reality: it is flat (188 → 189 distinct tests,
+515 → 516 spawns) — within noise of one test. The reason: the tests that moved were already
+FakeBd-backed or pure-port tests in the root suite (bh-sy36q.6's own table already measured zero
+of the 40 tests it added there as real-`bd` spawners); the 188/515 baseline was always the
+*retained* CLI administration/compatibility/topology surface (`test_cli.py`, `test_doctor*.py`,
+`test_hub*.py`, `test_onboard*.py`, `test_daemon_mcp_http.py`, the transport-parity spikes, …),
+which bh-o3xuf's scope explicitly did not touch (see its "Explicitly OUT of scope" list). Moving
+adapters that never spawned real `bd` in root cannot reduce a count that was never theirs.
+`packages/beadhive-bd-cli`'s OWN suite, by contrast, DOES spawn real `bd` deliberately —
+`test_coordination_int.py` and `test_ports_real_bd.py` exist specifically to prove the moved CLI
+adapters against a real `bd` process — that is a different, expected axis (its own sandboxed
+suite, run only by the `bd-cli` attest key) from "root's real-process spawn count," and is not a
+regression from the "0 real bd/dolt" packages-suite convention documented above (that convention
+describes `packages-check`'s shared key, from which `beadhive-bd-cli` is explicitly excluded).
 
 ## Tests
 
@@ -805,15 +844,15 @@ onboarding, doctor, hub), not superseded bead-access code.
   (the `--epic`-scoping read `bh work next --epic` and the loop share) selects
   `dispatch_state.open_swarm_members` before `bd children`, and that a successful routed answer
   means `bd` is never reached for it at all.
-- `tests/test_beads_routing.py` (bh-sy36q.6, `beadhive` package): the one composition decision.
-  It covers:
-  - the `BH_BEADS_ROUTE` switch: default, `cli`, and a mistyped value refused with exit 2 and
-    one diagnostic;
+- `tests/test_beads_routing.py` (bh-sy36q.6, updated bh-m36pc / bh-yp5e9, `beadhive` package): the
+  one composition decision. It covers:
   - every cohort seam opening its session through `beads_routing` with its own capability set;
-  - rollback selecting each seam's `bd` route before the service is even resolved;
-  - a mistyped value failing every seam instead of rerouting it;
-  - `bh work claim` byte-identical under rollback;
-  - `bh work assign` writing over HTTP by default and through `bd` under rollback;
-  - claim refusal keeping exit 1 and its `✗` diagnostic;
+  - `work.beads.route` resolving per-hive over global, and a mistyped value refusing every seam
+    with exit 2 instead of rerouting it;
+  - `api` failing every cohort closed with exit 1 when no capable session opens;
+  - `api+cli-fallback` / `cli` selecting each seam's `bd` route before the service is even
+    resolved, bit-for-bit the pre-cutover selection;
+  - `bh work claim` selecting `bd` when the hive opts in, and failing closed with the diagnostic
+    naming `work.beads.route` under the default;
   - the migrated verbs' command names and options as an explicit table, alongside
     `tests/test_cli_projection.py`'s hash-pinned Click inventory.

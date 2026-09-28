@@ -463,7 +463,7 @@ Resolves per-hive `entry.work.beads.route` > global `work.beads.route` > `api`.
 |---|---|---|---|
 | `work.beads.route` | `api` | `api` \| `api+cli-fallback` \| `cli` | `api`: fail closed, naming `bh host beads start --hive <hive>` and this key. `api+cli-fallback`: select the `bd` route before execution when no capable session opens. `cli`: always the `bd` route. An unknown value is refused (exit 2), never defaulted. |
 
-`BH_BEADS_ROUTE`, while it exists, overrides this key; see [BEADS-SERVICE.md](BEADS-SERVICE.md).
+See [BEADS-SERVICE.md](BEADS-SERVICE.md) for the full behavior table.
 `bh work approve` / `bounce` are outside this key and always fail closed without a service.
 
 ## `work.dispatch` — collapsed dispatch

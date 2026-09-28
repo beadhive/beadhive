@@ -49,7 +49,7 @@ class TelemetryRoutingObserver:
 def hive_session(main: Path, entry: Any) -> Any:
     """An unopened session for this cohort's ``DISPATCH_CAPABILITIES`` — see
     :func:`beadhive.beads_routing.hive_session` (the one composition decision, including the
-    ``BH_BEADS_ROUTE=cli`` rollback)."""
+    ``work.beads.route`` cli route)."""
     return beads_routing.hive_session(main, entry, _core().DISPATCH_CAPABILITIES)
 
 

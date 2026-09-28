@@ -315,8 +315,7 @@ class BeadsConfig(_Section):
             "opened the command fails closed, naming `bh host beads start --hive <hive>`. "
             "api+cli-fallback: the API when a capable session opens, else the bd CLI route "
             "selected before the first Beads operation (never a retry). cli: always the bd CLI "
-            "route. An unknown value is refused, never defaulted. BH_BEADS_ROUTE, while it "
-            "still exists, overrides this key."
+            "route. An unknown value is refused, never defaulted."
         ),
     )
 
