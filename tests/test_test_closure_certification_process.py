@@ -29,7 +29,6 @@ SCRIPT = ROOT / "scripts" / "test_closure_certification.py"
 # reimplementing it, so this test can never drift from where evidence actually lands.
 EVIDENCE = evidence_path(ROOT, "test-closure-certification.json")
 MISSING_AUTHORITY = "candidate checkout has no authoritative matching full-gate receipt"
-PROCESS_TIMEOUT_SECONDS = 30.0
 TERMINATION_GRACE_SECONDS = 2.0
 PRODUCTION_JUST = shutil.which("just")
 # Captured while pytest imports this module, before the compatibility fixture
@@ -61,9 +60,9 @@ def _bounded_run(
     *,
     cwd: Path | None = None,
     env: dict[str, str] | None = None,
-    timeout: float = PROCESS_TIMEOUT_SECONDS,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run one isolated process group with a finite deadline and complete reaping."""
+    """Run under the outer watchdog, isolating only explicitly bounded probes."""
     process = subprocess.Popen(
         args,
         cwd=cwd,
@@ -71,7 +70,11 @@ def _bounded_run(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        start_new_session=True,
+        # Real gate subprocesses have no arbitrary load-sensitive inner deadline.  Keep them in
+        # pytest's process group so the stateful recipe's 900-second watchdog can terminate and
+        # reap the complete tree.  A probe with an explicit deadline owns its own session because
+        # the timeout path below terminates that whole group itself.
+        start_new_session=timeout is not None,
     )
     try:
         stdout, stderr = process.communicate(timeout=timeout)
@@ -91,11 +94,24 @@ def _candidate_clone(tmp_path: Path, name: str) -> tuple[dict[str, object], dict
     workspace = tmp_path / name / "workspace"
     repo = workspace / "github" / "beadhive" / "beadhive"
     repo.parent.mkdir(parents=True)
+    source_revision = _git(ROOT, "rev-parse", "HEAD")
     completed = _bounded_run(
-        ("git", "clone", "--quiet", "--local", "--no-hardlinks", str(ROOT), str(repo)),
+        (
+            "git",
+            "clone",
+            "--quiet",
+            "--local",
+            "--no-hardlinks",
+            "--no-checkout",
+            str(ROOT),
+            str(repo),
+        ),
     )
     completed.check_returncode()
-    _git(repo, "branch", "-M", "main")
+    # Full gates run pytest from a detached clean checkout.  A local clone inherits that
+    # detached HEAD, so renaming its nonexistent current branch is inherently racy with the
+    # caller's execution shape.  Materialize main explicitly at the exact source revision.
+    _git(repo, "checkout", "--quiet", "-B", "main", source_revision)
     branch = f"wt/bead/issue/bh-{name}"
     _git(repo, "branch", branch)
     entry: dict[str, object] = {
@@ -176,7 +192,7 @@ def _record_untrusted_green_receipts(repo: Path, command: str) -> None:
 
 
 def _architecture_check(
-    repo: Path, *, executable: str = "just", timeout: float = PROCESS_TIMEOUT_SECONDS
+    repo: Path, *, executable: str = "just", timeout: float | None = None
 ) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     if executable == PRODUCTION_JUST:
@@ -190,13 +206,27 @@ def _architecture_check(
 
 
 def _refresh_closure_evidence(repo: Path) -> None:
-    """Materialize current checkout evidence in the clone's Git-private state."""
+    """Materialize the coupled closure evidence set in the clone's private state."""
+    assert PRODUCTION_JUST is not None, "the production just executable is required"
+    environment = os.environ.copy()
+    environment["PATH"] = f"{Path(PRODUCTION_JUST).parent}{os.pathsep}{environment['PATH']}"
     refreshed = _bounded_run(
-        (sys.executable, "scripts/test_closure_certification.py"),
+        (
+            PRODUCTION_JUST,
+            "--justfile",
+            str(repo / "justfile"),
+            "validation-evidence-refresh",
+        ),
         cwd=repo,
-        env=os.environ.copy(),
+        env=environment,
     )
     assert refreshed.returncode == 0, refreshed.stdout + refreshed.stderr
+    for name in (
+        "test-closure-certification.json",
+        "test-closure-shadow-policy.json",
+        "test-closure-promotion-policy.json",
+    ):
+        assert evidence_path(repo, name).is_file(), f"missing candidate evidence: {name}"
 
 
 def _clean_checkout(
@@ -404,6 +434,31 @@ def test_selective_architecture_recipe_uses_only_explicit_structural_mode() -> N
     _assert_production_full_gate_wiring(ROOT)
 
 
+def test_candidate_clone_materializes_main_from_a_detached_source(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "detached-source"
+    cloned = _bounded_run(
+        ("git", "clone", "--quiet", "--local", "--no-hardlinks", str(ROOT), str(source))
+    )
+    cloned.check_returncode()
+    source_revision = _git(source, "rev-parse", "HEAD")
+    _git(source, "checkout", "--quiet", "--detach", source_revision)
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", source)
+
+    _, _, candidate = _candidate_clone(tmp_path / "candidate", "detached-proof")
+
+    assert _git(candidate, "symbolic-ref", "--short", "HEAD") == "main"
+    assert _git(candidate, "rev-parse", "HEAD") == source_revision
+
+
+def test_unbounded_probe_remains_in_the_outer_watchdogs_process_group() -> None:
+    completed = _bounded_run((sys.executable, "-c", "import os; print(os.getpgrp())"))
+
+    completed.check_returncode()
+    assert int(completed.stdout) == os.getpgrp()
+
+
 def test_bounded_probe_terminates_and_reaps_nested_children(tmp_path: Path) -> None:
     """The timeout path kills the whole session, not just its direct driver."""
     child_pid_path = tmp_path / "child.pid"
@@ -512,7 +567,10 @@ def test_real_gate_receipts_authorize_only_their_exact_candidate_process(
     production_architecture = _architecture_check(
         check_repo,
         executable=PRODUCTION_JUST,
-        timeout=60.0,
+        # The stateful recipe's test watchdog owns the load-independent outer deadline and
+        # diagnostics.  A second fixed deadline here made a healthy architecture audit fail
+        # solely because a concurrently loaded host took longer than 60 seconds.
+        timeout=None,
     )
     assert production_architecture.returncode == 0, (
         production_architecture.stdout + production_architecture.stderr
