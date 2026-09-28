@@ -11,6 +11,7 @@ KEY_RECIPES = {
     "docs": ("attest-docs", ("lint-md",)),
     "unit": ("attest-unit", ("lint", "license-check")),
     "stateful": ("attest-stateful", ("stateful-native",)),
+    "root-composition": ("attest-root-composition", ("root-composition-native",)),
     "integration": ("attest-integration", ("require-bd", "test-integration-land")),
     "architecture-contracts": (
         "attest-architecture-contracts",
@@ -27,6 +28,7 @@ NATIVE_FAST = (
     "license-check",
     "architecture-structural-check",
     "stateful-native",
+    "root-composition-native",
     "beads-client-check",
 )
 PANTS_FULL = (
@@ -40,6 +42,7 @@ PANTS_FULL = (
     "pants-artifact-check",
     "stateful-pants",
     "stateful-native",
+    "root-composition-native",
     "test-integration-land",
     "demo-local-loop",
     "demo-live-ingress",
@@ -55,6 +58,7 @@ NATIVE_FULL = (
     "license-check",
     "architecture-structural-check",
     "stateful-native",
+    "root-composition-native",
     "beads-client-check",
     "test-integration-land",
     "demo-local-loop",

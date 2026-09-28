@@ -10,16 +10,17 @@ from pathlib import Path
 from beadhive import config, config_work_settings, registry
 from beadhive.adapters.impact_paths import (
     PATHS_BACKEND,
-    ROOT_WORKSPACE_PACKAGES,
+    ROOT_COMPOSITION,
     expanded_selector_patterns,
     matches_path,
-    root_workspace_package_patterns,
+    root_composition_package_patterns,
 )
 from beadhive.bootstrap.impact import attest_keys
 from beadhive.modules.config.contracts import AttestConfig
 
 ROOT = Path(__file__).resolve().parents[1]
 ROOT_CODE_KEYS = ("stateful", "integration", "demos")
+ROOT_COMPOSITION_KEY = "root-composition"
 
 
 def tracked_files(repo: Path) -> tuple[str, ...]:
@@ -52,19 +53,27 @@ def check(repo: Path, attest: AttestConfig, paths: tuple[str, ...] | None = None
     if uncovered:
         errors.append("tracked paths have no native impact owner: " + ", ".join(uncovered))
 
-    dependent_patterns = root_workspace_package_patterns(repo)
+    dependent_patterns = root_composition_package_patterns(repo)
     if dependent_patterns:
         by_name = {key.name: key for key in keys}
+        composition = by_name.get(ROOT_COMPOSITION_KEY)
+        if composition is None:
+            errors.append(f"missing root-composition attest key {ROOT_COMPOSITION_KEY!r}")
+        elif ROOT_COMPOSITION not in (composition.selector(PATHS_BACKEND) or "").splitlines():
+            errors.append(
+                f"{ROOT_COMPOSITION_KEY}: root depends on workspace packages "
+                f"{dependent_patterns!r}, but its selector lacks {ROOT_COMPOSITION}"
+            )
         for name in ROOT_CODE_KEYS:
             key = by_name.get(name)
             if key is None:
                 errors.append(f"missing root-code attest key {name!r}")
                 continue
             configured = key.selector(PATHS_BACKEND) or ""
-            if ROOT_WORKSPACE_PACKAGES not in configured.splitlines():
+            if ROOT_COMPOSITION in configured.splitlines():
                 errors.append(
-                    f"{name}: root depends on workspace packages {dependent_patterns!r}, but its "
-                    f"selector lacks {ROOT_WORKSPACE_PACKAGES}"
+                    f"{name}: workspace package changes belong only to {ROOT_COMPOSITION_KEY!r}; "
+                    f"remove {ROOT_COMPOSITION}"
                 )
     return errors
 

@@ -18,7 +18,7 @@ from ..modules.work.domain.impact import BackendImpact, ImpactRequest
 
 PATHS_BACKEND = "paths"
 PATHS_BACKEND_VERSION = "1"
-ROOT_WORKSPACE_PACKAGES = "@root-workspace-packages"
+ROOT_COMPOSITION = "@root-composition"
 
 
 def selector_patterns(selector: str | None) -> tuple[str, ...]:
@@ -35,8 +35,8 @@ def matches_path(path: str, pattern: str) -> bool:
     return fnmatch.fnmatchcase(path, pattern)
 
 
-def root_workspace_package_patterns(repo: str | Path) -> tuple[str, ...]:
-    """Derive path patterns for workspace distributions consumed by the root project."""
+def root_composition_package_patterns(repo: str | Path) -> tuple[str, ...]:
+    """Derive package paths whose public surfaces are composed by the root project."""
     root = Path(repo)
     payload = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     project = payload.get("project") or {}
@@ -69,8 +69,8 @@ def expanded_selector_patterns(repo: str | Path, selector: str | None) -> tuple[
     """Expand derived selector tokens while leaving ordinary fnmatch rules unchanged."""
     expanded: list[str] = []
     for pattern in selector_patterns(selector):
-        if pattern == ROOT_WORKSPACE_PACKAGES:
-            expanded.extend(root_workspace_package_patterns(repo))
+        if pattern == ROOT_COMPOSITION:
+            expanded.extend(root_composition_package_patterns(repo))
         else:
             expanded.append(pattern)
     return tuple(dict.fromkeys(expanded))
@@ -110,10 +110,10 @@ class PathsImpactBackend:
 __all__ = [
     "PATHS_BACKEND",
     "PATHS_BACKEND_VERSION",
-    "ROOT_WORKSPACE_PACKAGES",
+    "ROOT_COMPOSITION",
     "PathsImpactBackend",
     "expanded_selector_patterns",
     "matches_path",
-    "root_workspace_package_patterns",
+    "root_composition_package_patterns",
     "selector_patterns",
 ]

@@ -14,14 +14,15 @@ The key catalog is configured under `work.attest` in the fleet configuration. Th
 `just check-all-native`, the push gate, and run only the native framework; Pants steps live only
 in the optional `just check-all-pants` profile (whether Pants stays is bh-ahm6x).
 `just check-attest-catalog` checks that partition and both explicit native and Pants recipe
-graphs. The native hive profile removes the catalog and uses its single explicit
-`work.validate_cmd` path; the catalog remains available for rollback.
+graphs. The live native profile uses the path backend and keeps the catalog active; uncertainty
+falls back to the complete key set.
 
 | Key | Opaque command | Pants selector | Covers |
 |---|---|---|---|
 | `docs` | `just attest-docs` | `attest:docs` | Markdown lint |
 | `unit` | `just attest-unit` | `attest:unit` | Ruff and licence policy |
 | `stateful` | `just attest-stateful` | `attest:stateful` | Native stateful suite (hermetic fence) |
+| `root-composition` | `just attest-root-composition` | native paths | Root tests that compose workspace package APIs, plus `tests/contracts` |
 | `integration` | `just attest-integration` | `attest:integration` | Landing integration tests |
 | `architecture-contracts` | `just attest-architecture-contracts` | `attest:architecture-contracts` | Architecture, transport, wire, and proof contracts |
 | `packages` | `just attest-packages` | `attest:packages` | Ruff and sandboxed tests for every other `packages/*` distribution |
@@ -42,6 +43,18 @@ key itself does not import or register backend implementations.
 into the shared `packages` key would invalidate every other distribution's proof on every touch.
 Its targets carry `attest:bd-cli` rather than `attest:packages`, and `just bd-cli-check` — not
 `just packages-check` — is its whole-package recipe, called by `just attest-bd-cli`.
+
+The native `@root-composition` selector expands to workspace distributions consumed by the root
+project. A package-only change selects its package key and `root-composition`; it does not select
+the complete stateful, integration, or demo keys. `scripts/root_composition_tests.py` registers
+the root tests for each consumed package and always includes `tests/contracts`. The ordinary and
+full native profiles run `stateful-native` and `root-composition-native` as disjoint pytest file
+partitions, so this optimization removes work only from selective package gates. A root source
+change selects both partitions and the other root keys. An unknown path or an impact backend
+error still falls back to every key.
+
+The Pants proven-tests manifest remains an optional Pants-profile concern. Native architecture
+and lifecycle gates do not require an edit to that manifest when a new package test is added.
 
 Keys are policy, not test-framework plugins. `cmd` is an opaque string that Beadhive executes
 verbatim. A key is required unless configured with `policy: optional`. An optional key may be

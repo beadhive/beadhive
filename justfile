@@ -55,7 +55,7 @@ check: check-native
 
 # Stable fast entry points. Native collects the complete non-integration core suite directly;
 # Pants retains its impact-selected developer route.
-check-native: lint lint-md license-check architecture-structural-check stateful-native beads-client-check
+check-native: lint lint-md license-check architecture-structural-check stateful-native root-composition-native beads-client-check
 
 # Compare the checked-in SDK and exercise the package without the root app.
 beads-client-check:
@@ -148,11 +148,11 @@ gateway-contract-check:
 # FULL GATE: ruff + markdown + licences + the COMPLETE suite + the local-loop demo — what the LAND runs
 check-all: check-all-native
 
-check-all-pants: require-bd lint lint-md license-check architecture-structural-check architecture-pants-check pants-attest pants-artifact-check stateful-pants stateful-native test-integration-land demo-local-loop demo-live-ingress packages-check beads-client-check bd-cli-check
+check-all-pants: require-bd lint lint-md license-check architecture-structural-check architecture-pants-check pants-attest pants-artifact-check stateful-pants stateful-native root-composition-native test-integration-land demo-local-loop demo-live-ingress packages-check beads-client-check bd-cli-check
 
 # Full native validation runs every core and workspace test directly with pytest. Pants remains
 # available through check-all-pants; this mode deliberately has no Pants engine prerequisite.
-check-all-native: require-bd lint lint-md license-check architecture-structural-check stateful-native beads-client-check test-integration-land demo-local-loop demo-live-ingress packages-check bd-cli-check
+check-all-native: require-bd lint lint-md license-check architecture-structural-check stateful-native root-composition-native beads-client-check test-integration-land demo-local-loop demo-live-ingress packages-check bd-cli-check
 
 # Attest-key commands deliberately partition check-all-native, the push gate. Pants steps belong
 # only to the optional check-all-pants profile, never to a key (native is the primary framework;
@@ -168,6 +168,11 @@ attest-unit:
 
 attest-stateful:
     just stateful-native
+
+# Root tests that compose public workspace-package surfaces plus every compatibility contract.
+# The registry is independent of Pants' optional proven-tests manifest.
+attest-root-composition:
+    just root-composition-native
 
 attest-integration:
     # The integration selection skips when bd is absent; keep its non-vacuity probe local to
@@ -214,7 +219,6 @@ architecture-check:
     uv run python scripts/test_closure_promotion_policy.py --check
     uv run python scripts/test_closure_operational_report.py --check
     uv run python scripts/check_pants_ownership.py
-    uv run python scripts/check_pants_proven.py
     uv run python scripts/pants_ci.py verify
 
 # Lifecycle gates cannot require the full-gate receipt they are in the process of establishing.
@@ -691,7 +695,16 @@ stateful_workers := "16"
 
 stateful-native:
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{stateful_workers}} tests -m "not integration and not pants_profile"
+        ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{stateful_workers}} tests \
+        -m "not integration and not pants_profile" \
+        $(uv run python scripts/root_composition_tests.py --ignore-args)
+
+# The small root/package seam. Package-only impact selects this instead of the complete root,
+# integration and demo suites; the ordinary/full profiles still run both native partitions.
+root-composition-native:
+    uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
+        ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{stateful_workers}} \
+        $(uv run python scripts/root_composition_tests.py)
 
 # Recursive PEX packaging executes the Pants engine and needs its pinned artifact cache. Keep
 # this one test in the Pants full profile and outside the native collection.

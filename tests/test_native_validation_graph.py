@@ -32,6 +32,7 @@ def test_native_full_gate_has_no_pants_engine_dependency() -> None:
     dependencies = _dependencies(justfile, "check-all-native")
     assert "architecture-structural-check" in dependencies
     assert "stateful-native" in dependencies
+    assert "root-composition-native" in dependencies
     assert "test-integration-land" in dependencies
     assert "packages-check" in dependencies
     assert (
@@ -72,6 +73,9 @@ def test_backend_neutral_structural_gate_owns_shared_contract_checks() -> None:
         "pants_ci.py verify",
     ):
         assert required in pants
+
+    native_audit = "\n".join(_recipe_body(justfile, "architecture-check"))
+    assert "check_pants_proven.py" not in native_audit
 
 
 def test_recursive_pants_artifact_is_excluded_only_from_native_profile() -> None:

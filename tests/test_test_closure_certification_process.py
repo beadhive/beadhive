@@ -278,7 +278,6 @@ def _assert_production_full_gate_wiring(repo: Path) -> None:
         "uv run python scripts/test_closure_promotion_policy.py --check",
         "uv run python scripts/test_closure_operational_report.py --check",
         "uv run python scripts/check_pants_ownership.py",
-        "uv run python scripts/check_pants_proven.py",
         "uv run python scripts/pants_ci.py verify",
     ]
     selective_body = [row[0] for row in selective_architecture["body"]]

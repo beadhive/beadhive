@@ -24,6 +24,11 @@ def _recipe_body(justfile: str, recipe: str) -> list[str]:
     return body
 
 
+def _dependencies(justfile: str, recipe: str) -> set[str]:
+    declaration = next(line for line in justfile.splitlines() if line.startswith(f"{recipe}:"))
+    return set(declaration.split(":", 1)[1].split())
+
+
 def _workspace_packages(root: Path) -> list[Path]:
     config = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     patterns = config["tool"]["uv"]["workspace"]["members"]
@@ -87,10 +92,17 @@ def test_native_test_recipes_collect_all_core_tests_without_pants_filtering() ->
     justfile = (ROOT / "justfile").read_text(encoding="utf-8")
     fast = "\n".join(_recipe_body(justfile, "test"))
     native = "\n".join(_recipe_body(justfile, "stateful-native"))
+    composition = "\n".join(_recipe_body(justfile, "root-composition-native"))
     integration = "\n".join(_recipe_body(justfile, "test-integration-land"))
-    for body in (fast, native, integration):
+    for body in (fast, native, composition, integration):
         assert "pytest" in body
         assert "tests" in body
         assert "pants_ci.py" not in body
-        assert "--ignore" not in body
+    assert "--ignore" not in fast
+    assert "--ignore" not in integration
+    assert "root_composition_tests.py --ignore-args" in native
+    assert "root_composition_tests.py" in composition
+    assert {"stateful-native", "root-composition-native"} <= _dependencies(
+        justfile, "check-native"
+    )
     assert '-m "integration"' in integration
