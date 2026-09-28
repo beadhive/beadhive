@@ -38,6 +38,7 @@ from . import (  # noqa: F401 - bd is a compatibility patch seam
     jsonout,
     precious,
     registry,
+    worktree_state_adapters,
     wt_status,
 )
 from .config_consumer_ports import work_settings as config
@@ -48,12 +49,14 @@ from .modules.worktrees import (
     WorktreeInventoryService,
     WorktreeStatusRequest,
 )
-from .worktree_state_adapters import ArgvBeadStateLookup
 
-#: The one root-supplied `BeadStateLookup` adapter today (bh-qdezo.5) — argv-era `bd.json` /
-#: `bd.show` reads. A `BeadsSession`-backed adapter is a later, additive swap (bh-sy36q.6) that
-#: replaces only this composition, never the classification policy it feeds.
-_BEAD_STATE_LOOKUP = ArgvBeadStateLookup()
+
+def _bead_state_lookup():
+    """The composed `BeadStateLookup` (bh-qdezo.5), read at call time so a consumer-boundary
+    substitution of `worktree_state_adapters.BEAD_STATE_LOOKUP` reaches every read (bh-qdezo.9).
+    A `BeadsSession`-backed adapter is a later, additive swap that replaces only that
+    composition, never the classification policy it feeds."""
+    return worktree_state_adapters.BEAD_STATE_LOOKUP
 
 
 def _facade():
@@ -622,7 +625,7 @@ def impl__probe_store(main: Path) -> str:
     The read itself and its message texts are :func:`beadhive_worktrees.policy.bead_state.
     store_reason` (bh-qdezo.5) — this wrapper supplies the one argv-era ``BeadStateLookup``
     adapter (:mod:`beadhive.worktree_state_adapters`) at composition time."""
-    return bead_state.store_reason(_BEAD_STATE_LOOKUP, main)
+    return bead_state.store_reason(_bead_state_lookup(), main)
 
 
 def impl__bead_statuses_for_entry(
@@ -655,7 +658,7 @@ def impl__bead_statuses_for_entry(
         if bead_id and bead_id not in seen:
             seen.add(bead_id)
             bead_ids.append(bead_id)
-    return bead_state.bead_states(_BEAD_STATE_LOOKUP, main, bead_ids, store_reason)
+    return bead_state.bead_states(_bead_state_lookup(), main, bead_ids, store_reason)
 
 
 def impl__bead_disposition_relations_for_entry(
@@ -674,7 +677,7 @@ def impl__bead_disposition_relations_for_entry(
     if not dispositions:
         return {}
     main = registry.hive_dir(entry)
-    return bead_state.disposition_relations(_BEAD_STATE_LOOKUP, main, dispositions)
+    return bead_state.disposition_relations(_bead_state_lookup(), main, dispositions)
 
 
 def _batch_evidence_for_entry(
@@ -702,7 +705,7 @@ def _batch_evidence_for_entry(
         entry,
         rows,
         integration,
-        lookup=_BEAD_STATE_LOOKUP,
+        lookup=_bead_state_lookup(),
         main=main,
         integration_base_fn=lambda e, bead_id, integ: _facade().integration_base(e, bead_id, integ),
     )

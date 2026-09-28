@@ -10,12 +10,20 @@ Every method resolves its collaborator (``bd``, ``claim_authority``, ``ghpr``) a
 rather than caching a bound reference, so the existing per-module patch seams
 (``worktree_inventory.bd``, ``worktree.bd``, ...) keep intercepting these calls unchanged —
 they are all the same shared module object.
+
+:data:`BEAD_STATE_LOOKUP`, :data:`CLAIM_RECORDS`, and :data:`MERGE_EVIDENCE` are the composed
+port instances (bh-qdezo.9). Every root consumer reads them from this module at call time, so
+they are the one consumer-boundary substitution point: a higher-layer test swaps a port here
+(for example with ``beadhive_worktrees.testing.InMemoryBeadStateLookup``) instead of patching a
+worktree module's private helpers or the ``bd`` module reached through its namespace.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+
+from beadhive_worktrees import BeadStateLookup, ClaimRecords, MergeEvidence
 
 from . import bd, ghpr
 
@@ -54,4 +62,18 @@ class GhprMergeEvidence:
         return ghpr.merged_pr_for(entry, branch)
 
 
-__all__ = ["ArgvBeadStateLookup", "ClaimAuthorityRecords", "GhprMergeEvidence"]
+#: The composed ``BeadStateLookup``: argv-era today, a ``BeadsSession`` adapter later (bh-e7s80).
+BEAD_STATE_LOOKUP: BeadStateLookup = ArgvBeadStateLookup()
+#: The composed ``ClaimRecords`` over ``claim_authority``'s record paths.
+CLAIM_RECORDS: ClaimRecords = ClaimAuthorityRecords()
+#: The composed ``MergeEvidence`` over ``gh pr list --state merged``.
+MERGE_EVIDENCE: MergeEvidence = GhprMergeEvidence()
+
+__all__ = [
+    "BEAD_STATE_LOOKUP",
+    "CLAIM_RECORDS",
+    "MERGE_EVIDENCE",
+    "ArgvBeadStateLookup",
+    "ClaimAuthorityRecords",
+    "GhprMergeEvidence",
+]

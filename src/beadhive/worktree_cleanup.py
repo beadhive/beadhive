@@ -19,13 +19,8 @@ from beadhive_worktrees import (
     withhold_untrustworthy,
 )
 
-from . import registry, wt_status
+from . import registry, worktree_state_adapters, wt_status
 from .config_consumer_ports import work_settings as config
-from .worktree_state_adapters import ClaimAuthorityRecords
-
-#: The one root-supplied `ClaimRecords` adapter today (bh-qdezo.5) — `claim_authority`'s
-#: record-path bookkeeping.
-_CLAIM_RECORDS = ClaimAuthorityRecords()
 
 
 def _facade():
@@ -213,7 +208,7 @@ def impl_remove(hive, ref, force=False, as_json=False):
     started = time.monotonic()
     outcome = execute_removal(
         lambda: _remove_worktree(cfg, entry, main, target, force=force),
-        claim_records=_CLAIM_RECORDS,
+        claim_records=worktree_state_adapters.CLAIM_RECORDS,
         target=target,
     )
     elapsed = time.monotonic() - started
@@ -319,7 +314,7 @@ def impl__prune_remove_one(cfg, entries_by_prefix: dict, main: Path, st) -> bool
     # left managed_repos still goes through the same release-then-remove effect (E30).
     result = execute_removal(
         lambda: _remove_worktree(cfg, entry, main, Path(st.path), st.branch, force=True),
-        claim_records=_CLAIM_RECORDS,
+        claim_records=worktree_state_adapters.CLAIM_RECORDS,
         target=Path(st.path),
     )
     outcome = "ok" if result.ok else "error"
