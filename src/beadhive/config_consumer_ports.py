@@ -54,6 +54,7 @@ work_settings = CapabilitySettings(
         "BINARY_ALIAS",
         "DEFAULT_LEDGER_TTL",
         "batch_max_size",
+        "beads_route",
         "claim_authority",
         "codex_default_sandbox_covers",
         "codex_sandbox_active",

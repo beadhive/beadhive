@@ -34,7 +34,14 @@ from beadhive.config_schema import RoutingTierConfig
 
 _CP = namedtuple("CP", "returncode stdout stderr")
 
-FAKE_ENTRY = {"provider": "github", "org": "myorg", "repo": "myrepo", "prefix": "mr"}
+#: FakeBd-backed, so the hive opts into the bd route (bh-m36pc); the default ``api`` fails closed.
+FAKE_ENTRY = {
+    "provider": "github",
+    "org": "myorg",
+    "repo": "myrepo",
+    "prefix": "mr",
+    "work": {"beads": {"route": "api+cli-fallback"}},
+}
 FAKE_MAIN = Path("/fake/main")
 FAKE_EPIC = "mr-epic"
 

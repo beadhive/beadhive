@@ -103,10 +103,15 @@ class FakeReadBd:
         return self.calls[-1]
 
 
+#: FakeBd-backed reads opt into the bd route (bh-m36pc); the default ``api`` route fails closed.
+_BD_ROUTE_CFG = {"work": {"beads": {"route": "api+cli-fallback"}}}
+
+
 def _run(monkeypatch, fake, argv):
-    """Invoke the `ws work` sub-app with a faked bd + a no-op config (hive resolves to cwd)."""
+    """Invoke the `ws work` sub-app with a faked bd + a minimal config (hive resolves to cwd) that
+    opts into the bd route."""
     monkeypatch.setattr(work.bd, "_run", fake)
-    monkeypatch.setattr(work.config, "load", lambda: {})
+    monkeypatch.setattr(work.config, "load", lambda: _BD_ROUTE_CFG)
     return CliRunner().invoke(work.app, argv)
 
 

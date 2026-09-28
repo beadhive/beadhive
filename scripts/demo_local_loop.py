@@ -788,6 +788,9 @@ def build_hive(root: Path, *, init_runner=None) -> Path:
                 "validate_cmd": "true",
                 "review_gate": "human",
                 "identity": {"mode": "agent", "name": "dev/demo", "email": "demo@example.invalid"},
+                # An embedded-Dolt scratch hive with no Beads service: opt into the bd CLI route
+                # explicitly (bh-m36pc); the default `api` route would fail closed.
+                "beads": {"route": "api+cli-fallback"},
             },
             "managed_repos": [
                 {

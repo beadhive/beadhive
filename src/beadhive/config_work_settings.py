@@ -229,6 +229,14 @@ def enforce_signing(cfg, entry) -> bool:
     return bool(work_value(cfg, entry, "enforce_signing", False))
 
 
+def beads_route(cfg, entry):
+    """The RAW `work.beads.route` (per-hive > global > `api`), deliberately NOT normalized or
+    defaulted on an unknown value: `beadhive.beads_routing.configured_route` refuses one loudly,
+    because silently degrading this key would silently select (or refuse) the bd CLI route. See
+    `config_schema.BeadsConfig.route`."""
+    return layered(cfg, entry, "work.beads", "route", "api")
+
+
 def batch_max_size(cfg, entry):
     """Max issues a planner-declared `batch:<group>` may hold (handled+validated+merged as one
     unit). Default 5 — keeps a batch bubble small enough to stay reviewable / bisectable."""
@@ -574,6 +582,7 @@ __all__ = [
     "duration_seconds",
     "ledger_ttl",
     "enforce_signing",
+    "beads_route",
     "batch_max_size",
     "dispatch_value",
     "dispatch_mode",

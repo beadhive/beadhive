@@ -13,6 +13,7 @@ resolution-markers = [
 [manifest]
 members = [
     "beadhive",
+    "beadhive-bd-cli",
     "beadhive-beads-client",
     "beadhive-core",
     "beadhive-package-template",
@@ -133,6 +134,7 @@ pants = [
 
 [package.dev-dependencies]
 core = [
+    { name = "beadhive-bd-cli" },
     { name = "beadhive-beads-client" },
     { name = "beadhive-core" },
 ]
@@ -178,6 +180,7 @@ provides-extras = ["mcp", "otel", "pants"]
 
 [package.metadata.requires-dev]
 core = [
+    { name = "beadhive-bd-cli", editable = "packages/beadhive-bd-cli" },
     { name = "beadhive-beads-client", editable = "packages/beadhive-beads-client" },
     { name = "beadhive-core", editable = "packages/beadhive-core" },
 ]
@@ -195,6 +198,21 @@ dev = [
 pants = [{ name = "beadhive-pants", editable = "packages/beadhive-pants" }]
 plugins = [{ name = "beadhive-plugins", editable = "packages/beadhive-plugins" }]
 worktrees = [{ name = "beadhive-worktrees", editable = "packages/beadhive-worktrees" }]
+
+[[package]]
+name = "beadhive-bd-cli"
+version = "0.1.0"
+source = { editable = "packages/beadhive-bd-cli" }
+dependencies = [
+    { name = "beadhive-beads-client" },
+    { name = "beadhive-core" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "beadhive-beads-client", editable = "packages/beadhive-beads-client" },
+    { name = "beadhive-core", editable = "packages/beadhive-core" },
+]
 
 [[package]]
 name = "beadhive-beads-client"

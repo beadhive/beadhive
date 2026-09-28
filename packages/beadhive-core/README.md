@@ -27,13 +27,14 @@ name, *args, **kwargs)` is the one dispatch point: it selects the route against
 `session.context.capabilities` and calls the exact `BeadsSession` method the matrix names — never
 a method chosen generically at runtime. `select_cli` / `select_administrative` only name the
 route and its reason; the compatibility shell still owns the actual `bd` invocation (`work_review.py`'s
-`CliGateOperations` / `CliStateOperations` and `coordination.py` are the existing examples).
+`CliGateOperations` / `CliStateOperations` and `beadhive_bd_cli.coordination`, all in
+[`beadhive-bd-cli`](../beadhive-bd-cli/README.md) since bh-o3xuf, are the existing examples).
 Every selector accepts an optional `RoutingObserver` so the chosen route can be attributed in
 telemetry.
 
 `COORDINATION_OPERATIONS` names every lease, heartbeat, reclaim, merge-slot and gate operation
 that must stay `cli-compatibility`: their exclusivity and staleness guarantees come from the real
-service or the real `bd` binary (`tests/test_coordination_int.py`, `tests/test_merge_slot.py`),
+service or the real `bd` binary (`packages/beadhive-bd-cli/tests/test_coordination_int.py`, `tests/test_merge_slot.py`),
 never from an in-memory stand-in, and a policy test fails the day the installed matrix moves one
 of them to `api-ready` without a deliberate, evidenced bead.
 
@@ -305,7 +306,7 @@ Every Beads operation takes one named route from the matrix:
 |---|---|---|
 | `work.issue.get` | `api-ready` | `SessionIssues` over `BeadsSession` (guard reads, claim re-verification, abandon's re-read, submit's admission) |
 | `work.issue.update` | `api-ready` | `SessionIssues.assign` — a guarded update (`expected_version` from the guard read), so a bead that moved after the guard is refused (`409`), never overwritten |
-| `work.lease.acquire` / `work.lease.release` | `cli-compatibility` | `Leases` port → shell `CliLeases` (`bd update --claim` / reopen+unassign): `issues.claim` does not grant the renewable lease |
+| `work.lease.acquire` / `work.lease.release` | `cli-compatibility` | `Leases` port → `beadhive_bd_cli.CliLeases` (`bd update --claim` / reopen+unassign): `issues.claim` does not grant the renewable lease |
 | `work.state.get` / `work.state.update` | `cli-compatibility` | `StateReads` / `StateOperations` → `bd state` / `bd set-state` (review, dispatch dimensions) |
 | `work.gate.lookup` / `work.gate.resolve` | `cli-compatibility` | `GateOperations` (resume's orphaned-review-gate GC) |
 
@@ -347,7 +348,7 @@ anything is sent — refused outright, never chunked into multiple non-atomic re
 | Operation | Route | Served by |
 |---|---|---|
 | `plan.batch-apply.atomic` | **api-ready** (bh-sy36q.2: reclassified from `cli-compatibility` — see `test_core_planning_real_service.py`) | `SessionMoleculeFiler` over `BeadsSession.batch_apply` |
-| `plan.gate.create` / `plan.kickoff.update` | `cli-compatibility` (no v1.3 HTTP route for either) | `PlanningGates` port → shell `CliPlanningGates` (`bd gate create` / `bd set-state kickoff=pending`) |
+| `plan.gate.create` / `plan.kickoff.update` | `cli-compatibility` (no v1.3 HTTP route for either) | `PlanningGates` port → `beadhive_bd_cli.CliPlanningGates` (`bd gate create` / `bd set-state kickoff=pending`) |
 
 Route selection follows the same pre-execution rule as `work_queue` / `work_lifecycle`: when the
 hive's supervised Beads service can be reached, `plan_filing._filer` opens it and selects
@@ -469,14 +470,11 @@ resolve-and-map-errors body, and of the "which errors mean select the `bd` route
 - **Pre-execution `bd` compatibility route (kept, see the decision below).** No capable session
   means `SessionUnavailable` / `ServiceError` / `IncompatibleService` before the first Beads
   operation, and the seam selects its named `bd` route for the whole command. It is never a retry.
-- **Bounded rollback: `BH_BEADS_ROUTE=cli`.** Makes `hive_session` refuse before resolving
-  anything, so every cutover command takes its `bd` route at once, with the service still
-  running. Unset, empty or `api` selects the default. Any other value renders one `✗` line and
-  exits 2 (`BeadsRouteInvalid`, a `typer.Exit` subclass). It is deliberately not one of the
-  errors the seams map to the `bd` route, so a typo cannot silently reroute a command or silently
-  fail to. The switch ships with the release that first carries this cutover and is removed in
-  the release after it. The follow-up that deletes it has to touch only `selected_route` and its
-  tests.
+- **Bounded rollback env var (removed, bh-yp5e9).** For one release window a rollback switch made
+  `hive_session` refuse before resolving anything, so every cutover command took its `bd` route at
+  once, with the service still running. It shipped with the release that first carried this
+  cutover, and was deleted once `work.beads.route` (bh-m36pc) proved the config path — see
+  "Removed" below.
 
 The audit found that the per-verb pre-execution selection already was the only second path. No
 verb had a separate old Python implementation left to switch to: bh-sy36q.1 and bh-sy36q.2 had
@@ -503,6 +501,34 @@ not retired:
 
 The rollback switch is temporary. This automatic route is not, and stays after the switch is
 removed.
+
+### Superseded: `work.beads.route` makes the `bd` route opt-in (bh-m36pc)
+
+The decision above is superseded by operator decision bh-fqsp2: the API is the only default route.
+The automatic selection is kept, but only as a named per-hive opt-in, the `work.beads.route` key
+(`beadhive.beads_routing.route`, per-hive > global > `api`):
+
+- `api` (default): a seam that cannot open a capable session calls
+  `beads_routing.allow_cli_route`, which renders one `✗` line naming
+  `bh host beads start --hive <hive>` and the key, and raises `BeadsServiceRequired` (a
+  `typer.Exit`, exit 1) from the original error. No `bd` route is selected. Every error branch a
+  seam used to map onto its `bd` route goes through this gate, including `work_queue` /
+  `dispatch_state`'s `RouteMismatch` / `OperationDenied` / `UnknownOperation` / `OSError` /
+  `ValueError` branch. Pre-execution CLI routes that are not a fallback (`claim_next`'s bare
+  actor, `--epic` scoping, capped `ready` reads) are unchanged.
+- `api+cli-fallback`: exactly the automatic selection described above.
+- `cli`: `hive_session` refuses before resolving anything.
+
+An unknown value renders one `✗` line and exits 2 (`BeadsRouteConfigInvalid`); the config
+schema (`WorkConfig.beads.route`, a `Literal`) refuses it at `bh config set` and `validate`
+time too. Embedded-Dolt hives, which Beads 1.3 cannot serve, must opt in explicitly.
+
+### Removed: the bounded rollback env var (bh-yp5e9)
+
+The bounded rollback env var above is gone. `work.beads.route` (bh-m36pc) is now the sole
+mechanism, proven by the package move (bh-o3xuf) and its own attest key (bh-vq34o). `route(entry,
+cfg)` calls `configured_route(entry, cfg)` directly; there is no env-precedence branch left in
+`beadhive.beads_routing`.
 
 ### What was already cut over, and what this bead changed
 
@@ -563,6 +589,15 @@ superseded code, so none were deleted.
 
 ### Intentionally retained CLI administration and compatibility surface
 
+> **2026-09-28 (bh-o3xuf).** The `bd` argv routes behind items 1 and 3 — `CliIssues`,
+> `CliLeases`, `CliStateReads`, `CliStateOperations`, `CliGateOperations`, `CliMoleculeFiler`,
+> `CliPlanningGates`, the `show` / `children` / `child_rows` / `ready` reads, and every
+> `COORDINATION_OPERATIONS` wrapper — moved to the
+> [`beadhive-bd-cli`](../beadhive-bd-cli/README.md) library package, which root resolves lazily
+> by name (`beadhive.bd_cli`). The route *selection* stays in root, as below. Still in root, over
+> inline `bd` argv: submit's gate creation (`work.review.submit`), the `bd import` epic birth,
+> and everything in items 4–7.
+
 In the root package, over named `bd` routes:
 
 1. **Pre-execution `bd` route when no capable Beads service is available** (kept, decision
@@ -575,7 +610,7 @@ In the root package, over named `bd` routes:
    - unbounded `ready --json` (`bd ready` forward)
    - `plan file` (`CliMoleculeFiler`)
    - the local loop's molecule, swarm, event and poll reads
-2. **The bounded rollback**, `BH_BEADS_ROUTE=cli`, for one release.
+2. **The bounded rollback env var**, forcing `cli`, for one release (removed, bh-yp5e9).
 3. **Matrix `cli-compatibility` operations with no v1.3 HTTP route**, always on `bd`:
    - `work.lease.acquire` / `release`
    - `work.state.get` / `update`
@@ -652,6 +687,42 @@ The "before" spawn count is the measured after-count adjusted by the tests that 
 The cutover removed no stateful tests because nothing stateful was redundant. Every real-`bd`
 test left in the root suite exercises a retained `bd` route or real topology (worktrees,
 onboarding, doctor, hub), not superseded bead-access code.
+
+### Measured (bh-fqsp2 / bh-yp5e9)
+
+Measured on the final tree of the bh-fqsp2 delivery (work.beads.route replacing the automatic
+per-verb `bd` fallback; bh-m36pc, bh-o3xuf, bh-vq34o, bh-yp5e9) against the bh-sy36q.6 baseline
+recorded in the table above, on a 32-core host, same PATH-shim method (`bd` / `dolt` shims
+logging `$PYTEST_CURRENT_TEST`, first on `PATH` inside the hermetic fence, full root selection).
+
+| Measure | Before (bh-sy36q.6) | After (bh-yp5e9, fork tip 357a8a60) |
+|---|---|---|
+| Root selected suite (`not integration and not pants_profile`) | 9,541 | 9,557 |
+| Root selected tests that spawn a real `bd` / `dolt` process | 188 | 189 |
+| Root selected real-`bd`/`dolt` spawns (total process invocations) | 515 | 516 |
+| `packages/beadhive-bd-cli` suite (`just bd-cli-check`) | — | 55 tests, 55 passed |
+| `packages/beadhive-bd-cli` suite wall time (`-n auto`/16 workers, hermetic) | — | 21.5 s pytest call (`just bd-cli-check` end to end ≈ 29 s incl. ruff + `uv sync`) |
+| Full gate `bh work check bh-yp5e9` (`just check-all-native`) | — | in bh-yp5e9's NOTES ¹ |
+
+¹ Same caveat as bh-sy36q.6's table: the gate validates this exact tree, so its wall time is
+recorded on the bead instead of here.
+
+**The root real-`bd`/`dolt` spawn count did NOT drop.** The design expected it to fall
+materially once the migrated adapters' FakeBd/real-bd tests moved into
+`packages/beadhive-bd-cli` (bh-o3xuf). Measured reality: it is flat (188 → 189 distinct tests,
+515 → 516 spawns) — within noise of one test. The reason: the tests that moved were already
+FakeBd-backed or pure-port tests in the root suite (bh-sy36q.6's own table already measured zero
+of the 40 tests it added there as real-`bd` spawners); the 188/515 baseline was always the
+*retained* CLI administration/compatibility/topology surface (`test_cli.py`, `test_doctor*.py`,
+`test_hub*.py`, `test_onboard*.py`, `test_daemon_mcp_http.py`, the transport-parity spikes, …),
+which bh-o3xuf's scope explicitly did not touch (see its "Explicitly OUT of scope" list). Moving
+adapters that never spawned real `bd` in root cannot reduce a count that was never theirs.
+`packages/beadhive-bd-cli`'s OWN suite, by contrast, DOES spawn real `bd` deliberately —
+`test_coordination_int.py` and `test_ports_real_bd.py` exist specifically to prove the moved CLI
+adapters against a real `bd` process — that is a different, expected axis (its own sandboxed
+suite, run only by the `bd-cli` attest key) from "root's real-process spawn count," and is not a
+regression from the "0 real bd/dolt" packages-suite convention documented above (that convention
+describes `packages-check`'s shared key, from which `beadhive-bd-cli` is explicitly excluded).
 
 ## Tests
 
@@ -773,15 +844,15 @@ onboarding, doctor, hub), not superseded bead-access code.
   (the `--epic`-scoping read `bh work next --epic` and the loop share) selects
   `dispatch_state.open_swarm_members` before `bd children`, and that a successful routed answer
   means `bd` is never reached for it at all.
-- `tests/test_beads_routing.py` (bh-sy36q.6, `beadhive` package): the one composition decision.
-  It covers:
-  - the `BH_BEADS_ROUTE` switch: default, `cli`, and a mistyped value refused with exit 2 and
-    one diagnostic;
+- `tests/test_beads_routing.py` (bh-sy36q.6, updated bh-m36pc / bh-yp5e9, `beadhive` package): the
+  one composition decision. It covers:
   - every cohort seam opening its session through `beads_routing` with its own capability set;
-  - rollback selecting each seam's `bd` route before the service is even resolved;
-  - a mistyped value failing every seam instead of rerouting it;
-  - `bh work claim` byte-identical under rollback;
-  - `bh work assign` writing over HTTP by default and through `bd` under rollback;
-  - claim refusal keeping exit 1 and its `✗` diagnostic;
+  - `work.beads.route` resolving per-hive over global, and a mistyped value refusing every seam
+    with exit 2 instead of rerouting it;
+  - `api` failing every cohort closed with exit 1 when no capable session opens;
+  - `api+cli-fallback` / `cli` selecting each seam's `bd` route before the service is even
+    resolved, bit-for-bit the pre-cutover selection;
+  - `bh work claim` selecting `bd` when the hive opts in, and failing closed with the diagnostic
+    naming `work.beads.route` under the default;
   - the migrated verbs' command names and options as an explicit table, alongside
     `tests/test_cli_projection.py`'s hash-pinned Click inventory.

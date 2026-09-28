@@ -10,17 +10,19 @@ fails — the same rule :mod:`beadhive.work_queue` (bh-l5sxi.2) and :mod:`beadhi
   (``bh host beads``) can be reached: :class:`SessionMoleculeFiler` submits the compiled request
   and resolves its key-to-id map in ONE HTTP call.
 * **cli-compatibility** otherwise (an embedded-Dolt hive Beads 1.3 cannot serve, no service
-  running, a missing capability): :class:`CliMoleculeFiler` walks the identical compiled item
+  running, a missing capability), when the hive's ``work.beads.route`` allows it (bh-m36pc; the
+  default ``api`` fails closed instead): ``CliMoleculeFiler`` walks the identical compiled item
   list one ``bd create`` / ``bd dep add`` at a time. It is a thin interpreter of the SAME
   :class:`~beadhive_core.planning.CompiledMolecule`, not a second implementation of the molecule
   contract — the compiler is the one place that decides what a spec lowers to, on both routes.
 
 The molecule's gate/kickoff/swarm conventions (``plan.gate.create`` / ``plan.kickoff.update``,
-always cli-compatibility — v1.3 has no HTTP route for either) are :class:`CliPlanningGates`, the
-SAME ``bd`` calls `bh plan repair` shares (``_create_swarm`` / ``_create_kickoff_gate`` /
-``_set_kickoff_pending`` moved here from :mod:`beadhive.plan` so both callers share one
-implementation of the kickoff-gate contract, never two that could drift — see this module's
-``create_kickoff_gate`` docstring).
+always cli-compatibility — v1.3 has no HTTP route for either) are ``CliPlanningGates``, the
+SAME ``bd`` calls `bh plan repair` shares, so both callers share one implementation of the
+kickoff-gate contract, never two that could drift.
+
+Both ``bd`` routes live in the ``beadhive-bd-cli`` library package (bh-o3xuf), resolved lazily
+by name through :mod:`beadhive.bd_cli` and run over root's own ``bd`` invocation seam.
 
 ``beadhive_core`` is resolved lazily by name; ``src/beadhive`` never imports a workspace package
 statically (``scripts/check_package_imports.py``).
@@ -35,27 +37,10 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from . import adopt, bd, beads_routing, config, log, molecule, registry
+from . import adopt, bd, bd_cli, beads_routing, config, log, molecule, registry
 from .identity import workspace_identity
 
 _CORE_MODULE = "beadhive_core"
-
-
-def _unset() -> Any:
-    """The ``beads_v1_3.types.UNSET`` sentinel, imported lazily: ``src/beadhive`` must import
-    without ``beadhive-beads-client`` installed (``tests/test_demo_live_ingress_matrix.py``'s
-    no-venv parity check), and this module's own top-level import chain (``beadhive.cli`` ->
-    ``beadhive.plan`` -> here) must not force that dependency just to define the CLI-
-    compatibility molecule-filing fallback, which only runs when filing actually happens."""
-    return importlib.import_module("beads_v1_3.types").UNSET
-
-
-#: The kickoff-gate contract's authoritative marker (see ``create_kickoff_gate``). Matched by
-#: ``plan._names_kickoff_for`` — the description format must never drift from this literal.
-_KICKOFF_REASON = "kickoff {epic_id}"
-#: The release-hold gate's authoritative marker (mirrored, read-side, in
-#: ``beadhive_core.review.Gate.is_release_hold``).
-_RELEASE_HOLD_MARKER = "release-hold:"
 
 
 def _core() -> Any:
@@ -87,147 +72,13 @@ class TelemetryRoutingObserver:
         log.get_logger("beadhive.plan").info("route_selected", operation=name, route=kind)
 
 
-# ---- named CLI-compatibility routes ------------------------------------------------------------
-
-
-class CliMoleculeFiler:
-    """``plan.batch-apply.atomic``'s CLI-compatibility fallback.
-
-    Walks the SAME compiled item list :class:`SessionMoleculeFiler` would submit in one HTTP
-    request, one ``bd create`` / ``bd dep add`` at a time — the compiler decided what the
-    molecule lowers to; this only interprets it over a different transport. Selected only when
-    the hive's Beads service cannot be reached, never as a retry after a failed API call, so a
-    failure here is reported (never silently emulated as atomic): a caller that lands on this
-    route and fails partway has genuinely partial state, exactly as the pre-BatchApply
-    implementation did.
-    """
-
-    route = "cli-compatibility"
-
-    def __init__(self, main: Path) -> None:
-        self._main = main
-
-    def apply(self, compiled: Any, *, actor: str) -> Any:
-        core = _core()
-        ids: dict[str, str] = {}
-
-        def resolved(ref: Any) -> str:
-            # `Unset.__bool__` is False, so a plain truthiness check already excludes an unset
-            # `ref.id` exactly like an explicit `is not UNSET` would — no import needed here.
-            if ref.id:
-                return str(ref.id)
-            return ids[ref.key]
-
-        for item in compiled.items:
-            if item.kind.value == "create":
-                new_id = self._create(item.create, actor)
-                if item.create.key:
-                    ids[item.create.key] = new_id
-            else:
-                dep = item.dep_add
-                source_id, target_id = resolved(dep.source), resolved(dep.target)
-                result = bd.run(
-                    ["dep", "add", source_id, target_id, "-t", dep.type_], self._main, actor=actor
-                )
-                if result.returncode != 0:
-                    raise core.MoleculeFilingFailed(
-                        f"bd dep add {source_id} {target_id} -t {dep.type_} failed"
-                    )
-        return core.FilingOutcome(ids)
-
-    def _create(self, create: Any, actor: str) -> str:
-        core = _core()
-        args = [str(create.title)]
-        if create.issue_type:
-            args += ["--type", str(create.issue_type)]
-        # `priority` may legitimately be 0 (P0/critical) — falsy but SET — so this is the one
-        # field that needs the real sentinel rather than a truthiness check.
-        if create.priority is not _unset():
-            args += ["-p", str(create.priority)]
-        if create.description:
-            args += ["-d", str(create.description)]
-        if create.design:
-            args += ["--design", str(create.design)]
-        if create.acceptance_criteria:
-            args += ["--acceptance", str(create.acceptance_criteria)]
-        if create.external_ref:
-            args += ["--external-ref", str(create.external_ref)]
-        if create.labels:
-            args += ["-l", ",".join(create.labels)]
-        result = bd.run(["create", *args, "--silent"], self._main, actor=actor, capture=True)
-        new_id = (result.stdout or "").strip().splitlines()[-1].strip() if result.stdout else ""
-        if result.returncode != 0 or not new_id:
-            raise core.MoleculeFilingFailed(
-                f"bd create failed ({(result.stderr or '').strip() or 'no id returned'})"
-            )
-        return new_id
-
-
-class CliPlanningGates:
-    """``plan.gate.create`` / ``plan.kickoff.update`` over ``bd`` — v1.3 has no HTTP route for
-    either. The ONE authoritative code path for the kickoff-gate contract: `bh plan file` and
-    `bh plan repair` (:mod:`beadhive.plan`'s ``_repair_epic``) both call these same methods, so
-    the gate description format cannot drift between the two — see ``create_kickoff_gate``."""
-
-    def __init__(self, main: Path) -> None:
-        self._main = main
-
-    def create_swarm(self, epic_id: str, *, actor: str) -> bool:
-        """``bd swarm create <epic>``; True on success."""
-        return bd.run(["swarm", "create", epic_id], self._main, actor=actor).returncode == 0
-
-    def create_kickoff_gate(self, root_id: str, epic_id: str, *, actor: str) -> None:
-        """Open THE kickoff gate for one molecule root: a human gate blocking ``root_id`` whose
-        description carries the literal ``kickoff <epic_id>`` marker
-        (:mod:`beadhive.plan`'s ``_names_kickoff_for`` matches on exactly this pair)."""
-        bd.run(
-            [
-                "gate",
-                "create",
-                "--type=human",
-                "--blocks",
-                root_id,
-                "--reason",
-                _KICKOFF_REASON.format(epic_id=epic_id),
-            ],
-            self._main,
-            actor=actor,
-        )
-
-    def set_kickoff_pending(self, epic_id: str, *, actor: str) -> None:
-        """Stamp the epic ``kickoff=pending`` — filed/repaired, awaiting `plan approve`."""
-        bd.run(
-            ["set-state", epic_id, "kickoff=pending", "--reason", "awaiting kickoff approval"],
-            self._main,
-            actor=actor,
-        )
-
-    def create_release_hold_gate(self, bead_id: str, epic_id: str, *, actor: str) -> None:
-        """Open THE release-hold gate for one ``release:breaking`` bead (bh-k2j8.5,
-        ``release.enforce_hold`` on): a human gate blocking ``bead_id`` whose reason carries the
-        ``release-hold:`` marker + epic for the selector."""
-        bd.run(
-            [
-                "gate",
-                "create",
-                "--type=human",
-                "--blocks",
-                bead_id,
-                "--reason",
-                f"{_RELEASE_HOLD_MARKER} {epic_id} — release:breaking held for release",
-            ],
-            self._main,
-            actor=actor,
-        )
-
-
 # ---- route selection ---------------------------------------------------------------------------
 
 
 def hive_session(main: Path, entry: Any) -> Any:
     """An unopened session for this cohort's ``PLANNING_CAPABILITIES`` — see
     :func:`beadhive.beads_routing.hive_session` (the one composition decision, including the
-    ``BH_BEADS_ROUTE=cli`` rollback)."""
+    ``work.beads.route`` cli route)."""
     return beads_routing.hive_session(main, entry, _core().PLANNING_CAPABILITIES)
 
 
@@ -254,10 +105,11 @@ def _filer(main: Path, entry: Any) -> Iterator[Any]:
         session = session_factory(main, entry)
         session.open()
     except _unavailable_errors() as exc:
+        beads_routing.allow_cli_route(entry, exc)
         log.get_logger("beadhive.plan").info(
             "planning_route_fallback", operation=core.BATCH_APPLY_ROUTE, detail=str(exc)
         )
-        yield CliMoleculeFiler(main)
+        yield bd_cli.molecule_filer(main)
         return
     try:
         yield core.SessionMoleculeFiler(session, observer=TelemetryRoutingObserver())
@@ -334,7 +186,7 @@ def file(spec: dict, cwd: Path, actor: str, cfg: Any) -> Any:
     )
     try:
         with _filer(cwd, entry) as filer:
-            commands = core.PlanningCommands(filer, CliPlanningGates(cwd))
+            commands = core.PlanningCommands(filer, bd_cli.planning_gates(cwd))
             return commands.file(
                 spec,
                 actor=actor,

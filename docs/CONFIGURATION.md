@@ -452,6 +452,20 @@ pre-existing `model` field remains temporarily as a deprecated alias of `selecte
 See [Complexity-first routing](COMPLEXITY-ROUTING.md) for availability limitations, strict/loose
 decision behavior, migration recovery, and the complete public decision schema.
 
+## `work.beads` — Beads route {#work-beads}
+
+`work.beads.route` decides whether the cohorts cut over to `beadhive-core` (assign, claim,
+resume, abandon, submit's bead-state half, next, ready --json, schedule, `bh plan file`, and the
+local loop's reads) may take their `bd` CLI route when no capable Beads service session opens.
+Resolves per-hive `entry.work.beads.route` > global `work.beads.route` > `api`.
+
+| Key | Default | Values | Effect |
+|---|---|---|---|
+| `work.beads.route` | `api` | `api` \| `api+cli-fallback` \| `cli` | `api`: fail closed, naming `bh host beads start --hive <hive>` and this key. `api+cli-fallback`: select the `bd` route before execution when no capable session opens. `cli`: always the `bd` route. An unknown value is refused (exit 2), never defaulted. |
+
+See [BEADS-SERVICE.md](BEADS-SERVICE.md) for the full behavior table.
+`bh work approve` / `bounce` are outside this key and always fail closed without a service.
+
 ## `work.dispatch` — collapsed dispatch
 
 `work.dispatch.*` tunes how the root dispatcher dispatches a ready epic's beads: the default

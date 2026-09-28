@@ -24,17 +24,24 @@ graphs. The native hive profile removes the catalog and uses its single explicit
 | `stateful` | `just attest-stateful` | `attest:stateful` | Native stateful suite (hermetic fence) |
 | `integration` | `just attest-integration` | `attest:integration` | Landing integration tests |
 | `architecture-contracts` | `just attest-architecture-contracts` | `attest:architecture-contracts` | Architecture, transport, wire, and proof contracts |
-| `packages` | `just attest-packages` | `attest:packages` | Ruff and sandboxed tests for every `packages/*` distribution |
+| `packages` | `just attest-packages` | `attest:packages` | Ruff and sandboxed tests for every other `packages/*` distribution |
+| `bd-cli` | `just attest-bd-cli` | `attest:bd-cli` | Ruff and sandboxed tests for `packages/beadhive-bd-cli` only |
 | `demos` | `just attest-demos` | `attest:demos` | Local-loop and live-ingress operator demos |
 
-`packages` is one shared key for all in-repo distributions. The template in
-`packages/_template` gives each package recursive source, resource, and test targets tagged
-`attest:packages`; `just pkg <name> check` validates one package during development, while
-`just packages-check` is the whole-tree recipe called by `just attest-packages`. Copying the
-template to a new package and running `uv lock` includes it in the workspace and Pants graph.
-Every package test runs in its own Pants sandbox. A package backend is selected through plugin
-manifest discovery and a lazy bootstrap binding; the attest key itself does not import or
-register backend implementations.
+`packages` is the shared key for every in-repo distribution except `beadhive-bd-cli`. The
+template in `packages/_template` gives each package recursive source, resource, and test
+targets tagged `attest:packages`; `just pkg <name> check` validates one package during
+development, while `just packages-check` is the whole-tree recipe called by
+`just attest-packages`. Copying the template to a new package and running `uv lock` includes it
+in the workspace and Pants graph. Every package test runs in its own Pants sandbox. A package
+backend is selected through plugin manifest discovery and a lazy bootstrap binding; the attest
+key itself does not import or register backend implementations.
+
+`beadhive-bd-cli` has its own dedicated `bd-cli` key instead (bh-vq34o): it implements
+`beadhive-core`'s ports and changes far more often than the rest of `packages/*`, so folding it
+into the shared `packages` key would invalidate every other distribution's proof on every touch.
+Its targets carry `attest:bd-cli` rather than `attest:packages`, and `just bd-cli-check` — not
+`just packages-check` — is its whole-package recipe, called by `just attest-bd-cli`.
 
 Keys are policy, not test-framework plugins. `cmd` is an opaque string that Beadhive executes
 verbatim. A key is required unless configured with `policy: optional`. An optional key may be

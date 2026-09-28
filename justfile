@@ -148,11 +148,11 @@ gateway-contract-check:
 # FULL GATE: ruff + markdown + licences + the COMPLETE suite + the local-loop demo — what the LAND runs
 check-all: check-all-native
 
-check-all-pants: require-bd lint lint-md license-check architecture-structural-check architecture-pants-check pants-attest pants-artifact-check stateful-pants stateful-native test-integration-land demo-local-loop demo-live-ingress packages-check beads-client-check
+check-all-pants: require-bd lint lint-md license-check architecture-structural-check architecture-pants-check pants-attest pants-artifact-check stateful-pants stateful-native test-integration-land demo-local-loop demo-live-ingress packages-check beads-client-check bd-cli-check
 
 # Full native validation runs every core and workspace test directly with pytest. Pants remains
 # available through check-all-pants; this mode deliberately has no Pants engine prerequisite.
-check-all-native: require-bd lint lint-md license-check architecture-structural-check stateful-native beads-client-check test-integration-land demo-local-loop demo-live-ingress packages-check
+check-all-native: require-bd lint lint-md license-check architecture-structural-check stateful-native beads-client-check test-integration-land demo-local-loop demo-live-ingress packages-check bd-cli-check
 
 # Attest-key commands deliberately partition check-all-native, the push gate. Pants steps belong
 # only to the optional check-all-pants profile, never to a key (native is the primary framework;
@@ -178,10 +178,16 @@ attest-integration:
 attest-architecture-contracts:
     just architecture-structural-check
 
-# ONE key for every packages/* distribution (bh-3fcl0.1); Pants' CAS serves unchanged ones.
+# ONE key for every OTHER packages/* distribution (bh-3fcl0.1); Pants' CAS serves unchanged
+# ones. beadhive-bd-cli has its own key below (bh-vq34o).
 attest-packages:
     just packages-check
     just beads-client-check
+
+# beadhive-bd-cli's own key (bh-vq34o), split out of the shared `packages` key: it implements
+# beadhive-core's ports and changes far more often than the rest of packages/*.
+attest-bd-cli:
+    just bd-cli-check
 
 # The demos execute declared application and fixture inputs, and config owners carry the same
 # selector. They therefore run for graph-implicated code/config changes without taxing docs-only
@@ -748,18 +754,35 @@ _pants *args:
 pkg name *args:
     just --justfile {{quote("packages/" + name + "/justfile")}} {{args}}
 
-# lint + sandboxed tests for every packages/* distribution (the `packages` attest key). ruff
-# runs here too: a change confined to packages/ selects only this key, never `unit`'s `lint`.
+# lint + sandboxed tests for every OTHER packages/* distribution (the `packages` attest key).
+# ruff runs here too: a change confined to packages/ selects only this key, never `unit`'s
+# `lint`. beadhive-bd-cli is EXCLUDED (bh-vq34o): it implements beadhive-core's ports and
+# changes far more often than the rest of packages/*, so it gets its own `bd-cli` key/leaf
+# (`bd-cli-check` below) instead of invalidating every other distribution's proof on every
+# touch. uv sync/build below still cover the whole workspace (`--all-packages`) -- that's
+# shared infrastructure, not a per-package test -- only the lint scope and the test glob carve
+# beadhive-bd-cli out.
 packages-check:
-    uv run ruff check packages
-    uv run ruff format --check packages
+    uv run ruff check packages --exclude packages/beadhive-bd-cli
+    uv run ruff format --check packages --exclude packages/beadhive-bd-cli
     # The two locked `uv run` steps above provision build requirements in the selected cache.
     # Keep workspace builds deterministic when the package index is temporarily unavailable.
     ./scripts/hermetic.sh uv sync --locked --offline --all-packages
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run --locked --all-packages python scripts/pytest_with_report.py -n auto packages/*/tests
+        ./scripts/hermetic.sh uv run --locked --all-packages python scripts/pytest_with_report.py -n auto $(printf '%s\n' packages/*/tests | grep -v '^packages/beadhive-bd-cli/tests$')
     ./scripts/hermetic.sh uv build --all-packages --no-build-isolation
     just release-smoke-check
+
+# lint + sandboxed tests for ONLY packages/beadhive-bd-cli (the `bd-cli` attest key, bh-vq34o).
+# Mirrors packages-check's structure, scoped to this one distribution: beadhive-bd-cli
+# implements beadhive-core's ports and is the most actively-changed package, so it gets its
+# own key rather than sharing the generic `packages` key's whole-tree invalidation.
+bd-cli-check:
+    uv run ruff check packages/beadhive-bd-cli
+    uv run ruff format --check packages/beadhive-bd-cli
+    ./scripts/hermetic.sh uv sync --locked --offline --all-packages
+    uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
+        ./scripts/hermetic.sh uv run --locked --all-packages python scripts/pytest_with_report.py -n auto packages/beadhive-bd-cli/tests
 
 # Reproduces .github/workflows/release.yml's build + smoke test (bh-mxjoy). A plain `uv build`
 # here builds the ROOT distribution ONLY — no `--all-packages`, so uv resolves

@@ -969,17 +969,31 @@ def refresh_container(entry, branch: str, upstream: str) -> None:
         tracked = _run_git(
             ["git", "-C", str(main), "rev-parse", tracking_ref], check=False, capture=True
         )
-        if (
-            local.returncode != 0
-            or tracked.returncode != 0
-            or (local.stdout or "").strip() != (tracked.stdout or "").strip()
-        ):
-            typer.echo(
-                f"WARNING: refusing refresh of {branch} from {upstream}: local {upstream} "
-                f"diverges from remote-tracking ref {tracking_ref}",
-                err=True,
+        local_rev = (local.stdout or "").strip()
+        tracked_rev = (tracked.stdout or "").strip()
+        if local.returncode != 0 or tracked.returncode != 0 or local_rev != tracked_rev:
+            # Unequal: lands accumulate on local main before an eventual push, so local being
+            # strictly AHEAD of origin (tracked is an ancestor of local) is the normal, safe,
+            # fast-forward-publishable case — proceed instead of refusing. Only refuse when local
+            # is behind or has diverged (tracked is NOT an ancestor of local), or either rev is
+            # unresolvable.
+            ahead = (
+                local.returncode == 0
+                and tracked.returncode == 0
+                and _run_git(
+                    ["git", "-C", str(main), "merge-base", "--is-ancestor", tracked_rev, local_rev],
+                    check=False,
+                    capture=True,
+                ).returncode
+                == 0
             )
-            return
+            if not ahead:
+                typer.echo(
+                    f"WARNING: refusing refresh of {branch} from {upstream}: local {upstream} "
+                    f"diverges from remote-tracking ref {tracking_ref}",
+                    err=True,
+                )
+                return
     res = _run_git(
         ["git", "-C", str(main), "rev-list", "--count", f"{branch}..{upstream}"],
         check=False,

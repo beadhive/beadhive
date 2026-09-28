@@ -39,6 +39,7 @@ import typer
 from . import (
     adopt,  # noqa: F401 - injected merge collaborator
     bd,
+    bd_cli,  # noqa: F401 - injected lifecycle collaborator
     claim_authority,  # noqa: F401 - injected submission collaborator
     converge,  # noqa: F401 - injected submission collaborator
     dispatch_state,  # noqa: F401 - injected lifecycle collaborator

@@ -1,9 +1,10 @@
 """The compatibility shell's review composition seam (bh-bwnys.1).
 
-Covers only what the shell owns: the ``GateOperations`` / ``StateOperations`` adapters over the
-existing named ``bd`` CLI routes, the hive's Beads session selection, and the top-level
+Covers only what the shell owns: the hive's Beads session selection, and the top-level
 ``bh work approve`` / ``bounce`` adapter (arguments, actor resolution, rendering, exit codes).
-Review policy itself is proven package-locally in ``packages/beadhive-core/tests``.
+Review policy itself is proven package-locally in ``packages/beadhive-core/tests``, and the
+``GateOperations`` / ``StateOperations`` ``bd`` routes in ``packages/beadhive-bd-cli/tests``
+(bh-o3xuf).
 """
 
 from __future__ import annotations
@@ -65,70 +66,6 @@ def _gate(gate_id, blocks, reason, status="open", await_type="human"):
         "description": f"blocks {blocks}\n\nReason: {reason}",
         "await_type": await_type,
     }
-
-
-# ---- GateOperations / StateOperations over the CLI compatibility routes ----------------------
-
-
-def test_gate_lookup_reuses_the_unwindowed_list_and_anchors_the_bead_id(recorded):
-    runner = recorded(
-        [
-            _gate("g1", "bh-epic.1", "bh:review abc1234"),
-            _gate("g10", "bh-epic.10", "security: warden scan"),
-            _gate("g-parent", "bh-epic", "release-hold: legal"),
-            _gate("g0", "bh-epic.1", "bh:review 1111111", status="closed"),
-        ]
-    )
-
-    gates = work_review.CliGateOperations(MAIN).gates_for("bh-epic.1")
-
-    assert runner.calls == [
-        ["bd", "-C", str(MAIN), "gate", "list", "--limit", "0", "--all", "--json"]
-    ]
-    assert [(g.id, g.status, g.await_type) for g in gates] == [
-        ("g1", "open", "human"),
-        ("g0", "closed", "human"),
-    ]
-    assert all(isinstance(g, core.Gate) for g in gates)
-
-
-def test_gate_lookup_failure_raises_instead_of_reading_as_no_gates(recorded):
-    recorded(fail={"gate list": 1})
-
-    with pytest.raises(core.GateLookupFailed):
-        work_review.CliGateOperations(MAIN).gates_for(BEAD)
-
-
-def test_gate_resolve_is_attributed_and_carries_the_bd_exit_code(recorded):
-    runner = recorded()
-    gates = work_review.CliGateOperations(MAIN)
-
-    gates.resolve("g1", reason="approved by rev/bob", actor="rev/bob")
-    assert runner.calls[-1] == [
-        "bd", "-C", str(MAIN), "--actor", "rev/bob",
-        "gate", "resolve", "g1", "--reason", "approved by rev/bob",
-    ]  # fmt: skip
-
-    recorded(fail={"gate resolve": 3})
-    with pytest.raises(core.GateResolveFailed) as failure:
-        gates.resolve("g1", reason="x", actor="rev/bob")
-    assert failure.value.exit_code == 3
-
-
-def test_state_route_is_bd_set_state_attributed_to_the_actor(recorded):
-    runner = recorded()
-    states = work_review.CliStateOperations(MAIN)
-
-    states.set_state(BEAD, "review", "changes-requested", reason="changes requested", actor="r/b")
-    assert runner.calls[-1] == [
-        "bd", "-C", str(MAIN), "--actor", "r/b",
-        "set-state", BEAD, "review=changes-requested", "--reason", "changes requested",
-    ]  # fmt: skip
-
-    recorded(fail={f"set-state {BEAD}": 2})
-    with pytest.raises(core.StateUpdateFailed) as failure:
-        states.set_state(BEAD, "review", "approved", reason="x", actor="r/b")
-    assert failure.value.exit_code == 2
 
 
 # ---- session selection -----------------------------------------------------------------------

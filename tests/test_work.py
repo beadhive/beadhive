@@ -68,6 +68,7 @@ providers: [github]
 work:
   validate_cmd: "true"
   review_gate: "human"
+  beads: {route: "api+cli-fallback"}  # FakeBd-backed: opt into the bd route (bh-m36pc)
   identity: {mode: agent, name: "dev/default", email: "agents@test.dev"}
 managed_repos:
   - {provider: github, org: myorg, repo: myrepo, prefix: mr, kind: personal}
@@ -78,6 +79,7 @@ providers: [github]
 work:
   validate_cmd: "true"
   review_gate: "human"
+  beads: {route: "api+cli-fallback"}  # FakeBd-backed: opt into the bd route (bh-m36pc)
   landing: pr
   identity: {mode: agent, name: "dev/default", email: "agents@test.dev"}
 managed_repos:
@@ -89,6 +91,7 @@ providers: [github]
 work:
   validate_cmd: "true"
   review_gate: "human"
+  beads: {route: "api+cli-fallback"}  # FakeBd-backed: opt into the bd route (bh-m36pc)
   identity: {mode: agent, name: "dev/default", email: "agents@test.dev"}
 managed_repos:
   - {provider: github, org: myorg, repo: myrepo, prefix: mr, kind: external,
@@ -100,6 +103,7 @@ providers: [github]
 work:
   validate_cmd: "true"
   review_gate: "human"
+  beads: {route: "api+cli-fallback"}  # FakeBd-backed: opt into the bd route (bh-m36pc)
   identity: {mode: agent, email: "agents@test.dev"}
 managed_repos:
   - {provider: github, org: myorg, repo: myrepo, prefix: mr, kind: personal}
@@ -110,6 +114,7 @@ providers: [github]
 work:
   validate_cmd: "true"
   review_gate: "human"
+  beads: {route: "api+cli-fallback"}  # FakeBd-backed: opt into the bd route (bh-m36pc)
   identity: {mode: agent, name: "dev/default", email: "agents@test.dev"}
   conflict:
     union_globs: ["notes.txt"]
@@ -797,13 +802,79 @@ def test_submit_tolerates_container_refresh_merge(hive, fakebd):
     assert fakebd.states["mr-1.2"]["review"] == "pending"
 
 
-def test_claim_refuses_refresh_from_diverged_tracked_integration(hive, fakebd, capsys):
-    """A local-only main commit must not be made durable in an epic refresh bubble."""
+def _second_clone(hive, tmp_path):
+    """A second clone of the same bare remote — lets a test advance `origin/main` independently
+    of `hive.main`'s local `main`, to build a behind or diverged scenario."""
+    other = tmp_path / "second-clone"
+    _git("clone", "-q", str(hive.remote), str(other), cwd=tmp_path)
+    _git("config", "user.email", "human@example.com", cwd=other)
+    _git("config", "user.name", "human", cwd=other)
+    # The bare remote's HEAD isn't set to `main` (it was never checked out there), so a plain
+    # clone lands on a nonexistent-branch checkout — pin an explicit local `main` tracking
+    # `origin/main`.
+    _git("checkout", "-q", "-b", "main", "origin/main", cwd=other)
+    return other
+
+
+def test_claim_refreshes_container_when_local_main_is_strictly_ahead_of_origin(
+    hive, fakebd, capsys
+):
+    """Lands accumulate on local main before an eventual push — local main strictly ahead of
+    origin/main (tracked is an ancestor of local) is the normal, safe, fast-forward-publishable
+    case, so refresh must PROCEED rather than being refused."""
     _kicked_off_pair(fakebd)
     _git("push", "-u", "-q", "origin", "main", cwd=hive.main)
     work.claim(bead="mr-1.1", as_="", hive="myrepo")
     seat = _wt(hive, "mr-1")
     _commit(seat, "feat: container-side work", fname="container.txt")
+    _commit(hive.main, "fix: local-only land ahead of origin", fname="mainfix.txt")
+    capsys.readouterr()
+
+    work.claim(bead="mr-1.2", as_="", hive="myrepo")
+
+    assert "diverges" not in capsys.readouterr().err
+    assert (_wt_of(hive, "mr-1.2") / "mainfix.txt").exists(), (
+        "refresh must pick up the local-only land, not refuse it"
+    )
+
+
+def test_claim_refuses_refresh_when_local_main_is_behind_origin(hive, fakebd, capsys, tmp_path):
+    """Local main missing commits present on origin (tracked is NOT an ancestor of local) is a
+    real hazard — it must still refuse, exactly as before."""
+    _kicked_off_pair(fakebd)
+    _git("push", "-u", "-q", "origin", "main", cwd=hive.main)
+    work.claim(bead="mr-1.1", as_="", hive="myrepo")
+    seat = _wt(hive, "mr-1")
+    _commit(seat, "feat: container-side work", fname="container.txt")
+
+    other = _second_clone(hive, tmp_path)
+    _commit(other, "fix: landed on origin from elsewhere", fname="originfix.txt")
+    _git("push", "-q", "origin", "main", cwd=other)
+    _git("fetch", "-q", "origin", cwd=hive.main)  # advances origin/main tracking ref only
+    before = _git("rev-parse", "wt/bead/epic/mr-1", cwd=hive.main).stdout.strip()
+    capsys.readouterr()
+
+    work.claim(bead="mr-1.2", as_="", hive="myrepo")
+
+    assert "diverges from remote-tracking ref origin/main" in capsys.readouterr().err
+    assert _git("rev-parse", "wt/bead/epic/mr-1", cwd=hive.main).stdout.strip() == before
+    assert not (_wt_of(hive, "mr-1.2") / "originfix.txt").exists()
+
+
+def test_claim_refuses_refresh_when_local_main_diverged_from_origin(hive, fakebd, capsys, tmp_path):
+    """Local main and origin/main each carry a commit the other lacks — true divergence (neither
+    is an ancestor of the other) is a real hazard, so it must still refuse."""
+    _kicked_off_pair(fakebd)
+    _git("push", "-u", "-q", "origin", "main", cwd=hive.main)
+    work.claim(bead="mr-1.1", as_="", hive="myrepo")
+    seat = _wt(hive, "mr-1")
+    _commit(seat, "feat: container-side work", fname="container.txt")
+
+    other = _second_clone(hive, tmp_path)
+    _commit(other, "fix: landed on origin from elsewhere", fname="originfix.txt")
+    _git("push", "-q", "origin", "main", cwd=other)
+    _git("fetch", "-q", "origin", cwd=hive.main)  # origin/main now holds a commit local lacks
+    # local main also diverges with its own commit
     _commit(hive.main, "fix: local only integration work", fname="mainfix.txt")
     before = _git("rev-parse", "wt/bead/epic/mr-1", cwd=hive.main).stdout.strip()
     capsys.readouterr()
@@ -813,6 +884,7 @@ def test_claim_refuses_refresh_from_diverged_tracked_integration(hive, fakebd, c
     assert "diverges from remote-tracking ref origin/main" in capsys.readouterr().err
     assert _git("rev-parse", "wt/bead/epic/mr-1", cwd=hive.main).stdout.strip() == before
     assert not (_wt_of(hive, "mr-1.2") / "mainfix.txt").exists()
+    assert not (_wt_of(hive, "mr-1.2") / "originfix.txt").exists()
 
 
 def test_claim_as_flag_overrides_identity(hive, fakebd):
@@ -1052,6 +1124,7 @@ providers: [github]
 work:
   validate_cmd: "true"
   review_gate: "human"
+  beads: {route: "api+cli-fallback"}  # FakeBd-backed: opt into the bd route (bh-m36pc)
   identity:
     mode: agent
     name: "dev/default"
@@ -1104,6 +1177,7 @@ providers: [github]
 work:
   validate_cmd: "true"
   review_gate: "human"
+  beads: {route: "api+cli-fallback"}  # FakeBd-backed: opt into the bd route (bh-m36pc)
   identity:
     mode: agent
     name: "dev/default"

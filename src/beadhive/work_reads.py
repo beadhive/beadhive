@@ -36,7 +36,7 @@ from typing import Any
 
 import typer
 
-from . import bd, otel, registry, release_order, work_guards, work_queue, worktree
+from . import bd, bd_cli, otel, registry, release_order, work_guards, work_queue, worktree
 from . import schedule as schedule_mod
 from .config_consumer_ports import work_settings as config
 
@@ -98,7 +98,11 @@ class MoleculeReadinessError(Exception):
 
 
 def forward_read(sub_args, cwd):
-    result = bd.run(sub_args, cwd, capture=True)
+    emit_forward(bd.run(sub_args, cwd, capture=True))
+
+
+def emit_forward(result):
+    """Write a captured ``bd`` forward's output verbatim and exit with its code."""
     if result.stdout:
         sys.stdout.write(result.stdout)
     if result.stderr:
@@ -141,9 +145,9 @@ def count_avoided_conflicts(beads, order, estimator, strategy) -> None:
 
 
 def forward_ready_ordered(args, cwd, strategy, fix_churn_budget, estimator) -> None:
-    beads = bd.json(["ready", *[arg for arg in args if arg != "--json"]], cwd)
+    beads = bd_cli.ready_rows(cwd, args)
     if not isinstance(beads, list) or not beads:
-        forward_read(["ready", *args], cwd)
+        emit_forward(bd_cli.ready(cwd, args))
         return
     order = release_order.merge_sequence(
         beads, strategy=strategy, fix_churn_budget=fix_churn_budget
@@ -156,7 +160,7 @@ def forward_ready_ordered(args, cwd, strategy, fix_churn_budget, estimator) -> N
         )
         sys.stdout.write(json.dumps(ordered, indent=2) + "\n")
         return
-    result = bd.run(["ready", *args], cwd, capture=True)
+    result = bd_cli.ready(cwd, args)
     if result.stdout:
         sys.stdout.write(reorder_ready_lines(result.stdout, order))
     if result.stderr:
@@ -360,7 +364,7 @@ def ready_via_api(cwd, entry, args: list[str]) -> bool:
 
 
 def forward_ready_plain(args, cwd) -> None:
-    result = bd.run(["ready", *args], cwd, capture=True)
+    result = bd_cli.ready(cwd, args)
     if result.stdout:
         sys.stdout.write(result.stdout)
     if result.stderr:
@@ -369,7 +373,7 @@ def forward_ready_plain(args, cwd) -> None:
 
 
 def emit_start_gated_ready(cfg, entry, cwd, args) -> None:
-    result = bd.run(["ready", *args], cwd, capture=True)
+    result = bd_cli.ready(cwd, args)
     try:
         beads = json.loads(result.stdout) if result.stdout.strip() else []
     except json.JSONDecodeError:

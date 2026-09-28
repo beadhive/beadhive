@@ -93,6 +93,12 @@ def _api_session_factory(fixture: FakeDispatchService):
     return factory
 
 
+#: A hive that opts into the bd route (bh-m36pc): only then does an unavailable service select it.
+#: Under the default ``work.beads.route: api`` the same call fails closed — see
+#: ``tests/test_beads_routing.py``.
+FALLBACK_ENTRY = {"prefix": "mr", "work": {"beads": {"route": "api+cli-fallback"}}}
+
+
 def _unavailable_factory(_main, _entry):
     raise ServiceUnavailable("no service", state="absent", start_command="bh host beads start")
 
@@ -113,7 +119,7 @@ def test_open_molecule_progress_routes_through_the_api(monkeypatch):
 
 def test_open_molecule_progress_falls_back_to_none_when_the_service_is_unavailable(monkeypatch):
     monkeypatch.setattr(dispatch_state, "session_factory", _unavailable_factory)
-    assert dispatch_state.open_molecule_progress(Path("/fake/main"), {"prefix": "mr"}, "e") is None
+    assert dispatch_state.open_molecule_progress(Path("/fake/main"), FALLBACK_ENTRY, "e") is None
 
 
 def test_open_local_loop_state_routes_through_the_api(monkeypatch):
@@ -128,7 +134,7 @@ def test_open_local_loop_state_routes_through_the_api(monkeypatch):
 
 def test_open_local_loop_state_falls_back_to_none_when_the_service_is_unavailable(monkeypatch):
     monkeypatch.setattr(dispatch_state, "session_factory", _unavailable_factory)
-    assert dispatch_state.open_local_loop_state(Path("/fake/main"), {"prefix": "mr"}, "b") is None
+    assert dispatch_state.open_local_loop_state(Path("/fake/main"), FALLBACK_ENTRY, "b") is None
 
 
 # ---- swarm_members / event_rows -----------------------------------------------------------------
@@ -156,7 +162,7 @@ def test_open_swarm_members_routes_through_the_api_and_narrows_to_direct_edge(mo
 
 def test_open_swarm_members_falls_back_to_none_when_the_service_is_unavailable(monkeypatch):
     monkeypatch.setattr(dispatch_state, "session_factory", _unavailable_factory)
-    assert dispatch_state.open_swarm_members(Path("/fake/main"), {"prefix": "mr"}, "ep-1") is None
+    assert dispatch_state.open_swarm_members(Path("/fake/main"), FALLBACK_ENTRY, "ep-1") is None
 
 
 def test_open_event_rows_routes_through_the_api_and_does_not_narrow(monkeypatch):
@@ -173,7 +179,7 @@ def test_open_event_rows_routes_through_the_api_and_does_not_narrow(monkeypatch)
 
 def test_open_event_rows_falls_back_to_none_when_the_service_is_unavailable(monkeypatch):
     monkeypatch.setattr(dispatch_state, "session_factory", _unavailable_factory)
-    assert dispatch_state.open_event_rows(Path("/fake/main"), {"prefix": "mr"}, "bh-1") is None
+    assert dispatch_state.open_event_rows(Path("/fake/main"), FALLBACK_ENTRY, "bh-1") is None
 
 
 # ---- poll_ready ----------------------------------------------------------------------------------
@@ -194,7 +200,7 @@ def test_open_poll_ready_routes_through_the_api(monkeypatch):
 
 def test_open_poll_ready_falls_back_to_none_when_the_service_is_unavailable(monkeypatch):
     monkeypatch.setattr(dispatch_state, "session_factory", _unavailable_factory)
-    assert dispatch_state.open_poll_ready(Path("/fake/main"), {"prefix": "mr"}) is None
+    assert dispatch_state.open_poll_ready(Path("/fake/main"), FALLBACK_ENTRY) is None
 
 
 def test_open_poll_ready_forwards_parent_scoping(monkeypatch):
