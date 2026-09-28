@@ -93,6 +93,7 @@
     "packages/beadhive-worktrees/tests/test_worktrees_package_boundary.py": {"status": "proven", "dependencies": ["packages/beadhive-worktrees/src:lib"]},
     "packages/beadhive-worktrees/tests/test_policy.py": {"status": "proven", "dependencies": ["packages/beadhive-worktrees/src:lib"]},
     "packages/beadhive-worktrees/tests/test_services.py": {"status": "proven", "dependencies": ["packages/beadhive-worktrees/src:lib"]},
+    "packages/beadhive-worktrees/tests/test_init_rules.py": {"status": "proven", "dependencies": ["packages/beadhive-worktrees/src:lib"]},
     "packages/beadhive-pants/tests/test_impact_conformance.py": {"status": "proven", "dependencies": ["beadhive.testing impact conformance kit", "beadhive-pants:lib"]},
     "packages/beadhive-pants/tests/test_package.py": {"status": "proven", "dependencies": ["beadhive-pants packaged resources", "beadhive public contracts"]},
     "packages/beadhive-pants/tests/test_verify.py": {"status": "proven", "dependencies": ["beadhive-pants:lib", "beadhive build verification contracts"]},
