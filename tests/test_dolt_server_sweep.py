@@ -19,6 +19,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -43,6 +44,7 @@ def fake_dolt(tmp_path):
         _wait_until_visible(proc.pid)
         return proc
 
+    _start.binary = binary
     yield _start
     for proc in started:
         with contextlib.suppress(OSError):
@@ -68,6 +70,24 @@ def _config(tmp_path, name: str):
     cfg = server_dir / "dolt-server-config.yaml"
     cfg.write_text("listener:\n  port: 3308\n")
     return cfg
+
+
+@pytest.fixture
+def isolated_sweep_root(tmp_path_factory):
+    """A nested pytest root that a concurrent outer controller cannot sweep.
+
+    The stateful suite's controllers all sweep the shared ``pytest-of-<user>`` root.  A nested
+    proof rooted anywhere below it therefore exposes its deliberately orphaned fake server to
+    every sibling controller.  Put the nested proof beside that shared root so only the nested
+    controller's explicitly scoped sweep can see it.
+    """
+    shared_pytest_root = tmp_path_factory.getbasetemp().parent
+    with tempfile.TemporaryDirectory(
+        prefix="bh-dolt-sweep-proof-", dir=shared_pytest_root.parent
+    ) as root:
+        isolated_root = Path(root)
+        assert not isolated_root.is_relative_to(shared_pytest_root)
+        yield isolated_root
 
 
 def test_a_server_whose_config_dir_was_deleted_is_orphaned(tmp_path, fake_dolt):
@@ -139,9 +159,25 @@ def test_the_sweep_is_a_no_op_when_there_is_nothing_to_reap(tmp_path):
     assert sweep_orphaned_dolt_servers(tmp_path) == []
 
 
-def test_xdist_controller_reaps_prior_session_orphan_at_start(tmp_path, fake_dolt):
+def test_nested_sweep_root_is_hidden_from_concurrent_controller(
+    tmp_path_factory, isolated_sweep_root, fake_dolt
+):
+    """A sibling stateful controller cannot consume the nested proof's fake orphan."""
+    cfg = _config(isolated_sweep_root, "nested-proof")
+    proc = fake_dolt(cfg)
+    shutil.rmtree(cfg.parent)
+
+    concurrent_root = tmp_path_factory.getbasetemp().parent
+    concurrent_candidates = orphaned_dolt_servers(concurrent_root)
+    nested_candidates = orphaned_dolt_servers(isolated_sweep_root)
+
+    assert proc.pid not in [pid for pid, _cfg in concurrent_candidates]
+    assert proc.pid in [pid for pid, _cfg in nested_candidates]
+
+
+def test_xdist_controller_reaps_prior_session_orphan_at_start(isolated_sweep_root, fake_dolt):
     """The plugin hook runs on the controller before xdist workers start."""
-    cfg = _config(tmp_path, "prior-session")
+    cfg = _config(isolated_sweep_root, "prior-session")
     proc = fake_dolt(cfg)
     shutil.rmtree(cfg.parent)
     repo = Path(__file__).parents[1]
@@ -157,7 +193,7 @@ def test_xdist_controller_reaps_prior_session_orphan_at_start(tmp_path, fake_dol
             "-s",
             "tests/unit/test_pure_module_independence.py::test_operation_catalog_import_has_no_ambient_or_runtime_dependencies",
             "--basetemp",
-            str(tmp_path / "current-session"),
+            str(isolated_sweep_root / "current-session"),
         ],
         cwd=repo,
         text=True,
@@ -170,11 +206,11 @@ def test_xdist_controller_reaps_prior_session_orphan_at_start(tmp_path, fake_dol
     proc.wait(timeout=10)
 
 
-def test_xdist_controller_reaps_worker_orphan_at_end(tmp_path, fake_dolt):
+def test_xdist_controller_reaps_worker_orphan_at_end(isolated_sweep_root, fake_dolt):
     """The plugin hook runs on the controller after xdist workers have stopped."""
     repo = Path(__file__).parents[1]
-    pid_path = tmp_path / "worker-orphan.pid"
-    child_test = tmp_path / "test_create_worker_orphan.py"
+    pid_path = isolated_sweep_root / "worker-orphan.pid"
+    child_test = isolated_sweep_root / "test_create_worker_orphan.py"
     child_test.write_text(
         """\
 import os
@@ -206,7 +242,7 @@ def test_create_worker_orphan(tmp_path):
 """
     )
     environment = dict(os.environ)
-    environment["BH_TEST_FAKE_DOLT"] = str(tmp_path / "bin" / "dolt")
+    environment["BH_TEST_FAKE_DOLT"] = str(fake_dolt.binary)
     environment["BH_TEST_ORPHAN_PID"] = str(pid_path)
     environment["PYTHONPATH"] = os.pathsep.join(
         [str(repo / "tests"), str(repo / "src"), environment.get("PYTHONPATH", "")]
@@ -226,7 +262,7 @@ def test_create_worker_orphan(tmp_path):
                 "-s",
                 str(child_test),
                 "--basetemp",
-                str(tmp_path / "current-session"),
+                str(isolated_sweep_root / "current-session"),
             ],
             cwd=repo,
             env=environment,
