@@ -98,7 +98,7 @@ class MoleculeReadinessError(Exception):
 
 
 def forward_read(sub_args, cwd):
-    emit_forward(bd.run(sub_args, cwd, capture=True))
+    emit_forward(bd_cli.routes(cwd).forward(sub_args))
 
 
 def emit_forward(result):
@@ -169,7 +169,7 @@ def forward_ready_ordered(args, cwd, strategy, fix_churn_budget, estimator) -> N
 
 
 def readiness_json(args, cwd):
-    result = bd.run([*args, "--json"], cwd, capture=True)
+    result = bd_cli.routes(cwd).json_forward(args)
     if result.returncode != 0:
         raise MoleculeReadinessError(bd.err_detail(result))
     try:

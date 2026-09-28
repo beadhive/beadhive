@@ -40,7 +40,7 @@ from typing import Any
 
 import typer
 
-from . import bd, bd_cli, beads_routing, log, otel
+from . import bd_cli, beads_routing, log, otel
 from .config_consumer_ports import work_settings as config
 
 _CORE_MODULE = "beadhive_core"
@@ -192,7 +192,7 @@ class TyperOutput:
     def feedback(self, bead: str) -> None:
         # Presentation, not lifecycle state: bd's markdown comment renderer is the operator
         # contract and is not reproducible from typed comment rows.
-        bd.run(["comments", bead], self._main)
+        bd_cli.routes(self._main).comments(bead)
 
 
 class TelemetryLifecycleObserver:

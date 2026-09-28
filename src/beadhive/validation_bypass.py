@@ -249,10 +249,10 @@ def record_override(
 def write_bead_event(bd, main, event: dict) -> bool:
     """Append the structured override decision to the bead's durable comment stream."""
     payload = json.dumps(event, sort_keys=True, separators=(",", ":"))
-    result = bd.run(
-        ["comments", "add", event["bead"], f"bh:validation-override {payload}"],
-        main,
-        actor=event["actor"],
+    from . import bd_cli
+
+    result = bd_cli.package().CliRoutes(bd, main).comment_add(
+        event["bead"], f"bh:validation-override {payload}", actor=event["actor"]
     )
     return result.returncode == 0
 

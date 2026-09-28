@@ -640,6 +640,39 @@ superseded code, so none were deleted.
 > inline `bd` argv: submit's gate creation (`work.review.submit`), the `bd import` epic birth,
 > and everything in items 4–7.
 
+> **2026-09-28 (bh-t1jsq).** That final root-owned argv surface is now closed. The operations
+> named above, plus the remaining worktree, metrics, intake, contributor, checkpoint, release,
+> report, MCP and presentation routes, are semantic methods in `beadhive_bd_cli.routes`. Root
+> resolves `CliRoutes` through `beadhive.bd_cli.routes()` at call time and supplies its existing
+> transport, preserving the configured engine and every established patch seam. The structural
+> guard in `tests/test_bd_cli_boundary.py` refuses a new inline `bd.run` / `bd.json` or raw `bd`
+> process argv outside the retained surfaces below.
+
+> The retained root administration/infrastructure surface is explicit:
+>
+> - `doctor.py`, `onboard.py`, `hive_repair.py`, `hub.py`, and `sync_remote.py` administer,
+>   bootstrap, diagnose, repair, or synchronize stores rather than implement application routes;
+> - `complexity_backfill.py` is a guarded one-shot whole-corpus migration whose export and
+>   rollback transaction stay together;
+> - `engine.py` is the transport beneath `beadhive-bd-cli`; routing it back through the package
+>   would invert the dependency;
+> - `cli.py` owns the explicit `bh bd` passthrough dispatch and `deps.py` probes the installed bd
+>   dependency version; both must address the executable itself rather than an application route;
+> - `validate.py`, `registry.py`, and `fleet.py` use cycle-safe low-level reads documented at
+>   their call sites; `safety.py` owns scrubbed-environment probes; `dolt_health.py` owns bootstrap
+>   and health processes. These are infrastructure probes, not application routes.
+>
+> Measured collection counts (same locked environment and selectors on both trees):
+>
+> | Suite | Before (`c5104bf3`) | After |
+> |---|---:|---:|
+> | Root selected (`not integration and not pants_profile`) | 9,509 | 9,509 |
+> | Root total / deselected | 9,579 / 70 | 9,579 / 70 |
+> | `beadhive-bd-cli` package | 55 | 60 |
+>
+> Root stays level because the new structural guard replaces the now-redundant adapter argv-shape
+> test in `test_worktree_state_adapters.py`. Five package tests cover the moved semantic routes.
+
 In the root package, over named `bd` routes:
 
 1. **Pre-execution `bd` route when no capable Beads service is available** (kept, decision

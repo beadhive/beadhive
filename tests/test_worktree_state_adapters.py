@@ -1,6 +1,6 @@
 """Root adapters for the worktree capability's state ports (bh-qdezo.5, bh-e7s80).
 
-These are the only root tests that reach ``bd`` / ``claim_authority`` / ``ghpr`` underneath the
+These are the only root tests that reach ``claim_authority`` / ``ghpr`` underneath the
 ``BeadStateLookup`` / ``ClaimRecords`` / ``MergeEvidence`` ports: every other worktree test
 substitutes the composed port in :mod:`beadhive.worktree_state_adapters` instead.
 """
@@ -11,32 +11,13 @@ from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
-from beadhive import bd, claim_authority, ghpr, worktree_state_adapters
+from beadhive import claim_authority, ghpr, worktree_state_adapters
 from beadhive.worktree_state_adapters import (
-    ArgvBeadStateLookup,
     BeadsSessionBeadStateLookup,
     ClaimAuthorityRecords,
     GhprMergeEvidence,
     RoutedBeadStateLookup,
 )
-
-
-def test_argv_bead_state_lookup_keeps_the_exact_bd_argv_shapes(monkeypatch) -> None:
-    calls: list[tuple[str, object, str]] = []
-    monkeypatch.setattr(bd, "json", lambda args, cwd: calls.append(("json", args, cwd)) or [])
-    monkeypatch.setattr(bd, "show", lambda bead, cwd: calls.append(("show", bead, cwd)) or {})
-    lookup = ArgvBeadStateLookup()
-    main = Path("/repo")
-
-    assert lookup.probe(main) == []
-    assert lookup.show("bh-1", main) == {}
-    assert lookup.all_issues(main) == []
-
-    assert calls == [
-        ("json", ["list"], "/repo"),
-        ("show", "bh-1", "/repo"),
-        ("json", ["list", "--all", "--include-infra", "--limit", "0"], "/repo"),
-    ]
 
 
 def test_claim_and_merge_adapters_pass_straight_through(monkeypatch, tmp_path) -> None:

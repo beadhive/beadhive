@@ -37,7 +37,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from . import adopt, bd, bd_cli, beads_routing, config, log, molecule, registry
+from . import adopt, bd_cli, beads_routing, config, log, molecule, registry
 from .identity import workspace_identity
 
 _CORE_MODULE = "beadhive_core"
@@ -149,9 +149,7 @@ def import_epic(epic: dict, dimension_fields: tuple[str, ...], cwd: Path, actor:
     """
     labels = _dimension_labels(epic, dimension_fields) + list(identity_labels(cwd))
     record = adopt.epic_import_record(epic, labels)
-    result = bd.run(
-        ["import", "-", "--json"], cwd, actor=actor, capture=True, text_input=json.dumps(record)
-    )
+    result = bd_cli.routes(cwd).import_records(json.dumps(record), actor=actor)
     data = json.loads(result.stdout or "null") if result.returncode == 0 and result.stdout else None
     ids = data.get("ids") if isinstance(data, dict) else None
     if result.returncode != 0 or not ids:

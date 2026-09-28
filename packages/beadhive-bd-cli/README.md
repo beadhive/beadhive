@@ -20,6 +20,7 @@ Every `bd` argv route the API-first cutover (bh-sy36q) left in the root shell:
 | `planning` | `CliPlanningGates` (`plan.gate.create` / `plan.kickoff.update`) | Always |
 | `reads` | `show`, `state`, `child_rows`, `children`, `ready`, `ready_rows` | CLI-compatibility reads of the migrated cohorts (dispatch state, schedule, claim-next, `bh work ready`), and the shell's own `bd.show` / `bd.children` / `bd.child_rows` / `bd.state` |
 | `coordination` | `gate_*`, `merge_slot_*`, `heartbeat`, `reclaim` | Always: every `beadhive_core.COORDINATION_OPERATIONS` operation |
+| `routes` | Named issue, gate, dependency, swarm, intake, contributor, checkpoint, worktree and presentation routes | Always when root composition still requires a CLI-only operation |
 
 Because the no-API operations live here too (the CLI-only-operations decision recorded on
 bh-fqsp2), the package is imported at runtime on essentially every claim, heartbeat, gate and
@@ -43,7 +44,8 @@ matcher, bh-1vvdp) are the one implementation of each; the shell's `bd.err_line`
 
 ## Tests
 
-`tests/` holds the moved FakeBd tests (`test_ports.py`, `test_reads.py`, `test_coordination.py`)
+`tests/` holds the moved FakeBd tests (`test_ports.py`, `test_reads.py`, `test_coordination.py`,
+`test_routes.py`)
 and the real-`bd` tests (`test_ports_real_bd.py`, `test_coordination_int.py`, marked
 `integration`, self-skipping without `bd` on `PATH`). They run under the shared `packages` attest
 key via `just packages-check` (a dedicated key is bh-vq34o):

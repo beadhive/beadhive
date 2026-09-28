@@ -75,6 +75,11 @@ def planning_gates(main: Path) -> Any:
     return package().CliPlanningGates(transport(), main)
 
 
+def routes(cwd: Any) -> Any:
+    """Named root-shell compatibility routes, with argv shaped by ``beadhive-bd-cli``."""
+    return package().CliRoutes(transport(), cwd)
+
+
 # ---- the ready reads ---------------------------------------------------------------------------
 
 

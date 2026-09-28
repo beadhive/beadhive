@@ -71,6 +71,7 @@ from typing import Any
 from . import (
     alerts,
     bd,
+    bd_cli,
     config,
     doctor,
     hive_services,
@@ -1146,7 +1147,7 @@ def _register_read_resources(_mcp, tool, resource):
         """
         cfg = config.load()
         cwd = registry.hive_dir_for(cfg, hive="")
-        return bd.json(["ready"], cwd, strict=True) or []
+        return bd_cli.ready_rows(cwd) or []
 
     @resource("work.intake")
     def work_intake_resource():
@@ -1232,7 +1233,7 @@ def _register_read_resources(_mcp, tool, resource):
         non-zero or the output is not valid JSON.
         """
         cwd = registry.hive_dir_for(config.load(), hive="")
-        return bd.json(["swarm", "list"], cwd, strict=True)
+        return bd_cli.routes(cwd).swarm_list(strict=True)
 
     @resource("plan.status")
     def plan_resource(ref: str):
@@ -1244,7 +1245,7 @@ def _register_read_resources(_mcp, tool, resource):
         ref is not found or bd exits non-zero.
         """
         cwd = registry.hive_dir_for(config.load(), hive="")
-        return bd.json(["swarm", "status", ref], cwd, strict=True)
+        return bd_cli.routes(cwd).swarm_status(ref, strict=True)
 
     # ---- hq plane ---------------------------------------------------------------
 
@@ -1264,7 +1265,9 @@ def _register_read_resources(_mcp, tool, resource):
         if not (hub_dir / ".beads").is_dir():
             return []
         return (
-            bd.json(["list", "--label", INTAKE_UNTRIAGED, "--status", "open"], hub_dir, strict=True)
+            bd_cli.routes(hub_dir).issue_list(
+                label=INTAKE_UNTRIAGED, status="open", strict=True, label_first=True
+            )
             or []
         )
 

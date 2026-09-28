@@ -28,7 +28,7 @@ from typing import Any
 
 from beadhive_worktrees import BeadStateLookup, ClaimRecords, MergeEvidence
 
-from . import bd, beads_routing, ghpr, registry
+from . import bd, bd_cli, beads_routing, ghpr, registry
 from .config_consumer_ports import work_settings as config
 
 _GET_CAPABILITIES = frozenset({"issues.get"})
@@ -58,13 +58,13 @@ class ArgvBeadStateLookup:
     """``BeadStateLookup`` over ``bd.json`` / ``bd.show`` subprocess reads."""
 
     def probe(self, main: Path) -> list[Any] | None:
-        return bd.json(["list"], str(main))
+        return bd_cli.routes(str(main)).issue_list()
 
     def show(self, bead_id: str, main: Path) -> dict[str, Any] | None:
         return bd.show(bead_id, str(main))
 
     def all_issues(self, main: Path) -> list[Any] | None:
-        return bd.json(["list", "--all", "--include-infra", "--limit", "0"], str(main))
+        return bd_cli.routes(str(main)).issue_list(all_=True, include_infra=True, limit=0)
 
 
 class BeadsSessionBeadStateLookup:

@@ -34,7 +34,7 @@ import json
 
 import typer
 
-from . import bd
+from . import bd, bd_cli
 from .state import (
     INTAKE_UNTRIAGED,
     ORIGIN_DIM,
@@ -67,7 +67,9 @@ def list_intake(cwd, source: str = ""):
     any channel — report|github|import — shares one queue). `source` narrows to one resolved
     `origin` channel client-side (bd has no channel list filter). Returns a list of bead rows (empty
     on read failure)."""
-    rows = bd.json(["list", "--label", INTAKE_UNTRIAGED, "--status", "open"], cwd) or []
+    rows = bd_cli.routes(cwd).issue_list(
+        label=INTAKE_UNTRIAGED, status="open", label_first=True
+    ) or []
     if not isinstance(rows, list):
         return []
     if source:
@@ -82,7 +84,7 @@ def find_dupes(cwd, threshold: float = 0.5, method: str = "mechanical"):
     """Likely-duplicate pairs across a hive's open issues via the beads-native `bd find-duplicates`
     (mechanical by default — no API key; `ai` for semantic). Returns the list of pair dicts
     (`issue_a_id`, `issue_b_id`, `similarity`, …), empty on read failure."""
-    data = bd.json(["find-duplicates", "--threshold", str(threshold), "--method", method], cwd)
+    data = bd_cli.routes(cwd).find_duplicates(threshold=threshold, method=method)
     if not isinstance(data, dict):
         return []
     pairs = data.get("pairs")
@@ -125,8 +127,8 @@ def _clear_intake(bead, cwd, actor, disposition, reason):
     """Event-sourced clear: transition the intake dimension to the disposition's terminal value
     (`bd set-state`, consistent with). Returns (exit, error)."""
     value = disposition_state(disposition)
-    res = bd.run(
-        ["set-state", bead, f"intake={value}", "--reason", reason], cwd, actor, capture=True
+    res = bd_cli.routes(cwd).issue_set_state(
+        bead, f"intake={value}", reason=reason, actor=actor, capture=True
     )
     if res.returncode:
         return res.returncode, f"could not clear intake state: {bd.err_line(res)}"
@@ -145,7 +147,9 @@ def accept(cwd, bead, actor, issue_type: str = "", priority: str = ""):
     if priority:
         update += ["--priority", priority]
     if update:
-        res = bd.run(["update", bead, *update], cwd, actor, capture=True)
+        res = bd_cli.routes(cwd).issue_update_fields(
+            bead, issue_type=issue_type, priority=priority, actor=actor, capture=True
+        )
         if res.returncode:
             return res.returncode, f"bd update failed: {bd.err_line(res)}", ""
     code, err = _clear_intake(bead, cwd, actor, "accept", "accepted into backlog")
@@ -166,7 +170,7 @@ def reject(cwd, bead, actor, reason: str):
     code, err = _clear_intake(bead, cwd, actor, "reject", f"rejected: {reason}")
     if err:
         return code, err, ""
-    res = bd.run(["close", bead, "--reason", reason], cwd, actor, capture=True)
+    res = bd_cli.routes(cwd).issue_close(bead, reason=reason, actor=actor, capture=True)
     if res.returncode:
         return res.returncode, f"bd close failed: {bd.err_line(res)}", ""
     return 0, "", f"✓ rejected {bead}: {reason}"
@@ -188,7 +192,9 @@ def reroute(cwd, bead, actor, to_hive: str = "", superintendent: str = "", cfg=N
         return 1, err, ""
 
     if superintendent:
-        res = bd.run(["assign", bead, superintendent], cwd, actor, capture=True)
+        res = bd_cli.routes(cwd).issue_assign(
+            bead, superintendent, actor=actor, capture=True
+        )
         if res.returncode:
             return res.returncode, f"bounce to superintendent failed: {bd.err_line(res)}", ""
         return 0, "", f"✓ bounced {bead} → {superintendent} (stays in the fleet-wide inbox)"
@@ -205,7 +211,7 @@ def reroute(cwd, bead, actor, to_hive: str = "", superintendent: str = "", cfg=N
     code, cerr = _clear_intake(bead, cwd, actor, "reroute", reason)
     if cerr:
         return code, cerr, ""
-    res = bd.run(["close", bead, "--reason", reason], cwd, actor, capture=True)
+    res = bd_cli.routes(cwd).issue_close(bead, reason=reason, actor=actor, capture=True)
     if res.returncode:
         return res.returncode, f"bd close failed: {bd.err_line(res)}", ""
     return 0, "", f"✓ rerouted {bead} → {to_hive} ({new_id})"

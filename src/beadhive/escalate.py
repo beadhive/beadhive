@@ -52,7 +52,7 @@ import sys
 
 import typer
 
-from . import bd, config, registry
+from . import bd_cli, config, registry
 from .identity import _env_actor
 from .state import ORIGIN_ESCALATION
 
@@ -136,15 +136,10 @@ def _stamp_extra(label_kv: str, new_id: str, hq_dir, actor: str) -> None:
 
     Failures are silently swallowed: the escalation bead is already filed and the raiser
     must not be blocked by a non-critical metadata stamp."""
-    bd.run(
-        [
-            "set-state",
-            new_id,
-            label_kv,
-            "--reason",
-            f"{config.BINARY_ALIAS} escalate metadata",
-        ],
-        hq_dir,
+    bd_cli.routes(hq_dir).issue_set_state(
+        new_id,
+        label_kv,
+        reason=f"{config.BINARY_ALIAS} escalate metadata",
         actor=actor,
         capture=True,
     )

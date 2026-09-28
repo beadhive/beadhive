@@ -265,8 +265,7 @@ def _gate_list(cwd, *, all_gates: bool = False) -> list | None:
     """`bd gate list [--all]` as a LIST — [] when the hive has no gates at all (bd emits JSON
     `null` there, which bd.json can't tell apart from a failed read), None only when the read
     itself failed. The gate-reading seam for approve / verify / repair."""
-    args = ["gate", "list", "--limit", "0", *(["--all"] if all_gates else []), "--json"]
-    res = bd.run(args, cwd, capture=True)
+    res = bd_cli.routes(cwd).gate_list_raw(include_resolved=all_gates)
     if res.returncode != 0:
         return None
     try:
@@ -421,7 +420,7 @@ def _epic_molecule(epic_id: str, cwd):
     acceptance and demand no kickoff gate). None if the epic or its children can't be retrieved.
     Shared by `show` (render) and `verify` (validate) so the load logic lives once.
     """
-    epic_raw = bd.json(["show", epic_id], cwd)
+    epic_raw = bd_cli.routes(cwd).issue_show_raw(epic_id)
     if not isinstance(epic_raw, list) or not epic_raw:
         return None
     epic_data = epic_raw[0]
@@ -617,7 +616,9 @@ def _swarm_missing(epic_id: str, cwd) -> bool | None:
 
     Shared by `_check_swarm` (verify) and plan_repair (backfill).
     """
-    related = bd.json(["dep", "list", epic_id, "--direction", "up", "--type", "relates-to"], cwd)
+    related = bd_cli.routes(cwd).dependency_list(
+        epic_id, direction="up", type_="relates-to"
+    )
     if not isinstance(related, list):
         return None
     return not any(
@@ -929,7 +930,7 @@ def adopt_cmd(
 
     loaded: list[dict] = []
     for bead_id in beads:
-        data = bd.json(["show", bead_id], cwd)
+        data = bd_cli.routes(cwd).issue_show_raw(bead_id)
         if isinstance(data, list):
             data = data[0] if data else None
         if not isinstance(data, dict):
@@ -1091,14 +1092,12 @@ def _approve_kickoff(epic: str, cwd, actor: str, cfg) -> KickoffResult:
         gate_id = str(gate.get("id") or gate.get("key") or "")
         if not gate_id:
             raise PlanError(f"gate missing id field: {gate}")
-        bd.run(["gate", "resolve", gate_id], cwd, actor=actor)
+        bd_cli.routes(cwd).gate_resolve(gate_id, actor=actor)
 
     # Flip state to approved (skipped when it already says approved — pure gate cleanup)
     if current != "approved":
-        bd.run(
-            ["set-state", epic, "kickoff=approved", "--reason", "kickoff approved"],
-            cwd,
-            actor=actor,
+        bd_cli.routes(cwd).issue_set_state(
+            epic, "kickoff=approved", reason="kickoff approved", actor=actor
         )
 
     return KickoffResult(epic, len(open_gates))
@@ -1175,7 +1174,7 @@ def status(
     cwd = registry.hive_dir_for(cfg, hive)
 
     if not epic:
-        data = bd.json(["swarm", "list"], cwd)
+        data = bd_cli.routes(cwd).swarm_list()
         if data is None or not isinstance(data, dict):
             _abort("could not retrieve swarm list")
         swarms = data.get("swarms") or []
@@ -1191,7 +1190,7 @@ def status(
             kickoff = kickoff_states.get(eid, "") or "—"
             typer.echo(f"  {eid}  {title}  {completed}/{total}  kickoff={kickoff}")
     else:
-        detail = bd.json(["swarm", "status", epic], cwd)
+        detail = bd_cli.routes(cwd).swarm_status(epic)
         if detail is None:
             _abort(f"could not retrieve swarm status for {epic}")
         # Detail status is deliberately one fresh state read for one explicitly requested epic.
@@ -1266,7 +1265,9 @@ def repair_epic(epic_id: str, cfg, cwd, actor: str) -> RepairOutcome:
                 if validate._label_val(labels, f"{field}:"):
                     continue
                 label = f"{field}:{value}"
-                if bd.run(["label", "add", child_id, label], cwd, actor=actor).returncode != 0:
+                if bd_cli.routes(cwd).issue_add_label(
+                    child_id, label, actor=actor
+                ).returncode != 0:
                     raise PlanError(f"`bd label add {child_id} {label}` failed — inspect the hive")
                 fixes.append(f"added label {label} to {child_id}")
 
