@@ -12,9 +12,15 @@ from pathlib import Path
 
 import typer
 
+from beadhive_worktrees import (
+    execute_removal,
+    reclaim_empty_parents,
+    split_safe_skipped,
+    withhold_untrustworthy,
+)
+
 from . import registry, wt_status
 from .config_consumer_ports import work_settings as config
-from .modules.worktrees import WorktreeManagerError
 from .worktree_state_adapters import ClaimAuthorityRecords
 
 #: The one root-supplied `ClaimRecords` adapter today (bh-qdezo.5) — `claim_authority`'s
@@ -130,19 +136,14 @@ def _warn_untrustworthy(*args, **kwargs):
 
 def impl__rmdir_empty_parents(leaf_path, cfg):
     """Climb from a removed worktree's parent toward the shadow root, removing now-empty
-    triplet dirs. Path.rmdir only deletes EMPTY dirs (raises otherwise) — that's the safety:
-    a non-empty dir (another live worktree) stops the climb, and the root is never removed.
-    Disabled by `worktrees.rmdir_empty: false` (absent ⇒ enabled)."""
-    if not config.worktrees_cfg(cfg).get("rmdir_empty", True):
-        return
-    root = config.worktrees_root().resolve()
-    d = Path(leaf_path).parent.resolve()
-    while root in d.parents and d != root:
-        try:
-            d.rmdir()
-        except OSError:
-            break
-        d = d.parent
+    triplet dirs — ``beadhive_worktrees.reclaim_empty_parents`` (bh-qdezo.7, moved verbatim).
+    Disabled by `worktrees.rmdir_empty: false` (absent ⇒ enabled); that config read, like the
+    shadow root itself, stays root's job."""
+    reclaim_empty_parents(
+        leaf_path,
+        config.worktrees_root(),
+        enabled=config.worktrees_cfg(cfg).get("rmdir_empty", True),
+    )
 
 
 def impl__refuse_unknown_removal(cfg, entry, target: Path, *, force: bool) -> None:
@@ -195,29 +196,31 @@ def impl_remove(hive, ref, force=False, as_json=False):
     durable artifact here (a bead's history lives on it) and a manager's ``remove`` never
     deletes it — never call this for a disposable prune removal (see `prune`). `as_json`
     (bh-73rz.4) emits the same `{op, hive, path, removed}` machine-readable shape an external
-    orchestrator's preview→create→…→remove flow parses, mirroring `add --json`."""
+    orchestrator's preview→create→…→remove flow parses, mirroring `add --json`.
+
+    The claim-record resolve/retire sequencing around the ONE removal effect
+    (`_remove_worktree`, which releases any recorded presentation binding before the native
+    remove per E30/bh-cb4jo.2) is `beadhive_worktrees.execute_removal` (bh-qdezo.7, moved
+    verbatim); telemetry, the CLI exit-code contract, and metadata invalidation stay here."""
     cfg = config.load()
     entry = _resolve_entry(cfg, hive)
     main = registry.hive_dir(entry)
     target = wt_dir(entry, _leaf(ref))
 
-    # Git removes linked-worktree admin metadata as part of its operation, so
-    # resolve this private record before removal and delete it only on success.
-    claim_path = _CLAIM_RECORDS.record_path(target)
     hive_key = registry.hive_key(entry)
     hive = str(entry.get("prefix", ""))
     _refuse_unknown_removal(cfg, entry, target, force=force)
     started = time.monotonic()
-    try:
-        # Releases any recorded presentation binding before the native remove (E30).
-        _remove_worktree(cfg, entry, main, target, force=force)
-    except WorktreeManagerError as exc:
-        elapsed = time.monotonic() - started
+    outcome = execute_removal(
+        lambda: _remove_worktree(cfg, entry, main, target, force=force),
+        claim_records=_CLAIM_RECORDS,
+        target=target,
+    )
+    elapsed = time.monotonic() - started
+    if not outcome.ok:
         _record_wt_event("remove", "error", hive=hive, leaf=target.name)
         _record_wt_op_duration("remove", elapsed, "error", hive=hive, leaf=target.name)
-        raise typer.Exit(exc.returncode) from None
-    elapsed = time.monotonic() - started
-    _CLAIM_RECORDS.remove_record_path(claim_path)
+        raise typer.Exit(outcome.returncode)
     _rmdir_empty_parents(target, cfg)
     _record_wt_op_duration("remove", elapsed, "ok", hive=hive, leaf=target.name)
     _record_wt_event("remove", hive=hive, leaf=target.name)
@@ -260,7 +263,11 @@ def impl__prune_sweep_orphans(entries_by_prefix: dict, want: str | None) -> int:
 
 def impl__prune_classify(cfg, entries_by_prefix: dict, rows: list) -> tuple:
     """Classify every candidate row concurrently. Returns `(safe_set, skipped)` — the
-    SAFE-to-remove and NOT-SAFE ``WtStatus`` lists."""
+    SAFE-to-remove and NOT-SAFE ``WtStatus`` lists.
+
+    The concurrent classification stays root-adjacent orchestration (it drives git/bd I/O
+    through the classifier); the post-classification split itself is
+    ``beadhive_worktrees.split_safe_skipped`` (bh-qdezo.7, moved verbatim)."""
     prefixes = list(dict.fromkeys(r[0] for r in rows))
     entries = [entries_by_prefix[prefix] for prefix in prefixes if prefix in entries_by_prefix]
     rows_by_prefix: dict[str, list] = {}
@@ -269,35 +276,16 @@ def impl__prune_classify(cfg, entries_by_prefix: dict, rows: list) -> tuple:
     statuses_by_prefix = _classify_entries(cfg, entries, rows_by_prefix)
 
     all_statuses = [status for prefix in prefixes for status in statuses_by_prefix.get(prefix, [])]
-    safe_set = [s for s in all_statuses if s.safe]
-    skipped = [s for s in all_statuses if not s.safe]
-    return safe_set, skipped
+    return split_safe_skipped(all_statuses)
 
 
 def impl__prune_withhold_untrustworthy(
     safe_set: list, skipped: list
 ) -> tuple[list, list, set[str]]:
-    """Drop every hive carrying an UNKNOWN row out of the removal set (bh-167s0).
-
-    UNKNOWN is not ``safe``, so an unresolvable row was never going to be removed — but that is
-    not enough, and this is the acceptance criterion that says so: prune must "refuse to run
-    unattended over a hive containing UNKNOWN rows".  Whatever stopped one bead resolving —
-    a store bd will not open, a retired prefix — stopped every OTHER bead in that hive being
-    confirmed too, so the SAFE verdicts from the same pass are not evidence either.  They are
-    withheld, not removed, and the caller says why and exits non-zero.
-
-    Scoped to the affected HIVE rather than the whole run: a second, healthy hive in the same
-    `bh worktree prune` still prunes, because its answers were never in doubt.
-    """
-    tainted = {s.hive for s in wt_status.untrustworthy(safe_set + skipped)}
-    if not tainted:
-        return safe_set, skipped, tainted
-    withheld = [s for s in safe_set if s.hive in tainted]
-    return (
-        [s for s in safe_set if s.hive not in tainted],
-        skipped + withheld,
-        tainted,
-    )
+    """Drop every hive carrying an UNKNOWN row out of the removal set (bh-167s0) —
+    ``beadhive_worktrees.withhold_untrustworthy`` (bh-qdezo.7, moved verbatim; see that
+    function's docstring for the bh-167s0 rationale)."""
+    return withhold_untrustworthy(safe_set, skipped)
 
 
 def impl__prune_report_skipped(skipped: list) -> None:
@@ -317,21 +305,24 @@ def impl__prune_report_skipped(skipped: list) -> None:
 def impl__prune_remove_one(cfg, entries_by_prefix: dict, main: Path, st) -> bool:
     """Remove one SAFE worktree through the selected ``worktrees.manager``, recording telemetry
     and deleting the now-merged branch afterwards. Returns True iff removal succeeded
-    (outcome == "ok")."""
+    (outcome == "ok").
+
+    The claim-record resolve/retire sequencing around the ONE removal effect is
+    ``beadhive_worktrees.execute_removal`` (bh-qdezo.7, moved verbatim, same as `impl_remove`);
+    telemetry, CLI echo, and the post-removal branch delete stay here."""
     prefix = st.hive
     entry = entries_by_prefix.get(prefix)
 
-    claim_path = _CLAIM_RECORDS.record_path(st.path)
     started = time.monotonic()
     # SAFE (closed + merged + clean) → the branch is disposable; the manager removes only the
     # linked worktree and the `git branch -D` step below retires the branch. A row whose hive
     # left managed_repos still goes through the same release-then-remove effect (E30).
-    try:
-        _remove_worktree(cfg, entry, main, Path(st.path), st.branch, force=True)
-    except WorktreeManagerError as exc:
-        outcome, error = "error", exc.error
-    else:
-        outcome, error = "ok", ""
+    result = execute_removal(
+        lambda: _remove_worktree(cfg, entry, main, Path(st.path), st.branch, force=True),
+        claim_records=_CLAIM_RECORDS,
+        target=Path(st.path),
+    )
+    outcome = "ok" if result.ok else "error"
     elapsed = time.monotonic() - started
     if outcome == "ok":
         typer.echo(f"  removed {st.path}  [{st.branch}]")
@@ -339,13 +330,13 @@ def impl__prune_remove_one(cfg, entries_by_prefix: dict, main: Path, st) -> bool
         # A failure retains its captured stderr when the facade runner supplied it; this line
         # also prevents a misleading "removed" claim.
         typer.echo(
-            f"  failed to remove {st.path}  [{st.branch}]: {error or 'git worktree remove failed'}"
+            f"  failed to remove {st.path}  [{st.branch}]: "
+            f"{result.error or 'git worktree remove failed'}"
         )
     _record_wt_event("prune", outcome, hive=prefix, leaf=st.leaf)
     _record_wt_op_duration("prune", elapsed, outcome, hive=prefix, leaf=st.leaf)
     if outcome != "ok":
         return False
-    _CLAIM_RECORDS.remove_record_path(claim_path)
     _rmdir_empty_parents(st.path, cfg)
     # A SAFE tree is already merged, so once its worktree is gone the branch is dead weight.
     # Best-effort: a stray branch never blocks the prune loop.

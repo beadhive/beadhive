@@ -1247,35 +1247,11 @@ def test_unregistered_repo_worktrees_are_surfaced_not_omitted(tmp_path, monkeypa
 # ---- empty-dir cleanup ------------------------------------------------------
 
 
-def test_rmdir_empty_parents_climbs_to_root(tmp_path, monkeypatch):
-    root = tmp_path / "wts"
-    monkeypatch.setenv("BH_WORKTREES", str(root))
-    leaf = root / "github" / "org" / "repo" / "feat"
-    leaf.mkdir(parents=True)
-    leaf.rmdir()  # simulate git having removed the worktree dir
-
-    worktree._rmdir_empty_parents(leaf, {})
-
-    assert root.exists()  # root itself is never removed
-    assert not (root / "github").exists()  # empty triplet dirs climbed away
-
-
-def test_rmdir_empty_parents_stops_at_nonempty(tmp_path, monkeypatch):
-    root = tmp_path / "wts"
-    monkeypatch.setenv("BH_WORKTREES", str(root))
-    leaf = root / "github" / "org" / "repo" / "feat"
-    leaf.mkdir(parents=True)
-    sibling = root / "github" / "org" / "other-repo" / "live"
-    sibling.mkdir(parents=True)  # another live worktree under the same org
-    leaf.rmdir()
-
-    worktree._rmdir_empty_parents(leaf, {})
-
-    assert not (root / "github" / "org" / "repo").exists()  # empty repo dir removed
-    assert (root / "github" / "org").exists()  # non-empty org stops the climb
-    assert sibling.exists()
-
-
+# The pure climb algorithm (climb-to-root, stop-at-nonempty) moved to
+# packages/beadhive-worktrees/tests/test_removal_service.py (bh-qdezo.7) as direct tests of
+# beadhive_worktrees.reclaim_empty_parents. This test stays as the one root proof that the
+# BH_WORKTREES env var reaches config.worktrees_root() and that the `rmdir_empty: false` config
+# flag actually disables the climb end to end.
 def test_rmdir_empty_parents_disabled(tmp_path, monkeypatch):
     root = tmp_path / "wts"
     monkeypatch.setenv("BH_WORKTREES", str(root))
@@ -3149,32 +3125,6 @@ def test_prune_lists_precious_base_safe_row_in_skipped_set(monkeypatch, capsys):
     assert "HELD (base: safe; precious: .env (8 bytes))" in rendered
 
 
-def test_retained_is_skipped_by_two_consecutive_prune_classifications(monkeypatch):
-    """A deliberate retention is durable policy, not a one-shot skip marker."""
-    retained = wt_status.WtStatus(
-        hive="mr",
-        leaf="old",
-        branch="wt/bead/issue/old",
-        path="/wts/old",
-        bead_id="old",
-        classification=wt_status.WtClassification.RETAINED,
-        merged=False,
-        dirty=False,
-        safe=False,
-        disposition_reason="pivot",
-        citing_bead="port",
-    )
-    monkeypatch.setattr(worktree, "_classify_entry", lambda _entry, _rows, _cfg: [retained])
-    rows = [("mr", "/wts/old", "wt/bead/issue/old")]
-    entries = {"mr": {"prefix": "mr"}}
-
-    first = worktree._prune_classify({}, entries, rows)
-    second = worktree._prune_classify({}, entries, rows)
-
-    assert first == ([], [retained])
-    assert second == ([], [retained])
-
-
 def test_status_rows_classifies_concurrently_but_returns_managed_order(monkeypatch):
     first_started = threading.Event()
     second_started = threading.Event()
@@ -3768,48 +3718,6 @@ def test_a_dirty_row_renders_what_it_is_masking(capsys):
     )
     worktree._render_status([st])
     assert "(under: UNKNOWN)" in capsys.readouterr().out
-
-
-def test_prune_withholds_a_hive_that_carries_an_unknown_row():
-    """AC4. UNKNOWN is not `safe`, so it was never going to be removed — but the SAFE verdicts
-    from the SAME pass are not evidence either: whatever stopped one bead resolving stopped
-    every other bead being confirmed."""
-    safe = wt_status.WtStatus(
-        hive="mr",
-        leaf="s-1",
-        branch="wt/bead/issue/s-1",
-        path="/wts/s-1",
-        bead_id="s-1",
-        classification=wt_status.WtClassification.SAFE,
-        merged=True,
-        dirty=False,
-        safe=True,
-    )
-    kept, skipped, tainted = worktree._prune_withhold_untrustworthy([safe], [_unknown_status()])
-    assert kept == []
-    assert safe in skipped
-    assert tainted == {"mr"}
-
-
-def test_prune_still_prunes_a_healthy_hive_in_the_same_run():
-    """Scoped to the affected HIVE, not the whole run — a guard that punishes unrelated hives
-    is a guard someone disables."""
-    healthy = wt_status.WtStatus(
-        hive="other",
-        leaf="s-2",
-        branch="wt/bead/issue/s-2",
-        path="/wts/s-2",
-        bead_id="s-2",
-        classification=wt_status.WtClassification.SAFE,
-        merged=True,
-        dirty=False,
-        safe=True,
-    )
-    kept, _skipped, tainted = worktree._prune_withhold_untrustworthy(
-        [healthy], [_unknown_status(hive="mr")]
-    )
-    assert kept == [healthy]
-    assert tainted == {"mr"}
 
 
 def test_prune_exits_non_zero_when_a_hive_was_withheld(tmp_path, monkeypatch):

@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 import inspect
 import subprocess
-import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -382,66 +381,10 @@ def test_batch_evidence_uses_one_complete_label_snapshot_and_shared_member_paren
     }
 
 
-@pytest.mark.parametrize(
-    "issues,parent_by_bead",
-    [
-        (None, {}),
-        ([], {}),
-        ([{"id": "mr-1.1", "status": "closed", "labels": ["batch:g", "batch:x"]}], {}),
-        (
-            [
-                {"id": "mr-1.1", "status": "closed", "labels": ["batch:g"]},
-                {"id": "mr-2.1", "status": "closed", "labels": ["batch:g"]},
-            ],
-            {"mr-1.1": "wt/bead/epic/mr-1", "mr-2.1": "wt/bead/epic/mr-2"},
-        ),
-    ],
-)
-def test_batch_evidence_fails_closed_on_missing_ambiguous_or_mixed_parent_data(
-    monkeypatch, issues, parent_by_bead
-):
-    entry = {"prefix": "mr"}
-    rows = [("mr", "/wt/batch-g", "wt/batch/g")]
-    monkeypatch.setattr(worktree.registry, "hive_dir", lambda _entry: "/repo")
-    monkeypatch.setattr(worktree_inventory.bd, "json", lambda args, cwd: issues)
-    monkeypatch.setattr(
-        worktree,
-        "integration_base",
-        lambda _entry, bead, integration: parent_by_bead.get(bead, integration),
-    )
-
-    assert worktree_inventory._batch_evidence_for_entry(entry, rows, "main") == {}
-
-
-def test_concurrent_classification_streams_completion_order_but_flattens_entry_order(monkeypatch):
-    entries = [{"prefix": "first"}, {"prefix": "second"}, {"prefix": "empty"}]
-    rows_by_prefix = {
-        "first": [("first", "/wt/first", "wt/bead/issue/first")],
-        "second": [("second", "/wt/second", "wt/bead/issue/second")],
-    }
-    release_first = threading.Event()
-    first_started = threading.Event()
-    completion_order = []
-
-    def classify(entry, _rows, _cfg):
-        if entry["prefix"] == "first":
-            first_started.set()
-            assert release_first.wait(timeout=2)
-        else:
-            assert first_started.wait(timeout=2)
-        return [entry["prefix"]]
-
-    def completed(prefix, _statuses):
-        completion_order.append(prefix)
-        if prefix == "second":
-            release_first.set()
-
-    monkeypatch.setattr(worktree, "_classify_entry", classify)
-
-    statuses_by_prefix = worktree._classify_entries(
-        {}, entries, rows_by_prefix, on_complete=completed
-    )
-
-    assert completion_order == ["second", "first"]
-    assert set(statuses_by_prefix) == {"first", "second"}
-    assert worktree._ordered_statuses(entries, statuses_by_prefix) == ["first", "second"]
+# The remaining fail-closed edge cases (None/empty/ambiguous-labels/mixed-parent issues) and
+# the concurrent-classification scheduling test both moved to
+# packages/beadhive-worktrees/tests/test_classification_service.py (bh-qdezo.7): they exercised
+# beadhive_worktrees.resolve_batch_evidence / classify_entries_concurrently / ordered_statuses
+# on fakes with no root-specific behavior left to characterize here. The happy-path test above
+# stays as the one root wiring proof (registry.hive_dir + the ArgvBeadStateLookup adapter's
+# real bd.json argv shape + the integration_base callable seam).

@@ -6,17 +6,31 @@ The pure lifecycle classifier stays in :mod:`beadhive.wt_status`. Implementation
 
 from __future__ import annotations
 
-import base64
 import contextlib
-import hashlib
-import json
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from pathlib import Path
 
 import typer
 
+from beadhive_worktrees import (
+    build_inventory_payload as _pkg_build_inventory_payload,
+)
+from beadhive_worktrees import (
+    classify_entries_concurrently,
+    flag_legacy_root,
+)
+from beadhive_worktrees import (
+    compute_digest as _inventory_digest,
+)
+from beadhive_worktrees import (
+    ordered_statuses as _pkg_ordered_statuses,
+)
+from beadhive_worktrees import (
+    resolve_batch_evidence as _pkg_resolve_batch_evidence,
+)
+from beadhive_worktrees import (
+    status_tags as _pkg_status_tags,
+)
 from beadhive_worktrees.policy import bead_state
 
 from . import (  # noqa: F401 - bd is a compatibility patch seam
@@ -61,8 +75,6 @@ _BOX_SPACE = _facade()._BOX_SPACE
 
 _INVENTORY_SCHEMA_VERSION = 1
 _INVENTORY_DEFAULT_LIMIT = 50
-_INVENTORY_MAX_LIMIT = 200
-_INVENTORY_STATES = frozenset(str(state) for state in wt_status.WtClassification)
 
 
 def _managed_for_entry(*args, **kwargs):
@@ -292,74 +304,6 @@ def impl_unregistered_worktrees(cfg):
     return out
 
 
-def _inventory_digest(value) -> str:
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()
-    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
-
-
-def _inventory_cursor(revision: str, scope: dict, offset: int) -> str:
-    value = {"v": 1, "revision": revision, "scope": scope, "offset": offset}
-    return (
-        base64.urlsafe_b64encode(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
-        .decode()
-        .rstrip("=")
-    )
-
-
-def _inventory_cursor_offset(cursor: str | None, revision: str, scope: dict) -> int:
-    if cursor is None:
-        return 0
-    try:
-        padded = cursor + "=" * (-len(cursor) % 4)
-        value = json.loads(base64.b64decode(padded, altchars=b"-_", validate=True))
-    except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError("the worktree inventory cursor is malformed") from exc
-    if (
-        not isinstance(value, dict)
-        or value.get("v") != 1
-        or not isinstance(value.get("offset"), int)
-        or value["offset"] < 0
-    ):
-        raise ValueError("the worktree inventory cursor is malformed")
-    if value.get("scope") != scope:
-        raise ValueError("the worktree inventory cursor belongs to different filters")
-    if value.get("revision") != revision:
-        raise ValueError("the worktree inventory changed; restart without a cursor")
-    return value["offset"]
-
-
-def _inventory_item(observation: dict, status) -> dict:
-    hive_id = str(observation["hive_id"])
-    classification = str(status.classification)
-    return {
-        "hive_id": hive_id,
-        "hive_prefix": str(observation["hive_prefix"]),
-        "bead_id": status.bead_id,
-        "worktree_id": f"{hive_id}:{status.leaf}",
-        "leaf": status.leaf,
-        "branch": status.branch,
-        "path": status.path,
-        "state": classification,
-        "retention": "reclaimable" if status.safe else "retained",
-        "merged": status.merged,
-        "dirty": status.dirty,
-        "safe": status.safe,
-        "underlying_state": str(status.underlying) if status.underlying else None,
-        "unknown_reason": status.unknown_reason or None,
-    }
-
-
-def _inventory_coverage_state(observations: list[dict]) -> str:
-    states = {str(observation.get("state", "unavailable")) for observation in observations}
-    if not states or states == {"complete"}:
-        return "complete"
-    if states == {"unavailable"}:
-        return "unavailable"
-    if states == {"stale"}:
-        return "stale"
-    return "partial"
-
-
 def impl_inventory_payload(
     observations: list[dict],
     *,
@@ -371,150 +315,22 @@ def impl_inventory_payload(
 ) -> dict:
     """Build the versioned, bounded managed-worktree contract from source observations.
 
-    An observation has an exact ``hive_id``, its configured ``hive_prefix``, a coverage
-    ``state`` (complete/partial/stale/unavailable), an optional ``reason`` and ``revision``, and
-    zero or more classified ``statuses``.  Keeping this fold pure makes the important count
-    rule explicit: totals are numbers only when every covered source is complete.  A partial
-    page is safe because totals are computed over the complete filtered snapshot before paging.
+    The pure fold itself — an observation has an exact ``hive_id``, its configured
+    ``hive_prefix``, a coverage ``state`` (complete/partial/stale/unavailable), an optional
+    ``reason`` and ``revision``, and zero or more classified ``statuses`` — is
+    ``beadhive_worktrees.build_inventory_payload`` (bh-qdezo.7, moved verbatim from this
+    function's former body). This wrapper only adds the ``schema_version``/``command`` envelope,
+    which stays a root concern (``jsonout`` is a root module the package must never import).
     """
-    if not 1 <= limit <= _INVENTORY_MAX_LIMIT:
-        raise ValueError(f"limit must be from 1 through {_INVENTORY_MAX_LIMIT}")
-    requested_states = tuple(sorted(set(states)))
-    invalid_states = sorted(set(requested_states) - _INVENTORY_STATES)
-    if invalid_states:
-        raise ValueError(f"unknown worktree state: {invalid_states[0]}")
-
-    normalized: list[dict] = []
-    all_items: list[dict] = []
-    warnings: list[dict] = []
-    for raw in observations:
-        observation = {
-            "hive_id": str(raw["hive_id"]),
-            "hive_prefix": str(raw["hive_prefix"]),
-            "state": str(raw.get("state") or "unavailable"),
-            "reason": str(raw.get("reason") or "") or None,
-            "revision": raw.get("revision"),
-            "statuses": list(raw.get("statuses") or []),
-        }
-        if observation["state"] == "complete" and any(
-            str(status.classification) == "unknown" for status in observation["statuses"]
-        ):
-            observation["state"] = "partial"
-            observation["reason"] = "one or more worktree states could not be resolved"
-        normalized.append(observation)
-        all_items.extend(_inventory_item(observation, status) for status in observation["statuses"])
-        if observation["state"] != "complete":
-            warnings.append(
-                {
-                    "code": f"worktree_source_{observation['state']}",
-                    "hive_id": observation["hive_id"],
-                    "detail": observation["reason"],
-                }
-            )
-
-    all_items.sort(key=lambda item: (item["hive_id"], item["worktree_id"]))
-    coverage_state = _inventory_coverage_state(normalized)
-    coverage_complete = coverage_state == "complete"
-    filtered = [
-        item for item in all_items if not requested_states or item["state"] in requested_states
-    ]
-    source_revision = (
-        None
-        if coverage_state == "unavailable"
-        else _inventory_digest(
-            [
-                {
-                    "hive_id": observation["hive_id"],
-                    "state": observation["state"],
-                    "revision": observation["revision"],
-                    "items": [
-                        item for item in all_items if item["hive_id"] == observation["hive_id"]
-                    ],
-                }
-                for observation in normalized
-            ]
-        )
+    payload = _pkg_build_inventory_payload(
+        observations,
+        hive=hive,
+        states=states,
+        limit=limit,
+        cursor=cursor,
+        generated_at=generated_at,
     )
-    scope = {"hive": hive or None, "states": list(requested_states)}
-    offset = _inventory_cursor_offset(cursor, source_revision or "unavailable", scope)
-    if offset > len(filtered):
-        raise ValueError("the worktree inventory cursor is outside the collection")
-    page = filtered[offset : offset + limit]
-    next_offset = offset + len(page)
-    truncated = next_offset < len(filtered)
-
-    counts = None
-    if coverage_complete:
-        counts = []
-        for observation in normalized:
-            hive_items = [item for item in all_items if item["hive_id"] == observation["hive_id"]]
-            by_state = {
-                state: sum(item["state"] == state for item in hive_items)
-                for state in sorted({item["state"] for item in hive_items})
-            }
-            counts.append(
-                {
-                    "hive_id": observation["hive_id"],
-                    "hive_prefix": observation["hive_prefix"],
-                    "total": len(hive_items),
-                    "by_state": by_state,
-                }
-            )
-
-    now = generated_at if generated_at is not None else time.time_ns() // 1_000_000
-    freshness_state = (
-        "stale"
-        if any(observation["state"] == "stale" for observation in normalized)
-        else "unknown"
-        if coverage_state == "unavailable"
-        else "fresh"
-    )
-    reason = (
-        "; ".join(
-            sorted(
-                {str(observation["reason"]) for observation in normalized if observation["reason"]}
-            )
-        )
-        or None
-    )
-    return jsonout.envelope(
-        "worktree list",
-        _INVENTORY_SCHEMA_VERSION,
-        {
-            "source_revision": source_revision,
-            "generated_at": now,
-            "freshness": {
-                "state": freshness_state,
-                "as_of": now if freshness_state != "unknown" else None,
-            },
-            "coverage": {
-                "state": coverage_state,
-                "reason": reason,
-                "sources": [
-                    {
-                        "hive_id": observation["hive_id"],
-                        "state": observation["state"],
-                        "reason": observation["reason"],
-                        "revision": observation["revision"],
-                    }
-                    for observation in normalized
-                ],
-            },
-            "filters": scope,
-            "worktrees": page,
-            "returned": len(page),
-            "total": len(filtered) if coverage_complete else None,
-            "counts": counts,
-            "limit": limit,
-            "truncated": truncated,
-            "next_cursor": (
-                _inventory_cursor(source_revision or "unavailable", scope, next_offset)
-                if truncated
-                else None
-            ),
-            "warnings": warnings,
-        },
-    )
+    return jsonout.envelope("worktree list", _INVENTORY_SCHEMA_VERSION, payload)
 
 
 def _inventory_observations(hive: str = "") -> list[dict]:
@@ -708,55 +524,26 @@ def impl__classify_entries(
 ) -> dict[str, list]:
     """Classify populated hives concurrently, optionally reporting each completed hive.
 
-    Every classification has independent git and bead-store subprocesses, so waiting for one
-    hive before starting the next only delays the fleet view.  Each worker owns a
-    :func:`store_probe_cache` context: cache entries are per main-clone path and one worker owns
-    one hive, which preserves the one-probe-per-hive command contract without sharing a mutable
-    ``ContextVar`` value between threads.
-
-    Results are keyed rather than appended in completion order.  Callers that return structured
-    data can then retain their established deterministic entry ordering, while the human status
-    renderer uses ``on_complete`` to show a hive as soon as it is ready.
+    The concurrency scheduling itself — job selection, the single-job fast path, and the
+    ThreadPoolExecutor fan-out with keyed (not completion-ordered) results — is
+    ``beadhive_worktrees.classify_entries_concurrently`` (bh-qdezo.7, moved verbatim). Root
+    supplies ``classify_one``: each worker owns its own :func:`store_probe_cache` context, since
+    cache entries are per main-clone path and ContextVars do not propagate their values into new
+    threads — no two workers classify one hive, which preserves the one-probe-per-hive command
+    contract.
     """
-    jobs = [
-        (str(entry.get("prefix", "")), entry, rows_by_prefix.get(str(entry.get("prefix", "")), []))
-        for entry in entries
-        if rows_by_prefix.get(str(entry.get("prefix", "")), [])
-    ]
-    if not jobs:
-        return {}
 
     def classify_one(entry, entry_rows):
-        # A context is intentionally per worker rather than around the executor: ContextVars do
-        # not propagate their values into new threads, and no two workers classify one hive.
         with store_probe_cache():
             return _classify_entry(entry, entry_rows, cfg)
 
-    statuses_by_prefix: dict[str, list] = {}
-    if len(jobs) == 1:
-        prefix, entry, entry_rows = jobs[0]
-        statuses = classify_one(entry, entry_rows)
-        statuses_by_prefix[prefix] = statuses
-        if on_complete is not None:
-            on_complete(prefix, statuses)
-        return statuses_by_prefix
-
-    with ThreadPoolExecutor(
-        max_workers=min(_CLASSIFY_MAX_WORKERS, len(jobs)),
-        thread_name_prefix="bh-worktree-classify",
-    ) as executor:
-        futures = {
-            executor.submit(classify_one, entry, entry_rows): prefix
-            for prefix, entry, entry_rows in jobs
-        }
-        for future in as_completed(futures):
-            prefix = futures[future]
-            statuses = future.result()
-            statuses_by_prefix[prefix] = statuses
-            if on_complete is not None:
-                on_complete(prefix, statuses)
-
-    return statuses_by_prefix
+    return classify_entries_concurrently(
+        entries,
+        rows_by_prefix,
+        classify_one,
+        on_complete=on_complete,
+        max_workers=_CLASSIFY_MAX_WORKERS,
+    )
 
 
 def impl__wt_dirty(path: str) -> bool:
@@ -897,72 +684,28 @@ def _batch_evidence_for_entry(
 ) -> dict[str, wt_status.BatchEvidence]:
     """Resolve exact batch-label membership and one shared parent from one bounded snapshot.
 
-    Batch branches deliberately have no bead id.  Their lifecycle authority is instead the set
-    of issues carrying the exact ``batch:<group>`` label.  Any unreadable or contradictory shape
-    is omitted so the pure classifier keeps the worktree ABANDONED rather than making a pruning
-    decision from partial evidence.
+    The matching/evidence policy itself is ``beadhive_worktrees.resolve_batch_evidence``
+    (bh-qdezo.7, moved verbatim). Root still owns resolving this hive's ``main`` clone path
+    (registry lookup) and supplying ``integration_base_fn`` — walking a bead's integration base
+    is branch/history mechanics explicitly out of the package's scope (bh-7oo93.8). The
+    no-batch-branches short circuit is repeated here (cheap, no I/O) so a caller with no batch
+    rows never resolves ``main`` at all — some callers pass a bare ``{"prefix": ...}`` entry
+    with no registry-resolvable identity when there is nothing to look up.
     """
-    branches = tuple(
-        dict.fromkeys(
-            branch
-            for _prefix, _path, branch in rows
-            if branch.startswith("wt/batch/") and branch.removeprefix("wt/batch/")
-        )
-    )
-    if not branches:
+    if not any(
+        branch.startswith("wt/batch/") and branch.removeprefix("wt/batch/")
+        for _prefix, _path, branch in rows
+    ):
         return {}
-
     main = registry.hive_dir(entry)
-    issues = _BEAD_STATE_LOOKUP.all_issues(main)
-    if not isinstance(issues, list):
-        return {}
-
-    requested = {branch.removeprefix("wt/batch/"): branch for branch in branches}
-    members: dict[str, dict[str, str]] = {group: {} for group in requested}
-    invalid: set[str] = set()
-
-    for issue in issues:
-        if not isinstance(issue, dict):
-            continue
-        labels = [str(label) for label in (issue.get("labels") or [])]
-        issue_groups = [
-            label.removeprefix("batch:") for label in labels if label.startswith("batch:")
-        ]
-        matching_groups = [group for group in issue_groups if group in requested]
-        if not matching_groups:
-            continue
-        bead_id = str(issue.get("id") or "")
-        if not bead_id or len(issue_groups) != 1:
-            invalid.update(matching_groups)
-            continue
-        group = matching_groups[0]
-        status = str(issue.get("status") or "")
-        previous = members[group].get(bead_id)
-        if previous is not None and previous != status:
-            invalid.add(group)
-            continue
-        members[group][bead_id] = status
-
-    evidence: dict[str, wt_status.BatchEvidence] = {}
-    for group, branch in requested.items():
-        group_members = members[group]
-        if group in invalid or not group_members:
-            continue
-        try:
-            parents = {
-                str(_facade().integration_base(entry, bead_id, integration))
-                for bead_id in group_members
-            }
-        except Exception:
-            continue
-        parents.discard("")
-        if len(parents) != 1:
-            continue
-        evidence[branch] = wt_status.BatchEvidence(
-            member_statuses=tuple(sorted(group_members.items())),
-            parent=next(iter(parents)),
-        )
-    return evidence
+    return _pkg_resolve_batch_evidence(
+        entry,
+        rows,
+        integration,
+        lookup=_BEAD_STATE_LOOKUP,
+        main=main,
+        integration_base_fn=lambda e, bead_id, integ: _facade().integration_base(e, bead_id, integ),
+    )
 
 
 def impl__classify_entry(
@@ -972,8 +715,13 @@ def impl__classify_entry(
 ) -> list:
     """Classify all managed worktrees for one hive entry.
 
-    Repopulates fresh metadata (ttl=0) then runs the classifier.  Returns a list of
-    ``WtStatus`` objects.
+    Repopulates fresh metadata (ttl=0), assembles this hive's bead-state / dirty / precious /
+    batch-evidence facts (registry, config, and git reads that stay root-shaped per bh-qdezo.5's
+    own scope note), calls ``wt_status.classify`` directly (``beadhive.worktree`` is the
+    established patch boundary existing tests target — this call is intentionally NOT routed
+    through the package so that seam survives unchanged), then applies the ``legacy_root`` flag
+    through ``beadhive_worktrees.flag_legacy_root`` (bh-qdezo.7, moved verbatim). Returns a list
+    of ``WtStatus`` objects.
     """
     from . import metadata
 
@@ -1030,48 +778,13 @@ def impl__classify_entry(
         bead_disposition_relations=disposition_relations,
         batch_evidence=batch_evidence,
     )
-    active_root = config.worktrees_root(cfg).resolve()
-    return [
-        replace(
-            status,
-            legacy_root=not Path(status.path).resolve().is_relative_to(active_root),
-        )
-        if hasattr(status, "path")
-        else status
-        for status in statuses
-    ]
+    return flag_legacy_root(statuses, config.worktrees_root(cfg))
 
 
 def impl__status_tags(st) -> str:
-    """The trailing tag run on one rendered row.
-
-    ``? UNKNOWN`` is deliberately the loudest thing on the line and the only class carrying a
-    glyph: it is the one classification that means "do not act on this row", and it has to be
-    findable by eye in a tree of thirty (bh-167s0 — "visually distinct in the rendered tree").
-    A ``DIRTY`` row also shows what it is masking, so a dirty-but-SAFE seat is distinguishable
-    from a dirty-and-open one and a dirty row over an unresolvable bead cannot look ordinary.
-    """
-    tags = ""
-    if st.merged:
-        tags += "  merged"
-    if st.dirty:
-        tags += "  dirty"
-    if getattr(st, "underlying", None):
-        tags += f"  (under: {str(st.underlying).upper()})"
-    if st.safe:
-        tags += "  SAFE"
-    elif getattr(st, "precious", ()):
-        paths = ",".join(f"{item.path}({item.bytes}B)" for item in st.precious)
-        tags += f"  precious={paths}"
-    if getattr(st, "legacy_root", False):
-        tags += "  legacy-root"
-    if getattr(st, "disposition_reason", ""):
-        tags += f"  reason={st.disposition_reason}"
-    if getattr(st, "citing_bead", ""):
-        tags += f"  citing={st.citing_bead}"
-    if getattr(st, "binding_gaps", ()):
-        tags += f"  binding-gap={','.join(st.binding_gaps)}"
-    return tags
+    """The trailing tag run on one rendered row — ``beadhive_worktrees.status_tags``
+    (bh-qdezo.7, moved verbatim; see that function's docstring for the bh-167s0 rationale)."""
+    return _pkg_status_tags(st)
 
 
 def impl__render_status(statuses: list, header: str = "") -> None:
@@ -1178,12 +891,9 @@ def impl__status_classifications(hive: str = "", on_complete=None) -> tuple:
 
 
 def impl__ordered_statuses(entries: list, statuses_by_prefix: dict[str, list]) -> list:
-    """Flatten completed classifications in managed-repository order, never finish order."""
-    return [
-        status
-        for entry in entries
-        for status in statuses_by_prefix.get(str(entry.get("prefix", "")), [])
-    ]
+    """Flatten completed classifications in managed-repository order, never finish order —
+    ``beadhive_worktrees.ordered_statuses`` (bh-qdezo.7, moved verbatim)."""
+    return _pkg_ordered_statuses(entries, statuses_by_prefix)
 
 
 def _read_status_rows(hive: str = "") -> list:
