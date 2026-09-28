@@ -24,7 +24,10 @@ def test_every_parallel_pytest_recipe_uses_the_shared_xdist_ceiling() -> None:
     text = JUSTFILE.read_text()
     assert f"export {AUTO_WORKER_ENV} := shell(" in text
     assert f"${{{AUTO_WORKER_ENV}:-16}}" in text
-    assert len(_parallel_pytest_lines()) == 3
+    # `test`, `packages-check`, `bd-cli-check` (bh-vq34o, split out of `packages-check` for
+    # beadhive-bd-cli's own attest key), and the coverage line below -- all four read the same
+    # exported ceiling automatically, since `-n auto` is xdist's own env-driven behavior.
+    assert len(_parallel_pytest_lines()) == 4
     assert all("-n auto" in line for line in _parallel_pytest_lines())
 
 

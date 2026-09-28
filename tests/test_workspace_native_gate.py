@@ -66,10 +66,21 @@ def test_workspace_packages_are_all_tested_and_built_by_the_gate() -> None:
     package_gate = "\n".join(_recipe_body(justfile, "packages-check"))
     assert "./scripts/hermetic.sh uv sync --locked --offline --all-packages" in package_gate
     assert (
-        "--all-packages python scripts/pytest_with_report.py -n auto packages/*/tests"
+        "--all-packages python scripts/pytest_with_report.py -n auto "
+        "$(printf '%s\\n' packages/*/tests | grep -v '^packages/beadhive-bd-cli/tests$')"
         in package_gate
     )
     assert "./scripts/hermetic.sh uv build --all-packages --no-build-isolation" in package_gate
+
+    # beadhive-bd-cli is carved out of the shared `packages-check` glob (excluded from the
+    # `packages/*/tests` pytest collection above) into its own `bd-cli-check` leaf/key
+    # (bh-vq34o); confirm the overall "every workspace package is tested by the native gate"
+    # invariant still holds through that other recipe.
+    bd_cli_gate = "\n".join(_recipe_body(justfile, "bd-cli-check"))
+    assert (
+        "--all-packages python scripts/pytest_with_report.py -n auto packages/beadhive-bd-cli/tests"
+        in bd_cli_gate
+    )
 
 
 def test_native_test_recipes_collect_all_core_tests_without_pants_filtering() -> None:
