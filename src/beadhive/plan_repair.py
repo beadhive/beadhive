@@ -1,8 +1,8 @@
 """Compatibility facade for the planning capability's repair operation.
 
-Repair now belongs to :mod:`beadhive.modules.planning` and is composed by
-``beadhive.plan``.  These names remain import-compatible for callers and patch points that used
-the historical split module; dependency flow is one-way and no longer forms plan↔plan_repair.
+Repair is implemented by :func:`beadhive.plan.repair_epic`.  These names remain
+import-compatible for callers and patch points that used the historical split module; dependency
+flow is one-way and no longer forms plan↔plan_repair.
 """
 
 from dataclasses import dataclass, field
@@ -22,7 +22,7 @@ class RepairResult:
 
 
 def repair_epic(epic_id: str, cfg, cwd, actor: str) -> RepairResult:
-    """Delegate to the typed planning repair operation without recreating its policy."""
+    """Delegate to :func:`beadhive.plan.repair_epic` without recreating its policy."""
     result = plan.repair_epic(epic_id, cfg, cwd, actor)
     return RepairResult(list(result.fixes), list(result.problems))
 

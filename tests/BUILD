@@ -49,11 +49,9 @@ _UNIT_TEST_FIELDS = dict(
             "unit/modules/hives/test_hive_identity.py",
             "unit/modules/hives/test_hive_independence.py",
             "unit/modules/hives/test_hive_services.py",
-            "unit/modules/planning/test_planning_services.py",
             "unit/modules/state/test_state_services.py",
             "unit/modules/work/test_impact_pants.py",
             "unit/modules/work/test_work_independence.py",
-            "unit/modules/work/test_work_lifecycle_services.py",
             "unit/testing/test_conformance_testkit.py",
             "unit/testing/test_impact_conformance_kit.py",
         ): {
@@ -103,7 +101,6 @@ _unit_tests("kernel/telemetry", "kernel/telemetry", "kernel")
 _unit_tests("modules/agents", "modules/agents", "capability")
 _unit_tests("modules/config", "modules/config", "capability")
 _unit_tests("modules/hives", "modules/hives", "capability")
-_unit_tests("modules/planning", "modules/planning", "capability")
 _unit_tests("modules/state", "modules/state", "capability")
 _unit_tests("modules/work", "modules/work", "capability")
 _unit_tests("modules/worktrees", "modules/worktrees", "capability")

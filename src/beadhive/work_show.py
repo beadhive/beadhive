@@ -365,24 +365,7 @@ def review(
     view: list[str] = _VIEW,
     hive: str = _HIVE,
 ):
-    """Assemble review evidence through the typed work lifecycle boundary."""
-    from . import work_services
-    from .modules.work import ReviewRequest
-
-    return (
-        work_services.work_lifecycle_service(
-            review=lambda item: _legacy_review(
-                item.bead,
-                item.run_validation,
-                item.run_demo,
-                item.fresh,
-                list(item.views),
-                item.hive,
-            )
-        )
-        .review(ReviewRequest(bead, hive, run_validate, demo, fresh, tuple(view)))
-        .value
-    )
+    return _legacy_review(bead, run_validate, demo, fresh, list(view), hive)
 
 
 review.__doc__ = _legacy_review.__doc__

@@ -979,6 +979,125 @@ async def test_molecule_filters_detached_prefix_rows_but_keeps_historical_events
     assert molecule.events == {"b1": [event]}
 
 
+@async_test
+async def test_load_molecule_tries_the_routed_reads_before_bd(tmp_path, fakebd, monkeypatch):
+    """bh-sy36q.5: each of the epic-row, children, and per-child event fetches selects its named
+    `beadhive.dispatch_state` route before falling back to `bd` — when all three answer, `bd` is
+    never reached for any of them, and the molecule it builds is the one the routed reads named,
+    not whatever `FakeBd` would have answered."""
+    fake = fakebd(FakeBd(children=[_child("wrong-via-bd")]))
+
+    from beadhive import dispatch_state
+
+    calls: list[str] = []
+
+    def fake_progress(main, entry, bead):
+        calls.append(f"progress:{bead}")
+        return {"id": bead, "status": "in_progress"}
+
+    def fake_swarm(main, entry, epic):
+        calls.append(f"swarm:{epic}")
+        return [_child("b1")]
+
+    def fake_events(main, entry, bead):
+        calls.append(f"events:{bead}")
+        return []
+
+    monkeypatch.setattr(dispatch_state, "open_molecule_progress", fake_progress)
+    monkeypatch.setattr(dispatch_state, "open_swarm_members", fake_swarm)
+    monkeypatch.setattr(dispatch_state, "open_event_rows", fake_events)
+
+    molecule = _loop(tmp_path).load_molecule(budget=1)
+
+    assert calls == ["progress:epic-1", "swarm:epic-1", "events:b1"]
+    assert molecule.epic_status == "in_progress"
+    assert [row["id"] for row in molecule.beads] == ["b1"]
+    assert fake.calls == [], "bd must not be reached when every routed read answers"
+
+
+@async_test
+async def test_load_molecule_falls_back_to_bd_per_fetch_independently(
+    tmp_path, fakebd, monkeypatch
+):
+    """One routed fetch being unavailable must not force the others onto the CLI path too — each
+    of the three tries its own route independently."""
+    fake = fakebd(FakeBd(children=[_child("b1")]))
+
+    from beadhive import dispatch_state
+
+    monkeypatch.setattr(dispatch_state, "open_molecule_progress", lambda *a: None)
+    monkeypatch.setattr(dispatch_state, "open_swarm_members", lambda *a: None)
+    monkeypatch.setattr(dispatch_state, "open_event_rows", lambda *a: None)
+
+    molecule = _loop(tmp_path).load_molecule(budget=1)
+
+    assert [row["id"] for row in molecule.beads] == ["b1"]
+    assert any(c[0] == "show" for c in fake.calls)
+    assert any(c[0] == "list" for c in fake.calls)
+
+
+@async_test
+async def test_claimable_now_tries_the_routed_poll_before_bd(tmp_path, fakebd, monkeypatch):
+    """bh-sy36q.5: the dispatch-pass ready poll selects `work.dispatch.poll`
+    (`dispatch_state.open_poll_ready`) before the `bd ready` forward."""
+    fake = fakebd(FakeBd(children=[_child("b1")], ready=[]))  # bd would answer "not ready"
+
+    from beadhive import dispatch_state
+
+    monkeypatch.setattr(
+        dispatch_state, "open_poll_ready", lambda main, entry, parent=None: [{"id": "b1"}]
+    )
+
+    loop = _loop(tmp_path)
+    decision = work_next.Decision(
+        action="dispatch", beads=("b1",), row="dispatch-up-to-budget", reason=""
+    )
+
+    assert loop.claimable_now(decision) == ("b1",)
+    assert not any(c[0] == "ready" for c in fake.calls)
+
+
+@async_test
+async def test_claimable_now_falls_back_to_bd_when_the_route_is_unavailable(
+    tmp_path, fakebd, monkeypatch
+):
+    fake = fakebd(FakeBd(children=[_child("b1")], ready=[{"id": "b1"}]))
+
+    from beadhive import dispatch_state
+
+    monkeypatch.setattr(dispatch_state, "open_poll_ready", lambda main, entry, parent=None: None)
+
+    loop = _loop(tmp_path)
+    decision = work_next.Decision(
+        action="dispatch", beads=("b1",), row="dispatch-up-to-budget", reason=""
+    )
+
+    assert loop.claimable_now(decision) == ("b1",)
+    assert any(c[0] == "ready" for c in fake.calls)
+
+
+@async_test
+async def test_default_routing_tries_the_local_loop_state_route_before_bd(
+    tmp_path, fakebd, monkeypatch
+):
+    """bh-sy36q.5: the per-bead routing read selects `work.local-loop.state`
+    (`dispatch_state.open_local_loop_state`) before the `bd show --strict` forward."""
+    fake = fakebd(FakeBd(children=[_child("b1")]))
+
+    from beadhive import dispatch_state
+
+    monkeypatch.setattr(
+        dispatch_state,
+        "open_local_loop_state",
+        lambda main, entry, bead: {"id": bead, "model": "anthropic/claude-opus-4"},
+    )
+
+    loop = _loop(tmp_path)
+    loop._default_routing("b1", "developer")
+
+    assert not any(c[0] == "show" for c in fake.calls)
+
+
 # ---- dry-run: decide-only (bh-3xl60) --------------------------------------------------------
 
 

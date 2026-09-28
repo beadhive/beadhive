@@ -12,7 +12,10 @@ operation goes through `worktree` / `identity`. Tests use a real git repo and fa
 `bd` by patching `ws.work.run`.
 
 Composition map: reads/rendering live in ``work_reads`` and ``work_show``; intake in
-``work_intake``; assignment and scheduling in ``work_assignment`` / ``work_dispatch``;
+``work_intake``; assign / claim / resume / abandon and submit's bead state are served by
+``beadhive_core.lifecycle`` through the one ``work_lifecycle`` composition seam (bh-sy36q.1), with
+the claim-record and batch-checkout capabilities in ``work_assignment``; scheduling in
+``work_dispatch``;
 check/submit/review gates in ``work_submission``; molecule, bead, and PR landing in
 ``work_merge``; safe history rewriting in ``work_refine``. This module keeps the Typer command
 registry, public types, and injected compatibility seams used by callers and tests.
@@ -38,6 +41,7 @@ from . import (
     bd,
     claim_authority,  # noqa: F401 - injected submission collaborator
     converge,  # noqa: F401 - injected submission collaborator
+    dispatch_state,  # noqa: F401 - injected lifecycle collaborator
     ghpr,  # noqa: F401 - injected merge collaborator
     git_linkage,  # noqa: F401 - injected merge collaborator
     guard,  # noqa: F401 - injected merge collaborator
@@ -59,6 +63,7 @@ from . import (
     work_group,  # noqa: F401 - injected merge collaborator
     work_guards,
     work_intake,
+    work_lifecycle,
     work_logic,
     work_merge,
     work_metrics,
@@ -67,7 +72,6 @@ from . import (
     work_reads,
     work_refine,
     work_review,
-    work_services,
     work_show,
     work_submission,
     worktree,
@@ -75,11 +79,9 @@ from . import (
 from . import log as dispatch_log
 from . import schedule as schedule_mod  # noqa: F401 - injected lifecycle collaborator
 from .config_consumer_ports import work_settings as config
-from .modules import work as work_capability
 from .run import missing_binary, run  # noqa: F401 - injected submission collaborator
 from .work_logic import (
     _MARKER,  # noqa: F401 - injected refine collaborator
-    _guard_holds_claim,  # noqa: F401 - injected submission collaborator
     _guard_not_other,
     _guard_open,
     _history_ok,  # noqa: F401 - injected merge collaborator
@@ -259,9 +261,6 @@ def _print_work_preview(cfg, hive, bead, stamp_actor, op, as_json) -> None:
 
 _seat_of = work_guards.seat_of
 _guard_seat = work_guards.guard_seat
-_is_orchestrator = work_guards.is_orchestrator
-_names_a_seat = work_guards.names_a_seat
-_guard_orchestrator = work_guards.guard_orchestrator
 _epic_of = work_guards.epic_of
 _guard_conventions = work_guards.guard_conventions
 _print_brief = work_guards.print_brief
@@ -445,22 +444,10 @@ def assign(
 
     `--preview` (read-only): print the worktree provisioning + `--to` identity this call would
     stamp, without touching `bd` or git — the machine-readable pre-flight for an external
-    orchestrator (`--json` for the schema)."""
-    return (
-        work_services.work_lifecycle_service(
-            assign=lambda item: work_assignment.impl_assign(
-                sys.modules[__name__],
-                item.bead,
-                item.assignee,
-                item.actor,
-                item.hive,
-                item.preview,
-                as_json,
-            )
-        )
-        .assign(work_capability.AssignmentRequest(bead, to, as_, hive, preview))
-        .value
-    )
+    orchestrator (`--json` for the schema).
+
+    Served by the `beadhive_core` lifecycle handlers through the one `work_lifecycle` seam."""
+    return work_lifecycle.assign(bead, to, as_, hive, preview, as_json)
 
 
 def _claim_fence(cfg, hive) -> tuple[str, int]:
@@ -511,36 +498,23 @@ def claim(
 
     `--preview` (read-only, single bead only): print the worktree provisioning + identity this
     call would stamp, without touching `bd` or git — the machine-readable pre-flight for an
-    external orchestrator (`--json` for the schema)."""
-    return (
-        work_services.work_lifecycle_service(
-            claim=lambda item: work_assignment.impl_claim(
-                sys.modules[__name__],
-                item.bead,
-                item.actor,
-                item.group,
-                item.collapse,
-                item.hive,
-                item.preview,
-                as_json,
-            )
-        )
-        .claim(work_capability.ClaimRequest(bead, as_, group, collapse, hive, preview))
-        .value
-    )
+    external orchestrator (`--json` for the schema).
+
+    Served by the `beadhive_core` lifecycle handlers through the one `work_lifecycle` seam."""
+    return work_lifecycle.claim(bead, as_, group, collapse, hive, preview, as_json)
 
 
 def _claim_single_bead(cfg, hive, bead, as_) -> ClaimResult:
     """The single-bead claim: re-attach/provision the worktree with `actor`'s identity, refuse
     if it's someone else's or the wrong seat, then `bd update --claim` (→ in_progress)."""
-    return work_assignment.impl__claim_single_bead(sys.modules[__name__], cfg, hive, bead, as_)
+    return work_lifecycle.claim_single_bead(cfg, hive, bead, as_)
 
 
 def _batch_member_procedure_msg(bead, grp) -> str:
     """The error a per-bead `submit`/`check` on a BATCH member gets instead of the misleading
     "claim it first": a batch member has no per-bead worktree — the whole batch lives in the ONE
     shared `wt/batch/<grp>` worktree and completes as a UNIT (bh-n5z3.7)."""
-    return work_assignment.impl__batch_member_procedure_msg(sys.modules[__name__], bead, grp)
+    return work_lifecycle.batch_member_procedure(bead, grp)
 
 
 def _batch_worktree(cfg, hive, bead, main):
@@ -664,7 +638,7 @@ def _try_claim(bead, actor, main) -> bool:
     outright, but a ZERO claim proves nothing — `bd` will happily hand the same bead to a second
     caller. `work_next.claim_won` decides from the re-read row, so the verdict is a pure function
     of what the store actually says rather than of an exit code."""
-    return work_assignment.impl__try_claim(sys.modules[__name__], bead, actor, main)
+    return work_lifecycle.try_claim(bead, actor, main)
 
 
 def _release_claim(main, bead, actor, detail: str = "") -> None:
@@ -678,7 +652,7 @@ def _release_claim(main, bead, actor, detail: str = "") -> None:
     text-matching conflate "the reviewer bounced this" with "the disk was full" (state.py's
     module docstring, "Dispatcher failure dimensions"; bh-qczj.2's NOTES field). `detail`
     (typically the provisioning exception's message) rides as `--reason` for the operator."""
-    return work_assignment.impl__release_claim(sys.modules[__name__], main, bead, actor, detail)
+    return work_lifecycle.release_claim(main, bead, actor, detail)
 
 
 def _provision_claim(cfg, hive, main, bead, actor):
@@ -689,9 +663,7 @@ def _provision_claim(cfg, hive, main, bead, actor):
 
     Any failure here releases the claim (`_release_claim`) before re-raising, so a caller of
     `bh work next` never observes `status: claimed` for a bead with no worktree behind it."""
-    return work_assignment.impl__provision_claim(
-        sys.modules[__name__], cfg, hive, main, bead, actor
-    )
+    return work_lifecycle.provision_claim(cfg, hive, main, bead, actor)
 
 
 def next_(as_: str = _AS, hive: str = _HIVE, as_json: _NextJson = False, epic: _NextEpic = ""):
@@ -844,15 +816,7 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
     A green run against a CLEAN tree also seeds the verdict ledger `submit` reuses from
     (bh-i0p1.4), so the ordinary check-then-submit sequence pays for validation once, not
     twice — see `_record_check_verdict`."""
-    return (
-        work_services.work_lifecycle_service(
-            check=lambda item: work_submission.impl_check(
-                sys.modules[__name__], item.bead, item.hive
-            )
-        )
-        .check(work_capability.CheckRequest(bead, hive))
-        .value
-    )
+    return work_submission.impl_check(sys.modules[__name__], bead, hive)
 
 
 def artifacts_uploaded(
@@ -966,15 +930,7 @@ def schedule_payload(epic: str, cfg, entry, main) -> dict:
     raises ``ValueError`` when ``epic`` is not found in this hive so callers can map the
     error to the appropriate surface (``typer.Exit`` or MCP ``ResourceError``).
     """
-    return (
-        work_services.work_lifecycle_service(
-            schedule=lambda item: work_dispatch.impl_schedule_payload(
-                sys.modules[__name__], item.epic, cfg, entry, main
-            )
-        )
-        .schedule(work_capability.ScheduleRequest(epic))
-        .plan
-    )
+    return work_dispatch.impl_schedule_payload(sys.modules[__name__], epic, cfg, entry, main)
 
 
 def _apply_start_gating(payload: dict, beads: list, cfg, entry) -> None:
@@ -996,16 +952,7 @@ def schedule(
     (a planner `batch:<group>` or an auto-detected linear chain) vs as singletons (parallel
     wall-time, the default one-per-worktree). Read-only — surfaces the decision; you still
     `bh work claim --group` / `assign` to act on it. See the coordinator skill for the model."""
-    return (
-        work_services.work_lifecycle_service(
-            schedule=lambda item: work_dispatch.impl_schedule(
-                sys.modules[__name__], item.epic, item.hive, as_json
-            )
-        )
-        .schedule(work_capability.ScheduleRequest(epic, hive))
-        .plan
-        or None
-    )
+    return work_dispatch.impl_schedule(sys.modules[__name__], epic, hive, as_json)
 
 
 def _guard_fork_remote(entry, remote) -> None:
@@ -1030,20 +977,8 @@ def submit(
     With `--group <ids>`, submits a whole work-group from the shared `wt/batch/<group>` worktree:
     validate it once and open exactly ONE review gate whose reason names every member, so a single
     `approve` on any member clears it before `merge --group`."""
-    return (
-        work_services.work_lifecycle_service(
-            submit=lambda item: work_submission.impl_submit(
-                sys.modules[__name__],
-                item.bead,
-                item.actor,
-                item.hive,
-                item.group,
-                override_validation,
-                override_as,
-            )
-        )
-        .submit(work_capability.SubmissionRequest(bead, as_, hive, group))
-        .value
+    return work_submission.impl_submit(
+        sys.modules[__name__], bead, as_, hive, group, override_validation, override_as
     )
 
 
@@ -1065,14 +1000,16 @@ def _guard_submit_worktree(bead, main, target) -> None:
     return work_submission.impl__guard_submit_worktree(sys.modules[__name__], bead, main, target)
 
 
-def _resolve_submit_actor(cfg, entry, target, bead, main, as_, data=None) -> str:
+def _resolve_submit_actor(cfg, entry, target, bead, main, as_, hive="") -> tuple[str, dict]:
     """Resolve the submitting actor and guard the claim: no explicit `--as` defaults to the seat
     `claim`/`resume` actually recorded (bh-ejlq) — NOT a fresh env/git re-derivation, which is
     exactly what used to diverge from the held claim across separate shells/tool-calls. An
-    explicit `--as` still wins outright; `_guard_holds_claim` refuses a mismatch or an unclaimed
-    bead either way. Also warns (non-fatal) when cwd isn't the bead worktree."""
+    explicit `--as` still wins outright; the core's claim-holder admission
+    (`work_lifecycle.admit_submission`) refuses a mismatch or an unclaimed bead either way and
+    returns `(actor, bead)` — the ONE pre-mutation bead read submit's policy checks share. Also
+    warns (non-fatal) when cwd isn't the bead worktree."""
     return work_submission.impl__resolve_submit_actor(
-        sys.modules[__name__], cfg, entry, target, bead, main, as_, data
+        sys.modules[__name__], cfg, entry, target, bead, main, as_, hive
     )
 
 
@@ -1118,14 +1055,14 @@ def _validate_submit_checkout(entry, branch, cfg, bead=None, override=None) -> N
     )
 
 
-def _open_submit_gate(cfg, entry, bead, branch, main, sha) -> tuple[str, bool]:
+def _open_submit_gate(cfg, entry, bead, branch, main, sha, actor="", hive="") -> tuple[str, bool]:
     """Publish + open (or reuse) the review gate: push BEFORE set-state so a failed push blocks
     the gate too (no half-submitted bead) — out-of-process reviewers (GitHub CI) can't see a
     branch we don't push, and a `kind=external` (contribution) hive always pushes to its fork
     whatever the gate (bh-uxam.6). Opens the gate FIRST, then flips state, so we never leave a
     bead review=pending with nothing blocking it. Returns (gate type, reused an open gate)."""
     return work_submission.impl__open_submit_gate(
-        sys.modules[__name__], cfg, entry, bead, branch, main, sha
+        sys.modules[__name__], cfg, entry, bead, branch, main, sha, actor, hive
     )
 
 
@@ -1479,21 +1416,8 @@ def merge(
     With `--group <ids>`, lands a whole work-group: validate the shared `wt/batch/<group>` branch
     once, merge it `--no-ff` into the members' molecule as ONE bubble (per-bead commits preserved
     inside, so it stays bisectable), then close every member — release the slot either way."""
-    return (
-        work_services.work_lifecycle_service(
-            merge=lambda item: work_merge.impl_merge(
-                sys.modules[__name__],
-                item.bead,
-                item.hive,
-                item.remove_worktree,
-                item.molecule,
-                item.group,
-                override_validation,
-                override_as,
-            )
-        )
-        .merge(work_capability.MergeRequest(bead, hive, rm, molecule, group))
-        .value
+    return work_merge.impl_merge(
+        sys.modules[__name__], bead, hive, rm, molecule, group, override_validation, override_as
     )
 
 
@@ -1641,146 +1565,16 @@ def _merge_bead(cfg, bead, hive, rm, override_reason="", override_actor=""):
     )
 
 
-def _legacy_resume(
-    bead: str = _BEAD,
-    as_: str = _AS,
-    hive: str = _HIVE,
-):
-    """After review returns changes-requested: re-attach a fresh worktree on the bead branch,
-    print the feedback, and re-assert the claim. Address the feedback and `submit` again."""
-    otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
-    cfg = config.load()
-    entry, main, _target, _branch = worktree.locate(cfg, hive, bead)
-    _pull_state(cfg, main)  # see current state first — bounce feedback may have landed elsewhere
-    state = bd.state(bead, "review", main)
-    if state != "changes-requested":
-        typer.echo(f"✗ {bead} not in review:changes-requested (now: {state or 'none'})", err=True)
-        raise typer.Exit(1)
-    # GC any review gate a RAW `bd set-state` bounce left open (bh-n5z3.6): resolve it here so a
-    # same-sha resubmit can't resurrect a stale gate that would deadlock merge against approve.
-    open_review, _resolved = work_logic.review_gates(bead, main)
-    for gate in open_review:
-        bd.run(
-            [
-                "gate",
-                "resolve",
-                str(gate.get("id") or ""),
-                "--reason",
-                "orphaned by bounce — cleared on resume",
-            ],
-            main,
-        )
-    # A BATCH member re-attaches to the shared `wt/batch/<grp>` worktree and NEVER provisions its
-    # own (bh-c3nf). `worktree.ensure(bead)` would create `wt/bead/<type>/<id>` forked off the
-    # container tip — a tree holding none of the group's work — which then shadowed `check`'s
-    # batch redirect and poisoned the verdict ledger. No `_issue_claim` here, matching
-    # `work_group.claim_group`: a batch is claimed as a unit, and the group's own claim stands.
-    grp, batch_target = _batch_worktree(cfg, hive, bead, main)
-    if grp:
-        if batch_target is None:
-            typer.echo(_batch_member_procedure_msg(bead, grp), err=True)
-            raise typer.Exit(1)
-        target = batch_target
-    else:
-        entry, target, _branch = worktree.ensure(cfg, hive, bead)
-    actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
-    _stamp(cfg, entry, target, actor)
-    if not grp:
-        _issue_claim(cfg, entry, bead, actor, target, hive)
-    typer.echo("── review feedback ──")
-    bd.run(["comments", bead], main)
-    bd.run(["update", bead, "--claim"], main, actor=actor)
-    typer.echo(f"✓ resumed {bead} as {actor}; worktree {target}")
-
-
 def resume(
     bead: str = _BEAD,
     as_: str = _AS,
     hive: str = _HIVE,
 ):
-    """After review returns changes-requested, reattach and reassert the typed claim."""
-    # Keep the historical public-facade patch point discoverable here while the callback below
-    # routes through the typed service. The live call remains in `_legacy_resume`:
-    # `_issue_claim(cfg, entry, bead, actor, target, hive)`.
-    request = work_capability.ResumeRequest(bead, as_, hive)
-    return (
-        work_services.work_lifecycle_service(
-            resume=lambda item: _legacy_resume(item.bead, item.actor, item.hive)
-        )
-        .resume(request)
-        .value
-    )
+    """After review returns changes-requested: re-attach a fresh worktree on the bead branch,
+    print the feedback, and re-assert the claim. Address the feedback and `submit` again.
 
-
-resume.__doc__ = _legacy_resume.__doc__
-
-
-def _claim_residue(data) -> str:
-    """What of the claim SURVIVED the release write — "" when the bead is genuinely free.
-
-    The re-verify half of abandon (bh-0mckw), and the deliberate mirror of
-    `work_next.claim_won`: taking a claim is not believed on an exit code, so giving one back
-    must not be either. Same store, same non-CAS write, same reason.
-    """
-    if not isinstance(data, dict):
-        # A bead we cannot re-read is a bead we cannot vouch for. Reporting success here would
-        # be the exact unqualified ✓ this function exists to stop.
-        return "the bead could not be re-read, so its claim state is unknown"
-    residue = []
-    status = str(data.get("status") or "")
-    if status not in ("", "open"):
-        residue.append(f"status is still {status}")
-    holder = str(data.get("assignee") or "")
-    if holder:
-        residue.append(f"still assigned to {holder}")
-    return "; ".join(residue)
-
-
-def _legacy_abandon(
-    bead: str = _BEAD,
-    hive: str = _HIVE,
-    rm: bool = typer.Option(False, "--rm", help="also remove the worktree (default: keep it)"),
-):
-    """Release the claim and record the abandon, then RE-READ to prove it. Recovery path for
-    stalls.
-
-    The re-read is the point (bh-0mckw). This verb reported an unqualified ✓ off two exit codes
-    and nothing else, and an operator cleaning up after a runaway loop measured eight beads that
-    came back `in_progress` and still assigned — so the only net effect was an `abandoned` review
-    marker on work that was still held, which is strictly worse than having left them alone.
-    Whatever made the release not take, a verb whose whole job is releasing a claim must not be
-    the last thing to find out it failed. `bd update --claim` is not a compare-and-swap in either
-    direction; `work_next.claim_won` re-reads for the same reason on the way in.
-    """
-    otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
-    cfg = config.load()
-    entry, main, target, _branch = worktree.locate(cfg, hive, bead)
-    actor = identity.resolve_actor("", config.work_identity(cfg, entry)["name"] or "")
-    # Recovery path: deliberately no refuse-if-other guard (the point is to release a bead a
-    # stalled/dead agent left claimed). Surface bd failures instead of always reporting success.
-    r1 = bd.run(["set-state", bead, "review=abandoned", "--reason", "abandoned"], main, actor=actor)
-    r2 = bd.run(["update", bead, "--status", "open", "--assignee", ""], main, actor=actor)
-    if rm and target.exists():
-        worktree.remove(hive, bead, force=True)
-    if r1.returncode or r2.returncode:
-        typer.echo(f"⚠ abandoned {bead} with bd errors (see above)", err=True)
-        raise typer.Exit(1)
-    residue = _claim_residue(bd.show(bead, main))
-    if residue:
-        # NAME THE REMAINING STEP. The bead's acceptance criterion is that abandon either leaves
-        # the bead open and unassigned or says what is still needed — a bare ✓ over a still-held
-        # bead points at no follow-up at all, which is how eight of them went unnoticed.
-        typer.echo(
-            f"⚠ {bead}: review=abandoned was recorded, but the claim was NOT released "
-            f"({residue}).\n"
-            f"  The bead is still held, so nothing else can take it. Release it with:\n"
-            f"    bh bd reclaim            # reverts claims whose lease has expired\n"
-            f"    bh bd update {bead} --status open --assignee ''   # or force it directly",
-            err=True,
-        )
-        raise typer.Exit(1)
-    otel.count_bead_transition("abandoned")  # bead id rides the span (set_bead), not the metric
-    typer.echo(f"✓ abandoned {bead}" + ("; worktree removed" if rm else "; worktree kept"))
+    Served by the `beadhive_core` lifecycle handlers through the one `work_lifecycle` seam."""
+    return work_lifecycle.resume(bead, as_, hive)
 
 
 def abandon(
@@ -1788,18 +1582,13 @@ def abandon(
     hive: str = _HIVE,
     rm: bool = typer.Option(False, "--rm", help="also remove the worktree (default: keep it)"),
 ):
-    """Release a claim through the typed lifecycle boundary."""
-    request = work_capability.AbandonRequest(bead, hive, rm)
-    return (
-        work_services.work_lifecycle_service(
-            abandon=lambda item: _legacy_abandon(item.bead, item.hive, item.remove_worktree)
-        )
-        .abandon(request)
-        .value
-    )
+    """Release the claim and record the abandon, then RE-READ to prove it. Recovery path for
+    stalls.
 
-
-abandon.__doc__ = _legacy_abandon.__doc__
+    The re-read is the point (bh-0mckw): a release that did not take names the remaining step
+    instead of printing an unqualified ✓. Served by the `beadhive_core` lifecycle handlers
+    through the one `work_lifecycle` seam."""
+    return work_lifecycle.abandon(bead, hive, rm)
 
 
 # ---- show / review (read-only render verbs; bodies live in work_show) -------

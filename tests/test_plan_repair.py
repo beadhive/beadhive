@@ -440,7 +440,7 @@ def test_repair_then_approve_twice_each_converges(hive, monkeypatch):
 def _kickoff_desc(root: str, epic: str) -> str:
     """The description bd actually stores for a kickoff gate — the same text
     ``FakeBdRepair`` builds from ``gate create --blocks <root> --reason "kickoff <epic>"``,
-    which is what ``plan._create_kickoff_gate`` emits."""
+    which is what ``plan_filing.CliPlanningGates.create_kickoff_gate`` emits."""
     return f"Ad-hoc gate blocking {root}\n\nReason: kickoff {epic}"
 
 

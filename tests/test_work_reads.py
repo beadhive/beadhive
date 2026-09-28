@@ -6,6 +6,14 @@ The test seam mirrors the rest of the suite: patch the one `ws.work.run` symbol 
 drive the verbs through Typer's CliRunner, and assert the forwarded argv, the byte-identical
 output, and the propagated exit code. `ws work show`'s gates section (bh-i371) is driven through
 the same seam with the git producers faked.
+
+WORKSPACE ISOLATION (bh-p76tk.1): `bh work ready --json` now composes a Beads session through
+`registry.entry_for_dir`'s AMBIENT `cwd` resolution (`work_reads.ready_via_api` /
+`work_queue.open_ready`, mirroring `work_queue.claim_next`'s existing seam for `bh work next`).
+`_isolate_ambient_hive_resolution` below (autouse for this whole module) is the guard that keeps
+every test in this file from ever reaching this shared host's real, live hive service through that
+resolution — see its own docstring and `test_ambient_hive_resolution_reports_no_hive_once_isolated`
+for the measured hazard it closes.
 """
 
 from __future__ import annotations
@@ -14,13 +22,66 @@ import json
 from collections import namedtuple
 from pathlib import Path
 
+import httpx
+import pytest
 from typer.testing import CliRunner
 
 from beadhive import config as config_mod
-from beadhive import work, work_logic
+from beadhive import identity as identity_mod
+from beadhive import registry as registry_mod
+from beadhive import work, work_logic, work_queue, work_reads
 from beadhive import worktree as worktree_mod
+from beadhive_core import QUEUE_CAPABILITIES
 
 _CP = namedtuple("CP", "returncode stdout stderr")
+
+PROJECT = "proj"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_ambient_hive_resolution(tmp_path, monkeypatch):
+    """Close the ambient `cwd` -> real-hive resolution hazard bh-mu5yb.1 flagged and this bead
+    (bh-p76tk.1) closes: `ready()` now unconditionally computes `registry.entry_for_dir(cfg, cwd)`
+    for its `--json` composition, and that resolution does NOT go through `config.load` (faking it
+    to `{}`, as every test here already does, doesn't touch this at all) — it walks `cwd`'s OWN
+    path segments two different ways.
+
+    Measured directly against THIS hive, not asserted from prose: a pytest process's real cwd
+    running from inside a bead worktree (`.../bh-worktrees/github/beadhive/beadhive/<bead>`, the
+    shared host's own default ephemeral-worktrees-root layout — see
+    `config_paths.worktrees_root`) makes `registry.current_hive`'s shadow-root reverse-mapping
+    branch resolve the REAL `github/beadhive/beadhive` hive from those path segments alone, even
+    with `$GIT_WORKSPACE` faked — because that branch keys off `config.worktrees_root()`, not
+    `$GIT_WORKSPACE`. That hive has a genuinely running, `bh host beads status`-verified `bd
+    serve` on this shared host at times (bh-mu5yb.1's own notes) — a composed session reaching it
+    from a test would be a real read against real production data, not a hypothetical.
+
+    `$BH_WORKTREES` (the canonical override; `$WS_WORKTREES` is its deprecated alias, deliberately
+    left alone here) is the one lever that closes the shadow-root branch too: pointed at a scratch
+    `tmp_path` unrelated to this process's real cwd, `config.worktrees_root()` no longer matches
+    it, so both resolvers report "cwd is a hive nowhere" (``None``) — the same honest answer a
+    genuinely unmanaged process gets. `identity.workspace_identity` is process-lifetime `@cache`d
+    (bh-z31lc) and keyed on the `cwd` argument, so it is cleared before AND after every test here,
+    the same discipline `tests/stateful_fixtures.py`'s `_clear_git_fact_caches` already applies
+    suite-wide for the bare-cwd form.
+    """
+    monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path / "git-workspace"))
+    monkeypatch.setenv("BH_WORKTREES", str(tmp_path / "worktrees"))
+    identity_mod.workspace_identity.cache_clear()
+    yield
+    identity_mod.workspace_identity.cache_clear()
+
+
+def test_ambient_hive_resolution_reports_no_hive_once_isolated():
+    """The guard test (bh-p76tk.1 acceptance criterion 1): proves the isolation fixture above
+    actually works, rather than asserting it in prose only. Resolved from THIS test process's
+    real, unmodified cwd — this bead's own live worktree, the exact shape that otherwise
+    reverse-maps to the real `github/beadhive/beadhive` hive (see the fixture's docstring) —
+    `current_hive`/`entry_for_dir` must both report "no hive here" once isolated: never the real
+    hive's triplet, which is the one answer that would let a composed session reach this shared
+    host's live `bd serve`."""
+    assert registry_mod.current_hive({}) is None
+    assert registry_mod.entry_for_dir({}, Path.cwd()) is None
 
 
 class FakeReadBd:
@@ -262,6 +323,221 @@ def test_ready_has_flag_strips_equals_form():
     assert work._ready_has_flag(["--limit=0"], work._READY_LIMIT_FLAGS) is True
     assert work._ready_has_flag(["--limit"], work._READY_LIMIT_FLAGS) is True
     assert work._ready_has_flag(["--label"], work._READY_LIMIT_FLAGS) is False
+
+
+# ---- ready --json: the work.ready.list API route (bh-p76tk.1) ---------------------------------
+#
+# Finishes bh-mu5yb.1's byte-proven-but-unwired API surface: an UNBOUNDED `--json` read (explicit
+# `--limit 0`, or any narrowing flag auto-widened to it) selects `QueueCommands.list_ready` before
+# execution; every other shape (a capped read, `--mol`/`--mol-type`, human/non-JSON, `--gated`)
+# stays the named CLI-compatibility forward unconditionally — see `work_reads`'s module docstring.
+# `_isolate_ambient_hive_resolution` (autouse, top of file) is what keeps the FakeReadBd-only
+# tests above honest: without it, the composed session could resolve this shared host's real hive.
+
+
+def _row(bead_id, **kw):
+    row = {
+        "id": bead_id,
+        "title": f"title {bead_id}",
+        "priority": 2,
+        "created_at": "2026-09-26T00:00:00Z",
+        "updated_at": "2026-09-26T00:00:00Z",
+        "dependency_count": 0,
+        "dependent_count": 0,
+        "comment_count": 0,
+        "status": "open",
+        "issue_type": "task",
+    }
+    row.update(kw)
+    return row
+
+
+class FakeReadyService:
+    """Serves `/v0/beads/ready`, the same transport-fixture shape `test_work_queue.py`'s
+    `FakeQueueService` uses, narrowed to just what `list_ready` needs here."""
+
+    def __init__(self, rows):
+        self.rows = rows
+        self.ready_calls: list[dict] = []
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/healthz":
+            return httpx.Response(200, json={"status": "ok"})
+        if path == "/v0/beads/context":
+            return httpx.Response(
+                200,
+                json={
+                    "api_version": "v0",
+                    "bd_version": "1.3.0",
+                    "schema_version": 1,
+                    "backend": "dolt",
+                    "dolt_mode": "server",
+                    "database": "bh",
+                    "project_id": PROJECT,
+                    "capabilities": sorted(QUEUE_CAPABILITIES),
+                },
+            )
+        if path == "/v0/beads/ready":
+            self.ready_calls.append(dict(request.url.params))
+            return httpx.Response(200, json={"items": self.rows, "has_more": False})
+        raise AssertionError(f"unexpected request: {request.method} {path}")
+
+
+def _api_session_factory(fixture: FakeReadyService):
+    from beadhive_beads_client import BeadsSession, ExpectedContext, RemoteEndpoint
+
+    def factory(_main, _entry):
+        return BeadsSession(
+            RemoteEndpoint("http://127.0.0.1:8080"),
+            ExpectedContext(PROJECT, "bh", required_capabilities=QUEUE_CAPABILITIES),
+            transport=httpx.MockTransport(fixture.handle),
+        )
+
+    return factory
+
+
+def _forbidden_bd(*_a, **_kw):
+    raise AssertionError("bd must never be invoked once the API route is selected")
+
+
+def test_ready_json_unbounded_routes_through_the_api(monkeypatch):
+    """The plain case bh-mu5yb.1 byte-proved but did not wire: `--json --limit 0`, no narrowing,
+    selects the API route and emits `to_bd_json`'s byte-identical encoding — never touching `bd`
+    at all."""
+    fixture = FakeReadyService(rows=[_row("bh-1"), _row("bh-2")])
+    monkeypatch.setattr(work_queue, "session_factory", _api_session_factory(fixture))
+    monkeypatch.setattr(work.bd, "_run", _forbidden_bd)
+    monkeypatch.setattr(work.config, "load", lambda: {})
+    res = CliRunner().invoke(work.app, ["ready", "--json", "--limit", "0"])
+
+    assert res.exit_code == 0
+    assert [row["id"] for row in json.loads(res.stdout)] == ["bh-1", "bh-2"]
+    # the FIRST call is the session's own negotiation probe (`list_ready(limit=1)`, see
+    # `BeadsSession._negotiate`) — the actual op is the LAST call, asking for the unbounded page.
+    assert fixture.ready_calls[-1]["limit"] == "0"
+
+
+def test_ready_json_narrowed_auto_widened_routes_through_the_api(monkeypatch):
+    """A narrowing flag with no explicit limit is auto-widened to `-n 0` (bh-i0p1.2) — the
+    widened, now-unbounded read also qualifies for the API route, with the narrowing flag
+    forwarded onto the wire under its typed name."""
+    fixture = FakeReadyService(rows=[_row("bh-3", labels=["component:cli"])])
+    monkeypatch.setattr(work_queue, "session_factory", _api_session_factory(fixture))
+    monkeypatch.setattr(work.bd, "_run", _forbidden_bd)
+    monkeypatch.setattr(work.config, "load", lambda: {})
+    res = CliRunner().invoke(work.app, ["ready", "--json", "--label", "component:cli"])
+
+    assert res.exit_code == 0
+    assert [row["id"] for row in json.loads(res.stdout)] == ["bh-3"]
+    assert fixture.ready_calls[-1]["label"] == "component:cli"
+    assert fixture.ready_calls[-1]["limit"] == "0"
+
+
+def test_ready_json_falls_back_to_cli_when_the_service_is_unavailable(monkeypatch):
+    """The missing-capability / no-service fallback, selected before any write, never as a
+    retry — mirrors `test_work_queue.py`'s
+    `test_next_falls_back_to_cli_when_the_service_is_unavailable`."""
+    from beadhive_beads_client.service import ServiceUnavailable
+
+    def factory(_main, _entry):
+        raise ServiceUnavailable("no service", state="absent", start_command="bh host beads start")
+
+    monkeypatch.setattr(work_queue, "session_factory", factory)
+    fake = FakeReadBd(stdout="[]\n")
+    res = _run(monkeypatch, fake, ["ready", "--json", "--limit", "0"])
+
+    assert res.exit_code == 0
+    assert fake.last[-4:] == ["ready", "--json", "--limit", "0"]  # CLI-compatibility forward ran
+
+
+def test_ready_json_mol_flag_never_tries_the_api_route(monkeypatch):
+    """`--mol`/`--mol-type` have no HTTP equivalent (re-verified, bh-mu5yb.1) — stays
+    CLI-compatibility unconditionally, decided before any session is even opened."""
+    attempts: list[object] = []
+
+    def factory(main, entry):
+        attempts.append((main, entry))
+        raise AssertionError("the API route must never be tried for --mol narrowing")
+
+    monkeypatch.setattr(work_queue, "session_factory", factory)
+    fake = FakeReadBd(stdout="[]\n")
+    res = _run(monkeypatch, fake, ["ready", "--json", "--mol", "mr-epic"])
+
+    assert res.exit_code == 0
+    assert attempts == []
+    # `--mol` is a narrowing flag (`READY_NARROWING_FLAGS`) with no explicit limit, so it is also
+    # auto-widened to `-n 0` before the CLI-compatibility forward — orthogonal to this test's point.
+    assert fake.last[-6:] == ["ready", "--json", "--mol", "mr-epic", "-n", "0"]
+
+
+def test_ready_json_capped_limit_never_tries_the_api_route(monkeypatch):
+    """An explicit non-zero `--limit` stays CLI-compatibility unconditionally: `ReadyPage` carries
+    no total-count field to reproduce bd's own truncation notice byte-for-byte, so a capped read
+    is never attempted over the API at all — see `work_reads`'s module docstring."""
+    attempts: list[object] = []
+
+    def factory(main, entry):
+        attempts.append((main, entry))
+        raise AssertionError("the API route must never be tried for a capped (non-zero) limit")
+
+    monkeypatch.setattr(work_queue, "session_factory", factory)
+    fake = FakeReadBd(stdout="[]\n")
+    res = _run(monkeypatch, fake, ["ready", "--json", "--limit", "5"])
+
+    assert res.exit_code == 0
+    assert attempts == []
+
+
+def test_api_ready_kwargs_maps_every_narrowing_flag():
+    assert work_reads._api_ready_kwargs(
+        [
+            "--json",
+            "-l",
+            "a",
+            "--label-any",
+            "b",
+            "--exclude-label",
+            "c",
+            "-t",
+            "task",
+            "--exclude-type",
+            "gate",
+            "-p",
+            "1",
+            "-a",
+            "dev/x",
+            "-u",
+            "--parent",
+            "mr-1",
+            "--has-metadata-key",
+            "k",
+            "--metadata-field",
+            "k=v",
+            "--limit",
+            "0",
+        ]
+    ) == {
+        "label": ["a"],
+        "label_any": ["b"],
+        "exclude_label": ["c"],
+        "type_": "task",
+        "exclude_type": ["gate"],
+        "priority": 1,
+        "assignee": "dev/x",
+        "unassigned": True,
+        "parent": "mr-1",
+        "has_metadata_key": "k",
+        "metadata_field": ["k=v"],
+        "limit": 0,
+    }
+
+
+def test_api_ready_kwargs_rejects_mol_and_unknown_flags():
+    assert work_reads._api_ready_kwargs(["--json", "--mol", "mr-1"]) is None
+    assert work_reads._api_ready_kwargs(["--json", "--mol-type", "swarm"]) is None
+    assert work_reads._api_ready_kwargs(["--json", "--explain"]) is None
+    assert work_reads._api_ready_kwargs(["--json", "--sort", "priority"]) is None
 
 
 # ---- readiness: one molecule, including persistent gates over wisp steps ---------------------
