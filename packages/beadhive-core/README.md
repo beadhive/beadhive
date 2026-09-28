@@ -504,6 +504,28 @@ not retired:
 The rollback switch is temporary. This automatic route is not, and stays after the switch is
 removed.
 
+### Superseded: `work.beads.route` makes the `bd` route opt-in (bh-m36pc)
+
+The decision above is superseded by operator decision bh-fqsp2: the API is the only default route.
+The automatic selection is kept, but only as a named per-hive opt-in, the `work.beads.route` key
+(`beadhive.beads_routing.route`, per-hive > global > `api`):
+
+- `api` (default): a seam that cannot open a capable session calls
+  `beads_routing.allow_cli_route`, which renders one `✗` line naming
+  `bh host beads start --hive <hive>` and the key, and raises `BeadsServiceRequired` (a
+  `typer.Exit`, exit 1) from the original error. No `bd` route is selected. Every error branch a
+  seam used to map onto its `bd` route goes through this gate, including `work_queue` /
+  `dispatch_state`'s `RouteMismatch` / `OperationDenied` / `UnknownOperation` / `OSError` /
+  `ValueError` branch. Pre-execution CLI routes that are not a fallback (`claim_next`'s bare
+  actor, `--epic` scoping, capped `ready` reads) are unchanged.
+- `api+cli-fallback`: exactly the automatic selection described above.
+- `cli`: `hive_session` refuses before resolving anything, exactly like `BH_BEADS_ROUTE=cli`.
+
+An unknown value renders one `✗` line and exits 2 (`BeadsRouteConfigInvalid`); the config
+schema (`WorkConfig.beads.route`, a `Literal`) refuses it at `bh config set` and `validate`
+time too. `BH_BEADS_ROUTE`, while it exists, still wins with its old meaning (`api` there is
+`api+cli-fallback`). Embedded-Dolt hives, which Beads 1.3 cannot serve, must opt in explicitly.
+
 ### What was already cut over, and what this bead changed
 
 | Area | Found | Changed here |
