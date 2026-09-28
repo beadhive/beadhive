@@ -282,6 +282,92 @@ def test_same_distribution_imports_are_not_restricted(tmp_path: Path) -> None:
     assert MODULE.check(tmp_path) == ()
 
 
+# --- root tests <-> library packages (bh-qdezo.9) ------------------------------------------
+
+
+def _root_test(root: Path, content: str, *, filename: str = "test_consumer.py") -> None:
+    _write(root / "tests" / filename, content)
+
+
+def _library_with_internals(root: Path) -> None:
+    _make_package(
+        root,
+        "example",
+        "beadhive_example",
+        init="from .internals import helper\n__all__ = ['helper']\n",
+        modules={
+            "internals": "def helper():\n    return 1\n",
+            "public": "__all__ = ['x']\nx = 1\n",
+        },
+    )
+
+
+def test_root_tests_may_import_and_patch_a_librarys_public_surface(tmp_path: Path) -> None:
+    _library_with_internals(tmp_path)
+    _root_test(
+        tmp_path,
+        "import beadhive_example\n"
+        "from beadhive_example import helper, public\n"
+        "def test_x(monkeypatch):\n"
+        "    monkeypatch.setattr(beadhive_example, 'helper', lambda: 2)\n"
+        "    monkeypatch.setattr(public, 'x', 2)\n",
+    )
+
+    assert MODULE.check_root_tests(tmp_path) == ()
+
+
+def test_root_tests_importing_a_librarys_private_module_are_rejected(tmp_path: Path) -> None:
+    _library_with_internals(tmp_path)
+    _root_test(tmp_path, "from beadhive_example.internals import helper\n")
+
+    [violation] = MODULE.check_root_tests(tmp_path)
+
+    assert violation.edge == "beadhive_example.internals"
+    assert "root tests may import a library package only" in violation.reason
+
+
+def test_root_tests_patching_a_package_private_name_name_every_target(tmp_path: Path) -> None:
+    _library_with_internals(tmp_path)
+    _root_test(
+        tmp_path,
+        "from unittest.mock import patch\n"
+        "import beadhive_example\n"
+        "from beadhive_example import public as pub\n"
+        "def test_x(monkeypatch):\n"
+        "    monkeypatch.setattr(beadhive_example, '_secret', 1)\n"
+        "    monkeypatch.setattr(pub, '_cache', {})\n"
+        "    monkeypatch.setattr('beadhive_example._state.value', 3)\n"
+        "    monkeypatch.delattr(beadhive_example._state, 'value')\n"
+        "    with patch.object(beadhive_example, '_other'):\n"
+        "        pass\n",
+    )
+
+    edges = [violation.edge for violation in MODULE.check_root_tests(tmp_path)]
+
+    assert edges == [
+        "beadhive_example._secret",
+        "beadhive_example.public._cache",
+        "beadhive_example._state.value",
+        "beadhive_example._state.value",
+        "beadhive_example._other",
+    ]
+
+
+def test_root_tests_may_patch_root_private_names_and_plugin_packages(tmp_path: Path) -> None:
+    _library_with_internals(tmp_path)
+    _make_package(tmp_path, "plug", "beadhive_plug", is_plugin=True)
+    _root_test(
+        tmp_path,
+        "import beadhive_plug\n"
+        "from beadhive import worktree\n"
+        "def test_x(monkeypatch):\n"
+        "    monkeypatch.setattr(worktree, '_run_git', None)\n"
+        "    monkeypatch.setattr(beadhive_plug, '_seam', None)\n",
+    )
+
+    assert MODULE.check_root_tests(tmp_path) == ()
+
+
 # --- the real repository -------------------------------------------------------------------
 
 
@@ -294,3 +380,4 @@ def test_real_repository_packages_classify_and_pass() -> None:
     assert packages["_template"].is_plugin is False
 
     assert MODULE.check(MODULE.ROOT) == ()
+    assert MODULE.check_root_tests(MODULE.ROOT) == ()
