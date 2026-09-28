@@ -30,12 +30,31 @@ from types import SimpleNamespace
 
 import pytest
 
-from beadhive import activity_publisher, config, localloop, run_journal, seatrun, state, work_next
+from beadhive import (
+    activity_publisher,
+    beads_routing,
+    config,
+    localloop,
+    run_journal,
+    seatrun,
+    state,
+    work_next,
+)
 from beadhive import bd as bd_mod
 from beadhive.complexity import ComplexityTier
 from beadhive.model_routing import ModelBlockedVerdict, ModelSelection
 
 STUB_SEAT = Path(__file__).parent / "fixtures" / "stub_seat.py"
+
+
+@pytest.fixture(autouse=True)
+def _bd_cli_fallback_route(monkeypatch):
+    """These loop tests drive the bd CLI route (FakeBd, no Beads service): opt in, exactly as a
+    hive would with ``work.beads.route: api+cli-fallback`` (bh-m36pc). Under the default ``api``
+    route the same reads fail closed — see ``tests/test_beads_routing.py``."""
+    monkeypatch.setattr(
+        beads_routing, "configured_route", lambda *_a, **_k: beads_routing.ROUTE_API_CLI_FALLBACK
+    )
 
 
 def _model_selection(

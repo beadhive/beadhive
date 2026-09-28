@@ -68,6 +68,7 @@ providers: [github]
 work:
   validate_cmd: "true"
   review_gate: "human"
+  beads: {route: "api+cli-fallback"}  # FakeBd-backed: opt into the bd route (bh-m36pc)
   identity: {mode: agent, name: "dev/default", email: "agents@test.dev"}
 managed_repos:
   - {provider: github, org: myorg, repo: myrepo, prefix: mr, kind: personal}
@@ -78,6 +79,7 @@ providers: [github]
 work:
   validate_cmd: "true"
   review_gate: "human"
+  beads: {route: "api+cli-fallback"}  # FakeBd-backed: opt into the bd route (bh-m36pc)
   landing: pr
   identity: {mode: agent, name: "dev/default", email: "agents@test.dev"}
 managed_repos:
@@ -89,6 +91,7 @@ providers: [github]
 work:
   validate_cmd: "true"
   review_gate: "human"
+  beads: {route: "api+cli-fallback"}  # FakeBd-backed: opt into the bd route (bh-m36pc)
   identity: {mode: agent, name: "dev/default", email: "agents@test.dev"}
 managed_repos:
   - {provider: github, org: myorg, repo: myrepo, prefix: mr, kind: external,
@@ -100,6 +103,7 @@ providers: [github]
 work:
   validate_cmd: "true"
   review_gate: "human"
+  beads: {route: "api+cli-fallback"}  # FakeBd-backed: opt into the bd route (bh-m36pc)
   identity: {mode: agent, email: "agents@test.dev"}
 managed_repos:
   - {provider: github, org: myorg, repo: myrepo, prefix: mr, kind: personal}
@@ -110,6 +114,7 @@ providers: [github]
 work:
   validate_cmd: "true"
   review_gate: "human"
+  beads: {route: "api+cli-fallback"}  # FakeBd-backed: opt into the bd route (bh-m36pc)
   identity: {mode: agent, name: "dev/default", email: "agents@test.dev"}
   conflict:
     union_globs: ["notes.txt"]
@@ -1052,6 +1057,7 @@ providers: [github]
 work:
   validate_cmd: "true"
   review_gate: "human"
+  beads: {route: "api+cli-fallback"}  # FakeBd-backed: opt into the bd route (bh-m36pc)
   identity:
     mode: agent
     name: "dev/default"
@@ -1104,6 +1110,7 @@ providers: [github]
 work:
   validate_cmd: "true"
   review_gate: "human"
+  beads: {route: "api+cli-fallback"}  # FakeBd-backed: opt into the bd route (bh-m36pc)
   identity:
     mode: agent
     name: "dev/default"

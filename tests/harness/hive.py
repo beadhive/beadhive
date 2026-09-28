@@ -20,7 +20,14 @@ from beadhive import config
 from . import beads
 from .world import World, git
 
-_DEFAULT_WORK = {"validate_cmd": "true", "review_gate": "human", "integration_branch": "main"}
+#: Scratch hives are embedded-Dolt with no Beads service, so they opt into the bd CLI route
+#: explicitly (``work.beads.route``, bh-m36pc); the default ``api`` route would fail closed.
+_DEFAULT_WORK = {
+    "validate_cmd": "true",
+    "review_gate": "human",
+    "integration_branch": "main",
+    "beads": {"route": "api+cli-fallback"},
+}
 
 
 @dataclass
