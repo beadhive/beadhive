@@ -961,11 +961,6 @@ class FakeBdApprove(FakeBd):
         if args and len(args) > 1 and args[0] == "gate" and args[1] == "list":
             # bd gate list --json → return configured gates as JSON
             return _CP(0, json.dumps(self._gates) + "\n", "")
-        if args and args[0] == "create":
-            self._n += 1
-            new_id = f"mr-{self._n}"
-            self.created.append((new_id, args[1:]))
-            return _CP(0, new_id + "\n", "")
         return _CP(0, "", "")
 
 
@@ -2314,3 +2309,61 @@ def test_check_epic_unretrievable_aborts(hive, monkeypatch):
     result = _runner.invoke(app, ["plan", "check", "epic-zzz", "--hive", "myrepo"])
     assert result.exit_code != 0
     assert "could not retrieve epic" in result.output
+
+
+# ---- shared kickoff-gate contract and molecule ordering (moved from the retired planning
+# capability's contract tests, bh-sy36q.6) ------------------------------------------------------
+
+
+def test_kickoff_gate_write_contract_is_the_exact_bd_call(monkeypatch):
+    """``plan_filing.CliPlanningGates.create_kickoff_gate`` — moved here from
+    ``plan._create_kickoff_gate`` (bh-sy36q.2) so `bh plan file` and `bh plan repair` share ONE
+    implementation of the kickoff-gate contract."""
+    completed = namedtuple("Completed", "returncode stdout stderr")
+    writes = []
+    monkeypatch.setattr(
+        plan_filing.bd,
+        "run",
+        lambda args, cwd, actor="", **_kwargs: (
+            writes.append((args, cwd, actor)) or completed(0, "", "")
+        ),
+    )
+
+    plan_filing.CliPlanningGates(Path("/hive")).create_kickoff_gate(
+        "bh-epic.1", "bh-epic", actor="planner"
+    )
+
+    assert writes == [
+        (
+            [
+                "gate",
+                "create",
+                "--type=human",
+                "--blocks",
+                "bh-epic.1",
+                "--reason",
+                "kickoff bh-epic",
+            ],
+            Path("/hive"),
+            "planner",
+        )
+    ]
+
+
+def test_preview_ordering_is_the_filing_compilers_graph():
+    """`bh plan show` / `--dry-run` / the `plan_file` preview order a molecule through the SAME
+    ``beadhive_core.MoleculeGraph`` the filing compiler lowers through (bh-sy36q.6 retired the
+    root-side duplicate), and a malformed graph still raises ``ValueError``."""
+    issues = [
+        {"handle": "c", "deps": ["a", "b"]},
+        {"handle": "a"},
+        {"handle": "b", "deps": ["a"]},
+    ]
+
+    assert [issue["handle"] for issue in plan._topo_order(issues)] == ["a", "b", "c"]
+    assert [issue["handle"] for issue in plan._roots(issues)] == ["a"]
+    assert type(plan_filing.molecule_graph(issues)) is plan_filing._core().MoleculeGraph
+    with pytest.raises(ValueError, match="cycle"):
+        plan._topo_order([{"handle": "a", "deps": ["b"]}, {"handle": "b", "deps": ["a"]}])
+    with pytest.raises(ValueError, match="unknown handles"):
+        plan._topo_order([{"handle": "a", "deps": ["ghost"]}])

@@ -27,7 +27,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from . import host_beads, log
+from . import beads_routing, log
 
 _CORE_MODULE = "beadhive_core"
 _LOGGER_NAME = "beadhive.dispatch_state"
@@ -45,21 +45,10 @@ class TelemetryRoutingObserver:
 
 
 def hive_session(main: Path, entry: Any) -> Any:
-    """An unopened session against the hive's one supervised Beads service (``bh host beads``).
-
-    Never starts ``bd serve``: an absent or stale service (or a hive that cannot be served at
-    all) raises the client's ``ServiceUnavailable`` / ``beadhive_core.SessionUnavailable``, both
-    of which every ``open_*`` function below catches to select the CLI-compatibility route
-    instead — always before any read is attempted, never as a retry after one fails.
-    """
-    try:
-        return host_beads.resolve_session(main, _core().DISPATCH_CAPABILITIES, entry=entry)
-    except host_beads.HiveNotServable as exc:
-        raise _core().SessionUnavailable(str(exc)) from exc
-    except (KeyError, TypeError) as exc:
-        raise _core().SessionUnavailable(
-            f"cannot address hive from entry {entry!r}: {exc}"
-        ) from exc
+    """An unopened session for this cohort's ``DISPATCH_CAPABILITIES`` — see
+    :func:`beadhive.beads_routing.hive_session` (the one composition decision, including the
+    ``BH_BEADS_ROUTE=cli`` rollback)."""
+    return beads_routing.hive_session(main, entry, _core().DISPATCH_CAPABILITIES)
 
 
 #: The session seam: ``(main, entry)`` -> an unopened ``BeadsSession``. Tests substitute a
@@ -68,18 +57,7 @@ session_factory: Callable[[Path, Any], Any] = hive_session
 
 
 def _incompatible_service_errors() -> tuple[type[BaseException], ...]:
-    """``IncompatibleService`` (whose subclass ``CapabilityMissing`` is the missing-capability
-    fallback) plus the supervised-service errors ``hive_session`` raises — imported lazily so
-    this module never statically imports a workspace package. Mirrors
-    :func:`beadhive.work_queue._incompatible_service_errors` exactly."""
-    beads_client = importlib.import_module("beadhive_beads_client")
-    service_mod = importlib.import_module("beadhive_beads_client.service")
-    core = _core()
-    return (
-        beads_client.IncompatibleService,
-        service_mod.ServiceError,
-        core.SessionUnavailable,
-    )
+    return beads_routing.unavailable_errors()
 
 
 def _route_fallback_errors(core: Any) -> tuple[type[BaseException], ...]:

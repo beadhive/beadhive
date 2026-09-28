@@ -15,13 +15,35 @@ Beadhive host runtime owns it; commands never start, stop, or address `bd serve`
 - **One service per hive, always on.** A hive's service runs until it is stopped. There is no
   lazy start on first use and no idle sleep or suspend.
 - **Commands never start it.** A command that needs the API resolves the hive's running service.
-  If none is running (or it is stale, not ready, or bound to a different workspace) the command
-  fails closed with `start it with bh host beads start --hive <hive>`.
+  If none is running (or it is stale, not ready, or bound to a different workspace) an API-only
+  command fails closed with `start it with bh host beads start --hive <hive>`; a cutover command
+  takes its `bd` route instead (see [Which commands use it](#which-commands-use-it)).
 - **Per hive, never fleet-wide by default.** `start`, `stop`, `run`, `enable`, and `disable` act
   on one hive (`--hive`, defaulting to the hive you are in). Only `status` takes `--all`.
   Turning services on across the fleet is a per-hive choice.
 - **Server-mode hives only.** Beads 1.3 does not serve its API from an embedded-Dolt store; those
   hives are refused with a clear message. Beadhive does not support embedded Dolt on this path.
+
+## Which commands use it
+
+Two behaviors, decided per command before its first Beads operation:
+
+- **Fail closed:** `bh work approve` / `bounce`. With no running service they refuse and name
+  `bh host beads start`; there is no `bd` fallback.
+- **Core by default, `bd` when the API cannot serve the hive:** the work and planning cohorts cut
+  over to `beadhive-core` (bh-sy36q) — `assign`, `claim`, `resume`, `abandon`, submit's bead-state
+  half, `next`, unbounded `ready --json`, `schedule`, `bh plan file`, and the local loop's molecule,
+  swarm, poll and routing reads. When no capable service can be used (none running, an
+  embedded-Dolt hive, a missing capability) they take their named `bd` compatibility route for
+  the whole command. That keeps claim (the first step of every developer loop) and abandon (the
+  stall-recovery path) working on hives Beads 1.3 cannot serve. It is never a retry: once a
+  command has selected the API, a failing call is reported, not replayed through `bd`.
+
+**Rollback (one release window).** `BH_BEADS_ROUTE=cli` forces the `bd` compatibility route for
+every cutover command at once, without stopping the service; unset or `api` is the default. Any
+other value stops the command with exit 2. The switch ships with the release that first carries
+the cutover and is removed in the release after it. The automatic `bd` route for hives the API
+cannot serve stays. Details: `packages/beadhive-core/README.md`, "CLI composition cutover".
 
 ## Commands
 

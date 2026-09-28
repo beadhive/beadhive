@@ -54,7 +54,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import host_beads, log, otel, work_guards
+from . import beads_routing, log, otel, work_guards
 
 _CORE_MODULE = "beadhive_core"
 
@@ -71,25 +71,10 @@ class TelemetryRoutingObserver:
 
 
 def hive_session(main: Path, entry: Any) -> Any:
-    """An unopened session against the hive's one supervised Beads service (``bh host beads``).
-
-    Never starts ``bd serve``: an absent or stale service (or a hive that cannot be served at
-    all) raises the client's ``ServiceUnavailable`` / ``beadhive_core.SessionUnavailable``, both
-    of which :func:`claim_next` / :func:`open_children` catch to select the CLI-compatibility
-    route instead — always before any write or read is attempted, never as a retry after one
-    fails. A caller carrying a minimal/synthesized ``entry`` missing the registry triplet (several
-    read-only surfaces pass ``{"prefix": "..."}`` deliberately, to prove a `bd`-absent failure is
-    reported honestly rather than misattributed — see `tests/test_mcp_strict_bd_reads.py`) is the
-    same "cannot even address this hive" condition as `HiveNotServable`, not a bug in this seam.
-    """
-    try:
-        return host_beads.resolve_session(main, _core().QUEUE_CAPABILITIES, entry=entry)
-    except host_beads.HiveNotServable as exc:
-        raise _core().SessionUnavailable(str(exc)) from exc
-    except (KeyError, TypeError) as exc:
-        raise _core().SessionUnavailable(
-            f"cannot address hive from entry {entry!r}: {exc}"
-        ) from exc
+    """An unopened session for this cohort's ``QUEUE_CAPABILITIES`` — see
+    :func:`beadhive.beads_routing.hive_session` (the one composition decision, including the
+    ``BH_BEADS_ROUTE=cli`` rollback)."""
+    return beads_routing.hive_session(main, entry, _core().QUEUE_CAPABILITIES)
 
 
 #: The session seam: ``(main, entry)`` -> an unopened ``BeadsSession``. Tests substitute a
@@ -242,14 +227,4 @@ def encode_ready_rows(rows: list[dict[str, Any]]) -> str:
 
 
 def _incompatible_service_errors() -> tuple[type[BaseException], ...]:
-    """``IncompatibleService`` (whose subclass ``CapabilityMissing`` is the missing-capability
-    fallback) plus the supervised-service errors ``hive_session`` raises — imported lazily so
-    this module never statically imports a workspace package."""
-    beads_client = importlib.import_module("beadhive_beads_client")
-    service_mod = importlib.import_module("beadhive_beads_client.service")
-    core = _core()
-    return (
-        beads_client.IncompatibleService,
-        service_mod.ServiceError,
-        core.SessionUnavailable,
-    )
+    return beads_routing.unavailable_errors()

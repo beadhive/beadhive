@@ -52,7 +52,8 @@ def _open(bead_id, **kw):
 
 
 class FakeBd:
-    """`bd` at the `bd._run` seam: an in-memory bead store serving `ready` / `show` / `update`.
+    """`bd` at the `bd._run` seam: an in-memory bead store serving `ready` / `list` / `show` /
+    `update --claim` (the only writes this file's CLI-compatibility fallbacks make).
 
     The non-racy half of `test_work_next.py`'s fixture of the same name — this file's atomic-route
     scenarios don't need the race modelling, only a working CLI-compatibility fallback."""
@@ -89,14 +90,6 @@ class FakeBd:
             bead = self.beads.setdefault(args[1], {"id": args[1]})
             self.claims.append(args[1])
             bead.update(assignee=actor, status="in_progress")
-            return _CP(0, "", "")
-        if sub == "update" and "--status" in args:
-            bead = self.beads.setdefault(args[1], {"id": args[1]})
-            bead["status"] = args[args.index("--status") + 1]
-            if "--assignee" in args:
-                bead["assignee"] = args[args.index("--assignee") + 1]
-            return _CP(0, "", "")
-        if sub == "set-state":
             return _CP(0, "", "")
         return _CP(0, "", "")
 

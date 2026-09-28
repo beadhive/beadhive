@@ -39,8 +39,9 @@ def test_checked_registry_is_complete_and_keeps_full_gates_authoritative():
     assert registry.full_gate == "just check"
     assert registry.release_gate == "just check-all"
     assert len(registry.closures) == 24
-    assert sum(closure.status == "present" for closure in registry.closures) == 24
-    assert sum(closure.status == "absent" for closure in registry.closures) == 0
+    assert sum(closure.status == "present" for closure in registry.closures) == 23
+    # module.planning, retired in the beadhive-core cutover (bh-sy36q.6).
+    assert [c.id for c in registry.closures if c.status == "absent"] == ["module.planning"]
 
 
 def test_canonical_registry_definition_binds_every_declared_closure_field():
@@ -69,7 +70,7 @@ def test_capability_module_closures_survive_workstream_composition():
     assert closures["module.worktrees"].owner_path == "src/beadhive/modules/worktrees"
     assert closures["module.work"].status == "present"
     assert closures["module.work"].owner_path == "src/beadhive/modules/work"
-    assert closures["module.planning"].status == "present"
+    assert closures["module.planning"].status == "absent"  # retired, bh-sy36q.6
     assert closures["module.planning"].owner_path == "src/beadhive/modules/planning"
     assert closures["module.state"].status == "present"
     assert closures["module.state"].owner_path == "src/beadhive/modules/state"

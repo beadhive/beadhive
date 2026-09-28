@@ -450,6 +450,209 @@ by any `work.*` route in the bh-97fo0.3 matrix, and `bh plan swarm` reads a DIFF
 construct (`bd swarm`, a `type:molecule`/`mol_type:swarm` tracking bead) than Beadhive's own
 epic-parented molecule this cohort's four routes serve.
 
+## CLI composition cutover (bh-sy36q.6)
+
+The last cohort bead of bh-sy36q. It makes the composition decision explicit and singular, deletes
+what the four cohorts (bh-sy36q.1 lifecycle, bh-sy36q.2 filing, bh-sy36q.5 dispatch reads,
+bh-p76tk.1 ready/schedule) left superseded, and names the root surface that stays on purpose.
+
+### One composition decision
+
+`beadhive.beads_routing` is the one place the migrated cohorts open a Beads session.
+`work_lifecycle`, `plan_filing`, `work_queue` and `dispatch_state` each keep their
+`hive_session` / `session_factory` test seam, but every one is now a single call into
+`beads_routing.hive_session(main, entry, <COHORT>_CAPABILITIES)`. The four copies of the
+resolve-and-map-errors body, and of the "which errors mean select the `bd` route" tuple, are gone.
+
+- **Default: beadhive-core.** A capable session opens and the command runs through its
+  `beadhive_core` handler.
+- **Pre-execution `bd` compatibility route (kept, see the decision below).** No capable session
+  means `SessionUnavailable` / `ServiceError` / `IncompatibleService` before the first Beads
+  operation, and the seam selects its named `bd` route for the whole command. It is never a retry.
+- **Bounded rollback: `BH_BEADS_ROUTE=cli`.** Makes `hive_session` refuse before resolving
+  anything, so every cutover command takes its `bd` route at once, with the service still
+  running. Unset, empty or `api` selects the default. Any other value renders one `✗` line and
+  exits 2 (`BeadsRouteInvalid`, a `typer.Exit` subclass). It is deliberately not one of the
+  errors the seams map to the `bd` route, so a typo cannot silently reroute a command or silently
+  fail to. The switch ships with the release that first carries this cutover and is removed in
+  the release after it. The follow-up that deletes it has to touch only `selected_route` and its
+  tests.
+
+The audit found that the per-verb pre-execution selection already was the only second path. No
+verb had a separate old Python implementation left to switch to: bh-sy36q.1 and bh-sy36q.2 had
+already deleted theirs in place, and bh-sy36q.5 and bh-p76tk.1 had deleted nothing because their
+`bd` forwards *are* the compatibility route. So the rollback forces that existing route. It does
+not preserve dead code.
+
+`approve` / `bounce` (`work_review`, bh-bwnys.1) are deliberately outside the switch. They have no
+`bd` implementation to fall back to and still fail closed without a service.
+
+### Decision: keep the pre-execution `bd` route for assign / claim / resume / abandon
+
+bh-sy36q.1 left these verbs selecting the `bd` route, instead of failing closed, when the hive's
+Beads service cannot be used. That route is **kept deliberately** as named compatibility surface,
+not retired:
+
+- Beads 1.3 cannot serve an embedded-Dolt hive at all. Retiring the route would break every
+  developer loop on those hives, because `claim` is the first step of every loop.
+- `abandon` is the stall-recovery path. It must work when the service is the thing that stalled.
+- The same rule already governs `work.claim-next`, `schedule`, `ready --json`, `plan file` and
+  the dispatch reads, so retiring it for four verbs would leave the cohorts inconsistent.
+- It is not a retry. Once a command selects the API, a failing call is reported and never replayed
+  through `bd`. That keeps the ADR's ambiguous-write rule intact.
+
+The rollback switch is temporary. This automatic route is not, and stays after the switch is
+removed.
+
+### What was already cut over, and what this bead changed
+
+| Area | Found | Changed here |
+|---|---|---|
+| assign / claim / resume / abandon, submit state | `work.py` delegates to `work_lifecycle` with no second implementation (bh-sy36q.1) | session opened via `beads_routing` |
+| `plan file` | `plan_filing` + `beadhive_core.planning` (bh-sy36q.2) | same; `PlanError` and the one `MoleculeGraph` now come from here |
+| ready / schedule / claim-next | `work_queue` (bh-l5sxi.2, bh-mu5yb.1, bh-p76tk.1) | same |
+| local-loop and `--epic` reads | `dispatch_state` (bh-sy36q.5) | same |
+| check / submit / review / merge / schedule payload | still went through `WorkLifecycleService`, a callback pass-through with one `CallbackBeadStore` port | layer deleted; `work.py`, `work_show.py` and `mcp.py` call the `impl_*` functions directly |
+| plan validate / verify / approve / repair | still went through `PlanningService`, a callback pass-through | layer deleted; plain functions in `beadhive.plan` |
+| `bh plan show`, `--dry-run` and `plan_file` preview ordering | root-side `MoleculeGraph` duplicate (flagged by bh-sy36q.2) | uses `beadhive_core.MoleculeGraph` through `plan_filing.molecule_graph`, so it is the same graph the compiler lowers. A malformed graph still raises `ValueError` |
+
+### Deletion inventory
+
+Source:
+
+- `src/beadhive/work_services.py` (whole file)
+- `src/beadhive/planning_services.py` (whole file)
+- `src/beadhive/modules/planning/` (whole package: `PlanningService`, its four ports, eight
+  request/result DTOs, `PlanningError`, and the duplicate `MoleculeGraph`)
+- `src/beadhive/modules/work/application/services.py` (`WorkLifecycleService`)
+- `src/beadhive/modules/work/contracts/ports.py` (`BeadStore`, `ExecutionPort`,
+  `ValidationEvidenceStore`, `IdentityProvider`, `WorkNotifier`)
+- `src/beadhive/modules/work/domain/models.py` (ten lifecycle request/result DTOs)
+- `plan._opt`, dead since filing moved to the compiler
+- four duplicated `hive_session` bodies and four error tuples in the cohort seams
+
+`modules/work` keeps only impact resolution.
+
+Tests:
+
+- `tests/unit/modules/work/test_work_lifecycle_services.py`
+- `tests/contracts/test_work_capability_adapters.py`
+- `tests/unit/modules/planning/test_planning_services.py`
+- `tests/unit/modules/planning/test_planning_independence.py`
+- `tests/contracts/test_planning_capability_adapters.py`. Its one real assertion, the kickoff-gate
+  `bd gate create` argv, moved to `tests/test_plan.py`.
+
+FakeBd branches that nothing reaches, found with branch coverage over the six cohort test files:
+
+- `tests/test_work_queue.py` FakeBd: the `update --status` and `set-state` branches
+- `tests/test_plan.py` FakeBdApprove: the `create` branch
+
+Registry: the `module.planning` test closure is declared `absent`. `module.work`'s port is now
+`contracts/impact.py`. `tests/BUILD` and both Pants proven-test manifests drop the deleted files.
+
+Every other FakeBd and harness was checked by reference and coverage, and each is still load-bearing:
+
+- `test_work.py` FakeBd serves submit, merge, finish, resume and `bd` route tests.
+- `test_plan.py` FakeBd is the only end-to-end proof of the CLI filing fallback.
+- `test_work_next.py` FakeBd models the race for the CLI claim loop.
+- `test_localloop.py` FakeBd drives the dispatch fallbacks.
+- `test_plan_repair.py` FakeBdRepair covers repair.
+
+The `integration` real-`bd` tests exercise the retained `bd` routes and topology, not
+superseded code, so none were deleted.
+
+### Intentionally retained CLI administration and compatibility surface
+
+In the root package, over named `bd` routes:
+
+1. **Pre-execution `bd` route when no capable Beads service is available** (kept, decision
+   above). It covers:
+   - assign, claim, resume, abandon and submit's admission read (`CliIssues`: `bd show` / `bd
+     assign`)
+   - `work.claim-next`'s pick/claim/re-verify loop (`work_next` / `work_dispatch`: `eligible`,
+     `claim_won`, `decline`, `_try_claim`)
+   - schedule's children fetch (`bd.children`)
+   - unbounded `ready --json` (`bd ready` forward)
+   - `plan file` (`CliMoleculeFiler`)
+   - the local loop's molecule, swarm, event and poll reads
+2. **The bounded rollback**, `BH_BEADS_ROUTE=cli`, for one release.
+3. **Matrix `cli-compatibility` operations with no v1.3 HTTP route**, always on `bd`:
+   - `work.lease.acquire` / `release`
+   - `work.state.get` / `update`
+   - `work.gate.lookup` / `resolve`
+   - `plan.gate.create` / `plan.kickoff.update` (`CliPlanningGates`: swarm, kickoff gates,
+     `kickoff=pending`, release-hold gates)
+   - `work.review.submit` (submit's gate creation, validation and Git handoff)
+   - every `COORDINATION_OPERATIONS` lease, heartbeat, reclaim and merge-slot operation
+   - the `bd import` epic birth for native `source_system` provenance
+4. **Inherited from bh-sy36q.1:**
+   - batch `claim --group` / `--collapse` and `submit --group` (`work_group`)
+   - `start` (epic seat claim)
+   - `--preview`
+   - review-feedback rendering. Decided here that it stays shell presentation: `bd comments`'
+     markdown renderer is the operator contract, and typed comment rows cannot reproduce it.
+5. **`bh work ready` shapes with no byte-identical API equivalent:**
+   - capped reads
+   - `--mol` / `--mol-type`
+   - `--gated`
+   - every other forwarded `bd ready` flag
+   - human table output
+6. **`bh work next --epic` and undeclared-actor claims.** `--epic` stays a listed CLI route;
+   moving it is bh-sy36q.9.
+7. **Verbs no cohort migrated, which stay shell-owned per the ADR:**
+   - `check`, `submit` (beyond its state half), `review`, `merge` / `finish` / `land`,
+     `refine` / `show`
+   - `brief` / `issue` / `list` read forwards
+   - the intake verbs and `readiness`
+   - `loop`'s process orchestration
+   - `bh host dispatch run`'s hive-wide picker
+   - `bh plan verify` / `approve` / `repair` / `show` / `status` / `check` / `adopt` / swarm
+     reads
+8. **Administration:**
+   - the `bh bd` passthrough
+   - `bh host beads` service lifecycle
+   - backup, migration, repair and federation
+   - hive administration
+
+### Measured (bh-sy36q.6)
+
+Measured on this bead's tree against its fork point (container `0cec83c6`, main `829425d9`) on
+a 32-core host. None of these are estimates.
+
+| Measure | Before | After |
+|---|---|---|
+| `src/beadhive` Python lines | 145,793 | 144,924 (+245 / −1,114) |
+| `tests/` Python lines | 184,091 | 184,042 (+381 / −430) |
+| `packages/*/src` Python lines | 38,613 | 38,613 (unchanged) |
+| Root selected suite (`not integration and not pants_profile`) | 9,514 | 9,541 (−13 deleted, one of them relocated; +40 new) |
+| Root `integration` (real `bd` harness) | 74 | 74 |
+| Root selected tests that spawn a real `bd` / `dolt` process | 188 | 188 |
+| Packages suite (`packages/*/tests`) | 279 (16 opt-in `real_service`) | 279 (16 opt-in `real_service`) |
+| Packages suite tests that spawn a real `bd` / `dolt` process | 0 | 0 |
+| Packages suite wall time (`-n auto`, hermetic, MockTransport / in-memory) | — | 6.3 s (pytest 4.75 s; serial 5.8 s) |
+| Full gate `bh work check bh-sy36q.6` (`just check-native`) | — | in bh-sy36q.6's NOTES ¹ |
+
+¹ The gate validates this exact tree, so its wall time cannot be written into this file without
+changing the tree the verdict is keyed on. It is recorded on the bead instead.
+
+The "spawn a real process" rows were measured, not inferred from markers. `bd` and
+`dolt` shims that log `$PYTEST_CURRENT_TEST` went first on `PATH` inside the hermetic fence, and
+the full root selection ran under it: 515 spawns from 188 distinct tests, and zero from the
+packages suite. The count is a lower bound: a test that execs `bd` by absolute path, or drops
+`PATH`, is not seen.
+
+The "before" spawn count is the measured after-count adjusted by the tests that changed:
+
+- **Added:** 40 tests. Measured: none of them appears in the spawn log.
+  `test_beads_routing.py` drives the real `bh work claim` / `assign` composition over a
+  MockTransport session and `test_work`'s FakeBd.
+- **Deleted:** 13 tests. They cannot spawn by construction: two are independence tests that
+  monkeypatch `subprocess` to fail, and the rest call pure services over fake ports.
+
+The cutover removed no stateful tests because nothing stateful was redundant. Every real-`bd`
+test left in the root suite exercises a retained `bd` route or real topology (worktrees,
+onboarding, doctor, hub), not superseded bead-access code.
+
 ## Tests
 
 - `test_core_routing_policy.py` — every matrix row resolves to exactly one typed route; capability
@@ -570,3 +773,15 @@ epic-parented molecule this cohort's four routes serve.
   (the `--epic`-scoping read `bh work next --epic` and the loop share) selects
   `dispatch_state.open_swarm_members` before `bd children`, and that a successful routed answer
   means `bd` is never reached for it at all.
+- `tests/test_beads_routing.py` (bh-sy36q.6, `beadhive` package): the one composition decision.
+  It covers:
+  - the `BH_BEADS_ROUTE` switch: default, `cli`, and a mistyped value refused with exit 2 and
+    one diagnostic;
+  - every cohort seam opening its session through `beads_routing` with its own capability set;
+  - rollback selecting each seam's `bd` route before the service is even resolved;
+  - a mistyped value failing every seam instead of rerouting it;
+  - `bh work claim` byte-identical under rollback;
+  - `bh work assign` writing over HTTP by default and through `bd` under rollback;
+  - claim refusal keeping exit 1 and its `✗` diagnostic;
+  - the migrated verbs' command names and options as an explicit table, alongside
+    `tests/test_cli_projection.py`'s hash-pinned Click inventory.

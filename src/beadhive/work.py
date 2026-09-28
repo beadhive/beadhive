@@ -72,7 +72,6 @@ from . import (
     work_reads,
     work_refine,
     work_review,
-    work_services,
     work_show,
     work_submission,
     worktree,
@@ -80,7 +79,6 @@ from . import (
 from . import log as dispatch_log
 from . import schedule as schedule_mod  # noqa: F401 - injected lifecycle collaborator
 from .config_consumer_ports import work_settings as config
-from .modules import work as work_capability
 from .run import missing_binary, run  # noqa: F401 - injected submission collaborator
 from .work_logic import (
     _MARKER,  # noqa: F401 - injected refine collaborator
@@ -818,15 +816,7 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
     A green run against a CLEAN tree also seeds the verdict ledger `submit` reuses from
     (bh-i0p1.4), so the ordinary check-then-submit sequence pays for validation once, not
     twice — see `_record_check_verdict`."""
-    return (
-        work_services.work_lifecycle_service(
-            check=lambda item: work_submission.impl_check(
-                sys.modules[__name__], item.bead, item.hive
-            )
-        )
-        .check(work_capability.CheckRequest(bead, hive))
-        .value
-    )
+    return work_submission.impl_check(sys.modules[__name__], bead, hive)
 
 
 def artifacts_uploaded(
@@ -940,15 +930,7 @@ def schedule_payload(epic: str, cfg, entry, main) -> dict:
     raises ``ValueError`` when ``epic`` is not found in this hive so callers can map the
     error to the appropriate surface (``typer.Exit`` or MCP ``ResourceError``).
     """
-    return (
-        work_services.work_lifecycle_service(
-            schedule=lambda item: work_dispatch.impl_schedule_payload(
-                sys.modules[__name__], item.epic, cfg, entry, main
-            )
-        )
-        .schedule(work_capability.ScheduleRequest(epic))
-        .plan
-    )
+    return work_dispatch.impl_schedule_payload(sys.modules[__name__], epic, cfg, entry, main)
 
 
 def _apply_start_gating(payload: dict, beads: list, cfg, entry) -> None:
@@ -970,16 +952,7 @@ def schedule(
     (a planner `batch:<group>` or an auto-detected linear chain) vs as singletons (parallel
     wall-time, the default one-per-worktree). Read-only — surfaces the decision; you still
     `bh work claim --group` / `assign` to act on it. See the coordinator skill for the model."""
-    return (
-        work_services.work_lifecycle_service(
-            schedule=lambda item: work_dispatch.impl_schedule(
-                sys.modules[__name__], item.epic, item.hive, as_json
-            )
-        )
-        .schedule(work_capability.ScheduleRequest(epic, hive))
-        .plan
-        or None
-    )
+    return work_dispatch.impl_schedule(sys.modules[__name__], epic, hive, as_json)
 
 
 def _guard_fork_remote(entry, remote) -> None:
@@ -1004,20 +977,8 @@ def submit(
     With `--group <ids>`, submits a whole work-group from the shared `wt/batch/<group>` worktree:
     validate it once and open exactly ONE review gate whose reason names every member, so a single
     `approve` on any member clears it before `merge --group`."""
-    return (
-        work_services.work_lifecycle_service(
-            submit=lambda item: work_submission.impl_submit(
-                sys.modules[__name__],
-                item.bead,
-                item.actor,
-                item.hive,
-                item.group,
-                override_validation,
-                override_as,
-            )
-        )
-        .submit(work_capability.SubmissionRequest(bead, as_, hive, group))
-        .value
+    return work_submission.impl_submit(
+        sys.modules[__name__], bead, as_, hive, group, override_validation, override_as
     )
 
 
@@ -1455,21 +1416,8 @@ def merge(
     With `--group <ids>`, lands a whole work-group: validate the shared `wt/batch/<group>` branch
     once, merge it `--no-ff` into the members' molecule as ONE bubble (per-bead commits preserved
     inside, so it stays bisectable), then close every member — release the slot either way."""
-    return (
-        work_services.work_lifecycle_service(
-            merge=lambda item: work_merge.impl_merge(
-                sys.modules[__name__],
-                item.bead,
-                item.hive,
-                item.remove_worktree,
-                item.molecule,
-                item.group,
-                override_validation,
-                override_as,
-            )
-        )
-        .merge(work_capability.MergeRequest(bead, hive, rm, molecule, group))
-        .value
+    return work_merge.impl_merge(
+        sys.modules[__name__], bead, hive, rm, molecule, group, override_validation, override_as
     )
 
 
