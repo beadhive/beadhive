@@ -109,7 +109,9 @@ def test_an_unservable_hive_selects_the_bd_route_before_any_beads_operation(reco
         raise core.SessionUnavailable("embedded Dolt cannot be served")
 
     monkeypatch.setattr(work_lifecycle, "session_factory", unavailable)
-    with work_lifecycle.commands({}, "", MAIN, {}) as lifecycle:
+    # Only a hive opted into the bd route selects it (bh-m36pc); the default fails closed.
+    entry = {"work": {"beads": {"route": "api+cli-fallback"}}}
+    with work_lifecycle.commands({}, "", MAIN, entry) as lifecycle:
         assert lifecycle._issues.route == "cli-compatibility"
         assert lifecycle._issues.get("mr-1")["id"] == "mr-1"
     assert _argv(runner.calls[-1])[1][:2] == ["show", "mr-1"]

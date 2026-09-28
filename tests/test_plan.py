@@ -34,6 +34,8 @@ _CP = namedtuple("CP", "returncode stdout stderr")
 
 CONFIG_YAML = """\
 providers: [github]
+work:
+  beads: {route: "api+cli-fallback"}  # FakeBd-backed: opt into the bd route (bh-m36pc)
 managed_repos:
   - {provider: github, org: myorg, repo: myrepo, prefix: mr, kind: personal}
 dimensions:

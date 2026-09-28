@@ -282,6 +282,25 @@
       "title": "BackupConfig",
       "type": "object"
     },
+    "BeadsConfig": {
+      "additionalProperties": false,
+      "description": "How the migrated work/planning cohorts reach Beads (``work.beads``, bh-m36pc).",
+      "properties": {
+        "route": {
+          "default": "api",
+          "description": "Which Beads route the migrated cohorts (assign / claim / resume / abandon / submit state, plan file, ready / schedule / claim-next, dispatch reads) may take. api (default): the supervised Beads service only; when no capable session can be opened the command fails closed, naming `bh host beads start --hive <hive>`. api+cli-fallback: the API when a capable session opens, else the bd CLI route selected before the first Beads operation (never a retry). cli: always the bd CLI route. An unknown value is refused, never defaulted. BH_BEADS_ROUTE, while it still exists, overrides this key.",
+          "enum": [
+            "api",
+            "api+cli-fallback",
+            "cli"
+          ],
+          "title": "Route",
+          "type": "string"
+        }
+      },
+      "title": "BeadsConfig",
+      "type": "object"
+    },
     "ClaudeConfig": {
       "additionalProperties": false,
       "description": "Claude Code plugin distribution — how `bh hive init --claude` installs seat agents +\nrole skills.",
@@ -2057,6 +2076,9 @@
           "description": "Max issues a planner-declared batch:<group> may hold as one unit.",
           "title": "Batch Max Size",
           "type": "integer"
+        },
+        "beads": {
+          "$ref": "#/$defs/BeadsConfig"
         },
         "conflict": {
           "$ref": "#/$defs/ConflictConfig"

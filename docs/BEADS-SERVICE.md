@@ -16,8 +16,9 @@ Beadhive host runtime owns it; commands never start, stop, or address `bd serve`
   lazy start on first use and no idle sleep or suspend.
 - **Commands never start it.** A command that needs the API resolves the hive's running service.
   If none is running (or it is stale, not ready, or bound to a different workspace) an API-only
-  command fails closed with `start it with bh host beads start --hive <hive>`; a cutover command
-  takes its `bd` route instead (see [Which commands use it](#which-commands-use-it)).
+  command fails closed with `start it with bh host beads start --hive <hive>`. A cutover command
+  does the same by default, and takes its `bd` route instead only when the hive opts in with
+  `work.beads.route` (see [Which commands use it](#which-commands-use-it)).
 - **Per hive, never fleet-wide by default.** `start`, `stop`, `run`, `enable`, and `disable` act
   on one hive (`--hive`, defaulting to the hive you are in). Only `status` takes `--all`.
   Turning services on across the fleet is a per-hive choice.
@@ -30,20 +31,27 @@ Two behaviors, decided per command before its first Beads operation:
 
 - **Fail closed:** `bh work approve` / `bounce`. With no running service they refuse and name
   `bh host beads start`; there is no `bd` fallback.
-- **Core by default, `bd` when the API cannot serve the hive:** the work and planning cohorts cut
+- **Core only by default; `bd` only when the hive opts in:** the work and planning cohorts cut
   over to `beadhive-core` (bh-sy36q) — `assign`, `claim`, `resume`, `abandon`, submit's bead-state
   half, `next`, unbounded `ready --json`, `schedule`, `bh plan file`, and the local loop's molecule,
-  swarm, poll and routing reads. When no capable service can be used (none running, an
-  embedded-Dolt hive, a missing capability) they take their named `bd` compatibility route for
-  the whole command. That keeps claim (the first step of every developer loop) and abandon (the
-  stall-recovery path) working on hives Beads 1.3 cannot serve. It is never a retry: once a
-  command has selected the API, a failing call is reported, not replayed through `bd`.
+  swarm, poll and routing reads. What they do when no capable service can be used (none running,
+  an embedded-Dolt hive, a missing capability) is the hive's `work.beads.route` (bh-m36pc):
 
-**Rollback (one release window).** `BH_BEADS_ROUTE=cli` forces the `bd` compatibility route for
-every cutover command at once, without stopping the service; unset or `api` is the default. Any
-other value stops the command with exit 2. The switch ships with the release that first carries
-the cutover and is removed in the release after it. The automatic `bd` route for hives the API
-cannot serve stays. Details: `packages/beadhive-core/README.md`, "CLI composition cutover".
+  | `work.beads.route` | No capable service |
+  |---|---|
+  | `api` (default) | The command fails closed with one `✗` line naming `bh host beads start --hive <hive>` and this key (exit 1). No `bd` route is selected. |
+  | `api+cli-fallback` | The command takes its named `bd` compatibility route for the whole command, decided before the first Beads operation (the bh-sy36q.6 behavior). |
+  | `cli` | Every cutover command takes its `bd` route, without resolving the service. |
+
+  Set it per hive (`managed_repos[].work.beads.route`) or globally (`work.beads.route`). An unknown
+  value stops the command with exit 2. The `bd` route is never a retry: once a command has selected
+  the API, a failing call is reported, not replayed through `bd`.
+
+**Rollback (one release window).** `BH_BEADS_ROUTE`, when set, still wins over `work.beads.route`
+with its bh-sy36q.6 meaning: `cli` forces the `bd` compatibility route for every cutover command at
+once, without stopping the service; `api` is the API with the automatic `bd` route
+(`api+cli-fallback`). Any other value stops the command with exit 2. It is removed once the config
+path is proven (bh-fqsp2). Details: `packages/beadhive-core/README.md`, "CLI composition cutover".
 
 ## Commands
 
