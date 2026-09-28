@@ -9,7 +9,7 @@ to be captured first) and retire it only once the effect has actually succeeded,
 now-empty parent directories.
 
 Deliberately narrow: telemetry recording, CLI echo, and metadata-cache invalidation stay root
-concerns (this package never imports telemetry, typer, or the metadata cache).
+concerns (this package never imports telemetry, the CLI framework, or the metadata cache).
 """
 
 from __future__ import annotations

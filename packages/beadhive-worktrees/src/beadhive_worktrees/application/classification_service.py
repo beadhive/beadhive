@@ -49,7 +49,7 @@ def classify_entries_concurrently(
 
     Results are keyed rather than appended in completion order. Callers that return structured
     data can then retain their established deterministic entry ordering, while a human status
-    renderer uses ``on_complete`` to show a hive as soon as it is ready.
+    display uses ``on_complete`` to show a hive as soon as it is ready.
 
     A single populated hive runs inline (no thread pool) — the exact fast path
     ``worktree_inventory.py``'s ``impl__classify_entries`` used, preserved so a one-hive command

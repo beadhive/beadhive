@@ -1,8 +1,8 @@
-"""Pure data shaping shared by every ``bh worktree status`` rendering path (bh-qdezo.7).
+"""Pure data shaping shared by every ``bh worktree status`` display path (bh-qdezo.7).
 
 Moved verbatim (byte-identical behavior) from ``worktree_inventory.py``'s ``impl__status_tags``
-and ``impl__ordered_statuses``. Text/tree rendering itself (``typer.echo``) stays a root concern
-— this module only builds the strings and orders the rows a renderer consumes.
+and ``impl__ordered_statuses``. Printing the text tree itself stays a root concern — this module
+only builds the strings and orders the rows a root display function consumes.
 """
 
 from __future__ import annotations
@@ -11,11 +11,11 @@ from typing import Any
 
 
 def status_tags(st: Any) -> str:
-    """The trailing tag run on one rendered row.
+    """The trailing tag run appended to one displayed row.
 
     ``? UNKNOWN`` is deliberately the loudest thing on the line and the only class carrying a
     glyph: it is the one classification that means "do not act on this row", and it has to be
-    findable by eye in a tree of thirty (bh-167s0 — "visually distinct in the rendered tree").
+    findable by eye in a tree of thirty (bh-167s0 — "visually distinct in the displayed tree").
     A ``DIRTY`` row also shows what it is masking, so a dirty-but-SAFE seat is distinguishable
     from a dirty-and-open one and a dirty row over an unresolvable bead cannot look ordinary.
     """

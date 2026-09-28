@@ -2,8 +2,8 @@
 
 Moved verbatim (byte-identical behavior) from ``worktree_inventory.py``'s
 ``impl_inventory_payload`` and its private helpers. This module returns the INNER payload dict
-only — the ``schema_version``/``command`` envelope wrapping (``beadhive.jsonout.envelope``) stays
-a root concern, since ``jsonout`` is a root module this package must never import.
+only — the ``schema_version``/``command`` envelope wrapping stays a root concern, added by a
+root-only module this package must never import.
 """
 
 from __future__ import annotations
