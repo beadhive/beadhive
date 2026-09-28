@@ -5,11 +5,11 @@ python_sources(
     # Pants does not infer importlib.resources reads; this one edge covers every resource the
     # glob below will ever match.
     dependencies=[":resources"],
-    tags=["category:code", "attest:packages"],
+    tags=["category:code", "attest:bd-cli"],
 )
 
 resources(
     name="resources",
     sources=["**/py.typed"],
-    tags=["category:code", "attest:packages"],
+    tags=["category:code", "attest:bd-cli"],
 )
