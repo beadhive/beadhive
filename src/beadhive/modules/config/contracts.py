@@ -303,6 +303,24 @@ class DispatchConfig(_Section):
     )
 
 
+class BeadsConfig(_Section):
+    """How the migrated work/planning cohorts reach Beads (``work.beads``, bh-m36pc)."""
+
+    route: Literal["api", "api+cli-fallback", "cli"] = Field(
+        "api",
+        description=(
+            "Which Beads route the migrated cohorts (assign / claim / resume / abandon / submit "
+            "state, plan file, ready / schedule / claim-next, dispatch reads) may take. api "
+            "(default): the supervised Beads service only; when no capable session can be "
+            "opened the command fails closed, naming `bh host beads start --hive <hive>`. "
+            "api+cli-fallback: the API when a capable session opens, else the bd CLI route "
+            "selected before the first Beads operation (never a retry). cli: always the bd CLI "
+            "route. An unknown value is refused, never defaulted. BH_BEADS_ROUTE, while it "
+            "still exists, overrides this key."
+        ),
+    )
+
+
 class ConflictConfig(_Section):
     """Merge-conflict resolution policy (``work.conflict``)."""
 
@@ -894,6 +912,7 @@ class WorkConfig(_Section):
         ),
     )
     dispatch: DispatchConfig = Field(default_factory=DispatchConfig)
+    beads: BeadsConfig = Field(default_factory=BeadsConfig)
     identity: IdentityConfig | None = Field(
         None,
         description="Agent identity profile; omit (or mode: supervised) to inherit git config.",
@@ -1845,6 +1864,7 @@ __all__ = (
     "AttestKeyConfig",
     "BackupConfig",
     "BeadhiveConfig",
+    "BeadsConfig",
     "ClaudeConfig",
     "ConflictConfig",
     "CONFIG_SECTION_COMPATIBILITY_ALIASES",

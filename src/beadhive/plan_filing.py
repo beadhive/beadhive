@@ -10,7 +10,8 @@ fails — the same rule :mod:`beadhive.work_queue` (bh-l5sxi.2) and :mod:`beadhi
   (``bh host beads``) can be reached: :class:`SessionMoleculeFiler` submits the compiled request
   and resolves its key-to-id map in ONE HTTP call.
 * **cli-compatibility** otherwise (an embedded-Dolt hive Beads 1.3 cannot serve, no service
-  running, a missing capability): :class:`CliMoleculeFiler` walks the identical compiled item
+  running, a missing capability), when the hive's ``work.beads.route`` allows it (bh-m36pc; the
+  default ``api`` fails closed instead): :class:`CliMoleculeFiler` walks the identical compiled item
   list one ``bd create`` / ``bd dep add`` at a time. It is a thin interpreter of the SAME
   :class:`~beadhive_core.planning.CompiledMolecule`, not a second implementation of the molecule
   contract — the compiler is the one place that decides what a spec lowers to, on both routes.
@@ -254,6 +255,7 @@ def _filer(main: Path, entry: Any) -> Iterator[Any]:
         session = session_factory(main, entry)
         session.open()
     except _unavailable_errors() as exc:
+        beads_routing.allow_cli_route(entry, exc)
         log.get_logger("beadhive.plan").info(
             "planning_route_fallback", operation=core.BATCH_APPLY_ROUTE, detail=str(exc)
         )

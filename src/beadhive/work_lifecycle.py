@@ -132,7 +132,8 @@ class SelectedIssues:
 
     Selection happens before the first Beads operation that needs it and never changes
     afterwards: once the api-ready route is chosen, a failing call is reported by the core
-    (fail closed), never replayed through ``bd``.
+    (fail closed), never replayed through ``bd``. The ``bd`` route is selected only when the
+    hive's ``work.beads.route`` allows it (``beads_routing.allow_cli_route``, bh-m36pc).
     """
 
     def __init__(self, main: Path, entry: Any, stack: ExitStack) -> None:
@@ -151,6 +152,7 @@ class SelectedIssues:
         try:
             session = self._stack.enter_context(session_factory(self._main, self._entry))
         except _unavailable_errors() as exc:
+            beads_routing.allow_cli_route(self._entry, exc)
             log.get_logger("beadhive.work").info(
                 "lifecycle_route_fallback", operation="work.issue.get", detail=str(exc)
             )
