@@ -42,3 +42,9 @@ facades are deliberate migration tools). Root composition (`beadhive.worktree`) 
 native provider to the declared `worktree.manager` slot with `bind_application_port` and
 injects the resulting port where the worktree lifecycle service is composed — this package
 never constructs or selects a provider itself.
+
+The exact retained root surface, consumers, removal gates, boundary score, and modularization
+done-gate evidence are recorded in the
+[worktree compatibility and removal ledger](../../docs/design/worktree-compatibility-removal-ledger.md).
+Root's composed `BeadStateLookup` prefers the supervised Beads service and uses the shared
+`work.beads.route` decision for its explicitly named argv compatibility fallback.

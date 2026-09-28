@@ -123,6 +123,9 @@ python_tests(
         "test_docs_role_vocabulary.py": {
             "dependencies": ["//docs:docs-root", "//:root-guide-doc"],
         },
+        "contracts/test_worktree_capability_compatibility.py": {
+            "dependencies": ["//docs:docs-design"],
+        },
     },
     tags=["category:test-only", "attest:stateful"],
 )
