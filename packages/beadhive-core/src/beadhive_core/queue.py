@@ -30,32 +30,48 @@ the next candidate on a lost race" loop the CLI-compatibility path still runs
 nothing left to retry: :class:`QueueCommands.claim_next` is a single call, and its result is
 final.
 
-``work.claim-next``'s ``--epic`` scoping stays CLI-compatibility (:mod:`beadhive.work_queue`
-refuses the atomic route up front for an epic-scoped claim, unconditionally). CORRECTION
-(bh-mu5yb.1): an earlier revision of this docstring claimed Beads' `parent` QUERY PARAMETER on
-`GET /v0/beads/ready` / `work.claim-next` was the direct parent-child edge only, one level — that
-is false. The pinned v1.3 OpenAPI spec (`spec/openapi.v0.yaml`) documents `parent` on both
-`listReadyWork` and `claimNextIssue` as "Restrict to recursive descendants of this issue", and a
-real disposable-hive probe against `bd`/`bd serve` 1.3.0 (f45b249ce) confirms it: a leaf three
+``bh work next --epic <id>`` (bh-7ip8t) routes through :meth:`QueueCommands.claim_next_in_epic`,
+NOT the atomic ``work.claim-next``: an epic-scoped claim needs a candidate set the atomic op
+cannot express. The molecule is the epic PLUS its DIRECT children, one level, deliberately
+(bh-sh6yt: a nested epic is dispatched as a bead and then driven by its own loop, so recursing
+would let an outer loop claim a grandchild out from under the loop that owns it), and that
+membership includes closed and infra rows (``bd list --parent <epic> --include-infra --all``).
+``work.claim-next``'s ``parent`` filter is recursive (bh-mu5yb.1) and cannot narrow to one level,
+so the epic route is the pre-atomic shape instead: fetch the scoped candidates
+(:meth:`QueueCommands.epic_candidates` — the unbounded ready front narrowed to
+:meth:`QueueCommands.molecule_members`), then take them in ready order through
+``work.claim.acquire`` (``issues.claim``), which IS a server-side compare-and-set: a claim held by
+another actor is a 409, never a silent overwrite, so a lost race is a definite answer and the next
+candidate is tried. Each win is still believed only through :func:`claim_won` over the row Beads
+returns (or a re-read, when the write's outcome is unknown) — the guarded-update discipline the
+CLI-compatibility loop applies to ``bd update --claim``.
+
+CORRECTION (bh-mu5yb.1): an earlier revision of this docstring claimed Beads' `parent` QUERY
+PARAMETER on `GET /v0/beads/ready` / `work.claim-next` was the direct parent-child edge only, one
+level — that is false. The pinned v1.3 OpenAPI spec (`spec/openapi.v0.yaml`) documents `parent` on
+both `listReadyWork` and `claimNextIssue` as "Restrict to recursive descendants of this issue", and
+a real disposable-hive probe against `bd`/`bd serve` 1.3.0 (f45b249ce) confirms it: a leaf three
 levels under an epic is returned by `GET /v0/beads/ready?parent=<epic>`. What IS one level only is
 the ROW field :class:`IssueWithCounts` reports back on each item (`row["parent"]`, what
 :func:`by_parent` and :func:`direct_children` filter on) — a different thing from the query
-parameter that selects which rows come back in the first place. Whether `work.claim-next`'s
-`--epic` scoping should therefore move off CLI-compatibility was NOT re-evaluated here (out of
-this bead's stated scope, `bh work ready` / `bh work schedule` only) — see
-`packages/beadhive-core/README.md`'s ready/schedule section for the follow-up note.
+parameter that selects which rows come back in the first place. `GET /v0/beads/issues?parent=`,
+by contrast, returns only DIRECT children on the same server build despite identical OpenAPI
+wording (bh-sy36q.5's real-service finding); :func:`direct_children` narrows either way, so no
+caller here depends on which one the server does.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from beads_v1_3.models import ClaimNextRequest, IssueWithCounts, ReadyPage
+from beadhive_beads_client import IndeterminateWrite, ServiceProblem
+from beads_v1_3.models import ClaimNextRequest, ClaimRequest, IssueWithCounts, ReadyPage
 from beads_v1_3.types import UNSET
 
+from .lifecycle import claim_won
 from .routing import RoutingObserver, RoutingTable, default_table
 
 #: Capabilities a queue session must negotiate before any read or write is attempted.
@@ -63,12 +79,15 @@ from .routing import RoutingObserver, RoutingTable, default_table
 #: releases anything, but because a seat-mismatched claim (see `beadhive.work_queue`) must be able
 #: to release it back in the SAME session — a capability check that fails only after the claim
 #: already committed would leave a wrongly-typed bead claimed with nobody able to undo it.
+#: `issues.claim` is the compare-and-set `bh work next --epic` takes its scoped candidates through
+#: (:meth:`QueueCommands.claim_next_in_epic`, bh-7ip8t) — negotiated up front for the same reason.
 QUEUE_CAPABILITIES = frozenset(
     {
         "project.enforce",
         "issues.get",
         "issues.list",
         "ready.list",
+        "issues.claim",
         "issues.claimNext",
         "issues.release",
     }
@@ -83,6 +102,17 @@ INFRA_TYPES = frozenset({"gate", "event"})
 DECLINE_EMPTY_QUEUE = "empty_queue"  # the ready front was empty
 DECLINE_NONE_ELIGIBLE = "none_eligible"  # ready rows existed, none claimable by this actor
 DECLINES: tuple[str, ...] = (DECLINE_EMPTY_QUEUE, DECLINE_NONE_ELIGIBLE)
+#: The third code only the epic-scoped guarded-claim loop can report: candidates existed and were
+#: tried, and every one was claimed out from under us (a 409 from the compare-and-set). Mirrors
+#: `work_next.DECLINE_ALL_LOST`; the atomic route never "tries and loses" (see `decline`).
+DECLINE_ALL_LOST = "all_lost"
+EPIC_DECLINES: tuple[str, ...] = (*DECLINES, DECLINE_ALL_LOST)
+
+#: `issues.claim` refusals that mean "this candidate is not ours to take" — lost to another actor
+#: (`already_claimed`), no longer claimable (`not_claimable`: closed/in flight since the ready read)
+#: or gone (`not_found`). Each is a definite, committed-nothing answer, so the loop moves on to the
+#: next candidate; any OTHER refusal is a genuine failure and propagates, fail-closed.
+_LOST_CLAIM_CODES = frozenset({"already_claimed", "not_claimable", "not_found"})
 
 
 def ready_row(item: IssueWithCounts) -> dict[str, Any]:
@@ -182,6 +212,31 @@ def decline(rows: Sequence[Mapping[str, Any]]) -> str:
     return DECLINE_EMPTY_QUEUE if not rows else DECLINE_NONE_ELIGIBLE
 
 
+def decline_after(rows: Sequence[Mapping[str, Any]], tried: Sequence[str]) -> str:
+    """The decline code for the epic-scoped guarded-claim loop, which CAN try and lose — the
+    same three-way split as :func:`beadhive.work_next.decline`: an empty scoped front, a front
+    with nothing eligible for this actor, or every tried candidate lost to a racer."""
+    if not rows:
+        return DECLINE_EMPTY_QUEUE
+    if not tried:
+        return DECLINE_NONE_ELIGIBLE
+    return DECLINE_ALL_LOST
+
+
+def molecule_scope(
+    ready: Sequence[Mapping[str, Any]], members: Sequence[Mapping[str, Any]], epic: str
+) -> list[dict[str, Any]]:
+    """``ready`` narrowed to one molecule: the epic itself plus ``members`` (its direct children
+    by the parent edge), in the ready order Beads returned — a filter that only ever REMOVES rows,
+    so the ready predicate stays Beads' alone and a member it did not report is still not
+    claimable. Mirrors the CLI-compatibility route's ``_molecule_members`` filter exactly
+    (``beadhive.work_dispatch``)."""
+    ids = {str(row.get("id") or "") for row in members if isinstance(row, Mapping)}
+    ids.add(epic)
+    ids.discard("")
+    return [dict(row) for row in ready if str(row.get("id") or "") in ids]
+
+
 def by_parent(rows: Sequence[Mapping[str, Any]], parent: str) -> list[dict[str, Any]]:
     """Rows whose direct ``parent`` field equals ``parent`` (Beads' parent-child edge, one level).
 
@@ -242,6 +297,28 @@ class ClaimNextOutcome:
     """
 
     claimed: dict[str, Any] | None
+
+
+@dataclass(frozen=True)
+class EpicClaimOutcome:
+    """The result of one epic-scoped guarded-claim pass, in the CLI-compatibility loop's own
+    vocabulary (``beadhive.work_dispatch``): the claimed bead and the seat-qualified actor that
+    holds it (both empty when nothing was claimed), every candidate a claim was attempted on,
+    every candidate refused for a seat mismatch before any write, the scoped rows the pass chose
+    from, and — when nothing was claimed — the decline reason (:data:`EPIC_DECLINES`)."""
+
+    claimed: str = ""
+    claim_actor: str = ""
+    tried: tuple[str, ...] = ()
+    refused: tuple[str, ...] = ()
+    rows: tuple[dict[str, Any], ...] = ()
+    reason: str = ""
+
+
+#: Resolves the actor to claim one candidate row under, or ``None`` to refuse it before any write
+#: (a seat mismatch). Beadhive's seat rule lives in the shell (``work_dispatch``'s
+#: ``_next_seat_actor``); the core loop takes it as a port so there is one rule, not two.
+SeatResolver = Callable[[Mapping[str, Any]], str | None]
 
 
 class QueueCommands:
@@ -341,3 +418,106 @@ class QueueCommands:
         )
         claimed = response.claimed  # type: ignore[attr-defined]
         return ClaimNextOutcome(None if claimed is UNSET else claimed.to_dict())
+
+    def molecule_members(
+        self, session: object, epic: str, *, observer: RoutingObserver | None = None
+    ) -> list[dict[str, Any]]:
+        """``epic``'s full membership as the CLI-compatibility route reads it — ``bd list --parent
+        <epic> --include-infra --all --limit 0`` narrowed to the direct parent edge: closed rows
+        and infra types (gate/event) INCLUDED, one level only (a nested epic is a member; its own
+        children are not — see the module docstring). ``all_`` / ``include_infra`` are the
+        ``listIssues`` default-exclusion overrides (bh-sy36q.5); :func:`direct_children` narrows
+        whatever the server's ``parent`` filter returns (direct-only on bd 1.3.0) to the edge."""
+        page = self._routing.call_api(
+            session,
+            "work.issue.list",
+            parent=epic,
+            sort="priority",
+            limit=0,
+            all_=True,
+            include_infra=True,
+            observer=observer,
+        )
+        rows = [item.to_dict() for item in page.items]  # type: ignore[attr-defined]
+        return direct_children(rows, epic)
+
+    def epic_candidates(
+        self, session: object, epic: str, *, observer: RoutingObserver | None = None
+    ) -> list[dict[str, Any]]:
+        """The ready rows ``bh work next --epic <epic>`` chooses from: the UNBOUNDED ready front
+        (``bd ready --limit 0``'s set — a truncated read would silently hide every candidate past
+        the window, bh-fruer) narrowed to :meth:`molecule_members` plus the epic itself, ready
+        order preserved (:func:`molecule_scope`)."""
+        members = self.molecule_members(session, epic, observer=observer)
+        ready = ready_rows(self.list_ready(session, limit=0, observer=observer))
+        return molecule_scope(ready, members, epic)
+
+    def claim_guarded(
+        self, session: object, bead: str, actor: str, *, observer: RoutingObserver | None = None
+    ) -> bool:
+        """Claim ``bead`` for ``actor`` through ``work.claim.acquire``; true only when ``actor``
+        verifiably holds it.
+
+        ``issues.claim`` is a server-side compare-and-set: another holder is a 409
+        (``already_claimed``) and a no-longer-claimable bead a 409 (``not_claimable``), each a
+        definite lost race reported as ``False``. A 200 is still believed only through
+        :func:`claim_won` over the row Beads returns (assignee is ``actor`` AND the bead left
+        ``open``); ``already_claimed: true`` on a 200 is the idempotent re-claim of a bead
+        ``actor`` already held, which ``claim_won`` accepts. When the write's outcome is unknown
+        (:class:`beadhive_beads_client.IndeterminateWrite`) it is reconciled by READING the bead,
+        never by replaying the write."""
+        try:
+            response = self._routing.call_api(
+                session, "work.claim.acquire", bead, ClaimRequest(actor=actor), observer=observer
+            )
+        except ServiceProblem as exc:
+            if str(exc.problem.code) in _LOST_CLAIM_CODES:
+                return False
+            raise
+        except IndeterminateWrite:
+            detail = self._routing.call_api(session, "work.issue.get", bead, observer=observer)
+            return claim_won(detail.to_dict(), actor)  # type: ignore[attr-defined]
+        return claim_won(response.issue.to_dict(), actor)  # type: ignore[attr-defined]
+
+    def claim_next_in_epic(
+        self,
+        session: object,
+        epic: str,
+        actor: str,
+        *,
+        seat_actor: SeatResolver | None = None,
+        observer: RoutingObserver | None = None,
+    ) -> EpicClaimOutcome:
+        """Take the next claimable bead in ``epic``'s molecule for ``actor``.
+
+        :meth:`epic_candidates` once, then each :func:`eligible` candidate in ready order:
+        ``seat_actor`` resolves the seat-qualified actor for that row (``None`` refuses it with no
+        write — a declared seat that mismatches the bead's type), and :meth:`claim_guarded` takes
+        it. A lost race moves on to the next candidate; the first verified win ends the pass. The
+        outcome is the same vocabulary the CLI-compatibility loop reports, so the caller renders
+        either route identically."""
+        rows = self.epic_candidates(session, epic, observer=observer)
+        resolve = seat_actor or (lambda _row: actor)
+        by_id = {str(row.get("id") or ""): row for row in rows}
+        tried: list[str] = []
+        refused: list[str] = []
+        for bead in eligible(rows, actor):
+            claim_actor = resolve(by_id.get(bead, {}))
+            if claim_actor is None:
+                refused.append(bead)
+                continue
+            tried.append(bead)
+            if self.claim_guarded(session, bead, claim_actor, observer=observer):
+                return EpicClaimOutcome(
+                    claimed=bead,
+                    claim_actor=claim_actor,
+                    tried=tuple(tried),
+                    refused=tuple(refused),
+                    rows=tuple(rows),
+                )
+        return EpicClaimOutcome(
+            tried=tuple(tried),
+            refused=tuple(refused),
+            rows=tuple(rows),
+            reason=decline_after(rows, tried),
+        )

@@ -107,15 +107,20 @@ class DispatchCommands:
     def swarm_members(
         self, session: object, epic_id: str, *, observer: RoutingObserver | None = None
     ) -> list[dict[str, Any]]:
-        """An epic's full RESTARTABLE membership: every recursive descendant, narrowed to the
-        direct parent-child edge, including CLOSED rows and INFRA types (gate/event) — the same
+        """An epic's full RESTARTABLE membership: its DIRECT children by the parent-child edge,
+        including CLOSED rows and INFRA types (gate/event) — the same
         set `bd list --parent <epic> --include-infra --all` returns and
         `beadhive.localloop.LocalLoop.load_molecule` needs (closed children so the ready/blocked
         computation sees finished work as finished; infra rows so gate/event beads are visible to
         the decision table and the escalation latch).
 
         Unlike :meth:`beadhive_core.queue.QueueCommands.list_children` (open children only, the
-        `bh work schedule` fetch), this asks for the full default-exclusion override."""
+        `bh work schedule` fetch), this asks for the full default-exclusion override. One level is
+        the contract, not a limitation: `GET /v0/beads/issues?parent=` returns only direct
+        children on bd 1.3.0 despite the spec's "recursive descendants" wording (bh-sy36q.5's
+        real-service finding), and :func:`direct_children` narrows to the edge whichever the
+        server does — the membership `bh work next --epic` scopes to as well (bh-sh6yt,
+        :meth:`beadhive_core.queue.QueueCommands.molecule_members`)."""
         page = self._routing.call_api(
             session,
             "work.swarm.inspect",
