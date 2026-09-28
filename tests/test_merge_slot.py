@@ -179,8 +179,9 @@ def test_acquire_reclaims_orphaned_slot():
     proc.wait()
     orphan = f"dev/dead|host={_this_host()}|pid={proc.pid}|ts={2**31}"
     fake = _FakeBd(acquire_rcs=[1, 0], holder=orphan)
+    routes = wg.bd_cli.package().CliRoutes(fake, "/main")
 
-    assert wg._acquire_slot(fake, "/main", wg._slot_holder("dev/me")) is True
+    assert wg._acquire_slot(routes, "/main", wg._slot_holder("dev/me")) is True
     assert fake.did("merge-slot", "release")  # reclaimed
     # acquire attempted twice (fail, then win after reclaim)
     assert sum(1 for c in fake.calls if "acquire" in c) == 2
@@ -189,8 +190,9 @@ def test_acquire_reclaims_orphaned_slot():
 def test_acquire_does_not_reclaim_live_holder():
     """A held slot whose holder is alive is NOT stolen — the acquire fails cleanly, no release."""
     fake = _FakeBd(acquire_rcs=[1], holder=wg._slot_holder("dev/live"))
+    routes = wg.bd_cli.package().CliRoutes(fake, "/main")
 
-    assert wg._acquire_slot(fake, "/main", wg._slot_holder("dev/me")) is False
+    assert wg._acquire_slot(routes, "/main", wg._slot_holder("dev/me")) is False
     assert not fake.did("merge-slot", "release")
     assert sum(1 for c in fake.calls if "acquire" in c) == 1  # no retry
 

@@ -460,7 +460,7 @@ def test_the_two_failures_are_different_exception_types(hq, hive, this_host, mon
     merge_src = inspect.getsource(work_merge.impl__merge_bead)
     assert "work_merge.impl__merge_bead" in merge_facade
     close_src = inspect.getsource(work_logic.close_merged)
-    assert 'bd.run(["close", bead' in close_src  # the close call itself lives in close_merged
+    assert "bd_cli.routes(main).issue_close" in close_src  # the close route lives in close_merged
     assert "work_logic.close_merged" in merge_src  # _merge_bead delegates, doesn't inline it
     assert "guard_primary" not in merge_src  # the gate is up front, not around the close
     assert "guard_primary" not in close_src
