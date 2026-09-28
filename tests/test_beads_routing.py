@@ -251,6 +251,10 @@ def test_an_api_route_key_resolves_the_service(resolved, seam, capabilities, key
 # ---- default ``api``: every cohort fails closed instead of selecting bd ----------------------
 
 
+def _seat(_row):
+    raise AssertionError("no candidate may be seat-resolved when no session opened")
+
+
 @pytest.mark.parametrize("error", UNAVAILABLE)
 def test_api_fails_closed_for_ready_schedule_and_claim_next(monkeypatch, no_bd, capsys, error):
     monkeypatch.setattr(work_queue, "session_factory", _no_session(error))
@@ -259,6 +263,7 @@ def test_api_fails_closed_for_ready_schedule_and_claim_next(monkeypatch, no_bd, 
         lambda: work_queue.open_ready(MAIN, DEFAULT, limit=0),
         lambda: work_queue.open_children(MAIN, DEFAULT, "mr-epic"),
         lambda: work_queue.claim_next(MAIN, DEFAULT, "dev/alice"),
+        lambda: work_queue.claim_in_epic(MAIN, DEFAULT, "mr-epic", "dev/alice", _seat),
     ):
         with pytest.raises(beads_routing.BeadsServiceRequired) as refused:
             call()
@@ -333,6 +338,7 @@ def test_an_opted_in_hive_selects_the_cli_route_for_ready_schedule_and_claim_nex
     assert work_queue.open_ready(MAIN, entry, limit=0) is None
     assert work_queue.open_children(MAIN, entry, "mr-epic") is None
     assert work_queue.claim_next(MAIN, entry, "dev/alice") is None
+    assert work_queue.claim_in_epic(MAIN, entry, "mr-epic", "dev/alice", _seat) is None
     assert "✗" not in capsys.readouterr().err  # the selection is logged, never refused
 
 
@@ -371,6 +377,7 @@ def test_a_cli_route_key_selects_every_cohort_cli_route_without_resolving(resolv
     assert work_queue.open_ready(MAIN, entry, limit=0) is None
     assert work_queue.open_children(MAIN, entry, "mr-epic") is None
     assert work_queue.claim_next(MAIN, entry, "dev/alice") is None
+    assert work_queue.claim_in_epic(MAIN, entry, "mr-epic", "dev/alice", _seat) is None
     assert dispatch_state.open_poll_ready(MAIN, entry) is None
     with plan_filing._filer(MAIN, entry) as filer:
         assert isinstance(filer, beadhive_bd_cli.CliMoleculeFiler)

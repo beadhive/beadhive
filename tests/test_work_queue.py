@@ -1,7 +1,7 @@
 """`beadhive.work_queue`'s composition seams: the atomic `work.claim-next` route for `bh work
-next`, and (bh-mu5yb.1) the `work.issue.list` children route for `bh work schedule` — both
-selected before execution, with an explicit fallback to the CLI-compatibility path this cohort
-leaves in place.
+next`, the epic-scoped guarded-claim route for `bh work next --epic` (bh-7ip8t), and (bh-mu5yb.1)
+the `work.issue.list` children route for `bh work schedule` — all selected before execution, with
+an explicit fallback to the CLI-compatibility path this cohort leaves in place.
 
 The CLI-compatibility half of each scenario here fakes `bd` at the same `bd._run` seam
 `test_work_next.py` uses, over a real (committed) git repo `worktree.ensure` can fork a claim's
@@ -148,13 +148,16 @@ class FakeQueueService:
     fixed row set, exactly the transport fixture `packages/beadhive-core`'s own policy tests use.
     """
 
-    def __init__(self, rows, claimed_id=None, children_rows=None):
+    def __init__(self, rows, claimed_id=None, children_rows=None, lost=()):
         self.rows = rows
         self.claimed_id = claimed_id
         self.children_rows = children_rows if children_rows is not None else []
+        self.lost = set(lost)  # issue ids whose `:claim` another actor already holds (409)
         self.claim_calls: list[str] = []
         self.release_calls: list[str] = []
         self.children_calls: list[str] = []
+        self.children_params: list[dict] = []
+        self.issue_claims: list[tuple[str, str]] = []  # (issue id, actor) per `:claim` request
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -178,6 +181,7 @@ class FakeQueueService:
             return httpx.Response(200, json={"items": self.rows, "has_more": False})
         if path == "/v0/beads/issues" and request.method == "GET":
             self.children_calls.append(str(request.url.params.get("parent", "")))
+            self.children_params.append(dict(request.url.params))
             return httpx.Response(200, json={"items": self.children_rows, "has_more": False})
         if path == "/v0/beads/issues:claimNext" and request.method == "POST":
             import json as _json
@@ -189,6 +193,24 @@ class FakeQueueService:
             claimed = next(r for r in self.rows if r["id"] == self.claimed_id)
             row = dict(claimed, assignee=body["actor"], status="in_progress")
             return httpx.Response(200, json={"claimed": row})
+        if path.endswith(":claim") and request.method == "POST":
+            issue_id = path.removeprefix("/v0/beads/issues/").removesuffix(":claim")
+            actor = json.loads(request.content or b"{}")["actor"]
+            self.issue_claims.append((issue_id, actor))
+            if issue_id in self.lost:
+                problem = {
+                    "status": 409,
+                    "title": "Conflict",
+                    "code": "already_claimed",
+                    "request_id": "req-lost",
+                    "assignee": "dev/racer",
+                }
+                return httpx.Response(
+                    409, json=problem, headers={"content-type": "application/problem+json"}
+                )
+            row = next(r for r in self.rows if r["id"] == issue_id)
+            issue = dict(row, assignee=actor, status="in_progress")
+            return httpx.Response(200, json={"issue": issue, "already_claimed": False})
         if path.endswith(":release") and request.method == "POST":
             issue_id = path.removeprefix("/v0/beads/issues/").removesuffix(":release")
             self.release_calls.append(issue_id)
@@ -263,25 +285,123 @@ def test_next_falls_back_to_cli_when_the_service_is_unavailable(nexthive, monkey
     assert fake.claims == ["bh-2"]  # the CLI-compatibility loop actually claimed it
 
 
-def test_next_epic_scope_never_tries_the_api_route(nexthive, monkeypatch, capsys):
-    """`--epic` has no recursive-molecule equivalent over HTTP — it stays CLI-only regardless of
-    whether the API route would otherwise be available (see `work_queue`'s module docstring)."""
-    attempts: list[object] = []
+def _next_json(capsys, **kwargs):
+    code = 0
+    try:
+        work.next_(hive="mr", as_json=True, **kwargs)
+    except typer.Exit as exc:
+        code = exc.exit_code
+    return code, json.loads(capsys.readouterr().out)
 
-    def factory(main, entry):
-        attempts.append((main, entry))
-        raise AssertionError("the atomic route must never be tried for an --epic scoped claim")
+
+def _no_bd(monkeypatch):
+    def refuse(cmd, **_kw):
+        raise AssertionError(f"bd must not be reached on the --epic API route: {cmd}")
+
+    monkeypatch.setattr(bd_mod, "_run", refuse)
+
+
+def _epic_fixture(lost=()):
+    """Ready front: an outsider FIRST (a scope that leaked would take it), then two molecule
+    members. Membership: the two members plus a closed and an infra member (never ready) and a
+    row reported with no parent edge (a dotted-prefix match, never a member)."""
+    return FakeQueueService(
+        rows=[_row("mr-out"), _row("mr-ep.1"), _row("mr-ep.2"), _row("mr-ep.9")],
+        children_rows=[
+            _row("mr-ep.1", parent="mr-ep"),
+            _row("mr-ep.2", parent="mr-ep"),
+            _row("mr-ep.3", parent="mr-ep", status="closed"),
+            _row("mr-ep.4", parent="mr-ep", issue_type="event"),
+            _row("mr-ep.9", parent="elsewhere"),
+        ],
+        lost=lost,
+    )
+
+
+def test_next_epic_scope_claims_through_the_guarded_api_route(nexthive, monkeypatch, capsys):
+    """bh-7ip8t: `--epic` no longer skips the API. The scoped candidates come from ONE membership
+    read (closed + infra included, narrowed to the parent edge) and the unbounded ready front,
+    and the first in-scope candidate is taken through `issues.claim` — `bd` is never reached."""
+    fixture = _epic_fixture()
+    monkeypatch.setattr(work_queue, "session_factory", _api_session_factory(fixture))
+    _no_bd(monkeypatch)
+    _stub_provision(monkeypatch)
+
+    code, payload = _next_json(capsys, as_="dev/alice", epic="mr-ep")
+
+    assert code == 0
+    assert (payload["status"], payload["bead"], payload["actor"]) == (
+        "claimed",
+        "mr-ep.1",
+        "dev/alice",
+    )
+    assert fixture.issue_claims == [("mr-ep.1", "dev/alice")], "no out-of-molecule attempt"
+    assert fixture.claim_calls == [], "the atomic claim-next op is not the --epic route"
+    assert fixture.children_calls == ["mr-ep"]
+    assert fixture.children_params[0].get("all") == "true"
+    assert fixture.children_params[0].get("include_infra") == "true"
+
+
+def test_next_epic_scope_resolves_a_bare_actor_s_seat_before_the_compare_and_set(
+    nexthive, monkeypatch, capsys
+):
+    """Unlike the atomic route, the scoped route resolves the seat from the CANDIDATE's type
+    before it writes, so an undeclared actor needs no CLI carve-out on it."""
+    fixture = _epic_fixture()
+    monkeypatch.setattr(work_queue, "session_factory", _api_session_factory(fixture))
+    _no_bd(monkeypatch)
+    _stub_provision(monkeypatch)
+
+    code, payload = _next_json(capsys, as_="alice", epic="mr-ep")
+
+    assert (code, payload["bead"], payload["actor"]) == (0, "mr-ep.1", "dev/alice")
+    assert fixture.issue_claims == [("mr-ep.1", "dev/alice")]
+
+
+def test_next_epic_scope_moves_past_a_lost_compare_and_set(nexthive, monkeypatch, capsys):
+    """A 409 `already_claimed` is a definite lost race: the next in-scope candidate is tried."""
+    fixture = _epic_fixture(lost={"mr-ep.1"})
+    monkeypatch.setattr(work_queue, "session_factory", _api_session_factory(fixture))
+    _no_bd(monkeypatch)
+    _stub_provision(monkeypatch)
+
+    code, payload = _next_json(capsys, as_="dev/alice", epic="mr-ep")
+
+    assert (code, payload["bead"]) == (0, "mr-ep.2")
+    assert payload["tried"] == ["mr-ep.1", "mr-ep.2"]
+
+
+def test_next_epic_scope_reports_all_lost_when_every_candidate_is_taken(
+    nexthive, monkeypatch, capsys
+):
+    fixture = _epic_fixture(lost={"mr-ep.1", "mr-ep.2"})
+    monkeypatch.setattr(work_queue, "session_factory", _api_session_factory(fixture))
+    _no_bd(monkeypatch)
+    _stub_provision(monkeypatch)
+
+    code, payload = _next_json(capsys, as_="dev/alice", epic="mr-ep")
+
+    assert code == work.NEXT_DECLINE_EXIT
+    assert (payload["status"], payload["reason"]) == ("declined", "all_lost")
+
+
+def test_next_epic_scope_falls_back_to_cli_when_the_service_is_unavailable(
+    nexthive, monkeypatch, capsys
+):
+    """No capable session (and this hive opts into the `bd` route): the named CLI-compatibility
+    loop runs instead, selected before any Beads read or write."""
+
+    def factory(_main, _entry):
+        raise ServiceUnavailable("no service", state="absent", start_command="bh host beads start")
 
     monkeypatch.setattr(work_queue, "session_factory", factory)
-    fake = FakeBd(ready=[_open("bh-3")], children={"ep-1": ["bh-3"]})
+    fake = FakeBd(ready=[_open("bh-out"), _open("bh-3")], children={"ep-1": ["bh-3"]})
     monkeypatch.setattr(bd_mod, "_run", fake)
     _stub_provision(monkeypatch)
 
-    try:
-        work.next_(as_="dev/alice", hive="mr", as_json=True, epic="ep-1")
-    except typer.Exit:
-        pass
-    assert attempts == []
+    code, payload = _next_json(capsys, as_="dev/alice", epic="ep-1")
+
+    assert (code, payload["bead"]) == (0, "bh-3")
     assert fake.claims == ["bh-3"]
 
 

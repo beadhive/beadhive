@@ -83,6 +83,7 @@ Beads owns readiness and claim atomicity, and this module never reproduces its s
 | List the ready front, priority-ordered | `ready.list` (`QueueCommands.list_ready`) |
 | Atomically take the next ready issue | `issues.claimNext` (`QueueCommands.claim_next`) |
 | Release a wrongly-claimed issue back | `issues.release` (only for the seat-mismatch case below) |
+| Take the next claimable member of one molecule (`--epic`, bh-7ip8t) | `issues.list` + `ready.list`, then the `issues.claim` compare-and-set (`QueueCommands.claim_next_in_epic`) |
 
 `QueueCommands.claim_next` replaces the CLI-compatibility "list ready, optimistically claim the
 first eligible candidate, re-read to see who actually won, retry the next one on a lost race" loop
@@ -96,21 +97,72 @@ recursive molecule-membership traversal — Beads' `parent` field is the direct 
 The installed `beadhive` shell selects this route at `src/beadhive/work_queue.py`, used by
 `bh work next`'s claim orchestration (and, through it, `bh work loop`'s dispatch-claim step,
 since the local loop shells out to `bh work next --json`). The seam selects BEFORE execution,
-never as a retry after an API failure: an `--epic`-scoped claim (no recursive-molecule filter over
-HTTP) and an undeclared actor (whose seat prefix depends on the claimed bead's type, unknowable
-before an atomic claim commits) stay on the named CLI-compatibility route unconditionally; a
-declared actor with no capable Beads service falls back the same way `work_review.py` does
-(`SessionUnavailable` / `CapabilityMissing`, both before any write). A seat-mismatched atomic claim
-(a declared `dev/<name>` actually won an epic) is released back in the same session rather than
-left claimed, and reported as a refusal — see `work_queue`'s module docstring.
+never as a retry after an API failure: an `--epic`-scoped claim takes its own API route (see
+below, bh-7ip8t); an unscoped undeclared actor (whose seat prefix depends on the claimed bead's
+type, unknowable before an atomic claim commits) stays on the named CLI-compatibility route
+unconditionally; a declared actor with no capable Beads service falls back the same way
+`work_review.py` does (`SessionUnavailable` / `CapabilityMissing`, both before any write). A
+seat-mismatched atomic claim (a declared `dev/<name>` actually won an epic) is released back in
+the same session rather than left claimed, and reported as a refusal — see `work_queue`'s module
+docstring.
 
 ### Retained CLI-compatibility surface (named for bh-sy36q.6)
 
 The CLI-compatibility pick/claim/re-verify loop in `beadhive.work_next` / `beadhive.work_dispatch`
 (`eligible`, `claim_won`, `decline`, `_try_claim`, the `bd ready` + `bd update --claim` calls in
-`impl_next_`) is retained, not superseded: it is the explicit route for an undeclared actor, an
-`--epic`-scoped claim, and any hive with no capable Beads service — including `bh work loop`'s
-local no-server tier, which must keep working.
+`impl_next_`) is retained, not superseded: it is the explicit route for an unscoped undeclared
+actor, and — `--epic` scoped or not — for any hive with no capable Beads service whose
+`work.beads.route` permits the `bd` route (including `bh work loop`'s local no-server tier, which
+must keep working).
+
+### `bh work next --epic`: the epic-scoped guarded claim (bh-7ip8t)
+
+`--epic <id>` no longer skips the API. `beadhive.work_dispatch.impl_next_` tries
+`beadhive.work_queue.claim_in_epic` first, selected before execution exactly like `claim_next`:
+the session is opened (with `QUEUE_CAPABILITIES`, which now includes `issues.claim`), and only a
+failure to OPEN it — no service, a missing capability, an unaddressable hive — selects the named
+CLI route, and only when `work.beads.route` permits it (`api`, this hive's default, fails closed
+instead). Once the session is open the route is committed: a failure after that propagates, it is
+never replayed through `bd`.
+
+`QueueCommands.claim_next_in_epic` is not the atomic `work.claim-next`. The `--epic` scope is the
+epic PLUS its DIRECT children, closed and infra rows included — one level, deliberately (bh-sh6yt;
+`docs/WORK.md`): a nested epic is dispatched as a bead and driven by its own loop, so recursing
+would let an outer loop claim a grandchild out from under the loop that owns it. `claimNext`'s
+`parent` filter is recursive (bh-mu5yb.1) and cannot narrow to one level. So the core route is the
+guarded-update shape instead:
+
+1. `molecule_members` — `GET /v0/beads/issues?parent=<epic>&all=true&include_infra=true&limit=0`
+   narrowed to the parent edge with `direct_children` (the `bd list --parent <epic> --include-infra
+   --all` + edge filter the CLI route runs; `list_issues`'s `all_` / `include_infra` are
+   bh-sy36q.5's widening).
+2. `epic_candidates` — the UNBOUNDED ready front (`GET /v0/beads/ready?limit=0`, `bd ready --limit
+   0`'s set) narrowed to those members plus the epic itself by `molecule_scope`, ready order kept.
+   The filter only removes rows; the ready predicate stays Beads'.
+3. For each `eligible` candidate in order: a `seat_actor` port (the shell passes its one seat rule,
+   `_next_seat_actor`) resolves the seat-qualified actor or refuses the row before any write — so an
+   undeclared actor needs no carve-out on this route — then `claim_guarded` takes it through
+   `work.claim.acquire` (`issues.claim`). That op IS a server-side compare-and-set: another holder
+   is a 409 `already_claimed`, a no-longer-claimable bead 409 `not_claimable`, a vanished one 404
+   `not_found` — each a definite lost race, so the next candidate is tried. A 200 is believed only
+   through `claim_won` over the returned row; an `IndeterminateWrite` is reconciled by reading the
+   bead, never by replaying. A pass that claims nothing reports `empty_queue` / `none_eligible` /
+   `all_lost` (`decline_after`, the CLI loop's three-way split).
+
+`test_core_epic_claim_real_service.py` proves against a real `bd serve` 1.3.0 that steps 1–2 return
+exactly the CLI route's sets (membership and ordered candidates) for a molecule holding an open and
+a closed infra (event) member, a closed task, a nested sub-epic with its own ready leaf (the
+sub-epic is a member on both routes, its leaf on neither), a blocked member, a detached dotted-id
+prefix match, and ready work outside the molecule; and that racing `claim_next_in_epic` from
+several real threads yields exactly one winner for one ready member, and exactly two distinct
+winners for two.
+
+`DispatchCommands.swarm_members`'s docstring previously said it fetched "every recursive
+descendant"; on bd 1.3.0 `GET /v0/beads/issues?parent=` returns direct children only (bh-sy36q.5's
+finding below), and the method narrows to the edge either way. The docstring now says one level —
+a wording fix, no behavior change. `beadhive.work_dispatch.impl__molecule_members` (the CLI route's
+membership read) no longer tries `dispatch_state.open_swarm_members` first: it is reached only
+after the epic API route already declined to open a session, so it reads `bd` directly.
 
 ## `bh work ready` and `bh work schedule` (bh-mu5yb.1)
 
@@ -155,6 +207,8 @@ against the pinned client (not just its own prior notes) before adopting or keep
   question or bh-l5sxi.2's own successor to weigh (the CLI path's `bd children --include-infra
   --all` also widens infra/ephemeral inclusion in ways not yet checked against the HTTP
   equivalent), not something to change as a side effect of fixing a docstring. Flagged, not fixed.
+  (Resolved by bh-7ip8t — which kept the one-level scope and so did NOT use the recursive filter;
+  see "`bh work next --epic`: the epic-scoped guarded claim".)
 - **`get_dependency_tree` for recursive membership.** Investigated as directed. It is real,
   present since the initial v1.3 pin, and does walk `parent-child` edges recursively — but it
   answers a DIFFERENT predicate than what `--mol`/molecule-scoped `ready` narrowing needs: it
@@ -261,27 +315,15 @@ so were deletable). `tests/test_work_reads.py`'s existing ~40 tests are unchange
 that fallback path exactly as before; the new `work.ready.list` route and its pre-execution
 carve-outs (`--mol`, a capped limit) are covered by new tests alongside them.
 
-**`work.claim-next --epic` carve-out, re-evaluated (bh-p76tk.1).** `beadhive.work_dispatch.
-impl__molecule_members` (the epic-scoped candidate set `work_queue.claim_next`'s `--epic` guard
-falls back to) calls `beadhive.bd.children(epic, main, ["--include-infra", "--all"])` — needing
-`bd list --parent`'s rows including INFRA types (gate/event) and CLOSED beads, narrowed to the
-direct parent edge. The now-confirmed-recursive `parent` query parameter does not, by itself,
-close this gap: `BeadsSession.list_issues` (the method `QueueCommands.list_children` already routes
-`bh work schedule` through) forwards only `limit`/`cursor`/`parent`/`sort` — even though the pinned
-OpenAPI spec's `listIssues` operation itself also publishes `all`, `include_infra`,
-`include_gates`, and `include_templates` query parameters, none of them are surfaced by the
-GENERATED CLIENT WRAPPER yet. Moving `--epic`'s carve-out to the API would need widening
-`BeadsSession.list_issues` (a `beadhive-beads-client` change with its own tests), a new/extended
-`QueueCommands` method, rewiring `work_queue.claim_next`'s guard, and — because this is a WRITE
-path (claiming work), not a read — a dedicated real-service test proving exact set parity with `bd
-children --include-infra --all` (recursive membership, infra inclusion, closed inclusion
-together), not just a mocked-transport policy test. That is a second, materially larger unit of
-work than this bead's stated ready/schedule scope, so it is NOT acted on here — recorded as a
-finding and recommended as its own follow-up bead. (Separately, and unrelated to routing:
-`beadhive.bd.children`'s own CLI implementation already narrows whatever `bd list --parent`
-returns down to the DIRECT parent edge locally, so `impl__molecule_members`'s candidate set today
-is direct children of the epic plus the epic itself, not a multi-level recursive descendant set —
-worth flagging on its own terms, but out of scope here too.)
+**`work.claim-next --epic` carve-out, re-evaluated (bh-p76tk.1) — since resolved (bh-7ip8t).**
+bh-p76tk.1 found the carve-out still blocked: the `--epic` candidate set needs `bd list --parent`'s
+rows including INFRA types and CLOSED beads, narrowed to the direct parent edge, and
+`BeadsSession.list_issues` did not yet forward `listIssues`'s `all` / `include_infra` flags; it
+also flagged that the candidate set is direct children of the epic plus the epic itself, not a
+multi-level descendant set. bh-sy36q.5 widened `list_issues`; bh-7ip8t added the core route and
+its real-service parity proof, keeping the one-level scope as the contract (bh-sh6yt) — see "`bh
+work next --epic`: the epic-scoped guarded claim" above. The carve-out is gone: `--epic` keeps a
+named CLI route only as the no-service fallback.
 
 | `bh work schedule` flag | Route | Why |
 |---|---|---|
@@ -388,8 +430,7 @@ returned rather than a request-local key.
 ## Molecule progress, swarm inspection, dispatch polling, and local-loop bead-state access (bh-sy36q.5)
 
 `beadhive_core.dispatch` (`DispatchCommands`) serves the bh-97fo0.3 matrix's four named routes for
-the `local` work-runtime tier's poll loop (`beadhive.localloop.LocalLoop`) and its `--epic`
-molecule-scoping (`beadhive.work_dispatch.impl__molecule_members`) — nothing here is a generic
+the `local` work-runtime tier's poll loop (`beadhive.localloop.LocalLoop`) — nothing here is a generic
 "read a bead" abstraction; each route is a distinct call site, attributed separately in routing
 telemetry, even where two share one underlying capability:
 
@@ -397,7 +438,7 @@ telemetry, even where two share one underlying capability:
 |---|---|---|---|
 | `work.molecule.progress` | `issues.get` / `get_issue` | `DispatchCommands.molecule_progress` | `LocalLoop.load_molecule`'s epic-row read |
 | `work.local-loop.state` | `issues.get` / `get_issue` | `DispatchCommands.local_loop_state` | `LocalLoop._default_routing`'s per-bead read |
-| `work.swarm.inspect` | `issues.list` / `list_issues` | `DispatchCommands.swarm_members` / `.event_rows` | `LocalLoop.load_molecule`'s children + per-child event-stream reads; `work_dispatch.impl__molecule_members`'s `--epic` scoping |
+| `work.swarm.inspect` | `issues.list` / `list_issues` | `DispatchCommands.swarm_members` / `.event_rows` | `LocalLoop.load_molecule`'s children + per-child event-stream reads (`bh work next --epic` reads the same membership through `QueueCommands.molecule_members`, bh-7ip8t) |
 | `work.dispatch.poll` | `ready.list` / `list_ready` | `DispatchCommands.poll_ready` | `LocalLoop.claimable_now`'s ready-set poll |
 
 `BeadsSession.list_issues` is widened (bh-sy36q.5) with `status` / `all_` / `include_infra`
@@ -515,7 +556,8 @@ The automatic selection is kept, but only as a named per-hive opt-in, the `work.
   seam used to map onto its `bd` route goes through this gate, including `work_queue` /
   `dispatch_state`'s `RouteMismatch` / `OperationDenied` / `UnknownOperation` / `OSError` /
   `ValueError` branch. Pre-execution CLI routes that are not a fallback (`claim_next`'s bare
-  actor, `--epic` scoping, capped `ready` reads) are unchanged.
+  actor, capped `ready` reads) are unchanged; `--epic` scoping was one until bh-7ip8t gave it an
+  API route of its own.
 - `api+cli-fallback`: exactly the automatic selection described above.
 - `cli`: `hive_session` refuses before resolving anything.
 
@@ -632,8 +674,9 @@ In the root package, over named `bd` routes:
    - `--gated`
    - every other forwarded `bd ready` flag
    - human table output
-6. **`bh work next --epic` and undeclared-actor claims.** `--epic` stays a listed CLI route;
-   moving it is bh-sy36q.9.
+6. **Unscoped undeclared-actor claims.** They stay a listed CLI route. (`bh work next --epic`
+   was listed here too until bh-7ip8t, re-filed from bh-sy36q.9, routed it through beadhive-core;
+   its `bd` route is now only the no-service fallback.)
 7. **Verbs no cohort migrated, which stay shell-owned per the ADR:**
    - `check`, `submit` (beyond its state half), `review`, `merge` / `finish` / `land`,
      `refine` / `show`
@@ -840,10 +883,27 @@ describes `packages-check`'s shared key, from which `beadhive-bd-cli` is explici
   never invoked) and that one routed fetch answering does not force the other two onto the CLI
   path, nor the reverse. `tests/test_localloop_int.py` (unmodified) re-proves restart-is-a-no-op
   against a REAL `bd` process with the routed reads wired in underneath it.
-- `tests/test_work_next.py` (`beadhive` package) — one addition proving `_molecule_members`
-  (the `--epic`-scoping read `bh work next --epic` and the loop share) selects
-  `dispatch_state.open_swarm_members` before `bd children`, and that a successful routed answer
-  means `bd` is never reached for it at all.
+- `tests/test_work_next.py` (`beadhive` package) — the `--epic` CLI-compatibility fallback's
+  scope tests (FakeBd). bh-sy36q.5's addition proving `_molecule_members` tried
+  `dispatch_state.open_swarm_members` first was deleted by bh-7ip8t: that read now happens only
+  after the epic API route declined, so it goes straight to `bd`.
+- `test_core_queue_policy.py` (bh-7ip8t additions) — `molecule_scope` / `decline_after`;
+  `molecule_members` asking for `all` / `include_infra` and narrowing a grandchild away;
+  `epic_candidates` reading the unbounded ready front; `claim_next_in_epic` taking the first
+  in-scope candidate through `issues.claim` (never `claimNext`), moving past each definite 409/404
+  refusal, reporting `all_lost`, refusing a seat mismatch before any write, and claiming under the
+  resolved seat actor; `claim_guarded` propagating an unexpected refusal and reconciling an
+  indeterminate write by reading; a missing `issues.claim` capability refusing before any request.
+- `test_core_epic_claim_real_service.py` — opt-in (`BEADS_EPIC_CLAIM_SCRATCH=1 ... -m
+  real_service`) candidate-set parity with the CLI route and contention proofs, against a
+  disposable OWNED-mode scratch hive it creates and reaps (see the `--epic` section above).
+- `tests/test_work_queue.py` (bh-7ip8t additions, `beadhive` package) — `bh work next --epic`
+  claiming through the API route end to end over a transport fixture with `bd` forbidden (outsider
+  and grandchild never attempted, closed/infra membership asked for), a bare actor's seat resolved
+  per candidate, a lost compare-and-set moving on, `all_lost`, and the CLI fallback when no service
+  opens. It replaces `test_next_epic_scope_never_tries_the_api_route`, which pinned the carve-out.
+  `tests/test_beads_routing.py` adds `claim_in_epic` to the fail-closed (`api`) and opted-in
+  (`api+cli-fallback` / `cli`) seam tables.
 - `tests/test_beads_routing.py` (bh-sy36q.6, updated bh-m36pc / bh-yp5e9, `beadhive` package): the
   one composition decision. It covers:
   - every cohort seam opening its session through `beads_routing` with its own capability set;

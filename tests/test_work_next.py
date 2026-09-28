@@ -7,9 +7,10 @@ touch real git (bh-qczj.2): a won claim provisions a real worktree via `worktree
 `nexthive` fixture is a real (committed) git repo, not a bare directory.
 
 Since bh-l5sxi.2, this is the CLI-COMPATIBILITY route only — the explicitly-selected fallback
-`beadhive.work_queue` picks for an undeclared actor, an `--epic`-scoped claim, or a hive with no
-capable Beads service. The atomic `work.claim-next` route (and its real-contention proof) lives in
-`packages/beadhive-core`; `tests/test_work_queue.py` covers the seam that chooses between the two.
+`beadhive.work_queue` picks for an unscoped undeclared actor, or for any claim (`--epic` scoped or
+not) in a hive with no capable Beads service. The atomic `work.claim-next` route and the `--epic`
+guarded-claim route (bh-7ip8t), with their real-contention proofs, live in `packages/beadhive-core`;
+`tests/test_work_queue.py` covers the seam that chooses between them.
 """
 
 from __future__ import annotations
@@ -742,8 +743,10 @@ def test_max_action_retries_default_override_and_clamp():
 #
 # The CLI-compatibility pick/claim/re-verify loop this file's other tests exercise (`FakeBd`,
 # `_try_claim`, `work_next.claim_won`) remains: it is still the explicitly-selected route for an
-# undeclared actor, an `--epic`-scoped claim, or a hive with no capable Beads service — see
-# `beadhive.work_queue`'s module docstring for exactly when and why each stays on it.
+# unscoped undeclared actor, or — `--epic` scoped or not — a hive with no capable Beads service
+# whose `work.beads.route` permits the `bd` route (these fixtures opt in). The `--epic` API route
+# (bh-7ip8t) is covered in `tests/test_work_queue.py` and against a real service in
+# `packages/beadhive-core/tests/test_core_epic_claim_real_service.py`.
 
 
 # ---- the ready read must not be truncated (bh-fruer, P0) -----------------------------------
@@ -894,26 +897,3 @@ def test_next_epic_scope_reads_membership_one_level_matching_the_loop_s_own_mole
         "exactly ONE membership read: `_molecule_members` shells out to `bd`, so resolving it "
         "per candidate row would spawn a subprocess per ready bead"
     )
-
-
-def test_next_epic_scope_tries_the_swarm_inspect_route_before_bd(nexthive, monkeypatch, capsys):
-    """bh-sy36q.5: `_molecule_members` selects `dispatch_state.open_swarm_members` (the
-    `work.swarm.inspect` route) before execution; when it succeeds `bd children` is never
-    reached at all — the fallback is a pre-execution choice, not a retry after one fails."""
-    fake = _molecule_hive(monkeypatch)
-
-    from beadhive import dispatch_state
-
-    calls: list[tuple] = []
-
-    def fake_open_swarm_members(main, entry, epic):
-        calls.append((main, entry, epic))
-        return [{"id": "e1.2"}]  # only the takeable member — proves this row set is what's used
-
-    monkeypatch.setattr(dispatch_state, "open_swarm_members", fake_open_swarm_members)
-
-    code, payload = _run_next(capsys, epic="e1")
-
-    assert calls and calls[0][2] == "e1"
-    assert fake.list_args == [], "bd children must not be reached when the API route answers"
-    assert (code, payload["bead"]) == (0, "e1.2")

@@ -146,6 +146,11 @@ beads, provisioned worktrees for them, and flipped them to `in_progress` (bh-sh6
 - **It only ever removes rows.** `bd ready` stays the sole authority on what is ready; a molecule
   member `bd` did not return is still not claimable.
 - **Unscoped is unchanged.** No `--epic`, no membership read, same candidate set as before.
+- **Same scope on either route.** With a capable Beads service the scoped claim runs through
+  beadhive-core (`QueueCommands.claim_next_in_epic`, bh-7ip8t): the same membership and ready
+  reads over HTTP, each candidate taken through the `issues.claim` compare-and-set. The `bd` loop
+  above is the named fallback when no service opens and `work.beads.route` allows it. A real-service
+  test holds the two candidate sets identical (`packages/beadhive-core/README.md`).
 
 `bh work loop` passes it automatically. `--dry-run` reports the resulting **`claimable`** set
 alongside the decision's bead list, which is a *budget bound* and legitimately includes beads

@@ -19,14 +19,13 @@ def impl__next_seat_actor(api, actor, data):
 
 
 def impl__molecule_members(api, epic, main):
-    """Pre-execution route selection (bh-sy36q.5, never a retry after an API failure): tries the
-    ``work.swarm.inspect`` route (:mod:`beadhive.dispatch_state`) first; it returns ``None`` to
-    mean "select the CLI-compatibility forward instead" (`bd children --include-infra --all`),
-    decided before any Beads read is attempted."""
-    entry = api.registry.entry_for_dir(api.config.load(), main) or {}
-    rows = api.dispatch_state.open_swarm_members(main, entry, epic)
-    if rows is None:
-        rows = api.bd.children(epic, main, ["--include-infra", "--all"]) or []
+    """The CLI-compatibility route's membership read (`bd children --include-infra --all`).
+
+    Reached only once :func:`impl_next_` has already selected the CLI route for an `--epic`
+    claim — the epic-scoped API route (``work_queue.claim_in_epic``, bh-7ip8t) reads the same
+    membership over HTTP itself, so there is nothing left to attempt here first: a hive whose
+    queue session did not open would not open a second one for this read either."""
+    rows = api.bd.children(epic, main, ["--include-infra", "--all"]) or []
     members = {str(r.get("id") or "") for r in rows if isinstance(r, dict)}
     members.add(epic)
     members.discard("")
@@ -77,12 +76,32 @@ def _next_via_api(api, cfg, hive, main, actor, api_result):
     return claimed, list(api_result.refused), worktree_path, ident, api_result.reason
 
 
+def _next_via_epic_api(api, cfg, hive, main, actor, outcome):
+    """Translate one ``work_queue.claim_in_epic`` outcome (the core ``EpicClaimOutcome``) into this
+    verb's own vocabulary, provisioning a win exactly like every other route."""
+    claimed = outcome.claimed
+    worktree_path, ident = ("", None)
+    if claimed:
+        worktree_path, ident = api._provision_claim(cfg, hive, main, claimed, actor)
+    return (
+        claimed,
+        outcome.claim_actor or actor,
+        list(outcome.refused),
+        list(outcome.tried),
+        list(outcome.rows),
+        worktree_path,
+        ident,
+        outcome.reason,
+    )
+
+
 def _next_via_cli(api, cfg, hive, main, actor, epic):
     """The CLI-compatibility pick/claim/re-verify loop: `bd ready`, then optimistically claim and
     re-verify each eligible candidate in ready order, retrying the next one on a lost race.
 
-    Selected explicitly (never as a retry after the atomic route fails) whenever the atomic route
-    does not apply up front — see `work_queue`'s module docstring for exactly when and why."""
+    Selected explicitly (never as a retry after an API route fails) whenever neither API route —
+    the atomic claim-next, or the `--epic` guarded claim — applies up front: see `work_queue`'s
+    module docstring for exactly when and why."""
     rows = [r for r in api.bd_cli.ready_rows(main, ["--limit", "0"]) or [] if isinstance(r, dict)]
     if epic:
         members = api._molecule_members(epic, main)
@@ -119,15 +138,33 @@ def impl_next_(api, as_, hive, as_json, epic):
     actor = api.identity.resolve_actor(as_, api.config.work_identity(cfg, entry)["name"] or "")
     api._pull_state(cfg, main)
 
-    # Pre-execution route selection (never a retry after an API failure): `--epic` scoping and an
-    # undeclared actor stay on the CLI-compatibility path unconditionally — see `work_queue`'s
-    # module docstring for exactly why. Otherwise, try the atomic `work.claim-next` route; it
-    # returns `None` to mean "select CLI instead" (service absent or a capability missing),
-    # decided before any Beads write is attempted.
-    api_result = None if epic else api.work_queue.claim_next(main, entry, actor)
+    # Pre-execution route selection (never a retry after an API failure): `--epic` scoping tries
+    # the epic-scoped guarded-claim route, anything else the atomic `work.claim-next` route (an
+    # undeclared actor stays CLI-compatibility for that one — see `work_queue`'s module
+    # docstring). Either returns `None` to mean "select CLI instead" (service absent or a
+    # capability missing, and `work.beads.route` permits it), decided before any Beads write.
+    if epic:
+        epic_result = api.work_queue.claim_in_epic(
+            main, entry, epic, actor, lambda row: api._next_seat_actor(actor, row)
+        )
+        api_result = None
+    else:
+        epic_result = None
+        api_result = api.work_queue.claim_next(main, entry, actor)
     rows: list = []
     tried: list[str] = []
-    if api_result is not None:
+    if epic_result is not None:
+        (
+            claimed,
+            claim_actor,
+            refused,
+            tried,
+            rows,
+            worktree_path,
+            ident,
+            reason,
+        ) = _next_via_epic_api(api, cfg, hive, main, actor, epic_result)
+    elif api_result is not None:
         claimed, refused, worktree_path, ident, reason = _next_via_api(
             api, cfg, hive, main, actor, api_result
         )
