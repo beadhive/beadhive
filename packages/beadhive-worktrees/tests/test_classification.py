@@ -1,18 +1,33 @@
-"""Table-driven unit tests for ws.wt_status.classify — the pure worktree classifier."""
+"""Table-driven unit tests for the pure worktree safety classifier (``classify``).
+
+Re-homed from root ``tests/test_wt_status.py`` by bh-qdezo.9: the classifier moved into
+``beadhive_worktrees.policy.classification`` (bh-qdezo.5), so its policy table is proven here,
+with the package alone, and root keeps only its adapter/wiring tests.
+"""
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from dataclasses import dataclass
 
-from beadhive.precious import PreciousFile
-from beadhive.worktree import bead_and_parent  # noqa: E402
-from beadhive.wt_status import (  # noqa: E402
+from beadhive_worktrees import (
     BatchEvidence,
     WtClassification,
     classify,
     format_disposition,
     parse_disposition,
+    untrustworthy,
 )
+
+
+@dataclass(frozen=True)
+class PreciousFile:
+    """Stand-in for root's precious-scan record: the classifier carries it opaquely."""
+
+    path: str
+    bytes: int
+    category: str
+    matched_glob: str | None
+
 
 # Importing WtClassification.LANDED_REBASED here validates the new enum member is present
 _LANDED_REBASED = WtClassification.LANDED_REBASED
@@ -684,46 +699,6 @@ def test_dirty_landed_rebased_is_not_safe():
 
 
 # ---------------------------------------------------------------------------
-# bead_and_parent: id parsed from dotted branch ref, not dashed directory leaf
-# ---------------------------------------------------------------------------
-
-
-def test_bead_and_parent_parses_id_from_dotted_branch_ref():
-    """bead_and_parent extracts the bead id from the real branch ref, not the directory leaf.
-
-    The directory leaf for ``bh-88vi.1`` is ``bh-88vi-1`` (dot→dash
-    sanitization).  The real branch ref ``wt/bead/issue/bh-88vi.1`` must be used.
-    Stripping the ``wt/bead/<type>/`` prefix from the actual ref yields the dotted id.
-    """
-    entry = {"provider": "github", "org": "org", "repo": "repo", "prefix": "repo"}
-    path = "/some/root/github/org/repo/bh-88vi-1"  # dashed leaf
-    dotted_branch = "wt/bead/issue/bh-88vi.1"  # real ref with type + dot
-    integration = "main"
-
-    # integration_base is called to resolve the parent branch; mock it to return integration
-    # so this test needs no real git repo.
-    with patch("beadhive.worktree.integration_base", return_value=integration):
-        bead_id, parent = bead_and_parent(entry, path, integration, branch=dotted_branch)
-
-    assert bead_id == "bh-88vi.1", f"expected dotted id 'bh-88vi.1', got {bead_id!r}"
-    assert bead_id != "bh-88vi-1", "id must NOT come from the dashed directory leaf"
-    assert parent == integration
-
-
-def test_bead_and_parent_none_for_non_bead_branch():
-    """bead_and_parent returns bead_id=None for non-bead branches (batch, session)."""
-    entry = {"provider": "github", "org": "org", "repo": "repo", "prefix": "repo"}
-    path = "/some/root/github/org/repo/some-epic"
-    integration = "main"
-
-    with patch("beadhive.worktree.integration_base", return_value=integration):
-        bead_id, parent = bead_and_parent(entry, path, integration, branch="wt/batch/some-epic")
-
-    assert bead_id is None
-    assert parent == integration
-
-
-# ---------------------------------------------------------------------------
 # UNKNOWN: a bead that cannot be READ is not a bead that is OPEN (bh-167s0)
 # ---------------------------------------------------------------------------
 #
@@ -804,8 +779,6 @@ def test_dirty_still_wins_but_reports_the_bead_state_underneath():
 def test_a_dirty_row_over_an_unresolvable_bead_still_taints_the_hive():
     """The compounding case the bead names: DIRTY masks the bead state, so without this a
     hive's UNKNOWN rows could hide behind dirt and the 'not trustworthy' warning never fire."""
-    from beadhive.wt_status import untrustworthy
-
     st = _unknown_run(dirty=True)
     assert st.classification == WtClassification.DIRTY
     assert st.underlying == WtClassification.UNKNOWN
@@ -815,8 +788,6 @@ def test_a_dirty_row_over_an_unresolvable_bead_still_taints_the_hive():
 def test_a_clean_resolvable_hive_is_not_tainted():
     """The negative: `untrustworthy` must not fire on ordinary rows, or every hive would be
     permanently unprunable and the guard would get switched off."""
-    from beadhive.wt_status import untrustworthy
-
     rows = [
         _run(bead_status="open"),
         _run(bead_status="closed", merged=True),

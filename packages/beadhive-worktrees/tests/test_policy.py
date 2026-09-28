@@ -32,3 +32,25 @@ def test_binding_applies_prefix_once_and_keeps_batch_leaf_namespace() -> None:
 def test_session_binding_fails_closed_without_explicit_entropy() -> None:
     with pytest.raises(ValueError, match="timestamp and random token"):
         branch_suffix(WorktreeBranchPolicy())
+
+
+@pytest.mark.parametrize(
+    ("suffix", "expected"),
+    [
+        # Default kind is the leaf 'issue'; <type> lives in the branch, the leaf stays <id>.
+        ({"bead": "ag-infra-7"}, ("wt/bead/issue/ag-infra-7", "ag-infra-7")),
+        # An explicit epic kind opens the container namespace; the leaf is unchanged.
+        ({"bead": "ag-epic", "kind": "epic"}, ("wt/bead/epic/ag-epic", "ag-epic")),
+        # A raw branch is prefixed, never overridden, and never double-prefixed.
+        ({"branch": "spike-xyz"}, ("wt/spike-xyz", "spike-xyz")),
+        ({"branch": "feature/login"}, ("wt/feature/login", "login")),
+        ({"branch": "wt/foo"}, ("wt/foo", "foo")),
+        # A work-group's leaf carries `batch-` so it never collides with a same-named bead seat.
+        ({"branch": "batch/samefile"}, ("wt/batch/samefile", "batch-samefile")),
+    ],
+)
+def test_default_policy_names_bead_raw_and_batch_worktrees(suffix, expected) -> None:
+    """Re-homed from root tests/test_worktree.py's `_branch_and_leaf` table (bh-qdezo.9)."""
+    binding = bind_worktree(branch_suffix(WorktreeBranchPolicy(), **suffix))
+
+    assert (binding.branch, binding.leaf) == expected

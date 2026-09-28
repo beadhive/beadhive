@@ -58,41 +58,9 @@ def _git(*args, cwd):
 
 
 # ---- naming / templating ----------------------------------------------------
-
-
-def test_branch_and_leaf_bead():
-    # Default kind is the leaf 'issue'; <type> lives in the branch, the dir leaf stays <id>.
-    assert worktree._branch_and_leaf({}, bead="ag-infra-7") == (
-        "wt/bead/issue/ag-infra-7",
-        "ag-infra-7",
-    )
-
-
-def test_branch_and_leaf_bead_epic_kind():
-    # An explicit epic kind opens the container namespace; leaf stays <id> (dir name unchanged).
-    assert worktree._branch_and_leaf({}, bead="ag-epic", kind="epic") == (
-        "wt/bead/epic/ag-epic",
-        "ag-epic",
-    )
-
-
-def test_branch_and_leaf_branch_is_prefixed_not_overridden():
-    assert worktree._branch_and_leaf({}, branch="spike-xyz") == ("wt/spike-xyz", "spike-xyz")
-    assert worktree._branch_and_leaf({}, branch="feature/login") == ("wt/feature/login", "login")
-
-
-def test_branch_and_leaf_branch_does_not_double_prefix():
-    assert worktree._branch_and_leaf({}, branch="wt/foo") == ("wt/foo", "foo")
-
-
-def test_branch_and_leaf_batch_mode():
-    # a work-group rides the `wt/<name>` mode as batch/<group> → wt/batch/<group>, but its worktree
-    # dir leaf carries a `batch-` prefix so it can't collide with a bead worktree of the same name
-    # (notably the epic seat wt/bead/epic/<epic> in collapsed mode —)
-    assert worktree._branch_and_leaf({}, branch="batch/samefile") == (
-        "wt/batch/samefile",
-        "batch-samefile",
-    )
+# The pure bead/raw/batch naming table lives with the policy in beadhive-worktrees
+# (packages/beadhive-worktrees/tests/test_policy.py, bh-qdezo.9); root keeps the config, clock,
+# and entropy wiring of `_branch_and_leaf`.
 
 
 def test_branch_and_leaf_session_fallback():
@@ -728,6 +696,20 @@ def test_bead_and_parent_returns_none_for_non_bead_worktree(tmp_path, monkeypatc
     wt_path.mkdir(parents=True)
 
     bead_id, parent = worktree.bead_and_parent(entry, str(wt_path), "main")
+    assert bead_id is None
+    assert parent == "main"
+
+
+def test_bead_and_parent_none_for_an_explicit_batch_branch(monkeypatch):
+    """An explicit ``wt/batch/<group>`` ref names no bead (re-homed from test_wt_status.py when
+    the pure classifier table moved into beadhive-worktrees, bh-qdezo.9)."""
+    entry = {"provider": "github", "org": "org", "repo": "repo", "prefix": "repo"}
+    monkeypatch.setattr(worktree, "integration_base", lambda *_a, **_k: "main")
+
+    bead_id, parent = worktree.bead_and_parent(
+        entry, "/some/root/github/org/repo/some-epic", "main", branch="wt/batch/some-epic"
+    )
+
     assert bead_id is None
     assert parent == "main"
 
