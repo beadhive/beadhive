@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import contextlib
 import datetime
-import hashlib
 import json
 import os
 import secrets
@@ -21,8 +20,9 @@ from pathlib import Path
 
 import typer
 
+from beadhive_worktrees.policy import init_rules
+
 from . import (
-    cache_locality,
     converge,
     host,
     otel,
@@ -33,6 +33,7 @@ from . import (
     validation_bypass,
     validation_ledger,
     validation_records,
+    worktree_init_adapters,
 )
 from .config_consumer_ports import work_settings as config
 
@@ -44,8 +45,7 @@ _VERIFY_CREATE_ATTEMPTS = 8
 _VERIFY_GRACE_SECONDS = 5 * 60
 _VERIFY_TTL_SECONDS = 24 * 60 * 60
 _COLOR_FORCE_ENV_KEYS = ("FORCE_COLOR", "CLICOLOR_FORCE")
-_INIT_RULES_CONFIG_KEY = "beadhive.initRulesFingerprint"
-_INIT_RULES_FINGERPRINT_VERSION = "v1"
+_GIT_CONFIG_RUNNER = worktree_init_adapters.HostGitConfigRunner()
 _BARE_CHECKOUT_HINT = (
     "  ↳ the command ran in a bare clean checkout: only worktree init rules flagged "
     "`verify: true` were applied. If this failure doesn't reproduce in your dev worktree, "
@@ -176,86 +176,39 @@ def impl__rules(cfg, entry):
 
 
 def impl__init_rules_fingerprint(cfg, entry) -> str:
-    """Stable identity for the ordered effective seat-init rule set.
-
-    The order is part of the contract (global rules precede hive rules), while mapping key order
-    is not.  Version the digest so a future canonicalization change reports drift once instead of
-    silently treating an old stamp as current.
-    """
-    payload = json.dumps(_rules(cfg, entry), sort_keys=True, separators=(",", ":"))
-    digest = hashlib.sha256(payload.encode()).hexdigest()
-    return f"{_INIT_RULES_FINGERPRINT_VERSION}:{digest}"
+    """Compatibility facade for ``beadhive_worktrees.policy.init_rules.rules_fingerprint``."""
+    return init_rules.rules_fingerprint(_rules(cfg, entry))
 
 
 def impl__read_init_rules_fingerprint(path: Path) -> str | None:
-    """Read this Git worktree incarnation's init-rule stamp without mutating it."""
-    res = run(
-        ["git", "-C", str(path), "config", "--worktree", "--get", _INIT_RULES_CONFIG_KEY],
-        check=False,
-        capture=True,
-    )
-    value = (res.stdout or "").strip()
-    return value if res.returncode == 0 and value else None
+    """Compatibility facade for
+    ``beadhive_worktrees.policy.init_rules.read_recorded_fingerprint``."""
+    return init_rules.read_recorded_fingerprint(path, runner=_GIT_CONFIG_RUNNER)
 
 
 def impl_record_init_rules(cfg, entry, path: Path) -> bool:
-    """Persist the current rule fingerprint in Git-owned per-worktree config.
-
-    The stamp follows a linked worktree across ``git worktree move`` and disappears with that
-    incarnation.  A write failure is non-fatal, matching init's best-effort contract; leaving the
-    stamp absent makes the next reuse warn instead of falsely claiming provisioning is current.
-    """
-    enabled = run(
-        ["git", "-C", str(path), "config", "extensions.worktreeConfig", "true"],
-        check=False,
-        capture=True,
+    """Compatibility facade for ``beadhive_worktrees.policy.init_rules.record_fingerprint``."""
+    return init_rules.record_fingerprint(
+        path,
+        _rules(cfg, entry),
+        runner=_GIT_CONFIG_RUNNER,
+        warn=lambda message: typer.echo(message, err=True),
     )
-    if enabled.returncode != 0:
-        typer.echo(f"  ⚠ init: could not record the provisioning rule set for {path}", err=True)
-        return False
-    written = run(
-        [
-            "git",
-            "-C",
-            str(path),
-            "config",
-            "--worktree",
-            _INIT_RULES_CONFIG_KEY,
-            impl__init_rules_fingerprint(cfg, entry),
-        ],
-        check=False,
-        capture=True,
-    )
-    if written.returncode != 0:
-        typer.echo(f"  ⚠ init: could not record the provisioning rule set for {path}", err=True)
-        return False
-    return True
 
 
 def impl_warn_init_rules_drift(cfg, entry, path: Path) -> bool:
-    """Warn when an existing seat was provisioned under a different rule set.
-
-    Legacy worktrees have no stamp.  They warn only when rules are currently configured: an
-    unstamped checkout with no provisioning to miss is byte-compatible with the old quiet path.
-    This detector never re-runs operator commands or modifies the checkout.
-    """
-    rules = _rules(cfg, entry)
-    recorded = impl__read_init_rules_fingerprint(path)
-    current = impl__init_rules_fingerprint(cfg, entry)
-    if recorded == current or (recorded is None and not rules):
-        return False
-    typer.echo(
-        "WARNING: worktree init rules changed since this checkout was provisioned; "
-        f"re-attaching without re-running them: {path}\n"
-        f'  → {config.BINARY_ALIAS} wt init "{path}"',
-        err=True,
+    """Compatibility facade for ``beadhive_worktrees.policy.init_rules.warn_drift``."""
+    return init_rules.warn_drift(
+        path,
+        _rules(cfg, entry),
+        runner=_GIT_CONFIG_RUNNER,
+        warn=lambda message: typer.echo(message, err=True),
+        reinit_hint=f'{config.BINARY_ALIAS} wt init "{path}"',
     )
-    return True
 
 
 def impl_run_init(cfg, entry, path: Path, verify_only: bool = False):
-    """Evaluate init rules in `path`: run each whose if_exists glob matches (or has none).
-    Best-effort — a failing/absent command warns and we keep going.
+    """Compatibility facade for ``beadhive_worktrees.policy.init_rules.run_init_rules``.
 
     `verify_only` filters to rules flagged `{verify: true}` — the opt-in subset a
     `clean_checkout` verify dir needs to be provisioned enough to validate (dependency
@@ -264,10 +217,10 @@ def impl_run_init(cfg, entry, path: Path, verify_only: bool = False):
     Flagged rules run on EVERY validation (per-invocation verify dirs), so keep them
     idempotent and cache-friendly.
 
-    Ponytail note (bh-3oq2.2, subprocess-in-loop biomarker): this loop's one `run()` spawn per
-    rule is NOT a batchable N+1 — each rule is a distinct, config-declared external command
-    (`uv sync`, `mise trust`, `just setup`, ...) that must run in its own process, in the
-    operator's declared order, with its own independent failure handling (best-effort: one
+    Ponytail note (bh-3oq2.2, subprocess-in-loop biomarker): this loop's one command-runner
+    spawn per rule is NOT a batchable N+1 — each rule is a distinct, config-declared external
+    command (`uv sync`, `mise trust`, `just setup`, ...) that must run in its own process, in
+    the operator's declared order, with its own independent failure handling (best-effort: one
     rule's nonzero exit warns but never skips the rest). There's no single call that could
     replace N different commands without changing what actually runs, so this is left as-is
     rather than forced into an artificial batch.
@@ -276,52 +229,14 @@ def impl_run_init(cfg, entry, path: Path, verify_only: bool = False):
     failures are also collected and re-surfaced as a one-line summary after the loop — still
     non-fatal (best-effort optional convenience, never blocks worktree creation), just no
     longer silent-in-practice."""
-    failed: list[str] = []
-    for rule in _rules(cfg, entry):
-        rule = rule or {}
-        cmd = rule.get("run")
-        if not cmd:
-            continue
-        if verify_only and not rule.get("verify"):
-            continue
-        cond = rule.get("if_exists")
-        if cond and not any(path.glob(cond)):
-            continue
-        typer.echo(f"  → {cmd}")
-        argv = shlex.split(cmd)
-        cache = cache_locality.command_environment(
-            argv,
-            path,
-            worktree_root=config.worktrees_root(cfg),
-            ephemeral=config.worktrees_ephemeral(cfg),
-        )
-        run_kwargs = {"cwd": str(path), "check": False}
-        if cache is not None:
-            child_env, selection = cache
-            run_kwargs["env"] = child_env
-            typer.echo(
-                f"  → cache[{selection.application}] {selection.tier} "
-                f"{selection.path} ({selection.link_method}; "
-                f"device {selection.cache_device} → {selection.target_device}; "
-                f"{selection.free_bytes} bytes/{selection.free_inodes} inodes free)"
-            )
-            if selection.link_method == "copy" or "fallback" in selection.diagnostic:
-                typer.echo(f"  ⚠ cache locality: {selection.diagnostic}", err=True)
-        res = run(argv, **run_kwargs)
-        if missing_binary(res):
-            typer.echo(f"  ⚠ init: command not found: {cmd}", err=True)
-            failed.append(cmd)
-            continue
-        if res.returncode != 0:
-            typer.echo(f"  ⚠ init: '{cmd}' exited {res.returncode}", err=True)
-            failed.append(cmd)
-    if failed:
-        typer.echo(
-            f"  ⚠ init: {len(failed)} optional provisioning rule(s) failed and were skipped "
-            f"(worktree is otherwise ready): {'; '.join(failed)}",
-            err=True,
-        )
-    return not failed
+    return init_rules.run_init_rules(
+        _rules(cfg, entry),
+        path,
+        verify_only=verify_only,
+        runner=worktree_init_adapters.HostInitCommandRunner(cfg),
+        report=typer.echo,
+        warn=lambda message: typer.echo(message, err=True),
+    )
 
 
 def impl__pid_alive(pid: int) -> bool:
