@@ -27,13 +27,14 @@ name, *args, **kwargs)` is the one dispatch point: it selects the route against
 `session.context.capabilities` and calls the exact `BeadsSession` method the matrix names — never
 a method chosen generically at runtime. `select_cli` / `select_administrative` only name the
 route and its reason; the compatibility shell still owns the actual `bd` invocation (`work_review.py`'s
-`CliGateOperations` / `CliStateOperations` and `coordination.py` are the existing examples).
+`CliGateOperations` / `CliStateOperations` and `beadhive_bd_cli.coordination`, all in
+[`beadhive-bd-cli`](../beadhive-bd-cli/README.md) since bh-o3xuf, are the existing examples).
 Every selector accepts an optional `RoutingObserver` so the chosen route can be attributed in
 telemetry.
 
 `COORDINATION_OPERATIONS` names every lease, heartbeat, reclaim, merge-slot and gate operation
 that must stay `cli-compatibility`: their exclusivity and staleness guarantees come from the real
-service or the real `bd` binary (`tests/test_coordination_int.py`, `tests/test_merge_slot.py`),
+service or the real `bd` binary (`packages/beadhive-bd-cli/tests/test_coordination_int.py`, `tests/test_merge_slot.py`),
 never from an in-memory stand-in, and a policy test fails the day the installed matrix moves one
 of them to `api-ready` without a deliberate, evidenced bead.
 
@@ -305,7 +306,7 @@ Every Beads operation takes one named route from the matrix:
 |---|---|---|
 | `work.issue.get` | `api-ready` | `SessionIssues` over `BeadsSession` (guard reads, claim re-verification, abandon's re-read, submit's admission) |
 | `work.issue.update` | `api-ready` | `SessionIssues.assign` — a guarded update (`expected_version` from the guard read), so a bead that moved after the guard is refused (`409`), never overwritten |
-| `work.lease.acquire` / `work.lease.release` | `cli-compatibility` | `Leases` port → shell `CliLeases` (`bd update --claim` / reopen+unassign): `issues.claim` does not grant the renewable lease |
+| `work.lease.acquire` / `work.lease.release` | `cli-compatibility` | `Leases` port → `beadhive_bd_cli.CliLeases` (`bd update --claim` / reopen+unassign): `issues.claim` does not grant the renewable lease |
 | `work.state.get` / `work.state.update` | `cli-compatibility` | `StateReads` / `StateOperations` → `bd state` / `bd set-state` (review, dispatch dimensions) |
 | `work.gate.lookup` / `work.gate.resolve` | `cli-compatibility` | `GateOperations` (resume's orphaned-review-gate GC) |
 
@@ -347,7 +348,7 @@ anything is sent — refused outright, never chunked into multiple non-atomic re
 | Operation | Route | Served by |
 |---|---|---|
 | `plan.batch-apply.atomic` | **api-ready** (bh-sy36q.2: reclassified from `cli-compatibility` — see `test_core_planning_real_service.py`) | `SessionMoleculeFiler` over `BeadsSession.batch_apply` |
-| `plan.gate.create` / `plan.kickoff.update` | `cli-compatibility` (no v1.3 HTTP route for either) | `PlanningGates` port → shell `CliPlanningGates` (`bd gate create` / `bd set-state kickoff=pending`) |
+| `plan.gate.create` / `plan.kickoff.update` | `cli-compatibility` (no v1.3 HTTP route for either) | `PlanningGates` port → `beadhive_bd_cli.CliPlanningGates` (`bd gate create` / `bd set-state kickoff=pending`) |
 
 Route selection follows the same pre-execution rule as `work_queue` / `work_lifecycle`: when the
 hive's supervised Beads service can be reached, `plan_filing._filer` opens it and selects
@@ -584,6 +585,15 @@ The `integration` real-`bd` tests exercise the retained `bd` routes and topology
 superseded code, so none were deleted.
 
 ### Intentionally retained CLI administration and compatibility surface
+
+> **2026-09-28 (bh-o3xuf).** The `bd` argv routes behind items 1 and 3 — `CliIssues`,
+> `CliLeases`, `CliStateReads`, `CliStateOperations`, `CliGateOperations`, `CliMoleculeFiler`,
+> `CliPlanningGates`, the `show` / `children` / `child_rows` / `ready` reads, and every
+> `COORDINATION_OPERATIONS` wrapper — moved to the
+> [`beadhive-bd-cli`](../beadhive-bd-cli/README.md) library package, which root resolves lazily
+> by name (`beadhive.bd_cli`). The route *selection* stays in root, as below. Still in root, over
+> inline `bd` argv: submit's gate creation (`work.review.submit`), the `bd import` epic birth,
+> and everything in items 4–7.
 
 In the root package, over named `bd` routes:
 

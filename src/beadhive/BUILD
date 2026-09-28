@@ -18,6 +18,22 @@ python_sources(
                 "//packages/beadhive-beads-client/src:lib",
             ],
         },
+        # Every `bd` argv route lives in beadhive-bd-cli (bh-o3xuf), resolved by name here and
+        # by bd.py's read-helper forwards.
+        "bd.py": {
+            "dependencies": [
+                "//packages/beadhive-bd-cli/src:lib",
+                "//packages/beadhive-core/src:lib",
+                "//packages/beadhive-beads-client/src:lib",
+            ],
+        },
+        "bd_cli.py": {
+            "dependencies": [
+                "//packages/beadhive-bd-cli/src:lib",
+                "//packages/beadhive-core/src:lib",
+                "//packages/beadhive-beads-client/src:lib",
+            ],
+        },
         # The lifecycle composition seam (bh-sy36q.1) resolves the core the same way.
         "work_lifecycle.py": {
             "dependencies": [
@@ -85,6 +101,7 @@ pex_binary(
         ":package-data",
         "//packages/beadhive-pants/src:lib",
         "//packages/beadhive-core/src:lib",
+        "//packages/beadhive-bd-cli/src:lib",
         "//packages/beadhive-beads-client/src:lib",
     ],
     output_path="bh.pex",

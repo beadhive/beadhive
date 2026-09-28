@@ -51,7 +51,8 @@ def _init_scratch_hive(path: Path) -> None:
     """An OWNED-mode (`bd init --server`) scratch hive: `bd serve` refuses embedded Dolt
     ("bd serve requires a Dolt SQL server"), so the default `bd init` shape this cohort's other
     scratch-hive tests use (`test_core_routing_real_service.py`) cannot serve HTTP at all. This
-    mirrors `tests/test_coordination_int.py`'s `server_store` fixture instead."""
+    mirrors `packages/beadhive-bd-cli/tests/test_coordination_int.py`'s `server_store` fixture
+    instead."""
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=path, check=True)
     subprocess.run(
         ["bd", "init", "--server", "--prefix", "qsc", "--non-interactive"],

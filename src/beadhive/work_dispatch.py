@@ -83,7 +83,7 @@ def _next_via_cli(api, cfg, hive, main, actor, epic):
 
     Selected explicitly (never as a retry after the atomic route fails) whenever the atomic route
     does not apply up front — see `work_queue`'s module docstring for exactly when and why."""
-    rows = [r for r in api.bd.json(["ready", "--limit", "0"], main) or [] if isinstance(r, dict)]
+    rows = [r for r in api.bd_cli.ready_rows(main, ["--limit", "0"]) or [] if isinstance(r, dict)]
     if epic:
         members = api._molecule_members(epic, main)
         rows = [r for r in rows if str(r.get("id") or "") in members]

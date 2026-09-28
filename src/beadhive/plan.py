@@ -23,6 +23,7 @@ import typer
 from . import (
     adopt,
     bd,
+    bd_cli,
     complexity,
     config,
     guard,
@@ -647,7 +648,7 @@ def _names_kickoff_for(desc, epic_id: str) -> bool:
     """True iff `desc` is a kickoff-gate description for THIS epic, not for a nested one.
 
     The description contract is `kickoff <epic>` (see
-    `plan_filing.CliPlanningGates.create_kickoff_gate`), and the marker was
+    `beadhive_bd_cli.CliPlanningGates.create_kickoff_gate`), and the marker was
     matched as a plain substring — so `kickoff bh-bh2h` matched `kickoff bh-bh2h.3`, the gate of a
     NESTED epic. The fourth mirror of bh-1vvdp, and the one that RESOLVES: `plan approve <parent>`
     resolved the child's gate while its kickoff STATE stayed unapproved (the state flip targets
@@ -667,8 +668,8 @@ def _ungated_roots(epic_id: str, issues: list[dict], cwd) -> list[str] | None:
     """Ids of GENUINE roots lacking a kickoff gate (None when the gate list is unavailable).
 
     Gate descriptions carry both the blocked root id and the `kickoff <epic>` marker (see
-    `plan_filing.CliPlanningGates.create_kickoff_gate`), so match on that pair. Uses `--all` so an
-    already-approved molecule (gates since resolved) still counts as gated.
+    `beadhive_bd_cli.CliPlanningGates.create_kickoff_gate`), so match on that pair. Uses `--all`
+    so an already-approved molecule (gates since resolved) still counts as gated.
 
     A root whose blocking predecessors have all merged/closed (`satisfied_deps`) is a *satisfied*
     root, not a fresh entry point: its kickoff gate lived on the original root, which has since
@@ -1062,7 +1063,7 @@ def _approve_kickoff(epic: str, cwd, actor: str, cfg) -> KickoffResult:
     current = bd.state(epic, "kickoff", cwd)
 
     # Discover open kickoff gates for this epic (description contract:
-    # plan_filing.CliPlanningGates.create_kickoff_gate)
+    # beadhive_bd_cli.CliPlanningGates.create_kickoff_gate)
     gates = _gate_list(cwd)
     if gates is None:
         raise PlanError(f"could not retrieve gate list for {epic}")
@@ -1221,7 +1222,7 @@ def repair_epic(epic_id: str, cfg, cwd, actor: str) -> RepairOutcome:
     """Idempotently backfill a filed molecule's plumbing (swarm, root kickoff gates, kickoff
     state, identity labels) over its named `bd` routes, then re-verify it. Typer-free."""
     cwd = Path(cwd)
-    gates = plan_filing.CliPlanningGates(cwd)
+    gates = bd_cli.planning_gates(cwd)
     loaded = _epic_molecule(epic_id, cwd)
     if loaded is None:
         raise PlanError(

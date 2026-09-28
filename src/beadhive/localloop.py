@@ -96,6 +96,7 @@ from pathlib import Path
 
 from . import bd as bd_mod
 from . import (
+    bd_cli,
     config,
     coordination,
     log,
@@ -1567,7 +1568,7 @@ class LocalLoop:
 
         rows = dispatch_state.open_poll_ready(self.hive_dir, self._hive_entry())
         if rows is None:
-            rows = bd_mod.json(["ready", "--limit", "0"], self.hive_dir) or []
+            rows = bd_cli.ready_rows(self.hive_dir, ["--limit", "0"]) or []
         ready = {str(r.get("id") or "") for r in rows if isinstance(r, dict)}
         return tuple(b for b in decision.beads if b in ready)
 

@@ -246,8 +246,9 @@ def default_table() -> RoutingTable:
 
 #: Concurrency-sensitive coordination operations that must never move to an api-ready route
 #: without a deliberate, evidenced bead: their exclusivity/staleness guarantees come from the
-#: real service or the real ``bd`` binary (see ``tests/test_coordination_int.py`` and
-#: ``tests/test_merge_slot.py``), never from an in-memory stand-in. ``test_core_routing_policy``
+#: real service or the real ``bd`` binary (see
+#: ``packages/beadhive-bd-cli/tests/test_coordination_int.py`` and ``tests/test_merge_slot.py``),
+#: never from an in-memory stand-in. ``test_core_routing_policy``
 #: fails the day the installed matrix reclassifies any of these.
 COORDINATION_OPERATIONS: tuple[str, ...] = (
     "work.gate.lookup",

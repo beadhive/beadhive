@@ -5,12 +5,12 @@ acquire.
 Lease, heartbeat, reclaim, merge-slot and gate resolution have no v1.3 HTTP route (see
 ``COORDINATION_OPERATIONS`` in :mod:`beadhive_core.routing`); their exclusivity and staleness
 guarantees are proven exhaustively elsewhere, against the real ``bd`` binary, by this repo's own
-``tests/test_coordination_int.py`` (concurrent real-thread acquire, stale-lease reclaim via a
-server-mode store) and ``tests/test_merge_slot.py`` (holder-token staleness policy). This test
-does not re-prove those from scratch; it proves the one thing specific to bh-l5sxi.1 — that
-*selecting* ``work.merge-slot.acquire`` through :class:`beadhive_core.RoutingTable` still points
-at real ``bd``, not an in-memory stand-in, and that contested acquire through that exact path is
-still exclusive.
+``packages/beadhive-bd-cli/tests/test_coordination_int.py`` (concurrent real-thread acquire,
+stale-lease reclaim via a server-mode store) and ``tests/test_merge_slot.py`` (holder-token
+staleness policy). This test does not re-prove those from scratch; it proves the one thing
+specific to bh-l5sxi.1 — that *selecting* ``work.merge-slot.acquire`` through
+:class:`beadhive_core.RoutingTable` still points at real ``bd``, not an in-memory stand-in, and
+that contested acquire through that exact path is still exclusive.
 
 This never touches a managed hive. It creates its own disposable scratch hive (embedded Dolt, no
 server) in a temp directory, exactly the discipline ``test_core_review_real_service.py`` uses,

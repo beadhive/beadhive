@@ -17,7 +17,10 @@ compatibility read/assign BEFORE the first Beads operation of the command, never
 an API call failed. These verbs are the recovery path for stalled work (``abandon``) and the
 first step of every developer loop (``claim``), so they must not fail closed on hives the API
 cannot serve. The ``work.lease.*``, ``work.state.*`` and ``work.gate.*`` rows are
-``cli-compatibility`` in the matrix and always take their named ``bd`` route here.
+``cli-compatibility`` in the matrix and always take their named ``bd`` route here. Every ``bd``
+route (``CliIssues``, ``CliLeases``, ``CliStateReads``, ``CliStateOperations``,
+``CliGateOperations``) lives in the ``beadhive-bd-cli`` library package, resolved lazily by name
+through :mod:`beadhive.bd_cli` (bh-o3xuf).
 
 Worktree, identity, claim-record and state-sync effects are the supplied capabilities of
 :class:`ShellWorkspace`; worktree mechanics go through ``worktree.ensure`` / ``worktree.remove``,
@@ -37,9 +40,8 @@ from typing import Any
 
 import typer
 
-from . import bd, beads_routing, log, otel
+from . import bd, bd_cli, beads_routing, log, otel
 from .config_consumer_ports import work_settings as config
-from .work_review import CliGateOperations, CliStateOperations
 
 _CORE_MODULE = "beadhive_core"
 
@@ -51,56 +53,6 @@ def _core() -> Any:
 def _work() -> Any:
     """The ``beadhive.work`` facade, resolved at call time (it imports this module)."""
     return importlib.import_module("beadhive.work")
-
-
-# ---- named CLI-compatibility routes ----------------------------------------------------------
-
-
-class CliIssues:
-    """``work.issue.get`` / ``work.issue.update`` over ``bd`` — selected only when the hive's
-    Beads service cannot be used for this command (see the module docstring)."""
-
-    route = "cli-compatibility"
-
-    def __init__(self, main: Path) -> None:
-        self._main = main
-
-    def get(self, bead: str) -> dict | None:
-        return bd.show(bead, self._main)
-
-    def assign(self, bead: str, assignee: str, *, actor: str, read: Any) -> None:
-        result = bd.run(["assign", bead, assignee], self._main, actor=actor)
-        if result.returncode != 0:  # bd streamed its own error
-            raise _core().WriteFailed(result.returncode)
-
-
-class CliLeases:
-    """``work.lease.acquire`` (``bd update --claim``) / ``work.lease.release`` (reopen +
-    unassign) — the renewable claim lease v1.3's ``issues.claim`` does not grant."""
-
-    def __init__(self, main: Path) -> None:
-        self._main = main
-
-    def acquire(self, bead: str, *, actor: str) -> None:
-        result = bd.run(["update", bead, "--claim"], self._main, actor=actor)
-        if result.returncode != 0:
-            raise _core().WriteFailed(result.returncode)
-
-    def release(self, bead: str, *, actor: str) -> None:
-        args = ["update", bead, "--status", "open", "--assignee", ""]
-        result = bd.run(args, self._main, actor=actor)
-        if result.returncode != 0:
-            raise _core().WriteFailed(result.returncode)
-
-
-class CliStateReads:
-    """``work.state.get`` (``bd state``): '' when unset."""
-
-    def __init__(self, main: Path) -> None:
-        self._main = main
-
-    def get_state(self, bead: str, dimension: str) -> str:
-        return bd.state(bead, dimension, self._main)
 
 
 # ---- route selection -------------------------------------------------------------------------
@@ -156,7 +108,7 @@ class SelectedIssues:
             log.get_logger("beadhive.work").info(
                 "lifecycle_route_fallback", operation="work.issue.get", detail=str(exc)
             )
-            return CliIssues(self._main)
+            return bd_cli.issues(self._main)
         return core.SessionIssues(session, observer=TelemetryRoutingObserver())
 
     @property
@@ -278,10 +230,10 @@ def commands(cfg: Any, hive: str, main: Path, entry: Any) -> Iterator[Any]:
     with ExitStack() as stack:
         yield core.LifecycleCommands(
             SelectedIssues(main, entry, stack),
-            CliLeases(main),
-            CliStateOperations(main),
-            CliStateReads(main),
-            CliGateOperations(main),
+            bd_cli.leases(main),
+            bd_cli.state_operations(main),
+            bd_cli.state_reads(main),
+            bd_cli.gate_operations(main),
             ShellWorkspace(cfg, hive, main, entry),
             TyperOutput(main),
             observer=TelemetryLifecycleObserver(cfg, entry),
