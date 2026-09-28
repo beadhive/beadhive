@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 
+import beadhive_worktrees
 from beadhive import (
     cli,
     mcp,
@@ -74,11 +75,17 @@ def test_remove_and_prune_keep_compensation_outside_the_module() -> None:
     prune_source = inspect.getsource(worktree_cleanup.impl__prune_remove_one)
     # bh-qdezo.5: the claim_authority record-path bookkeeping moved behind the `ClaimRecords`
     # port (beadhive.worktree_state_adapters.ClaimAuthorityRecords) rather than importing
-    # claim_authority directly; the compensation itself still runs right here.
-    assert "_CLAIM_RECORDS.remove_record_path" in remove_source
+    # claim_authority directly. bh-qdezo.7: the resolve/retire SEQUENCING around the one
+    # removal effect moved into beadhive_worktrees.execute_removal (root calls it directly at
+    # both call sites, never through the generic plugin/lifecycle observer fan-out) — the
+    # compensation call itself (`claim_records.remove_record_path`) still runs right there.
+    assert "execute_removal(" in remove_source
     assert "_rmdir_empty_parents" in remove_source
+    assert "execute_removal(" in prune_source
     assert '"branch", "-D"' in prune_source
     assert "claim_authority" not in inspect.getsource(worktrees.WorktreeLifecycleService)
+    execute_removal_source = inspect.getsource(beadhive_worktrees.execute_removal)
+    assert "claim_records.remove_record_path" in execute_removal_source
 
 
 def test_facade_imports_no_telemetry_observaloop_or_metadata_implementation() -> None:

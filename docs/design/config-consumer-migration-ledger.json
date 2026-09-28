@@ -1736,147 +1736,147 @@
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3036,
+        "line": 3012,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3061,
+        "line": 3037,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3197,
+        "line": 3147,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3228,
+        "line": 3178,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3257,
+        "line": 3207,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3277,
+        "line": 3227,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3329,
+        "line": 3279,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.integration_branch",
         "kind": "indirect-adapter",
-        "line": 3340,
+        "line": 3290,
         "path": "tests/test_worktree.py",
         "target": "beadhive.worktree.config.integration_branch"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3377,
+        "line": 3327,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3821,
+        "line": 3729,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3841,
+        "line": 3749,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3858,
+        "line": 3766,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3872,
+        "line": 3780,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3888,
+        "line": 3796,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.integration_branch",
         "kind": "indirect-adapter",
-        "line": 160,
+        "line": 159,
         "path": "tests/test_worktree_inventory_boundaries.py",
         "target": "beadhive.worktree.config.integration_branch"
       },
       {
         "facade_target": "beadhive.config.precious_globs",
         "kind": "indirect-adapter",
-        "line": 168,
+        "line": 167,
         "path": "tests/test_worktree_inventory_boundaries.py",
         "target": "beadhive.worktree.config.precious_globs"
       },
       {
         "facade_target": "beadhive.config.junk_globs",
         "kind": "indirect-adapter",
-        "line": 169,
+        "line": 168,
         "path": "tests/test_worktree_inventory_boundaries.py",
         "target": "beadhive.worktree.config.junk_globs"
       },
       {
         "facade_target": "beadhive.config.precious_min_bytes",
         "kind": "indirect-adapter",
-        "line": 170,
+        "line": 169,
         "path": "tests/test_worktree_inventory_boundaries.py",
         "target": "beadhive.worktree.config.precious_min_bytes"
       },
       {
         "facade_target": "beadhive.config.integration_branch",
         "kind": "indirect-adapter",
-        "line": 257,
+        "line": 256,
         "path": "tests/test_worktree_inventory_boundaries.py",
         "target": "beadhive.worktree.config.integration_branch"
       },
       {
         "facade_target": "beadhive.config.integration_branch",
         "kind": "indirect-adapter",
-        "line": 286,
+        "line": 285,
         "path": "tests/test_worktree_inventory_boundaries.py",
         "target": "beadhive.worktree.config.integration_branch"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "indirect-adapter",
-        "line": 226,
+        "line": 84,
         "path": "tests/test_worktree_inventory_json.py",
         "target": "beadhive.worktree.config.load"
       },
