@@ -55,12 +55,14 @@ check: check-native
 
 # Stable fast entry points. Native collects the complete non-integration core suite directly;
 # Pants retains its impact-selected developer route.
-check-native: lint lint-md license-check architecture-structural-check stateful-native beads-client-check
+check-native: lint lint-md license-check architecture-structural-check stateful-native root-composition-native beads-client-check
 
 # Compare the checked-in SDK and exercise the package without the root app.
 beads-client-check:
     uv run --locked --offline python packages/beadhive-beads-client/regenerate.py
-    uv run --locked --offline --no-build-isolation --package beadhive-beads-client python scripts/pytest_with_report.py packages/beadhive-beads-client/tests -m 'not real_service'
+    ./scripts/hermetic.sh uv sync --locked --offline --inexact --no-default-groups --package beadhive-beads-client
+    ./scripts/hermetic.sh uv run --no-sync python scripts/pytest_with_report.py packages/beadhive-beads-client/tests -m 'not real_service'
+    ./scripts/hermetic.sh uv build --package beadhive-beads-client --no-build-isolation
 
 check-pants: lint lint-md license-check architecture-structural-check test-changed
 
@@ -148,11 +150,11 @@ gateway-contract-check:
 # FULL GATE: ruff + markdown + licences + the COMPLETE suite + the local-loop demo — what the LAND runs
 check-all: check-all-native
 
-check-all-pants: require-bd lint lint-md license-check architecture-structural-check architecture-pants-check pants-attest pants-artifact-check stateful-pants stateful-native test-integration-land demo-local-loop demo-live-ingress packages-check beads-client-check bd-cli-check
+check-all-pants: require-bd lint lint-md license-check architecture-structural-check architecture-pants-check pants-attest pants-artifact-check stateful-pants stateful-native root-composition-native root-workspace-check test-integration-land demo-local-loop demo-live-ingress packages-check beads-client-check bd-cli-check
 
 # Full native validation runs every core and workspace test directly with pytest. Pants remains
 # available through check-all-pants; this mode deliberately has no Pants engine prerequisite.
-check-all-native: require-bd lint lint-md license-check architecture-structural-check stateful-native beads-client-check test-integration-land demo-local-loop demo-live-ingress packages-check bd-cli-check
+check-all-native: require-bd lint lint-md license-check architecture-structural-check stateful-native root-composition-native root-workspace-check beads-client-check test-integration-land demo-local-loop demo-live-ingress packages-check bd-cli-check
 
 # Attest-key commands deliberately partition check-all-native, the push gate. Pants steps belong
 # only to the optional check-all-pants profile, never to a key (native is the primary framework;
@@ -168,6 +170,12 @@ attest-unit:
 
 attest-stateful:
     just stateful-native
+
+# Root tests that compose public workspace-package surfaces plus every compatibility contract.
+# The registry is independent of Pants' optional proven-tests manifest.
+attest-root-composition:
+    just root-composition-native
+    just root-workspace-check
 
 attest-integration:
     # The integration selection skips when bd is absent; keep its non-vacuity probe local to
@@ -214,7 +222,6 @@ architecture-check:
     uv run python scripts/test_closure_promotion_policy.py --check
     uv run python scripts/test_closure_operational_report.py --check
     uv run python scripts/check_pants_ownership.py
-    uv run python scripts/check_pants_proven.py
     uv run python scripts/pants_ci.py verify
 
 # Lifecycle gates cannot require the full-gate receipt they are in the process of establishing.
@@ -689,9 +696,21 @@ stateful-pants:
 # uses half of its 32 cores for the fixed native fan-out.
 stateful_workers := "16"
 
-stateful-native:
+root-composition-validate:
+    uv run python scripts/root_composition_tests.py --validate-only
+
+stateful-native: root-composition-validate
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{stateful_workers}} tests -m "not integration and not pants_profile"
+        ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{stateful_workers}} tests \
+        -m "not integration and not pants_profile" \
+        $(uv run python scripts/root_composition_tests.py --ignore-args)
+
+# The small root/package seam. Package-only impact selects this instead of the complete root,
+# integration and demo suites; the ordinary/full profiles still run both native partitions.
+root-composition-native: root-composition-validate
+    uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
+        ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{stateful_workers}} \
+        $(uv run python scripts/root_composition_tests.py)
 
 # Recursive PEX packaging executes the Pants engine and needs its pinned artifact cache. Keep
 # this one test in the Pants full profile and outside the native collection.
@@ -759,19 +778,21 @@ pkg name *args:
 # `lint`. beadhive-bd-cli is EXCLUDED (bh-vq34o): it implements beadhive-core's ports and
 # changes far more often than the rest of packages/*, so it gets its own `bd-cli` key/leaf
 # (`bd-cli-check` below) instead of invalidating every other distribution's proof on every
-# touch. uv sync/build below still cover the whole workspace (`--all-packages`) -- that's
-# shared infrastructure, not a per-package test -- only the lint scope and the test glob carve
-# beadhive-bd-cli out.
+# touch. Sync, tests, and builds below name only the distributions this key owns. Beads client
+# keeps its existing dedicated leaf in the same key; Pants/root artifacts belong to
+# root-composition, and bd-cli remains fully isolated in its own leaf.
 packages-check:
-    uv run ruff check packages --exclude packages/beadhive-bd-cli
-    uv run ruff format --check packages --exclude packages/beadhive-bd-cli
-    # The two locked `uv run` steps above provision build requirements in the selected cache.
-    # Keep workspace builds deterministic when the package index is temporarily unavailable.
-    ./scripts/hermetic.sh uv sync --locked --offline --all-packages
-    uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run --locked --all-packages python scripts/pytest_with_report.py -n auto $(printf '%s\n' packages/*/tests | grep -v '^packages/beadhive-bd-cli/tests$')
-    ./scripts/hermetic.sh uv build --all-packages --no-build-isolation
-    just release-smoke-check
+    uv run ruff check packages --exclude packages/beadhive-bd-cli --exclude packages/beadhive-pants
+    uv run ruff format --check packages --exclude packages/beadhive-bd-cli --exclude packages/beadhive-pants
+    ./scripts/hermetic.sh uv sync --locked --offline --inexact --no-default-groups \
+        --package beadhive-package-template --package beadhive-core \
+        --package beadhive-plugins --package beadhive-worktrees
+    uv run --no-sync python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
+        ./scripts/hermetic.sh uv run --no-sync python scripts/pytest_with_report.py -n auto $(uv run --no-sync python scripts/native_package_tests.py --relative)
+    ./scripts/hermetic.sh uv build --package beadhive-package-template --no-build-isolation
+    ./scripts/hermetic.sh uv build --package beadhive-core --no-build-isolation
+    ./scripts/hermetic.sh uv build --package beadhive-plugins --no-build-isolation
+    ./scripts/hermetic.sh uv build --package beadhive-worktrees --no-build-isolation
 
 # lint + sandboxed tests for ONLY packages/beadhive-bd-cli (the `bd-cli` attest key, bh-vq34o).
 # Mirrors packages-check's structure, scoped to this one distribution: beadhive-bd-cli
@@ -780,9 +801,22 @@ packages-check:
 bd-cli-check:
     uv run ruff check packages/beadhive-bd-cli
     uv run ruff format --check packages/beadhive-bd-cli
-    ./scripts/hermetic.sh uv sync --locked --offline --all-packages
-    uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run --locked --all-packages python scripts/pytest_with_report.py -n auto packages/beadhive-bd-cli/tests
+    ./scripts/hermetic.sh uv sync --locked --offline --inexact --no-default-groups --package beadhive-bd-cli
+    uv run --no-sync python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
+        ./scripts/hermetic.sh uv run --no-sync python scripts/pytest_with_report.py -n auto packages/beadhive-bd-cli/tests
+    ./scripts/hermetic.sh uv build --package beadhive-bd-cli --no-build-isolation
+
+# Root/package seam ownership. Pants imports the root distribution, and the root wheel vendors
+# five library packages including bd-cli. Keeping those artifact operations on root-composition
+# makes the package and bd-cli keys independent while preserving one full-gate owner.
+root-workspace-check: root-composition-validate
+    uv run ruff check packages/beadhive-pants
+    uv run ruff format --check packages/beadhive-pants
+    ./scripts/hermetic.sh uv sync --locked --offline --inexact --no-default-groups --package beadhive-pants
+    uv run --no-sync python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
+        ./scripts/hermetic.sh uv run --no-sync python scripts/pytest_with_report.py -n auto packages/beadhive-pants/tests
+    ./scripts/hermetic.sh uv build --package beadhive-pants --no-build-isolation
+    just release-smoke-check
 
 # Reproduces .github/workflows/release.yml's build + smoke test (bh-mxjoy). A plain `uv build`
 # here builds the ROOT distribution ONLY — no `--all-packages`, so uv resolves
@@ -795,9 +829,9 @@ bd-cli-check:
 # `[tool.uv.workspace]` member, had leaked into `[project].dependencies` as a hard dependency,
 # and every OTHER gate resolves workspace members so none of them caught it (the tag was not
 # moved; see docs/AGF.md's release-rollback note and bh-mxjoy). This step is wired into
-# `packages-check` — part of the configured `work.validate.push-main` gate that `just bump` /
-# `bh release attest` resolve — so the same regression fails here before a tag exists, not after
-# one has shipped.
+# `root-workspace-check`, owned by the `root-composition` attest key and the configured
+# `work.validate.push-main` full gate that `just bump` / `bh release attest` resolve, so the same
+# regression fails here before a tag exists, not after one has shipped.
 release-smoke-check:
     rm -rf dist/release-smoke
     uv build --out-dir dist/release-smoke

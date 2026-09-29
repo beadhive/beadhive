@@ -28,6 +28,12 @@ files(
 )
 
 files(
+    name="docs-proof",
+    sources=["proof/**/*"],
+    tags=["category:docs", "attest:docs"],
+)
+
+files(
     name="docs-releases",
     sources=["releases/**/*"],
     tags=["category:docs", "attest:docs"],

@@ -14,6 +14,7 @@ server. No `bd`, no dolt, no ports.
 from __future__ import annotations
 
 import contextlib
+import getpass
 import os
 import shutil
 import signal
@@ -73,7 +74,7 @@ def _config(tmp_path, name: str):
 
 
 @pytest.fixture
-def isolated_sweep_root(tmp_path_factory):
+def isolated_sweep_root():
     """A nested pytest root that a concurrent outer controller cannot sweep.
 
     The stateful suite's controllers all sweep the shared ``pytest-of-<user>`` root.  A nested
@@ -81,13 +82,24 @@ def isolated_sweep_root(tmp_path_factory):
     every sibling controller.  Put the nested proof beside that shared root so only the nested
     controller's explicitly scoped sweep can see it.
     """
-    shared_pytest_root = tmp_path_factory.getbasetemp().parent
+    # Use the hermetic run's TMPDIR directly.  Under xdist a worker's basetemp is
+    # ``pytest-of-<user>/pytest-N/popen-gwN``; deriving a parent from that path puts the proof
+    # back inside the controller's global ``pytest-of-<user>`` sweep root.
     with tempfile.TemporaryDirectory(
-        prefix="bh-dolt-sweep-proof-", dir=shared_pytest_root.parent
+        prefix="bh-dolt-sweep-proof-", dir=tempfile.gettempdir()
     ) as root:
-        isolated_root = Path(root)
-        assert not isolated_root.is_relative_to(shared_pytest_root)
-        yield isolated_root
+        yield Path(root)
+
+
+def test_nested_sweep_root_is_outside_controller_sweep_root(isolated_sweep_root):
+    """Identify the controller root without consulting the worker's tmp-path hierarchy.
+
+    This mirrors the production controller's no-``--basetemp`` calculation.  In an xdist worker,
+    the old fixture put its directory directly below this root and this assertion failed.
+    """
+    controller_sweep_root = Path(tempfile.gettempdir()) / f"pytest-of-{getpass.getuser()}"
+
+    assert not isolated_sweep_root.is_relative_to(controller_sweep_root)
 
 
 def test_a_server_whose_config_dir_was_deleted_is_orphaned(tmp_path, fake_dolt):
@@ -159,15 +171,13 @@ def test_the_sweep_is_a_no_op_when_there_is_nothing_to_reap(tmp_path):
     assert sweep_orphaned_dolt_servers(tmp_path) == []
 
 
-def test_nested_sweep_root_is_hidden_from_concurrent_controller(
-    tmp_path_factory, isolated_sweep_root, fake_dolt
-):
+def test_nested_sweep_root_is_hidden_from_concurrent_controller(isolated_sweep_root, fake_dolt):
     """A sibling stateful controller cannot consume the nested proof's fake orphan."""
     cfg = _config(isolated_sweep_root, "nested-proof")
     proc = fake_dolt(cfg)
     shutil.rmtree(cfg.parent)
 
-    concurrent_root = tmp_path_factory.getbasetemp().parent
+    concurrent_root = Path(tempfile.gettempdir()) / f"pytest-of-{getpass.getuser()}"
     concurrent_candidates = orphaned_dolt_servers(concurrent_root)
     nested_candidates = orphaned_dolt_servers(isolated_sweep_root)
 

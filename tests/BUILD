@@ -2,7 +2,7 @@ python_source(
     name="root-conftest",
     source="conftest.py",
     dependencies=[":watchdog-diagnostics"],
-    tags=["category:test-only", "attest:stateful"],
+    tags=["category:test-only", "attest:stateful", "attest:root-composition"],
 )
 
 python_source(

@@ -16,6 +16,11 @@ only in the Pants full profile. Pants also keeps the proven test partition, grap
 checks, package sandbox evidence, integration, and demos. `just check-attest-catalog` rejects
 missing or partially wired steps in either graph.
 
+The native core test closure is split into `stateful-native` and `root-composition-native`.
+Together they cover the same root test files. The second recipe is the small package/API seam used
+by selective package gates and includes all compatibility contracts. Pants ownership and
+proven-test manifests are checked only by the optional Pants architecture profile.
+
 Native is the selected primary: `just check` aliases `check-native`, and `just check-all`
 aliases `check-all-native`. The beadhive hive configuration must name the corresponding
 **explicit** commands in `work.validate_cmd` and `work.validate.submit`, `merge`, `union`,
@@ -24,10 +29,9 @@ aliases `check-all-native`. The beadhive hive configuration must name the corres
 Using explicit strings changes the ledger's command hash when the profile changes; an ambient
 environment variable cannot make an old verdict count for a different gate.
 
-The Pants selective catalog is `work.attest.keys` in the fleet's beadhive entry. Native
-single-command validation sets `keys: []`, so ordinary validation executes `work.validate_cmd`
-directly. The remaining `attest.impact`, `semantic`, and `trivial` settings are inert without
-keys. The active live strings are `just check-native` for ordinary phases and
+The selective catalog is `work.attest.keys` in the fleet's beadhive entry. The active native
+profile uses its `paths` selectors, while the optional Pants graph remains available for the Pants
+profile. The active live strings are `just check-native` for ordinary phases and
 `just check-all-native` for main-boundary phases. To switch profiles, update the fleet config,
 the two aliases, and the push hook's `gate_cmd` in one reviewed change. Run
 `just check-attest-catalog` and `just check-all-pants` before relying on new Pants verdicts.
