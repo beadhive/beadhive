@@ -47,6 +47,10 @@ Two behaviors, decided per command before its first Beads operation:
   value stops the command with exit 2. The `bd` route is never a retry: once a command has selected
   the API, a failing call is reported, not replayed through `bd`.
 
+  For the 0.20.0 rollout, the HQ fleet configuration defaults to `api+cli-fallback` while services
+  are commissioned across its managed hives. The `bh` hive has an explicit per-hive `api` override,
+  so Beadhive development fails closed when its supervised Beads service is unavailable.
+
   Details: `packages/beadhive-core/README.md`, "CLI composition cutover".
 
 ## Commands
