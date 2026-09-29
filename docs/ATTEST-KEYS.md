@@ -246,6 +246,26 @@ Normal `bh work check`, `submit`, `review --run`, `merge`, `finish`, and
 `bh release attest --if-needed` consumers then resolve keys and print whether each key ran,
 carried (including source tree and receipt digest), or remained unknown.
 
+Batch lifecycle boundaries use the same proof model. `bh work submit --group` resolves the
+shared batch branch once and records a green verdict for each key it actually runs. On an
+unchanged branch, `bh work merge --group` reuses those exact-tree, exact-command verdicts and
+runs only keys whose proof is missing or invalidated. After the batch merge, the molecule tree
+can reuse the same key proof when its content is byte-identical. A rebase, command change,
+expired verdict, red result, or unknown result forces that key to run again.
+
+The fallback and bypass contracts remain unchanged:
+
+- With no key catalog, group submit and merge run the phase's monolithic `validate_cmd`; merge
+  keeps its existing exact-tree reuse behavior.
+- An enabled validation bypass audits one bypass of the monolithic phase boundary. It does not
+  invoke key selection and creates no green key proof.
+- Disabled or policy-skipped keys create no proof. A red, unknown, or interrupted key also
+  cannot satisfy a later boundary.
+- A successful configured full gate expands into key proof only at the documented full-gate
+  phases (`molecule`, `merge-main`, `push-main`, and `postland`) and only when the command is the
+  exact configured partition. Ordinary submit and merge commands never broaden proof beyond
+  the keys they actually ran.
+
 For a one-off diagnostic, request the consumer's `--full` mode where exposed. To roll back a
 hive, set `work.attest.impact.backend: native-full` (or remove the impact block). This retains
 the catalog but invalidates every key, reproducing the conservative all-key behavior. Removing

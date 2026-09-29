@@ -507,6 +507,26 @@ def _enable_validation_bypass(hive):
     config_store.clear_load_cache()
 
 
+def _enable_test_attest_catalog(hive, log: Path):
+    """Enable two active keys plus one disabled key whose commands are cheap and observable."""
+    alpha = json.dumps(f"sh -c 'echo alpha >> {log}'")
+    beta = json.dumps(f"sh -c 'echo beta >> {log}'")
+    paused = json.dumps(f"sh -c 'echo paused >> {log}'")
+    attest = (
+        '  review_gate: "human"\n'
+        "  attest:\n"
+        "    impact: {backend: native-full}\n"
+        "    keys:\n"
+        f"      - {{name: alpha, cmd: {alpha}}}\n"
+        f"      - {{name: beta, cmd: {beta}}}\n"
+        f"      - {{name: paused, cmd: {paused}, enabled: false, "
+        'disabled_reason: "test-only disabled key"}\n'
+    )
+    text = hive.cfg_path.read_text().replace('  review_gate: "human"\n', attest)
+    hive.cfg_path.write_text(text)
+    config_store.clear_load_cache()
+
+
 # ---- the history guard (ponytail self-check) -------------------------------
 
 
@@ -2183,6 +2203,57 @@ def test_batch_land_reuses_the_submitted_verdict(hive, fakebd, monkeypatch, caps
     assert "validation verdict reused" in capsys.readouterr().out
     assert fakebd.beads["mr-1.1"]["status"] == "closed"
     assert fakebd.beads["mr-1.2"]["status"] == "closed"
+
+
+def test_batch_submit_and_merge_run_selected_keys_then_reuse_exact_tree(
+    hive, fakebd, tmp_path, capsys
+):
+    """Group submit records per-key proof, and unchanged group merge reuses each active key.
+
+    Disabled keys stay visible as policy but neither execute nor gain proof.
+    """
+    log = tmp_path / "group-attest.log"
+    _enable_test_attest_catalog(hive, log)
+    _claim_and_commit_batch(hive, fakebd)
+
+    work.submit(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    assert log.read_text().splitlines() == ["alpha", "beta"]
+    submit_out = capsys.readouterr().out
+    assert "alpha: ran green" in submit_out
+    assert "beta: ran green" in submit_out
+    assert "paused: DISABLED" in submit_out
+
+    fakebd.resolve_review("mr-1.1")
+    work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    assert log.read_text().splitlines() == ["alpha", "beta"]
+    merge_out = capsys.readouterr().out
+    assert merge_out.count("exact-tree verdict reused") == 2
+    assert fakebd.beads["mr-1.1"]["status"] == "closed"
+    assert fakebd.beads["mr-1.2"]["status"] == "closed"
+
+
+def test_batch_validation_bypass_does_not_enter_selective_key_runner(
+    hive, fakebd, tmp_path, monkeypatch, capsys
+):
+    """The emergency bypass remains one audited monolithic boundary with a catalog present."""
+    log = tmp_path / "group-attest.log"
+    _enable_test_attest_catalog(hive, log)
+    _enable_validation_bypass(hive)
+    _claim_and_commit_batch(hive, fakebd)
+    monkeypatch.setattr(
+        work_group.selective_validation,
+        "run",
+        lambda *args, **kwargs: pytest.fail("bypassed group validation selected attest keys"),
+    )
+
+    work.submit(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    assert not log.exists()
+    assert "BYPASSED validation [submit]" in capsys.readouterr().out
+    assert fakebd.states["mr-1.1"]["review"] == "pending"
+    assert fakebd.states["mr-1.2"]["review"] == "pending"
 
 
 # ---- check feeds the same verdict ledger submit reuses from (bh-i0p1.4) ----------

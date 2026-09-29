@@ -21,7 +21,7 @@ from contextlib import contextmanager
 
 import typer
 
-from . import bd_cli, host, identity, otel, validation_bypass, worktree
+from . import bd_cli, host, identity, otel, selective_validation, validation_bypass, worktree
 from .config_consumer_ports import work_settings as config
 
 BATCH_PREFIX = "batch/"  # a work-group's shared worktree branch is wt/batch/<group>
@@ -365,6 +365,41 @@ def _record_group_commits(members, main, shas: list[str]) -> None:
         typer.echo(f"⚠ failed to record commit linkage for {', '.join(members)}: {exc}", err=True)
 
 
+def _validate_group_checkout(entry, cfg, branch, base, *, phase: str, reuse: bool) -> int:
+    """Validate a batch branch through the configured attestation boundary.
+
+    A validation bypass remains one audited bypass of the phase's monolithic command. With no
+    key catalog, retain the existing group behavior, including submit/merge reuse policy. With a
+    catalog, run selected keys in clean checkouts and allow exact-tree proof from an earlier
+    lifecycle phase to satisfy them.
+    """
+    command = config.validate_cmd(cfg, entry, phase)
+    if validation_bypass.enabled(cfg, entry) or not selective_validation.configured(cfg, entry):
+        return worktree.clean_checkout(
+            entry,
+            branch,
+            command,
+            cfg=cfg,
+            reuse=reuse,
+            phase=phase,
+        )
+    return selective_validation.run(
+        entry,
+        cfg,
+        base_rev=base,
+        head_rev=branch,
+        repo_path=str(worktree.clone_for_branch(entry, branch)),
+        runner=lambda key_cmd: worktree.clean_checkout(
+            entry,
+            branch,
+            key_cmd,
+            cfg=cfg,
+            reuse=True,
+            phase=phase,
+        ),
+    )
+
+
 def submit_group(cfg, hive, group_arg, as_):
     """Hand a whole work-group off to review from the ONE shared `wt/batch/<group>` worktree.
     Mirrors single-bead `submit` (clean tree, right branch, clean-checkout validation) with the
@@ -408,13 +443,7 @@ def submit_group(cfg, hive, group_arg, as_):
         typer.echo(f"✗ {msg} — self-refine before submitting the batch", err=True)
         raise typer.Exit(1)
 
-    rc = worktree.clean_checkout(
-        entry,
-        branch,
-        config.validate_cmd(cfg, entry, "submit"),
-        cfg=cfg,
-        phase="submit",
-    )
+    rc = _validate_group_checkout(entry, cfg, branch, base, phase="submit", reuse=False)
     if not validation_bypass.is_bypassed(rc):
         otel.count_validation(rc == 0, {"bh.batch": group, "bh.work.phase": "submit"})
     if rc != 0:
@@ -590,14 +619,7 @@ def merge_group(cfg, group_arg, hive, rm):
         # keyed on (TREE, cmd_hash), so a hit here means this exact content already passed this
         # exact command — the batch branch is unchanged since its submit. Anything else (a
         # rebase onto a moved base, a changed command, a stale or red entry) misses and runs.
-        rc = worktree.clean_checkout(
-            entry,
-            branch,
-            config.validate_cmd(cfg, entry, "merge"),
-            cfg=cfg,
-            reuse=True,
-            phase="merge",
-        )
+        rc = _validate_group_checkout(entry, cfg, branch, base, phase="merge", reuse=True)
         if not validation_bypass.is_bypassed(rc):
             otel.count_validation(rc == 0, {"bh.batch": group, "bh.work.phase": "batch"})
         if rc != 0:
