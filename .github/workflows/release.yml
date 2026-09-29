@@ -158,6 +158,14 @@ jobs:
           tag_sha="$(git rev-parse --verify "refs/tags/${TAG}^{commit}")"
           echo "tag ${TAG} -> ${tag_sha}"
 
+          # A published Python package is not enough to make a valid Nix channel target. Check
+          # the TAG tree (rather than the workflow checkout by accident) and refuse an obsolete,
+          # prerelease, missing, or metadata-skewed Beads derivation before moving the branch.
+          if ! policy="$(python3 scripts/check-channel-toolchain.py --ref "${TAG}" 2>&1)"; then
+            refuse "refusing to move 'latest': ${TAG} has an ineligible Nix toolchain." "${policy}"
+          fi
+          echo "${policy}"
+
           # Ask the REMOTE where the channel is, not the local remote-tracking ref: the ref we
           # are about to move lives on origin, and reading it from there means the answer does
           # not depend on what the checkout action happened to fetch.

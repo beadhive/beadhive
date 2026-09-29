@@ -9,6 +9,7 @@ from ruamel.yaml import YAML
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "release.yml"
+STABLE_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "promote-stable.yml"
 CONTRIBUTING = (ROOT / "CONTRIBUTING.md").read_text()
 
 
@@ -78,6 +79,20 @@ def test_downstream_release_jobs_wait_for_attested_publish() -> None:
 
     assert jobs["homebrew-tap"]["needs"] == "publish"
     assert jobs["latest"]["needs"] == "publish"
+
+
+def test_both_channels_check_the_target_tags_nix_toolchain_before_push() -> None:
+    latest = "\n".join(str(step.get("run", "")) for step in _workflow()["jobs"]["latest"]["steps"])
+    stable_workflow = YAML(typ="safe").load(STABLE_WORKFLOW_PATH)
+    stable = "\n".join(
+        str(step.get("run", "")) for step in stable_workflow["jobs"]["promote"]["steps"]
+    )
+
+    command = 'python3 scripts/check-channel-toolchain.py --ref "${TAG}"'
+    assert command in latest
+    assert latest.index(command) < latest.index('git push origin "${tag_sha}:refs/heads/latest"')
+    assert command in stable
+    assert stable.index(command) < stable.index('git push origin "${tag_sha}:refs/heads/stable"')
 
 
 def test_pypi_environment_is_not_documented_as_an_approval_gate() -> None:

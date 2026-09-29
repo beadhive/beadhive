@@ -198,6 +198,14 @@ jobs:
 
           tag_sha="$(git rev-parse --verify "refs/tags/${TAG}^{commit}")"
 
+          # Apply the same Nix eligibility policy as `latest`, against the requested TAG tree.
+          # This is what prevents an old otherwise-valid PyPI release from reintroducing a
+          # prerelease Beads toolchain when `stable` is promoted.
+          if ! policy="$(python3 scripts/check-channel-toolchain.py --ref "${TAG}" 2>&1)"; then
+            refuse "refusing to promote 'stable': ${TAG} has an ineligible Nix toolchain." "${policy}"
+          fi
+          echo "${policy}"
+
           if ! stable_sha="$(git ls-remote --exit-code origin refs/heads/stable | cut -f1)"; then
             echo "::warning::channel branch 'stable' does not exist on origin — creating it at ${TAG}"
             git push origin "${tag_sha}:refs/heads/stable"
