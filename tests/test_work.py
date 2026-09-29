@@ -2267,6 +2267,64 @@ def test_batch_submit_and_merge_run_selected_keys_then_reuse_exact_tree(
     assert "exact-tree verdict reused" in capsys.readouterr().out
 
 
+def test_batch_merge_refuses_proof_when_sibling_advanced_container_base(
+    hive, fakebd, tmp_path, capsys
+):
+    """A submitted batch head proves only the tree it contains. If a sibling advances the epic
+    container afterward, merging would compose both trees without proof of that composition, so
+    merge must require a rebase and resubmit before consulting the reusable key verdicts."""
+    log = tmp_path / "group-attest.log"
+    _enable_test_attest_catalog(hive, log)
+    fakebd.seed("mr-1", title="epic", issue_type="epic")
+    _submit_and_approve_batch(hive, fakebd)
+    assert log.read_text().splitlines() == ["alpha", "beta"]
+
+    container = "wt/bead/epic/mr-1"
+    batch = "wt/batch/samefile"
+    batch_head = _git("rev-parse", batch, cwd=hive.main).stdout.strip()
+    _git("checkout", "-q", container, cwd=hive.main)
+    _commit(hive.main, "feat(sibling): advance container", fname="sibling.txt")
+    _git("checkout", "-q", "main", cwd=hive.main)
+    container_head = _git("rev-parse", container, cwd=hive.main).stdout.strip()
+    assert _git("merge-base", container_head, batch_head, cwd=hive.main).stdout.strip() != (
+        container_head
+    )
+    capsys.readouterr()
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert "not an ancestor" in err
+    assert "unvalidated composition" in err
+    assert "Rebase" in err and "resubmit" in err
+    assert log.read_text().splitlines() == ["alpha", "beta"]  # no stale proof was consulted
+    assert _git("rev-parse", container, cwd=hive.main).stdout.strip() == container_head
+    assert fakebd.beads["mr-1.1"]["status"] != "closed"
+
+
+def test_batch_submit_refuses_when_sibling_advanced_container_base(hive, fakebd, tmp_path, capsys):
+    """Do not open review or record proof for a stale batch head that omits the current base."""
+    log = tmp_path / "group-attest.log"
+    _enable_test_attest_catalog(hive, log)
+    _claim_and_commit_batch(hive, fakebd)
+
+    container = "wt/bead/epic/mr-1"
+    _git("checkout", "-q", container, cwd=hive.main)
+    _commit(hive.main, "feat(sibling): advance before submit", fname="sibling.txt")
+    _git("checkout", "-q", "main", cwd=hive.main)
+    capsys.readouterr()
+
+    with pytest.raises(typer.Exit):
+        work.submit(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert "refusing to submit an unvalidated composition" in err
+    assert "Rebase" in err and "resubmit" in err
+    assert not log.exists()
+    assert not [g for g in fakebd.gates if work_logic.is_review_gate_desc(g["description"])]
+
+
 def test_batch_submit_carries_unaffected_key_and_records_direct_ledger_states(
     hive, fakebd, tmp_path, monkeypatch
 ):

@@ -425,6 +425,24 @@ def _guard_group_refs(main, branch, head_sha, base, base_sha, *, boundary: str) 
         raise typer.Exit(1)
 
 
+def _guard_group_base_ancestor(entry, branch, head_sha, base, base_sha, *, boundary: str) -> None:
+    """Require the pinned integration base to be part of the validated batch tree.
+
+    A sibling batch can advance an epic container after this batch forked. Validating only the
+    stale batch head and then merging it into that newer base would compose a tree no validation
+    ever saw. An unreadable ancestry result fails in the same safe direction as divergence.
+    """
+    if worktree.base_of(entry, base_sha, head_sha) == base_sha:
+        return
+    typer.echo(
+        f"✗ {base} is not an ancestor of {branch} — refusing to {boundary} an unvalidated "
+        "composition.\n"
+        f"  Rebase {branch} onto {base}, resolve any conflicts, then resubmit the batch.",
+        err=True,
+    )
+    raise typer.Exit(1)
+
+
 def submit_group(cfg, hive, group_arg, as_):
     """Hand a whole work-group off to review from the ONE shared `wt/batch/<group>` worktree.
     Mirrors single-bead `submit` (clean tree, right branch, clean-checkout validation) with the
@@ -466,6 +484,7 @@ def submit_group(cfg, hive, group_arg, as_):
     if not head_sha or not base_sha:
         typer.echo("✗ could not pin batch validation revisions", err=True)
         raise typer.Exit(1)
+    _guard_group_base_ancestor(entry, branch, head_sha, base, base_sha, boundary="submit")
     count, subjects = worktree.history(entry, head_sha, base_sha)
     limit = config.max_commits(cfg, entry) * len(members)  # relaxed: per-bead-commits × members
     ok, msg = work_logic._history_ok(count, subjects, limit)
@@ -617,6 +636,7 @@ def merge_group(cfg, group_arg, hive, rm):
             err=True,
         )
         raise typer.Exit(1)
+    _guard_group_base_ancestor(entry, branch, head_sha, base, base_sha, boundary="merge")
     if not target.exists() or not worktree.is_clean(target):
         typer.echo("✗ batch working tree missing or not clean", err=True)
         raise typer.Exit(1)
