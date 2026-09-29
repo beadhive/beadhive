@@ -160,11 +160,60 @@ def test_named_issue_routes_keep_actor_capture_and_optional_fields() -> None:
         True,
         None,
     )
+    assert bd.calls[2] == (
+        "run",
+        ["update", "bh-1", "--type", "bug", "--priority", "1"],
+        "/hive",
+        "dir/a",
+        True,
+        None,
+    )
+    assert bd.calls[3] == (
+        "run",
+        ["assign", "bh-1", "dev/b"],
+        "/hive",
+        "disp/a",
+        True,
+        None,
+    )
     assert bd.calls[4] == (
         "run",
         ["close", "bh-1", "bh-2", "--reason", "landed", "--force"],
         "/hive",
         "merge/a",
+        True,
+        None,
+    )
+    assert bd.calls[8] == (
+        "run",
+        ["set-state", "bh-1", "review=pending", "--reason", "submitted"],
+        "/hive",
+        "dev/a",
+        False,
+        None,
+    )
+    assert bd.calls[9] == ("run", ["label", "add", "bh-1", "wave:x"], "/hive", "dev/a", False, None)
+    assert bd.calls[10] == (
+        "run",
+        ["label", "remove", "bh-1", "review:pending"],
+        "/hive",
+        "dev/a",
+        False,
+        None,
+    )
+    assert bd.calls[11] == (
+        "run",
+        ["update", "bh-1", "--external-ref", "gh-7"],
+        "/hive",
+        "contrib/a",
+        True,
+        None,
+    )
+    assert bd.calls[13] == (
+        "run",
+        ["update", "bh-1", "--metadata", '{"proof":1}'],
+        "/hive",
+        "",
         True,
         None,
     )
@@ -193,6 +242,23 @@ def test_named_gate_dependency_and_coordination_routes() -> None:
         ["merge-slot", "acquire", "--holder", "merge/a|pid=1"],
         ["merge-slot", "release"],
     ]
+    assert bd.calls[0] == (
+        "run",
+        ["gate", "create", "--blocks", "bh-1", "--type", "human", "--reason", "review abc"],
+        "/hive",
+        "dev/a",
+        True,
+        None,
+    )
+    assert bd.calls[1] == (
+        "run",
+        ["gate", "resolve", "g-1", "--reason", "approved"],
+        "/hive",
+        "review/a",
+        False,
+        None,
+    )
+    assert bd.calls[5] == ("run", ["merge-slot", "check", "--json"], "/hive", "", True, None)
 
 
 def test_named_filing_contributor_and_presentation_routes() -> None:
@@ -233,6 +299,24 @@ def test_named_filing_contributor_and_presentation_routes() -> None:
         True,
         "records",
     )
+    assert bd.calls[3] == (
+        "run",
+        ["github", "push", "--issues", "bh-1"],
+        "/hive",
+        "contrib/a",
+        True,
+        None,
+    )
+    assert bd.calls[4] == (
+        "run",
+        ["--json", "create", "Title", "--type", "bug", "-l", "org:o", "-d", "Details"],
+        "/hive",
+        "dev/a",
+        True,
+        None,
+    )
+    assert bd.calls[5] == ("run", ["show", "bh-1", "--long"], "/hive", "", True, None)
+    assert bd.calls[6] == ("run", ["list", "--all"], "/hive", "", True, None)
 
 
 def test_public_snapshot_route_is_narrow_and_shared_with_the_root_contract() -> None:
