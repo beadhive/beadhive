@@ -286,6 +286,18 @@ def test_real_opentelemetry_imports_are_confined_to_adapter_and_composition_owne
     ]
 
 
+def test_worktree_routes_do_not_pull_bd_cli_into_the_legacy_cycle() -> None:
+    modules, edges, _dynamic = boundaries.collect_imports(_REPO_ROOT / "src")
+    components, _cyclic = boundaries._cyclic_edges(modules, edges)
+
+    assert not [
+        edge
+        for edge in edges
+        if edge.importer == "beadhive.worktree" and edge.imported_module == "beadhive.bd_cli"
+    ]
+    assert all("beadhive.bd_cli" not in component for component in components)
+
+
 def test_cross_capability_domain_import_fails_direction_rule(tmp_path: Path) -> None:
     source_root = tmp_path / "src"
     _write_source(

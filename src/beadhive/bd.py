@@ -41,6 +41,16 @@ def names_bead(desc: str, bead: str) -> bool:
     return bool(_cli().names_bead(desc, bead))
 
 
+def routes(cwd: Any) -> Any:
+    """Named compatibility routes bound directly to this module's invocation transport.
+
+    Cycle-heavy legacy facades such as :mod:`beadhive.worktree` already depend on this module.
+    Composing there avoids a second edge through :mod:`beadhive.bd_cli` while keeping every argv
+    shape owned by ``beadhive-bd-cli``.
+    """
+    return _cli().CliRoutes(sys.modules[__name__], cwd)
+
+
 def run(
     args,
     cwd,

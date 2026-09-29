@@ -93,4 +93,6 @@ def test_named_compatibility_routes_run_through_roots_engine(recorded):
     runner = recorded("[]")
 
     assert bd_cli.routes(MAIN).ready_all() == []
-    assert runner.calls == [["bd", "-C", str(MAIN), "ready", "--limit", "0", "--json"]]
+    assert bd.routes(MAIN).ready_all() == []
+    expected = ["bd", "-C", str(MAIN), "ready", "--limit", "0", "--json"]
+    assert runner.calls == [expected, expected]
