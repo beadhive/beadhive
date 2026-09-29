@@ -114,11 +114,7 @@ def _sha(pattern, row, fields) -> str:
 
 def _approved_review_gate(resolved_review):
     """The final gate explicitly resolved as approved; never an earlier bounced round."""
-    approved = [
-        gate
-        for gate in resolved_review
-        if str(gate.get("close_reason") or "").strip().lower().startswith("approved")
-    ]
+    approved = [gate for gate in resolved_review if work_logic.is_approved_review_gate(gate)]
     ordered = work_next.chronological_rows(
         approved, ("closed_at", "resolved_at", "updated_at", "created_at", "created")
     )

@@ -18,27 +18,55 @@ import pytest
 from harness.world import MAX_CONCURRENT_DOLT_SERVER_TESTS, dolt_server_slot
 
 
-def _hold(slots: int, holders: int, hold_for: float = 0.3):
+def _hold(
+    slots: int,
+    holders: int,
+    hold_for: float = 0.3,
+    *,
+    require_overlap: int = 0,
+):
     """Run *holders* threads that each take a slot and sleep. Returns the peak concurrency seen."""
     peak = 0
     live = 0
-    lock = threading.Lock()
+    condition = threading.Condition()
+    failures = []
+    start_gate = threading.Barrier(holders)
 
     def _worker():
         nonlocal peak, live
-        with dolt_server_slot(slots):
-            with lock:
-                live += 1
-                peak = max(peak, live)
-            time.sleep(hold_for)
-            with lock:
-                live -= 1
+        try:
+            start_gate.wait(timeout=10)
+            with dolt_server_slot(slots):
+                with condition:
+                    live += 1
+                    peak = max(peak, live)
+                    condition.notify_all()
+                try:
+                    with condition:
+                        deadline = time.monotonic() + 10
+                        while require_overlap and peak < require_overlap:
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                raise AssertionError(
+                                    f"only {peak} of {require_overlap} holders overlapped"
+                                )
+                            condition.wait(remaining)
+                    time.sleep(hold_for)
+                finally:
+                    with condition:
+                        live -= 1
+                        condition.notify_all()
+        except BaseException as exc:  # surface worker failures in the owning test thread
+            failures.append(exc)
 
     threads = [threading.Thread(target=_worker) for _ in range(holders)]
     for t in threads:
         t.start()
     for t in threads:
         t.join(timeout=60)
+    assert not [thread for thread in threads if thread.is_alive()]
+    if failures:
+        raise failures[0]
     return peak
 
 
@@ -82,7 +110,7 @@ def test_the_default_bound_is_a_named_constant():
 def test_slot_events_separate_queue_from_hold(monkeypatch, tmp_path):
     events = tmp_path / "slots.jsonl"
     monkeypatch.setenv("BH_DOLT_SLOT_EVENTS", str(events))
-    assert _hold(slots=2, holders=4, hold_for=0.05) == 2
+    assert _hold(slots=2, holders=4, hold_for=0.05, require_overlap=2) == 2
 
     rows = [json.loads(line) for line in events.read_text().splitlines()]
     acquired = [row for row in rows if row["event"] == "acquired"]
