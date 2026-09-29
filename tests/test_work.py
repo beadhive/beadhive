@@ -38,6 +38,7 @@ from beadhive import (
     plan,
     private_paths,
     registry,
+    selective_validation,
     validation_ledger,
     validation_records,
     work,
@@ -47,6 +48,7 @@ from beadhive import (
     worktree,
     worktree_merge,
 )
+from beadhive.modules.work.domain.impact import AttestKey, ImpactReceipt, KeyEvidence
 from beadhive.run import run as real_run
 from harness.processes import process_context
 from harness.validation_state import age as age_verdict
@@ -525,6 +527,32 @@ def _enable_test_attest_catalog(hive, log: Path):
     text = hive.cfg_path.read_text().replace('  review_gate: "human"\n', attest)
     hive.cfg_path.write_text(text)
     config_store.clear_load_cache()
+
+
+class _OneAffectedGroupResolver:
+    """Real receipt shape for group tests: alpha changed, beta safely carryable."""
+
+    def __init__(self, entry):
+        self.entry = entry
+        self.calls = []
+
+    def resolve(self, repo, base_rev, head_rev, keys):
+        self.calls.append((repo, base_rev, head_rev, tuple(key.name for key in keys)))
+        base_tree = validation_ledger.tree_of(self.entry, base_rev)
+        head_tree = validation_ledger.tree_of(self.entry, head_rev)
+        names = {key.name for key in keys}
+        return ImpactReceipt(
+            backend="test-selective",
+            backend_version="1",
+            base_tree=base_tree,
+            head_tree=head_tree,
+            changed_paths=("a.txt",),
+            unowned_paths=(),
+            global_inputs_hit=(),
+            invalidated_keys=tuple(name for name in ("alpha",) if name in names),
+            unaffected_keys=tuple(name for name in ("beta",) if name in names),
+            evidence={name: KeyEvidence("test-selective") for name in names},
+        )
 
 
 # ---- the history guard (ponytail self-check) -------------------------------
@@ -2214,6 +2242,7 @@ def test_batch_submit_and_merge_run_selected_keys_then_reuse_exact_tree(
     """
     log = tmp_path / "group-attest.log"
     _enable_test_attest_catalog(hive, log)
+    fakebd.seed("mr-1", title="epic", issue_type="epic")
     _claim_and_commit_batch(hive, fakebd)
 
     work.submit(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
@@ -2232,6 +2261,138 @@ def test_batch_submit_and_merge_run_selected_keys_then_reuse_exact_tree(
     assert merge_out.count("exact-tree verdict reused") == 2
     assert fakebd.beads["mr-1.1"]["status"] == "closed"
     assert fakebd.beads["mr-1.2"]["status"] == "closed"
+
+    work.finish(epic="mr-1", hive="myrepo")
+    assert log.read_text().splitlines() == ["alpha", "beta"]
+    assert "exact-tree verdict reused" in capsys.readouterr().out
+
+
+def test_batch_submit_carries_unaffected_key_and_records_direct_ledger_states(
+    hive, fakebd, tmp_path, monkeypatch
+):
+    """A real selective receipt runs the affected key and carries only qualified base proof."""
+    log = tmp_path / "group-attest.log"
+    _enable_test_attest_catalog(hive, log)
+    target = _claim_and_commit_batch(hive, fakebd)
+    cfg = config.load()
+    entry, main, _target, branch = worktree.locate(cfg, "myrepo", branch="batch/samefile")
+    base = worktree.integration_base(entry, "mr-1.1", config.integration_branch(cfg, entry))
+    base_sha = worktree._ref_sha(main, base)
+    keys = selective_validation.attest_keys(selective_validation.config.attest_config(cfg, entry))
+    by_name = {key.name: key for key in keys}
+    validation_ledger.record(entry, base_sha, by_name["beta"].cmd, 0, cfg=cfg, phase="check")
+    resolver = _OneAffectedGroupResolver(entry)
+    monkeypatch.setattr(selective_validation, "impact_resolver", lambda *_a, **_k: resolver)
+
+    work.submit(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    assert log.read_text().splitlines() == ["alpha"]
+    head_sha = worktree.head_full_sha(target)
+    assert resolver.calls == [(str(target), base_sha, head_sha, ("alpha", "beta"))]
+    assert (
+        validation_ledger.key_verdict(entry, head_sha, by_name["alpha"], cfg=cfg).state
+        == validation_ledger.KeyVerdictState.CURRENT
+    )
+    assert (
+        validation_ledger.key_verdict(entry, head_sha, by_name["beta"], cfg=cfg).state
+        == validation_ledger.KeyVerdictState.CARRIED
+    )
+    paused = validation_ledger.key_verdict(entry, head_sha, by_name["paused"], cfg=cfg)
+    assert paused.state == validation_ledger.KeyVerdictState.ABSENT
+    assert paused.reason == "disabled"
+
+
+def test_batch_submit_refuses_if_pinned_branch_moves_during_selection(
+    hive, fakebd, tmp_path, monkeypatch, capsys
+):
+    """Validation may finish, but a moved batch ref cannot open a review gate for stale proof."""
+    _enable_test_attest_catalog(hive, tmp_path / "group-attest.log")
+    target = _claim_and_commit_batch(hive, fakebd)
+    pinned = worktree.head_full_sha(target)
+    seen = {}
+
+    def move_branch(_entry, _cfg, **kwargs):
+        seen.update(kwargs)
+        _commit(target, "fix: move while validation runs", fname="moved.txt")
+        return 0
+
+    monkeypatch.setattr(work_group.selective_validation, "run", move_branch)
+
+    with pytest.raises(typer.Exit):
+        work.submit(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    assert seen["head_rev"] == pinned
+    assert len(seen["base_rev"]) == 40
+    assert seen["repo_path"] == str(target)
+    assert "moved during batch validation" in capsys.readouterr().err
+    assert "review" not in fakebd.states.get("mr-1.1", {})
+
+
+def test_batch_key_command_change_invalidates_only_changed_proof(hive, fakebd, tmp_path, capsys):
+    """Proof identity includes the opaque command even when the batch tree is unchanged."""
+    log = tmp_path / "group-attest.log"
+    _enable_test_attest_catalog(hive, log)
+    _claim_and_commit_batch(hive, fakebd)
+    work.submit(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+    capsys.readouterr()
+    hive.cfg_path.write_text(hive.cfg_path.read_text().replace("echo alpha >>", "echo alpha-v2 >>"))
+    config_store.clear_load_cache()
+    fakebd.resolve_review("mr-1.1")
+
+    work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    assert log.read_text().splitlines() == ["alpha", "beta", "alpha-v2"]
+    out = capsys.readouterr().out
+    assert "alpha: ran green" in out
+    assert "beta: exact-tree verdict reused" in out
+
+
+def test_batch_merge_refuses_if_pinned_branch_moves_after_validation(
+    hive, fakebd, tmp_path, monkeypatch, capsys
+):
+    """Merge validates and merges one immutable SHA, refusing branch movement between them."""
+    _enable_test_attest_catalog(hive, tmp_path / "group-attest.log")
+    target = _claim_and_commit_batch(hive, fakebd)
+    work.submit(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+    fakebd.resolve_review("mr-1.1")
+    pinned = worktree.head_full_sha(target)
+    seen = {}
+
+    def move_branch(_entry, _cfg, **kwargs):
+        seen.update(kwargs)
+        _commit(target, "fix: move before merge", fname="moved.txt")
+        return 0
+
+    monkeypatch.setattr(work_group.selective_validation, "run", move_branch)
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    assert seen["head_rev"] == pinned
+    assert "moved during batch validation" in capsys.readouterr().err
+    assert fakebd.beads["mr-1.1"]["status"] != "closed"
+
+
+def test_key_ledger_keeps_disabled_unproved_and_unknown_absent_and_red_nonqualifying(
+    hive,
+):
+    """Only qualifying green state can satisfy reuse; policy and failure states fail closed."""
+    cfg = config.load()
+    entry, _main, _target, _branch = worktree.locate(cfg, "myrepo", bead="mr-ledger")
+    rev = worktree._ref_sha(hive.main, "main")
+    disabled = AttestKey("disabled", "true", enabled=False, disabled_reason="maintenance")
+    unproved = AttestKey("unproved", "true")
+    unknown = AttestKey("unknown", "exit 75")
+    red = AttestKey("red", "false")
+    validation_ledger.record(entry, rev, unknown.cmd, 75, cfg=cfg, phase="submit")
+    validation_ledger.record(entry, rev, red.cmd, 1, cfg=cfg, phase="submit")
+
+    assert validation_ledger.key_verdict(entry, rev, disabled, cfg=cfg).state.name == "ABSENT"
+    assert validation_ledger.key_verdict(entry, rev, unproved, cfg=cfg).state.name == "ABSENT"
+    assert validation_ledger.key_verdict(entry, rev, unknown, cfg=cfg).state.name == "ABSENT"
+    red_verdict = validation_ledger.key_verdict(entry, rev, red, cfg=cfg)
+    assert red_verdict.state == validation_ledger.KeyVerdictState.CURRENT
+    assert not validation_ledger.is_qualifying_green(red_verdict.record)
 
 
 def test_batch_validation_bypass_does_not_enter_selective_key_runner(

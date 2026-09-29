@@ -365,7 +365,9 @@ def _record_group_commits(members, main, shas: list[str]) -> None:
         typer.echo(f"⚠ failed to record commit linkage for {', '.join(members)}: {exc}", err=True)
 
 
-def _validate_group_checkout(entry, cfg, branch, base, *, phase: str, reuse: bool) -> int:
+def _validate_group_checkout(
+    entry, cfg, head_sha, base_sha, repo_path, *, phase: str, reuse: bool
+) -> int:
     """Validate a batch branch through the configured attestation boundary.
 
     A validation bypass remains one audited bypass of the phase's monolithic command. With no
@@ -373,11 +375,18 @@ def _validate_group_checkout(entry, cfg, branch, base, *, phase: str, reuse: boo
     catalog, run selected keys in clean checkouts and allow exact-tree proof from an earlier
     lifecycle phase to satisfy them.
     """
+    if (
+        not repo_path.exists()
+        or not worktree.is_clean(repo_path)
+        or worktree.head_full_sha(repo_path) != head_sha
+    ):
+        typer.echo("✗ batch selection checkout no longer matches the pinned head", err=True)
+        raise typer.Exit(1)
     command = config.validate_cmd(cfg, entry, phase)
     if validation_bypass.enabled(cfg, entry) or not selective_validation.configured(cfg, entry):
         return worktree.clean_checkout(
             entry,
-            branch,
+            head_sha,
             command,
             cfg=cfg,
             reuse=reuse,
@@ -386,18 +395,34 @@ def _validate_group_checkout(entry, cfg, branch, base, *, phase: str, reuse: boo
     return selective_validation.run(
         entry,
         cfg,
-        base_rev=base,
-        head_rev=branch,
-        repo_path=str(worktree.clone_for_branch(entry, branch)),
+        base_rev=base_sha,
+        head_rev=head_sha,
+        repo_path=str(repo_path),
         runner=lambda key_cmd: worktree.clean_checkout(
             entry,
-            branch,
+            head_sha,
             key_cmd,
             cfg=cfg,
             reuse=True,
             phase=phase,
         ),
     )
+
+
+def _guard_group_refs(main, branch, head_sha, base, base_sha, *, boundary: str) -> None:
+    """Fail when either ref moved after the immutable validation snapshot was pinned."""
+    moved = []
+    if worktree._ref_sha(main, branch) != head_sha:
+        moved.append(branch)
+    if worktree._ref_sha(main, base) != base_sha:
+        moved.append(base)
+    if moved:
+        typer.echo(
+            f"✗ {', '.join(moved)} moved during batch validation — refusing to {boundary}; "
+            "retry against the new refs",
+            err=True,
+        )
+        raise typer.Exit(1)
 
 
 def submit_group(cfg, hive, group_arg, as_):
@@ -436,22 +461,30 @@ def submit_group(cfg, hive, group_arg, as_):
         raise typer.Exit(1)
 
     base = worktree.integration_base(entry, members[0], config.integration_branch(cfg, entry))
-    count, subjects = worktree.history(entry, branch, base)
+    head_sha = worktree.head_full_sha(target)
+    base_sha = worktree._ref_sha(main, base)
+    if not head_sha or not base_sha:
+        typer.echo("✗ could not pin batch validation revisions", err=True)
+        raise typer.Exit(1)
+    count, subjects = worktree.history(entry, head_sha, base_sha)
     limit = config.max_commits(cfg, entry) * len(members)  # relaxed: per-bead-commits × members
     ok, msg = work_logic._history_ok(count, subjects, limit)
     if not ok:
         typer.echo(f"✗ {msg} — self-refine before submitting the batch", err=True)
         raise typer.Exit(1)
 
-    rc = _validate_group_checkout(entry, cfg, branch, base, phase="submit", reuse=False)
+    rc = _validate_group_checkout(
+        entry, cfg, head_sha, base_sha, target, phase="submit", reuse=False
+    )
     if not validation_bypass.is_bypassed(rc):
         otel.count_validation(rc == 0, {"bh.batch": group, "bh.work.phase": "submit"})
     if rc != 0:
         typer.echo(f"✗ clean-checkout validation failed (exit {rc}) — nothing submitted", err=True)
         raise typer.Exit(rc)
+    _guard_group_refs(main, branch, head_sha, base, base_sha, boundary="open review")
 
-    sha = worktree.head_sha(target)
-    _record_group_commits(members, main, worktree.commit_shas(entry, branch, base))
+    sha = head_sha
+    _record_group_commits(members, main, worktree.commit_shas(entry, head_sha, base_sha))
     gate = config.review_gate(cfg, entry)
     if (
         gate.startswith("gh:")
@@ -559,7 +592,12 @@ def merge_group(cfg, group_arg, hive, rm):
         raise typer.Exit(1)
 
     base = worktree.integration_base(entry, members[0], config.integration_branch(cfg, entry))
-    count, subjects = worktree.history(entry, branch, base)
+    head_sha = worktree._ref_sha(main, branch)
+    base_sha = worktree._ref_sha(main, base)
+    if not head_sha or not base_sha:
+        typer.echo("✗ could not pin batch validation revisions", err=True)
+        raise typer.Exit(1)
+    count, subjects = worktree.history(entry, head_sha, base_sha)
     if count == 0 and worktree.landed_via_merge(entry, branch, base):
         # ALREADY LANDED — the batch merged and its bookkeeping half did not finish (bh-lvqs).
         # Reconcile every member and exit 0 instead of routing the operator to the
@@ -579,6 +617,16 @@ def merge_group(cfg, group_arg, hive, rm):
             err=True,
         )
         raise typer.Exit(1)
+    if not target.exists() or not worktree.is_clean(target):
+        typer.echo("✗ batch working tree missing or not clean", err=True)
+        raise typer.Exit(1)
+    cur = worktree.current_branch(target)
+    if cur != branch:
+        typer.echo(f"✗ on branch {cur or '(detached)'}, expected {branch}", err=True)
+        raise typer.Exit(1)
+    if worktree.head_full_sha(target) != head_sha:
+        typer.echo("✗ batch working tree HEAD does not match its pinned branch", err=True)
+        raise typer.Exit(1)
     limit = config.max_commits(cfg, entry) * len(members)  # relaxed: per-bead-commits × members
     ok, msg = work_logic._history_ok(count, subjects, limit)
     if not ok:
@@ -589,7 +637,7 @@ def merge_group(cfg, group_arg, hive, rm):
     # so the same gate applies — every commit in the range, not just the tip. No-op when off.
     if config.enforce_signing(cfg, entry):
         sok, smsg = work_logic._signing_ok(
-            worktree.signature_status(entry, branch, base), branch, base
+            worktree.signature_status(entry, head_sha, base_sha), branch, base
         )
         if not sok:
             typer.echo(f"✗ {smsg}", err=True)
@@ -617,20 +665,23 @@ def merge_group(cfg, group_arg, hive, rm):
     with merge_slot(main):
         # Landing-boundary reuse on exact tree match (ADR Decision 4, bh-ku9n9.17): the ledger is
         # keyed on (TREE, cmd_hash), so a hit here means this exact content already passed this
-        # exact command — the batch branch is unchanged since its submit. Anything else (a
-        # rebase onto a moved base, a changed command, a stale or red entry) misses and runs.
-        rc = _validate_group_checkout(entry, cfg, branch, base, phase="merge", reuse=True)
+        # exact command — the batch branch is unchanged since its submit. A changed tree or
+        # command, or a stale/red entry, misses and runs.
+        rc = _validate_group_checkout(
+            entry, cfg, head_sha, base_sha, target, phase="merge", reuse=True
+        )
         if not validation_bypass.is_bypassed(rc):
             otel.count_validation(rc == 0, {"bh.batch": group, "bh.work.phase": "batch"})
         if rc != 0:
             typer.echo(f"✗ batch validation failed (exit {rc}) — nothing landed", err=True)
             raise typer.Exit(rc)
+        _guard_group_refs(main, branch, head_sha, base, base_sha, boundary="merge")
 
         prof = config.work_identity(cfg, entry)
         agent = prof["mode"] == "agent"
         mrc, out = worktree.merge_no_ff(
             entry,
-            branch,
+            head_sha,
             base,
             name=(prof["name"] or "") if agent else "",
             email=(prof["email"] or "") if agent else "",

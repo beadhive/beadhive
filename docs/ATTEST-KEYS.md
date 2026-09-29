@@ -247,11 +247,12 @@ Normal `bh work check`, `submit`, `review --run`, `merge`, `finish`, and
 carried (including source tree and receipt digest), or remained unknown.
 
 Batch lifecycle boundaries use the same proof model. `bh work submit --group` resolves the
-shared batch branch once and records a green verdict for each key it actually runs. On an
-unchanged branch, `bh work merge --group` reuses those exact-tree, exact-command verdicts and
-runs only keys whose proof is missing or invalidated. After the batch merge, the molecule tree
-can reuse the same key proof when its content is byte-identical. A rebase, command change,
-expired verdict, red result, or unknown result forces that key to run again.
+shared batch branch once and records or safely carries a green verdict for each key it proves.
+On an unchanged branch, `bh work merge --group` reuses those exact-tree, exact-command verdicts
+and runs only keys whose proof is missing or invalidated. After the batch merge, the molecule
+tree can reuse the same key proof when its content is byte-identical. A tree-changing rebase,
+command change, expired verdict, red result, or unknown result forces that key to run again; a
+rebase that preserves the tree does not invalidate tree-keyed proof.
 
 The fallback and bypass contracts remain unchanged:
 
