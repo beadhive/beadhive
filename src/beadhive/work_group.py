@@ -670,9 +670,14 @@ def merge_group(cfg, group_arg, hive, rm):
     # above, so a bounced batch (whose gate resolved on bounce) can't slip through here.
     if config.review_gate(cfg, entry) == "human":
         _open, resolved = work_logic.review_gates(members[0], main)
-        if not resolved:
+        approved_head = any(
+            work_logic.review_gate_sha(str(gate.get("description") or "")) == head_sha.lower()
+            for gate in resolved
+        )
+        if not approved_head:
             typer.echo(
-                f"✗ batch {group} has no resolved review gate — it was never submitted/approved.\n"
+                f"✗ batch {group} has no resolved review gate for current head {head_sha} — "
+                "it was never submitted/approved at this revision.\n"
                 f"  Open ONE gate for the whole batch and approve it before merging:\n"
                 f"      {config.BINARY_ALIAS} work submit --group {group_arg}\n"
                 f"      {config.BINARY_ALIAS} work approve {members[0]}\n"

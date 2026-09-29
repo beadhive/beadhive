@@ -2325,6 +2325,43 @@ def test_batch_submit_refuses_when_sibling_advanced_container_base(hive, fakebd,
     assert not [g for g in fakebd.gates if work_logic.is_review_gate_desc(g["description"])]
 
 
+def test_batch_rebase_requires_resubmit_and_approval_for_rewritten_head(hive, fakebd, capsys):
+    """Approval of A cannot authorize B after a required rebase onto a sibling-advanced base."""
+    target = _submit_and_approve_batch(hive, fakebd)
+    branch = "wt/batch/samefile"
+    container = "wt/bead/epic/mr-1"
+    approved_a = _git("rev-parse", branch, cwd=hive.main).stdout.strip()
+
+    _git("checkout", "-q", container, cwd=hive.main)
+    _commit(hive.main, "feat(sibling): advance container", fname="sibling.txt")
+    _git("checkout", "-q", "main", cwd=hive.main)
+    with pytest.raises(typer.Exit):
+        work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+    assert "not an ancestor" in capsys.readouterr().err
+
+    _git("rebase", container, cwd=target)
+    rewritten_b = _git("rev-parse", branch, cwd=hive.main).stdout.strip()
+    assert rewritten_b != approved_a
+    with pytest.raises(typer.Exit):
+        work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+    err = capsys.readouterr().err
+    assert f"no resolved review gate for current head {rewritten_b}" in err
+    assert fakebd.beads["mr-1.1"]["status"] != "closed"
+
+    work.submit(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+    open_review, resolved_review = work_logic.review_gates("mr-1.1", hive.main)
+    assert any(work_logic.review_gate_sha(g["description"]) == rewritten_b for g in open_review)
+    assert any(work_logic.review_gate_sha(g["description"]) == approved_a for g in resolved_review)
+    fakebd.resolve_review("mr-1.2")  # the shared gate remains approvable through either member
+
+    work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    assert fakebd.beads["mr-1.1"]["status"] == "closed"
+    assert fakebd.beads["mr-1.2"]["status"] == "closed"
+    assert _git("cat-file", "-e", f"{container}:sibling.txt", cwd=hive.main).returncode == 0
+    assert _git("cat-file", "-e", f"{container}:a.txt", cwd=hive.main).returncode == 0
+
+
 def test_batch_submit_carries_unaffected_key_and_records_direct_ledger_states(
     hive, fakebd, tmp_path, monkeypatch
 ):

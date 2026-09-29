@@ -31,7 +31,7 @@ _MARKER = re.compile(r"^(fixup|squash)! ")
 # <sha>`; legacy gates wrote the bare `review <sha>`). The `bh:` prefix is optional for back-compat
 # and the trailing hex-sha requirement is what separates a real review gate from an ad-hoc human
 # gate whose reason merely starts with the word "review" (e.g. "review the rollout plan with ops").
-_REVIEW_REASON = re.compile(r"reason: (?:bh:)?review [0-9a-f]{7,40}\b")
+_REVIEW_REASON = re.compile(r"reason: (?:bh:)?review (?P<sha>[0-9a-f]{7,40})\b")
 
 # Integration bubbles written by the three lifecycle merge paths.  An epic may contain many
 # commits, but its own first-parent spine is made only of these no-ff bubbles; all other commits
@@ -56,6 +56,12 @@ def is_review_gate_desc(desc: str) -> bool:
     as a review gate. Matches both the current `bh:review <sha>` marker and the legacy `review
     <sha>` form."""
     return bool(_REVIEW_REASON.search(desc.lower()))
+
+
+def review_gate_sha(desc: str) -> str:
+    """The exact submitted revision named by a convention review gate, or ``""``."""
+    match = _REVIEW_REASON.search(desc.lower())
+    return match.group("sha") if match else ""
 
 
 # ---- release-hint reconcile (bh-k2j8.5) -------------------------------------
