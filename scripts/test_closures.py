@@ -18,6 +18,7 @@ _ID = re.compile(r"^[a-z0-9]+(?:[.-][a-z0-9]+)*$")
 _KINDS = {"kernel", "module", "adapter", "plugin", "contract", "integration", "system"}
 _SELECTOR_FIELDS = ("tests", "shared_contract_tests", "reverse_dependency_tests")
 _SOURCE_ROOTS = (("src", "beadhive"), ("tests",), ("docs",))
+_BYTECODE_SUFFIXES = {".pyc", ".pyo"}
 
 
 @dataclass(frozen=True)
@@ -117,9 +118,50 @@ def registry_definition(registry: Registry) -> dict[str, object]:
     }
 
 
-def discover_plugin_sources(root: Path) -> set[str]:
+def _git_tracked_paths(root: Path) -> frozenset[PurePosixPath]:
+    completed = subprocess.run(
+        ("git", "-C", str(root), "ls-files", "-z"),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode:
+        return frozenset()
+    return frozenset(PurePosixPath(item) for item in completed.stdout.split("\0") if item)
+
+
+def _has_repository_content(
+    path: Path,
+    *,
+    root: Path,
+    tracked_paths: frozenset[PurePosixPath],
+) -> bool:
+    """Return whether *path* owns tracked content or non-bytecode working-tree content."""
+    relative = PurePosixPath(path.relative_to(root).as_posix())
+    if any(candidate == relative or relative in candidate.parents for candidate in tracked_paths):
+        return True
+    if path.is_file():
+        return path.suffix not in _BYTECODE_SUFFIXES and path.parent.name != "__pycache__"
+    if not path.is_dir():
+        return False
+    for candidate in path.rglob("*"):
+        if not candidate.is_file():
+            continue
+        relative = candidate.relative_to(path)
+        if "__pycache__" in relative.parts or candidate.suffix in _BYTECODE_SUFFIXES:
+            continue
+        return True
+    return False
+
+
+def discover_plugin_sources(
+    root: Path, *, tracked_paths: frozenset[PurePosixPath] | None = None
+) -> set[str]:
+    tracked_paths = _git_tracked_paths(root) if tracked_paths is None else tracked_paths
     discovered: set[str] = set()
     for path in sorted((root / "src" / "beadhive").glob("*.py")):
+        if not _has_repository_content(path, root=root, tracked_paths=tracked_paths):
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in tree.body:
             targets: list[ast.expr] = []
@@ -133,14 +175,19 @@ def discover_plugin_sources(root: Path) -> set[str]:
     return discovered
 
 
-def discover_modules(root: Path) -> set[str]:
+def discover_modules(
+    root: Path, *, tracked_paths: frozenset[PurePosixPath] | None = None
+) -> set[str]:
+    tracked_paths = _git_tracked_paths(root) if tracked_paths is None else tracked_paths
     module_root = root / "src" / "beadhive" / "modules"
     if not module_root.is_dir():
         return set()
     return {
         path.name
         for path in module_root.iterdir()
-        if path.is_dir() and not path.name.startswith((".", "__"))
+        if path.is_dir()
+        and not path.name.startswith((".", "__"))
+        and _has_repository_content(path, root=root, tracked_paths=tracked_paths)
     }
 
 
@@ -234,6 +281,7 @@ def _pytest_args_errors(closure: Closure, root: Path) -> tuple[str, ...]:
 
 def validate_registry(registry: Registry, root: Path = ROOT) -> tuple[str, ...]:
     errors: list[str] = []
+    tracked_paths = _git_tracked_paths(root)
     if registry.full_gate != "just check":
         errors.append("registry full_gate must remain the authoritative 'just check'")
     if registry.release_gate != "just check-all":
@@ -296,7 +344,7 @@ def validate_registry(registry: Registry, root: Path = ROOT) -> tuple[str, ...]:
     missing_expected = sorted(expected - module_rows.keys())
     if missing_expected:
         errors.append(f"expected modules without explicit closure rows: {missing_expected}")
-    discovered_modules = discover_modules(root)
+    discovered_modules = discover_modules(root, tracked_paths=tracked_paths)
     for name in sorted(discovered_modules):
         closure = module_rows.get(name)
         if closure is None:
@@ -304,7 +352,9 @@ def validate_registry(registry: Registry, root: Path = ROOT) -> tuple[str, ...]:
         elif closure.status != "present":
             errors.append(f"registered module {name!r} is incorrectly declared absent")
     for name, closure in sorted(module_rows.items()):
-        exists = (root / closure.owner_path).is_dir()
+        exists = _has_repository_content(
+            root / closure.owner_path, root=root, tracked_paths=tracked_paths
+        )
         if closure.status == "present" and not exists:
             errors.append(
                 f"module closure {name!r} is present but {closure.owner_path!r} is absent"
@@ -312,7 +362,7 @@ def validate_registry(registry: Registry, root: Path = ROOT) -> tuple[str, ...]:
         if closure.status == "absent" and exists:
             errors.append(f"module closure {name!r} is absent but {closure.owner_path!r} exists")
 
-    discovered_plugins = discover_plugin_sources(root)
+    discovered_plugins = discover_plugin_sources(root, tracked_paths=tracked_paths)
     plugin_rows = {
         closure.owner_path: closure for closure in registry.closures if closure.kind == "plugin"
     }

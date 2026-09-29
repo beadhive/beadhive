@@ -135,8 +135,47 @@ def test_new_registered_plugin_without_closure_fails_drift_check(tmp_path):
     assert "registered plugin 'src/beadhive/new_plugin.py' has no declared test closure" in errors
 
 
-def test_module_directory_cannot_remain_declared_absent(tmp_path):
-    (tmp_path / "src" / "beadhive" / "modules" / "planning").mkdir(parents=True)
+def test_bytecode_only_module_directory_remains_absent(tmp_path):
+    cache = tmp_path / "src" / "beadhive" / "modules" / "planning" / "__pycache__"
+    cache.mkdir(parents=True)
+    (cache / "service.cpython-311.pyc").write_bytes(b"stale bytecode")
+    registry = _replace_closure(test_closures.load_registry(), "module.planning", status="absent")
+
+    errors = test_closures.validate_registry(registry, tmp_path)
+
+    assert "planning" not in test_closures.discover_modules(tmp_path)
+    assert "registered module 'planning' is incorrectly declared absent" not in errors
+    assert (
+        "module closure 'planning' is absent but 'src/beadhive/modules/planning' exists"
+        not in errors
+    )
+
+
+def test_force_tracked_bytecode_makes_module_present(tmp_path):
+    cache = tmp_path / "src" / "beadhive" / "modules" / "planning" / "__pycache__"
+    cache.mkdir(parents=True)
+    bytecode = cache / "service.cpython-311.pyc"
+    bytecode.write_bytes(b"tracked bytecode")
+    subprocess.run(("git", "init", "-q", str(tmp_path)), check=True)
+    subprocess.run(
+        ("git", "-C", str(tmp_path), "add", "-f", bytecode.relative_to(tmp_path).as_posix()),
+        check=True,
+    )
+    registry = _replace_closure(test_closures.load_registry(), "module.planning", status="absent")
+
+    errors = test_closures.validate_registry(registry, tmp_path)
+
+    assert "planning" in test_closures.discover_modules(tmp_path)
+    assert "registered module 'planning' is incorrectly declared absent" in errors
+    assert (
+        "module closure 'planning' is absent but 'src/beadhive/modules/planning' exists" in errors
+    )
+
+
+def test_module_directory_with_real_source_cannot_remain_declared_absent(tmp_path):
+    module = tmp_path / "src" / "beadhive" / "modules" / "planning"
+    module.mkdir(parents=True)
+    (module / "service.py").write_text("class PlanningService: ...\n")
     registry = _replace_closure(test_closures.load_registry(), "module.planning", status="absent")
 
     errors = test_closures.validate_registry(registry, tmp_path)
@@ -148,11 +187,35 @@ def test_module_directory_cannot_remain_declared_absent(tmp_path):
 
 
 def test_new_registered_module_without_closure_fails_drift_check(tmp_path):
-    (tmp_path / "src" / "beadhive" / "modules" / "billing").mkdir(parents=True)
+    module = tmp_path / "src" / "beadhive" / "modules" / "billing"
+    module.mkdir(parents=True)
+    (module / "__init__.py").write_text("")
 
     errors = test_closures.validate_registry(test_closures.load_registry(), tmp_path)
 
     assert "registered module 'billing' has no declared test closure" in errors
+
+
+def test_bytecode_only_deleted_plugin_is_not_discovered(tmp_path):
+    cache = tmp_path / "src" / "beadhive" / "__pycache__"
+    cache.mkdir(parents=True)
+    (cache / "deleted_plugin.cpython-311.pyc").write_bytes(b"stale bytecode")
+
+    errors = test_closures.validate_registry(test_closures.load_registry(), tmp_path)
+
+    assert test_closures.discover_plugin_sources(tmp_path) == set()
+    assert not any("deleted_plugin" in error for error in errors)
+
+
+def test_real_plugin_source_is_discovered_even_when_untracked(tmp_path):
+    plugin = tmp_path / "src" / "beadhive" / "new_plugin.py"
+    plugin.parent.mkdir(parents=True)
+    plugin.write_text("PLUGIN = object()\n")
+
+    errors = test_closures.validate_registry(test_closures.load_registry(), tmp_path)
+
+    assert test_closures.discover_plugin_sources(tmp_path) == {"src/beadhive/new_plugin.py"}
+    assert "registered plugin 'src/beadhive/new_plugin.py' has no declared test closure" in errors
 
 
 @pytest.mark.parametrize(
