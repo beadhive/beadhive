@@ -284,12 +284,156 @@ def test_cli_projects_terminal_daemon_failure(served_hive):
     assert host_beads.supervision_status(spec) is None
 
 
+def _deny_snapshot_publication(monkeypatch, hive, stage):
+    directory_name = registry.sanitize(hive)
+    if stage == "replace":
+        original = os.replace
+
+        def denied(source, destination):
+            if Path(destination).parent.name == directory_name:
+                raise PermissionError("snapshot storage is read-only")
+            return original(source, destination)
+
+        monkeypatch.setattr(os, "replace", denied)
+    else:
+        original = getattr(Path, stage)
+
+        def denied(path, *args, **kwargs):
+            if path.parent.name == directory_name and path.name.startswith(".supervision."):
+                raise OSError("snapshot storage is full")
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, stage, denied)
+
+
+@pytest.mark.parametrize("stage", ["write_text", "chmod", "replace"])
+@pytest.mark.parametrize("failure", ["spec", "tick", "none"])
+def test_snapshot_failure_is_isolated_to_one_hive_and_tick(
+    tmp_path, stand_in_bd, monkeypatch, caplog, stage, failure
+):
+    main = _hive(tmp_path)
+    root = tmp_path / "run"
+    other = f"{HIVE}-other"
+    specs = {hive: host_beads.service_spec(main, hive, root=root) for hive in (HIVE, other)}
+    for spec in specs.values():
+        host_beads.enable(spec)
+
+    def spec_factory(_main, hive):
+        if hive == HIVE and failure == "spec":
+            raise host_beads.HiveNotServable("not servable")
+        return specs[hive]
+
+    class Supervisor(_FakeSupervisor):
+        def tick(self):
+            super().tick()
+            if self.spec.workspace == HIVE and failure == "tick":
+                raise OSError("child could not start")
+            return host_beads.service_module().SupervisorSnapshot("running", 0, "ready")
+
+    supervision = host_beads.DaemonBeadsSupervision(
+        root, spec_factory=spec_factory, supervisor_factory=Supervisor
+    )
+    _deny_snapshot_publication(monkeypatch, HIVE, stage)
+
+    supervision.reconcile()
+    supervision.reconcile()
+
+    assert supervision.supervisors[other].ticks == 2
+    assert host_beads.supervision_status(specs[other])["state"] == "running"
+    assert f"Cannot publish Beads supervision state for {HIVE}" in caplog.text
+    assert not list(specs[HIVE].paths.directory.glob(".supervision.*"))
+    children = list(supervision.supervisors.values())
+    supervision.shutdown()
+    assert all(supervisor.stopped for supervisor in children)
+
+
+@pytest.mark.parametrize("stage", ["write_text", "chmod", "replace", "shutdown"])
+def test_shutdown_attempts_every_child_when_one_hive_fails(
+    tmp_path, stand_in_bd, monkeypatch, caplog, stage
+):
+    main = _hive(tmp_path)
+    root = tmp_path / "run"
+    other = f"{HIVE}-other"
+    specs = [host_beads.service_spec(main, hive, root=root) for hive in (HIVE, other)]
+    for spec in specs:
+        host_beads.enable(spec)
+
+    class Supervisor(_FakeSupervisor):
+        def shutdown(self):
+            super().shutdown()
+            if self.spec.workspace == HIVE and stage == "shutdown":
+                raise OSError("child stop failed")
+
+    children = {spec.workspace: Supervisor(spec) for spec in specs}
+    supervision = host_beads.DaemonBeadsSupervision(root)
+    supervision.supervisors = children.copy()
+    if stage != "shutdown":
+        _deny_snapshot_publication(monkeypatch, HIVE, stage)
+
+    supervision.shutdown()
+
+    assert all(child.stopped for child in children.values())
+    assert supervision.supervisors == {}
+    assert host_beads.supervision_status(specs[1])["state"] == "stopped"
+    assert HIVE in caplog.text
+
+
+def test_removed_snapshot_directory_does_not_prevent_other_child_shutdown(
+    tmp_path, stand_in_bd, caplog
+):
+    main = _hive(tmp_path)
+    root = tmp_path / "run"
+    specs = [host_beads.service_spec(main, hive, root=root) for hive in (HIVE, f"{HIVE}-other")]
+    for spec in specs:
+        host_beads.enable(spec)
+    children = {spec.workspace: _FakeSupervisor(spec) for spec in specs}
+    supervision = host_beads.DaemonBeadsSupervision(root)
+    supervision.supervisors = children.copy()
+    shutil.rmtree(specs[0].paths.directory)
+
+    supervision.shutdown()
+
+    assert all(child.stopped for child in children.values())
+    assert host_beads.supervision_status(specs[1])["state"] == "stopped"
+    assert "Cannot publish Beads supervision state" in caplog.text
+
+
+def test_supervision_loop_retries_after_intent_directory_io_failure(tmp_path, monkeypatch, caplog):
+    supervision = host_beads.DaemonBeadsSupervision(tmp_path, interval=0.001)
+    calls = []
+
+    def reconcile():
+        calls.append(None)
+        if len(calls) == 1:
+            raise OSError("intent directory disappeared")
+
+    monkeypatch.setattr(supervision, "reconcile", reconcile)
+
+    async def exercise():
+        task = asyncio.create_task(supervision.run())
+        try:
+            for _ in range(200):
+                if len(calls) >= 2:
+                    break
+                await asyncio.sleep(0.001)
+            assert len(calls) >= 2
+            assert not task.done()
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    asyncio.run(exercise())
+    assert "Cannot reconcile Beads supervision intents" in caplog.text
+
+
 def test_supervised_child_uses_repo_cwd_and_external_gate_write_boundary(
     tmp_path, stand_in_bd, monkeypatch
 ):
     """Model ProtectSystem=strict with only BH_HOME and the gate file writable."""
     bwrap = shutil.which("bwrap")
-    assert bwrap, "service write-boundary regression requires bubblewrap"
+    if sys.platform != "linux" or not bwrap:
+        pytest.skip("service write-boundary regression requires Linux and bubblewrap")
     probe = subprocess.run([bwrap, "--ro-bind", "/", "/", "--", "true"], capture_output=True)
     if probe.returncode:
         pytest.skip("outer sandbox denies mount namespaces; hermetic gate supplies them")

@@ -274,9 +274,23 @@ class DaemonBeadsSupervision:
         directory = self.root / registry.sanitize(hive)
         payload = {"hive": hive, "state": state, "detail": detail, "failures": failures}
         temporary = directory / f".{SUPERVISION_FILE}.{os.getpid()}"
-        temporary.write_text(json.dumps(payload, sort_keys=True) + "\n")
-        temporary.chmod(0o600)
-        os.replace(temporary, directory / SUPERVISION_FILE)
+        try:
+            temporary.write_text(json.dumps(payload, sort_keys=True) + "\n")
+            temporary.chmod(0o600)
+            os.replace(temporary, directory / SUPERVISION_FILE)
+        except OSError as exc:
+            # Diagnostics must never stop supervision of this or another hive. The daemon
+            # log remains available when the runtime directory itself cannot be written.
+            logging.getLogger(__name__).warning(
+                "Cannot publish Beads supervision state for %s at %s: %s",
+                hive,
+                directory,
+                exc,
+            )
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def reconcile(self) -> None:
         with self._lock:
@@ -284,20 +298,31 @@ class DaemonBeadsSupervision:
                 return
             wanted = {intent.hive: intent for intent in iter_intents(self.root)}
             for hive in [hive for hive in self.supervisors if hive not in wanted]:
-                self.supervisors.pop(hive).shutdown()
-                (self.root / registry.sanitize(hive) / SUPERVISION_FILE).unlink(missing_ok=True)
+                try:
+                    self.supervisors.pop(hive).shutdown()
+                except Exception:
+                    logging.getLogger(__name__).exception(
+                        "Cannot stop disabled Beads supervisor for %s", hive
+                    )
+                try:
+                    (self.root / registry.sanitize(hive) / SUPERVISION_FILE).unlink(missing_ok=True)
+                except OSError as exc:
+                    logging.getLogger(__name__).warning(
+                        "Cannot remove disabled Beads supervision state for %s: %s", hive, exc
+                    )
                 self.errors.pop(hive, None)
             for hive, intent in wanted.items():
                 supervisor = self.supervisors.get(hive)
                 if supervisor is None:
                     try:
                         spec = self._spec_factory(intent.main, hive)
+                        supervisor = self._supervisor_factory(spec)
                     except (HiveNotServable, OSError) as exc:
                         self.errors[hive] = str(exc)
                         self._publish(hive, "failed", str(exc))
                         continue
                     self.errors.pop(hive, None)
-                    supervisor = self.supervisors[hive] = self._supervisor_factory(spec)
+                    self.supervisors[hive] = supervisor
                 try:
                     snapshot = supervisor.tick()
                 except (OSError, ValueError) as exc:
@@ -312,13 +337,22 @@ class DaemonBeadsSupervision:
         with self._lock:
             self._closed = True
             supervisors, self.supervisors = self.supervisors, {}
-        for supervisor in supervisors.values():
-            supervisor.shutdown()
-            self._publish(supervisor.spec.workspace, "stopped", "host daemon stopped")
+        for hive, supervisor in supervisors.items():
+            try:
+                supervisor.shutdown()
+            except Exception as exc:
+                self.errors[hive] = str(exc)
+                logging.getLogger(__name__).exception("Cannot stop Beads supervisor for %s", hive)
+                self._publish(hive, "failed", f"host daemon shutdown failed: {exc}")
+                continue
+            self._publish(hive, "stopped", "host daemon stopped")
 
     async def run(self) -> None:
         while True:
-            await asyncio.to_thread(self.reconcile)
+            try:
+                await asyncio.to_thread(self.reconcile)
+            except OSError:
+                logging.getLogger(__name__).exception("Cannot reconcile Beads supervision intents")
             await asyncio.sleep(self.interval)
 
     def component(self) -> Any:
