@@ -73,6 +73,10 @@ writable as well as `$BH_HOME`. For example, a host using
 the unit and `ReadWritePaths=/data/bees/beads/shared-server/dolt.gate.lock`, with the gate
 file already created and owned by the service account. Retain `ProtectSystem=strict` and
 the existing `$BH_HOME` write boundary; do not grant all of `/data` or the Dolt data tree.
+Beads also acquires `<hive repository>/.beads.gate.lock`: repositories beneath `$BH_HOME`
+already have that write permission, while an external read-only repository needs its
+existing gate file listed separately in `ReadWritePaths`. Both exact gate files must
+remain writable; a readiness success accompanied by an ungated warning is incomplete.
 The child starts with its hive repository as cwd as well as `bd -C`, so the service
 manager's working directory does not affect Git workspace discovery.
 
