@@ -76,13 +76,24 @@ includes `src/*`, `README.md`, `scripts/*`, root metadata, every derived consume
 
 The key command receives no changed-path or package argument. It therefore runs the deduplicated
 union of every registered package's root tests, rather than claiming per-package command
-narrowing. On the final bh-3quwp tree, that conservative union is 27 files and 700 items: the root
-pytest leaf took 34.740 seconds, while the complete key took 49.530 seconds for 734 items after its
-34-test Pants/root-artifact leaf. The impact backend requires every derived root workspace
-dependency to have a `PACKAGE_TESTS` entry; a missing entry makes resolution fail closed to all
-keys instead of silently omitting an unknown root test closure. It also scans direct imports in
-root tests and requires each package consumer to appear in that mapping or the registered contract
-set.
+narrowing. On the measured bh-3quwp command implementation, that conservative union is 27 files
+and 700 items: the root pytest leaf took 34.740 seconds, while the complete key took 49.530 seconds
+for 734 items after its 34-test Pants/root-artifact leaf. The impact backend requires every derived
+root workspace dependency to have a `PACKAGE_TESTS` entry; a missing entry makes resolution fail
+closed to all keys instead of silently omitting an unknown root test closure. It also scans direct
+imports in root tests and requires each package consumer to appear in that mapping or the
+registered contract set.
+
+The final combined v0.20.0 wave tree (`7f9d4ba6`, tree `89cc1ed8`) also measured the full root
+path with its required cross-blocker fixes. Its six selected keys passed in 1,131.720 seconds:
+`unit` 1.690, `stateful` 461.010, `root-composition` 51.370, `integration` 375.750,
+`architecture-contracts` 83.490, and `demos` 158.410 seconds. The stateful partition collected
+8,857 items and passed 8,846 with 11 skipped; root composition passed 699 of 700 root items with
+one skipped, 34 Pants tests, and the release smoke. Against the 939.531-second five-key pre-split
+sample, adding root composition makes the new six-key total 192.189 seconds (20.46%) higher. The
+corresponding five after keys total 1,080.350 seconds, 140.819 seconds (14.99%) higher. The
+package-only `packages` plus `root-composition` sample remains 73.750 seconds, a 91.6% reduction
+from its 881.544-second pre-split selection.
 
 The Pants proven-tests manifest remains an optional Pants-profile concern. Native architecture
 and lifecycle gates do not require an edit to that manifest when a new package test is added.
