@@ -13,6 +13,7 @@ fixtures are local — this package never imports the root test harness.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import signal
@@ -70,7 +71,23 @@ def _create(hive: Path, title: str) -> str:
 
 
 @pytest.fixture
-def server_hive(tmp_path: Path):
+def server_env(tmp_path: Path) -> dict[str, str]:
+    """The bd env plus a private Dolt root carrying an author identity.
+
+    The hermetic fence gives every phase a blank ``$HOME``, so a server-mode ``dolt init`` would
+    otherwise die with "Author identity unknown"; owning the identity keeps the fixture
+    independent of the operator's ``~/.dolt``.
+    """
+    root = tmp_path.parent / f"{tmp_path.name}-dolt-root"
+    (root / ".dolt").mkdir(parents=True)
+    (root / ".dolt" / "config_global.json").write_text(
+        json.dumps({"user.name": "Beadhive Test", "user.email": "test@beadhive.invalid"})
+    )
+    return {**_ENV, "DOLT_ROOT_PATH": str(root)}
+
+
+@pytest.fixture
+def server_hive(tmp_path: Path, server_env: dict[str, str]):
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
     try:
         result = subprocess.run(
@@ -79,7 +96,7 @@ def server_hive(tmp_path: Path):
             capture_output=True,
             text=True,
             timeout=_TIMEOUT,
-            env=_ENV,
+            env=server_env,
         )
         assert result.returncode == 0, result.stderr
         yield tmp_path
@@ -135,9 +152,11 @@ def test_claim_lease_assign_and_state_round_trip_through_real_bd(hive):
         "renewed",
     ],
 )
-def test_atomic_abandon_reclaim_obeys_real_expiry_replica_and_audit(server_hive, lease_state):
+def test_atomic_abandon_reclaim_obeys_real_expiry_replica_and_audit(
+    server_hive, server_env, lease_state
+):
     hive = server_hive
-    transport = SubprocessBd(timeout=_TIMEOUT, env={**_ENV, "BEADS_NODE_ID": "replica-a"})
+    transport = SubprocessBd(timeout=_TIMEOUT, env={**server_env, "BEADS_NODE_ID": "replica-a"})
     leases = CliLeases(transport, hive)
     issues = CliIssues(transport, hive)
     bead = _create(hive, "atomic abandon proof")
@@ -204,8 +223,8 @@ def test_atomic_abandon_reclaim_obeys_real_expiry_replica_and_audit(server_hive,
     assert CliStateReads(transport, hive).get_state(bead, "review") == "pending"
 
 
-def test_atomic_abandon_refuses_malformed_expiry_metadata_without_mutation(server_hive):
-    transport = SubprocessBd(timeout=_TIMEOUT, env={**_ENV, "BEADS_NODE_ID": "replica-a"})
+def test_atomic_abandon_refuses_malformed_expiry_metadata_without_mutation(server_hive, server_env):
+    transport = SubprocessBd(timeout=_TIMEOUT, env={**server_env, "BEADS_NODE_ID": "replica-a"})
     issues, leases = CliIssues(transport, server_hive), CliLeases(transport, server_hive)
     bead = _create(server_hive, "malformed lease metadata")
     leases.acquire(bead, actor="dev/a")
