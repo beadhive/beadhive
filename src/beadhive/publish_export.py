@@ -71,7 +71,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from . import bd, config
+from . import bd, bd_cli, config
 
 #: Filename bh-7jm7v.1 fixed for the public snapshot.
 PUBLIC_SNAPSHOT_FILENAME = "issues.jsonl"
@@ -104,7 +104,7 @@ def public_snapshot_argv(dest_dir: Path | str) -> list[str]:
     Returns the args AFTER `bd -C <hive_root>`: `["export", "-o", "<dest_dir>/issues.jsonl"]`.
     No flag is added conditionally, so there is no branch that could grow an `--all`.
     """
-    return ["export", "-o", str(Path(dest_dir) / PUBLIC_SNAPSHOT_FILENAME)]
+    return bd_cli.package().public_snapshot_argv(Path(dest_dir) / PUBLIC_SNAPSHOT_FILENAME)
 
 
 def public_snapshot_envelope(generated_at: str, issues: list[dict[str, Any]]) -> dict[str, Any]:
@@ -184,7 +184,9 @@ def export_public_snapshot(hive_root: Path | str, dest_dir: Path | str) -> Path:
     dest = Path(dest_dir).expanduser()
     dest.mkdir(parents=True, exist_ok=True)
     argv = public_snapshot_argv(dest)
-    res = bd.run(argv, cwd=root)
+    res = (
+        bd_cli.package().CliRoutes(bd, root).public_snapshot_export(dest / PUBLIC_SNAPSHOT_FILENAME)
+    )
     if res.returncode != 0:
         raise RuntimeError(f"bd {' '.join(argv)} failed in {root} (exit {res.returncode})")
     return dest / PUBLIC_SNAPSHOT_FILENAME

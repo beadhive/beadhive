@@ -44,8 +44,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import bd as bd_mod
-from . import config, dispatch_log, log, registry
+from . import bd_cli, config, dispatch_log, log, registry
 
 _LOG = log.get_logger(__name__)
 
@@ -90,7 +89,7 @@ def kicked_off_ready_epics(hive_dir: Path) -> list[str]:
     way (`release.py`, `validate.py`, `contributor.py`, `plan.py`, `work_logic.py`); this is the
     sixth. (`bd.json` appends its own `--json`, so passing one here was redundant.)
     """
-    rows = bd_mod.json(["ready", "--limit", "0"], hive_dir) or []
+    rows = bd_cli.routes(hive_dir).ready_all() or []
     out = []
     for row in rows:
         if not isinstance(row, dict):

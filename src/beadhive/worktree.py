@@ -1538,10 +1538,10 @@ def mark_landed(hive: str, ref: str) -> None:
         if reason in _LANDED_REASONS:
             typer.echo(f"• {bead} already closed with close_reason '{reason}' — nothing to do")
             return
-        if bd.run(["reopen", bead], main).returncode != 0:
+        if bd.routes(main).issue_reopen(bead).returncode != 0:
             typer.echo(f"✗ cannot reopen {bead} to restamp its close_reason", err=True)
             raise typer.Exit(1)
-    if bd.run(["close", bead, "--reason", "merged"], main).returncode != 0:
+    if bd.routes(main).issue_close(bead, reason="merged").returncode != 0:
         typer.echo(f"✗ failed to close {bead} with close_reason 'merged'", err=True)
         raise typer.Exit(1)
     typer.echo(
@@ -1567,10 +1567,7 @@ def _has_any_edge(data: dict, target: str) -> bool:
 
 
 def _restore_closed_reason(bead: str, close_reason: str, main: Path) -> bool:
-    args = ["close", bead]
-    if close_reason:
-        args.extend(["--reason", close_reason])
-    return bd.run(args, main).returncode == 0
+    return bd.routes(main).issue_close(bead, reason=close_reason).returncode == 0
 
 
 def mark_abandoned(
@@ -1652,7 +1649,7 @@ def mark_abandoned(
 
     edge_added = False
     if edge_type and not edge_existed:
-        added = bd.run(["dep", "add", edge_source, edge_target, "-t", edge_type], main)
+        added = bd.routes(main).dependency_add(edge_source, edge_target, edge_type)
         if added.returncode != 0:
             typer.echo(f"✗ failed to record {edge_type} relation for {bead}", err=True)
             raise typer.Exit(1)
@@ -1661,20 +1658,20 @@ def mark_abandoned(
     was_closed = str(data.get("status") or "") == "closed"
     old_reason = str(data.get("close_reason") or "")
     if not already_stamped:
-        if was_closed and bd.run(["reopen", bead], main).returncode != 0:
+        if was_closed and bd.routes(main).issue_reopen(bead).returncode != 0:
             compensated = True
             if edge_added:
                 compensated = (
-                    bd.run(["dep", "remove", edge_source, edge_target], main).returncode == 0
+                    bd.routes(main).dependency_remove(edge_source, edge_target).returncode == 0
                 )
             detail = "" if compensated else "; relation compensation also failed"
             typer.echo(f"✗ cannot reopen {bead} to restamp its close_reason{detail}", err=True)
             raise typer.Exit(1)
-        if bd.run(["close", bead, "--reason", close_reason], main).returncode != 0:
+        if bd.routes(main).issue_close(bead, reason=close_reason).returncode != 0:
             edge_restored = True
             if edge_added:
                 edge_restored = (
-                    bd.run(["dep", "remove", edge_source, edge_target], main).returncode == 0
+                    bd.routes(main).dependency_remove(edge_source, edge_target).returncode == 0
                 )
             restored = not was_closed or _restore_closed_reason(bead, old_reason, main)
             failures = []

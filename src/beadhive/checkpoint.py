@@ -22,7 +22,7 @@ from pathlib import Path
 
 import typer
 
-from . import bd, config, registry
+from . import bd, bd_cli, config, registry
 from .run import run
 
 app = typer.Typer(
@@ -176,17 +176,15 @@ def execute(
         # already-visible value; only cooperating helper invocations receive the atomic guarantee.
         _ensure_key_free(main, bead_id, key)
         payload = json.dumps({key: measurement}, separators=(",", ":"), sort_keys=True)
-        updated = bd.run(["update", bead_id, "--metadata", payload], main, capture=True)
+        updated = bd_cli.routes(main).issue_update_metadata(bead_id, payload, capture=True)
         if updated.returncode != 0:
             raise CheckpointError(
                 f"could not record checkpoint on {bead_id}: {bd.err_detail(updated)}"
             )
 
         if step_id:
-            closed = bd.run(
-                ["close", step_id, "--reason", f"checkpoint {key} command succeeded"],
-                main,
-                capture=True,
+            closed = bd_cli.routes(main).issue_close(
+                step_id, reason=f"checkpoint {key} command succeeded", capture=True
             )
             if closed.returncode != 0:
                 raise CheckpointError(

@@ -640,6 +640,51 @@ superseded code, so none were deleted.
 > inline `bd` argv: submit's gate creation (`work.review.submit`), the `bd import` epic birth,
 > and everything in items 4–7.
 
+> **2026-09-28 (bh-t1jsq).** That final root-owned argv surface is now closed. The operations
+> named above, plus the remaining worktree, metrics, intake, contributor, checkpoint, release,
+> report, MCP and presentation routes, are semantic methods in `beadhive_bd_cli.routes`. Root
+> resolves `CliRoutes` through `beadhive.bd_cli.routes()` at call time and supplies its existing
+> transport, preserving the configured engine and every established patch seam. The structural
+> guard in `tests/test_bd_cli_boundary.py` refuses a new inline `bd.run` / `bd.json` or raw `bd`
+> process argv outside the retained surfaces below.
+
+> The retained root administration/infrastructure surface is explicit:
+>
+> - `doctor.py`, `onboard.py`, `hive_repair.py`, `hub.py`, and `sync_remote.py` administer,
+>   bootstrap, diagnose, repair, or synchronize stores rather than implement application routes;
+> - `complexity_backfill.py` is a guarded one-shot whole-corpus migration whose export and
+>   rollback transaction stay together;
+> - `engine.py` is the transport beneath `beadhive-bd-cli`; routing it back through the package
+>   would invert the dependency;
+> - `cli.py` owns the explicit `bh bd` passthrough dispatch and the operator-requested
+>   `bh backup export --all` corpus snapshot; `deps.py` probes the installed bd dependency
+>   version. These must address the executable or preserve backup administration policy rather
+>   than present an application route. Its `("bd", "git")` tuple is command-name vocabulary in
+>   `_resolve_hive_routing_mode`, not process argv, and only that function is checker-exempt;
+> - `backup.py::_bd`, `hq.py::_bd`, and `hq.py::_bd_version` are timeout-aware runners for backup,
+>   HQ bootstrap, and HQ diagnostics. Their callable-import aliases are checker-visible and only
+>   these named administrative scopes are retained;
+> - `storage_migrate.py` is one-shot store administration. Its status/config verification probes
+>   and process-cwd-pinned migration runner stay together with the backup, mode switch, rollback,
+>   and verification transaction they protect;
+> - `validate.py`, `registry.py`, and `fleet.py` use cycle-safe low-level reads documented at
+>   their call sites; `safety.py` owns scrubbed-environment probes; `dolt_health.py` owns bootstrap
+>   and health processes. These are infrastructure probes, not application routes. The boundary
+>   checker permits only the named `cli.py` and `storage_migrate.py` function scopes above, so a
+>   new `bd_mod.run` / `bd_mod.json` elsewhere in either module still fails.
+>
+> Measured collection counts (same locked environment and selectors on both trees):
+>
+> | Suite | Before (`c5104bf3`) | After |
+> |---|---:|---:|
+> | Root selected (`not integration and not pants_profile`) | 9,509 | 9,512 |
+> | Root total / deselected | 9,579 / 70 | 9,582 / 70 |
+> | `beadhive-bd-cli` package | 55 | 60 |
+>
+> The structural guard replaces the now-redundant adapter argv-shape test in
+> `test_worktree_state_adapters.py`; its module-alias, callable/assignment-alias, and raw-literal
+> scope regressions add three root tests. Five package tests cover the moved semantic routes.
+
 In the root package, over named `bd` routes:
 
 1. **Pre-execution `bd` route when no capable Beads service is available** (kept, decision

@@ -1034,9 +1034,10 @@ def record_cause(cwd, bead: str, cause: str, *, reason: str, actor: str = "") ->
             f"unknown dispatch cause {cause!r} — the set is closed "
             f"(state.STATE_DIMENSIONS['dispatch'])"
         )
-    res = bd_mod.run(
-        ["set-state", bead, f"{DISPATCH_DIMENSION}={cause}", "--reason", reason],
-        cwd,
+    res = bd_cli.routes(cwd).issue_set_state(
+        bead,
+        f"{DISPATCH_DIMENSION}={cause}",
+        reason=reason,
         actor=actor,
         capture=True,
     )
@@ -2072,9 +2073,10 @@ class LocalLoop:
         record_cause(self.hive_dir, bead, CAUSE_ESCALATED, reason=reason, actor=self.actor)
         # The latch itself. Written AFTER the cause so a crash between the two re-escalates
         # (one duplicate event) rather than silently swallowing the escalation entirely.
-        res = bd_mod.run(
-            ["set-state", bead, f"{state.ESCALATION_DIM}=raised", "--reason", reason],
-            self.hive_dir,
+        res = bd_cli.routes(self.hive_dir).issue_set_state(
+            bead,
+            f"{state.ESCALATION_DIM}=raised",
+            reason=reason,
             actor=self.actor,
             capture=True,
         )
@@ -2391,9 +2393,8 @@ class LocalLoop:
         failure mode the group kill exists to prevent — under a direct-child-only kill the
         "dead" holder is still alive and still committing while its lease ages out.
         """
-        res = bd_mod.run(
-            ["update", bead, "--status", "open", "--assignee", ""],
-            self.hive_dir,
+        res = bd_cli.routes(self.hive_dir).issue_release_claim(
+            bead,
             actor=self.actor,
             capture=True,
         )

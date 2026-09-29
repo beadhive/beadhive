@@ -21,7 +21,7 @@ from contextlib import contextmanager
 
 import typer
 
-from . import host, identity, otel, validation_bypass, worktree
+from . import bd_cli, host, identity, otel, validation_bypass, worktree
 from .config_consumer_ports import work_settings as config
 
 BATCH_PREFIX = "batch/"  # a work-group's shared worktree branch is wt/batch/<group>
@@ -90,7 +90,7 @@ def _holder_is_stale(token, ttl: int = _SLOT_TTL_SECONDS) -> bool:
 
 def _current_holder(bd, main):
     """The slot's current holder token via ``bd merge-slot check --json`` (None if unreadable)."""
-    res = bd.run(["merge-slot", "check", "--json"], main, capture=True)
+    res = bd.merge_slot_check()
     if res.returncode != 0 or not (res.stdout or "").strip():
         return None
     try:
@@ -102,12 +102,12 @@ def _current_holder(bd, main):
 def _acquire_slot(bd, main, holder) -> bool:
     """Acquire the slot as `holder`; on a held slot, reclaim a demonstrably-orphaned holder (dead
     pid / TTL-exceeded) exactly once and retry. Returns True iff the slot is held on return."""
-    if bd.run(["merge-slot", "acquire", "--holder", holder], main).returncode == 0:
+    if bd.merge_slot_acquire(holder).returncode == 0:
         return True
     if _holder_is_stale(_current_holder(bd, main)):
         typer.echo("• merge slot held by an orphaned process — reclaiming", err=True)
-        bd.run(["merge-slot", "release"], main)
-        return bd.run(["merge-slot", "acquire", "--holder", holder], main).returncode == 0
+        bd.merge_slot_release()
+        return bd.merge_slot_acquire(holder).returncode == 0
     return False
 
 
@@ -154,11 +154,10 @@ def merge_slot(main, slot_attrs=None):
     now fix that: (1) signal handlers release the slot before the process dies, and (2) the acquire
     reclaims a holder whose owning process is gone (or that blew a generous TTL), so even an
     uncatchable SIGKILL self-heals on the next attempt."""
-    from . import bd  # lazy: avoids a load-time import cycle
-
-    bd.run(["merge-slot", "create"], main)  # idempotent: no-op once the hive's slot bead exists
+    routes = bd_cli.routes(main)
+    routes.merge_slot_create()  # idempotent: no-op once the hive's slot bead exists
     slot_mark = time.perf_counter()
-    if not _acquire_slot(bd, main, _slot_holder(identity.resolve_actor())):
+    if not _acquire_slot(routes, main, _slot_holder(identity.resolve_actor())):
         typer.echo("✗ could not acquire merge slot — another merge holds it", err=True)
         raise typer.Exit(1)
     slot_acquired = time.perf_counter()
@@ -171,7 +170,7 @@ def merge_slot(main, slot_attrs=None):
         nonlocal released
         if not released:
             released = True
-            bd.run(["merge-slot", "release"], main)
+            routes.merge_slot_release()
 
     prev_handlers = _install_slot_signal_release(_release)
     try:
@@ -246,13 +245,11 @@ def synthesize_batch_labels(members, epic, datas, main, actor) -> None:
     un-batched epic (it is NOT modified — this only makes its precondition true). Additive and
     idempotent: a member already carrying a batch label (planner-authored or a prior stamp) is left
     untouched, and no other label is ever removed."""
-    from . import bd  # lazy: avoids a circular import at module level
-
     label = f"batch:{epic}"
     for m in members:
         if batch_label(datas[m]):
             continue  # read-only w.r.t. existing (planner) batch labels — never overwrite
-        if bd.run(["label", "add", m, label], main, actor=actor).returncode != 0:
+        if bd_cli.routes(main).issue_add_label(m, label, actor=actor).returncode != 0:
             typer.echo(f"✗ could not stamp {label} on {m}", err=True)
             raise typer.Exit(1)
 
@@ -334,7 +331,7 @@ def claim_group(cfg, hive, group_arg, as_):
         raise typer.Exit(1)
     work_logic._stamp(cfg, entry, target, actor)
     for m in members:
-        if bd.run(["update", m, "--claim"], main, actor=actor).returncode != 0:
+        if bd_cli.routes(main).issue_claim(m, actor=actor).returncode != 0:
             raise typer.Exit(1)
         otel.count_bead_transition("claimed", {"bh.bead": m, "bh.batch": group})
     typer.echo(
@@ -440,8 +437,8 @@ def submit_group(cfg, hive, group_arg, as_):
     reason = f"bh:review {sha} batch {group}: {', '.join(members)}"
     work_logic.ensure_review_gate(main, members[0], sha, gate, reason=reason)
     for m in members:
-        sres = bd.run(
-            ["set-state", m, "review=pending", "--reason", f"submitted {sha} (batch {group})"], main
+        sres = bd_cli.routes(main).issue_set_state(
+            m, "review=pending", reason=f"submitted {sha} (batch {group})"
         )
         if sres.returncode != 0:
             typer.echo(f"✗ failed to set review state on {m} — batch partially submitted", err=True)

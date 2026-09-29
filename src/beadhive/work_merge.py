@@ -68,7 +68,7 @@ def impl__close_swarm_bead(api, epic, main):
     `work list` until a manual groom sweep. Best-effort — a failure warns, never unwinds a
     completed land. Batched into ONE `bd close` for every still-open match (`bd close` accepts
     multiple ids) instead of a subprocess-per-swarm loop."""
-    data = api.bd.json(["swarm", "list"], main)
+    data = api.bd_cli.routes(main).swarm_list()
     swarms = data.get("swarms") if isinstance(data, dict) else None
     ids = [
         str(sw.get("id") or "")
@@ -77,7 +77,7 @@ def impl__close_swarm_bead(api, epic, main):
     ]
     if not ids:
         return
-    if api.bd.run(["close", *ids, "--reason", f"molecule {epic} landed"], main).returncode != 0:
+    if api.bd_cli.routes(main).issue_close(ids, reason=f"molecule {epic} landed").returncode != 0:
         api.typer.echo(
             f"⚠ landed but failed to close swarm bead(s) {', '.join(ids)} — close manually",
             err=True,
@@ -102,9 +102,7 @@ def impl__ensure_pr_gate(api, main, bead, ref):
     if gates:
         api.typer.echo(f"• gh:pr gate {gates[0].get('id')} already open for {bead} — reusing it")
         return
-    g = api.bd.run(
-        ["gate", "create", "--blocks", bead, "--type", "gh:pr", "--reason", f"pr-merge {ref}"], main
-    )
+    g = api.bd_cli.routes(main).gate_create(bead, "gh:pr", f"pr-merge {ref}")
     if g.returncode != 0:
         opened = [
             gg
@@ -157,7 +155,10 @@ def impl__open_landing_pr(api, cfg, entry, main, bead, data, branch, base):
         pr = api.ghpr.pr_from_url(out)
     ref = api._pr_ref(pr)
     api._ensure_pr_gate(main, bead, ref)
-    if api.bd.run(["set-state", bead, "landing=pr-pending", "--reason", ref], main).returncode != 0:
+    if (
+        api.bd_cli.routes(main).issue_set_state(bead, "landing=pr-pending", reason=ref).returncode
+        != 0
+    ):
         api.typer.echo(
             "⚠ PR opened but failed to record landing=pr-pending — set it by hand", err=True
         )
@@ -413,7 +414,10 @@ def impl__close_molecule_origin_reports(api, origin_reports, epic, main):
     ids = [str(r.get("id")) for r in origin_reports if str(r.get("status", "")) != "closed"]
     if not ids:
         return
-    if api.bd.run(["close", *ids, "--reason", f"adopted epic {epic} landed"], main).returncode != 0:
+    if (
+        api.bd_cli.routes(main).issue_close(ids, reason=f"adopted epic {epic} landed").returncode
+        != 0
+    ):
         api.typer.echo(
             f"⚠ landed but failed to close origin report(s) {', '.join(ids)} — close manually",
             err=True,
@@ -652,7 +656,7 @@ def impl_land(api, bead, hive):
     ref = api._pr_ref(pr)
     api._resolve_land_pr_merge_gates(bead, main, ref)
     reason = "molecule landed" if api._is_epic(data) else "merged"
-    if api.bd.run(["close", bead, "--reason", reason], main).returncode != 0:
+    if api.bd_cli.routes(main).issue_close(bead, reason=reason).returncode != 0:
         api.typer.echo(f"✗ PR merged but failed to close {bead} — close it manually", err=True)
         raise api.typer.Exit(1)
     api._clear_review_label(bead, data, main)
@@ -711,7 +715,7 @@ def impl__resolve_land_pr_merge_gates(api, bead, main, ref):
     gate resolve` only ever takes ONE gate id, so this stays a per-gate spawn (not batchable)."""
     for g in api._pr_merge_gates(bead, main):
         gid = str(g.get("id") or "")
-        if api.bd.run(["gate", "resolve", gid, "--reason", f"{ref} merged"], main).returncode != 0:
+        if api.bd_cli.routes(main).gate_resolve(gid, reason=f"{ref} merged").returncode != 0:
             api.typer.echo(f"⚠ failed to resolve gh:pr gate {gid} — resolve it manually", err=True)
 
 
@@ -732,7 +736,10 @@ def impl__close_land_origin_reports(api, bead, main):
     ]
     if not ids:
         return
-    if api.bd.run(["close", *ids, "--reason", f"adopted epic {bead} landed"], main).returncode != 0:
+    if (
+        api.bd_cli.routes(main).issue_close(ids, reason=f"adopted epic {bead} landed").returncode
+        != 0
+    ):
         api.typer.echo(f"⚠ landed but failed to close origin report(s) {', '.join(ids)}", err=True)
 
 
@@ -1083,16 +1090,11 @@ def impl__postland_revalidate_bead(
     if vrc == 0:
         return
     rolled = api._rollback_or_keep(entry, main, base, pre, slot_attrs)
-    api.bd.run(
-        [
-            "set-state",
-            bead,
-            "review=changes-requested",
-            "--reason",
-            "combined-state red after merge — may be an interaction with "
-            "already-merged siblings; rebase on the current tip and fix",
-        ],
-        main,
+    api.bd_cli.routes(main).issue_set_state(
+        bead,
+        "review=changes-requested",
+        reason="combined-state red after merge — may be an interaction with "
+        "already-merged siblings; rebase on the current tip and fix",
     )
     if rolled:
         api.typer.echo(

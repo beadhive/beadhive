@@ -24,6 +24,7 @@ from . import coordination, reads
 from .lifecycle import CliIssues, CliLeases, CliStateReads
 from .planning import KICKOFF_REASON, RELEASE_HOLD_MARKER, CliMoleculeFiler, CliPlanningGates
 from .review import CliGateOperations, CliStateOperations
+from .routes import CliRoutes, public_snapshot_argv
 from .transport import (
     BdResult,
     BdTransport,
@@ -46,6 +47,7 @@ __all__ = [
     "CliLeases",
     "CliMoleculeFiler",
     "CliPlanningGates",
+    "CliRoutes",
     "CliStateOperations",
     "CliStateReads",
     "SubprocessBd",
@@ -53,5 +55,6 @@ __all__ = [
     "err_line",
     "names_bead",
     "parse_json_tail",
+    "public_snapshot_argv",
     "reads",
 ]

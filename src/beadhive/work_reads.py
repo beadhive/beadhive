@@ -97,8 +97,9 @@ class MoleculeReadinessError(Exception):
     """A molecule-readiness read failed or returned an unusable shape."""
 
 
-def forward_read(sub_args, cwd):
-    emit_forward(bd.run(sub_args, cwd, capture=True))
+def forward_read(result):
+    """Preserve the public forwarding seam while argv ownership stays in named package routes."""
+    emit_forward(result)
 
 
 def emit_forward(result):
@@ -168,24 +169,24 @@ def forward_ready_ordered(args, cwd, strategy, fix_churn_budget, estimator) -> N
     raise typer.Exit(result.returncode)
 
 
-def readiness_json(args, cwd):
-    result = bd.run([*args, "--json"], cwd, capture=True)
+def readiness_json(result, operation: str):
     if result.returncode != 0:
         raise MoleculeReadinessError(bd.err_detail(result))
     try:
         return json.loads(result.stdout or "null")
     except json.JSONDecodeError as exc:
-        raise MoleculeReadinessError(f"invalid JSON from bd {' '.join(args)}") from exc
+        raise MoleculeReadinessError(f"invalid JSON from bd {operation}") from exc
 
 
 def molecule_readiness_payload(molecule: str, cwd) -> dict:
-    children = readiness_json(["show", molecule, "--children"], cwd)
+    routes = bd_cli.routes(cwd)
+    children = readiness_json(routes.molecule_children(molecule), f"show {molecule} --children")
     members = children.get(molecule) if isinstance(children, dict) else None
     if not isinstance(members, list) or not all(isinstance(row, dict) for row in members):
         raise MoleculeReadinessError(f"cannot read molecule {molecule}")
 
-    explained = readiness_json(["ready", "--include-ephemeral", "--explain", "--limit", "0"], cwd)
-    ready_rows = readiness_json(["ready", "--include-ephemeral", "--limit", "0"], cwd)
+    explained = readiness_json(routes.ready_explanation_all(), "ready --explain")
+    ready_rows = readiness_json(routes.ready_including_ephemeral_all(), "ready")
     if not isinstance(explained, dict) or not isinstance(ready_rows, list):
         raise MoleculeReadinessError("bd ready returned an unexpected shape")
     ready_ids = {
@@ -429,9 +430,11 @@ def ready(ctx: typer.Context, hive: str = ""):
 def issue(ctx: typer.Context, bead: str, hive: str = ""):
     otel.set_bead(bead)
     cfg = config.load()
-    forward_read(["show", bead, *ctx.args], registry.hive_dir_for(cfg, hive))
+    cwd = registry.hive_dir_for(cfg, hive)
+    forward_read(bd_cli.routes(cwd).presentation_show(bead, ctx.args))
 
 
 def list_(ctx: typer.Context, hive: str = ""):
     cfg = config.load()
-    forward_read(["list", *ctx.args], registry.hive_dir_for(cfg, hive))
+    cwd = registry.hive_dir_for(cfg, hive)
+    forward_read(bd_cli.routes(cwd).presentation_list(ctx.args))

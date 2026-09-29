@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from . import bd
+from . import bd, bd_cli
 
 #: The flat metadata key name — literally "git.commits", never a nested {"git": {"commits": …}}.
 METADATA_KEY = "git.commits"
@@ -79,7 +79,7 @@ def record_commits(bead_id: str, main: Path, shas: list[str]) -> bool:
         return False
     merged = existing + new
     value = f"{METADATA_KEY}={json.dumps(merged)}"
-    res = bd.run(["update", bead_id, "--set-metadata", value], main)
+    res = bd_cli.routes(main).issue_set_metadata(bead_id, value)
     if res.returncode != 0:
         raise RuntimeError(f"bd update --set-metadata failed for {bead_id}: {bd.err_line(res)}")
     return True

@@ -16,7 +16,7 @@ import shlex
 
 import typer
 
-from . import adopt, bd, git_linkage, identity, worktree
+from . import adopt, bd, bd_cli, git_linkage, identity, worktree
 from .config_consumer_ports import work_settings as config
 
 # Conventional-commit subject — type(scope)!: summary. Used by the submit cleanliness guard.
@@ -925,8 +925,7 @@ def _bead_gates(bead, cwd, include_resolved=False) -> list[dict]:
     (bh-pwi2: an open review gate aged out of the window and approve couldn't see it).
     The name match is ANCHORED via `bd.names_bead` — an unanchored substring made `<epic>.1`
     the owner of `<epic>.10`'s gates (bh-1vvdp)."""
-    args = ["gate", "list", "--limit", "0"] + (["--all"] if include_resolved else [])
-    gates = bd.json(args, cwd)
+    gates = bd_cli.routes(cwd).gate_list(include_resolved=include_resolved)
     if not isinstance(gates, list):
         return []
     return [g for g in gates if isinstance(g, dict) and bd.names_bead(g.get("description"), bead)]
@@ -969,7 +968,7 @@ def _resolve_stale_review_gates(main, stale: list[dict], sha: str) -> None:
     failure, echoing the submit-context error."""
     for old in stale:
         old_id = str(old.get("id") or "")
-        res = bd.run(["gate", "resolve", old_id, "--reason", f"superseded by resubmit {sha}"], main)
+        res = bd_cli.routes(main).gate_resolve(old_id, reason=f"superseded by resubmit {sha}")
         if res.returncode != 0:
             typer.echo(
                 f"✗ failed to resolve superseded review gate {old_id} — nothing submitted",
@@ -996,7 +995,7 @@ def ensure_review_gate(main, bead, sha, gate_type, reason="") -> bool:
     if reuse:
         typer.echo(f"• review gate {reuse[0].get('id')} already open for {sha} — reusing it")
         return True
-    g = bd.run(["gate", "create", "--blocks", bead, "--type", gate_type, "--reason", reason], main)
+    g = bd_cli.routes(main).gate_create(bead, gate_type, reason)
     if g.returncode != 0 and not _gate_opened_despite_dep_refusal(bead, sha, main):
         typer.echo("✗ failed to open review gate — nothing submitted", err=True)
         raise typer.Exit(1)
@@ -1145,10 +1144,10 @@ def close_merged(bead, main, reason, data=None) -> bool:
         data = bd.show(bead, main)
     assignee = str((data or {}).get("assignee") or "").strip()
     if assignee:
-        res = bd.run(["close", bead, "--reason", reason], main, actor=assignee)
+        res = bd_cli.routes(main).issue_close(bead, reason=reason, actor=assignee)
         if res.returncode == 0:
             return True
-    return bd.run(["close", bead, "--reason", reason, "--force"], main).returncode == 0
+    return bd_cli.routes(main).issue_close(bead, reason=reason, force=True).returncode == 0
 
 
 def record_merge_conflict(entry, branch, base, main, bead_ids, action) -> str:
@@ -1167,8 +1166,9 @@ def record_merge_conflict(entry, branch, base, main, bead_ids, action) -> str:
     where = ", ".join(paths) if paths else "unresolved (see merge output above)"
     reason = f"{action} conflict onto {base} — resolve: {where}"
     for bead in bead_ids:
-        bd.run(["note", bead, f"{action} conflict: rebase onto {base} and resolve — {where}"], main)
-        bd.run(["set-state", bead, "review=changes-requested", "--reason", reason], main)
+        routes = bd_cli.routes(main)
+        routes.issue_note(bead, f"{action} conflict: rebase onto {base} and resolve — {where}")
+        routes.issue_set_state(bead, "review=changes-requested", reason=reason)
     return where
 
 

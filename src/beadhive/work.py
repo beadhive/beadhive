@@ -1315,7 +1315,7 @@ def start(epic: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
     _guard_conventions(cfg, data, epic, main, action="dispatch")
     entry, target, branch = worktree.ensure(cfg, hive, bead=epic, kind="epic")
     _stamp(cfg, entry, target, actor)
-    res = bd.run(["update", epic, "--claim"], main, actor=actor)
+    res = bd_cli.routes(main).issue_claim(epic, actor=actor)
     if res.returncode != 0:
         raise typer.Exit(res.returncode)
     otel.count_bead_transition("started")  # bead id rides the span (set_bead), not the metric

@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime
 import re
 
-from . import bd, otel, state, work_logic, work_next
+from . import bd, bd_cli, otel, state, work_logic, work_next
 from .work_guards import first
 
 
@@ -89,7 +89,9 @@ def dispatch_cause_count(events, cause: str) -> int:
 def record_dispatch_failure(bead, cause: str, reason: str, cwd, *, actor="") -> bool:
     if cause not in state.STATE_DIMENSIONS[state.DISPATCH_DIM]:
         raise ValueError(f"unknown dispatch cause: {cause!r}")
-    result = bd.run(["set-state", bead, f"dispatch={cause}", "--reason", reason], cwd, actor=actor)
+    result = bd_cli.routes(cwd).issue_set_state(
+        bead, f"dispatch={cause}", reason=reason, actor=actor
+    )
     return result.returncode == 0
 
 
@@ -148,19 +150,19 @@ def clear_review_label(bead, data, main, actor="") -> None:
     labels = data.get("labels") if isinstance(data, dict) else None
     for label in labels or []:
         if str(label).startswith("review:"):
-            bd.run(["label", "remove", bead, str(label)], main, actor=actor)
+            bd_cli.routes(main).issue_remove_label(bead, str(label), actor=actor)
 
 
 def strip_review_pending(row, main, actor) -> int:
     bead = str(row.get("id") or "") if isinstance(row, dict) else ""
     if not bead:
         return 0
-    result = bd.run(["label", "remove", bead, "review:pending"], main, actor=actor)
+    result = bd_cli.routes(main).issue_remove_label(bead, "review:pending", actor=actor)
     return int(result.returncode == 0)
 
 
 def backfill_stale_review_labels(main, actor="") -> int:
-    rows = bd.json(["list", "--status", "closed", "--label", "review:pending"], main)
+    rows = bd_cli.routes(main).issue_list(status="closed", label="review:pending")
     if not isinstance(rows, list):
         return 0
     return sum(strip_review_pending(row, main, actor) for row in rows)

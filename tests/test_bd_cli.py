@@ -87,3 +87,12 @@ def test_roots_bd_read_helpers_forward_to_the_package_routes(recorded):
     assert bd_cli.ready_rows(MAIN, ["--limit", "0"]) == rows
     assert runner.calls[-1] == ["bd", "-C", str(MAIN), "ready", "--limit", "0", "--json"]
     assert bd.names_bead("blocks e.1", "e.1") and not bd.names_bead("blocks e.10", "e.1")
+
+
+def test_named_compatibility_routes_run_through_roots_engine(recorded):
+    runner = recorded("[]")
+
+    assert bd_cli.routes(MAIN).ready_all() == []
+    assert bd.routes(MAIN).ready_all() == []
+    expected = ["bd", "-C", str(MAIN), "ready", "--limit", "0", "--json"]
+    assert runner.calls == [expected, expected]

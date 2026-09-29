@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import json
 
-from . import bd, config, engine, hub, registry, validate
+from . import bd, bd_cli, config, engine, hub, registry, validate
 from .state import INTAKE_UNTRIAGED, ORIGIN_REPORT
 
 # `--type` accepts the intake-relevant issue types; bd owns the full type vocabulary, we gate the
@@ -69,10 +69,9 @@ def _create_bead(title, report_type, ident, target, actor, description="") -> tu
     Returns `(exit, error, new_id)` — `id` read from the `--json` create payload."""
     provider, org, repo = ident
     triplet = f"provider:{provider},org:{org},repo:{repo}"
-    args = ["--json", "create", title, "--type", report_type, "-l", triplet]
-    if description:
-        args += ["-d", description]
-    res = bd.run(args, target, actor, capture=True)
+    res = bd_cli.routes(target).create_report(
+        title, report_type, triplet, description=description, actor=actor
+    )
     if res.returncode:
         return res.returncode, f"bd create failed: {bd.err_line(res)}", ""
     try:
@@ -87,11 +86,8 @@ def _create_bead(title, report_type, ident, target, actor, description="") -> tu
 def _set_state(label, new_id, target, actor):
     """`bd set-state <id> <dim>=<value>` for a `ws/state.py` label-cache constant."""
     reason = f"filed via {config.BINARY_ALIAS} report"
-    return bd.run(
-        ["set-state", new_id, _state_arg(label), "--reason", reason],
-        target,
-        actor,
-        capture=True,
+    return bd_cli.routes(target).issue_set_state(
+        new_id, _state_arg(label), reason=reason, actor=actor, capture=True
     )
 
 

@@ -79,7 +79,7 @@ from pathlib import Path
 
 import typer
 
-from . import bd, config, private_paths, registry, validation_ledger, worktree
+from . import bd_cli, config, private_paths, registry, validation_ledger, worktree
 from . import release_order as ro
 
 _RELEASE_METADATA_PATHS = {"CHANGELOG.md", "pyproject.toml", "uv.lock"}
@@ -217,7 +217,7 @@ def order(hive: str = _HIVE):
     strategy = config.release_strategy(cfg, entry)
     budget = config.release_fix_churn_budget(cfg, entry)
 
-    beads = bd.json(["ready", "--gated", "--limit", "0"], cwd) or []
+    beads = bd_cli.ready_rows(cwd, ["--gated", "--limit", "0"]) or []
     by_id = {str(b.get("id") or ""): b for b in beads}
     sequence = ro.merge_sequence(beads, strategy=strategy, fix_churn_budget=budget)
 

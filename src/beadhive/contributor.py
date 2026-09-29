@@ -39,7 +39,7 @@ from dataclasses import asdict, dataclass, field, fields
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import bd, config, guard, registry
+from . import bd, bd_cli, config, guard, registry
 from .state import OUTBOUND_PENDING, PUBLISH_APPROVED, is_outbound_candidate
 
 # ---------------------------------------------------------------------------
@@ -428,7 +428,9 @@ def list_outbound(cwd) -> list[dict]:
     """The external hive's ``outbound:pending`` queue — staged outbound candidates not yet filed
     upstream (``publish:approved``). Keyed on the shared ``state`` vocabulary, filtered by
     :func:`state.is_outbound_candidate`. Empty on a read failure."""
-    rows = bd.json(["list", "--label", OUTBOUND_PENDING, "--status", "open"], cwd) or []
+    rows = (
+        bd_cli.routes(cwd).issue_list(label=OUTBOUND_PENDING, status="open", label_first=True) or []
+    )
     if not isinstance(rows, list):
         return []
     return [r for r in rows if is_outbound_candidate(r.get("labels"))]
@@ -453,7 +455,7 @@ def _bead_gates(bead, cwd, include_resolved=True) -> list[dict]:
     Shares that module's ANCHORED matcher (``bd.names_bead``) so the mirror cannot drift back into
     the prefix collision — the publish gate is as much an integrity boundary as the review gate
     (bh-1vvdp)."""
-    gates = bd.json(["gate", "list", "--all", "--limit", "0"], cwd)
+    gates = bd_cli.routes(cwd).gate_list(include_resolved=True)
     if not isinstance(gates, list):
         return []
     out = []
@@ -490,11 +492,8 @@ def open_publish_gate(cwd, bead, actor) -> tuple[int, str]:
     if open_gates:
         return 0, ""  # already gated — idempotent
     reason = f"{PUBLISH_GATE_MARKER} {bead} — human publication gate (external upstream)"
-    res = bd.run(
-        ["gate", "create", "--blocks", bead, "--type", _PUBLISH_GATE_TYPE, "--reason", reason],
-        cwd,
-        actor,
-        capture=True,
+    res = bd_cli.routes(cwd).gate_create(
+        bead, _PUBLISH_GATE_TYPE, reason, actor=actor, capture=True
     )
     if res.returncode:
         return res.returncode, f"could not open publication gate: {bd.err_line(res)}"
@@ -541,24 +540,23 @@ def publish(cwd, bead, actor, external_ref: str = "") -> tuple[int, str, str]:
             "",
         )
 
-    res = bd.run(push_args, cwd, actor, capture=True)
+    res = bd_cli.routes(cwd).github_push_issue(bead, actor=actor)
     if res.returncode:
         return res.returncode, f"upstream push failed: {bd.err_line(res)}", ""
 
     # Stamp the external_ref (gh-#) so the resolution watch (bh-haak) can follow the filed issue.
     if external_ref:
-        upd = bd.run(["update", bead, "--external-ref", external_ref], cwd, actor, capture=True)
+        upd = bd_cli.routes(cwd).issue_set_external_ref(
+            bead, external_ref, actor=actor, capture=True
+        )
         if upd.returncode:
             msg = f"filed {bead} but could not stamp external_ref: {bd.err_line(upd)}"
             return upd.returncode, msg, ""
 
     # Flip outbound:pending → publish:approved (event-sourced, shared state vocabulary).
     reason = f"filed upstream via {config.BINARY_ALIAS} contrib publish"
-    flip = bd.run(
-        ["set-state", bead, _state_arg(PUBLISH_APPROVED), "--reason", reason],
-        cwd,
-        actor,
-        capture=True,
+    flip = bd_cli.routes(cwd).issue_set_state(
+        bead, _state_arg(PUBLISH_APPROVED), reason=reason, actor=actor, capture=True
     )
     if flip.returncode:
         msg = f"filed {bead} but could not flip to {PUBLISH_APPROVED}: {bd.err_line(flip)}"
