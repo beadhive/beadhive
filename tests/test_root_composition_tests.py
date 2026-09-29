@@ -38,6 +38,13 @@ def test_every_direct_root_package_dependent_is_registered_or_a_contract() -> No
         "tests/test_selective_validation_impact_golden.py",
         "tests/unit/modules/work/test_impact_plugin_backends.py",
     } <= set(PACKAGE_TESTS["beadhive-pants"])
+    assert {
+        "tests/test_bd_cli.py",
+        "tests/test_bd_cli_boundary.py",
+        "tests/test_beads_routing.py",
+        "tests/test_guard_primary.py",
+        "tests/test_merge_slot.py",
+    } <= set(PACKAGE_TESTS["beadhive-bd-cli"])
 
 
 def test_unregistered_direct_root_package_dependent_fails_closed(

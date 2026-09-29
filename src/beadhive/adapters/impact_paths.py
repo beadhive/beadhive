@@ -26,7 +26,13 @@ ROOT_COMPOSITION = "@root-composition"
 # paths live here, beside the derived dependency resolver, so impact analysis can fail closed
 # before declaring a package change resolved when its root test closure is unknown.
 PACKAGE_TESTS: dict[str, tuple[str, ...]] = {
-    "beadhive-bd-cli": ("tests/test_beads_routing.py",),
+    "beadhive-bd-cli": (
+        "tests/test_bd_cli.py",
+        "tests/test_bd_cli_boundary.py",
+        "tests/test_beads_routing.py",
+        "tests/test_guard_primary.py",
+        "tests/test_merge_slot.py",
+    ),
     "beadhive-beads-client": (
         "tests/test_beads_routing.py",
         "tests/test_dispatch_state.py",
