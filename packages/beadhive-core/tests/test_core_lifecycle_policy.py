@@ -145,6 +145,7 @@ class Leases:
     refuse: int = 0
     release_fails: bool = False
     takes: bool = True
+    reclaimable: bool = True
 
     def acquire(self, bead: str, *, actor: str) -> None:
         self.log.append(f"lease.acquire {actor}")
@@ -159,6 +160,18 @@ class Leases:
             raise WriteFailed(1)
         if self.takes:
             self.beads.assignee, self.beads.status = "", "open"
+
+    def abandon(self, bead: str, *, actor: str, read: Any, reclaim: bool) -> None:
+        self.log.append(f"lease.abandon {actor} reclaim={reclaim}")
+        if self.release_fails or (reclaim and not self.reclaimable):
+            raise WriteFailed(detail="lease refused")
+        if self.takes:
+            self.beads.assignee, self.beads.status = "", "open"
+            if not reclaim:
+                self.beads.labels = [
+                    label for label in self.beads.labels if not label.startswith("review:")
+                ]
+                self.beads.labels.append("review:abandoned")
 
 
 @dataclass
@@ -711,7 +724,8 @@ def test_resume_warns_when_the_gate_lookup_fails_and_still_resumes(world: World)
 def test_abandon_records_releases_and_proves_the_release(world: World) -> None:
     world.beads.assignee, world.beads.status = "dev/carol", "in_progress"
     outcome = world.run(lambda c: c.abandon(BEAD, "disp/lead"))
-    assert world.states.calls == [("review", "abandoned", "abandoned", "disp/lead")]
+    assert world.states.calls == []  # reclaim's own durable audit is the sole write
+    assert world.log[0] == "lease.abandon disp/lead reclaim=True"
     assert world.output.out == [f"✓ abandoned {BEAD}; worktree kept"]
     assert world.observer.transitions == ["abandoned"]
     assert "remove" not in world.log and outcome.removed is False
@@ -732,15 +746,68 @@ def test_abandon_refuses_to_report_success_while_the_bead_is_still_held(world: W
     error = world.output.errors[-1]
     assert "NOT released" in error
     assert "status is still in_progress; still assigned to dev/carol" in error
-    assert "bh bd reclaim" in error and f"bh bd update {BEAD} --status open" in error
+    assert "inspect the current holder" in error
     assert world.observer.transitions == []
 
 
 def test_abandon_surfaces_route_failures_instead_of_success(world: World) -> None:
-    world.states.fail = 1
-    world.refused(lambda c: c.abandon(BEAD, "disp/lead", remove=True))
-    assert world.output.errors == [f"⚠ abandoned {BEAD} with bd errors (see above)"]
-    assert "remove" in world.log  # the recovery still removes what it was asked to
+    world.beads.assignee, world.beads.status = "dev/carol", "in_progress"
+    world.leases.release_fails = True
+    world.refused(lambda c: c.abandon(BEAD, "dev/carol"))
+    assert "abandon refused" in world.output.errors[-1]
+    assert world.states.calls == []
+    assert "remove" not in world.log
+    assert (world.beads.assignee, world.beads.status) == ("dev/carol", "in_progress")
+
+
+def test_own_live_claim_is_released_with_the_review_label_in_one_write(world: World) -> None:
+    world.beads.assignee, world.beads.status = "dev/alice", "in_progress"
+    world.beads.labels = ["review:pending", "component:work"]
+    world.run(lambda c: c.abandon(BEAD, "dev/alice"))
+    assert world.beads.labels == ["component:work", "review:abandoned"]
+    assert world.states.calls == []
+    assert world.log[0] == "lease.abandon dev/alice reclaim=False"
+    assert world.observer.transitions == ["abandoned"]
+
+
+@pytest.mark.parametrize("actor", ["dev/stranger", "rev/other", "anonymous"])
+def test_unrelated_actor_is_refused_before_any_write(world: World, actor: str) -> None:
+    world.beads.assignee, world.beads.status = "dev/alice", "in_progress"
+    world.refused(lambda c: c.abandon(BEAD, actor))
+    assert world.states.calls == []
+    assert not any(line.startswith("lease.") for line in world.log)
+
+
+def test_unreclaimable_foreign_claim_has_no_partial_review_or_removal(world: World) -> None:
+    world.beads.assignee, world.beads.status = "dev/alice", "in_progress"
+    world.leases.reclaimable = False
+    world.refused(lambda c: c.abandon(BEAD, "ops/recovery"))
+    assert world.states.calls == []
+    assert (world.beads.assignee, world.beads.status) == ("dev/alice", "in_progress")
+
+
+def test_rm_on_a_held_claim_refuses_before_store_or_worktree_changes(world: World) -> None:
+    world.beads.assignee, world.beads.status = "dev/alice", "in_progress"
+    world.refused(lambda c: c.abandon(BEAD, "dev/alice", remove=True))
+    assert world.states.calls == []
+    assert not any(line.startswith("lease.") or line == "remove" for line in world.log)
+
+
+def test_repeated_open_unassigned_abandon_is_idempotent(world: World) -> None:
+    world.run(lambda c: c.abandon(BEAD, "dev/alice"))
+    world.run(lambda c: c.abandon(BEAD, "dev/alice"))
+    assert world.states.calls == []
+    assert not any(line.startswith("lease.") for line in world.log)
+
+
+@pytest.mark.parametrize("status", ["closed", "blocked", "in_progress"])
+def test_invalid_status_or_missing_holder_is_refused_without_a_write(
+    world: World, status: str
+) -> None:
+    world.beads.status = status
+    world.refused(lambda c: c.abandon(BEAD, "ops/recovery"))
+    assert world.states.calls == []
+    assert not any(line.startswith("lease.") for line in world.log)
 
 
 def test_an_unreadable_bead_is_never_reported_as_released(world: World) -> None:

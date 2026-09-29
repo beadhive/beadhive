@@ -71,7 +71,8 @@ def _api(name: str) -> str:
 ISSUE_ROUTES = tuple(_api(name) for name in ("work.issue.get", "work.issue.update"))
 #: The claim-lease rows the :class:`Leases` port stands in for.
 LEASE_ROUTES = tuple(
-    default_table().select_cli(name).name for name in ("work.lease.acquire", "work.lease.release")
+    default_table().select_cli(name).name
+    for name in ("work.lease.acquire", "work.lease.release", "work.lease.reclaim")
 )
 #: The state-dimension rows :class:`StateReads` / ``StateOperations`` stand in for here.
 LIFECYCLE_STATE_ROUTES = tuple(
@@ -183,6 +184,11 @@ class Leases(Protocol):
 
     def release(self, bead: str, *, actor: str) -> None:
         """Reopen and unassign ``bead``; raise :class:`WriteFailed`."""
+        ...
+
+    def abandon(self, bead: str, *, actor: str, read: Issue, reclaim: bool) -> None:
+        """One atomic release/audit operation. A reclaim retains the backend's grace,
+        granting-replica and renewal guards; no subsequent review mutation is made."""
         ...
 
 
@@ -680,39 +686,46 @@ class LifecycleCommands:
     # -- abandon --
 
     def abandon(self, bead: str, actor: str, *, remove: bool = False) -> AbandonOutcome:
-        """Release the claim and record the abandon, then RE-READ to prove it.
+        """Atomically release our claim, or recover a stale claim as an operator.
 
-        Deliberately no refuse-if-other guard: this is the recovery path for a bead a stalled or
-        dead agent left claimed. Route failures are surfaced instead of reporting success, and a
-        release that did not take names the remaining step rather than printing a bare ✓.
+        The backend's reclaim event is the foreign claim's abandonment audit: keeping it
+        as the sole mutation preserves its expiry, replica and concurrent-renewal guards.
+        Worktree deletion is a separate step on an already released bead, so a deletion
+        refusal cannot leave a held claim without its worktree.
         """
-        failed = False
-        try:
-            self._states.set_state(
-                bead, REVIEW_DIMENSION, "abandoned", reason="abandoned", actor=actor
+        issue = self._read(bead)
+        if text(issue, "status") not in {"open", "in_progress"}:
+            self._fail(f"✗ {bead}: only an open or claimed bead can be abandoned (nothing changed)")
+        holder = text(issue, "assignee")
+        held = bool(holder) or text(issue, "status") == "in_progress"
+        if text(issue, "status") == "in_progress" and not holder:
+            self._fail(
+                f"✗ {bead}: claimed bead has no holder; "
+                "repair its claim metadata first (nothing changed)"
             )
-        except StateUpdateFailed:
-            failed = True
-        try:
-            self._leases.release(bead, actor=actor)
-        except WriteFailed:
-            failed = True
-        removed = self._workspace.remove(bead) if remove else False
-        if failed:
-            self._fail(f"⚠ abandoned {bead} with bd errors (see above)")
-        try:
-            current = self._issues.get(bead)
-        except IssueReadFailed:
-            current = None
+        if remove and held:
+            self._fail(
+                f"✗ {bead}: --rm requires an already released claim; abandon without --rm "
+                "first, then repeat with --rm (nothing changed)"
+            )
+        reclaim = bool(holder and holder != actor)
+        if reclaim and not actor.startswith(("super/", "dir/", "disp/", "ops/", "cust/", "ctrl/")):
+            self._fail(f"✗ {bead}: {actor} may not reclaim {holder}'s claim (nothing changed)")
+        if held:
+            try:
+                self._leases.abandon(bead, actor=actor, read=issue, reclaim=reclaim)
+            except WriteFailed as exc:
+                self._fail(
+                    f"✗ {bead}: abandon refused; {exc.detail or 'claim unchanged'}", exc.exit_code
+                )
+        current = self._read(bead)
         residue = claim_residue(current)
         if residue:
             self._fail(
-                f"⚠ {bead}: review=abandoned was recorded, but the claim was NOT released "
-                f"({residue}).\n"
-                f"  The bead is still held, so nothing else can take it. Release it with:\n"
-                f"    bh bd reclaim            # reverts claims whose lease has expired\n"
-                f"    bh bd update {bead} --status open --assignee ''   # or force it directly"
+                f"⚠ {bead}: claim was NOT released ({residue}); "
+                "inspect the current holder before retrying"
             )
+        removed = self._workspace.remove(bead) if remove else False
         self._observer.transition("abandoned")
         kept = "; worktree removed" if remove else "; worktree kept"
         self._out.say(f"✓ abandoned {bead}{kept}")

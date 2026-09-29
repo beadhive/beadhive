@@ -33,6 +33,7 @@ package statically (``scripts/check_package_imports.py``).
 from __future__ import annotations
 
 import importlib
+import os
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
@@ -391,7 +392,7 @@ def abandon(bead: str, hive: str, rm: bool) -> None:
     otel.set_bead(bead)
     cfg = config.load()
     entry, main, _target, _branch = work.worktree.locate(cfg, hive, bead)
-    actor = _actor(cfg, entry, "")
+    actor = _actor(cfg, entry, os.environ.get("BH_DEV", ""))
     with _failing_closed(), commands(cfg, hive, main, entry) as lifecycle:
         lifecycle.abandon(bead, actor, remove=rm)
 

@@ -34,8 +34,19 @@ brief → claim → (work in worktree) → show → refine → check → submit 
 | `bh work submit <id>` | Verify clean conventional-digest history, validate the proposed hash from a **clean checkout**, (push for out-of-process review,) set `review:pending` + open a `bd gate`. Handoff, **not** "done" — leaves the worktree intact. |
 | `bh work bounce <id> -m "<reason>"` | **Reviewer.** Send a submitted bead back for changes: resolve every open review gate (no orphan left blocking a later merge) then set `review:changes-requested`. With no open gate it warns and still records the bounce. Points the developer at `resume`. |
 | `bh work resume <id> [--as …]` | After review returns `changes-requested`: re-attach a fresh worktree on the bead branch, print the feedback, re-assert the claim (GCs any review gate a raw bounce left open). Address it and `submit` again. |
-| `bh work abandon <id> [--rm]` | Release the claim and record the abandon, then **re-read the bead to prove it**. `--rm` also removes the worktree. Exits non-zero and names the remaining step if the bead comes back still claimed — a ✓ here means the bead is genuinely open and unassigned. |
+| `bh work abandon <id> [--rm]` | Atomically release your claim, or reclaim an expired foreign lease as an operator, then **re-read the bead to prove it**. `--rm` removes an already released worktree; it refuses before changing a held claim. A ✓ means the bead is open and unassigned. |
 | `bh work land <id>` | **PR-governed hives only** (`work.landing: pr`): complete a `pr-pending` landing once GitHub reports the PR MERGED — resolve the `gh:pr` gate, close the bead/epic with the squash-proof close_reason. See [PR-governed landing](#pr-governed-landing--worklanding-pr). |
+
+Abandon uses the explicit `BH_DEV` identity before configuration defaults; for example,
+`BH_DEV=ops/recovery bh work abandon <id>`. A holder's release
+sets `review:abandoned` in the same guarded update that opens and unassigns the bead. A foreign
+claim requires an operator seat (`ops/`, `super/`, `dir/`, `disp/`, `cust/`, or `ctrl/`) and
+uses Beads' narrow reclaim operation for that bead and its observed holder. Reclaim's durable
+recovery event is the abandonment audit; no second review write can leave a partial lifecycle
+state. Beads enforces its configured expiry grace, granting replica, and concurrent renewal
+checks. A live, missing, malformed, or foreign-replica lease is not reclaimed. An unrelated
+actor is refused before a write. Repeating abandon on an open unassigned bead writes nothing.
+To remove a claimed worktree, first abandon without `--rm`, then repeat with `--rm`.
 
 Merge is a **separate role** (the Refiner / merge owner) gated by `bd merge-slot` —
 not driven by `bh work`. Never push `main` or run the merge yourself. The molecule wrap-up
