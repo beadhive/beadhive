@@ -522,6 +522,7 @@ def _spawn(spec: ServiceSpec, token_file: Path, port: int) -> subprocess.Popen[b
     try:
         return subprocess.Popen(
             argv,
+            cwd=spec.repo_root,
             stdin=subprocess.DEVNULL,
             stdout=log_fd,
             stderr=log_fd,

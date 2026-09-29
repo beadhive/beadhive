@@ -107,6 +107,30 @@ class RealLeases:
     def release(self, bead: str, *, actor: str) -> None:
         self._run(["update", bead, "--status", "open", "--assignee", ""], actor)
 
+    def abandon(self, bead: str, *, actor: str, read: Any, reclaim: bool) -> None:
+        if reclaim:
+            result = _bd("reclaim", "--id", bead, cwd=self._cwd, actor=actor)
+            if bead not in [row["id"] for row in result.get("reclaimed") or []]:
+                raise WriteFailed(detail="lease not reclaimable")
+        else:
+            self._run(
+                [
+                    "update",
+                    bead,
+                    "--status",
+                    "open",
+                    "--assignee",
+                    "",
+                    "--if-assignee",
+                    actor,
+                    "--if-status",
+                    str(read["status"]),
+                    "--add-label",
+                    "review:abandoned",
+                ],
+                actor,
+            )
+
 
 class RealStates:
     def __init__(self, cwd: Path) -> None:
@@ -258,7 +282,7 @@ def test_real_v13_cli_lease_is_verified_by_the_http_re_read(tmp_path: Path) -> N
             # route failure instead of an unqualified ✓ (the bead is still held).
             with pytest.raises(LifecycleFailed):
                 commands.abandon(held, "disp/lead")
-            assert out.lines[-1] == f"⚠ abandoned {held} with bd errors (see above)"
+            assert "abandon refused" in out.lines[-1]
         assert _row(hive, held)["assignee"] == "dev/bob"
         final = _row(hive, bead)
         assert (final["status"], final.get("assignee") or "") == ("open", "")

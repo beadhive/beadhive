@@ -1583,12 +1583,11 @@ def abandon(
     hive: str = _HIVE,
     rm: bool = typer.Option(False, "--rm", help="also remove the worktree (default: keep it)"),
 ):
-    """Release the claim and record the abandon, then RE-READ to prove it. Recovery path for
-    stalls.
-
-    The re-read is the point (bh-0mckw): a release that did not take names the remaining step
-    instead of printing an unqualified ✓. Served by the `beadhive_core` lifecycle handlers
-    through the one `work_lifecycle` seam."""
+    """Atomically release your claim, or reclaim a stale foreign lease with BH_DEV=ops/<name>
+    (also super/dir/disp/cust/ctrl). Reclaim preserves Beads' configured grace and replica
+    guards; a live, renewed, missing, or foreign-replica lease changes nothing. Its durable
+    recovery event records the abandonment without a second review-state write. Repeat with
+    --rm after releasing to remove the worktree; --rm on a held claim refuses unchanged."""
     return work_lifecycle.abandon(bead, hive, rm)
 
 

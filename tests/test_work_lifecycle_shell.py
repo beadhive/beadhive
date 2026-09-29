@@ -257,11 +257,20 @@ def test_claim_provisioning_failure_releases_through_the_bd_routes(
     assert (fakebd.beads["mr-2"]["status"], fakebd.beads["mr-2"]["assignee"]) == ("open", "")
 
 
-def test_bh_work_abandon_verifies_the_release_over_http(hive, fakebd, served):
+def test_bh_work_abandon_verifies_the_release_over_http(hive, fakebd, served, monkeypatch):
     fakebd.seed("mr-3", title="t")
     work.claim(bead="mr-3", as_="dev/carol", hive="myrepo")
     fakebd.calls.clear()
+    monkeypatch.setenv("BH_DEV", "dev/carol")
 
+    result = CliRunner().invoke(cli.app, ["work", "abandon", "mr-3", "--rm", "--hive", "myrepo"])
+
+    assert result.exit_code == 1, result.output
+    assert fakebd.beads["mr-3"]["assignee"] == "dev/carol"
+    assert _wt(hive, "mr-3").exists()
+    assert fakebd.states.get("mr-3", {}).get("review") != "abandoned"
+    released = CliRunner().invoke(cli.app, ["work", "abandon", "mr-3", "--hive", "myrepo"])
+    assert released.exit_code == 0, released.output
     result = CliRunner().invoke(cli.app, ["work", "abandon", "mr-3", "--rm", "--hive", "myrepo"])
 
     assert result.exit_code == 0, result.output

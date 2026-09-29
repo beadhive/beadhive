@@ -17,8 +17,8 @@ from typing import Any
 
 from beadhive_core import WriteFailed
 
-from . import reads
-from .transport import BdTransport
+from . import coordination, reads
+from .transport import BdTransport, err_line
 
 __all__ = ["CliIssues", "CliLeases", "CliStateReads"]
 
@@ -59,6 +59,42 @@ class CliLeases:
         result = self._bd.run(args, self._main, actor=actor)
         if result.returncode != 0:
             raise WriteFailed(result.returncode)
+
+    def abandon(self, bead: str, *, actor: str, read: Any, reclaim: bool) -> None:
+        if reclaim:
+            result = coordination.reclaim(
+                self._bd,
+                self._main,
+                ids=[bead],
+                assignee=[str(read.get("assignee") or "")],
+                actor=actor,
+            )
+            if not result.ok or bead not in result.reclaimed_ids:
+                raise WriteFailed(
+                    detail=result.error
+                    or "lease is live, within reclaim grace, absent, or granted by another replica"
+                )
+            return
+        args = [
+            "update",
+            bead,
+            "--status",
+            "open",
+            "--assignee",
+            "",
+            "--if-assignee",
+            str(read.get("assignee") or ""),
+            "--if-status",
+            str(read.get("status") or ""),
+            "--add-label",
+            "review:abandoned",
+        ]
+        for label in read.get("labels") or ():
+            if str(label).startswith("review:") and label != "review:abandoned":
+                args += ["--remove-label", str(label)]
+        result = self._bd.run(args, self._main, actor=actor, capture=True)
+        if result.returncode != 0:
+            raise WriteFailed(result.returncode, err_line(result))
 
 
 class CliStateReads:

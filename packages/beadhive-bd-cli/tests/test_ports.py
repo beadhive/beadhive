@@ -105,6 +105,62 @@ def test_lease_and_assign_failures_carry_the_exit_code_without_repeating_bd():
     assert release.value.exit_code == 4
 
 
+def test_abandon_holder_uses_one_guarded_release_and_review_update():
+    bd = FakeBd()
+    CliLeases(bd, MAIN).abandon(
+        BEAD,
+        actor="dev/a",
+        reclaim=False,
+        read={"assignee": "dev/a", "status": "in_progress", "labels": ["review:pending"]},
+    )
+    assert [_argv(call) for call in bd.calls] == [
+        (
+            "dev/a",
+            [
+                "update",
+                BEAD,
+                "--status",
+                "open",
+                "--assignee",
+                "",
+                "--if-assignee",
+                "dev/a",
+                "--if-status",
+                "in_progress",
+                "--add-label",
+                "review:abandoned",
+                "--remove-label",
+                "review:pending",
+            ],
+        )
+    ]
+
+
+def test_abandon_foreign_uses_only_the_narrow_reclaim_and_its_audit():
+    bd = FakeBd(
+        stdout={
+            "reclaim --assignee": json.dumps(
+                {"count": 1, "reclaimed": [{"id": BEAD, "previous_owner": "dev/a"}]}
+            )
+        }
+    )
+    CliLeases(bd, MAIN).abandon(
+        BEAD, actor="ops/recovery", reclaim=True, read={"assignee": "dev/a"}
+    )
+    assert [_argv(call) for call in bd.calls] == [
+        ("ops/recovery", ["reclaim", "--assignee", "dev/a", "--id", BEAD, "--json"])
+    ]
+
+
+def test_abandon_declined_reclaim_does_not_write_review():
+    bd = FakeBd(stdout={"reclaim --assignee": '{"count": 0, "reclaimed": []}'})
+    with pytest.raises(core.WriteFailed, match="lease is live"):
+        CliLeases(bd, MAIN).abandon(
+            BEAD, actor="ops/recovery", reclaim=True, read={"assignee": "dev/a"}
+        )
+    assert len(bd.calls) == 1
+
+
 def test_issue_and_state_compatibility_routes_read_through_bd():
     bd = FakeBd(show={"id": "mr-1", "status": "open"})
     assert CliIssues(bd, MAIN).get("mr-1") == {"id": "mr-1", "status": "open"}

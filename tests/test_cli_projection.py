@@ -143,7 +143,9 @@ def test_generated_projection_preserves_help_and_every_migrated_flag() -> None:
     invocation_env = {"COLUMNS": "120", "BH_SKIP_SETUP_CHECK": "1", "NO_COLOR": "1"}
     expected_help = {
         (): "f29cac19a29f3527cabce08ab78c82700d2887716b7be4653e1b2074d3371fcf",
-        ("work",): "0e2be538a1848edde4a75489b843e16ece7a988afad5ff87854585fcf0278fc3",
+        # The atomic-abandon fix documents stale-lease recovery in the command summary;
+        # the parameter inventory above remains unchanged.
+        ("work",): "64b0f4d9b911ce0c9f3738f2309a8507f208e5e26d17fa8eef8a8a879268b950",
         ("plan",): "25562be42291d9cb0489760bb59061838e88562deb07cfe3b1e1fc20dc34af2b",
     }
     for path, digest in expected_help.items():
@@ -165,6 +167,19 @@ def test_naming_adr_is_a_generator_gate_and_generated_traces_are_exact() -> None
         for command in module.app.registered_commands:
             verb = command.name or command.callback.__name__.rstrip("_")
             assert getattr(command.callback, "__otel_verb__", None) == f"{group}.{verb}"
+
+
+def test_abandon_help_explains_operator_identity_and_safe_cleanup() -> None:
+    result = CliRunner().invoke(
+        cli.app,
+        ["work", "abandon", "--help"],
+        env={"COLUMNS": "120", "BH_SKIP_SETUP_CHECK": "1", "NO_COLOR": "1"},
+    )
+    assert result.exit_code == 0
+    text = " ".join(result.stdout.split())
+    assert "BH_DEV=ops/<name>" in text
+    assert "configured grace and replica" in text
+    assert "--rm on a held claim refuses unchanged" in text
 
 
 @pytest.mark.parametrize(
