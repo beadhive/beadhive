@@ -38,6 +38,11 @@ A route only shapes argv and interprets output. The process is the caller's `BdT
   `Engine` (`-C <hive>` scoping, `--actor`, strict-read narration).
 - `SubprocessBd` is the plain `subprocess` transport, used by this package's real-`bd` tests.
 
+Root composition deliberately retains both `src/beadhive/engine.py` (engine selection) and
+`src/beadhive/bd.py` (the configured transport adapter passed to these routes). They are
+composition and transport boundaries, respectively; neither is an alternate owner for
+application-level `bd` argv construction.
+
 `err_line` (bd's significant failure line) and `names_bead` (the anchored gate-description
 matcher, bh-1vvdp) are the one implementation of each; the shell's `bd.err_line` /
 `bd.names_bead` forward here.

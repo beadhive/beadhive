@@ -66,13 +66,33 @@ class CliRoutes:
         """Every ready issue in bd's dependency order, without its default 100-row cap."""
         return self._bd.json(["ready", "--limit", "0"], self._cwd)
 
-    def forward(self, args: Iterable[str], *, capture: bool = True) -> Any:
-        """A named byte-forward route for shell commands whose flags are intentionally opaque."""
-        return self._bd.run(list(args), self._cwd, capture=capture)
+    def presentation_show(self, bead: str, extra_args: Iterable[str] = ()) -> Any:
+        """Stream-compatible ``bd show`` presentation with intentionally opaque CLI flags."""
+        return self._bd.run(["show", bead, *extra_args], self._cwd, capture=True)
 
-    def json_forward(self, args: Iterable[str]) -> Any:
-        """A named JSON-forward route for compatibility reads with caller-owned flag policy."""
-        return self._bd.run([*args, "--json"], self._cwd, capture=True)
+    def presentation_list(self, extra_args: Iterable[str] = ()) -> Any:
+        """Stream-compatible ``bd list`` presentation with intentionally opaque CLI flags."""
+        return self._bd.run(["list", *extra_args], self._cwd, capture=True)
+
+    def molecule_children(self, molecule: str) -> Any:
+        """Raw JSON process result for the molecule's direct children."""
+        return self._bd.run(["show", molecule, "--children", "--json"], self._cwd, capture=True)
+
+    def ready_explanation_all(self) -> Any:
+        """Raw JSON readiness explanation, including ephemeral rows and without a row cap."""
+        return self._bd.run(
+            ["ready", "--include-ephemeral", "--explain", "--limit", "0", "--json"],
+            self._cwd,
+            capture=True,
+        )
+
+    def ready_including_ephemeral_all(self) -> Any:
+        """Raw JSON ready rows, including ephemeral rows and without a row cap."""
+        return self._bd.run(
+            ["ready", "--include-ephemeral", "--limit", "0", "--json"],
+            self._cwd,
+            capture=True,
+        )
 
     def gate_list(self, *, include_resolved: bool = False, strict: bool = False) -> Any:
         args = ["gate", "list", "--limit", "0"]

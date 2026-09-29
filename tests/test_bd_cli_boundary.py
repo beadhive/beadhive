@@ -74,6 +74,11 @@ RAW_BD_INFRASTRUCTURE_SCOPES = {
     }
 }
 
+# No root composition scope may use CliRoutes.forward/json_forward. Opaque terminal presentation
+# is retained only through the named package routes ``presentation_show`` and
+# ``presentation_list``, which constrain the operation while deliberately leaving its flags to bd.
+GENERIC_FORWARD_SCOPES: dict[str, set[str]] = {}
+
 
 def _dotted(node: ast.AST) -> str:
     if isinstance(node, ast.Name):
@@ -167,6 +172,23 @@ def _raw_bd_argv(source: str, relative: str) -> list[str]:
     return raw
 
 
+def _generic_forward_calls(source: str, relative: str) -> list[str]:
+    """Generic package forwarding would let arbitrary bd argv bypass named-route ownership."""
+    tree = ast.parse(source, filename=relative)
+    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    allowed_scopes = GENERIC_FORWARD_SCOPES.get(relative, set())
+    calls = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr not in {"forward", "json_forward"}:
+            continue
+        scope = _enclosing_function(node, parents)
+        if scope not in allowed_scopes:
+            calls.append(f"{relative}:{node.lineno}:{node.func.attr}")
+    return calls
+
+
 def test_bd_module_import_aliases_cannot_hide_inline_routes() -> None:
     source = (
         "from . import bd as bd_mod\n"
@@ -204,18 +226,35 @@ def test_cli_raw_bd_literal_exception_is_function_scoped() -> None:
     assert _raw_bd_argv(vocabulary, "cli.py") == []
 
 
+def test_generic_package_forwarders_cannot_hide_arbitrary_routes() -> None:
+    source = (
+        "def application(routes, args):\n"
+        "    routes.forward(args)\n"
+        "    routes.json_forward(['ready'])\n"
+    )
+    assert _generic_forward_calls(source, "application.py") == [
+        "application.py:2:forward",
+        "application.py:3:json_forward",
+    ]
+
+
 def test_root_bd_argv_is_package_routed_or_an_explicit_admin_boundary() -> None:
     direct: list[str] = []
     raw: list[str] = []
+    generic: list[str] = []
     for path in sorted(SOURCE.rglob("*.py")):
         relative = path.relative_to(SOURCE).as_posix()
         source = path.read_text()
         direct.extend(_direct_bd_calls(source, relative))
         raw.extend(_raw_bd_argv(source, relative))
+        generic.extend(_generic_forward_calls(source, relative))
 
     assert direct == [], "inline bd adapter calls must move to beadhive-bd-cli:\n" + "\n".join(
         direct
     )
     assert raw == [], (
         "raw bd argv must move to beadhive-bd-cli or be documented infra:\n" + "\n".join(raw)
+    )
+    assert generic == [], (
+        "generic bd forwarding must become a named beadhive-bd-cli route:\n" + "\n".join(generic)
     )
