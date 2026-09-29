@@ -13,6 +13,79 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.20.0 (2026-09-29)
+
+### Feat
+
+- **work**: reuse attest keys for batch lifecycle
+- **validation**: isolate package root composition gates
+- **worktrees**: route bead state reads through Beads
+- **work**: route bh work next --epic through beadhive-core
+- **core**: add the epic-scoped guarded claim to QueueCommands
+- **attest**: split beadhive-bd-cli into its own attest key
+- **work**: add work.beads.route and fail closed by default when no Beads session opens
+- **work**: add the bounded BH_BEADS_ROUTE rollback and cutover contract tests
+- **dispatch**: route molecule progress, swarm inspection, dispatch polling, and local-loop state through beadhive-core
+- **planning**: file molecules via one Beads BatchApply request
+- **work**: wire bh work ready through QueueCommands.list_ready
+- **core**: serve assign, claim, resume and abandon from beadhive-core
+- **worktrees**: move the safety classifier behind bead-state/claim/merge-evidence ports
+- **worktrees**: release Herdr bindings before remove and repair binding gaps
+- **herdr**: bind launch through the Herdr workspace.binding with worktree open --path
+- **worktrees**: declare worktree.manager slots and select the native manager
+- **scripts**: enforce library and plugin package classes in check_package_imports
+- **queue**: route bh work schedule through beadhive-core; widen ready API surface
+- **work**: select the atomic claim-next route before bh work next's CLI fallback
+- **core**: add ready-selection and atomic claim-next queue policy
+- **core**: add explicit operation routing table from parity evidence
+
+### Fix
+
+- **release**: enforce Beads floor on Nix channels
+- **routing**: record HQ fallback and bh API override
+- **work**: verify batch approval provenance
+- **work**: bind batch approval to head
+- **work**: reject stale batch base proof
+- **work**: pin batch attest revisions
+- **bd-cli**: close generic route escape
+- **validation**: isolate proven manifest to pants profile
+- **architecture**: keep bd cli out of worktree cycle
+- **validation**: cover bd cli root consumers
+- **validation**: ignore stale bytecode in closure discovery
+- **validation**: stabilize certification process proof
+- **validation**: fail closed on incomplete root composition
+- **factory**: classify terminal HQ probes before timeout
+- **worktree**: allow container refresh when local main is strictly ahead of origin
+- **worktrees**: satisfy the CLI/package boundary contract and refresh the config ledger
+- **validation**: attest keys run only the native framework
+- **docs**: sync config module evidence with the current importer count
+- **planning**: keep beads_v1_3 out of beadhive's top-level import chain
+- **packages**: avoid pytest basename collision on beadhive-worktrees boundary test
+- **packages**: update parity demo and test-closure registry for beadhive-plugins
+- **test**: keep the concurrent-tree regression test off the real evidence dir
+- **validation**: scope test-closure evidence to the validated checkout
+- **backups**: keep shared-server backups opt-in
+- **config**: disable automatic Dolt backups by default
+
+### Refactor
+
+- **bd-cli**: close dispatch route gaps
+- **bd-cli**: centralize remaining root routes
+- **worktree**: compose the bead-state, claim, and merge-evidence ports at one seam
+- **routing**: remove BH_BEADS_ROUTE, work.beads.route is now the sole switch
+- **bd-cli**: move the bd argv routes into the beadhive-bd-cli library package
+- **worktrees**: route worktree_merge's pure tier logic through beadhive-worktrees
+- **worktrees**: move inventory/status/cleanup/prune orchestration into beadhive-worktrees
+- **worktrees**: move init rules and lifecycle observers into beadhive-worktrees
+- **plan**: retire the planning service layer and its duplicate MoleculeGraph
+- **work**: delete the pass-through work lifecycle service layer
+- **work**: open every core cohort session at one composition seam
+- **worktrees**: retire plugin and orca worktree delegation
+- **packages**: scaffold beadhive-worktrees with the pure worktree domain
+- **packages**: extract kernel plugin/lifecycle contracts to beadhive-plugins
+- **schedule**: isolate the children-fetch route selection for testing
+- **work**: retire the FakeBd claim-race simulation now proven for real
+
 ## v0.19.0 (2026-09-27)
 
 ### Feat
