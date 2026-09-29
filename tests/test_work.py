@@ -369,6 +369,9 @@ class FakeBd:
             for g in self.gates:
                 if g["id"] == args[1]:
                     g["status"] = "closed"
+                    g["close_reason"] = (
+                        args[args.index("--reason") + 1] if "--reason" in args else ""
+                    )
             return _CP(0, "", "")
         return _CP(0, "", "")
 
@@ -377,8 +380,9 @@ class FakeBd:
         for g in self.gates:
             if g["status"] == "open" and bead in g["description"]:
                 g["status"] = "closed"
+                g["close_reason"] = "approved by review/test"
 
-    def resolve_review(self, bead):
+    def resolve_review(self, bead, close_reason="approved by review/test"):
         """A reviewer's approve, reduced to its gate effect: resolve only `bead`'s open REVIEW
         gates (anchored id match), leaving security/kickoff/ad-hoc gates standing. The approve
         verb itself is covered by beadhive-core and tests/test_work_review_shell.py."""
@@ -390,10 +394,11 @@ class FakeBd:
                 and work_logic.is_review_gate_desc(desc)
             ):
                 g["status"] = "closed"
+                g["close_reason"] = close_reason
 
     def bounce(self, bead):
         """A reviewer's bounce, reduced to its effects: review gates resolved, state recorded."""
-        self.resolve_review(bead)
+        self.resolve_review(bead, close_reason="changes requested by review/test")
         self.states.setdefault(bead, {})["review"] = "changes-requested"
 
     def did(self, *needles):
@@ -2360,6 +2365,73 @@ def test_batch_rebase_requires_resubmit_and_approval_for_rewritten_head(hive, fa
     assert fakebd.beads["mr-1.2"]["status"] == "closed"
     assert _git("cat-file", "-e", f"{container}:sibling.txt", cwd=hive.main).returncode == 0
     assert _git("cat-file", "-e", f"{container}:a.txt", cwd=hive.main).returncode == 0
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "review {short}",
+        "bh:review {short} batch samefile: mr-1.1, mr-1.2",
+    ],
+)
+def test_batch_merge_accepts_approved_legacy_short_review_marker(hive, fakebd, reason):
+    """Both legacy short marker shapes resolve to the exact approved batch head."""
+    _submit_and_approve_batch(hive, fakebd)
+    head = _git("rev-parse", "wt/batch/samefile", cwd=hive.main).stdout.strip()
+    review = [g for g in fakebd.gates if work_logic.is_review_gate_desc(g["description"])]
+    assert len(review) == 1
+    review[0]["description"] = f"blocks mr-1.1\n\nReason: {reason.format(short=head[:7])}"
+
+    work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    assert fakebd.beads["mr-1.1"]["status"] == "closed"
+    assert fakebd.beads["mr-1.2"]["status"] == "closed"
+
+
+def test_batch_merge_refuses_unresolvable_legacy_review_marker(hive, fakebd, capsys):
+    """A short marker that Git cannot resolve is never treated as approval of the pinned head."""
+    _submit_and_approve_batch(hive, fakebd)
+    review = [g for g in fakebd.gates if work_logic.is_review_gate_desc(g["description"])]
+    review[0]["description"] = "blocks mr-1.1\n\nReason: bh:review 0000000 batch samefile"
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    assert "no resolved review gate for current head" in capsys.readouterr().err
+    assert fakebd.beads["mr-1.1"]["status"] != "closed"
+
+
+@pytest.mark.parametrize(
+    "close_reason", ["changes requested by review/test", "superseded by resubmit deadbee"]
+)
+def test_batch_merge_refuses_resolved_nonapproval_for_current_head(
+    hive, fakebd, capsys, close_reason
+):
+    """Resolution is not authorization when the gate was bounced or administratively superseded."""
+    _submit_and_approve_batch(hive, fakebd)
+    review = [g for g in fakebd.gates if work_logic.is_review_gate_desc(g["description"])]
+    review[0]["close_reason"] = close_reason
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    assert "no resolved review gate for current head" in capsys.readouterr().err
+    assert fakebd.beads["mr-1.1"]["status"] != "closed"
+
+
+def test_batch_bounce_resume_direct_merge_stays_refused(hive, fakebd, capsys):
+    """A bounced gate remains non-authorizing after the developer resumes the shared checkout."""
+    _claim_and_commit_batch(hive, fakebd)
+    work.submit(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+    fakebd.bounce("mr-1.1")
+
+    work.resume(bead="mr-1.1", as_="", hive="myrepo")
+    capsys.readouterr()
+    with pytest.raises(typer.Exit):
+        work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    assert "changes-requested" in capsys.readouterr().err
+    assert fakebd.beads["mr-1.1"]["status"] != "closed"
 
 
 def test_batch_submit_carries_unaffected_key_and_records_direct_ledger_states(

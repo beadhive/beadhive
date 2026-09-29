@@ -671,7 +671,9 @@ def merge_group(cfg, group_arg, hive, rm):
     if config.review_gate(cfg, entry) == "human":
         _open, resolved = work_logic.review_gates(members[0], main)
         approved_head = any(
-            work_logic.review_gate_sha(str(gate.get("description") or "")) == head_sha.lower()
+            work_logic.is_approved_review_gate(gate)
+            and work_logic.resolved_review_gate_sha(str(gate.get("description") or ""), main)
+            == head_sha.lower()
             for gate in resolved
         )
         if not approved_head:

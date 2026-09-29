@@ -64,6 +64,29 @@ def review_gate_sha(desc: str) -> str:
     return match.group("sha") if match else ""
 
 
+def resolved_review_gate_sha(desc: str, cwd) -> str:
+    """Resolve a gate's full or legacy-short marker to one unambiguous commit.
+
+    ``rev-parse --verify`` rejects missing and ambiguous abbreviations. The marker parser admits
+    hex only, so no gate text can become revision syntax beyond the commit peel appended here.
+    """
+    marker = review_gate_sha(desc)
+    if not marker:
+        return ""
+    result = worktree._run_git(
+        ["git", "-C", str(cwd), "rev-parse", "--verify", "-q", f"{marker}^{{commit}}"],
+        check=False,
+        capture=True,
+    )
+    resolved = (result.stdout or "").strip().lower()
+    return resolved if result.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", resolved) else ""
+
+
+def is_approved_review_gate(gate: dict) -> bool:
+    """True only for a review gate affirmatively closed by approval policy."""
+    return str(gate.get("close_reason") or "").strip().lower().startswith("approved")
+
+
 # ---- release-hint reconcile (bh-k2j8.5) -------------------------------------
 # A submit-time, NON-BLOCKING cross-check: the planner's `release:` hint (breaking|feature|fix)
 # vs what the branch actually landed. A `release:feature`/`release:fix` bead that ships a breaking
