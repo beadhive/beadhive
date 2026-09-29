@@ -810,10 +810,25 @@ def test_invalid_status_or_missing_holder_is_refused_without_a_write(
     assert not any(line.startswith("lease.") for line in world.log)
 
 
-def test_an_unreadable_bead_is_never_reported_as_released(world: World) -> None:
+def test_an_unreadable_bead_is_refused_before_any_abandon_mutation(world: World) -> None:
     world.beads.fail = {f"GET /v0/beads/issues/{BEAD}": lambda _r: _problem(500, "internal")}
     world.refused(lambda c: c.abandon(BEAD, "disp/lead"))
-    assert "could not be re-read" in world.output.errors[-1]
+    assert "refused reading" in world.output.errors[-1]
+    assert world.beads.writes == [] and world.states.calls == []
+    assert not any(line.startswith("lease.") for line in world.log)
+    assert world.observer.transitions == []
+
+
+def test_an_unreadable_bead_after_release_is_never_reported_as_released(world: World) -> None:
+    world.beads.assignee, world.beads.status = "dev/carol", "in_progress"
+
+    def unreadable_after_guard(beads: Beads, reads: int) -> None:
+        beads.fail = {f"GET /v0/beads/issues/{BEAD}": lambda _r: _problem(500, "internal")}
+
+    world.beads.on_read = unreadable_after_guard  # the guard read succeeds; the re-read fails
+    world.refused(lambda c: c.abandon(BEAD, "disp/lead"))
+    assert "refused reading" in world.output.errors[-1]
+    assert world.observer.transitions == []
 
 
 def test_claim_residue_names_each_surviving_half_separately() -> None:
