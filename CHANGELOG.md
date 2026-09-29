@@ -13,6 +13,14 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.20.1 (2026-09-29)
+
+### Fix
+
+- **host**: isolate supervision diagnostics and child shutdown failures
+- **work**: abandon claims with atomic release and guarded stale recovery
+- **host**: run supervised Beads in its hive and expose startup failures
+
 ## v0.20.0 (2026-09-29)
 
 ### Feat
