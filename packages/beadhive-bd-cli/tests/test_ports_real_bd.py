@@ -123,7 +123,17 @@ def test_claim_lease_assign_and_state_round_trip_through_real_bd(hive):
 
 
 @pytest.mark.parametrize(
-    "lease_state", ["expired", "live", "within_grace", "missing", "foreign_replica", "renewed"]
+    "lease_state",
+    [
+        "expired",
+        "live",
+        "within_grace",
+        "just_inside_grace",
+        "just_beyond_grace",
+        "missing",
+        "foreign_replica",
+        "renewed",
+    ],
 )
 def test_atomic_abandon_reclaim_obeys_real_expiry_replica_and_audit(server_hive, lease_state):
     hive = server_hive
@@ -145,6 +155,14 @@ def test_atomic_abandon_reclaim_obeys_real_expiry_replica_and_audit(server_hive,
             "UPDATE leases SET lease_expires_at = DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 MINUTE) "
             + f"WHERE issue_id = '{bead}'"
         )
+    elif lease_state in {"just_inside_grace", "just_beyond_grace"}:
+        # bd 1.3's default TTL is five minutes and reclaim grace is twice that.
+        # A 30-second margin exceeds process/second-resolution timestamp overhead.
+        seconds = 570 if lease_state == "just_inside_grace" else 630
+        query = (
+            "UPDATE leases SET lease_expires_at = "
+            f"DATE_SUB(UTC_TIMESTAMP(), INTERVAL {seconds} SECOND) " + f"WHERE issue_id = '{bead}'"
+        )
     elif lease_state == "missing":
         query = f"DELETE FROM leases WHERE issue_id = '{bead}'"
     else:
@@ -162,7 +180,7 @@ def test_atomic_abandon_reclaim_obeys_real_expiry_replica_and_audit(server_hive,
     if lease_state == "renewed":
         # Renewal after the policy read must win over the stale snapshot.
         assert coordination.heartbeat(transport, hive, bead, actor="dev/a").ok
-    if lease_state == "expired":
+    if lease_state in {"expired", "just_beyond_grace"}:
         leases.abandon(bead, actor="ops/recovery", read=before, reclaim=True)
         after = issues.get(bead)
         assert (after["status"], after.get("assignee") or "") == ("open", "")
@@ -184,6 +202,54 @@ def test_atomic_abandon_reclaim_obeys_real_expiry_replica_and_audit(server_hive,
         after = issues.get(bead)
         assert (after["status"], after.get("assignee")) == ("in_progress", "dev/a")
     assert CliStateReads(transport, hive).get_state(bead, "review") == "pending"
+
+
+def test_atomic_abandon_refuses_malformed_expiry_metadata_without_mutation(server_hive):
+    transport = SubprocessBd(timeout=_TIMEOUT, env={**_ENV, "BEADS_NODE_ID": "replica-a"})
+    issues, leases = CliIssues(transport, server_hive), CliLeases(transport, server_hive)
+    bead = _create(server_hive, "malformed lease metadata")
+    leases.acquire(bead, actor="dev/a")
+    CliStateOperations(transport, server_hive).set_state(
+        bead, "review", "pending", reason="preserve prior review", actor="dev/a"
+    )
+    before = issues.get(bead)
+    # DATETIME normally rejects malformed values. Corrupt only this private fixture's
+    # ephemeral metadata column to prove the route still refuses an unreadable expiry.
+    for query in (
+        "ALTER TABLE leases MODIFY COLUMN lease_expires_at VARCHAR(255) NOT NULL",
+        f"UPDATE leases SET lease_expires_at = 'invalid-expiry' WHERE issue_id = '{bead}'",
+    ):
+        result = transport.run(["sql", query], server_hive, capture=True)
+        assert result.returncode == 0, result.stderr
+
+    with pytest.raises(core.WriteFailed):
+        leases.abandon(bead, actor="ops/recovery", read=before, reclaim=True)
+
+    assert transport.json(
+        [
+            "sql",
+            f"SELECT status, assignee FROM issues WHERE id = '{bead}'",
+        ],
+        server_hive,
+    ) == [{"status": "in_progress", "assignee": "dev/a"}]
+    assert transport.json(
+        ["sql", f"SELECT holder, lease_expires_at FROM leases WHERE issue_id = '{bead}'"],
+        server_hive,
+    ) == [{"holder": "dev/a", "lease_expires_at": "invalid-expiry"}]
+    # Full issue reads also fail on the deliberately malformed expiry. Inspect the
+    # durable review label directly rather than mistaking a failed read for a mutation.
+    assert transport.json(
+        ["sql", f"SELECT label FROM labels WHERE issue_id = '{bead}' AND label LIKE 'review:%'"],
+        server_hive,
+    ) == [{"label": "review:pending"}]
+    assert transport.json(
+        [
+            "sql",
+            f"SELECT actor FROM events WHERE issue_id = '{bead}' "
+            "AND event_type = 'lease_reclaimed'",
+        ],
+        server_hive,
+    ) in ([], None)
 
 
 def test_atomic_holder_abandon_is_guarded_and_preserves_labels_on_a_lost_race(hive):
