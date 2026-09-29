@@ -41,6 +41,7 @@ from . import registry, store_locator
 from .config_consumer_ports import daemon_settings as config
 
 INTENT_FILE = "supervise.json"
+SUPERVISION_FILE = "supervision.json"
 _RUNTIME = Path("run") / "beads-serve"
 
 
@@ -187,6 +188,25 @@ def is_enabled(spec: Any) -> bool:
     return (spec.paths.directory / INTENT_FILE).is_file()
 
 
+def supervision_status(spec: Any) -> dict[str, Any] | None:
+    """Token-free diagnostic state published by the daemon that owns this intent."""
+    if not is_enabled(spec):
+        return None
+    try:
+        value = json.loads((spec.paths.directory / SUPERVISION_FILE).read_text())
+    except (OSError, ValueError):
+        return None
+    if (
+        not isinstance(value, dict)
+        or value.get("hive") != spec.workspace
+        or not isinstance(value.get("state"), str)
+        or not isinstance(value.get("detail"), str)
+        or not isinstance(value.get("failures"), int)
+    ):
+        return None
+    return value
+
+
 @dataclass(frozen=True)
 class Intent:
     hive: str
@@ -250,6 +270,14 @@ class DaemonBeadsSupervision:
         self._lock = threading.Lock()
         self._closed = False
 
+    def _publish(self, hive: str, state: str, detail: str, failures: int = 0) -> None:
+        directory = self.root / registry.sanitize(hive)
+        payload = {"hive": hive, "state": state, "detail": detail, "failures": failures}
+        temporary = directory / f".{SUPERVISION_FILE}.{os.getpid()}"
+        temporary.write_text(json.dumps(payload, sort_keys=True) + "\n")
+        temporary.chmod(0o600)
+        os.replace(temporary, directory / SUPERVISION_FILE)
+
     def reconcile(self) -> None:
         with self._lock:
             if self._closed:
@@ -257,6 +285,8 @@ class DaemonBeadsSupervision:
             wanted = {intent.hive: intent for intent in iter_intents(self.root)}
             for hive in [hive for hive in self.supervisors if hive not in wanted]:
                 self.supervisors.pop(hive).shutdown()
+                (self.root / registry.sanitize(hive) / SUPERVISION_FILE).unlink(missing_ok=True)
+                self.errors.pop(hive, None)
             for hive, intent in wanted.items():
                 supervisor = self.supervisors.get(hive)
                 if supervisor is None:
@@ -264,10 +294,19 @@ class DaemonBeadsSupervision:
                         spec = self._spec_factory(intent.main, hive)
                     except (HiveNotServable, OSError) as exc:
                         self.errors[hive] = str(exc)
+                        self._publish(hive, "failed", str(exc))
                         continue
                     self.errors.pop(hive, None)
                     supervisor = self.supervisors[hive] = self._supervisor_factory(spec)
-                supervisor.tick()
+                try:
+                    snapshot = supervisor.tick()
+                except (OSError, ValueError) as exc:
+                    self.errors[hive] = str(exc)
+                    self._publish(hive, "failed", str(exc))
+                    continue
+                if snapshot is not None:
+                    self.errors.pop(hive, None)
+                    self._publish(hive, snapshot.state, snapshot.detail, snapshot.failures)
 
     def shutdown(self) -> None:
         with self._lock:
@@ -275,6 +314,7 @@ class DaemonBeadsSupervision:
             supervisors, self.supervisors = self.supervisors, {}
         for supervisor in supervisors.values():
             supervisor.shutdown()
+            self._publish(supervisor.spec.workspace, "stopped", "host daemon stopped")
 
     async def run(self) -> None:
         while True:
@@ -323,4 +363,5 @@ __all__ = [
     "spec_for_dir",
     "spec_for_hive",
     "start_command",
+    "supervision_status",
 ]

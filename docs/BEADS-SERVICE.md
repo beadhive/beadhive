@@ -67,6 +67,22 @@ All accept `--json`. Who owns the service on Factory hosts (systemd unit versus 
 child) is not decided here; it belongs to `bh-infra-920k.2`. Both owners write the same record, so
 consumers do not care which one is running.
 
+A hardened system service must allow the supervised child's external Dolt gate to be
+writable as well as `$BH_HOME`. For example, a host using
+`BEADS_SHARED_SERVER_DIR=/data/bees/beads/shared-server` needs that environment value in
+the unit and `ReadWritePaths=/data/bees/beads/shared-server/dolt.gate.lock`, with the gate
+file already created and owned by the service account. Retain `ProtectSystem=strict` and
+the existing `$BH_HOME` write boundary; do not grant all of `/data` or the Dolt data tree.
+The child starts with its hive repository as cwd as well as `bd -C`, so the service
+manager's working directory does not affect Git workspace discovery.
+
+Daemon supervision publishes token-free `supervision.json` diagnostics beside its
+intent. `bh host beads status --json` includes the last supervisor state, failure count,
+and error in `supervision`; when no verified endpoint is running, text and JSON `detail`
+also name that failure, including an exhausted restart budget. Removing the intent
+stops displaying its previous diagnostics. After adjusting a system unit, reload the
+manager, restart the host daemon, and require a context-verified `running` status.
+
 ## Files
 
 Everything lives under `$BH_HOME/run/beads-serve/<sanitized hive key>/`:
@@ -77,6 +93,7 @@ Everything lives under `$BH_HOME/run/beads-serve/<sanitized hive key>/`:
 | `token` | Bearer token, mode `0600`, in a `0700` directory. Minted once; not rotated yet. |
 | `serve.lock`, `serve.log` | Start/stop serialization and the service's log. |
 | `supervise.json` | The daemon intent written by `enable`. |
+| `supervision.json` | Last daemon supervision state, failure count, and diagnostic; no bearer token. |
 
 Consumers call `host_beads.resolve_session(main, capabilities, entry=...)`. It returns an
 unopened, context-verified `BeadsSession` for the running service and raises

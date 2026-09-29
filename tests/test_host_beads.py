@@ -11,7 +11,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import signal
+import subprocess
 import sys
 from pathlib import Path
 
@@ -263,6 +265,76 @@ def test_daemon_records_an_unservable_intent_without_supervising_it(tmp_path, st
 
     assert made == []
     assert "embedded Dolt" in supervision.errors[HIVE]
+    assert host_beads.supervision_status(spec)["state"] == "failed"
+
+
+def test_cli_projects_terminal_daemon_failure(served_hive):
+    spec = host_beads.service_spec(served_hive, HIVE)
+    host_beads.enable(spec)
+    supervision = host_beads.DaemonBeadsSupervision(host_beads.runtime_root())
+    supervision._publish(HIVE, "failed", "gave up: external Dolt gate is read-only", 5)
+    result = runner.invoke(app, ["host", "beads", "status", "--json"])
+    assert result.exit_code == 1
+    row = json.loads(result.stdout)
+    assert row["state"] == "absent"
+    assert row["supervision"]["failures"] == 5
+    assert "external Dolt gate is read-only" in row["detail"]
+    assert "token" not in row["supervision"]
+    host_beads.disable(spec)
+    assert host_beads.supervision_status(spec) is None
+
+
+def test_supervised_child_uses_repo_cwd_and_external_gate_write_boundary(
+    tmp_path, stand_in_bd, monkeypatch
+):
+    """Model ProtectSystem=strict with only BH_HOME and the gate file writable."""
+    bwrap = shutil.which("bwrap")
+    assert bwrap, "service write-boundary regression requires bubblewrap"
+    probe = subprocess.run([bwrap, "--ro-bind", "/", "/", "--", "true"], capture_output=True)
+    if probe.returncode:
+        pytest.skip("outer sandbox denies mount namespaces; hermetic gate supplies them")
+    main = _hive(tmp_path)
+    runtime = tmp_path / "bh-home"
+    runtime.mkdir()
+    gate = tmp_path / "external-dolt" / "dolt.gate.lock"
+    gate.parent.mkdir()
+    gate.touch()
+    child = tmp_path / "real-bd"
+    child.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys\n"
+        "assert os.getcwd() == sys.argv[sys.argv.index('-C') + 1]\n"
+        "gate_path = os.path.join(os.environ['BEADS_SHARED_SERVER_DIR'], 'dolt.gate.lock')\n"
+        "with open(gate_path, 'a') as gate: gate.write('acquired\\n')\n"
+        "try:\n"
+        "    open('forbidden-write', 'w').close()\n"
+        "except OSError:\n"
+        "    pass\n"
+        "else:\n"
+        "    raise AssertionError('repository must remain read-only')\n" + _STAND_IN_BD
+    )
+    child.chmod(0o755)
+    stand_in_bd.write_text(
+        "#!/bin/sh\n"
+        f'exec "{bwrap}" --ro-bind / / --bind "{runtime}" "{runtime}" '
+        f'--bind "{gate}" "{gate}" -- "{child}" "$@"\n'
+    )
+    monkeypatch.setenv("BH_HOME", str(runtime))
+    monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(gate.parent))
+    monkeypatch.chdir(tmp_path)
+    spec = host_beads.service_spec(main, HIVE, root=runtime / "run" / "beads-serve")
+    host_beads.enable(spec)
+    supervision = host_beads.DaemonBeadsSupervision(
+        runtime / "run" / "beads-serve", spec_factory=lambda _main, _hive: spec
+    )
+    try:
+        supervision.reconcile()
+        assert host_beads.service_module().status(spec).state == "running"
+        assert host_beads.supervision_status(spec)["state"] == "running"
+        assert gate.read_text() == "acquired\n"
+        assert not (main / "forbidden-write").exists()
+    finally:
+        supervision.shutdown()
 
 
 def test_daemon_component_shuts_supervisors_down_on_drain(tmp_path, stand_in_bd):
