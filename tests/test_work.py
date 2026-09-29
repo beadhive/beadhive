@@ -38,6 +38,7 @@ from beadhive import (
     plan,
     private_paths,
     registry,
+    selective_validation,
     validation_ledger,
     validation_records,
     work,
@@ -47,6 +48,7 @@ from beadhive import (
     worktree,
     worktree_merge,
 )
+from beadhive.modules.work.domain.impact import AttestKey, ImpactReceipt, KeyEvidence
 from beadhive.run import run as real_run
 from harness.processes import process_context
 from harness.validation_state import age as age_verdict
@@ -367,6 +369,9 @@ class FakeBd:
             for g in self.gates:
                 if g["id"] == args[1]:
                     g["status"] = "closed"
+                    g["close_reason"] = (
+                        args[args.index("--reason") + 1] if "--reason" in args else ""
+                    )
             return _CP(0, "", "")
         return _CP(0, "", "")
 
@@ -375,8 +380,9 @@ class FakeBd:
         for g in self.gates:
             if g["status"] == "open" and bead in g["description"]:
                 g["status"] = "closed"
+                g["close_reason"] = "approved by review/test"
 
-    def resolve_review(self, bead):
+    def resolve_review(self, bead, close_reason="approved by review/test"):
         """A reviewer's approve, reduced to its gate effect: resolve only `bead`'s open REVIEW
         gates (anchored id match), leaving security/kickoff/ad-hoc gates standing. The approve
         verb itself is covered by beadhive-core and tests/test_work_review_shell.py."""
@@ -388,10 +394,11 @@ class FakeBd:
                 and work_logic.is_review_gate_desc(desc)
             ):
                 g["status"] = "closed"
+                g["close_reason"] = close_reason
 
     def bounce(self, bead):
         """A reviewer's bounce, reduced to its effects: review gates resolved, state recorded."""
-        self.resolve_review(bead)
+        self.resolve_review(bead, close_reason="changes requested by review/test")
         self.states.setdefault(bead, {})["review"] = "changes-requested"
 
     def did(self, *needles):
@@ -505,6 +512,52 @@ def _enable_validation_bypass(hive):
     )
     hive.cfg_path.write_text(text)
     config_store.clear_load_cache()
+
+
+def _enable_test_attest_catalog(hive, log: Path):
+    """Enable two active keys plus one disabled key whose commands are cheap and observable."""
+    alpha = json.dumps(f"sh -c 'echo alpha >> {log}'")
+    beta = json.dumps(f"sh -c 'echo beta >> {log}'")
+    paused = json.dumps(f"sh -c 'echo paused >> {log}'")
+    attest = (
+        '  review_gate: "human"\n'
+        "  attest:\n"
+        "    impact: {backend: native-full}\n"
+        "    keys:\n"
+        f"      - {{name: alpha, cmd: {alpha}}}\n"
+        f"      - {{name: beta, cmd: {beta}}}\n"
+        f"      - {{name: paused, cmd: {paused}, enabled: false, "
+        'disabled_reason: "test-only disabled key"}\n'
+    )
+    text = hive.cfg_path.read_text().replace('  review_gate: "human"\n', attest)
+    hive.cfg_path.write_text(text)
+    config_store.clear_load_cache()
+
+
+class _OneAffectedGroupResolver:
+    """Real receipt shape for group tests: alpha changed, beta safely carryable."""
+
+    def __init__(self, entry):
+        self.entry = entry
+        self.calls = []
+
+    def resolve(self, repo, base_rev, head_rev, keys):
+        self.calls.append((repo, base_rev, head_rev, tuple(key.name for key in keys)))
+        base_tree = validation_ledger.tree_of(self.entry, base_rev)
+        head_tree = validation_ledger.tree_of(self.entry, head_rev)
+        names = {key.name for key in keys}
+        return ImpactReceipt(
+            backend="test-selective",
+            backend_version="1",
+            base_tree=base_tree,
+            head_tree=head_tree,
+            changed_paths=("a.txt",),
+            unowned_paths=(),
+            global_inputs_hit=(),
+            invalidated_keys=tuple(name for name in ("alpha",) if name in names),
+            unaffected_keys=tuple(name for name in ("beta",) if name in names),
+            evidence={name: KeyEvidence("test-selective") for name in names},
+        )
 
 
 # ---- the history guard (ponytail self-check) -------------------------------
@@ -2183,6 +2236,352 @@ def test_batch_land_reuses_the_submitted_verdict(hive, fakebd, monkeypatch, caps
     assert "validation verdict reused" in capsys.readouterr().out
     assert fakebd.beads["mr-1.1"]["status"] == "closed"
     assert fakebd.beads["mr-1.2"]["status"] == "closed"
+
+
+def test_batch_submit_and_merge_run_selected_keys_then_reuse_exact_tree(
+    hive, fakebd, tmp_path, capsys
+):
+    """Group submit records per-key proof, and unchanged group merge reuses each active key.
+
+    Disabled keys stay visible as policy but neither execute nor gain proof.
+    """
+    log = tmp_path / "group-attest.log"
+    _enable_test_attest_catalog(hive, log)
+    fakebd.seed("mr-1", title="epic", issue_type="epic")
+    _claim_and_commit_batch(hive, fakebd)
+
+    work.submit(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    assert log.read_text().splitlines() == ["alpha", "beta"]
+    submit_out = capsys.readouterr().out
+    assert "alpha: ran green" in submit_out
+    assert "beta: ran green" in submit_out
+    assert "paused: DISABLED" in submit_out
+
+    fakebd.resolve_review("mr-1.1")
+    work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    assert log.read_text().splitlines() == ["alpha", "beta"]
+    merge_out = capsys.readouterr().out
+    assert merge_out.count("exact-tree verdict reused") == 2
+    assert fakebd.beads["mr-1.1"]["status"] == "closed"
+    assert fakebd.beads["mr-1.2"]["status"] == "closed"
+
+    work.finish(epic="mr-1", hive="myrepo")
+    assert log.read_text().splitlines() == ["alpha", "beta"]
+    assert "exact-tree verdict reused" in capsys.readouterr().out
+
+
+def test_batch_merge_refuses_proof_when_sibling_advanced_container_base(
+    hive, fakebd, tmp_path, capsys
+):
+    """A submitted batch head proves only the tree it contains. If a sibling advances the epic
+    container afterward, merging would compose both trees without proof of that composition, so
+    merge must require a rebase and resubmit before consulting the reusable key verdicts."""
+    log = tmp_path / "group-attest.log"
+    _enable_test_attest_catalog(hive, log)
+    fakebd.seed("mr-1", title="epic", issue_type="epic")
+    _submit_and_approve_batch(hive, fakebd)
+    assert log.read_text().splitlines() == ["alpha", "beta"]
+
+    container = "wt/bead/epic/mr-1"
+    batch = "wt/batch/samefile"
+    batch_head = _git("rev-parse", batch, cwd=hive.main).stdout.strip()
+    _git("checkout", "-q", container, cwd=hive.main)
+    _commit(hive.main, "feat(sibling): advance container", fname="sibling.txt")
+    _git("checkout", "-q", "main", cwd=hive.main)
+    container_head = _git("rev-parse", container, cwd=hive.main).stdout.strip()
+    assert _git("merge-base", container_head, batch_head, cwd=hive.main).stdout.strip() != (
+        container_head
+    )
+    capsys.readouterr()
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert "not an ancestor" in err
+    assert "unvalidated composition" in err
+    assert "Rebase" in err and "resubmit" in err
+    assert log.read_text().splitlines() == ["alpha", "beta"]  # no stale proof was consulted
+    assert _git("rev-parse", container, cwd=hive.main).stdout.strip() == container_head
+    assert fakebd.beads["mr-1.1"]["status"] != "closed"
+
+
+def test_batch_submit_refuses_when_sibling_advanced_container_base(hive, fakebd, tmp_path, capsys):
+    """Do not open review or record proof for a stale batch head that omits the current base."""
+    log = tmp_path / "group-attest.log"
+    _enable_test_attest_catalog(hive, log)
+    _claim_and_commit_batch(hive, fakebd)
+
+    container = "wt/bead/epic/mr-1"
+    _git("checkout", "-q", container, cwd=hive.main)
+    _commit(hive.main, "feat(sibling): advance before submit", fname="sibling.txt")
+    _git("checkout", "-q", "main", cwd=hive.main)
+    capsys.readouterr()
+
+    with pytest.raises(typer.Exit):
+        work.submit(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert "refusing to submit an unvalidated composition" in err
+    assert "Rebase" in err and "resubmit" in err
+    assert not log.exists()
+    assert not [g for g in fakebd.gates if work_logic.is_review_gate_desc(g["description"])]
+
+
+def test_batch_rebase_requires_resubmit_and_approval_for_rewritten_head(hive, fakebd, capsys):
+    """Approval of A cannot authorize B after a required rebase onto a sibling-advanced base."""
+    target = _submit_and_approve_batch(hive, fakebd)
+    branch = "wt/batch/samefile"
+    container = "wt/bead/epic/mr-1"
+    approved_a = _git("rev-parse", branch, cwd=hive.main).stdout.strip()
+
+    _git("checkout", "-q", container, cwd=hive.main)
+    _commit(hive.main, "feat(sibling): advance container", fname="sibling.txt")
+    _git("checkout", "-q", "main", cwd=hive.main)
+    with pytest.raises(typer.Exit):
+        work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+    assert "not an ancestor" in capsys.readouterr().err
+
+    _git("rebase", container, cwd=target)
+    rewritten_b = _git("rev-parse", branch, cwd=hive.main).stdout.strip()
+    assert rewritten_b != approved_a
+    with pytest.raises(typer.Exit):
+        work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+    err = capsys.readouterr().err
+    assert f"no resolved review gate for current head {rewritten_b}" in err
+    assert fakebd.beads["mr-1.1"]["status"] != "closed"
+
+    work.submit(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+    open_review, resolved_review = work_logic.review_gates("mr-1.1", hive.main)
+    assert any(work_logic.review_gate_sha(g["description"]) == rewritten_b for g in open_review)
+    assert any(work_logic.review_gate_sha(g["description"]) == approved_a for g in resolved_review)
+    fakebd.resolve_review("mr-1.2")  # the shared gate remains approvable through either member
+
+    work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    assert fakebd.beads["mr-1.1"]["status"] == "closed"
+    assert fakebd.beads["mr-1.2"]["status"] == "closed"
+    assert _git("cat-file", "-e", f"{container}:sibling.txt", cwd=hive.main).returncode == 0
+    assert _git("cat-file", "-e", f"{container}:a.txt", cwd=hive.main).returncode == 0
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "review {short}",
+        "bh:review {short} batch samefile: mr-1.1, mr-1.2",
+    ],
+)
+def test_batch_merge_accepts_approved_legacy_short_review_marker(hive, fakebd, reason):
+    """Both legacy short marker shapes resolve to the exact approved batch head."""
+    _submit_and_approve_batch(hive, fakebd)
+    head = _git("rev-parse", "wt/batch/samefile", cwd=hive.main).stdout.strip()
+    review = [g for g in fakebd.gates if work_logic.is_review_gate_desc(g["description"])]
+    assert len(review) == 1
+    review[0]["description"] = f"blocks mr-1.1\n\nReason: {reason.format(short=head[:7])}"
+
+    work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    assert fakebd.beads["mr-1.1"]["status"] == "closed"
+    assert fakebd.beads["mr-1.2"]["status"] == "closed"
+
+
+def test_batch_merge_refuses_unresolvable_legacy_review_marker(hive, fakebd, capsys):
+    """A short marker that Git cannot resolve is never treated as approval of the pinned head."""
+    _submit_and_approve_batch(hive, fakebd)
+    review = [g for g in fakebd.gates if work_logic.is_review_gate_desc(g["description"])]
+    review[0]["description"] = "blocks mr-1.1\n\nReason: bh:review 0000000 batch samefile"
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    assert "no resolved review gate for current head" in capsys.readouterr().err
+    assert fakebd.beads["mr-1.1"]["status"] != "closed"
+
+
+@pytest.mark.parametrize(
+    "close_reason", ["changes requested by review/test", "superseded by resubmit deadbee"]
+)
+def test_batch_merge_refuses_resolved_nonapproval_for_current_head(
+    hive, fakebd, capsys, close_reason
+):
+    """Resolution is not authorization when the gate was bounced or administratively superseded."""
+    _submit_and_approve_batch(hive, fakebd)
+    review = [g for g in fakebd.gates if work_logic.is_review_gate_desc(g["description"])]
+    review[0]["close_reason"] = close_reason
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    assert "no resolved review gate for current head" in capsys.readouterr().err
+    assert fakebd.beads["mr-1.1"]["status"] != "closed"
+
+
+def test_batch_bounce_resume_direct_merge_stays_refused(hive, fakebd, capsys):
+    """A bounced gate remains non-authorizing after the developer resumes the shared checkout."""
+    _claim_and_commit_batch(hive, fakebd)
+    work.submit(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+    fakebd.bounce("mr-1.1")
+
+    work.resume(bead="mr-1.1", as_="", hive="myrepo")
+    capsys.readouterr()
+    with pytest.raises(typer.Exit):
+        work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    assert "changes-requested" in capsys.readouterr().err
+    assert fakebd.beads["mr-1.1"]["status"] != "closed"
+
+
+def test_batch_submit_carries_unaffected_key_and_records_direct_ledger_states(
+    hive, fakebd, tmp_path, monkeypatch
+):
+    """A real selective receipt runs the affected key and carries only qualified base proof."""
+    log = tmp_path / "group-attest.log"
+    _enable_test_attest_catalog(hive, log)
+    target = _claim_and_commit_batch(hive, fakebd)
+    cfg = config.load()
+    entry, main, _target, branch = worktree.locate(cfg, "myrepo", branch="batch/samefile")
+    base = worktree.integration_base(entry, "mr-1.1", config.integration_branch(cfg, entry))
+    base_sha = worktree._ref_sha(main, base)
+    keys = selective_validation.attest_keys(selective_validation.config.attest_config(cfg, entry))
+    by_name = {key.name: key for key in keys}
+    validation_ledger.record(entry, base_sha, by_name["beta"].cmd, 0, cfg=cfg, phase="check")
+    resolver = _OneAffectedGroupResolver(entry)
+    monkeypatch.setattr(selective_validation, "impact_resolver", lambda *_a, **_k: resolver)
+
+    work.submit(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    assert log.read_text().splitlines() == ["alpha"]
+    head_sha = worktree.head_full_sha(target)
+    assert resolver.calls == [(str(target), base_sha, head_sha, ("alpha", "beta"))]
+    assert (
+        validation_ledger.key_verdict(entry, head_sha, by_name["alpha"], cfg=cfg).state
+        == validation_ledger.KeyVerdictState.CURRENT
+    )
+    assert (
+        validation_ledger.key_verdict(entry, head_sha, by_name["beta"], cfg=cfg).state
+        == validation_ledger.KeyVerdictState.CARRIED
+    )
+    paused = validation_ledger.key_verdict(entry, head_sha, by_name["paused"], cfg=cfg)
+    assert paused.state == validation_ledger.KeyVerdictState.ABSENT
+    assert paused.reason == "disabled"
+
+
+def test_batch_submit_refuses_if_pinned_branch_moves_during_selection(
+    hive, fakebd, tmp_path, monkeypatch, capsys
+):
+    """Validation may finish, but a moved batch ref cannot open a review gate for stale proof."""
+    _enable_test_attest_catalog(hive, tmp_path / "group-attest.log")
+    target = _claim_and_commit_batch(hive, fakebd)
+    pinned = worktree.head_full_sha(target)
+    seen = {}
+
+    def move_branch(_entry, _cfg, **kwargs):
+        seen.update(kwargs)
+        _commit(target, "fix: move while validation runs", fname="moved.txt")
+        return 0
+
+    monkeypatch.setattr(work_group.selective_validation, "run", move_branch)
+
+    with pytest.raises(typer.Exit):
+        work.submit(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    assert seen["head_rev"] == pinned
+    assert len(seen["base_rev"]) == 40
+    assert seen["repo_path"] == str(target)
+    assert "moved during batch validation" in capsys.readouterr().err
+    assert "review" not in fakebd.states.get("mr-1.1", {})
+
+
+def test_batch_key_command_change_invalidates_only_changed_proof(hive, fakebd, tmp_path, capsys):
+    """Proof identity includes the opaque command even when the batch tree is unchanged."""
+    log = tmp_path / "group-attest.log"
+    _enable_test_attest_catalog(hive, log)
+    _claim_and_commit_batch(hive, fakebd)
+    work.submit(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+    capsys.readouterr()
+    hive.cfg_path.write_text(hive.cfg_path.read_text().replace("echo alpha >>", "echo alpha-v2 >>"))
+    config_store.clear_load_cache()
+    fakebd.resolve_review("mr-1.1")
+
+    work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    assert log.read_text().splitlines() == ["alpha", "beta", "alpha-v2"]
+    out = capsys.readouterr().out
+    assert "alpha: ran green" in out
+    assert "beta: exact-tree verdict reused" in out
+
+
+def test_batch_merge_refuses_if_pinned_branch_moves_after_validation(
+    hive, fakebd, tmp_path, monkeypatch, capsys
+):
+    """Merge validates and merges one immutable SHA, refusing branch movement between them."""
+    _enable_test_attest_catalog(hive, tmp_path / "group-attest.log")
+    target = _claim_and_commit_batch(hive, fakebd)
+    work.submit(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+    fakebd.resolve_review("mr-1.1")
+    pinned = worktree.head_full_sha(target)
+    seen = {}
+
+    def move_branch(_entry, _cfg, **kwargs):
+        seen.update(kwargs)
+        _commit(target, "fix: move before merge", fname="moved.txt")
+        return 0
+
+    monkeypatch.setattr(work_group.selective_validation, "run", move_branch)
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    assert seen["head_rev"] == pinned
+    assert "moved during batch validation" in capsys.readouterr().err
+    assert fakebd.beads["mr-1.1"]["status"] != "closed"
+
+
+def test_key_ledger_keeps_disabled_unproved_and_unknown_absent_and_red_nonqualifying(
+    hive,
+):
+    """Only qualifying green state can satisfy reuse; policy and failure states fail closed."""
+    cfg = config.load()
+    entry, _main, _target, _branch = worktree.locate(cfg, "myrepo", bead="mr-ledger")
+    rev = worktree._ref_sha(hive.main, "main")
+    disabled = AttestKey("disabled", "true", enabled=False, disabled_reason="maintenance")
+    unproved = AttestKey("unproved", "true")
+    unknown = AttestKey("unknown", "exit 75")
+    red = AttestKey("red", "false")
+    validation_ledger.record(entry, rev, unknown.cmd, 75, cfg=cfg, phase="submit")
+    validation_ledger.record(entry, rev, red.cmd, 1, cfg=cfg, phase="submit")
+
+    assert validation_ledger.key_verdict(entry, rev, disabled, cfg=cfg).state.name == "ABSENT"
+    assert validation_ledger.key_verdict(entry, rev, unproved, cfg=cfg).state.name == "ABSENT"
+    assert validation_ledger.key_verdict(entry, rev, unknown, cfg=cfg).state.name == "ABSENT"
+    red_verdict = validation_ledger.key_verdict(entry, rev, red, cfg=cfg)
+    assert red_verdict.state == validation_ledger.KeyVerdictState.CURRENT
+    assert not validation_ledger.is_qualifying_green(red_verdict.record)
+
+
+def test_batch_validation_bypass_does_not_enter_selective_key_runner(
+    hive, fakebd, tmp_path, monkeypatch, capsys
+):
+    """The emergency bypass remains one audited monolithic boundary with a catalog present."""
+    log = tmp_path / "group-attest.log"
+    _enable_test_attest_catalog(hive, log)
+    _enable_validation_bypass(hive)
+    _claim_and_commit_batch(hive, fakebd)
+    monkeypatch.setattr(
+        work_group.selective_validation,
+        "run",
+        lambda *args, **kwargs: pytest.fail("bypassed group validation selected attest keys"),
+    )
+
+    work.submit(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    assert not log.exists()
+    assert "BYPASSED validation [submit]" in capsys.readouterr().out
+    assert fakebd.states["mr-1.1"]["review"] == "pending"
+    assert fakebd.states["mr-1.2"]["review"] == "pending"
 
 
 # ---- check feeds the same verdict ledger submit reuses from (bh-i0p1.4) ----------
