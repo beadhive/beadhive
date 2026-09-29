@@ -264,8 +264,8 @@ The fallback and bypass contracts remain unchanged:
   cannot satisfy a later boundary.
 - A successful configured full gate expands into key proof only at the documented full-gate
   phases (`molecule`, `merge-main`, `push-main`, and `postland`) and only when the command is the
-  exact configured partition. Ordinary submit and merge commands never broaden proof beyond
-  the keys they actually ran.
+  exact configured partition. Ordinary submit and merge commands prove only keys they ran or
+  safely carried from qualifying evidence.
 
 For a one-off diagnostic, request the consumer's `--full` mode where exposed. To roll back a
 hive, set `work.attest.impact.backend: native-full` (or remove the impact block). This retains
