@@ -67,9 +67,9 @@ def list_intake(cwd, source: str = ""):
     any channel — report|github|import — shares one queue). `source` narrows to one resolved
     `origin` channel client-side (bd has no channel list filter). Returns a list of bead rows (empty
     on read failure)."""
-    rows = bd_cli.routes(cwd).issue_list(
-        label=INTAKE_UNTRIAGED, status="open", label_first=True
-    ) or []
+    rows = (
+        bd_cli.routes(cwd).issue_list(label=INTAKE_UNTRIAGED, status="open", label_first=True) or []
+    )
     if not isinstance(rows, list):
         return []
     if source:
@@ -192,9 +192,7 @@ def reroute(cwd, bead, actor, to_hive: str = "", superintendent: str = "", cfg=N
         return 1, err, ""
 
     if superintendent:
-        res = bd_cli.routes(cwd).issue_assign(
-            bead, superintendent, actor=actor, capture=True
-        )
+        res = bd_cli.routes(cwd).issue_assign(bead, superintendent, actor=actor, capture=True)
         if res.returncode:
             return res.returncode, f"bounce to superintendent failed: {bd.err_line(res)}", ""
         return 0, "", f"✓ bounced {bead} → {superintendent} (stays in the fleet-wide inbox)"

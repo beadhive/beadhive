@@ -184,8 +184,8 @@ def export_public_snapshot(hive_root: Path | str, dest_dir: Path | str) -> Path:
     dest = Path(dest_dir).expanduser()
     dest.mkdir(parents=True, exist_ok=True)
     argv = public_snapshot_argv(dest)
-    res = bd_cli.package().CliRoutes(bd, root).public_snapshot_export(
-        dest / PUBLIC_SNAPSHOT_FILENAME
+    res = (
+        bd_cli.package().CliRoutes(bd, root).public_snapshot_export(dest / PUBLIC_SNAPSHOT_FILENAME)
     )
     if res.returncode != 0:
         raise RuntimeError(f"bd {' '.join(argv)} failed in {root} (exit {res.returncode})")

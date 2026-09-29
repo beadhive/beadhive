@@ -251,8 +251,10 @@ def write_bead_event(bd, main, event: dict) -> bool:
     payload = json.dumps(event, sort_keys=True, separators=(",", ":"))
     from . import bd_cli
 
-    result = bd_cli.package().CliRoutes(bd, main).comment_add(
-        event["bead"], f"bh:validation-override {payload}", actor=event["actor"]
+    result = (
+        bd_cli.package()
+        .CliRoutes(bd, main)
+        .comment_add(event["bead"], f"bh:validation-override {payload}", actor=event["actor"])
     )
     return result.returncode == 0
 

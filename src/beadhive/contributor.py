@@ -428,9 +428,9 @@ def list_outbound(cwd) -> list[dict]:
     """The external hive's ``outbound:pending`` queue — staged outbound candidates not yet filed
     upstream (``publish:approved``). Keyed on the shared ``state`` vocabulary, filtered by
     :func:`state.is_outbound_candidate`. Empty on a read failure."""
-    rows = bd_cli.routes(cwd).issue_list(
-        label=OUTBOUND_PENDING, status="open", label_first=True
-    ) or []
+    rows = (
+        bd_cli.routes(cwd).issue_list(label=OUTBOUND_PENDING, status="open", label_first=True) or []
+    )
     if not isinstance(rows, list):
         return []
     return [r for r in rows if is_outbound_candidate(r.get("labels"))]

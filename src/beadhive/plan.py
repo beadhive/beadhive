@@ -616,9 +616,7 @@ def _swarm_missing(epic_id: str, cwd) -> bool | None:
 
     Shared by `_check_swarm` (verify) and plan_repair (backfill).
     """
-    related = bd_cli.routes(cwd).dependency_list(
-        epic_id, direction="up", type_="relates-to"
-    )
+    related = bd_cli.routes(cwd).dependency_list(epic_id, direction="up", type_="relates-to")
     if not isinstance(related, list):
         return None
     return not any(
@@ -1265,9 +1263,7 @@ def repair_epic(epic_id: str, cfg, cwd, actor: str) -> RepairOutcome:
                 if validate._label_val(labels, f"{field}:"):
                     continue
                 label = f"{field}:{value}"
-                if bd_cli.routes(cwd).issue_add_label(
-                    child_id, label, actor=actor
-                ).returncode != 0:
+                if bd_cli.routes(cwd).issue_add_label(child_id, label, actor=actor).returncode != 0:
                     raise PlanError(f"`bd label add {child_id} {label}` failed — inspect the hive")
                 fixes.append(f"added label {label} to {child_id}")
 

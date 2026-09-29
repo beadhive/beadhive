@@ -968,9 +968,7 @@ def _resolve_stale_review_gates(main, stale: list[dict], sha: str) -> None:
     failure, echoing the submit-context error."""
     for old in stale:
         old_id = str(old.get("id") or "")
-        res = bd_cli.routes(main).gate_resolve(
-            old_id, reason=f"superseded by resubmit {sha}"
-        )
+        res = bd_cli.routes(main).gate_resolve(old_id, reason=f"superseded by resubmit {sha}")
         if res.returncode != 0:
             typer.echo(
                 f"✗ failed to resolve superseded review gate {old_id} — nothing submitted",
