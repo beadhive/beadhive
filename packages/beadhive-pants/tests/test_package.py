@@ -5,6 +5,7 @@ import subprocess
 from importlib import resources
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from beadhive.kernel.plugins.contracts import BuildVerifier
@@ -66,6 +67,7 @@ def _package_manifest_tests() -> dict[str, dict[str, object]]:
     }
 
 
+@pytest.mark.pants_profile
 def test_proven_manifest_explicitly_declares_every_package_test() -> None:
     declared = _package_manifest_tests()
     workspace_package_tests = {

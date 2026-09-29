@@ -167,6 +167,22 @@ def test_native_test_recipes_collect_all_core_tests_without_pants_filtering() ->
     assert '-m "integration"' in integration
 
 
+def test_proven_manifest_enforcement_stays_in_optional_pants_profile() -> None:
+    justfile = (ROOT / "justfile").read_text(encoding="utf-8")
+    native_workspace = "\n".join(_recipe_body(justfile, "root-workspace-check"))
+    pants = "\n".join(_recipe_body(justfile, "stateful-pants"))
+    package_tests = (ROOT / "packages" / "beadhive-pants" / "tests" / "test_package.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert '-m "not pants_profile" packages/beadhive-pants/tests' in native_workspace
+    assert "uv run python scripts/pants_ci.py all" in pants
+    assert (
+        "@pytest.mark.pants_profile\n"
+        "def test_proven_manifest_explicitly_declares_every_package_test()" in package_tests
+    )
+
+
 @pytest.mark.parametrize("recipe", ("root-composition-native", "root-workspace-check"))
 def test_root_composition_render_failure_stops_recipe_before_pytest(
     tmp_path: Path, recipe: str

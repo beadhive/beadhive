@@ -814,7 +814,8 @@ root-workspace-check: root-composition-validate
     uv run ruff format --check packages/beadhive-pants
     ./scripts/hermetic.sh uv sync --locked --offline --inexact --no-default-groups --package beadhive-pants
     uv run --no-sync python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run --no-sync python scripts/pytest_with_report.py -n auto packages/beadhive-pants/tests
+        ./scripts/hermetic.sh uv run --no-sync python scripts/pytest_with_report.py -n auto \
+        -m "not pants_profile" packages/beadhive-pants/tests
     ./scripts/hermetic.sh uv build --package beadhive-pants --no-build-isolation
     just release-smoke-check
 
