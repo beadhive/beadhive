@@ -13,8 +13,10 @@ fixtures are local — this package never imports the root test harness.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
+import signal
 import subprocess
 from pathlib import Path
 
@@ -68,6 +70,46 @@ def _create(hive: Path, title: str) -> str:
     return (res.stdout or "").strip().splitlines()[-1].strip()
 
 
+@pytest.fixture
+def server_env(tmp_path: Path) -> dict[str, str]:
+    """The bd env plus a private Dolt root carrying an author identity.
+
+    The hermetic fence gives every phase a blank ``$HOME``, so a server-mode ``dolt init`` would
+    otherwise die with "Author identity unknown"; owning the identity keeps the fixture
+    independent of the operator's ``~/.dolt``.
+    """
+    root = tmp_path.parent / f"{tmp_path.name}-dolt-root"
+    (root / ".dolt").mkdir(parents=True)
+    (root / ".dolt" / "config_global.json").write_text(
+        json.dumps({"user.name": "Beadhive Test", "user.email": "test@beadhive.invalid"})
+    )
+    return {**_ENV, "DOLT_ROOT_PATH": str(root)}
+
+
+@pytest.fixture
+def server_hive(tmp_path: Path, server_env: dict[str, str]):
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    try:
+        result = subprocess.run(
+            ["bd", "init", "--server", "--prefix", "pc", "--non-interactive"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=_TIMEOUT,
+            env=server_env,
+        )
+        assert result.returncode == 0, result.stderr
+        yield tmp_path
+    finally:
+        # Owned-mode pidfile names only this fixture's server, including failed setup.
+        pidfile = tmp_path / ".beads" / "dolt-server.pid"
+        if pidfile.exists():
+            try:
+                os.kill(int(pidfile.read_text().strip()), signal.SIGTERM)
+            except (ProcessLookupError, ValueError):
+                pass
+
+
 def test_claim_lease_assign_and_state_round_trip_through_real_bd(hive):
     bead = _create(hive, "leased bead")
     issues, leases = CliIssues(BD, hive), CliLeases(BD, hive)
@@ -95,6 +137,155 @@ def test_claim_lease_assign_and_state_round_trip_through_real_bd(hive):
     assert issues.get("pc-does-not-exist") is None
     with pytest.raises(core.WriteFailed):
         leases.acquire("pc-does-not-exist", actor="dev/a")
+
+
+@pytest.mark.parametrize(
+    "lease_state",
+    [
+        "expired",
+        "live",
+        "within_grace",
+        "just_inside_grace",
+        "just_beyond_grace",
+        "missing",
+        "foreign_replica",
+        "renewed",
+    ],
+)
+def test_atomic_abandon_reclaim_obeys_real_expiry_replica_and_audit(
+    server_hive, server_env, lease_state
+):
+    hive = server_hive
+    transport = SubprocessBd(timeout=_TIMEOUT, env={**server_env, "BEADS_NODE_ID": "replica-a"})
+    leases = CliLeases(transport, hive)
+    issues = CliIssues(transport, hive)
+    bead = _create(hive, "atomic abandon proof")
+    leases.acquire(bead, actor="dev/a")
+    CliStateOperations(transport, hive).set_state(
+        bead, "review", "pending", reason="preserve prior review", actor="dev/a"
+    )
+    if lease_state in {"expired", "foreign_replica", "renewed"}:
+        query = (
+            "UPDATE leases SET lease_expires_at = DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 HOUR) "
+            + f"WHERE issue_id = '{bead}'"
+        )
+    elif lease_state == "within_grace":
+        query = (
+            "UPDATE leases SET lease_expires_at = DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 MINUTE) "
+            + f"WHERE issue_id = '{bead}'"
+        )
+    elif lease_state in {"just_inside_grace", "just_beyond_grace"}:
+        # bd 1.3's default TTL is five minutes and reclaim grace is twice that.
+        # A 30-second margin exceeds process/second-resolution timestamp overhead.
+        seconds = 570 if lease_state == "just_inside_grace" else 630
+        query = (
+            "UPDATE leases SET lease_expires_at = "
+            f"DATE_SUB(UTC_TIMESTAMP(), INTERVAL {seconds} SECOND) " + f"WHERE issue_id = '{bead}'"
+        )
+    elif lease_state == "missing":
+        query = f"DELETE FROM leases WHERE issue_id = '{bead}'"
+    else:
+        query = "SELECT 1"
+    result = transport.run(["sql", query], hive, capture=True)
+    assert result.returncode == 0, result.stderr
+    if lease_state == "foreign_replica":
+        result = transport.run(
+            ["sql", f"UPDATE leases SET granted_node = 'replica-b' WHERE issue_id = '{bead}'"],
+            hive,
+            capture=True,
+        )
+        assert result.returncode == 0, result.stderr
+    before = issues.get(bead)
+    if lease_state == "renewed":
+        # Renewal after the policy read must win over the stale snapshot.
+        assert coordination.heartbeat(transport, hive, bead, actor="dev/a").ok
+    if lease_state in {"expired", "just_beyond_grace"}:
+        leases.abandon(bead, actor="ops/recovery", read=before, reclaim=True)
+        after = issues.get(bead)
+        assert (after["status"], after.get("assignee") or "") == ("open", "")
+        events = transport.json(
+            [
+                "sql",
+                f"SELECT actor, event_type FROM events WHERE issue_id = '{bead}' "
+                "AND event_type = 'lease_reclaimed'",
+            ],
+            hive,
+        )
+        assert events == [{"actor": "ops/recovery", "event_type": "lease_reclaimed"}]
+        assert transport.json(
+            ["sql", f"SELECT holder FROM leases WHERE issue_id = '{bead}'"], hive
+        ) in ([], None)
+    else:
+        with pytest.raises(core.WriteFailed):
+            leases.abandon(bead, actor="ops/recovery", read=before, reclaim=True)
+        after = issues.get(bead)
+        assert (after["status"], after.get("assignee")) == ("in_progress", "dev/a")
+    assert CliStateReads(transport, hive).get_state(bead, "review") == "pending"
+
+
+def test_atomic_abandon_refuses_malformed_expiry_metadata_without_mutation(server_hive, server_env):
+    transport = SubprocessBd(timeout=_TIMEOUT, env={**server_env, "BEADS_NODE_ID": "replica-a"})
+    issues, leases = CliIssues(transport, server_hive), CliLeases(transport, server_hive)
+    bead = _create(server_hive, "malformed lease metadata")
+    leases.acquire(bead, actor="dev/a")
+    CliStateOperations(transport, server_hive).set_state(
+        bead, "review", "pending", reason="preserve prior review", actor="dev/a"
+    )
+    before = issues.get(bead)
+    # DATETIME normally rejects malformed values. Corrupt only this private fixture's
+    # ephemeral metadata column to prove the route still refuses an unreadable expiry.
+    for query in (
+        "ALTER TABLE leases MODIFY COLUMN lease_expires_at VARCHAR(255) NOT NULL",
+        f"UPDATE leases SET lease_expires_at = 'invalid-expiry' WHERE issue_id = '{bead}'",
+    ):
+        result = transport.run(["sql", query], server_hive, capture=True)
+        assert result.returncode == 0, result.stderr
+
+    with pytest.raises(core.WriteFailed):
+        leases.abandon(bead, actor="ops/recovery", read=before, reclaim=True)
+
+    assert transport.json(
+        [
+            "sql",
+            f"SELECT status, assignee FROM issues WHERE id = '{bead}'",
+        ],
+        server_hive,
+    ) == [{"status": "in_progress", "assignee": "dev/a"}]
+    assert transport.json(
+        ["sql", f"SELECT holder, lease_expires_at FROM leases WHERE issue_id = '{bead}'"],
+        server_hive,
+    ) == [{"holder": "dev/a", "lease_expires_at": "invalid-expiry"}]
+    # Full issue reads also fail on the deliberately malformed expiry. Inspect the
+    # durable review label directly rather than mistaking a failed read for a mutation.
+    assert transport.json(
+        ["sql", f"SELECT label FROM labels WHERE issue_id = '{bead}' AND label LIKE 'review:%'"],
+        server_hive,
+    ) == [{"label": "review:pending"}]
+    assert transport.json(
+        [
+            "sql",
+            f"SELECT actor FROM events WHERE issue_id = '{bead}' "
+            "AND event_type = 'lease_reclaimed'",
+        ],
+        server_hive,
+    ) in ([], None)
+
+
+def test_atomic_holder_abandon_is_guarded_and_preserves_labels_on_a_lost_race(hive):
+    bead = _create(hive, "holder abandon proof")
+    issues, leases = CliIssues(BD, hive), CliLeases(BD, hive)
+    leases.acquire(bead, actor="dev/a")
+    before = issues.get(bead)
+    leases.abandon(bead, actor="dev/a", read=before, reclaim=False)
+    released = issues.get(bead)
+    assert (released["status"], released.get("assignee") or "") == ("open", "")
+    assert "review:abandoned" in released["labels"]
+    leases.acquire(bead, actor="dev/b")
+    with pytest.raises(core.WriteFailed) as failure:
+        leases.abandon(bead, actor="dev/a", read=before, reclaim=False)
+    assert failure.value.exit_code == 13
+    held = issues.get(bead)
+    assert (held["status"], held["assignee"]) == ("in_progress", "dev/b")
 
 
 def test_gate_lookup_narrows_to_the_bead_and_resolve_closes_it_for_real(hive):

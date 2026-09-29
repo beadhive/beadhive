@@ -349,6 +349,7 @@ Every Beads operation takes one named route from the matrix:
 | `work.issue.get` | `api-ready` | `SessionIssues` over `BeadsSession` (guard reads, claim re-verification, abandon's re-read, submit's admission) |
 | `work.issue.update` | `api-ready` | `SessionIssues.assign` — a guarded update (`expected_version` from the guard read), so a bead that moved after the guard is refused (`409`), never overwritten |
 | `work.lease.acquire` / `work.lease.release` | `cli-compatibility` | `Leases` port → `beadhive_bd_cli.CliLeases` (`bd update --claim` / reopen+unassign): `issues.claim` does not grant the renewable lease |
+| `work.lease.reclaim` | `cli-compatibility` | `Leases.abandon`: authorized foreign recovery uses one scoped `bd reclaim` and its durable audit, preserving grace, replica and renewal guards |
 | `work.state.get` / `work.state.update` | `cli-compatibility` | `StateReads` / `StateOperations` → `bd state` / `bd set-state` (review, dispatch dimensions) |
 | `work.gate.lookup` / `work.gate.resolve` | `cli-compatibility` | `GateOperations` (resume's orphaned-review-gate GC) |
 

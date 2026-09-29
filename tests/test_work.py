@@ -208,12 +208,20 @@ class FakeBd:
             return _CP(0, "", "")
         if sub == "update":
             bead = self.beads.setdefault(args[1], {"id": args[1]})
+            for flag, field in (("--if-assignee", "assignee"), ("--if-status", "status")):
+                if flag in args and (bead.get(field) or "") != args[args.index(flag) + 1]:
+                    return _CP(13, "", "guard mismatch")
             if "--claim" in args:
                 bead.update(assignee=actor, status="in_progress")
             if "--status" in args:
                 bead["status"] = args[args.index("--status") + 1]
             if "--assignee" in args:
                 bead["assignee"] = args[args.index("--assignee") + 1]
+            if "--add-label" in args:
+                label = args[args.index("--add-label") + 1]
+                bead.setdefault("labels", []).append(label)
+                if label.startswith("review:"):
+                    self.states.setdefault(args[1], {})["review"] = label.split(":", 1)[1]
             if "--set-metadata" in args:
                 # Mirrors real `bd update --set-metadata k=v`: a flat shallow-merge into
                 # `metadata`, value stored verbatim as a string (bh-1b0rc.1's contract doc).
@@ -5854,10 +5862,16 @@ def test_submit_warns_but_proceeds_on_push_failure(hive, fakebd, capsys):
 # ---- abandon ---------------------------------------------------------------
 
 
-def test_abandon_rm_removes_worktree(hive, fakebd):
+def test_abandon_rm_removes_worktree(hive, fakebd, monkeypatch):
     fakebd.seed("mr-7", title="t")
     work.claim(bead="mr-7", as_="", hive="myrepo")
     assert _wt(hive, "mr-7").exists()
+    with pytest.raises(typer.Exit):
+        work.abandon(bead="mr-7", hive="myrepo", rm=True)
+    assert _wt(hive, "mr-7").exists()
+    holder = fakebd.beads["mr-7"]["assignee"]
+    monkeypatch.setenv("BH_DEV", holder)
+    work.abandon(bead="mr-7", hive="myrepo", rm=False)
     work.abandon(bead="mr-7", hive="myrepo", rm=True)
     assert not _wt(hive, "mr-7").exists()
     assert fakebd.states["mr-7"]["review"] == "abandoned"
@@ -5885,6 +5899,7 @@ def test_assign_claim_abandon_emit_lifecycle_transitions(hive, fakebd, monkeypat
     fakebd.seed("mr-20", title="t")
     work.assign(bead="mr-20", to="dev/carol", as_="disp/lead", hive="myrepo")
     work.claim(bead="mr-20", as_="dev/carol", hive="myrepo")
+    monkeypatch.setenv("BH_DEV", "dev/carol")
     work.abandon(bead="mr-20", hive="myrepo", rm=False)
 
     # All counters share one mocked instrument, so filter the bead transitions out of the
@@ -5899,12 +5914,13 @@ def test_assign_claim_abandon_emit_lifecycle_transitions(hive, fakebd, monkeypat
     otel._instruments.clear()  # don't leak mocked instruments into later tests
 
 
-def test_lifecycle_transitions_are_noop_when_otel_off(hive, fakebd):
+def test_lifecycle_transitions_are_noop_when_otel_off(hive, fakebd, monkeypatch):
     # Default/off path: the verbs run unchanged and cache no instrument (zero-cost no-op).
     otel._instruments.clear()
     fakebd.seed("mr-21", title="t")
     work.assign(bead="mr-21", to="dev/carol", as_="disp/lead", hive="myrepo")
     work.claim(bead="mr-21", as_="dev/carol", hive="myrepo")
+    monkeypatch.setenv("BH_DEV", "dev/carol")
     work.abandon(bead="mr-21", hive="myrepo", rm=False)
     assert fakebd.beads["mr-21"]["status"] == "open"  # abandon reopened it — behavior intact
     assert otel._instruments == {}  # nothing cached on the off-path

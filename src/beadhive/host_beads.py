@@ -41,6 +41,7 @@ from . import registry, store_locator
 from .config_consumer_ports import daemon_settings as config
 
 INTENT_FILE = "supervise.json"
+SUPERVISION_FILE = "supervision.json"
 _RUNTIME = Path("run") / "beads-serve"
 
 
@@ -187,6 +188,25 @@ def is_enabled(spec: Any) -> bool:
     return (spec.paths.directory / INTENT_FILE).is_file()
 
 
+def supervision_status(spec: Any) -> dict[str, Any] | None:
+    """Token-free diagnostic state published by the daemon that owns this intent."""
+    if not is_enabled(spec):
+        return None
+    try:
+        value = json.loads((spec.paths.directory / SUPERVISION_FILE).read_text())
+    except (OSError, ValueError):
+        return None
+    if (
+        not isinstance(value, dict)
+        or value.get("hive") != spec.workspace
+        or not isinstance(value.get("state"), str)
+        or not isinstance(value.get("detail"), str)
+        or not isinstance(value.get("failures"), int)
+    ):
+        return None
+    return value
+
+
 @dataclass(frozen=True)
 class Intent:
     hive: str
@@ -250,35 +270,89 @@ class DaemonBeadsSupervision:
         self._lock = threading.Lock()
         self._closed = False
 
+    def _publish(self, hive: str, state: str, detail: str, failures: int = 0) -> None:
+        directory = self.root / registry.sanitize(hive)
+        payload = {"hive": hive, "state": state, "detail": detail, "failures": failures}
+        temporary = directory / f".{SUPERVISION_FILE}.{os.getpid()}"
+        try:
+            temporary.write_text(json.dumps(payload, sort_keys=True) + "\n")
+            temporary.chmod(0o600)
+            os.replace(temporary, directory / SUPERVISION_FILE)
+        except OSError as exc:
+            # Diagnostics must never stop supervision of this or another hive. The daemon
+            # log remains available when the runtime directory itself cannot be written.
+            logging.getLogger(__name__).warning(
+                "Cannot publish Beads supervision state for %s at %s: %s",
+                hive,
+                directory,
+                exc,
+            )
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
     def reconcile(self) -> None:
         with self._lock:
             if self._closed:
                 return
             wanted = {intent.hive: intent for intent in iter_intents(self.root)}
             for hive in [hive for hive in self.supervisors if hive not in wanted]:
-                self.supervisors.pop(hive).shutdown()
+                try:
+                    self.supervisors.pop(hive).shutdown()
+                except Exception:
+                    logging.getLogger(__name__).exception(
+                        "Cannot stop disabled Beads supervisor for %s", hive
+                    )
+                try:
+                    (self.root / registry.sanitize(hive) / SUPERVISION_FILE).unlink(missing_ok=True)
+                except OSError as exc:
+                    logging.getLogger(__name__).warning(
+                        "Cannot remove disabled Beads supervision state for %s: %s", hive, exc
+                    )
+                self.errors.pop(hive, None)
             for hive, intent in wanted.items():
                 supervisor = self.supervisors.get(hive)
                 if supervisor is None:
                     try:
                         spec = self._spec_factory(intent.main, hive)
+                        supervisor = self._supervisor_factory(spec)
                     except (HiveNotServable, OSError) as exc:
                         self.errors[hive] = str(exc)
+                        self._publish(hive, "failed", str(exc))
                         continue
                     self.errors.pop(hive, None)
-                    supervisor = self.supervisors[hive] = self._supervisor_factory(spec)
-                supervisor.tick()
+                    self.supervisors[hive] = supervisor
+                try:
+                    snapshot = supervisor.tick()
+                except (OSError, ValueError) as exc:
+                    self.errors[hive] = str(exc)
+                    self._publish(hive, "failed", str(exc))
+                    continue
+                if snapshot is not None:
+                    self.errors.pop(hive, None)
+                    self._publish(hive, snapshot.state, snapshot.detail, snapshot.failures)
 
     def shutdown(self) -> None:
         with self._lock:
             self._closed = True
             supervisors, self.supervisors = self.supervisors, {}
-        for supervisor in supervisors.values():
-            supervisor.shutdown()
+        for hive, supervisor in supervisors.items():
+            try:
+                supervisor.shutdown()
+            except Exception as exc:
+                self.errors[hive] = str(exc)
+                logging.getLogger(__name__).exception("Cannot stop Beads supervisor for %s", hive)
+                self._publish(hive, "failed", f"host daemon shutdown failed: {exc}")
+                continue
+            self._publish(hive, "stopped", "host daemon stopped")
 
     async def run(self) -> None:
         while True:
-            await asyncio.to_thread(self.reconcile)
+            try:
+                await asyncio.to_thread(self.reconcile)
+            except OSError:
+                logging.getLogger(__name__).exception("Cannot reconcile Beads supervision intents")
             await asyncio.sleep(self.interval)
 
     def component(self) -> Any:
@@ -323,4 +397,5 @@ __all__ = [
     "spec_for_dir",
     "spec_for_hive",
     "start_command",
+    "supervision_status",
 ]

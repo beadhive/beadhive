@@ -487,8 +487,19 @@ def beads_status_cmd(
             rows.append({"hive": key, "state": "unservable", "detail": str(exc), "record": None})
             continue
         current = host_beads.service_module().status(spec)
+        supervision = host_beads.supervision_status(spec)
+        payload = current.payload()
+        if supervision and current.state != "running":
+            payload["detail"] = (
+                f"{payload['detail']}; daemon {supervision['state']}: {supervision['detail']}"
+            )
         rows.append(
-            {"hive": key, "supervised_by_daemon": host_beads.is_enabled(spec), **current.payload()}
+            {
+                "hive": key,
+                "supervised_by_daemon": host_beads.is_enabled(spec),
+                "supervision": supervision,
+                **payload,
+            }
         )
     healthy = bool(rows) and all(row["state"] == "running" for row in rows)
     if as_json:
