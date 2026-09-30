@@ -308,6 +308,13 @@
             nodes.machine = { ... }: {
               programs.nix-ld.enable = false;
               environment.systemPackages = [ self.packages.${system}.bh ];
+              # Under TCG the generic test driver's shell has a fixed 300s
+              # connection window. Start only this test backdoor during sysinit;
+              # the assertions below still wait for the full multi-user boot.
+              systemd.services.backdoor = {
+                unitConfig.DefaultDependencies = false;
+                wantedBy = [ "sysinit.target" "emergency.target" ];
+              };
             };
             testScript = ''
               machine.start()
