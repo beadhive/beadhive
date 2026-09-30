@@ -1216,7 +1216,7 @@ def provision_cmd(
     answers: str = typer.Option(
         "",
         "--answers",
-        help="declarative plan (role, hq.remote, hives, adopt) — for unattended installs.",
+        help="declarative plan (role, hq.remote, hq.push, hives, adopt) — for unattended installs.",
     ),
     auto: bool = typer.Option(
         False,
@@ -1233,6 +1233,7 @@ def provision_cmd(
         help="re-mint this host's manifest even if one is already registered "
         "(never re-mints host_id/host.yaml itself)",
     ),
+    push: bool = typer.Option(False, "--push", help="publish only this host's manifest to HQ"),
 ):
     """Thin CLI wrapper over :func:`beadhive.host_provision.provision` — see that module's
     docstring for the full pipeline + the hard requirements it holds itself to (never clobber
@@ -1269,6 +1270,7 @@ def provision_cmd(
         auto=auto or plan is not None,  # an answers file IS the answer — never prompt with one
         dry_run=dry_run,
         force_manifest=force,
+        push=push or (plan.hq_push if plan else False),
         adopt=plan.adopt if plan else None,
         hives=plan.hives if plan else None,
     )

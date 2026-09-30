@@ -32,6 +32,7 @@ import re
 import stat
 import sys
 import tarfile
+import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -447,6 +448,96 @@ def status(*, as_json: bool = False) -> None:
         typer.echo("✓ HQ is up to date with its remote")
     else:
         typer.echo(f"→ run `{config.BINARY_ALIAS} hq push` to publish")
+
+
+class HostPublicationError(Exception):
+    """A host registration could not be published without touching unrelated HQ work."""
+
+
+def publish_host_manifest(hq_dir: Path, host_id: str, *, attempts: int = 3) -> bool:
+    """Publish only this registration; return False when the remote already has it.
+
+    The HQ publication boundary owns Git here. A remote-based disposable checkout avoids
+    publishing unrelated local commits, staging someone else's edits, or stashing HQ dirt.
+    Non-fast-forward races rebase only our manifest commit, then validate it again.
+    """
+    from . import hosts
+
+    if Path(host_id).name != host_id or not host_id or host_id in {".", ".."}:
+        raise HostPublicationError("host_id must be a manifest filename")
+    manifest = hosts.load(hq_dir, host_id)
+    if manifest.host_id != host_id:
+        raise HostPublicationError("manifest host_id does not match this host")
+    relative = hosts.manifest_path(hq_dir, host_id).relative_to(hq_dir)
+    content = (hq_dir / relative).read_bytes()
+
+    def checked(args: list[str], cwd: Path):
+        result = _git(args, cwd)
+        if result.returncode:
+            raise HostPublicationError(f"git {args[0]} failed: {err_line(result)}")
+        return result
+
+    remote = checked(["remote", "get-url", "--push", "origin"], hq_dir).stdout.strip()
+    settings = {}
+    for key in (
+        "user.name",
+        "user.email",
+        "user.signingkey",
+        "gpg.format",
+        "gpg.ssh.program",
+        "commit.gpgsign",
+        "core.sshcommand",
+    ):
+        value = _git(["config", "--get", key], hq_dir)
+        if value.returncode == 0:
+            settings[key] = value.stdout.strip()
+    with tempfile.TemporaryDirectory(prefix="bh-host-publish-") as directory:
+        checkout = Path(directory) / "hq"
+        transport = (
+            ["-c", f"core.sshcommand={settings['core.sshcommand']}"]
+            if "core.sshcommand" in settings
+            else []
+        )
+        checked(
+            [
+                *transport,
+                "clone",
+                "--single-branch",
+                "--branch",
+                "main",
+                "--",
+                remote,
+                str(checkout),
+            ],
+            hq_dir,
+        )
+        # Clone loses HQ-local settings; preserve effective signing and transport policy.
+        for key, value in settings.items():
+            checked(["config", key, value], checkout)
+        target = checkout / relative
+        if target.is_symlink() or target.parent.is_symlink():
+            raise HostPublicationError("remote registration path must not be a symlink")
+        if target.exists() and target.read_bytes() == content:
+            return False
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+        checked(["add", "--", str(relative)], checkout)
+        checked(["commit", "-m", f"feat(host): register {host_id}"], checkout)
+        for attempt in range(attempts):
+            verified = hosts.load(checkout, host_id)
+            if verified != manifest or target.read_bytes() != content:
+                raise HostPublicationError("registration changed during publication retry")
+            pushed = _git(["push", "origin", "HEAD:refs/heads/main"], checkout)
+            if pushed.returncode == 0:
+                return True
+            diagnostic = pushed.stderr + pushed.stdout
+            if attempt + 1 == attempts or not any(
+                marker in diagnostic for marker in ("non-fast-forward", "fetch first")
+            ):
+                raise HostPublicationError(f"git push failed: {err_line(pushed)}")
+            checked(["fetch", "origin", "main"], checkout)
+            checked(["rebase", "origin/main"], checkout)
+        raise HostPublicationError("registration publication retry limit exhausted")
 
 
 def push(*, dry_run: bool = False) -> None:
