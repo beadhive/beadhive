@@ -706,16 +706,22 @@ def merge_group(cfg, group_arg, hive, rm):
 
         prof = config.work_identity(cfg, entry)
         agent = prof["mode"] == "agent"
-        mrc, out = worktree.merge_no_ff(
-            entry,
-            head_sha,
-            base,
-            name=(prof["name"] or "") if agent else "",
-            email=(prof["email"] or "") if agent else "",
-            signing_key=(prof["signing_key"] or "") if agent else "",
-            sign=prof["sign"] if agent else False,
-            message=f"chore(merge): batch {group}",
-        )
+        try:
+            mrc, out = worktree.merge_no_ff(
+                entry,
+                head_sha,
+                base,
+                name=(prof["name"] or "") if agent else "",
+                email=(prof["email"] or "") if agent else "",
+                signing_key=(prof["signing_key"] or "") if agent else "",
+                sign=prof["sign"] if agent else False,
+                message=f"chore(merge): batch {group}",
+            )
+        except worktree.MergePreconditionError as exc:
+            typer.echo(
+                f"✗ workspace precondition failed — aborted, nothing landed: {exc}", err=True
+            )
+            raise typer.Exit(1) from None
         if mrc != 0:
             # The merger has no write authority to hand-resolve this (bh-2p6w — merger is "not
             # implement" per docs/design/roles-rbac-matrix.md), so the escalation is made

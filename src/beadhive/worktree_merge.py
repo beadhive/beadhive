@@ -27,12 +27,18 @@ from beadhive_worktrees import (
 from . import registry, worktree
 
 
+class MergePreconditionError(RuntimeError):
+    """The integration workspace cannot start a merge; no content was compared."""
+
+
 def merge_no_ff(entry, branch, base, *, name="", email="", signing_key="", sign=False, message=""):
     """Integration-boundary merge: bring `branch` onto `base` in the hive's main clone with a
     real merge commit (`--no-ff`) — history preserved, never squashed. Checks out `base` first
     (refusing if the clone is dirty, so we never merge over someone's uncommitted work). Pass
     identity/signing overrides for an agent-mode merger; omit them to inherit the clone's git
-    config (supervised). On conflict the merge is aborted, leaving the clone clean. (rc, output).
+    config (supervised). On content conflict the merge is aborted, leaving the clone clean and
+    returning (rc, output). A dirty workspace, checkout refusal, or merge failure without
+    unmerged paths raises MergePreconditionError; callers must not bounce reviewed work for it.
 
     Runs in the worktree that has `base` checked out (`clone_for_branch`): the main clone for a
     top-level land onto `main`, or the coordinator seat for a merge onto a container branch (which
@@ -49,7 +55,7 @@ def merge_no_ff(entry, branch, base, *, name="", email="", signing_key="", sign=
         dirty = worktree.dirty_paths(main)
         listed = "\n".join(f"      {p}" for p in dirty[:10]) or "      (nothing reported)"
         more = f"\n      … and {len(dirty) - 10} more" if len(dirty) > 10 else ""
-        return 1, (
+        raise MergePreconditionError(
             f"main clone {main} is not clean — cannot merge.\n"
             f"  Untracked or modified:\n{listed}{more}\n"
             "  Commit or stash them, or add them to the hive's .gitignore. Note bd takes its "
@@ -61,7 +67,7 @@ def merge_no_ff(entry, branch, base, *, name="", email="", signing_key="", sign=
             ["git", "-C", str(main), "checkout", base], check=False, capture=True
         )
         if co.returncode != 0:
-            return co.returncode, (co.stdout or "") + (co.stderr or "")
+            raise MergePreconditionError((co.stdout or "") + (co.stderr or ""))
     # Disable rerere: an integration-boundary merge must be deterministic — `_run_git` scrubs
     # GIT_CONFIG_GLOBAL so git falls back to the user's ~/.gitconfig, and a developer's rerere
     # cache could silently replay a stale resolution over a real conflict. We want a clean merge
@@ -82,9 +88,17 @@ def merge_no_ff(entry, branch, base, *, name="", email="", signing_key="", sign=
         ]
     cmd += ["merge", "--no-ff", "-m", message or f"chore(merge): {branch}", branch]
     res = worktree._run_git(cmd, check=False, capture=True)
+    output = (res.stdout or "") + (res.stderr or "")
     if res.returncode != 0:
+        unresolved = worktree._run_git(
+            ["git", "-C", str(main), "diff", "--name-only", "--diff-filter=U"],
+            check=False,
+            capture=True,
+        )
         worktree._run_git(["git", "-C", str(main), "merge", "--abort"], check=False, capture=True)
-    return res.returncode, (res.stdout or "") + (res.stderr or "")
+        if unresolved.returncode != 0 or not (unresolved.stdout or "").strip():
+            raise MergePreconditionError(output)
+    return res.returncode, output
 
 
 def _ref_sha(main: Path, ref: str) -> str:
@@ -181,7 +195,11 @@ def _try_union_tier(
         return 1, dout, "conflict"
 
     pre_union = _ref_sha(main, base)  # snapshot integration tip to roll back to on failure
-    rc, out = merge_with_union(entry, branch, base, union_globs, **idkw)
+    try:
+        rc, out = merge_with_union(entry, branch, base, union_globs, **idkw)
+    except MergePreconditionError:
+        worktree.reset_hard(target, backup)
+        raise
     if rc != 0:
         worktree.reset_hard(main, pre_union)  # union merge itself conflicted — undo partial state
         worktree.reset_hard(target, backup)
@@ -286,7 +304,11 @@ def try_merge_rebase(
             "conflict",
         )
 
-    rc2, out2 = merge_no_ff(entry, branch, base, **idkw)
+    try:
+        rc2, out2 = merge_no_ff(entry, branch, base, **idkw)
+    except MergePreconditionError:
+        worktree.reset_hard(target, backup)
+        raise
     if rc2 != 0:
         worktree.reset_hard(target, backup)  # restore the pre-rebase bead branch — never drop work
         urc, uout, uhow = _try_union_tier(

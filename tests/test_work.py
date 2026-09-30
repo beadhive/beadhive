@@ -3275,6 +3275,42 @@ def test_merge_real_conflict_fails_clean_and_restores_branch(hive, fakebd):
     assert note_calls and "shared.txt" in " ".join(note_calls[0])
 
 
+def test_merge_unrelated_untracked_file_preserves_approved_review(hive, fakebd, capsys):
+    fakebd.seed("mr-33", title="t")
+    _take_to_approved(hive, fakebd, "mr-33")
+    fakebd.states["mr-33"]["review"] = "approved"
+    branch = "wt/bead/issue/mr-33"
+    common = _git("merge-base", "main", branch, cwd=hive.main).stdout.strip()
+    merge_tree = _git("merge-tree", common, "main", branch, cwd=hive.main)
+    assert merge_tree.returncode == 0 and "<<<<<<<" not in merge_tree.stdout
+    tip = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
+    operator_file = hive.main / "operator-scratch.txt"
+    assert not _git(
+        "ls-tree", "--name-only", branch, "--", operator_file.name, cwd=hive.main
+    ).stdout
+    operator_file.write_text("untracked operator work")
+    assert _git("status", "--porcelain", "--untracked-files=all", cwd=hive.main).stdout == (
+        "?? operator-scratch.txt\n"
+    )
+    calls_before = len(fakebd.calls)
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-33", hive="myrepo", rm=False, molecule=False)
+
+    err = capsys.readouterr().err
+    assert "workspace precondition failed" in err and "conflict" not in err
+    assert fakebd.states["mr-33"]["review"] == "approved"
+    assert not any(
+        args[:2] == ["note", "mr-33"] or args[:2] == ["set-state", "mr-33"]
+        for _actor, args in fakebd.calls[calls_before:]
+    )
+    assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == tip
+
+    operator_file.unlink()
+    work.merge(bead="mr-33", hive="myrepo", rm=False, molecule=False)
+    assert fakebd.beads["mr-33"]["status"] == "closed"
+
+
 def test_successful_merge_close_reaps_refine_and_premerge_backups(hive, fakebd):
     fakebd.seed("mr-32", title="t")
     work.claim(bead="mr-32", as_="", hive="myrepo")
@@ -5631,9 +5667,9 @@ def test_merge_adhoc_main_gate_fires_in_relaxed_and_rolls_back(hive, fakebd):
     assert fakebd.did("merge-slot", "release")
 
 
-def test_merge_adhoc_main_gate_escalates_red_kept_on_pushed_main(hive, fakebd):
+def test_merge_adhoc_main_gate_escalates_red_kept_on_pushed_main(hive, fakebd, monkeypatch):
     """relaxed: an ad-hoc bead → a SHARED (pushed) main that goes red is NOT rewritten — the merge
-    bubble stands, escalated for fix-forward; the bead is still bounced."""
+    bubble stands, is attributed and closed, and is escalated for fix-forward."""
     hive.cfg_path.write_text(
         CONFIG_YAML.replace(
             'validate_cmd: "true"',
@@ -5650,16 +5686,35 @@ def test_merge_adhoc_main_gate_escalates_red_kept_on_pushed_main(hive, fakebd):
     )  # submit green; merge-main red on main
     work.submit(bead="mr-6", hive="myrepo")
     fakebd.approve("mr-6")
+    real_checkout = worktree.clean_checkout
+
+    def inspect_linkage(entry, branch, command, **kw):
+        if kw.get("phase") == "merge":
+            assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() in _linkage(
+                fakebd, "mr-6"
+            )
+        return real_checkout(entry, branch, command, **kw)
+
+    monkeypatch.setattr(worktree, "clean_checkout", inspect_linkage)
 
     with pytest.raises(typer.Exit):
-        work.merge(bead="mr-6", hive="myrepo", rm=False, molecule=False)
+        work.merge(bead="mr-6", hive="myrepo", rm=True, molecule=False)
 
-    # pushed main NOT rewritten — the bubble stands; bead bounced, not closed
+    # Pushed main is not rewritten: attribution and closure record code that actually landed.
     assert (
         _git("log", "-1", "--format=%s", cwd=hive.main).stdout.strip() == "chore(merge): bead mr-6"
     )
-    assert fakebd.beads["mr-6"]["status"] != "closed"
-    assert fakebd.states.get("mr-6", {}).get("review") == "changes-requested"
+    merge_sha = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
+    assert merge_sha in _linkage(fakebd, "mr-6")
+    assert fakebd.beads["mr-6"]["status"] == "closed"
+    assert fakebd.states.get("mr-6", {}).get("review") != "changes-requested"
+    assert any(
+        args[:2] == ["note", "mr-6"] and "Fix forward" in " ".join(args)
+        for _actor, args in fakebd.calls
+    )
+    assert not _wt(hive, "mr-6").exists()
+    work.merge(bead="mr-6", hive="myrepo", rm=False, molecule=False)  # already landed
+    assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == merge_sha
 
 
 def test_merge_adhoc_main_gate_skipped_under_loose(hive, fakebd, monkeypatch):
@@ -6510,6 +6565,42 @@ def test_merge_group_lands_one_bubble_with_per_bead_commits_and_closes_all(hive,
     assert fakebd.did("close", "mr-1.2", "--reason", "merged in batch samefile")
     assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == main_before
     assert fakebd.did("merge-slot", "acquire") and fakebd.did("merge-slot", "release")
+
+
+def test_merge_group_workspace_precondition_preserves_both_verdicts(hive, fakebd, capsys):
+    _submit_and_approve_batch(hive, fakebd)
+    members = ("mr-1.1", "mr-1.2")
+    for member in members:
+        fakebd.states[member]["review"] = "approved"
+    base = "wt/bead/epic/mr-1"
+    before = _git("rev-parse", base, cwd=hive.main).stdout.strip()
+    # This collides with a file the batch will add, so Git must refuse regardless of how
+    # unrelated untracked scratch is classified by the merge cleanliness policy.
+    operator_file = hive.main / "a.txt"
+    operator_file.write_text("operator work")
+    workspace_status = _git("status", "--porcelain", "--untracked-files=all", cwd=hive.main).stdout
+    operator_bytes = operator_file.read_bytes()
+    calls_before = len(fakebd.calls)
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="", group=",".join(members), hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert "aborted, nothing landed" in err and "conflict" not in err
+    assert all(fakebd.states[m]["review"] == "approved" for m in members)
+    assert not any(
+        args[0] in ("note", "set-state") and len(args) > 1 and args[1] in members
+        for _actor, args in fakebd.calls[calls_before:]
+    )
+    assert _git("rev-parse", base, cwd=hive.main).stdout.strip() == before
+    assert (
+        _git("status", "--porcelain", "--untracked-files=all", cwd=hive.main).stdout
+        == workspace_status
+    )
+    assert operator_file.read_bytes() == operator_bytes
+    operator_file.unlink()
+    work.merge(bead="", group=",".join(members), hive="myrepo")
+    assert all(fakebd.beads[m]["status"] == "closed" for m in members)
 
 
 def test_merge_group_closes_members_as_assignee_without_needing_force(hive, fakebd):
