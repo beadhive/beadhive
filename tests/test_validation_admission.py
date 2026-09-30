@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
-from beadhive import validation_admission, work_submission, worktree_verify
+from beadhive import config_schema, validation_admission, work_submission, worktree_verify
 from harness.processes import process_context
 
 
@@ -38,6 +40,59 @@ def test_priority_command_defaults_on_and_applies_nice_ionice_to_child(monkeypat
     assert policy["mechanism"] == "nice+ionice"
 
 
+def test_priority_command_applies_configured_nice_and_ionice_to_real_child(monkeypatch):
+    nice = shutil.which("nice")
+    ionice = shutil.which("ionice")
+    if not nice or not ionice:
+        pytest.skip("nice and ionice executables are required for the inheritance proof")
+    monkeypatch.delenv("BH_VALIDATION_PRIORITY", raising=False)
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+
+    script = (
+        "import json, os, subprocess; "
+        "io=subprocess.run(['ionice','-p',str(os.getpid())],"
+        "capture_output=True,text=True,check=True); "
+        "print(json.dumps({'nice':os.getpriority(os.PRIO_PROCESS,0),'ionice':io.stdout.strip()}))"
+    )
+    argv, policy = validation_admission.priority_command(
+        {
+            "work": {
+                "validation_priority": {
+                    "nice": 13,
+                    "ionice_class": 2,
+                    "ionice_priority": 6,
+                }
+            }
+        },
+        [sys.executable, "-c", script],
+    )
+    payload = json.loads(subprocess.run(argv, capture_output=True, text=True, check=True).stdout)
+
+    assert payload["nice"] == 13
+    assert payload["ionice"] == "best-effort: prio 6"
+    assert policy["nice"] == 13
+    assert policy["ionice_class"] == 2
+    assert policy["ionice_priority"] == 6
+
+
+def test_priority_config_rejects_priority_raising_or_invalid_values(monkeypatch):
+    for value in (-1, 20):
+        with pytest.raises(ValueError):
+            config_schema.WorkConfig.model_validate({"validation_priority": {"nice": value}})
+    with pytest.raises(ValueError):
+        config_schema.WorkConfig.model_validate({"validation_priority": {"ionice_class": 1}})
+    for value in (-1, 8):
+        with pytest.raises(ValueError):
+            config_schema.WorkConfig.model_validate(
+                {"validation_priority": {"ionice_priority": value}}
+            )
+
+    monkeypatch.setenv("BH_VALIDATION_PRIORITY", "sometimes")
+    with pytest.raises(ValueError, match="BH_VALIDATION_PRIORITY must be a boolean"):
+        validation_admission.priority_command({}, ["gate"])
+
+
 def test_priority_command_supports_emergency_disable_and_graceful_degrade(monkeypatch, tmp_path):
     command = ["gate"]
     monkeypatch.setattr(validation_admission.shutil, "which", lambda _name: None)
@@ -51,6 +106,12 @@ def test_priority_command_supports_emergency_disable_and_graceful_degrade(monkey
     assert disabled["applied"] is False
 
     monkeypatch.delenv("BH_VALIDATION_PRIORITY")
+    configured_argv, configured = validation_admission.priority_command(
+        {"work": {"validation_priority": {"enabled": False}}}, command
+    )
+    assert configured_argv == command
+    assert configured["mechanism"] == "disabled"
+
     unavailable_argv, unavailable = validation_admission.priority_command({}, command)
     assert unavailable_argv == command
     assert unavailable["mechanism"] == "unavailable"
@@ -75,6 +136,36 @@ def test_priority_command_supports_emergency_disable_and_graceful_degrade(monkey
     assert fallback["mechanism"] == "nice+ionice"
 
 
+def test_priority_command_uses_safe_configured_idle_class(monkeypatch):
+    monkeypatch.delenv("BH_VALIDATION_PRIORITY", raising=False)
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+    monkeypatch.setattr(
+        validation_admission.shutil,
+        "which",
+        lambda name: f"/usr/bin/{name}" if name in {"nice", "ionice"} else None,
+    )
+
+    argv, policy = validation_admission.priority_command(
+        {
+            "work": {
+                "validation_priority": {
+                    "enabled": True,
+                    "nice": 4,
+                    "ionice_class": 3,
+                    "ionice_priority": 1,
+                }
+            }
+        },
+        ["gate"],
+    )
+
+    assert argv == ["/usr/bin/ionice", "-c3", "/usr/bin/nice", "-n", "4", "gate"]
+    assert policy["nice"] == 4
+    assert policy["ionice_class"] == 3
+    assert policy["ionice_priority"] == 1
+
+
 def test_priority_command_adds_user_systemd_scope_when_bus_is_available(monkeypatch, tmp_path):
     runtime = tmp_path / "runtime"
     runtime.mkdir()
@@ -85,7 +176,9 @@ def test_priority_command_adds_user_systemd_scope_when_bus_is_available(monkeypa
     monkeypatch.setattr(
         validation_admission.shutil,
         "which",
-        lambda name: f"/usr/bin/{name}" if name in {"nice", "ionice", "systemd-run"} else None,
+        lambda name: (
+            f"/usr/bin/{name}" if name in {"nice", "ionice", "systemd-run", "true"} else None
+        ),
     )
     monkeypatch.setattr(
         validation_admission.subprocess,
@@ -105,6 +198,50 @@ def test_priority_command_adds_user_systemd_scope_when_bus_is_available(monkeypa
         "--",
     ]
     assert policy["mechanism"] == "systemd-user-scope+nice+ionice"
+
+
+def test_priority_command_real_systemd_scope_has_reduced_cgroup_weight(monkeypatch):
+    if not Path("/sys/fs/cgroup/cgroup.controllers").exists():
+        pytest.skip("cgroup v2 is unavailable")
+    if not shutil.which("systemd-run"):
+        pytest.skip("systemd-run is unavailable")
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    bus = os.environ.get("DBUS_SESSION_BUS_ADDRESS", "")
+    if not ((runtime and (Path(runtime) / "bus").exists()) or bus.startswith("unix:path=")):
+        pytest.skip("user systemd bus is unavailable")
+    monkeypatch.delenv("BH_VALIDATION_PRIORITY", raising=False)
+
+    script = """
+import json
+import os
+import subprocess
+from pathlib import Path
+
+cgroup = next(line.split(':', 2)[2] for line in Path('/proc/self/cgroup').read_text().splitlines()
+              if line.startswith('0::'))
+root = Path('/sys/fs/cgroup') / cgroup.lstrip('/')
+io = subprocess.run(['ionice', '-p', str(os.getpid())], capture_output=True, text=True, check=True)
+print(json.dumps({
+    'cgroup': cgroup,
+    'cpu_weight': (root / 'cpu.weight').read_text().strip(),
+    'io_weight': (
+        (root / 'io.weight').read_text().strip() if (root / 'io.weight').exists() else None
+    ),
+    'nice': os.getpriority(os.PRIO_PROCESS, 0),
+    'ionice': io.stdout.strip(),
+}))
+"""
+    argv, policy = validation_admission.priority_command({}, [sys.executable, "-c", script])
+    if "systemd-user-scope" not in policy["mechanism"]:
+        pytest.skip("user systemd scope rejected the reduced-weight probe")
+    payload = json.loads(subprocess.run(argv, capture_output=True, text=True, check=True).stdout)
+
+    assert ".scope" in payload["cgroup"]
+    assert payload["cpu_weight"] == "20"
+    if payload["io_weight"] is not None:
+        assert payload["io_weight"] in {"20", "default 20"}
+    assert payload["nice"] == 10
+    assert payload["ionice"] == "best-effort: prio 7"
 
 
 def _hold(root, entered, release):

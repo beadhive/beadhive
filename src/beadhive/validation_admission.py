@@ -47,32 +47,72 @@ def configured_slots(cfg: dict, entry=None) -> int:
     return value
 
 
+def _priority_bool(value: object, *, source: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{source} must be a boolean")
+
+
+def _priority_int(value: object, *, name: str, minimum: int, maximum: int) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer from {minimum} to {maximum}")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be an integer from {minimum} to {maximum}") from exc
+    if not minimum <= parsed <= maximum:
+        raise ValueError(f"{name} must be an integer from {minimum} to {maximum}")
+    return parsed
+
+
+def _priority_settings(cfg: dict) -> tuple[bool, int, int, int]:
+    work = cfg.get("work") if isinstance(cfg, dict) else None
+    raw = work.get("validation_priority", {}) if isinstance(work, dict) else {}
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValueError("work.validation_priority must be a mapping")
+    unknown = set(raw) - {"enabled", "nice", "ionice_class", "ionice_priority"}
+    if unknown:
+        raise ValueError(
+            "unknown work.validation_priority setting(s): " + ", ".join(sorted(unknown))
+        )
+    enabled = _priority_bool(raw.get("enabled", True), source="validation priority enabled")
+    override = os.environ.get("BH_VALIDATION_PRIORITY")
+    if override is not None:
+        enabled = _priority_bool(override, source="BH_VALIDATION_PRIORITY")
+    nice_level = _priority_int(raw.get("nice", 10), name="validation nice", minimum=0, maximum=19)
+    ionice_class = _priority_int(
+        raw.get("ionice_class", 2), name="validation ionice class", minimum=2, maximum=3
+    )
+    ionice_priority = _priority_int(
+        raw.get("ionice_priority", 7),
+        name="validation ionice priority",
+        minimum=0,
+        maximum=7,
+    )
+    return enabled, nice_level, ionice_class, ionice_priority
+
+
 def priority_command(cfg: dict, command: list[str]) -> tuple[list[str], dict]:
     """Return the validation launcher and an auditable summary of its scheduling policy.
 
     The controls are best-effort.  `BH_VALIDATION_PRIORITY` is the host emergency override;
     otherwise the host-level `work.validation_priority` setting defaults to enabled.
     """
-    work = cfg.get("work") if isinstance(cfg, dict) else None
-    enabled: object = work.get("validation_priority", True) if isinstance(work, dict) else True
-    override = os.environ.get("BH_VALIDATION_PRIORITY")
-    if override is not None:
-        enabled = override.strip().lower() not in {"0", "false", "no", "off"}
-    enabled = enabled is not False and str(enabled).strip().lower() not in {
-        "0",
-        "false",
-        "no",
-        "off",
-        "none",
-        "",
-    }
+    enabled, nice_level, ionice_class, ionice_priority = _priority_settings(cfg)
     policy = {
         "enabled": enabled,
         "applied": False,
         "mechanism": "disabled" if not enabled else "unavailable",
-        "nice": 10,
-        "ionice_class": 2,
-        "ionice_priority": 7,
+        "nice": nice_level,
+        "ionice_class": ionice_class,
+        "ionice_priority": ionice_priority,
         "cpu_weight": 20,
         "io_weight": 20,
     }
@@ -84,22 +124,26 @@ def priority_command(cfg: dict, command: list[str]) -> tuple[list[str], dict]:
     launcher = list(command)
     layers = []
     if nice:
-        launcher = [nice, "-n", "10", *launcher]
+        launcher = [nice, "-n", str(nice_level), *launcher]
         layers.append("nice")
     if ionice:
-        launcher = [ionice, "-c2", "-n7", *launcher]
+        ionice_argv = [ionice, f"-c{ionice_class}"]
+        if ionice_class == 2:
+            ionice_argv.append(f"-n{ionice_priority}")
+        launcher = [*ionice_argv, *launcher]
         layers.append("ionice")
 
     # A user manager is often absent in CI and containers even when systemd-run is installed.
     # Probe only local session evidence and keep the command path non-blocking.
     systemd_run = shutil.which("systemd-run")
+    true_executable = shutil.which("true")
     runtime = os.environ.get("XDG_RUNTIME_DIR")
     bus_address = os.environ.get("DBUS_SESSION_BUS_ADDRESS", "")
     bus_available = bool(
         (runtime and (Path(runtime) / "bus").exists()) or bus_address.startswith("unix:path=")
     )
     scope_available = False
-    if systemd_run and bus_available:
+    if systemd_run and true_executable and bus_available:
         try:
             probe = subprocess.run(
                 [
@@ -110,7 +154,7 @@ def priority_command(cfg: dict, command: list[str]) -> tuple[list[str], dict]:
                     "--property=CPUWeight=20",
                     "--property=IOWeight=20",
                     "--",
-                    "/usr/bin/true",
+                    true_executable,
                 ],
                 stdin=subprocess.DEVNULL,
                 capture_output=True,

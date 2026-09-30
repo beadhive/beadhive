@@ -223,8 +223,11 @@ worktrees:
 #                                  # not up.
 #   validation_slots: 1            # host-wide uniform concurrent gates; 0 disables admission.
 #                                  # BH_VALIDATION_SLOTS wins; per-hive overlays are ignored.
-#   validation_priority: true      # lower validation CPU/I/O priority when supported.
-#                                  # BH_VALIDATION_PRIORITY=false is the emergency override.
+#   validation_priority:           # host-owned, best-effort validation scheduling controls.
+#     enabled: true                # BH_VALIDATION_PRIORITY=false is the emergency override.
+#     nice: 10                     # 0..19; negative (priority-raising) values are rejected.
+#     ionice_class: 2              # 2=best-effort or 3=idle; realtime class 1 is rejected.
+#     ionice_priority: 7           # 0..7 for class 2; ignored for idle class 3.
 #   validate_subset: "./scripts/hermetic.sh uv run pytest -n auto --pyargs {tests}"
 #                                  # OPTIONAL template that re-runs only NAMED failing tests, one
 #                                  # required {tests} placeholder — a value missing it is rejected
