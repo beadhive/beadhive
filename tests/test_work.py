@@ -3285,32 +3285,113 @@ def test_merge_unrelated_untracked_file_preserves_approved_review(hive, fakebd, 
     common = _git("merge-base", "main", branch, cwd=hive.main).stdout.strip()
     merge_tree = _git("merge-tree", common, "main", branch, cwd=hive.main)
     assert merge_tree.returncode == 0 and "<<<<<<<" not in merge_tree.stdout
-    tip = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
     operator_file = hive.main / "operator-scratch.txt"
     assert not _git(
         "ls-tree", "--name-only", branch, "--", operator_file.name, cwd=hive.main
     ).stdout
     operator_file.write_text("untracked operator work")
+    _git("checkout", "-qb", "operator-stale-checkout", cwd=hive.main)
     assert _git("status", "--porcelain", "--untracked-files=all", cwd=hive.main).stdout == (
         "?? operator-scratch.txt\n"
     )
-    calls_before = len(fakebd.calls)
+    work.merge(bead="mr-33", hive="myrepo", rm=False, molecule=False)
+    assert fakebd.states["mr-33"]["review"] == "approved"
+    assert fakebd.beads["mr-33"]["status"] == "closed"
+    assert operator_file.read_text() == "untracked operator work"
+
+
+def test_merge_colliding_untracked_file_names_path_and_keeps_review(hive, fakebd, capsys):
+    fakebd.seed("mr-34", title="t")
+    _take_to_approved(hive, fakebd, "mr-34")
+    fakebd.states["mr-34"]["review"] = "approved"
+    operator_file = hive.main / "change.txt"
+    operator_file.write_text("operator work")
+    tip = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
 
     with pytest.raises(typer.Exit):
-        work.merge(bead="mr-33", hive="myrepo", rm=False, molecule=False)
+        work.merge(bead="mr-34", hive="myrepo", rm=False, molecule=False)
 
     err = capsys.readouterr().err
-    assert "workspace precondition failed" in err and "conflict" not in err
-    assert fakebd.states["mr-33"]["review"] == "approved"
-    assert not any(
-        args[:2] == ["note", "mr-33"] or args[:2] == ["set-state", "mr-33"]
-        for _actor, args in fakebd.calls[calls_before:]
-    )
+    assert "untracked path collides" in err and operator_file.name in err
+    assert operator_file.read_text() == "operator work"
     assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == tip
+    assert fakebd.states["mr-34"]["review"] == "approved"
 
-    operator_file.unlink()
-    work.merge(bead="mr-33", hive="myrepo", rm=False, molecule=False)
-    assert fakebd.beads["mr-33"]["status"] == "closed"
+
+def test_merge_ignored_colliding_file_preserves_operator_property(hive, fakebd, capsys):
+    fakebd.seed("mr-36", title="t")
+    _take_to_approved(hive, fakebd, "mr-36")
+    fakebd.states["mr-36"]["review"] = "approved"
+    (hive.main / ".git" / "info" / "exclude").write_text("change.txt\n")
+    operator_file = hive.main / "change.txt"
+    operator_file.write_text("ignored operator work")
+    assert "change.txt" not in _git("status", "--porcelain", cwd=hive.main).stdout
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-36", hive="myrepo", rm=False, molecule=False)
+
+    err = capsys.readouterr().err
+    assert "untracked path collides" in err and "change.txt" in err
+    assert operator_file.read_text() == "ignored operator work"
+    assert fakebd.states["mr-36"]["review"] == "approved"
+
+
+def test_merge_untracked_directory_colliding_with_incoming_file(hive, fakebd, capsys):
+    fakebd.seed("mr-37", title="t")
+    _take_to_approved(hive, fakebd, "mr-37")
+    operator_file = hive.main / "change.txt" / "operator.txt"
+    operator_file.parent.mkdir()
+    operator_file.write_text("operator work")
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-37", hive="myrepo", rm=False, molecule=False)
+
+    err = capsys.readouterr().err
+    assert "untracked path collides" in err and "change.txt/operator.txt" in err
+    assert operator_file.read_text() == "operator work"
+
+
+def test_merge_untracked_file_colliding_with_incoming_directory(hive, fakebd, capsys):
+    fakebd.seed("mr-38", title="t")
+    work.claim(bead="mr-38", as_="", hive="myrepo")
+    target = _wt(hive, "mr-38")
+    new_file = target / "incoming" / "child.txt"
+    new_file.parent.mkdir()
+    new_file.write_text("reviewed work")
+    _git("add", "-A", cwd=target)
+    _git("commit", "-qm", "feat: nested change", cwd=target)
+    work.submit(bead="mr-38", hive="myrepo")
+    fakebd.approve("mr-38")
+    operator_file = hive.main / "incoming"
+    operator_file.write_text("operator work")
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-38", hive="myrepo", rm=False, molecule=False)
+
+    err = capsys.readouterr().err
+    assert "untracked path collides" in err and "incoming" in err
+    assert operator_file.read_text() == "operator work"
+
+
+@pytest.mark.parametrize("staged", [False, True])
+def test_merge_tracked_change_still_refuses_without_bouncing_review(hive, fakebd, capsys, staged):
+    fakebd.seed("mr-35", title="t")
+    _take_to_approved(hive, fakebd, "mr-35")
+    fakebd.states["mr-35"]["review"] = "approved"
+    readme = hive.main / "README.md"
+    readme.write_text("operator edit")
+    if staged:
+        _git("add", "README.md", cwd=hive.main)
+    tip = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-35", hive="myrepo", rm=False, molecule=False)
+
+    err = capsys.readouterr().err
+    assert "tracked changes block the merge" in err and "README.md" in err
+    assert readme.read_text() == "operator edit"
+    assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == tip
+    assert fakebd.states["mr-35"]["review"] == "approved"
 
 
 def test_successful_merge_close_reaps_refine_and_premerge_backups(hive, fakebd):
@@ -4798,8 +4879,8 @@ def test_epic_finish_rechecks_and_rejects_missing_child_linkage(hive, fakebd, ca
 def test_finish_one_shot_override_cannot_bypass_clean_target_guard(hive, fakebd):
     _land_two_bead_molecule(hive, fakebd, "mr-1")
     fakebd.beads["mr-1"]["issue_type"] = "epic"
-    dirty = hive.main / "operator-dirty.txt"
-    dirty.write_text("uncommitted")
+    dirty = hive.main / "README.md"
+    dirty.write_text(dirty.read_text() + "\nuncommitted\n")
     main_before = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
 
     with pytest.raises(typer.Exit):
@@ -4813,6 +4894,45 @@ def test_finish_one_shot_override_cannot_bypass_clean_target_guard(hive, fakebd)
     assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == main_before
     root = validation_records._validation_root(hive.main)
     assert not (root / "bypasses").exists()
+
+
+def test_finish_lands_reviewed_molecule_with_unattended_orca_scratch(hive, fakebd):
+    epic = "mr-scratch-finish"
+    _start_and_land_children(hive, fakebd, epic=epic, count=1)
+    work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+    fakebd.resolve_review(epic)
+    screenshot = hive.main / ".orca" / "drops" / "Screenshot 2026-08-10.png"
+    screenshot.parent.mkdir(parents=True)
+    screenshot.write_bytes(b"operator screenshot")
+    assert _git("diff", "--stat", cwd=hive.main).stdout == ""
+
+    work.finish(epic=epic, hive="myrepo")
+
+    assert fakebd.beads[epic]["status"] == "closed"
+    assert screenshot.read_bytes() == b"operator screenshot"
+    assert _git("log", "-1", "--format=%s", cwd=hive.main).stdout.strip() == (
+        f"chore(merge): molecule {epic}"
+    )
+
+
+def test_finish_refuses_colliding_untracked_file_without_bouncing_review(hive, fakebd, capsys):
+    epic = "mr-colliding-finish"
+    _start_and_land_children(hive, fakebd, epic=epic, count=1)
+    work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+    fakebd.resolve_review(epic)
+    review_before = fakebd.states[epic]["review"]
+    operator_file = hive.main / "child-1.txt"
+    operator_file.write_text("operator data")
+    before = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
+
+    with pytest.raises(typer.Exit):
+        work.finish(epic=epic, hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert "untracked path collides" in err and operator_file.name in err
+    assert operator_file.read_text() == "operator data"
+    assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == before
+    assert fakebd.states[epic]["review"] == review_before
 
 
 def test_epic_submit_rejects_landed_direct_child_without_integration(hive, fakebd, capsys):

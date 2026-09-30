@@ -471,14 +471,17 @@ def impl__merge_molecule(api, cfg, epic, hive, override_reason="", override_acto
         api.typer.echo(f"✗ no container branch {mol_branch} — was {epic} kicked off?", err=True)
         raise api.typer.Exit(1)
     origin_reports = api._guard_molecule_children(epic, main)
-    if not api.worktree.is_clean(main):
-        api.typer.echo(f"✗ main clone {main} not clean — cannot land molecule", err=True)
-        raise api.typer.Exit(1)
     integration = api.config.integration_branch(cfg, entry)
     base = api._guard_molecule_land_base(entry, epic, integration)
     api.work_logic.guard_container_refresh(
         entry, base, integration, action=f"finish molecule {epic} into {base}"
     )
+    issue = api.worktree.merge_workspace_issue(
+        api.worktree.clone_for_branch(entry, base), base, mol_branch
+    )
+    if issue:
+        api.typer.echo(f"✗ cannot land molecule: {issue}", err=True)
+        raise api.typer.Exit(1)
     if api.already_landed(entry, mol_branch, base):
         if override_reason:
             api.typer.echo(

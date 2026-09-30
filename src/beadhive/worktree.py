@@ -99,6 +99,7 @@ otel = importlib.import_module(".otel", __package__)  # noqa: F401 - compatibili
 
 # Re-export the integration-merge tier (in worktree_merge) so ws.worktree.<name> still works.
 merge_no_ff = worktree_merge.merge_no_ff
+merge_workspace_issue = worktree_merge.merge_workspace_issue
 MergePreconditionError = worktree_merge.MergePreconditionError
 merge_conflict_paths = worktree_merge.merge_conflict_paths
 merge_with_union = worktree_merge.merge_with_union

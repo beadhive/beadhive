@@ -15,6 +15,7 @@ The lower-level git/worktree helpers these tiers compose (``_run_git``, ``is_cle
 from __future__ import annotations
 
 import os
+from bisect import bisect_left
 from pathlib import Path
 
 from beadhive_worktrees import (
@@ -31,6 +32,53 @@ class MergePreconditionError(RuntimeError):
     """The integration workspace cannot start a merge; no content was compared."""
 
 
+def merge_workspace_issue(main: Path, base: str, branch: str) -> str:
+    """Describe workspace changes that would make checkout or merge unsafe.
+
+    Check the index and tracked files separately from operator-owned untracked files. An
+    untracked file is safe only when neither the target base nor the incoming branch tracks
+    it (or a parent/child path). Keep this preflight ahead of validation and let Git make
+    the final merge decision under the merge slot.
+    """
+    git = lambda *args: worktree._run_git(  # noqa: E731 - all probes share the same cwd
+        ["git", "-C", str(main), *args], check=False, capture=True
+    )
+    status = git("status", "--porcelain=v1", "-z", "--untracked-files=no")
+    if status.returncode != 0:
+        return f"cannot inspect tracked changes in {main}: {(status.stderr or '').strip()}"
+    if status.stdout:
+        paths = [part for part in status.stdout.split("\0") if part]
+        return "tracked changes block the merge: " + ", ".join(paths[:10])
+
+    untracked = git("ls-files", "--others", "--exclude-standard", "-z")
+    ignored = git("ls-files", "--others", "--ignored", "--exclude-standard", "-z")
+    trees = [git("ls-tree", "-r", "--name-only", "-z", ref) for ref in (base, branch)]
+    if any(result.returncode != 0 for result in (untracked, ignored, *trees)):
+        return f"cannot inspect incoming paths for {branch} onto {base}"
+    local_paths = set((untracked.stdout or "").split("\0")) | set(
+        (ignored.stdout or "").split("\0")
+    )
+    incoming_paths = set().union(*(set((result.stdout or "").split("\0")) for result in trees))
+    local_paths.discard("")
+    incoming_paths.discard("")
+    sorted_incoming = sorted(incoming_paths)
+
+    def collides(local: str) -> bool:
+        if local in incoming_paths:
+            return True
+        parts = local.split("/")
+        if any("/".join(parts[:index]) in incoming_paths for index in range(1, len(parts))):
+            return True
+        prefix = local + "/"
+        index = bisect_left(sorted_incoming, prefix)
+        return index < len(sorted_incoming) and sorted_incoming[index].startswith(prefix)
+
+    collisions = sorted(local for local in local_paths if collides(local))
+    if collisions:
+        return "untracked path collides with the incoming merge: " + ", ".join(collisions[:10])
+    return ""
+
+
 def merge_no_ff(entry, branch, base, *, name="", email="", signing_key="", sign=False, message=""):
     """Integration-boundary merge: bring `branch` onto `base` in the hive's main clone with a
     real merge commit (`--no-ff`) — history preserved, never squashed. Checks out `base` first
@@ -44,24 +92,9 @@ def merge_no_ff(entry, branch, base, *, name="", email="", signing_key="", sign=
     top-level land onto `main`, or the coordinator seat for a merge onto a container branch (which
     lives there, not the main clone) — see xn3o.6."""
     main = worktree.clone_for_branch(entry, base)
-    if not worktree.is_clean(main):
-        # NAME THE FILES (bh-bj219). The old text guessed: "if the churn is under .beads/, add
-        # `.beads/` to the hive's .gitignore". On nvidia-hackathon that was wrong twice over —
-        # the churn was `.beads.gate.lock` at the REPO ROOT, which no `.beads/` rule covers, and
-        # ignoring `.beads/` wholesale would also have ignored the tracked `config.yaml`. An
-        # operator following the advice would have made it worse while the real culprit stayed
-        # invisible. Listing what is actually dirty costs one git call on a path that is already
-        # failing, and removes the guessing.
-        dirty = worktree.dirty_paths(main)
-        listed = "\n".join(f"      {p}" for p in dirty[:10]) or "      (nothing reported)"
-        more = f"\n      … and {len(dirty) - 10} more" if len(dirty) > 10 else ""
-        raise MergePreconditionError(
-            f"main clone {main} is not clean — cannot merge.\n"
-            f"  Untracked or modified:\n{listed}{more}\n"
-            "  Commit or stash them, or add them to the hive's .gitignore. Note bd takes its "
-            "gate lock at `.beads.gate.lock` in the REPO ROOT — a `.beads/` rule does not cover "
-            "it."
-        )
+    issue = merge_workspace_issue(main, base, branch)
+    if issue:
+        raise MergePreconditionError(f"main clone {main} cannot merge: {issue}")
     if worktree.current_branch(main) != base:
         co = worktree._run_git(
             ["git", "-C", str(main), "checkout", base], check=False, capture=True
