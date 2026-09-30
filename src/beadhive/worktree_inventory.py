@@ -550,7 +550,7 @@ def impl__classify_entries(
 
 
 def impl__wt_dirty(path: str) -> bool:
-    """True iff the worktree at `path` has uncommitted changes.
+    """True iff the worktree has uncommitted changes beyond bead-store JSONL exports.
 
     Runs ``git status --porcelain`` directly in the worktree directory — the only reliable
     approach for linked worktrees, since the main clone's ``RepoMetadata.branches`` dirty flag
@@ -558,7 +558,30 @@ def impl__wt_dirty(path: str) -> bool:
     or git fails, treated as clean (not dirty) so a missing worktree is never blocked by I/O.
     """
     try:
-        res = _run_git(["git", "-C", path, "status", "--porcelain"], check=False, capture=True)
+        from . import hive
+
+        if hive._jsonl_is_authoritative(path):
+            res = _run_git(["git", "-C", path, "status", "--porcelain"], check=False, capture=True)
+            return res.returncode == 0 and bool((res.stdout or "").strip())
+        # A legacy branch can still track exported JSONL even after the hive's main branch
+        # stops tracking it. Exclude only files directly under .beads; --no-renames leaves a
+        # deleted source visible if an operator moves a real file into that directory.
+        res = _run_git(
+            [
+                "git",
+                "-C",
+                path,
+                "status",
+                "--porcelain",
+                "--no-renames",
+                "--untracked-files=all",
+                "--",
+                ".",
+                ":(top,exclude,glob).beads/*.jsonl",
+            ],
+            check=False,
+            capture=True,
+        )
         return res.returncode == 0 and bool((res.stdout or "").strip())
     except Exception:
         return False

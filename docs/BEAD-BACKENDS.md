@@ -41,6 +41,10 @@ exists.
 `.beads/issues.jsonl` look like the default git-tracked source of truth; current releases treat
 it as an optional export for viewers, interchange, and issue-level migration."* Exports are
 lossy — no Dolt branches, commit history, or non-issue tables.
+For Dolt-backed Beadhive hives, all `.beads/*.jsonl` files are derived working-tree
+byproducts. Furnished onboarding ignores and untracks them; zero-footprint onboarding
+excludes `.beads/` entirely. The JSONL-only `no-db` backend is a separate case whose
+JSONL file is authoritative.
 
 **Transition history** (why version matters for compatibility):
 

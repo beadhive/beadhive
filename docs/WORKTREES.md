@@ -517,7 +517,7 @@ Each worktree is classified into one of these states:
 |---|---|---|
 | `SAFE` | Bead is **closed**, or every exact batch-label member is closed; branch is merged into its parent; worktree is **clean** | Yes |
 | `REVIEW` | Branch merged into parent, clean, but bead not yet closed (waiting on close) | No |
-| `DIRTY` | Uncommitted changes in the working tree | No |
+| `DIRTY` | Uncommitted changes in the working tree, excluding derived `.beads/*.jsonl` exports | No |
 | `LANDED_REBASED` | Closed, clean branch whose content is proven in the parent under different SHAs | Yes |
 | `RETAINED` | Deliberately preserved branch with a queryable consumer and inline reason | No |
 | `SUPERSEDED` | Explicit replacement relation plus content equivalence through landed detection | Yes |
@@ -529,8 +529,12 @@ Each worktree is classified into one of these states:
 | `ABANDONED` | No bead id, including a batch worktree without complete all-closed + merged evidence | No |
 
 **SAFE** is a conservative three-way conjunction: a worktree must satisfy *all* three
-conditions — `closed AND merged AND clean` — before `prune` will touch it. For
-`wt/batch/<group>`, `closed` means a non-empty, exact `batch:<group>` member set in which every
+conditions — `closed AND merged AND clean` — before `prune` will touch it. For the
+cleanliness check, Git's staged, unstaged, and untracked `.beads/*.jsonl` export
+changes are excluded. Other `.beads/` changes still count as dirty. This lets legacy
+worktrees with only bead-store export churn expose their underlying state while furnished
+onboarding removes tracked exports from new branch history. For `wt/batch/<group>`,
+`closed` means a non-empty, exact `batch:<group>` member set in which every
 member is closed and every member resolves to the same parent branch. Missing or contradictory
 evidence leaves the worktree in place.
 

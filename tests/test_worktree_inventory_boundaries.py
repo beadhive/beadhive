@@ -249,6 +249,36 @@ def _git(repo: Path, *args: str) -> None:
     subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True)
 
 
+def test_export_only_churn_does_not_make_a_worktree_dirty(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / ".beads").mkdir()
+    (repo / ".beads/issues.jsonl").write_text("old\n")
+    (repo / ".beads/interactions.jsonl").write_text("old\n")
+    _git(repo, "add", ".beads")
+    _git(
+        repo,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-qm",
+        "init",
+    )
+    (repo / ".beads/issues.jsonl").write_text("new\n")
+    (repo / ".beads/interactions.jsonl").write_text("new\n")
+    _git(repo, "add", ".beads/issues.jsonl")
+    assert worktree._wt_dirty(str(repo)) is False
+
+    (repo / "operator.txt").write_text("work\n")
+    assert worktree._wt_dirty(str(repo)) is True
+    (repo / "operator.txt").unlink()
+    (repo / ".beads/config.yaml").write_text("no-db: true\n")
+    assert worktree._wt_dirty(str(repo)) is True
+
+
 def test_classify_entry_scans_real_configured_ignored_content(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
