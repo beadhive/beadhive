@@ -276,6 +276,43 @@ def _direct_work_children(epic: str, main) -> tuple[list[dict], list[str]]:
     return children, []
 
 
+def _reviewed_subtree_commits(child: dict, main, seen=None) -> tuple[set[str], list[str]]:
+    """Collect durable commit provenance from a child and its reviewed epic descendants."""
+    seen = set() if seen is None else seen
+    bead = str(child.get("id") or "")
+    commits = set(git_linkage.commits_from_data(child))
+    if not bead or bead in seen or str(child.get("issue_type") or "") != "epic":
+        return commits, []
+    seen.add(bead)
+    descendants, errors = _direct_work_children(bead, main)
+    for descendant in descendants:
+        if not _landed_child(descendant):
+            continue
+        nested_commits, nested_errors = _reviewed_subtree_commits(descendant, main, seen)
+        commits.update(nested_commits)
+        errors.extend(nested_errors)
+    return commits, errors
+
+
+def _landed_epic_bubble_on_base(entry, child: dict, base: str) -> bool:
+    """Prove a landed child epic's canonical molecule bubble is already in this epic's base."""
+    bead = str(child.get("id") or "")
+    if str(child.get("issue_type") or "") != "epic" or not _landed_child(child):
+        return False
+    for sha in git_linkage.commits_from_data(child):
+        if not _is_ancestor_of(entry, sha, base):
+            continue
+        rows = worktree.commit_rows(entry, f"{sha}^", sha)
+        if any(
+            str(row.get("sha") or "") == sha
+            and str(row.get("subject") or "") == f"chore(merge): molecule {bead}"
+            and len(row.get("parents") or []) == 2
+            for row in rows
+        ):
+            return True
+    return False
+
+
 def _first_parent_spine(
     rows: list[dict],
     branch_sha: str,
@@ -375,6 +412,71 @@ def _refresh_identity_errors(entry, row: dict, branch: str, upstream: str) -> li
             f"unsafe container refresh {short} must use an upstream-ancestral second parent"
         )
     return errors
+
+
+def _container_refresh_errors(entry, branch: str, upstream: str) -> list[str]:
+    """Reject malformed refresh bubbles before the next child is dispatched.
+
+    ``epic_history_policy`` performs this audit at finish, but a hand-made refresh can otherwise
+    sit unnoticed while later children are provisioned against it. Keep this early guard narrow:
+    it checks refresh-shaped rows on the container's first-parent spine and leaves the complete
+    reviewed-child topology audit to submit/finish.
+    """
+    base = worktree.base_of(entry, branch, upstream)
+    branch_sha = worktree._branch_sha(entry, branch)
+    if not base or not branch_sha:
+        return []
+    rows = worktree.commit_rows(entry, base, branch)
+    spine, errors = _first_parent_spine(
+        rows,
+        branch_sha,
+        base,
+        ancestor_boundary=lambda boundary: _is_ancestor_of(entry, boundary, upstream),
+    )
+    if errors:
+        return []
+    candidates = []
+    for row in spine:
+        parents = [str(parent) for parent in (row.get("parents") or [])]
+        subject = str(row.get("subject") or "")
+        refresh_shape = (
+            len(parents) == 2
+            and _is_ancestor_of(entry, parents[1], upstream)
+            and not _is_ancestor_of(entry, parents[0], upstream)
+        )
+        if subject.startswith(_REFRESH_PREFIX) or refresh_shape:
+            candidates.append(row)
+    return [
+        error
+        for row in candidates
+        for error in _refresh_identity_errors(entry, row, branch, upstream)
+    ]
+
+
+def guard_container_refresh(entry, branch: str, integration: str, *, action: str) -> None:
+    """Refuse a lifecycle operation that would build on an unsafe epic-container refresh.
+
+    ``assign``/``claim`` normally refresh a container before a child forks, but a manual merge can
+    still be added after that child (or batch) was dispatched.  Every lifecycle boundary that is
+    about to provision from or land into a container calls this same guard, so malformed topology
+    cannot survive until the much later epic-finish audit.
+    """
+    prefix = f"{worktree._BEAD_PREFIX}epic/"
+    if not branch.startswith(prefix):
+        return
+    epic = branch[len(prefix) :]
+    upstream = worktree.integration_base(entry, epic, integration)
+    errors = _container_refresh_errors(entry, branch, upstream)
+    if not errors:
+        return
+    typer.echo(
+        f"✗ refusing to {action} with an unsafe container refresh:\n  "
+        + "\n  ".join(errors)
+        + "\n  Use the lifecycle refresh performed by `bh work assign` / `bh work claim`; "
+        "do not merge upstream into the container by hand.",
+        err=True,
+    )
+    raise typer.Exit(1)
 
 
 def _first_parent_spine_with_refreshes(
@@ -706,10 +808,13 @@ def epic_history_policy(
     """Audit an assembled epic without flattening its reviewed child graph.
 
     ``max_commits`` remains the unchanged leaf budget.  Epic capacity is instead the exact union
-    of commits already linked to landed direct children and reachable in ``base..branch``.  The
-    numeric allowance therefore cannot admit noise: every commit must be linked, and the epic's
-    own first-parent spine must consist solely of lifecycle no-ff bubbles that name those direct
-    children.  Child/batch limits were enforced at their own submit+merge boundaries; this guard
+    of commits already linked to landed direct children and reachable in ``base..branch``. For a
+    direct child epic, linkage includes the recursively reviewed descendant tree because its
+    nested leaf bubbles are part of the parent integration. A canonical child-epic land bubble
+    already reachable from ``base`` is also accepted as pre-integrated. The numeric allowance
+    therefore cannot admit noise: every introduced commit must be linked, and the epic's own
+    first-parent spine must consist solely of lifecycle no-ff bubbles that name those direct
+    children. Child/batch limits were enforced at their own submit+merge boundaries; this guard
     preserves their graph and verifies the durable provenance they recorded there.
     """
     # Submit/finish historically pass the integration ref (for example ``main``), while show
@@ -721,10 +826,11 @@ def epic_history_policy(
     range_shas = {str(row.get("sha") or "") for row in rows if row.get("sha")}
     children, errors = _direct_work_children(epic, main)
     direct = {str(child.get("id") or ""): child for child in children if child.get("id")}
-    linked_by_child = {
-        child_id: set(git_linkage.commits_from_data(child)) & range_shas
-        for child_id, child in direct.items()
-    }
+    linked_by_child = {}
+    for child_id, child in direct.items():
+        reviewed_commits, subtree_errors = _reviewed_subtree_commits(child, main)
+        linked_by_child[child_id] = reviewed_commits & range_shas
+        errors.extend(subtree_errors)
     branch_sha = worktree._branch_sha(entry, branch)
     epic_data = bd.show(epic, main) or {}
     parent = str(epic_data.get("parent") or "")
@@ -807,6 +913,12 @@ def epic_history_policy(
         accounted.update(introduced)
 
     landed = {child_id for child_id, child in direct.items() if _landed_child(child)}
+    already_in_base = {
+        child_id
+        for child_id, child in direct.items()
+        if _landed_epic_bubble_on_base(entry, child, base)
+    }
+    integrated.update(already_in_base)
     missing_integrations = landed - integrated
     if missing_integrations and not unsafe_refresh:
         errors.append(
@@ -1283,6 +1395,12 @@ def ensure_container(cfg, hive, epic, main) -> None:
         return
     entry, _seat, container = worktree.ensure(cfg, hive, bead=epic, kind="epic")
     upstream = worktree.integration_base(entry, epic, config.integration_branch(cfg, entry))
+    guard_container_refresh(
+        entry,
+        container,
+        config.integration_branch(cfg, entry),
+        action="dispatch into the container",
+    )
     worktree.refresh_container(entry, container, upstream)
 
 

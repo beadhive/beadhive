@@ -705,13 +705,19 @@ bh work start <epic> --as disp/<name>
 ```
 
 `start` guards that the bead is an epic, is `kickoff=approved`, and that you act as a
-dispatcher (`disp/<name>`), then opens `mol/<epic>` off the integration branch and takes the
-epic seat. (If `start` is skipped, the first `bh work assign`/`claim` of a child lazily opens
-`mol/<epic>` too — as long as the epic is `kickoff=approved`.) Bead worktrees in that molecule
-fork off `mol/<epic>` instead of `main`, so intra-molecule dependencies compose correctly —
-bead B sees bead A's already-merged work.
+dispatcher (`disp/<name>`), then opens the container branch `wt/bead/epic/<epic>` from the
+epic's integration base and takes the epic seat. (If `start` is skipped, the first
+`bh work assign`/`claim` of a child lazily opens the container too — as long as the epic is
+`kickoff=approved`.) Bead worktrees in that molecule fork off the container instead of `main`,
+so intra-molecule dependencies compose correctly — bead B sees bead A's already-merged work.
 
-`bh work merge <bead>` lands each bead into `mol/<epic>` (not `main`). When all beads are
+Use `bh work assign` / `bh work claim` to provision each child; these lifecycle steps refresh
+the container from its integration base before the child forks. Never merge `main` or another
+upstream into the container by hand: the lifecycle writes and validates the canonical refresh
+bubble. A hand-made refresh is rejected by the next lifecycle operation that touches the
+container, including child dispatch, a single-child merge, or a batch merge.
+
+`bh work merge <bead>` lands each bead into `wt/bead/epic/<epic>` (not `main`). When all beads are
 merged, the dispatcher runs the wrap-up verb:
 
 ```bash

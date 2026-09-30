@@ -611,6 +611,12 @@ def merge_group(cfg, group_arg, hive, rm):
         raise typer.Exit(1)
 
     base = worktree.integration_base(entry, members[0], config.integration_branch(cfg, entry))
+    work_logic.guard_container_refresh(
+        entry,
+        base,
+        config.integration_branch(cfg, entry),
+        action=f"merge batch {group} into {base}",
+    )
     head_sha = worktree._ref_sha(main, branch)
     base_sha = worktree._ref_sha(main, base)
     if not head_sha or not base_sha:
