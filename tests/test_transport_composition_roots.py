@@ -51,6 +51,35 @@ def test_installed_transport_entrypoints_are_thin_bootstrap_modules() -> None:
         assert len(source.splitlines()) <= 40
 
 
+@pytest.mark.parametrize("module", ["beadhive.bootstrap.host", "beadhive.bootstrap.frame_bridge"])
+def test_daemon_help_exits_before_startup(module: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = importlib.import_module(module)
+    target = root.host_daemon_entrypoint if module.endswith("host") else root.frame_bridge_runtime
+    monkeypatch.setattr(sys, "argv", [module, "--help"])
+    monkeypatch.setattr(target, "main", lambda: pytest.fail("--help started the daemon"))
+    with pytest.raises(SystemExit) as exc:
+        root.main()
+    assert exc.value.code == 0
+
+
+@pytest.mark.parametrize("module", ["beadhive.bootstrap.host", "beadhive.bootstrap.frame_bridge"])
+def test_daemon_entrypoint_preserves_flagless_start_and_rejects_unknown_flags(
+    module: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = importlib.import_module(module)
+    target = root.host_daemon_entrypoint if module.endswith("host") else root.frame_bridge_runtime
+    starts: list[bool] = []
+    monkeypatch.setattr(target, "main", lambda: starts.append(True))
+    monkeypatch.setattr(sys, "argv", [module])
+    root.main()
+    assert starts == [True]
+    monkeypatch.setattr(sys, "argv", [module, "--unknown"])
+    with pytest.raises(SystemExit) as exc:
+        root.main()
+    assert exc.value.code == 2
+    assert starts == [True]
+
+
 def test_production_code_never_depends_back_on_bootstrap() -> None:
     offenders: list[str] = []
     for path in SOURCE.rglob("*.py"):
