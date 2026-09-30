@@ -15,6 +15,7 @@ The lower-level git/worktree helpers these tiers compose (``_run_git``, ``is_cle
 from __future__ import annotations
 
 import os
+import re
 from bisect import bisect_left
 from pathlib import Path
 
@@ -37,8 +38,9 @@ def merge_workspace_issue(main: Path, base: str, branch: str) -> str:
 
     Check the index and tracked files separately from operator-owned untracked files. An
     untracked file is safe when checkout of `base` and merge of `branch` would leave it
-    alone. The branch's whole tree is too broad: an unchanged file on a stale branch may
-    already have been deleted on `base`, and Git does not restore it during the merge.
+    alone. Ask Git for the merge result tree: a stale branch may contain unchanged paths
+    Git will not restore, while directory rename inference may write paths absent from the
+    branch's own tree.
     Keep this preflight ahead of validation and let Git make the final merge decision under
     the merge slot.
     """
@@ -54,24 +56,33 @@ def merge_workspace_issue(main: Path, base: str, branch: str) -> str:
 
     untracked = git("ls-files", "--others", "--exclude-standard", "-z")
     ignored = git("ls-files", "--others", "--ignored", "--exclude-standard", "-z")
-    base_tree = git("ls-tree", "-r", "--name-only", "-z", base)
-    branch_tree = git("ls-tree", "-r", "--name-only", "-z", branch)
-    common = git("merge-base", base, branch)
-    if any(
-        result.returncode != 0 for result in (untracked, ignored, base_tree, branch_tree, common)
-    ):
-        return f"cannot inspect incoming paths for {branch} onto {base}"
-    changed = git("diff", "--name-only", "-z", common.stdout.strip(), branch)
-    if changed.returncode != 0:
-        return f"cannot inspect incoming paths for {branch} onto {base}"
+    if untracked.returncode != 0 or ignored.returncode != 0:
+        return f"cannot inspect operator files in {main}"
     local_paths = set((untracked.stdout or "").split("\0")) | set(
         (ignored.stdout or "").split("\0")
     )
-    branch_paths = set((branch_tree.stdout or "").split("\0"))
-    incoming_paths = set((base_tree.stdout or "").split("\0")) | (
-        set((changed.stdout or "").split("\0")) & branch_paths
-    )
     local_paths.discard("")
+    if not local_paths:
+        return ""
+
+    base_tree = git("ls-tree", "-r", "--name-only", "-z", base)
+    merged = git("merge-tree", "--write-tree", base, branch)
+    tree = (merged.stdout or "").splitlines()[:1]
+    if (
+        base_tree.returncode != 0
+        or merged.returncode not in (0, 1)
+        or not tree
+        or not re.fullmatch(r"[0-9a-f]{40,64}", tree[0])
+    ):
+        return f"cannot inspect incoming paths for {branch} onto {base}"
+    changed = git("diff", "--name-only", "-z", base, tree[0])
+    result_tree = git("ls-tree", "-r", "--name-only", "-z", tree[0])
+    if changed.returncode != 0 or result_tree.returncode != 0:
+        return f"cannot inspect incoming paths for {branch} onto {base}"
+    result_paths = set((result_tree.stdout or "").split("\0"))
+    incoming_paths = set((base_tree.stdout or "").split("\0")) | (
+        set((changed.stdout or "").split("\0")) & result_paths
+    )
     incoming_paths.discard("")
     sorted_incoming = sorted(incoming_paths)
 

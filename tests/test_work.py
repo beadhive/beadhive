@@ -3324,6 +3324,43 @@ def test_merge_stale_branch_does_not_restore_deleted_untracked_path(hive, fakebd
     assert _git("show", "main:change.txt", cwd=hive.main).stdout.strip() == "feat: the change"
 
 
+@pytest.mark.parametrize("ignored", [False, True])
+def test_merge_directory_rename_refuses_actual_destination_collision(hive, fakebd, capsys, ignored):
+    _git("config", "merge.directoryRenames", "true", cwd=hive.main)
+    old = hive.main / "old"
+    old.mkdir()
+    (old / "tracked.txt").write_text("ancestor")
+    _git("add", "-A", cwd=hive.main)
+    _git("commit", "-qm", "feat: old directory", cwd=hive.main)
+
+    fakebd.seed("mr-rename", title="t")
+    work.claim(bead="mr-rename", as_="", hive="myrepo")
+    child = _wt(hive, "mr-rename")
+    (child / "old" / "added.txt").write_text("reviewed child")
+    _git("add", "-A", cwd=child)
+    _git("commit", "-qm", "feat: add child file", cwd=child)
+    work.submit(bead="mr-rename", hive="myrepo")
+    fakebd.approve("mr-rename")
+    fakebd.states["mr-rename"]["review"] = "approved"
+
+    _git("mv", "old", "new", cwd=hive.main)
+    _git("commit", "-qm", "refactor: rename directory", cwd=hive.main)
+    if ignored:
+        (hive.main / ".git" / "info" / "exclude").write_text("new/added.txt\n")
+    operator_file = hive.main / "new" / "added.txt"
+    operator_file.write_text("operator property")
+    tip = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-rename", hive="myrepo", rm=False, molecule=False)
+
+    err = capsys.readouterr().err
+    assert "untracked path collides" in err and "new/added.txt" in err
+    assert operator_file.read_text() == "operator property"
+    assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == tip
+    assert fakebd.states["mr-rename"]["review"] == "approved"
+
+
 def test_merge_colliding_untracked_file_names_path_and_keeps_review(hive, fakebd, capsys):
     fakebd.seed("mr-34", title="t")
     _take_to_approved(hive, fakebd, "mr-34")
