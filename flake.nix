@@ -308,16 +308,14 @@
             nodes.machine = { ... }: {
               programs.nix-ld.enable = false;
               environment.systemPackages = [ self.packages.${system}.bh ];
-              # Under TCG the generic test driver's shell has a fixed 300s
-              # connection window. Start only this test backdoor during sysinit;
-              # the assertions below still wait for the full multi-user boot.
-              systemd.services.backdoor = {
-                unitConfig.DefaultDependencies = false;
-                wantedBy = [ "sysinit.target" "emergency.target" ];
-              };
             };
             testScript = ''
+              import time
               machine.start()
+              # TCG can need more than the driver's fixed 300s shell-connect
+              # window to boot. Let QEMU run before starting that window; full
+              # multi-user readiness and every executable assertion remain required.
+              time.sleep(240)
               machine.wait_for_unit("multi-user.target")
               machine.succeed("test \"$(bh --version)\" = \"${bhVersion}\"")
               machine.succeed("bh-host-daemon --help >/dev/null")
