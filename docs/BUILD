@@ -56,3 +56,9 @@ files(
     sources=["upstream/**/*"],
     tags=["category:docs", "attest:docs"],
 )
+
+files(
+    name="docs-deploy",
+    sources=["deploy/**/*"],
+    tags=["category:docs", "attest:docs"],
+)

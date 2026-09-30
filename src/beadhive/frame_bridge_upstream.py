@@ -32,13 +32,14 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from . import daemon_auth, daemon_contract, operator_work_items
+from .frame_bridge_daemon import DEFAULT_DAEMON_ORIGIN, validate_daemon_origin
 
 UPSTREAM_CONTRACT = "frame-bridge.upstream.v1"
 _DIRECTORY_PAGE_LIMIT = 200
 _DIRECTORY_MAX_PAGES = 64
 GATEWAY_ISSUER = "gateway/dev/aggregate"
 _PREFIX = "/frame-bridge/upstream/v1"
-_LOOPBACK_ORIGIN = "http://127.0.0.1:8420"
+_LOOPBACK_ORIGIN = DEFAULT_DAEMON_ORIGIN
 _MAX_JSON_BYTES = 1 << 20
 _MAX_QUERY_BYTES = 16 * 1024
 _REQUEST_ID = re.compile(r"req_[A-Za-z0-9_-]{22}\Z")
@@ -409,6 +410,7 @@ class HostDaemonFrameBridgeSource:
         daemon_bearer: daemon_auth.SecretBearer,
         instance: RegisteredInstance,
         display_name: str = "Beadhive",
+        daemon_origin: str = _LOOPBACK_ORIGIN,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         if not isinstance(daemon_bearer, daemon_auth.SecretBearer):
@@ -417,13 +419,14 @@ class HostDaemonFrameBridgeSource:
             raise ValueError("private display name is incompatible")
         self._instance = instance
         self._display_name = display_name
+        daemon_origin = validate_daemon_origin(daemon_origin)
         self._client = client or httpx.AsyncClient(
-            base_url=_LOOPBACK_ORIGIN,
+            base_url=daemon_origin,
             timeout=httpx.Timeout(5.0, read=None),
             trust_env=False,
         )
-        if str(self._client.base_url).rstrip("/") != _LOOPBACK_ORIGIN:
-            raise ValueError("private daemon client must use the fixed loopback origin")
+        if str(self._client.base_url).rstrip("/") != daemon_origin:
+            raise ValueError("private daemon client must use the configured loopback origin")
         self._auth = _LoopbackDaemonAuth(daemon_bearer)
         self._encoded_hive = quote(instance.primary_hive_id, safe="-._~")
 

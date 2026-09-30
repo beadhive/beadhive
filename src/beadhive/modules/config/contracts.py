@@ -1063,6 +1063,15 @@ class HostDispatchConfig(_Section):
     )
 
 
+class FrameBridgeIdentityConfig(_Section):
+    """Enrollment-owned identity of the private Factory bridge."""
+
+    host_id: str | None = None
+    instance_id: str | None = None
+    factory_id: str | None = None
+    primary_hive_id: str | None = None
+
+
 class HostConfig(_Section):
     """Multi-host model policy (``host``) — how this factory arbitrates who may write a hive.
 
@@ -1070,6 +1079,7 @@ class HostConfig(_Section):
     :mod:`beadhive.hosts`): that file describes ONE machine; this section is the fleet-wide
     policy every machine applies."""
 
+    frame_bridge: FrameBridgeIdentityConfig = Field(default_factory=FrameBridgeIdentityConfig)
     lease: HostLeaseConfig = Field(default_factory=HostLeaseConfig)
     dispatch: HostDispatchConfig = Field(default_factory=HostDispatchConfig)
     daemon: HostDaemonConfig = Field(
