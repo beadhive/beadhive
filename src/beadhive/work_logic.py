@@ -286,6 +286,8 @@ def _reviewed_subtree_commits(child: dict, main, seen=None) -> tuple[set[str], l
     seen.add(bead)
     descendants, errors = _direct_work_children(bead, main)
     for descendant in descendants:
+        if not _landed_child(descendant):
+            continue
         nested_commits, nested_errors = _reviewed_subtree_commits(descendant, main, seen)
         commits.update(nested_commits)
         errors.extend(nested_errors)

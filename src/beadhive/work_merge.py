@@ -476,6 +476,9 @@ def impl__merge_molecule(api, cfg, epic, hive, override_reason="", override_acto
         raise api.typer.Exit(1)
     integration = api.config.integration_branch(cfg, entry)
     base = api._guard_molecule_land_base(entry, epic, integration)
+    api.work_logic.guard_container_refresh(
+        entry, base, integration, action=f"finish molecule {epic} into {base}"
+    )
     if api.already_landed(entry, mol_branch, base):
         if override_reason:
             api.typer.echo(

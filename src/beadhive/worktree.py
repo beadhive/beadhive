@@ -1040,7 +1040,9 @@ def refresh_container(entry, branch: str, upstream: str) -> None:
         _run_git(["git", "-C", str(workdir), "merge", "--abort"], check=False, capture=True)
         typer.echo(
             f"{stale} and merging it CONFLICTS — provisioning from the stale base; "
-            f"merge {upstream} into {branch} (the container seat, {workdir}) by hand",
+            "resolve the conflicting paths through a reviewed child or an upstream forward fix, "
+            "then rerun `bh work assign` / `bh work claim`; do not merge upstream into the "
+            "container by hand",
             err=True,
         )
         return
