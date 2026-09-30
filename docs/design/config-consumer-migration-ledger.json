@@ -1881,7 +1881,7 @@
         "target": "beadhive.config.load"
       }
     ],
-    "production_config_importer_count": 81,
+    "production_config_importer_count": 82,
     "production_config_importers": [
       "src/beadhive/activity_publisher.py",
       "src/beadhive/agent_run_summary_reader.py",
@@ -1907,6 +1907,7 @@
       "src/beadhive/dolt_health.py",
       "src/beadhive/engine.py",
       "src/beadhive/escalate.py",
+      "src/beadhive/frame_bridge_factory.py",
       "src/beadhive/frame_bridge_runtime.py",
       "src/beadhive/git.py",
       "src/beadhive/git_identity.py",
@@ -1965,10 +1966,12 @@
       "src/beadhive/toolchain.py",
       "src/beadhive/validate.py"
     ],
-    "production_config_schema_importer_count": 3,
+    "production_config_schema_importer_count": 5,
     "production_config_schema_importers": [
       "src/beadhive/daemon_platform.py",
       "src/beadhive/daemon_supervisor.py",
+      "src/beadhive/frame_bridge_daemon.py",
+      "src/beadhive/frame_bridge_factory.py",
       "src/beadhive/host_daemon.py"
     ],
     "remaining_broad_dependencies": [
@@ -2090,6 +2093,11 @@
       {
         "owner": "bh-18hud.5 compatibility migration ledger",
         "path": "src/beadhive/escalate.py",
+        "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
+      },
+      {
+        "owner": "bh-18hud.5 compatibility migration ledger",
+        "path": "src/beadhive/frame_bridge_factory.py",
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       },
       {
@@ -2378,7 +2386,7 @@
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       }
     ],
-    "test_config_importer_count": 146,
+    "test_config_importer_count": 147,
     "test_config_importers": [
       "tests/contracts/test_config_contract_compatibility.py",
       "tests/contracts/test_config_resolution_compatibility.py",
@@ -2430,6 +2438,7 @@
       "tests/test_doctor_dispatch.py",
       "tests/test_enforce_signing.py",
       "tests/test_engine.py",
+      "tests/test_frame_bridge_daemon.py",
       "tests/test_git_identity.py",
       "tests/test_gitworkspace_plugin.py",
       "tests/test_guard_primary.py",
@@ -2527,7 +2536,7 @@
       "tests/unit/modules/config/test_consumer_settings.py",
       "tests/unit/test_pure_module_independence.py"
     ],
-    "test_config_schema_importer_count": 26,
+    "test_config_schema_importer_count": 27,
     "test_config_schema_importers": [
       "tests/contracts/test_config_contract_compatibility.py",
       "tests/test_attestation_provider.py",
@@ -2548,6 +2557,7 @@
       "tests/test_daemon_contract.py",
       "tests/test_daemon_platform_lifecycle.py",
       "tests/test_deps_characterization.py",
+      "tests/test_frame_bridge_daemon.py",
       "tests/test_host_lease.py",
       "tests/test_mcp_work_schedule_resource.py",
       "tests/test_model_routing.py",

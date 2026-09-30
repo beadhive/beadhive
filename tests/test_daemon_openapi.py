@@ -525,7 +525,7 @@ def test_compatibility_profile_cannot_publish_openapi_without_operator_scope(
         async with app.router.lifespan_context(app):
             transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 5000))
             async with httpx.AsyncClient(
-                transport=transport, base_url="http://127.0.0.1:8420"
+                transport=transport, base_url="http://127.0.0.1:8737"
             ) as client:
                 return await client.get("/openapi.json")
 
@@ -542,7 +542,7 @@ def test_compatibility_profile_cannot_publish_openapi_without_operator_scope(
         policy = operator_api.LocalReadPolicyMiddleware(
             downstream,
             listener_host="127.0.0.1",
-            listener_port=8420,
+            listener_port=8737,
         )
         scope = {
             "type": "http",
@@ -554,9 +554,9 @@ def test_compatibility_profile_cannot_publish_openapi_without_operator_scope(
             "raw_path": b"/openapi.json",
             "query_string": b"",
             "root_path": "",
-            "headers": [(b"host", b"127.0.0.1:8420")],
+            "headers": [(b"host", b"127.0.0.1:8737")],
             "client": ("127.0.0.1", 5000),
-            "server": ("127.0.0.1", 8420),
+            "server": ("127.0.0.1", 8737),
             "state": {"auth_principal": principal},
         }
 

@@ -8,6 +8,7 @@ import json
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 MINIMUM_BEADS_VERSION = (1, 3, 0)
@@ -178,14 +179,57 @@ def check(root: Path, ref: str | None = None) -> str:
     return flake_text
 
 
+def verify_bh(root: Path, ref: str) -> str:
+    """Build the tagged Nix app and compare its executable with tagged project metadata."""
+    project = tomllib.loads(_read(root, ref, "pyproject.toml"))
+    expected = project["project"]["version"]
+    _version(expected, source=f"{ref}: project version")
+    commit = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--verify", f"{ref}^{{commit}}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    url = f"git+file://{root}?rev={commit}#bh"
+    built = subprocess.run(
+        ["nix", "build", "--no-link", "--print-out-paths", url],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    paths = built.stdout.strip().splitlines()
+    if len(paths) != 1:
+        raise ValueError(f"{ref}: expected one packages.bh output, got {paths!r}")
+    package = Path(paths[0])
+    for script in ("bh", "bh-host-daemon", "beadhive-frame-bridge"):
+        if not (package / "bin" / script).is_file():
+            raise ValueError(f"{ref}: packages.bh omits {script}")
+    version = subprocess.run(
+        [str(package / "bin" / "bh"), "--version"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    if version != expected:
+        raise ValueError(f"{ref}: packages.bh reports {version!r}, expected {expected!r}")
+    return version
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--ref", help="Git tree/tag to inspect instead of the working tree")
+    parser.add_argument(
+        "--verify-bh", action="store_true", help="build tagged packages.bh and verify its version"
+    )
     args = parser.parse_args()
     try:
         version = check(args.root.resolve(), args.ref)
-    except (OSError, ValueError) as exc:
+        if args.verify_bh:
+            if not args.ref:
+                raise ValueError("--verify-bh requires --ref")
+            verify_bh(args.root.resolve(), args.ref)
+    except (OSError, ValueError, subprocess.CalledProcessError, KeyError) as exc:
         print(f"channel toolchain refused: {exc}", file=sys.stderr)
         return 1
     print(f"channel toolchain eligible: Beads {version} >= 1.3.0")

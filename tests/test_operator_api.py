@@ -119,7 +119,7 @@ def _app(tmp_path: Path, *, cfg=None, provider=None, now_millis=None):
             Middleware(
                 operator_api.LocalReadPolicyMiddleware,
                 listener_host="127.0.0.1",
-                listener_port=8420,
+                listener_port=8737,
                 allowed_origin="http://127.0.0.1:3000",
             )
         ],
@@ -136,7 +136,7 @@ def _exercise(tmp_path: Path, action, **app_kwargs):
         async with app.router.lifespan_context(app):
             transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 5000))
             async with httpx.AsyncClient(
-                transport=transport, base_url="http://127.0.0.1:8420"
+                transport=transport, base_url="http://127.0.0.1:8737"
             ) as client:
                 return await action(client, app)
 
@@ -582,7 +582,7 @@ def test_host_origin_peer_and_read_only_profile_fail_closed(tmp_path: Path) -> N
         ]
         remote_transport = httpx.ASGITransport(app=app, client=("192.0.2.10", 5000))
         async with httpx.AsyncClient(
-            transport=remote_transport, base_url="http://127.0.0.1:8420"
+            transport=remote_transport, base_url="http://127.0.0.1:8737"
         ) as remote:
             nonloopback = await remote.get("/api/v1/factory")
         return (
@@ -706,7 +706,7 @@ def test_product_factory_composes_operator_state_into_daemon_core(tmp_path: Path
         pid=1234,
         process_start="test:1",
         listener_host="127.0.0.1",
-        listener_port=8420,
+        listener_port=8737,
         started_at=NOW,
     )
     app = host_daemon.build_product_application(
@@ -714,7 +714,7 @@ def test_product_factory_composes_operator_state_into_daemon_core(tmp_path: Path
         state_broker_factory=daemon_state_broker.DaemonStateBroker.for_host,
         control_record=record,
         listener_host="127.0.0.1",
-        listener_port=8420,
+        listener_port=8737,
         cfg={"managed_repos": []},
     )
     paths = {route.path for route in app.routes if hasattr(route, "path")}
