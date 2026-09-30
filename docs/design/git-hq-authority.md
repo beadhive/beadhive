@@ -137,3 +137,11 @@ Protected own-manifest publication selects the recorded runtime signing key and
 operator-pinned SSH executable explicitly, including retry commits. It does not
 require caller Git signing settings. Legacy nonframe publication retains its
 existing transport and signing behavior.
+
+The public heartbeat API composes the real protected authority binding above lower
+heartbeat transport/types; the Git provider depends on that lower layer with its
+explicit authority callback. Own-manifest Git publication and its error type live
+in a lower adapter shared by HQ and the provider. This removes both dependency
+cycles without widening the reviewed legacy cycle baseline. Config generation
+uses the canonical current release renderer and atomic inventory writer; historical
+v1 bundle bytes remain pinned and unchanged.

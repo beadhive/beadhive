@@ -186,13 +186,13 @@ def bind_broker(
 
 
 def candidate_ref(frame):
-    from .host_heartbeat import ref_name
+    from .host_heartbeat_core import ref_name
 
     return ref_name(frame).replace("/heartbeat/", "/candidate-heartbeat/")
 
 
 def registration_ref(authority):
-    from .host_heartbeat import ref_name
+    from .host_heartbeat_core import ref_name
 
     binding = (
         authority["holder_identity"],
@@ -461,7 +461,7 @@ class GitControlPlane:
         return path
 
     def _snapshot(self, frame, record, state, *, candidate=False):
-        from .host_heartbeat import AuthoritySnapshot, ObservationAuthority, ref_name
+        from .host_heartbeat_core import AuthoritySnapshot, ObservationAuthority, ref_name
 
         if record is None or record["state"] == "retired":
             return None
@@ -495,7 +495,7 @@ class GitControlPlane:
         return replace(active, alternatives=(pending,)) if active and pending else active or pending
 
     def _select(self, lease):
-        from .host_heartbeat import _authority_matches
+        from .host_heartbeat_core import _authority_matches
 
         snapshot = self.watch_state(lease.frame_id)
         for selected in () if snapshot is None else (snapshot, *snapshot.alternatives):
@@ -507,7 +507,7 @@ class GitControlPlane:
         return self._select(lease).carrier_ref
 
     def heartbeat(self, lease, *, signing_key):
-        from . import host_heartbeat as hb
+        from . import host_heartbeat_core as hb
 
         policy = self._policy()
         if policy["client"]["role"] != "frame":
@@ -558,7 +558,7 @@ class GitControlPlane:
         }
 
     def publish_registration(self, manifest, *, attempts=3):
-        from . import host, hosts, hq
+        from . import host, hosts, hq_manifest_publication
 
         record = hosts.load(self.hq_dir, manifest)
         remote, signing_key, ssh_keygen = None, None, None
@@ -567,11 +567,11 @@ class GitControlPlane:
             remote = self._remote(policy)
             signing_key = host.signing_key()
             if not signing_key:
-                raise hq.HostPublicationError(
+                raise hq_manifest_publication.HostPublicationError(
                     "frame registration requires its own runtime signing key"
                 )
             ssh_keygen = policy["executables"]["ssh_keygen"]["path"]
-        changed = hq._publish_host_manifest_git(
+        changed = hq_manifest_publication._publish_host_manifest_git(
             self.hq_dir,
             manifest,
             attempts=attempts,
@@ -688,7 +688,7 @@ class GitControlPlane:
         return self._write(state, expected, operator_key)
 
     def accept_observation(self, frame, *, expected, operator_key, holder_identity=""):
-        from . import host_heartbeat as hb
+        from . import host_heartbeat_core as hb
         from . import hosts
 
         sha, state, policy = self._operator_read()
@@ -804,7 +804,7 @@ class GitControlPlane:
         supersede=False,
         deadline=None,
     ):
-        from .host_heartbeat import HeartbeatLease, ref_name
+        from .host_heartbeat_core import HeartbeatLease, ref_name
 
         sha, state, policy = self._operator_read()
         entry = state.get("frames", {}).get(frame)

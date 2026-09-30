@@ -1353,29 +1353,9 @@
       "additionalProperties": false,
       "description": "Factory HQ remote (``hq``) — where the factory's central HQ store publishes to.",
       "properties": {
-        "admission_policy": {
-          "const": "manual",
-          "default": "manual",
-          "title": "Admission Policy",
-          "type": "string"
-        },
-        "authority_anchor": {
-          "default": "",
-          "title": "Authority Anchor",
-          "type": "string"
-        },
-        "mode": {
-          "default": "git",
-          "enum": [
-            "git",
-            "dolt-server"
-          ],
-          "title": "Mode",
-          "type": "string"
-        },
         "remote": {
           "default": "",
-          "description": "HQ repo remote: `<owner>/beadhive-hq`, an absolute local path, or local `file://` URL. Empty (default) derives `<owner>` from the logged-in `gh` identity at read time (`config.hq_remote`) — host identity, so the answer does not vary by which hive you invoke from; an explicit value here always overrides the derivation. `bh hq init`/`clone` confirm the result interactively unless `--auto` is passed.",
+          "description": "HQ repo remote, `<owner>/beadhive-hq` form. Empty (default) derives `<owner>` from the logged-in `gh` identity at read time (`config.hq_remote`) — host identity, so the answer does not vary by which hive you invoke from; an explicit value here always overrides the derivation. `bh hq init`/`clone` confirm the result interactively unless `--auto` is passed.",
           "title": "Remote",
           "type": "string"
         }
