@@ -78,6 +78,15 @@ def test_backend_neutral_structural_gate_owns_shared_contract_checks() -> None:
     assert "check_pants_proven.py" not in native_audit
 
 
+def test_stateful_attestation_waits_for_its_closure_evidence_producer() -> None:
+    justfile = (ROOT / "justfile").read_text(encoding="utf-8")
+    stateful = _dependencies(justfile, "stateful-native")
+
+    # `attest-stateful` is a standalone selective-validation key. Its consumer must establish
+    # current-tree evidence itself instead of relying on the architecture key to finish first.
+    assert "architecture-structural-check" in stateful
+
+
 def test_recursive_pants_artifact_is_excluded_only_from_native_profile() -> None:
     justfile = (ROOT / "justfile").read_text(encoding="utf-8")
     native = "\n".join(_recipe_body(justfile, "stateful-native"))
