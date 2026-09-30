@@ -3815,6 +3815,42 @@ def _land_reviewed_suffix_children(hive, fakebd, *, epic: str, start: int, count
         work.merge(bead=child, hive="myrepo", rm=False, molecule=False)
 
 
+def _append_reviewed_suffix_behind_unsafe_wrapper(
+    hive, fakebd, capsys, *, epic: str, start: int, count: int = 2
+):
+    """Construct reviewed child bubbles after proving dispatch rejects the unsafe wrapper.
+
+    Real dispatch must stop at the new refresh guard. These history-audit tests need the
+    impossible suffix topology to check diagnostics for a malformed wrapper buried below
+    otherwise attributable child integrations, so only the fixture appends it with Git.
+    """
+    branch = f"wt/bead/epic/{epic}"
+    seat = worktree.locate(config.load(), "myrepo", epic, kind="epic")[2]
+    first = f"{epic}.{start}"
+    fakebd.seed(first, title=f"suffix child {start}", parent=epic)
+    capsys.readouterr()
+    with pytest.raises(typer.Exit):
+        work.claim(bead=first, as_="dev/suffix", hive="myrepo")
+    assert "unsafe container refresh" in capsys.readouterr().err
+
+    for index in range(start, start + count):
+        child = f"{epic}.{index}"
+        if child != first:
+            fakebd.seed(child, title=f"suffix child {index}", parent=epic)
+        side = hive.wts / f"synthetic-{child}"
+        _git("worktree", "add", "--detach", str(side), branch, cwd=hive.main)
+        _commit(side, f"feat: {child}", fname=f"suffix-{index}.txt")
+        commit = _git("rev-parse", "HEAD", cwd=side).stdout.strip()
+        _git("merge", "--no-ff", commit, "-m", f"chore(merge): bead {child}", cwd=seat)
+        bubble = _git("rev-parse", "HEAD", cwd=seat).stdout.strip()
+        fakebd.beads[child].update(
+            status="closed",
+            close_reason="merged",
+            metadata={"git.commits": json.dumps([commit, bubble])},
+        )
+        fakebd.states[child] = {"review": "approved"}
+
+
 def test_epic_finish_accepts_proven_container_refresh_topology(hive, fakebd, capsys):
     """A normal lifecycle refresh crosses the moving merge-base without becoming child work."""
     epic = "mr-safe-refresh"
@@ -4261,7 +4297,7 @@ def test_epic_submit_rejects_buried_canonical_reversal_after_reviewed_suffixes(
         composed_epic=epic,
         composed_parent="mr-root",
     )
-    _land_reviewed_suffix_children(hive, fakebd, epic=epic, start=3, count=2)
+    _append_reviewed_suffix_behind_unsafe_wrapper(hive, fakebd, capsys, epic=epic, start=3, count=2)
 
     capsys.readouterr()
     work.show(bead=epic, view=["log"], json_out=True, hive="myrepo")
@@ -4317,7 +4353,7 @@ def test_buried_reversed_wrapper_reports_identity_before_parent_order(
         composed_epic=composed_epic,
         composed_parent=composed_parent,
     )
-    _land_reviewed_suffix_children(hive, fakebd, epic=epic, start=3, count=2)
+    _append_reviewed_suffix_behind_unsafe_wrapper(hive, fakebd, capsys, epic=epic, start=3, count=2)
 
     capsys.readouterr()
     work.show(bead=epic, view=["log"], json_out=True, hive="myrepo")
@@ -4357,7 +4393,7 @@ def test_buried_reversed_wrapper_rejects_invalid_reviewed_suffix(
         composed_epic=epic,
         composed_parent="mr-root",
     )
-    _land_reviewed_suffix_children(hive, fakebd, epic=epic, start=3, count=2)
+    _append_reviewed_suffix_behind_unsafe_wrapper(hive, fakebd, capsys, epic=epic, start=3, count=2)
 
     if malformation == "missing-linkage":
         fakebd.beads[f"{epic}.4"]["metadata"].pop("git.commits")
