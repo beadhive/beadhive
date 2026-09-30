@@ -1070,6 +1070,9 @@ def _configure_auto_export(ctx: Ctx) -> None:
     push-based state see bh-jksq."""
     from . import hive
 
+    if hive._jsonl_is_authoritative(ctx.base):
+        return
+
     for key, value in _EXPORT_CONFIG:
         res = bd_mod.run(["config", "set", key, value], ctx.base)
         if getattr(res, "returncode", 1) != 0:
@@ -1079,7 +1082,7 @@ def _configure_auto_export(ctx: Ctx) -> None:
             return
     typer.echo("✓ beads: auto-export on (issues.jsonl, throttled 60s, never git-added)")
     if ctx.furnish and hive._ensure_export_exclude(ctx.base):
-        typer.echo("✓ beads: excluded .beads/issues.jsonl from git (furnished hive)")
+        typer.echo("✓ beads: excluded .beads/*.jsonl from git (furnished hive)")
 
 
 def _origin_has_dolt_data(ctx: Ctx) -> bool:
@@ -1325,7 +1328,7 @@ def _act_footprint(ctx: Ctx) -> None:
 
     Furnished hives (declared, ownership-gated): un-stealth .beads/ and commit the scaffolding
     so a green onboard ends with a clean survey row. Runs last (after hub-sync) so the
-    exported .beads/issues.jsonl lands in the commit too; re-runs amend an unpushed scaffold
+    exported .beads/*.jsonl stays local; re-runs amend an unpushed scaffold
     commit or use the distinct repair subject — never duplicate identically-titled commits.
     Zero-footprint hives (the default; every external hive): ensure .beads/ stays
     stealth-excluded and commit NOTHING — onboarding leaves no trace in the repo."""
@@ -1342,6 +1345,13 @@ def _act_footprint(ctx: Ctx) -> None:
         return
     if hive._remove_stealth_exclude(ctx.base):
         typer.echo("✓ footprint: removed .beads/ stealth exclusion (furnished hive)")
+    hive._ensure_export_exclude(ctx.base)
+    try:
+        if hive._untrack_export_jsonl(ctx.base):
+            typer.echo("✓ footprint: removed tracked .beads JSONL exports from the index")
+    except RuntimeError as exc:
+        typer.echo(f"✗ footprint: {exc}", err=True)
+        raise typer.Exit(1) from exc
     if hive._commit_scaffolding(ctx.base):
         typer.echo("✓ footprint: committed hive scaffolding")
     else:
@@ -1580,9 +1590,10 @@ def build_steps(ctx: Ctx) -> list[Step]:
         enabled=lambda c: c.hub_sync is not False,
     )
     # Last on purpose: hub-sync exports .beads/issues.jsonl into the hive (synchronously, even
-    # under the default deferred mode — bh-d5jhc.1), and a furnished hive's scaffold commit
-    # should capture it. When hub-sync is disabled (plain init, or explicit --no-hub-sync) the
-    # edge is ignored by the topo sort, so footprint still runs after register + installers.
+    # under the default deferred mode — bh-d5jhc.1). The furnished footprint excludes that
+    # derived file before committing. When hub-sync is disabled (plain init, or explicit
+    # --no-hub-sync) the edge is ignored by the topo sort, so footprint still runs after
+    # register + installers.
     footprint = Step(
         "footprint",
         "settle declared footprint",

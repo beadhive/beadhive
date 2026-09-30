@@ -64,9 +64,15 @@ none|full`) and is sticky across re-onboards; entries without the key infer `non
 forks and `full` otherwise (the pre-furnish behavior — zero migration).
 
 - **Tracked (furnished hives only):** `.beads/config.yaml`, `.beads/metadata.json`,
-  `.beads/issues.jsonl`, `.beads/.gitignore`, `.claude/settings.json`, and the managed
+  `.beads/.gitignore`, `.claude/settings.json`, and the managed
   `CLAUDE.md` / `AGENTS.md` hints. bd's own `.beads/.gitignore` keeps the local-only pieces
-  (Dolt db, locks, backups) out of the commit.
+  (Dolt db, locks, backups) out of the commit. In Dolt-backed hives, `.beads/*.jsonl` is a
+  derived local export, never tracked; `refs/dolt/data` carries authoritative bead state.
+  Re-running furnished onboarding stages removal of legacy tracked exports while keeping
+  their on-disk copies, then commits that repair with the scaffolding. Existing linked
+  branches can still show export changes until they are refreshed, but worktree status
+  excludes those artifacts when checking for operator work. JSONL-only `no-db` stores are
+  authoritative and must remain tracked.
 - **Host-local only** (`.git/info/exclude`, never the tracked `.gitignore`): `.bh/`,
   `.claude/settings.local.json` (the machine-specific sandbox grant), and — on
   zero-footprint hives — all of `.beads/`.
