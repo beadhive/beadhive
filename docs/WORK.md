@@ -711,6 +711,11 @@ epic seat. (If `start` is skipped, the first `bh work assign`/`claim` of a child
 fork off `mol/<epic>` instead of `main`, so intra-molecule dependencies compose correctly —
 bead B sees bead A's already-merged work.
 
+Use `bh work assign` / `bh work claim` to provision each child; these lifecycle steps refresh
+the container from its integration base before the child forks. Never merge `main` or another
+upstream into the container by hand: the lifecycle writes and validates the canonical refresh
+bubble, and a hand-made refresh can block the next child dispatch.
+
 `bh work merge <bead>` lands each bead into `mol/<epic>` (not `main`). When all beads are
 merged, the dispatcher runs the wrap-up verb:
 

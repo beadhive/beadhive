@@ -3843,6 +3843,36 @@ def test_epic_finish_accepts_proven_container_refresh_topology(hive, fakebd, cap
     assert fakebd.beads[epic]["status"] == "closed"
 
 
+def test_claim_rejects_noncanonical_container_refresh_before_dispatch(hive, fakebd, capsys):
+    """A hand-made refresh is caught at the next child dispatch, not only at epic finish."""
+    epic = "mr-manual-refresh"
+    fakebd.seed(epic, title="epic", issue_type="epic")
+    fakebd.states[epic] = {"kickoff": "approved"}
+    work.start(epic=epic, as_="disp/lead", hive="myrepo")
+
+    seat = _wt(hive, epic)
+    _commit(seat, "feat(mol): container-only work", fname="container-only.txt")
+    _commit(hive.main, "fix(up): upstream advance", fname="upstream-advance.txt")
+    _git(
+        "merge",
+        "--no-ff",
+        "main",
+        "-m",
+        f"chore(merge): refresh {epic} container from main (829425d9)",
+        cwd=seat,
+    )
+
+    child = f"{epic}.1"
+    fakebd.seed(child, title="first child", parent=epic)
+    with pytest.raises(typer.Exit):
+        work.claim(bead=child, as_="dev/child", hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert "unsafe container refresh" in err
+    assert "do not merge upstream into the container by hand" in err
+    assert not _wt(hive, child).exists()
+
+
 @pytest.mark.parametrize(
     ("malformation", "expected"),
     [

@@ -377,6 +377,37 @@ def _refresh_identity_errors(entry, row: dict, branch: str, upstream: str) -> li
     return errors
 
 
+def _container_refresh_errors(entry, branch: str, upstream: str) -> list[str]:
+    """Reject malformed refresh bubbles before the next child is dispatched.
+
+    ``epic_history_policy`` performs this audit at finish, but a hand-made refresh can otherwise
+    sit unnoticed while later children are provisioned against it. Keep this early guard narrow:
+    it checks refresh-shaped rows on the container's first-parent spine and leaves the complete
+    reviewed-child topology audit to submit/finish.
+    """
+    base = worktree.base_of(entry, branch, upstream)
+    branch_sha = worktree._branch_sha(entry, branch)
+    if not base or not branch_sha:
+        return []
+    rows = worktree.commit_rows(entry, base, branch)
+    spine, errors = _first_parent_spine(
+        rows,
+        branch_sha,
+        base,
+        ancestor_boundary=lambda boundary: _is_ancestor_of(entry, boundary, upstream),
+    )
+    if errors:
+        return []
+    candidates = [
+        row for row in spine if str(row.get("subject") or "").startswith(_REFRESH_PREFIX)
+    ]
+    return [
+        error
+        for row in candidates
+        for error in _refresh_identity_errors(entry, row, branch, upstream)
+    ]
+
+
 def _first_parent_spine_with_refreshes(
     entry,
     rows: list[dict],
@@ -1283,6 +1314,16 @@ def ensure_container(cfg, hive, epic, main) -> None:
         return
     entry, _seat, container = worktree.ensure(cfg, hive, bead=epic, kind="epic")
     upstream = worktree.integration_base(entry, epic, config.integration_branch(cfg, entry))
+    refresh_errors = _container_refresh_errors(entry, container, upstream)
+    if refresh_errors:
+        typer.echo(
+            "✗ refusing to dispatch into a container with an unsafe refresh:\n  "
+            + "\n  ".join(refresh_errors)
+            + "\n  Use the lifecycle refresh performed by `bh work assign` / `bh work claim`; "
+            "do not merge upstream into the container by hand.",
+            err=True,
+        )
+        raise typer.Exit(1)
     worktree.refresh_container(entry, container, upstream)
 
 
