@@ -294,6 +294,11 @@ than early — the safe direction. `bh-gj0v9.2` owns classifying that as defect 
 work:
   validate_cmd: "just check"     # default validation for any boundary without an override
   validation_slots: 1             # host-wide uniform gate capacity; 0 disables admission
+  validation_priority:            # lower validation CPU/I/O priority when supported
+    enabled: true
+    nice: 10                      # 0..19; non-negative values only
+    ionice_class: 2               # 2=best-effort, 3=idle; realtime is rejected
+    ionice_priority: 7            # 0..7 for best-effort; ignored for idle
   validation: relaxed            # merge re-test depth: relaxed | conservative | loose (see below)
   validate:                      # optional per-boundary overrides (fall back to validate_cmd).
                                  # a `<phase>-main` key wins when the op targets the integration branch.
@@ -330,6 +335,17 @@ work:
 change it. `BH_VALIDATION_SLOTS` overrides the configured value for one invocation. See
 [WORKTREES.md](WORKTREES.md#host-wide-admission-and-duplicate-coalescing) for safe tuning,
 coalescing, xdist fan-out, and the separate Dolt fixture semaphore.
+
+`work.validation_priority` is host-owned and defaults to the values above. Only non-negative nice
+levels and the reduced I/O classes (best-effort or idle) are accepted. Validation commands use the
+configured values when `nice` and `ionice` are available. The configured nice value is a minimum:
+an already less favored caller keeps its inherited level, and nested validation does not add the
+same value again. Run manifests record the requested, inherited, increment, and effective levels.
+An active user systemd manager also runs them in a scope with reduced CPU and I/O weights. Set
+`enabled: false`, or set
+`BH_VALIDATION_PRIORITY=false` for a one-invocation override. The run manifest records the resolved
+values and which scheduling controls were applied. Each host mechanism is probed first; missing or
+refused controls are omitted so they cannot prevent the validation command from running.
 
 ### Emergency validation bypass
 

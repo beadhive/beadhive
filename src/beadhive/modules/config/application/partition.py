@@ -15,6 +15,7 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         "otel",
         "work.identity",
         "work.validation_slots",
+        "work.validation_priority",
         "work.dispatch.max_beads_per_session",
         "work.dispatch.auto_budget",
         "hq.remote",

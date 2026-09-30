@@ -2693,7 +2693,10 @@ def test_later_nongreen_check_blocks_stale_green_reuse_and_records_fresh_use(
         )
         == 0
     )
-    assert executed == [["true"]]  # stale green was refused; this was not a reuse short-cut
+    # Priority wrappers may surround the configured command; one observed launch proves the
+    # stale green was refused rather than reused, and the tail proves the command stayed intact.
+    assert len(executed) == 1
+    assert executed[0][-1:] == ["true"]
 
     root = hive.main / ".git/bh/validation"
     manifests = [json.loads(path.read_text()) for path in (root / "runs").glob("*/manifest.json")]
