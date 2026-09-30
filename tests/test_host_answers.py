@@ -84,3 +84,10 @@ def test_dotted_hq_remote_key_round_trips():
     """The key is `hq.remote`, matching bh's dotted config names rather than nesting."""
     answers = host_answers.parse({"role": "viewer", "hq.remote": "git@example.com:hq.git"})
     assert answers.hq_remote == "git@example.com:hq.git"
+
+
+def test_publication_is_opt_in_and_requires_a_boolean():
+    assert not host_answers.parse({"role": "viewer"}).hq_push
+    assert host_answers.parse({"role": "viewer", "hq.push": True}).hq_push
+    with pytest.raises(AnswersInvalid, match="hq.push"):
+        host_answers.parse({"role": "viewer", "hq.push": "true"})

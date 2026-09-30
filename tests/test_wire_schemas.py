@@ -643,3 +643,65 @@ def _rewrite_json(path: Path, **updates: object) -> dict:
     value.update(updates)
     path.write_text(json.dumps(value, indent=2) + "\n")
     return value
+
+
+def _host_push_draft_pair() -> tuple[dict, dict]:
+    candidate = _catalog()
+    old = deepcopy(candidate)
+    operation = _operation(old, "host.provision")
+    operation["parameters"].pop()
+    operation["surfaces"]["cli"]["parameters"].pop()
+    return old, candidate
+
+
+def test_approved_host_push_v2_draft_amendment() -> None:
+    old, candidate = _host_push_draft_pair()
+    assert _COMPAT._approved_host_push_draft(old, candidate)
+    assert catalog_compatibility_errors(old, candidate) == []
+
+
+@pytest.mark.parametrize(
+    "mutation", ["required", "type", "privilege", "existing", "projection", "other", "policy"]
+)
+def test_host_push_draft_amendment_rejects_unapproved_edits(mutation: str) -> None:
+    old, candidate = _host_push_draft_pair()
+    operation = _operation(candidate, "host.provision")
+    if mutation == "required":
+        operation["parameters"][-1]["required"] = True
+    elif mutation == "type":
+        operation["parameters"][-1]["schema"]["type"] = "string"
+    elif mutation == "privilege":
+        operation["parameters"][-1]["privilege"] = "admin"
+    elif mutation == "existing":
+        operation["parameters"][0]["name"] = "changed"
+    elif mutation == "projection":
+        operation["surfaces"]["cli"]["parameters"][-1] = "publish"
+    elif mutation == "other":
+        _operation(candidate, "probe.health")["result_schema"] = "changed"
+    else:
+        candidate["policy"]["catalog_role"] = "changed"
+    assert not _COMPAT._approved_host_push_draft(old, candidate)
+    assert catalog_compatibility_errors(old, candidate)
+
+
+@pytest.mark.parametrize(
+    ("version", "path"),
+    [
+        ("2.0.0", "docs/schemas/wire/v2.0.0/operation-catalog-v1.json"),
+        ("2.2.0", "docs/schemas/wire/v2.2.0/operation-catalog-v1.json"),
+        ("2.1.0", "docs/schemas/wire/v2.1.0/config-v1.schema.json"),
+    ],
+)
+def test_host_push_amendment_does_not_allow_other_release_files(version: str, path: str) -> None:
+    old, candidate = _host_push_draft_pair()
+    assert not _COMPAT._approved_host_push_file(version, Path(path), old, candidate)
+    assert _COMPAT._approved_host_push_file(
+        "2.1.0", Path("docs/schemas/wire/v2.1.0/operation-catalog-v1.json"), old, candidate
+    )
+
+
+def test_host_push_amendment_is_specific_to_catalog_v2() -> None:
+    old, candidate = _host_push_draft_pair()
+    old["catalog_version"] = candidate["catalog_version"] = "3.0.0"
+    assert not _COMPAT._approved_host_push_draft(old, candidate)
+    assert catalog_compatibility_errors(old, candidate)

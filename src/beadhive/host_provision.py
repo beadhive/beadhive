@@ -136,8 +136,11 @@ PLAN: tuple[str, ...] = (
     # right before the read-only verifying gate.
     "harness plugin",
     "verify",
-    # LAST, AND AFTER VERIFY, DELIBERATELY (bh-q160.2). Every other step is local and
-    # reversible; adopt CASes the hive's epoch fence and then HQ's lease, which is
+    # Fleet-visible registration publishes only after verification; adoption also requires
+    # successful publication when requested.
+    "hq publish",
+    # LAST, AND AFTER VERIFY, DELIBERATELY (bh-q160.2). Apart from opt-in publication,
+    # prior steps are local and reversible; adopt CASes the hive's epoch fence and HQ's lease,
     # fleet-visible and races other hosts. Running it only once the host is VERIFIED usable is
     # what makes "a failure in any earlier step leaves zero leases adopted" true — a half-built
     # host that grabbed primary is strictly worse than one that failed cleanly.
@@ -924,12 +927,28 @@ def _step_adopt(*, adopt: list[str], dry_run: bool, prior: list[StepResult]) -> 
     return StepResult("adopt", "done", f"primary for: {', '.join(adopted)}")
 
 
+def _step_hq_publish(*, push: bool, dry_run: bool, prior: list[StepResult]) -> StepResult:
+    if not push:
+        return StepResult("hq publish", "skipped", "publication not requested")
+    if any(step.status == "failed" for step in prior):
+        return StepResult("hq publish", "skipped", "prior failure — publishing NOTHING")
+    if dry_run:
+        return StepResult("hq publish", "would", "would publish only this host's manifest")
+    published = hq.publish_host_manifest(config.hq_dir(), host.host_id())
+    return StepResult(
+        "hq publish",
+        "done" if published else "skipped",
+        "host manifest published" if published else "remote already has host manifest",
+    )
+
+
 def provision(
     *,
     role: str,
     auto: bool = False,
     dry_run: bool = False,
     force_manifest: bool = False,
+    push: bool = False,
     adopt: list[str] | None = None,
     hives: list[str] | None = None,
 ) -> list[StepResult]:
@@ -953,6 +972,7 @@ def provision(
         lambda: _step_fix_permissions(dry_run=dry_run),
         lambda: _step_harness_plugin(role=role, dry_run=dry_run),
         lambda: _step_verify(),
+        lambda: _step_hq_publish(push=push, dry_run=dry_run, prior=results),
         lambda: _step_adopt(adopt=adopt, dry_run=dry_run, prior=results),
     )
     adopt = list(adopt or [])

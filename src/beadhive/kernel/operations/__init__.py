@@ -136,7 +136,7 @@ host lease adopt|hive:string:r,force:boolean:o
 host lease release|hive:string:o,all_hives:boolean:o
 host list|as_json:boolean:o,lease_hive:string:o
 host packup|
-host provision|role:string:o,answers:string:o,auto:boolean:o,dry_run:boolean:o,force:boolean:o
+host provision|role:string:o,answers:string:o,auto:boolean:o,dry_run:boolean:o,force:boolean:o,push:boolean:o
 host release|hive:string:o,all_hives:boolean:o
 host retire|dry_run:boolean:o,backup:boolean:o,confirm:boolean:o,purge:boolean:o
 host rm|host_id:string:r,dry_run:boolean:o,confirm:boolean:o,force:boolean:o
