@@ -2057,6 +2057,46 @@
       "title": "RoutingTierConfig",
       "type": "object"
     },
+    "ValidationPriorityConfig": {
+      "additionalProperties": false,
+      "description": "Best-effort host scheduling controls for validation subprocesses.",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "description": "Apply reduced CPU and I/O scheduling priority when host facilities are available. BH_VALIDATION_PRIORITY temporarily overrides this setting.",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "ionice_class": {
+          "default": 2,
+          "description": "Linux I/O scheduling class: 2 is best-effort; 3 is idle. Realtime class 1 is intentionally rejected.",
+          "enum": [
+            2,
+            3
+          ],
+          "title": "Ionice Class",
+          "type": "integer"
+        },
+        "ionice_priority": {
+          "default": 7,
+          "description": "Best-effort I/O priority from 0 (highest) to 7 (lowest); ignored for idle class 3.",
+          "maximum": 7,
+          "minimum": 0,
+          "title": "Ionice Priority",
+          "type": "integer"
+        },
+        "nice": {
+          "default": 10,
+          "description": "Process nice level. Only non-negative values are accepted.",
+          "maximum": 19,
+          "minimum": 0,
+          "title": "Nice",
+          "type": "integer"
+        }
+      },
+      "title": "ValidationPriorityConfig",
+      "type": "object"
+    },
     "WorkConfig": {
       "additionalProperties": false,
       "description": "Integration-plane driver (`bh work`) settings — drives a bead assigned -> merged.",
@@ -2230,6 +2270,10 @@
           "description": "Emergency per-hive switch that bypasses validation command execution without changing configured commands or creating green attestations.",
           "title": "Validation Bypass",
           "type": "boolean"
+        },
+        "validation_priority": {
+          "$ref": "#/$defs/ValidationPriorityConfig",
+          "description": "Host scheduling policy for validation children: nice/ionice and a weighted user systemd scope when available."
         },
         "validation_protocol": {
           "default": "none",
