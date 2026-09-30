@@ -86,5 +86,8 @@ bd.db
 # on every bead change and guarantees merge conflicts.
 issues.jsonl
 
-# Added by bd (missing required patterns)
+# Older bd releases checked this file for *.gate.lock* and appended it during store opens
+# when absent, dirtying this tracked file and blocking bh work merge. The actual lock is
+# .beads.gate.lock in the repo root, already covered by the root .gitignore. Keep this
+# redundant compatibility pattern for those releases; preserve bh's clean-clone merge guard.
 *.gate.lock*
