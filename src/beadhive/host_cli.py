@@ -648,7 +648,7 @@ def iter_manifests(hq_dir: Path) -> list[tuple[hosts.HostManifest, Path]]:
 
 def manifest_row(
     manifest: hosts.HostManifest, path: Path, *, stale: bool = False
-) -> dict[str, str]:
+) -> dict[str, object]:
     """One roster row's base fields. A dict, not a tuple/dataclass, on purpose: a later
     caller (bh-ytbb.13) builds its OWN rows the same way — this manifest-only dict plus an
     extra lease-state key — and passes an extended column spec to :func:`render_table`
@@ -659,6 +659,12 @@ def manifest_row(
         "host_id": manifest.host_id,
         "label": manifest.label,
         "role": manifest.role,
+        "frame_id": manifest.frame_id,
+        "state": manifest.state,
+        "release": manifest.release.model_dump(mode="json") if manifest.release else None,
+        "capabilities": (
+            manifest.capabilities.model_dump(mode="json") if manifest.capabilities else None
+        ),
         "last_seen": _last_seen(path),
         "stale": "stale" if stale else "",
     }
@@ -670,12 +676,16 @@ BASE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("host_id", "HOST_ID"),
     ("label", "LABEL"),
     ("role", "ROLE"),
+    ("frame_id", "FRAME_ID"),
+    ("state", "STATE"),
+    ("release", "RELEASE"),
+    ("capabilities", "CAPABILITIES"),
     ("last_seen", "LAST_SEEN"),
     ("stale", "STALE"),
 )
 
 
-def render_table(rows: Sequence[dict[str, str]], columns: Sequence[tuple[str, str]]) -> str:
+def render_table(rows: Sequence[dict[str, object]], columns: Sequence[tuple[str, str]]) -> str:
     """Render already-assembled row dicts against a ``(row key, header)`` column spec as a
     padded plain-text table. Generic on purpose — the seam a later caller (bh-ytbb.13) uses
     to add a lease-state column: it builds rows + an extended `columns` tuple and calls this
@@ -684,13 +694,21 @@ def render_table(rows: Sequence[dict[str, str]], columns: Sequence[tuple[str, st
     row yet) still renders."""
     if not rows:
         return "(no hosts registered)"
+
+    def _cell(value: object) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, separators=(",", ":"))
+        return str(value)
+
     widths = {
-        key: max(len(header), *(len(str(row.get(key, ""))) for row in rows))
+        key: max(len(header), *(len(_cell(row.get(key))) for row in rows))
         for key, header in columns
     }
 
-    def _line(values: dict[str, str]) -> str:
-        return "  ".join(f"{str(values.get(key, '')):<{widths[key]}}" for key, _h in columns)
+    def _line(values: dict[str, object]) -> str:
+        return "  ".join(f"{_cell(values.get(key)):<{widths[key]}}" for key, _h in columns)
 
     lines = [_line(dict(columns))]
     lines.extend(_line(row) for row in rows)
@@ -838,7 +856,7 @@ def identity_cmd(
         raise typer.Exit(1)
 
 
-def list_payload(hq_dir: Path, cfg: dict | None = None) -> list[dict[str, str]]:
+def list_payload(hq_dir: Path, cfg: dict | None = None) -> list[dict[str, object]]:
     """The rows :func:`render_table` renders for ``list`` — the JSON payload shape too.
     Split out from the command so tests (and a future MCP resource) can call it directly.
     ``cfg`` (default: :func:`beadhive.config.load`) sizes the STALE marker's threshold
@@ -858,8 +876,8 @@ LEASE_COLUMNS: tuple[tuple[str, str], ...] = (*BASE_COLUMNS, ("lease", "LEASE"))
 
 
 def with_lease_state(
-    rows: list[dict[str, str]], prefix: str, lease: host_lease.HostLease | None, state: str
-) -> tuple[list[dict[str, str]], str]:
+    rows: list[dict[str, object]], prefix: str, lease: host_lease.HostLease | None, state: str
+) -> tuple[list[dict[str, object]], str]:
     """`rows` (as :func:`list_payload` built them) enriched with a ``lease`` key on the
     HOLDER's row only, plus a one-line human summary — a fully ``"free"`` lease leaves no
     row visibly different at all (nobody is `held`), so the summary is what actually says so.
@@ -973,6 +991,13 @@ def show_cmd(
     typer.echo(f"host_id:    {manifest.host_id}")
     typer.echo(f"label:      {manifest.label}")
     typer.echo(f"role:       {manifest.role}")
+    typer.echo(f"frame_id:   {manifest.frame_id or '(none)'}")
+    typer.echo(f"state:      {manifest.state}")
+    typer.echo(f"release:    {manifest.release.model_dump() if manifest.release else '(none)'}")
+    typer.echo(
+        f"capabilities: {manifest.capabilities.model_dump() if manifest.capabilities else '(none)'}"
+    )
+    typer.echo(f"instance_ref: {manifest.instance_ref or '(none)'}")
     typer.echo(f"os/arch:    {manifest.os}/{manifest.arch}")
     typer.echo(f"last_seen:  {_last_seen(path)}")
     typer.echo(f"identity:   {manifest.identity.kind} ({manifest.identity.value or '—'})")
