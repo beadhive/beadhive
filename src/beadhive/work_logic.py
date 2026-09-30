@@ -451,6 +451,32 @@ def _container_refresh_errors(entry, branch: str, upstream: str) -> list[str]:
     ]
 
 
+def guard_container_refresh(entry, branch: str, integration: str, *, action: str) -> None:
+    """Refuse a lifecycle operation that would build on an unsafe epic-container refresh.
+
+    ``assign``/``claim`` normally refresh a container before a child forks, but a manual merge can
+    still be added after that child (or batch) was dispatched.  Every lifecycle boundary that is
+    about to provision from or land into a container calls this same guard, so malformed topology
+    cannot survive until the much later epic-finish audit.
+    """
+    prefix = f"{worktree._BEAD_PREFIX}epic/"
+    if not branch.startswith(prefix):
+        return
+    epic = branch[len(prefix) :]
+    upstream = worktree.integration_base(entry, epic, integration)
+    errors = _container_refresh_errors(entry, branch, upstream)
+    if not errors:
+        return
+    typer.echo(
+        f"✗ refusing to {action} with an unsafe container refresh:\n  "
+        + "\n  ".join(errors)
+        + "\n  Use the lifecycle refresh performed by `bh work assign` / `bh work claim`; "
+        "do not merge upstream into the container by hand.",
+        err=True,
+    )
+    raise typer.Exit(1)
+
+
 def _first_parent_spine_with_refreshes(
     entry,
     rows: list[dict],
@@ -1367,16 +1393,12 @@ def ensure_container(cfg, hive, epic, main) -> None:
         return
     entry, _seat, container = worktree.ensure(cfg, hive, bead=epic, kind="epic")
     upstream = worktree.integration_base(entry, epic, config.integration_branch(cfg, entry))
-    refresh_errors = _container_refresh_errors(entry, container, upstream)
-    if refresh_errors:
-        typer.echo(
-            "✗ refusing to dispatch into a container with an unsafe refresh:\n  "
-            + "\n  ".join(refresh_errors)
-            + "\n  Use the lifecycle refresh performed by `bh work assign` / `bh work claim`; "
-            "do not merge upstream into the container by hand.",
-            err=True,
-        )
-        raise typer.Exit(1)
+    guard_container_refresh(
+        entry,
+        container,
+        config.integration_branch(cfg, entry),
+        action="dispatch into the container",
+    )
     worktree.refresh_container(entry, container, upstream)
 
 

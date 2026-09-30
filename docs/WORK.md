@@ -714,7 +714,8 @@ so intra-molecule dependencies compose correctly — bead B sees bead A's alread
 Use `bh work assign` / `bh work claim` to provision each child; these lifecycle steps refresh
 the container from its integration base before the child forks. Never merge `main` or another
 upstream into the container by hand: the lifecycle writes and validates the canonical refresh
-bubble, and a hand-made refresh can block the next child dispatch.
+bubble. A hand-made refresh is rejected by the next lifecycle operation that touches the
+container, including child dispatch, a single-child merge, or a batch merge.
 
 `bh work merge <bead>` lands each bead into `wt/bead/epic/<epic>` (not `main`). When all beads are
 merged, the dispatcher runs the wrap-up verb:

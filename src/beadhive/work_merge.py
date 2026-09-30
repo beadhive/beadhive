@@ -1192,6 +1192,9 @@ def impl__merge_bead(api, cfg, bead, hive, rm, override_reason="", override_acto
     api._guard_bead_merge_gates(bead, main, landing_pr)
     integration = api.config.integration_branch(cfg, entry)
     base = api._guard_bead_land_base(entry, bead, integration)
+    api.work_logic.guard_container_refresh(
+        entry, base, integration, action=f"merge {bead} into {base}"
+    )
     if api._guard_bead_clean_history(
         entry,
         branch,

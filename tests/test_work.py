@@ -3873,6 +3873,44 @@ def test_claim_rejects_noncanonical_container_refresh_before_dispatch(hive, fake
     assert not _wt(hive, child).exists()
 
 
+def _add_noncanonical_refresh_after_dispatch(hive, epic):
+    """Advance main and hand-merge it into an already-open container with the field-bug subject."""
+    seat = _wt(hive, epic)
+    _commit(hive.main, "fix(up): upstream advance", fname=f"{epic}-upstream.txt")
+    _git(
+        "merge",
+        "--no-ff",
+        "main",
+        "-m",
+        f"chore(merge): refresh {epic} container from main (829425d9)",
+        cwd=seat,
+    )
+
+
+def test_merge_rejects_noncanonical_container_refresh_after_child_dispatch(hive, fakebd, capsys):
+    """An already-approved child cannot land after a manual refresh corrupts its container."""
+    epic, child = "mr-late-refresh", "mr-late-refresh.1"
+    fakebd.seed(epic, title="epic", issue_type="epic")
+    fakebd.states[epic] = {"kickoff": "approved"}
+    work.start(epic=epic, as_="disp/lead", hive="myrepo")
+    _commit(_wt(hive, epic), "chore(mol): establish container", fname="container.txt")
+
+    fakebd.seed(child, title="child", parent=epic)
+    work.claim(bead=child, as_="dev/child", hive="myrepo")
+    _commit(_wt_of(hive, child), "fix(child): approved work", fname="child.txt")
+    work.submit(bead=child, as_="dev/child", hive="myrepo")
+    fakebd.resolve_review(child)
+    _add_noncanonical_refresh_after_dispatch(hive, epic)
+
+    capsys.readouterr()
+    with pytest.raises(typer.Exit):
+        work.merge(bead=child, hive="myrepo", rm=False, molecule=False)
+    err = capsys.readouterr().err
+    assert "unsafe container refresh" in err
+    assert f"merge {child} into wt/bead/epic/{epic}" in err
+    assert fakebd.beads[child]["status"] != "closed"
+
+
 @pytest.mark.parametrize(
     ("malformation", "expected"),
     [
@@ -3898,7 +3936,14 @@ def test_epic_history_rejects_malformed_container_refresh(
     _commit(child_wt, f"feat: {child}", fname="child-2.txt")
     work.submit(bead=child, as_="dev/child", hive="myrepo")
     fakebd.resolve_review(child)
-    work.merge(bead=child, hive="myrepo", rm=False, molecule=False)
+
+    capsys.readouterr()
+    with pytest.raises(typer.Exit):
+        work.merge(bead=child, hive="myrepo", rm=False, molecule=False)
+    merge_err = capsys.readouterr().err
+    assert "unsafe container refresh" in merge_err
+    assert expected in merge_err
+    assert fakebd.beads[child]["status"] != "closed"
 
     capsys.readouterr()
     work.show(bead=epic, view=["log"], json_out=True, hive="myrepo")
@@ -5366,6 +5411,42 @@ def test_parent_finish_accepts_nested_epic_landed_before_container_open(hive, fa
     assert fakebd.beads[parent]["status"] == "closed"
 
 
+def test_parent_history_rejects_unlinked_commit_inside_nested_epic(hive, fakebd, capsys):
+    """Recursive descendant linkage must not bless unrelated commits inside a nested bubble."""
+    parent, nested = "mr-nested-unlinked", "mr-nested-unlinked.1"
+    fakebd.seed(parent, title="parent", issue_type="epic")
+    fakebd.states[parent] = {"kickoff": "approved"}
+    fakebd.seed(nested, title="nested", issue_type="epic", parent=parent)
+    fakebd.states[nested] = {"kickoff": "approved"}
+    work.start(epic=parent, as_="disp/parent", hive="myrepo")
+    work.start(epic=nested, as_="disp/nested", hive="myrepo")
+    _land_epic_child(hive, fakebd, nested, 1)
+
+    nested_seat = worktree.locate(config.load(), "myrepo", nested, kind="epic")[2]
+    _commit(nested_seat, "chore: unlinked nested noise", fname="unlinked.txt")
+    parent_seat = _wt(hive, parent)
+    _git(
+        "merge",
+        "--no-ff",
+        f"wt/bead/epic/{nested}",
+        "-m",
+        f"chore(merge): molecule {nested}",
+        cwd=parent_seat,
+    )
+    bubble = _git("rev-parse", "HEAD", cwd=parent_seat).stdout.strip()
+    fakebd.beads[nested].update(
+        status="closed",
+        close_reason="molecule landed",
+        metadata={"git.commits": json.dumps([bubble])},
+    )
+
+    capsys.readouterr()
+    work.show(bead=parent, view=["log"], json_out=True, hive="myrepo")
+    policy = json.loads(capsys.readouterr().out)["history_policy"]
+    assert not policy["valid"]
+    assert any("not linked" in error for error in policy["errors"]), policy["errors"]
+
+
 def test_finish_tears_down_coordinator_seat(hive, fakebd):
     """finish tears the seat down after the land: the coordinator worktree is removed AND the
     container branch wt/bead/epic/<epic> is deleted (mirrors merge --rm)."""
@@ -6478,6 +6559,32 @@ def test_merge_group_empty_batch_gives_actionable_wrong_branch_hint(hive, fakebd
     err = capsys.readouterr().err
     assert "no commits" in err and "wrong branch" in err  # actionable, not the generic submit msg
     assert fakebd.beads["mr-1.1"]["status"] != "closed"  # nothing landed / closed
+
+
+def test_merge_group_rejects_noncanonical_container_refresh_after_dispatch(hive, fakebd, capsys):
+    """A dispatched batch rechecks its destination container immediately before landing."""
+    epic = "mr-batch-late-refresh"
+    members = [f"{epic}.1", f"{epic}.2"]
+    fakebd.seed(epic, title="epic", issue_type="epic")
+    fakebd.states[epic] = {"kickoff": "approved"}
+    work.start(epic=epic, as_="disp/lead", hive="myrepo")
+    _commit(_wt(hive, epic), "chore(mol): establish container", fname="container.txt")
+    for member in members:
+        fakebd.seed(member, title=member, parent=epic, labels=["batch:late-refresh"])
+    work.claim(bead="", as_="dev/group", group=",".join(members), hive="myrepo")
+    batch = _batch_wt(hive, "late-refresh")
+    _commit(batch, "fix(batch): approved work", fname="batch.txt")
+    work.submit(bead="", group=",".join(members), as_="dev/group", hive="myrepo")
+    fakebd.resolve_review(members[0])
+    _add_noncanonical_refresh_after_dispatch(hive, epic)
+
+    capsys.readouterr()
+    with pytest.raises(typer.Exit):
+        work.merge(bead="", group=",".join(members), hive="myrepo")
+    err = capsys.readouterr().err
+    assert "unsafe container refresh" in err
+    assert f"merge batch late-refresh into wt/bead/epic/{epic}" in err
+    assert all(fakebd.beads[member]["status"] != "closed" for member in members)
 
 
 def test_claim_collapse_preserves_existing_planner_batch_label(hive, fakebd):
