@@ -301,6 +301,10 @@
         if system == "x86_64-linux" then {
           bh-no-nix-ld = pkgs.testers.runNixOSTest {
             name = "bh-no-nix-ld";
+            # CI workers without /dev/kvm still have to boot and assert the VM.
+            requiredFeatures.kvm = false;
+            qemu.forceAccel = false;
+            globalTimeout = 1800;
             nodes.machine = { ... }: {
               programs.nix-ld.enable = false;
               environment.systemPackages = [ self.packages.${system}.bh ];
