@@ -1834,14 +1834,14 @@
       {
         "facade_target": "beadhive.config.integration_branch",
         "kind": "indirect-adapter",
-        "line": 281,
+        "line": 311,
         "path": "tests/test_worktree_inventory_boundaries.py",
         "target": "beadhive.worktree.config.integration_branch"
       },
       {
         "facade_target": "beadhive.config.integration_branch",
         "kind": "indirect-adapter",
-        "line": 306,
+        "line": 336,
         "path": "tests/test_worktree_inventory_boundaries.py",
         "target": "beadhive.worktree.config.integration_branch"
       },
