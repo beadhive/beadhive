@@ -145,3 +145,7 @@ in a lower adapter shared by HQ and the provider. This removes both dependency
 cycles without widening the reviewed legacy cycle baseline. Config generation
 uses the canonical current release renderer and atomic inventory writer; historical
 v1 bundle bytes remain pinned and unchanged.
+
+Frame retirement uses `bh host frame-retire plan|apply|check <frame_id>`.
+The existing `bh host retire` keeps its four options and host-local decommission
+behavior; the additive command owns the protected authority lifecycle.

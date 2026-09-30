@@ -1767,12 +1767,6 @@ def retire_cmd(
         "--purge",
         help="hard-delete each hive's clone instead of soft-archiving it (still gated)",
     ),
-    action: str | None = typer.Argument(None, help="frame lifecycle: plan, apply, or check"),
-    frame_id: str | None = typer.Argument(None, help="declared frame identity"),
-    expected: str = typer.Option("", "--expected-revision"),
-    expected_host_id: str = typer.Option("", "--expected-host-id"),
-    expected_release: str = typer.Option("", "--expected-release"),
-    operator_key: Annotated[Path | None, typer.Option("--operator-key")] = None,
 ):
     """Thin CLI wrapper over :func:`beadhive.host_retire.retire` — see that module's docstring
     for the full order + the guardrail contract (a host must never lose bead state, its own
@@ -1781,20 +1775,6 @@ def retire_cmd(
     :func:`_scan_leases`) so the two stay import-cycle-safe, matching :func:`provision_cmd`."""
     from . import host_retire
 
-    if isinstance(action, str) and action:
-        _frame_lifecycle(
-            "retire",
-            action,
-            frame_id or "",
-            expected,
-            expected_host_id,
-            expected_release,
-            operator_key,
-            confirm,
-            False,
-            None,
-        )
-        return
     results = host_retire.retire(dry_run=dry_run, backup=backup, confirm=confirm, purge=purge)
     if not dry_run and any(r.status == "failed" for r in results):
         raise typer.Exit(1)
@@ -1833,7 +1813,9 @@ def _frame_lifecycle(
         raise typer.Exit(1) from exc
 
 
-def _lifecycle_command(verb: str):
+def _lifecycle_command(verb: str, *, operation: str | None = None):
+    operation = operation or verb
+
     def command(
         action: str = typer.Argument(..., help="plan, apply, or check"),
         frame_id: str = typer.Argument(...),
@@ -1860,15 +1842,17 @@ def _lifecycle_command(verb: str):
             deadline,
         )
 
-    command.__name__ = f"{verb}_cmd"
+    command.__name__ = f"{operation.replace('-', '_')}_cmd"
     command.__doc__ = (
         f"{verb.capitalize()} a declared frame using plan/apply/check and exact expected authority."
     )
-    return otel.trace_verb(f"host.{verb}")(command)
+    return otel.trace_verb(f"host.{operation}")(command)
 
 
 for _verb in ("admit", "cordon", "drain", "park", "resume", "quarantine"):
     app.command(_verb)(_lifecycle_command(_verb))
+
+app.command("frame-retire")(_lifecycle_command("retire", operation="frame-retire"))
 
 
 # ---- remove: drop an orphaned manifest from HQ (bh-salu) ------------------------------

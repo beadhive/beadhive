@@ -6423,6 +6423,129 @@
         "secret_material": false
       },
       "kind": "action",
+      "name": "host.frame-retire",
+      "parameters": [
+        {
+          "name": "action",
+          "privilege": "inherited",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "frame_id",
+          "privilege": "inherited",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "expected",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "expected_host_id",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "expected_release",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "operator_key",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "confirm",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "supersede",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "deadline",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "number"
+          }
+        }
+      ],
+      "privilege": "ordinary-mutation",
+      "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "surfaces": {
+        "cli": {
+          "aliases": [],
+          "declared_hidden": false,
+          "effective_hidden": false,
+          "granularity": {
+            "mode": "fine",
+            "reason": null
+          },
+          "interactivity": {
+            "guard_conditions": [],
+            "guard_parameters": [],
+            "mode": "none",
+            "prompt_seams": [],
+            "reason": null
+          },
+          "parameter_map": {},
+          "parameters": [
+            "action",
+            "frame_id",
+            "expected",
+            "expected_host_id",
+            "expected_release",
+            "operator_key",
+            "confirm",
+            "supersede",
+            "deadline"
+          ],
+          "path": "host frame-retire",
+          "progress": {
+            "mode": "stdout",
+            "notification_uris": [],
+            "reason": "CLI reports human-oriented progress on stdout/stderr"
+          }
+        }
+      }
+    },
+    {
+      "alias_of": null,
+      "constraints": {
+        "hq_write": false,
+        "interactive": false,
+        "override_parameters": [],
+        "secret_material": false
+      },
+      "kind": "action",
       "name": "host.heartbeat",
       "parameters": [
         {
@@ -7408,54 +7531,6 @@
           "schema": {
             "type": "boolean"
           }
-        },
-        {
-          "name": "action",
-          "privilege": "inherited",
-          "required": false,
-          "schema": {
-            "type": "string"
-          }
-        },
-        {
-          "name": "frame_id",
-          "privilege": "inherited",
-          "required": false,
-          "schema": {
-            "type": "string"
-          }
-        },
-        {
-          "name": "expected",
-          "privilege": "inherited",
-          "required": false,
-          "schema": {
-            "type": "string"
-          }
-        },
-        {
-          "name": "expected_host_id",
-          "privilege": "inherited",
-          "required": false,
-          "schema": {
-            "type": "string"
-          }
-        },
-        {
-          "name": "expected_release",
-          "privilege": "inherited",
-          "required": false,
-          "schema": {
-            "type": "string"
-          }
-        },
-        {
-          "name": "operator_key",
-          "privilege": "inherited",
-          "required": false,
-          "schema": {
-            "type": "string"
-          }
         }
       ],
       "privilege": "ordinary-mutation",
@@ -7481,13 +7556,7 @@
             "dry_run",
             "backup",
             "confirm",
-            "purge",
-            "action",
-            "frame_id",
-            "expected",
-            "expected_host_id",
-            "expected_release",
-            "operator_key"
+            "purge"
           ],
           "path": "host retire",
           "progress": {

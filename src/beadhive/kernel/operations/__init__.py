@@ -145,7 +145,8 @@ host list|as_json:boolean:o,lease_hive:string:o
 host packup|
 host provision|role:string:o,answers:string:o,auto:boolean:o,dry_run:boolean:o,force:boolean:o,push:boolean:o
 host release|hive:string:o,all_hives:boolean:o
-host retire|dry_run:boolean:o,backup:boolean:o,confirm:boolean:o,purge:boolean:o,action:string:o,frame_id:string:o,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o
+host retire|dry_run:boolean:o,backup:boolean:o,confirm:boolean:o,purge:boolean:o
+host frame-retire|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o
 host rm|host_id:string:r,dry_run:boolean:o,confirm:boolean:o,force:boolean:o
 host show|host_id:string:r,as_json:boolean:o
 hq bd|

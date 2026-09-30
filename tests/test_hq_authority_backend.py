@@ -1126,3 +1126,40 @@ def test_fetch_config_selects_exact_active_and_candidate_desired_binding(backend
         )
     with pytest.raises(ControlPlaneError, match="unknown, expired or retired"):
         plane.fetch_config("frame-one", holder_identity="not-granted")
+
+
+def test_additive_frame_retire_keeps_legacy_retire_four_parameters(backend):
+    import inspect
+
+    from beadhive import host_cli
+
+    assert tuple(inspect.signature(host_cli.retire_cmd).parameters) == (
+        "dry_run",
+        "backup",
+        "confirm",
+        "purge",
+    )
+    b = backend
+    result = CliRunner().invoke(app, ["host", "frame-retire", "plan", "frame-one"])
+    assert result.exit_code == 0, result.output
+    plan = json.loads(result.stdout)
+    result = CliRunner().invoke(
+        app,
+        [
+            "host",
+            "frame-retire",
+            "apply",
+            "frame-one",
+            "--expected-revision",
+            plan["revision"],
+            "--expected-host-id",
+            plan["host_id"],
+            "--expected-release",
+            plan["release"],
+            "--operator-key",
+            str(b["operator"]),
+            "--confirm",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["state"] == "retired"
