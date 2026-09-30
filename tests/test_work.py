@@ -3300,6 +3300,30 @@ def test_merge_unrelated_untracked_file_preserves_approved_review(hive, fakebd, 
     assert operator_file.read_text() == "untracked operator work"
 
 
+def test_merge_stale_branch_does_not_restore_deleted_untracked_path(hive, fakebd):
+    removed = hive.main / "removed.txt"
+    removed.write_text("old tracked content")
+    _git("add", "removed.txt", cwd=hive.main)
+    _git("commit", "-qm", "feat: add removable file", cwd=hive.main)
+    fakebd.seed("mr-39", title="t")
+    _take_to_approved(hive, fakebd, "mr-39")
+    fakebd.states["mr-39"]["review"] = "approved"
+    _git("rm", "removed.txt", cwd=hive.main)
+    _git("commit", "-qm", "fix: remove stale file", cwd=hive.main)
+    removed.write_text("operator replacement")
+    assert (
+        "?? removed.txt\n"
+        in _git("status", "--porcelain", "--untracked-files=all", cwd=hive.main).stdout
+    )
+
+    work.merge(bead="mr-39", hive="myrepo", rm=False, molecule=False)
+
+    assert removed.read_text() == "operator replacement"
+    assert fakebd.states["mr-39"]["review"] == "approved"
+    assert fakebd.beads["mr-39"]["status"] == "closed"
+    assert _git("show", "main:change.txt", cwd=hive.main).stdout.strip() == "feat: the change"
+
+
 def test_merge_colliding_untracked_file_names_path_and_keeps_review(hive, fakebd, capsys):
     fakebd.seed("mr-34", title="t")
     _take_to_approved(hive, fakebd, "mr-34")

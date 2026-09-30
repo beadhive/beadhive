@@ -36,9 +36,11 @@ def merge_workspace_issue(main: Path, base: str, branch: str) -> str:
     """Describe workspace changes that would make checkout or merge unsafe.
 
     Check the index and tracked files separately from operator-owned untracked files. An
-    untracked file is safe only when neither the target base nor the incoming branch tracks
-    it (or a parent/child path). Keep this preflight ahead of validation and let Git make
-    the final merge decision under the merge slot.
+    untracked file is safe when checkout of `base` and merge of `branch` would leave it
+    alone. The branch's whole tree is too broad: an unchanged file on a stale branch may
+    already have been deleted on `base`, and Git does not restore it during the merge.
+    Keep this preflight ahead of validation and let Git make the final merge decision under
+    the merge slot.
     """
     git = lambda *args: worktree._run_git(  # noqa: E731 - all probes share the same cwd
         ["git", "-C", str(main), *args], check=False, capture=True
@@ -52,13 +54,23 @@ def merge_workspace_issue(main: Path, base: str, branch: str) -> str:
 
     untracked = git("ls-files", "--others", "--exclude-standard", "-z")
     ignored = git("ls-files", "--others", "--ignored", "--exclude-standard", "-z")
-    trees = [git("ls-tree", "-r", "--name-only", "-z", ref) for ref in (base, branch)]
-    if any(result.returncode != 0 for result in (untracked, ignored, *trees)):
+    base_tree = git("ls-tree", "-r", "--name-only", "-z", base)
+    branch_tree = git("ls-tree", "-r", "--name-only", "-z", branch)
+    common = git("merge-base", base, branch)
+    if any(
+        result.returncode != 0 for result in (untracked, ignored, base_tree, branch_tree, common)
+    ):
+        return f"cannot inspect incoming paths for {branch} onto {base}"
+    changed = git("diff", "--name-only", "-z", common.stdout.strip(), branch)
+    if changed.returncode != 0:
         return f"cannot inspect incoming paths for {branch} onto {base}"
     local_paths = set((untracked.stdout or "").split("\0")) | set(
         (ignored.stdout or "").split("\0")
     )
-    incoming_paths = set().union(*(set((result.stdout or "").split("\0")) for result in trees))
+    branch_paths = set((branch_tree.stdout or "").split("\0"))
+    incoming_paths = set((base_tree.stdout or "").split("\0")) | (
+        set((changed.stdout or "").split("\0")) & branch_paths
+    )
     local_paths.discard("")
     incoming_paths.discard("")
     sorted_incoming = sorted(incoming_paths)
