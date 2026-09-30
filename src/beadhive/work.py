@@ -1547,12 +1547,9 @@ def _postland_revalidate_bead(
 
 def _record_merge_commit(bead, main, base) -> None:
     """Append the just-landed merge commit's own sha onto `bead`'s `git.commits` linkage
-    (bh-1b0rc.2, docs/design/bead-commit-linkage-contract.md). Read `base`'s tip AFTER the merge
-    lands and (when this run re-validates) AFTER `_postland_revalidate_bead` has returned —
-    that call either returns clean or raises `typer.Exit` on a red re-validation that ROLLS THE
-    MERGE BACK, so calling this only once control reaches here means a rolled-back sha is never
-    recorded. Non-fatal by construction: a metadata write must never fail a merge that already
-    landed — a failure is surfaced as a warning, never swallowed silently and never raised."""
+    (bh-1b0rc.2, docs/design/bead-commit-linkage-contract.md). The merge orchestrator calls
+    this before post-land validation on a shared base and after validation on a rewriteable base,
+    so a red shared tip retains attribution without recording a rolled-back local sha."""
     return work_merge.impl__record_merge_commit(sys.modules[__name__], bead, main, base)
 
 

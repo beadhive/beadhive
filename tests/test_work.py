@@ -5659,9 +5659,9 @@ def test_merge_adhoc_main_gate_fires_in_relaxed_and_rolls_back(hive, fakebd):
     assert fakebd.did("merge-slot", "release")
 
 
-def test_merge_adhoc_main_gate_escalates_red_kept_on_pushed_main(hive, fakebd):
+def test_merge_adhoc_main_gate_escalates_red_kept_on_pushed_main(hive, fakebd, monkeypatch):
     """relaxed: an ad-hoc bead → a SHARED (pushed) main that goes red is NOT rewritten — the merge
-    bubble stands, escalated for fix-forward; the bead is still bounced."""
+    bubble stands, is attributed and closed, and is escalated for fix-forward."""
     hive.cfg_path.write_text(
         CONFIG_YAML.replace(
             'validate_cmd: "true"',
@@ -5678,16 +5678,35 @@ def test_merge_adhoc_main_gate_escalates_red_kept_on_pushed_main(hive, fakebd):
     )  # submit green; merge-main red on main
     work.submit(bead="mr-6", hive="myrepo")
     fakebd.approve("mr-6")
+    real_checkout = worktree.clean_checkout
+
+    def inspect_linkage(entry, branch, command, **kw):
+        if kw.get("phase") == "merge":
+            assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() in _linkage(
+                fakebd, "mr-6"
+            )
+        return real_checkout(entry, branch, command, **kw)
+
+    monkeypatch.setattr(worktree, "clean_checkout", inspect_linkage)
 
     with pytest.raises(typer.Exit):
-        work.merge(bead="mr-6", hive="myrepo", rm=False, molecule=False)
+        work.merge(bead="mr-6", hive="myrepo", rm=True, molecule=False)
 
-    # pushed main NOT rewritten — the bubble stands; bead bounced, not closed
+    # Pushed main is not rewritten: attribution and closure record code that actually landed.
     assert (
         _git("log", "-1", "--format=%s", cwd=hive.main).stdout.strip() == "chore(merge): bead mr-6"
     )
-    assert fakebd.beads["mr-6"]["status"] != "closed"
-    assert fakebd.states.get("mr-6", {}).get("review") == "changes-requested"
+    merge_sha = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
+    assert merge_sha in _linkage(fakebd, "mr-6")
+    assert fakebd.beads["mr-6"]["status"] == "closed"
+    assert fakebd.states.get("mr-6", {}).get("review") != "changes-requested"
+    assert any(
+        args[:2] == ["note", "mr-6"] and "Fix forward" in " ".join(args)
+        for _actor, args in fakebd.calls
+    )
+    assert not _wt(hive, "mr-6").exists()
+    work.merge(bead="mr-6", hive="myrepo", rm=False, molecule=False)  # already landed
+    assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == merge_sha
 
 
 def test_merge_adhoc_main_gate_skipped_under_loose(hive, fakebd, monkeypatch):
