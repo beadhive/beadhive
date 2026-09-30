@@ -15,6 +15,8 @@ The lower-level git/worktree helpers these tiers compose (``_run_git``, ``is_cle
 from __future__ import annotations
 
 import os
+import re
+from bisect import bisect_left
 from pathlib import Path
 
 from beadhive_worktrees import (
@@ -27,41 +29,101 @@ from beadhive_worktrees import (
 from . import registry, worktree
 
 
+class MergePreconditionError(RuntimeError):
+    """The integration workspace cannot start a merge; no content was compared."""
+
+
+def merge_workspace_issue(main: Path, base: str, branch: str) -> str:
+    """Describe workspace changes that would make checkout or merge unsafe.
+
+    Check the index and tracked files separately from operator-owned untracked files. An
+    untracked file is safe when checkout of `base` and merge of `branch` would leave it
+    alone. Ask Git for the merge result tree: a stale branch may contain unchanged paths
+    Git will not restore, while directory rename inference may write paths absent from the
+    branch's own tree.
+    Keep this preflight ahead of validation and let Git make the final merge decision under
+    the merge slot.
+    """
+    git = lambda *args: worktree._run_git(  # noqa: E731 - all probes share the same cwd
+        ["git", "-C", str(main), *args], check=False, capture=True
+    )
+    status = git("status", "--porcelain=v1", "-z", "--untracked-files=no")
+    if status.returncode != 0:
+        return f"cannot inspect tracked changes in {main}: {(status.stderr or '').strip()}"
+    if status.stdout:
+        paths = [part for part in status.stdout.split("\0") if part]
+        return "tracked changes block the merge: " + ", ".join(paths[:10])
+
+    untracked = git("ls-files", "--others", "--exclude-standard", "-z")
+    ignored = git("ls-files", "--others", "--ignored", "--exclude-standard", "-z")
+    if untracked.returncode != 0 or ignored.returncode != 0:
+        return f"cannot inspect operator files in {main}"
+    local_paths = set((untracked.stdout or "").split("\0")) | set(
+        (ignored.stdout or "").split("\0")
+    )
+    local_paths.discard("")
+    if not local_paths:
+        return ""
+
+    base_tree = git("ls-tree", "-r", "--name-only", "-z", base)
+    merged = git("merge-tree", "--write-tree", base, branch)
+    tree = (merged.stdout or "").splitlines()[:1]
+    if (
+        base_tree.returncode != 0
+        or merged.returncode not in (0, 1)
+        or not tree
+        or not re.fullmatch(r"[0-9a-f]{40,64}", tree[0])
+    ):
+        return f"cannot inspect incoming paths for {branch} onto {base}"
+    changed = git("diff", "--name-only", "-z", base, tree[0])
+    result_tree = git("ls-tree", "-r", "--name-only", "-z", tree[0])
+    if changed.returncode != 0 or result_tree.returncode != 0:
+        return f"cannot inspect incoming paths for {branch} onto {base}"
+    result_paths = set((result_tree.stdout or "").split("\0"))
+    incoming_paths = set((base_tree.stdout or "").split("\0")) | (
+        set((changed.stdout or "").split("\0")) & result_paths
+    )
+    incoming_paths.discard("")
+    sorted_incoming = sorted(incoming_paths)
+
+    def collides(local: str) -> bool:
+        if local in incoming_paths:
+            return True
+        parts = local.split("/")
+        if any("/".join(parts[:index]) in incoming_paths for index in range(1, len(parts))):
+            return True
+        prefix = local + "/"
+        index = bisect_left(sorted_incoming, prefix)
+        return index < len(sorted_incoming) and sorted_incoming[index].startswith(prefix)
+
+    collisions = sorted(local for local in local_paths if collides(local))
+    if collisions:
+        return "untracked path collides with the incoming merge: " + ", ".join(collisions[:10])
+    return ""
+
+
 def merge_no_ff(entry, branch, base, *, name="", email="", signing_key="", sign=False, message=""):
     """Integration-boundary merge: bring `branch` onto `base` in the hive's main clone with a
     real merge commit (`--no-ff`) — history preserved, never squashed. Checks out `base` first
     (refusing if the clone is dirty, so we never merge over someone's uncommitted work). Pass
     identity/signing overrides for an agent-mode merger; omit them to inherit the clone's git
-    config (supervised). On conflict the merge is aborted, leaving the clone clean. (rc, output).
+    config (supervised). On content conflict the merge is aborted, leaving the clone clean and
+    returning (rc, output). A dirty workspace, checkout refusal, or merge failure without
+    unmerged paths raises MergePreconditionError; callers must not bounce reviewed work for it.
 
     Runs in the worktree that has `base` checked out (`clone_for_branch`): the main clone for a
     top-level land onto `main`, or the coordinator seat for a merge onto a container branch (which
     lives there, not the main clone) — see xn3o.6."""
     main = worktree.clone_for_branch(entry, base)
-    if not worktree.is_clean(main):
-        # NAME THE FILES (bh-bj219). The old text guessed: "if the churn is under .beads/, add
-        # `.beads/` to the hive's .gitignore". On nvidia-hackathon that was wrong twice over —
-        # the churn was `.beads.gate.lock` at the REPO ROOT, which no `.beads/` rule covers, and
-        # ignoring `.beads/` wholesale would also have ignored the tracked `config.yaml`. An
-        # operator following the advice would have made it worse while the real culprit stayed
-        # invisible. Listing what is actually dirty costs one git call on a path that is already
-        # failing, and removes the guessing.
-        dirty = worktree.dirty_paths(main)
-        listed = "\n".join(f"      {p}" for p in dirty[:10]) or "      (nothing reported)"
-        more = f"\n      … and {len(dirty) - 10} more" if len(dirty) > 10 else ""
-        return 1, (
-            f"main clone {main} is not clean — cannot merge.\n"
-            f"  Untracked or modified:\n{listed}{more}\n"
-            "  Commit or stash them, or add them to the hive's .gitignore. Note bd takes its "
-            "gate lock at `.beads.gate.lock` in the REPO ROOT — a `.beads/` rule does not cover "
-            "it."
-        )
+    issue = merge_workspace_issue(main, base, branch)
+    if issue:
+        raise MergePreconditionError(f"main clone {main} cannot merge: {issue}")
     if worktree.current_branch(main) != base:
         co = worktree._run_git(
             ["git", "-C", str(main), "checkout", base], check=False, capture=True
         )
         if co.returncode != 0:
-            return co.returncode, (co.stdout or "") + (co.stderr or "")
+            raise MergePreconditionError((co.stdout or "") + (co.stderr or ""))
     # Disable rerere: an integration-boundary merge must be deterministic — `_run_git` scrubs
     # GIT_CONFIG_GLOBAL so git falls back to the user's ~/.gitconfig, and a developer's rerere
     # cache could silently replay a stale resolution over a real conflict. We want a clean merge
@@ -82,9 +144,17 @@ def merge_no_ff(entry, branch, base, *, name="", email="", signing_key="", sign=
         ]
     cmd += ["merge", "--no-ff", "-m", message or f"chore(merge): {branch}", branch]
     res = worktree._run_git(cmd, check=False, capture=True)
+    output = (res.stdout or "") + (res.stderr or "")
     if res.returncode != 0:
+        unresolved = worktree._run_git(
+            ["git", "-C", str(main), "diff", "--name-only", "--diff-filter=U"],
+            check=False,
+            capture=True,
+        )
         worktree._run_git(["git", "-C", str(main), "merge", "--abort"], check=False, capture=True)
-    return res.returncode, (res.stdout or "") + (res.stderr or "")
+        if unresolved.returncode != 0 or not (unresolved.stdout or "").strip():
+            raise MergePreconditionError(output)
+    return res.returncode, output
 
 
 def _ref_sha(main: Path, ref: str) -> str:
@@ -181,7 +251,11 @@ def _try_union_tier(
         return 1, dout, "conflict"
 
     pre_union = _ref_sha(main, base)  # snapshot integration tip to roll back to on failure
-    rc, out = merge_with_union(entry, branch, base, union_globs, **idkw)
+    try:
+        rc, out = merge_with_union(entry, branch, base, union_globs, **idkw)
+    except MergePreconditionError:
+        worktree.reset_hard(target, backup)
+        raise
     if rc != 0:
         worktree.reset_hard(main, pre_union)  # union merge itself conflicted — undo partial state
         worktree.reset_hard(target, backup)
@@ -286,7 +360,11 @@ def try_merge_rebase(
             "conflict",
         )
 
-    rc2, out2 = merge_no_ff(entry, branch, base, **idkw)
+    try:
+        rc2, out2 = merge_no_ff(entry, branch, base, **idkw)
+    except MergePreconditionError:
+        worktree.reset_hard(target, backup)
+        raise
     if rc2 != 0:
         worktree.reset_hard(target, backup)  # restore the pre-rebase bead branch — never drop work
         urc, uout, uhow = _try_union_tier(

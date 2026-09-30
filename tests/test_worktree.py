@@ -2259,8 +2259,127 @@ def test_clean_checkout_missing_binary_is_completed_none_not_red(tmp_path, monke
         "none",
         "missing_binary",
     )
+    assert run["priority"]["applied"] is False
+    assert run["priority"]["mechanism"] == "unavailable"
     uses = list((repo / ".git/bh/validation/uses").glob("*.json"))
     assert len(uses) == 1
+
+
+def test_clean_checkout_missing_binary_preserves_disabled_priority_policy(tmp_path, monkeypatch):
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    cfg["work"] = {"validation_priority": {"enabled": False}}
+
+    rc = worktree.clean_checkout(entry, "main", "absent-disabled-priority-gate", cfg=cfg)
+
+    assert rc == 127
+    run = json.loads(next((repo / ".git/bh/validation/runs").glob("*/manifest.json")).read_text())
+    assert run["reason"] == "missing_binary"
+    assert run["priority"]["applied"] is False
+    assert run["priority"]["mechanism"] == "disabled"
+
+
+def test_clean_checkout_existing_relative_executable_exit_127_stays_red(tmp_path, monkeypatch):
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    executable = repo / "gate-127"
+    executable.write_text("#!/bin/sh\nexit 127\n")
+    executable.chmod(0o755)
+    _git("add", "gate-127", cwd=repo)
+    _git("commit", "-qm", "test: add relative gate", cwd=repo)
+
+    rc = worktree.clean_checkout(entry, "main", "./gate-127", cfg=cfg, bead="bh-x")
+
+    assert rc == 127
+    run = json.loads(next((repo / ".git/bh/validation/runs").glob("*/manifest.json")).read_text())
+    assert (run["lifecycle"], run["verdict"], run["reason"]) == (
+        "completed",
+        "red",
+        "command_exit",
+    )
+    assert run["priority"]["applied"] is True
+
+
+def test_clean_checkout_missing_shebang_interpreter_stays_missing(tmp_path, monkeypatch):
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    executable = repo / "gate-missing-interpreter"
+    executable.write_text("#!/definitely/no/beadhive-interpreter\nexit 0\n")
+    executable.chmod(0o755)
+    _git("add", "gate-missing-interpreter", cwd=repo)
+    _git("commit", "-qm", "test: add gate with missing interpreter", cwd=repo)
+
+    rc = worktree.clean_checkout(entry, "main", "./gate-missing-interpreter", cfg=cfg, bead="bh-x")
+
+    assert rc == 127
+    run = json.loads(next((repo / ".git/bh/validation/runs").glob("*/manifest.json")).read_text())
+    assert (run["lifecycle"], run["verdict"], run["reason"]) == (
+        "completed",
+        "none",
+        "missing_binary",
+    )
+    assert run["priority"]["applied"] is False
+
+
+def test_clean_checkout_crlf_shebang_preserves_kernel_missing_interpreter(tmp_path, monkeypatch):
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    executable = repo / "gate-crlf-shebang"
+    executable.write_bytes(b"#!/bin/sh\r\nexit 0\r\n")
+    executable.chmod(0o755)
+    _git("add", "gate-crlf-shebang", cwd=repo)
+    _git("commit", "-qm", "test: add CRLF shebang gate", cwd=repo)
+
+    rc = worktree.clean_checkout(entry, "main", "./gate-crlf-shebang", cfg=cfg, bead="bh-x")
+
+    assert rc == 127
+    run = json.loads(next((repo / ".git/bh/validation/runs").glob("*/manifest.json")).read_text())
+    assert (run["lifecycle"], run["verdict"], run["reason"]) == (
+        "completed",
+        "none",
+        "missing_binary",
+    )
+    assert run["priority"]["applied"] is False
+
+
+def test_clean_checkout_resolves_relative_launch_path_in_child_environment(tmp_path, monkeypatch):
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    executable = repo / "validation-bin" / "relative-gate"
+    executable.parent.mkdir()
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o755)
+    _git("add", "validation-bin/relative-gate", cwd=repo)
+    _git("commit", "-qm", "test: add PATH gate", cwd=repo)
+    monkeypatch.setenv("PATH", f"validation-bin{os.pathsep}{os.environ['PATH']}")
+
+    rc = worktree.clean_checkout(entry, "main", "relative-gate", cfg=cfg, bead="bh-x")
+
+    assert rc == 0
+    run = json.loads(next((repo / ".git/bh/validation/runs").glob("*/manifest.json")).read_text())
+    assert (run["lifecycle"], run["verdict"], run["reason"]) == (
+        "completed",
+        "green",
+        "command_exit",
+    )
+    assert run["priority"]["applied"] is True
+
+
+def test_clean_checkout_path_skips_missing_interpreter_and_uses_later_entry(tmp_path, monkeypatch):
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    broken = repo / "broken-bin" / "path-gate"
+    valid = repo / "valid-bin" / "path-gate"
+    broken.parent.mkdir()
+    valid.parent.mkdir()
+    broken.write_text("#!/definitely/no/beadhive-interpreter\nexit 1\n")
+    valid.write_text("#!/bin/sh\nexit 0\n")
+    broken.chmod(0o755)
+    valid.chmod(0o755)
+    _git("add", "broken-bin/path-gate", "valid-bin/path-gate", cwd=repo)
+    _git("commit", "-qm", "test: add fallback PATH gates", cwd=repo)
+    monkeypatch.setenv("PATH", f"broken-bin{os.pathsep}valid-bin{os.pathsep}{os.environ['PATH']}")
+
+    rc = worktree.clean_checkout(entry, "main", "path-gate", cfg=cfg, bead="bh-x")
+
+    assert rc == 0
+    run = json.loads(next((repo / ".git/bh/validation/runs").glob("*/manifest.json")).read_text())
+    assert (run["verdict"], run["reason"]) == ("green", "command_exit")
+    assert run["priority"]["applied"] is True
 
 
 def test_clean_checkout_keeps_complete_external_run_artifacts(tmp_path, monkeypatch):

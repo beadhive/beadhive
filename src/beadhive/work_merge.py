@@ -471,11 +471,17 @@ def impl__merge_molecule(api, cfg, epic, hive, override_reason="", override_acto
         api.typer.echo(f"✗ no container branch {mol_branch} — was {epic} kicked off?", err=True)
         raise api.typer.Exit(1)
     origin_reports = api._guard_molecule_children(epic, main)
-    if not api.worktree.is_clean(main):
-        api.typer.echo(f"✗ main clone {main} not clean — cannot land molecule", err=True)
-        raise api.typer.Exit(1)
     integration = api.config.integration_branch(cfg, entry)
     base = api._guard_molecule_land_base(entry, epic, integration)
+    api.work_logic.guard_container_refresh(
+        entry, base, integration, action=f"finish molecule {epic} into {base}"
+    )
+    issue = api.worktree.merge_workspace_issue(
+        api.worktree.clone_for_branch(entry, base), base, mol_branch
+    )
+    if issue:
+        api.typer.echo(f"✗ cannot land molecule: {issue}", err=True)
+        raise api.typer.Exit(1)
     if api.already_landed(entry, mol_branch, base):
         if override_reason:
             api.typer.echo(
@@ -555,16 +561,20 @@ def impl__merge_molecule(api, cfg, epic, hive, override_reason="", override_acto
         stale = api.worktree.base_of(entry, mol_branch, base) != pre
         prof = api.config.work_identity(cfg, entry)
         agent = prof["mode"] == "agent"
-        mrc, out = api.worktree.merge_no_ff(
-            entry,
-            mol_branch,
-            base,
-            name=prof["name"] or "" if agent else "",
-            email=prof["email"] or "" if agent else "",
-            signing_key=prof["signing_key"] or "" if agent else "",
-            sign=prof["sign"] if agent else False,
-            message=f"chore(merge): molecule {epic}",
-        )
+        try:
+            mrc, out = api.worktree.merge_no_ff(
+                entry,
+                mol_branch,
+                base,
+                name=prof["name"] or "" if agent else "",
+                email=prof["email"] or "" if agent else "",
+                signing_key=prof["signing_key"] or "" if agent else "",
+                sign=prof["sign"] if agent else False,
+                message=f"chore(merge): molecule {epic}",
+            )
+        except api.worktree.MergePreconditionError as exc:
+            api.typer.echo(f"✗ workspace precondition failed — nothing landed: {exc}", err=True)
+            raise api.typer.Exit(1) from None
         if mrc != 0:
             api.otel.count_merge_outcome({**slot_attrs, "bh.merge.how": "conflict"})
             where = api.work_logic.record_merge_conflict(
@@ -879,6 +889,21 @@ def _has_linked_landing_bubble(api, entry, branch, base, bead, bead_data):
     )
 
 
+def _has_recorded_landing_bubble(api, entry, base, bead, bead_data):
+    """Confirm a closed bead's recorded bubble even if --rm removed its branch."""
+    for sha in api.git_linkage.commits_from_data(bead_data):
+        if not api.worktree.is_merged(entry, sha, base):
+            continue
+        if any(
+            row.get("sha") == sha
+            and row.get("subject") == f"chore(merge): bead {bead}"
+            and len(row.get("parents") or []) == 2
+            for row in api.worktree.commit_rows(entry, f"{sha}^", sha)
+        ):
+            return True
+    return False
+
+
 def impl__guard_bead_clean_history(
     api, entry, branch, base, cfg, *, bead="", main=None, bead_data=None
 ):
@@ -972,19 +997,23 @@ def impl__merge_bead_no_ff(api, entry, branch, base, target, cfg, bead, main, sl
     `review=changes-requested` naming the conflicted paths), not just this stderr transcript."""
     prof = api.config.work_identity(cfg, entry)
     agent = prof["mode"] == "agent"
-    rc, out, how = api.worktree.try_merge_rebase(
-        entry,
-        branch,
-        base,
-        target,
-        name=prof["name"] or "" if agent else "",
-        email=prof["email"] or "" if agent else "",
-        signing_key=prof["signing_key"] or "" if agent else "",
-        sign=prof["sign"] if agent else False,
-        message=f"chore(merge): bead {bead}",
-        union_globs=tuple(api.config.union_globs(cfg, entry)),
-        validate_cmd=api.config.validate_cmd(cfg, entry, "union"),
-    )
+    try:
+        rc, out, how = api.worktree.try_merge_rebase(
+            entry,
+            branch,
+            base,
+            target,
+            name=prof["name"] or "" if agent else "",
+            email=prof["email"] or "" if agent else "",
+            signing_key=prof["signing_key"] or "" if agent else "",
+            sign=prof["sign"] if agent else False,
+            message=f"chore(merge): bead {bead}",
+            union_globs=tuple(api.config.union_globs(cfg, entry)),
+            validate_cmd=api.config.validate_cmd(cfg, entry, "union"),
+        )
+    except api.worktree.MergePreconditionError as exc:
+        api.typer.echo(f"✗ workspace precondition failed — nothing landed: {exc}", err=True)
+        raise api.typer.Exit(1) from None
     if rc != 0:
         api.otel.count_merge_outcome({**slot_attrs, "bh.merge.how": "conflict"})
         where = api.work_logic.record_merge_conflict(entry, branch, base, main, [bead], "merge")
@@ -1016,7 +1045,8 @@ def impl__postland_revalidate_bead(
     the COMBINATION with what's already on the tip may be red. Still holding the slot, so on red
     we reset a safe-to-rewrite tip (the private mol/<epic>, or an unpushed main) to its pre-merge
     sha and bounce the bead to changes-requested; a shared (pushed) tip is left standing and
-    fixed forward. Raises on an unrecoverable red result.
+    fixed forward. Returns a nonzero exit for red kept on a shared tip so the caller can finish
+    landed bookkeeping before reporting the failure; a rollback still raises immediately.
 
     "The COMBINATION may be red" is precisely a statement about the TREE: a merge onto a base that
     moved since the branch forked produces a tree neither parent has, the (tree, cmd_hash) lookup
@@ -1088,39 +1118,39 @@ def impl__postland_revalidate_bead(
     if not getattr(vrc, "bypassed", False):
         api.otel.count_validation(vrc == 0, {"bh.work.phase": "merge"})
     if vrc == 0:
-        return
+        return 0
     rolled = api._rollback_or_keep(entry, main, base, pre, slot_attrs)
-    api.bd_cli.routes(main).issue_set_state(
-        bead,
-        "review=changes-requested",
-        reason="combined-state red after merge — may be an interaction with "
-        "already-merged siblings; rebase on the current tip and fix",
-    )
     if rolled:
+        api.bd_cli.routes(main).issue_set_state(
+            bead,
+            "review=changes-requested",
+            reason="combined-state red after merge — may be an interaction with "
+            "already-merged siblings; rebase on the current tip and fix",
+        )
         api.typer.echo(
             f"✗ {bead} merged clean but the {base} tip is RED in combination (exit "
             f"{vrc}) — rolled {base} back to {pre[:7]} and bounced the bead to "
             "changes-requested.",
             err=True,
         )
-    else:
-        api.typer.echo(
-            f"✗✗ {bead} merged clean but {base} is RED in combination (exit {vrc}) and "
-            f"{base} is shared (pushed) so it is NOT rewritten — the merge stands. "
-            "Bounced the bead; fix forward.",
-            err=True,
-        )
-    raise api.typer.Exit(vrc)
+        raise api.typer.Exit(vrc)
+    merge_sha = api.worktree._ref_sha(main, base)
+    note = (
+        f"Post-land validation failed (exit {vrc}) after merge {merge_sha} on shared {base}; "
+        "merge stands and bead is landed. Fix forward: revert the merge or land a follow-up fix."
+    )
+    if api.bd_cli.routes(main).issue_note(bead, note).returncode != 0:
+        api.typer.echo(f"⚠ could not record post-land red alert on {bead}: {note}", err=True)
+    api.typer.echo(f"✗✗ {note}", err=True)
+    return vrc
 
 
 def impl__record_merge_commit(api, bead, main, base):
     """Append the just-landed merge commit's own sha onto `bead`'s `git.commits` linkage
-    (bh-1b0rc.2, docs/design/bead-commit-linkage-contract.md). Read `base`'s tip AFTER the merge
-    lands and (when this run re-validates) AFTER `_postland_revalidate_bead` has returned —
-    that call either returns clean or raises `typer.Exit` on a red re-validation that ROLLS THE
-    MERGE BACK, so calling this only once control reaches here means a rolled-back sha is never
-    recorded. Non-fatal by construction: a metadata write must never fail a merge that already
-    landed — a failure is surfaced as a warning, never swallowed silently and never raised."""
+    (bh-1b0rc.2, docs/design/bead-commit-linkage-contract.md). On a shared base the caller
+    records it immediately after the no-ff merge, before post-land validation; on a rewriteable
+    base it records only after validation so a rolled-back sha never enters the linkage. A
+    metadata write failure warns rather than hiding a merge that already landed."""
     try:
         merge_sha = api.worktree._ref_sha(main, base)
         if merge_sha:
@@ -1155,11 +1185,22 @@ def impl__merge_bead(api, cfg, bead, hive, rm, override_reason="", override_acto
     started = api.time.perf_counter()
     entry, main, target, branch = api.worktree.locate(cfg, hive, bead)
     bead_data = api.bd.show(bead, main)
+    if bead_data and str(bead_data.get("status")) == "closed":
+        integration = api.config.integration_branch(cfg, entry)
+        base = api._guard_bead_land_base(entry, bead, integration)
+        if str(bead_data.get("close_reason")) == "merged" and _has_recorded_landing_bubble(
+            api, entry, base, bead, bead_data
+        ):
+            api.typer.echo(f"✓ {bead} is already merged on {base}; nothing to reconcile")
+            return
     api._guard_open(bead_data, bead)
     landing_pr = api.config.work_landing(cfg, entry) == "pr"
     api._guard_bead_merge_gates(bead, main, landing_pr)
     integration = api.config.integration_branch(cfg, entry)
     base = api._guard_bead_land_base(entry, bead, integration)
+    api.work_logic.guard_container_refresh(
+        entry, base, integration, action=f"merge {bead} into {base}"
+    )
     if api._guard_bead_clean_history(
         entry,
         branch,
@@ -1204,9 +1245,15 @@ def impl__merge_bead(api, cfg, bead, hive, rm, override_reason="", override_acto
     with api.work_group.merge_slot(main, slot_attrs):
         base_before = api.worktree._ref_sha(main, base)
         how = api._merge_bead_no_ff(entry, branch, base, target, cfg, bead, main, slot_attrs)
+        # A shared tip cannot be rolled back. Persist its bead linkage before a potentially red
+        # post-land gate so a crash or red verdict cannot strand already-landed history.
+        shared_base = not api.worktree.safe_to_rewrite(main, base)
+        if shared_base:
+            api._record_merge_commit(bead, main, base)
+        postland_rc = 0
         if revalidate:
             if override_reason:
-                api._postland_revalidate_bead(
+                postland_rc = api._postland_revalidate_bead(
                     cfg,
                     entry,
                     main,
@@ -1219,12 +1266,14 @@ def impl__merge_bead(api, cfg, bead, hive, rm, override_reason="", override_acto
                     override_actor,
                 )
             else:
-                api._postland_revalidate_bead(
+                postland_rc = api._postland_revalidate_bead(
                     cfg, entry, main, base, pre, bead, slot_attrs, on_main
                 )
         _record_rebased_commits(api, bead, main, entry, branch, base_before, how)
-        api._record_merge_commit(bead, main, base)
-        api.otel.count_merge_outcome({**slot_attrs, "bh.merge.how": how})
+        if not shared_base:
+            api._record_merge_commit(bead, main, base)
+        if not postland_rc:
+            api.otel.count_merge_outcome({**slot_attrs, "bh.merge.how": how})
         try:
             closed = api.work_logic.close_merged(bead, main, "merged", data=bead_data)
             api._clear_review_label(bead, bead_data, main)
@@ -1268,6 +1317,13 @@ def impl__merge_bead(api, cfg, bead, hive, rm, override_reason="", override_acto
             err=True,
         )
         raise api.typer.Exit(1)
+    if postland_rc:
+        api.typer.echo(
+            f"✗ {bead} is closed as merged because its code is on shared {base}; "
+            "post-land validation remains red and needs a fix forward",
+            err=True,
+        )
+        raise api.typer.Exit(postland_rc)
     api.typer.echo(f"✓ merged {bead} ({branch} --no-ff → {base}){note} and closed it")
 
 

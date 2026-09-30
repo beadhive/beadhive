@@ -596,7 +596,7 @@ def _git_exclude(rel: str, base=None) -> None:
 # .beads/ stays local-only behind a .git/info/exclude block, nothing is tracked, nothing is
 # committed (bead state rides refs/dolt/data, not the working tree). FURNISHED hives
 # (furnish: full — an ownership-gated, conscious opt-in) TRACK their scaffolding in git
-# (.beads config/metadata/issues.jsonl, .claude/settings.json, CLAUDE.md/AGENTS.md hints);
+# (.beads config/metadata, .claude/settings.json, CLAUDE.md/AGENTS.md hints);
 # bd's own .beads/.gitignore keeps the local-only pieces (dolt db, locks, backups) out, and
 # host-local files live in .git/info/exclude (.ws/, .claude/settings.local.json). These
 # helpers flip a repo between the two footprints after bd-init + the installers have run.
@@ -691,8 +691,24 @@ def _ensure_stealth_exclude(base=None) -> bool:
     return True
 
 
+def _jsonl_is_authoritative(base=None) -> bool:
+    """Fail closed for a hive whose config declares JSONL as its primary store."""
+    from ruamel.yaml import YAML
+    from ruamel.yaml.error import YAMLError
+
+    base = _base(base)
+    config_file = base / ".beads/config.yaml"
+    if not config_file.exists():
+        return False
+    try:
+        config_data = YAML(typ="safe").load(config_file.read_text()) or {}
+    except (OSError, YAMLError):
+        return True
+    return not isinstance(config_data, dict) or config_data.get("no-db") is True
+
+
 def _ensure_export_exclude(base=None) -> bool:
-    """Keep bd's auto-exported `.beads/issues.jsonl` out of git in a FURNISHED hive.
+    """Keep derived `.beads/*.jsonl` exports out of git in a furnished hive.
 
     Zero-footprint hives already exclude all of `.beads/`, so this is only for the furnished
     convention, which deliberately tracks `.beads/` (onboard's `_act_footprint`). With
@@ -704,18 +720,66 @@ def _ensure_export_exclude(base=None) -> bool:
     concern and bh must not mutate a hive's tracked files to satisfy its own runtime. Returns
     True when the entry was written (False = already ignored).
 
-    Does NOT untrack a copy some hive already committed — `git rm --cached` across the fleet is
-    bh-n17d's call, not this function's. `bh doctor` reports those; see bh-ug5u."""
+    Tracked copies are removed from the index by `_untrack_export_jsonl` during furnishing."""
     base = _base(base)
-    probe = run(["git", "check-ignore", "-q", ".beads/issues.jsonl"], cwd=str(base), check=False)
-    if getattr(probe, "returncode", 1) == 0:
+    if _jsonl_is_authoritative(base):
+        return False
+    # --no-index matters for a legacy tracked export: ordinary check-ignore returns false
+    # for tracked paths even when the exclusion is already in place.
+    probes = (
+        run(
+            ["git", "check-ignore", "--no-index", "-q", ".beads/issues.jsonl"],
+            cwd=str(base),
+            check=False,
+        ),
+        run(
+            ["git", "check-ignore", "--no-index", "-q", ".beads/interactions.jsonl"],
+            cwd=str(base),
+            check=False,
+        ),
+    )
+    if all(getattr(probe, "returncode", 1) == 0 for probe in probes):
         return False
     exclude = base / ".git/info/exclude"
     exclude.parent.mkdir(parents=True, exist_ok=True)
     existing = exclude.read_text() if exclude.exists() else ""
     sep = "" if not existing or existing.endswith("\n") else "\n"
-    block = "\n# Beads auto-export snapshot (bh)\n.beads/issues.jsonl\n"
+    block = "\n# Beads JSONL exports (Dolt is authoritative)\n/.beads/*.jsonl\n"
     exclude.write_text(existing + sep + block)
+    return True
+
+
+def _untrack_export_jsonl(base=None) -> bool:
+    """Stage removal of tracked JSONL exports in a Dolt-backed furnished hive.
+
+    Keep the on-disk exports for readers. The caller commits this index change together with
+    scaffolding; the ignore rule must be installed first so `git add .beads` cannot re-add them.
+    Refuse to infer that JSONL is derived unless metadata identifies the Dolt backend: JSONL
+    can be authoritative in a no-db hive.
+    """
+    base = _base(base)
+    if _jsonl_is_authoritative(base):
+        return False
+    metadata = base / ".beads/metadata.json"
+    try:
+        if json.loads(metadata.read_text()).get("backend") != "dolt":
+            return False
+    except (OSError, ValueError, AttributeError):
+        return False
+    tracked = run(
+        ["git", "ls-files", "-z", "--", ".beads/*.jsonl"],
+        cwd=str(base),
+        check=False,
+        capture=True,
+    )
+    if tracked.returncode != 0:
+        raise RuntimeError("cannot list tracked .beads JSONL exports")
+    paths = [path for path in (tracked.stdout or "").split("\0") if path]
+    if not paths:
+        return False
+    removed = _git_locked_run(["git", "rm", "--cached", "-f", "--", *paths], base)
+    if removed.returncode != 0:
+        raise RuntimeError("cannot untrack .beads JSONL exports")
     return True
 
 

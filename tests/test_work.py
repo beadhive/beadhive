@@ -840,6 +840,8 @@ def test_claim_conflicting_container_refresh_warns_but_provisions(hive, fakebd, 
 
     err = capsys.readouterr().err
     assert "WARNING" in err and "behind" in err and "CONFLICTS" in err
+    assert "rerun `bh work assign` / `bh work claim`" in err
+    assert "do not merge upstream into the container by hand" in err
     assert _wt_of(hive, "mr-1.2").exists()
     assert worktree.is_clean(seat), "conflicted refresh merge must be aborted"
 
@@ -2691,7 +2693,10 @@ def test_later_nongreen_check_blocks_stale_green_reuse_and_records_fresh_use(
         )
         == 0
     )
-    assert executed == [["true"]]  # stale green was refused; this was not a reuse short-cut
+    # Priority wrappers may surround the configured command; one observed launch proves the
+    # stale green was refused rather than reused, and the tail proves the command stayed intact.
+    assert len(executed) == 1
+    assert executed[0][-1:] == ["true"]
 
     root = hive.main / ".git/bh/validation"
     manifests = [json.loads(path.read_text()) for path in (root / "runs").glob("*/manifest.json")]
@@ -3275,6 +3280,184 @@ def test_merge_real_conflict_fails_clean_and_restores_branch(hive, fakebd):
     assert note_calls and "shared.txt" in " ".join(note_calls[0])
 
 
+def test_merge_unrelated_untracked_file_preserves_approved_review(hive, fakebd, capsys):
+    fakebd.seed("mr-33", title="t")
+    _take_to_approved(hive, fakebd, "mr-33")
+    fakebd.states["mr-33"]["review"] = "approved"
+    branch = "wt/bead/issue/mr-33"
+    common = _git("merge-base", "main", branch, cwd=hive.main).stdout.strip()
+    merge_tree = _git("merge-tree", common, "main", branch, cwd=hive.main)
+    assert merge_tree.returncode == 0 and "<<<<<<<" not in merge_tree.stdout
+    operator_file = hive.main / "operator-scratch.txt"
+    assert not _git(
+        "ls-tree", "--name-only", branch, "--", operator_file.name, cwd=hive.main
+    ).stdout
+    operator_file.write_text("untracked operator work")
+    _git("checkout", "-qb", "operator-stale-checkout", cwd=hive.main)
+    assert _git("status", "--porcelain", "--untracked-files=all", cwd=hive.main).stdout == (
+        "?? operator-scratch.txt\n"
+    )
+    work.merge(bead="mr-33", hive="myrepo", rm=False, molecule=False)
+    assert fakebd.states["mr-33"]["review"] == "approved"
+    assert fakebd.beads["mr-33"]["status"] == "closed"
+    assert operator_file.read_text() == "untracked operator work"
+
+
+def test_merge_stale_branch_does_not_restore_deleted_untracked_path(hive, fakebd):
+    removed = hive.main / "removed.txt"
+    removed.write_text("old tracked content")
+    _git("add", "removed.txt", cwd=hive.main)
+    _git("commit", "-qm", "feat: add removable file", cwd=hive.main)
+    fakebd.seed("mr-39", title="t")
+    _take_to_approved(hive, fakebd, "mr-39")
+    fakebd.states["mr-39"]["review"] = "approved"
+    _git("rm", "removed.txt", cwd=hive.main)
+    _git("commit", "-qm", "fix: remove stale file", cwd=hive.main)
+    removed.write_text("operator replacement")
+    assert (
+        "?? removed.txt\n"
+        in _git("status", "--porcelain", "--untracked-files=all", cwd=hive.main).stdout
+    )
+
+    work.merge(bead="mr-39", hive="myrepo", rm=False, molecule=False)
+
+    assert removed.read_text() == "operator replacement"
+    assert fakebd.states["mr-39"]["review"] == "approved"
+    assert fakebd.beads["mr-39"]["status"] == "closed"
+    assert _git("show", "main:change.txt", cwd=hive.main).stdout.strip() == "feat: the change"
+
+
+@pytest.mark.parametrize("ignored", [False, True])
+def test_merge_directory_rename_refuses_actual_destination_collision(hive, fakebd, capsys, ignored):
+    _git("config", "merge.directoryRenames", "true", cwd=hive.main)
+    old = hive.main / "old"
+    old.mkdir()
+    (old / "tracked.txt").write_text("ancestor")
+    _git("add", "-A", cwd=hive.main)
+    _git("commit", "-qm", "feat: old directory", cwd=hive.main)
+
+    fakebd.seed("mr-rename", title="t")
+    work.claim(bead="mr-rename", as_="", hive="myrepo")
+    child = _wt(hive, "mr-rename")
+    (child / "old" / "added.txt").write_text("reviewed child")
+    _git("add", "-A", cwd=child)
+    _git("commit", "-qm", "feat: add child file", cwd=child)
+    work.submit(bead="mr-rename", hive="myrepo")
+    fakebd.approve("mr-rename")
+    fakebd.states["mr-rename"]["review"] = "approved"
+
+    _git("mv", "old", "new", cwd=hive.main)
+    _git("commit", "-qm", "refactor: rename directory", cwd=hive.main)
+    if ignored:
+        (hive.main / ".git" / "info" / "exclude").write_text("new/added.txt\n")
+    operator_file = hive.main / "new" / "added.txt"
+    operator_file.write_text("operator property")
+    tip = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-rename", hive="myrepo", rm=False, molecule=False)
+
+    err = capsys.readouterr().err
+    assert "untracked path collides" in err and "new/added.txt" in err
+    assert operator_file.read_text() == "operator property"
+    assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == tip
+    assert fakebd.states["mr-rename"]["review"] == "approved"
+
+
+def test_merge_colliding_untracked_file_names_path_and_keeps_review(hive, fakebd, capsys):
+    fakebd.seed("mr-34", title="t")
+    _take_to_approved(hive, fakebd, "mr-34")
+    fakebd.states["mr-34"]["review"] = "approved"
+    operator_file = hive.main / "change.txt"
+    operator_file.write_text("operator work")
+    tip = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-34", hive="myrepo", rm=False, molecule=False)
+
+    err = capsys.readouterr().err
+    assert "untracked path collides" in err and operator_file.name in err
+    assert operator_file.read_text() == "operator work"
+    assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == tip
+    assert fakebd.states["mr-34"]["review"] == "approved"
+
+
+def test_merge_ignored_colliding_file_preserves_operator_property(hive, fakebd, capsys):
+    fakebd.seed("mr-36", title="t")
+    _take_to_approved(hive, fakebd, "mr-36")
+    fakebd.states["mr-36"]["review"] = "approved"
+    (hive.main / ".git" / "info" / "exclude").write_text("change.txt\n")
+    operator_file = hive.main / "change.txt"
+    operator_file.write_text("ignored operator work")
+    assert "change.txt" not in _git("status", "--porcelain", cwd=hive.main).stdout
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-36", hive="myrepo", rm=False, molecule=False)
+
+    err = capsys.readouterr().err
+    assert "untracked path collides" in err and "change.txt" in err
+    assert operator_file.read_text() == "ignored operator work"
+    assert fakebd.states["mr-36"]["review"] == "approved"
+
+
+def test_merge_untracked_directory_colliding_with_incoming_file(hive, fakebd, capsys):
+    fakebd.seed("mr-37", title="t")
+    _take_to_approved(hive, fakebd, "mr-37")
+    operator_file = hive.main / "change.txt" / "operator.txt"
+    operator_file.parent.mkdir()
+    operator_file.write_text("operator work")
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-37", hive="myrepo", rm=False, molecule=False)
+
+    err = capsys.readouterr().err
+    assert "untracked path collides" in err and "change.txt/operator.txt" in err
+    assert operator_file.read_text() == "operator work"
+
+
+def test_merge_untracked_file_colliding_with_incoming_directory(hive, fakebd, capsys):
+    fakebd.seed("mr-38", title="t")
+    work.claim(bead="mr-38", as_="", hive="myrepo")
+    target = _wt(hive, "mr-38")
+    new_file = target / "incoming" / "child.txt"
+    new_file.parent.mkdir()
+    new_file.write_text("reviewed work")
+    _git("add", "-A", cwd=target)
+    _git("commit", "-qm", "feat: nested change", cwd=target)
+    work.submit(bead="mr-38", hive="myrepo")
+    fakebd.approve("mr-38")
+    operator_file = hive.main / "incoming"
+    operator_file.write_text("operator work")
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-38", hive="myrepo", rm=False, molecule=False)
+
+    err = capsys.readouterr().err
+    assert "untracked path collides" in err and "incoming" in err
+    assert operator_file.read_text() == "operator work"
+
+
+@pytest.mark.parametrize("staged", [False, True])
+def test_merge_tracked_change_still_refuses_without_bouncing_review(hive, fakebd, capsys, staged):
+    fakebd.seed("mr-35", title="t")
+    _take_to_approved(hive, fakebd, "mr-35")
+    fakebd.states["mr-35"]["review"] = "approved"
+    readme = hive.main / "README.md"
+    readme.write_text("operator edit")
+    if staged:
+        _git("add", "README.md", cwd=hive.main)
+    tip = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-35", hive="myrepo", rm=False, molecule=False)
+
+    err = capsys.readouterr().err
+    assert "tracked changes block the merge" in err and "README.md" in err
+    assert readme.read_text() == "operator edit"
+    assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == tip
+    assert fakebd.states["mr-35"]["review"] == "approved"
+
+
 def test_successful_merge_close_reaps_refine_and_premerge_backups(hive, fakebd):
     fakebd.seed("mr-32", title="t")
     work.claim(bead="mr-32", as_="", hive="myrepo")
@@ -3777,6 +3960,42 @@ def _land_reviewed_suffix_children(hive, fakebd, *, epic: str, start: int, count
         work.merge(bead=child, hive="myrepo", rm=False, molecule=False)
 
 
+def _append_reviewed_suffix_behind_unsafe_wrapper(
+    hive, fakebd, capsys, *, epic: str, start: int, count: int = 2
+):
+    """Construct reviewed child bubbles after proving dispatch rejects the unsafe wrapper.
+
+    Real dispatch must stop at the new refresh guard. These history-audit tests need the
+    impossible suffix topology to check diagnostics for a malformed wrapper buried below
+    otherwise attributable child integrations, so only the fixture appends it with Git.
+    """
+    branch = f"wt/bead/epic/{epic}"
+    seat = worktree.locate(config.load(), "myrepo", epic, kind="epic")[2]
+    first = f"{epic}.{start}"
+    fakebd.seed(first, title=f"suffix child {start}", parent=epic)
+    capsys.readouterr()
+    with pytest.raises(typer.Exit):
+        work.claim(bead=first, as_="dev/suffix", hive="myrepo")
+    assert "unsafe container refresh" in capsys.readouterr().err
+
+    for index in range(start, start + count):
+        child = f"{epic}.{index}"
+        if child != first:
+            fakebd.seed(child, title=f"suffix child {index}", parent=epic)
+        side = hive.wts / f"synthetic-{child}"
+        _git("worktree", "add", "--detach", str(side), branch, cwd=hive.main)
+        _commit(side, f"feat: {child}", fname=f"suffix-{index}.txt")
+        commit = _git("rev-parse", "HEAD", cwd=side).stdout.strip()
+        _git("merge", "--no-ff", commit, "-m", f"chore(merge): bead {child}", cwd=seat)
+        bubble = _git("rev-parse", "HEAD", cwd=seat).stdout.strip()
+        fakebd.beads[child].update(
+            status="closed",
+            close_reason="merged",
+            metadata={"git.commits": json.dumps([commit, bubble])},
+        )
+        fakebd.states[child] = {"review": "approved"}
+
+
 def test_epic_finish_accepts_proven_container_refresh_topology(hive, fakebd, capsys):
     """A normal lifecycle refresh crosses the moving merge-base without becoming child work."""
     epic = "mr-safe-refresh"
@@ -3807,6 +4026,74 @@ def test_epic_finish_accepts_proven_container_refresh_topology(hive, fakebd, cap
     assert fakebd.beads[epic]["status"] == "closed"
 
 
+def test_claim_rejects_noncanonical_container_refresh_before_dispatch(hive, fakebd, capsys):
+    """A hand-made refresh is caught at the next child dispatch, not only at epic finish."""
+    epic = "mr-manual-refresh"
+    fakebd.seed(epic, title="epic", issue_type="epic")
+    fakebd.states[epic] = {"kickoff": "approved"}
+    work.start(epic=epic, as_="disp/lead", hive="myrepo")
+
+    seat = _wt(hive, epic)
+    _commit(seat, "feat(mol): container-only work", fname="container-only.txt")
+    _commit(hive.main, "fix(up): upstream advance", fname="upstream-advance.txt")
+    _git(
+        "merge",
+        "--no-ff",
+        "main",
+        "-m",
+        f"chore(merge): refresh {epic} container from main (829425d9)",
+        cwd=seat,
+    )
+
+    child = f"{epic}.1"
+    fakebd.seed(child, title="first child", parent=epic)
+    with pytest.raises(typer.Exit):
+        work.claim(bead=child, as_="dev/child", hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert "unsafe container refresh" in err
+    assert "do not merge upstream into the container by hand" in err
+    assert not _wt(hive, child).exists()
+
+
+def _add_noncanonical_refresh_after_dispatch(hive, epic):
+    """Advance main and hand-merge it into an already-open container with the field-bug subject."""
+    seat = _wt(hive, epic)
+    _commit(hive.main, "fix(up): upstream advance", fname=f"{epic}-upstream.txt")
+    _git(
+        "merge",
+        "--no-ff",
+        "main",
+        "-m",
+        f"chore(merge): refresh {epic} container from main (829425d9)",
+        cwd=seat,
+    )
+
+
+def test_merge_rejects_noncanonical_container_refresh_after_child_dispatch(hive, fakebd, capsys):
+    """An already-approved child cannot land after a manual refresh corrupts its container."""
+    epic, child = "mr-late-refresh", "mr-late-refresh.1"
+    fakebd.seed(epic, title="epic", issue_type="epic")
+    fakebd.states[epic] = {"kickoff": "approved"}
+    work.start(epic=epic, as_="disp/lead", hive="myrepo")
+    _commit(_wt(hive, epic), "chore(mol): establish container", fname="container.txt")
+
+    fakebd.seed(child, title="child", parent=epic)
+    work.claim(bead=child, as_="dev/child", hive="myrepo")
+    _commit(_wt_of(hive, child), "fix(child): approved work", fname="child.txt")
+    work.submit(bead=child, as_="dev/child", hive="myrepo")
+    fakebd.resolve_review(child)
+    _add_noncanonical_refresh_after_dispatch(hive, epic)
+
+    capsys.readouterr()
+    with pytest.raises(typer.Exit):
+        work.merge(bead=child, hive="myrepo", rm=False, molecule=False)
+    err = capsys.readouterr().err
+    assert "unsafe container refresh" in err
+    assert f"merge {child} into wt/bead/epic/{epic}" in err
+    assert fakebd.beads[child]["status"] != "closed"
+
+
 @pytest.mark.parametrize(
     ("malformation", "expected"),
     [
@@ -3832,7 +4119,14 @@ def test_epic_history_rejects_malformed_container_refresh(
     _commit(child_wt, f"feat: {child}", fname="child-2.txt")
     work.submit(bead=child, as_="dev/child", hive="myrepo")
     fakebd.resolve_review(child)
-    work.merge(bead=child, hive="myrepo", rm=False, molecule=False)
+
+    capsys.readouterr()
+    with pytest.raises(typer.Exit):
+        work.merge(bead=child, hive="myrepo", rm=False, molecule=False)
+    merge_err = capsys.readouterr().err
+    assert "unsafe container refresh" in merge_err
+    assert expected in merge_err
+    assert fakebd.beads[child]["status"] != "closed"
 
     capsys.readouterr()
     work.show(bead=epic, view=["log"], json_out=True, hive="myrepo")
@@ -4148,7 +4442,7 @@ def test_epic_submit_rejects_buried_canonical_reversal_after_reviewed_suffixes(
         composed_epic=epic,
         composed_parent="mr-root",
     )
-    _land_reviewed_suffix_children(hive, fakebd, epic=epic, start=3, count=2)
+    _append_reviewed_suffix_behind_unsafe_wrapper(hive, fakebd, capsys, epic=epic, start=3, count=2)
 
     capsys.readouterr()
     work.show(bead=epic, view=["log"], json_out=True, hive="myrepo")
@@ -4204,7 +4498,7 @@ def test_buried_reversed_wrapper_reports_identity_before_parent_order(
         composed_epic=composed_epic,
         composed_parent=composed_parent,
     )
-    _land_reviewed_suffix_children(hive, fakebd, epic=epic, start=3, count=2)
+    _append_reviewed_suffix_behind_unsafe_wrapper(hive, fakebd, capsys, epic=epic, start=3, count=2)
 
     capsys.readouterr()
     work.show(bead=epic, view=["log"], json_out=True, hive="myrepo")
@@ -4244,7 +4538,7 @@ def test_buried_reversed_wrapper_rejects_invalid_reviewed_suffix(
         composed_epic=epic,
         composed_parent="mr-root",
     )
-    _land_reviewed_suffix_children(hive, fakebd, epic=epic, start=3, count=2)
+    _append_reviewed_suffix_behind_unsafe_wrapper(hive, fakebd, capsys, epic=epic, start=3, count=2)
 
     if malformation == "missing-linkage":
         fakebd.beads[f"{epic}.4"]["metadata"].pop("git.commits")
@@ -4649,8 +4943,8 @@ def test_epic_finish_rechecks_and_rejects_missing_child_linkage(hive, fakebd, ca
 def test_finish_one_shot_override_cannot_bypass_clean_target_guard(hive, fakebd):
     _land_two_bead_molecule(hive, fakebd, "mr-1")
     fakebd.beads["mr-1"]["issue_type"] = "epic"
-    dirty = hive.main / "operator-dirty.txt"
-    dirty.write_text("uncommitted")
+    dirty = hive.main / "README.md"
+    dirty.write_text(dirty.read_text() + "\nuncommitted\n")
     main_before = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
 
     with pytest.raises(typer.Exit):
@@ -4664,6 +4958,45 @@ def test_finish_one_shot_override_cannot_bypass_clean_target_guard(hive, fakebd)
     assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == main_before
     root = validation_records._validation_root(hive.main)
     assert not (root / "bypasses").exists()
+
+
+def test_finish_lands_reviewed_molecule_with_unattended_orca_scratch(hive, fakebd):
+    epic = "mr-scratch-finish"
+    _start_and_land_children(hive, fakebd, epic=epic, count=1)
+    work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+    fakebd.resolve_review(epic)
+    screenshot = hive.main / ".orca" / "drops" / "Screenshot 2026-08-10.png"
+    screenshot.parent.mkdir(parents=True)
+    screenshot.write_bytes(b"operator screenshot")
+    assert _git("diff", "--stat", cwd=hive.main).stdout == ""
+
+    work.finish(epic=epic, hive="myrepo")
+
+    assert fakebd.beads[epic]["status"] == "closed"
+    assert screenshot.read_bytes() == b"operator screenshot"
+    assert _git("log", "-1", "--format=%s", cwd=hive.main).stdout.strip() == (
+        f"chore(merge): molecule {epic}"
+    )
+
+
+def test_finish_refuses_colliding_untracked_file_without_bouncing_review(hive, fakebd, capsys):
+    epic = "mr-colliding-finish"
+    _start_and_land_children(hive, fakebd, epic=epic, count=1)
+    work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+    fakebd.resolve_review(epic)
+    review_before = fakebd.states[epic]["review"]
+    operator_file = hive.main / "child-1.txt"
+    operator_file.write_text("operator data")
+    before = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
+
+    with pytest.raises(typer.Exit):
+        work.finish(epic=epic, hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert "untracked path collides" in err and operator_file.name in err
+    assert operator_file.read_text() == "operator data"
+    assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == before
+    assert fakebd.states[epic]["review"] == review_before
 
 
 def test_epic_submit_rejects_landed_direct_child_without_integration(hive, fakebd, capsys):
@@ -5250,6 +5583,160 @@ def test_finish_lands_nested_epic_onto_workstream_then_workstream_onto_main(hive
     assert not worktree._branch_exists(hive.main, "wt/bead/epic/mr-ws")
 
 
+def test_parent_finish_accounts_for_reviewed_nested_epic_descendants(hive, fakebd, capsys):
+    """A nested epic's linked descendant bubbles attribute its full integration in the parent."""
+    parent, nested = "mr-nested-parent", "mr-nested-parent.1"
+    fakebd.seed(parent, title="parent", issue_type="epic")
+    fakebd.states[parent] = {"kickoff": "approved"}
+    fakebd.seed(nested, title="nested", issue_type="epic", parent=parent)
+    fakebd.states[nested] = {"kickoff": "approved"}
+    work.start(epic=parent, as_="disp/parent", hive="myrepo")
+    work.start(epic=nested, as_="disp/nested", hive="myrepo")
+    _land_epic_child(hive, fakebd, nested, 1)
+    work.finish(epic=nested, hive="myrepo")
+
+    capsys.readouterr()
+    work.show(bead=parent, view=["log"], json_out=True, hive="myrepo")
+    policy = json.loads(capsys.readouterr().out)["history_policy"]
+    assert policy["valid"], policy["errors"]
+    assert policy["direct_children"] == policy["integrated_children"] == 1
+
+    work.submit(bead=parent, as_="disp/parent", hive="myrepo")
+    fakebd.resolve_review(parent)
+    work.finish(epic=parent, hive="myrepo")
+    assert fakebd.beads[parent]["status"] == "closed"
+
+
+def test_parent_finish_accepts_nested_epic_landed_before_container_open(hive, fakebd, capsys):
+    """A nested molecule already in the integration base needs no duplicate parent bubble."""
+    parent, nested = "mr-prior-parent", "mr-prior-parent.1"
+    fakebd.seed(parent, title="parent", issue_type="epic")
+    fakebd.states[parent] = {"kickoff": "approved"}
+    fakebd.seed(nested, title="nested", issue_type="epic", parent=parent)
+    fakebd.states[nested] = {"kickoff": "approved"}
+    work.start(epic=nested, as_="disp/nested", hive="myrepo")
+    _land_epic_child(hive, fakebd, nested, 1)
+    work.finish(epic=nested, hive="myrepo")
+
+    # The parent container opens only after the nested molecule's land bubble reached main.
+    work.start(epic=parent, as_="disp/parent", hive="myrepo")
+    _land_epic_child(hive, fakebd, parent, 2)
+    capsys.readouterr()
+    work.show(bead=parent, view=["log"], json_out=True, hive="myrepo")
+    policy = json.loads(capsys.readouterr().out)["history_policy"]
+    assert policy["valid"], policy["errors"]
+    assert policy["direct_children"] == policy["integrated_children"] == 2
+
+    work.submit(bead=parent, as_="disp/parent", hive="myrepo")
+    fakebd.resolve_review(parent)
+    work.finish(epic=parent, hive="myrepo")
+    assert fakebd.beads[parent]["status"] == "closed"
+
+
+def test_parent_history_rejects_unlinked_commit_inside_nested_epic(hive, fakebd, capsys):
+    """Recursive descendant linkage must not bless unrelated commits inside a nested bubble."""
+    parent, nested = "mr-nested-unlinked", "mr-nested-unlinked.1"
+    fakebd.seed(parent, title="parent", issue_type="epic")
+    fakebd.states[parent] = {"kickoff": "approved"}
+    fakebd.seed(nested, title="nested", issue_type="epic", parent=parent)
+    fakebd.states[nested] = {"kickoff": "approved"}
+    work.start(epic=parent, as_="disp/parent", hive="myrepo")
+    work.start(epic=nested, as_="disp/nested", hive="myrepo")
+    _land_epic_child(hive, fakebd, nested, 1)
+
+    nested_seat = worktree.locate(config.load(), "myrepo", nested, kind="epic")[2]
+    _commit(nested_seat, "chore: unlinked nested noise", fname="unlinked.txt")
+    parent_seat = _wt(hive, parent)
+    _git(
+        "merge",
+        "--no-ff",
+        f"wt/bead/epic/{nested}",
+        "-m",
+        f"chore(merge): molecule {nested}",
+        cwd=parent_seat,
+    )
+    bubble = _git("rev-parse", "HEAD", cwd=parent_seat).stdout.strip()
+    fakebd.beads[nested].update(
+        status="closed",
+        close_reason="molecule landed",
+        metadata={"git.commits": json.dumps([bubble])},
+    )
+
+    capsys.readouterr()
+    work.show(bead=parent, view=["log"], json_out=True, hive="myrepo")
+    policy = json.loads(capsys.readouterr().out)["history_policy"]
+    assert not policy["valid"]
+    assert any("not linked" in error for error in policy["errors"]), policy["errors"]
+
+
+def test_parent_history_rejects_submitted_unapproved_nested_descendant(hive, fakebd, capsys):
+    """Submit linkage alone cannot make an unapproved nested descendant reviewed provenance."""
+    parent, nested, child = (
+        "mr-nested-pending",
+        "mr-nested-pending.1",
+        "mr-nested-pending.1.1",
+    )
+    fakebd.seed(parent, title="parent", issue_type="epic")
+    fakebd.states[parent] = {"kickoff": "approved"}
+    fakebd.seed(nested, title="nested", issue_type="epic", parent=parent)
+    fakebd.states[nested] = {"kickoff": "approved"}
+    work.start(epic=parent, as_="disp/parent", hive="myrepo")
+    work.start(epic=nested, as_="disp/nested", hive="myrepo")
+
+    fakebd.seed(child, title="pending child", parent=nested)
+    work.claim(bead=child, as_="dev/child", hive="myrepo")
+    _commit(_wt_of(hive, child), "fix(child): submitted only", fname="pending.txt")
+    work.submit(bead=child, as_="dev/child", hive="myrepo")
+    nested_seat = worktree.locate(config.load(), "myrepo", nested, kind="epic")[2]
+    _git("merge", "--ff-only", f"wt/bead/issue/{child}", cwd=nested_seat)
+
+    parent_seat = _wt(hive, parent)
+    _git(
+        "merge",
+        "--no-ff",
+        f"wt/bead/epic/{nested}",
+        "-m",
+        f"chore(merge): molecule {nested}",
+        cwd=parent_seat,
+    )
+    bubble = _git("rev-parse", "HEAD", cwd=parent_seat).stdout.strip()
+    fakebd.beads[nested].update(
+        status="closed",
+        close_reason="molecule landed",
+        metadata={"git.commits": json.dumps([bubble])},
+    )
+
+    capsys.readouterr()
+    work.show(bead=parent, view=["log"], json_out=True, hive="myrepo")
+    policy = json.loads(capsys.readouterr().out)["history_policy"]
+    assert not policy["valid"]
+    assert any("not linked" in error for error in policy["errors"]), policy["errors"]
+
+
+def test_nested_finish_rejects_noncanonical_parent_container_refresh(hive, fakebd, capsys):
+    """A nested molecule cannot finish into a parent container corrupted after its dispatch."""
+    parent, nested = "mr-parent-late-refresh", "mr-parent-late-refresh.1"
+    fakebd.seed(parent, title="parent", issue_type="epic")
+    fakebd.states[parent] = {"kickoff": "approved"}
+    fakebd.seed(nested, title="nested", issue_type="epic", parent=parent)
+    fakebd.states[nested] = {"kickoff": "approved"}
+    work.start(epic=parent, as_="disp/parent", hive="myrepo")
+    _commit(_wt(hive, parent), "chore(mol): establish parent", fname="parent.txt")
+    work.start(epic=nested, as_="disp/nested", hive="myrepo")
+    _land_epic_child(hive, fakebd, nested, 1)
+    work.submit(bead=nested, as_="disp/nested", hive="myrepo")
+    fakebd.resolve_review(nested)
+    _add_noncanonical_refresh_after_dispatch(hive, parent)
+
+    capsys.readouterr()
+    with pytest.raises(typer.Exit):
+        work.finish(epic=nested, hive="myrepo")
+    err = capsys.readouterr().err
+    assert "unsafe container refresh" in err
+    assert f"finish molecule {nested} into wt/bead/epic/{parent}" in err
+    assert fakebd.beads[nested]["status"] != "closed"
+
+
 def test_finish_tears_down_coordinator_seat(hive, fakebd):
     """finish tears the seat down after the land: the coordinator worktree is removed AND the
     container branch wt/bead/epic/<epic> is deleted (mirrors merge --rm)."""
@@ -5631,9 +6118,9 @@ def test_merge_adhoc_main_gate_fires_in_relaxed_and_rolls_back(hive, fakebd):
     assert fakebd.did("merge-slot", "release")
 
 
-def test_merge_adhoc_main_gate_escalates_red_kept_on_pushed_main(hive, fakebd):
+def test_merge_adhoc_main_gate_escalates_red_kept_on_pushed_main(hive, fakebd, monkeypatch):
     """relaxed: an ad-hoc bead → a SHARED (pushed) main that goes red is NOT rewritten — the merge
-    bubble stands, escalated for fix-forward; the bead is still bounced."""
+    bubble stands, is attributed and closed, and is escalated for fix-forward."""
     hive.cfg_path.write_text(
         CONFIG_YAML.replace(
             'validate_cmd: "true"',
@@ -5650,16 +6137,35 @@ def test_merge_adhoc_main_gate_escalates_red_kept_on_pushed_main(hive, fakebd):
     )  # submit green; merge-main red on main
     work.submit(bead="mr-6", hive="myrepo")
     fakebd.approve("mr-6")
+    real_checkout = worktree.clean_checkout
+
+    def inspect_linkage(entry, branch, command, **kw):
+        if kw.get("phase") == "merge":
+            assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() in _linkage(
+                fakebd, "mr-6"
+            )
+        return real_checkout(entry, branch, command, **kw)
+
+    monkeypatch.setattr(worktree, "clean_checkout", inspect_linkage)
 
     with pytest.raises(typer.Exit):
-        work.merge(bead="mr-6", hive="myrepo", rm=False, molecule=False)
+        work.merge(bead="mr-6", hive="myrepo", rm=True, molecule=False)
 
-    # pushed main NOT rewritten — the bubble stands; bead bounced, not closed
+    # Pushed main is not rewritten: attribution and closure record code that actually landed.
     assert (
         _git("log", "-1", "--format=%s", cwd=hive.main).stdout.strip() == "chore(merge): bead mr-6"
     )
-    assert fakebd.beads["mr-6"]["status"] != "closed"
-    assert fakebd.states.get("mr-6", {}).get("review") == "changes-requested"
+    merge_sha = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
+    assert merge_sha in _linkage(fakebd, "mr-6")
+    assert fakebd.beads["mr-6"]["status"] == "closed"
+    assert fakebd.states.get("mr-6", {}).get("review") != "changes-requested"
+    assert any(
+        args[:2] == ["note", "mr-6"] and "Fix forward" in " ".join(args)
+        for _actor, args in fakebd.calls
+    )
+    assert not _wt(hive, "mr-6").exists()
+    work.merge(bead="mr-6", hive="myrepo", rm=False, molecule=False)  # already landed
+    assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == merge_sha
 
 
 def test_merge_adhoc_main_gate_skipped_under_loose(hive, fakebd, monkeypatch):
@@ -6345,6 +6851,32 @@ def test_merge_group_empty_batch_gives_actionable_wrong_branch_hint(hive, fakebd
     assert fakebd.beads["mr-1.1"]["status"] != "closed"  # nothing landed / closed
 
 
+def test_merge_group_rejects_noncanonical_container_refresh_after_dispatch(hive, fakebd, capsys):
+    """A dispatched batch rechecks its destination container immediately before landing."""
+    epic = "mr-batch-late-refresh"
+    members = [f"{epic}.1", f"{epic}.2"]
+    fakebd.seed(epic, title="epic", issue_type="epic")
+    fakebd.states[epic] = {"kickoff": "approved"}
+    work.start(epic=epic, as_="disp/lead", hive="myrepo")
+    _commit(_wt(hive, epic), "chore(mol): establish container", fname="container.txt")
+    for member in members:
+        fakebd.seed(member, title=member, parent=epic, labels=["batch:late-refresh"])
+    work.claim(bead="", as_="dev/group", group=",".join(members), hive="myrepo")
+    batch = _batch_wt(hive, "late-refresh")
+    _commit(batch, "fix(batch): approved work", fname="batch.txt")
+    work.submit(bead="", group=",".join(members), as_="dev/group", hive="myrepo")
+    fakebd.resolve_review(members[0])
+    _add_noncanonical_refresh_after_dispatch(hive, epic)
+
+    capsys.readouterr()
+    with pytest.raises(typer.Exit):
+        work.merge(bead="", group=",".join(members), hive="myrepo")
+    err = capsys.readouterr().err
+    assert "unsafe container refresh" in err
+    assert f"merge batch late-refresh into wt/bead/epic/{epic}" in err
+    assert all(fakebd.beads[member]["status"] != "closed" for member in members)
+
+
 def test_claim_collapse_preserves_existing_planner_batch_label(hive, fakebd):
     """The stamping is read-only w.r.t. existing planner labels: a child the planner already
     batched keeps its own label and is not re-stamped with batch:<epic>."""
@@ -6510,6 +7042,42 @@ def test_merge_group_lands_one_bubble_with_per_bead_commits_and_closes_all(hive,
     assert fakebd.did("close", "mr-1.2", "--reason", "merged in batch samefile")
     assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == main_before
     assert fakebd.did("merge-slot", "acquire") and fakebd.did("merge-slot", "release")
+
+
+def test_merge_group_workspace_precondition_preserves_both_verdicts(hive, fakebd, capsys):
+    _submit_and_approve_batch(hive, fakebd)
+    members = ("mr-1.1", "mr-1.2")
+    for member in members:
+        fakebd.states[member]["review"] = "approved"
+    base = "wt/bead/epic/mr-1"
+    before = _git("rev-parse", base, cwd=hive.main).stdout.strip()
+    # This collides with a file the batch will add, so Git must refuse regardless of how
+    # unrelated untracked scratch is classified by the merge cleanliness policy.
+    operator_file = hive.main / "a.txt"
+    operator_file.write_text("operator work")
+    workspace_status = _git("status", "--porcelain", "--untracked-files=all", cwd=hive.main).stdout
+    operator_bytes = operator_file.read_bytes()
+    calls_before = len(fakebd.calls)
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="", group=",".join(members), hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert "aborted, nothing landed" in err and "conflict" not in err
+    assert all(fakebd.states[m]["review"] == "approved" for m in members)
+    assert not any(
+        args[0] in ("note", "set-state") and len(args) > 1 and args[1] in members
+        for _actor, args in fakebd.calls[calls_before:]
+    )
+    assert _git("rev-parse", base, cwd=hive.main).stdout.strip() == before
+    assert (
+        _git("status", "--porcelain", "--untracked-files=all", cwd=hive.main).stdout
+        == workspace_status
+    )
+    assert operator_file.read_bytes() == operator_bytes
+    operator_file.unlink()
+    work.merge(bead="", group=",".join(members), hive="myrepo")
+    assert all(fakebd.beads[m]["status"] == "closed" for m in members)
 
 
 def test_merge_group_closes_members_as_assignee_without_needing_force(hive, fakebd):

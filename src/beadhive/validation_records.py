@@ -189,6 +189,7 @@ def begin_run(
     owner_start: str | None = None,
     artifact_root_config: object = None,
     admission: dict | None = None,
+    priority: dict | None = None,
 ) -> dict | None:
     """Allocate an independent running record using mkdir as the atomic claim."""
     root = _validation_root(hive, create=True)
@@ -249,6 +250,7 @@ def begin_run(
             }
             if isinstance(admission, dict)
             else None,
+            "priority": dict(priority) if isinstance(priority, dict) else None,
             "artifacts": artifacts,
         }
         try:
@@ -318,6 +320,20 @@ def attach_summary(hive: str | Path, run_id: str, summary: dict) -> dict | None:
     if current is None or root is None:
         return None
     current["summary"] = summary
+    try:
+        _write_manifest(root / "runs" / run_id / "manifest.json", current)
+    except OSError:
+        return None
+    return current
+
+
+def attach_priority(hive: str | Path, run_id: str, priority: dict) -> dict | None:
+    """Replace the planned scheduling policy with the policy used at the execution boundary."""
+    current = read_run(hive, run_id)
+    root = _validation_root(hive)
+    if current is None or root is None:
+        return None
+    current["priority"] = dict(priority)
     try:
         _write_manifest(root / "runs" / run_id / "manifest.json", current)
     except OSError:

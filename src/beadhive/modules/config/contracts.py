@@ -702,6 +702,39 @@ class AttestConfig(_Section):
         return v
 
 
+class ValidationPriorityConfig(_Section):
+    """Best-effort host scheduling controls for validation subprocesses."""
+
+    enabled: bool = Field(
+        True,
+        description=(
+            "Apply reduced CPU and I/O scheduling priority when host facilities are available. "
+            "BH_VALIDATION_PRIORITY temporarily overrides this setting."
+        ),
+    )
+    nice: int = Field(
+        10,
+        ge=0,
+        le=19,
+        description="Process nice level. Only non-negative values are accepted.",
+    )
+    ionice_class: Literal[2, 3] = Field(
+        2,
+        description=(
+            "Linux I/O scheduling class: 2 is best-effort; 3 is idle. "
+            "Realtime class 1 is intentionally rejected."
+        ),
+    )
+    ionice_priority: int = Field(
+        7,
+        ge=0,
+        le=7,
+        description=(
+            "Best-effort I/O priority from 0 (highest) to 7 (lowest); ignored for idle class 3."
+        ),
+    )
+
+
 class WorkConfig(_Section):
     """Integration-plane driver (`bh work`) settings — drives a bead assigned -> merged."""
 
@@ -723,6 +756,13 @@ class WorkConfig(_Section):
         description=(
             "Host-wide concurrent validation capacity. One is the safe default; zero disables "
             "admission. BH_VALIDATION_SLOTS temporarily overrides this host-local value."
+        ),
+    )
+    validation_priority: ValidationPriorityConfig = Field(
+        default_factory=ValidationPriorityConfig,
+        description=(
+            "Host scheduling policy for validation children: nice/ionice and a weighted user "
+            "systemd scope when available."
         ),
     )
     validation_protocol: Literal["none", "beadhive-validation-result/v1"] = Field(

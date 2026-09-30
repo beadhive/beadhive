@@ -129,6 +129,54 @@ def test_the_exported_file_cannot_be_staged_after_exclusion(repo):
     assert "issues.jsonl" not in staged
 
 
+def test_furnished_dolt_hive_untracks_legacy_exports_without_deleting_them(repo):
+    """A local exclude cannot hide files already in Git's index."""
+    beads = repo / ".beads"
+    (beads / "metadata.json").write_text('{"backend":"dolt"}\n')
+    for name in ("issues.jsonl", "interactions.jsonl"):
+        (beads / name).write_text('{"id":"old"}\n')
+    _git("add", "-f", ".beads", cwd=repo)
+    _git(
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-qm",
+        "init",
+        cwd=repo,
+    )
+    (beads / "issues.jsonl").write_text('{"id":"new"}\n')
+    hive._ensure_export_exclude(repo)
+
+    assert hive._untrack_export_jsonl(repo) is True
+    assert all((beads / name).exists() for name in ("issues.jsonl", "interactions.jsonl"))
+    _git("add", ".beads", cwd=repo)
+    staged = subprocess.run(
+        ["git", "diff", "--cached", "--name-status"], cwd=str(repo), capture_output=True, text=True
+    ).stdout
+    assert "D\t.beads/issues.jsonl" in staged
+    assert "D\t.beads/interactions.jsonl" in staged
+    assert hive._untrack_export_jsonl(repo) is False
+
+
+def test_jsonl_only_hive_keeps_its_authoritative_file(repo):
+    (repo / ".beads/config.yaml").write_text("no-db: true\n")
+    (repo / ".beads/issues.jsonl").write_text('{"id":"source"}\n')
+    assert hive._ensure_export_exclude(repo) is False
+    assert hive._untrack_export_jsonl(repo) is False
+    _git("add", ".beads", cwd=repo)
+    assert (
+        "issues.jsonl"
+        in subprocess.run(
+            ["git", "diff", "--cached", "--name-only"],
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+        ).stdout
+    )
+
+
 def test_zero_footprint_hive_needs_no_separate_exclude(repo, monkeypatch):
     """Zero-footprint already excludes all of `.beads/`, so `_configure_auto_export` must not
     write a redundant entry — the furnished branch is the only one that needs it."""
