@@ -3275,15 +3275,23 @@ def test_merge_real_conflict_fails_clean_and_restores_branch(hive, fakebd):
     assert note_calls and "shared.txt" in " ".join(note_calls[0])
 
 
-def test_merge_untracked_collision_preserves_approved_review(hive, fakebd, capsys):
+def test_merge_unrelated_untracked_file_preserves_approved_review(hive, fakebd, capsys):
     fakebd.seed("mr-33", title="t")
     _take_to_approved(hive, fakebd, "mr-33")
     fakebd.states["mr-33"]["review"] = "approved"
     branch = "wt/bead/issue/mr-33"
     common = _git("merge-base", "main", branch, cwd=hive.main).stdout.strip()
-    assert "<<<<<<<" not in _git("merge-tree", common, "main", branch, cwd=hive.main).stdout
+    merge_tree = _git("merge-tree", common, "main", branch, cwd=hive.main)
+    assert merge_tree.returncode == 0 and "<<<<<<<" not in merge_tree.stdout
     tip = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
-    (hive.main / "change.txt").write_text("untracked operator work")
+    operator_file = hive.main / "operator-scratch.txt"
+    assert not _git(
+        "ls-tree", "--name-only", branch, "--", operator_file.name, cwd=hive.main
+    ).stdout
+    operator_file.write_text("untracked operator work")
+    assert _git("status", "--porcelain", "--untracked-files=all", cwd=hive.main).stdout == (
+        "?? operator-scratch.txt\n"
+    )
     calls_before = len(fakebd.calls)
 
     with pytest.raises(typer.Exit):
@@ -3298,7 +3306,7 @@ def test_merge_untracked_collision_preserves_approved_review(hive, fakebd, capsy
     )
     assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == tip
 
-    (hive.main / "change.txt").unlink()
+    operator_file.unlink()
     work.merge(bead="mr-33", hive="myrepo", rm=False, molecule=False)
     assert fakebd.beads["mr-33"]["status"] == "closed"
 
@@ -6568,7 +6576,10 @@ def test_merge_group_workspace_precondition_preserves_both_verdicts(hive, fakebd
     before = _git("rev-parse", base, cwd=hive.main).stdout.strip()
     # This collides with a file the batch will add, so Git must refuse regardless of how
     # unrelated untracked scratch is classified by the merge cleanliness policy.
-    (hive.main / "a.txt").write_text("operator work")
+    operator_file = hive.main / "a.txt"
+    operator_file.write_text("operator work")
+    workspace_status = _git("status", "--porcelain", "--untracked-files=all", cwd=hive.main).stdout
+    operator_bytes = operator_file.read_bytes()
     calls_before = len(fakebd.calls)
 
     with pytest.raises(typer.Exit):
@@ -6582,7 +6593,12 @@ def test_merge_group_workspace_precondition_preserves_both_verdicts(hive, fakebd
         for _actor, args in fakebd.calls[calls_before:]
     )
     assert _git("rev-parse", base, cwd=hive.main).stdout.strip() == before
-    (hive.main / "a.txt").unlink()
+    assert (
+        _git("status", "--porcelain", "--untracked-files=all", cwd=hive.main).stdout
+        == workspace_status
+    )
+    assert operator_file.read_bytes() == operator_bytes
+    operator_file.unlink()
     work.merge(bead="", group=",".join(members), hive="myrepo")
     assert all(fakebd.beads[m]["status"] == "closed" for m in members)
 
