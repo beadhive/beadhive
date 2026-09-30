@@ -796,6 +796,9 @@ def _impl_clean_checkout_unadmitted(
         head_out = getattr(head, "stdout", "") or ""  # tolerate faked run() results without stdout
         validated_sha = head_out.strip() if head.returncode == 0 and head_out.strip() else sha
         tree = validation_ledger.tree_of(entry, validated_sha)
+        validation_argv, priority_policy = validation_admission.priority_command(
+            cfg, shlex.split(cmd)
+        )
         run_record = validation_records.begin_run(
             main,
             bead=bead,
@@ -809,6 +812,7 @@ def _impl_clean_checkout_unadmitted(
             owner_start=_pid_start(os.getpid()),
             artifact_root_config=artifact_root_config,
             admission=_permit_record(permit),
+            priority=priority_policy,
         )
         # From this point the run manifest is authoritative.  Remove the 0.15.1 worktree-keyed
         # compatibility marker; the run-id active pointer is sufficient for liveness/reaping.
@@ -878,7 +882,7 @@ def _impl_clean_checkout_unadmitted(
                 child_env[validation_records.PROTOCOL_RESULT_ENV] = str(protocol_path)
             try:
                 res = run(
-                    shlex.split(cmd),
+                    validation_argv,
                     cwd=str(tmp),
                     check=False,
                     env=child_env,

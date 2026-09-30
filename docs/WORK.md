@@ -294,6 +294,7 @@ than early — the safe direction. `bh-gj0v9.2` owns classifying that as defect 
 work:
   validate_cmd: "just check"     # default validation for any boundary without an override
   validation_slots: 1             # host-wide uniform gate capacity; 0 disables admission
+  validation_priority: true       # lower validation CPU/I/O priority when supported
   validation: relaxed            # merge re-test depth: relaxed | conservative | loose (see below)
   validate:                      # optional per-boundary overrides (fall back to validate_cmd).
                                  # a `<phase>-main` key wins when the op targets the integration branch.
@@ -330,6 +331,12 @@ work:
 change it. `BH_VALIDATION_SLOTS` overrides the configured value for one invocation. See
 [WORKTREES.md](WORKTREES.md#host-wide-admission-and-duplicate-coalescing) for safe tuning,
 coalescing, xdist fan-out, and the separate Dolt fixture semaphore.
+
+`work.validation_priority` is host-owned and defaults to enabled. Validation commands run under
+`nice -n 10` and `ionice -c2 -n7` when those utilities are available; an active user systemd
+manager additionally runs them in a scope with reduced CPU and I/O weights. Set
+`BH_VALIDATION_PRIORITY=false` for an emergency per-invocation override. The run manifest records
+which scheduling controls were applied.
 
 ### Emergency validation bypass
 

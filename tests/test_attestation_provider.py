@@ -18,11 +18,20 @@ directory and reads what the hive's own command left there.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
 
-from beadhive import config_schema, host, test_report, triage_store, validation_ledger, worktree
+from beadhive import (
+    config_schema,
+    host,
+    test_report,
+    triage_store,
+    validation_admission,
+    validation_ledger,
+    worktree,
+)
 from harness.validation_state import runs as validation_runs
 
 # A pytest-shaped JUnit report claiming a clean sweep. Deliberately all-green: it is the payload
@@ -242,6 +251,13 @@ def test_bh_never_invokes_a_test_runner(tmp_path, monkeypatch):
     framework probe, no decision about HOW tests run — `validate_cmd` is a pipeline (`just check`
     is lint + lint-md + license-check + test), so anything that owned the run would drop legs."""
     entry, _repo = _hive(tmp_path, monkeypatch)
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+    monkeypatch.setattr(
+        validation_admission.shutil,
+        "which",
+        lambda name: f"/usr/bin/{name}" if name in {"nice", "ionice"} else None,
+    )
     spawns = []
 
     def _fake_run(cmd, **kw):
@@ -252,8 +268,13 @@ def test_bh_never_invokes_a_test_runner(tmp_path, monkeypatch):
     worktree.clean_checkout(entry, "main", "just check")
 
     ((argv, kw),) = [(c, k) for c, k in spawns if c[:1] != ["git"]]
-    assert argv == ["just", "check"], "bh altered the hive's validation command"
+    assert argv[-2:] == ["just", "check"], "bh altered the hive's validation command"
     assert kw["env"][test_report.ENV_VAR]
+    manifests = list((_repo / ".git/bh/validation/runs").glob("*/manifest.json"))
+    assert len(manifests) == 1
+    priority = json.loads(manifests[0].read_text())["priority"]
+    assert priority["enabled"] is True
+    assert priority["mechanism"] == "nice+ionice"
     # …and the provider module itself cannot spawn anything: it imports no process seam at all.
     assert not [n for n in ("subprocess", "os", "run") if hasattr(test_report, n)]
 

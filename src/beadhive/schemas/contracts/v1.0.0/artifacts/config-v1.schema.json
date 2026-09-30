@@ -2231,6 +2231,12 @@
           "title": "Validation Bypass",
           "type": "boolean"
         },
+        "validation_priority": {
+          "default": true,
+          "description": "Lower validation process priority with nice/ionice and a weighted user systemd scope when available. BH_VALIDATION_PRIORITY temporarily overrides this setting.",
+          "title": "Validation Priority",
+          "type": "boolean"
+        },
         "validation_protocol": {
           "default": "none",
           "description": "Explicit opt-in typed runner result protocol. v1 exports BH_VALIDATION_RESULT_PATH; absent/invalid output remains ordinary process semantics.",

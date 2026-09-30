@@ -2,12 +2,109 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 import time
 
 import pytest
 
 from beadhive import validation_admission, work_submission, worktree_verify
 from harness.processes import process_context
+
+
+def test_priority_command_defaults_on_and_applies_nice_ionice_to_child(monkeypatch):
+    monkeypatch.delenv("BH_VALIDATION_PRIORITY", raising=False)
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+    monkeypatch.setattr(
+        validation_admission.shutil,
+        "which",
+        lambda name: f"/usr/bin/{name}" if name in {"nice", "ionice"} else None,
+    )
+
+    argv, policy = validation_admission.priority_command(
+        {},
+        [
+            sys.executable,
+            "-c",
+            "import os; print(os.getpriority(os.PRIO_PROCESS, 0))",
+        ],
+    )
+    result = subprocess.run(argv, capture_output=True, text=True, check=True)
+
+    assert result.stdout.strip() == "10"
+    assert policy["enabled"] is True
+    assert policy["applied"] is True
+    assert policy["mechanism"] == "nice+ionice"
+
+
+def test_priority_command_supports_emergency_disable_and_graceful_degrade(monkeypatch, tmp_path):
+    command = ["gate"]
+    monkeypatch.setattr(validation_admission.shutil, "which", lambda _name: None)
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+
+    monkeypatch.setenv("BH_VALIDATION_PRIORITY", "false")
+    disabled_argv, disabled = validation_admission.priority_command({}, command)
+    assert disabled_argv == command
+    assert disabled["mechanism"] == "disabled"
+    assert disabled["applied"] is False
+
+    monkeypatch.delenv("BH_VALIDATION_PRIORITY")
+    unavailable_argv, unavailable = validation_admission.priority_command({}, command)
+    assert unavailable_argv == command
+    assert unavailable["mechanism"] == "unavailable"
+    assert unavailable["enabled"] is True
+
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    (runtime / "bus").touch()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.setattr(
+        validation_admission.shutil,
+        "which",
+        lambda name: f"/usr/bin/{name}" if name in {"nice", "ionice", "systemd-run"} else None,
+    )
+    monkeypatch.setattr(
+        validation_admission.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1),
+    )
+    fallback_argv, fallback = validation_admission.priority_command({}, command)
+    assert fallback_argv[-1:] == command
+    assert fallback["mechanism"] == "nice+ionice"
+
+
+def test_priority_command_adds_user_systemd_scope_when_bus_is_available(monkeypatch, tmp_path):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    (runtime / "bus").touch()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+    monkeypatch.delenv("BH_VALIDATION_PRIORITY", raising=False)
+    monkeypatch.setattr(
+        validation_admission.shutil,
+        "which",
+        lambda name: f"/usr/bin/{name}" if name in {"nice", "ionice", "systemd-run"} else None,
+    )
+    monkeypatch.setattr(
+        validation_admission.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0),
+    )
+
+    argv, policy = validation_admission.priority_command({}, ["gate"])
+
+    assert argv[:7] == [
+        "/usr/bin/systemd-run",
+        "--user",
+        "--scope",
+        "--quiet",
+        "--property=CPUWeight=20",
+        "--property=IOWeight=20",
+        "--",
+    ]
+    assert policy["mechanism"] == "systemd-user-scope+nice+ionice"
 
 
 def _hold(root, entered, release):

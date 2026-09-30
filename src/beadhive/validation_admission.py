@@ -6,6 +6,8 @@ import contextlib
 import fcntl
 import hashlib
 import os
+import shutil
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,6 +45,98 @@ def configured_slots(cfg: dict, entry=None) -> int:
     if value < 0:
         raise ValueError("validation slots must be a non-negative integer")
     return value
+
+
+def priority_command(cfg: dict, command: list[str]) -> tuple[list[str], dict]:
+    """Return the validation launcher and an auditable summary of its scheduling policy.
+
+    The controls are best-effort.  `BH_VALIDATION_PRIORITY` is the host emergency override;
+    otherwise the host-level `work.validation_priority` setting defaults to enabled.
+    """
+    work = cfg.get("work") if isinstance(cfg, dict) else None
+    enabled: object = work.get("validation_priority", True) if isinstance(work, dict) else True
+    override = os.environ.get("BH_VALIDATION_PRIORITY")
+    if override is not None:
+        enabled = override.strip().lower() not in {"0", "false", "no", "off"}
+    enabled = enabled is not False and str(enabled).strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+        "none",
+        "",
+    }
+    policy = {
+        "enabled": enabled,
+        "applied": False,
+        "mechanism": "disabled" if not enabled else "unavailable",
+        "nice": 10,
+        "ionice_class": 2,
+        "ionice_priority": 7,
+        "cpu_weight": 20,
+        "io_weight": 20,
+    }
+    if not enabled:
+        return command, policy
+
+    nice = shutil.which("nice")
+    ionice = shutil.which("ionice")
+    launcher = list(command)
+    layers = []
+    if nice:
+        launcher = [nice, "-n", "10", *launcher]
+        layers.append("nice")
+    if ionice:
+        launcher = [ionice, "-c2", "-n7", *launcher]
+        layers.append("ionice")
+
+    # A user manager is often absent in CI and containers even when systemd-run is installed.
+    # Probe only local session evidence and keep the command path non-blocking.
+    systemd_run = shutil.which("systemd-run")
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    bus_address = os.environ.get("DBUS_SESSION_BUS_ADDRESS", "")
+    bus_available = bool(
+        (runtime and (Path(runtime) / "bus").exists()) or bus_address.startswith("unix:path=")
+    )
+    scope_available = False
+    if systemd_run and bus_available:
+        try:
+            probe = subprocess.run(
+                [
+                    systemd_run,
+                    "--user",
+                    "--scope",
+                    "--quiet",
+                    "--property=CPUWeight=20",
+                    "--property=IOWeight=20",
+                    "--",
+                    "/usr/bin/true",
+                ],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                check=False,
+                timeout=2,
+            )
+            scope_available = probe.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            scope_available = False
+    if scope_available:
+        launcher = [
+            systemd_run,
+            "--user",
+            "--scope",
+            "--quiet",
+            "--property=CPUWeight=20",
+            "--property=IOWeight=20",
+            "--",
+            *launcher,
+        ]
+        layers.insert(0, "systemd-user-scope")
+
+    if layers:
+        policy["applied"] = True
+        policy["mechanism"] = "+".join(layers)
+    return launcher, policy
 
 
 def _attributes(entry, phase: str) -> dict[str, str]:

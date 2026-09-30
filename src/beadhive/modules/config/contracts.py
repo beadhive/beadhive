@@ -725,6 +725,13 @@ class WorkConfig(_Section):
             "admission. BH_VALIDATION_SLOTS temporarily overrides this host-local value."
         ),
     )
+    validation_priority: bool = Field(
+        True,
+        description=(
+            "Lower validation process priority with nice/ionice and a weighted user systemd "
+            "scope when available. BH_VALIDATION_PRIORITY temporarily overrides this setting."
+        ),
+    )
     validation_protocol: Literal["none", "beadhive-validation-result/v1"] = Field(
         "none",
         description=(
