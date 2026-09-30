@@ -35,7 +35,8 @@ The canonical full gate runs only after committing a stable final tree.
 ## Provisioned custody and transport
 
 The supported Linux server deployment uses an operator-owned bare repository, its copied
-guard/broker snapshots and a pinned pure Python YAML parser/schema evaluator, a separate operator checkout and private key, and a
+guard/broker snapshots and a pinned pure Python YAML parser/schema evaluator, a separate operator
+checkout and private key, and a
 fixed Unix socket broker. Operator policy pins guard/broker bytes, Python, Git,
 OpenSSH executables and server PATH. Clients compare installed bytes to that policy,
 independent of the client's checkout path. Hosted Git enforcement is not yet proven.

@@ -18,11 +18,13 @@ The carrier is a parentless SSH-signed commit with exactly `heartbeat.json`, at
 compare-and-swap against the observed remote SHA. Replacing an existing ref requires
 matching current operator authority and a new signature verified to its approved
 fingerprint. A revoked incarnation's old signature need not remain trusted to let
-the authorized replacement publish. Unknown predecessor signatures, or known D16 signatures on ungranted epoch or
+the authorized replacement publish. Unknown predecessor signatures, or known D16 signatures on
+ungranted epoch or
 incarnation metadata, cannot establish an epoch/sequence floor. The authoritative
 accepted receipt sets that floor; attacker-chosen huge values do not advance it. Replacement
 requires a current trusted authority snapshot and verifies the new signer against
-that authority; a local authority file alone cannot authorize replacing a beat. Verified predecessor records enforce sequence
+that authority; a local authority file alone cannot authorize replacing a beat. Verified
+predecessor records enforce sequence
 monotonicity; incarnation/key/instance changes require an epoch advance. Repeated
 beats replace the ref;
 its reachable history has one commit. No HQ main commit, index edit, ordinary
@@ -112,7 +114,8 @@ age basis and liveness source. `sender-diagnostic` age remains visible when curr
 authority/observer receipts are unavailable; it never sets fresh or eligible. A
 signed record provably expired by sender TTL is stale even without authoritative
 observer state. Only `trusted-observer` age can establish bounded observation
-freshness, which remains distinct from admission. Mtime fallback is only for a legacy host with no heartbeat, labeled
+freshness, which remains distinct from admission. Mtime fallback is only for a legacy host with no
+heartbeat, labeled
 `legacy-mtime`. A frame without a heartbeat is stale. A present invalid heartbeat
 cannot become live by touching the manifest. Network uncertainty cannot turn
 existing heartbeat evidence into a fresh mtime fallback.
