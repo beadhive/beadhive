@@ -186,12 +186,16 @@ def verify_bh(root: Path, ref: str) -> str:
     _version(expected, source=f"{ref}: project version")
     commit = subprocess.run(
         ["git", "-C", str(root), "rev-parse", "--verify", f"{ref}^{{commit}}"],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout.strip()
     url = f"git+file://{root}?rev={commit}#bh"
     built = subprocess.run(
         ["nix", "build", "--no-link", "--print-out-paths", url],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     paths = built.stdout.strip().splitlines()
     if len(paths) != 1:
@@ -202,7 +206,9 @@ def verify_bh(root: Path, ref: str) -> str:
             raise ValueError(f"{ref}: packages.bh omits {script}")
     version = subprocess.run(
         [str(package / "bin" / "bh"), "--version"],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout.strip()
     if version != expected:
         raise ValueError(f"{ref}: packages.bh reports {version!r}, expected {expected!r}")
