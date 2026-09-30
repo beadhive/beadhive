@@ -125,12 +125,12 @@ def write_object(record: Mapping, *, cwd: Path) -> str:
     return (res.stdout or "").strip()
 
 
-def remote_sha(remote: str, ref: str, *, cwd: Path) -> str:
+def remote_sha(remote: str, ref: str, *, cwd: Path, git_options: list[str] | None = None) -> str:
     """The sha `ref` points at on `remote`, or ``""`` when the ref does not exist.
 
     Raises :class:`RemoteUnreachable` when the *query itself* failed — the distinction
     matters: "absent" licenses an adopt, "unreachable" licenses nothing."""
-    res = _git(["ls-remote", remote, ref], cwd)
+    res = _git([*(git_options or []), "ls-remote", remote, ref], cwd)
     if res.returncode:
         raise RemoteUnreachable(f"git ls-remote {remote} {ref} failed: {message(res)}")
     line = (res.stdout or "").strip()

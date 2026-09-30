@@ -1,0 +1,987 @@
+"""HQ port with protected Git authority, independent observer, and admission."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import sys
+import time
+from dataclasses import asdict
+from pathlib import Path
+from typing import Protocol
+
+from . import config, gitref, hq_git_broker, hq_manifest_guard
+from . import hq_authority_guard as guard
+from .run import run
+
+
+class ControlPlaneError(ValueError):
+    """Unavailable protection, rejected authority, or unsupported binding."""
+
+
+class HqControlPlane(Protocol):
+    def fetch_config(self, frame: str, *, holder_identity: str | None = None) -> dict: ...
+    def publish_registration(self, manifest: str, *, attempts: int = 3) -> bool: ...
+    def heartbeat(self, lease, *, signing_key: str) -> str: ...
+    def watch_state(self, frame: str): ...
+
+
+def _git(directory, *args, data=None):
+    forbidden = {
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    }
+    if any(name in os.environ for name in forbidden):
+        raise ControlPlaneError("Git environment injection is unsupported for authority operations")
+    result = run(
+        ["git", *args],
+        cwd=str(directory),
+        capture=True,
+        check=False,
+        text_input=data,
+        timeout=gitref.GIT_TIMEOUT,
+    )
+    if result.returncode:
+        raise ControlPlaneError(gitref.message(result))
+    return (result.stdout or "").strip()
+
+
+def fingerprint(public_key):
+    return guard.fingerprint(public_key)
+
+
+def _digest(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _hook_text(remote, policy):
+    return (
+        f"#!{policy['interpreter']}\nimport runpy\n"
+        f"runpy.run_path({str(remote / 'bh-authority-guard.py')!r}, run_name='__main__')\n"
+    )
+
+
+def install_guard(
+    hq_dir, operator_public_key, generation, *, interpreter=None, confirm_server_custody=False
+):
+    if not confirm_server_custody or not generation:
+        raise ControlPlaneError("explicit operator server custody and recovery generation required")
+    url = _git(hq_dir, "remote", "get-url", "origin")
+    if url.startswith("file://"):
+        url = url[7:]
+    if ":" in url:
+        raise ControlPlaneError("provisioning requires a controlled local bare HQ")
+    remote = (Path(hq_dir) / url).resolve()
+    if _git(remote, "rev-parse", "--is-bare-repository") != "true":
+        raise ControlPlaneError("controlled bare HQ required")
+    policy_path, hook = remote / guard.POLICY, remote / "hooks/pre-receive"
+    if (
+        hook.exists()
+        or policy_path.exists()
+        or _git(remote, "for-each-ref", "--format=%(refname)", guard.HEAD, guard.WITNESS)
+    ):
+        raise ControlPlaneError("existing authority protection requires out-of-band recovery")
+    interpreter = str(Path(interpreter or sys.executable).resolve())
+    if not os.access(interpreter, os.X_OK):
+        raise ControlPlaneError("explicit executable server interpreter required")
+    anchor = remote / "bh-authority-operators"
+    anchor.write_text("operator " + operator_public_key.strip() + "\n")
+    server_guard, server_broker = remote / "bh-authority-guard.py", remote / "bh-git-broker.py"
+    server_guard.write_bytes(Path(guard.__file__).read_bytes())
+    server_broker.write_bytes(Path(hq_git_broker.__file__).read_bytes())
+    from ruamel import yaml
+
+    from .hosts import HostManifest
+
+    libraries = remote / "bh-guard-libs"
+    yaml_source = Path(yaml.__file__).parent
+    for source in yaml_source.rglob("*.py"):
+        if "__pycache__" in source.parts:
+            continue
+        target = libraries / "ruamel/yaml" / source.relative_to(yaml_source)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(source.read_bytes())
+    (libraries / "manifest_guard.py").write_bytes(Path(hq_manifest_guard.__file__).read_bytes())
+    (libraries / "host-manifest.schema.json").write_text(
+        gitref.encode(HostManifest.model_json_schema())
+    )
+    runtime_files = {
+        str(p.relative_to(libraries)): _digest(p) for p in libraries.rglob("*") if p.is_file()
+    }
+    executables = {}
+    for name, program in (("git", "git"), ("ssh_keygen", "ssh-keygen")):
+        executable = shutil.which(program)
+        if not executable:
+            raise ControlPlaneError(f"server executable missing: {program}")
+        executable = str(Path(executable).resolve())
+        executables[name] = {"path": executable, "digest": _digest(executable)}
+    policy = {
+        "generation": generation,
+        "server_root": str(remote),
+        "operator_signers": str(anchor),
+        "operator_signers_digest": _digest(anchor),
+        "operator_fingerprints": [fingerprint(operator_public_key)],
+        "guard_digest": _digest(server_guard),
+        "broker_digest": _digest(server_broker),
+        "runtime_files": runtime_files,
+        "interpreter": interpreter,
+        "interpreter_digest": _digest(interpreter),
+        "executables": executables,
+        "server_path": os.pathsep.join(
+            sorted({str(Path(v["path"]).parent) for v in executables.values()})
+        ),
+        "custody": "operator-only-filesystem-writes",
+    }
+    policy_path.write_text(gitref.encode(policy))
+    hook.write_text(_hook_text(remote, policy))
+    hook.chmod(0o755)
+    for path in (remote, *remote.rglob("*")):
+        if path.is_symlink():
+            raise ControlPlaneError("server authority tree must not contain symlinks")
+        path.chmod(path.stat().st_mode & ~0o022)
+    return _digest(policy_path)
+
+
+def _broker_url(endpoint, interpreter):
+    source = Path(hq_git_broker.__file__).resolve()
+    paths = str(endpoint) + interpreter + str(source)
+    if any(c.isspace() for c in paths) or "%" in paths:
+        raise ControlPlaneError("broker paths cannot contain whitespace or percent escapes")
+    return f"ext::{interpreter} {source} client {endpoint} %S"
+
+
+def bind_broker(
+    hq_dir, server_root, endpoint, policy_digest, *, client_interpreter=None, role="frame"
+):
+    """Operator provisions a protected per-client anchor, outside client Git config."""
+    remote, endpoint = Path(server_root).resolve(), Path(endpoint).resolve()
+    if role not in {"operator", "frame"} or not os.access(remote, os.W_OK):
+        raise ControlPlaneError("anchor provisioning requires operator filesystem custody")
+    policy = json.loads((remote / guard.POLICY).read_text())
+    if _digest(remote / guard.POLICY) != policy_digest or policy["server_root"] != str(remote):
+        raise ControlPlaneError("provided protected server policy digest mismatch")
+    interpreter = str(Path(client_interpreter or sys.executable).resolve())
+    if not os.access(interpreter, os.X_OK):
+        raise ControlPlaneError("executable client interpreter required")
+    identity = hashlib.sha256(str(Path(hq_dir).resolve()).encode()).hexdigest()[:24]
+    protected = remote / f"bh-client-anchor-{identity}.json"
+    record = {
+        "server_root": str(remote),
+        "socket": str(endpoint),
+        "policy_digest": policy_digest,
+        "generation": policy["generation"],
+        "role": role,
+        "client_interpreter": interpreter,
+        "client_interpreter_digest": _digest(interpreter),
+    }
+    protected.write_text(gitref.encode(record))
+    protected.chmod(0o644)
+    return protected
+
+
+def candidate_ref(frame):
+    from .host_heartbeat import ref_name
+
+    return ref_name(frame).replace("/heartbeat/", "/candidate-heartbeat/")
+
+
+def registration_ref(authority):
+    from .host_heartbeat import ref_name
+
+    binding = (
+        authority["holder_identity"],
+        authority["instance_ref"],
+        authority["key_fingerprint"],
+    )
+    suffix = hashlib.sha256(json.dumps(binding, separators=(",", ":")).encode()).hexdigest()[:24]
+    return ref_name(authority["frame_id"]).replace("/heartbeat/", "/registration/") + "/" + suffix
+
+
+class GitControlPlane:
+    def __init__(self, hq_dir, *, authority_anchor=None, clock=time.time, policy_digest=""):
+        self.hq_dir, self.clock = Path(hq_dir), clock
+        self.authority_anchor = Path(authority_anchor) if authority_anchor else None
+        # Legacy callers cannot turn a mutable Git-config digest into authority.
+        if policy_digest:
+            raise ControlPlaneError("use an operator-provisioned protected authority anchor")
+
+    def _policy(self):
+        if self.authority_anchor is None:
+            raise ControlPlaneError("protected authority anchor has not been provisioned")
+        try:
+            client = json.loads(self.authority_anchor.read_text())
+            remote = Path(client["server_root"])
+            paths = (
+                self.authority_anchor,
+                remote,
+                remote / "hooks",
+                remote / "hooks/pre-receive",
+                remote / guard.POLICY,
+                remote / "bh-authority-guard.py",
+                remote / "bh-git-broker.py",
+            )
+            if any(
+                p.is_symlink()
+                or p.stat().st_uid != remote.stat().st_uid
+                or p.stat().st_mode & 0o022
+                for p in paths
+            ):
+                raise ControlPlaneError("protected authority custody changed")
+            writable = os.access(remote, os.W_OK)
+            if (
+                client["role"] == "frame"
+                and remote.stat().st_uid == os.geteuid()
+                and not os.statvfs(remote).f_flag & os.ST_RDONLY
+            ):
+                raise ControlPlaneError(
+                    "frame-owned server requires enforced read-only mount custody"
+                )
+            if client["role"] == "frame" and writable:
+                raise ControlPlaneError(
+                    "frame process must not have server filesystem write access"
+                )
+            if client["role"] == "operator" and not writable:
+                raise ControlPlaneError("operator anchor cannot be used from a frame sandbox")
+            encoded = (remote / guard.POLICY).read_bytes()
+            if hashlib.sha256(encoded).hexdigest() != client["policy_digest"]:
+                raise ControlPlaneError(
+                    "authority policy trust anchor changed; out-of-band recovery required"
+                )
+            policy = json.loads(encoded)
+            if (
+                policy["server_root"] != str(remote)
+                or policy["generation"] != client["generation"]
+                or policy["custody"] != "operator-only-filesystem-writes"
+            ):
+                raise ControlPlaneError("protected server/generation binding mismatch")
+            if (remote / "hooks/pre-receive").read_text() != _hook_text(
+                remote, policy
+            ) or not os.access(remote / "hooks/pre-receive", os.X_OK):
+                raise ControlPlaneError("authority receive guard absent or changed")
+            for path, digest in (
+                (remote / "bh-authority-guard.py", policy["guard_digest"]),
+                (remote / "bh-git-broker.py", policy["broker_digest"]),
+                (Path(policy["operator_signers"]), policy["operator_signers_digest"]),
+                (Path(policy["interpreter"]), policy["interpreter_digest"]),
+                (Path(client["client_interpreter"]), client["client_interpreter_digest"]),
+            ):
+                if _digest(path) != digest:
+                    raise ControlPlaneError("provisioned authority executable/trust bytes changed")
+            libraries = remote / "bh-guard-libs"
+            files = {str(p.relative_to(libraries)): p for p in libraries.rglob("*") if p.is_file()}
+            if set(files) != set(policy["runtime_files"]):
+                raise ControlPlaneError("provisioned guard runtime file set changed")
+            for relative, path in files.items():
+                if (
+                    path.is_symlink()
+                    or path.stat().st_uid != remote.stat().st_uid
+                    or path.stat().st_mode & 0o022
+                    or _digest(path) != policy["runtime_files"][relative]
+                ):
+                    raise ControlPlaneError("provisioned guard runtime bytes/custody changed")
+            for executable in policy["executables"].values():
+                if _digest(executable["path"]) != executable["digest"]:
+                    raise ControlPlaneError("provisioned server executable changed")
+            endpoint = Path(client["socket"])
+            if (
+                endpoint.is_symlink()
+                or endpoint.stat().st_uid != remote.stat().st_uid
+                or endpoint.parent.stat().st_mode & 0o022
+            ):
+                raise ControlPlaneError("broker endpoint custody changed")
+            if client["role"] == "frame" and os.access(endpoint.parent, os.W_OK):
+                raise ControlPlaneError("frame can rewrite broker endpoint")
+            rewritten = (
+                run(
+                    [
+                        policy["executables"]["git"]["path"],
+                        "config",
+                        "--get-regexp",
+                        r"^url\..*\.(insteadof|pushinsteadof)$",
+                    ],
+                    cwd=str(self.hq_dir),
+                    capture=True,
+                    check=False,
+                    timeout=gitref.GIT_TIMEOUT,
+                )
+                if self.hq_dir.exists()
+                else None
+            )
+            if rewritten is not None and rewritten.returncode != 1:
+                raise ControlPlaneError(
+                    "Git URL rewrite configuration cannot select authority transport"
+                )
+            return {**policy, "client": client}
+        except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise ControlPlaneError("protected authority backend unavailable") from exc
+
+    def _remote(self, policy):
+        client = policy["client"]
+        return _broker_url(Path(client["socket"]), client["client_interpreter"])
+
+    def _read(self, *, allow_expired=False):
+        policy = self._policy()
+        rows = _git(
+            self.hq_dir,
+            "-c",
+            "protocol.ext.allow=always",
+            "ls-remote",
+            self._remote(policy),
+            guard.HEAD,
+            guard.WITNESS + "*",
+        ).splitlines()
+        refs = dict(row.split()[::-1] for row in rows)
+        sha = refs.get(guard.HEAD, "")
+        witnesses = sorted(ref for ref in refs if ref.startswith(guard.WITNESS))
+        if not sha:
+            if witnesses:
+                raise ControlPlaneError("missing authority head with retained witnesses")
+            return "", {}, policy
+        _git(
+            self.hq_dir,
+            "-c",
+            "protocol.ext.allow=always",
+            "fetch",
+            "--no-tags",
+            self._remote(policy),
+            sha,
+        )
+        _git(
+            self.hq_dir,
+            "-c",
+            f"gpg.ssh.allowedSignersFile={policy['operator_signers']}",
+            "-c",
+            f"gpg.ssh.program={policy['executables']['ssh_keygen']['path']}",
+            "verify-commit",
+            sha,
+        )
+        if (
+            int(_git(self.hq_dir, "cat-file", "-s", f"{sha}:authority.json")) > 4 * 1024 * 1024
+            or _git(self.hq_dir, "ls-tree", "--name-only", sha) != "authority.json"
+        ):
+            raise ControlPlaneError("invalid authority carrier")
+        state = json.loads(_git(self.hq_dir, "show", f"{sha}:authority.json"))
+        guard.validate_state(state)
+        if (
+            not witnesses
+            or witnesses[-1] != f"{guard.WITNESS}{state['revision']:020d}"
+            or refs[witnesses[-1]] != sha
+        ):
+            raise ControlPlaneError("authority rollback or inconsistent witness detected")
+        if state["generation"] != policy["generation"] or self.clock() < state["issued_at"] - 30:
+            raise ControlPlaneError("authority recovery generation or clock mismatch")
+        if not allow_expired and self.clock() >= state["expires_at"]:
+            raise ControlPlaneError("authority validity interval expired")
+        return sha, state, policy
+
+    def _operator_read(self):
+        sha, state, policy = self._read(allow_expired=True)
+        if policy["client"]["role"] != "operator":
+            raise ControlPlaneError(
+                "operator operation requires a protected operator anchor and checkout"
+            )
+        return sha, state, policy
+
+    def _write(self, state, expected, operator_key, *, duration=3600, updates=()):
+        current, previous, policy = self._operator_read()
+        if current != expected or not 1 <= duration <= 86400:
+            raise ControlPlaneError("expected authority revision/duration mismatch")
+        state.update(
+            domain=guard.DOMAIN,
+            generation=policy["generation"],
+            revision=previous.get("revision", 0) + 1,
+            issued_at=self.clock(),
+            expires_at=self.clock() + duration,
+        )
+        guard.validate_state(state)
+        blob = _git(self.hq_dir, "hash-object", "-w", "--stdin", data=gitref.encode(state))
+        tree = _git(self.hq_dir, "mktree", data=f"100644 blob {blob}\tauthority.json\n")
+        args = [
+            "-c",
+            "gpg.format=ssh",
+            "-c",
+            f"user.signingkey={operator_key}",
+            "commit-tree",
+            "-S",
+            tree,
+        ]
+        if expected:
+            args += ["-p", expected]
+        sha = _git(self.hq_dir, *args, data=f"HQ authority revision {state['revision']}\n")
+        _git(
+            self.hq_dir,
+            "-c",
+            f"gpg.ssh.allowedSignersFile={policy['operator_signers']}",
+            "-c",
+            f"gpg.ssh.program={policy['executables']['ssh_keygen']['path']}",
+            "verify-commit",
+            sha,
+        )
+        witness = f"{guard.WITNESS}{state['revision']:020d}"
+        push = [
+            "-c",
+            "protocol.ext.allow=always",
+            "push",
+            "--atomic",
+            f"--force-with-lease={guard.HEAD}:{expected}",
+            f"--force-with-lease={witness}:",
+        ]
+        for reference, old, _new in updates:
+            push += [f"--force-with-lease={reference}:{old}"]
+        push += [self._remote(policy), f"{sha}:{guard.HEAD}", f"{sha}:{witness}"]
+        push += [f"{new}:{reference}" for reference, old, new in updates]
+        _git(self.hq_dir, *push)
+        if self._read()[0] != sha:
+            raise ControlPlaneError("authority changed before readback")
+        return sha
+
+    def renew(self, *, expected, operator_key, duration=3600):
+        sha, state, _ = self._operator_read()
+        if not sha:
+            raise ControlPlaneError("cannot renew absent authority")
+        return self._write(state, expected, operator_key, duration=duration)
+
+    def _trust(self, state):
+        path = Path(_git(self.hq_dir, "rev-parse", "--git-path", "bh-authority-signers"))
+        if not path.is_absolute():
+            path = self.hq_dir / path
+        path.write_text(
+            "".join(
+                "frame " + r["public_key"].strip() + "\n"
+                for _, r in guard.records(state)
+                if r["state"] != "retired"
+            )
+        )
+        return path
+
+    def _snapshot(self, frame, record, state, *, candidate=False):
+        from .host_heartbeat import AuthoritySnapshot, ObservationAuthority, ref_name
+
+        if record is None or record["state"] == "retired":
+            return None
+        auth = ObservationAuthority(**record["authority"])
+        expiry = min(state["expires_at"], auth.candidate_expires_at or state["expires_at"])
+        if self.clock() >= expiry:
+            return None
+        receipt = record["receipt"]
+        return AuthoritySnapshot(
+            auth,
+            self.clock(),
+            expiry,
+            receipt["sequence"],
+            receipt["sha"],
+            receipt["first_seen"],
+            record["state"],
+            record["state"] == "active" and not record["cordoned"],
+            candidate_ref(frame) if candidate else ref_name(frame),
+        )
+
+    def watch_state(self, frame):
+        from dataclasses import replace
+
+        _, state, _ = self._read()
+        entry = state.get("frames", {}).get(frame)
+        if entry is None:
+            return None
+        self._trust(state)
+        active = self._snapshot(frame, entry["active"], state)
+        pending = self._snapshot(frame, entry["candidate"], state, candidate=True)
+        return replace(active, alternatives=(pending,)) if active and pending else active or pending
+
+    def _select(self, lease):
+        from .host_heartbeat import _authority_matches
+
+        snapshot = self.watch_state(lease.frame_id)
+        for selected in () if snapshot is None else (snapshot, *snapshot.alternatives):
+            if _authority_matches(lease, selected.authority):
+                return selected
+        raise ControlPlaneError("heartbeat requires a current operator-granted incarnation")
+
+    def heartbeat_reference(self, lease):
+        return self._select(lease).carrier_ref
+
+    def heartbeat(self, lease, *, signing_key):
+        from . import host_heartbeat as hb
+
+        policy = self._policy()
+        if policy["client"]["role"] != "frame":
+            raise ControlPlaneError(
+                "runtime publication requires a separate protected frame anchor"
+            )
+        snapshot = self._select(lease)
+        if lease.seq <= snapshot.sequence:
+            raise ControlPlaneError("heartbeat replays durable accepted sequence floor")
+        result = hb.publish(
+            self.hq_dir,
+            lease,
+            signing_key=signing_key,
+            remote=self._remote(policy),
+            reference=snapshot.carrier_ref,
+            transport_options=["-c", "protocol.ext.allow=always"],
+            trusted_authority_lookup=lambda *_: self._select(lease),
+        )
+        self._select(lease)  # reject a revocation race on readback
+        return result
+
+    def fetch_config(self, frame, *, holder_identity=None):
+        _, state, _ = self._read()
+        entry = state.get("frames", {}).get(frame)
+        if entry is None:
+            raise ControlPlaneError("unknown declared frame")
+        available = [
+            record
+            for slot in ("active", "candidate")
+            if (record := entry[slot]) is not None
+            and self._snapshot(frame, record, state, candidate=slot == "candidate") is not None
+            and (
+                holder_identity is None or record["authority"]["holder_identity"] == holder_identity
+            )
+        ]
+        if not available:
+            raise ControlPlaneError("unknown, expired or retired frame incarnation")
+        if len(available) != 1:
+            raise ControlPlaneError(
+                "config requires exact holder identity for coexisting incarnations"
+            )
+        record = available[0]
+        return {
+            **record["desired"],
+            "state": record["state"],
+            "cordoned": record["cordoned"],
+            "authority": record["authority"],
+        }
+
+    def publish_registration(self, manifest, *, attempts=3):
+        from . import host, hosts, hq
+
+        record = hosts.load(self.hq_dir, manifest)
+        remote, signing_key, ssh_keygen = None, None, None
+        if record.frame_id:
+            policy = self._policy()
+            remote = self._remote(policy)
+            signing_key = host.signing_key()
+            if not signing_key:
+                raise hq.HostPublicationError(
+                    "frame registration requires its own runtime signing key"
+                )
+            ssh_keygen = policy["executables"]["ssh_keygen"]["path"]
+        changed = hq._publish_host_manifest_git(
+            self.hq_dir,
+            manifest,
+            attempts=attempts,
+            remote_override=remote,
+            signing_key=signing_key,
+            ssh_keygen=ssh_keygen,
+        )
+        if record.frame_id:
+            self.publish_registration_evidence(record, signing_key=signing_key)
+        return changed
+
+    def publish_registration_evidence(self, manifest, *, signing_key):
+        policy = self._policy()
+        # Pending registration is authenticated evidence, never an authority grant.
+        public_path = Path(signing_key + ".pub")
+        if not public_path.exists():
+            public_path = Path(signing_key)
+        fp = fingerprint(public_path.read_text())
+        reference = registration_ref(
+            {
+                "frame_id": manifest.frame_id,
+                "holder_identity": manifest.host_id,
+                "instance_ref": manifest.instance_ref,
+                "key_fingerprint": fp,
+            }
+        )
+        remote = self._remote(policy)
+        expected = gitref.remote_sha(
+            remote, reference, cwd=self.hq_dir, git_options=["-c", "protocol.ext.allow=always"]
+        )
+        blob = _git(
+            self.hq_dir,
+            "hash-object",
+            "-w",
+            "--stdin",
+            data=gitref.encode(manifest.model_dump(mode="json", exclude_none=True)),
+        )
+        tree = _git(self.hq_dir, "mktree", data=f"100644 blob {blob}\tregistration.json\n")
+        sha = _git(
+            self.hq_dir,
+            "-c",
+            "gpg.format=ssh",
+            "-c",
+            f"user.signingkey={signing_key}",
+            "commit-tree",
+            "-S",
+            tree,
+            data="Frame candidate registration\n",
+        )
+        _git(
+            self.hq_dir,
+            "-c",
+            "protocol.ext.allow=always",
+            "push",
+            f"--force-with-lease={reference}:{expected}",
+            remote,
+            f"{sha}:{reference}",
+        )
+        return sha
+
+    def grant(self, authority, public_key, desired, *, expected, operator_key):
+        sha, state, policy = self._operator_read()
+        if (
+            sha != expected
+            or authority.candidate_expires_at is None
+            or authority.candidate_expires_at <= self.clock()
+        ):
+            raise ControlPlaneError(
+                "candidate grant requires exact revision and bounded future expiry"
+            )
+        fp = fingerprint(public_key)
+        if (
+            fp != authority.key_fingerprint
+            or fp in policy["operator_fingerprints"]
+            or any(
+                r["authority"]["key_fingerprint"] == fp
+                for _, r in guard.records(state or {"frames": {}})
+            )
+        ):
+            raise ControlPlaneError(
+                "candidate key mismatch, operator key reuse, or incarnation signer reuse"
+            )
+        if any(
+            r["authority"]["holder_identity"] == authority.holder_identity
+            for _, r in guard.records(state or {"frames": {}})
+        ):
+            raise ControlPlaneError("candidate holder identity already names an incarnation")
+        frames = state.setdefault("frames", {})
+        entry = frames.setdefault(
+            authority.frame_id,
+            {"active": None, "candidate": None, "retired": [], "epoch_floor": -1},
+        )
+        if entry["candidate"] is not None or authority.epoch <= entry["epoch_floor"]:
+            raise ControlPlaneError(
+                "candidate exists or epoch does not advance operator-granted floor"
+            )
+        entry["candidate"] = {
+            "authority": asdict(authority),
+            "public_key": public_key.strip(),
+            "state": "pending",
+            "desired": desired,
+            "cordoned": False,
+            "drain_deadline": None,
+            "receipt": {
+                "sequence": 0,
+                "sha": "",
+                "first_seen": None,
+                "consecutive": 0,
+                "lease": None,
+                "registration": None,
+            },
+        }
+        entry["epoch_floor"] = authority.epoch
+        return self._write(state, expected, operator_key)
+
+    def accept_observation(self, frame, *, expected, operator_key, holder_identity=""):
+        from . import host_heartbeat as hb
+        from . import hosts
+
+        sha, state, policy = self._operator_read()
+        if sha != expected:
+            raise ControlPlaneError("expected authority revision changed")
+        entry = state["frames"].get(frame)
+        record = entry["active"] or entry["candidate"] if entry else None
+        candidate = bool(entry and record is entry["candidate"])
+        if holder_identity and entry:
+            for slot in ("active", "candidate"):
+                selected = entry[slot]
+                if selected and selected["authority"]["holder_identity"] == holder_identity:
+                    record, candidate = selected, slot == "candidate"
+                    break
+            else:
+                raise ControlPlaneError("unknown granted holder")
+        if record is None:
+            raise ControlPlaneError("unknown or retired candidate")
+        authority = hb.ObservationAuthority(**record["authority"])
+        now = self.clock()
+        if authority.candidate_expires_at is not None and now >= authority.candidate_expires_at:
+            raise ControlPlaneError("candidate grant expired")
+        reference = candidate_ref(frame) if candidate else hb.ref_name(frame)
+        remote = self._remote(policy)
+        beat = gitref.remote_sha(
+            remote, reference, cwd=self.hq_dir, git_options=["-c", "protocol.ext.allow=always"]
+        )
+        if not beat:
+            raise ControlPlaneError("heartbeat absent")
+        _git(self.hq_dir, "-c", "protocol.ext.allow=always", "fetch", "--no-tags", remote, beat)
+        envelope = hb.framelease_envelope(self.hq_dir, beat, self._trust(state))
+        payload = {k: v for k, v in envelope["spec"].items() if k != "signature"}
+        lease = hb.HeartbeatLease.model_validate(payload)
+        if not hb._authority_matches(lease, authority):
+            raise ControlPlaneError("ungranted heartbeat incarnation")
+        receipt = record["receipt"]
+        if lease.seq == receipt["sequence"] and beat == receipt["sha"]:
+            return sha
+        if lease.seq <= receipt["sequence"]:
+            raise ControlPlaneError("heartbeat replays accepted sequence floor")
+        age = now - lease.observed_at
+        if age < -30 or age >= lease.leaseDurationSeconds:
+            raise ControlPlaneError("first observation is expired or future-skewed")
+        streak = receipt["consecutive"] + 1 if lease.seq == receipt["sequence"] + 1 else 1
+        if (
+            receipt["lease"]
+            and now - receipt["first_seen"] >= receipt["lease"]["leaseDurationSeconds"]
+        ):
+            streak = 1
+        registration_sha = gitref.remote_sha(
+            remote,
+            registration_ref(record["authority"]),
+            cwd=self.hq_dir,
+            git_options=["-c", "protocol.ext.allow=always"],
+        )
+        registration = None
+        if registration_sha:
+            _git(
+                self.hq_dir,
+                "-c",
+                "protocol.ext.allow=always",
+                "fetch",
+                "--no-tags",
+                remote,
+                registration_sha,
+            )
+            if (
+                hb._fingerprint(self.hq_dir, registration_sha, self._trust(state))
+                != authority.key_fingerprint
+            ):
+                raise ControlPlaneError("registration signer mismatch")
+            if (
+                _git(self.hq_dir, "show", "-s", "--format=%P", registration_sha)
+                or _git(self.hq_dir, "ls-tree", "--name-only", registration_sha)
+                != "registration.json"
+                or int(_git(self.hq_dir, "cat-file", "-s", f"{registration_sha}:registration.json"))
+                > hb.MAX_BYTES
+            ):
+                raise ControlPlaneError("invalid registration carrier")
+            manifest = hosts.HostManifest.model_validate_json(
+                _git(self.hq_dir, "show", f"{registration_sha}:registration.json")
+            )
+            if (manifest.frame_id, manifest.host_id, manifest.instance_ref) != (
+                frame,
+                authority.holder_identity,
+                authority.instance_ref,
+            ):
+                raise ControlPlaneError("registration incarnation mismatch")
+            registration = manifest.model_dump(mode="json", exclude_none=True)
+        record["receipt"] = {
+            "sequence": lease.seq,
+            "sha": beat,
+            "first_seen": now,
+            "consecutive": streak,
+            "lease": payload,
+            "registration": registration,
+        }
+        if record["state"] == "draining" and lease.state_seen == "drained":
+            record["state"] = "drained"
+        return self._write(state, expected, operator_key)
+
+    def lifecycle(
+        self,
+        verb,
+        frame,
+        action="plan",
+        *,
+        expected="",
+        expected_host_id="",
+        expected_release="",
+        operator_key="",
+        confirm=False,
+        supersede=False,
+        deadline=None,
+    ):
+        from .host_heartbeat import HeartbeatLease, ref_name
+
+        sha, state, policy = self._operator_read()
+        entry = state.get("frames", {}).get(frame)
+        if entry is None:
+            raise ControlPlaneError("frame has no operator grant")
+        record = (
+            entry["candidate"]
+            if verb == "admit" and entry["candidate"]
+            else entry["active"] or entry["candidate"]
+        )
+        if expected_host_id:
+            matching = [
+                r
+                for r in (entry["active"], entry["candidate"], *reversed(entry["retired"]))
+                if r and r["authority"]["holder_identity"] == expected_host_id
+            ]
+            if matching:
+                record = matching[0]
+        if record is None:
+            record = entry["retired"][-1] if entry["retired"] else None
+        if record is None:
+            raise ControlPlaneError("unknown incarnation")
+        a, r = record["authority"], record["receipt"]
+        lease, current = r["lease"], record["state"]
+        release = lease["release"]["digest"] if lease else ""
+        result = {
+            "frame_id": frame,
+            "host_id": a["holder_identity"],
+            "instance_ref": a["instance_ref"],
+            "key_fingerprint": a["key_fingerprint"],
+            "epoch": a["epoch"],
+            "revision": sha,
+            "state": current,
+            "cordoned": record["cordoned"],
+            "release": release,
+            "toplevel": lease.get("toplevel") if lease else None,
+            "image": lease.get("image") if lease else None,
+            "capabilities": (r["registration"] or {}).get("capabilities"),
+            "attestor_evidence_kind": "ssh-runtime-signature",
+            "consecutive_verified_beats": r["consecutive"],
+            "conformance": lease["conformance"] if lease else None,
+            "prior_active": entry["active"]["authority"]
+            if record is entry["candidate"] and entry["active"]
+            else None,
+        }
+        if action in {"plan", "check"}:
+            return result
+        if action != "apply" or not confirm or not operator_key:
+            raise ControlPlaneError("apply requires explicit --confirm and separate operator key")
+        if (
+            expected != sha
+            or expected_host_id != a["holder_identity"]
+            or expected_release != release
+        ):
+            raise ControlPlaneError("expected authoritative revision/host/release mismatch")
+        updates = []
+        remote = self._remote(policy)
+        if verb == "admit":
+            if current == "active" and not record["cordoned"]:
+                return result
+            if record is not entry["candidate"] or current != "pending":
+                raise ControlPlaneError("admit requires pending candidate")
+            desired, registration = record["desired"], r["registration"]
+            if not desired["declared"] or not registration:
+                raise ControlPlaneError(
+                    "admit requires declared frame and authenticated registration"
+                )
+            if not lease or r["consecutive"] < 3:
+                raise ControlPlaneError("admit requires three consecutive verified beats")
+            parsed = HeartbeatLease.model_validate(lease)
+            now = self.clock()
+            if (
+                now >= a["candidate_expires_at"]
+                or now - r["first_seen"] >= parsed.leaseDurationSeconds
+                or now - parsed.observed_at >= parsed.leaseDurationSeconds
+                or now >= state["expires_at"]
+            ):
+                raise ControlPlaneError("admit requires fresh trusted observation")
+            if (
+                lease["release"] != desired["release"]
+                or registration.get("release") != desired["release"]
+            ):
+                raise ControlPlaneError("admit release mismatch")
+            if registration.get("capabilities") != desired["caps"]:
+                raise ControlPlaneError("admit capability mismatch")
+            conformance = lease["conformance"]
+            if (
+                conformance["profile"] != desired["profile"]
+                or conformance["status"] != "conformant"
+                or not conformance["checks"]
+                or any(c["status"] == "fail" for c in conformance["checks"])
+            ):
+                raise ControlPlaneError("admit requires conformant evidence")
+            if entry["active"] and not supersede:
+                raise ControlPlaneError("another active incarnation requires explicit --supersede")
+            if entry["active"]:
+                old = entry["active"]
+                old.update(state="retired", cordoned=True)
+                entry["retired"].append(old)
+                old_registration = registration_ref(old["authority"])
+                old_sha = gitref.remote_sha(
+                    remote,
+                    old_registration,
+                    cwd=self.hq_dir,
+                    git_options=["-c", "protocol.ext.allow=always"],
+                )
+                if old_sha:
+                    updates.append((old_registration, old_sha, ""))
+            entry["active"], entry["candidate"] = record, None
+            record.update(state="active", cordoned=False)
+            a["candidate_expires_at"] = None
+            reference = ref_name(frame)
+            updates.append(
+                (
+                    reference,
+                    gitref.remote_sha(
+                        remote,
+                        reference,
+                        cwd=self.hq_dir,
+                        git_options=["-c", "protocol.ext.allow=always"],
+                    ),
+                    r["sha"],
+                )
+            )
+            updates.append((candidate_ref(frame), r["sha"], ""))
+        elif verb == "retire":
+            if current == "retired":
+                return result
+            slot = "candidate" if record is entry["candidate"] else "active"
+            record.update(state="retired", cordoned=True)
+            entry[slot] = None
+            entry["retired"].append(record)
+            for reference in (
+                candidate_ref(frame) if slot == "candidate" else ref_name(frame),
+                registration_ref(a),
+            ):
+                old = gitref.remote_sha(
+                    remote,
+                    reference,
+                    cwd=self.hq_dir,
+                    git_options=["-c", "protocol.ext.allow=always"],
+                )
+                if old:
+                    updates.append((reference, old, ""))
+        elif verb == "cordon":
+            if current != "active":
+                raise ControlPlaneError("cordon requires active frame")
+            if record["cordoned"]:
+                return result
+            record["cordoned"] = True
+        else:
+            transitions = {
+                "drain": ({"active", "draining"}, "draining"),
+                "park": ({"drained", "parked"}, "parked"),
+                "resume": ({"parked", "active"}, "active"),
+                "quarantine": (
+                    {"pending", "active", "draining", "drained", "parked", "quarantined"},
+                    "quarantined",
+                ),
+            }
+            if verb not in transitions or current not in transitions[verb][0]:
+                raise ControlPlaneError("illegal lifecycle transition")
+            target = transitions[verb][1]
+            if current == target and not (verb == "resume" and record["cordoned"]):
+                return result
+            if verb == "drain":
+                if deadline is None or deadline <= self.clock():
+                    raise ControlPlaneError("drain requires future deadline")
+                record["drain_deadline"] = deadline
+            record.update(state=target, cordoned=verb != "resume")
+        self._write(state, expected, operator_key, updates=updates)
+        # Return the exact selected incarnation's authoritative state after readback.
+        return self.lifecycle(verb, frame, "check", expected_host_id=expected_host_id)
+
+
+def control_plane(hq_dir=None):
+    cfg = config.load().get("hq", {})
+    if cfg.get("mode", "git") != "git":
+        raise ControlPlaneError(f"unsupported HQ control-plane mode: {cfg.get('mode')}")
+    return GitControlPlane(hq_dir or config.hq_dir(), authority_anchor=cfg.get("authority_anchor"))

@@ -4926,6 +4926,129 @@
         "secret_material": false
       },
       "kind": "action",
+      "name": "host.admit",
+      "parameters": [
+        {
+          "name": "action",
+          "privilege": "inherited",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "frame_id",
+          "privilege": "inherited",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "expected",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "expected_host_id",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "expected_release",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "operator_key",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "confirm",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "supersede",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "deadline",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "number"
+          }
+        }
+      ],
+      "privilege": "ordinary-mutation",
+      "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "surfaces": {
+        "cli": {
+          "aliases": [],
+          "declared_hidden": false,
+          "effective_hidden": false,
+          "granularity": {
+            "mode": "fine",
+            "reason": null
+          },
+          "interactivity": {
+            "guard_conditions": [],
+            "guard_parameters": [],
+            "mode": "none",
+            "prompt_seams": [],
+            "reason": null
+          },
+          "parameter_map": {},
+          "parameters": [
+            "action",
+            "frame_id",
+            "expected",
+            "expected_host_id",
+            "expected_release",
+            "operator_key",
+            "confirm",
+            "supersede",
+            "deadline"
+          ],
+          "path": "host admit",
+          "progress": {
+            "mode": "stdout",
+            "notification_uris": [],
+            "reason": "CLI reports human-oriented progress on stdout/stderr"
+          }
+        }
+      }
+    },
+    {
+      "alias_of": null,
+      "constraints": {
+        "hq_write": false,
+        "interactive": false,
+        "override_parameters": [],
+        "secret_material": false
+      },
+      "kind": "action",
       "name": "host.beads.disable",
       "parameters": [
         {
@@ -5273,6 +5396,129 @@
             "mode": "structured",
             "notification_uris": [],
             "reason": "--json carries machine-readable status/result data instead of a separate progress channel"
+          }
+        }
+      }
+    },
+    {
+      "alias_of": null,
+      "constraints": {
+        "hq_write": false,
+        "interactive": false,
+        "override_parameters": [],
+        "secret_material": false
+      },
+      "kind": "action",
+      "name": "host.cordon",
+      "parameters": [
+        {
+          "name": "action",
+          "privilege": "inherited",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "frame_id",
+          "privilege": "inherited",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "expected",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "expected_host_id",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "expected_release",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "operator_key",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "confirm",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "supersede",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "deadline",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "number"
+          }
+        }
+      ],
+      "privilege": "ordinary-mutation",
+      "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "surfaces": {
+        "cli": {
+          "aliases": [],
+          "declared_hidden": false,
+          "effective_hidden": false,
+          "granularity": {
+            "mode": "fine",
+            "reason": null
+          },
+          "interactivity": {
+            "guard_conditions": [],
+            "guard_parameters": [],
+            "mode": "none",
+            "prompt_seams": [],
+            "reason": null
+          },
+          "parameter_map": {},
+          "parameters": [
+            "action",
+            "frame_id",
+            "expected",
+            "expected_host_id",
+            "expected_release",
+            "operator_key",
+            "confirm",
+            "supersede",
+            "deadline"
+          ],
+          "path": "host cordon",
+          "progress": {
+            "mode": "stdout",
+            "notification_uris": [],
+            "reason": "CLI reports human-oriented progress on stdout/stderr"
           }
         }
       }
@@ -6054,6 +6300,129 @@
         "secret_material": false
       },
       "kind": "action",
+      "name": "host.drain",
+      "parameters": [
+        {
+          "name": "action",
+          "privilege": "inherited",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "frame_id",
+          "privilege": "inherited",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "expected",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "expected_host_id",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "expected_release",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "operator_key",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "confirm",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "supersede",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "deadline",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "number"
+          }
+        }
+      ],
+      "privilege": "ordinary-mutation",
+      "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "surfaces": {
+        "cli": {
+          "aliases": [],
+          "declared_hidden": false,
+          "effective_hidden": false,
+          "granularity": {
+            "mode": "fine",
+            "reason": null
+          },
+          "interactivity": {
+            "guard_conditions": [],
+            "guard_parameters": [],
+            "mode": "none",
+            "prompt_seams": [],
+            "reason": null
+          },
+          "parameter_map": {},
+          "parameters": [
+            "action",
+            "frame_id",
+            "expected",
+            "expected_host_id",
+            "expected_release",
+            "operator_key",
+            "confirm",
+            "supersede",
+            "deadline"
+          ],
+          "path": "host drain",
+          "progress": {
+            "mode": "stdout",
+            "notification_uris": [],
+            "reason": "CLI reports human-oriented progress on stdout/stderr"
+          }
+        }
+      }
+    },
+    {
+      "alias_of": null,
+      "constraints": {
+        "hq_write": false,
+        "interactive": false,
+        "override_parameters": [],
+        "secret_material": false
+      },
+      "kind": "action",
       "name": "host.heartbeat",
       "parameters": [
         {
@@ -6526,6 +6895,129 @@
       "alias_of": null,
       "constraints": {
         "hq_write": false,
+        "interactive": false,
+        "override_parameters": [],
+        "secret_material": false
+      },
+      "kind": "action",
+      "name": "host.park",
+      "parameters": [
+        {
+          "name": "action",
+          "privilege": "inherited",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "frame_id",
+          "privilege": "inherited",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "expected",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "expected_host_id",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "expected_release",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "operator_key",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "confirm",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "supersede",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "deadline",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "number"
+          }
+        }
+      ],
+      "privilege": "ordinary-mutation",
+      "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "surfaces": {
+        "cli": {
+          "aliases": [],
+          "declared_hidden": false,
+          "effective_hidden": false,
+          "granularity": {
+            "mode": "fine",
+            "reason": null
+          },
+          "interactivity": {
+            "guard_conditions": [],
+            "guard_parameters": [],
+            "mode": "none",
+            "prompt_seams": [],
+            "reason": null
+          },
+          "parameter_map": {},
+          "parameters": [
+            "action",
+            "frame_id",
+            "expected",
+            "expected_host_id",
+            "expected_release",
+            "operator_key",
+            "confirm",
+            "supersede",
+            "deadline"
+          ],
+          "path": "host park",
+          "progress": {
+            "mode": "stdout",
+            "notification_uris": [],
+            "reason": "CLI reports human-oriented progress on stdout/stderr"
+          }
+        }
+      }
+    },
+    {
+      "alias_of": null,
+      "constraints": {
+        "hq_write": false,
         "interactive": true,
         "override_parameters": [
           "force"
@@ -6637,6 +7129,252 @@
         "secret_material": false
       },
       "kind": "action",
+      "name": "host.quarantine",
+      "parameters": [
+        {
+          "name": "action",
+          "privilege": "inherited",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "frame_id",
+          "privilege": "inherited",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "expected",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "expected_host_id",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "expected_release",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "operator_key",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "confirm",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "supersede",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "deadline",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "number"
+          }
+        }
+      ],
+      "privilege": "ordinary-mutation",
+      "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "surfaces": {
+        "cli": {
+          "aliases": [],
+          "declared_hidden": false,
+          "effective_hidden": false,
+          "granularity": {
+            "mode": "fine",
+            "reason": null
+          },
+          "interactivity": {
+            "guard_conditions": [],
+            "guard_parameters": [],
+            "mode": "none",
+            "prompt_seams": [],
+            "reason": null
+          },
+          "parameter_map": {},
+          "parameters": [
+            "action",
+            "frame_id",
+            "expected",
+            "expected_host_id",
+            "expected_release",
+            "operator_key",
+            "confirm",
+            "supersede",
+            "deadline"
+          ],
+          "path": "host quarantine",
+          "progress": {
+            "mode": "stdout",
+            "notification_uris": [],
+            "reason": "CLI reports human-oriented progress on stdout/stderr"
+          }
+        }
+      }
+    },
+    {
+      "alias_of": null,
+      "constraints": {
+        "hq_write": false,
+        "interactive": false,
+        "override_parameters": [],
+        "secret_material": false
+      },
+      "kind": "action",
+      "name": "host.resume",
+      "parameters": [
+        {
+          "name": "action",
+          "privilege": "inherited",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "frame_id",
+          "privilege": "inherited",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "expected",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "expected_host_id",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "expected_release",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "operator_key",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "confirm",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "supersede",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "deadline",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "number"
+          }
+        }
+      ],
+      "privilege": "ordinary-mutation",
+      "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "surfaces": {
+        "cli": {
+          "aliases": [],
+          "declared_hidden": false,
+          "effective_hidden": false,
+          "granularity": {
+            "mode": "fine",
+            "reason": null
+          },
+          "interactivity": {
+            "guard_conditions": [],
+            "guard_parameters": [],
+            "mode": "none",
+            "prompt_seams": [],
+            "reason": null
+          },
+          "parameter_map": {},
+          "parameters": [
+            "action",
+            "frame_id",
+            "expected",
+            "expected_host_id",
+            "expected_release",
+            "operator_key",
+            "confirm",
+            "supersede",
+            "deadline"
+          ],
+          "path": "host resume",
+          "progress": {
+            "mode": "stdout",
+            "notification_uris": [],
+            "reason": "CLI reports human-oriented progress on stdout/stderr"
+          }
+        }
+      }
+    },
+    {
+      "alias_of": null,
+      "constraints": {
+        "hq_write": false,
+        "interactive": false,
+        "override_parameters": [],
+        "secret_material": false
+      },
+      "kind": "action",
       "name": "host.retire",
       "parameters": [
         {
@@ -6670,6 +7408,54 @@
           "schema": {
             "type": "boolean"
           }
+        },
+        {
+          "name": "action",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "frame_id",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "expected",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "expected_host_id",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "expected_release",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "operator_key",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
         }
       ],
       "privilege": "ordinary-mutation",
@@ -6695,7 +7481,13 @@
             "dry_run",
             "backup",
             "confirm",
-            "purge"
+            "purge",
+            "action",
+            "frame_id",
+            "expected",
+            "expected_host_id",
+            "expected_release",
+            "operator_key"
           ],
           "path": "host retire",
           "progress": {
@@ -6842,6 +7634,201 @@
             "mode": "structured",
             "notification_uris": [],
             "reason": "--json carries machine-readable status/result data instead of a separate progress channel"
+          }
+        }
+      }
+    },
+    {
+      "alias_of": null,
+      "constraints": {
+        "hq_write": true,
+        "interactive": false,
+        "override_parameters": [],
+        "secret_material": false
+      },
+      "kind": "action",
+      "name": "hq.authority",
+      "parameters": [
+        {
+          "name": "action",
+          "privilege": "inherited",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "record",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "frame",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "public_key",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "generation",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "expected",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "operator_key",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "interpreter",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "confirm_server_custody",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "server_root",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "socket_path",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "policy_digest",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "role",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "holder_id",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "duration",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "integer"
+          }
+        },
+        {
+          "name": "client_interpreter",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "confirm",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        }
+      ],
+      "privilege": "privileged",
+      "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "surfaces": {
+        "cli": {
+          "aliases": [],
+          "declared_hidden": false,
+          "effective_hidden": false,
+          "granularity": {
+            "mode": "fine",
+            "reason": null
+          },
+          "interactivity": {
+            "guard_conditions": [],
+            "guard_parameters": [],
+            "mode": "none",
+            "prompt_seams": [],
+            "reason": null
+          },
+          "parameter_map": {},
+          "parameters": [
+            "action",
+            "record",
+            "frame",
+            "public_key",
+            "generation",
+            "expected",
+            "operator_key",
+            "interpreter",
+            "confirm_server_custody",
+            "server_root",
+            "socket_path",
+            "policy_digest",
+            "role",
+            "holder_id",
+            "duration",
+            "client_interpreter",
+            "confirm"
+          ],
+          "path": "hq authority",
+          "progress": {
+            "mode": "stdout",
+            "notification_uris": [],
+            "reason": "CLI reports human-oriented progress on stdout/stderr"
           }
         }
       }

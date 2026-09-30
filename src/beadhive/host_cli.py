@@ -62,6 +62,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
+from typing import Annotated
 
 import typer
 
@@ -947,12 +948,16 @@ def heartbeat_cmd(
         key = host.signing_key()
         if not key:
             raise host_heartbeat.HeartbeatError("no recorded host signing key")
-        sha = host_heartbeat.publish(config.hq_dir(), lease, signing_key=key)
+        from .hq_control_plane import control_plane
+
+        plane = control_plane(config.hq_dir())
+        reference = plane.heartbeat_reference(lease)
+        sha = plane.heartbeat(lease, signing_key=key)
     except (ValueError, OSError, RuntimeError) as exc:
         typer.echo(f"heartbeat refused: {exc}", err=True)
         raise typer.Exit(1) from exc
     if as_json:
-        typer.echo(json.dumps({"sha": sha, "ref": host_heartbeat.ref_name(lease.frame_id)}))
+        typer.echo(json.dumps({"sha": sha, "ref": reference}))
     else:
         typer.echo(f"published heartbeat {sha}")
 
@@ -1762,6 +1767,12 @@ def retire_cmd(
         "--purge",
         help="hard-delete each hive's clone instead of soft-archiving it (still gated)",
     ),
+    action: str | None = typer.Argument(None, help="frame lifecycle: plan, apply, or check"),
+    frame_id: str | None = typer.Argument(None, help="declared frame identity"),
+    expected: str = typer.Option("", "--expected-revision"),
+    expected_host_id: str = typer.Option("", "--expected-host-id"),
+    expected_release: str = typer.Option("", "--expected-release"),
+    operator_key: Annotated[Path | None, typer.Option("--operator-key")] = None,
 ):
     """Thin CLI wrapper over :func:`beadhive.host_retire.retire` — see that module's docstring
     for the full order + the guardrail contract (a host must never lose bead state, its own
@@ -1770,9 +1781,94 @@ def retire_cmd(
     :func:`_scan_leases`) so the two stay import-cycle-safe, matching :func:`provision_cmd`."""
     from . import host_retire
 
+    if isinstance(action, str) and action:
+        _frame_lifecycle(
+            "retire",
+            action,
+            frame_id or "",
+            expected,
+            expected_host_id,
+            expected_release,
+            operator_key,
+            confirm,
+            False,
+            None,
+        )
+        return
     results = host_retire.retire(dry_run=dry_run, backup=backup, confirm=confirm, purge=purge)
     if not dry_run and any(r.status == "failed" for r in results):
         raise typer.Exit(1)
+
+
+def _frame_lifecycle(
+    verb,
+    action,
+    frame_id,
+    expected,
+    expected_host_id,
+    expected_release,
+    operator_key,
+    confirm,
+    supersede,
+    deadline,
+):
+    from .hq_control_plane import control_plane
+
+    try:
+        result = control_plane().lifecycle(
+            verb,
+            frame_id,
+            action,
+            expected=expected,
+            expected_host_id=expected_host_id,
+            expected_release=expected_release,
+            operator_key=str(operator_key) if operator_key else "",
+            confirm=confirm,
+            supersede=supersede,
+            deadline=deadline,
+        )
+        typer.echo(json.dumps(result, sort_keys=True))
+    except (ValueError, OSError, RuntimeError) as exc:
+        typer.echo(f"{verb} refused: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+
+def _lifecycle_command(verb: str):
+    def command(
+        action: str = typer.Argument(..., help="plan, apply, or check"),
+        frame_id: str = typer.Argument(...),
+        expected: str = typer.Option("", "--expected-revision"),
+        expected_host_id: str = typer.Option("", "--expected-host-id"),
+        expected_release: str = typer.Option("", "--expected-release"),
+        operator_key: Annotated[Path | None, typer.Option("--operator-key")] = None,
+        confirm: bool = typer.Option(False, "--confirm"),
+        supersede: bool = typer.Option(False, "--supersede"),
+        deadline: float | None = typer.Option(
+            None, "--deadline", help="drain deadline, Unix seconds"
+        ),
+    ) -> None:
+        _frame_lifecycle(
+            verb,
+            action,
+            frame_id,
+            expected,
+            expected_host_id,
+            expected_release,
+            operator_key,
+            confirm,
+            supersede,
+            deadline,
+        )
+
+    command.__name__ = f"{verb}_cmd"
+    command.__doc__ = (
+        f"{verb.capitalize()} a declared frame using plan/apply/check and exact expected authority."
+    )
+    return otel.trace_verb(f"host.{verb}")(command)
+
+
+for _verb in ("admit", "cordon", "drain", "park", "resume", "quarantine"):
+    app.command(_verb)(_lifecycle_command(_verb))
 
 
 # ---- remove: drop an orphaned manifest from HQ (bh-salu) ------------------------------

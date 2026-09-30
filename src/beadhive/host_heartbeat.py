@@ -141,6 +141,10 @@ class AuthoritySnapshot:
     sequence: int
     sha: str
     first_seen: float | None
+    lifecycle_state: str = "pending"
+    eligible: bool = False
+    carrier_ref: str = ""
+    alternatives: tuple[AuthoritySnapshot, ...] = ()
 
     def __post_init__(self):
         if type(self.sequence) is not int or self.sequence < 0:
@@ -162,12 +166,13 @@ class AuthoritySnapshot:
 
 
 def load_trusted_authority(hq_dir: Path, identity: str) -> AuthoritySnapshot | None:
-    """No production binding exists yet; P6/admission must implement this port.
+    """Read protected remote authority and durable observer state atomically."""
+    from .hq_control_plane import ControlPlaneError, control_plane
 
-    In particular, load_authority's local files are diagnostic inventory, not proof
-    of remote currentness, durable replay floors or trusted first observation.
-    """
-    return None
+    try:
+        return control_plane(hq_dir).watch_state(identity)
+    except ControlPlaneError:
+        return None  # diagnostics remain available; no authority means no eligibility
 
 
 @dataclass(frozen=True)
@@ -222,6 +227,11 @@ def load_authority(hq_dir: Path, identity: str) -> ObservationAuthority | None:
 
 
 def _trust_path(hq_dir: Path, authority: ObservationAuthority | None) -> Path:
+    authoritative = Path(_required(["rev-parse", "--git-path", "bh-authority-signers"], hq_dir))
+    if not authoritative.is_absolute():
+        authoritative = hq_dir / authoritative
+    if authoritative.exists():
+        return authoritative
     candidate = authority is not None and authority.candidate_expires_at is not None
     return hq_dir / ("candidate_signers" if candidate else "allowed_signers")
 
@@ -275,6 +285,8 @@ def publish(
     *,
     signing_key: str,
     remote: str = "origin",
+    reference: str | None = None,
+    transport_options: list[str] | None = None,
     now: float | None = None,
     trusted_authority_lookup: Callable[[Path, str], AuthoritySnapshot | None] | None = None,
 ) -> str:
@@ -283,16 +295,28 @@ def publish(
     Replacing evidence whose key has been revoked requires the current explicit
     operator authority and a new commit verified to its exact current fingerprint.
     """
-    reference = ref_name(lease.frame_id or lease.holderIdentity)
-    expected = gitref.remote_sha(remote, reference, cwd=hq_dir)
+    active_reference = ref_name(lease.frame_id or lease.holderIdentity)
+    reference = reference or active_reference
+    if reference not in {
+        active_reference,
+        active_reference.replace("/heartbeat/", "/candidate-heartbeat/"),
+    }:
+        raise HeartbeatError("heartbeat carrier must belong to the granted frame")
+    transport = transport_options or []
+    expected = (
+        gitref.remote_sha(remote, reference, cwd=hq_dir, git_options=transport)
+        if transport
+        else gitref.remote_sha(remote, reference, cwd=hq_dir)
+    )
     authority = load_authority(hq_dir, lease.frame_id or lease.holderIdentity)
-    if expected:
-        at = time.time() if now is None else now
-        if not math.isfinite(at):
-            raise HeartbeatError("publication clock must be finite")
+    snapshot = None
+    if expected or trusted_authority_lookup is not None:
         snapshot = (trusted_authority_lookup or load_trusted_authority)(
             hq_dir, lease.frame_id or lease.holderIdentity
         )
+        at = time.time() if now is None else now
+        if not math.isfinite(at):
+            raise HeartbeatError("publication clock must be finite")
         if snapshot is None or at < snapshot.checked_at or at >= snapshot.valid_until:
             raise HeartbeatError("current trusted authority unavailable for replacement")
         authority = snapshot.authority
@@ -302,7 +326,7 @@ def publish(
             raise HeartbeatError("heartbeat sequence must advance authoritative accepted floor")
     trust = _trust_path(hq_dir, authority)
     if expected:
-        _required(["fetch", "--no-tags", remote, expected], hq_dir)
+        _required([*transport, "fetch", "--no-tags", remote, expected], hq_dir)
         try:
             previous_fingerprint = _fingerprint(hq_dir, expected, trust)
         except HeartbeatError:
@@ -335,7 +359,7 @@ def publish(
         hq_dir,
         f"{DOMAIN}\n",
     )
-    if expected:
+    if snapshot is not None:
         at = time.time() if now is None else now
         if at < snapshot.checked_at or at >= snapshot.valid_until:
             raise HeartbeatError("current trusted authority expired before publication")
@@ -346,7 +370,13 @@ def publish(
         if _fingerprint(hq_dir, commit, trust) != authority.key_fingerprint:
             raise HeartbeatError("replacement signer must match current authority")
     result = _git(
-        ["push", f"--force-with-lease={reference}:{expected}", remote, f"{commit}:{reference}"],
+        [
+            *transport,
+            "push",
+            f"--force-with-lease={reference}:{expected}",
+            remote,
+            f"{commit}:{reference}",
+        ],
         hq_dir,
     )
     if result.returncode:
@@ -473,7 +503,26 @@ def observe(
                 return VerifiedObservation("absent")
         sha = gitref.remote_sha(remote, reference, cwd=hq_dir)
         if not sha:
-            return VerifiedObservation("absent")
+            reference = reference.replace("/heartbeat/", "/candidate-heartbeat/")
+            sha = gitref.remote_sha(remote, reference, cwd=hq_dir)
+            if not sha:
+                return VerifiedObservation("absent")
+        snapshot = (trusted_authority_lookup or load_trusted_authority)(hq_dir, identity)
+        if snapshot is not None:
+            for selected in (snapshot, *snapshot.alternatives):
+                authority = selected.authority
+                if authority.holder_identity == manifest.host_id and (
+                    manifest.instance_ref is None or authority.instance_ref == manifest.instance_ref
+                ):
+                    snapshot = selected
+                    break
+            if snapshot.carrier_ref and snapshot.carrier_ref != reference:
+                reference = snapshot.carrier_ref
+                sha = gitref.remote_sha(remote, reference, cwd=hq_dir)
+                if not sha:
+                    return VerifiedObservation("absent")
+        if now is None:
+            at = time.time()
         _required(["fetch", "--no-tags", remote, sha], hq_dir)
         if int(_required(["cat-file", "-s", sha], hq_dir)) > MAX_BYTES:
             return VerifiedObservation("invalid", reason="oversized commit", sha=sha)
@@ -482,7 +531,6 @@ def observe(
             return VerifiedObservation("invalid", reason="not a parentless commit", sha=sha)
         if "\ngpgsig -----BEGIN SSH SIGNATURE-----" not in header.split("\n\n", 1)[0]:
             return VerifiedObservation("unsigned", sha=sha)
-        snapshot = (trusted_authority_lookup or load_trusted_authority)(hq_dir, identity)
         authority = snapshot.authority if snapshot else authority_lookup(hq_dir, identity)
         trust = _trust_path(hq_dir, authority)
         if not trust.is_file():
