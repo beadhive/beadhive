@@ -1860,7 +1860,7 @@
         "target": "beadhive.config.load"
       }
     ],
-    "production_config_importer_count": 78,
+    "production_config_importer_count": 79,
     "production_config_importers": [
       "src/beadhive/activity_publisher.py",
       "src/beadhive/agent_run_summary_reader.py",
@@ -1903,6 +1903,7 @@
       "src/beadhive/home_migration.py",
       "src/beadhive/host.py",
       "src/beadhive/host_cli.py",
+      "src/beadhive/host_heartbeat.py",
       "src/beadhive/host_provision.py",
       "src/beadhive/host_retire.py",
       "src/beadhive/hq.py",
@@ -2151,6 +2152,11 @@
       {
         "owner": "bh-18hud.5 compatibility migration ledger",
         "path": "src/beadhive/host_cli.py",
+        "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
+      },
+      {
+        "owner": "bh-18hud.5 compatibility migration ledger",
+        "path": "src/beadhive/host_heartbeat.py",
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       },
       {

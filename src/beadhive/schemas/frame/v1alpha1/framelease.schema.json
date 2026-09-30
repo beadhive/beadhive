@@ -1,0 +1,360 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://frame.beadhive.ai/contract/v1alpha1/framelease.schema.json",
+  "title": "FrameLease",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "spec"
+  ],
+  "properties": {
+    "apiVersion": {
+      "const": "frame.beadhive.ai/v1alpha1"
+    },
+    "kind": {
+      "const": "FrameLease"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,127}$"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "labels": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,127}$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 0
+          }
+        }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "domain",
+        "audience",
+        "frame_id",
+        "holderIdentity",
+        "instance_ref",
+        "key_id",
+        "epoch",
+        "config_revision",
+        "seq",
+        "renewTime",
+        "leaseDurationSeconds",
+        "intervalSeconds",
+        "release",
+        "generation",
+        "state_seen",
+        "conformance",
+        "free_sessions",
+        "report_digest",
+        "signature"
+      ],
+      "properties": {
+        "domain": {
+          "const": "beadhive/frame-heartbeat/v1"
+        },
+        "audience": {
+          "type": "string",
+          "minLength": 1
+        },
+        "frame_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,127}$"
+        },
+        "holderIdentity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "instance_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "key_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "epoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "config_revision": {
+          "type": "string",
+          "minLength": 1
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "renewTime": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "leaseDurationSeconds": {
+          "type": "integer",
+          "minimum": 3,
+          "maximum": 900
+        },
+        "intervalSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300
+        },
+        "release": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "digest"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        "toplevel": {
+          "type": "string",
+          "minLength": 1
+        },
+        "image": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "state_seen": {
+          "enum": [
+            "pending",
+            "active",
+            "draining",
+            "drained",
+            "parked",
+            "quarantined",
+            "retired"
+          ]
+        },
+        "conformance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "profile",
+            "status",
+            "checks"
+          ],
+          "properties": {
+            "profile": {
+              "type": "string",
+              "minLength": 1
+            },
+            "status": {
+              "enum": [
+                "unknown",
+                "conformant",
+                "non-conformant"
+              ]
+            },
+            "checks": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "status"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "status": {
+                    "enum": [
+                      "pass",
+                      "fail",
+                      "not-applicable"
+                    ]
+                  },
+                  "evidence": {
+                    "type": "string",
+                    "maxLength": 1024
+                  }
+                }
+              }
+            }
+          }
+        },
+        "free_sessions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "report_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "signature": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "keyId",
+            "algorithm",
+            "scope",
+            "value"
+          ],
+          "properties": {
+            "keyId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "algorithm": {
+              "enum": [
+                "ssh",
+                "ed25519",
+                "ecdsa-p256-sha256"
+              ]
+            },
+            "scope": {
+              "enum": [
+                "payload",
+                "git-commit"
+              ]
+            },
+            "signedObject": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "value": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9+/]+={0,2}$"
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "scope": {
+                    "const": "git-commit"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "signedObject"
+                ],
+                "properties": {
+                  "algorithm": {
+                    "const": "ssh"
+                  }
+                }
+              },
+              "else": {
+                "not": {
+                  "required": [
+                    "signedObject"
+                  ]
+                },
+                "properties": {
+                  "algorithm": {
+                    "enum": [
+                      "ed25519",
+                      "ecdsa-p256-sha256"
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "not": {
+            "required": [
+              "toplevel",
+              "image"
+            ]
+          }
+        }
+      ]
+    },
+    "status": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "conditions"
+      ],
+      "properties": {
+        "conditions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "status",
+              "reason",
+              "lastTransitionTime"
+            ],
+            "properties": {
+              "type": {
+                "enum": [
+                  "ProcessHealthy",
+                  "Enrolled",
+                  "Conformant",
+                  "Admitted",
+                  "DispatchEligible"
+                ]
+              },
+              "status": {
+                "enum": [
+                  "True",
+                  "False",
+                  "Unknown"
+                ]
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              },
+              "message": {
+                "type": "string",
+                "maxLength": 1024
+              },
+              "lastTransitionTime": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          },
+          "uniqueItems": true
+        }
+      }
+    }
+  }
+}

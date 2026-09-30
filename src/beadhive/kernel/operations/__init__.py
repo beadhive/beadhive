@@ -130,6 +130,7 @@ host dispatch logs|hive:string:o,lines:integer:o,as_json:boolean:o
 host dispatch run|hive:string:r,passes:integer:o,dry_run:boolean:o,seat_binary:string:o
 host dispatch runs|hive:string:o,as_json:boolean:o
 host dispatch status|hive:string:o,all_hives:boolean:o,as_json:boolean:o
+host heartbeat|record:string:r,as_json:boolean:o
 host identity|dry_run:boolean:o
 host init|role:string:r,label:string:o,identity_kind:string:o,identity_value:string:o,remote_only_hive:array:o,force:boolean:o
 host lease adopt|hive:string:r,force:boolean:o

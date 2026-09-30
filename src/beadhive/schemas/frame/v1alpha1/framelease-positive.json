@@ -1,0 +1,44 @@
+{
+  "apiVersion": "frame.beadhive.ai/v1alpha1",
+  "kind": "FrameLease",
+  "metadata": {
+    "name": "frame-doc-machine-01"
+  },
+  "spec": {
+    "domain": "beadhive/frame-heartbeat/v1",
+    "audience": "hq-example",
+    "frame_id": "frame-doc-machine-01",
+    "holderIdentity": "host-example",
+    "instance_ref": "vm/example",
+    "key_id": "SHA256:example-key",
+    "epoch": 1,
+    "config_revision": "config-1",
+    "seq": 1,
+    "renewTime": "2026-09-30T16:00:00Z",
+    "leaseDurationSeconds": 300,
+    "intervalSeconds": 60,
+    "release": {
+      "id": "frame-runtime-1.2.3",
+      "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "generation": 1,
+    "state_seen": "pending",
+    "conformance": {
+      "profile": "frame-v1",
+      "status": "conformant",
+      "checks": []
+    },
+    "free_sessions": 2,
+    "report_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "signature": {
+      "keyId": "SHA256:example-key",
+      "algorithm": "ssh",
+      "scope": "git-commit",
+      "signedObject": "1111111111111111111111111111111111111111",
+      "value": "c2lnbmF0dXJl"
+    }
+  },
+  "status": {
+    "conditions": []
+  }
+}
