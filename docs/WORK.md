@@ -344,7 +344,8 @@ same value again. Run manifests record the requested, inherited, increment, and 
 An active user systemd manager also runs them in a scope with reduced CPU and I/O weights. Set
 `enabled: false`, or set
 `BH_VALIDATION_PRIORITY=false` for a one-invocation override. The run manifest records the resolved
-values and which scheduling controls were applied.
+values and which scheduling controls were applied. Each host mechanism is probed first; missing or
+refused controls are omitted so they cannot prevent the validation command from running.
 
 ### Emergency validation bypass
 

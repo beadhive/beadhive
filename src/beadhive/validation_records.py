@@ -327,6 +327,20 @@ def attach_summary(hive: str | Path, run_id: str, summary: dict) -> dict | None:
     return current
 
 
+def attach_priority(hive: str | Path, run_id: str, priority: dict) -> dict | None:
+    """Replace the planned scheduling policy with the policy used at the execution boundary."""
+    current = read_run(hive, run_id)
+    root = _validation_root(hive)
+    if current is None or root is None:
+        return None
+    current["priority"] = dict(priority)
+    try:
+        _write_manifest(root / "runs" / run_id / "manifest.json", current)
+    except OSError:
+        return None
+    return current
+
+
 def prune_artifacts(hive: str | Path) -> int:
     """Apply bounded raw-artifact retention without deleting control manifests.
 

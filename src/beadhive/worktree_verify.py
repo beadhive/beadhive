@@ -11,6 +11,7 @@ import contextlib
 import datetime
 import json
 import os
+import re
 import secrets
 import shlex
 import shutil
@@ -681,6 +682,51 @@ def impl__prepare_verify_worktree(main: Path, entry, branch: str, cmd: str):
     return tmp, 0
 
 
+def _resolve_validation_executable(
+    command: list[str], *, cwd: Path, env: dict[str, str]
+) -> Path | None:
+    """Resolve the original validation executable with subprocess-compatible PATH semantics."""
+    if not command:
+        return None
+    executable = Path(command[0])
+    if os.path.dirname(command[0]):
+        candidate = executable if executable.is_absolute() else cwd / executable
+        return candidate if candidate.is_file() and os.access(candidate, os.X_OK) else None
+    for raw_directory in os.get_exec_path(env):
+        directory = Path(raw_directory or ".")
+        if not directory.is_absolute():
+            directory = cwd / directory
+        candidate = directory / executable
+        if (
+            candidate.is_file()
+            and os.access(candidate, os.X_OK)
+            and not _missing_shebang_interpreter(candidate, cwd=cwd)
+        ):
+            return candidate
+    return None
+
+
+def _missing_shebang_interpreter(executable: Path, *, cwd: Path) -> bool:
+    """Match the kernel's ENOENT result for an executable whose ``#!`` target is absent."""
+    try:
+        with executable.open("rb") as stream:
+            first_line = stream.readline(4096)
+    except OSError:
+        return False
+    if not first_line.startswith(b"#!"):
+        return False
+    # Linux trims spaces and tabs around the interpreter token but keeps a carriage return
+    # before the newline as part of its path. Generic bytes.strip()/split() would therefore
+    # misclassify a CRLF shebang as launchable even though exec returns ENOENT for `/bin/sh\r`.
+    shebang = first_line[2:].removesuffix(b"\n").lstrip(b" \t")
+    if not shebang:
+        return False
+    interpreter = Path(os.fsdecode(re.split(rb"[ \t]+", shebang, maxsplit=1)[0]))
+    if not interpreter.is_absolute():
+        interpreter = cwd / interpreter
+    return not (interpreter.is_file() and os.access(interpreter, os.X_OK))
+
+
 def _impl_clean_checkout_unadmitted(
     entry,
     branch,
@@ -796,9 +842,8 @@ def _impl_clean_checkout_unadmitted(
         head_out = getattr(head, "stdout", "") or ""  # tolerate faked run() results without stdout
         validated_sha = head_out.strip() if head.returncode == 0 and head_out.strip() else sha
         tree = validation_ledger.tree_of(entry, validated_sha)
-        validation_argv, priority_policy = validation_admission.priority_command(
-            cfg, shlex.split(cmd)
-        )
+        command_argv = shlex.split(cmd)
+        validation_argv, priority_policy = validation_admission.priority_command(cfg, command_argv)
         run_record = validation_records.begin_run(
             main,
             bead=bead,
@@ -853,6 +898,26 @@ def _impl_clean_checkout_unadmitted(
                     reused=False,
                 )
             raise
+        child_base_env = _color_neutral_env(otel.telemetry_neutral_env())
+        resolved_executable = _resolve_validation_executable(
+            command_argv, cwd=tmp, env=child_base_env
+        )
+        if resolved_executable is None or _missing_shebang_interpreter(
+            resolved_executable, cwd=tmp
+        ):
+            # A scheduling wrapper can start successfully and then translate the underlying
+            # exec failure into its own exit 127. Launch the original argv in this case so the
+            # run seam retains its explicit bh_missing_binary tag. Existing executables that
+            # choose to return 127 still use the wrapped path and remain ordinary red runs.
+            validation_argv = command_argv
+            priority_policy = {
+                **priority_policy,
+                "applied": False,
+                "mechanism": "unavailable" if priority_policy["enabled"] else "disabled",
+                "effective_nice": priority_policy.get("inherited_nice"),
+            }
+            if run_record is not None:
+                validation_records.attach_priority(main, run_record["run_id"], priority_policy)
         # BH_TEST_REPORT_DIR (bh-ku9n9.20): a fresh, empty drop zone exported into every
         # validation subprocess, with no opt-in and no bh config. bh never invokes a runner — it
         # names a directory and reads what appears. `rc` below stays the sole verdict; an
@@ -877,7 +942,7 @@ def _impl_clean_checkout_unadmitted(
             protocol_path = validation_records.protocol_path(
                 drop, config.work_value(cfg, entry, "validation_protocol", "none")
             )
-            child_env = test_report.export(_color_neutral_env(otel.telemetry_neutral_env()), drop)
+            child_env = test_report.export(child_base_env, drop)
             if protocol_path is not None:
                 child_env[validation_records.PROTOCOL_RESULT_ENV] = str(protocol_path)
             try:

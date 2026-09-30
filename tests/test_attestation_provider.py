@@ -259,6 +259,7 @@ def test_bh_never_invokes_a_test_runner(tmp_path, monkeypatch):
         lambda name: f"/usr/bin/{name}" if name in {"nice", "ionice"} else None,
     )
     monkeypatch.setattr(validation_admission, "_current_nice", lambda: 0)
+    monkeypatch.setattr(validation_admission, "_priority_prefix_available", lambda _prefix: True)
     spawns = []
 
     def _fake_run(cmd, **kw):

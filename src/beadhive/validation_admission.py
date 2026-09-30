@@ -8,6 +8,7 @@ import hashlib
 import os
 import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -107,6 +108,21 @@ def _current_nice() -> int | None:
         return None
 
 
+def _priority_prefix_available(prefix: list[str]) -> bool:
+    """Return whether a scheduling prefix can launch a harmless child on this host."""
+    try:
+        probe = subprocess.run(
+            [*prefix, sys.executable, "-c", "pass"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            check=False,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return probe.returncode == 0
+
+
 def priority_command(cfg: dict, command: list[str]) -> tuple[list[str], dict]:
     """Return the validation launcher and an auditable summary of its scheduling policy.
 
@@ -115,9 +131,7 @@ def priority_command(cfg: dict, command: list[str]) -> tuple[list[str], dict]:
     """
     enabled, nice_level, ionice_class, ionice_priority = _priority_settings(cfg)
     inherited_nice = _current_nice()
-    nice_increment = (
-        max(0, nice_level - inherited_nice) if inherited_nice is not None else None
-    )
+    nice_increment = max(0, nice_level - inherited_nice) if inherited_nice is not None else None
     policy = {
         "enabled": enabled,
         "applied": False,
@@ -142,15 +156,18 @@ def priority_command(cfg: dict, command: list[str]) -> tuple[list[str], dict]:
     launcher = list(command)
     layers = []
     if nice and nice_increment:
-        launcher = [nice, "-n", str(nice_increment), *launcher]
-        layers.append("nice")
-        policy["effective_nice"] = nice_level
+        nice_argv = [nice, "-n", str(nice_increment)]
+        if _priority_prefix_available(nice_argv):
+            launcher = [*nice_argv, *launcher]
+            layers.append("nice")
+            policy["effective_nice"] = nice_level
     if ionice:
         ionice_argv = [ionice, f"-c{ionice_class}"]
         if ionice_class == 2:
             ionice_argv.append(f"-n{ionice_priority}")
-        launcher = [*ionice_argv, *launcher]
-        layers.append("ionice")
+        if _priority_prefix_available(ionice_argv):
+            launcher = [*ionice_argv, *launcher]
+            layers.append("ionice")
 
     # A user manager is often absent in CI and containers even when systemd-run is installed.
     # Probe only local session evidence and keep the command path non-blocking.
