@@ -338,8 +338,11 @@ coalescing, xdist fan-out, and the separate Dolt fixture semaphore.
 
 `work.validation_priority` is host-owned and defaults to the values above. Only non-negative nice
 levels and the reduced I/O classes (best-effort or idle) are accepted. Validation commands use the
-configured values when `nice` and `ionice` are available; an active user systemd manager also runs
-them in a scope with reduced CPU and I/O weights. Set `enabled: false`, or set
+configured values when `nice` and `ionice` are available. The configured nice value is a minimum:
+an already less favored caller keeps its inherited level, and nested validation does not add the
+same value again. Run manifests record the requested, inherited, increment, and effective levels.
+An active user systemd manager also runs them in a scope with reduced CPU and I/O weights. Set
+`enabled: false`, or set
 `BH_VALIDATION_PRIORITY=false` for a one-invocation override. The run manifest records the resolved
 values and which scheduling controls were applied.
 

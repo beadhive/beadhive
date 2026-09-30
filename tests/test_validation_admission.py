@@ -24,6 +24,7 @@ def test_priority_command_defaults_on_and_applies_nice_ionice_to_child(monkeypat
         lambda name: f"/usr/bin/{name}" if name in {"nice", "ionice"} else None,
     )
 
+    inherited_nice = os.getpriority(os.PRIO_PROCESS, 0)
     argv, policy = validation_admission.priority_command(
         {},
         [
@@ -34,10 +35,15 @@ def test_priority_command_defaults_on_and_applies_nice_ionice_to_child(monkeypat
     )
     result = subprocess.run(argv, capture_output=True, text=True, check=True)
 
-    assert result.stdout.strip() == "10"
+    effective_nice = max(inherited_nice, 10)
+    assert result.stdout.strip() == str(effective_nice)
     assert policy["enabled"] is True
     assert policy["applied"] is True
-    assert policy["mechanism"] == "nice+ionice"
+    assert policy["mechanism"] == ("nice+ionice" if inherited_nice < 10 else "ionice")
+    assert policy["requested_nice"] == 10
+    assert policy["inherited_nice"] == inherited_nice
+    assert policy["effective_nice"] == effective_nice
+    assert policy["nice_increment"] == max(0, 10 - inherited_nice)
 
 
 def test_priority_command_applies_configured_nice_and_ionice_to_real_child(monkeypatch):
@@ -55,6 +61,7 @@ def test_priority_command_applies_configured_nice_and_ionice_to_real_child(monke
         "capture_output=True,text=True,check=True); "
         "print(json.dumps({'nice':os.getpriority(os.PRIO_PROCESS,0),'ionice':io.stdout.strip()}))"
     )
+    inherited_nice = os.getpriority(os.PRIO_PROCESS, 0)
     argv, policy = validation_admission.priority_command(
         {
             "work": {
@@ -69,9 +76,12 @@ def test_priority_command_applies_configured_nice_and_ionice_to_real_child(monke
     )
     payload = json.loads(subprocess.run(argv, capture_output=True, text=True, check=True).stdout)
 
-    assert payload["nice"] == 13
+    assert payload["nice"] == max(inherited_nice, 13)
     assert payload["ionice"] == "best-effort: prio 6"
     assert policy["nice"] == 13
+    assert policy["requested_nice"] == 13
+    assert policy["inherited_nice"] == inherited_nice
+    assert policy["effective_nice"] == max(inherited_nice, 13)
     assert policy["ionice_class"] == 2
     assert policy["ionice_priority"] == 6
 
@@ -95,6 +105,7 @@ def test_priority_config_rejects_priority_raising_or_invalid_values(monkeypatch)
 
 def test_priority_command_supports_emergency_disable_and_graceful_degrade(monkeypatch, tmp_path):
     command = ["gate"]
+    monkeypatch.setattr(validation_admission, "_current_nice", lambda: 0)
     monkeypatch.setattr(validation_admission.shutil, "which", lambda _name: None)
     monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
     monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
@@ -117,9 +128,23 @@ def test_priority_command_supports_emergency_disable_and_graceful_degrade(monkey
     assert unavailable["mechanism"] == "unavailable"
     assert unavailable["enabled"] is True
 
+    monkeypatch.setattr(validation_admission, "_current_nice", lambda: None)
+    monkeypatch.setattr(
+        validation_admission.shutil,
+        "which",
+        lambda name: f"/usr/bin/{name}" if name in {"nice", "ionice"} else None,
+    )
+    unknown_argv, unknown = validation_admission.priority_command({}, command)
+    assert unknown_argv == ["/usr/bin/ionice", "-c2", "-n7", "gate"]
+    assert unknown["mechanism"] == "ionice"
+    assert unknown["inherited_nice"] is None
+    assert unknown["effective_nice"] is None
+    assert unknown["nice_increment"] is None
+
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     (runtime / "bus").touch()
+    monkeypatch.setattr(validation_admission, "_current_nice", lambda: 0)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
     monkeypatch.setattr(
         validation_admission.shutil,
@@ -145,6 +170,7 @@ def test_priority_command_uses_safe_configured_idle_class(monkeypatch):
         "which",
         lambda name: f"/usr/bin/{name}" if name in {"nice", "ionice"} else None,
     )
+    monkeypatch.setattr(validation_admission, "_current_nice", lambda: 0)
 
     argv, policy = validation_admission.priority_command(
         {
@@ -166,6 +192,46 @@ def test_priority_command_uses_safe_configured_idle_class(monkeypatch):
     assert policy["ionice_priority"] == 1
 
 
+def test_priority_command_is_idempotent_when_nested_under_lower_priority(monkeypatch):
+    nice = shutil.which("nice")
+    ionice = shutil.which("ionice")
+    if not nice or not ionice:
+        pytest.skip("nice and ionice executables are required for the nesting proof")
+    monkeypatch.delenv("BH_VALIDATION_PRIORITY", raising=False)
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+
+    nested = """
+import json
+import subprocess
+import sys
+from beadhive import validation_admission
+
+argv, policy = validation_admission.priority_command(
+    {},
+    [sys.executable, '-c', 'import os; print(os.getpriority(os.PRIO_PROCESS, 0))'],
+)
+result = subprocess.run(argv, capture_output=True, text=True, check=True)
+print(json.dumps({'child_nice': int(result.stdout), 'policy': policy}))
+"""
+    inherited_nice = os.getpriority(os.PRIO_PROCESS, 0)
+    argv, outer_policy = validation_admission.priority_command(
+        {"work": {"validation_priority": {"nice": 13}}},
+        [sys.executable, "-c", nested],
+    )
+    payload = json.loads(subprocess.run(argv, capture_output=True, text=True, check=True).stdout)
+    expected_nice = max(inherited_nice, 13)
+
+    assert payload["child_nice"] == expected_nice
+    assert outer_policy["requested_nice"] == 13
+    assert outer_policy["effective_nice"] == expected_nice
+    assert payload["policy"]["requested_nice"] == 10
+    assert payload["policy"]["inherited_nice"] == expected_nice
+    assert payload["policy"]["effective_nice"] == expected_nice
+    assert payload["policy"]["nice_increment"] == 0
+    assert payload["policy"]["mechanism"] == "ionice"
+
+
 def test_priority_command_adds_user_systemd_scope_when_bus_is_available(monkeypatch, tmp_path):
     runtime = tmp_path / "runtime"
     runtime.mkdir()
@@ -180,6 +246,7 @@ def test_priority_command_adds_user_systemd_scope_when_bus_is_available(monkeypa
             f"/usr/bin/{name}" if name in {"nice", "ionice", "systemd-run", "true"} else None
         ),
     )
+    monkeypatch.setattr(validation_admission, "_current_nice", lambda: 0)
     monkeypatch.setattr(
         validation_admission.subprocess,
         "run",
@@ -231,6 +298,7 @@ print(json.dumps({
     'ionice': io.stdout.strip(),
 }))
 """
+    inherited_nice = os.getpriority(os.PRIO_PROCESS, 0)
     argv, policy = validation_admission.priority_command({}, [sys.executable, "-c", script])
     if "systemd-user-scope" not in policy["mechanism"]:
         pytest.skip("user systemd scope rejected the reduced-weight probe")
@@ -240,7 +308,7 @@ print(json.dumps({
     assert payload["cpu_weight"] == "20"
     if payload["io_weight"] is not None:
         assert payload["io_weight"] in {"20", "default 20"}
-    assert payload["nice"] == 10
+    assert payload["nice"] == max(inherited_nice, 10)
     assert payload["ionice"] == "best-effort: prio 7"
 
 

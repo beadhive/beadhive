@@ -99,6 +99,14 @@ def _priority_settings(cfg: dict) -> tuple[bool, int, int, int]:
     return enabled, nice_level, ionice_class, ionice_priority
 
 
+def _current_nice() -> int | None:
+    """Read inherited process niceness when the host exposes the POSIX priority API."""
+    try:
+        return os.getpriority(os.PRIO_PROCESS, 0)
+    except (AttributeError, OSError):
+        return None
+
+
 def priority_command(cfg: dict, command: list[str]) -> tuple[list[str], dict]:
     """Return the validation launcher and an auditable summary of its scheduling policy.
 
@@ -106,11 +114,21 @@ def priority_command(cfg: dict, command: list[str]) -> tuple[list[str], dict]:
     otherwise the host-level `work.validation_priority` setting defaults to enabled.
     """
     enabled, nice_level, ionice_class, ionice_priority = _priority_settings(cfg)
+    inherited_nice = _current_nice()
+    nice_increment = (
+        max(0, nice_level - inherited_nice) if inherited_nice is not None else None
+    )
     policy = {
         "enabled": enabled,
         "applied": False,
         "mechanism": "disabled" if not enabled else "unavailable",
+        # Keep `nice` as the configured value for manifest compatibility while making the
+        # request, inherited state, and expected result explicit.
         "nice": nice_level,
+        "requested_nice": nice_level,
+        "inherited_nice": inherited_nice,
+        "effective_nice": inherited_nice,
+        "nice_increment": nice_increment,
         "ionice_class": ionice_class,
         "ionice_priority": ionice_priority,
         "cpu_weight": 20,
@@ -123,9 +141,10 @@ def priority_command(cfg: dict, command: list[str]) -> tuple[list[str], dict]:
     ionice = shutil.which("ionice")
     launcher = list(command)
     layers = []
-    if nice:
-        launcher = [nice, "-n", str(nice_level), *launcher]
+    if nice and nice_increment:
+        launcher = [nice, "-n", str(nice_increment), *launcher]
         layers.append("nice")
+        policy["effective_nice"] = nice_level
     if ionice:
         ionice_argv = [ionice, f"-c{ionice_class}"]
         if ionice_class == 2:

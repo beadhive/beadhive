@@ -258,6 +258,7 @@ def test_bh_never_invokes_a_test_runner(tmp_path, monkeypatch):
         "which",
         lambda name: f"/usr/bin/{name}" if name in {"nice", "ionice"} else None,
     )
+    monkeypatch.setattr(validation_admission, "_current_nice", lambda: 0)
     spawns = []
 
     def _fake_run(cmd, **kw):
@@ -275,6 +276,10 @@ def test_bh_never_invokes_a_test_runner(tmp_path, monkeypatch):
     priority = json.loads(manifests[0].read_text())["priority"]
     assert priority["enabled"] is True
     assert priority["mechanism"] == "nice+ionice"
+    assert priority["requested_nice"] == 10
+    assert priority["inherited_nice"] == 0
+    assert priority["nice_increment"] == 10
+    assert priority["effective_nice"] == 10
     # …and the provider module itself cannot spawn anything: it imports no process seam at all.
     assert not [n for n in ("subprocess", "os", "run") if hasattr(test_report, n)]
 

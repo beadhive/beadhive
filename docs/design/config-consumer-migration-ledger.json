@@ -2486,7 +2486,7 @@
       "tests/unit/modules/config/test_consumer_settings.py",
       "tests/unit/test_pure_module_independence.py"
     ],
-    "test_config_schema_importer_count": 25,
+    "test_config_schema_importer_count": 26,
     "test_config_schema_importers": [
       "tests/contracts/test_config_contract_compatibility.py",
       "tests/test_attestation_provider.py",
@@ -2512,7 +2512,8 @@
       "tests/test_model_routing.py",
       "tests/test_precious.py",
       "tests/test_runtime.py",
-      "tests/test_schedule.py"
+      "tests/test_schedule.py",
+      "tests/test_validation_admission.py"
     ]
   },
   "removal_prerequisites": [
