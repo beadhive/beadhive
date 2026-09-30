@@ -13,6 +13,28 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.20.2 (2026-09-30)
+
+### Fix
+
+- **work**: probe validation priority controls
+- **work**: make validation niceness idempotent
+- **config**: refresh validation priority contracts
+- **work**: make validation priority configurable
+- **work**: lower validation process priority
+- **work**: inspect merge result for operator path collisions
+- **work**: exclude unchanged stale branch paths from merge collisions
+- **work**: permit safe untracked scratch during landing
+- **work**: close container history review gaps
+- **work**: guard container refresh at merge boundaries
+- **work**: account for nested epic review history
+- **work**: reject malformed container refresh before dispatch
+- **worktrees**: ignore derived bead JSONL churn
+- **gitignore**: retain bd gate lock compatibility rule
+- **work**: retain attribution after red shared-main validation
+- **work**: preserve review verdicts on merge preconditions
+- **validation**: order stateful tests after evidence refresh
+
 ## v0.20.1 (2026-09-29)
 
 ### Fix
