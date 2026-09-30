@@ -276,6 +276,41 @@ def _direct_work_children(epic: str, main) -> tuple[list[dict], list[str]]:
     return children, []
 
 
+def _reviewed_subtree_commits(child: dict, main, seen=None) -> tuple[set[str], list[str]]:
+    """Collect durable commit provenance from a child and its reviewed epic descendants."""
+    seen = set() if seen is None else seen
+    bead = str(child.get("id") or "")
+    commits = set(git_linkage.commits_from_data(child))
+    if not bead or bead in seen or str(child.get("issue_type") or "") != "epic":
+        return commits, []
+    seen.add(bead)
+    descendants, errors = _direct_work_children(bead, main)
+    for descendant in descendants:
+        nested_commits, nested_errors = _reviewed_subtree_commits(descendant, main, seen)
+        commits.update(nested_commits)
+        errors.extend(nested_errors)
+    return commits, errors
+
+
+def _landed_epic_bubble_on_base(entry, child: dict, base: str) -> bool:
+    """Prove a landed child epic's canonical molecule bubble is already in this epic's base."""
+    bead = str(child.get("id") or "")
+    if str(child.get("issue_type") or "") != "epic" or not _landed_child(child):
+        return False
+    for sha in git_linkage.commits_from_data(child):
+        if not _is_ancestor_of(entry, sha, base):
+            continue
+        rows = worktree.commit_rows(entry, f"{sha}^", sha)
+        if any(
+            str(row.get("sha") or "") == sha
+            and str(row.get("subject") or "") == f"chore(merge): molecule {bead}"
+            and len(row.get("parents") or []) == 2
+            for row in rows
+        ):
+            return True
+    return False
+
+
 def _first_parent_spine(
     rows: list[dict],
     branch_sha: str,
@@ -398,9 +433,17 @@ def _container_refresh_errors(entry, branch: str, upstream: str) -> list[str]:
     )
     if errors:
         return []
-    candidates = [
-        row for row in spine if str(row.get("subject") or "").startswith(_REFRESH_PREFIX)
-    ]
+    candidates = []
+    for row in spine:
+        parents = [str(parent) for parent in (row.get("parents") or [])]
+        subject = str(row.get("subject") or "")
+        refresh_shape = (
+            len(parents) == 2
+            and _is_ancestor_of(entry, parents[1], upstream)
+            and not _is_ancestor_of(entry, parents[0], upstream)
+        )
+        if subject.startswith(_REFRESH_PREFIX) or refresh_shape:
+            candidates.append(row)
     return [
         error
         for row in candidates
@@ -737,10 +780,13 @@ def epic_history_policy(
     """Audit an assembled epic without flattening its reviewed child graph.
 
     ``max_commits`` remains the unchanged leaf budget.  Epic capacity is instead the exact union
-    of commits already linked to landed direct children and reachable in ``base..branch``.  The
-    numeric allowance therefore cannot admit noise: every commit must be linked, and the epic's
-    own first-parent spine must consist solely of lifecycle no-ff bubbles that name those direct
-    children.  Child/batch limits were enforced at their own submit+merge boundaries; this guard
+    of commits already linked to landed direct children and reachable in ``base..branch``. For a
+    direct child epic, linkage includes the recursively reviewed descendant tree because its
+    nested leaf bubbles are part of the parent integration. A canonical child-epic land bubble
+    already reachable from ``base`` is also accepted as pre-integrated. The numeric allowance
+    therefore cannot admit noise: every introduced commit must be linked, and the epic's own
+    first-parent spine must consist solely of lifecycle no-ff bubbles that name those direct
+    children. Child/batch limits were enforced at their own submit+merge boundaries; this guard
     preserves their graph and verifies the durable provenance they recorded there.
     """
     # Submit/finish historically pass the integration ref (for example ``main``), while show
@@ -752,10 +798,11 @@ def epic_history_policy(
     range_shas = {str(row.get("sha") or "") for row in rows if row.get("sha")}
     children, errors = _direct_work_children(epic, main)
     direct = {str(child.get("id") or ""): child for child in children if child.get("id")}
-    linked_by_child = {
-        child_id: set(git_linkage.commits_from_data(child)) & range_shas
-        for child_id, child in direct.items()
-    }
+    linked_by_child = {}
+    for child_id, child in direct.items():
+        reviewed_commits, subtree_errors = _reviewed_subtree_commits(child, main)
+        linked_by_child[child_id] = reviewed_commits & range_shas
+        errors.extend(subtree_errors)
     branch_sha = worktree._branch_sha(entry, branch)
     epic_data = bd.show(epic, main) or {}
     parent = str(epic_data.get("parent") or "")
@@ -838,6 +885,12 @@ def epic_history_policy(
         accounted.update(introduced)
 
     landed = {child_id for child_id, child in direct.items() if _landed_child(child)}
+    already_in_base = {
+        child_id
+        for child_id, child in direct.items()
+        if _landed_epic_bubble_on_base(entry, child, base)
+    }
+    integrated.update(already_in_base)
     missing_integrations = landed - integrated
     if missing_integrations and not unsafe_refresh:
         errors.append(

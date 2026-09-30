@@ -5316,6 +5316,56 @@ def test_finish_lands_nested_epic_onto_workstream_then_workstream_onto_main(hive
     assert not worktree._branch_exists(hive.main, "wt/bead/epic/mr-ws")
 
 
+def test_parent_finish_accounts_for_reviewed_nested_epic_descendants(hive, fakebd, capsys):
+    """A nested epic's linked descendant bubbles attribute its full integration in the parent."""
+    parent, nested = "mr-nested-parent", "mr-nested-parent.1"
+    fakebd.seed(parent, title="parent", issue_type="epic")
+    fakebd.states[parent] = {"kickoff": "approved"}
+    fakebd.seed(nested, title="nested", issue_type="epic", parent=parent)
+    fakebd.states[nested] = {"kickoff": "approved"}
+    work.start(epic=parent, as_="disp/parent", hive="myrepo")
+    work.start(epic=nested, as_="disp/nested", hive="myrepo")
+    _land_epic_child(hive, fakebd, nested, 1)
+    work.finish(epic=nested, hive="myrepo")
+
+    capsys.readouterr()
+    work.show(bead=parent, view=["log"], json_out=True, hive="myrepo")
+    policy = json.loads(capsys.readouterr().out)["history_policy"]
+    assert policy["valid"], policy["errors"]
+    assert policy["direct_children"] == policy["integrated_children"] == 1
+
+    work.submit(bead=parent, as_="disp/parent", hive="myrepo")
+    fakebd.resolve_review(parent)
+    work.finish(epic=parent, hive="myrepo")
+    assert fakebd.beads[parent]["status"] == "closed"
+
+
+def test_parent_finish_accepts_nested_epic_landed_before_container_open(hive, fakebd, capsys):
+    """A nested molecule already in the integration base needs no duplicate parent bubble."""
+    parent, nested = "mr-prior-parent", "mr-prior-parent.1"
+    fakebd.seed(parent, title="parent", issue_type="epic")
+    fakebd.states[parent] = {"kickoff": "approved"}
+    fakebd.seed(nested, title="nested", issue_type="epic", parent=parent)
+    fakebd.states[nested] = {"kickoff": "approved"}
+    work.start(epic=nested, as_="disp/nested", hive="myrepo")
+    _land_epic_child(hive, fakebd, nested, 1)
+    work.finish(epic=nested, hive="myrepo")
+
+    # The parent container opens only after the nested molecule's land bubble reached main.
+    work.start(epic=parent, as_="disp/parent", hive="myrepo")
+    _land_epic_child(hive, fakebd, parent, 2)
+    capsys.readouterr()
+    work.show(bead=parent, view=["log"], json_out=True, hive="myrepo")
+    policy = json.loads(capsys.readouterr().out)["history_policy"]
+    assert policy["valid"], policy["errors"]
+    assert policy["direct_children"] == policy["integrated_children"] == 2
+
+    work.submit(bead=parent, as_="disp/parent", hive="myrepo")
+    fakebd.resolve_review(parent)
+    work.finish(epic=parent, hive="myrepo")
+    assert fakebd.beads[parent]["status"] == "closed"
+
+
 def test_finish_tears_down_coordinator_seat(hive, fakebd):
     """finish tears the seat down after the land: the coordinator worktree is removed AND the
     container branch wt/bead/epic/<epic> is deleted (mirrors merge --rm)."""
