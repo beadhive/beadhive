@@ -1,0 +1,11 @@
+host_id: 6ae345b9-81a8-4c9b-8661-c5a4420fc12d
+label: beadhive-factory
+os: linux
+arch: x86_64
+role: executor
+identity:
+  kind: none
+  value: ''
+capacity: {}
+harnesses: {}
+remote_only_hives: []

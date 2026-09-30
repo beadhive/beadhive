@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from typer.testing import CliRunner
 
 from beadhive import config, host, host_cli, hosts
@@ -288,7 +289,17 @@ def test_render_table_renders_base_columns():
     out = host_cli.render_table(rows, host_cli.BASE_COLUMNS)
 
     lines = out.splitlines()
-    assert lines[0].split() == ["HOST_ID", "LABEL", "ROLE", "LAST_SEEN", "STALE"]
+    assert lines[0].split() == [
+        "HOST_ID",
+        "LABEL",
+        "ROLE",
+        "FRAME_ID",
+        "STATE",
+        "RELEASE",
+        "CAPABILITIES",
+        "LAST_SEEN",
+        "STALE",
+    ]
     assert "h1" in lines[1] and "L1" in lines[1] and "viewer" in lines[1]
 
 
@@ -380,3 +391,48 @@ def test_show_malformed_manifest_fails_loudly_naming_the_offending_key():
 
     assert result.exit_code == 1
     assert "role" in result.output
+
+
+@pytest.mark.parametrize("verb", ["list", "show"])
+@pytest.mark.parametrize("as_json", [False, True])
+def test_frame_membership_visible_in_cli(verb, as_json):
+    manifest = hosts.HostManifest(
+        host_id="frame-host",
+        label="frame",
+        os="linux",
+        arch="x86_64",
+        role="executor",
+        identity=hosts.IdentityMechanism(kind="none"),
+        frame_id="frame-01",
+        release={"id": "v0.20.2", "digest": "sha256:abc"},
+        capabilities={
+            "isolation": "microvm",
+            "trust_zone": "vendor-hosted",
+            "arch": "x86_64",
+            "harnesses": ["codex"],
+            "max_sessions": 2,
+        },
+    )
+    hosts.save(config.hq_dir(), manifest)
+    args = ["host", verb] + ([manifest.host_id] if verb == "show" else [])
+    result = runner.invoke(app, args + (["--json"] if as_json else []))
+    assert result.exit_code == 0, result.output
+    if as_json:
+        payload = json.loads(result.stdout)
+        row = payload[0] if verb == "list" else payload
+        assert row["frame_id"] == "frame-01"
+        assert row["state"] == "pending"
+        assert row["release"] == {"id": "v0.20.2", "digest": "sha256:abc"}
+        assert row["capabilities"]["isolation"] == "microvm"
+        assert row["capabilities"]["max_sessions"] == 2
+    else:
+        for value in [
+            "frame-01",
+            "pending",
+            "v0.20.2",
+            "sha256:abc",
+            "microvm",
+            "vendor-hosted",
+            "codex",
+        ]:
+            assert value in result.stdout
