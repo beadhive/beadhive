@@ -555,16 +555,20 @@ def impl__merge_molecule(api, cfg, epic, hive, override_reason="", override_acto
         stale = api.worktree.base_of(entry, mol_branch, base) != pre
         prof = api.config.work_identity(cfg, entry)
         agent = prof["mode"] == "agent"
-        mrc, out = api.worktree.merge_no_ff(
-            entry,
-            mol_branch,
-            base,
-            name=prof["name"] or "" if agent else "",
-            email=prof["email"] or "" if agent else "",
-            signing_key=prof["signing_key"] or "" if agent else "",
-            sign=prof["sign"] if agent else False,
-            message=f"chore(merge): molecule {epic}",
-        )
+        try:
+            mrc, out = api.worktree.merge_no_ff(
+                entry,
+                mol_branch,
+                base,
+                name=prof["name"] or "" if agent else "",
+                email=prof["email"] or "" if agent else "",
+                signing_key=prof["signing_key"] or "" if agent else "",
+                sign=prof["sign"] if agent else False,
+                message=f"chore(merge): molecule {epic}",
+            )
+        except api.worktree.MergePreconditionError as exc:
+            api.typer.echo(f"✗ workspace precondition failed — nothing landed: {exc}", err=True)
+            raise api.typer.Exit(1) from None
         if mrc != 0:
             api.otel.count_merge_outcome({**slot_attrs, "bh.merge.how": "conflict"})
             where = api.work_logic.record_merge_conflict(
@@ -972,19 +976,23 @@ def impl__merge_bead_no_ff(api, entry, branch, base, target, cfg, bead, main, sl
     `review=changes-requested` naming the conflicted paths), not just this stderr transcript."""
     prof = api.config.work_identity(cfg, entry)
     agent = prof["mode"] == "agent"
-    rc, out, how = api.worktree.try_merge_rebase(
-        entry,
-        branch,
-        base,
-        target,
-        name=prof["name"] or "" if agent else "",
-        email=prof["email"] or "" if agent else "",
-        signing_key=prof["signing_key"] or "" if agent else "",
-        sign=prof["sign"] if agent else False,
-        message=f"chore(merge): bead {bead}",
-        union_globs=tuple(api.config.union_globs(cfg, entry)),
-        validate_cmd=api.config.validate_cmd(cfg, entry, "union"),
-    )
+    try:
+        rc, out, how = api.worktree.try_merge_rebase(
+            entry,
+            branch,
+            base,
+            target,
+            name=prof["name"] or "" if agent else "",
+            email=prof["email"] or "" if agent else "",
+            signing_key=prof["signing_key"] or "" if agent else "",
+            sign=prof["sign"] if agent else False,
+            message=f"chore(merge): bead {bead}",
+            union_globs=tuple(api.config.union_globs(cfg, entry)),
+            validate_cmd=api.config.validate_cmd(cfg, entry, "union"),
+        )
+    except api.worktree.MergePreconditionError as exc:
+        api.typer.echo(f"✗ workspace precondition failed — nothing landed: {exc}", err=True)
+        raise api.typer.Exit(1) from None
     if rc != 0:
         api.otel.count_merge_outcome({**slot_attrs, "bh.merge.how": "conflict"})
         where = api.work_logic.record_merge_conflict(entry, branch, base, main, [bead], "merge")
