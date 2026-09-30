@@ -9,17 +9,17 @@
   },
   "fan_in": {
     "production_config_importers_before": 95,
-    "production_config_importers_after": 78,
+    "production_config_importers_after": 79,
     "production_config_schema_importers_before": 8,
-    "production_config_schema_importers_after": 3,
+    "production_config_schema_importers_after": 5,
     "remaining_dependency_owner": "bh-18hud.5 compatibility migration ledger",
     "remaining_dependency_rationale": "Every remaining path is enumerated in the dependency ledger with an owner and a separately bounded port plus reverse-dependent closure as its removal gate."
   },
   "static_test_blast_radius": {
     "historical_documented_files": 129,
     "exact_ast_files_at_baseline": 135,
-    "exact_ast_files_after": 144,
-    "delta_explanation": "The historical 129 used an older static graph snapshot. Re-running the checked AST definition at the exact implementation base finds 135 after repository growth; the config module candidate and later workspace, precious-worktree, and host-daemon compatibility suites account for the current exact AST inventory. This static count does not claim a smaller dynamic closure.",
+    "exact_ast_files_after": 145,
+    "delta_explanation": "The historical 129 used an older static graph snapshot. Re-running the checked AST definition at the exact implementation base finds 135 after repository growth; the config module candidate and later workspace, precious-worktree, and host-daemon compatibility suites account for the current exact AST inventory. This static count does not claim a smaller dynamic closure. The bh-qa7vc Factory enrollment and daemon-origin coverage is included in the current exact AST inventory.",
     "owner": "configuration compatibility suite and bh-18hud.5 migration ledger"
   },
   "import_graph": {
@@ -96,5 +96,9 @@
     "warning_rationale": "Expected Pydantic serializer warning from the invalid plugin-fragment default rejection test."
   },
   "selective_ci_graduation_claimed": false,
-  "graduation_note": "No closure is promoted to authoritative CI selection solely from this extraction; just check remains the submission decision."
+  "graduation_note": "No closure is promoted to authoritative CI selection solely from this extraction; just check remains the submission decision.",
+  "current_inventory_update": {
+    "bead": "bh-qa7vc",
+    "reason": "Synchronize current config importer inventory after Factory enrollment identity and listener config wiring; historical extraction measurements and full-gate evidence are unchanged."
+  }
 }

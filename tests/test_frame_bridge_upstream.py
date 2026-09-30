@@ -710,7 +710,7 @@ def test_host_daemon_adapter_is_loopback_only_and_rejects_malformed_snapshots() 
     async def exercise() -> dict[str, object]:
         transport = httpx.MockTransport(handler)
         async with httpx.AsyncClient(
-            transport=transport, base_url="http://127.0.0.1:8420"
+            transport=transport, base_url="http://127.0.0.1:8737"
         ) as client:
             source = upstream.HostDaemonFrameBridgeSource(
                 daemon_bearer=daemon_auth.SecretBearer("bh1.frame-bridge." + "d" * 43),
@@ -751,7 +751,7 @@ def test_host_daemon_adapter_preserves_queue_overflow_as_stable_413_signal() -> 
 
     async def exercise() -> None:
         async with httpx.AsyncClient(
-            transport=httpx.MockTransport(handler), base_url="http://127.0.0.1:8420"
+            transport=httpx.MockTransport(handler), base_url="http://127.0.0.1:8737"
         ) as client:
             source = upstream.HostDaemonFrameBridgeSource(
                 daemon_bearer=daemon_auth.SecretBearer("bh1.frame-bridge." + "d" * 43),
@@ -1019,7 +1019,7 @@ def test_gateway_and_daemon_authority_do_not_cross_the_private_seam() -> None:
         ]
     )
     daemon_client = httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=daemon_app), base_url="http://127.0.0.1:8420"
+        transport=httpx.ASGITransport(app=daemon_app), base_url="http://127.0.0.1:8737"
     )
     source = upstream.HostDaemonFrameBridgeSource(
         daemon_bearer=daemon_auth.SecretBearer(daemon_bearer),
@@ -1308,7 +1308,7 @@ def test_private_directory_serves_cached_daemon_summaries_with_slow_hive_sources
     )
     daemon_client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=Starlette(routes=api.routes())),
-        base_url="http://127.0.0.1:8420",
+        base_url="http://127.0.0.1:8737",
     )
     source = upstream.HostDaemonFrameBridgeSource(
         daemon_bearer=daemon_auth.SecretBearer("bh1.frame-bridge." + "d" * 43),

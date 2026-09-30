@@ -1013,6 +1013,62 @@
       "title": "ExcludeConfig",
       "type": "object"
     },
+    "FrameBridgeIdentityConfig": {
+      "additionalProperties": false,
+      "description": "Enrollment-owned identity of the private Factory bridge.",
+      "properties": {
+        "factory_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Factory Id"
+        },
+        "host_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Host Id"
+        },
+        "instance_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instance Id"
+        },
+        "primary_hive_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Primary Hive Id"
+        }
+      },
+      "title": "FrameBridgeIdentityConfig",
+      "type": "object"
+    },
     "GenaiConfig": {
       "additionalProperties": false,
       "description": "EXPERIMENTAL agentic GenAI span attributes (``otel.genai``).",
@@ -1172,6 +1228,9 @@
         },
         "dispatch": {
           "$ref": "#/$defs/HostDispatchConfig"
+        },
+        "frame_bridge": {
+          "$ref": "#/$defs/FrameBridgeIdentityConfig"
         },
         "lease": {
           "$ref": "#/$defs/HostLeaseConfig"

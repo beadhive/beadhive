@@ -33,6 +33,7 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         "hitch",
         "herdr",
         "host.daemon",
+        "host.frame_bridge",
     }
 )
 

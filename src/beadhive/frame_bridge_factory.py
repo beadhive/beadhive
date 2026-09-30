@@ -14,7 +14,9 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import daemon_auth
+from . import config as bh_config
+from . import daemon_auth, host
+from .frame_bridge_daemon import configured_daemon_origin
 from .frame_bridge_upstream import (
     GatewayVerifierStore,
     HostDaemonFrameBridgeSource,
@@ -173,12 +175,28 @@ def create_application(*, paths: FactoryServicePaths | None = None):
         load_gateway_verifier_set(paths.verifier_path, require_root=True)
     )
     daemon_bearer = daemon_auth.load_bearer_file(paths.daemon_bearer_path)
-    instance = RegisteredInstance()
-    source = HostDaemonFrameBridgeSource(daemon_bearer=daemon_bearer, instance=instance)
+    from .config_schema import BeadhiveConfig
+
+    raw_config = bh_config.load()
+    identity = BeadhiveConfig.model_validate(raw_config).host.frame_bridge
+    host_id = identity.host_id or host.host_id()
+    if not identity.primary_hive_id:
+        raise FactoryServiceError("host.frame_bridge.primary_hive_id must be configured")
+    instance = RegisteredInstance(
+        instance_id=identity.instance_id or f"frames/{host_id}",
+        factory_id=identity.factory_id or host_id,
+        primary_hive_id=identity.primary_hive_id,
+    )
+    source = HostDaemonFrameBridgeSource(
+        daemon_bearer=daemon_bearer,
+        instance=instance,
+        daemon_origin=configured_daemon_origin(raw_config),
+    )
     return build_private_frame_bridge_application(
         config=PrivateFrameBridgeConfig(
             verifier_store=verifier_store,
             instance=instance,
+            host_id=host_id,
             host_epoch=_load_or_create_host_epoch(paths.host_epoch_path),
         ),
         source=source,

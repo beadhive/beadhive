@@ -699,7 +699,7 @@ def test_local_desktop_factory_does_not_load_clerk_material(
     monkeypatch.setattr(
         frame_bridge_runtime.bh_config,
         "load",
-        lambda: (_ for _ in ()).throw(RuntimeError("telemetry unavailable")),
+        lambda: {},
     )
 
     app = frame_bridge_runtime.create_application()
@@ -738,7 +738,7 @@ def test_local_desktop_live_factory_wires_the_loopback_gateway_read_source(
     monkeypatch.setattr(
         frame_bridge_runtime.bh_config,
         "load",
-        lambda: (_ for _ in ()).throw(RuntimeError("telemetry unavailable")),
+        lambda: {},
     )
 
     class Runtime:
