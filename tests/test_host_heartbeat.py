@@ -601,9 +601,7 @@ def test_default_cli_diagnostic_age_without_authority(fleet, monkeypatch, now, s
     hb.publish(repo, lease(), signing_key=str(key), now=1000)
     # Exercise the real default unavailable production binding, not a receipt fixture.
     monkeypatch.setattr(hb, "load_trusted_authority", lambda *_: None)
-    monkeypatch.setattr(
-        hb, "control_plane", lambda *_: hq_control_plane.GitControlPlane(repo)
-    )
+    monkeypatch.setattr(hb, "control_plane", lambda *_: hq_control_plane.GitControlPlane(repo))
     monkeypatch.setattr(host_cli.time, "time", lambda: now)
     monkeypatch.setattr(host_cli.config, "hq_dir", lambda: repo)
     monkeypatch.setattr(host_cli.config, "load", lambda: {})
