@@ -166,3 +166,19 @@ def test_the_toolchain_flake_ref_is_a_tag_and_carries_no_version_literal():
 
     src = (__import__("pathlib").Path(setup.__file__)).read_text()
     assert "/v0.8.0#default" not in src, "a hardcoded version would be a second place to be wrong"
+
+
+def test_linux_beads_is_relocated_and_proven_without_nix_ld():
+    text = FLAKE.read_text()
+    beads = text.split("beadsRelease = pkgs:", 1)[1].split("doltReleaseCommit", 1)[0]
+    assert "nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux" in beads
+    assert "pkgs.autoPatchelfHook" in beads
+    assert (
+        "buildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.glibc ]" in beads
+    )
+    check = text.split("bh-no-nix-ld =", 1)[1]
+    assert "programs.nix-ld.enable = false;" in check
+    assert "self.packages.${system}.beads" in check
+    assert 'machine.succeed("bd --version")' in check
+    assert "bd init --prefix proof --shared-server" in check
+    assert "bd -C /tmp/beads-smoke status --json" in check
