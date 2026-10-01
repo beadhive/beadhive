@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -123,8 +124,12 @@ def main(argv=None):
         encoded = fields[4]
         target = Path(re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), encoded))
         try:
-            actual_device = os.stat(target).st_dev
-        except PermissionError:
+            actual_stat = os.stat(target)
+            actual_device = actual_stat.st_dev
+        except (PermissionError, FileNotFoundError):
+            # An inherited mount may be hidden/absent in the enclosing hermetic
+            # /dev. Unreachable targets cannot expose a writable host mount.
+            actual_stat = None
             actual_device = None
         if (
             actual_device is not None
@@ -132,7 +137,10 @@ def main(argv=None):
         ):
             # A fresh proc or later bind obscures this inherited mount.
             continue
-        if not os.access(target, os.R_OK | os.X_OK):
+        # Directory traversal requires execute; readable file/device bind mounts
+        # such as hermetic /dev/null still enter the checked read-only remount.
+        access = os.R_OK | (os.X_OK if actual_stat and stat.S_ISDIR(actual_stat.st_mode) else 0)
+        if not os.access(target, access):
             if os.access(target, os.W_OK):
                 raise ValueError(f"inaccessible writable host mount: {target}")
             continue

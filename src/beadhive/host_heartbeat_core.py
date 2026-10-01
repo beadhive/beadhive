@@ -476,6 +476,22 @@ def _observation_store(hq_dir: Path, observer_dir: Path | None) -> Path:
     return root / f"{scope}.sqlite3"
 
 
+def _identity_matches(lease, fingerprint, manifest, authority):
+    bindings = (
+        (lease.frame_id, authority.frame_id),
+        (lease.holderIdentity, authority.holder_identity),
+        (lease.instance_ref, authority.instance_ref),
+        (lease.key_id, authority.key_fingerprint),
+        (fingerprint, authority.key_fingerprint),
+        (lease.epoch, authority.epoch),
+        (lease.audience, authority.audience),
+        (lease.config_revision, authority.config_revision),
+        (lease.holderIdentity, manifest.host_id),
+        (lease.frame_id, manifest.frame_id or manifest.host_id),
+    )
+    return all(actual == expected for actual, expected in bindings)
+
+
 def assess_authenticated_observation(
     lease: HeartbeatLease,
     fingerprint: str,
@@ -499,19 +515,7 @@ def assess_authenticated_observation(
     authority = snapshot.authority if snapshot else authority
     if authority is None:
         return _diagnostic(lease, sha, at, "unbound", "current authority unavailable")
-    bindings = (
-        (lease.frame_id, authority.frame_id),
-        (lease.holderIdentity, authority.holder_identity),
-        (lease.instance_ref, authority.instance_ref),
-        (lease.key_id, authority.key_fingerprint),
-        (fingerprint, authority.key_fingerprint),
-        (lease.epoch, authority.epoch),
-        (lease.audience, authority.audience),
-        (lease.config_revision, authority.config_revision),
-        (lease.holderIdentity, manifest.host_id),
-        (lease.frame_id, manifest.frame_id or manifest.host_id),
-    )
-    if any(actual != expected for actual, expected in bindings):
+    if not _identity_matches(lease, fingerprint, manifest, authority):
         return VerifiedObservation("identity-mismatch", True, lease=lease, sha=sha)
     candidate = authority.candidate_expires_at is not None
     if candidate and at >= authority.candidate_expires_at:
@@ -699,6 +703,10 @@ def observe(
         lease = HeartbeatLease.model_validate_json(
             _required(["show", f"{sha}:heartbeat.json"], hq_dir)
         )
+        # Preserve the Git diagnostic denial before canonical eligibility decoding.
+        # A mismatched signed carrier can never reach fresh/eligible assessment.
+        if authority is not None and not _identity_matches(lease, fingerprint, manifest, authority):
+            return VerifiedObservation("identity-mismatch", True, lease=lease, sha=sha)
         framelease_envelope(hq_dir, sha, trust)
         return assess_authenticated_observation(
             lease,
