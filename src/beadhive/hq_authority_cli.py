@@ -33,12 +33,7 @@ def authority_cmd(
     try:
         plane = hq_control_plane.control_plane()
         if action == "status":
-            sha, state, _ = plane._operator_read()
-            result = {
-                "revision": sha,
-                "state": state,
-                "authority_ready": bool(sha) and plane.clock() < state["expires_at"],
-            }
+            result = plane.authority_status()
         else:
             if not confirm:
                 raise hq_control_plane.ControlPlaneError("operator mutation requires --confirm")

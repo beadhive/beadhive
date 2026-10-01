@@ -113,6 +113,11 @@ def observe(
     remote: str = "origin",
     trusted_authority_lookup: Callable[[Path, str], AuthoritySnapshot | None] | None = None,
 ) -> VerifiedObservation:
+    if manifest.frame_id and trusted_authority_lookup is None:
+        try:
+            return control_plane(hq_dir).observe(manifest, now=now, observer_dir=observer_dir)
+        except (ControlPlaneError, OSError, RuntimeError) as exc:
+            return VerifiedObservation("authority-unavailable", reason=str(exc))
     return _implementation.observe(
         hq_dir,
         manifest,

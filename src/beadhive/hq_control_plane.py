@@ -8,17 +8,67 @@ import os
 import shutil
 import sys
 import time
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from . import config, gitref, hq_git_broker, hq_manifest_guard
 from . import hq_authority_guard as guard
 from .run import run
 
+if TYPE_CHECKING:
+    from .host_heartbeat_core import AuthoritySnapshot
+    from .modules.config.domain.ports import FleetConfigSnapshot
+
 
 class ControlPlaneError(ValueError):
     """Unavailable protection, rejected authority, or unsupported binding."""
+
+
+@dataclass(frozen=True)
+class HqConsistencyToken:
+    """Provider-issued identity of one qualified config/authority read boundary."""
+
+    backend_identity: str
+    generation: str
+    revision: str
+
+    def __post_init__(self):
+        if any(
+            not isinstance(value, str) or not value
+            for value in (self.backend_identity, self.generation, self.revision)
+        ):
+            raise ControlPlaneError("HQ consistency token requires backend/generation/revision")
+
+
+@dataclass(frozen=True)
+class ConfigAuthoritySnapshot:
+    """Both immutable views from one provider-qualified authoritative transaction.
+
+    Only the backend issues this result; joining independent reads does not qualify.
+    The token revision identifies the combined read, while config.commit_revision and
+    authority.authority.config_revision retain their distinct document/policy meaning.
+    SQL must reject mixed, revoked or expired facts before returning this result.
+    """
+
+    token: HqConsistencyToken
+    config: FleetConfigSnapshot
+    authority: AuthoritySnapshot
+
+    def __post_init__(self):
+        from .host_heartbeat_core import AuthoritySnapshot
+        from .modules.config.domain.ports import FleetConfigSnapshot
+
+        if (
+            not isinstance(self.token, HqConsistencyToken)
+            or not isinstance(self.config, FleetConfigSnapshot)
+            or not isinstance(self.authority, AuthoritySnapshot)
+            or self.token.backend_identity != self.config.backend_identity
+            or self.token.generation != self.config.generation
+            or max(self.config.fetched_at, self.authority.checked_at)
+            >= min(self.config.valid_until, self.authority.valid_until)
+        ):
+            raise ControlPlaneError("inconsistent HQ config/authority provenance")
 
 
 class HqControlPlane(Protocol):
@@ -26,6 +76,31 @@ class HqControlPlane(Protocol):
     def publish_registration(self, manifest: str, *, attempts: int = 3) -> bool: ...
     def heartbeat(self, lease, *, signing_key: str) -> str: ...
     def watch_state(self, frame: str): ...
+    def authority_status(self) -> dict: ...
+    def observe(self, manifest, *, now=None, observer_dir=None): ...
+    def config_store(self, *, operator_key=None, duration=3600): ...
+    def load_config_authority_snapshot(
+        self, frame: str, *, revision: str | None = None
+    ) -> ConfigAuthoritySnapshot: ...
+    def heartbeat_reference(self, lease): ...
+    def publish_registration_evidence(self, manifest, *, signing_key): ...
+    def grant(self, authority, public_key, desired, *, expected, operator_key): ...
+    def accept_observation(self, frame, *, expected, operator_key, holder_identity=""): ...
+    def renew(self, *, expected, operator_key, duration=3600): ...
+    def lifecycle(
+        self,
+        verb,
+        frame,
+        action="plan",
+        *,
+        expected="",
+        expected_host_id="",
+        expected_release="",
+        operator_key="",
+        confirm=False,
+        supersede=False,
+        deadline=None,
+    ): ...
 
 
 def _git(directory, *args, data=None):
@@ -84,7 +159,15 @@ def install_guard(
     if (
         hook.exists()
         or policy_path.exists()
-        or _git(remote, "for-each-ref", "--format=%(refname)", guard.HEAD, guard.WITNESS)
+        or _git(
+            remote,
+            "for-each-ref",
+            "--format=%(refname)",
+            guard.HEAD,
+            guard.WITNESS,
+            guard.CONFIG_HEAD,
+            guard.CONFIG_WITNESS,
+        )
     ):
         raise ControlPlaneError("existing authority protection requires out-of-band recovery")
     interpreter = str(Path(interpreter or sys.executable).resolve())
@@ -210,6 +293,54 @@ class GitControlPlane:
         # Legacy callers cannot turn a mutable Git-config digest into authority.
         if policy_digest:
             raise ControlPlaneError("use an operator-provisioned protected authority anchor")
+
+    def config_store(self, *, operator_key=None, duration=3600):
+        from .hq_fleet_config import GitFleetConfigRevisionStore
+
+        return GitFleetConfigRevisionStore(self, _git, operator_key=operator_key, duration=duration)
+
+    def load_config_authority_snapshot(self, frame, *, revision=None):
+        raise ControlPlaneError("atomic config/authority snapshot unsupported by Git binding")
+
+    def authority_status(self):
+        sha, state, _ = self._operator_read()
+        return {
+            "revision": sha,
+            "state": state,
+            "authority_ready": bool(sha) and self.clock() < state["expires_at"],
+        }
+
+    def observe(self, manifest, *, now=None, observer_dir=None):
+        from . import host_heartbeat_core as hb
+
+        try:
+            policy = self._policy()
+        except ControlPlaneError:
+            # Git-only compatibility diagnostics may verify an existing signed
+            # carrier, but cannot derive freshness without protected authority.
+            return hb.observe(
+                self.hq_dir,
+                manifest,
+                now=now,
+                observer_dir=observer_dir,
+                trusted_authority_lookup=lambda *_: None,
+            )
+
+        def trusted_authority(_directory, frame):
+            try:
+                return self.watch_state(frame)
+            except ControlPlaneError:
+                return None
+
+        return hb.observe(
+            self.hq_dir,
+            manifest,
+            now=now,
+            observer_dir=observer_dir,
+            remote=self._remote(policy),
+            transport_options=["-c", "protocol.ext.allow=always"],
+            trusted_authority_lookup=trusted_authority,
+        )
 
     def _policy(self):
         if self.authority_anchor is None:
@@ -981,7 +1112,25 @@ class GitControlPlane:
 
 
 def control_plane(hq_dir=None):
-    cfg = config.load().get("hq", {})
+    # Backend connection/trust must be available before fleet/effective resolution.
+    cfg = config.load_host().get("hq", {})
     if cfg.get("mode", "git") != "git":
         raise ControlPlaneError(f"unsupported HQ control-plane mode: {cfg.get('mode')}")
     return GitControlPlane(hq_dir or config.hq_dir(), authority_anchor=cfg.get("authority_anchor"))
+
+
+def attach_fleet_config(hq_dir=None, *, bootstrap=None, operator_key=None):
+    """Read back central config using only host-injected connection/trust inputs.
+
+    Returning a binding and committed snapshot performs no checkout/Beads hydration,
+    source migration, host identity change or implicit backend switch.
+    """
+    settings = bootstrap if bootstrap is not None else config.load_host().get("hq", {})
+    mode = settings.get("mode", "git")
+    if mode != "git":
+        raise ControlPlaneError(f"unsupported HQ configuration bootstrap mode: {mode}")
+    plane = GitControlPlane(
+        hq_dir or config.hq_dir(), authority_anchor=settings.get("authority_anchor")
+    )
+    store = plane.config_store(operator_key=operator_key)
+    return store, store.load_snapshot()

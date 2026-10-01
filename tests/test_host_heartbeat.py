@@ -99,8 +99,23 @@ def fleet(tmp_path, monkeypatch):
 
     monkeypatch.setattr(hb, "load_trusted_authority", trusted_provider)
 
+    from beadhive import host_heartbeat_core
+
+    class FixtureControlPlane:
+        def observe(self, selected, *, now=None, observer_dir=None):
+            return host_heartbeat_core.observe(
+                repo,
+                selected,
+                now=now,
+                observer_dir=observer_dir,
+                trusted_authority_lookup=hb.load_trusted_authority,
+            )
+
+    monkeypatch.setattr(hb, "control_plane", lambda *_: FixtureControlPlane())
+
     def observe(at=1000, **kwargs):
         observer_clock[0] = at
+        kwargs.setdefault("trusted_authority_lookup", hb.load_trusted_authority)
         return hb.observe(repo, manifest, now=at, observer_dir=tmp_path / "observer", **kwargs)
 
     return repo, key, remote, lease, observe, authority, manifest
@@ -315,7 +330,13 @@ def test_revoked_key_replacement_requires_current_authority(fleet, tmp_path):
         hb.publish(repo, new_lease, signing_key=str(key), now=1000)
     hb.publish(repo, new_lease, signing_key=str(replacement), now=1000)
     new_manifest = manifest.model_copy(update={"host_id": "host-new", "instance_ref": "vm-new"})
-    result = hb.observe(repo, new_manifest, now=1000, observer_dir=tmp_path / "observer")
+    result = hb.observe(
+        repo,
+        new_manifest,
+        now=1000,
+        observer_dir=tmp_path / "observer",
+        trusted_authority_lookup=hb.load_trusted_authority,
+    )
     assert result.fresh
     assert git(remote, "rev-list", "--count", hb.ref_name("frame-1")) == "1"
 
@@ -351,13 +372,25 @@ def test_identity_change_requires_epoch_advance_even_if_authority_changes(fleet,
     path.write_text(json.dumps(new_authority.__dict__))
     new_manifest = manifest.model_copy(update={"host_id": "host-new", "instance_ref": "vm-new"})
     raw_commit(repo, changed, key=key)
-    result = hb.observe(repo, new_manifest, now=1001, observer_dir=tmp_path / "observer")
+    result = hb.observe(
+        repo,
+        new_manifest,
+        now=1001,
+        observer_dir=tmp_path / "observer",
+        trusted_authority_lookup=hb.load_trusted_authority,
+    )
     assert result.status == "replay"
     path.write_text(json.dumps(replace(new_authority, epoch=3).__dict__))
     raw_commit(
         repo, lease(1002, 1, epoch=3, holderIdentity="host-new", instance_ref="vm-new"), key=key
     )
-    assert hb.observe(repo, new_manifest, now=1002, observer_dir=tmp_path / "observer").fresh
+    assert hb.observe(
+        repo,
+        new_manifest,
+        now=1002,
+        observer_dir=tmp_path / "observer",
+        trusted_authority_lookup=hb.load_trusted_authority,
+    ).fresh
 
 
 def test_unknown_key_cannot_replace_trusted_beat(fleet, tmp_path):
@@ -561,13 +594,16 @@ def test_untrusted_replacement_requires_current_trusted_authority(fleet, tmp_pat
 def test_default_cli_diagnostic_age_without_authority(fleet, monkeypatch, now, status, age):
     from typer.testing import CliRunner
 
-    from beadhive import host_cli
+    from beadhive import host_cli, hq_control_plane
 
     repo, key, _, lease, _, _, manifest = fleet
     hosts.save(repo, manifest)
     hb.publish(repo, lease(), signing_key=str(key), now=1000)
     # Exercise the real default unavailable production binding, not a receipt fixture.
     monkeypatch.setattr(hb, "load_trusted_authority", lambda *_: None)
+    monkeypatch.setattr(
+        hb, "control_plane", lambda *_: hq_control_plane.GitControlPlane(repo)
+    )
     monkeypatch.setattr(host_cli.time, "time", lambda: now)
     monkeypatch.setattr(host_cli.config, "hq_dir", lambda: repo)
     monkeypatch.setattr(host_cli.config, "load", lambda: {})
@@ -615,3 +651,70 @@ def test_new_authoritative_epoch_without_receipt_does_not_grant_freshness(fleet)
     result = observe(trusted_authority_lookup=lambda *_: snapshot)
     assert result.status == "authority-unavailable" and not result.fresh
     assert result.age_basis == "sender-diagnostic"
+
+
+def test_observation_facade_delegates_to_selected_backend_without_git(monkeypatch, tmp_path):
+    manifest = hosts.HostManifest(
+        host_id="host-one",
+        frame_id="frame-one",
+        instance_ref="vm-one",
+        label="frame",
+        os="linux",
+        arch="x86_64",
+        role="executor",
+        identity={"kind": "none"},
+    )
+    expected = hb.VerifiedObservation("authority-unavailable", reason="binding not qualified")
+
+    class Port:
+        def observe(self, observed, *, now=None, observer_dir=None):
+            assert observed == manifest
+            assert now == 1000
+            return expected
+
+    monkeypatch.setattr(hb, "control_plane", lambda *_: Port())
+    monkeypatch.setattr(
+        hb._implementation, "observe", lambda *_args, **_kwargs: pytest.fail("Git fallback")
+    )
+    assert hb.observe(tmp_path / "no-checkout", manifest, now=1000) is expected
+
+
+def test_carrier_neutral_assessment_keeps_trusted_receipt_floor(fleet, tmp_path):
+    from beadhive.host_heartbeat_core import assess_authenticated_observation
+
+    _repo, _key, _remote, make_lease, _observe, authority, manifest = fleet
+    lease = make_lease(seq=3)
+    carrier = "sha256:" + "a" * 64
+    receipt = hb.AuthoritySnapshot(authority, 1000, 1400, 3, carrier, 1000)
+    store = tmp_path / "carrier-observations.sqlite"
+    for invalid_clock in (float("nan"), float("inf"), -float("inf"), True, "1010", None):
+        invalid = assess_authenticated_observation(
+            lease,
+            authority.key_fingerprint,
+            carrier,
+            manifest,
+            receipt,
+            at=invalid_clock,
+            observer_store=store,
+        )
+        assert invalid.status == "invalid" and not invalid.fresh
+        assert not store.exists()
+    result = assess_authenticated_observation(
+        lease, authority.key_fingerprint, carrier, manifest, receipt, at=1010, observer_store=store
+    )
+    assert result.fresh and result.age_seconds == 10
+    store.unlink()  # lost/restored local cache cannot reset the trusted first receipt
+    stale = assess_authenticated_observation(
+        lease, authority.key_fingerprint, carrier, manifest, receipt, at=1300, observer_store=store
+    )
+    assert stale.status == "stale"
+    replay = assess_authenticated_observation(
+        make_lease(seq=2),
+        authority.key_fingerprint,
+        "sha256:" + "b" * 64,
+        manifest,
+        receipt,
+        at=1010,
+        observer_store=store,
+    )
+    assert replay.status == "replay"

@@ -161,6 +161,7 @@ def backend(tmp_path, monkeypatch, request):
         )
     )
     monkeypatch.setattr(config, "load", lambda: {"hq": {"authority_anchor": str(op_anchor)}})
+    monkeypatch.setattr(config, "load_host", lambda: {"hq": {"authority_anchor": str(op_anchor)}})
     monkeypatch.setattr(config, "hq_dir", lambda: op_repo)
     monkeypatch.setattr(config, "home", lambda: tmp_path / "home")
     monkeypatch.setattr(host, "host_id", lambda: "host-one")
@@ -283,6 +284,7 @@ from typer.testing import CliRunner
 anchor = os.environ["FRAME_AUTHORITY_ANCHOR"]
 os.environ["BH_SKIP_SETUP_CHECK"] = "1"
 config.load = lambda: {"schema_version": 1, "hq": {"authority_anchor": anchor}}
+config.load_host = lambda: {"schema_version": 1, "hq": {"authority_anchor": anchor}}
 config.hq_dir = lambda: Path(sys.argv[1])
 host.host_id = lambda: "host-one"
 host.signing_key = lambda: sys.argv[2]
@@ -1163,3 +1165,156 @@ def test_additive_frame_retire_keeps_legacy_retire_four_parameters(backend):
     )
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout)["state"] == "retired"
+
+
+def test_committed_fleet_snapshot_cas_and_document_order(backend):
+    from beadhive.hq_fleet_config import FleetConfigError
+    from beadhive.modules.config.domain.ports import FleetConfigDocument
+
+    b = backend
+    plane = b["plane"]
+    store = plane.config_store(operator_key=str(b["operator"]))
+    documents = (
+        FleetConfigDocument("fleet.yaml", "schema_version: 1\nmanaged_repos: []\n"),
+        FleetConfigDocument("workspace-prototypes.toml", '[[provider]]\npath="prototypes"\n'),
+        FleetConfigDocument("workspace.toml", '[[provider]]\npath="contrib"\n'),
+        FleetConfigDocument("allowed_signers", "# public policy\n"),
+    )
+    initial_main = git(b["remote"], "rev-parse", "main")
+    first = store.publish_snapshot(documents, expected_revision="")
+    assert first.documents == documents
+    assert first.backend_identity.startswith("git:")
+    assert first.generation == "recovery-generation-one"
+    assert first.fetched_at < first.valid_until
+    assert store.load_snapshot().commit_revision == first.commit_revision
+    (b["op_repo"] / "fleet.yaml").write_text("dirty local file must never replace committed config")
+    assert store.load_snapshot().documents == documents
+    second = store.publish_snapshot(documents[:-1], expected_revision=first.commit_revision)
+    assert second.commit_revision != first.commit_revision
+    with pytest.raises(FleetConfigError, match="expected configuration revision changed"):
+        store.publish_snapshot(documents, expected_revision=first.commit_revision)
+    with pytest.raises(FleetConfigError, match="no longer current"):
+        store.load_snapshot(revision=first.commit_revision)
+    assert git(b["remote"], "rev-parse", "main") == initial_main
+    assert store.load_snapshot().commit_revision == second.commit_revision
+
+
+def test_fleet_config_rollback_expiry_and_protected_publication(backend):
+    from beadhive.hq_fleet_config import FleetConfigError
+    from beadhive.modules.config.domain.ports import FleetConfigDocument
+
+    b = backend
+    store = b["plane"].config_store(operator_key=str(b["operator"]))
+    docs = (FleetConfigDocument("fleet.yaml", "schema_version: 1\n"),)
+    first = store.publish_snapshot(docs, expected_revision="")
+    second = store.publish_snapshot(docs, expected_revision=first.commit_revision)
+    # Operator-owned remote restore cannot roll back the head while newer witnesses survive.
+    git(b["remote"], "update-ref", guard.CONFIG_HEAD, first.commit_revision)
+    with pytest.raises(FleetConfigError, match="rollback"):
+        store.load_snapshot()
+    git(b["remote"], "update-ref", guard.CONFIG_HEAD, second.commit_revision)
+    original_clock = b["plane"].clock
+    b["plane"].clock = lambda: second.valid_until
+    with pytest.raises(FleetConfigError, match="validity expired"):
+        store.load_snapshot()
+    b["plane"].clock = original_clock
+    result = frame_process(
+        b,
+        """
+import os, sys
+from pathlib import Path
+from beadhive.hq_control_plane import GitControlPlane
+from beadhive.modules.config.domain.ports import FleetConfigDocument
+plane = GitControlPlane(Path(sys.argv[1]), authority_anchor=os.environ['FRAME_AUTHORITY_ANCHOR'])
+plane.config_store(operator_key=sys.argv[2]).publish_snapshot(
+    (FleetConfigDocument('fleet.yaml', 'schema_version: 1\\n'),), expected_revision=sys.argv[3])
+""",
+        second.commit_revision,
+    )
+    assert result.returncode != 0
+    assert "operator custody" in result.stderr
+    assert store.load_snapshot().commit_revision == second.commit_revision
+
+
+def test_attach_fleet_config_reads_only_host_bootstrap(backend, monkeypatch):
+    from beadhive.hq_control_plane import attach_fleet_config, control_plane
+    from beadhive.modules.config.domain.ports import FleetConfigDocument
+
+    b = backend
+    snapshot = (
+        b["plane"]
+        .config_store(operator_key=str(b["operator"]))
+        .publish_snapshot(
+            (FleetConfigDocument("fleet.yaml", "schema_version: 1\n"),), expected_revision=""
+        )
+    )
+    monkeypatch.setattr(config, "load", lambda: pytest.fail("recursive effective config load"))
+    monkeypatch.setattr(
+        config,
+        "load_host",
+        lambda: {"hq": {"mode": "git", "authority_anchor": str(b["op_anchor"])}},
+    )
+    _, readback = attach_fleet_config(b["op_repo"])
+    assert readback.commit_revision == snapshot.commit_revision
+    assert control_plane(b["op_repo"]).authority_anchor == b["op_anchor"]
+    for mode in ("dolt-server", "invalid"):
+        with pytest.raises(ControlPlaneError, match="unsupported HQ configuration bootstrap mode"):
+            attach_fleet_config(b["op_repo"], bootstrap={"mode": mode})
+
+
+def test_fleet_config_refuses_credential_paths_and_duplicate_documents(backend):
+    from beadhive.modules.config.domain.ports import FleetConfigDocument
+
+    b = backend
+    store = b["plane"].config_store(operator_key=str(b["operator"]))
+    fleet = FleetConfigDocument("fleet.yaml", "schema_version: 1\n")
+    for documents in (
+        (fleet, FleetConfigDocument("host.yaml", "host-only")),
+        (fleet, FleetConfigDocument("../credential", "private")),
+        (fleet, fleet),
+    ):
+        with pytest.raises(ValueError):
+            store.publish_snapshot(documents, expected_revision="")
+    assert not git(b["remote"], "show-ref", guard.CONFIG_HEAD, check=False).returncode == 0
+
+
+def test_raw_frame_receive_cannot_publish_config_or_witness(backend):
+    from beadhive.modules.config.domain.ports import FleetConfigDocument
+
+    b = backend
+    snapshot = (
+        b["plane"]
+        .config_store(operator_key=str(b["operator"]))
+        .publish_snapshot(
+            (FleetConfigDocument("fleet.yaml", "schema_version: 1\n"),), expected_revision=""
+        )
+    )
+    # Raw Git cannot bypass adapter-level role checks, even with an operator-signed object.
+    code = """
+import os, subprocess, sys
+from pathlib import Path
+from beadhive.hq_control_plane import GitControlPlane
+plane = GitControlPlane(Path(sys.argv[1]), authority_anchor=os.environ['FRAME_AUTHORITY_ANCHOR'])
+policy = plane._policy()
+remote = plane._remote(policy)
+git = policy['executables']['git']['path']
+subprocess.run([git, '-c', 'protocol.ext.allow=always', 'fetch', remote, sys.argv[3]],
+               cwd=plane.hq_dir, check=True)
+result = subprocess.run([git, '-c', 'protocol.ext.allow=always', 'push', remote,
+                         sys.argv[3] + ':refs/bh/config-witness/00000000000000000002'],
+                        cwd=plane.hq_dir, capture_output=True, text=True)
+print(result.stderr)
+raise SystemExit(result.returncode)
+"""
+    result = frame_process(b, code, snapshot.commit_revision)
+    assert result.returncode != 0
+    assert "frame cannot write configuration" in result.stdout, result.stderr + result.stdout
+    assert b["plane"].config_store().load_snapshot().commit_revision == snapshot.commit_revision
+
+
+def test_git_composite_snapshot_refuses_without_joining_independent_reads(tmp_path, monkeypatch):
+    plane = GitControlPlane(tmp_path)
+    monkeypatch.setattr(plane, "watch_state", lambda *_: pytest.fail("independent authority read"))
+    monkeypatch.setattr(plane, "config_store", lambda **_: pytest.fail("independent config read"))
+    with pytest.raises(ControlPlaneError, match="atomic config/authority snapshot unsupported"):
+        plane.load_config_authority_snapshot("frame-a")

@@ -152,8 +152,13 @@ class AuthoritySnapshot:
         if self.sequence == 0:
             if self.sha != "" or self.first_seen is not None:
                 raise HeartbeatError("new epoch without receipt requires empty SHA and first_seen")
-        elif not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", self.sha) or self.first_seen is None:
-            raise HeartbeatError("authoritative receipt requires an exact Git SHA and first_seen")
+        elif (
+            not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}|sha256:[0-9a-f]{64}", self.sha)
+            or self.first_seen is None
+        ):
+            raise HeartbeatError(
+                "authoritative receipt requires an exact carrier digest and first_seen"
+            )
         timestamps = (self.checked_at, self.valid_until)
         if self.first_seen is not None:
             timestamps += (self.first_seen,)
@@ -471,6 +476,138 @@ def _observation_store(hq_dir: Path, observer_dir: Path | None) -> Path:
     return root / f"{scope}.sqlite3"
 
 
+def assess_authenticated_observation(
+    lease: HeartbeatLease,
+    fingerprint: str,
+    sha: str,
+    manifest: hosts.HostManifest,
+    snapshot: AuthoritySnapshot | None,
+    *,
+    at: float,
+    observer_store: Path,
+    authority: ObservationAuthority | None = None,
+) -> VerifiedObservation:
+    """Assess backend-authenticated evidence against one trusted authority/receipt.
+
+    The carrier adapter MUST authenticate the complete envelope and signer before
+    calling this policy. No sender, inventory or local cache can supply authority.
+    The cache records denials/high-water only; the trusted receipt bounds freshness.
+    """
+    if type(at) not in (int, float) or not math.isfinite(at):
+        return VerifiedObservation("invalid", reason="observer clock must be finite", sha=sha)
+    identity = manifest.frame_id or manifest.host_id
+    authority = snapshot.authority if snapshot else authority
+    if authority is None:
+        return _diagnostic(lease, sha, at, "unbound", "current authority unavailable")
+    bindings = (
+        (lease.frame_id, authority.frame_id),
+        (lease.holderIdentity, authority.holder_identity),
+        (lease.instance_ref, authority.instance_ref),
+        (lease.key_id, authority.key_fingerprint),
+        (fingerprint, authority.key_fingerprint),
+        (lease.epoch, authority.epoch),
+        (lease.audience, authority.audience),
+        (lease.config_revision, authority.config_revision),
+        (lease.holderIdentity, manifest.host_id),
+        (lease.frame_id, manifest.frame_id or manifest.host_id),
+    )
+    if any(actual != expected for actual, expected in bindings):
+        return VerifiedObservation("identity-mismatch", True, lease=lease, sha=sha)
+    candidate = authority.candidate_expires_at is not None
+    if candidate and at >= authority.candidate_expires_at:
+        return VerifiedObservation("candidate-expired", True, lease=lease, sha=sha, candidate=True)
+    if lease.observed_at > at + 30:
+        return _diagnostic(
+            lease, sha, at, "clock-skew", "sender timestamp exceeds skew bound", candidate
+        )
+    if snapshot is None:
+        return _diagnostic(
+            lease,
+            sha,
+            at,
+            "authority-unavailable",
+            "current authority and durable observer receipt unavailable",
+            candidate,
+        )
+    if at < snapshot.checked_at:
+        return VerifiedObservation(
+            "replay",
+            True,
+            lease=lease,
+            sha=sha,
+            candidate=candidate,
+            reason="observer clock precedes trusted receipt",
+        )
+    if at >= snapshot.valid_until:
+        return _diagnostic(
+            lease, sha, at, "authority-unavailable", "authority snapshot expired", candidate
+        )
+    if snapshot.sequence == 0:
+        return _diagnostic(
+            lease,
+            sha,
+            at,
+            "authority-unavailable",
+            "current epoch has no trusted first-observer receipt",
+            candidate,
+        )
+    if lease.seq < snapshot.sequence or (lease.seq == snapshot.sequence and sha != snapshot.sha):
+        return VerifiedObservation("replay", True, lease=lease, sha=sha, candidate=candidate)
+    if sha != snapshot.sha:
+        return VerifiedObservation(
+            "authority-unavailable",
+            True,
+            lease=lease,
+            sha=sha,
+            candidate=candidate,
+            reason="trusted first-observer receipt unavailable",
+        )
+    with sqlite3.connect(observer_store, timeout=5) as db:
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS observations (identity TEXT PRIMARY KEY, "
+            "epoch INTEGER, seq INTEGER, sha TEXT, first_seen REAL, "
+            "last_checked REAL, binding TEXT)"
+        )
+        db.execute("BEGIN IMMEDIATE")
+        previous = db.execute(
+            "SELECT epoch,seq,sha,first_seen,last_checked,binding "
+            "FROM observations WHERE identity=?",
+            (identity,),
+        ).fetchone()
+        if previous and (
+            at < previous[4]
+            or lease.epoch < previous[0]
+            or (
+                lease.epoch == previous[0]
+                and (
+                    lease.seq < previous[1]
+                    or (lease.seq == previous[1] and sha != previous[2])
+                    or previous[5] != _binding(lease)
+                )
+            )
+        ):
+            return VerifiedObservation("replay", True, lease=lease, sha=sha)
+        first_seen = snapshot.first_seen
+        if previous and sha == previous[2]:
+            first_seen = min(first_seen, previous[3])
+        age = max(0.0, at - min(first_seen, lease.observed_at))
+        db.execute(
+            "INSERT OR REPLACE INTO observations VALUES (?,?,?,?,?,?,?)",
+            (identity, lease.epoch, lease.seq, sha, first_seen, at, _binding(lease)),
+        )
+    fresh = age < lease.leaseDurationSeconds
+    return VerifiedObservation(
+        "verified" if fresh else "stale",
+        True,
+        fresh,
+        age,
+        lease,
+        sha=sha,
+        candidate=candidate,
+        age_basis="trusted-observer",
+    )
+
+
 def observe(
     hq_dir: Path,
     manifest: hosts.HostManifest,
@@ -479,6 +616,7 @@ def observe(
     observer_dir: Path | None = None,
     authority_lookup: Callable[[Path, str], ObservationAuthority | None] = load_authority,
     remote: str = "origin",
+    transport_options: list[str] | None = None,
     trusted_authority_lookup: Callable[[Path, str], AuthoritySnapshot | None] | None = None,
     _default_authority_lookup: Callable[[Path, str], AuthoritySnapshot | None] | None = None,
 ) -> VerifiedObservation:
@@ -490,6 +628,8 @@ def observe(
     at = time.time() if now is None else now
     identity = manifest.frame_id or manifest.host_id
     sha = ""
+    transport = transport_options or []
+    remote_options = {"git_options": transport} if transport else {}
     try:
         if not math.isfinite(at):
             raise HeartbeatError("observer clock must be finite")
@@ -498,10 +638,10 @@ def observe(
             configured = _git(["remote", "get-url", remote], hq_dir)
             if configured.returncode:
                 return VerifiedObservation("absent")
-        sha = gitref.remote_sha(remote, reference, cwd=hq_dir)
+        sha = gitref.remote_sha(remote, reference, cwd=hq_dir, **remote_options)
         if not sha:
             reference = reference.replace("/heartbeat/", "/candidate-heartbeat/")
-            sha = gitref.remote_sha(remote, reference, cwd=hq_dir)
+            sha = gitref.remote_sha(remote, reference, cwd=hq_dir, **remote_options)
             if not sha:
                 return VerifiedObservation("absent")
         snapshot = (
@@ -517,12 +657,12 @@ def observe(
                     break
             if snapshot.carrier_ref and snapshot.carrier_ref != reference:
                 reference = snapshot.carrier_ref
-                sha = gitref.remote_sha(remote, reference, cwd=hq_dir)
+                sha = gitref.remote_sha(remote, reference, cwd=hq_dir, **remote_options)
                 if not sha:
                     return VerifiedObservation("absent")
         if now is None:
             at = time.time()
-        _required(["fetch", "--no-tags", remote, sha], hq_dir)
+        _required([*transport, "fetch", "--no-tags", remote, sha], hq_dir)
         if int(_required(["cat-file", "-s", sha], hq_dir)) > MAX_BYTES:
             return VerifiedObservation("invalid", reason="oversized commit", sha=sha)
         header = _required(["cat-file", "-p", sha], hq_dir)
@@ -559,123 +699,16 @@ def observe(
         lease = HeartbeatLease.model_validate_json(
             _required(["show", f"{sha}:heartbeat.json"], hq_dir)
         )
-        if authority is None:
-            framelease_envelope(hq_dir, sha, trust)
-            return _diagnostic(lease, sha, at, "unbound", "current authority unavailable")
-        bindings = (
-            (lease.frame_id, authority.frame_id),
-            (lease.holderIdentity, authority.holder_identity),
-            (lease.instance_ref, authority.instance_ref),
-            (lease.key_id, authority.key_fingerprint),
-            (fingerprint, authority.key_fingerprint),
-            (lease.epoch, authority.epoch),
-            (lease.audience, authority.audience),
-            (lease.config_revision, authority.config_revision),
-            (lease.holderIdentity, manifest.host_id),
-            (lease.frame_id, manifest.frame_id or manifest.host_id),
-        )
-        if any(actual != expected for actual, expected in bindings):
-            return VerifiedObservation("identity-mismatch", True, lease=lease, sha=sha)
-        # Eligibility consumers cannot bypass the canonical contract by calling
-        # observe directly instead of the envelope adapter.
         framelease_envelope(hq_dir, sha, trust)
-        candidate = authority.candidate_expires_at is not None
-        if candidate and at >= authority.candidate_expires_at:
-            return VerifiedObservation(
-                "candidate-expired", True, lease=lease, sha=sha, candidate=True
-            )
-        if lease.observed_at > at + 30:
-            return _diagnostic(
-                lease, sha, at, "clock-skew", "sender timestamp exceeds skew bound", candidate
-            )
-        if snapshot is None:
-            return _diagnostic(
-                lease,
-                sha,
-                at,
-                "authority-unavailable",
-                "current authority and durable observer receipt unavailable",
-                candidate,
-            )
-        if at < snapshot.checked_at:
-            return VerifiedObservation(
-                "replay",
-                True,
-                lease=lease,
-                sha=sha,
-                candidate=candidate,
-                reason="observer clock precedes trusted receipt",
-            )
-        if at >= snapshot.valid_until:
-            return _diagnostic(
-                lease, sha, at, "authority-unavailable", "authority snapshot expired", candidate
-            )
-        if snapshot.sequence == 0:
-            return _diagnostic(
-                lease,
-                sha,
-                at,
-                "authority-unavailable",
-                "current epoch has no trusted first-observer receipt",
-                candidate,
-            )
-        if lease.seq < snapshot.sequence or (
-            lease.seq == snapshot.sequence and sha != snapshot.sha
-        ):
-            return VerifiedObservation("replay", True, lease=lease, sha=sha, candidate=candidate)
-        if sha != snapshot.sha:
-            return VerifiedObservation(
-                "authority-unavailable",
-                True,
-                lease=lease,
-                sha=sha,
-                candidate=candidate,
-                reason="trusted first-observer receipt unavailable",
-            )
-        store = _observation_store(hq_dir, observer_dir)
-        with sqlite3.connect(store, timeout=5) as db:
-            db.execute(
-                "CREATE TABLE IF NOT EXISTS observations (identity TEXT PRIMARY KEY, "
-                "epoch INTEGER, seq INTEGER, sha TEXT, first_seen REAL, "
-                "last_checked REAL, binding TEXT)"
-            )
-            db.execute("BEGIN IMMEDIATE")
-            previous = db.execute(
-                "SELECT epoch,seq,sha,first_seen,last_checked,binding "
-                "FROM observations WHERE identity=?",
-                (identity,),
-            ).fetchone()
-            if previous and (
-                at < previous[4]
-                or lease.epoch < previous[0]
-                or (
-                    lease.epoch == previous[0]
-                    and (
-                        lease.seq < previous[1]
-                        or (lease.seq == previous[1] and sha != previous[2])
-                        or previous[5] != _binding(lease)
-                    )
-                )
-            ):
-                return VerifiedObservation("replay", True, lease=lease, sha=sha)
-            first_seen = snapshot.first_seen
-            if previous and sha == previous[2]:
-                first_seen = min(first_seen, previous[3])
-            age = max(0.0, at - min(first_seen, lease.observed_at))
-            db.execute(
-                "INSERT OR REPLACE INTO observations VALUES (?,?,?,?,?,?,?)",
-                (identity, lease.epoch, lease.seq, sha, first_seen, at, _binding(lease)),
-            )
-        fresh = age < lease.leaseDurationSeconds
-        return VerifiedObservation(
-            "verified" if fresh else "stale",
-            True,
-            fresh,
-            age,
+        return assess_authenticated_observation(
             lease,
-            sha=sha,
-            candidate=candidate,
-            age_basis="trusted-observer",
+            fingerprint,
+            sha,
+            manifest,
+            snapshot,
+            at=at,
+            observer_store=_observation_store(hq_dir, observer_dir),
+            authority=authority,
         )
     except (TypeError, ValueError, OverflowError, OSError, RuntimeError, sqlite3.Error) as exc:
         return VerifiedObservation("invalid" if sha else "unreachable", reason=str(exc), sha=sha)

@@ -149,3 +149,67 @@ v1 bundle bytes remain pinned and unchanged.
 Frame retirement uses `bh host frame-retire plan|apply|check <frame_id>`.
 The existing `bh host retire` keeps its four options and host-local decommission
 behavior; the additive command owns the protected authority lifecycle.
+
+## Committed fleet configuration port and observation boundary
+
+The additive `FleetConfigRevisionPort` lives beside the existing configuration document
+ports. It returns immutable raw ordered documents and separate backend identity, committed
+revision, recovery generation, fetch time and validity metadata. The configuration module
+remains the only owner of model validation, scope/override resolution and secret classification;
+the store does not invent an effective-config resolver. Workspace documents preserve the full
+selected set and original order, including provider group paths, filters and non-secret metadata.
+No host roots, credentials or Beads attachment data belong in a fleet document snapshot.
+
+Protected Git config publication uses its own operator-signed `bh-config` head and immutable
+`config-witness` refs. It is separate from legacy main-layout writes and frame desired-config
+reads, so enabling this API does not silently migrate a working checkout or change released
+executors. Publication compares the originally loaded expected revision, atomically updates
+head and witness, then rereads the exact committed revision. Stale writers, runtime frame keys,
+missing witnesses, rollback, expired authority and mismatched recovery generation refuse.
+Restoring all heads/witnesses/policy still requires independent recovery generation custody.
+
+`attach_fleet_config` resolves explicit bootstrap inputs or `config.load_host()` only, before
+fleet/effective loading can run. It attaches and reads back without source import, host identity
+changes or Beads initialization/hydration/remote writes. The Git client uses its existing protected
+binding and object workspace. SQL and unknown selectors fail closed until the separately owned
+SQL binding is implemented and qualified; attachment never falls back to Git after SQL failure.
+The subsequent fleet config consumer owns import validation, working-copy seed reconciliation,
+cache/materialization and configuration authority switching.
+
+Production frame observation now invokes the selected control-plane port, which authenticates
+its own carrier. Git remains the SSH-signed parentless carrier adapter. The shared
+`assess_authenticated_observation` policy consumes a verified lease/signer and opaque carrier
+digest with one trusted authority/receipt; it performs no Git fetch or signature inference.
+Durable receipt sequence, identity, first-seen and validity remain authoritative after local
+SQLite loss. This extraction does not implement SQL signatures or qualify a fake SQL backend.
+Legacy nonframe Git observation and explicit low-level transport test injection remain supported.
+The authority CLI uses public `authority_status`, rather than a Git-private reader.
+When Git protection is unavailable, its adapter may retain signed-carrier diagnostic age
+from the existing Git source, with no trusted receipt and no fresh/eligible result. This
+compatibility path exists only inside the selected Git binding; an unsupported or failed
+SQL selector never invokes Git diagnostics.
+
+The additive `load_config_authority_snapshot` port returns `ConfigAuthoritySnapshot` with
+both immutable views and a provider-issued `HqConsistencyToken` (backend, generation and
+combined-read revision). The separate Git config head and legacy frame-authority head do not
+constitute an atomic combined read, so this capability explicitly refuses on the Git binding.
+Consumers must not join independent `load_snapshot` and `watch_state` calls
+to assert config-bound eligibility. The SQL consumer binding must expose a combined read in
+one authoritative transaction: committed fleet revision, backend identity/recovery generation,
+frame desired-policy revision and trusted observer receipt floors share an immutable binding
+token. It must reject mixed revisions, changed/revoked authority or either expired validity.
+Receipt `config_revision` remains the frame desired-policy revision; it must not be silently
+relabelled as the fleet document commit. Existing Git frame behavior keeps its protected
+authority snapshot contract until that explicit consumer migration is implemented.
+
+Execution baseline is clean `fe07dc1d`, with signed U2 checkpoint `1307874b` retained as ancestor
+and independently verified 116 focused tests green. Security/data-integrity changes use strict
+validation: focused carrier/adapter tests at each coherent transition, then the configured
+native gate and managed shared-group submission. SQL binding, hosted Git enforcement, U3 dispatch
+eligibility and the NixOS migration smoke proof remain explicit independent qualification inputs.
+The retained `fe07dc1d` NixOS/no-nix-ld fixture subsequently passed with actual KVM under its
+unchanged init 180s/status 120s bounds (134.02s/2.13s); the original TCG failure was deadline
+cancellation, not a reproduced migration deadlock. That proof qualifies the original packaged
+closure only, not these new Python changes or hosted Git enforcement.
+Current operator delivery is HQ configuration syncing only; existing Beads databases and remotes,
+including HQ's, remain untouched.

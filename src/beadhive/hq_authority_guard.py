@@ -16,6 +16,9 @@ from pathlib import Path
 
 HEAD = "refs/heads/bh-authority"
 WITNESS = "refs/bh/authority-witness/"
+CONFIG_HEAD = "refs/heads/bh-config"
+CONFIG_WITNESS = "refs/bh/config-witness/"
+CONFIG_DOMAIN = "beadhive/fleet-config/v1"
 ZERO = "0" * 40
 POLICY = "bh-authority-policy.json"
 DOMAIN = "beadhive/git-authority/v1"
@@ -381,6 +384,92 @@ def load_runtime(policy):
     sys.path[:] = [str(libraries.resolve()), stdlib, str(Path(stdlib) / "lib-dynload")]
 
 
+def validate_config_state(state):
+    """Validate the carrier, leaving config semantics to the existing config module."""
+    if set(state) != {"domain", "generation", "revision", "issued_at", "expires_at", "documents"}:
+        raise ValueError("invalid configuration envelope")
+    if state["domain"] != CONFIG_DOMAIN or not isinstance(state["generation"], str):
+        raise ValueError("invalid configuration domain/generation")
+    if type(state["revision"]) is not int or state["revision"] < 1:
+        raise ValueError("invalid configuration revision")
+    if (
+        any(
+            type(state[k]) not in (int, float) or not math.isfinite(state[k])
+            for k in ("issued_at", "expires_at")
+        )
+        or state["expires_at"] <= state["issued_at"]
+    ):
+        raise ValueError("invalid configuration validity")
+    documents = state["documents"]
+    if not isinstance(documents, list) or not documents:
+        raise ValueError("configuration documents required")
+    paths = set()
+    for doc in documents:
+        if not isinstance(doc, dict) or set(doc) != {"path", "content"}:
+            raise ValueError("invalid configuration document")
+        path = doc["path"]
+        if (
+            not isinstance(path, str)
+            or not re.fullmatch(
+                r"fleet\.yaml|workspace(?:-[A-Za-z0-9_-]+)?\.toml|allowed_signers|"
+                r"hosts/[A-Za-z0-9_-]+\.yaml|hives/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\.yaml",
+                path,
+            )
+            or any(part in {".", ".."} for part in path.split("/"))
+        ):
+            raise ValueError("unsupported configuration document path")
+        if path in paths or not isinstance(doc["content"], str):
+            raise ValueError("duplicate path or invalid configuration document content")
+        paths.add(path)
+    if "fleet.yaml" not in paths:
+        raise ValueError("fleet document required")
+
+
+def read_config_state(sha):
+    if (
+        git("ls-tree", "--name-only", sha) != "config.json"
+        or int(git("cat-file", "-s", f"{sha}:config.json")) > 4 * 1024 * 1024
+    ):
+        raise ValueError("invalid configuration carrier")
+    state = json.loads(git("show", f"{sha}:config.json"))
+    validate_config_state(state)
+    return state
+
+
+def enforce_config(updates, policy, principal):
+    protected = [
+        (old, new, ref)
+        for old, new, ref in updates
+        if ref == CONFIG_HEAD or ref.startswith(CONFIG_WITNESS)
+    ]
+    if not protected:
+        return
+    if principal != "operator":
+        raise ValueError("frame cannot write configuration or witnesses")
+    heads = [(old, new) for old, new, ref in protected if ref == CONFIG_HEAD]
+    if len(heads) != 1:
+        raise ValueError("configuration head/witness must advance atomically")
+    old, new = heads[0]
+    if new == ZERO:
+        raise ValueError("configuration deletion forbidden")
+    git("-c", f"gpg.ssh.allowedSignersFile={policy['operator_signers']}", "verify-commit", new)
+    state = read_config_state(new)
+    if (
+        state["generation"] != policy["generation"]
+        or state["issued_at"] > time.time() + 30
+        or state["expires_at"] <= time.time()
+    ):
+        raise ValueError("configuration generation/validity mismatch")
+    parents = git("show", "-s", "--format=%P", new).split()
+    previous_revision = read_config_state(old)["revision"] if old != ZERO else 0
+    if parents != ([] if old == ZERO else [old]) or state["revision"] != previous_revision + 1:
+        raise ValueError("configuration must advance exact parent/revision")
+    if sorted(protected) != sorted(
+        [(old, new, CONFIG_HEAD), (ZERO, new, f"{CONFIG_WITNESS}{state['revision']:020d}")]
+    ):
+        raise ValueError("configuration witness mismatch")
+
+
 def enforce(updates, policy):
     protected = [
         (old, new, ref) for old, new, ref in updates if ref == HEAD or ref.startswith(WITNESS)
@@ -388,6 +477,7 @@ def enforce(updates, policy):
     principal = os.environ.get("BH_HQ_BROKER_PRINCIPAL")
     if principal not in {"operator", "frame"}:
         raise ValueError("protected broker principal required")
+    enforce_config(updates, policy, principal)
     if principal == "frame":
         if protected:
             raise ValueError("frame cannot write authority or witness refs")
