@@ -149,11 +149,17 @@ def decision_for(host_id, hive=None, *, hq_dir=None, cfg=None, at=None):
     """None denotes an unbound legacy host; a declared binding always fails closed."""
     from . import config
 
-    settings = cfg if cfg is not None else config.load_host()
+    try:
+        bootstrap = config.load_host()
+    except FileNotFoundError:
+        # Historical raw lease recovery has no host config. A declared frame manifest below
+        # still enters protected authority checks; malformed/unreadable config never falls back.
+        bootstrap = {}
+    settings = cfg if cfg is not None else bootstrap
     root = Path(hq_dir) if hq_dir is not None else config.hq_dir()
-    binding = config.load_host().get("hq", {})
+    binding = bootstrap.get("hq", {})
     # Configuration storage alone does not enroll a legacy executor as a frame.
-    enrolled = bool(config.load_host().get("host", {}).get("frame_id"))
+    enrolled = bool(bootstrap.get("host", {}).get("frame_id"))
     if anchor := binding.get("authority_anchor"):
         try:
             # Operator/observer bootstrap access does not enroll an executor.

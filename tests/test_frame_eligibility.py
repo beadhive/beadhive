@@ -150,6 +150,39 @@ def test_sql_and_bound_missing_manifest_never_allow_legacy(tmp_path, monkeypatch
     assert not policy.decision_for("host", hq_dir=tmp_path).allowed
 
 
+def test_missing_host_config_preserves_raw_legacy_recovery_but_denies_frames(
+    candidate, tmp_path, monkeypatch
+):
+    from beadhive import hq_control_plane
+
+    def absent():
+        raise FileNotFoundError("host config absent")
+
+    def unavailable(_root):
+        raise ValueError("no protected binding")
+
+    monkeypatch.setattr(config, "load_host", absent)
+    assert policy.require_eligible("legacy", {"prefix": "bh"}, hq_dir=tmp_path) is None
+    frame, _facts = candidate
+    hosts.save(tmp_path, frame)
+    monkeypatch.setattr(hq_control_plane, "control_plane", unavailable)
+    decision = policy.decision_for(frame.host_id, hq_dir=tmp_path)
+    assert not decision.allowed
+    assert dict(decision.predicates)["authority_available"] is False
+    with pytest.raises(policy.EligibilityError, match="authority_available"):
+        policy.require_eligible(frame.host_id, hq_dir=tmp_path)
+
+
+@pytest.mark.parametrize("error", [ValueError("invalid-config"), PermissionError("unreadable")])
+def test_existing_invalid_or_unreadable_config_never_selects_legacy(error, tmp_path, monkeypatch):
+    def rejected():
+        raise error
+
+    monkeypatch.setattr(config, "load_host", rejected)
+    with pytest.raises(type(error)):
+        policy.require_eligible("legacy", hq_dir=tmp_path)
+
+
 def test_fleet_only_hive_requirements_and_unresolved_catalog(candidate, tmp_path, monkeypatch):
     from beadhive import registry
 
