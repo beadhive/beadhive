@@ -266,7 +266,7 @@ def config_paths(cfg) -> list[Path]:
 
 def is_seeded(root) -> bool:
     """Whether an internal root already has a source workspace TOML (not its lockfile)."""
-    return bool(glob_configs(Path(root)))
+    return bool(_external_configs(Path(root)))
 
 
 def ensure_seeded(root) -> bool:
