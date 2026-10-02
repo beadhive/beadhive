@@ -30,6 +30,7 @@ from . import (
     gitworkspace_plugin,
     home_migration,
     host_cli,
+    hq_authority_cli,
     jsonout,
     log,
     otel,
@@ -82,6 +83,7 @@ hq_app = typer.Typer(
     no_args_is_help=True, help="Factory HQ: the durable central store (kind=hq singleton)."
 )
 setup_app = typer.Typer(no_args_is_help=True, help="Post-install dependency check + cached gate.")
+hq_app.command("authority")(otel.trace_verb("hq.authority")(hq_authority_cli.authority_cmd))
 harness_app = typer.Typer(
     no_args_is_help=True,
     help="Aliases onto `bh dep`, filtered to agent harnesses (bh-hsus.6).",

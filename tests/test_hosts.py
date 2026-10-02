@@ -275,6 +275,27 @@ def test_canonical_role_passes_an_unknown_value_through_untouched():
     assert hosts.canonical_role("executor") == "executor"
 
 
+def test_neutral_manifest_reexport_preserves_structured_deprecated_role_warning():
+    import io
+    import json
+
+    from beadhive import log
+    from beadhive.host_manifest_contracts import HostManifest
+
+    assert hosts.HostManifest is HostManifest
+    output = io.StringIO()
+    log.configure(level="WARNING", fmt="json", stream=output)
+    try:
+        assert hosts.canonical_role("worker") == "viewer"
+    finally:
+        log.configure()
+    warning = json.loads(output.getvalue().splitlines()[-1])
+    assert warning["event"] == "deprecated_host_role"
+    assert warning["deprecated"] == "worker"
+    assert warning["replacement"] == "viewer"
+    assert "bh host init --role viewer --force" in warning["reason"]
+
+
 # Captured from the factory HQ on 2026-09-30, before frame membership fields.
 def test_real_pre_frame_hq_manifest_loads_unchanged_as_active(tmp_path):
     from pathlib import Path

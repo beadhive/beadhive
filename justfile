@@ -703,9 +703,11 @@ root-composition-validate:
 # architecture phase. Keep this edge here as well as in check-native's sibling list: selective
 # validation can invoke `attest-stateful` on its own, and that run may start before the
 # architecture-contracts key in a different worker.
+# Work stealing redistributes unstarted tests when an uneven fixture-heavy batch leaves idle
+# workers. Keep the same complete collection, fixed worker bound, and watchdog deadline.
 stateful-native: root-composition-validate architecture-structural-check
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{stateful_workers}} tests \
+        ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{stateful_workers}} tests --dist worksteal \
         -m "not integration and not pants_profile" \
         $(uv run python scripts/root_composition_tests.py --ignore-args)
 

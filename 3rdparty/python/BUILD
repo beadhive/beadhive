@@ -1,6 +1,7 @@
 # Keep this resolve aligned with pyproject.toml's direct runtime, optional, and dev inputs.
 # Pants' uv lock is secondary build metadata; canonical dependency authority remains uv.lock.
 python_requirement(name="typer", requirements=["typer>=0.12"])
+python_requirement(name="pymysql", requirements=["PyMySQL==1.1.2"], modules=["pymysql"])
 python_requirement(
     name="ruamel-yaml",
     requirements=["ruamel.yaml>=0.18"],

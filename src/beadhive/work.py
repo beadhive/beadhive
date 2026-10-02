@@ -1315,6 +1315,9 @@ def start(epic: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
     _guard_conventions(cfg, data, epic, main, action="dispatch")
     entry, target, branch = worktree.ensure(cfg, hive, bead=epic, kind="epic")
     _stamp(cfg, entry, target, actor)
+    from . import frame_eligibility
+
+    frame_eligibility.require_intake(hive, cfg=cfg, hive_dir=main)
     res = bd_cli.routes(main).issue_claim(epic, actor=actor)
     if res.returncode != 0:
         raise typer.Exit(res.returncode)

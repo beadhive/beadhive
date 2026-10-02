@@ -71,11 +71,11 @@ last_verified_commit = "bh-3qkmk.5"
 expiry_trigger = "Move the released Development Frame Bridge runtime behind adapters/frame_bridge after its compatibility consumers reach zero."
 
 [cycle_snapshot]
-sha256 = "dd32e0c48ca2440b737417cc8cb710e4d105b41a144da776c6cc63eb6067022c"
+sha256 = "a3b51f4f4bacd3a0f1ea72e161e9d4a9d15b947f523539420a2dba392ffa5685"
 components = 8
-modules = 53
-edges = 125
-symbols = 141
+modules = 58
+edges = 147
+symbols = 170
 
 [[cycle_exception]]
 id = "cycle-edge-001"
@@ -995,3 +995,449 @@ test_closure = "module.config; just check"
 introduced_commit = "bh-18hud.3"
 last_verified_commit = "bh-18hud.3"
 expiry_trigger = "bh-18hud.5 migrates warning/migration callers and bh-18hud.6 proves the replacement closure."
+
+# Fleet composition exceptions: independently review exact edges before merging.
+# The successor schema field records the ongoing named steward allowed by the modular
+# dependency ADR; these records do not promise or fabricate a cleanup successor.
+
+[[cycle_exception]]
+id = "cycle-fleet-composition-001"
+status = "active"
+importer = "beadhive.frame_eligibility"
+importer_path = "src/beadhive/frame_eligibility.py"
+imported_module = "beadhive.config"
+symbols = ["beadhive.config"]
+target_owner_package = "src/beadhive Fleet application composition"
+successor = "Fleet composition steward: dev/fleet-eligibility"
+reason = "Selected HQ backend and host dispatch/lease settings belong at this application composition boundary; inventory cannot replace authority. introduced edge or changed exact symbols relative to d2485d67; retained concrete composition, not deferred cleanup."
+consumer_inventory = { production = "beadhive.frame_eligibility exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
+executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-structural-check; just check-native"
+introduced_commit = "bh-38h7p (exact graph addition at 357e4ff7; reviewed retained composition)"
+last_verified_commit = "0f050a206af6b5a66365244a5c41a3b13dfd077c"
+expiry_trigger = "Remove this exact edge when beadhive.frame_eligibility no longer calls beadhive.config or that consumer is migrated behind an injected capability port. Steward reassignment requires reviewed ledger amendment."
+
+[[cycle_exception]]
+id = "cycle-fleet-composition-002"
+status = "active"
+importer = "beadhive.frame_eligibility"
+importer_path = "src/beadhive/frame_eligibility.py"
+imported_module = "beadhive.host"
+symbols = ["beadhive.host"]
+target_owner_package = "src/beadhive Fleet application composition"
+successor = "Fleet composition steward: dev/fleet-eligibility"
+reason = "Resolve local executor identity for authoritative hive ownership. introduced edge or changed exact symbols relative to d2485d67; retained concrete composition, not deferred cleanup."
+consumer_inventory = { production = "beadhive.frame_eligibility exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
+executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-structural-check; just check-native"
+introduced_commit = "bh-38h7p (exact graph addition at 357e4ff7; reviewed retained composition)"
+last_verified_commit = "0f050a206af6b5a66365244a5c41a3b13dfd077c"
+expiry_trigger = "Remove this exact edge when beadhive.frame_eligibility no longer calls beadhive.host or that consumer is migrated behind an injected capability port. Steward reassignment requires reviewed ledger amendment."
+
+[[cycle_exception]]
+id = "cycle-fleet-composition-003"
+status = "active"
+importer = "beadhive.frame_eligibility"
+importer_path = "src/beadhive/frame_eligibility.py"
+imported_module = "beadhive.host_heartbeat_core"
+symbols = ["beadhive.host_heartbeat_core.VerifiedObservation"]
+target_owner_package = "src/beadhive Fleet application composition"
+successor = "Fleet composition steward: dev/fleet-eligibility"
+reason = "Retain exact authenticated observation type shared by production assessor and pure predicate. introduced edge or changed exact symbols relative to d2485d67; retained concrete composition, not deferred cleanup."
+consumer_inventory = { production = "beadhive.frame_eligibility exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
+executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-structural-check; just check-native"
+introduced_commit = "bh-38h7p (exact graph addition at 357e4ff7; reviewed retained composition)"
+last_verified_commit = "0f050a206af6b5a66365244a5c41a3b13dfd077c"
+expiry_trigger = "Remove this exact edge when beadhive.frame_eligibility no longer calls beadhive.host_heartbeat_core or that consumer is migrated behind an injected capability port. Steward reassignment requires reviewed ledger amendment."
+
+[[cycle_exception]]
+id = "cycle-fleet-composition-004"
+status = "removed"
+importer = "beadhive.frame_eligibility"
+importer_path = "src/beadhive/frame_eligibility.py"
+imported_module = "beadhive.hosts"
+symbols = ["beadhive.hosts"]
+target_owner_package = "src/beadhive Fleet application composition"
+successor = "Fleet composition steward: dev/fleet-eligibility"
+reason = "Load validated manifest capabilities and incarnation for the pure predicate. introduced edge or changed exact symbols relative to d2485d67; retained concrete composition, not deferred cleanup. Neutral HostManifest extraction in bh-v0k3i removed this exact cyclic dependency; the entry remains as historical ownership evidence."
+consumer_inventory = { production = "beadhive.frame_eligibility exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
+executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-structural-check; just check-native"
+introduced_commit = "bh-38h7p (exact graph addition at 357e4ff7; reviewed retained composition)"
+last_verified_commit = "0f050a206af6b5a66365244a5c41a3b13dfd077c"
+expiry_trigger = "Remove this exact edge when beadhive.frame_eligibility no longer calls beadhive.hosts or that consumer is migrated behind an injected capability port. Steward reassignment requires reviewed ledger amendment."
+
+[[cycle_exception]]
+id = "cycle-fleet-composition-005"
+status = "active"
+importer = "beadhive.frame_eligibility"
+importer_path = "src/beadhive/frame_eligibility.py"
+imported_module = "beadhive.hq_control_plane"
+symbols = ["beadhive.hq_control_plane.control_plane", "beadhive.hq_control_plane.verified_anchor_role"]
+target_owner_package = "src/beadhive Fleet application composition"
+successor = "Fleet composition steward: dev/fleet-eligibility"
+reason = "Compose the explicit authority provider and verified anchor classification, preserving fail-closed enrollment and current remote reads. introduced edge or changed exact symbols relative to d2485d67; retained concrete composition, not deferred cleanup."
+consumer_inventory = { production = "beadhive.frame_eligibility exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
+executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-structural-check; just check-native"
+introduced_commit = "bh-38h7p (exact graph addition at 357e4ff7; reviewed retained composition)"
+last_verified_commit = "0f050a206af6b5a66365244a5c41a3b13dfd077c"
+expiry_trigger = "Remove this exact edge when beadhive.frame_eligibility no longer calls beadhive.hq_control_plane or that consumer is migrated behind an injected capability port. Steward reassignment requires reviewed ledger amendment."
+
+[[cycle_exception]]
+id = "cycle-fleet-composition-006"
+status = "active"
+importer = "beadhive.frame_eligibility"
+importer_path = "src/beadhive/frame_eligibility.py"
+imported_module = "beadhive.registry"
+symbols = ["beadhive.registry"]
+target_owner_package = "src/beadhive Fleet application composition"
+successor = "Fleet composition steward: dev/fleet-eligibility"
+reason = "Resolve canonical hive requirements before authorizing intake. introduced edge or changed exact symbols relative to d2485d67; retained concrete composition, not deferred cleanup."
+consumer_inventory = { production = "beadhive.frame_eligibility exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
+executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-structural-check; just check-native"
+introduced_commit = "bh-38h7p (exact graph addition at 357e4ff7; reviewed retained composition)"
+last_verified_commit = "0f050a206af6b5a66365244a5c41a3b13dfd077c"
+expiry_trigger = "Remove this exact edge when beadhive.frame_eligibility no longer calls beadhive.registry or that consumer is migrated behind an injected capability port. Steward reassignment requires reviewed ledger amendment."
+
+[[cycle_exception]]
+id = "cycle-fleet-composition-007"
+status = "active"
+importer = "beadhive.guard"
+importer_path = "src/beadhive/guard.py"
+imported_module = "beadhive.frame_eligibility"
+symbols = ["beadhive.frame_eligibility"]
+target_owner_package = "src/beadhive Fleet application composition"
+successor = "Fleet composition steward: dev/fleet-eligibility"
+reason = "Every bd write requires the same frame intake check before legacy primary guard; removing this call restores unsafe bypass. introduced edge or changed exact symbols relative to d2485d67; retained concrete composition, not deferred cleanup."
+consumer_inventory = { production = "beadhive.guard exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
+executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-structural-check; just check-native"
+introduced_commit = "bh-38h7p (exact graph addition at 357e4ff7; reviewed retained composition)"
+last_verified_commit = "0f050a206af6b5a66365244a5c41a3b13dfd077c"
+expiry_trigger = "Remove this exact edge when beadhive.guard no longer calls beadhive.frame_eligibility or that consumer is migrated behind an injected capability port. Steward reassignment requires reviewed ledger amendment."
+
+[[cycle_exception]]
+id = "cycle-fleet-composition-008"
+status = "active"
+importer = "beadhive.host_heartbeat_core"
+importer_path = "src/beadhive/host_heartbeat_core.py"
+imported_module = "beadhive.config"
+symbols = ["beadhive.config"]
+target_owner_package = "src/beadhive Fleet application composition"
+successor = "Fleet composition steward: dev/fleet-eligibility"
+reason = "Existing observer receipt storage defaults to local host home; this is composition, never authoritative replay-floor reset. preexisting edge promoted into SCC relative to d2485d67; retained concrete composition, not deferred cleanup."
+consumer_inventory = { production = "beadhive.host_heartbeat_core exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
+executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-structural-check; just check-native"
+introduced_commit = "bh-38h7p (exact graph addition at 357e4ff7; reviewed retained composition)"
+last_verified_commit = "0f050a206af6b5a66365244a5c41a3b13dfd077c"
+expiry_trigger = "Remove this exact edge when beadhive.host_heartbeat_core no longer calls beadhive.config or that consumer is migrated behind an injected capability port. Steward reassignment requires reviewed ledger amendment."
+
+[[cycle_exception]]
+id = "cycle-fleet-composition-009"
+status = "active"
+importer = "beadhive.host_heartbeat_core"
+importer_path = "src/beadhive/host_heartbeat_core.py"
+imported_module = "beadhive.gitref"
+symbols = ["beadhive.gitref"]
+target_owner_package = "src/beadhive Fleet application composition"
+successor = "Fleet composition steward: dev/fleet-eligibility"
+reason = "Existing signed Git heartbeat publication and signature verification use the bounded shared Git carrier primitives. preexisting edge promoted into SCC relative to d2485d67; retained concrete composition, not deferred cleanup."
+consumer_inventory = { production = "beadhive.host_heartbeat_core exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
+executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-structural-check; just check-native"
+introduced_commit = "bh-38h7p (exact graph addition at 357e4ff7; reviewed retained composition)"
+last_verified_commit = "0f050a206af6b5a66365244a5c41a3b13dfd077c"
+expiry_trigger = "Remove this exact edge when beadhive.host_heartbeat_core no longer calls beadhive.gitref or that consumer is migrated behind an injected capability port. Steward reassignment requires reviewed ledger amendment."
+
+[[cycle_exception]]
+id = "cycle-fleet-composition-010"
+status = "removed"
+importer = "beadhive.host_heartbeat_core"
+importer_path = "src/beadhive/host_heartbeat_core.py"
+imported_module = "beadhive.hosts"
+symbols = ["beadhive.hosts"]
+target_owner_package = "src/beadhive Fleet application composition"
+successor = "Fleet composition steward: dev/fleet-eligibility"
+reason = "Shared manifest release schema and typed incarnation data preserve authentication identity. preexisting edge promoted into SCC relative to d2485d67; retained concrete composition, not deferred cleanup. Neutral HostManifest extraction in bh-v0k3i removed this exact cyclic dependency; the entry remains as historical ownership evidence."
+consumer_inventory = { production = "beadhive.host_heartbeat_core exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
+executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-structural-check; just check-native"
+introduced_commit = "bh-38h7p (exact graph addition at 357e4ff7; reviewed retained composition)"
+last_verified_commit = "0f050a206af6b5a66365244a5c41a3b13dfd077c"
+expiry_trigger = "Remove this exact edge when beadhive.host_heartbeat_core no longer calls beadhive.hosts or that consumer is migrated behind an injected capability port. Steward reassignment requires reviewed ledger amendment."
+
+[[cycle_exception]]
+id = "cycle-fleet-composition-011"
+status = "active"
+importer = "beadhive.host_heartbeat_core"
+importer_path = "src/beadhive/host_heartbeat_core.py"
+imported_module = "beadhive.run"
+symbols = ["beadhive.run.run"]
+target_owner_package = "src/beadhive Fleet application composition"
+successor = "Fleet composition steward: dev/fleet-eligibility"
+reason = "Existing bounded Git subprocesses keep inherited launcher and telemetry behavior. preexisting edge promoted into SCC relative to d2485d67; retained concrete composition, not deferred cleanup."
+consumer_inventory = { production = "beadhive.host_heartbeat_core exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
+executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-structural-check; just check-native"
+introduced_commit = "bh-38h7p (exact graph addition at 357e4ff7; reviewed retained composition)"
+last_verified_commit = "0f050a206af6b5a66365244a5c41a3b13dfd077c"
+expiry_trigger = "Remove this exact edge when beadhive.host_heartbeat_core no longer calls beadhive.run or that consumer is migrated behind an injected capability port. Steward reassignment requires reviewed ledger amendment."
+
+[[cycle_exception]]
+id = "cycle-fleet-composition-012"
+status = "active"
+importer = "beadhive.host_lease"
+importer_path = "src/beadhive/host_lease.py"
+imported_module = "beadhive.frame_eligibility"
+symbols = ["beadhive.frame_eligibility"]
+target_owner_package = "src/beadhive Fleet application composition"
+successor = "Fleet composition steward: dev/fleet-eligibility"
+reason = "Adopt and renew check candidate eligibility and authenticated incumbent eviction at the actual CAS boundary. introduced edge or changed exact symbols relative to d2485d67; retained concrete composition, not deferred cleanup."
+consumer_inventory = { production = "beadhive.host_lease exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
+executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-structural-check; just check-native"
+introduced_commit = "bh-38h7p (exact graph addition at 357e4ff7; reviewed retained composition)"
+last_verified_commit = "0f050a206af6b5a66365244a5c41a3b13dfd077c"
+expiry_trigger = "Remove this exact edge when beadhive.host_lease no longer calls beadhive.frame_eligibility or that consumer is migrated behind an injected capability port. Steward reassignment requires reviewed ledger amendment."
+
+[[cycle_exception]]
+id = "cycle-fleet-composition-013"
+status = "active"
+importer = "beadhive.host_lease"
+importer_path = "src/beadhive/host_lease.py"
+imported_module = "beadhive.host"
+symbols = ["beadhive.host"]
+target_owner_package = "src/beadhive Fleet application composition"
+successor = "Fleet composition steward: dev/fleet-eligibility"
+reason = "Resolve current holder identity before choosing legacy Git or protected frame lease. introduced edge or changed exact symbols relative to d2485d67; retained concrete composition, not deferred cleanup."
+consumer_inventory = { production = "beadhive.host_lease exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
+executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-structural-check; just check-native"
+introduced_commit = "bh-38h7p (exact graph addition at 357e4ff7; reviewed retained composition)"
+last_verified_commit = "0f050a206af6b5a66365244a5c41a3b13dfd077c"
+expiry_trigger = "Remove this exact edge when beadhive.host_lease no longer calls beadhive.host or that consumer is migrated behind an injected capability port. Steward reassignment requires reviewed ledger amendment."
+
+[[cycle_exception]]
+id = "cycle-fleet-composition-014"
+status = "active"
+importer = "beadhive.host_lease"
+importer_path = "src/beadhive/host_lease.py"
+imported_module = "beadhive.hq_control_plane"
+symbols = ["beadhive.hq_control_plane.control_plane"]
+target_owner_package = "src/beadhive Fleet application composition"
+successor = "Fleet composition steward: dev/fleet-eligibility"
+reason = "Select the protected lease publication/read adapter for enrolled frames; legacy path remains separate. introduced edge or changed exact symbols relative to d2485d67; retained concrete composition, not deferred cleanup."
+consumer_inventory = { production = "beadhive.host_lease exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
+executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-structural-check; just check-native"
+introduced_commit = "bh-38h7p (exact graph addition at 357e4ff7; reviewed retained composition)"
+last_verified_commit = "0f050a206af6b5a66365244a5c41a3b13dfd077c"
+expiry_trigger = "Remove this exact edge when beadhive.host_lease no longer calls beadhive.hq_control_plane or that consumer is migrated behind an injected capability port. Steward reassignment requires reviewed ledger amendment."
+
+[[cycle_exception]]
+id = "cycle-fleet-composition-015"
+status = "active"
+importer = "beadhive.hq_control_plane"
+importer_path = "src/beadhive/hq_control_plane.py"
+imported_module = "beadhive.config"
+symbols = ["beadhive.config"]
+target_owner_package = "src/beadhive Fleet application composition"
+successor = "Fleet composition steward: dev/fleet-eligibility"
+reason = "Existing explicit backend factory and local binding configuration select the protected provider. preexisting edge promoted into SCC relative to d2485d67; retained concrete composition, not deferred cleanup."
+consumer_inventory = { production = "beadhive.hq_control_plane exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
+executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-structural-check; just check-native"
+introduced_commit = "bh-38h7p (exact graph addition at 357e4ff7; reviewed retained composition)"
+last_verified_commit = "0f050a206af6b5a66365244a5c41a3b13dfd077c"
+expiry_trigger = "Remove this exact edge when beadhive.hq_control_plane no longer calls beadhive.config or that consumer is migrated behind an injected capability port. Steward reassignment requires reviewed ledger amendment."
+
+[[cycle_exception]]
+id = "cycle-fleet-composition-016"
+status = "active"
+importer = "beadhive.hq_control_plane"
+importer_path = "src/beadhive/hq_control_plane.py"
+imported_module = "beadhive.gitref"
+symbols = ["beadhive.gitref"]
+target_owner_package = "src/beadhive Fleet application composition"
+successor = "Fleet composition steward: dev/fleet-eligibility"
+reason = "Existing signed policy, authority and config carriers retain encoding, CAS and bounded Git primitives. preexisting edge promoted into SCC relative to d2485d67; retained concrete composition, not deferred cleanup."
+consumer_inventory = { production = "beadhive.hq_control_plane exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
+executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-structural-check; just check-native"
+introduced_commit = "bh-38h7p (exact graph addition at 357e4ff7; reviewed retained composition)"
+last_verified_commit = "0f050a206af6b5a66365244a5c41a3b13dfd077c"
+expiry_trigger = "Remove this exact edge when beadhive.hq_control_plane no longer calls beadhive.gitref or that consumer is migrated behind an injected capability port. Steward reassignment requires reviewed ledger amendment."
+
+[[cycle_exception]]
+id = "cycle-fleet-composition-017"
+status = "active"
+importer = "beadhive.hq_control_plane"
+importer_path = "src/beadhive/hq_control_plane.py"
+imported_module = "beadhive.host"
+symbols = ["beadhive.host"]
+target_owner_package = "src/beadhive Fleet application composition"
+successor = "Fleet composition steward: dev/fleet-eligibility"
+reason = "Existing publication uses enrolled holder identity and local key reference, never exports private key content. preexisting edge promoted into SCC relative to d2485d67; retained concrete composition, not deferred cleanup."
+consumer_inventory = { production = "beadhive.hq_control_plane exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
+executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-structural-check; just check-native"
+introduced_commit = "bh-38h7p (exact graph addition at 357e4ff7; reviewed retained composition)"
+last_verified_commit = "0f050a206af6b5a66365244a5c41a3b13dfd077c"
+expiry_trigger = "Remove this exact edge when beadhive.hq_control_plane no longer calls beadhive.host or that consumer is migrated behind an injected capability port. Steward reassignment requires reviewed ledger amendment."
+
+[[cycle_exception]]
+id = "cycle-fleet-composition-018"
+status = "active"
+importer = "beadhive.hq_control_plane"
+importer_path = "src/beadhive/hq_control_plane.py"
+imported_module = "beadhive.host_heartbeat_core"
+symbols = ["beadhive.host_heartbeat_core", "beadhive.host_heartbeat_core.AuthoritySnapshot", "beadhive.host_heartbeat_core.HeartbeatLease", "beadhive.host_heartbeat_core.ObservationAuthority", "beadhive.host_heartbeat_core.VerifiedObservation", "beadhive.host_heartbeat_core._authority_matches", "beadhive.host_heartbeat_core.ref_name"]
+target_owner_package = "src/beadhive Fleet application composition"
+successor = "Fleet composition steward: dev/fleet-eligibility"
+reason = "Existing provider implements trusted snapshots, authenticated observations, heartbeat publication and epoch matching using shared types. preexisting edge promoted into SCC relative to d2485d67; retained concrete composition, not deferred cleanup."
+consumer_inventory = { production = "beadhive.hq_control_plane exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
+executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-structural-check; just check-native"
+introduced_commit = "bh-38h7p (exact graph addition at 357e4ff7; reviewed retained composition)"
+last_verified_commit = "315cd2ce528bb70baefaad203680f6cd1d53675d"
+expiry_trigger = "Remove this exact edge when beadhive.hq_control_plane no longer calls beadhive.host_heartbeat_core or that consumer is migrated behind an injected capability port. Steward reassignment requires reviewed ledger amendment."
+
+[[cycle_exception]]
+id = "cycle-fleet-composition-019"
+status = "removed"
+importer = "beadhive.hq_control_plane"
+importer_path = "src/beadhive/hq_control_plane.py"
+imported_module = "beadhive.hosts"
+symbols = ["beadhive.hosts", "beadhive.hosts.HostManifest"]
+target_owner_package = "src/beadhive Fleet application composition"
+successor = "Fleet composition steward: dev/fleet-eligibility"
+reason = "Existing provider validates exact registration manifest and authenticated membership schemas. preexisting edge promoted into SCC relative to d2485d67; retained concrete composition, not deferred cleanup. Neutral HostManifest extraction in bh-v0k3i removed this exact cyclic dependency; the entry remains as historical ownership evidence."
+consumer_inventory = { production = "beadhive.hq_control_plane exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
+executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-structural-check; just check-native"
+introduced_commit = "bh-38h7p (exact graph addition at 357e4ff7; reviewed retained composition)"
+last_verified_commit = "0f050a206af6b5a66365244a5c41a3b13dfd077c"
+expiry_trigger = "Remove this exact edge when beadhive.hq_control_plane no longer calls beadhive.hosts or that consumer is migrated behind an injected capability port. Steward reassignment requires reviewed ledger amendment."
+
+[[cycle_exception]]
+id = "cycle-fleet-composition-020"
+status = "active"
+importer = "beadhive.hq_control_plane"
+importer_path = "src/beadhive/hq_control_plane.py"
+imported_module = "beadhive.hq_fleet_config"
+symbols = ["beadhive.hq_fleet_config.GitFleetConfigRevisionStore"]
+target_owner_package = "src/beadhive Fleet application composition"
+successor = "Fleet composition steward: dev/fleet-eligibility"
+reason = "Existing provider constructs the committed Git config store for the revision port. preexisting edge promoted into SCC relative to d2485d67; retained concrete composition, not deferred cleanup."
+consumer_inventory = { production = "beadhive.hq_control_plane exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
+executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-structural-check; just check-native"
+introduced_commit = "bh-38h7p (exact graph addition at 357e4ff7; reviewed retained composition)"
+last_verified_commit = "0f050a206af6b5a66365244a5c41a3b13dfd077c"
+expiry_trigger = "Remove this exact edge when beadhive.hq_control_plane no longer calls beadhive.hq_fleet_config or that consumer is migrated behind an injected capability port. Steward reassignment requires reviewed ledger amendment."
+
+[[cycle_exception]]
+id = "cycle-fleet-composition-021"
+status = "active"
+importer = "beadhive.hq_control_plane"
+importer_path = "src/beadhive/hq_control_plane.py"
+imported_module = "beadhive.hq_manifest_publication"
+symbols = ["beadhive.hq_manifest_publication"]
+target_owner_package = "src/beadhive Fleet application composition"
+successor = "Fleet composition steward: dev/fleet-eligibility"
+reason = "Existing provider delegates exact own-manifest publication without staging unrelated HQ changes. preexisting edge promoted into SCC relative to d2485d67; retained concrete composition, not deferred cleanup."
+consumer_inventory = { production = "beadhive.hq_control_plane exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
+executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-structural-check; just check-native"
+introduced_commit = "bh-38h7p (exact graph addition at 357e4ff7; reviewed retained composition)"
+last_verified_commit = "0f050a206af6b5a66365244a5c41a3b13dfd077c"
+expiry_trigger = "Remove this exact edge when beadhive.hq_control_plane no longer calls beadhive.hq_manifest_publication or that consumer is migrated behind an injected capability port. Steward reassignment requires reviewed ledger amendment."
+
+[[cycle_exception]]
+id = "cycle-fleet-composition-022"
+status = "active"
+importer = "beadhive.hq_control_plane"
+importer_path = "src/beadhive/hq_control_plane.py"
+imported_module = "beadhive.run"
+symbols = ["beadhive.run.run"]
+target_owner_package = "src/beadhive Fleet application composition"
+successor = "Fleet composition steward: dev/fleet-eligibility"
+reason = "Existing authority provider retains protected bounded Git execution through the established launcher. preexisting edge promoted into SCC relative to d2485d67; retained concrete composition, not deferred cleanup."
+consumer_inventory = { production = "beadhive.hq_control_plane exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
+executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-structural-check; just check-native"
+introduced_commit = "bh-38h7p (exact graph addition at 357e4ff7; reviewed retained composition)"
+last_verified_commit = "0f050a206af6b5a66365244a5c41a3b13dfd077c"
+expiry_trigger = "Remove this exact edge when beadhive.hq_control_plane no longer calls beadhive.run or that consumer is migrated behind an injected capability port. Steward reassignment requires reviewed ledger amendment."
+
+[[cycle_exception]]
+id = "cycle-fleet-composition-023"
+status = "active"
+importer = "beadhive.hq_fleet_config"
+importer_path = "src/beadhive/hq_fleet_config.py"
+imported_module = "beadhive.gitref"
+symbols = ["beadhive.gitref"]
+target_owner_package = "src/beadhive Fleet application composition"
+successor = "Fleet composition steward: dev/fleet-eligibility"
+reason = "Existing revision store uses the same canonical encoder for signed immutable configuration carriers. preexisting edge promoted into SCC relative to d2485d67; retained concrete composition, not deferred cleanup."
+consumer_inventory = { production = "beadhive.hq_fleet_config exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
+executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-structural-check; just check-native"
+introduced_commit = "bh-38h7p (exact graph addition at 357e4ff7; reviewed retained composition)"
+last_verified_commit = "0f050a206af6b5a66365244a5c41a3b13dfd077c"
+expiry_trigger = "Remove this exact edge when beadhive.hq_fleet_config no longer calls beadhive.gitref or that consumer is migrated behind an injected capability port. Steward reassignment requires reviewed ledger amendment."
+
+[[cycle_exception]]
+id = "cycle-fleet-composition-024"
+status = "active"
+importer = "beadhive.hq_manifest_publication"
+importer_path = "src/beadhive/hq_manifest_publication.py"
+imported_module = "beadhive.gitref"
+symbols = ["beadhive.gitref.GIT_TIMEOUT"]
+target_owner_package = "src/beadhive Fleet application composition"
+successor = "Fleet composition steward: dev/fleet-eligibility"
+reason = "Existing publication shares Git timeout bounds; does not read authority from application state. preexisting edge promoted into SCC relative to d2485d67; retained concrete composition, not deferred cleanup."
+consumer_inventory = { production = "beadhive.hq_manifest_publication exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
+executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-structural-check; just check-native"
+introduced_commit = "bh-38h7p (exact graph addition at 357e4ff7; reviewed retained composition)"
+last_verified_commit = "0f050a206af6b5a66365244a5c41a3b13dfd077c"
+expiry_trigger = "Remove this exact edge when beadhive.hq_manifest_publication no longer calls beadhive.gitref or that consumer is migrated behind an injected capability port. Steward reassignment requires reviewed ledger amendment."
+
+[[cycle_exception]]
+id = "cycle-fleet-composition-025"
+status = "removed"
+importer = "beadhive.hq_manifest_publication"
+importer_path = "src/beadhive/hq_manifest_publication.py"
+imported_module = "beadhive.hosts"
+symbols = ["beadhive.hosts"]
+target_owner_package = "src/beadhive Fleet application composition"
+successor = "Fleet composition steward: dev/fleet-eligibility"
+reason = "Existing exact registration publication validates manifest identity and preserves schema. preexisting edge promoted into SCC relative to d2485d67; retained concrete composition, not deferred cleanup. Neutral HostManifest extraction in bh-v0k3i removed this exact cyclic dependency; the entry remains as historical ownership evidence."
+consumer_inventory = { production = "beadhive.hq_manifest_publication exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
+executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-structural-check; just check-native"
+introduced_commit = "bh-38h7p (exact graph addition at 357e4ff7; reviewed retained composition)"
+last_verified_commit = "0f050a206af6b5a66365244a5c41a3b13dfd077c"
+expiry_trigger = "Remove this exact edge when beadhive.hq_manifest_publication no longer calls beadhive.hosts or that consumer is migrated behind an injected capability port. Steward reassignment requires reviewed ledger amendment."
+
+[[cycle_exception]]
+id = "cycle-fleet-composition-026"
+status = "active"
+importer = "beadhive.hq_manifest_publication"
+importer_path = "src/beadhive/hq_manifest_publication.py"
+imported_module = "beadhive.run"
+symbols = ["beadhive.run.run"]
+target_owner_package = "src/beadhive Fleet application composition"
+successor = "Fleet composition steward: dev/fleet-eligibility"
+reason = "Existing isolated Git publication uses the established launcher to preserve subprocess environment. preexisting edge promoted into SCC relative to d2485d67; retained concrete composition, not deferred cleanup."
+consumer_inventory = { production = "beadhive.hq_manifest_publication exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
+executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-structural-check; just check-native"
+introduced_commit = "bh-38h7p (exact graph addition at 357e4ff7; reviewed retained composition)"
+last_verified_commit = "0f050a206af6b5a66365244a5c41a3b13dfd077c"
+expiry_trigger = "Remove this exact edge when beadhive.hq_manifest_publication no longer calls beadhive.run or that consumer is migrated behind an injected capability port. Steward reassignment requires reviewed ledger amendment."

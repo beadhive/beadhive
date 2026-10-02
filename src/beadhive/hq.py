@@ -32,7 +32,6 @@ import re
 import stat
 import sys
 import tarfile
-import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -53,6 +52,8 @@ from . import (
 )
 from .bd import err_line
 from .bd import run as run_bd
+from .hq_manifest_publication import HostPublicationError as HostPublicationError
+from .hq_manifest_publication import _publish_host_manifest_git as _publish_host_manifest_git
 from .run import run
 
 GIT_TIMEOUT = 30.0  # seconds — bounds a git ls-remote/fetch/push so a wedged remote can't hang
@@ -107,7 +108,13 @@ def init_store() -> None:
     owns that, and lands it in the hub."""
     # Create the durable store FIRST (prefix hq) — so a bd-init failure never leaves a dangling
     # registration — then register the synthetic identity in the ws registry.
+    fresh_git = not (config.hq_dir() / ".git").exists()
     hq = hub.ensure_store(config.hq_dir(), registry.HQ_PREFIX)
+    if fresh_git:
+        # All HQ transport/clone operations use main, independent of machine Git defaults.
+        initialized = _git(["branch", "-M", "main"], hq)
+        if initialized.returncode:
+            raise RuntimeError(f"cannot initialize HQ main branch: {err_line(initialized)}")
     registry.register(
         registry.HQ_PROVIDER,
         registry.HQ_ORG,
@@ -450,94 +457,11 @@ def status(*, as_json: bool = False) -> None:
         typer.echo(f"→ run `{config.BINARY_ALIAS} hq push` to publish")
 
 
-class HostPublicationError(Exception):
-    """A host registration could not be published without touching unrelated HQ work."""
-
-
 def publish_host_manifest(hq_dir: Path, host_id: str, *, attempts: int = 3) -> bool:
-    """Publish only this registration; return False when the remote already has it.
+    """Publish through the selected HQ control-plane binding."""
+    from .hq_control_plane import control_plane
 
-    The HQ publication boundary owns Git here. A remote-based disposable checkout avoids
-    publishing unrelated local commits, staging someone else's edits, or stashing HQ dirt.
-    Non-fast-forward races rebase only our manifest commit, then validate it again.
-    """
-    from . import hosts
-
-    if Path(host_id).name != host_id or not host_id or host_id in {".", ".."}:
-        raise HostPublicationError("host_id must be a manifest filename")
-    manifest = hosts.load(hq_dir, host_id)
-    if manifest.host_id != host_id:
-        raise HostPublicationError("manifest host_id does not match this host")
-    relative = hosts.manifest_path(hq_dir, host_id).relative_to(hq_dir)
-    content = (hq_dir / relative).read_bytes()
-
-    def checked(args: list[str], cwd: Path):
-        result = _git(args, cwd)
-        if result.returncode:
-            raise HostPublicationError(f"git {args[0]} failed: {err_line(result)}")
-        return result
-
-    remote = checked(["remote", "get-url", "--push", "origin"], hq_dir).stdout.strip()
-    settings = {}
-    for key in (
-        "user.name",
-        "user.email",
-        "user.signingkey",
-        "gpg.format",
-        "gpg.ssh.program",
-        "commit.gpgsign",
-        "core.sshcommand",
-    ):
-        value = _git(["config", "--get", key], hq_dir)
-        if value.returncode == 0:
-            settings[key] = value.stdout.strip()
-    with tempfile.TemporaryDirectory(prefix="bh-host-publish-") as directory:
-        checkout = Path(directory) / "hq"
-        transport = (
-            ["-c", f"core.sshcommand={settings['core.sshcommand']}"]
-            if "core.sshcommand" in settings
-            else []
-        )
-        checked(
-            [
-                *transport,
-                "clone",
-                "--single-branch",
-                "--branch",
-                "main",
-                "--",
-                remote,
-                str(checkout),
-            ],
-            hq_dir,
-        )
-        # Clone loses HQ-local settings; preserve effective signing and transport policy.
-        for key, value in settings.items():
-            checked(["config", key, value], checkout)
-        target = checkout / relative
-        if target.is_symlink() or target.parent.is_symlink():
-            raise HostPublicationError("remote registration path must not be a symlink")
-        if target.exists() and target.read_bytes() == content:
-            return False
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(content)
-        checked(["add", "--", str(relative)], checkout)
-        checked(["commit", "-m", f"feat(host): register {host_id}"], checkout)
-        for attempt in range(attempts):
-            verified = hosts.load(checkout, host_id)
-            if verified != manifest or target.read_bytes() != content:
-                raise HostPublicationError("registration changed during publication retry")
-            pushed = _git(["push", "origin", "HEAD:refs/heads/main"], checkout)
-            if pushed.returncode == 0:
-                return True
-            diagnostic = pushed.stderr + pushed.stdout
-            if attempt + 1 == attempts or not any(
-                marker in diagnostic for marker in ("non-fast-forward", "fetch first")
-            ):
-                raise HostPublicationError(f"git push failed: {err_line(pushed)}")
-            checked(["fetch", "origin", "main"], checkout)
-            checked(["rebase", "origin/main"], checkout)
-        raise HostPublicationError("registration publication retry limit exhausted")
+    return control_plane(hq_dir).publish_registration(host_id, attempts=attempts)
 
 
 def push(*, dry_run: bool = False) -> None:
@@ -773,6 +697,9 @@ def clone(*, auto: bool = False) -> None:
         typer.echo(f"✗ git clone {git_url} failed: {err_line(cloned)}", err=True)
         raise typer.Exit(1)
 
+    # Fleet files are present now; reconcile before any engine/registry call reloads config.
+    dropped = config.reconcile_host_after_fleet()
+    hub._ensure_shared_server_running(hq_dir)
     bootstrapped = engine.get_engine(cfg).bootstrap(hq_dir, env=hub.bootstrap_env())
     if bootstrapped.returncode:
         typer.echo(f"✗ bd bootstrap failed: {err_line(bootstrapped)}", err=True)
@@ -795,7 +722,7 @@ def clone(*, auto: bool = False) -> None:
     # `bh hq init`; a host that CLONES one inherits someone else's fleet.yaml, so its own
     # copies are stale by definition. Reconcile here, at the moment the conflict is created,
     # instead of leaving the operator to discover it on their next unrelated command.
-    dropped = config.reconcile_host_after_fleet()
+    dropped.extend(config.reconcile_host_after_fleet())
     if dropped:
         typer.echo(
             f"  reconciled host config against the cloned fleet.yaml — dropped "
@@ -819,6 +746,23 @@ def _remote_urls(remote: str) -> tuple[str, str]:
     ``config.hq_remote`` can derive today (mirrors ``hub._hive_url``'s github fallback). bd's
     Dolt-on-git-ref transport needs its own ``git+ssh://`` scheme (verified against a real bd
     binary), distinct from git's scp-like clone form."""
+    from urllib.parse import unquote, urlsplit
+
+    if remote.startswith("/") or remote.startswith("file://"):
+        parsed = urlsplit(remote) if remote.startswith("file://") else None
+        if parsed and (parsed.netloc not in {"", "localhost"} or parsed.query or parsed.fragment):
+            raise ValueError("HQ file remote must identify one local absolute Git repository")
+        path = Path(unquote(parsed.path) if parsed else remote)
+        if not path.is_absolute() or "\n" in str(path) or "\r" in str(path):
+            raise ValueError("HQ local remote must be an absolute repository path")
+        canonical = path.resolve()
+        return canonical.as_uri(), "git+" + canonical.as_uri()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", remote) or any(
+        part in {".", ".."} for part in remote.split("/")
+    ):
+        raise ValueError(
+            "unsupported HQ remote; use owner/repo or an explicit local/file repository"
+        )
     return f"git@github.com:{remote}.git", f"git+ssh://git@github.com/{remote}.git"
 
 
@@ -970,6 +914,7 @@ def _wire_remote(
 
     for path in scaffold_layout(hq_dir, cfg):
         typer.echo(f"  ✓ wrote {path.relative_to(hq_dir)}")
+    config.reconcile_host_after_fleet()
     _commit_if_dirty(hq_dir, "chore(hq): scaffold fleet.yaml/workspace.toml/hosts/")
 
     add_origin = _git(["remote", "add", "origin", git_url], hq_dir)

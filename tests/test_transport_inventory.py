@@ -62,7 +62,7 @@ def test_generated_cli_and_mcp_inventory_exactly_covers_the_catalog() -> None:
     for row in projections():
         counts[row.surface] = counts.get(row.surface, 0) + 1
     assert counts == {
-        "cli": 221,
+        "cli": 231,
         "gateway": 36,
         "mcp-resource": 21,
         "mcp-tool": 10,
@@ -70,6 +70,7 @@ def test_generated_cli_and_mcp_inventory_exactly_covers_the_catalog() -> None:
     }
 
     rows = {(row.surface, row.identifier): row for row in projections()}
+    assert rows["cli", "host eligible"].operation == "host.eligible"
     catalog_rows = operation_catalog.operations()
     for operation in catalog_rows:
         if cli := operation.surfaces.get("cli"):

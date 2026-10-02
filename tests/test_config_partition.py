@@ -142,3 +142,9 @@ def test_only_worktrees_ephemeral_is_host_overridable():
     assert is_host_overridable("worktrees.ephemeral")
     assert not is_host_overridable("work.validate_cmd")
     assert not is_host_overridable("delimiter")
+
+
+def test_authority_config_ownership():
+    assert partition_of("hq.authority_anchor") == HOST
+    assert partition_of("hq.mode") == FLEET
+    assert partition_of("hq.admission_policy") == FLEET
