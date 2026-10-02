@@ -114,6 +114,10 @@ def adopt(
 
     Raises :class:`HiveNotCloned` when `hive_cwd` is not a clone on this host — see the
     precondition below."""
+    from . import frame_eligibility
+
+    frame_eligibility.require_eligible(host_id, {"prefix": prefix}, hq_dir=hq_cwd, at=at)
+
     # ---- precondition: this host must actually CARRY the hive (bh-1atj) --------------
     # BEFORE phase 0, so a host with nothing on it cannot reach either CAS. A skip chain
     # (`git workspace update` skipped -> `bead sync` skipped) leaves exactly that host, and
@@ -133,7 +137,18 @@ def adopt(
 
     # Refuse a live foreign lease BEFORE touching either remote, so the common "someone else
     # has it" case costs nothing and leaves no half-state at all.
-    if lease is not None and not lease.is_expired(at) and lease.host_id != host_id and not force:
+    evict = (
+        lease is not None
+        and lease.host_id != host_id
+        and frame_eligibility.evictable(lease.host_id, hq_dir=hq_cwd, at=at)
+    )
+    if (
+        lease is not None
+        and not lease.is_expired(at)
+        and lease.host_id != host_id
+        and not force
+        and not evict
+    ):
         raise HostLeaseRejected(
             f"{prefix} is held by another host — host lease: {lease.describe()}.\n"
             f"  Wait for it to expire, have that host release it, or force a takeover "
@@ -142,6 +157,10 @@ def adopt(
 
     epoch = _next_epoch(fence, lease)
 
+    # Recheck after the remote reads, immediately before the first mutation.
+    frame_eligibility.require_eligible(host_id, {"prefix": prefix}, hq_dir=hq_cwd, at=at)
+    if evict and not force and not frame_eligibility.evictable(lease.host_id, hq_dir=hq_cwd, at=at):
+        raise HostLeaseRejected("incumbent eviction authority changed")
     # ---- phase 1: ENFORCEMENT (hive remote) -----------------------------------------
     held = host_fence.install_fence(
         hive_remote,

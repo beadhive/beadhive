@@ -371,8 +371,13 @@ def _owned(module: str, context: str, *values: str) -> set[tuple[str, str, str]]
 
 
 _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
+    # Git-owned store detection and operator-owned bare protection metadata;
+    # these exact reads never authorize worker-private state outside .bh/.
+    _owned("hq.py", "init_store", ".git")
+    | _owned("hq_authority_guard.py", "main", "bh-authority-policy.json")
+    | _owned("hq_git_broker.py", "serve", "bh-authority-policy.json")
     # Beads/Dolt own their repository and embedded-store roots.
-    _owned("backup.py", "pre_migrate_stores", ".beads")
+    | _owned("backup.py", "pre_migrate_stores", ".beads")
     | _owned("backup.py", "hive_backup_dir", ".beads")
     | _owned("backup.py", "bd_backup_target", ".beads")
     | _owned("backup.py", "_hive_rotated_dirs", ".beads")

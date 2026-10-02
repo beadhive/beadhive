@@ -32,7 +32,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from ruamel.yaml import YAML
 
 # Same round-trip settings as host.py/config.py's writers. No comment/flow-style preservation
@@ -132,8 +132,50 @@ class IdentityMechanism(_Section):
     )
 
 
+FRAME_STATES = ("pending", "active", "draining", "drained", "parked", "quarantined", "retired")
+FRAME_ISOLATIONS = ("kvm", "microvm", "container")
+FRAME_TRUST_ZONES = ("self-hosted", "vendor-hosted")
+
+
+class FrameRelease(_Section):
+    """The installed frame release, following the v1alpha1 release shape."""
+
+    id: str
+    digest: str
+
+
+class FrameCapabilities(_Section):
+    """Routing facts; per-host harness configuration remains a separate policy block."""
+
+    isolation: Literal["kvm", "microvm", "container"]
+    trust_zone: Literal["self-hosted", "vendor-hosted"]
+    arch: str
+    harnesses: list[str]
+    max_sessions: int = Field(ge=0)
+
+
 class HostManifest(_Section):
     """One host's fleet-visible manifest — ``hosts/<host_id>.yaml`` in HQ."""
+
+    frame_id: str | None = Field(None, description="Stable inventory-owned frame identity.")
+    state: Literal[
+        "pending", "active", "draining", "drained", "parked", "quarantined", "retired"
+    ] = "active"
+    release: FrameRelease | None = None
+    capabilities: FrameCapabilities | None = None
+    instance_ref: str | None = Field(None, description="Substrate-owned instance identity.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _new_frame_starts_pending(cls, value):
+        """New frames require admission; legacy hosts retain their active default.
+
+        The disk reader supplies active for historical manifests missing state, so
+        constructing a new frame and reading a legacy record remain distinct.
+        """
+        if isinstance(value, dict) and value.get("frame_id") and "state" not in value:
+            return {**value, "state": "pending"}
+        return value
 
     host_id: str = Field(
         ..., description="The host_id this manifest is keyed by (beadhive.host.host_id())."
@@ -244,6 +286,8 @@ def load(hq_dir: Path, host_id: str) -> HostManifest:
     if not p.exists():
         raise FileNotFoundError(f"no host manifest for {host_id!r} at {p}")
     raw = _yaml.load(p.read_text()) or {}
+    if isinstance(raw, dict) and "state" not in raw:
+        raw = {**raw, "state": "active"}
     try:
         return HostManifest.model_validate(raw)
     except ValidationError as exc:

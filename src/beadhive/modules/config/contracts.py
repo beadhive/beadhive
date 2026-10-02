@@ -965,10 +965,16 @@ class WorkConfig(_Section):
 class HqConfig(_Section):
     """Factory HQ remote (``hq``) — where the factory's central HQ store publishes to."""
 
+    mode: Literal["git", "dolt-server"] = "git"
+    authority_anchor: str = ""
+    admission_policy: Literal["manual"] = "manual"
+
     remote: str = Field(
         "",
         description=(
-            "HQ repo remote, `<owner>/beadhive-hq` form. Empty (default) derives `<owner>` "
+            "HQ repo remote: `<owner>/beadhive-hq`, an absolute local path, "
+            "or local `file://` URL. "
+            "Empty (default) derives `<owner>` "
             "from the logged-in `gh` identity at read time (`config.hq_remote`) — host "
             "identity, so the answer does not vary by which hive you invoke from; an "
             "explicit value here always overrides the derivation. `bh hq init`/`clone` "
@@ -997,6 +1003,8 @@ class HostLeaseConfig(_Section):
     (:func:`beadhive.host_lease.ttl_for_role`) — never by per-host overrides of these keys.
     """
 
+    evict_after_s: float = Field(900.0, gt=0, allow_inf_nan=False)
+
     renew_interval: float = Field(
         300.0,
         description=(
@@ -1024,6 +1032,8 @@ class HostDispatchConfig(_Section):
     Per-HOST, not fleet-scoped like ``host.lease``: which supervisor exists (systemd vs
     launchd vs a container's own restart policy) is a fact about THIS machine, not a shared
     fleet judgement."""
+
+    enabled: bool = Field(True, description="Allow frame intake; legacy hosts retain lease policy.")
 
     backend: str = Field(
         "systemd",
@@ -1063,6 +1073,15 @@ class HostDispatchConfig(_Section):
     )
 
 
+class FrameBridgeIdentityConfig(_Section):
+    """Enrollment-owned identity of the private Factory bridge."""
+
+    host_id: str | None = None
+    instance_id: str | None = None
+    factory_id: str | None = None
+    primary_hive_id: str | None = None
+
+
 class HostConfig(_Section):
     """Multi-host model policy (``host``) — how this factory arbitrates who may write a hive.
 
@@ -1070,6 +1089,11 @@ class HostConfig(_Section):
     :mod:`beadhive.hosts`): that file describes ONE machine; this section is the fleet-wide
     policy every machine applies."""
 
+    frame_id: str = Field(
+        "",
+        description="Enrollment-owned Fleet identity; config storage does not enroll a host.",
+    )
+    frame_bridge: FrameBridgeIdentityConfig = Field(default_factory=FrameBridgeIdentityConfig)
     lease: HostLeaseConfig = Field(default_factory=HostLeaseConfig)
     dispatch: HostDispatchConfig = Field(default_factory=HostDispatchConfig)
     daemon: HostDaemonConfig = Field(

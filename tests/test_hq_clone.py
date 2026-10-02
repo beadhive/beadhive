@@ -105,6 +105,7 @@ class _StubEngine:
 
 
 def _stub_engine(monkeypatch, engine_stub):
+    monkeypatch.setattr(hq.hub, "_ensure_shared_server_running", lambda path: None)
     monkeypatch.setattr(hq.engine, "get_engine", lambda cfg=None: engine_stub)
 
 

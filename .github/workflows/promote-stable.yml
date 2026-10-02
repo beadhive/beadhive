@@ -181,6 +181,8 @@ jobs:
 
           echo "${PROJECT} ${VERSION} is live on PyPI"
 
+      - uses: cachix/install-nix-action@v31
+
       - name: Fast-forward `stable` to the promoted tag
         env:
           TAG: ${{ steps.req.outputs.tag }}
@@ -201,7 +203,7 @@ jobs:
           # Apply the same Nix eligibility policy as `latest`, against the requested TAG tree.
           # This is what prevents an old otherwise-valid PyPI release from reintroducing a
           # prerelease Beads toolchain when `stable` is promoted.
-          if ! policy="$(python3 scripts/check-channel-toolchain.py --ref "${TAG}" 2>&1)"; then
+          if ! policy="$(python3 scripts/check-channel-toolchain.py --ref "${TAG}" --verify-bh 2>&1)"; then
             refuse "refusing to promote 'stable': ${TAG} has an ineligible Nix toolchain." "${policy}"
           fi
           echo "${policy}"

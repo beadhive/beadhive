@@ -331,6 +331,9 @@ def claim_group(cfg, hive, group_arg, as_):
         raise typer.Exit(1)
     work_logic._stamp(cfg, entry, target, actor)
     for m in members:
+        from . import frame_eligibility
+
+        frame_eligibility.require_intake(hive, cfg=cfg, hive_dir=main)
         if bd_cli.routes(main).issue_claim(m, actor=actor).returncode != 0:
             raise typer.Exit(1)
         otel.count_bead_transition("claimed", {"bh.bead": m, "bh.batch": group})

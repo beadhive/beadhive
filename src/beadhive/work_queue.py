@@ -117,11 +117,17 @@ def claim_next(main: Path, entry: Any, actor: str) -> ApiNextResult | None:
         return None  # auto-resolving seat prefix needs the candidate's type first — CLI-only
     core = _core()
     observer = TelemetryRoutingObserver()
+    from . import frame_eligibility
+
     try:
         session_cm = session_factory(main, entry)
         with session_cm as session:
             commands = core.QueueCommands()
-            outcome = commands.claim_next(session, actor, observer=observer)
+            from .frame_eligibility import GuardedClaimSession
+
+            outcome = commands.claim_next(
+                GuardedClaimSession(session, main), actor, observer=observer
+            )
             if outcome.claimed is None:
                 page = commands.list_ready(session, limit=1, observer=observer)
                 reason = core.decline(core.ready_rows(page))
@@ -135,6 +141,8 @@ def claim_next(main: Path, entry: Any, actor: str) -> ApiNextResult | None:
             otel.set_bead(bead)
             otel.count_bead_transition("claimed")
             return ApiNextResult(claimed=bead, row=row)
+    except frame_eligibility.EligibilityError:
+        raise
     except (
         core.RouteMismatch,
         core.OperationDenied,
@@ -185,8 +193,14 @@ def claim_in_epic(
             beads_routing.allow_cli_route(entry, exc)
             log.get_logger("beadhive.work").info("queue_route_fallback", detail=str(exc))
             return None
+        from .frame_eligibility import GuardedClaimSession
+
         outcome = core.QueueCommands().claim_next_in_epic(
-            session, epic, actor, seat_actor=seat_actor, observer=TelemetryRoutingObserver()
+            GuardedClaimSession(session, main),
+            epic,
+            actor,
+            seat_actor=seat_actor,
+            observer=TelemetryRoutingObserver(),
         )
     if outcome.claimed:
         otel.set_bead(outcome.claimed)

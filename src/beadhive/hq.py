@@ -52,6 +52,8 @@ from . import (
 )
 from .bd import err_line
 from .bd import run as run_bd
+from .hq_manifest_publication import HostPublicationError as HostPublicationError
+from .hq_manifest_publication import _publish_host_manifest_git as _publish_host_manifest_git
 from .run import run
 
 GIT_TIMEOUT = 30.0  # seconds — bounds a git ls-remote/fetch/push so a wedged remote can't hang
@@ -106,7 +108,13 @@ def init_store() -> None:
     owns that, and lands it in the hub."""
     # Create the durable store FIRST (prefix hq) — so a bd-init failure never leaves a dangling
     # registration — then register the synthetic identity in the ws registry.
+    fresh_git = not (config.hq_dir() / ".git").exists()
     hq = hub.ensure_store(config.hq_dir(), registry.HQ_PREFIX)
+    if fresh_git:
+        # All HQ transport/clone operations use main, independent of machine Git defaults.
+        initialized = _git(["branch", "-M", "main"], hq)
+        if initialized.returncode:
+            raise RuntimeError(f"cannot initialize HQ main branch: {err_line(initialized)}")
     registry.register(
         registry.HQ_PROVIDER,
         registry.HQ_ORG,
@@ -449,6 +457,13 @@ def status(*, as_json: bool = False) -> None:
         typer.echo(f"→ run `{config.BINARY_ALIAS} hq push` to publish")
 
 
+def publish_host_manifest(hq_dir: Path, host_id: str, *, attempts: int = 3) -> bool:
+    """Publish through the selected HQ control-plane binding."""
+    from .hq_control_plane import control_plane
+
+    return control_plane(hq_dir).publish_registration(host_id, attempts=attempts)
+
+
 def push(*, dry_run: bool = False) -> None:
     """`bh hq push`: publish BOTH halves of HQ to its wired remote (bh-z9hl) — the
     discoverable, repeatable counterpart to `_wire_remote`'s one-shot first push. Idempotent:
@@ -682,6 +697,9 @@ def clone(*, auto: bool = False) -> None:
         typer.echo(f"✗ git clone {git_url} failed: {err_line(cloned)}", err=True)
         raise typer.Exit(1)
 
+    # Fleet files are present now; reconcile before any engine/registry call reloads config.
+    dropped = config.reconcile_host_after_fleet()
+    hub._ensure_shared_server_running(hq_dir)
     bootstrapped = engine.get_engine(cfg).bootstrap(hq_dir, env=hub.bootstrap_env())
     if bootstrapped.returncode:
         typer.echo(f"✗ bd bootstrap failed: {err_line(bootstrapped)}", err=True)
@@ -704,7 +722,7 @@ def clone(*, auto: bool = False) -> None:
     # `bh hq init`; a host that CLONES one inherits someone else's fleet.yaml, so its own
     # copies are stale by definition. Reconcile here, at the moment the conflict is created,
     # instead of leaving the operator to discover it on their next unrelated command.
-    dropped = config.reconcile_host_after_fleet()
+    dropped.extend(config.reconcile_host_after_fleet())
     if dropped:
         typer.echo(
             f"  reconciled host config against the cloned fleet.yaml — dropped "
@@ -728,6 +746,23 @@ def _remote_urls(remote: str) -> tuple[str, str]:
     ``config.hq_remote`` can derive today (mirrors ``hub._hive_url``'s github fallback). bd's
     Dolt-on-git-ref transport needs its own ``git+ssh://`` scheme (verified against a real bd
     binary), distinct from git's scp-like clone form."""
+    from urllib.parse import unquote, urlsplit
+
+    if remote.startswith("/") or remote.startswith("file://"):
+        parsed = urlsplit(remote) if remote.startswith("file://") else None
+        if parsed and (parsed.netloc not in {"", "localhost"} or parsed.query or parsed.fragment):
+            raise ValueError("HQ file remote must identify one local absolute Git repository")
+        path = Path(unquote(parsed.path) if parsed else remote)
+        if not path.is_absolute() or "\n" in str(path) or "\r" in str(path):
+            raise ValueError("HQ local remote must be an absolute repository path")
+        canonical = path.resolve()
+        return canonical.as_uri(), "git+" + canonical.as_uri()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", remote) or any(
+        part in {".", ".."} for part in remote.split("/")
+    ):
+        raise ValueError(
+            "unsupported HQ remote; use owner/repo or an explicit local/file repository"
+        )
     return f"git@github.com:{remote}.git", f"git+ssh://git@github.com/{remote}.git"
 
 
@@ -879,6 +914,7 @@ def _wire_remote(
 
     for path in scaffold_layout(hq_dir, cfg):
         typer.echo(f"  ✓ wrote {path.relative_to(hq_dir)}")
+    config.reconcile_host_after_fleet()
     _commit_if_dirty(hq_dir, "chore(hq): scaffold fleet.yaml/workspace.toml/hosts/")
 
     add_origin = _git(["remote", "add", "origin", git_url], hq_dir)

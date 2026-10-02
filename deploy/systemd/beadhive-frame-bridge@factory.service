@@ -6,6 +6,7 @@ ConditionPathExists=/etc/beadhive/frame-bridge/gateway-verifiers.json
 
 [Service]
 Type=simple
+Environment=BH_HOME=/var/lib/beadhive/host
 User=beadhive-frame-bridge
 Group=beadhive-gateway
 UMask=0007

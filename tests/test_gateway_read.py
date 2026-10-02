@@ -1286,6 +1286,7 @@ def test_live_dense_host_seed_page_detail_and_single_invalidation_are_hive_bound
             daemon_bearer=daemon_auth.SecretBearer(daemon_bearer),
             authorized_subjects=frozenset({SUBJECT}),
             client=daemon_client,
+            daemon_origin=origin,
         )
         app = _application(public_key, source)
         headers = _headers(_token(private_key))

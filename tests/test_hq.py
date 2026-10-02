@@ -24,6 +24,7 @@ import typer
 
 from beadhive import config, hq, hub, registry, validate
 from harness.beads import skip_if_no_bd
+from harness.world import git
 
 # ---- config.hq_dir() --------------------------------------------------------
 
@@ -96,6 +97,10 @@ def _stub_store_and_sync(monkeypatch, sync_result=None):
 
     def fake_ensure_store(store, prefix):
         calls["ensure"].append((store, prefix))
+        # The production seam returns a Git repository; stub only Beads storage.
+        store.mkdir(parents=True, exist_ok=True)
+        if not (store / ".git").exists():
+            git("init", "-b", "fixture-before-main", str(store))
         return store
 
     def fake_sync():
@@ -105,6 +110,20 @@ def _stub_store_and_sync(monkeypatch, sync_result=None):
     monkeypatch.setattr(hub, "ensure_store", fake_ensure_store)
     monkeypatch.setattr(hub, "sync", fake_sync)
     return calls
+
+
+def test_hq_init_refuses_failed_main_initialization(world, monkeypatch):
+    from subprocess import CompletedProcess
+
+    _stub_store_and_sync(monkeypatch)
+    monkeypatch.setattr(
+        hq,
+        "_git",
+        lambda args, cwd: CompletedProcess(args, 1, "", "branch initialization denied"),
+    )
+    with pytest.raises(RuntimeError, match="cannot initialize HQ main branch"):
+        hq.init()
+    assert registry.hive_of_kind(config.load(), registry.HQ_KIND) is None
 
 
 def test_hq_init_registers_synthetic_identity_and_does_not_aggregate(world, monkeypatch):

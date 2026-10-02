@@ -10,3 +10,6 @@ role: executor
 # here must also appear under `hives` when that key is present.
 # adopt:
 #   - beadhive
+
+# Optional: publish only this host registration after successful verification.
+# hq.push: true

@@ -83,7 +83,8 @@ def test_create_application_loads_root_verifier_and_service_bearer(
         return verifier_set
 
     class Source:
-        def __init__(self, *, daemon_bearer: object, instance: object) -> None:
+        def __init__(self, *, daemon_bearer: object, instance: object, daemon_origin: str) -> None:
+            observed["daemon_origin"] = daemon_origin
             observed["source"] = self
             observed["source_arguments"] = (daemon_bearer, instance)
 
@@ -92,6 +93,13 @@ def test_create_application_loads_root_verifier_and_service_bearer(
         observed["built_source"] = source
         return application
 
+    monkeypatch.setattr(
+        frame_bridge_factory.bh_config,
+        "load",
+        lambda: {
+            "host": {"frame_bridge": {"host_id": "host-one", "primary_hive_id": "github/acme/one"}}
+        },
+    )
     monkeypatch.setattr(frame_bridge_factory, "load_gateway_verifier_set", load_verifier)
     monkeypatch.setattr(
         frame_bridge_factory.daemon_auth, "load_bearer_file", lambda path: daemon_bearer
@@ -101,6 +109,8 @@ def test_create_application_loads_root_verifier_and_service_bearer(
 
     assert frame_bridge_factory.create_application(paths=paths) is application
     assert observed["verifier"] == (paths.verifier_path, True)
+    assert observed["daemon_origin"] == "http://127.0.0.1:8737"
+    assert observed["config"].host_id == "host-one"
     assert observed["source_arguments"][0] is daemon_bearer
     assert observed["built_source"] is observed["source"]
     assert (
@@ -206,6 +216,77 @@ def test_factory_systemd_profile_keeps_socket_private_and_has_no_tcp_listener() 
     assert "python -m beadhive.frame_bridge_factory" in unit
     assert "8787" not in unit
     assert "ListenStream" not in unit
-    assert "Environment=" not in unit
+    assert "Environment=BH_HOME=/var/lib/beadhive/host" in unit
     manifest = (Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8")
     assert 'beadhive-frame-bridge = "beadhive.bootstrap.frame_bridge:main"' in manifest
+
+
+def test_factory_enrollment_changes_registration_digest_and_uses_configured_daemon(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from beadhive.frame_bridge_upstream import PrivateFrameBridgeConfig
+
+    paths = _paths(tmp_path)
+    captured: list[PrivateFrameBridgeConfig] = []
+    origins: list[str] = []
+    enrollment = {
+        "host": {
+            "frame_bridge": {
+                "host_id": "host-one",
+                "instance_id": "frames/one",
+                "factory_id": "factory-one",
+                "primary_hive_id": "github/acme/one",
+            },
+            "daemon": {"port": 9742},
+        }
+    }
+    monkeypatch.setattr(frame_bridge_factory.bh_config, "load", lambda: enrollment)
+    monkeypatch.setattr(frame_bridge_factory, "load_gateway_verifier_set", lambda *a, **k: object())
+    monkeypatch.setattr(frame_bridge_factory.daemon_auth, "load_bearer_file", lambda p: object())
+    monkeypatch.setattr(
+        frame_bridge_factory,
+        "HostDaemonFrameBridgeSource",
+        lambda **kwargs: origins.append(kwargs["daemon_origin"]),
+    )
+    monkeypatch.setattr(
+        frame_bridge_factory,
+        "build_private_frame_bridge_application",
+        lambda *, config, source: captured.append(config),
+    )
+    frame_bridge_factory.create_application(paths=paths)
+    identity = enrollment["host"]["frame_bridge"]
+    identity.update(host_id="host-two", instance_id="frames/two", factory_id="factory-two")
+    frame_bridge_factory.create_application(paths=paths)
+    assert captured[0].registration()["hostId"] == "host-one"
+    assert captured[1].registration()["hostId"] == "host-two"
+    assert captured[0].registration()["instances"][0]["instanceId"] == "frames/one"
+    assert captured[1].registration()["instances"][0]["instanceId"] == "frames/two"
+    assert captured[0].host_epoch == captured[1].host_epoch
+    assert captured[0].registration_digest() != captured[1].registration_digest()
+    assert origins == ["http://127.0.0.1:9742"] * 2
+    for field, value in (
+        ("host_id", "host-three"),
+        ("instance_id", "frames/three"),
+        ("factory_id", "factory-three"),
+        ("primary_hive_id", "github/acme/three"),
+    ):
+        identity[field] = value
+        frame_bridge_factory.create_application(paths=paths)
+        assert captured[-1].registration_digest() != captured[-2].registration_digest()
+    del identity["host_id"], identity["instance_id"], identity["factory_id"]
+    monkeypatch.setattr(frame_bridge_factory.host, "host_id", lambda: "local-host")
+    frame_bridge_factory.create_application(paths=paths)
+    assert captured[-1].host_id == "local-host"
+    assert captured[-1].instance.instance_id == "frames/local-host"
+    assert captured[-1].instance.factory_id == "local-host"
+    del identity["primary_hive_id"]
+    with pytest.raises(frame_bridge_factory.FactoryServiceError, match="primary_hive_id"):
+        frame_bridge_factory.create_application(paths=paths)
+
+
+def test_host_system_unit_uses_the_same_home_and_installed_daemon() -> None:
+    unit = (Path(__file__).parents[1] / "deploy/systemd/beadhive-host.service").read_text()
+    assert "User=bees" in unit
+    assert "Environment=BH_HOME=/var/lib/beadhive/host" in unit
+    assert "ExecStart=/opt/beadhive-frame-bridge/bin/bh-host-daemon" in unit
+    assert "StateDirectory=beadhive/host" in unit

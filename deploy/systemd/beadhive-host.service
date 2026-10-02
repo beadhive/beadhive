@@ -1,0 +1,26 @@
+[Unit]
+Description=Beadhive unified host daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bees
+Group=beadhive-gateway
+Environment=BH_HOME=/var/lib/beadhive/host
+StateDirectory=beadhive/host
+StateDirectoryMode=0750
+UMask=0027
+ExecStart=/opt/beadhive-frame-bridge/bin/bh-host-daemon
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=30s
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

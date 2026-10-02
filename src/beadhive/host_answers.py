@@ -6,8 +6,8 @@ right at a terminal and useless from a script: an unattended install has nobody 
 
 THE FILE IS SHORT ON PURPOSE. HQ already carries the fleet's truth — ``fleet.yaml`` holds orgs,
 dimensions and managed_repos; ``workspace.toml`` holds the git-workspace providers. A host that
-clones HQ inherits all of it. Only four things cannot be known until somebody decides them for
-THIS host, and they are the only four keys here.
+clones HQ inherits all of it. The answers state this host's role, HQ remote, hive selection,
+adoption, and optional registration publication.
 
 That inheritance claim was ASPIRATIONAL for ``workspace.toml`` until bh-9bkj/bh-28ha: the host
 cloned the file, and nothing read it or handed it to git-workspace. It is true by construction
@@ -33,7 +33,7 @@ import yaml
 from . import hosts
 
 #: Every key the file may carry. Anything else is a typo or a stale field, and both are errors.
-KNOWN_KEYS: frozenset[str] = frozenset({"role", "hq.remote", "hives", "adopt"})
+KNOWN_KEYS: frozenset[str] = frozenset({"role", "hq.remote", "hq.push", "hives", "adopt"})
 
 #: Keys with no default — the file is not a plan without them.
 REQUIRED_KEYS: frozenset[str] = frozenset({"role"})
@@ -56,6 +56,7 @@ class Answers:
     hq_remote: str = ""
     hives: list[str] | None = None
     adopt: list[str] = field(default_factory=list)
+    hq_push: bool = False
 
     @property
     def adopts_anything(self) -> bool:
@@ -92,6 +93,10 @@ def parse(raw: dict[str, Any]) -> Answers:
     if not isinstance(hq_remote, str):
         raise AnswersInvalid(f"`hq.remote` must be a string — got {hq_remote!r}")
 
+    hq_push = raw.get("hq.push", False)
+    if not isinstance(hq_push, bool):
+        raise AnswersInvalid(f"`hq.push` must be a boolean — got {hq_push!r}")
+
     hives = _as_str_list(raw["hives"], "hives") if "hives" in raw else None
     adopt = _as_str_list(raw["adopt"], "adopt") if "adopt" in raw else []
 
@@ -106,7 +111,7 @@ def parse(raw: dict[str, Any]) -> Answers:
             "a host cannot hold primary for a hive it does not clone"
         )
 
-    return Answers(role=role, hq_remote=hq_remote, hives=hives, adopt=adopt)
+    return Answers(role=role, hq_remote=hq_remote, hq_push=hq_push, hives=hives, adopt=adopt)
 
 
 def load(path: Path) -> Answers:

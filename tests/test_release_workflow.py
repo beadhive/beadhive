@@ -90,8 +90,10 @@ def test_both_channels_check_the_target_tags_nix_toolchain_before_push() -> None
 
     command = 'python3 scripts/check-channel-toolchain.py --ref "${TAG}"'
     assert command in latest
+    assert "--verify-bh" in latest
     assert latest.index(command) < latest.index('git push origin "${tag_sha}:refs/heads/latest"')
     assert command in stable
+    assert "--verify-bh" in stable
     assert stable.index(command) < stable.index('git push origin "${tag_sha}:refs/heads/stable"')
 
 

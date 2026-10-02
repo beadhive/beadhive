@@ -130,18 +130,28 @@ host dispatch logs|hive:string:o,lines:integer:o,as_json:boolean:o
 host dispatch run|hive:string:r,passes:integer:o,dry_run:boolean:o,seat_binary:string:o
 host dispatch runs|hive:string:o,as_json:boolean:o
 host dispatch status|hive:string:o,all_hives:boolean:o,as_json:boolean:o
+host eligible|identity:string:o,hive:string:o,as_json:boolean:o
+host heartbeat|record:string:r,as_json:boolean:o
+host admit|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o
+host cordon|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o
+host drain|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o
+host park|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o
+host resume|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o
+host quarantine|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o
 host identity|dry_run:boolean:o
 host init|role:string:r,label:string:o,identity_kind:string:o,identity_value:string:o,remote_only_hive:array:o,force:boolean:o
 host lease adopt|hive:string:r,force:boolean:o
 host lease release|hive:string:o,all_hives:boolean:o
 host list|as_json:boolean:o,lease_hive:string:o
 host packup|
-host provision|role:string:o,answers:string:o,auto:boolean:o,dry_run:boolean:o,force:boolean:o
+host provision|role:string:o,answers:string:o,auto:boolean:o,dry_run:boolean:o,force:boolean:o,push:boolean:o
 host release|hive:string:o,all_hives:boolean:o
 host retire|dry_run:boolean:o,backup:boolean:o,confirm:boolean:o,purge:boolean:o
+host frame-retire|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o
 host rm|host_id:string:r,dry_run:boolean:o,confirm:boolean:o,force:boolean:o
 host show|host_id:string:r,as_json:boolean:o
 hq bd|
+hq authority|action:string:r,record:string:o,frame:string:o,public_key:string:o,generation:string:o,expected:string:o,operator_key:string:o,interpreter:string:o,confirm_server_custody:boolean:o,server_root:string:o,socket_path:string:o,policy_digest:string:o,role:string:o,holder_id:string:o,duration:integer:o,client_interpreter:string:o,confirm:boolean:o
 hq clone|auto:boolean:o
 hq init|dry_run:boolean:o,auto:boolean:o,create:boolean:o
 hq intake|
