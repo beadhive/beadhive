@@ -578,20 +578,54 @@ def test_committed_sql_config_publication_and_floor(tmp_path, monkeypatch):
             # Schema allowlisting is checked against the actual committed tree,
             # not just the rows returned by the three known tables.
             _cli(tmp_path, port, "USE beadhive_hq_config; CALL DOLT_RESET('--hard')")
+            from beadhive import config, hq_beadyard
             from beadhive.beadyard_identity import DOCUMENT_PATH, new_document, parse_document
 
+            monkeypatch.setattr(
+                hq_beadyard, "_selected_store", lambda _root: ("dolt-server", restarted)
+            )
+            monkeypatch.setattr(config, "home", lambda: tmp_path / "identity-home")
+            observed = hq_beadyard.inspect(tmp_path / "config-only-hq")
+            assert observed.state == "legacy"
+            assert observed.revision == winners[0].commit_revision
             bound_document = FleetConfigDocument(DOCUMENT_PATH, new_document())
             bound_documents = winners[0].documents + (bound_document,)
             with pytest.raises(SqlConfigError, match="beadyard identity publication conflict"):
                 restarted.publish_snapshot(
                     bound_documents, expected_revision=winners[0].commit_revision
                 )
-            bound = restarted.publish_snapshot(
-                bound_documents,
-                expected_revision=winners[0].commit_revision,
-                explicit_adoption=True,
+            actual_publish = restarted.publish_snapshot
+
+            def commit_then_lose_reply(*args, **kwargs):
+                actual_publish(*args, **kwargs)
+                raise PublicationUnknown("identity-fixture-publication", observed.revision)
+
+            monkeypatch.setattr(restarted, "publish_snapshot", commit_then_lose_reply)
+            adopted = hq_beadyard.adopt_legacy(
+                hq_dir=tmp_path / "config-only-hq", expected_revision=observed.revision
             )
-            assert bound.beadyard_id == parse_document(bound_document.content)
+            monkeypatch.setattr(restarted, "publish_snapshot", actual_publish)
+            first_bound = restarted.load_snapshot(revision=adopted.revision)
+            later_documents = (
+                FleetConfigDocument(
+                    "fleet.yaml", "hq:\n  mode: dolt-server\nmanaged_repos: []\n"
+                ),
+                *(doc for doc in first_bound.documents if doc.path != "fleet.yaml"),
+            )
+            later_bound = restarted.publish_snapshot(
+                later_documents, expected_revision=adopted.revision
+            )
+            retried = hq_beadyard.adopt_legacy(
+                hq_dir=tmp_path / "config-only-hq", expected_revision=observed.revision
+            )
+            assert retried.beadyard_id == adopted.beadyard_id
+            assert retried.revision == later_bound.commit_revision
+            bound = restarted.load_snapshot(revision=later_bound.commit_revision)
+            assert adopted.beadyard_id == bound.beadyard_id
+            assert bound.beadyard_id == parse_document(
+                next(doc.content for doc in bound.documents if doc.path == DOCUMENT_PATH)
+            )
+            assert not (tmp_path / "config-only-hq").exists()
             version_reader = pymysql.connect(
                 host="127.0.0.1", port=port, user="root", database="beadhive_hq_config"
             )

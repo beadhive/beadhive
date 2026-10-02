@@ -1217,12 +1217,16 @@ def test_committed_fleet_snapshot_cas_and_document_order(backend):
 
 def test_signed_git_config_v2_binds_immutable_beadyard_identity(backend):
     from beadhive.beadyard_identity import DOCUMENT_PATH, new_document, parse_document
+    from beadhive.beadyard_identity_file import create_identity
     from beadhive.hq_fleet_config import FleetConfigError
     from beadhive.modules.config.domain.ports import FleetConfigDocument
 
     b = backend
     store = b["plane"].config_store(operator_key=str(b["operator"]))
-    identity_doc = FleetConfigDocument(DOCUMENT_PATH, new_document())
+    create_identity(b["op_repo"])
+    identity_doc = FleetConfigDocument(
+        DOCUMENT_PATH, (b["op_repo"] / DOCUMENT_PATH).read_text()
+    )
     documents = (
         FleetConfigDocument("fleet.yaml", "schema_version: 1\nmanaged_repos: []\n"),
         identity_doc,
@@ -1238,6 +1242,9 @@ def test_signed_git_config_v2_binds_immutable_beadyard_identity(backend):
         with pytest.raises(FleetConfigError, match="beadyard identity publication conflict"):
             store.publish_snapshot(attempted, expected_revision=first.commit_revision)
     assert store.load_snapshot().commit_revision == first.commit_revision
+    (b["op_repo"] / DOCUMENT_PATH).unlink()
+    with pytest.raises(FleetConfigError, match="conflicts with local HQ"):
+        store.load_snapshot()
 
 
 def test_bound_git_frame_grant_and_eligibility_reject_foreign_hq(backend):
@@ -1293,6 +1300,570 @@ def test_bound_git_frame_grant_and_eligibility_reject_foreign_hq(backend):
         plane.read_eligibility(manifest.model_copy(update={"beadyard_id": str(uuid4())}))
     with pytest.raises(ControlPlaneError, match="different beadyard"):
         plane.read_eligibility(manifest.model_copy(update={"beadyard_id": None}))
+
+
+def test_protected_legacy_git_adoption_preserves_live_grant_then_binds_same_incarnation(backend):
+    from beadhive import hq_beadyard
+    from beadhive.frame_eligibility import EligibilityFacts, eligible
+    from beadhive.modules.config.domain.ports import FleetConfigDocument
+
+    b = backend
+    plane = b["plane"]
+    for sequence in (1, 2, 3):
+        b["accept"](sequence)
+    apply(b, "admit")
+    legacy_lease_code = """
+import os,sys,time
+from pathlib import Path
+from beadhive import host,host_lease
+from beadhive.hq_control_plane import GitControlPlane
+host.host_id=lambda:"host-one"
+host.signing_key=lambda:sys.argv[2]
+plane=GitControlPlane(Path(sys.argv[1]),authority_anchor=os.environ["FRAME_AUTHORITY_ANCHOR"])
+lease=host_lease.HostLease("host-one","fixture",1,host_lease.now_stamp(),
+                           host_lease.now_stamp(time.time()+900))
+print(plane.publish_hive_lease("bh",lease,expected="",operation="adopt"))
+"""
+    old_lease_result = frame_process(b, legacy_lease_code)
+    assert old_lease_result.returncode == 0, old_lease_result.stderr + old_lease_result.stdout
+    old_lease_sha = old_lease_result.stdout.strip()
+    old_lease_envelope = json.loads(git(b["repo"], "show", f"{old_lease_sha}:hive-lease.json"))
+    assert old_lease_envelope["domain"] == "beadhive-frame-hive-lease-v1"
+    store = plane.config_store(operator_key=str(b["operator"]))
+    legacy = store.publish_snapshot(
+        (FleetConfigDocument("fleet.yaml", "schema_version: 1\nmanaged_repos: []\n"),),
+        expected_revision="",
+    )
+    assert legacy.beadyard_id is None
+    original_main = git(b["op_repo"], "rev-parse", "main")
+    before_revision, before_state, _policy = plane._operator_read()
+    original_frames = json.loads(json.dumps(before_state["frames"]))
+    old_beat = git(b["remote"], "rev-parse", hb.ref_name("frame-one"))
+    adopted = hq_beadyard.adopt_legacy(
+        hq_dir=b["op_repo"], expected_revision=original_main, operator_key=b["operator"]
+    )
+    assert adopted.state == "bound"
+    assert store.load_snapshot().beadyard_id == adopted.beadyard_id
+    assert plane._operator_read()[0] == before_revision
+    assert plane._operator_read()[1]["frames"] == original_frames
+    assert git(b["remote"], "rev-parse", hb.ref_name("frame-one")) == old_beat
+    bound_manifest = b["manifest"].model_copy(update={"beadyard_id": adopted.beadyard_id})
+    with pytest.raises(ControlPlaneError, match="different beadyard"):
+        plane.read_eligibility(bound_manifest)
+    with pytest.raises(ControlPlaneError, match="exact legacy authority revision"):
+        plane.bind_beadyard(expected="wrong", operator_key=str(b["operator"]))
+    bound_revision = plane.bind_beadyard(
+        expected=before_revision, operator_key=str(b["operator"])
+    )
+    after_revision, after_state, _policy = plane._operator_read()
+    assert after_revision == bound_revision != before_revision
+    assert after_state["domain"] == guard.DOMAIN_V2
+    before_record = original_frames["frame-one"]["active"]
+    after_record = after_state["frames"]["frame-one"]["active"]
+    assert before_record is not None and after_record is not None
+    assert after_record["authority"] == {
+        **before_record["authority"], "beadyard_id": adopted.beadyard_id
+    }
+    assert {k: v for k, v in after_record.items() if k != "authority"} == {
+        k: v for k, v in before_record.items() if k != "authority"
+    }
+    assert after_state["frames"]["frame-one"]["epoch_floor"] == 1
+    assert after_state["frames"]["frame-one"]["retired"] == []
+    assert git(b["remote"], "rev-parse", hb.ref_name("frame-one")) == old_beat
+    _revision, desired, old_observation = plane.read_eligibility(bound_manifest)
+    assert not eligible(
+        bound_manifest, {"requires": {}}, EligibilityFacts(old_observation, desired)
+    ).allowed
+    assert publish_result(b, b["lease"](4)).returncode != 0
+    plane.publish_registration_evidence(bound_manifest, signing_key=str(b["runtime"]))
+    for sequence in (4, 5, 6):
+        beat = b["lease"](
+            sequence,
+            domain="beadhive/frame-heartbeat/v2",
+            beadyard_id=adopted.beadyard_id,
+        )
+        assert publish_result(b, beat).returncode == 0
+        plane.accept_observation(
+            "frame-one", expected=plane._read()[0], operator_key=str(b["operator"])
+        )
+    after_refresh = plane._operator_read()[1]["frames"]["frame-one"]["active"]
+    assert after_refresh["receipt"]["consecutive"] == 3
+    assert after_refresh["receipt"]["registration"]["beadyard_id"] == adopted.beadyard_id
+    _revision, desired, fresh_observation = plane.read_eligibility(bound_manifest)
+    assert eligible(
+        bound_manifest, {"requires": {}}, EligibilityFacts(fresh_observation, desired)
+    ).allowed
+    assert git(b["remote"], "rev-parse", "refs/bh/lease/bh") == old_lease_sha
+    # A historical v1 lease remains an incumbent for exact CAS renewal, but it
+    # cannot authorize a new pick after the HQ has bound its identity.
+    assert plane.read_hive_lease("bh", holder_identity="host-one") is None
+    from beadhive.hq_beadyard_policy import refresh_after_adoption
+
+    renewed_policy = refresh_after_adoption(
+        b["op_repo"], expected_policy_digest=b["digest"], expected_config_head="",
+        expected_config_parent=legacy.commit_revision,
+        anchors=(b["op_anchor"], b["frame_anchor"]),
+        operator_anchor=b["op_anchor"],
+    )
+    assert renewed_policy != b["digest"]
+    for failure in ("downgrade", "foreign"):
+        forged = json.loads(json.dumps(old_lease_envelope))
+        forged.update(
+            operation="renew", authority_revision=plane._read()[0],
+            expected_lease_sha=old_lease_sha,
+        )
+        if failure == "foreign":
+            from uuid import uuid4
+
+            forged["domain"] = "beadhive-frame-hive-lease-v2"
+            forged["authority"]["beadyard_id"] = str(uuid4())
+        blob = git(b["repo"], "hash-object", "-w", "--stdin", data=json.dumps(forged))
+        tree = git(b["repo"], "mktree", data=f"100644 blob {blob}\thive-lease.json\n")
+        commit = git(
+            b["repo"], "-c", "gpg.format=ssh", "-c",
+            f"user.signingkey={b['runtime']}", "commit-tree", "-S", tree,
+            data=f"foreign {failure} renewal\n",
+        )
+        result = raw_frame_push(b, f"{commit}:refs/bh/lease/bh")
+        assert result.returncode != 0 and "pre-receive hook declined" in result.stderr
+        assert git(b["remote"], "rev-parse", "refs/bh/lease/bh") == old_lease_sha
+    hosts.save(b["repo"], bound_manifest)
+    renewal_code = """
+import os,sys,time
+from pathlib import Path
+from beadhive import host,host_lease
+from beadhive.hq_control_plane import GitControlPlane
+host.host_id=lambda:"host-one"
+host.signing_key=lambda:sys.argv[2]
+plane=GitControlPlane(Path(sys.argv[1]),authority_anchor=os.environ["FRAME_AUTHORITY_ANCHOR"])
+sha,prior=plane.read_hive_lease_record("bh")
+assert prior is not None and prior.host_id=="host-one"
+assert plane.read_hive_lease("bh",holder_identity="host-one") is None
+lease=host_lease.HostLease(prior.host_id,prior.label,prior.epoch,prior.adopted_at,
+                           host_lease.now_stamp(time.time()+900))
+print(plane.publish_hive_lease("bh",lease,expected=sha,operation="renew"))
+"""
+    renewed = frame_process(b, renewal_code)
+    assert renewed.returncode == 0, renewed.stderr + renewed.stdout
+    renewed_sha = renewed.stdout.strip()
+    assert renewed_sha != old_lease_sha
+    renewed_envelope = json.loads(git(b["repo"], "show", f"{renewed_sha}:hive-lease.json"))
+    assert renewed_envelope["domain"] == "beadhive-frame-hive-lease-v2"
+    assert renewed_envelope["lease"]["epoch"] == old_lease_envelope["lease"]["epoch"]
+    assert renewed_envelope["lease"]["adopted_at"] == old_lease_envelope["lease"]["adopted_at"]
+    assert plane.read_hive_lease("bh", holder_identity="host-one") is not None
+    apply(b, "cordon")
+    release_code = """
+import os,sys,time
+from pathlib import Path
+from beadhive import host,host_lease
+from beadhive.hq_control_plane import GitControlPlane
+host.host_id=lambda:"host-one"
+host.signing_key=lambda:sys.argv[2]
+plane=GitControlPlane(Path(sys.argv[1]),authority_anchor=os.environ["FRAME_AUTHORITY_ANCHOR"])
+sha,prior=plane.read_hive_lease_record("bh")
+lease=host_lease.HostLease("",prior.label,prior.epoch,prior.adopted_at,
+                           host_lease.now_stamp(time.time()-1))
+print(plane.publish_hive_lease("bh",lease,expected=sha,operation="release"))
+"""
+    released = frame_process(b, release_code)
+    assert released.returncode == 0, released.stderr + released.stdout
+    assert plane.read_hive_lease("bh") is not None
+    assert plane.read_hive_lease("bh").is_tombstone
+    with pytest.raises(ControlPlaneError, match="different beadyard"):
+        plane.read_eligibility(bound_manifest.model_copy(update={"beadyard_id": None}))
+
+
+@pytest.mark.parametrize("bound", [False, True])
+def test_signed_authority_receive_rejects_reused_signer_holder_and_ungranted_epoch(
+    backend, bound
+):
+    from beadhive import hq_beadyard
+    from beadhive.modules.config.domain.ports import FleetConfigDocument
+
+    b = backend
+    plane = b["plane"]
+    if bound:
+        plane.config_store(operator_key=str(b["operator"])).publish_snapshot(
+            (FleetConfigDocument("fleet.yaml", "schema_version: 1\nmanaged_repos: []\n"),),
+            expected_revision="",
+        )
+        main = git(b["op_repo"], "rev-parse", "main")
+        hq_beadyard.adopt_legacy(
+            hq_dir=b["op_repo"], expected_revision=main, operator_key=b["operator"]
+        )
+        plane.bind_beadyard(expected=plane._read()[0], operator_key=str(b["operator"]))
+    original_head, original, policy = plane._read()
+    other_key = key(b["tmp"] / "other-runtime")
+    for failure in ("signer", "holder", "epoch"):
+        state = json.loads(json.dumps(original))
+        state["revision"] += 1
+        state["issued_at"] = time.time()
+        if failure == "epoch":
+            state["frames"]["frame-one"]["candidate"]["authority"]["epoch"] += 1
+        else:
+            original_record = state["frames"]["frame-one"]["candidate"]
+            duplicate = json.loads(json.dumps(original_record))
+            duplicate["authority"]["frame_id"] = "frame-two"
+            if failure == "signer":
+                duplicate["authority"]["holder_identity"] = "host-two"
+            else:
+                duplicate["public_key"] = other_key
+                duplicate["authority"]["key_fingerprint"] = fingerprint(other_key)
+            state["frames"]["frame-two"] = {
+                "active": None,
+                "candidate": duplicate,
+                "retired": [],
+                "epoch_floor": duplicate["authority"]["epoch"],
+            }
+        blob = git(b["op_repo"], "hash-object", "-w", "--stdin", data=json.dumps(state))
+        tree = git(b["op_repo"], "mktree", data=f"100644 blob {blob}\tauthority.json\n")
+        signed = git(
+            b["op_repo"], "-c", "gpg.format=ssh", "-c",
+            f"user.signingkey={b['operator']}", "commit-tree", "-S", tree,
+            "-p", original_head, data=f"invalid {failure}\n",
+        )
+        remote = plane._remote(policy)
+        result = git(
+            b["op_repo"], "push", "--atomic", remote,
+            f"{signed}:{guard.HEAD}",
+            f"{signed}:{guard.WITNESS}{state['revision']:020d}", check=False,
+        )
+        assert result.returncode != 0 and "pre-receive hook declined" in result.stderr, failure
+        assert plane._read()[0] == original_head
+
+
+def test_legacy_binding_predicate_preserves_live_grant_bytes_and_rejects_expiry_revival(backend):
+    from uuid import uuid4
+
+    _revision, original, _policy = backend["plane"]._read()
+    now = time.time()
+    owner = str(uuid4())
+
+    def bound_copy(previous):
+        updated = json.loads(json.dumps(previous))
+        updated["domain"] = guard.DOMAIN_V2
+        updated["revision"] += 1
+        updated["issued_at"] = now
+        for entry in updated["frames"].values():
+            for slot in ("active", "candidate"):
+                if entry[slot] is not None:
+                    entry[slot]["authority"]["beadyard_id"] = owner
+        return updated
+
+    valid = bound_copy(original)
+    guard.validate_legacy_binding_transition(original, valid, trusted_now=now)
+    for mutation in ("receipt", "floor", "retired", "expiry-extension", "backdate", "state"):
+        proposed = json.loads(json.dumps(valid))
+        candidate = proposed["frames"]["frame-one"]["candidate"]
+        if mutation == "receipt":
+            candidate["receipt"]["consecutive"] = 1
+        elif mutation == "floor":
+            proposed["frames"]["frame-one"]["epoch_floor"] += 1
+        elif mutation == "retired":
+            proposed["frames"]["frame-one"]["retired"].append(candidate)
+        elif mutation == "expiry-extension":
+            proposed["expires_at"] = original["expires_at"] + 1
+        elif mutation == "backdate":
+            proposed["issued_at"] = original["issued_at"] - 1
+        else:
+            candidate["state"] = "active"
+        with pytest.raises(ValueError):
+            guard.validate_legacy_binding_transition(original, proposed, trusted_now=now)
+    expired = json.loads(json.dumps(original))
+    expired["frames"]["frame-one"]["candidate"]["authority"]["candidate_expires_at"] = now - 1
+    with pytest.raises(ValueError, match="incarnation beyond UUID"):
+        guard.validate_legacy_binding_transition(
+            expired, bound_copy(expired), trusted_now=now
+        )
+
+
+def test_explicit_git_identity_policy_refresh_recovers_partial_rotation(backend, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from beadhive import hq_beadyard, hq_beadyard_policy, hq_git_broker
+    from beadhive.modules.config.domain.ports import FleetConfigDocument
+
+    b = backend
+    legacy = b["plane"].config_store(operator_key=str(b["operator"])).publish_snapshot(
+        (FleetConfigDocument("fleet.yaml", "schema_version: 1\nmanaged_repos: []\n"),),
+        expected_revision="",
+    )
+    original_main = git(b["op_repo"], "rev-parse", "main")
+    hq_beadyard.adopt_legacy(
+        hq_dir=b["op_repo"], expected_revision=original_main, operator_key=b["operator"]
+    )
+    original_authority = b["plane"]._read()[0]
+    b["plane"].bind_beadyard(expected=original_authority, operator_key=str(b["operator"]))
+    original_policy = (b["remote"] / guard.POLICY).read_bytes()
+    original_anchor = b["frame_anchor"].read_bytes()
+    options = dict(
+        expected_policy_digest=b["digest"], expected_config_head="",
+        expected_config_parent=legacy.commit_revision,
+        anchors=(b["op_anchor"], b["frame_anchor"]),
+        operator_anchor=b["op_anchor"],
+    )
+    with pytest.raises(hq_beadyard_policy.PolicyRefreshError, match="anchor set"):
+        hq_beadyard_policy.refresh_after_adoption(
+            b["op_repo"], **{**options, "anchors": (b["op_anchor"],)}
+        )
+    with pytest.raises(hq_beadyard_policy.PolicyRefreshError, match="digest"):
+        hq_beadyard_policy.refresh_after_adoption(
+            b["op_repo"], **{**options, "expected_policy_digest": "0" * 64}
+        )
+    with pytest.raises(hq_beadyard_policy.PolicyRefreshError, match="original config HEAD"):
+        hq_beadyard_policy.refresh_after_adoption(
+            b["op_repo"], **{**options, "expected_config_parent": "0" * 40}
+        )
+    tampered_anchor = json.loads(original_anchor)
+    tampered_anchor["policy_digest"] = "f" * 64
+    b["frame_anchor"].write_text(json.dumps(tampered_anchor))
+    with pytest.raises(hq_beadyard_policy.PolicyRefreshError, match="anchor changed"):
+        hq_beadyard_policy.refresh_after_adoption(b["op_repo"], **options)
+    b["frame_anchor"].write_bytes(original_anchor)
+    pinned_guard = b["remote"] / "bh-authority-guard.py"
+    original_guard = pinned_guard.read_bytes()
+    pinned_guard.write_bytes(original_guard + b"\n# unauthorized edit\n")
+    with pytest.raises(ControlPlaneError, match="bytes changed"):
+        hq_beadyard_policy.refresh_after_adoption(b["op_repo"], **options)
+    pinned_guard.write_bytes(original_guard)
+    original_atomic = hq_beadyard_policy._atomic
+    waiting = []
+
+    def concurrent_receive_lock():
+        with hq_git_broker.receive_lock(b["remote"], timeout=5):
+            return True
+
+    def stop_before_anchors(path, content, **kwargs):
+        if path in {b["frame_anchor"], b["op_anchor"]}:
+            waiting.append(pool.submit(concurrent_receive_lock))
+            time.sleep(0.1)
+            assert not waiting[0].done(), "a receive entered during policy rotation"
+            raise hq_beadyard_policy.PolicyRefreshError("interrupted after policy")
+        return original_atomic(path, content, **kwargs)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        monkeypatch.setattr(hq_beadyard_policy, "_atomic", stop_before_anchors)
+        with pytest.raises(hq_beadyard_policy.PolicyRefreshError, match="interrupted"):
+            hq_beadyard_policy.refresh_after_adoption(b["op_repo"], **options)
+        assert waiting[0].result(timeout=5) is True
+    assert (b["remote"] / guard.POLICY).read_bytes() != original_policy
+    assert b["frame_anchor"].read_bytes() == original_anchor
+    with pytest.raises(ControlPlaneError, match="trust anchor changed"):
+        b["plane"]._policy()
+    original_hook = (b["remote"] / "hooks/pre-receive").read_bytes()
+    (b["remote"] / "hooks/pre-receive").write_bytes(original_hook + b"\n# changed\n")
+    with pytest.raises(hq_beadyard_policy.PolicyRefreshError, match="receive hook changed"):
+        hq_beadyard_policy.refresh_after_adoption(b["op_repo"], **options)
+    assert b["frame_anchor"].read_bytes() == original_anchor
+    (b["remote"] / "hooks/pre-receive").write_bytes(original_hook)
+    pending_path = hq_beadyard_policy._intent(b["remote"])
+    pending_path.chmod(0o666)
+    with pytest.raises(hq_beadyard_policy.PolicyRefreshError, match="custody changed"):
+        hq_beadyard_policy.refresh_after_adoption(b["op_repo"], **options)
+    assert b["frame_anchor"].read_bytes() == original_anchor
+    pending_path.chmod(0o600)
+    anchor_updates = []
+
+    def stop_after_one_anchor(path, content, **kwargs):
+        if path in {b["frame_anchor"], b["op_anchor"]}:
+            anchor_updates.append(path)
+            if len(anchor_updates) == 2:
+                raise hq_beadyard_policy.PolicyRefreshError("interrupted between anchors")
+        return original_atomic(path, content, **kwargs)
+
+    monkeypatch.setattr(hq_beadyard_policy, "_atomic", stop_after_one_anchor)
+    with pytest.raises(hq_beadyard_policy.PolicyRefreshError, match="between anchors"):
+        hq_beadyard_policy.refresh_after_adoption(b["op_repo"], **options)
+    active_digest = hq_beadyard_policy._digest((b["remote"] / guard.POLICY).read_bytes())
+    matching = sum(
+        json.loads(path.read_text())["policy_digest"] == active_digest
+        for path in (b["op_anchor"], b["frame_anchor"])
+    )
+    assert matching == 1
+    monkeypatch.setattr(hq_beadyard_policy, "_atomic", original_atomic)
+    refreshed = hq_beadyard_policy.refresh_after_adoption(b["op_repo"], **options)
+    assert refreshed != b["digest"]
+    assert hq_beadyard_policy._intent(b["remote"]).exists() is False
+    assert hq_beadyard_policy._completion(b["remote"]).is_file()
+    # The first response can be lost after the durable completion rename.
+    assert hq_beadyard_policy.refresh_after_adoption(b["op_repo"], **options) == refreshed
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    cli_retry = CliRunner().invoke(
+        app,
+        [
+            "hq", "beadyard-policy-refresh", "--expected-policy-digest", b["digest"],
+            "--expected-config-head", "", "--expected-config-parent", legacy.commit_revision,
+            "--anchor", str(b["op_anchor"]), "--anchor", str(b["frame_anchor"]),
+            "--operator-anchor", str(b["op_anchor"]), "--confirm",
+        ],
+    )
+    assert cli_retry.exit_code == 0, cli_retry.output
+    assert json.loads(cli_retry.stdout)["policy_digest"] == refreshed
+    receipt_path = hq_beadyard_policy._completion(b["remote"])
+    original_receipt = receipt_path.read_bytes()
+    altered_receipt = json.loads(original_receipt)
+    altered_receipt["new_head"] = "0" * 40
+    receipt_path.write_text(json.dumps(altered_receipt))
+    with pytest.raises(hq_beadyard_policy.PolicyRefreshError, match="unrelated fields"):
+        hq_beadyard_policy.refresh_after_adoption(b["op_repo"], **options)
+    receipt_path.write_bytes(original_receipt)
+    assert b["plane"]._policy()["hive_policies"]["bh"]["config_head"] == (
+        b["plane"].config_store().load_snapshot().commit_revision
+    )
+    before = json.loads(original_policy)
+    after = json.loads((b["remote"] / guard.POLICY).read_bytes())
+    expected = json.loads(original_policy)
+    expected["hive_policies"]["bh"]["config_head"] = after["hive_policies"]["bh"]["config_head"]
+    assert after == expected
+    assert before["generation"] == after["generation"]
+    assert b["plane"]._read()[0] != original_authority
+    store = b["plane"].config_store(operator_key=str(b["operator"]))
+    current = store.load_snapshot()
+    store.publish_snapshot(
+        (
+            FleetConfigDocument(
+                "fleet.yaml",
+                "schema_version: 1\nmanaged_repos: []\nwork:\n  validate_cmd: just check\n",
+            ),
+            *(doc for doc in current.documents if doc.path != "fleet.yaml"),
+        ),
+        expected_revision=current.commit_revision,
+    )
+    with pytest.raises(hq_beadyard_policy.PolicyRefreshError, match="original config HEAD"):
+        hq_beadyard_policy.refresh_after_adoption(b["op_repo"], **options)
+
+
+def test_identity_policy_refresh_refuses_later_config_head(backend):
+    from beadhive import hq_beadyard, hq_beadyard_policy
+    from beadhive.modules.config.domain.ports import FleetConfigDocument
+
+    b = backend
+    store = b["plane"].config_store(operator_key=str(b["operator"]))
+    legacy = store.publish_snapshot(
+        (FleetConfigDocument("fleet.yaml", "schema_version: 1\nmanaged_repos: []\n"),),
+        expected_revision="",
+    )
+    original_main = git(b["op_repo"], "rev-parse", "main")
+    adopted = hq_beadyard.adopt_legacy(
+        hq_dir=b["op_repo"], expected_revision=original_main, operator_key=b["operator"]
+    )
+    after_adoption = store.load_snapshot()
+    assert after_adoption.beadyard_id == adopted.beadyard_id
+    store.publish_snapshot(
+        (
+            FleetConfigDocument("fleet.yaml", "schema_version: 1\nmanaged_repos: [other]\n"),
+            *(doc for doc in after_adoption.documents if doc.path != "fleet.yaml"),
+        ),
+        expected_revision=after_adoption.commit_revision,
+    )
+    with pytest.raises(hq_beadyard_policy.PolicyRefreshError, match="original config HEAD"):
+        hq_beadyard_policy.refresh_after_adoption(
+            b["op_repo"], expected_policy_digest=b["digest"], expected_config_head="",
+            expected_config_parent=legacy.commit_revision,
+            anchors=(b["op_anchor"], b["frame_anchor"]),
+            operator_anchor=b["op_anchor"],
+        )
+    assert json.loads((b["remote"] / guard.POLICY).read_text())["hive_policies"]["bh"][
+        "config_head"
+    ] == ""
+
+
+def test_git_adoption_keeps_pinned_config_parent_when_another_operator_advances(
+    backend, monkeypatch
+):
+    from beadhive import hq_beadyard, hq_fleet_config
+    from beadhive.modules.config.domain.ports import FleetConfigDocument
+
+    b = backend
+    store = b["plane"].config_store(operator_key=str(b["operator"]))
+    legacy = store.publish_snapshot(
+        (FleetConfigDocument("fleet.yaml", "schema_version: 1\nmanaged_repos: []\n"),),
+        expected_revision="",
+    )
+    original_main = git(b["op_repo"], "rev-parse", "main")
+    original_commit = hq_beadyard._commit_git_adoption
+    monkeypatch.setattr(
+        hq_beadyard,
+        "_commit_git_adoption",
+        lambda *_args: (_ for _ in ()).throw(
+            hq_beadyard.BeadyardOperationError("interrupted before main CAS")
+        ),
+    )
+    with pytest.raises(hq_beadyard.BeadyardOperationError, match="interrupted"):
+        hq_beadyard.adopt_legacy(
+            hq_dir=b["op_repo"], expected_revision=original_main, operator_key=b["operator"]
+        )
+    monkeypatch.setattr(hq_beadyard, "_commit_git_adoption", original_commit)
+    with monkeypatch.context() as independent_host:
+        independent_host.setattr(hq_fleet_config, "read_identity", lambda _root: None)
+        advanced = store.publish_snapshot(
+            (FleetConfigDocument("fleet.yaml", "schema_version: 1\nmanaged_repos: [other]\n"),),
+            expected_revision=legacy.commit_revision,
+        )
+    with pytest.raises(hq_beadyard.BeadyardOperationError, match="config changed"):
+        hq_beadyard.adopt_legacy(
+            hq_dir=b["op_repo"], expected_revision=original_main, operator_key=b["operator"]
+        )
+    assert git(b["op_repo"], "rev-parse", "main") == original_main
+    assert store._read(allow_legacy_bound=True)[0] == advanced.commit_revision
+    assert hq_beadyard.inspect(b["op_repo"]).state == "pending"
+
+
+def test_git_adoption_recovers_lost_completion_after_later_config_edit(backend, monkeypatch):
+    from beadhive import hq_beadyard
+    from beadhive.modules.config.domain.ports import FleetConfigDocument
+
+    b = backend
+    store = b["plane"].config_store(operator_key=str(b["operator"]))
+    original = store.publish_snapshot(
+        (FleetConfigDocument("fleet.yaml", "schema_version: 1\nmanaged_repos: []\n"),),
+        expected_revision="",
+    )
+    original_main = git(b["op_repo"], "rev-parse", "main")
+    finish = hq_beadyard._finish_git_adoption
+
+    def lost_completed_reply(root):
+        finish(root)
+        raise hq_beadyard.BeadyardOperationError("lost final adoption reply")
+
+    monkeypatch.setattr(hq_beadyard, "_finish_git_adoption", lost_completed_reply)
+    with pytest.raises(hq_beadyard.BeadyardOperationError, match="lost final"):
+        hq_beadyard.adopt_legacy(
+            hq_dir=b["op_repo"], expected_revision=original_main, operator_key=b["operator"]
+        )
+    first_bound = store.load_snapshot()
+    assert first_bound.beadyard_id is not None
+    assert first_bound.commit_revision != original.commit_revision
+    assert hq_beadyard.inspect(b["op_repo"]).state == "bound"
+    assert hq_beadyard._completed_original(b["op_repo"]) is not None
+    later = store.publish_snapshot(
+        (
+            FleetConfigDocument(
+                "fleet.yaml",
+                "schema_version: 1\nmanaged_repos: []\nwork:\n  validate_cmd: just check\n",
+            ),
+            *(doc for doc in first_bound.documents if doc.path != "fleet.yaml"),
+        ),
+        expected_revision=first_bound.commit_revision,
+    )
+    (b["op_repo"] / "unrelated-staged.txt").write_text("operator work remains staged\n")
+    git(b["op_repo"], "add", "unrelated-staged.txt")
+    staged_before_retry = git(b["op_repo"], "status", "--porcelain")
+    monkeypatch.setattr(hq_beadyard, "_finish_git_adoption", finish)
+    retried = hq_beadyard.adopt_legacy(
+        hq_dir=b["op_repo"], expected_revision=original_main, operator_key=b["operator"]
+    )
+    assert retried.state == "bound"
+    assert retried.beadyard_id == first_bound.beadyard_id
+    assert git(b["op_repo"], "status", "--porcelain") == staged_before_retry
+    assert store.load_snapshot().commit_revision == later.commit_revision
+    assert store.load_snapshot().documents == later.documents
+    with pytest.raises(hq_beadyard.BeadyardOperationError, match="original revision"):
+        hq_beadyard.adopt_legacy(
+            hq_dir=b["op_repo"], expected_revision=later.commit_revision,
+            operator_key=b["operator"],
+        )
 
 
 def test_fleet_config_rollback_expiry_and_protected_publication(backend):

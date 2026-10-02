@@ -207,6 +207,14 @@ def validate_state(state):
             raise ValueError("retired history must remain retired")
     for identity, record in records(state):
         validate_record(identity, record, state["issued_at"])
+        fp = record["authority"]["key_fingerprint"]
+        if fp in keys or record["authority"]["epoch"] > state["frames"][identity]["epoch_floor"]:
+            raise ValueError("signer reuse or ungranted epoch")
+        holder = record["authority"]["holder_identity"]
+        if holder in holders:
+            raise ValueError("holder identity names multiple incarnations")
+        holders.add(holder)
+        keys.add(fp)
     bound_ids = {record["authority"].get("beadyard_id") for _, record in records(state)} - {None}
     if state["domain"] == DOMAIN:
         if bound_ids:
@@ -217,14 +225,6 @@ def validate_state(state):
         for record in (entry["active"], entry["candidate"])
     ):
         raise ValueError("bound authority carrier requires one beadyard identity")
-        fp = record["authority"]["key_fingerprint"]
-        if fp in keys or record["authority"]["epoch"] > state["frames"][identity]["epoch_floor"]:
-            raise ValueError("signer reuse or ungranted epoch")
-        holder = record["authority"]["holder_identity"]
-        if holder in holders:
-            raise ValueError("holder identity names multiple incarnations")
-        holders.add(holder)
-        keys.add(fp)
 
 
 def read_state(sha):
@@ -244,6 +244,64 @@ def continuous(before, after):
     r1, r2 = before["receipt"], after["receipt"]
     if r2["sequence"] < r1["sequence"] or (r2["sequence"] == r1["sequence"] and r2 != r1):
         raise ValueError("accepted receipt rollback/refresh")
+
+
+def legacy_binding_upgrade(before, after, issued, trusted_now):
+    """Permit only a missing→bound ID on one unchanged live incarnation."""
+    if "beadyard_id" in before["authority"] or after is None:
+        return False
+    owner = after["authority"].get("beadyard_id")
+    expiry = before["authority"]["candidate_expires_at"]
+    return (
+        owner is not None
+        and (
+            expiry is None and before["state"] in {"active", "draining", "drained", "parked"}
+            or expiry is not None and expiry > max(issued, trusted_now)
+        )
+        and after["authority"] == {**before["authority"], "beadyard_id": owner}
+        and {key: value for key, value in after.items() if key != "authority"}
+        == {key: value for key, value in before.items() if key != "authority"}
+    )
+
+
+def validate_legacy_binding_transition(previous, state, *, trusted_now):
+    """An atomic v1→v2 bridge may add only one ID to every live record."""
+    if (
+        previous["domain"] != DOMAIN
+        or state["domain"] != DOMAIN_V2
+        or state["issued_at"] < previous["issued_at"]
+        or previous["expires_at"] <= state["issued_at"]
+        or state["expires_at"] > previous["expires_at"]
+        or set(state["frames"]) != set(previous["frames"])
+    ):
+        raise ValueError("legacy identity binding original/expiry changed")
+    found = False
+    for frame, before in previous["frames"].items():
+        after = state["frames"][frame]
+        if after["epoch_floor"] != before["epoch_floor"] or after["retired"] != before["retired"]:
+            raise ValueError("identity binding changed frame floor or retired history")
+        for slot in ("active", "candidate"):
+            old, new = before[slot], after[slot]
+            if old is None:
+                if new is not None:
+                    raise ValueError("identity binding created an incarnation")
+                continue
+            found = True
+            if not legacy_binding_upgrade(old, new, state["issued_at"], trusted_now):
+                raise ValueError("identity binding changed incarnation beyond UUID")
+    if not found:
+        raise ValueError("identity binding requires a live legacy incarnation")
+
+
+def same_incumbent_after_binding(previous, current):
+    """An old lease can renew/release under the same newly bound incarnation."""
+    return previous == current or (
+        isinstance(previous, dict)
+        and isinstance(current, dict)
+        and "beadyard_id" not in previous
+        and current.get("beadyard_id") is not None
+        and previous == {key: value for key, value in current.items() if key != "beadyard_id"}
+    )
 
 
 def signed_by(sha, record):
@@ -336,8 +394,18 @@ def enforce_hive_lease(old, new, reference, state, policy, head):
         raise ValueError("invalid frame hive lease envelope")
     prefix = reference.removeprefix("refs/bh/lease/")
     hive = policy.get("hive_policies", {}).get(prefix)
+    if not isinstance(envelope.get("authority"), dict):
+        raise ValueError("invalid hive lease authority binding")
+    authority_id = envelope["authority"].get("beadyard_id")
+    expected_domain = (
+        "beadhive-frame-hive-lease-v2"
+        if authority_id is not None
+        else "beadhive-frame-hive-lease-v1"
+    )
+    if authority_id is not None:
+        _beadyard_parser_id()(authority_id)
     if (
-        envelope["domain"] != "beadhive-frame-hive-lease-v1"
+        envelope["domain"] != expected_domain
         or envelope["prefix"] != prefix
         or envelope["authority_revision"] != head
         or envelope["expected_lease_sha"] != ("" if old == ZERO else old)
@@ -353,6 +421,10 @@ def enforce_hive_lease(old, new, reference, state, policy, head):
     frame, record = matches[0]
     signed_by(new, record)
     authority, lease = record["authority"], envelope["lease"]
+    if authority_id is not None:
+        config_head = git("for-each-ref", "--format=%(objectname)", CONFIG_HEAD)
+        if not config_head or config_beadyard_id(read_config_state(config_head)) != authority_id:
+            raise ValueError("hive lease belongs to another beadyard than current config")
     fields = {"host_id", "label", "epoch", "adopted_at", "expires_at"}
     if (
         not isinstance(lease, dict)
@@ -384,7 +456,7 @@ def enforce_hive_lease(old, new, reference, state, policy, head):
         if (
             prior is None
             or prior["host_id"] != authority["holder_identity"]
-            or previous["authority"] != envelope["authority"]
+            or not same_incumbent_after_binding(previous["authority"], envelope["authority"])
             or lease["host_id"]
             or lease["epoch"] != prior["epoch"]
             or lease["adopted_at"] != prior["adopted_at"]
@@ -433,7 +505,7 @@ def enforce_hive_lease(old, new, reference, state, policy, head):
     if operation == "renew":
         if (
             prior is None
-            or previous["authority"] != envelope["authority"]
+            or not same_incumbent_after_binding(previous["authority"], envelope["authority"])
             or prior["host_id"] != lease["host_id"]
             or timestamp(prior["expires_at"]) <= now
             or lease["epoch"] != prior["epoch"]
@@ -502,6 +574,7 @@ def enforce_runtime(updates, policy):
                     manifest["host_id"] != a["holder_identity"]
                     or manifest.get("frame_id") != frame
                     or manifest.get("instance_ref") != a["instance_ref"]
+                    or manifest.get("beadyard_id") != a.get("beadyard_id")
                     or manifest.get("release") != record["desired"]["release"]
                     or manifest.get("capabilities") != record["desired"]["caps"]
                 ):
@@ -538,6 +611,7 @@ def enforce_runtime(updates, policy):
                     manifest["host_id"] != a["holder_identity"]
                     or manifest.get("frame_id") != frame
                     or manifest.get("instance_ref") != a["instance_ref"]
+                    or manifest.get("beadyard_id") != a.get("beadyard_id")
                 ):
                     raise ValueError("registration identity differs from grant")
             else:
@@ -553,6 +627,7 @@ def enforce_runtime(updates, policy):
                 }
                 if (
                     any(lease.get(k) != v for k, v in fields.items())
+                    or lease.get("beadyard_id") != a.get("beadyard_id")
                     or type(lease.get("seq")) is not int
                     or lease["seq"] <= record["receipt"]["sequence"]
                 ):
@@ -773,6 +848,12 @@ def enforce(updates, policy):
         previous = read_state(old)
         if previous["domain"] == DOMAIN_V2 and state["domain"] != DOMAIN_V2:
             raise ValueError("authority beadyard binding cannot regress")
+        upgrading = previous["domain"] == DOMAIN and state["domain"] == DOMAIN_V2
+        if upgrading and any(
+            entry["active"] is not None or entry["candidate"] is not None
+            for entry in previous["frames"].values()
+        ):
+            validate_legacy_binding_transition(previous, state, trusted_now=time.time())
         if parents != [old] or state["revision"] != previous["revision"] + 1:
             raise ValueError("authority must advance exact parent/revision")
         high = max(witnesses, default="")
@@ -792,6 +873,10 @@ def enforce(updates, policy):
                     continue
                 if replacement is not None and binding(prior) == binding(replacement):
                     continuous(prior, replacement)
+                    continue
+                if upgrading and legacy_binding_upgrade(
+                    prior, replacement, state["issued_at"], time.time()
+                ):
                     continue
                 promoted = (
                     slot == "candidate"
@@ -831,6 +916,12 @@ def enforce(updates, policy):
                 before["candidate"] is not None
                 and after["candidate"] is not None
                 and binding(before["candidate"]) != binding(after["candidate"])
+                and not (
+                    upgrading
+                    and legacy_binding_upgrade(
+                        before["candidate"], after["candidate"], state["issued_at"], time.time()
+                    )
+                )
             ):
                 raise ValueError("pending candidate must be retired before replacement")
     expected = [(old, new, HEAD), (ZERO, new, f"{WITNESS}{state['revision']:020d}")]

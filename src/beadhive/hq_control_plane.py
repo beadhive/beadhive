@@ -625,19 +625,25 @@ class GitControlPlane:
             )
         return sha, state, policy
 
-    def _write(self, state, expected, operator_key, *, duration=3600, updates=()):
+    def _write(
+        self, state, expected, operator_key, *, duration=3600, updates=(), expires_at_cap=None
+    ):
         current, previous, policy = self._operator_read()
         if current != expected or not 1 <= duration <= 86400:
             raise ControlPlaneError("expected authority revision/duration mismatch")
         bound = any(
             record["authority"].get("beadyard_id") is not None for _, record in guard.records(state)
         )
+        issued_at = self.clock()
+        expires_at = issued_at + duration
+        if expires_at_cap is not None:
+            expires_at = min(expires_at, expires_at_cap)
         state.update(
             domain=guard.DOMAIN_V2 if bound else guard.DOMAIN,
             generation=policy["generation"],
             revision=previous.get("revision", 0) + 1,
-            issued_at=self.clock(),
-            expires_at=self.clock() + duration,
+            issued_at=issued_at,
+            expires_at=expires_at,
         )
         guard.validate_state(state)
         blob = _git(self.hq_dir, "hash-object", "-w", "--stdin", data=gitref.encode(state))
@@ -936,6 +942,52 @@ class GitControlPlane:
         entry["epoch_floor"] = authority.epoch
         return self._write(state, expected, operator_key)
 
+    def bind_beadyard(self, *, expected, operator_key):
+        """Atomically bind every live legacy frame without replacing its incarnation.
+
+        The old signed runtime/registration carriers remain recorded as history,
+        but do not qualify new intake until the same signer publishes fresh v2
+        evidence and the ordinary observation path accepts it.
+        """
+        from .beadyard_identity import parse_document
+        from .beadyard_identity_file import read_identity
+
+        owner = read_identity(self.hq_dir)
+        main_document = _git(self.hq_dir, "show", "main:beadyard.json")
+        if owner is None or parse_document(main_document) != owner:
+            raise ControlPlaneError("canonical Git HQ identity unavailable")
+        snapshot = self.config_store().load_snapshot()
+        if snapshot.beadyard_id != owner:
+            raise ControlPlaneError("committed fleet config belongs to another beadyard")
+        sha, state, _policy = self._operator_read()
+        if sha != expected or state.get("domain") != guard.DOMAIN:
+            raise ControlPlaneError("exact legacy authority revision required for binding")
+        now = self.clock()
+        remaining = int(state["expires_at"] - now)
+        if remaining < 1:
+            raise ControlPlaneError("expired authority cannot be revived by identity binding")
+        live = [
+            record
+            for entry in state["frames"].values()
+            for record in (entry["active"], entry["candidate"])
+            if record is not None
+        ]
+        if not live:
+            raise ControlPlaneError("no live legacy grants require identity binding")
+        for record in live:
+            authority = record["authority"]
+            expiry = authority["candidate_expires_at"]
+            if "beadyard_id" in authority or (
+                expiry is None
+                and record["state"] not in {"active", "draining", "drained", "parked"}
+            ) or (expiry is not None and expiry <= now):
+                raise ControlPlaneError("expired or already bound grant cannot be rebound")
+            authority["beadyard_id"] = owner
+        return self._write(
+            state, expected, operator_key, duration=remaining,
+            expires_at_cap=state["expires_at"],
+        )
+
     def accept_observation(self, frame, *, expected, operator_key, holder_identity=""):
         from . import host_heartbeat_core as hb
         from . import hosts
@@ -981,7 +1033,15 @@ class GitControlPlane:
         age = now - lease.observed_at
         if age < -30 or age >= lease.leaseDurationSeconds:
             raise ControlPlaneError("first observation is expired or future-skewed")
-        streak = receipt["consecutive"] + 1 if lease.seq == receipt["sequence"] + 1 else 1
+        same_identity = (
+            receipt["lease"] is None
+            or receipt["lease"].get("beadyard_id") == payload.get("beadyard_id")
+        )
+        streak = (
+            receipt["consecutive"] + 1
+            if same_identity and lease.seq == receipt["sequence"] + 1
+            else 1
+        )
         if (
             receipt["lease"]
             and now - receipt["first_seen"] >= receipt["lease"]["leaseDurationSeconds"]
@@ -1602,6 +1662,57 @@ class SqlControlPlane:
             if isinstance(exc, ControlPlaneError):
                 raise
             raise ControlPlaneError("SQL candidate grant unavailable") from None
+
+    def bind_beadyard(self, *, expected, operator_key):
+        """Bind the existing SQL authority ledger to its current committed HQ ID."""
+        operator = self._operator()
+        budget = self._operator_deadline()
+        try:
+            snapshot = self.config_store().load_snapshot()
+            owner = snapshot.beadyard_id
+            local_pin = config.load_host().get("hq", {}).get("beadyard_id")
+            if owner is None or local_pin != owner:
+                raise ControlPlaneError("SQL HQ identity and local pin must agree")
+            head, original, _crossref, _policies = operator.load(deadline=budget)
+            if head != expected or original["domain"] != guard.DOMAIN:
+                raise ControlPlaneError("exact legacy authority revision required for binding")
+            now = self.clock()
+            remaining = int(original["expires_at"] - now)
+            if remaining < 1:
+                raise ControlPlaneError("expired authority cannot be revived by identity binding")
+            state = json.loads(json.dumps(original))
+            live = [
+                record
+                for entry in state["frames"].values()
+                for record in (entry["active"], entry["candidate"])
+                if record is not None
+            ]
+            if not live:
+                raise ControlPlaneError("no live legacy grants require identity binding")
+            for record in live:
+                authority = record["authority"]
+                expiry = authority["candidate_expires_at"]
+                if "beadyard_id" in authority or (
+                    expiry is None
+                    and record["state"] not in {"active", "draining", "drained", "parked"}
+                ) or (expiry is not None and expiry <= now):
+                    raise ControlPlaneError("expired or already bound grant cannot be rebound")
+                authority["beadyard_id"] = owner
+            state.update(
+                domain=guard.DOMAIN_V2,
+                revision=original["revision"] + 1,
+                issued_at=now,
+                expires_at=now + remaining,
+            )
+            guard.validate_state(state)
+            guard.validate_legacy_binding_transition(original, state, trusted_now=now)
+            return operator.publish(
+                state, expected_revision=expected, operator_key=operator_key, deadline=budget
+            )
+        except ValueError as exc:
+            if isinstance(exc, ControlPlaneError):
+                raise
+            raise ControlPlaneError("SQL authority identity binding unavailable") from None
 
     def renew(self, *, expected, operator_key, duration=3600):
         import math

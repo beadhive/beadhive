@@ -456,11 +456,21 @@ class SqlFleetConfigRevisionStore:
         finally:
             connection.close()
 
-    def publish_snapshot(self, documents, *, expected_revision, explicit_adoption=False):
+    def publish_snapshot(
+        self, documents, *, expected_revision, explicit_adoption=False, publication_id=None
+    ):
         _validate(documents)
         if not isinstance(expected_revision, str) or not expected_revision:
             raise SqlConfigError("original expected configuration revision required")
-        publication_id = str(uuid.uuid4())
+        if publication_id is None:
+            publication_id = str(uuid.uuid4())
+        else:
+            try:
+                parsed_publication = uuid.UUID(publication_id)
+            except (TypeError, ValueError):
+                raise SqlConfigError("immutable publication ID invalid") from None
+            if parsed_publication.version != 4 or str(parsed_publication) != publication_id:
+                raise SqlConfigError("immutable publication ID invalid")
         digest = _digest(documents)
         connection, deadline = self._open("publisher")
         crossed_commit = False

@@ -138,6 +138,7 @@ class SqlRuntimeOperator:
                         registration.frame_id != frame
                         or registration.host_id != holder_identity
                         or registration.instance_ref != authority["instance_ref"]
+                        or registration.beadyard_id != authority.get("beadyard_id")
                         or registration.release is None
                         or registration.release.model_dump() != record["desired"]["release"]
                         or registration.capabilities is None
@@ -277,6 +278,15 @@ class SqlRuntimeOperator:
                 ):
                     raise SqlOperatorError("new authority sequence, time or generation invalid")
                 guard.validate_state(state)
+                if current["domain"] == guard.DOMAIN_V2 and state["domain"] != guard.DOMAIN_V2:
+                    raise SqlOperatorError("bound authority carrier cannot downgrade")
+                if current["domain"] == guard.DOMAIN and state["domain"] == guard.DOMAIN_V2 and any(
+                    entry["active"] is not None or entry["candidate"] is not None
+                    for entry in current["frames"].values()
+                ):
+                    guard.validate_legacy_binding_transition(
+                        current, state, trusted_now=self.clock()
+                    )
                 snapshot = self.authority.load_latest_config_at(cursor, deadline=deadline)
                 bound_ids = {
                     record["authority"].get("beadyard_id")

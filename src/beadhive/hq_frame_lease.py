@@ -6,6 +6,7 @@ import json
 import tempfile
 
 DOMAIN = "beadhive-frame-hive-lease-v1"
+DOMAIN_V2 = "beadhive-frame-hive-lease-v2"
 
 
 def _endpoint(plane, git, error):
@@ -41,16 +42,37 @@ def read(plane, prefix, *, git, error, decode, lease_ref, json_decode, holder_id
     ):
         raise error("invalid frame hive lease carrier")
     envelope = json.loads(git(plane.hq_dir, "show", f"{sha}:hive-lease.json"))
-    if envelope.get("domain") != DOMAIN or envelope.get("prefix") != prefix:
+    authority = envelope.get("authority")
+    if not isinstance(authority, dict) or envelope.get("prefix") != prefix:
+        raise error("frame hive lease domain mismatch")
+    if envelope.get("domain") == DOMAIN:
+        if "beadyard_id" in authority:
+            raise error("legacy frame hive lease cannot carry beadyard identity")
+    elif envelope.get("domain") == DOMAIN_V2:
+        from .beadyard_identity import parse_id
+
+        try:
+            parse_id(authority["beadyard_id"])
+        except (KeyError, ValueError):
+            raise error("bound frame hive lease identity invalid") from None
+    else:
         raise error("frame hive lease domain mismatch")
     matches = [
-        (f, r)
+        (f, r, False)
         for f, r in guard.records(state)
-        if envelope.get("authority") == {"frame_id": f, **r["authority"]}
+        if authority == {"frame_id": f, **r["authority"]}
     ]
+    if not matches and envelope["domain"] == DOMAIN and state["domain"] == guard.DOMAIN_V2:
+        matches = [
+            (f, r, True)
+            for f, r in guard.records(state)
+            if guard.same_incumbent_after_binding(
+                authority, {"frame_id": f, **r["authority"]}
+            )
+        ]
     if len(matches) != 1:
         raise error("frame hive lease incarnation unavailable")
-    _, record = matches[0]
+    _, record, historical = matches[0]
     with tempfile.NamedTemporaryFile(mode="w") as signers:
         signers.write("frame " + record["public_key"] + "\n")
         signers.flush()
@@ -61,6 +83,8 @@ def read(plane, prefix, *, git, error, decode, lease_ref, json_decode, holder_id
     if plane._read()[0] != revision:
         raise error("authority changed during hive lease read")
     if holder_identity is not None:
+        if historical:
+            return sha, None
         hive = policy.get("hive_policies", {}).get(prefix)
         if (
             record["state"] != "active"
@@ -110,10 +134,11 @@ def publish(
         record is None
         or record["authority"]["holder_identity"] != manifest.host_id
         or record["authority"]["instance_ref"] != manifest.instance_ref
+        or record["authority"].get("beadyard_id") != manifest.beadyard_id
     ):
         raise error("frame hive lease requires exact active incarnation")
     data = dict(
-        domain=DOMAIN,
+        domain=DOMAIN_V2 if manifest.beadyard_id is not None else DOMAIN,
         authority_revision=revision,
         expected_lease_sha=expected,
         operation=operation,

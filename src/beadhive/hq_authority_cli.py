@@ -12,7 +12,9 @@ from . import config, host_heartbeat, hq_control_plane
 
 
 def authority_cmd(
-    action: str = typer.Argument(..., help="install, bind, grant, observe, renew, or status"),
+    action: str = typer.Argument(
+        ..., help="install, bind, bind-beadyard, grant, observe, renew, or status"
+    ),
     record: Annotated[Path | None, typer.Option("--record")] = None,
     frame: str = typer.Option("", "--frame"),
     public_key: Annotated[Path | None, typer.Option("--public-key")] = None,
@@ -93,6 +95,8 @@ def authority_cmd(
                     sha = plane.renew(
                         expected=expected, operator_key=str(operator_key), duration=duration
                     )
+                elif action == "bind-beadyard":
+                    sha = plane.bind_beadyard(expected=expected, operator_key=str(operator_key))
                 else:
                     raise hq_control_plane.ControlPlaneError("unknown authority action")
                 result = {"revision": sha}

@@ -260,11 +260,12 @@ class SqlTrustedReceiver:
                     "frame_id": route.frame_id,
                     **authority,
                 }
+                same_incumbent = guard.same_incumbent_after_binding(old_authority, identity)
                 operation = request["operation"]
                 if operation == "release":
                     if (
                         old_lease is None
-                        or old_authority != identity
+                        or not same_incumbent
                         or old_lease.host_id != route.holder_identity
                         or lease.host_id != ""
                         or lease.epoch != old_lease.epoch
@@ -334,7 +335,7 @@ class SqlTrustedReceiver:
                     if operation == "renew":
                         if (
                             old_lease is None
-                            or old_authority != identity
+                            or not same_incumbent
                             or old_lease.host_id != lease.host_id
                             or old_lease.is_expired(now)
                             or lease.epoch != old_lease.epoch

@@ -77,8 +77,8 @@ class GitFleetConfigRevisionStore:
             local_id = read_identity(plane.hq_dir)
         except BeadyardIdentityError:
             raise FleetConfigError("committed or local beadyard identity invalid") from None
-        if local_id is not None and committed_id != local_id:
-            if not (allow_legacy_bound and committed_id is None):
+        if committed_id != local_id:
+            if not (allow_legacy_bound and committed_id is None and local_id is not None):
                 raise FleetConfigError("committed beadyard identity conflicts with local HQ")
         if (
             not witnesses
