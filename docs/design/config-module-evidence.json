@@ -99,6 +99,6 @@
   "graduation_note": "No closure is promoted to authoritative CI selection solely from this extraction; just check remains the submission decision.",
   "current_inventory_update": {
     "bead": "bh-bfb2y",
-    "reason": "Synchronize the live U7 process dispatch configuration patch inventory after adding fresh reads for admission and lease renewal (83 production config importers, 149 test importers, 290 patch points). Regenerated with scripts/config_dependency_ledger.py; historical extraction measurements and full-gate evidence are unchanged."
+    "reason": "Synchronize the live U7 process dispatch configuration patch inventory after adding fresh reads for admission and lease renewal (83 production config importers, 149 test importers, 290 patch points), plus current structural metrics after correcting the dispatch backend contract description. Regenerated with scripts/config_dependency_ledger.py and scripts/config_module_metrics.py; historical extraction measurements and full-gate evidence are unchanged."
   }
 }
