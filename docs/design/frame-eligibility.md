@@ -50,8 +50,12 @@ cannot extend expiry or authorize new intake.
 The Git adapter brackets constituent reads against a monotonic protected authority head;
 it does not claim an atomic combined SQL transaction. It verifies the configuration head's
 signature, recovery generation and rollback witnesses, then rechecks authority after the
-config read. A future SQL adapter implements the same lease/eligibility ports using its
-qualified central transaction, without consulting a Git checkout or cached Git lease.
+config read. The SQL adapter reads committed config, signed authority, public observer receipt
+and hive lease through one physical Dolt transaction. Exact config backend/generation/HEAD
+cross-reference denies split publications. A separate fresh authoritative reread fences
+completed config, authority and public-receipt changes at the eligibility boundary; every
+subsequent claim requalifies. A config snapshot cache TTL cannot waive revocation. SQL frame
+intake needs the bound runtime and separate receiver, not a Git checkout or cached Git lease.
 
 ## Canonical hive policy projection
 
@@ -66,7 +70,14 @@ a frame. Empty policy denies frame intake and publication.
 
 This projection is not another fleet configuration source. Runtime frames cannot provision
 or alter it. The current production provisioning CLI does not expose projection installation
-or refresh; operators must not infer frame readiness from an empty-policy default. Supported
-SQL provisioning will consume the canonical committed catalog directly. The current delivery
-proves HQ configuration syncing and synthetic runtime fixtures; existing production Beads
-stores, remotes and executor enrollment remain unchanged.
+or refresh; operators must not infer frame readiness from an empty-policy default.
+For SQL, the typed optional `managed_repos[].frame_policy` in committed `fleet.yaml` supplies
+`config_revision`, `requires` and positive finite `evict_after_s`. Omission denies that hive.
+The operator projects all policies from the exact committed ordered config snapshot, binds
+each to its Dolt config HEAD and a finite signed authority expiry, and signs that projection
+in protected runtime authority. A short reader cache TTL is not the durable policy expiry.
+Publishing config without a matching protected projection denies frame work until an operator
+refreshes it. This is the supported canonical-catalog-to-projection seam, not another fleet
+source. The regular config publisher does not enroll a frame. The fresh empty-schema seed
+path belongs to `bh-4shu3`; broad effective-config consumer routing belongs to `bh-9ej9n`.
+Existing production Beads stores, remotes and executor enrollment remain unchanged.

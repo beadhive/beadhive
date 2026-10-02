@@ -283,6 +283,8 @@ def apply(b, verb, **changes):
 
 
 def test_real_cli_repeated_beats_observation_and_admission(backend):
+    from harness.hq_membership_conformance import assert_common_membership_reads
+
     b = backend
     main = git(b["remote"], "rev-parse", "main")
     for sequence in range(1, 4):
@@ -359,6 +361,7 @@ raise SystemExit(result.exit_code)
         and active.lifecycle_state == "active"
         and active.authority.candidate_expires_at is None
     )
+    assert_common_membership_reads(b["plane"], b["manifest"], sha)
     before = b["plane"]._read()[0]
     assert apply(b, "admit")["state"] == "active"
     assert b["plane"]._read()[0] == before

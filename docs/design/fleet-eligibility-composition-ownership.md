@@ -77,3 +77,28 @@ coverage passed three tests; naming hooks passed thirteen tests. The operator ap
 inventory and matching snapshot after independent scanner reproduction. The approval covers
 retained composition ownership; it does not replace clean-tree validation or lifecycle review.
 Historical closeout tests and metrics remain unchanged.
+
+## Shared Dolt binding exact-graph amendment (`bh-v0k3i`)
+
+The 26-edge inventory above is the historical U3 review, not the current exact graph.
+The binding extracts the manifest model into neutral `host_manifest_contracts` while
+`hosts` retains the same public class identity. Four former cyclic edges to `hosts`
+(`cycle-fleet-composition-004`, `-010`, `-019`, `-025`) are now marked removed in the
+ledger. The retained `hq_control_plane -> host_heartbeat_core` composition edge
+(`-018`) additionally names `VerifiedObservation`, which the SQL public-read path
+uses; its existing Fleet composition steward and expiry rule remain in force.
+
+The config facade's existing `config -> config_store` import is promoted into a cyclic
+component by the explicit HOST backend selector. The new
+`config_store -> hq_control_plane.attach_fleet_config` import is the narrow bootstrap
+composition that attaches the selected revision store; it does not add a second
+effective-config resolver or import SQL runtime into config domain code. These exact
+edges are part of the existing owned component after removal of the reviewed feedback
+edges and require no new cycle exception or fabricated cleanup successor.
+
+Independent exact review for this source found 8 cyclic components, 58 modules,
+147 edges and 170 symbols, digest
+`a3b51f4f4bacd3a0f1ea72e161e9d4a9d15b947f523539420a2dba392ffa5685`.
+The count falls from the U3 151 edges/174 symbols, with no unowned component.
+The import-boundary checker passes on the amended exact ledger; final frozen-tree
+structural validation remains required.

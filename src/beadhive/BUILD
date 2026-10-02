@@ -84,7 +84,6 @@ target(
         "./modules/agents",
         "./modules/config",
         "./modules/hives",
-        "./modules/planning",
         "./modules/state",
         "./modules/work",
         "./modules/worktrees",

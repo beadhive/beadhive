@@ -20,6 +20,7 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         "work.dispatch.auto_budget",
         "hq.remote",
         "hq.authority_anchor",
+        "hq.sql",
         "dolt",
         "git_workspace",
         "log",

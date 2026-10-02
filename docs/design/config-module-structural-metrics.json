@@ -1,13 +1,13 @@
 {
   "after": {
-    "classes": 77,
+    "classes": 81,
     "cyclomatic_max": 25,
-    "cyclomatic_mean": 3.441,
-    "cyclomatic_sum": 351,
-    "functions": 102,
-    "functions_over_10": 3,
-    "nonblank_lines": 2837,
-    "physical_lines": 3362,
+    "cyclomatic_mean": 3.731,
+    "cyclomatic_sum": 403,
+    "functions": 108,
+    "functions_over_10": 6,
+    "nonblank_lines": 2992,
+    "physical_lines": 3535,
     "python_files": 15
   },
   "before": {
@@ -23,14 +23,14 @@
     "revision": "5e47c61107a67a26676fc5890a89f0fd0b715c78"
   },
   "delta": {
-    "classes": 13,
+    "classes": 17,
     "cyclomatic_max": 0,
-    "cyclomatic_mean": -0.213,
-    "cyclomatic_sum": 55,
-    "functions": 21,
-    "functions_over_10": 1,
-    "nonblank_lines": 495,
-    "physical_lines": 572,
+    "cyclomatic_mean": 0.077,
+    "cyclomatic_sum": 107,
+    "functions": 27,
+    "functions_over_10": 4,
+    "nonblank_lines": 650,
+    "physical_lines": 745,
     "python_files": 1
   },
   "metric_definition": {
