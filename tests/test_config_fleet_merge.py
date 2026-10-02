@@ -467,3 +467,23 @@ def test_set_value_writes_only_host_content_back(bh_home):
     assert "delimiter" not in written  # the fleet base did not leak into the host file
     assert "validate_cmd" not in written
     assert "enabled: false" in written
+
+
+def test_authority_settings_split_and_real_file_merge_preserve_protected_anchor(bh_home):
+    from beadhive.config_split_migration import split_leaves
+
+    flat = {
+        "schema_version": 1,
+        "hq": {
+            "mode": "git",
+            "admission_policy": "manual",
+            "remote": "file:///operator/hq.git",
+            "authority_anchor": "/operator/clients/frame.json",
+        },
+    }
+    fleet, client = split_leaves(flat)
+    assert fleet["hq"] == {"mode": "git", "admission_policy": "manual"}
+    assert client["hq"]["authority_anchor"] == flat["hq"]["authority_anchor"]
+    config._yaml.dump(fleet, bh_home / "hq" / "fleet.yaml")
+    config._yaml.dump(client, bh_home / "config.yaml")
+    assert config.load()["hq"] == flat["hq"]

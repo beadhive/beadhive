@@ -965,10 +965,16 @@ class WorkConfig(_Section):
 class HqConfig(_Section):
     """Factory HQ remote (``hq``) — where the factory's central HQ store publishes to."""
 
+    mode: Literal["git", "dolt-server"] = "git"
+    authority_anchor: str = ""
+    admission_policy: Literal["manual"] = "manual"
+
     remote: str = Field(
         "",
         description=(
-            "HQ repo remote, `<owner>/beadhive-hq` form. Empty (default) derives `<owner>` "
+            "HQ repo remote: `<owner>/beadhive-hq`, an absolute local path, "
+            "or local `file://` URL. "
+            "Empty (default) derives `<owner>` "
             "from the logged-in `gh` identity at read time (`config.hq_remote`) — host "
             "identity, so the answer does not vary by which hive you invoke from; an "
             "explicit value here always overrides the derivation. `bh hq init`/`clone` "

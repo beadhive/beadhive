@@ -299,6 +299,12 @@ def test_render_table_renders_base_columns():
         "CAPABILITIES",
         "LAST_SEEN",
         "STALE",
+        "HEARTBEAT",
+        "VERIFIED",
+        "BEAT_AGE",
+        "AGE_BASIS",
+        "CANDIDATE",
+        "LIVENESS",
     ]
     assert "h1" in lines[1] and "L1" in lines[1] and "viewer" in lines[1]
 

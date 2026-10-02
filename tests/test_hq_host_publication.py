@@ -84,7 +84,9 @@ def test_two_hosts_land_after_non_fast_forward_retry(tmp_path, monkeypatch):
             assert hq.publish_host_manifest(other, "host-b")
         return real_git(args, cwd)
 
-    monkeypatch.setattr(hq, "_git", race)
+    monkeypatch.setattr(
+        __import__("beadhive.hq_manifest_publication", fromlist=["_git"]), "_git", race
+    )
     assert hq.publish_host_manifest(local, "host-a")
     assert raced
     for host_id in ("host-a", "host-b"):

@@ -94,6 +94,12 @@
             inherit (release) hash;
           };
           sourceRoot = ".";
+          # Upstream Linux bd uses the conventional glibc ELF interpreter. Relocate
+          # it into the Nix closure; Darwin's archive needs no ELF relocation.
+          nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+            pkgs.autoPatchelfHook
+          ];
+          buildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.glibc ];
           installPhase = ''
             runHook preInstall
             install -Dm755 bd "$out/bin/bd"
@@ -307,7 +313,12 @@
             globalTimeout = 1800;
             nodes.machine = { ... }: {
               programs.nix-ld.enable = false;
-              environment.systemPackages = [ self.packages.${system}.bh ];
+              environment.systemPackages = [
+                self.packages.${system}.bh
+                self.packages.${system}.beads
+                (doltRelease pkgs)
+                pkgs.git
+              ];
             };
             testScript = ''
               import time
@@ -320,6 +331,21 @@
               machine.succeed("test \"$(bh --version)\" = \"${bhVersion}\"")
               machine.succeed("bh-host-daemon --help >/dev/null")
               machine.succeed("beadhive-frame-bridge --help >/dev/null")
+              machine.succeed("bd --version")
+              machine.succeed("git config --global user.name 'Beads VM Proof'")
+              machine.succeed("git config --global user.email 'beads@proof.invalid'")
+              machine.succeed("mkdir -p /tmp/beads-smoke")
+              machine.succeed(
+                "cd /tmp/beads-smoke && "
+                "BEADS_SHARED_SERVER_DIR=/tmp/beads-server BEADS_DOLT_SERVER_PORT=3310 "
+                "bd init --prefix proof --shared-server --skip-agents --skip-hooks --non-interactive",
+                timeout=180,
+              )
+              machine.succeed(
+                "BEADS_SHARED_SERVER_DIR=/tmp/beads-server BEADS_DOLT_SERVER_PORT=3310 "
+                "bd -C /tmp/beads-smoke status --json",
+                timeout=120,
+              )
             '';
           };
         } else { });

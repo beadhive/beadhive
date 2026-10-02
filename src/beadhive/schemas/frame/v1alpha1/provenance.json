@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/beadhive/frame",
+  "commit": "acf056630709dce340402e0613ac1792c4ce1a28",
+  "path": "contract/v1alpha1/framelease.schema.json",
+  "sha256": "d7d9114d1740003ac576d28b2e3151843598b3c232068a5f362604d306440119",
+  "fixture_path": "fixtures/v1alpha1/positive/framelease.json",
+  "fixture_sha256": "32ae10601bbe94024325ab2a8fac029848d28fa1c9c155c82f094f0ecedd0a70",
+  "status": "approved-published",
+  "review_gate": "bh-frame-ocj"
+}

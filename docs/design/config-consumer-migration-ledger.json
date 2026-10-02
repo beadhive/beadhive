@@ -16,7 +16,7 @@
     "successor_contracts": "beadhive.modules.config.contracts"
   },
   "current": {
-    "config_patch_point_count": 263,
+    "config_patch_point_count": 269,
     "config_patch_points": [
       {
         "facade_target": "beadhive.config.save_fleet",
@@ -724,6 +724,48 @@
         "line": 154,
         "path": "tests/test_hive_ready_schema_version.py",
         "target": "beadhive.config.hq_dir"
+      },
+      {
+        "facade_target": "beadhive.config.load",
+        "kind": "direct-facade",
+        "line": 163,
+        "path": "tests/test_hq_authority_backend.py",
+        "target": "beadhive.config.load"
+      },
+      {
+        "facade_target": "beadhive.config.load_host",
+        "kind": "direct-facade",
+        "line": 164,
+        "path": "tests/test_hq_authority_backend.py",
+        "target": "beadhive.config.load_host"
+      },
+      {
+        "facade_target": "beadhive.config.hq_dir",
+        "kind": "direct-facade",
+        "line": 165,
+        "path": "tests/test_hq_authority_backend.py",
+        "target": "beadhive.config.hq_dir"
+      },
+      {
+        "facade_target": "beadhive.config.home",
+        "kind": "direct-facade",
+        "line": 166,
+        "path": "tests/test_hq_authority_backend.py",
+        "target": "beadhive.config.home"
+      },
+      {
+        "facade_target": "beadhive.config.load",
+        "kind": "direct-facade",
+        "line": 1251,
+        "path": "tests/test_hq_authority_backend.py",
+        "target": "beadhive.config.load"
+      },
+      {
+        "facade_target": "beadhive.config.load_host",
+        "kind": "direct-facade",
+        "line": 1252,
+        "path": "tests/test_hq_authority_backend.py",
+        "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.load",
@@ -1860,7 +1902,7 @@
         "target": "beadhive.config.load"
       }
     ],
-    "production_config_importer_count": 79,
+    "production_config_importer_count": 82,
     "production_config_importers": [
       "src/beadhive/activity_publisher.py",
       "src/beadhive/agent_run_summary_reader.py",
@@ -1904,9 +1946,12 @@
       "src/beadhive/home_migration.py",
       "src/beadhive/host.py",
       "src/beadhive/host_cli.py",
+      "src/beadhive/host_heartbeat_core.py",
       "src/beadhive/host_provision.py",
       "src/beadhive/host_retire.py",
       "src/beadhive/hq.py",
+      "src/beadhive/hq_authority_cli.py",
+      "src/beadhive/hq_control_plane.py",
       "src/beadhive/hq_restore.py",
       "src/beadhive/hub.py",
       "src/beadhive/kernel/daemon/contracts/__init__.py",
@@ -2163,6 +2208,11 @@
       },
       {
         "owner": "bh-18hud.5 compatibility migration ledger",
+        "path": "src/beadhive/host_heartbeat_core.py",
+        "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
+      },
+      {
+        "owner": "bh-18hud.5 compatibility migration ledger",
         "path": "src/beadhive/host_provision.py",
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       },
@@ -2174,6 +2224,16 @@
       {
         "owner": "bh-18hud.5 compatibility migration ledger",
         "path": "src/beadhive/hq.py",
+        "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
+      },
+      {
+        "owner": "bh-18hud.5 compatibility migration ledger",
+        "path": "src/beadhive/hq_authority_cli.py",
+        "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
+      },
+      {
+        "owner": "bh-18hud.5 compatibility migration ledger",
+        "path": "src/beadhive/hq_control_plane.py",
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       },
       {
@@ -2347,7 +2407,7 @@
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       }
     ],
-    "test_config_importer_count": 145,
+    "test_config_importer_count": 147,
     "test_config_importers": [
       "tests/contracts/test_config_contract_compatibility.py",
       "tests/contracts/test_config_resolution_compatibility.py",
@@ -2437,7 +2497,9 @@
       "tests/test_host_retire.py",
       "tests/test_host_rm_cli.py",
       "tests/test_hq.py",
+      "tests/test_hq_authority_backend.py",
       "tests/test_hq_clone.py",
+      "tests/test_hq_local_bootstrap_int.py",
       "tests/test_hq_push.py",
       "tests/test_hq_remote.py",
       "tests/test_hub.py",

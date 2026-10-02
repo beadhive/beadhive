@@ -62,6 +62,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
+from typing import Annotated
 
 import typer
 
@@ -78,6 +79,7 @@ from . import (
     host,
     host_adopt,
     host_fence,
+    host_heartbeat,
     host_lease,
     hosts,
     hq,
@@ -647,7 +649,7 @@ def iter_manifests(hq_dir: Path) -> list[tuple[hosts.HostManifest, Path]]:
 
 
 def manifest_row(
-    manifest: hosts.HostManifest, path: Path, *, stale: bool = False
+    manifest: hosts.HostManifest, path: Path, *, stale: bool = False, last_seen: str | None = None
 ) -> dict[str, object]:
     """One roster row's base fields. A dict, not a tuple/dataclass, on purpose: a later
     caller (bh-ytbb.13) builds its OWN rows the same way — this manifest-only dict plus an
@@ -665,7 +667,7 @@ def manifest_row(
         "capabilities": (
             manifest.capabilities.model_dump(mode="json") if manifest.capabilities else None
         ),
-        "last_seen": _last_seen(path),
+        "last_seen": _last_seen(path) if last_seen is None else last_seen,
         "stale": "stale" if stale else "",
     }
 
@@ -682,6 +684,12 @@ BASE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("capabilities", "CAPABILITIES"),
     ("last_seen", "LAST_SEEN"),
     ("stale", "STALE"),
+    ("heartbeat_status", "HEARTBEAT"),
+    ("heartbeat_verified", "VERIFIED"),
+    ("heartbeat_age", "BEAT_AGE"),
+    ("heartbeat_age_basis", "AGE_BASIS"),
+    ("heartbeat_candidate", "CANDIDATE"),
+    ("liveness_source", "LIVENESS"),
 )
 
 
@@ -859,15 +867,35 @@ def identity_cmd(
 def list_payload(hq_dir: Path, cfg: dict | None = None) -> list[dict[str, object]]:
     """The rows :func:`render_table` renders for ``list`` — the JSON payload shape too.
     Split out from the command so tests (and a future MCP resource) can call it directly.
-    ``cfg`` (default: :func:`beadhive.config.load`) sizes the STALE marker's threshold
-    (:func:`_stale_after`) — accepted rather than always reloaded so a caller that already
-    has one (:func:`list_cmd`) doesn't pay a second read."""
+    Signed observation freshness drives frame rows. Legacy manifests without a heartbeat
+    use the configured mtime threshold, explicitly labeled legacy-mtime."""
     cfg = cfg if cfg is not None else config.load()
     threshold = _stale_after(cfg)
     now = time.time()
-    return [
-        manifest_row(m, p, stale=_is_stale(p, threshold, at=now)) for m, p in iter_manifests(hq_dir)
-    ]
+    rows = []
+    for manifest, path in iter_manifests(hq_dir):
+        observation = host_heartbeat.observe(hq_dir, manifest, now=now)
+        legacy = not manifest.frame_id and observation.status == "absent"
+        row = manifest_row(
+            manifest,
+            path,
+            stale=(_is_stale(path, threshold, at=now) if legacy else not observation.fresh),
+            last_seen=None
+            if legacy
+            else (observation.lease.renewTime if observation.lease else ""),
+        )
+        row.update(
+            heartbeat_status=observation.status,
+            heartbeat_verified=observation.verified,
+            heartbeat_age=observation.age_seconds,
+            heartbeat_age_basis=observation.age_basis,
+            heartbeat_candidate=observation.candidate,
+            liveness_source="legacy-mtime" if legacy else "signed-heartbeat",
+        )
+        if not legacy:
+            row["last_seen"] = observation.lease.renewTime if observation.lease else ""
+        rows.append(row)
+    return rows
 
 
 # The column spec `list --lease-hive` renders — BASE_COLUMNS plus the lease-state column
@@ -902,6 +930,38 @@ def with_lease_state(
     return enriched, summary
 
 
+_HEARTBEAT_RECORD = typer.Argument(
+    ..., help="JSON observation record; authority is separately operator owned"
+)
+
+
+@app.command("heartbeat", help="publish a signed, bounded observation for this host")
+def heartbeat_cmd(
+    record: Path = _HEARTBEAT_RECORD,
+    as_json: bool = _AS_JSON,
+) -> None:
+    """Publish caller-observed runtime facts; never mint admission or authority."""
+    try:
+        lease = host_heartbeat.HeartbeatLease.model_validate_json(record.read_text())
+        if lease.holderIdentity != host.host_id():
+            raise host_heartbeat.HeartbeatError("heartbeat holder must be this host")
+        key = host.signing_key()
+        if not key:
+            raise host_heartbeat.HeartbeatError("no recorded host signing key")
+        from .hq_control_plane import control_plane
+
+        plane = control_plane(config.hq_dir())
+        reference = plane.heartbeat_reference(lease)
+        sha = plane.heartbeat(lease, signing_key=key)
+    except (ValueError, OSError, RuntimeError) as exc:
+        typer.echo(f"heartbeat refused: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    if as_json:
+        typer.echo(json.dumps({"sha": sha, "ref": reference}))
+    else:
+        typer.echo(f"published heartbeat {sha}")
+
+
 @app.command(
     "list",
     help="render every host manifest in HQ (label, role, last-seen, stale); "
@@ -917,8 +977,8 @@ def list_cmd(
     ),
 ):
     """Every ``hosts/<host_id>.yaml`` manifest in Factory HQ, one row per host. Reads refs
-    only — no daemon, no live probe (last-seen is the manifest file's own mtime; STALE is
-    derived from it too — see :func:`_stale_after`).
+    with bounded signed heartbeat verification against HQ authority. Legacy hosts with
+    no heartbeat retain explicitly labeled manifest-mtime observations.
 
     Deliberately ``--lease-hive``, NOT the reserved ``--hive`` (cli-mcp-naming-conventions-adr
     §5d/§5d-i): the ADR's ``--hive`` means "target ONE hive, default the cwd's" and is scoped
@@ -1718,6 +1778,81 @@ def retire_cmd(
     results = host_retire.retire(dry_run=dry_run, backup=backup, confirm=confirm, purge=purge)
     if not dry_run and any(r.status == "failed" for r in results):
         raise typer.Exit(1)
+
+
+def _frame_lifecycle(
+    verb,
+    action,
+    frame_id,
+    expected,
+    expected_host_id,
+    expected_release,
+    operator_key,
+    confirm,
+    supersede,
+    deadline,
+):
+    from .hq_control_plane import control_plane
+
+    try:
+        result = control_plane().lifecycle(
+            verb,
+            frame_id,
+            action,
+            expected=expected,
+            expected_host_id=expected_host_id,
+            expected_release=expected_release,
+            operator_key=str(operator_key) if operator_key else "",
+            confirm=confirm,
+            supersede=supersede,
+            deadline=deadline,
+        )
+        typer.echo(json.dumps(result, sort_keys=True))
+    except (ValueError, OSError, RuntimeError) as exc:
+        typer.echo(f"{verb} refused: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+
+def _lifecycle_command(verb: str, *, operation: str | None = None):
+    operation = operation or verb
+
+    def command(
+        action: str = typer.Argument(..., help="plan, apply, or check"),
+        frame_id: str = typer.Argument(...),
+        expected: str = typer.Option("", "--expected-revision"),
+        expected_host_id: str = typer.Option("", "--expected-host-id"),
+        expected_release: str = typer.Option("", "--expected-release"),
+        operator_key: Annotated[Path | None, typer.Option("--operator-key")] = None,
+        confirm: bool = typer.Option(False, "--confirm"),
+        supersede: bool = typer.Option(False, "--supersede"),
+        deadline: float | None = typer.Option(
+            None, "--deadline", help="drain deadline, Unix seconds"
+        ),
+    ) -> None:
+        _frame_lifecycle(
+            verb,
+            action,
+            frame_id,
+            expected,
+            expected_host_id,
+            expected_release,
+            operator_key,
+            confirm,
+            supersede,
+            deadline,
+        )
+
+    command.__name__ = f"{operation.replace('-', '_')}_cmd"
+    command.__doc__ = (
+        f"{verb.capitalize()} a declared frame using plan/apply/check and exact expected authority."
+    )
+    return otel.trace_verb(f"host.{operation}")(command)
+
+
+for _verb in ("admit", "cordon", "drain", "park", "resume", "quarantine"):
+    app.command(_verb)(_lifecycle_command(_verb))
+
+app.command("frame-retire")(_lifecycle_command("retire", operation="frame-retire"))
 
 
 # ---- remove: drop an orphaned manifest from HQ (bh-salu) ------------------------------
