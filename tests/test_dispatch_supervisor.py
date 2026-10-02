@@ -33,9 +33,10 @@ def test_get_supervisor_backend_rejects_unknown_name():
 
 
 @pytest.mark.parametrize("name", [ds.BACKEND_LAUNCHD, ds.BACKEND_CONTAINER])
-def test_get_supervisor_backend_documents_unimplemented_backends(name):
-    with pytest.raises(NotImplementedError, match=name):
-        ds.get_supervisor_backend({"host": {"dispatch": {"backend": name}}})
+def test_external_supervisor_names_select_process(name):
+    assert isinstance(
+        ds.get_supervisor_backend({"host": {"dispatch": {"backend": name}}}), ds.ProcessBackend
+    )
 
 
 # ---- the seam is a real Protocol, not an assertion: a second implementation conforms ------
@@ -314,3 +315,12 @@ def test_a_started_but_not_yet_persisted_instance_still_reads_as_installed(tmp_p
     assert state.installed is True
     assert state.running is True
     assert state.persisted is False
+
+
+def test_process_backend_requires_foreground_external_supervisor():
+    backend = ds.get_supervisor_backend({"host": {"dispatch": {"backend": "process"}}})
+    with pytest.raises(ValueError, match="foreground"):
+        backend.enable("hive", exec_argv=[], env={})
+    with pytest.raises(ValueError, match="SIGTERM"):
+        backend.disable("hive")
+    assert not backend.status("hive").running
