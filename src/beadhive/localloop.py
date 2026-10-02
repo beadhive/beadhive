@@ -972,22 +972,31 @@ class HostLeaseKeeper:
 
 
 class EligibilityLeaseKeeper:
-    """Recheck frame intake on every pass, including an otherwise unconfigured lease."""
+    """Recheck intake each pass; production keepers reload current qualified config."""
 
-    def __init__(self, keeper, hive, cfg, hive_dir):
+    def __init__(self, keeper, hive, cfg, hive_dir, *, fresh_config=False):
         self.keeper, self.hive, self.cfg, self.hive_dir = keeper, hive, cfg, hive_dir
+        self.fresh_config = fresh_config
 
     def renew(self, *, active):
         from . import frame_eligibility
 
         try:
-            frame_eligibility.require_intake(self.hive, cfg=self.cfg, hive_dir=self.hive_dir)
+            current = config.load() if self.fresh_config else self.cfg
+        except Exception:  # noqa: BLE001 - an unavailable config cannot renew a lease
+            return LeaseStatus(False, detail="configuration unavailable")
+        try:
+            frame_eligibility.require_intake(self.hive, cfg=current, hive_dir=self.hive_dir)
         except frame_eligibility.EligibilityError as exc:
             return LeaseStatus(False, detail=str(exc))
+        except Exception:  # noqa: BLE001 - authority failure cannot renew a lease
+            return LeaseStatus(False, detail="intake authority unavailable")
         return self.keeper.renew(active=active)
 
 
-def lease_keeper_for(hive: str = "", *, cfg=None, hive_dir: Path | None = None):
+def lease_keeper_for(
+    hive: str = "", *, cfg=None, hive_dir: Path | None = None, fresh_config: bool = True
+):
     """The right keeper for this hive: :class:`HostLeaseKeeper` when a lease is actually recorded
     for it, :class:`NullLeaseKeeper` otherwise.
 
@@ -1006,10 +1015,14 @@ def lease_keeper_for(hive: str = "", *, cfg=None, hive_dir: Path | None = None):
             else guard.primary_state(hive, cfg=cfg, hive_dir=hive_dir)
         )
     except Exception as exc:  # pragma: no cover - never fail a pass on a lease lookup
-        _LOG.warning("lease_keeper_unavailable", error=str(exc))
-        return EligibilityLeaseKeeper(NullLeaseKeeper(), hive, cfg, hive_dir)
+        _LOG.warning("lease_keeper_unavailable", error_type=type(exc).__name__)
+        return EligibilityLeaseKeeper(
+            NullLeaseKeeper(), hive, cfg, hive_dir, fresh_config=fresh_config
+        )
     if state is None:
-        return EligibilityLeaseKeeper(NullLeaseKeeper(), hive, cfg, hive_dir)
+        return EligibilityLeaseKeeper(
+            NullLeaseKeeper(), hive, cfg, hive_dir, fresh_config=fresh_config
+        )
     prefix, this_host, _lease = state
     from .hq_control_plane import control_plane
 
@@ -1022,7 +1035,7 @@ def lease_keeper_for(hive: str = "", *, cfg=None, hive_dir: Path | None = None):
         backend=control_plane(config.hq_dir()) if decision is not None else None,
     )
 
-    return EligibilityLeaseKeeper(keeper, hive, cfg, hive_dir)
+    return EligibilityLeaseKeeper(keeper, hive, cfg, hive_dir, fresh_config=fresh_config)
 
 
 # --------------------------------------------------------------------------------------------

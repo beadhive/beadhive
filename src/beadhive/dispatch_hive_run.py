@@ -39,7 +39,9 @@ down.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
+import signal
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -159,6 +161,8 @@ class HiveDispatchRun:
         env: dict[str, str] | None = None,
         dry_run: bool = False,
         seat_binary: str = "",
+        eligible=None,
+        drain_timeout: float | None = None,
     ):
         self.hive_dir = Path(hive_dir)
         self.hive = hive
@@ -183,6 +187,9 @@ class HiveDispatchRun:
         self.backoff: dict[str, tuple[int, float]] = {}
         self.passes = 0
         self.stopping = False
+        self._eligible = eligible
+        self.drain_timeout = drain_timeout
+        self._stop: asyncio.Event | None = None
 
     async def _spawn(self, epic: str) -> _Child:
         env = dict(os.environ if self.env is None else self.env)
@@ -267,6 +274,11 @@ class HiveDispatchRun:
             )
             return report
 
+        if self.stopping or (self._eligible is not None and not self._eligible()):
+            report.idle = True
+            report.epics_in_flight = tuple(self.children)
+            return report
+
         room = self.max_epics_in_flight - len(self.children)
         spawned: list[str] = []
         deferred: list[str] = []
@@ -280,6 +292,10 @@ class HiveDispatchRun:
                 if self._deferred_until(epic, now):
                     deferred.append(epic)
                     continue
+                # Re-check immediately before every spawn: eligibility can change
+                # between candidates or while an earlier subprocess was starting.
+                if self.stopping or (self._eligible is not None and not self._eligible()):
+                    break
                 self.children[epic] = await self._spawn(epic)
                 spawned.append(epic)
                 room -= 1
@@ -289,23 +305,73 @@ class HiveDispatchRun:
         _LOG.info("hive_dispatch_pass", **report.as_dict())
         return report
 
+    def _on_sigterm(self) -> None:
+        self.stopping = True
+        if self._stop is not None:
+            self._stop.set()
+
     async def run(self, *, max_passes: int | None = None) -> list[HivePassReport]:
         reports: list[HivePassReport] = []
+        self._stop = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        installed = False
+        if self.drain_timeout is not None:
+            # Process mode must have working signal handling; failing here is an
+            # unrecoverable startup error, never a silently unsafe supervisor.
+            loop.add_signal_handler(signal.SIGTERM, self._on_sigterm)
+            installed = True
         try:
             while not self.stopping:
                 reports.append(await self.run_pass())
                 if max_passes is not None and len(reports) >= max_passes:
                     break
-                await asyncio.sleep(self.poll_interval)
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(self._stop.wait(), timeout=self.poll_interval)
         finally:
-            await self.shutdown()
+            try:
+                await self.shutdown()
+            finally:
+                if installed:
+                    loop.remove_signal_handler(signal.SIGTERM)
         return reports
 
     async def shutdown(self) -> None:
-        """Best-effort: let in-flight `bh work loop` children keep running (they are their own
-        supervised units under `LocalLoop`'s own process-group discipline) — this picker owns
-        scheduling, not their lifecycle. Just stop waiting on them."""
+        """Process mode checkpoints through LocalLoop's SIGTERM cancellation ladder.
+
+        Signal the direct loop child, allowing it to read cancellation envelopes,
+        retain its branch, release claims and reap its own seat groups. On expiry
+        fence the loop group and report failure instead of claiming a safe drain.
+        The legacy systemd scheduling-only behavior remains unchanged.
+        """
         self.stopping = True
+        if self.drain_timeout is None:
+            return
+        live = [child for child in self.children.values() if child.proc.returncode is None]
+        for child in live:
+            with contextlib.suppress(ProcessLookupError):
+                child.proc.send_signal(signal.SIGTERM)
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*(child.proc.wait() for child in live)),
+                timeout=self.drain_timeout,
+            )
+        except TimeoutError as exc:
+            for child in live:
+                if child.proc.returncode is None:
+                    with contextlib.suppress(ProcessLookupError):
+                        os.killpg(child.proc.pid, signal.SIGKILL)
+            await asyncio.gather(*(child.proc.wait() for child in live))
+            raise RuntimeError(
+                "dispatch drain deadline expired; checkpoint completion unverified"
+            ) from exc
+        failed = [
+            (child.epic, child.proc.returncode) for child in live if child.proc.returncode != 0
+        ]
+        self._reap_finished()
+        if failed:
+            raise RuntimeError(
+                f"dispatch child drain failed; checkpoint completion unverified: {failed}"
+            )
 
 
 def build_run(
@@ -319,7 +385,7 @@ def build_run(
     """Assemble a :class:`HiveDispatchRun` for `bh host dispatch run --hive <hive>` from config
     — the CLI-facing constructor, kept separate from the class so tests build the class
     directly with fakes."""
-    from . import identity, localloop
+    from . import dispatch_supervisor, identity, localloop
 
     cfg = cfg if cfg is not None else config.load()
     main = registry.hive_dir_for(cfg, hive)
@@ -327,6 +393,8 @@ def build_run(
     resolved_actor = identity.resolve_actor(actor, config.work_identity(cfg, entry)["name"] or "")
     dispatch_log.ensure_sink_dir()
     sink = dispatch_log.sink_path(cfg, entry)
+    backend = dispatch_supervisor.get_supervisor_backend(cfg)
+    process_mode = backend.name == dispatch_supervisor.BACKEND_PROCESS
     return HiveDispatchRun(
         hive_dir=main,
         hive=hive,
@@ -337,4 +405,37 @@ def build_run(
         lease=localloop.lease_keeper_for(hive, cfg=cfg, hive_dir=main),
         dry_run=dry_run,
         seat_binary=seat_binary,
+        # A long-lived picker must resolve config again for every admission check. The
+        # startup snapshot can outlive a central revision or its validity window.
+        eligible=(lambda: process_eligible(hive, hive_dir=main)) if process_mode else None,
+        drain_timeout=60.0 if process_mode else None,
     )
+
+
+def process_eligible(hive: str, *, hive_dir: Path) -> bool:
+    """Re-read current config and U3 intake authority before admitting work.
+
+    The picker calls this once before reading candidates and again immediately before
+    each child spawn. The child independently checks intake at the actual claim API.
+    """
+    from . import frame_eligibility, guard
+
+    try:
+        current = config.load()
+        decision = frame_eligibility.local_intake_decision(
+            hive,
+            cfg=current,
+            hive_dir=hive_dir,
+            legacy_primary=guard.primary_state,
+        )
+    except Exception as exc:  # noqa: BLE001 - no authority/config failure admits new work
+        _LOG.warning(
+            "hive_dispatch_ineligible",
+            hive=hive,
+            predicate="intake_unavailable",
+            error_type=type(exc).__name__,
+        )
+        return False
+    if not decision.allowed:
+        _LOG.warning("hive_dispatch_ineligible", hive=hive, predicate=decision.reason)
+    return decision.allowed
