@@ -1154,9 +1154,8 @@ class HostLeaseConfig(_Section):
 
 
 class HostDispatchConfig(_Section):
-    """Unattended-dispatch supervision (``host.dispatch``, bh-e7r9q.4/.5) — the backend that
-    keeps ``bh host dispatch run --hive <hive>`` alive across restarts/reboots, and the dumb
-    picker it drives.
+    """Unattended-dispatch supervision (``host.dispatch``, bh-e7r9q.4/.5) — the backend
+    selection for ``bh host dispatch run --hive <hive>`` and the dumb picker it drives.
 
     Per-HOST, not fleet-scoped like ``host.lease``: which supervisor exists (systemd vs
     launchd vs a container's own restart policy) is a fact about THIS machine, not a shared
@@ -1167,11 +1166,11 @@ class HostDispatchConfig(_Section):
     backend: str = Field(
         "systemd",
         description=(
-            "Which supervisor backend installs/starts/persists the per-hive dispatch loop: "
-            "'systemd' (only one implemented — systemd --user template units, one instance "
-            "per hive) | 'launchd' | 'container' (both known names, NOT implemented — see "
-            "beadhive.dispatch_supervisor's module docstring for what each would need to "
-            "supply)."
+            "Dispatch supervision: 'systemd' installs and persists per-hive systemd --user "
+            "units (the default). 'process' runs bh host dispatch run in the foreground "
+            "under an external supervisor, which owns restart and status. 'container' and "
+            "'launchd' select that same process runtime; they do not install services. "
+            "Stop the foreground process with SIGTERM for bounded draining."
         ),
     )
     max_epics_in_flight: int = Field(
