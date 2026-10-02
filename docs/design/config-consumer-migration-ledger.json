@@ -16,7 +16,7 @@
     "successor_contracts": "beadhive.modules.config.contracts"
   },
   "current": {
-    "config_patch_point_count": 291,
+    "config_patch_point_count": 297,
     "config_patch_points": [
       {
         "facade_target": "beadhive.config.save_fleet",
@@ -572,6 +572,34 @@
         "target": "beadhive.config.load"
       },
       {
+        "facade_target": "beadhive.config.hq_dir",
+        "kind": "direct-facade",
+        "line": 372,
+        "path": "tests/test_fleet_config_consumers.py",
+        "target": "beadhive.config.hq_dir"
+      },
+      {
+        "facade_target": "beadhive.config.load_host",
+        "kind": "direct-facade",
+        "line": 419,
+        "path": "tests/test_fleet_config_consumers.py",
+        "target": "beadhive.config.load_host"
+      },
+      {
+        "facade_target": "beadhive.config.load_host",
+        "kind": "direct-facade",
+        "line": 423,
+        "path": "tests/test_fleet_config_consumers.py",
+        "target": "beadhive.config.load_host"
+      },
+      {
+        "facade_target": "beadhive.config.load_host",
+        "kind": "direct-facade",
+        "line": 449,
+        "path": "tests/test_fleet_config_consumers.py",
+        "target": "beadhive.config.load_host"
+      },
+      {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
         "line": 145,
@@ -630,30 +658,37 @@
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 287,
+        "line": 288,
         "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 288,
+        "line": 289,
         "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.hq_dir",
         "kind": "direct-facade",
-        "line": 289,
+        "line": 290,
         "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.hq_dir"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 383,
+        "line": 384,
         "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.load_host"
+      },
+      {
+        "facade_target": "beadhive.config.fleet_sql_selected",
+        "kind": "direct-facade",
+        "line": 32,
+        "path": "tests/test_gitworkspace_seed.py",
+        "target": "beadhive.config.fleet_sql_selected"
       },
       {
         "facade_target": "beadhive.config.load",
@@ -918,6 +953,13 @@
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
         "line": 1520,
+        "path": "tests/test_hq_authority_backend.py",
+        "target": "beadhive.config.load_host"
+      },
+      {
+        "facade_target": "beadhive.config.load_host",
+        "kind": "direct-facade",
+        "line": 1529,
         "path": "tests/test_hq_authority_backend.py",
         "target": "beadhive.config.load_host"
       },
@@ -2056,7 +2098,7 @@
         "target": "beadhive.config.load"
       }
     ],
-    "production_config_importer_count": 83,
+    "production_config_importer_count": 84,
     "production_config_importers": [
       "src/beadhive/activity_publisher.py",
       "src/beadhive/agent_run_summary_reader.py",
@@ -2082,6 +2124,7 @@
       "src/beadhive/dolt_health.py",
       "src/beadhive/engine.py",
       "src/beadhive/escalate.py",
+      "src/beadhive/fleet_roster.py",
       "src/beadhive/frame_bridge_factory.py",
       "src/beadhive/frame_bridge_runtime.py",
       "src/beadhive/frame_eligibility.py",
@@ -2269,6 +2312,11 @@
       {
         "owner": "bh-18hud.5 compatibility migration ledger",
         "path": "src/beadhive/escalate.py",
+        "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
+      },
+      {
+        "owner": "bh-18hud.5 compatibility migration ledger",
+        "path": "src/beadhive/fleet_roster.py",
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       },
       {
@@ -2567,7 +2615,7 @@
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       }
     ],
-    "test_config_importer_count": 149,
+    "test_config_importer_count": 152,
     "test_config_importers": [
       "tests/contracts/test_config_contract_compatibility.py",
       "tests/contracts/test_config_resolution_compatibility.py",
@@ -2620,10 +2668,13 @@
       "tests/test_doctor_dispatch.py",
       "tests/test_enforce_signing.py",
       "tests/test_engine.py",
+      "tests/test_fleet_config_consumers.py",
+      "tests/test_fleet_config_consumers_int.py",
       "tests/test_frame_bridge_daemon.py",
       "tests/test_frame_eligibility.py",
       "tests/test_git_identity.py",
       "tests/test_gitworkspace_plugin.py",
+      "tests/test_gitworkspace_seed.py",
       "tests/test_guard_primary.py",
       "tests/test_help_hygiene.py",
       "tests/test_hitch_plugin.py",

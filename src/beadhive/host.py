@@ -71,6 +71,19 @@ def path() -> Path:
     return config.home() / "host.yaml"
 
 
+def frame_binding() -> tuple[bool, bool]:
+    """Return HOST presence and its durable frame enrollment marker; never use a fleet cache."""
+    try:
+        settings = config.load_host()
+    except FileNotFoundError:
+        return False, False
+    return True, bool(settings.get("host", {}).get("frame_id"))
+
+
+def frame_enrolled() -> bool:
+    return frame_binding()[1]
+
+
 def _default_label() -> str:
     return socket.gethostname()
 

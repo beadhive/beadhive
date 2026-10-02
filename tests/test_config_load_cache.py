@@ -37,7 +37,7 @@ def test_repeated_load_parses_each_unchanged_layer_once(tmp_path, monkeypatch):
 
     monkeypatch.setattr(config_store, "load_path", counted)
     assert config.load() == config.load()
-    assert calls == [config.fleet_path(), config.config_path()]
+    assert calls == [config.config_path(), config.fleet_path()]
 
 
 def test_concurrent_first_legacy_load_parses_each_layer_once(tmp_path, monkeypatch):
@@ -66,7 +66,7 @@ def test_concurrent_first_legacy_load_parses_each_layer_once(tmp_path, monkeypat
         worker.join(timeout=5)
         assert not worker.is_alive()
     assert values[0] == values[1]
-    assert calls == [config.fleet_path(), config.config_path()]
+    assert calls == [config.config_path(), config.fleet_path()]
 
 
 def test_caller_mutation_cannot_corrupt_the_cached_view(tmp_path, monkeypatch):

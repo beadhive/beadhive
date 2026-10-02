@@ -606,7 +606,7 @@ def _managed_repos_base() -> list:
     fleet.yaml). Keyed dedup so an identical host-side copy never shadows/duplicates the fleet
     entry it repeats."""
     host_list = list(config.load_host().get("managed_repos", []) or [])
-    if not config.fleet_path().is_file():
+    if not (config.fleet_sql_selected() or config.fleet_path().is_file()):
         return host_list
     fleet_list = list(config.load_fleet().get("managed_repos", []) or [])
     seen = {_key(e) for e in fleet_list}
@@ -614,28 +614,13 @@ def _managed_repos_base() -> list:
 
 
 def _save_managed_repos(kept) -> None:
-    """Persist the updated managed_repos list — and ONLY managed_repos; every other section
-    either config.yaml carries is left untouched (register/unregister own this one key, not a
-    general config sync).
+    """Persist only managed_repos in the selected fleet or legacy HOST store.
 
-    Host-only steady state (no fleet.yaml yet — this host has never run `hq init`/`hq clone`):
-    persist to host `config.yaml` exactly as before this bead — there is no fleet base to
-    diverge from, so nothing to route or migrate (`config.load()` tolerates fleet-classified
-    keys living in host for exactly this reason). Register/unregister must not themselves
-    create a fleet.yaml — only `hq init`/`hq clone` stand up the HQ working copy.
-
-    Once this host IS fleet-managed (a real fleet.yaml already exists): managed_repos is
-    FLEET-scoped truth (config_partition.py — bh-e0y8.3), identical across every host by
-    construction, so it is written through `config.save_fleet()` into the HQ working copy's
-    fleet.yaml (`config.fleet_path()`), never `config.save()`'s host config.yaml. That write is
-    LOCAL-ONLY to the HQ working copy (save_fleet's own contract) — committing/pushing it so
-    other hosts see the update is `bh hq push`'s job, NOT yet specced in this epic (bh-e0y8.11);
-    a caller that needs the change to reach the fleet must commit + push the HQ store itself for
-    now. Also drops any stale `managed_repos` key straight out of the host config, if one is
-    still there (see `_managed_repos_base`) — the actual bug this fixes: leaving a
-    FLEET-classified key sitting in host is exactly what makes the very next `config.load()`
-    raise ConfigError once a real fleet.yaml exists (bh-e0y8.11)."""
-    if not config.fleet_path().is_file():
+    A selected SQL fleet publishes against the original committed revision; a Git fleet
+    writes its local HQ copy. An unbound legacy host keeps its HOST-only behavior. Remove
+    a stale HOST managed_repos key only after the selected fleet write succeeds.
+    """
+    if not (config.fleet_sql_selected() or config.fleet_path().is_file()):
         host_cfg = config.load_host()
         host_cfg["managed_repos"] = CommentedSeq(kept)
         config.save(host_cfg)
@@ -659,10 +644,16 @@ def register(group, org, repo, prefix, kind, upstream="", furnish="", contributi
     # Fleet/managed_repos membership is the director's partition (§2.1); controller is read-only.
     guard.guard_hq_registry_write(guard.HQ_FLEET, resolve_actor())
     key = f"{group}/{org}/{repo}"
-    kept = [e for e in _managed_repos_base() if _key(e) != key]
-    kept.append(_entry(group, org, repo, prefix, kind, upstream, furnish, contribution))
-    kept.sort(key=lambda e: (str(e["org"]), str(e["repo"])))
-    _save_managed_repos(kept)
+    scope = (
+        config.SCOPE_FLEET
+        if config.fleet_sql_selected() or config.fleet_path().is_file()
+        else config.SCOPE_HOST
+    )
+    with config._write_transaction(scope):
+        kept = [e for e in _managed_repos_base() if _key(e) != key]
+        kept.append(_entry(group, org, repo, prefix, kind, upstream, furnish, contribution))
+        kept.sort(key=lambda e: (str(e["org"]), str(e["repo"])))
+        _save_managed_repos(kept)
     from . import metadata  # lazy: metadata imports registry (avoid an import cycle)
 
     # host_cfg (not the merged config.load()): metadata's own cache section is host-scoped
@@ -682,8 +673,14 @@ def unregister(group, org, repo):
     # Fleet/managed_repos membership is the director's partition (§2.1); controller is read-only.
     guard.guard_hq_registry_write(guard.HQ_FLEET, resolve_actor())
     key = f"{group}/{org}/{repo}"
-    kept = [e for e in _managed_repos_base() if _key(e) != key]
-    _save_managed_repos(kept)
+    scope = (
+        config.SCOPE_FLEET
+        if config.fleet_sql_selected() or config.fleet_path().is_file()
+        else config.SCOPE_HOST
+    )
+    with config._write_transaction(scope):
+        kept = [e for e in _managed_repos_base() if _key(e) != key]
+        _save_managed_repos(kept)
     from . import metadata  # lazy: metadata imports registry (avoid an import cycle)
 
     metadata.invalidate(config.load_host(), key, reload=False)  # repo is gone; drop the entry
