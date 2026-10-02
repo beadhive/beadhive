@@ -392,11 +392,30 @@ def test_sql_config_only_legacy_host_keeps_legacy_lease_policy(
     monkeypatch, tmp_path, sql_config, primary, expected
 ):
     monkeypatch.setattr(host, "host_id", lambda: "legacy-id")
-    monkeypatch.setattr(hosts, "load", lambda *a, **kw: (_ for _ in ()).throw(FileNotFoundError()))
+
+    def no_git_roster(*_args, **_kwargs):
+        pytest.fail("SQL-selected roster fell back to the Git manifest")
+
+    monkeypatch.setattr(hosts, "load", no_git_roster)
+
+    class ConfigReaderOnly:
+        config_backend = "sql"
+
+        @staticmethod
+        def verified_manifest_absence(error):
+            return isinstance(error, hq_control_plane.CommittedManifestAbsent)
+
+        def load_host_manifest(self, host_id):
+            assert host_id == "legacy-id"
+            raise hq_control_plane.CommittedManifestAbsent(host_id)
+
+        def __getattr__(self, name):
+            pytest.fail(f"config-only legacy host used SQL runtime authority: {name}")
+
     monkeypatch.setattr(
         hq_control_plane,
         "control_plane",
-        lambda *a, **kw: pytest.fail("config-only legacy host enrolled into SQL runtime"),
+        lambda *a, **kw: ConfigReaderOnly(),
     )
     monkeypatch.setattr(
         guard,

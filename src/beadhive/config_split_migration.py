@@ -145,7 +145,10 @@ def split_flat_config(*, dry_run: bool = False) -> None:
         return
 
     shutil.copy2(config.config_path(), _backup_path())
-    config.save_fleet(merged_fleet)
+    with config._write_transaction(config.SCOPE_FLEET):
+        # Rebuild from the same revision that publication will compare against.
+        merged_fleet = config._deep_merge(config.load_fleet(), fleet_portion)
+        config.save_fleet(merged_fleet)
     config.save(host_portion)
     typer.echo(f"✓ backed up original to {_backup_path()}")
     typer.echo(f"✓ wrote fleet keys to {config.fleet_path()}")

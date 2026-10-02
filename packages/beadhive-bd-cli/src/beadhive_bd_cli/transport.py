@@ -55,6 +55,8 @@ class BdTransport(Protocol):
         actor: str = "",
         capture: bool = False,
         text_input: str | None = None,
+        *,
+        timeout: float | None = None,
     ) -> BdResult: ...
 
     def json(self, args: list[str], cwd: Any, *, strict: bool = False) -> Any: ...
@@ -83,6 +85,8 @@ class SubprocessBd:
         actor: str = "",
         capture: bool = False,
         text_input: str | None = None,
+        *,
+        timeout: float | None = None,
     ) -> subprocess.CompletedProcess[str]:
         argv = [self._binary, "-C", str(Path(cwd)), *(["--actor", actor] if actor else []), *args]
         return subprocess.run(
@@ -90,7 +94,7 @@ class SubprocessBd:
             capture_output=capture,
             text=True,
             input=text_input,
-            timeout=self._timeout,
+            timeout=self._timeout if timeout is None else timeout,
             env=self._env,
             check=False,
         )

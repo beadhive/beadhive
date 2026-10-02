@@ -17,7 +17,6 @@ from . import (
     host,
     host_adopt,
     host_lease,
-    hosts,
     identity,
     jsonout,
     operator_actions,
@@ -29,6 +28,7 @@ from . import (
     work_group,
     worktree,
 )
+from . import fleet_roster as hosts
 from .agent_launch_profile import AgentLaunchReceipt
 from .herdr_launch_profile import (
     HerdrAgentLaunchProfile,

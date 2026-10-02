@@ -71,6 +71,7 @@ from __future__ import annotations
 
 import shutil
 import stat
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -85,11 +86,11 @@ from . import (
     hive_sync,
     host,
     host_cli,
-    hosts,
     hq,
     registry,
     store_locator,
 )
+from . import fleet_roster as hosts
 from .bd import err_line
 from .hive import _install_plugin_claude, _is_plugin_installed
 from .identity import workspace_root
@@ -305,48 +306,63 @@ def _link_workspace_config(sources: list[Path]) -> Path | None:
 
 
 def _step_git_workspace_update(*, dry_run: bool) -> StepResult:
-    cfg = _cfg_or_none()
-    if cfg is None:
-        return StepResult(
-            "git workspace update", "skipped", "no config.yaml yet — see config init above"
-        )
-    sources = gitworkspace.config_paths(cfg)
-    if not sources:
-        return StepResult(
-            "git workspace update",
-            "skipped",
-            f"no workspace*.toml under {workspace_root()}, {config.hq_dir()} or "
-            "git_workspace.path — place one, or `bh hq clone` a fleet that carries one",
-        )
-    if dry_run:
-        return StepResult("git workspace update", "would", "would run `git workspace update`")
+    from contextlib import nullcontext
 
-    linked = _link_workspace_config(sources)
+    sql = config.fleet_sql_selected()
+    transaction = config._write_transaction(config.SCOPE_FLEET) if sql else nullcontext()
+    with transaction:
+        cfg = _cfg_or_none()
+        if cfg is None:
+            return StepResult(
+                "git workspace update", "skipped", "no config.yaml yet — see config init above"
+            )
+        sources = gitworkspace.workspace_sources(cfg)
+        if not sources:
+            return StepResult(
+                "git workspace update",
+                "skipped",
+                f"no workspace*.toml under {workspace_root()}, {config.hq_dir()} or "
+                "git_workspace.path — place one, or `bh hq clone` a fleet that carries one",
+            )
+        if dry_run:
+            return StepResult("git workspace update", "would", "would run `git workspace update`")
 
-    # `github_token=True` and no `env=`: the child environment is CONSTRUCTED by `run` itself
-    # (bh-9qor). git-workspace resolves its root from $GIT_WORKSPACE and queries every provider's
-    # GraphQL API with the token its `env_var` names — on beadhive-factory neither was set in the
-    # invoking shell, and bh knew both. Nothing is written to disk: the token is derived fresh
-    # from `gh auth token` into this one child's environment.
-    res = run(
-        ["git", "workspace", "update"],
-        check=False,
-        capture=True,
-        timeout=GIT_WORKSPACE_TIMEOUT,
-        github_token=True,
-    )
-    if res.returncode != 0:
-        return StepResult("git workspace update", "failed", err_line(res))
-    detail = "repos cloned/updated from providers"
-    if linked is not None:
-        detail += f"; linked {linked} -> {sources[0]}"
-    return StepResult("git workspace update", "done", detail)
+        root = Path(workspace_root())
+        lock = gitworkspace.workspace_projection_lock(root) if sql else nullcontext()
+        with lock:
+            if sql:
+                snapshot = config.fleet_snapshot()
+                if time.time() >= snapshot.valid_until:
+                    raise ValueError("committed workspace configuration validity expired")
+                materialized = gitworkspace.materialize_workspace_sources(cfg, root)
+                linked = None
+            else:
+                linked = _link_workspace_config(gitworkspace.config_paths(cfg))
+                materialized = []
+            # The child environment is constructed by run, including provider token references.
+            res = run(
+                ["git", "workspace", "update"],
+                check=False,
+                capture=True,
+                timeout=GIT_WORKSPACE_TIMEOUT,
+                github_token=True,
+            )
+        if res.returncode != 0:
+            return StepResult("git workspace update", "failed", err_line(res))
+        detail = "repos cloned/updated from providers"
+        if linked is not None:
+            detail += f"; linked {linked} -> {sources[0].path}"
+        if materialized:
+            detail += f"; selected {len(materialized)} workspace source(s)"
+        return StepResult("git workspace update", "done", detail)
 
 
 # ---- step 3: hq.remote (resolve + confirm + persist) --------------------------
 
 
 def _step_hq_remote(*, auto: bool, dry_run: bool) -> StepResult:
+    if config.fleet_sql_selected():
+        return StepResult("hq.remote", "skipped", "central config binding selected")
     cfg = _cfg_or_none()
     if cfg is None:
         return StepResult("hq.remote", "skipped", "no config.yaml yet — see config init above")
@@ -391,6 +407,15 @@ def _reconcile_host_config_after_clone() -> list[str]:
 
 
 def _step_hq_clone(*, dry_run: bool) -> StepResult:
+    if config.fleet_sql_selected():
+        if dry_run:
+            return StepResult("hq clone", "would", "would verify central config attachment")
+        snapshot = config.fleet_snapshot()
+        dropped = config.reconcile_host_after_fleet()
+        detail = f"central config attached at revision {snapshot.commit_revision}"
+        if dropped:
+            detail += f"; reconciled host keys: {', '.join(dropped)}"
+        return StepResult("hq clone", "done", detail)
     hq_dir = config.hq_dir()
     if hq_dir.exists():
         dropped = [] if dry_run else _reconcile_host_config_after_clone()
@@ -458,11 +483,11 @@ def _step_host_init(*, role: str, force: bool, dry_run: bool) -> StepResult:
         return StepResult("host init", "skipped", "no host identity yet — see config init above")
 
     hq_dir = config.hq_dir()
-    if not hq_dir.exists():
+    if not config.fleet_sql_selected() and not hq_dir.exists():
         return StepResult("host init", "skipped", "no local HQ yet — see the hq clone step above")
 
     target = hosts.manifest_path(hq_dir, host_id)
-    exists = target.exists()
+    exists = hosts.exists(hq_dir, host_id)
     if exists and not force:
         return StepResult("host init", "skipped", f"already registered at {target}")
     if dry_run:
@@ -749,7 +774,7 @@ def status(cfg=None) -> list[Check]:
             cfg = config.load()
         except FileNotFoundError:
             cfg = None
-        except config.ConfigError as exc:
+        except (ValueError, OSError) as exc:
             cfg = None
             load_error = str(exc)
 
@@ -766,29 +791,37 @@ def status(cfg=None) -> list[Check]:
     )
 
     hq_dir = config.hq_dir()
+    sql = config.fleet_sql_selected()
     hq_present = (hq_dir / ".beads").is_dir()
-    checks.append(Check("HQ local store", hq_present, str(hq_dir)))
-
-    remote = ""
-    if hq_present:
-        got = run(
-            ["git", "-C", str(hq_dir), "remote", "get-url", "origin"],
-            check=False,
-            capture=True,
-            timeout=GIT_TIMEOUT,
-        )
-        remote = (got.stdout or "").strip() if got.returncode == 0 else ""
-    checks.append(Check("HQ remote wired", bool(remote), remote or "no `origin` remote"))
+    if sql:
+        try:
+            snapshot = config.fleet_snapshot()
+            attached, detail = True, f"committed revision {snapshot.commit_revision}"
+        except (ValueError, OSError) as exc:
+            attached, detail = False, str(exc)
+        checks.append(Check("HQ config attachment", attached, detail))
+    else:
+        checks.append(Check("HQ local store", hq_present, str(hq_dir)))
+        remote = ""
+        if hq_present:
+            got = run(
+                ["git", "-C", str(hq_dir), "remote", "get-url", "origin"],
+                check=False,
+                capture=True,
+                timeout=GIT_TIMEOUT,
+            )
+            remote = (got.stdout or "").strip() if got.returncode == 0 else ""
+        checks.append(Check("HQ remote wired", bool(remote), remote or "no `origin` remote"))
 
     manifest_ok = False
     manifest_detail = "no host identity — cannot resolve host_id"
-    if hq_present:
+    if sql or hq_present:
         try:
             hid = host.host_id()
         except FileNotFoundError:
             pass
         else:
-            manifest_ok = hosts.manifest_path(hq_dir, hid).exists()
+            manifest_ok = hosts.exists(hq_dir, hid)
             manifest_detail = (
                 f"hosts/{hid}.yaml"
                 if manifest_ok
@@ -872,10 +905,11 @@ def _step_verify() -> StepResult:
         return StepResult("verify", "failed", "; ".join(f"{c.label}: {c.detail}" for c in failed))
     hives = _present_hive_entries(_cfg_or_none())
     if not hives:
+        wiring = "central config" if config.fleet_sql_selected() else "HQ wiring"
         return StepResult(
             "verify",
             "done",
-            f"host identity, config, HQ wiring and roster registration verified — but this host "
+            f"host identity, config, {wiring} and roster registration verified — but this host "
             f"carries NO hive clones ({workspace_root()} is empty of them), so it can serve none "
             f"yet; `usable` is not claimed",
         )
