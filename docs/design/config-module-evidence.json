@@ -97,8 +97,12 @@
   },
   "selective_ci_graduation_claimed": false,
   "graduation_note": "No closure is promoted to authoritative CI selection solely from this extraction; just check remains the submission decision.",
-  "current_inventory_update": {
+  "previous_inventory_update": {
     "bead": "bh-38h7p",
     "reason": "Synchronize the measured Fleet U3 eligibility and selected lease port inventory, including missing-config recovery and malformed/unreadable bootstrap coverage (83 production config importers, 148 test importers, 282 patch points). Regenerated with scripts/config_dependency_ledger.py and scripts/config_module_metrics.py; historical extraction measurements and full-gate evidence are unchanged."
+  },
+  "current_inventory_update": {
+    "bead": "bh-v0k3i",
+    "reason": "Synchronize measured SQL HOST contracts and shared membership test locations. The live config-module mean complexity rose from the previously reviewed 3.441 to 3.731 as four typed SQL contract classes were added; the historical baseline remains 3.654 and the live maximum remains 25. The old mean-below-baseline assertion no longer describes the current source. Generated dependency and metric files are checked against source; historical extraction and full-gate receipts are unchanged."
   }
 }

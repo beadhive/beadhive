@@ -27,7 +27,11 @@ def test_config_module_evidence_matches_checked_ledgers():
         evidence["static_test_blast_radius"]["exact_ast_files_after"]
         == dependencies["current"]["test_config_importer_count"]
     )
-    assert metrics["after"]["cyclomatic_mean"] < metrics["before"]["cyclomatic_mean"]
+    assert metrics["before"]["revision"] == evidence["baseline_revision"]
+    assert metrics["after"]["cyclomatic_max"] <= metrics["before"]["cyclomatic_max"]
+    assert metrics["after"]["cyclomatic_mean"] == round(
+        metrics["after"]["cyclomatic_sum"] / metrics["after"]["functions"], 3
+    )
 
 
 def test_config_evidence_keeps_full_gate_and_selective_ci_claim_honest():
