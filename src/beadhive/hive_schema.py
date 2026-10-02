@@ -45,10 +45,11 @@ import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import ValidationError
 from ruamel.yaml import YAML
 
 from . import dolt_health
+from .hive_schema_contracts import HiveSchemaRecord
 
 _yaml = YAML()
 _yaml.indent(mapping=2, sequence=4, offset=2)
@@ -72,32 +73,6 @@ _yaml_lock = threading.Lock()
 DEFAULT_STALE_AFTER_SECONDS = 7 * 24 * 3600.0  # 7 days
 
 _TIMESTAMP_FMT = "%Y-%m-%dT%H:%M:%SZ"
-
-
-class HiveSchemaRecord(BaseModel):
-    """One hive's last-OBSERVED bd schema version — ``hives/<provider>/<org>/<repo>.yaml`` in
-    HQ. Every field here was measured, never guessed (see module docstring)."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    provider: str = Field(..., description="Repo-group path segment (registry.py's `provider`).")
-    org: str = Field(..., description="Org segment of the hive's identity triplet.")
-    repo: str = Field(..., description="Repo segment of the hive's identity triplet.")
-    schema_version: int = Field(
-        ..., description="The real bd/Dolt migration-count integer (e.g. 59), not a decoy field."
-    )
-    dolt_mode: str = Field(
-        "", description="bd's reported engine mode at observation time (embedded/server/...)."
-    )
-    observed_at: str = Field(
-        ..., description="UTC timestamp (see _TIMESTAMP_FMT) the probe actually ran."
-    )
-    observed_by_host: str = Field(
-        "", description="host_id (beadhive.host.host_id()) of the host that ran the probe."
-    )
-    observed_by_bd_version: str = Field(
-        "", description="`bd --version` output of the bd binary that produced this observation."
-    )
 
 
 def hives_dir(hq_dir: Path) -> Path:

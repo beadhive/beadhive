@@ -419,7 +419,7 @@ class RoutingTierConfig(_Section):
             )
         return value
 
-    @field_validator("floor", "ceiling", mode="before")
+    @field_validator("floor", "ceiling", mode="before", json_schema_input_type=str)
     @classmethod
     def _canonical_complexity_tier(cls, value):
         if isinstance(value, ComplexityTier):
@@ -1740,7 +1740,9 @@ class ManagedRepoEntry(_Section):
         "(upstream is a read rail; nothing yet consumes it as a push/PR target).",
     )
 
-    @field_validator("kind", "furnish", "contribution", mode="before")
+    @field_validator(
+        "kind", "furnish", "contribution", mode="before", json_schema_input_type=str | None
+    )
     @classmethod
     def _empty_string_is_unset(cls, v):
         """`kind: ""` means "unset" to every reader — they all do
