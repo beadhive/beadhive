@@ -223,11 +223,26 @@ def fleet_path() -> Path:
 
 
 def load_host():
-    return _config_store.load_path(_facade(), config_path())
+    return _config_store.load_host(_facade())
+
+
+def load_host_raw_for_repair():
+    """Opaque HOST source for explicit repair only; never a usable config view."""
+    return _config_store.load_host_raw_for_repair(_facade())
+
+
+def load_raw_for_diagnostics():
+    """Opaque source for explicit validation messages, never for runtime use."""
+    return _config_store.load_raw_for_diagnostics(_facade())
 
 
 def load_fleet():
     return _config_store.load_fleet(_facade())
+
+
+def load_fleet_raw_for_repair():
+    """Opaque local Git FLEET source for explicit repair only."""
+    return _config_store.load_fleet_raw_for_repair(_facade())
 
 
 def fleet_sql_selected() -> bool:

@@ -97,7 +97,7 @@ def test_one_config_set_operation_targets_only_one_hive(monkeypatch):
     second = {**_entry(False), "repo": "other", "prefix": "other"}
     fleet = {"managed_repos": [first, second]}
     saved = []
-    monkeypatch.setattr(config, "load_fleet", lambda: fleet)
+    monkeypatch.setattr(config, "load_fleet_raw_for_repair", lambda: fleet)
     monkeypatch.setattr(config, "save_fleet", lambda value: saved.append(value))
     monkeypatch.setattr(config, "_write_transaction", lambda _scope: nullcontext())
 

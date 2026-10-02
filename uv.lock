@@ -111,9 +111,11 @@ version = "0.20.2"
 source = { editable = "." }
 dependencies = [
     { name = "attrs" },
+    { name = "cryptography" },
     { name = "fastmcp" },
     { name = "httpx" },
     { name = "joserfc" },
+    { name = "jsonschema" },
     { name = "pydantic-settings" },
     { name = "pymysql" },
     { name = "ruamel-yaml" },
@@ -164,9 +166,11 @@ worktrees = [
 requires-dist = [
     { name = "attrs", specifier = ">=23" },
     { name = "beadhive-pants", marker = "extra == 'pants'", editable = "packages/beadhive-pants" },
+    { name = "cryptography", specifier = ">=45" },
     { name = "fastmcp", specifier = ">=3.4,<4" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "joserfc", specifier = ">=1.7,<2" },
+    { name = "jsonschema", specifier = ">=4" },
     { name = "opentelemetry-exporter-otlp", marker = "extra == 'otel'", specifier = ">=1.37,<2" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.37,<2" },
     { name = "pydantic-settings", specifier = ">=2.11" },

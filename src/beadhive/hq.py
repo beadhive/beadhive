@@ -1079,6 +1079,18 @@ def _wire_remote(
 
 
 def _commit_if_dirty(hq_dir: Path, message: str) -> None:
+    # The checkout is a Git mirror of HQ documents. Validate every canonical
+    # source before git add/commit, including unchanged files that a later push
+    # would otherwise carry as a usable fleet view.
+    from .hq_document_validation import validate_document
+
+    candidates = [hq_dir / "fleet.yaml", hq_dir / "allowed_signers"]
+    candidates.extend(sorted(hq_dir.glob("workspace*.toml")))
+    candidates.extend(sorted((hq_dir / "hosts").glob("*.yaml")))
+    candidates.extend(sorted((hq_dir / "hives").glob("*/*/*.yaml")))
+    for path in candidates:
+        if path.is_file():
+            validate_document(path.relative_to(hq_dir).as_posix(), path.read_text())
     status = _git(["status", "--porcelain"], hq_dir)
     if not (status.stdout or "").strip():
         return
@@ -1098,21 +1110,33 @@ def scaffold_layout(hq_dir: Path, cfg: dict) -> list[Path]:
     sane home: it is the operator's by construction and is already the durable central store
     every host clones. Scaffolded EMPTY (comment header only) — bh never invents a trusted key;
     each host enrolls its own public key here when it runs ``bh host identity``."""
-    written: list[Path] = []
+    from .hq_document_validation import validate_document
+
     fleet = hq_dir / "fleet.yaml"
-    if not fleet.exists():
-        fleet.write_text(_fleet_yaml(cfg))
-        written.append(fleet)
     workspace = hq_dir / "workspace.toml"
-    if not workspace.exists():
-        workspace.write_text(_workspace_toml(cfg))
-        written.append(workspace)
     signers = hq_dir / git_identity.ALLOWED_SIGNERS
+    fleet_content = _fleet_yaml(cfg) if not fleet.exists() else ""
+    workspace_content = _workspace_toml(cfg) if not workspace.exists() else ""
+    signers_content = (
+        "# Fleet-wide trusted SSH signers (bh). One `<principal> <key>` per line;\n"
+        "# hosts append their own PUBLIC key here as they are provisioned.\n"
+    )
+    # Preflight all scaffold candidates together, before creating any file.
+    if not fleet.exists():
+        validate_document("fleet.yaml", fleet_content)
+    if not workspace.exists():
+        validate_document("workspace.toml", workspace_content)
     if not signers.exists():
-        signers.write_text(
-            "# Fleet-wide trusted SSH signers (bh). One `<principal> <key>` per line;\n"
-            "# hosts append their own PUBLIC key here as they are provisioned.\n"
-        )
+        validate_document("allowed_signers", signers_content)
+    written: list[Path] = []
+    if not fleet.exists():
+        fleet.write_text(fleet_content)
+        written.append(fleet)
+    if not workspace.exists():
+        workspace.write_text(workspace_content)
+        written.append(workspace)
+    if not signers.exists():
+        signers.write_text(signers_content)
         written.append(signers)
     hosts = hq_dir / "hosts"
     hosts.mkdir(exist_ok=True)

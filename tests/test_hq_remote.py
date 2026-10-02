@@ -404,7 +404,7 @@ def test_wire_remote_unset_skips_without_error(world, monkeypatch, capsys):
 def test_scaffold_layout_writes_fleet_workspace_hosts_and_is_idempotent(tmp_path):
     hq_dir = tmp_path / "hq"
     hq_dir.mkdir()
-    cfg = {"schema_version": 3, "managed_repos": [{"provider": "github", "org": "a", "repo": "b"}]}
+    cfg = {"schema_version": 1, "managed_repos": [{"provider": "github", "org": "a", "repo": "b"}]}
 
     written = hq.scaffold_layout(hq_dir, cfg)
 
@@ -420,6 +420,27 @@ def test_scaffold_layout_writes_fleet_workspace_hosts_and_is_idempotent(tmp_path
     again = hq.scaffold_layout(hq_dir, cfg)
 
     assert again == []  # idempotent — nothing missing, nothing written
+
+
+def test_scaffold_rejects_invalid_declared_schema_before_any_file(tmp_path):
+    from beadhive.hq_document_validation import DocumentValidationError
+
+    hq_dir = tmp_path / "hq"
+    hq_dir.mkdir()
+    with pytest.raises(DocumentValidationError, match="schema_version"):
+        hq.scaffold_layout(hq_dir, {"schema_version": 2})
+    assert list(hq_dir.iterdir()) == []
+
+
+def test_hq_main_commit_rejects_invalid_document_before_git(tmp_path, monkeypatch):
+    from beadhive.hq_document_validation import DocumentValidationError
+
+    hq_dir = tmp_path / "hq"
+    hq_dir.mkdir()
+    (hq_dir / "fleet.yaml").write_text("schema_version: true\n")
+    monkeypatch.setattr(hq, "_git", lambda *a, **kw: pytest.fail("invalid HQ called git"))
+    with pytest.raises(DocumentValidationError, match="schema_version"):
+        hq._commit_if_dirty(hq_dir, "invalid fixture")
 
 
 # ---- backup levels — write + verify, in isolation ----------------------------

@@ -470,15 +470,48 @@ def test_committed_sql_config_publication_and_floor(tmp_path, monkeypatch):
                 ),
                 FleetConfigDocument(
                     "workspace.toml",
-                    "[[provider]]\ntype = 'github'\nname = 'first'\n"
+                    "[[provider]]\nprovider = 'github'\nname = 'first'\npath = 'github'\n"
                     "[provider.extension]\nkey = 'one'\n",
                 ),
                 FleetConfigDocument(
                     "workspace-extra.toml",
-                    "[[provider]]\ntype = 'gitlab'\nname = 'second'\n"
+                    "[[provider]]\nprovider = 'gitlab'\nname = 'second'\npath = 'gitlab'\n"
                     "[provider.extension]\nkey = 'two'\n",
                 ),
             )
+            invalid_candidate = (FleetConfigDocument("fleet.yaml", "schema_version: true\n"),)
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    store,
+                    "_open",
+                    lambda *args, **kwargs: pytest.fail("invalid candidate opened publisher SQL"),
+                )
+                with pytest.raises(SqlConfigError, match="schema_version"):
+                    store.publish_snapshot(invalid_candidate, expected_revision=initial)
+            assert store.load_snapshot().commit_revision == initial
+            for bad_pin in (
+                {"backend_identity": "wrong-backend"},
+                {"generation": "wrong-generation"},
+            ):
+                pinned = SqlFleetConfigRevisionStore(
+                    {
+                        **settings,
+                        **bad_pin,
+                        "floor_path": str(tmp_path / (next(iter(bad_pin)) + "-floor.json")),
+                    },
+                    broker=_Broker(),
+                )
+                with pytest.raises(SqlConfigError, match="trust/generation pin"):
+                    pinned.publish_snapshot(updated, expected_revision=initial)
+                root = pymysql.connect(
+                    host="127.0.0.1", port=port, user="root", database="beadhive_hq_config"
+                )
+                with root.cursor() as cursor:
+                    cursor.execute("SELECT DOLT_HASHOF('HEAD')")
+                    assert cursor.fetchone()[0] == initial
+                    cursor.execute("SELECT * FROM dolt_status")
+                    assert cursor.fetchall() == ()
+                root.close()
             published = store.publish_snapshot(updated, expected_revision=initial)
             assert published.documents == updated
             assert published.commit_revision != initial
@@ -537,7 +570,8 @@ def test_committed_sql_config_publication_and_floor(tmp_path, monkeypatch):
                 }
                 candidate = (
                     FleetConfigDocument(
-                        "fleet.yaml", f"hq:\n  mode: dolt-server\n  race_winner: {index}\n"
+                        "fleet.yaml",
+                        f"hq:\n  mode: dolt-server\nrelease:\n  fix_churn_budget: {index}\n",
                     ),
                 )
                 publisher = SqlFleetConfigRevisionStore(race_settings, broker=_Broker())
@@ -612,6 +646,65 @@ def test_committed_sql_config_publication_and_floor(tmp_path, monkeypatch):
             )
             with pytest.raises(SqlConfigError, match="rollback"):
                 SqlFleetConfigRevisionStore(settings, broker=_Broker()).load_snapshot()
+            with pytest.raises(SqlConfigError, match="rollback"):
+                SqlFleetConfigRevisionStore(settings, broker=_Broker()).publish_snapshot(
+                    original, expected_revision=initial
+                )
+            # A privileged direct SQL write can create a correctly hashed,
+            # witnessed commit whose declared settings schema is invalid.
+            # Ordinary immutable reads deny it; only the publisher's explicit
+            # raw view and original-parent repair can recover it.
+            invalid = (FleetConfigDocument("fleet.yaml", "schema_version: true\n"),)
+            invalid_digest = _digest(invalid)
+            invalid_content = invalid[0].content.encode().hex()
+            invalid_hash = hashlib.sha256(invalid[0].content.encode()).hexdigest()
+            repair_id = "00000000-0000-0000-0000-000000000002"
+            _cli(
+                tmp_path,
+                port,
+                "USE beadhive_hq_config; "
+                "UPDATE hq_config_meta SET publication_sequence=2, "
+                f"publication_id='{repair_id}',documents_sha256='{invalid_digest}'; "
+                "UPDATE hq_config_documents SET "
+                f"content=UNHEX('{invalid_content}'),content_sha256='{invalid_hash}' "
+                "WHERE path='fleet.yaml'; "
+                "INSERT INTO hq_config_publications VALUES "
+                f"('{repair_id}',2,'fixture-generation','{initial}','{invalid_digest}',1); "
+                "CALL DOLT_ADD('hq_config_meta','hq_config_documents','hq_config_publications'); "
+                "CALL DOLT_COMMIT('-m','privileged invalid schema fixture',"
+                "'--author','Fixture <fixture@example.invalid>')",
+            )
+            repair_settings = {
+                **settings,
+                "floor_path": str(tmp_path / "repair-floor.json"),
+                "initial_revision": initial,
+                "minimum_sequence": 1,
+            }
+            repair_store = SqlFleetConfigRevisionStore(repair_settings, broker=_Broker())
+            with pytest.raises(SqlConfigError, match="schema_version"):
+                repair_store.load_snapshot()
+            root = pymysql.connect(
+                host="127.0.0.1", port=port, user="root", database="beadhive_hq_config"
+            )
+            try:
+                with root.cursor() as cursor:
+                    cursor.execute("START TRANSACTION")
+                    cursor.execute("SELECT DOLT_HASHOF('HEAD')")
+                    captured_head = cursor.fetchone()[0]
+                    with pytest.raises(SqlConfigError, match="schema_version"):
+                        repair_store._snapshot(cursor, captured_head)
+                root.rollback()
+            finally:
+                root.close()
+            raw = repair_store.inspect_raw_for_repair()
+            assert raw.documents == invalid
+            with pytest.raises(SqlConfigError, match="schema_version"):
+                repair_store.publish_snapshot(original, expected_revision=raw.expected_revision)
+            repaired = repair_store.repair_snapshot(
+                original, expected_revision=raw.expected_revision
+            )
+            assert repaired.documents == original
+            assert repair_store.load_snapshot().commit_revision == repaired.commit_revision
             _negative_server_certificates(tmp_path)
             for certificate in ("wrong-name", "expired"):
                 server.terminate()

@@ -78,7 +78,7 @@ def test_atomic_save_failure_preserves_original_bytes(monkeypatch):
 
 
 def test_atomic_save_is_parseable_under_thread_races():
-    payloads = [{"writer": n, "nested": {"value": str(n) * 100}} for n in range(12)]
+    payloads = [{"beads": {"writer": n, "nested": {"value": str(n) * 100}}} for n in range(12)]
     with ThreadPoolExecutor(max_workers=6) as pool:
         list(pool.map(config.save, payloads))
 
@@ -86,16 +86,16 @@ def test_atomic_save_is_parseable_under_thread_races():
 
 
 def test_dotted_edits_are_serialized_without_lost_updates():
-    config.save({"custom": {}})
+    config.save({"beads": {"custom": {}}})
 
     def write(index):
-        return config.set_value(f"custom.key_{index}", str(index))
+        return config.set_value(f"beads.custom.key_{index}", str(index))
 
     with ThreadPoolExecutor(max_workers=6) as pool:
         results = list(pool.map(write, range(12)))
 
     assert all(result["ok"] for result in results)
-    assert config.load_host()["custom"] == {f"key_{index}": index for index in range(12)}
+    assert config.load_host()["beads"]["custom"] == {f"key_{index}": index for index in range(12)}
 
 
 def test_edit_facade_calls_named_boundary(monkeypatch):

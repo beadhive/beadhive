@@ -13,7 +13,7 @@ dimensions:
     description: Intra-project functional area. Open set.
   phase:
     description: Project phase / milestone.
-    values: [0, 1, 2, 3]
+    values: ["0", "1", "2", "3"]
   size:
     description: Effort estimate.
     values: [xs, s, m, l, xl]

@@ -1192,8 +1192,13 @@ def test_committed_fleet_snapshot_cas_and_document_order(backend):
     store = plane.config_store(operator_key=str(b["operator"]))
     documents = (
         FleetConfigDocument("fleet.yaml", "schema_version: 1\nmanaged_repos: []\n"),
-        FleetConfigDocument("workspace-prototypes.toml", '[[provider]]\npath="prototypes"\n'),
-        FleetConfigDocument("workspace.toml", '[[provider]]\npath="contrib"\n'),
+        FleetConfigDocument(
+            "workspace-prototypes.toml",
+            '[[provider]]\nprovider="github"\nname="prototypes"\npath="prototypes"\n',
+        ),
+        FleetConfigDocument(
+            "workspace.toml", '[[provider]]\nprovider="github"\nname="contrib"\npath="contrib"\n'
+        ),
         FleetConfigDocument("allowed_signers", "# public policy\n"),
     )
     initial_main = git(b["remote"], "rev-parse", "main")
@@ -1213,6 +1218,62 @@ def test_committed_fleet_snapshot_cas_and_document_order(backend):
         store.load_snapshot(revision=first.commit_revision)
     assert git(b["remote"], "rev-parse", "main") == initial_main
     assert store.load_snapshot().commit_revision == second.commit_revision
+
+
+def test_config_schema_denies_pre_hash_and_privileged_invalid_git_carrier(backend):
+    from beadhive import gitref
+    from beadhive.hq_fleet_config import FleetConfigError
+    from beadhive.modules.config.domain.ports import FleetConfigDocument
+
+    b = backend
+    store = b["plane"].config_store(operator_key=str(b["operator"]))
+    valid = (FleetConfigDocument("fleet.yaml", "schema_version: 1\n"),)
+    first = store.publish_snapshot(valid, expected_revision="")
+    invalid = (FleetConfigDocument("fleet.yaml", "schema_version: true\n"),)
+    calls = []
+    original_git = store.git
+
+    def trace_git(*args, **kwargs):
+        calls.append(args)
+        return original_git(*args, **kwargs)
+
+    store.git = trace_git
+    with pytest.raises(FleetConfigError, match="schema_version"):
+        store.publish_snapshot(invalid, expected_revision=first.commit_revision)
+    assert calls == []  # rejected before hash-object, commit-tree, or remote access
+    store.git = original_git
+    assert store.load_snapshot().commit_revision == first.commit_revision
+
+    # Simulate a privileged out-of-band signed carrier. Signature, generation,
+    # revision witness, and bytes are authentic; the declared settings schema is not.
+    state = json.loads(git(b["op_repo"], "show", f"{first.commit_revision}:config.json"))
+    state["revision"] += 1
+    state["documents"] = [asdict(invalid[0])]
+    encoded = gitref.encode(state)
+    blob = git(b["op_repo"], "hash-object", "-w", "--stdin", data=encoded)
+    tree = git(b["op_repo"], "mktree", data=f"100644 blob {blob}\tconfig.json\n")
+    bad_head = git(
+        b["op_repo"],
+        "-c",
+        "gpg.format=ssh",
+        "-c",
+        f"user.signingkey={b['operator']}",
+        "commit-tree",
+        "-S",
+        tree,
+        "-p",
+        first.commit_revision,
+        data="Privileged invalid schema fixture\n",
+    )
+    git(b["remote"], "fetch", str(b["op_repo"]), bad_head)
+    git(b["remote"], "update-ref", guard.CONFIG_HEAD, bad_head, first.commit_revision)
+    git(b["remote"], "update-ref", f"{guard.CONFIG_WITNESS}{state['revision']:020d}", bad_head)
+    with pytest.raises(FleetConfigError, match="schema_version"):
+        store.load_snapshot()
+    raw = store.inspect_raw_for_repair()
+    assert raw.expected_revision == bad_head and raw.documents == invalid
+    repaired = store.publish_snapshot(valid, expected_revision=raw.expected_revision)
+    assert repaired.documents == valid
 
 
 def test_fleet_config_rollback_expiry_and_protected_publication(backend):
@@ -1674,8 +1735,8 @@ print(plane.publish_hive_lease(sys.argv[3],lease,expected=sys.argv[4],operation=
     assert result.returncode != 0 and "pre-receive hook declined" in result.stderr
     assert git(b["remote"], "rev-parse", "refs/bh/lease/bh") == incumbent["bh"]
     # Signed real receipt aging, rather than replacing evictable() or server clocks.
-    b["accept"](4, state_seen="active", leaseDurationSeconds=6, intervalSeconds=1)
-    time.sleep(7)
+    b["accept"](4, state_seen="active", leaseDurationSeconds=30, intervalSeconds=1)
+    time.sleep(31)
     for prefix in ("stale", "quarantine", "retire"):
         if prefix == "quarantine":
             apply(b, "quarantine")

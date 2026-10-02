@@ -95,7 +95,7 @@ def test_legacy_migration_patch_points_still_drive_load_save_and_diagnostics(mon
     source = {"otel": {"rig": "legacy"}}
     saved = []
     warnings = []
-    monkeypatch.setattr(config, "load_host", lambda: source)
+    monkeypatch.setattr(config, "load_host_raw_for_repair", lambda: source)
     monkeypatch.setattr(config, "save", saved.append)
     monkeypatch.setattr(
         config,
@@ -118,7 +118,7 @@ def test_legacy_migration_guard_refuses_raw_invalid_versions_before_save(monkeyp
         "otel": {"rig": "migration-secret-canary"},
     }
     saved = []
-    monkeypatch.setattr(config, "load_host", lambda: source)
+    monkeypatch.setattr(config, "load_host_raw_for_repair", lambda: source)
     monkeypatch.setattr(config, "save", saved.append)
 
     with pytest.raises(config.ConfigError) as captured:

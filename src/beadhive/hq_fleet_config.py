@@ -1,7 +1,8 @@
 """Committed Git fleet documents behind the configuration revision port.
 
-This adapter does not resolve settings, import a working checkout, mutate Beads,
-or infer frame admission. Configuration consumers own semantic/secret validation.
+This adapter validates ordered raw documents with the pure shared contract before
+publication and on immutable read. It does not load a working checkout, mutate
+Beads, or infer frame admission.
 """
 
 from __future__ import annotations
@@ -11,7 +12,16 @@ from dataclasses import asdict
 
 from . import gitref
 from . import hq_authority_guard as guard
-from .modules.config.domain.ports import FleetConfigDocument, FleetConfigSnapshot
+from .hq_document_validation import (
+    DocumentValidationError,
+    validate_documents,
+    validate_repair_carrier,
+)
+from .modules.config.domain.ports import (
+    FleetConfigDocument,
+    FleetConfigSnapshot,
+    RawFleetConfigRevision,
+)
 
 
 class FleetConfigError(ValueError):
@@ -77,6 +87,11 @@ class GitFleetConfigRevisionStore:
         return sha, state, policy
 
     def _snapshot(self, sha, state, policy):
+        documents = tuple(FleetConfigDocument(**doc) for doc in state["documents"])
+        try:
+            validate_documents(documents)
+        except DocumentValidationError as exc:
+            raise FleetConfigError(str(exc)) from None
         identity = hashlib.sha256(
             (policy["server_root"] + "\0" + policy["client"]["policy_digest"]).encode()
         ).hexdigest()
@@ -86,7 +101,7 @@ class GitFleetConfigRevisionStore:
             generation=state["generation"],
             fetched_at=self.plane.clock(),
             valid_until=state["expires_at"],
-            documents=tuple(FleetConfigDocument(**doc) for doc in state["documents"]),
+            documents=documents,
         )
 
     def load_snapshot(self, *, revision=None):
@@ -98,7 +113,25 @@ class GitFleetConfigRevisionStore:
             raise FleetConfigError("requested configuration revision is no longer current")
         return self._snapshot(sha, state, policy)
 
+    def inspect_raw_for_repair(self):
+        """Expose the signed original carrier only to the operator repair capability."""
+        if not self.operator_key:
+            raise FleetConfigError("configuration repair requires operator custody")
+        sha, state, policy = self._read(allow_expired=True)
+        if not sha or policy["client"]["role"] != "operator":
+            raise FleetConfigError("configuration repair requires operator custody")
+        documents = tuple(FleetConfigDocument(**doc) for doc in state["documents"])
+        try:
+            validate_repair_carrier(documents)
+        except DocumentValidationError as exc:
+            raise FleetConfigError(str(exc)) from None
+        return RawFleetConfigRevision(sha, documents)
+
     def publish_snapshot(self, documents, *, expected_revision):
+        try:
+            validate_documents(documents)
+        except DocumentValidationError as exc:
+            raise FleetConfigError(str(exc)) from None
         if not self.operator_key or not 1 <= self.duration <= 86400:
             raise FleetConfigError(
                 "configuration publication requires operator key/bounded validity"
