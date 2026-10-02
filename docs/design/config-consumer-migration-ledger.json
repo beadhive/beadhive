@@ -16,7 +16,7 @@
     "successor_contracts": "beadhive.modules.config.contracts"
   },
   "current": {
-    "config_patch_point_count": 280,
+    "config_patch_point_count": 282,
     "config_patch_points": [
       {
         "facade_target": "beadhive.config.save_fleet",
@@ -530,51 +530,65 @@
         "target": "beadhive.config.load_host"
       },
       {
-        "facade_target": "beadhive.config.hq_dir",
-        "kind": "direct-facade",
-        "line": 158,
-        "path": "tests/test_frame_eligibility.py",
-        "target": "beadhive.config.hq_dir"
-      },
-      {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 159,
+        "line": 164,
         "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.load_host"
       },
       {
-        "facade_target": "beadhive.config.load",
-        "kind": "direct-facade",
-        "line": 162,
-        "path": "tests/test_frame_eligibility.py",
-        "target": "beadhive.config.load"
-      },
-      {
-        "facade_target": "beadhive.config.load",
-        "kind": "direct-facade",
-        "line": 254,
-        "path": "tests/test_frame_eligibility.py",
-        "target": "beadhive.config.load"
-      },
-      {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 255,
+        "line": 181,
         "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.hq_dir",
         "kind": "direct-facade",
-        "line": 256,
+        "line": 191,
         "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.hq_dir"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 350,
+        "line": 192,
+        "path": "tests/test_frame_eligibility.py",
+        "target": "beadhive.config.load_host"
+      },
+      {
+        "facade_target": "beadhive.config.load",
+        "kind": "direct-facade",
+        "line": 195,
+        "path": "tests/test_frame_eligibility.py",
+        "target": "beadhive.config.load"
+      },
+      {
+        "facade_target": "beadhive.config.load",
+        "kind": "direct-facade",
+        "line": 287,
+        "path": "tests/test_frame_eligibility.py",
+        "target": "beadhive.config.load"
+      },
+      {
+        "facade_target": "beadhive.config.load_host",
+        "kind": "direct-facade",
+        "line": 288,
+        "path": "tests/test_frame_eligibility.py",
+        "target": "beadhive.config.load_host"
+      },
+      {
+        "facade_target": "beadhive.config.hq_dir",
+        "kind": "direct-facade",
+        "line": 289,
+        "path": "tests/test_frame_eligibility.py",
+        "target": "beadhive.config.hq_dir"
+      },
+      {
+        "facade_target": "beadhive.config.load_host",
+        "kind": "direct-facade",
+        "line": 383,
         "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.load_host"
       },

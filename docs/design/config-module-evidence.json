@@ -99,6 +99,6 @@
   "graduation_note": "No closure is promoted to authoritative CI selection solely from this extraction; just check remains the submission decision.",
   "current_inventory_update": {
     "bead": "bh-38h7p",
-    "reason": "Synchronize the measured Fleet U3 eligibility and selected lease port inventory (83 production config importers, 148 test importers, 280 patch points). Regenerated with scripts/config_dependency_ledger.py and scripts/config_module_metrics.py; historical extraction measurements and full-gate evidence are unchanged."
+    "reason": "Synchronize the measured Fleet U3 eligibility and selected lease port inventory, including missing-config recovery and malformed/unreadable bootstrap coverage (83 production config importers, 148 test importers, 282 patch points). Regenerated with scripts/config_dependency_ledger.py and scripts/config_module_metrics.py; historical extraction measurements and full-gate evidence are unchanged."
   }
 }
