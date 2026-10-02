@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -189,3 +190,19 @@ def test_sql_registration_v2_signs_beadyard_binding(tmp_path):
             {**signed, "request": {**request, "beadyard_id": str(uuid4())}},
             granted_public_key=public,
         )
+
+
+def test_sql_principal_preserves_existing_incarnation_across_beadyard_binding():
+    from beadhive.hq_sql_operator import SqlRuntimeOperator
+
+    legacy = ObservationAuthority(
+        "frame-1", "host-1", "vm-1", "SHA256:granted-key", 7, "fleet", "config"
+    )
+    original = SqlRuntimeOperator.principal_for(legacy)
+    assert original.startswith("frame_")
+    assert SqlRuntimeOperator.principal_for(
+        replace(legacy, beadyard_id=str(uuid4()))
+    ) == original
+    assert SqlRuntimeOperator.principal_for(
+        replace(legacy, instance_ref="another-incarnation")
+    ) != original

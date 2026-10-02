@@ -58,10 +58,12 @@ class SqlRuntimeOperator:
 
     @staticmethod
     def principal_for(authority) -> str:
-        """Deterministic name for a separately preprovisioned frame SQL account."""
+        """Stable SQL account for one incarnation across its HQ-ID binding."""
         from .host_heartbeat_core import authority_payload
 
-        return "frame_" + hashlib.sha256(canonical(authority_payload(authority))).hexdigest()[:20]
+        identity = authority_payload(authority)
+        identity.pop("beadyard_id", None)
+        return "frame_" + hashlib.sha256(canonical(identity)).hexdigest()[:20]
 
     def _identity(self, cursor):
         binding = self.settings["authority_writer"]

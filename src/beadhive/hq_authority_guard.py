@@ -498,6 +498,33 @@ def enforce_hive_lease(old, new, reference, state, policy, head):
         or any(c["status"] == "fail" for c in beat["conformance"]["checks"])
     ):
         raise ValueError("hive lease requires fresh conformant protected receipt")
+    if authority_id is not None:
+        beat_id = beat.get("beadyard_id")
+        if operation == "adopt" and (
+            beat_id != authority_id
+            or (receipt["registration"] or {}).get("beadyard_id") != authority_id
+            or (receipt["registration"] or {}).get("release") != record["desired"]["release"]
+            or (receipt["registration"] or {}).get("capabilities")
+            != record["desired"]["caps"]
+        ):
+            raise ValueError("bound hive adoption requires fresh matching identity evidence")
+        if operation == "renew" and beat_id != authority_id:
+            # Only the first exact-incumbent renewal of an existing v1 lease may
+            # carry the still-fresh unbound receipt. Its remaining host/epoch,
+            # lease CAS, expiry and same-incarnation checks run below. Once the
+            # lease itself is v2, later renewals need a bound accepted beat.
+            first_legacy_bridge = (
+                beat_id is None
+                and previous is not None
+                and previous.get("domain") == "beadhive-frame-hive-lease-v1"
+                and isinstance(previous.get("authority"), dict)
+                and "beadyard_id" not in previous["authority"]
+                and previous["authority"]
+                == {key: value for key, value in envelope["authority"].items()
+                    if key != "beadyard_id"}
+            )
+            if not first_legacy_bridge:
+                raise ValueError("bound hive renewal requires matching identity evidence")
     caps = record["desired"]["caps"]
     if type(caps.get("max_sessions")) is not int or caps["max_sessions"] <= 0:
         raise ValueError("no frame intake capacity")
