@@ -13,6 +13,8 @@ satisfy a KVM requirement. Heartbeat freshness is strictly `age < TTL`; equality
 Unknown authority, changed protected revision, unavailable receipt, malformed requirements
 and unresolved hive catalog deny intake. Claims recheck immediately at their API/CLI write,
 and adoption rechecks after remote reads before the first fence mutation and lease CAS.
+Supported `bh bd` write passthrough also checks authenticated frame intake per target;
+read passthrough remains available. A raw `bd` invocation is outside this managed boundary.
 
 `hq.mode` selects configuration storage and does not enroll an executor. Existing non-frame
 hosts retain their cached legacy lease behavior through config-only cutover. A manifest with

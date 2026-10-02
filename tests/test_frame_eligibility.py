@@ -419,3 +419,38 @@ def test_dispatch_adapter_refuses_missing_legacy_primary_reader(monkeypatch):
     decision = policy.local_intake_decision("legacy", cfg={})
     assert not decision.allowed
     assert decision.reason == "legacy_primary_reader_available"
+
+
+@pytest.mark.parametrize("reason", ["quarantined", "authority_unavailable", "revoked"])
+def test_bd_passthrough_refuses_ineligible_frame_even_without_cached_lease(
+    reason, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(guard, "primary_state", lambda **kw: None)
+    calls = []
+
+    def refuse(**kwargs):
+        calls.append(kwargs)
+        raise policy.EligibilityError(f"frame ineligible: {reason}")
+
+    monkeypatch.setattr(policy, "require_intake", refuse)
+    assert reason in guard.bd_write_refusal(
+        ["update", "bh-test", "--claim"], tmp_path, cfg={"hq": {}}
+    )
+    assert calls == [{"cfg": {"hq": {}}, "hive_dir": tmp_path}]
+    calls.clear()
+    assert guard.bd_write_refusal(["show", "bh-test"], tmp_path, cfg={"hq": {}}) == ""
+    assert calls == []
+
+
+def test_bd_passthrough_uses_authenticated_signed_holder_without_cached_lease(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(guard, "primary_state", lambda **kw: None)
+    monkeypatch.setattr(policy, "require_intake", lambda **kw: policy.EligibilityDecision(()))
+    lease = SimpleNamespace(held_by=lambda identity: identity == "frame-holder")
+    monkeypatch.setattr(policy, "authoritative_primary", lambda **kw: ("bh", "frame-holder", lease))
+    assert guard.bd_write_refusal(["update", "bh-test", "--claim"], tmp_path, cfg={"hq": {}}) == ""
+    monkeypatch.setattr(policy, "authoritative_primary", lambda **kw: None)
+    assert "current_hive_lease_holder" in guard.bd_write_refusal(
+        ["update", "bh-test", "--claim"], tmp_path, cfg={"hq": {}}
+    )

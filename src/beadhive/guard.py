@@ -919,7 +919,19 @@ def bd_write_refusal(args, cwd, *, cfg=None) -> str:
     # bug this whole bead exists to close, reintroduced one layer down. Load it here instead:
     # only writes pay for it, and reads (the hot path) still skip it entirely.
     cfg = cfg if cfg else config.load()
-    state = primary_state(cfg=cfg, hive_dir=cwd)
+    from . import frame_eligibility
+
+    try:
+        frame_decision = frame_eligibility.require_intake(cfg=cfg, hive_dir=cwd)
+        state = (
+            frame_eligibility.authoritative_primary(cfg=cfg, hive_dir=cwd)
+            if frame_decision is not None
+            else primary_state(cfg=cfg, hive_dir=cwd)
+        )
+    except frame_eligibility.EligibilityError as exc:
+        return str(exc)
+    if state is None and frame_decision is not None:
+        return "frame ineligible: current_hive_lease_holder"
     if state is None:
         return ""  # multi-host model not in force here (see `primary_state`)
     prefix, this_host, lease = state
