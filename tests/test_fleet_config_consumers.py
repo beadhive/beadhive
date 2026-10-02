@@ -23,6 +23,8 @@ from beadhive import (
     host_lease,
     hq,
     hq_control_plane,
+    identity,
+    registry,
 )
 from beadhive import (
     fleet_roster as hosts,
@@ -63,6 +65,120 @@ def test_malformed_host_sql_selector_fails_closed(hq):
     api = SimpleNamespace(load_host=lambda: {"hq": hq}, ConfigError=config.ConfigError)
     with pytest.raises(config.ConfigError, match="invalid SQL HOST bootstrap"):
         config_store.sql_selected(api)
+
+
+@pytest.fixture
+def selected_sql_host(tmp_path, monkeypatch):
+    """Use the real HOST selector and a deterministic committed-store port."""
+    monkeypatch.setenv("BH_HOME", str(tmp_path))
+    bootstrap = {
+        "hq": {
+            "mode": "dolt-server",
+            "sql": {
+                "enabled": True,
+                "reader": {
+                    "host": "sql.example.test",
+                    "database": "beadhive_hq_config",
+                    "user": "reader",
+                    "server_name": "sql.example.test",
+                    "ca_file": str(tmp_path / "ca.pem"),
+                    "credential": {
+                        "config_path": str(tmp_path / "fnox.toml"),
+                        "profile": "test",
+                        "key": "SQL_READER",
+                    },
+                },
+                "floor_path": str(tmp_path / "floor.json"),
+                "backend_identity": "fixture",
+                "generation": "fixture-generation",
+                "initial_revision": "a" * 32,
+            },
+        }
+    }
+    host_path = tmp_path / "config.yaml"
+    host_path.write_text(json.dumps(bootstrap))
+    store = RevisionStore((FleetConfigDocument("fleet.yaml", "hq:\n  mode: dolt-server\n"),))
+    monkeypatch.setattr(
+        config_store,
+        "_sql_attachment",
+        lambda api, host=None: (store, store.load_snapshot()),
+    )
+    config_store.clear_load_cache()
+    return store, host_path, bootstrap
+
+
+def test_active_sql_edit_rejects_switch_to_git_before_any_write(selected_sql_host):
+    store, host_path, bootstrap = selected_sql_host
+    with config._write_transaction(config.SCOPE_FLEET):
+        fleet = config.load_fleet()
+        bootstrap["hq"]["mode"] = "git"
+        bootstrap["hq"]["sql"]["enabled"] = False
+        host_path.write_text(json.dumps(bootstrap))
+        with pytest.raises(config.ConfigError, match="changed during fleet transaction"):
+            config.save_fleet(fleet)
+        with pytest.raises(config.ConfigError, match="changed during fleet transaction"):
+            config.load_fleet()
+    assert store.revision == 1
+    assert not config.fleet_path().exists()
+
+
+@pytest.mark.parametrize("changed", ["reader", "generation"])
+def test_active_sql_edit_rejects_binding_change_before_publication(selected_sql_host, changed):
+    store, host_path, bootstrap = selected_sql_host
+    with config._write_transaction(config.SCOPE_FLEET):
+        fleet = config.load_fleet()
+        if changed == "reader":
+            bootstrap["hq"]["sql"]["reader"]["host"] = "other.example.test"
+            bootstrap["hq"]["sql"]["reader"]["server_name"] = "other.example.test"
+        else:
+            bootstrap["hq"]["sql"]["generation"] = "other-generation"
+        host_path.write_text(json.dumps(bootstrap))
+        with pytest.raises(config.ConfigError, match="changed during fleet transaction"):
+            config.save_fleet(fleet)
+        with pytest.raises(config.ConfigError, match="changed during fleet transaction"):
+            config.fleet_snapshot()
+    assert store.revision == 1
+
+
+def test_active_git_edit_rejects_switch_to_sql_before_read(selected_sql_host):
+    store, host_path, bootstrap = selected_sql_host
+    bootstrap["hq"]["mode"] = "git"
+    bootstrap["hq"]["sql"]["enabled"] = False
+    host_path.write_text(json.dumps(bootstrap))
+    with config._write_transaction(config.SCOPE_FLEET):
+        bootstrap["hq"]["mode"] = "dolt-server"
+        bootstrap["hq"]["sql"]["enabled"] = True
+        host_path.write_text(json.dumps(bootstrap))
+        with pytest.raises(config.ConfigError, match="changed during fleet transaction"):
+            config.load_fleet()
+        with pytest.raises(config.ConfigError, match="changed during fleet transaction"):
+            config.save_fleet({})
+    assert store.revision == 1
+    assert not config.fleet_path().exists()
+
+
+def test_binding_drift_blocks_roster_registry_workspace_and_document_publish(
+    selected_sql_host, tmp_path, monkeypatch
+):
+    from beadhive import guard
+
+    store, host_path, bootstrap = selected_sql_host
+    monkeypatch.setattr(gitworkspace, "workspace_root", lambda: tmp_path / "workspace")
+    monkeypatch.setattr(guard, "guard_hq_registry_write", lambda *a, **kw: None)
+    monkeypatch.setattr(identity, "resolve_actor", lambda: "dev/fixture")
+    with config._write_transaction(config.SCOPE_FLEET):
+        bootstrap["hq"]["sql"]["generation"] = "other-generation"
+        host_path.write_text(json.dumps(bootstrap))
+        for action in (
+            lambda: hosts.manifest_paths(tmp_path / "absent-hq"),
+            lambda: registry.register("github", "fixture", "repo", "fx", "prototype"),
+            lambda: gitworkspace.workspace_sources({}),
+            lambda: config.publish_fleet_document("workspace.toml", "[workspace]\n"),
+        ):
+            with pytest.raises(config.ConfigError, match="changed during fleet transaction"):
+                action()
+    assert store.revision == 1
+    assert not config.fleet_path().exists()
 
 
 @pytest.fixture

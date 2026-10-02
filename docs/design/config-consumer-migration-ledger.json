@@ -574,28 +574,28 @@
       {
         "facade_target": "beadhive.config.hq_dir",
         "kind": "direct-facade",
-        "line": 255,
+        "line": 371,
         "path": "tests/test_fleet_config_consumers.py",
         "target": "beadhive.config.hq_dir"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 302,
+        "line": 418,
         "path": "tests/test_fleet_config_consumers.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 306,
+        "line": 422,
         "path": "tests/test_fleet_config_consumers.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 332,
+        "line": 448,
         "path": "tests/test_fleet_config_consumers.py",
         "target": "beadhive.config.load_host"
       },

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 from collections.abc import Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from io import StringIO
 from pathlib import Path
 
@@ -20,11 +21,24 @@ from .modules.config.domain.ports import ConfigScope, FleetConfigDocument
 _mutation_lock = threading.RLock()
 _load_cache_lock = threading.RLock()
 _load_cache: dict[tuple[tuple, tuple], str] = {}
-_fleet_transaction: ContextVar[tuple | None] = ContextVar("fleet_transaction", default=None)
+
+
+@dataclass(frozen=True)
+class _FleetTransaction:
+    sql_selected: bool
+    binding_fingerprint: str
+    store: object | None = None
+    snapshot: object | None = None
+
+
+_fleet_transaction: ContextVar[_FleetTransaction | None] = ContextVar(
+    "fleet_transaction", default=None
+)
 
 
 def fleet_transaction_active() -> bool:
-    return _fleet_transaction.get() is not None
+    active = _fleet_transaction.get()
+    return active is not None and active.sql_selected
 
 
 # Public compatibility seams. The adapter scopes access with ``yaml_lock``; its standalone
@@ -59,23 +73,42 @@ def load_path(api, path: Path, *, missing_ok: bool = False):
     return _store(api).load_path(path, missing_ok=missing_ok)
 
 
-def sql_selected(api, host=None) -> bool:
-    """The HOST switch alone selects SQL; staged endpoints do not activate it."""
-    if host is None:
-        try:
-            host = api.load_host()
-        except FileNotFoundError:
-            return False
+def _validated_selection(api, host) -> tuple[bool, str]:
+    """Validate the HOST selector and fingerprint the exact SQL bootstrap."""
     from .modules.config.contracts import HqSqlConfig
 
     try:
         hq = host.get("hq", {})
-        selected = HqSqlConfig.model_validate(hq.get("sql", {})).enabled
+        sql = HqSqlConfig.model_validate(hq.get("sql", {}))
+        mode = hq.get("mode", "git")
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                {"mode": mode, "sql": sql.model_dump(mode="json")},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
     except (ValueError, TypeError, AttributeError):
         raise api.ConfigError("invalid SQL HOST bootstrap") from None
-    mode = hq.get("mode", "git")
+    selected = sql.enabled
     if mode not in ("git", "dolt-server") or (not selected and mode != "git"):
         raise api.ConfigError("unsupported HQ configuration mode")
+    return selected, fingerprint
+
+
+def sql_selected(api, host=None) -> bool:
+    """The HOST switch alone selects SQL; a mutation pins its original binding."""
+    if host is None:
+        try:
+            host = api.load_host()
+        except FileNotFoundError:
+            host = CommentedMap()
+    selected, fingerprint = _validated_selection(api, host)
+    active = _fleet_transaction.get()
+    if active is not None and (
+        selected != active.sql_selected or (selected and fingerprint != active.binding_fingerprint)
+    ):
+        raise api.ConfigError("selected HOST binding changed during fleet transaction")
     return selected
 
 
@@ -103,7 +136,7 @@ def load_fleet(api):
     if not sql_selected(api):
         return load_path(api, api.fleet_path(), missing_ok=True)
     active = _fleet_transaction.get()
-    snapshot = active[1] if active is not None else _sql_attachment(api)[1]
+    snapshot = active.snapshot if active is not None else _sql_attachment(api)[1]
     return _fleet_document(api, snapshot)
 
 
@@ -112,15 +145,16 @@ def fleet_snapshot(api):
     if not sql_selected(api):
         return None
     active = _fleet_transaction.get()
-    return active[1] if active is not None else _sql_attachment(api)[1]
+    return active.snapshot if active is not None else _sql_attachment(api)[1]
 
 
 def publish_fleet_document(api, path: str, content: str | None):
     """Replace/delete one committed document against the transaction's first head."""
     active = _fleet_transaction.get()
-    if active is None:
+    if active is None or not active.sql_selected:
         raise api.ConfigError("SQL document publication requires an original-revision transaction")
-    store, snapshot = active
+    sql_selected(api)  # no document or file write after a HOST backend/binding switch
+    store, snapshot = active.store, active.snapshot
     found = False
     documents = []
     for item in snapshot.documents:
@@ -141,15 +175,28 @@ def publish_fleet_document(api, path: str, content: str | None):
 
 @contextmanager
 def fleet_mutation(api):
-    if not sql_selected(api):
+    active = _fleet_transaction.get()
+    if active is not None:
+        if active.sql_selected:
+            raise api.ConfigError("nested fleet revision transaction")
+        sql_selected(api)  # retain the original Git selection in nested legacy edits
         with mutation(api.fleet_path()):
             yield
         return
-    if _fleet_transaction.get() is not None:
-        raise api.ConfigError("nested fleet revision transaction")
-    token = _fleet_transaction.set(_sql_attachment(api))
     try:
-        yield
+        host = api.load_host()
+    except FileNotFoundError:
+        host = CommentedMap()
+    selected = sql_selected(api, host)
+    _, fingerprint = _validated_selection(api, host)
+    store, snapshot = _sql_attachment(api, host) if selected else (None, None)
+    token = _fleet_transaction.set(_FleetTransaction(selected, fingerprint, store, snapshot))
+    try:
+        if selected:
+            yield
+        else:
+            with mutation(api.fleet_path()):
+                yield
     finally:
         _fleet_transaction.reset(token)
 
@@ -225,6 +272,9 @@ def load(api):
     always qualify a current committed snapshot. Comment-preserving mutations still use
     ``load_host`` / ``load_fleet`` directly.
     """
+    if _fleet_transaction.get() is not None:
+        prepared, selected = _load_uncached(api)
+        return json.loads(json.dumps(_load_sql(api, prepared) if selected else prepared))
     # Filesystem memoization applies only to Git. An authenticated SQL read
     # must requalify its finite validity and committed revision on every call.
     key = None
@@ -275,6 +325,8 @@ def atomic_dump(api, data, path: Path) -> None:
 
 def save_host(api, data) -> None:
     api._guard_hq_registry_controller()
+    if _fleet_transaction.get() is not None:
+        sql_selected(api)  # reject a changed on-disk selector before HOST cleanup
     if sql_selected(api, data):
         # A host switch is only persisted after a committed qualified readback.
         _fleet_document(api, _sql_attachment(api, data)[1])
@@ -290,7 +342,7 @@ def save_fleet(api, data) -> None:
     active = _fleet_transaction.get()
     if active is None:
         raise api.ConfigError("SQL fleet publication requires an original-revision transaction")
-    store, snapshot = active
+    store, snapshot = active.store, active.snapshot
     stream = StringIO()
     with api._yaml_lock:
         api._yaml.dump(data, stream)
