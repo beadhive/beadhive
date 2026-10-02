@@ -1069,6 +1069,48 @@
       "title": "FrameBridgeIdentityConfig",
       "type": "object"
     },
+    "FrameHivePolicy": {
+      "additionalProperties": false,
+      "description": "Canonical fleet-owned frame admission policy for one managed hive.",
+      "properties": {
+        "config_revision": {
+          "minLength": 1,
+          "title": "Config Revision",
+          "type": "string"
+        },
+        "evict_after_s": {
+          "exclusiveMinimum": 0,
+          "title": "Evict After S",
+          "type": "number"
+        },
+        "requires": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            ]
+          },
+          "title": "Requires",
+          "type": "object"
+        }
+      },
+      "required": [
+        "config_revision",
+        "evict_after_s"
+      ],
+      "title": "FrameHivePolicy",
+      "type": "object"
+    },
     "GenaiConfig": {
       "additionalProperties": false,
       "description": "EXPERIMENTAL agentic GenAI span attributes (``otel.genai``).",
@@ -1396,9 +1438,224 @@
           "description": "HQ repo remote: `<owner>/beadhive-hq`, an absolute local path, or local `file://` URL. Empty (default) derives `<owner>` from the logged-in `gh` identity at read time (`config.hq_remote`) — host identity, so the answer does not vary by which hive you invoke from; an explicit value here always overrides the derivation. `bh hq init`/`clone` confirm the result interactively unless `--auto` is passed.",
           "title": "Remote",
           "type": "string"
+        },
+        "sql": {
+          "$ref": "#/$defs/HqSqlConfig"
         }
       },
       "title": "HqConfig",
+      "type": "object"
+    },
+    "HqFnoxRef": {
+      "additionalProperties": false,
+      "description": "Host-local fnox lookup; the value itself is never configuration.",
+      "properties": {
+        "config_path": {
+          "default": "",
+          "title": "Config Path",
+          "type": "string"
+        },
+        "key": {
+          "default": "",
+          "title": "Key",
+          "type": "string"
+        },
+        "profile": {
+          "default": "",
+          "title": "Profile",
+          "type": "string"
+        }
+      },
+      "title": "HqFnoxRef",
+      "type": "object"
+    },
+    "HqSqlConfig": {
+      "additionalProperties": false,
+      "description": "Dedicated config service and optional, separately credentialed runtime.",
+      "properties": {
+        "authority_writer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HqSqlConnection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "backend_identity": {
+          "default": "",
+          "title": "Backend Identity",
+          "type": "string"
+        },
+        "cache_ttl": {
+          "default": 30,
+          "maximum": 300,
+          "minimum": 1,
+          "title": "Cache Ttl",
+          "type": "integer"
+        },
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "floor_path": {
+          "default": "",
+          "title": "Floor Path",
+          "type": "string"
+        },
+        "generation": {
+          "default": "",
+          "title": "Generation",
+          "type": "string"
+        },
+        "initial_revision": {
+          "default": "",
+          "title": "Initial Revision",
+          "type": "string"
+        },
+        "minimum_sequence": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Minimum Sequence",
+          "type": "integer"
+        },
+        "observer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HqSqlConnection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "publisher": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HqSqlConnection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "reader": {
+          "$ref": "#/$defs/HqSqlConnection"
+        },
+        "runtime": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HqSqlConnection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "runtime_backend_identity": {
+          "default": "",
+          "title": "Runtime Backend Identity",
+          "type": "string"
+        },
+        "runtime_floor_path": {
+          "default": "",
+          "title": "Runtime Floor Path",
+          "type": "string"
+        },
+        "runtime_generation": {
+          "default": "",
+          "title": "Runtime Generation",
+          "type": "string"
+        },
+        "runtime_initial_revision": {
+          "default": "",
+          "title": "Runtime Initial Revision",
+          "type": "string"
+        },
+        "runtime_operator_public_key": {
+          "default": "",
+          "title": "Runtime Operator Public Key",
+          "type": "string"
+        }
+      },
+      "title": "HqSqlConfig",
+      "type": "object"
+    },
+    "HqSqlConnection": {
+      "additionalProperties": false,
+      "description": "One explicitly scoped SQL principal and verified transport.",
+      "properties": {
+        "ca_file": {
+          "default": "",
+          "title": "Ca File",
+          "type": "string"
+        },
+        "connect_timeout": {
+          "default": 5,
+          "maximum": 30,
+          "minimum": 1,
+          "title": "Connect Timeout",
+          "type": "integer"
+        },
+        "credential": {
+          "$ref": "#/$defs/HqFnoxRef"
+        },
+        "database": {
+          "default": "",
+          "title": "Database",
+          "type": "string"
+        },
+        "host": {
+          "default": "",
+          "title": "Host",
+          "type": "string"
+        },
+        "operation_timeout": {
+          "default": 15,
+          "maximum": 60,
+          "minimum": 1,
+          "title": "Operation Timeout",
+          "type": "integer"
+        },
+        "port": {
+          "default": 3308,
+          "maximum": 65535,
+          "minimum": 1,
+          "title": "Port",
+          "type": "integer"
+        },
+        "read_timeout": {
+          "default": 5,
+          "maximum": 30,
+          "minimum": 1,
+          "title": "Read Timeout",
+          "type": "integer"
+        },
+        "server_name": {
+          "default": "",
+          "title": "Server Name",
+          "type": "string"
+        },
+        "user": {
+          "default": "",
+          "title": "User",
+          "type": "string"
+        },
+        "write_timeout": {
+          "default": 5,
+          "maximum": 30,
+          "minimum": 1,
+          "title": "Write Timeout",
+          "type": "integer"
+        }
+      },
+      "title": "HqSqlConnection",
       "type": "object"
     },
     "IdentityConfig": {
@@ -1555,6 +1812,18 @@
           "default": null,
           "description": "Marks a hive as a Contribution-plane target. Today only `pull` (upstream is a read rail; nothing yet consumes it as a push/PR target).",
           "title": "Contribution"
+        },
+        "frame_policy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FrameHivePolicy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Explicit fleet-owned frame requirements for this hive."
         },
         "furnish": {
           "anyOf": [

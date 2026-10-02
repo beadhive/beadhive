@@ -25,6 +25,19 @@ class ControlPlaneError(ValueError):
     """Unavailable protection, rejected authority, or unsupported binding."""
 
 
+class HqLeaseUnknown(ControlPlaneError):
+    """An exact frame proposal may have been accepted; do not refresh its CAS."""
+
+    def __init__(self, request_id, request_sha256, expected_revision):
+        self.request_id = request_id
+        self.request_sha256 = request_sha256
+        self.expected_revision = expected_revision
+        super().__init__(
+            f"HQ hive lease acknowledgment unknown for request {request_id} "
+            f"against original revision {expected_revision}"
+        )
+
+
 @dataclass(frozen=True)
 class HqConsistencyToken:
     """Provider-issued identity of one qualified config/authority read boundary."""
@@ -1187,9 +1200,974 @@ class GitControlPlane:
         return self.lifecycle(verb, frame, "check", expected_host_id=expected_host_id)
 
 
+def _validated_sql_binding(settings):
+    """Do not render Pydantic's raw rejected HOST values, which may be secrets."""
+    from pydantic import ValidationError
+
+    from .modules.config.contracts import HqSqlConfig
+
+    try:
+        return HqSqlConfig.model_validate(settings)
+    except (ValidationError, TypeError, ValueError):
+        raise ControlPlaneError("invalid SQL HOST binding") from None
+
+
+class SqlControlPlane:
+    """SQL config capability; runtime authority needs an explicit separate binding."""
+
+    def __init__(self, settings, *, broker=None, clock=time.time):
+        self.settings = _validated_sql_binding(settings).model_dump()
+        self.broker, self.clock = broker, clock
+
+    def config_store(self, *, operator_key=None, duration=3600):
+        from .hq_sql_config import SqlFleetConfigRevisionStore
+
+        return SqlFleetConfigRevisionStore(self.settings, broker=self.broker, clock=self.clock)
+
+    def _runtime_authority(self):
+        from .hq_sql_runtime import SqlRuntimeAuthority
+
+        if self.settings.get("runtime") is None:
+            raise ControlPlaneError("AUTHORITY_NOT_READY: SQL runtime binding unavailable")
+        return SqlRuntimeAuthority(self.settings, broker=self.broker, clock=self.clock)
+
+    def authority_status(self):
+        if self.settings.get("runtime") is None:
+            return {"revision": "", "state": "AUTHORITY_NOT_READY", "authority_ready": False}
+        try:
+            revision, state, _, _ = self._runtime_authority().load_state()
+        except ValueError as exc:
+            raise ControlPlaneError(str(exc)) from None
+        return {"revision": revision, "state": state, "authority_ready": True}
+
+    def eligibility_authority_status(self):
+        if self.settings.get("runtime") is None:
+            return self.authority_status()
+        try:
+            head, state, *_ = self._runtime_authority().read_frame_composite()
+            return {"revision": head, "state": state, "authority_ready": True}
+        except ValueError:
+            raise ControlPlaneError("qualified SQL authority unavailable") from None
+
+    def fetch_config(self, frame, *, holder_identity=None):
+        try:
+            (_head, _state, route, _slot, record, _snapshot, _policies, _observation, _lease) = (
+                self._runtime_authority().read_frame_composite()
+            )
+            if frame != route.frame_id or (
+                holder_identity is not None and holder_identity != route.holder_identity
+            ):
+                raise ControlPlaneError("frame config identity differs from authenticated grant")
+            return {
+                **record["desired"],
+                "state": record["state"],
+                "cordoned": record["cordoned"],
+                "authority": record["authority"],
+            }
+        except ValueError as exc:
+            if isinstance(exc, ControlPlaneError):
+                raise
+            raise ControlPlaneError("qualified SQL frame config unavailable") from None
+
+    def observe(self, manifest, *, now=None, observer_dir=None):
+        if observer_dir is not None:
+            raise ControlPlaneError("SQL observer storage is protected server-local custody")
+        return self.read_eligibility(manifest, now=now)[2]
+
+    def watch_state(self, frame):
+        try:
+            (head, state, route, slot, record, _snapshot, _policies, row, _lease) = (
+                self._runtime_authority().read_frame_composite()
+            )
+            if frame != route.frame_id:
+                return None
+            return self._authority_snapshot(state, route, slot, record, row)
+        except ValueError as exc:
+            if isinstance(exc, ControlPlaneError):
+                raise
+            raise ControlPlaneError("qualified SQL frame state unavailable") from None
+
+    def _authority_snapshot(self, state, route, slot, record, row):
+        from .host_heartbeat_core import AuthoritySnapshot, ObservationAuthority
+
+        authority = ObservationAuthority(**record["authority"])
+        checked = self.clock()
+        validity = min(
+            state["expires_at"],
+            authority.candidate_expires_at or state["expires_at"],
+        )
+        if row is None:
+            sequence, digest, first_seen = 0, "", None
+        else:
+            observation = self._public_observation(
+                row, route, slot, granted_public_key=record["public_key"], now=checked
+            )
+            sequence, digest = row[0], row[1]
+            first_seen = row[2] - observation.lease.leaseDurationSeconds
+        return AuthoritySnapshot(
+            authority,
+            checked,
+            validity,
+            sequence,
+            digest,
+            first_seen,
+            record["state"],
+            record["state"] == "active" and not record["cordoned"],
+            f"sql:observation/{route.principal}/{route.epoch}",
+        )
+
+    def load_config_authority_snapshot(self, frame, *, revision=None):
+        try:
+            (head, state, route, slot, record, snapshot, _policies, row, _lease) = (
+                self._runtime_authority().read_frame_composite()
+            )
+            if (
+                frame != route.frame_id
+                or revision is not None
+                and revision != snapshot.commit_revision
+            ):
+                raise ControlPlaneError(
+                    "SQL config/authority snapshot identity or revision mismatch"
+                )
+            authority = self._authority_snapshot(state, route, slot, record, row)
+            return ConfigAuthoritySnapshot(
+                HqConsistencyToken(snapshot.backend_identity, snapshot.generation, head),
+                snapshot,
+                authority,
+            )
+        except ValueError as exc:
+            if isinstance(exc, ControlPlaneError):
+                raise
+            raise ControlPlaneError("qualified SQL config/authority snapshot unavailable") from None
+
+    def heartbeat_reference(self, lease):
+        from .hq_framelease_contracts import HeartbeatLease
+
+        lease = HeartbeatLease.model_validate(lease)
+        (_head, _state, route, _slot, record, _snapshot, _policies, _row, _lease) = (
+            self._runtime_authority().read_frame_composite()
+        )
+        authority = record["authority"]
+        if (
+            lease.frame_id != route.frame_id
+            or lease.holderIdentity != route.holder_identity
+            or lease.instance_ref != route.instance_ref
+            or lease.epoch != route.epoch
+            or lease.key_id != route.signer_fingerprint
+            or lease.audience != authority["audience"]
+            or lease.config_revision != authority["config_revision"]
+        ):
+            raise ControlPlaneError("heartbeat reference differs from current grant")
+        return f"sql:inbox/{route.principal}/{route.epoch}"
+
+    def publish_registration_evidence(self, manifest, *, signing_key, deadline=None):
+        import uuid
+
+        from . import hosts
+        from .hq_sql_signatures import sign_registration
+
+        manifest = hosts.HostManifest.model_validate(manifest)
+        runtime = self._runtime_authority()
+        if deadline is None:
+            deadline = time.monotonic() + self.settings["runtime"]["operation_timeout"]
+        try:
+            (head, _state, route, _slot, record, _snapshot, _policies, _observation, _lease) = (
+                runtime.read_frame_composite(deadline=deadline)
+            )
+            authority = record["authority"]
+            if (
+                manifest.frame_id != route.frame_id
+                or manifest.host_id != route.holder_identity
+                or manifest.instance_ref != route.instance_ref
+                or authority["key_fingerprint"] != route.signer_fingerprint
+            ):
+                raise ControlPlaneError("registration manifest differs from current grant")
+            request_id = str(uuid.uuid4())
+            request = {
+                "domain": "beadhive/sql-registration/v1",
+                "request_id": request_id,
+                "principal": route.principal,
+                "frame_id": route.frame_id,
+                "holder_identity": route.holder_identity,
+                "instance_ref": route.instance_ref,
+                "epoch": route.epoch,
+                "key_fingerprint": route.signer_fingerprint,
+                "audience": authority["audience"],
+                "authority_revision": head,
+                "manifest": manifest.model_dump(mode="json", exclude_none=True),
+            }
+            _, digest = runtime.publish_inbox(
+                "registration",
+                sign_registration(request, signing_key=signing_key),
+                binding=route,
+                expected_head=head,
+                request_id=request_id,
+                deadline=deadline,
+            )
+            return digest
+        except ValueError as exc:
+            if isinstance(exc, ControlPlaneError):
+                raise
+            raise ControlPlaneError("SQL registration evidence unavailable") from None
+
+    def publish_registration(self, manifest, *, attempts=3):
+        from ruamel.yaml import YAML
+
+        from . import host, hosts
+
+        if type(attempts) is not int or attempts < 1:
+            raise ControlPlaneError("registration attempt bound invalid")
+        if self.settings.get("runtime") is None:
+            raise ControlPlaneError("AUTHORITY_NOT_READY: SQL runtime binding unavailable")
+        deadline = time.monotonic() + self.settings["runtime"]["operation_timeout"]
+        if isinstance(manifest, hosts.HostManifest):
+            record = manifest
+        elif isinstance(manifest, str):
+            (*_other, snapshot, _policies, _observation, _lease) = (
+                self._runtime_authority().read_frame_composite(deadline=deadline)
+            )
+            documents = [
+                document
+                for document in snapshot.documents
+                if document.path == f"hosts/{manifest}.yaml"
+            ]
+            if len(documents) != 1:
+                raise ControlPlaneError("committed host manifest unavailable")
+            record = hosts.HostManifest.model_validate(YAML(typ="safe").load(documents[0].content))
+        else:
+            raise ControlPlaneError("validated registration manifest required")
+        key = host.signing_key()
+        if not key:
+            raise ControlPlaneError("frame registration requires its own runtime signing key")
+        self.publish_registration_evidence(record, signing_key=key, deadline=deadline)
+        return True
+
+    def _operator(self):
+        from .hq_sql_operator import SqlRuntimeOperator
+
+        return SqlRuntimeOperator(self.settings, broker=self.broker, clock=self.clock)
+
+    def _operator_deadline(self):
+        binding = self.settings.get("authority_writer")
+        if binding is None:
+            raise ControlPlaneError("separate authority writer capability unavailable")
+        return time.monotonic() + binding["operation_timeout"]
+
+    def grant(self, authority, public_key, desired, *, expected, operator_key):
+        from .host_heartbeat_core import ObservationAuthority
+        from .hq_sql_operator import SqlRuntimeOperator
+        from .hq_sql_signatures import fingerprint
+
+        if not isinstance(authority, ObservationAuthority):
+            raise ControlPlaneError("validated candidate authority required")
+        operator = self._operator()
+        budget = self._operator_deadline()
+        try:
+            head, original, _crossref, _policies = operator.load(deadline=budget)
+            if (
+                head != expected
+                or authority.candidate_expires_at is None
+                or authority.candidate_expires_at <= self.clock()
+                or fingerprint(public_key) != authority.key_fingerprint
+                or authority.key_fingerprint
+                == fingerprint(self.settings["runtime_operator_public_key"])
+                or any(
+                    record["authority"]["key_fingerprint"] == authority.key_fingerprint
+                    or record["authority"]["holder_identity"] == authority.holder_identity
+                    for _, record in guard.records(original)
+                )
+            ):
+                raise ControlPlaneError("candidate grant identity or original CAS invalid")
+            state = json.loads(json.dumps(original))
+            entry = state["frames"].setdefault(
+                authority.frame_id,
+                {"active": None, "candidate": None, "retired": [], "epoch_floor": -1},
+            )
+            if entry["candidate"] is not None or authority.epoch <= entry["epoch_floor"]:
+                raise ControlPlaneError("candidate exists or epoch does not advance")
+            entry["candidate"] = {
+                "authority": asdict(authority),
+                "public_key": public_key.strip(),
+                "state": "pending",
+                "desired": desired,
+                "cordoned": False,
+                "drain_deadline": None,
+                "receipt": {
+                    "sequence": 0,
+                    "sha": "",
+                    "first_seen": None,
+                    "consecutive": 0,
+                    "lease": None,
+                    "registration": None,
+                },
+            }
+            entry["epoch_floor"] = authority.epoch
+            state["revision"] += 1
+            state["issued_at"] = self.clock()
+            state["expires_at"] = state["issued_at"] + 3600
+            guard.validate_state(state)
+            principal = SqlRuntimeOperator.principal_for(authority)
+            return operator.publish(
+                state,
+                expected_revision=expected,
+                operator_key=operator_key,
+                provisioned_route=(
+                    principal,
+                    authority.frame_id,
+                    authority.holder_identity,
+                    authority.instance_ref,
+                    authority.epoch,
+                    authority.key_fingerprint,
+                ),
+                deadline=budget,
+            )
+        except ValueError as exc:
+            if isinstance(exc, ControlPlaneError):
+                raise
+            raise ControlPlaneError("SQL candidate grant unavailable") from None
+
+    def renew(self, *, expected, operator_key, duration=3600):
+        import math
+
+        if (
+            type(duration) not in (int, float)
+            or not math.isfinite(duration)
+            or duration <= 0
+            or duration > 86400
+        ):
+            raise ControlPlaneError("bounded authority renewal duration required")
+        operator = self._operator()
+        budget = self._operator_deadline()
+        try:
+            head, current, _crossref, _policies = operator.load(deadline=budget)
+            if head != expected:
+                raise ControlPlaneError("original authority revision changed")
+            state = json.loads(json.dumps(current))
+            state["revision"] += 1
+            state["issued_at"] = self.clock()
+            state["expires_at"] = self.clock() + duration
+            return operator.publish(
+                state,
+                expected_revision=expected,
+                operator_key=operator_key,
+                deadline=budget,
+            )
+        except ValueError as exc:
+            if isinstance(exc, ControlPlaneError):
+                raise
+            raise ControlPlaneError("SQL authority renewal unavailable") from None
+
+    def accept_observation(self, frame, *, expected, operator_key, holder_identity=""):
+        operator = self._operator()
+        budget = self._operator_deadline()
+        try:
+            head, original, _crossref, _policies = operator.load(deadline=budget)
+            if head != expected:
+                raise ControlPlaneError("original authority revision changed")
+            entry = original.get("frames", {}).get(frame)
+            if entry is None:
+                raise ControlPlaneError("unknown frame observation")
+            selected = [
+                record
+                for record in (entry["active"], entry["candidate"])
+                if record is not None
+                and (
+                    not holder_identity or record["authority"]["holder_identity"] == holder_identity
+                )
+            ]
+            if len(selected) != 1:
+                raise ControlPlaneError("observation requires exact granted holder")
+            holder = selected[0]["authority"]["holder_identity"]
+            record, _registration, receipts = operator.evidence(
+                frame, holder, expected_revision=head, deadline=budget
+            )
+            if not receipts:
+                raise ControlPlaneError("accepted protected heartbeat absent")
+            latest = receipts[0][3]
+            if self.clock() - receipts[0][2] >= latest.leaseDurationSeconds:
+                raise ControlPlaneError("accepted protected heartbeat expired")
+            if record["state"] != "draining" or latest.state_seen != "drained":
+                return head
+            state = json.loads(json.dumps(original))
+            target = state["frames"][frame]
+            for slot in ("active", "candidate"):
+                candidate = target[slot]
+                if candidate and candidate["authority"]["holder_identity"] == holder:
+                    candidate["state"] = "drained"
+                    break
+            state["revision"] += 1
+            state["issued_at"] = self.clock()
+            state["expires_at"] = state["issued_at"] + 3600
+            return operator.publish(
+                state,
+                expected_revision=head,
+                operator_key=operator_key,
+                deadline=budget,
+            )
+        except ValueError as exc:
+            if isinstance(exc, ControlPlaneError):
+                raise
+            raise ControlPlaneError("SQL protected observation unavailable") from None
+
+    def lifecycle(
+        self,
+        verb,
+        frame,
+        action="plan",
+        *,
+        expected="",
+        expected_host_id="",
+        expected_release="",
+        operator_key="",
+        confirm=False,
+        supersede=False,
+        deadline=None,
+        _sql_deadline=None,
+    ):
+        operator = self._operator()
+        budget = _sql_deadline or self._operator_deadline()
+        try:
+            head, original, _crossref, _policies = operator.load(deadline=budget)
+            entry = original.get("frames", {}).get(frame)
+            if entry is None:
+                raise ControlPlaneError("frame has no operator grant")
+            selected = [
+                (slot, record)
+                for slot, record in (("active", entry["active"]), ("candidate", entry["candidate"]))
+                if record is not None
+                and (
+                    not expected_host_id
+                    or record["authority"]["holder_identity"] == expected_host_id
+                )
+            ]
+            if not selected and expected_host_id:
+                selected = [
+                    ("retired", record)
+                    for record in reversed(entry["retired"])
+                    if record["authority"]["holder_identity"] == expected_host_id
+                ][:1]
+            if not selected:
+                raise ControlPlaneError("unknown protected incarnation")
+            if len(selected) != 1:
+                raise ControlPlaneError("lifecycle requires exact holder identity")
+            slot, record = selected[0]
+            authority = record["authority"]
+            registration = None
+            receipts = []
+            if slot != "retired":
+                _evidence_record, registration, receipts = operator.evidence(
+                    frame,
+                    authority["holder_identity"],
+                    expected_revision=head,
+                    deadline=budget,
+                )
+            latest = receipts[0][3] if receipts else None
+            streak = 0
+            for index, (sequence, _digest, first_seen, beat) in enumerate(receipts):
+                if index and receipts[index - 1][0] != sequence + 1:
+                    break
+                if index and receipts[index - 1][2] - first_seen >= beat.leaseDurationSeconds:
+                    break
+                streak += 1
+            release = latest.release.digest if latest else ""
+            result = {
+                "frame_id": frame,
+                "host_id": authority["holder_identity"],
+                "instance_ref": authority["instance_ref"],
+                "key_fingerprint": authority["key_fingerprint"],
+                "epoch": authority["epoch"],
+                "revision": head,
+                "state": record["state"],
+                "cordoned": record["cordoned"],
+                "release": release,
+                "toplevel": latest.toplevel if latest else None,
+                "image": latest.image if latest else None,
+                "capabilities": (registration.capabilities.model_dump() if registration else None),
+                "attestor_evidence_kind": "ed25519-runtime-signature",
+                "consecutive_verified_beats": streak,
+                "conformance": (latest.conformance.model_dump() if latest else None),
+                "prior_active": entry["active"]["authority"]
+                if slot == "candidate" and entry["active"]
+                else None,
+            }
+            if action in {"plan", "check"}:
+                return result
+            if action != "apply" or not confirm or not operator_key:
+                raise ControlPlaneError("apply requires explicit --confirm and operator key")
+            if (
+                expected != head
+                or expected_host_id != authority["holder_identity"]
+                or expected_release != release
+            ):
+                raise ControlPlaneError("original authority/holder/release CAS mismatch")
+            state = json.loads(json.dumps(original))
+            target = state["frames"][frame]
+            record = target[slot] if slot != "retired" else None
+            now = self.clock()
+            if slot == "retired" and verb != "retire":
+                raise ControlPlaneError("retired incarnation cannot transition")
+            if verb == "admit":
+                if slot != "candidate" or record["state"] != "pending":
+                    raise ControlPlaneError("admit requires pending candidate")
+                if (
+                    not record["desired"]["declared"]
+                    or registration is None
+                    or latest is None
+                    or streak < 3
+                    or now >= authority["candidate_expires_at"]
+                    or now - receipts[0][2] >= latest.leaseDurationSeconds
+                    or latest.release.model_dump() != record["desired"]["release"]
+                    or registration.release.model_dump() != record["desired"]["release"]
+                    or registration.capabilities.model_dump() != record["desired"]["caps"]
+                    or latest.conformance.status != "conformant"
+                    or latest.conformance.profile != record["desired"]["profile"]
+                    or not latest.conformance.checks
+                    or any(check.status == "fail" for check in latest.conformance.checks)
+                ):
+                    raise ControlPlaneError("admit requires current complete trusted evidence")
+                if target["active"] and not supersede:
+                    raise ControlPlaneError("another active incarnation requires supersede")
+                if target["active"]:
+                    old = target["active"]
+                    old.update(state="retired", cordoned=True)
+                    target["retired"].append(old)
+                target["active"], target["candidate"] = record, None
+                record.update(state="active", cordoned=False)
+                record["authority"]["candidate_expires_at"] = None
+            elif verb == "retire":
+                if slot == "retired":
+                    return result
+                record.update(state="retired", cordoned=True)
+                target[slot] = None
+                target["retired"].append(record)
+            elif verb == "cordon":
+                if record["state"] != "active":
+                    raise ControlPlaneError("cordon requires active frame")
+                if record["cordoned"]:
+                    return result
+                record["cordoned"] = True
+            else:
+                transitions = {
+                    "drain": ({"active", "draining"}, "draining"),
+                    "park": ({"drained", "parked"}, "parked"),
+                    "resume": ({"parked", "active"}, "active"),
+                    "quarantine": (
+                        {"pending", "active", "draining", "drained", "parked", "quarantined"},
+                        "quarantined",
+                    ),
+                }
+                if verb not in transitions or record["state"] not in transitions[verb][0]:
+                    raise ControlPlaneError("illegal lifecycle transition")
+                destination = transitions[verb][1]
+                if record["state"] == destination and not (verb == "resume" and record["cordoned"]):
+                    return result
+                if verb == "drain":
+                    if type(deadline) not in (int, float) or deadline <= now:
+                        raise ControlPlaneError("drain requires future deadline")
+                    record["drain_deadline"] = deadline
+                record.update(state=destination, cordoned=verb != "resume")
+            state["revision"] += 1
+            state["issued_at"] = now
+            state["expires_at"] = now + 3600
+            operator.publish(
+                state,
+                expected_revision=head,
+                operator_key=operator_key,
+                deadline=budget,
+            )
+            return self.lifecycle(
+                verb,
+                frame,
+                "check",
+                expected_host_id=expected_host_id,
+                _sql_deadline=budget,
+            )
+        except ValueError as exc:
+            if isinstance(exc, ControlPlaneError):
+                raise
+            raise ControlPlaneError("SQL operator lifecycle unavailable") from None
+
+    @staticmethod
+    def _public_observation(row, route, slot, *, granted_public_key, now):
+        from .host_heartbeat_core import VerifiedObservation
+        from .hq_sql_signatures import canonical, verify_heartbeat
+
+        if row is None:
+            return VerifiedObservation("missing", candidate=slot == "candidate")
+        sequence, digest, accepted_until, body, envelope_body, signer = row
+        try:
+            if isinstance(body, memoryview):
+                body = body.tobytes()
+            if isinstance(envelope_body, memoryview):
+                envelope_body = envelope_body.tobytes()
+            if isinstance(body, str):
+                body = body.encode()
+            if isinstance(envelope_body, str):
+                envelope_body = envelope_body.encode()
+            envelope = json.loads(envelope_body)
+            if envelope_body != canonical(envelope):
+                raise ValueError()
+            lease, verified_digest = verify_heartbeat(
+                envelope, granted_public_key=granted_public_key
+            )
+            if (
+                type(sequence) is not int
+                or sequence < 1
+                or lease.seq != sequence
+                or lease.frame_id != route.frame_id
+                or lease.holderIdentity != route.holder_identity
+                or lease.instance_ref != route.instance_ref
+                or lease.epoch != route.epoch
+                or lease.key_id != signer
+                or signer != route.signer_fingerprint
+                or digest != verified_digest
+                or body != canonical(lease.model_dump(mode="json", exclude_none=True))
+            ):
+                raise ValueError()
+            first_seen = accepted_until - lease.leaseDurationSeconds
+            age = now - first_seen
+            if age < 0:
+                raise ValueError()
+        except (ValueError, TypeError, KeyError):
+            raise ControlPlaneError("protected public observation invalid") from None
+        return VerifiedObservation(
+            "fresh" if now < accepted_until else "stale",
+            verified=True,
+            fresh=now < accepted_until,
+            age_seconds=age,
+            lease=lease,
+            sha=digest,
+            candidate=slot == "candidate",
+            age_basis="protected-receiver-first-seen",
+        )
+
+    def read_eligibility(self, manifest, *, now=None):
+        """Return one qualified SQL config/authority/observation read boundary."""
+        import math
+
+        at = self.clock() if now is None else now
+        if type(at) not in (int, float) or not math.isfinite(at):
+            raise ControlPlaneError("eligibility clock invalid")
+        try:
+            head, _state, route, slot, record, _snapshot, policies, row, _ = (
+                self._runtime_authority().read_frame_composite()
+            )
+            if (
+                manifest.frame_id != route.frame_id
+                or manifest.host_id != route.holder_identity
+                or manifest.instance_ref != route.instance_ref
+                or not any(
+                    policy["config_revision"] == record["authority"]["config_revision"]
+                    for policy in policies.values()
+                )
+            ):
+                raise ControlPlaneError("manifest or desired policy differs from current grant")
+            desired = {
+                **record["desired"],
+                "state": record["state"],
+                "cordoned": record["cordoned"],
+                "authority": record["authority"],
+            }
+            return (
+                head,
+                desired,
+                self._public_observation(
+                    row, route, slot, granted_public_key=record["public_key"], now=at
+                ),
+            )
+        except ValueError as exc:
+            if isinstance(exc, ControlPlaneError):
+                raise
+            raise ControlPlaneError("qualified SQL eligibility unavailable") from None
+
+    def read_hive_lease_record(self, prefix, *, holder_identity=None):
+        from .host_lease_contracts import HostLease, _parse_stamp
+        from .hq_sql_signatures import canonical
+
+        try:
+            (
+                _head,
+                _state,
+                route,
+                slot,
+                record,
+                _snapshot,
+                policies,
+                observation_row,
+                lease_row,
+            ) = self._runtime_authority().read_frame_composite(prefix=prefix)
+            if lease_row is None:
+                return "", None
+            revision, body, _request_id, _request_sha = lease_row
+            if isinstance(body, memoryview):
+                body = body.tobytes()
+            if isinstance(body, str):
+                body = body.encode()
+            envelope = json.loads(body)
+            if body != canonical(envelope) or set(envelope) != {"authority", "lease"}:
+                raise ControlPlaneError("protected hive lease carrier invalid")
+            raw = envelope["lease"]
+            if (
+                not isinstance(raw, dict)
+                or set(raw) != {"host_id", "label", "epoch", "adopted_at", "expires_at"}
+                or any(
+                    type(raw[key]) is not str
+                    for key in ("host_id", "label", "adopted_at", "expires_at")
+                )
+                or type(raw["epoch"]) is not int
+                or raw["epoch"] < 1
+                or _parse_stamp(raw["adopted_at"]) <= 0
+                or _parse_stamp(raw["expires_at"]) <= 0
+            ):
+                raise ControlPlaneError("protected hive lease record invalid")
+            lease = HostLease(**raw)
+            if holder_identity is not None:
+                policy = policies.get(prefix)
+                observation = self._public_observation(
+                    observation_row,
+                    route,
+                    slot,
+                    granted_public_key=record["public_key"],
+                    now=self.clock(),
+                )
+                if (
+                    holder_identity != route.holder_identity
+                    or envelope["authority"] != {"frame_id": route.frame_id, **record["authority"]}
+                    or lease.host_id != holder_identity
+                    or lease.is_expired(self.clock())
+                    or slot != "active"
+                    or record["state"] != "active"
+                    or record["cordoned"]
+                    or policy is None
+                    or self.clock() >= policy["valid_until"]
+                    or policy["config_revision"] != record["authority"]["config_revision"]
+                    or not observation.verified
+                    or not observation.fresh
+                ):
+                    return revision, None
+            return revision, lease
+        except ValueError as exc:
+            if isinstance(exc, ControlPlaneError):
+                raise
+            raise ControlPlaneError("qualified SQL hive lease unavailable") from None
+
+    def read_hive_lease(self, prefix, *, holder_identity=None):
+        return self.read_hive_lease_record(prefix, holder_identity=holder_identity)[1]
+
+    def heartbeat(self, lease, *, signing_key):
+        from .hq_framelease_contracts import HeartbeatLease
+        from .hq_sql_runtime import InboxUnknown
+        from .hq_sql_signatures import sign_heartbeat
+
+        if self.settings.get("runtime") is None:
+            raise ControlPlaneError("AUTHORITY_NOT_READY: SQL runtime binding unavailable")
+        deadline = time.monotonic() + self.settings["runtime"]["operation_timeout"]
+        lease = HeartbeatLease.model_validate(lease)
+        runtime = self._runtime_authority()
+        try:
+            head, state, _, _ = runtime.load_state(deadline=deadline)
+            binding = runtime.load_frame_binding(expected_head=head, deadline=deadline)
+            entry = state.get("frames", {}).get(lease.frame_id)
+            selected = [
+                record
+                for record in ((entry or {}).get("active"), (entry or {}).get("candidate"))
+                if record is not None
+                and record["authority"]["holder_identity"] == binding.holder_identity
+                and record["authority"]["instance_ref"] == binding.instance_ref
+                and record["authority"]["epoch"] == binding.epoch
+                and record["authority"]["key_fingerprint"] == binding.signer_fingerprint
+            ]
+            if len(selected) != 1 or binding.frame_id != lease.frame_id:
+                raise ControlPlaneError("frame principal has no exact operator-granted incarnation")
+            authority = selected[0]["authority"]
+            if (
+                selected[0]["state"] == "retired"
+                or authority["candidate_expires_at"] is not None
+                and self.clock() >= authority["candidate_expires_at"]
+                or (
+                    lease.frame_id,
+                    lease.holderIdentity,
+                    lease.instance_ref,
+                    lease.key_id,
+                    lease.epoch,
+                    lease.audience,
+                    lease.config_revision,
+                )
+                != (
+                    authority["frame_id"],
+                    authority["holder_identity"],
+                    authority["instance_ref"],
+                    authority["key_fingerprint"],
+                    authority["epoch"],
+                    authority["audience"],
+                    authority["config_revision"],
+                )
+            ):
+                raise ControlPlaneError("heartbeat does not match current granted incarnation")
+            _, digest = runtime.publish_inbox(
+                "heartbeat",
+                sign_heartbeat(lease, signing_key=signing_key),
+                binding=binding,
+                expected_head=head,
+                deadline=deadline,
+            )
+            return digest
+        except InboxUnknown:
+            raise
+        except ValueError as exc:
+            if isinstance(exc, ControlPlaneError):
+                raise
+            raise ControlPlaneError(str(exc)) from None
+
+    def propose_hive_lease(
+        self, prefix, lease, *, expected, operation, force=False, signing_key, deadline=None
+    ):
+        """Submit a signed frame proposal; only the separate receiver can mutate the lease."""
+        import uuid
+
+        from .host_lease_contracts import HostLease, lease_ref
+        from .hq_sql_signatures import sign_hive_request
+
+        lease_ref(prefix)
+        if (
+            self.settings.get("runtime") is None
+            or force
+            or operation not in {"adopt", "renew", "release"}
+            or not isinstance(lease, HostLease)
+            or not isinstance(expected, str)
+        ):
+            raise ControlPlaneError("frame hive lease proposal requires bound unforced operation")
+        runtime = self._runtime_authority()
+        try:
+            head, state, _, _ = runtime.load_state(deadline=deadline)
+            binding = runtime.load_frame_binding(expected_head=head, deadline=deadline)
+            entry = state.get("frames", {}).get(binding.frame_id)
+            record = entry.get("active") if entry else None
+            if (
+                record is None
+                or record["authority"]["holder_identity"] != binding.holder_identity
+                or record["authority"]["instance_ref"] != binding.instance_ref
+                or record["authority"]["epoch"] != binding.epoch
+                or record["authority"]["key_fingerprint"] != binding.signer_fingerprint
+                or operation in {"adopt", "renew"}
+                and (record["state"] != "active" or record["cordoned"])
+                or operation != "release"
+                and lease.host_id != binding.holder_identity
+                or operation == "release"
+                and lease.host_id != ""
+            ):
+                raise ControlPlaneError("hive lease proposal requires exact active incarnation")
+            authority = record["authority"]
+            request_id = str(uuid.uuid4())
+            request = {
+                "domain": "beadhive/sql-hive-lease/v1",
+                "request_id": request_id,
+                "principal": binding.principal,
+                "frame_id": binding.frame_id,
+                "holder_identity": binding.holder_identity,
+                "instance_ref": binding.instance_ref,
+                "epoch": binding.epoch,
+                "key_fingerprint": binding.signer_fingerprint,
+                "audience": authority["audience"],
+                "config_revision": authority["config_revision"],
+                "authority_revision": head,
+                "prefix": prefix,
+                "expected_revision": expected,
+                "operation": operation,
+                "force": False,
+                "lease": lease.to_record(),
+            }
+            _, digest = runtime.publish_inbox(
+                "hive_lease",
+                sign_hive_request(request, signing_key=signing_key),
+                binding=binding,
+                expected_head=head,
+                request_id=request_id,
+                deadline=deadline,
+            )
+            return request_id, digest.removeprefix("sha256:"), binding, authority["audience"]
+        except ValueError as exc:
+            if isinstance(exc, ControlPlaneError):
+                raise
+            raise ControlPlaneError(str(exc)) from None
+
+    def publish_hive_lease(self, prefix, lease, *, expected, operation, force=False):
+        from . import host
+        from .hq_sql_runtime import InboxUnknown
+
+        if self.settings.get("runtime") is None:
+            raise ControlPlaneError("AUTHORITY_NOT_READY: SQL runtime binding unavailable")
+        deadline = time.monotonic() + self.settings["runtime"]["operation_timeout"]
+        try:
+            signing_key = host.signing_key()
+            if time.monotonic() >= deadline:
+                raise ControlPlaneError("hive lease signing deadline exceeded")
+            request_id, digest, binding, audience = self.propose_hive_lease(
+                prefix,
+                lease,
+                expected=expected,
+                operation=operation,
+                force=force,
+                signing_key=signing_key,
+                deadline=deadline,
+            )
+        except InboxUnknown as exc:
+            raise HqLeaseUnknown(exc.request_id, exc.payload_sha256, expected) from None
+        if time.monotonic() >= deadline:
+            raise HqLeaseUnknown(request_id, digest, expected)
+        runtime = self._runtime_authority()
+        while time.monotonic() < deadline:
+            result = runtime.read_public_result(
+                request_id,
+                request_sha256=digest,
+                principal=binding,
+                audience=audience,
+                expected_revision=expected,
+                deadline=deadline,
+            )
+            if time.monotonic() >= deadline:
+                raise HqLeaseUnknown(request_id, digest, expected)
+            if result is not None:
+                status, revision = result
+                if status != "accepted" or not revision:
+                    raise ControlPlaneError("trusted receiver rejected hive lease proposal")
+                return revision
+            time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+        raise HqLeaseUnknown(request_id, digest, expected)
+
+    def __getattr__(self, name):
+        if name in {
+            "fetch_config",
+            "publish_registration",
+            "heartbeat",
+            "watch_state",
+            "observe",
+            "read_eligibility",
+            "read_hive_lease",
+            "read_hive_lease_record",
+            "publish_hive_lease",
+            "load_config_authority_snapshot",
+            "heartbeat_reference",
+            "publish_registration_evidence",
+            "grant",
+            "accept_observation",
+            "renew",
+            "lifecycle",
+        }:
+
+            def unavailable(*_args, **_kwargs):
+                raise ControlPlaneError("AUTHORITY_NOT_READY: SQL runtime binding unavailable")
+
+            return unavailable
+        raise AttributeError(name)
+
+
 def control_plane(hq_dir=None):
     # Backend connection/trust must be available before fleet/effective resolution.
     cfg = config.load_host().get("hq", {})
+    sql = _validated_sql_binding(cfg.get("sql", {}))
+    if sql.enabled:
+        return SqlControlPlane(sql.model_dump())
     if cfg.get("mode", "git") != "git":
         raise ControlPlaneError(f"unsupported HQ control-plane mode: {cfg.get('mode')}")
     return GitControlPlane(hq_dir or config.hq_dir(), authority_anchor=cfg.get("authority_anchor"))
@@ -1203,6 +2181,10 @@ def attach_fleet_config(hq_dir=None, *, bootstrap=None, operator_key=None):
     """
     settings = bootstrap if bootstrap is not None else config.load_host().get("hq", {})
     mode = settings.get("mode", "git")
+    sql = _validated_sql_binding(settings.get("sql", {}))
+    if sql.enabled:
+        store = SqlControlPlane(sql.model_dump()).config_store()
+        return store, store.load_snapshot()
     if mode != "git":
         raise ControlPlaneError(f"unsupported HQ configuration bootstrap mode: {mode}")
     plane = GitControlPlane(

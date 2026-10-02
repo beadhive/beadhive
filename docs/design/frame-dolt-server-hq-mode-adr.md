@@ -6,6 +6,13 @@
 **Parent:** `bh-yzhcg` — Bead Frame fleet membership  
 **Supersedes:** nothing; existing accepted ADRs remain in force
 
+**Implementation note:** The [binding implementation amendment](#binding-implementation-amendment-bh-v0k3i)
+below is the current local implementation contract. The earlier five-table logical schema,
+shared hive-lease DML grants, and frame writer descriptions in this proposal are historical
+design evidence, not provisioning instructions. The separate config/runtime schemas, principal
+inbox grants, and trusted receiver described in the amendment replace those proposed shapes.
+The binding still requires final qualification and a separate deployment handoff.
+
 ## Context and proposed decision
 
 Frame membership needs an authoritative configuration and admission store plus frequent signed
@@ -219,6 +226,53 @@ contract; no stream guarantee is inferred from SQL polling.
 5. Run identical Git/SQL eligibility fixtures (fresh, stale, unsigned, revoked, pending,
    draining, wrong incarnation/release/capabilities, unavailable config) and failure drills.
 
-No SQL adapter, migrations, grants, deployment or accepted decision are implemented by this
-bead's overnight draft. Morning review may request changes before accepting the ADR; eventual
-merge satisfies the documentation acceptance criterion, not production-support evidence.
+The preceding text records the original overnight proposal. The binding implementation
+below refines its table and grant design. It does not deploy or migrate a production server.
+
+## Binding implementation amendment (`bh-v0k3i`)
+
+An explicit HOST `hq.sql.enabled` switch selects SQL; prepared reader/trust metadata alone
+never changes backend. HOST references identify each connection, trusted CA and fnox key.
+The fixed noninteractive fnox contract resolves only the role needed for an operation;
+config-only construction/load/publish never resolves runtime, observer or operator secrets.
+The config service is a dedicated database with only `hq_config_meta`,
+`hq_config_documents` and `hq_config_publications`. It returns ordered canonical raw
+documents at one captured committed Dolt HEAD, a finite cache validity, and durable HOST
+generation/sequence/HEAD restore floors. The trusted publisher uses the caller's original
+expected HEAD, explicit three-table staging and `DOLT_COMMIT` exact-hash readback.
+`PublicationUnknown` retains its immutable UUID and original parent. The read-only
+`recover_publication(UUID, expected_revision=original_parent)` confirms an exact committed
+witness on the current branch or reports no confirmed outcome; absence never authorizes a
+new UUID or refreshed-parent retry. Initial publication into an intentionally empty schema
+is a separate `bh-4shu3` seed contract.
+
+Runtime authority and per-principal registry live in a separate protected database.
+Each frame incarnation gets a distinct authenticated SQL principal and inbox table;
+frames have no observer, operator, protected receipt/floor DML, schema or version-control
+capability. The separately deployed trusted receiver validates domain-separated complete
+Ed25519 envelopes against the current operator grant before writing immutable private
+first-seen receipts, monotonic floors, public signed observations and global hive lease
+CAS/results. Frames may read only the public result and lease projections needed for
+bounded acknowledgment and eligibility. Shared-table ON DUP trigger isolation failed on
+the pinned server and is not used. The operator signs versioned authority plus the exact
+canonical hive policy projection; a config commit without matching protected projection
+denies frame intake. Config and runtime histories are not claimed to commit atomically.
+The composite read uses one physical snapshot, exact cross-reference and a fresh outside-
+snapshot reread at the eligibility point. Later claim/dispatch checks reread authority.
+In the isolated pinned-server fixture, killing the separate receiver before SQL COMMIT
+rolls back its receipt, floor and result together; killing it just after COMMIT leaves
+the exact accepted UUID/digest recoverable. An orderly Dolt restart retains ignored
+protected receipts and hive leases. These tests do not establish physical power-loss
+durability or an external backup/restore procedure; that recovery contract is part of
+the server-local deployment handoff.
+
+The application pins PyMySQL distribution `1.1.2`, requires server-advertised `CLIENT_SSL`
+before authentication, a private trusted-CA/hostname TLS context at least TLS 1.2, no
+LOCAL INFILE, no caller socket/Unix transport and no reconnect/replay. A bounded isolated
+Python resolver subprocess supplies IPv4 addresses while preserving the original hostname
+for TLS SNI and SAN verification. IPv6-only endpoints are unsupported. Each frame proposal,
+heartbeat, registration, config publication and operator transition carries its original
+monotonic deadline through broker, resolver, connection, packet I/O, floor waits and readback;
+unknown acknowledgments retain exact request identities. A raw SSH tunnel to a plaintext
+MySQL greeting does not satisfy this native TLS contract. Production native TLS and
+server-local provisioning remain deployment handoff prerequisites, not performed here.
