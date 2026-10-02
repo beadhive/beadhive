@@ -39,12 +39,16 @@ def _publish_host_manifest_git(
     Non-fast-forward races rebase only our manifest commit, then validate it again.
     """
     from . import hosts
+    from .beadyard_identity_file import read_identity
 
     if Path(host_id).name != host_id or not host_id or host_id in {".", ".."}:
         raise HostPublicationError("host_id must be a manifest filename")
     manifest = hosts.load(hq_dir, host_id)
     if manifest.host_id != host_id:
         raise HostPublicationError("manifest host_id does not match this host")
+    local_beadyard_id = read_identity(hq_dir)
+    if manifest.frame_id and manifest.beadyard_id != local_beadyard_id:
+        raise HostPublicationError("frame registration belongs to another beadyard")
     relative = hosts.manifest_path(hq_dir, host_id).relative_to(hq_dir)
     content = (hq_dir / relative).read_bytes()
 
@@ -101,6 +105,8 @@ def _publish_host_manifest_git(
             ],
             hq_dir,
         )
+        if read_identity(checkout) != local_beadyard_id:
+            raise HostPublicationError("remote HQ belongs to another beadyard")
         # Clone loses HQ-local settings; preserve effective signing and transport policy.
         for key, value in settings.items():
             checked(["config", key, value], checkout)

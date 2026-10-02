@@ -146,5 +146,6 @@ def test_only_worktrees_ephemeral_is_host_overridable():
 
 def test_authority_config_ownership():
     assert partition_of("hq.authority_anchor") == HOST
+    assert partition_of("hq.beadyard_id") == HOST
     assert partition_of("hq.mode") == FLEET
     assert partition_of("hq.admission_policy") == FLEET

@@ -1215,6 +1215,86 @@ def test_committed_fleet_snapshot_cas_and_document_order(backend):
     assert store.load_snapshot().commit_revision == second.commit_revision
 
 
+def test_signed_git_config_v2_binds_immutable_beadyard_identity(backend):
+    from beadhive.beadyard_identity import DOCUMENT_PATH, new_document, parse_document
+    from beadhive.hq_fleet_config import FleetConfigError
+    from beadhive.modules.config.domain.ports import FleetConfigDocument
+
+    b = backend
+    store = b["plane"].config_store(operator_key=str(b["operator"]))
+    identity_doc = FleetConfigDocument(DOCUMENT_PATH, new_document())
+    documents = (
+        FleetConfigDocument("fleet.yaml", "schema_version: 1\nmanaged_repos: []\n"),
+        identity_doc,
+    )
+    first = store.publish_snapshot(documents, expected_revision="")
+    assert first.beadyard_id == parse_document(identity_doc.content)
+    state = json.loads(git(b["remote"], "show", f"{first.commit_revision}:config.json"))
+    assert state["domain"] == guard.CONFIG_DOMAIN_V2
+    for attempted in (
+        documents[:-1],
+        documents[:-1] + (FleetConfigDocument(DOCUMENT_PATH, new_document()),),
+    ):
+        with pytest.raises(FleetConfigError, match="beadyard identity publication conflict"):
+            store.publish_snapshot(attempted, expected_revision=first.commit_revision)
+    assert store.load_snapshot().commit_revision == first.commit_revision
+
+
+def test_bound_git_frame_grant_and_eligibility_reject_foreign_hq(backend):
+    from uuid import uuid4
+
+    from beadhive.beadyard_identity import DOCUMENT_PATH
+    from beadhive.beadyard_identity_file import create_identity
+    from beadhive.modules.config.domain.ports import FleetConfigDocument
+
+    b = backend
+    plane = b["plane"]
+    apply(b, "retire")
+    owner = create_identity(b["op_repo"])
+    documents = (
+        FleetConfigDocument("fleet.yaml", "schema_version: 1\nmanaged_repos: []\n"),
+        FleetConfigDocument(DOCUMENT_PATH, (b["op_repo"] / DOCUMENT_PATH).read_text()),
+    )
+    plane.config_store(operator_key=str(b["operator"])).publish_snapshot(
+        documents, expected_revision=""
+    )
+    second_key = b["tmp"] / "second-runtime"
+    second_public = key(second_key)
+    authority = hb.ObservationAuthority(
+        "frame-two",
+        "host-two",
+        "vm-two",
+        fingerprint(second_public),
+        1,
+        "fleet-one",
+        "config-one",
+        time.time() + 3600,
+        owner,
+    )
+    plane.grant(
+        authority,
+        second_public,
+        b["desired"],
+        expected=plane._read()[0],
+        operator_key=str(b["operator"]),
+    )
+    snapshot = plane.watch_state("frame-two")
+    assert snapshot.authority.beadyard_id == owner
+    manifest = b["manifest"].model_copy(
+        update={
+            "frame_id": "frame-two",
+            "host_id": "host-two",
+            "instance_ref": "vm-two",
+            "beadyard_id": owner,
+        }
+    )
+    assert plane.read_eligibility(manifest)[0] == plane._read()[0]
+    with pytest.raises(ControlPlaneError, match="different beadyard"):
+        plane.read_eligibility(manifest.model_copy(update={"beadyard_id": str(uuid4())}))
+    with pytest.raises(ControlPlaneError, match="different beadyard"):
+        plane.read_eligibility(manifest.model_copy(update={"beadyard_id": None}))
+
+
 def test_fleet_config_rollback_expiry_and_protected_publication(backend):
     from beadhive.hq_fleet_config import FleetConfigError
     from beadhive.modules.config.domain.ports import FleetConfigDocument

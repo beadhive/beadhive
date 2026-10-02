@@ -20,9 +20,11 @@ WITNESS = "refs/bh/authority-witness/"
 CONFIG_HEAD = "refs/heads/bh-config"
 CONFIG_WITNESS = "refs/bh/config-witness/"
 CONFIG_DOMAIN = "beadhive/fleet-config/v1"
+CONFIG_DOMAIN_V2 = "beadhive/fleet-config/v2"
 ZERO = "0" * 40
 POLICY = "bh-authority-policy.json"
 DOMAIN = "beadhive/git-authority/v1"
+DOMAIN_V2 = "beadhive/git-authority/v2"
 EXECUTABLES = {"git": "git", "ssh_keygen": "ssh-keygen"}
 
 
@@ -47,7 +49,7 @@ def fingerprint(public):
 
 def binding(record):
     a = record["authority"]
-    return tuple(
+    values = tuple(
         a[k]
         for k in (
             "frame_id",
@@ -58,6 +60,7 @@ def binding(record):
             "audience",
         )
     )
+    return values + ((a["beadyard_id"],) if "beadyard_id" in a else ())
 
 
 def validate_record(identity, record, issued):
@@ -82,8 +85,10 @@ def validate_record(identity, record, issued):
         "config_revision",
         "candidate_expires_at",
     }
-    if set(a) != fields or a["frame_id"] != identity:
+    if set(a) not in (fields, fields | {"beadyard_id"}) or a["frame_id"] != identity:
         raise ValueError("invalid authority binding")
+    if "beadyard_id" in a:
+        _beadyard_parser_id()(a["beadyard_id"])
     if any(
         not isinstance(a[k], str) or not a[k] for k in fields - {"epoch", "candidate_expires_at"}
     ):
@@ -165,7 +170,7 @@ def records(state):
 def validate_state(state):
     if (
         set(state) != {"domain", "generation", "revision", "issued_at", "expires_at", "frames"}
-        or state["domain"] != DOMAIN
+        or state["domain"] not in (DOMAIN, DOMAIN_V2)
         or not isinstance(state["generation"], str)
     ):
         raise ValueError("invalid authority envelope")
@@ -202,6 +207,16 @@ def validate_state(state):
             raise ValueError("retired history must remain retired")
     for identity, record in records(state):
         validate_record(identity, record, state["issued_at"])
+    bound_ids = {record["authority"].get("beadyard_id") for _, record in records(state)} - {None}
+    if state["domain"] == DOMAIN:
+        if bound_ids:
+            raise ValueError("legacy authority carrier cannot contain beadyard identity")
+    elif len(bound_ids) != 1 or any(
+        record is not None and "beadyard_id" not in record["authority"]
+        for entry in state["frames"].values()
+        for record in (entry["active"], entry["candidate"])
+    ):
+        raise ValueError("bound authority carrier requires one beadyard identity")
         fp = record["authority"]["key_fingerprint"]
         if fp in keys or record["authority"]["epoch"] > state["frames"][identity]["epoch_floor"]:
             raise ValueError("signer reuse or ungranted epoch")
@@ -576,11 +591,38 @@ def load_runtime(policy):
     sys.path[:] = [str(libraries.resolve()), stdlib, str(Path(stdlib) / "lib-dynload")]
 
 
+def _beadyard_parser():
+    if __package__:
+        from .beadyard_identity import parse_document
+    else:
+        from beadyard_identity import parse_document
+
+    return parse_document
+
+
+def _beadyard_parser_id():
+    if __package__:
+        from .beadyard_identity import parse_id
+    else:
+        from beadyard_identity import parse_id
+
+    return parse_id
+
+
+def config_beadyard_id(state):
+    for document in state["documents"]:
+        if document["path"] == "beadyard.json":
+            return _beadyard_parser()(document["content"])
+    return None
+
+
 def validate_config_state(state):
     """Validate the carrier, leaving config semantics to the existing config module."""
     if set(state) != {"domain", "generation", "revision", "issued_at", "expires_at", "documents"}:
         raise ValueError("invalid configuration envelope")
-    if state["domain"] != CONFIG_DOMAIN or not isinstance(state["generation"], str):
+    if state["domain"] not in (CONFIG_DOMAIN, CONFIG_DOMAIN_V2) or not isinstance(
+        state["generation"], str
+    ):
         raise ValueError("invalid configuration domain/generation")
     if type(state["revision"]) is not int or state["revision"] < 1:
         raise ValueError("invalid configuration revision")
@@ -603,7 +645,7 @@ def validate_config_state(state):
         if (
             not isinstance(path, str)
             or not re.fullmatch(
-                r"fleet\.yaml|workspace(?:-[A-Za-z0-9_-]+)?\.toml|allowed_signers|"
+                r"beadyard\.json|fleet\.yaml|workspace(?:-[A-Za-z0-9_-]+)?\.toml|allowed_signers|"
                 r"hosts/[A-Za-z0-9_-]+\.yaml|hives/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\.yaml",
                 path,
             )
@@ -612,9 +654,14 @@ def validate_config_state(state):
             raise ValueError("unsupported configuration document path")
         if path in paths or not isinstance(doc["content"], str):
             raise ValueError("duplicate path or invalid configuration document content")
+        if path == "beadyard.json":
+            # The standalone guard imports the same parser from its pinned libs.
+            _beadyard_parser()(doc["content"])
         paths.add(path)
     if "fleet.yaml" not in paths:
         raise ValueError("fleet document required")
+    if (state["domain"] == CONFIG_DOMAIN) == ("beadyard.json" in paths):
+        raise ValueError("configuration carrier version and beadyard identity disagree")
 
 
 def read_config_state(sha):
@@ -653,9 +700,25 @@ def enforce_config(updates, policy, principal):
     ):
         raise ValueError("configuration generation/validity mismatch")
     parents = git("show", "-s", "--format=%P", new).split()
-    previous_revision = read_config_state(old)["revision"] if old != ZERO else 0
+    previous = read_config_state(old) if old != ZERO else None
+    previous_revision = previous["revision"] if previous is not None else 0
     if parents != ([] if old == ZERO else [old]) or state["revision"] != previous_revision + 1:
         raise ValueError("configuration must advance exact parent/revision")
+    if previous is not None:
+        prior_id = config_beadyard_id(previous)
+        next_id = config_beadyard_id(state)
+        if prior_id is not None and next_id != prior_id:
+            raise ValueError("beadyard identity cannot change or disappear")
+    authority_head = git("for-each-ref", "--format=%(objectname)", HEAD)
+    if authority_head:
+        authority_state = read_state(authority_head)
+        authority_ids = {
+            record["authority"].get("beadyard_id")
+            for _, record in records(authority_state)
+            if record["authority"].get("beadyard_id") is not None
+        }
+        if authority_ids and authority_ids != {config_beadyard_id(state)}:
+            raise ValueError("configuration belongs to another beadyard than authority")
     if sorted(protected) != sorted(
         [(old, new, CONFIG_HEAD), (ZERO, new, f"{CONFIG_WITNESS}{state['revision']:020d}")]
     ):
@@ -685,6 +748,16 @@ def enforce(updates, policy):
         raise ValueError("authority deletion forbidden")
     git("-c", f"gpg.ssh.allowedSignersFile={policy['operator_signers']}", "verify-commit", new)
     state = read_state(new)
+    if state["domain"] == DOMAIN_V2:
+        config_head = git("for-each-ref", "--format=%(objectname)", CONFIG_HEAD)
+        config_id = config_beadyard_id(read_config_state(config_head)) if config_head else None
+        authority_ids = {
+            record["authority"].get("beadyard_id")
+            for _, record in records(state)
+            if record["authority"].get("beadyard_id") is not None
+        }
+        if authority_ids != {config_id}:
+            raise ValueError("authority belongs to another beadyard than configuration")
     if (
         state["generation"] != policy["generation"]
         or state["issued_at"] > time.time() + 30
@@ -698,6 +771,8 @@ def enforce(updates, policy):
             raise ValueError("bootstrap requires empty history")
     else:
         previous = read_state(old)
+        if previous["domain"] == DOMAIN_V2 and state["domain"] != DOMAIN_V2:
+            raise ValueError("authority beadyard binding cannot regress")
         if parents != [old] or state["revision"] != previous["revision"] + 1:
             raise ValueError("authority must advance exact parent/revision")
         high = max(witnesses, default="")

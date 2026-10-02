@@ -578,6 +578,39 @@ def test_committed_sql_config_publication_and_floor(tmp_path, monkeypatch):
             # Schema allowlisting is checked against the actual committed tree,
             # not just the rows returned by the three known tables.
             _cli(tmp_path, port, "USE beadhive_hq_config; CALL DOLT_RESET('--hard')")
+            from beadhive.beadyard_identity import DOCUMENT_PATH, new_document, parse_document
+
+            bound_document = FleetConfigDocument(DOCUMENT_PATH, new_document())
+            bound_documents = winners[0].documents + (bound_document,)
+            with pytest.raises(SqlConfigError, match="beadyard identity publication conflict"):
+                restarted.publish_snapshot(
+                    bound_documents, expected_revision=winners[0].commit_revision
+                )
+            bound = restarted.publish_snapshot(
+                bound_documents,
+                expected_revision=winners[0].commit_revision,
+                explicit_adoption=True,
+            )
+            assert bound.beadyard_id == parse_document(bound_document.content)
+            version_reader = pymysql.connect(
+                host="127.0.0.1", port=port, user="root", database="beadhive_hq_config"
+            )
+            try:
+                with version_reader.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT schema_version FROM hq_config_meta AS OF %s",
+                        (bound.commit_revision,),
+                    )
+                    assert cursor.fetchone()[0] == 2
+            finally:
+                version_reader.close()
+            for attempt in (
+                winners[0].documents,
+                winners[0].documents + (FleetConfigDocument(DOCUMENT_PATH, new_document()),),
+            ):
+                with pytest.raises(SqlConfigError, match="beadyard identity publication conflict"):
+                    restarted.publish_snapshot(attempt, expected_revision=bound.commit_revision)
+            assert restarted.load_snapshot().commit_revision == bound.commit_revision
             _cli(
                 tmp_path,
                 port,
@@ -597,7 +630,7 @@ def test_committed_sql_config_publication_and_floor(tmp_path, monkeypatch):
                 **settings,
                 "floor_path": str(tmp_path / "fresh-extra-floor.json"),
                 "initial_revision": extra_head,
-                "minimum_sequence": 4,
+                "minimum_sequence": 5,
             }
             extra_store = SqlFleetConfigRevisionStore(extra_settings, broker=_Broker())
             with pytest.raises(SqlConfigError, match="schema table allowlist changed"):

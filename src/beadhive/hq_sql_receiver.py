@@ -182,7 +182,7 @@ class SqlTrustedReceiver:
                 request, signed_sha = verify_hive_request(
                     envelope, granted_public_key=record["public_key"]
                 )
-                if signed_sha != request_sha or set(request) != {
+                expected_fields = {
                     "domain",
                     "request_id",
                     "principal",
@@ -199,7 +199,10 @@ class SqlTrustedReceiver:
                     "operation",
                     "force",
                     "lease",
-                }:
+                }
+                if authority.get("beadyard_id") is not None:
+                    expected_fields.add("beadyard_id")
+                if signed_sha != request_sha or set(request) != expected_fields:
                     raise ReceiverError("signed hive request shape or digest invalid")
                 from .host_lease_contracts import lease_ref
 
@@ -214,6 +217,7 @@ class SqlTrustedReceiver:
                     or request["key_fingerprint"] != route.signer_fingerprint
                     or request["audience"] != authority["audience"]
                     or request["config_revision"] != authority["config_revision"]
+                    or request.get("beadyard_id") != authority.get("beadyard_id")
                     or request["authority_revision"] != head
                     or request["force"] is not False
                     or request["operation"] not in {"adopt", "renew", "release"}
@@ -529,6 +533,7 @@ class SqlTrustedReceiver:
                         "authority_revision",
                         "manifest",
                     }
+                    | ({"beadyard_id"} if authority.get("beadyard_id") is not None else set())
                     or (
                         request["request_id"],
                         request["principal"],
@@ -553,6 +558,8 @@ class SqlTrustedReceiver:
                     )
                 ):
                     raise ReceiverError("registration identity differs from protected grant")
+                if request.get("beadyard_id") != authority.get("beadyard_id"):
+                    raise ReceiverError("registration belongs to a different beadyard")
                 manifest = HostManifest.model_validate(request["manifest"])
                 if (
                     manifest.frame_id != route.frame_id
@@ -565,6 +572,11 @@ class SqlTrustedReceiver:
                 ):
                     raise ReceiverError("registration differs from declared desired frame")
                 snapshot = self.authority.load_config_at(cursor, crossref, deadline=deadline)
+                if (
+                    manifest.beadyard_id != snapshot.beadyard_id
+                    or manifest.beadyard_id != authority.get("beadyard_id")
+                ):
+                    raise ReceiverError("registration belongs to a different beadyard")
                 documents = [
                     document
                     for document in snapshot.documents
@@ -966,6 +978,7 @@ class SqlTrustedReceiver:
             lease.key_id,
             lease.audience,
             lease.config_revision,
+            lease.beadyard_id,
         ) == (
             route.frame_id,
             route.holder_identity,
@@ -974,4 +987,5 @@ class SqlTrustedReceiver:
             route.signer_fingerprint,
             authority["audience"],
             authority["config_revision"],
+            authority.get("beadyard_id"),
         )

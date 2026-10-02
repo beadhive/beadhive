@@ -8,11 +8,11 @@ import os
 import shutil
 import sys
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from . import config, gitref, hq_git_broker, hq_manifest_guard
+from . import beadyard_identity, config, gitref, hq_git_broker, hq_manifest_guard
 from . import hq_authority_guard as guard
 from .run import run
 
@@ -78,6 +78,7 @@ class ConfigAuthoritySnapshot:
             or not isinstance(self.authority, AuthoritySnapshot)
             or self.token.backend_identity != self.config.backend_identity
             or self.token.generation != self.config.generation
+            or self.authority.authority.beadyard_id != self.config.beadyard_id
             or max(self.config.fetched_at, self.authority.checked_at)
             >= min(self.config.valid_until, self.authority.valid_until)
         ):
@@ -216,6 +217,7 @@ def install_guard(
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(source.read_bytes())
     (libraries / "manifest_guard.py").write_bytes(Path(hq_manifest_guard.__file__).read_bytes())
+    (libraries / "beadyard_identity.py").write_bytes(Path(beadyard_identity.__file__).read_bytes())
     (libraries / "host-manifest.schema.json").write_text(
         gitref.encode(HostManifest.model_json_schema())
     )
@@ -353,6 +355,11 @@ class GitControlPlane:
         """
         revision, _, _ = self._read()
         desired = self.fetch_config(manifest.frame_id, holder_identity=manifest.host_id)
+        from .beadyard_identity_file import read_identity
+
+        owner = read_identity(self.hq_dir)
+        if manifest.beadyard_id != owner or desired["authority"].get("beadyard_id") != owner:
+            raise ControlPlaneError("frame belongs to a different beadyard")
         observation = self.observe(manifest, now=now)
         current, _, _ = self._read()
         if current != revision:
@@ -612,8 +619,11 @@ class GitControlPlane:
         current, previous, policy = self._operator_read()
         if current != expected or not 1 <= duration <= 86400:
             raise ControlPlaneError("expected authority revision/duration mismatch")
+        bound = any(
+            record["authority"].get("beadyard_id") is not None for _, record in guard.records(state)
+        )
         state.update(
-            domain=guard.DOMAIN,
+            domain=guard.DOMAIN_V2 if bound else guard.DOMAIN,
             generation=policy["generation"],
             revision=previous.get("revision", 0) + 1,
             issued_at=self.clock(),
@@ -804,6 +814,10 @@ class GitControlPlane:
         return changed
 
     def publish_registration_evidence(self, manifest, *, signing_key):
+        from .beadyard_identity_file import read_identity
+
+        if manifest.beadyard_id != read_identity(self.hq_dir):
+            raise ControlPlaneError("registration belongs to another beadyard")
         policy = self._policy()
         # Pending registration is authenticated evidence, never an authority grant.
         public_path = Path(signing_key + ".pub")
@@ -853,6 +867,11 @@ class GitControlPlane:
         return sha
 
     def grant(self, authority, public_key, desired, *, expected, operator_key):
+        from .beadyard_identity_file import read_identity
+        from .host_heartbeat_core import authority_payload
+
+        if authority.beadyard_id != read_identity(self.hq_dir):
+            raise ControlPlaneError("candidate belongs to a different beadyard")
         sha, state, policy = self._operator_read()
         if (
             sha != expected
@@ -889,7 +908,7 @@ class GitControlPlane:
                 "candidate exists or epoch does not advance operator-granted floor"
             )
         entry["candidate"] = {
-            "authority": asdict(authority),
+            "authority": authority_payload(authority),
             "public_key": public_key.strip(),
             "state": "pending",
             "desired": desired,
@@ -991,10 +1010,16 @@ class GitControlPlane:
             manifest = hosts.HostManifest.model_validate_json(
                 _git(self.hq_dir, "show", f"{registration_sha}:registration.json")
             )
-            if (manifest.frame_id, manifest.host_id, manifest.instance_ref) != (
+            if (
+                manifest.frame_id,
+                manifest.host_id,
+                manifest.instance_ref,
+                manifest.beadyard_id,
+            ) != (
                 frame,
                 authority.holder_identity,
                 authority.instance_ref,
+                authority.beadyard_id,
             ):
                 raise ControlPlaneError("registration incarnation mismatch")
             registration = manifest.model_dump(mode="json", exclude_none=True)
@@ -1356,6 +1381,7 @@ class SqlControlPlane:
             or lease.key_id != route.signer_fingerprint
             or lease.audience != authority["audience"]
             or lease.config_revision != authority["config_revision"]
+            or lease.beadyard_id != authority.get("beadyard_id")
         ):
             raise ControlPlaneError("heartbeat reference differs from current grant")
         return f"sql:inbox/{route.principal}/{route.epoch}"
@@ -1380,11 +1406,17 @@ class SqlControlPlane:
                 or manifest.host_id != route.holder_identity
                 or manifest.instance_ref != route.instance_ref
                 or authority["key_fingerprint"] != route.signer_fingerprint
+                or manifest.beadyard_id != _snapshot.beadyard_id
+                or manifest.beadyard_id != authority.get("beadyard_id")
             ):
                 raise ControlPlaneError("registration manifest differs from current grant")
             request_id = str(uuid.uuid4())
             request = {
-                "domain": "beadhive/sql-registration/v1",
+                "domain": (
+                    "beadhive/sql-registration/v2"
+                    if manifest.beadyard_id is not None
+                    else "beadhive/sql-registration/v1"
+                ),
                 "request_id": request_id,
                 "principal": route.principal,
                 "frame_id": route.frame_id,
@@ -1396,6 +1428,8 @@ class SqlControlPlane:
                 "authority_revision": head,
                 "manifest": manifest.model_dump(mode="json", exclude_none=True),
             }
+            if manifest.beadyard_id is not None:
+                request["beadyard_id"] = manifest.beadyard_id
             _, digest = runtime.publish_inbox(
                 "registration",
                 sign_registration(request, signing_key=signing_key),
@@ -1454,7 +1488,7 @@ class SqlControlPlane:
         return time.monotonic() + binding["operation_timeout"]
 
     def grant(self, authority, public_key, desired, *, expected, operator_key):
-        from .host_heartbeat_core import ObservationAuthority
+        from .host_heartbeat_core import ObservationAuthority, authority_payload
         from .hq_sql_operator import SqlRuntimeOperator
         from .hq_sql_signatures import fingerprint
 
@@ -1486,7 +1520,7 @@ class SqlControlPlane:
             if entry["candidate"] is not None or authority.epoch <= entry["epoch_floor"]:
                 raise ControlPlaneError("candidate exists or epoch does not advance")
             entry["candidate"] = {
-                "authority": asdict(authority),
+                "authority": authority_payload(authority),
                 "public_key": public_key.strip(),
                 "state": "pending",
                 "desired": desired,
@@ -1505,6 +1539,14 @@ class SqlControlPlane:
             state["revision"] += 1
             state["issued_at"] = self.clock()
             state["expires_at"] = state["issued_at"] + 3600
+            state["domain"] = (
+                guard.DOMAIN_V2
+                if any(
+                    row["authority"].get("beadyard_id") is not None
+                    for _, row in guard.records(state)
+                )
+                else guard.DOMAIN
+            )
             guard.validate_state(state)
             principal = SqlRuntimeOperator.principal_for(authority)
             return operator.publish(
@@ -1856,6 +1898,8 @@ class SqlControlPlane:
                 manifest.frame_id != route.frame_id
                 or manifest.host_id != route.holder_identity
                 or manifest.instance_ref != route.instance_ref
+                or manifest.beadyard_id != _snapshot.beadyard_id
+                or manifest.beadyard_id != record["authority"].get("beadyard_id")
                 or not any(
                     policy["config_revision"] == record["authority"]["config_revision"]
                     for policy in policies.values()
@@ -1992,6 +2036,7 @@ class SqlControlPlane:
                     lease.epoch,
                     lease.audience,
                     lease.config_revision,
+                    lease.beadyard_id,
                 )
                 != (
                     authority["frame_id"],
@@ -2001,6 +2046,7 @@ class SqlControlPlane:
                     authority["epoch"],
                     authority["audience"],
                     authority["config_revision"],
+                    authority.get("beadyard_id"),
                 )
             ):
                 raise ControlPlaneError("heartbeat does not match current granted incarnation")
@@ -2060,7 +2106,11 @@ class SqlControlPlane:
             authority = record["authority"]
             request_id = str(uuid.uuid4())
             request = {
-                "domain": "beadhive/sql-hive-lease/v1",
+                "domain": (
+                    "beadhive/sql-hive-lease/v2"
+                    if authority.get("beadyard_id") is not None
+                    else "beadhive/sql-hive-lease/v1"
+                ),
                 "request_id": request_id,
                 "principal": binding.principal,
                 "frame_id": binding.frame_id,
@@ -2077,6 +2127,8 @@ class SqlControlPlane:
                 "force": False,
                 "lease": lease.to_record(),
             }
+            if authority.get("beadyard_id") is not None:
+                request["beadyard_id"] = authority["beadyard_id"]
             _, digest = runtime.publish_inbox(
                 "hive_lease",
                 sign_hive_request(request, signing_key=signing_key),

@@ -15,6 +15,12 @@ from pathlib import Path
 
 from ruamel.yaml import YAML
 
+from .beadyard_identity import (
+    DOCUMENT_PATH,
+    BeadyardIdentityError,
+    parse_document,
+    validate_publication_identity,
+)
 from .hq_sql_deadline import flock_until
 from .hq_sql_transport import FnoxBroker, SqlTransportError, connect
 from .modules.config.domain.ports import FleetConfigDocument, FleetConfigSnapshot
@@ -22,7 +28,7 @@ from .modules.config.domain.ports import FleetConfigDocument, FleetConfigSnapsho
 TABLES = ("hq_config_meta", "hq_config_documents", "hq_config_publications")
 MAX_BYTES = 4 * 1024 * 1024
 PATH = re.compile(
-    r"fleet\.yaml|workspace(?:-[A-Za-z0-9_-]+)?\.toml|allowed_signers|"
+    r"beadyard\.json|fleet\.yaml|workspace(?:-[A-Za-z0-9_-]+)?\.toml|allowed_signers|"
     r"hosts/[A-Za-z0-9_-]+\.yaml|"
     r"hives/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\.yaml"
 )
@@ -68,6 +74,8 @@ def _digest(documents):
 
 
 def _kind(path):
+    if path == DOCUMENT_PATH:
+        return "beadyard"
     if path == "fleet.yaml":
         return "fleet"
     if path.startswith("workspace"):
@@ -81,7 +89,7 @@ def _kind(path):
     raise SqlConfigError("unsupported configuration document path")
 
 
-def _validate(documents):
+def _validate(documents, *, version=None):
     if not isinstance(documents, tuple) or not documents:
         raise SqlConfigError("ordered configuration documents required")
     seen = set()
@@ -98,8 +106,15 @@ def _validate(documents):
         size += len(document.path.encode()) + len(document.content.encode())
         if size > MAX_BYTES:
             raise SqlConfigError("configuration snapshot exceeds size bound")
+        if document.path == DOCUMENT_PATH:
+            try:
+                parse_document(document.content)
+            except BeadyardIdentityError:
+                raise SqlConfigError("beadyard identity document invalid") from None
     if "fleet.yaml" not in seen:
         raise SqlConfigError("fleet document required")
+    if version is not None and (version == 1) == (DOCUMENT_PATH in seen):
+        raise SqlConfigError("HQ config storage version and beadyard identity disagree")
     from .modules.config.application.partition import HOST, partition_of
 
     fleet = next(doc.content for doc in documents if doc.path == "fleet.yaml")
@@ -128,7 +143,7 @@ def _validate(documents):
                 source = tomllib.loads(document.content)
             except (ValueError, UnicodeError):
                 raise SqlConfigError("workspace configuration syntax invalid") from None
-        elif document.path == "allowed_signers":
+        elif document.path in ("allowed_signers", DOCUMENT_PATH):
             continue
         else:
             try:
@@ -247,7 +262,7 @@ class SqlFleetConfigRevisionStore:
         if len(rows) != 1:
             raise SqlConfigError("HQ config metadata missing or duplicated")
         (singleton, version, backend, generation, sequence, publication_id, digest, count) = rows[0]
-        if singleton != 1 or version != 1 or not backend or not generation or sequence < 1:
+        if singleton != 1 or version not in (1, 2) or not backend or not generation or sequence < 1:
             raise SqlConfigError("HQ config schema or authority metadata invalid")
         cursor.execute(
             "SELECT path,ordinal,kind,content,content_sha256 "
@@ -270,7 +285,7 @@ class SqlFleetConfigRevisionStore:
             except UnicodeError:
                 raise SqlConfigError("HQ config document encoding invalid") from None
         documents = tuple(documents)
-        _validate(documents)
+        _validate(documents, version=version)
         if len(documents) != count or _digest(documents) != digest:
             raise SqlConfigError("HQ config publication digest mismatch")
         cursor.execute(
@@ -281,12 +296,12 @@ class SqlFleetConfigRevisionStore:
         witness = cursor.fetchone()
         if witness != (sequence, generation, digest, count):
             raise SqlConfigError("HQ config publication witness mismatch")
-        return backend, generation, sequence, documents
+        return backend, generation, sequence, documents, version
 
     def _snapshot(self, cursor, head, *, revision=None, deadline=None):
         if revision is not None and revision != head:
             raise SqlConfigError("requested configuration revision is no longer current")
-        backend, generation, sequence, documents = self._committed(cursor, head)
+        backend, generation, sequence, documents, _version = self._committed(cursor, head)
         self._check_floor(cursor, backend, generation, sequence, head, deadline=deadline)
         now = self.clock()
         return FleetConfigSnapshot(
@@ -441,7 +456,7 @@ class SqlFleetConfigRevisionStore:
         finally:
             connection.close()
 
-    def publish_snapshot(self, documents, *, expected_revision):
+    def publish_snapshot(self, documents, *, expected_revision, explicit_adoption=False):
         _validate(documents)
         if not isinstance(expected_revision, str) or not expected_revision:
             raise SqlConfigError("original expected configuration revision required")
@@ -471,12 +486,32 @@ class SqlFleetConfigRevisionStore:
                 visible = {row[0] for row in cursor.fetchall()}
                 if visible != set(TABLES):
                     raise SqlConfigError("HQ config schema table allowlist changed")
-                backend, generation, sequence, _ = self._committed(cursor, head)
+                backend, generation, sequence, previous_documents, previous_version = (
+                    self._committed(cursor, head)
+                )
+                try:
+                    proposed_id = validate_publication_identity(
+                        previous_documents, documents, explicit_adoption=explicit_adoption
+                    )
+                except BeadyardIdentityError:
+                    raise SqlConfigError("beadyard identity publication conflict") from None
+                target_version = 2 if proposed_id is not None else 1
+                if target_version < previous_version:
+                    raise SqlConfigError("HQ config storage version cannot regress")
+                _validate(documents, version=target_version)
                 cursor.execute(
-                    "UPDATE hq_config_meta SET publication_sequence=%s,publication_id=%s,"
+                    "UPDATE hq_config_meta SET schema_version=%s,"
+                    "publication_sequence=%s,publication_id=%s,"
                     "documents_sha256=%s,document_count=%s "
                     "WHERE singleton_id=1 AND publication_sequence=%s",
-                    (sequence + 1, publication_id, digest, len(documents), sequence),
+                    (
+                        target_version,
+                        sequence + 1,
+                        publication_id,
+                        digest,
+                        len(documents),
+                        sequence,
+                    ),
                 )
                 if cursor.rowcount != 1:
                     raise SqlConfigError("configuration publication CAS conflict")

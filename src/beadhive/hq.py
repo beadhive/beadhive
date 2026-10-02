@@ -25,6 +25,7 @@ register the synthetic identity so ``bh hq bd ready`` resolves to it. See ``clon
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -52,6 +53,7 @@ from . import (
 )
 from .bd import err_line
 from .bd import run as run_bd
+from .beadyard_identity_file import create_identity
 from .hq_manifest_publication import HostPublicationError as HostPublicationError
 from .hq_manifest_publication import _publish_host_manifest_git as _publish_host_manifest_git
 from .run import run
@@ -106,22 +108,58 @@ def init_store() -> None:
     the very thing that put a derived per-host aggregate and HQ's authoritative beads on one
     Dolt remote path. Standing up HQ has nothing to do with hydrating the fleet; `bh sync`
     owns that, and lands it in the hub."""
-    # Create the durable store FIRST (prefix hq) — so a bd-init failure never leaves a dangling
-    # registration — then register the synthetic identity in the ws registry.
-    fresh_git = not (config.hq_dir() / ".git").exists()
-    hq = hub.ensure_store(config.hq_dir(), registry.HQ_PREFIX)
-    if fresh_git:
-        # All HQ transport/clone operations use main, independent of machine Git defaults.
-        initialized = _git(["branch", "-M", "main"], hq)
-        if initialized.returncode:
-            raise RuntimeError(f"cannot initialize HQ main branch: {err_line(initialized)}")
-    registry.register(
-        registry.HQ_PROVIDER,
-        registry.HQ_ORG,
-        registry.HQ_REPO,
-        registry.HQ_PREFIX,
-        registry.HQ_KIND,
-    )
+    hq_dir = config.hq_dir()
+    hq_dir.parent.mkdir(parents=True, exist_ok=True)
+    # The local HQ path is already governed by the host's protected BH_HOME custody.
+    # Serialize fresh setup, including its marker and registry registration, by path.
+    tag = hashlib.sha256(str(hq_dir.absolute()).encode()).hexdigest()[:20]
+    lock_path = hq_dir.parent / f".beadyard-hq-{tag}.lock"
+    pending = hq_dir.parent / f".beadyard-hq-{tag}.pending"
+    lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        if hq_dir.is_symlink():
+            raise RuntimeError("HQ path cannot be a symlink during identity setup")
+        fresh_git = not (hq_dir / ".git").exists()
+        if fresh_git and not pending.exists():
+            marker_fd = os.open(
+                pending,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            try:
+                os.fsync(marker_fd)
+            finally:
+                os.close(marker_fd)
+            directory_fd = os.open(hq_dir.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        # Create the store before registration. The durable marker distinguishes
+        # a partially created new HQ from an existing, unbound legacy HQ.
+        hq = hub.ensure_store(hq_dir, registry.HQ_PREFIX)
+        if pending.exists():
+            initialized = _git(["branch", "-M", "main"], hq)
+            if initialized.returncode:
+                raise RuntimeError(f"cannot initialize HQ main branch: {err_line(initialized)}")
+            create_identity(hq)
+        registry.register(
+            registry.HQ_PROVIDER,
+            registry.HQ_ORG,
+            registry.HQ_REPO,
+            registry.HQ_PREFIX,
+            registry.HQ_KIND,
+        )
+        if pending.exists():
+            pending.unlink()
+            directory_fd = os.open(hq_dir.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+    finally:
+        os.close(lock_fd)
     typer.echo(f"✓ Factory HQ store initialized at {hq} (prefix '{registry.HQ_PREFIX}', kind=hq)")
 
 

@@ -59,9 +59,9 @@ class SqlRuntimeOperator:
     @staticmethod
     def principal_for(authority) -> str:
         """Deterministic name for a separately preprovisioned frame SQL account."""
-        from dataclasses import asdict
+        from .host_heartbeat_core import authority_payload
 
-        return "frame_" + hashlib.sha256(canonical(asdict(authority))).hexdigest()[:20]
+        return "frame_" + hashlib.sha256(canonical(authority_payload(authority))).hexdigest()[:20]
 
     def _identity(self, cursor):
         binding = self.settings["authority_writer"]
@@ -186,6 +186,7 @@ class SqlRuntimeOperator:
                             or lease.key_id != signer
                             or lease.audience != authority["audience"]
                             or lease.config_revision != authority["config_revision"]
+                            or lease.beadyard_id != authority.get("beadyard_id")
                         ):
                             raise SqlOperatorError("protected accepted receipt identity invalid")
                         receipts.append((sequence, digest, first_seen, lease))
@@ -277,6 +278,13 @@ class SqlRuntimeOperator:
                     raise SqlOperatorError("new authority sequence, time or generation invalid")
                 guard.validate_state(state)
                 snapshot = self.authority.load_latest_config_at(cursor, deadline=deadline)
+                bound_ids = {
+                    record["authority"].get("beadyard_id")
+                    for _, record in guard.records(state)
+                    if record["authority"].get("beadyard_id") is not None
+                }
+                if bound_ids and bound_ids != {snapshot.beadyard_id}:
+                    raise SqlOperatorError("authority belongs to a different beadyard")
                 policies = project_hive_policies(
                     snapshot, valid_until=state["expires_at"], now=self.clock()
                 )

@@ -32,6 +32,18 @@ class FleetConfigSnapshot:
     valid_until: float
     documents: tuple[FleetConfigDocument, ...]
 
+    @property
+    def beadyard_id(self) -> str | None:
+        """Portable HQ instance binding; ``None`` is explicit legacy absence.
+
+        It is derived from the one raw document, never a second stored copy or
+        a generated default. Signed Git and committed Dolt adapters retain the
+        document unchanged through export/import and backend switches.
+        """
+        from ....beadyard_identity import identity_in_documents
+
+        return identity_in_documents(self.documents, required=False)
+
     def __post_init__(self):
         if any(
             not isinstance(value, str) or not value

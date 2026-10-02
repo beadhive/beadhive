@@ -3,20 +3,24 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from uuid import uuid4
 
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from beadhive.host_heartbeat_core import HeartbeatLease
+from beadhive.host_heartbeat_core import HeartbeatLease, ObservationAuthority, _authority_matches
+from beadhive.hq_framelease_contracts import DOMAIN_V2
 from beadhive.hq_framelease_contracts import HeartbeatLease as NeutralHeartbeatLease
 from beadhive.hq_sql_signatures import (
     SqlSignatureError,
     fingerprint,
     sign_heartbeat,
     sign_hive_request,
+    sign_registration,
     verify_heartbeat,
     verify_hive_request,
+    verify_registration,
 )
 
 
@@ -80,6 +84,44 @@ def test_sql_framelease_signature_binds_complete_envelope_and_current_key(tmp_pa
         sign_heartbeat(_lease(fingerprint(revoked_public)), signing_key=str(key))
 
 
+def test_bound_v2_framelease_signs_hq_id_and_denies_foreign_authority(tmp_path):
+    key, public = _key(tmp_path, "bound-frame")
+    beadyard_id = str(uuid4())
+    lease = HeartbeatLease.model_validate(
+        {
+            **_lease(fingerprint(public)).model_dump(mode="json", exclude_none=True),
+            "domain": DOMAIN_V2,
+            "beadyard_id": beadyard_id,
+        }
+    )
+    envelope = sign_heartbeat(lease, signing_key=str(key))
+    assert envelope["apiVersion"] == "frame.beadhive.ai/v1alpha2"
+    assert verify_heartbeat(envelope, granted_public_key=public)[0] == lease
+    with pytest.raises(SqlSignatureError):
+        verify_heartbeat(
+            {
+                **envelope,
+                "spec": {**envelope["spec"], "beadyard_id": str(uuid4())},
+            },
+            granted_public_key=public,
+        )
+    authority = ObservationAuthority(
+        lease.frame_id,
+        lease.holderIdentity,
+        lease.instance_ref,
+        lease.key_id,
+        lease.epoch,
+        lease.audience,
+        lease.config_revision,
+        beadyard_id=str(uuid4()),
+    )
+    assert not _authority_matches(lease, authority)
+    with pytest.raises(ValueError, match="domain and beadyard"):
+        HeartbeatLease.model_validate(
+            {**lease.model_dump(mode="json"), "domain": "beadhive/frame-heartbeat/v1"}
+        )
+
+
 def test_sql_hive_request_signature_binds_original_cas_and_request_id(tmp_path):
     key, public = _key(tmp_path, "frame-key")
     request = {
@@ -113,5 +155,37 @@ def test_sql_hive_request_signature_binds_original_cas_and_request_id(tmp_path):
     with pytest.raises(SqlSignatureError):
         verify_hive_request(
             {**envelope, "request": {**request, "expected_revision": "changed"}},
+            granted_public_key=public,
+        )
+    bound = {
+        **request,
+        "domain": "beadhive/sql-hive-lease/v2",
+        "beadyard_id": str(uuid4()),
+    }
+    bound_envelope = sign_hive_request(bound, signing_key=str(key))
+    assert verify_hive_request(bound_envelope, granted_public_key=public)[0] == bound
+    with pytest.raises(SqlSignatureError):
+        verify_hive_request(
+            {**bound_envelope, "request": {**bound, "beadyard_id": str(uuid4())}},
+            granted_public_key=public,
+        )
+    with pytest.raises(SqlSignatureError, match="version and beadyard"):
+        sign_hive_request({**bound, "domain": request["domain"]}, signing_key=str(key))
+
+
+def test_sql_registration_v2_signs_beadyard_binding(tmp_path):
+    key, public = _key(tmp_path, "registration-key")
+    request = {
+        "domain": "beadhive/sql-registration/v2",
+        "beadyard_id": str(uuid4()),
+        "key_fingerprint": fingerprint(public),
+        "frame_id": "frame-1",
+        "manifest": {"frame_id": "frame-1"},
+    }
+    signed = sign_registration(request, signing_key=str(key))
+    assert verify_registration(signed, granted_public_key=public)[0] == request
+    with pytest.raises(SqlSignatureError):
+        verify_registration(
+            {**signed, "request": {**request, "beadyard_id": str(uuid4())}},
             granted_public_key=public,
         )
