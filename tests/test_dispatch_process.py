@@ -9,7 +9,11 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
+
+from beadhive import config, frame_eligibility, guard, localloop
 from beadhive import dispatch_hive_run as dhr
 
 
@@ -49,8 +53,155 @@ def test_stopping_never_picks_new_work(tmp_path):
     assert asyncio.run(driver.run_pass()).idle
 
 
-def test_process_adapter_fails_closed_without_u3():
-    assert dhr.process_eligible("fixture/hive", cfg={}) is False
+@pytest.mark.parametrize(
+    ("candidate", "holder", "expected"),
+    [(True, True, True), (False, True, False), (True, False, False)],
+)
+def test_process_adapter_requires_frame_admission_and_current_holder(
+    monkeypatch, tmp_path, candidate, holder, expected
+):
+    current = {"revision": "current"}
+    monkeypatch.setattr(config, "load", lambda: current)
+    monkeypatch.setattr(
+        frame_eligibility,
+        "require_local",
+        lambda hive, *, cfg, hive_dir: frame_eligibility.EligibilityDecision(
+            (("admitted_active", candidate and cfg is current and hive_dir == tmp_path),)
+        ),
+    )
+    lease = SimpleNamespace(held_by=lambda identity: holder and identity == "frame-id")
+    monkeypatch.setattr(
+        frame_eligibility,
+        "authoritative_primary",
+        lambda hive, *, cfg, hive_dir: ("fixture", "frame-id", lease),
+    )
+    monkeypatch.setattr(
+        guard,
+        "primary_state",
+        lambda *a, **kw: pytest.fail("frame used legacy cached lease"),
+    )
+    assert dhr.process_eligible("fixture/hive", hive_dir=tmp_path) is expected
+
+
+@pytest.mark.parametrize(
+    ("lease_present", "holder", "expected"),
+    [(False, False, True), (True, True, True), (True, False, False)],
+)
+def test_process_adapter_preserves_legacy_primary_policy(
+    monkeypatch, tmp_path, lease_present, holder, expected
+):
+    monkeypatch.setattr(config, "load", lambda: {})
+    monkeypatch.setattr(frame_eligibility, "require_local", lambda *a, **kw: None)
+    lease = SimpleNamespace(held_by=lambda identity: holder and identity == "legacy-id")
+    calls = []
+
+    def primary(hive, *, cfg, hive_dir):
+        calls.append((hive, cfg, hive_dir))
+        return ("fixture", "legacy-id", lease) if lease_present else None
+
+    monkeypatch.setattr(guard, "primary_state", primary)
+    assert dhr.process_eligible("fixture/hive", hive_dir=tmp_path) is expected
+    assert calls == [("fixture/hive", {}, tmp_path)]
+
+
+@pytest.mark.parametrize(
+    "failure", [OSError("config unavailable"), RuntimeError("authority unavailable")]
+)
+def test_process_adapter_denies_config_or_authority_outage(monkeypatch, tmp_path, failure):
+    if isinstance(failure, OSError):
+        monkeypatch.setattr(config, "load", lambda: (_ for _ in ()).throw(failure))
+    else:
+        monkeypatch.setattr(config, "load", lambda: {})
+        monkeypatch.setattr(
+            frame_eligibility,
+            "local_intake_decision",
+            lambda *a, **kw: (_ for _ in ()).throw(failure),
+        )
+    assert not dhr.process_eligible("fixture/hive", hive_dir=tmp_path)
+
+
+def test_process_adapter_rereads_config_before_each_spawn(monkeypatch, tmp_path):
+    revisions = iter(["valid", "valid", "expired"])
+    monkeypatch.setattr(config, "load", lambda: {"revision": next(revisions)})
+    monkeypatch.setattr(
+        frame_eligibility,
+        "local_intake_decision",
+        lambda hive, *, cfg, hive_dir, legacy_primary: frame_eligibility.EligibilityDecision(
+            (("config_valid", cfg["revision"] == "valid" and hive_dir == tmp_path),)
+        ),
+    )
+    spawned = []
+    driver = dhr.HiveDispatchRun(
+        hive_dir=tmp_path,
+        hive="fixture/hive",
+        actor="dev/test",
+        sink_path=tmp_path / "dispatch.jsonl",
+        pick=lambda: ["one", "two"],
+        eligible=lambda: dhr.process_eligible("fixture/hive", hive_dir=tmp_path),
+    )
+
+    async def spawn(epic):
+        spawned.append(epic)
+        return dhr._Child(epic, type("Proc", (), {"returncode": None})())
+
+    driver._spawn = spawn
+    asyncio.run(driver.run_pass())
+    assert spawned == ["one"]
+
+
+def test_process_lease_renew_denies_expired_config(monkeypatch, tmp_path):
+    revisions = iter([{"current": True}, {"current": False}])
+    monkeypatch.setattr(config, "load", lambda: next(revisions))
+
+    def require_intake(hive, *, cfg, hive_dir):
+        assert (hive, hive_dir) == ("fixture/hive", tmp_path)
+        if not cfg["current"]:
+            raise frame_eligibility.EligibilityError("central config expired")
+
+    monkeypatch.setattr(frame_eligibility, "require_intake", require_intake)
+    keeper = localloop.EligibilityLeaseKeeper(
+        localloop.NullLeaseKeeper(),
+        "fixture/hive",
+        {"current": True},
+        tmp_path,
+        fresh_config=True,
+    )
+    assert keeper.renew(active=False).held
+    denied = keeper.renew(active=False)
+    assert not denied.held
+    assert "central config expired" in denied.detail
+
+
+def test_process_lease_renew_denies_config_outage(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "load", lambda: (_ for _ in ()).throw(OSError("config down")))
+
+    class ForbiddenRenew:
+        def renew(self, *, active):
+            pytest.fail("lease renewed after qualified config read failed")
+
+    keeper = localloop.EligibilityLeaseKeeper(
+        ForbiddenRenew(), "fixture/hive", {}, tmp_path, fresh_config=True
+    )
+    denied = keeper.renew(active=False)
+    assert not denied.held
+    assert denied.detail == "configuration unavailable"
+
+
+def test_shared_keeper_factory_refreshes_config_for_systemd_too(monkeypatch, tmp_path):
+    monkeypatch.setattr(frame_eligibility, "require_local", lambda *a, **kw: None)
+    monkeypatch.setattr(guard, "primary_state", lambda *a, **kw: None)
+    monkeypatch.setattr(config, "load", lambda: {"current": False})
+
+    def require_intake(hive, *, cfg, hive_dir):
+        assert hive_dir == tmp_path
+        if not cfg["current"]:
+            raise frame_eligibility.EligibilityError("central config expired")
+
+    monkeypatch.setattr(frame_eligibility, "require_intake", require_intake)
+    keeper = localloop.lease_keeper_for("fixture/hive", cfg={"current": True}, hive_dir=tmp_path)
+    denied = keeper.renew(active=False)
+    assert not denied.held
+    assert denied.detail == "central config expired"
 
 
 def test_sigterm_checkpoints_child_and_exits_zero(tmp_path):
@@ -128,5 +279,33 @@ def test_drain_deadline_fences_unresponsive_child_and_reports_failure(tmp_path):
         with pytest.raises(RuntimeError, match="checkpoint completion unverified"):
             await driver.shutdown()
         assert proc.returncode == -signal.SIGKILL
+
+    asyncio.run(scenario())
+
+
+def test_nonzero_child_drain_refuses_success_after_reaping(tmp_path):
+    async def scenario():
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            "import signal,sys,time; "
+            "signal.signal(signal.SIGTERM, lambda *_: sys.exit(1)); "
+            "print('ready',flush=True); time.sleep(300)",
+            stdout=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+        await proc.stdout.readline()
+        driver = dhr.HiveDispatchRun(
+            hive_dir=tmp_path,
+            hive="fixture/hive",
+            actor="dev/test",
+            sink_path=tmp_path / "dispatch.jsonl",
+            drain_timeout=2,
+        )
+        driver.children["one"] = dhr._Child("one", proc)
+        with pytest.raises(RuntimeError, match="checkpoint completion unverified"):
+            await driver.shutdown()
+        assert proc.returncode == 1
+        assert not driver.children
 
     asyncio.run(scenario())

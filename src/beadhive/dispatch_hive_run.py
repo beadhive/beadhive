@@ -364,7 +364,14 @@ class HiveDispatchRun:
             raise RuntimeError(
                 "dispatch drain deadline expired; checkpoint completion unverified"
             ) from exc
+        failed = [
+            (child.epic, child.proc.returncode) for child in live if child.proc.returncode != 0
+        ]
         self._reap_finished()
+        if failed:
+            raise RuntimeError(
+                f"dispatch child drain failed; checkpoint completion unverified: {failed}"
+            )
 
 
 def build_run(
@@ -398,16 +405,37 @@ def build_run(
         lease=localloop.lease_keeper_for(hive, cfg=cfg, hive_dir=main),
         dry_run=dry_run,
         seat_binary=seat_binary,
-        eligible=(lambda: process_eligible(hive, cfg=cfg)) if process_mode else None,
+        # A long-lived picker must resolve config again for every admission check. The
+        # startup snapshot can outlive a central revision or its validity window.
+        eligible=(lambda: process_eligible(hive, hive_dir=main)) if process_mode else None,
         drain_timeout=60.0 if process_mode else None,
     )
 
 
-def process_eligible(hive: str, *, cfg: dict) -> bool:
-    """Fail closed until the authoritative U3 integration is available.
+def process_eligible(hive: str, *, hive_dir: Path) -> bool:
+    """Re-read current config and U3 intake authority before admitting work.
 
-    This checkpoint deliberately cannot admit production frame work. U3 must
-    replace this adapter with the common verified-heartbeat eligibility function.
+    The picker calls this once before reading candidates and again immediately before
+    each child spawn. The child independently checks intake at the actual claim API.
     """
-    _LOG.warning("hive_dispatch_ineligible", hive=hive, predicate="eligibility_unavailable")
-    return False
+    from . import frame_eligibility, guard
+
+    try:
+        current = config.load()
+        decision = frame_eligibility.local_intake_decision(
+            hive,
+            cfg=current,
+            hive_dir=hive_dir,
+            legacy_primary=guard.primary_state,
+        )
+    except Exception as exc:  # noqa: BLE001 - no authority/config failure admits new work
+        _LOG.warning(
+            "hive_dispatch_ineligible",
+            hive=hive,
+            predicate="intake_unavailable",
+            error_type=type(exc).__name__,
+        )
+        return False
+    if not decision.allowed:
+        _LOG.warning("hive_dispatch_ineligible", hive=hive, predicate=decision.reason)
+    return decision.allowed

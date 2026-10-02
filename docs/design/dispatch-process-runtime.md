@@ -16,21 +16,20 @@ service or claim a process is running when the external supervisor has not been
 queried.
 
 The picker retains the existing hive lease check and `max_epics_in_flight` cap.
-It checks its injected eligibility predicate both at intake and immediately before
-each spawn. SIGTERM stops intake and wakes the poll sleep. Each live `bh work loop`
+Before reading candidates and immediately before each spawn, process mode reloads
+current effective configuration and calls U3's `local_intake_decision` for the exact
+hive. Enrolled frames need verified admission and current authoritative lease
+ownership; legacy hosts retain their existing primary-lease policy. An unreadable
+configuration or authority denies new intake. The spawned loop rechecks intake at
+the claim API write, including a config or authority change after the picker's
+last check. Both process and systemd dispatch renew their shared lease keeper using
+a current config read; expired or unavailable central configuration denies renewal
+even when a loop started under an earlier valid revision. SIGTERM stops intake and
+wakes the poll sleep. Each live `bh work loop`
 child receives SIGTERM directly, allowing LocalLoop's cancellation ladder to save
 its branch, release its claims, and reap its seat process groups. The drain window
 is 60 seconds. External supervisors must allow more than 60 seconds before forcing
-termination. A completed drain exits normally; an expired drain fences remaining
+termination. A completed zero-exit drain exits normally; a nonzero child exit
+reports an unverified checkpoint after reaping. An expired drain fences remaining
 loop groups and raises an error, because safe checkpoint completion is unverified.
 Unrecoverable startup or runtime errors also propagate for supervisor restart.
-
-## Integration checkpoint
-
-U3 (`bh-38h7p`) has not yet supplied the authoritative verified-heartbeat eligibility
-adapter. Process dispatch therefore fails closed with `eligibility_unavailable`.
-The injection tests prove the scheduling seam and actual SIGTERM delivery; they
-are not evidence that production frames can yet claim work. Replace this adapter
-with U3's common eligibility function and validate eligible/ineligible real frame
-records before submitting U7 (`bh-bfb2y`). The existing `bh work claim` guard must
-also enforce U3 so eligibility changes inside a spawned loop cannot admit work.
