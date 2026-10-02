@@ -798,49 +798,49 @@
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 175,
+        "line": 176,
         "path": "tests/test_hq_authority_backend.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 176,
+        "line": 177,
         "path": "tests/test_hq_authority_backend.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.hq_dir",
         "kind": "direct-facade",
-        "line": 177,
+        "line": 178,
         "path": "tests/test_hq_authority_backend.py",
         "target": "beadhive.config.hq_dir"
       },
       {
         "facade_target": "beadhive.config.home",
         "kind": "direct-facade",
-        "line": 178,
+        "line": 179,
         "path": "tests/test_hq_authority_backend.py",
         "target": "beadhive.config.home"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 1263,
+        "line": 1264,
         "path": "tests/test_hq_authority_backend.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 1264,
+        "line": 1265,
         "path": "tests/test_hq_authority_backend.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 1516,
+        "line": 1517,
         "path": "tests/test_hq_authority_backend.py",
         "target": "beadhive.config.load_host"
       },

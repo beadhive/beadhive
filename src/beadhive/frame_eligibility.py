@@ -281,16 +281,16 @@ def evictable(host_id, *, hq_dir, at=None, evict_after_s=None):
         return False
 
 
-def local_intake_decision(hive="", *, cfg=None, hive_dir=None):
+def local_intake_decision(hive="", *, cfg=None, hive_dir=None, legacy_primary=None):
     """Public dispatch adapter seam: candidate policy plus live hive lease ownership."""
-    from . import guard
-
     try:
         decision = require_local(hive, cfg=cfg, hive_dir=hive_dir)
+        if decision is None and legacy_primary is None:
+            return EligibilityDecision((("legacy_primary_reader_available", False),))
         primary = (
             authoritative_primary(hive, cfg=cfg, hive_dir=hive_dir)
             if decision is not None
-            else guard.primary_state(hive, cfg=cfg, hive_dir=hive_dir)
+            else legacy_primary(hive, cfg=cfg, hive_dir=hive_dir)
         )
         held = primary is not None and primary[2] is not None and primary[2].held_by(primary[1])
         if decision is None:

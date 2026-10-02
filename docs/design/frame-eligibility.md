@@ -21,6 +21,11 @@ qualification; missing enrolled inventory fails closed. Operator/observer anchor
 pass protected custody, digest and recovery-generation validation before legacy fallback.
 The Factory GUI bridge identity alone does not enroll a Fleet frame.
 
+Dispatch composition uses `local_intake_decision(hive, cfg=..., hive_dir=...,
+legacy_primary=guard.primary_state)`. The explicit legacy reader preserves existing
+non-frame policy without making the eligibility module depend on its caller. An omitted
+legacy reader denies; frame ownership always comes from the authenticated selected port.
+
 ## Lease custody
 
 Non-frame hosts retain their existing five-field unsigned blob leases. Frames publish an

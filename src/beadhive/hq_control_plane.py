@@ -347,17 +347,44 @@ class GitControlPlane:
         return revision, desired, observation
 
     def read_hive_lease_record(self, prefix, *, holder_identity=None):
+        from .host_lease_contracts import HostLease, lease_ref
         from .hq_frame_lease import read
 
-        return read(self, prefix, holder_identity=holder_identity)
+        return read(
+            self,
+            prefix,
+            holder_identity=holder_identity,
+            git=_git,
+            error=ControlPlaneError,
+            decode=HostLease.from_record,
+            lease_ref=lease_ref,
+            json_decode=gitref.decode,
+        )
 
     def read_hive_lease(self, prefix, *, holder_identity=None):
         return self.read_hive_lease_record(prefix, holder_identity=holder_identity)[1]
 
     def publish_hive_lease(self, prefix, lease, *, expected, operation, force=False):
+        from . import host, hosts
+        from .host_lease_contracts import HostLease, lease_ref
         from .hq_frame_lease import publish
 
-        return publish(self, prefix, lease, expected=expected, operation=operation, force=force)
+        return publish(
+            self,
+            prefix,
+            lease,
+            expected=expected,
+            operation=operation,
+            force=force,
+            git=_git,
+            error=ControlPlaneError,
+            decode=HostLease.from_record,
+            lease_ref=lease_ref,
+            manifest=hosts.load(self.hq_dir, host.host_id()),
+            signing_key=host.signing_key(),
+            json_decode=gitref.decode,
+            json_encode=gitref.encode,
+        )
 
     def observe(self, manifest, *, now=None, observer_dir=None):
         from . import host_heartbeat_core as hb

@@ -5,64 +5,61 @@ from __future__ import annotations
 import json
 import tempfile
 
-from . import gitref, host, host_lease, hosts
-from .hq_control_plane import ControlPlaneError, _git
-
 DOMAIN = "beadhive-frame-hive-lease-v1"
 
 
-def _endpoint(plane):
+def _endpoint(plane, git, error):
     revision, state, policy = plane._read()
     remote = plane._remote(policy)
-    origin = _git(plane.hq_dir, "remote", "get-url", "origin").strip()
+    origin = git(plane.hq_dir, "remote", "get-url", "origin").strip()
     if origin not in {remote, str(policy["client"]["server_root"])}:
-        raise ControlPlaneError("HQ origin differs from protected authority endpoint")
+        raise error("HQ origin differs from protected authority endpoint")
     return revision, state, policy, remote
 
 
-def read(plane, prefix, *, holder_identity=None):
+def read(plane, prefix, *, git, error, decode, lease_ref, json_decode, holder_identity=None):
     from . import hq_authority_guard as guard
 
-    revision, state, policy, remote = _endpoint(plane)
-    ref = host_lease.lease_ref(prefix)
-    rows = _git(plane.hq_dir, "-c", "protocol.ext.allow=always", "ls-remote", remote, ref)
+    revision, state, policy, remote = _endpoint(plane, git, error)
+    ref = lease_ref(prefix)
+    rows = git(plane.hq_dir, "-c", "protocol.ext.allow=always", "ls-remote", remote, ref)
     if not rows.strip():
         return "", None
     sha = rows.split()[0]
-    _git(plane.hq_dir, "-c", "protocol.ext.allow=always", "fetch", "--no-tags", remote, sha)
+    git(plane.hq_dir, "-c", "protocol.ext.allow=always", "fetch", "--no-tags", remote, sha)
     # Frames cannot trust unsigned legacy blobs as an intake authorization.
-    if _git(plane.hq_dir, "cat-file", "-t", sha) != "commit":
+    if git(plane.hq_dir, "cat-file", "-t", sha) != "commit":
         if holder_identity is not None:
             return sha, None
-        record = gitref.decode(_git(plane.hq_dir, "cat-file", "-p", sha))
+        record = json_decode(git(plane.hq_dir, "cat-file", "-p", sha))
         if plane._read()[0] != revision:
-            raise ControlPlaneError("authority changed during legacy incumbent read")
-        return sha, host_lease.HostLease.from_record(record)
+            raise error("authority changed during legacy incumbent read")
+        return sha, decode(record)
     if (
-        _git(plane.hq_dir, "show", "-s", "--format=%P", sha)
-        or _git(plane.hq_dir, "ls-tree", "--name-only", sha) != "hive-lease.json"
+        git(plane.hq_dir, "show", "-s", "--format=%P", sha)
+        or git(plane.hq_dir, "ls-tree", "--name-only", sha) != "hive-lease.json"
     ):
-        raise ControlPlaneError("invalid frame hive lease carrier")
-    envelope = json.loads(_git(plane.hq_dir, "show", f"{sha}:hive-lease.json"))
+        raise error("invalid frame hive lease carrier")
+    envelope = json.loads(git(plane.hq_dir, "show", f"{sha}:hive-lease.json"))
     if envelope.get("domain") != DOMAIN or envelope.get("prefix") != prefix:
-        raise ControlPlaneError("frame hive lease domain mismatch")
+        raise error("frame hive lease domain mismatch")
     matches = [
         (f, r)
         for f, r in guard.records(state)
         if envelope.get("authority") == {"frame_id": f, **r["authority"]}
     ]
     if len(matches) != 1:
-        raise ControlPlaneError("frame hive lease incarnation unavailable")
+        raise error("frame hive lease incarnation unavailable")
     _, record = matches[0]
     with tempfile.NamedTemporaryFile(mode="w") as signers:
         signers.write("frame " + record["public_key"] + "\n")
         signers.flush()
-        _git(plane.hq_dir, "-c", f"gpg.ssh.allowedSignersFile={signers.name}", "verify-commit", sha)
-    lease = host_lease.HostLease.from_record(envelope["lease"])
+        git(plane.hq_dir, "-c", f"gpg.ssh.allowedSignersFile={signers.name}", "verify-commit", sha)
+    lease = decode(envelope["lease"])
     if lease.host_id and lease.host_id != record["authority"]["holder_identity"]:
-        raise ControlPlaneError("frame hive lease holder mismatch")
+        raise error("frame hive lease holder mismatch")
     if plane._read()[0] != revision:
-        raise ControlPlaneError("authority changed during hive lease read")
+        raise error("authority changed during hive lease read")
     if holder_identity is not None:
         hive = policy.get("hive_policies", {}).get(prefix)
         if (
@@ -83,15 +80,30 @@ def read(plane, prefix, *, holder_identity=None):
         if expiry is not None and plane.clock() >= expiry:
             return sha, None
     if plane._read()[0] != revision:
-        raise ControlPlaneError("authority changed during hive lease read")
+        raise error("authority changed during hive lease read")
     return sha, lease
 
 
-def publish(plane, prefix, lease, *, expected, operation, force=False):
-    revision, state, policy, remote = _endpoint(plane)
+def publish(
+    plane,
+    prefix,
+    lease,
+    *,
+    expected,
+    operation,
+    git,
+    error,
+    decode,
+    lease_ref,
+    manifest,
+    signing_key,
+    json_decode,
+    json_encode,
+    force=False,
+):
+    revision, state, policy, remote = _endpoint(plane, git, error)
     if force and policy["client"]["role"] != "operator":
-        raise ControlPlaneError("frame cannot assert operator forced takeover")
-    manifest = hosts.load(plane.hq_dir, host.host_id())
+        raise error("frame cannot assert operator forced takeover")
     entry = state.get("frames", {}).get(manifest.frame_id, {})
     record = entry.get("active")
     if (
@@ -99,7 +111,7 @@ def publish(plane, prefix, lease, *, expected, operation, force=False):
         or record["authority"]["holder_identity"] != manifest.host_id
         or record["authority"]["instance_ref"] != manifest.instance_ref
     ):
-        raise ControlPlaneError("frame hive lease requires exact active incarnation")
+        raise error("frame hive lease requires exact active incarnation")
     data = dict(
         domain=DOMAIN,
         authority_revision=revision,
@@ -109,28 +121,39 @@ def publish(plane, prefix, lease, *, expected, operation, force=False):
         authority={"frame_id": manifest.frame_id, **record["authority"]},
         lease=lease.to_record(),
     )
-    blob = _git(plane.hq_dir, "hash-object", "-w", "--stdin", data=gitref.encode(data))
-    tree = _git(plane.hq_dir, "mktree", data=f"100644 blob {blob}\thive-lease.json\n")
-    sha = _git(
+    blob = git(plane.hq_dir, "hash-object", "-w", "--stdin", data=json_encode(data))
+    tree = git(plane.hq_dir, "mktree", data=f"100644 blob {blob}\thive-lease.json\n")
+    sha = git(
         plane.hq_dir,
         "-c",
         "gpg.format=ssh",
         "-c",
-        f"user.signingkey={host.signing_key()}",
+        f"user.signingkey={signing_key}",
         "commit-tree",
         "-S",
         tree,
         data="Frame hive lease\n",
     )
-    _git(
+    git(
         plane.hq_dir,
         "-c",
         "protocol.ext.allow=always",
         "push",
-        f"--force-with-lease={host_lease.lease_ref(prefix)}:{expected}",
+        f"--force-with-lease={lease_ref(prefix)}:{expected}",
         remote,
-        f"{sha}:{host_lease.lease_ref(prefix)}",
+        f"{sha}:{lease_ref(prefix)}",
     )
-    if read(plane, prefix)[0] != sha:
-        raise ControlPlaneError("frame hive lease publication readback mismatch")
+    if (
+        read(
+            plane,
+            prefix,
+            git=git,
+            error=error,
+            decode=decode,
+            lease_ref=lease_ref,
+            json_decode=json_decode,
+        )[0]
+        != sha
+    ):
+        raise error("frame hive lease publication readback mismatch")
     return sha

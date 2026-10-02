@@ -127,13 +127,14 @@ def backend(tmp_path, monkeypatch, request):
         "recovery-generation-one",
         confirm_server_custody=True,
         hive_policies={
-            "bh": {
+            prefix: {
                 "config_revision": "config-one",
                 "config_head": "",
                 "valid_until": time.time() + 3600,
                 "requires": {"isolation": "kvm"},
-                "evict_after_s": 900,
+                "evict_after_s": 1 if hasattr(request, "param") else 900,
             }
+            for prefix in getattr(request, "param", ("bh",))
         },
     )
     broker_dir = tmp_path / "broker"
@@ -1564,3 +1565,111 @@ assert out.lease.is_tombstone
 """
     result = frame_process(b, release_code)
     assert result.returncode == 0, result.stderr + result.stdout
+
+
+@pytest.mark.parametrize("backend", [("bh", "stale", "quarantine", "retire")], indirect=True)
+def test_real_foreign_holder_takeover_requires_authenticated_incumbent_evidence(backend):
+    b = backend
+    for seq in (1, 2, 3):
+        b["accept"](seq)
+    apply(b, "admit")
+    runtime = b["repo"] / "second-runtime"
+    public = key(runtime)
+    second_authority = replace(
+        b["authority"],
+        frame_id="frame-two",
+        holder_identity="host-two",
+        instance_ref="vm-two",
+        key_fingerprint=fingerprint(public),
+    )
+    second_manifest = b["manifest"].model_copy(
+        update={"frame_id": "frame-two", "host_id": "host-two", "instance_ref": "vm-two"}
+    )
+    hosts.save(b["repo"], second_manifest)
+    b["plane"].grant(
+        second_authority,
+        public,
+        b["desired"],
+        expected=b["plane"]._read()[0],
+        operator_key=str(b["operator"]),
+    )
+    second = {**b, "runtime": runtime, "manifest": second_manifest}
+    register = """
+import sys,os
+from pathlib import Path
+from beadhive import hosts
+from beadhive.hq_control_plane import GitControlPlane
+plane=GitControlPlane(Path(sys.argv[1]),authority_anchor=os.environ["FRAME_AUTHORITY_ANCHOR"])
+plane.publish_registration_evidence(hosts.load(Path(sys.argv[1]),"host-two"),signing_key=sys.argv[2])
+"""
+    result = frame_process(second, register)
+    assert result.returncode == 0, result.stderr + result.stdout
+    for seq in (1, 2, 3):
+        lease = b["lease"](seq).model_copy(
+            update={
+                "frame_id": "frame-two",
+                "holderIdentity": "host-two",
+                "instance_ref": "vm-two",
+                "key_id": second_authority.key_fingerprint,
+            }
+        )
+        publish(second, lease)
+        b["plane"].accept_observation(
+            "frame-two", expected=b["plane"]._read()[0], operator_key=str(b["operator"])
+        )
+    plan = b["plane"].lifecycle("admit", "frame-two")
+    b["plane"].lifecycle(
+        "admit",
+        "frame-two",
+        "apply",
+        expected=plan["revision"],
+        expected_host_id=plan["host_id"],
+        expected_release=plan["release"],
+        operator_key=str(b["operator"]),
+        confirm=True,
+    )
+    # Separate canonical hives retain monotonic lease epochs for each independent case.
+    create = """
+import sys,os,time,json
+from pathlib import Path
+from beadhive import host,host_lease
+from beadhive.hq_control_plane import GitControlPlane
+host.host_id=lambda:"host-one"
+host.signing_key=lambda:sys.argv[2]
+plane=GitControlPlane(Path(sys.argv[1]),authority_anchor=os.environ["FRAME_AUTHORITY_ANCHOR"])
+leases={}
+for prefix in ("bh","stale","quarantine","retire"):
+ lease=host_lease.HostLease("host-one","incumbent",1,host_lease.now_stamp(),host_lease.now_stamp(time.time()+900))
+ leases[prefix]=plane.publish_hive_lease(prefix,lease,expected="",operation="adopt")
+print(json.dumps(leases))
+"""
+    result = frame_process(b, create)
+    assert result.returncode == 0, result.stderr + result.stdout
+    incumbent = json.loads(result.stdout)
+    attempt = """
+import sys,os,time
+from pathlib import Path
+from beadhive import host,host_lease
+from beadhive.hq_control_plane import GitControlPlane
+host.host_id=lambda:"host-two"
+host.signing_key=lambda:sys.argv[2]
+plane=GitControlPlane(Path(sys.argv[1]),authority_anchor=os.environ["FRAME_AUTHORITY_ANCHOR"])
+lease=host_lease.HostLease("host-two","challenger",2,host_lease.now_stamp(),host_lease.now_stamp(time.time()+900))
+print(plane.publish_hive_lease(sys.argv[3],lease,expected=sys.argv[4],operation="adopt"))
+"""
+    result = frame_process(second, attempt, "bh", incumbent["bh"])
+    assert result.returncode != 0 and "pre-receive hook declined" in result.stderr
+    assert git(b["remote"], "rev-parse", "refs/bh/lease/bh") == incumbent["bh"]
+    # Signed real receipt aging, rather than replacing evictable() or server clocks.
+    b["accept"](4, state_seen="active", leaseDurationSeconds=6, intervalSeconds=1)
+    time.sleep(7)
+    for prefix in ("stale", "quarantine", "retire"):
+        if prefix == "quarantine":
+            apply(b, "quarantine")
+        elif prefix == "retire":
+            apply(b, "retire")
+        result = frame_process(second, attempt, prefix, incumbent[prefix])
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert git(b["remote"], "rev-parse", f"refs/bh/lease/{prefix}") == result.stdout.strip()
+        current = b["plane"].read_hive_lease(prefix, holder_identity="host-two")
+        assert current.host_id == "host-two" and current.epoch == 2

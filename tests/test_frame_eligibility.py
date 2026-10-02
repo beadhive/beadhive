@@ -395,3 +395,27 @@ def test_incumbent_recovery_rechecked_before_automatic_takeover(phase, tmp_path,
         with pytest.raises(host_lease.HostLeaseRejected, match="no longer evictable"):
             host_lease.adopt("r", "bh", host_id="new", label="new", cwd=tmp_path)
     assert writes == []
+
+
+@pytest.mark.parametrize("held", [True, False])
+def test_dispatch_adapter_uses_explicit_legacy_primary_reader(held, tmp_path, monkeypatch):
+    monkeypatch.setattr(policy, "require_local", lambda *a, **kw: None)
+    lease = SimpleNamespace(held_by=lambda identity: held and identity == "legacy")
+    calls = []
+
+    def reader(hive, **kwargs):
+        calls.append((hive, kwargs))
+        return "bh", "legacy", lease
+
+    decision = policy.local_intake_decision(
+        "beadhive", cfg={}, hive_dir=tmp_path, legacy_primary=reader
+    )
+    assert decision.allowed is held
+    assert calls == [("beadhive", {"cfg": {}, "hive_dir": tmp_path})]
+
+
+def test_dispatch_adapter_refuses_missing_legacy_primary_reader(monkeypatch):
+    monkeypatch.setattr(policy, "require_local", lambda *a, **kw: None)
+    decision = policy.local_intake_decision("legacy", cfg={})
+    assert not decision.allowed
+    assert decision.reason == "legacy_primary_reader_available"
