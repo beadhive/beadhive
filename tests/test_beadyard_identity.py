@@ -152,6 +152,65 @@ def test_legacy_publication_stays_legacy_until_explicit_adoption():
         identity.validate_publication_identity((), bound, local_id=str(uuid.uuid4()))
 
 
+def test_sql_adoption_recovery_refuses_unprivate_journal_before_publication(tmp_path, monkeypatch):
+    from beadhive import config
+
+    original = FleetConfigSnapshot(
+        "backend-one", "original-revision", "generation-one", 1, 2,
+        (FleetConfigDocument("fleet.yaml", "schema_version: 1\n"),),
+    )
+
+    class Store:
+        publications = 0
+
+        def load_snapshot(self):
+            return original
+
+        def publish_snapshot(self, *_args, **_kwargs):
+            self.publications += 1
+            raise AssertionError("custody failure must precede SQL publication")
+
+    store = Store()
+    monkeypatch.setattr(hq_beadyard, "_selected_store", lambda _root: ("dolt-server", store))
+    monkeypatch.setattr(config, "home", lambda: tmp_path / "home")
+    pending = hq_beadyard._pending_sql_directory(original, expected_revision="original-revision")
+    hq_beadyard._prepare_sql_pending(pending)
+    owner = identity_file.create_identity(pending)
+    document = FleetConfigDocument(
+        identity.DOCUMENT_PATH, (pending / identity.DOCUMENT_PATH).read_text()
+    )
+    hq_beadyard._start_sql_adoption(
+        pending, expected_revision="original-revision", documents=original.documents + (document,)
+    )
+    assert hq_beadyard._sql_intent(pending)["beadyard_id"] == owner
+    lock = pending / ".lock"
+    lock.write_text("")
+    lock.chmod(0o600)
+    for artifact in (
+        pending.parent, pending, pending / identity.DOCUMENT_PATH,
+        pending / "adoption.json", lock,
+    ):
+        mode = artifact.stat().st_mode & 0o777
+        artifact.chmod(mode | 0o044)
+        if artifact.name == "adoption.json":
+            with pytest.raises(hq_beadyard.BeadyardOperationError, match="intent invalid"):
+                hq_beadyard._sql_intent(pending)
+        with pytest.raises(hq_beadyard.BeadyardOperationError, match="custody"):
+            hq_beadyard.adopt_legacy(
+                hq_dir=tmp_path / "config-only-hq", expected_revision="original-revision"
+            )
+        artifact.chmod(mode)
+    intent = pending / "adoption.json"
+    original_intent = pending / "original-adoption.json"
+    intent.rename(original_intent)
+    intent.symlink_to(original_intent)
+    with pytest.raises(hq_beadyard.BeadyardOperationError, match="custody"):
+        hq_beadyard.adopt_legacy(
+            hq_dir=tmp_path / "config-only-hq", expected_revision="original-revision"
+        )
+    assert store.publications == 0
+
+
 def test_git_legacy_adoption_is_signed_original_head_cas_and_retryable(tmp_path, monkeypatch):
     from beadhive import config
 

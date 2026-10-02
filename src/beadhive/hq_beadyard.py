@@ -558,12 +558,41 @@ def _pending_sql_directory(snapshot, *, expected_revision: str | None = None) ->
     return config.home() / "hq-beadyard-adoptions" / hashlib.sha256(key).hexdigest()
 
 
+def _private_sql_artifact(path: Path, *, directory: bool) -> None:
+    try:
+        info = path.lstat()
+    except OSError:
+        raise BeadyardOperationError("SQL adoption journal custody unavailable") from None
+    correct_kind = stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)
+    if info.st_uid != os.geteuid() or info.st_mode & 0o077 or not correct_kind:
+        raise BeadyardOperationError("SQL adoption journal custody changed")
+
+
+def _prepare_sql_pending(pending: Path) -> None:
+    base = pending.parent
+    base.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _private_sql_artifact(base, directory=True)
+    pending.mkdir(mode=0o700, exist_ok=True)
+    _private_sql_artifact(pending, directory=True)
+    for name in (".lock", DOCUMENT_PATH, "adoption.json"):
+        artifact = pending / name
+        if artifact.exists() or artifact.is_symlink():
+            _private_sql_artifact(artifact, directory=False)
+
+
 @contextmanager
 def _sql_adoption_lock(pending: Path):
     fd = os.open(
         pending / ".lock", os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600
     )
     try:
+        metadata = os.fstat(fd)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_mode & 0o077
+        ):
+            raise BeadyardOperationError("SQL adoption lock custody changed")
         fcntl.flock(fd, fcntl.LOCK_EX)
         yield
     finally:
@@ -580,7 +609,13 @@ def _sql_intent(pending: Path) -> dict[str, str] | None:
     except OSError:
         raise BeadyardOperationError("SQL adoption intent unavailable") from None
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode) or os.fstat(fd).st_size > 512:
+        metadata = os.fstat(fd)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_size > 512
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_mode & 0o077
+        ):
             raise BeadyardOperationError("SQL adoption intent invalid")
         content = os.read(fd, 513)
     finally:
@@ -716,8 +751,9 @@ def adopt_legacy(
         raise BeadyardOperationError("SQL HQ identity is already bound or foreign")
     if snapshot.beadyard_id is None and snapshot.commit_revision != expected_revision:
         raise BeadyardOperationError("HQ identity adoption original revision changed")
-    pending.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _prepare_sql_pending(pending)
     with _sql_adoption_lock(pending):
+        _prepare_sql_pending(pending)
         snapshot = store.load_snapshot()
         intent = _sql_intent(pending)
         if intent is not None and intent["expected_revision"] != expected_revision:
