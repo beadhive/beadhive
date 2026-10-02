@@ -11,8 +11,8 @@ reimplementing either. Covers the AC:
 - the original file is backed up (`.bak`) before anything is overwritten
 - the split ROUND-TRIPS a representative real-world config: `_deep_merge(fleet, host)`
   reproduces the original flat config exactly
-- an unclassified key (`partition_of` -> None, e.g. the un-schema'd `beads` section) is
-  preserved on the host side rather than dropped
+- the canonical local `beads.engine` selector is HOST-owned; a truly unclassified
+  raw key is still preserved on the host side by the pure splitter
 """
 
 from __future__ import annotations
@@ -24,8 +24,8 @@ from beadhive import config, config_partition, config_split_migration
 # A representative real-world flat config.yaml: a mix of FLEET keys (delimiter, orgs,
 # dimensions, work.validate_cmd, work.dispatch.mode, managed_repos), HOST keys (otel,
 # worktrees.path, hq.remote, work.identity, work.dispatch.max_beads_per_session, dolt), and
-# one UNCLASSIFIED section (`beads` — not part of config_schema.BeadhiveConfig at all, per
-# `test_host_only_and_unclassified_keys_are_never_rejected` in test_config_fleet_merge.py).
+# the local HOST-owned Beads engine selector. A synthetic unclassified key is
+# added only in the pure no-drop test below; semantic publication rejects it.
 FLAT_YAML = """\
 schema_version: 1
 delimiter: ':'
@@ -109,17 +109,25 @@ def test_split_leaves_puts_host_keys_in_the_host_portion():
 
 
 def test_split_leaves_keeps_an_unclassified_key_on_the_host_side():
-    """`beads.engine` is not part of config_schema at all — partition_of returns None for it.
-    Unclassified is not a licence to drop the value (mirrors fleet_override_violations'
-    existing rule): it must land somewhere, and HOST (never silently promoted to fleet-wide
-    truth) is the safe side."""
+    """The known Beads selector is HOST; unknown raw material stays HOST in
+    the pure splitter, though semantic publication will refuse that candidate."""
     flat = config._yaml.load(FLAT_YAML)
-    assert config_partition.partition_of("beads.engine") is None  # pin the premise
+    flat["legacy_plugin"] = {"opaque": "kept for explicit repair"}
+    assert config_partition.partition_of("beads.engine") == config_partition.HOST
+    assert config_partition.partition_of("legacy_plugin.opaque") is None
 
     fleet_portion, host_portion = config_split_migration.split_leaves(flat)
 
     assert host_portion["beads"]["engine"] == "bd"
     assert "beads" not in fleet_portion
+    assert host_portion["legacy_plugin"]["opaque"] == "kept for explicit repair"
+    assert "legacy_plugin" not in fleet_portion
+
+    path = config.config_path()
+    original = path.read_bytes() if path.exists() else None
+    with pytest.raises(config.ConfigError, match="schema_additionalProperties"):
+        config.save(host_portion)
+    assert (path.read_bytes() if path.exists() else None) == original
 
 
 def test_split_leaves_round_trips_via_deep_merge():
@@ -148,8 +156,8 @@ def test_needs_split_false_once_reduced_to_host_only():
 
 
 def test_needs_split_false_for_an_unclassified_only_config():
-    """A config with nothing but unclassified keys never needed a fleet key moved out."""
-    assert not config_split_migration.needs_split({"beads": {"engine": "bd"}})
+    """A raw unknown-only document has no fleet key for the pure splitter to move."""
+    assert not config_split_migration.needs_split({"legacy_plugin": {"opaque": "value"}})
 
 
 # ---- split_flat_config: the real end-to-end migration --------------------------------
