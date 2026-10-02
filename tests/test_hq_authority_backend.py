@@ -1735,8 +1735,8 @@ print(plane.publish_hive_lease(sys.argv[3],lease,expected=sys.argv[4],operation=
     assert result.returncode != 0 and "pre-receive hook declined" in result.stderr
     assert git(b["remote"], "rev-parse", "refs/bh/lease/bh") == incumbent["bh"]
     # Signed real receipt aging, rather than replacing evictable() or server clocks.
-    b["accept"](4, state_seen="active", leaseDurationSeconds=6, intervalSeconds=1)
-    time.sleep(7)
+    b["accept"](4, state_seen="active", leaseDurationSeconds=30, intervalSeconds=1)
+    time.sleep(31)
     for prefix in ("stale", "quarantine", "retire"):
         if prefix == "quarantine":
             apply(b, "quarantine")

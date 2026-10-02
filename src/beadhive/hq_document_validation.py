@@ -157,9 +157,12 @@ def validate_settings_mapping(document: Mapping[str, Any], *, scope: str) -> Non
             resolve_config(ResolutionInputs(host=document))
     except ConfigResolutionError as exc:
         first = exc.diagnostics[0]
-        raise DocumentValidationError(
-            scope, _safe_path(first.path.split(".")), first.code
-        ) from None
+        # Keep the established actionable hint for this canonical cross-field
+        # rejection without rendering the rejected root path or other values.
+        code = first.code
+        if first.path == "git_workspace" and code == "validation_value_error":
+            code = "internal_root_forbidden_use_BH_HOME"
+        raise DocumentValidationError(scope, _safe_path(first.path.split(".")), code) from None
 
 
 def _parse_yaml(content: str, kind: str) -> Mapping[str, Any]:

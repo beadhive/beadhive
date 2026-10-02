@@ -2,12 +2,12 @@
   "after": {
     "classes": 83,
     "cyclomatic_max": 25,
-    "cyclomatic_mean": 3.716,
-    "cyclomatic_sum": 405,
+    "cyclomatic_mean": 3.734,
+    "cyclomatic_sum": 407,
     "functions": 109,
     "functions_over_10": 6,
-    "nonblank_lines": 3012,
-    "physical_lines": 3563,
+    "nonblank_lines": 3019,
+    "physical_lines": 3570,
     "python_files": 15
   },
   "before": {
@@ -25,12 +25,12 @@
   "delta": {
     "classes": 19,
     "cyclomatic_max": 0,
-    "cyclomatic_mean": 0.062,
-    "cyclomatic_sum": 109,
+    "cyclomatic_mean": 0.08,
+    "cyclomatic_sum": 111,
     "functions": 28,
     "functions_over_10": 4,
-    "nonblank_lines": 670,
-    "physical_lines": 773,
+    "nonblank_lines": 677,
+    "physical_lines": 780,
     "python_files": 1
   },
   "metric_definition": {

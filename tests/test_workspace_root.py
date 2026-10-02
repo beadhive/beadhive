@@ -53,7 +53,13 @@ def _write_config(mode=None, root=None, managed_repos=None):
         cfg["git_workspace"] = gw
     if managed_repos is not None:
         cfg["managed_repos"] = managed_repos
-    config.save(cfg)
+    if mode == "internal" and root is not None:
+        # Deliberately inject a corrupt legacy file. The public save boundary
+        # now rejects this candidate before persistence; these tests exercise
+        # the independent read and environment-precedence contracts.
+        cfg_path.write_text(json.dumps(cfg))
+    else:
+        config.save(cfg)
 
 
 # ---- 1. $GIT_WORKSPACE always wins, over both config and any legacy state ----

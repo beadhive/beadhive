@@ -80,6 +80,9 @@ def load_path(api, path: Path, *, missing_ok: bool = False):
 
 
 def _validate_settings(api, document, *, scope: str) -> None:
+    # Preserve the canonical layer-qualified invalid/future version diagnostic
+    # before the value-free raw-shape gate rejects the same document.
+    api._assert_mutable_schema_version(document, scope)
     try:
         validate_settings_mapping(document, scope=scope)
     except DocumentValidationError as exc:
@@ -89,6 +92,30 @@ def _validate_settings(api, document, *, scope: str) -> None:
 def load_host_raw_for_repair(api):
     """Read opaque HOST YAML for an explicit editor/migration, never for admission."""
     return load_path(api, api.config_path())
+
+
+def load_raw_for_diagnostics(api):
+    """Read opaque local source for explicit diagnostics, never a usable view.
+
+    A malformed HOST must not cause a diagnostic command to consult a selected
+    SQL backend or treat a local Git mirror as its authority. This port is only
+    used by ``config validate`` and the literal warning path after a usable
+    read has already failed.
+    """
+    host = load_host_raw_for_repair(api)
+    try:
+        selected, _ = _validated_selection(api, host)
+    except api.ConfigError:
+        # A malformed selector does not authorize treating a local Git mirror
+        # as the central source even for an explicit diagnostic.
+        return host
+    if selected:
+        return host
+    try:
+        fleet = load_path(api, api.fleet_path(), missing_ok=True)
+    except YAMLError:
+        raise api.ConfigError("fleet configuration YAML syntax invalid") from None
+    return deep_merge(fleet, host)
 
 
 def load_host(api):

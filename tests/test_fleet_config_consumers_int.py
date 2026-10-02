@@ -162,11 +162,13 @@ def test_normal_consumers_use_committed_revision_cas_and_never_fall_back(tmp_pat
             workspace = (
                 FleetConfigDocument(
                     "workspace.toml",
-                    "[[provider]]\nprovider = 'github'\nname = 'first'\ncustom = 'kept'\n",
+                    "[[provider]]\nprovider = 'github'\nname = 'first'\n"
+                    "path = 'first'\ncustom = 'kept'\n",
                 ),
                 FleetConfigDocument(
                     "workspace-extra.toml",
-                    "[[provider]]\nprovider = 'gitlab'\nname = 'second'\ncustom = 'kept-too'\n",
+                    "[[provider]]\nprovider = 'gitlab'\nname = 'second'\n"
+                    "path = 'second'\ncustom = 'kept-too'\n",
                 ),
             )
             store().publish_snapshot(

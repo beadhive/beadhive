@@ -8,6 +8,7 @@ from collections.abc import MutableMapping
 
 from pydantic import TypeAdapter
 from ruamel.yaml.comments import CommentedMap
+from ruamel.yaml.error import YAMLError
 
 from .modules.config.contracts import (
     SUBSET_PLACEHOLDER,
@@ -139,6 +140,13 @@ def warn_literal_violations(api) -> None:
         cfg = api.load()
     except FileNotFoundError:
         return
+    except api.ConfigError as exc:
+        try:
+            cfg = api.load_raw_for_diagnostics()
+        except (YAMLError, OSError, api.ConfigError):
+            # Keep the value-free usable-read rejection; ruamel's raw parse
+            # exception can embed submitted YAML and must not reach logs.
+            raise exc from None
     violations = api.literal_violations(cfg)
     if not violations:
         return

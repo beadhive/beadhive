@@ -154,7 +154,7 @@ def test_config_init_force_still_never_regenerates_host_yaml():
 def test_host_yaml_absent_from_hq_scaffold_layout_output(tmp_path):
     hq_dir = tmp_path / "hq"
     hq_dir.mkdir()
-    cfg = {"schema_version": 3, "managed_repos": []}
+    cfg = {"schema_version": 1, "managed_repos": []}
 
     written = hq.scaffold_layout(hq_dir, cfg)
 

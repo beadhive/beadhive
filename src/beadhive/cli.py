@@ -3496,15 +3496,27 @@ def config_schema_cmd(as_json: bool = typer.Option(False, "--json", help="machin
 
 
 def _load_config_or_exit():
-    """Load the resolved config; exit 1 with `config init` guidance instead of a traceback
-    when no config file exists yet."""
+    """Return (usable or diagnostic-only source, rejection) for config validate."""
     try:
-        return config.load()
+        return config.load(), None
     except FileNotFoundError:
         typer.echo(
             f"no config found — scaffold it with `{config.BINARY_ALIAS} config init`.", err=True
         )
         raise typer.Exit(1) from None
+    except config.ConfigError as exc:
+        # Validation is an explicit repair-only diagnostic. A rejected source
+        # cannot become a usable settings view, but its raw keys must remain
+        # available for actionable typo/rename/version messages.
+        from ruamel.yaml.error import YAMLError
+
+        try:
+            return config.load_raw_for_diagnostics(), str(exc)
+        except (YAMLError, OSError, config.ConfigError):
+            # The original usable-read rejection is already value-free. A
+            # second failed parse/inspection must not expose raw YAML content.
+            typer.echo(f"✗ {exc}", err=True)
+            raise typer.Exit(1) from None
 
 
 def _print_fix_prompt(cv, cfg) -> None:
@@ -3554,13 +3566,18 @@ def config_validate(
     `bh config init` guidance rather than a traceback."""
     from . import config_validate as cv
 
-    cfg = _load_config_or_exit()
+    cfg, rejection = _load_config_or_exit()
 
     if fix:
         _print_fix_prompt(cv, cfg)
+        if rejection is not None:
+            typer.echo(f"✗ {rejection}", err=True)
+            raise typer.Exit(1)
         return
 
     problems = cv.validate_config(cfg)
+    if rejection is not None:
+        problems.append(config._problem("error", rejection))
     if not problems:
         typer.echo(f"✓ config is valid (schema v{cv.SCHEMA_VERSION}).")
         return

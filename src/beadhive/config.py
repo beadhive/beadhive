@@ -231,6 +231,11 @@ def load_host_raw_for_repair():
     return _config_store.load_host_raw_for_repair(_facade())
 
 
+def load_raw_for_diagnostics():
+    """Opaque source for explicit validation messages, never for runtime use."""
+    return _config_store.load_raw_for_diagnostics(_facade())
+
+
 def load_fleet():
     return _config_store.load_fleet(_facade())
 
