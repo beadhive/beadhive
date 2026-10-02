@@ -47,6 +47,22 @@ class Broker:
         return "fixture-secret"
 
 
+def _runtime_commit_hashes(port):
+    """Trusted fixture view of versioned history, separate from live SQL rows."""
+    import pymysql
+
+    root = pymysql.connect(
+        host="127.0.0.1", port=port, user="root",
+        database="beadhive_hq_runtime", autocommit=True,
+    )
+    try:
+        with root.cursor() as cursor:
+            cursor.execute("SELECT commit_hash FROM dolt_log")
+            return tuple(sorted(row[0] for row in cursor.fetchall()))
+    finally:
+        root.close()
+
+
 def _openssl(directory, *args):
     subprocess.run(
         ["openssl", *args],
@@ -620,6 +636,8 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
                 frame_snapshot_connection.rollback()
                 frame_snapshot_connection.close()
 
+            runtime_commits_before_live_sql = _runtime_commit_hashes(port)
+            assert initial in runtime_commits_before_live_sql
             lease = HeartbeatLease(
                 audience="fixture-fleet",
                 frame_id="frame-1",
@@ -816,6 +834,9 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
                 )
                 assert accepted.returncode == 0, accepted.stderr
                 assert accepted.stdout.strip() == published_digest
+            # Frame proposals and trusted receiver commits are live SQL only:
+            # neither may create a versioned authority commit in dolt_log.
+            assert _runtime_commit_hashes(port) == runtime_commits_before_live_sql
             expired_lease = lease.model_copy(
                 update={
                     "seq": 99,
