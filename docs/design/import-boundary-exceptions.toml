@@ -1303,7 +1303,7 @@ consumer_inventory = { production = "beadhive.hq_control_plane exact composition
 executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
 test_closure = "just architecture-structural-check; just check-native"
 introduced_commit = "bh-38h7p (exact graph addition at 357e4ff7; reviewed retained composition)"
-last_verified_commit = "0f050a206af6b5a66365244a5c41a3b13dfd077c"
+last_verified_commit = "315cd2ce528bb70baefaad203680f6cd1d53675d"
 expiry_trigger = "Remove this exact edge when beadhive.hq_control_plane no longer calls beadhive.host_heartbeat_core or that consumer is migrated behind an injected capability port. Steward reassignment requires reviewed ledger amendment."
 
 [[cycle_exception]]
