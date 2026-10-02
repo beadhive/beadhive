@@ -178,7 +178,7 @@ def test_sql_and_bound_missing_manifest_never_allow_legacy(tmp_path, monkeypatch
         monkeypatch.setattr(config, "load_host", lambda binding=binding: {"hq": binding})
         assert not policy.decision_for("host", hq_dir=tmp_path).allowed
     monkeypatch.setattr(config, "load_host", lambda: {"hq": {"mode": "dolt-server"}})
-    assert policy.decision_for("host", hq_dir=tmp_path) is None
+    assert not policy.decision_for("host", hq_dir=tmp_path).allowed
     monkeypatch.setattr(config, "load_host", lambda: {"host": {"frame_id": "frame"}})
     assert not policy.decision_for("host", hq_dir=tmp_path).allowed
 
@@ -294,13 +294,14 @@ def test_protected_eviction_states(candidate, monkeypatch, tmp_path, state, read
     hosts.save(tmp_path, frame)
     record = {"authority": {"holder_identity": "host"}, "state": state}
     plane = SimpleNamespace(
+        load_host_manifest=lambda host_id: hosts.load(tmp_path, host_id),
         eligibility_authority_status=lambda: {
             "authority_ready": ready,
             "state": {
                 "expires_at": 9999999999,
                 "frames": {"frame": {"active": record, "candidate": None, "retired": []}},
             },
-        }
+        },
     )
     monkeypatch.setattr(hq_control_plane, "control_plane", lambda *a: plane)
     monkeypatch.setattr(policy, "load_facts", lambda *a, **kw: facts)

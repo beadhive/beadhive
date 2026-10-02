@@ -8,9 +8,11 @@ own ``bd`` invocation seam.
 from __future__ import annotations
 
 import json
+import subprocess
 from collections import namedtuple
+from pathlib import Path
 
-from beadhive_bd_cli import reads
+from beadhive_bd_cli import SubprocessBd, reads
 
 _CP = namedtuple("CP", "returncode stdout stderr")
 
@@ -209,3 +211,19 @@ def test_ready_rows_appends_json_once_and_reads_a_failure_as_none():
     assert reads.ready_rows(bd, "/hive", ["--limit", "0", "--json"]) == [{"id": "bh-1"}]
     assert reads.ready_rows(bd, "/hive", ["--limit", "0"]) is None
     assert seen[0] == ["bd", "-C", "/hive", "ready", "--limit", "0", "--json"]
+
+
+def test_status_snapshot_uses_exact_bounded_activity_free_argv(monkeypatch):
+    seen = []
+
+    def process(argv, **kwargs):
+        seen.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, '{"summary":{"total_issues":0}}', "")
+
+    monkeypatch.setattr("beadhive_bd_cli.transport.subprocess.run", process)
+    result = reads.status_snapshot(SubprocessBd(timeout=120), Path("/fixture/hq"), timeout=10)
+
+    assert result.returncode == 0
+    assert seen[0][0] == ["bd", "-C", "/fixture/hq", "status", "--json", "--no-activity"]
+    assert seen[0][1]["capture_output"] is True
+    assert seen[0][1]["timeout"] == 10

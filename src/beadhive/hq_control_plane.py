@@ -25,6 +25,10 @@ class ControlPlaneError(ValueError):
     """Unavailable protection, rejected authority, or unsupported binding."""
 
 
+class CommittedManifestAbsent(FileNotFoundError):
+    """A verified selected snapshot contains no document for this host."""
+
+
 class HqLeaseUnknown(ControlPlaneError):
     """An exact frame proposal may have been accepted; do not refresh its CAS."""
 
@@ -86,6 +90,7 @@ class ConfigAuthoritySnapshot:
 
 
 class HqControlPlane(Protocol):
+    def load_host_manifest(self, host_id: str): ...
     def fetch_config(self, frame: str, *, holder_identity: str | None = None) -> dict: ...
     def publish_registration(self, manifest: str, *, attempts: int = 3) -> bool: ...
     def heartbeat(self, lease, *, signing_key: str) -> str: ...
@@ -326,6 +331,11 @@ class GitControlPlane:
         # Legacy callers cannot turn a mutable Git-config digest into authority.
         if policy_digest:
             raise ControlPlaneError("use an operator-provisioned protected authority anchor")
+
+    def load_host_manifest(self, host_id: str):
+        from . import hosts
+
+        return hosts.load(self.hq_dir, host_id)
 
     def config_store(self, *, operator_key=None, duration=3600):
         from .hq_fleet_config import GitFleetConfigRevisionStore
@@ -1240,9 +1250,34 @@ def _validated_sql_binding(settings):
 class SqlControlPlane:
     """SQL config capability; runtime authority needs an explicit separate binding."""
 
+    config_backend = "sql"
+
+    @staticmethod
+    def verified_manifest_absence(error: BaseException) -> bool:
+        return isinstance(error, CommittedManifestAbsent)
+
     def __init__(self, settings, *, broker=None, clock=time.time):
         self.settings = _validated_sql_binding(settings).model_dump()
         self.broker, self.clock = broker, clock
+
+    def load_host_manifest(self, host_id: str):
+        from ruamel.yaml import YAML
+
+        from . import hosts
+
+        snapshot = self.config_store().load_snapshot()
+        documents = [item for item in snapshot.documents if item.path == f"hosts/{host_id}.yaml"]
+        if not documents:
+            raise CommittedManifestAbsent(f"committed host manifest unavailable for {host_id}")
+        if len(documents) != 1:
+            raise ControlPlaneError("committed host manifest selection invalid")
+        try:
+            raw = YAML(typ="safe").load(documents[0].content)
+            if isinstance(raw, dict) and "state" not in raw:
+                raw = {**raw, "state": "active"}
+            return hosts.HostManifest.model_validate(raw)
+        except Exception:  # noqa: BLE001 - malformed committed input must not expose values
+            raise ControlPlaneError("committed host manifest invalid") from None
 
     def config_store(self, *, operator_key=None, duration=3600):
         from .hq_sql_config import SqlFleetConfigRevisionStore

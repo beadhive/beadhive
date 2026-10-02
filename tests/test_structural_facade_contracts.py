@@ -130,7 +130,9 @@ def test_config_load_facade_executes_layer_patch_points_and_preserves_precedence
     effective = config.load()
 
     assert effective == {"shared": 1, "local": 2}
-    assert calls == ["fleet", "host", ("guard", {"local": 2})]
+    # HOST selects SQL before any local fleet access; Git still reaches the
+    # historical load_fleet and override-guard facade patch points.
+    assert calls == ["host", "fleet", ("guard", {"local": 2})]
 
 
 def test_worktree_run_init_facade_executes_the_module_local_runner(monkeypatch, tmp_path):

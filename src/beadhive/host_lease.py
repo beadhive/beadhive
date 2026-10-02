@@ -136,13 +136,37 @@ def _frame_plane(cwd):
     from . import host, hosts
     from .hq_control_plane import control_plane
 
+    host_config_present, enrolled = host.frame_binding()
     try:
         identity = host.host_id()
-        manifest = hosts.load(cwd, identity)
     except FileNotFoundError:
+        if enrolled:
+            raise HostLeaseRejected("enrolled frame has no local host identity") from None
         return None
+    if not host_config_present:
+        # Historical raw recovery has no selector yet, but a declared Git frame
+        # still requires the protected plane rather than a legacy lease.
+        try:
+            raw = hosts.load(cwd, identity)
+        except FileNotFoundError:
+            return None
+        return control_plane(cwd) if raw.frame_id else None
+
+    plane = control_plane(cwd)
+    try:
+        manifest = plane.load_host_manifest(identity)
+    except FileNotFoundError as exc:
+        if getattr(plane, "config_backend", None) == "sql" and not plane.verified_manifest_absence(
+            exc
+        ):
+            raise
+        if enrolled:
+            raise HostLeaseRejected("enrolled frame has no committed host manifest") from None
+        return None
+    if enrolled and not manifest.frame_id:
+        raise HostLeaseRejected("enrolled frame has no committed frame binding")
     if manifest.frame_id:
-        return control_plane(cwd)
+        return plane
     return None
 
 

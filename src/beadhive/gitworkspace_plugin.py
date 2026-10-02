@@ -55,8 +55,11 @@ def readiness(cfg, entry=None) -> tuple[str, str] | None:
     import os
     from pathlib import Path
 
+    from . import config
+
     root = Path(workspace_root())
-    if workspace_mode(str(root)) == "internal":
+    sql = config.fleet_sql_selected()
+    if workspace_mode(str(root)) == "internal" and not sql:
         if not gitworkspace.is_seeded(root):
             return (
                 "missing",
@@ -65,7 +68,7 @@ def readiness(cfg, entry=None) -> tuple[str, str] | None:
             )
     elif not os.environ.get("GIT_WORKSPACE"):
         return ("warn", f"GIT_WORKSPACE not set — defaulting to {root}")
-    sources = gitworkspace.config_paths(cfg)
+    sources = gitworkspace.workspace_sources(cfg)
     if not sources:
         return ("missing", f"no workspace*.toml found under {root}")
     lock = root / "workspace-lock.toml"
