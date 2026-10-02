@@ -14,6 +14,7 @@ import pytest
 from jsonschema import validate
 
 from beadhive import (
+    bd_cli,
     config,
     config_store,
     frame_eligibility,
@@ -532,8 +533,8 @@ def test_hq_status_keeps_present_beads_channel_usable(selected_sql, monkeypatch)
     scanned = []
     monkeypatch.setattr(hq, "local_readiness", lambda _path: "ready")
     monkeypatch.setattr(
-        hq,
-        "run_bd",
+        bd_cli,
+        "status_snapshot",
         lambda *a, **kw: SimpleNamespace(returncode=0, stdout='{"summary":{"total_issues":0}}'),
     )
 
@@ -569,7 +570,9 @@ def test_hq_status_keeps_present_beads_channel_usable(selected_sql, monkeypatch)
     assert payload["remote"]["configured"] is True
     assert scanned == [(config.hq_dir(), True)]
 
-    monkeypatch.setattr(hq, "run_bd", lambda *a, **kw: SimpleNamespace(returncode=1, stdout=""))
+    monkeypatch.setattr(
+        bd_cli, "status_snapshot", lambda *a, **kw: SimpleNamespace(returncode=1, stdout="")
+    )
     broken = hq.status_payload(generated_at=1235)
     validate(broken, schema)
     assert broken["availability"]["state"] == "available"  # Git facts remain observable.
@@ -577,6 +580,19 @@ def test_hq_status_keeps_present_beads_channel_usable(selected_sql, monkeypatch)
         "state": "unavailable",
         "reason_code": "beads_status_unavailable",
     }
+
+
+def test_beads_status_package_route_keeps_root_engine_and_timeout(monkeypatch, tmp_path):
+    calls = []
+
+    def run(args, cwd, *, capture, timeout):
+        calls.append((args, cwd, capture, timeout))
+        return SimpleNamespace(returncode=0, stdout='{"summary":{"total_issues":0}}')
+
+    monkeypatch.setattr(bd_cli.bd, "run", run)
+    result = bd_cli.status_snapshot(tmp_path, timeout=10)
+    assert result.returncode == 0
+    assert calls == [(["status", "--json", "--no-activity"], tmp_path, True, 10)]
 
 
 @pytest.mark.parametrize(
@@ -594,7 +610,7 @@ def test_beads_channel_rejects_invalid_or_timed_out_read(monkeypatch, tmp_path, 
             raise outcome
         return outcome
 
-    monkeypatch.setattr(hq, "run_bd", probe)
+    monkeypatch.setattr(bd_cli, "status_snapshot", probe)
     assert hq._beads_channel_status(tmp_path, local_ready=True) == {
         "state": "unavailable",
         "reason_code": "beads_status_unavailable",

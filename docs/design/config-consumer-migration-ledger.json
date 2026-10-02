@@ -16,7 +16,7 @@
     "successor_contracts": "beadhive.modules.config.contracts"
   },
   "current": {
-    "config_patch_point_count": 296,
+    "config_patch_point_count": 297,
     "config_patch_points": [
       {
         "facade_target": "beadhive.config.save_fleet",
@@ -574,28 +574,28 @@
       {
         "facade_target": "beadhive.config.hq_dir",
         "kind": "direct-facade",
-        "line": 371,
+        "line": 372,
         "path": "tests/test_fleet_config_consumers.py",
         "target": "beadhive.config.hq_dir"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 418,
+        "line": 419,
         "path": "tests/test_fleet_config_consumers.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 422,
+        "line": 423,
         "path": "tests/test_fleet_config_consumers.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 448,
+        "line": 449,
         "path": "tests/test_fleet_config_consumers.py",
         "target": "beadhive.config.load_host"
       },
@@ -953,6 +953,13 @@
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
         "line": 1520,
+        "path": "tests/test_hq_authority_backend.py",
+        "target": "beadhive.config.load_host"
+      },
+      {
+        "facade_target": "beadhive.config.load_host",
+        "kind": "direct-facade",
+        "line": 1529,
         "path": "tests/test_hq_authority_backend.py",
         "target": "beadhive.config.load_host"
       },

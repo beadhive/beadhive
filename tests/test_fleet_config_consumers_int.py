@@ -11,7 +11,7 @@ import time
 import pytest
 from ruamel.yaml import YAML
 
-from beadhive import config, gitworkspace, hq_control_plane, metadata, registry
+from beadhive import config, frame_eligibility, gitworkspace, hq_control_plane, metadata, registry
 from beadhive.hq_sql_config import SqlConfigError, SqlFleetConfigRevisionStore, _digest
 from beadhive.hq_sql_transport import SqlTransportError
 from beadhive.modules.config.domain.ports import FleetConfigDocument
@@ -199,6 +199,10 @@ def test_normal_consumers_use_committed_revision_cas_and_never_fall_back(tmp_pat
             ]
             assert config.key_provenance()["work.identity.name"] == config.PROVENANCE_HOST
             assert config.key_provenance()["work.validate_cmd"] == config.PROVENANCE_FLEET
+            assert (
+                frame_eligibility.decision_for("fixture-unenrolled", hq_dir=host_home / "hq")
+                is None
+            )
 
             before = config.fleet_snapshot()
             assert config.set_value("delimiter", "/", scope=config.SCOPE_FLEET)["ok"]
@@ -233,6 +237,10 @@ def test_normal_consumers_use_committed_revision_cas_and_never_fall_back(tmp_pat
             server.wait(timeout=10)
             with pytest.raises((SqlConfigError, SqlTransportError)):
                 config.load()
+            unavailable = frame_eligibility.decision_for(
+                "fixture-unenrolled", hq_dir=host_home / "hq"
+            )
+            assert dict(unavailable.predicates) == {"authority_available": False}
             assert (stale_hq / "fleet.yaml").read_text() == "delimiter: stale-git\n"
         finally:
             if server.poll() is None:

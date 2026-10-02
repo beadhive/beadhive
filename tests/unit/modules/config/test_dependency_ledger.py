@@ -52,7 +52,7 @@ def test_dependency_ledger_records_indirect_adapter_patch_points_exactly():
     points = ledger["current"]["config_patch_points"]
 
     assert ledger["schema_version"] == 2
-    assert ledger["current"]["config_patch_point_count"] == 296
+    assert ledger["current"]["config_patch_point_count"] == 297
     eligibility_host_patches = {
         point["line"]
         for point in points

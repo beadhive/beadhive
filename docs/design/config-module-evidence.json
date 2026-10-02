@@ -107,6 +107,6 @@
   },
   "current_inventory_update": {
     "bead": "bh-9ej9n",
-    "reason": "Regenerate the live dependency ledger after selected fleet config, roster, and workspace consumers and the process-dispatch test integration. The current AST inventory measures 84 production config importers, 5 schema importers, 152 test config importers, and 296 config patch sites. The prior SQL and process-dispatch observations remain above and in signed history; historical extraction, full-gate receipts, and the distinct pinned wire snapshot are unchanged."
+    "reason": "Regenerate the live dependency ledger after selected fleet config, roster, and workspace consumers and the process-dispatch test integration. The current AST inventory measures 84 production config importers, 5 schema importers, 152 test config importers, and 297 config patch sites. The prior SQL and process-dispatch observations remain above and in signed history; historical extraction, full-gate receipts, and the distinct pinned wire snapshot are unchanged."
   }
 }

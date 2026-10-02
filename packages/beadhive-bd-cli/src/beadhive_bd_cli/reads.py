@@ -23,7 +23,13 @@ __all__ = [
     "ready_rows",
     "show",
     "state",
+    "status_snapshot",
 ]
+
+
+def status_snapshot(bd: BdTransport, cwd: Any, *, timeout: float = 10.0) -> BdResult:
+    """Read the HQ Beads database status with bounded, activity-free JSON argv."""
+    return bd.run(["status", "--json", "--no-activity"], cwd, capture=True, timeout=timeout)
 
 
 def show(bd: BdTransport, bead: Any, cwd: Any, *, strict: bool = False) -> dict | None:

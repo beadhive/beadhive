@@ -77,6 +77,7 @@ def _validated_selection(api, host) -> tuple[bool, str]:
     """Validate the HOST selector and fingerprint the exact SQL bootstrap."""
     from .modules.config.contracts import HqSqlConfig
 
+    error_type = getattr(api, "ConfigError", ValueError)
     try:
         hq = host.get("hq", {})
         sql = HqSqlConfig.model_validate(hq.get("sql", {}))
@@ -89,10 +90,12 @@ def _validated_selection(api, host) -> tuple[bool, str]:
             ).encode()
         ).hexdigest()
     except (ValueError, TypeError, AttributeError):
-        raise api.ConfigError("invalid SQL HOST bootstrap") from None
+        # Minimal facade collaborators also call this port; never leak Pydantic's
+        # rejected values, even when they do not expose the public ConfigError.
+        raise error_type("invalid SQL HOST bootstrap") from None
     selected = sql.enabled
     if mode not in ("git", "dolt-server") or (not selected and mode != "git"):
-        raise api.ConfigError("unsupported HQ configuration mode")
+        raise error_type("unsupported HQ configuration mode")
     return selected, fingerprint
 
 
@@ -249,7 +252,7 @@ def _load_uncached(api):
         return fleet, False
     if sql_selected(api, host):
         return host, True
-    fleet = load_path(api, api.fleet_path(), missing_ok=True)
+    fleet = api.load_fleet()
     if not fleet:
         return host, False
     api._reject_fleet_overrides(host)

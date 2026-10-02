@@ -319,7 +319,9 @@ def _beads_channel_status(hq_dir: Path, *, local_ready: bool) -> dict[str, str]:
     if not local_ready:
         return {"state": "unavailable", "reason_code": "hq_not_initialized"}
     try:
-        result = run_bd(["status", "--json", "--no-activity"], hq_dir, capture=True, timeout=10)
+        from . import bd_cli
+
+        result = bd_cli.status_snapshot(hq_dir, timeout=10)
         if result.returncode == 0:
             parsed = json.loads(result.stdout or "null")
             summary = parsed.get("summary") if isinstance(parsed, dict) else None

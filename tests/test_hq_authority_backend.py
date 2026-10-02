@@ -1520,9 +1520,19 @@ def test_verified_operator_anchor_preserves_config_only_legacy_executor(backend,
     monkeypatch.setattr(
         config,
         "load_host",
-        lambda: {"hq": {"mode": "dolt-server", "authority_anchor": str(b["op_anchor"])}},
+        lambda: {"hq": {"mode": "git", "authority_anchor": str(b["op_anchor"])}},
     )
     assert frame_eligibility.decision_for("legacy-unenrolled", hq_dir=b["op_repo"]) is None
+
+    # An operator anchor proves this host has no frame role; it cannot repair an
+    # unsupported SQL config mode without an explicit selected HOST SQL binding.
+    monkeypatch.setattr(
+        config,
+        "load_host",
+        lambda: {"hq": {"mode": "dolt-server", "authority_anchor": str(b["op_anchor"])}},
+    )
+    decision = frame_eligibility.decision_for("legacy-unenrolled", hq_dir=b["op_repo"])
+    assert dict(decision.predicates) == {"authority_available": False}
 
 
 def test_config_head_advance_fences_old_hive_projection(backend):
