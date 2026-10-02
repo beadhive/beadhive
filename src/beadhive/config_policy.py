@@ -64,6 +64,8 @@ def warn_stale_schema_version_if_needed(api) -> None:
 
 
 def hq_has_remote(api) -> bool:
+    if api.fleet_sql_selected():
+        return False
     try:
         return '[remote "' in (api.hq_dir() / ".git" / "config").read_text()
     except Exception:
@@ -71,6 +73,8 @@ def hq_has_remote(api) -> bool:
 
 
 def warn_missing_fleet_config_if_needed(api) -> None:
+    if api.fleet_sql_selected():
+        return
     if not api.hq_dir().is_dir() or api.fleet_path().is_file() or not api._hq_has_remote():
         return
     api._warning(

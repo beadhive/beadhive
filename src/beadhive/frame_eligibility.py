@@ -148,6 +148,7 @@ def load_facts(frame, *, hq_dir, cfg=None, at=None):
 def decision_for(host_id, hive=None, *, hq_dir=None, cfg=None, at=None):
     """None denotes an unbound legacy host; a declared binding always fails closed."""
     from . import config
+    from .hq_control_plane import control_plane
 
     try:
         bootstrap = config.load_host()
@@ -155,6 +156,9 @@ def decision_for(host_id, hive=None, *, hq_dir=None, cfg=None, at=None):
         # Historical raw lease recovery has no host config. A declared frame manifest below
         # still enters protected authority checks; malformed/unreadable config never falls back.
         bootstrap = {}
+        missing_host_config = True
+    else:
+        missing_host_config = False
     settings = cfg if cfg is not None else bootstrap
     root = Path(hq_dir) if hq_dir is not None else config.hq_dir()
     binding = bootstrap.get("hq", {})
@@ -169,11 +173,24 @@ def decision_for(host_id, hive=None, *, hq_dir=None, cfg=None, at=None):
             enrolled = enrolled or role not in {"operator", "observer"}
         except (OSError, ValueError, AttributeError):
             enrolled = True
+    plane = None
     try:
-        frame = hosts.load(root, host_id)
-    except FileNotFoundError:
+        # Raw legacy recovery can have a Git manifest before host config exists.
+        # Once HOST exists, selecting the plane must succeed before absence can
+        # count as a legacy host.
+        if not missing_host_config:
+            plane = control_plane(root)
+        frame = hosts.load(root, host_id) if plane is None else plane.load_host_manifest(host_id)
+    except FileNotFoundError as exc:
+        if plane is not None and getattr(plane, "config_backend", None) == "sql":
+            if not plane.verified_manifest_absence(exc):
+                return EligibilityDecision((("authority_available", False),))
+        elif plane is None and not missing_host_config:
+            return EligibilityDecision((("authority_available", False),))
         if not enrolled:
             return None
+        return EligibilityDecision((("authority_available", False),))
+    except (ValueError, OSError, RuntimeError):
         return EligibilityDecision((("authority_available", False),))
     if not frame.frame_id:
         if not enrolled:
@@ -269,7 +286,7 @@ def evictable(host_id, *, hq_dir, at=None, evict_after_s=None):
     except (ValueError, OSError, RuntimeError):
         pass
     try:
-        frame = hosts.load(hq_dir, host_id)
+        frame = control_plane(hq_dir).load_host_manifest(host_id)
         if not frame.frame_id:
             return False
         facts = load_facts(frame, hq_dir=hq_dir, at=at)

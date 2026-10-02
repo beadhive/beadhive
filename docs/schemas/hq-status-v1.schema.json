@@ -126,6 +126,42 @@
         }
       ]
     },
+    "config_authority": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "backend_identity", "revision", "generation", "valid_until"],
+          "properties": {
+            "state": {"const": "available"},
+            "backend_identity": {"type": "string", "minLength": 1},
+            "revision": {"type": "string", "minLength": 1},
+            "generation": {"type": "string", "minLength": 1},
+            "valid_until": {"type": "number"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "reason_code"],
+          "properties": {
+            "state": {"const": "unavailable"},
+            "reason_code": {"const": "config_sql_unavailable"}
+          }
+        }
+      ]
+    },
+    "beads_channel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "reason_code"],
+      "properties": {
+        "state": {"enum": ["available", "unavailable"]},
+        "reason_code": {
+          "enum": ["beads_status_readable", "beads_status_unavailable", "hq_not_initialized"]
+        }
+      }
+    },
     "retirement": {
       "type": "object",
       "additionalProperties": false,

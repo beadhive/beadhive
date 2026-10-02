@@ -5,17 +5,27 @@ from __future__ import annotations
 import json
 import threading
 from collections.abc import Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import replace
+from io import StringIO
 from pathlib import Path
 
 from ruamel.yaml.comments import CommentedMap
 
 from .modules.config.adapters.yaml_store import RoundTripYamlStore, round_trip_yaml
 from .modules.config.application.resolution import deep_merge
-from .modules.config.domain.ports import ConfigScope
+from .modules.config.domain.ports import ConfigScope, FleetConfigDocument
 
 _mutation_lock = threading.RLock()
 _load_cache_lock = threading.RLock()
 _load_cache: dict[tuple[tuple, tuple], str] = {}
+_fleet_transaction: ContextVar[tuple | None] = ContextVar("fleet_transaction", default=None)
+
+
+def fleet_transaction_active() -> bool:
+    return _fleet_transaction.get() is not None
+
 
 # Public compatibility seams. The adapter scopes access with ``yaml_lock``; its standalone
 # default constructs one parser per operation.
@@ -47,6 +57,101 @@ def mutation(path: Path):
 
 def load_path(api, path: Path, *, missing_ok: bool = False):
     return _store(api).load_path(path, missing_ok=missing_ok)
+
+
+def sql_selected(api, host=None) -> bool:
+    """The HOST switch alone selects SQL; staged endpoints do not activate it."""
+    if host is None:
+        try:
+            host = api.load_host()
+        except FileNotFoundError:
+            return False
+    from .modules.config.contracts import HqSqlConfig
+
+    try:
+        hq = host.get("hq", {})
+        selected = HqSqlConfig.model_validate(hq.get("sql", {})).enabled
+    except (ValueError, TypeError, AttributeError):
+        raise api.ConfigError("invalid SQL HOST bootstrap") from None
+    mode = hq.get("mode", "git")
+    if mode not in ("git", "dolt-server") or (not selected and mode != "git"):
+        raise api.ConfigError("unsupported HQ configuration mode")
+    return selected
+
+
+def _sql_attachment(api, host=None):
+    from .hq_control_plane import attach_fleet_config
+
+    host = host if host is not None else api.load_host()
+    return attach_fleet_config(bootstrap=host.get("hq") or {})
+
+
+def _fleet_document(api, snapshot):
+    document = next((item for item in snapshot.documents if item.path == "fleet.yaml"), None)
+    if document is None:
+        raise api.ConfigError("committed SQL fleet document missing")
+    with api._yaml_lock:
+        fleet = api._yaml.load(StringIO(document.content))
+    if not isinstance(fleet, Mapping):
+        raise api.ConfigError("committed SQL fleet document invalid")
+    if (fleet.get("hq") or {}).get("mode") != "dolt-server":
+        raise api.ConfigError("committed HQ mode does not match SQL host binding")
+    return fleet
+
+
+def load_fleet(api):
+    if not sql_selected(api):
+        return load_path(api, api.fleet_path(), missing_ok=True)
+    active = _fleet_transaction.get()
+    snapshot = active[1] if active is not None else _sql_attachment(api)[1]
+    return _fleet_document(api, snapshot)
+
+
+def fleet_snapshot(api):
+    """Return current committed SQL documents and their provenance."""
+    if not sql_selected(api):
+        return None
+    active = _fleet_transaction.get()
+    return active[1] if active is not None else _sql_attachment(api)[1]
+
+
+def publish_fleet_document(api, path: str, content: str | None):
+    """Replace/delete one committed document against the transaction's first head."""
+    active = _fleet_transaction.get()
+    if active is None:
+        raise api.ConfigError("SQL document publication requires an original-revision transaction")
+    store, snapshot = active
+    found = False
+    documents = []
+    for item in snapshot.documents:
+        if item.path == path:
+            found = True
+            if content is not None:
+                documents.append(FleetConfigDocument(path, content))
+        else:
+            documents.append(item)
+    if content is not None and not found:
+        documents.append(FleetConfigDocument(path, content))
+    if content is None and not found:
+        raise FileNotFoundError(path)
+    published = store.publish_snapshot(tuple(documents), expected_revision=snapshot.commit_revision)
+    clear_load_cache()
+    return published
+
+
+@contextmanager
+def fleet_mutation(api):
+    if not sql_selected(api):
+        with mutation(api.fleet_path()):
+            yield
+        return
+    if _fleet_transaction.get() is not None:
+        raise api.ConfigError("nested fleet revision transaction")
+    token = _fleet_transaction.set(_sql_attachment(api))
+    try:
+        yield
+    finally:
+        _fleet_transaction.reset(token)
 
 
 def _file_signature(path: Path) -> tuple:
@@ -88,34 +193,16 @@ def fleet_override_violations(host) -> list[str]:
 
 
 def _load_uncached(api):
-    # Preserve the public fleet -> host read seam for Git. The local fleet
-    # document is never an authority or fallback when HOST explicitly selects
-    # SQL, so defer a local read error until after that selector is validated.
-    try:
-        fleet = api.load_fleet()
-        fleet_error = None
-    except Exception as exc:
-        fleet, fleet_error = None, exc
     try:
         host = api.load_host()
     except FileNotFoundError:
-        if fleet_error is not None:
-            raise fleet_error from None
+        fleet = api.load_fleet()
         if not fleet:
             raise
         return fleet, False
-    from .modules.config.contracts import HqSqlConfig
-
-    try:
-        sql = HqSqlConfig.model_validate(host.get("hq", {}).get("sql", {}))
-    except (ValueError, TypeError):
-        # Pydantic's raw input rendering can include an accidentally inlined
-        # credential value. The SQL bootstrap boundary reports only its phase.
-        raise ValueError("invalid SQL HOST bootstrap") from None
-    if sql.enabled:
+    if sql_selected(api, host):
         return host, True
-    if fleet_error is not None:
-        raise fleet_error from None
+    fleet = load_path(api, api.fleet_path(), missing_ok=True)
     if not fleet:
         return host, False
     api._reject_fleet_overrides(host)
@@ -123,33 +210,20 @@ def _load_uncached(api):
 
 
 def _load_sql(api, host):
-    from io import StringIO
-
-    from ruamel.yaml import YAML
-
-    from .hq_control_plane import attach_fleet_config
-
-    _, snapshot = attach_fleet_config(bootstrap=host.get("hq", {}))
-    document = next((item for item in snapshot.documents if item.path == "fleet.yaml"), None)
-    if document is None:
-        raise api.ConfigError("committed SQL fleet document missing")
-    fleet = YAML(typ="safe").load(StringIO(document.content))
-    if not isinstance(fleet, Mapping):
-        raise api.ConfigError("committed SQL fleet document invalid")
-    if fleet.get("hq", {}).get("mode") != "dolt-server":
-        raise api.ConfigError("committed HQ mode does not match SQL host binding")
+    snapshot = fleet_snapshot(api)
+    fleet = _fleet_document(api, snapshot)
     api._reject_fleet_overrides(host)
     return api._deep_merge(fleet, host)
 
 
 def load(api):
-    """Load an isolated effective config, parsing each unchanged layer once per process.
+    """Load an isolated effective config; memoize unchanged filesystem layers only.
 
     The memo stores JSON rather than the mutable ``CommentedMap`` returned by ruamel.  Each
     caller gets a fresh plain mapping, so one request/thread cannot corrupt another caller's
-    view.  The measured JSON round-trip costs 0.46 ms, versus 10.02 ms for deepcopy and
-    74.06 ms for reparsing; comment-preserving mutation paths still use ``load_host`` /
-    ``load_fleet`` directly.  Path and stat metadata make external edits self-invalidating.
+    view. Path and stat metadata make Git filesystem edits self-invalidating; SQL reads
+    always qualify a current committed snapshot. Comment-preserving mutations still use
+    ``load_host`` / ``load_fleet`` directly.
     """
     # Filesystem memoization applies only to Git. An authenticated SQL read
     # must requalify its finite validity and committed revision on every call.
@@ -201,12 +275,34 @@ def atomic_dump(api, data, path: Path) -> None:
 
 def save_host(api, data) -> None:
     api._guard_hq_registry_controller()
+    if sql_selected(api, data):
+        # A host switch is only persisted after a committed qualified readback.
+        _fleet_document(api, _sql_attachment(api, data)[1])
     _store(api).save_document(ConfigScope.HOST, data)
     clear_load_cache()
 
 
 def save_fleet(api, data) -> None:
-    _store(api).save_document(ConfigScope.FLEET, data)
+    if not sql_selected(api):
+        _store(api).save_document(ConfigScope.FLEET, data)
+        clear_load_cache()
+        return
+    active = _fleet_transaction.get()
+    if active is None:
+        raise api.ConfigError("SQL fleet publication requires an original-revision transaction")
+    store, snapshot = active
+    stream = StringIO()
+    with api._yaml_lock:
+        api._yaml.dump(data, stream)
+    documents = tuple(
+        FleetConfigDocument(
+            item.path, stream.getvalue() if item.path == "fleet.yaml" else item.content
+        )
+        for item in snapshot.documents
+    )
+    _fleet_document(api, replace(snapshot, documents=documents))
+    published = store.publish_snapshot(documents, expected_revision=snapshot.commit_revision)
+    _fleet_document(api, published)
     clear_load_cache()
 
 

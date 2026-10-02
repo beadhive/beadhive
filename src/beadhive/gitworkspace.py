@@ -21,7 +21,15 @@ longer gate on an `enabled()` predicate, they just call through and get empty re
 
 from __future__ import annotations
 
+import fcntl
+import hashlib
+import json
+import os
+import stat
+import tempfile
+import time
 import tomllib
+from contextlib import contextmanager
 from dataclasses import dataclass
 from glob import glob
 from pathlib import Path
@@ -32,6 +40,43 @@ _SEED_TOML = (
     "# seeded by `bh config init` — bh's internal workspace root.\n"
     "# `bh hive onboard` (or `git workspace add`) appends [[provider]] blocks here.\n"
 )
+_CENTRAL_PREFIX = "workspace-bh-"
+_GENERATED_MANIFEST = ".bh-workspace-generated.json"
+
+
+@contextmanager
+def workspace_projection_lock(root: Path, *, timeout: float = 30.0):
+    """Serialize projection and git-workspace invocation across local bh processes."""
+    root = Path(root)
+    if root.is_symlink():
+        raise ValueError("workspace root must not be a symlink")
+    root.mkdir(parents=True, exist_ok=True)
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(root / ".bh-workspace-projection.lock", flags, 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("workspace projection lock is not a regular file")
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("workspace projection lock deadline exceeded") from None
+                time.sleep(0.05)
+        yield
+    finally:
+        os.close(fd)
+
+
+@dataclass(frozen=True)
+class WorkspaceSource:
+    name: str
+    content: str
+    path: Path | None = None
+    backend_identity: str = ""
+    revision: str = ""
 
 
 @dataclass(frozen=True)
@@ -57,6 +102,123 @@ def glob_configs(d: Path) -> list[Path]:
     `workspace-lock.toml` (git-workspace's own output, not an input)."""
     found = sorted(glob(f"{d}/workspace*.toml"))
     return [Path(p) for p in found if not p.endswith("-lock.toml")]
+
+
+def _external_configs(root: Path) -> list[Path]:
+    # Generated central files are derived output, never an external source tier.
+    return [path for path in glob_configs(root) if not path.name.startswith(_CENTRAL_PREFIX)]
+
+
+def workspace_sources(cfg) -> list[WorkspaceSource]:
+    """Raw ordered files from the first selected workspace tier."""
+    explicit = (cfg.get("git_workspace") or {}).get("path")
+    if explicit:
+        path = Path(explicit).expanduser()
+        paths = [path] if path.exists() else []
+    elif own := _external_configs(Path(workspace_root())):
+        paths = own
+    else:
+        from . import config
+
+        if config.fleet_sql_selected():
+            snapshot = config.fleet_snapshot()
+            return [
+                WorkspaceSource(
+                    item.path,
+                    item.content,
+                    None,
+                    snapshot.backend_identity,
+                    snapshot.commit_revision,
+                )
+                for item in snapshot.documents
+                if item.path == "workspace.toml"
+                or (
+                    item.path.startswith("workspace-")
+                    and item.path.endswith(".toml")
+                    and item.path != "workspace-lock.toml"
+                )
+            ]
+        paths = glob_configs(config.hq_dir())
+    return [WorkspaceSource(path.name, path.read_text(), path) for path in paths]
+
+
+def materialize_workspace_sources(cfg, root: Path) -> list[Path]:
+    """Stage only derived files needed by the git-workspace child.
+
+    The manifest owns a reserved filename namespace; external source files and
+    workspace-lock.toml are never replaced or unlinked.
+    """
+    root = Path(root)
+    if root.is_symlink():
+        raise ValueError("workspace root must not be a symlink")
+    root.mkdir(parents=True, exist_ok=True)
+    sources = workspace_sources(cfg)
+    manifest = root / _GENERATED_MANIFEST
+    try:
+        old = (
+            json.loads(manifest.read_text())
+            if manifest.is_file() and not manifest.is_symlink()
+            else {}
+        )
+    except (OSError, ValueError):
+        old = {}
+    old_names = set(old.get("files", [])) if isinstance(old, dict) else set()
+    old_names = {
+        name
+        for name in old_names
+        if isinstance(name, str)
+        and name.startswith(_CENTRAL_PREFIX)
+        and name.endswith(".toml")
+        and "/" not in name
+    }
+
+    selected = []
+    generated = []
+    for index, source in enumerate(sources):
+        if source.path is not None and source.path.parent.resolve() == root.resolve():
+            selected.append(source.path)
+            continue
+        identity = (source.revision or source.name).encode()
+        digest = hashlib.sha256(identity).hexdigest()[:12]
+        # git-workspace discovers workspace*.toml in lexical filename order.
+        # Put the selected ordinal first so both SQL and off-root Git sources
+        # retain their precedence when their names/revisions hash differently.
+        name = f"{_CENTRAL_PREFIX}{index:03d}-{digest}.toml"
+        target = root / name
+        if target.exists() and name not in old_names:
+            raise ValueError("unowned generated workspace path exists")
+        if target.is_symlink() and name not in old_names:
+            raise ValueError("unowned generated workspace link exists")
+        fd, temporary = tempfile.mkstemp(prefix=".bh-workspace-", dir=root)
+        try:
+            with os.fdopen(fd, "w") as stream:
+                stream.write(source.content)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, target)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+        generated.append(name)
+        selected.append(target)
+    payload = {
+        "backend_identity": sources[0].backend_identity if sources else "",
+        "revision": sources[0].revision if sources else "",
+        "files": generated,
+    }
+    fd, temporary = tempfile.mkstemp(prefix=".bh-workspace-manifest-", dir=root)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            json.dump(payload, stream, sort_keys=True)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, manifest)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    for name in old_names - set(generated):
+        (root / name).unlink(missing_ok=True)
+    return selected
 
 
 def config_paths(cfg) -> list[Path]:
@@ -87,15 +249,18 @@ def config_paths(cfg) -> list[Path]:
     ``--workspace <dir>`` and looks for ``workspace*.toml`` inside it — see
     ``host_provision._link_workspace_config`` for how a resolved config outside that directory is
     made reachable to the child (bh-28ha).
+    SQL source documents have no local source path; use workspace_sources for reads.
     """
     explicit = (cfg.get("git_workspace") or {}).get("path")
     if explicit:
         p = Path(explicit).expanduser()
         return [p] if p.exists() else []
-    if own := glob_configs(Path(workspace_root())):
+    if own := _external_configs(Path(workspace_root())):
         return own
     from . import config  # lazy: config imports deps/schema, this module is a leaf reader
 
+    if config.fleet_sql_selected():
+        return []  # SQL documents are returned by workspace_sources, not local HQ paths.
     return glob_configs(config.hq_dir())
 
 
@@ -110,6 +275,10 @@ def ensure_seeded(root) -> bool:
     Existing ``workspace*.toml`` content is never rewritten. Returns whether the operation
     created either the directory or its initial source file.
     """
+    from . import config
+
+    if config.fleet_sql_selected():
+        return False
     root = Path(root)
     created = not root.is_dir()
     root.mkdir(parents=True, exist_ok=True)
@@ -120,10 +289,12 @@ def ensure_seeded(root) -> bool:
 
 
 def _provider_entries(cfg):
-    for path in config_paths(cfg):
+    for source in workspace_sources(cfg):
         try:
-            data = tomllib.loads(path.read_text())
+            data = tomllib.loads(source.content)
         except (OSError, tomllib.TOMLDecodeError):
+            if source.path is None:
+                raise ValueError("committed workspace configuration invalid") from None
             continue
         yield from data.get("provider", [])
 

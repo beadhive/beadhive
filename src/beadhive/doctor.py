@@ -41,7 +41,6 @@ from . import (
     hive_schema,
     host,
     host_fence,
-    hosts,
     install_plane,
     jsonout,
     metadata,
@@ -53,6 +52,7 @@ from . import (
     validate_probe,
     worktree,
 )
+from . import fleet_roster as hosts
 from .bootstrap.build_verify import collect_build_verify_diagnostics
 from .config_work_settings import attest_config
 from .identity import workspace_mode, workspace_root
@@ -113,13 +113,17 @@ def _data_config(cfg, root) -> dict:
     `workspace*.toml` source resolved" rather than a config toggle — the JSON shape is
     unchanged, only what the field measures is. Seed state is actionable only for an internal
     root; external roots remain operator-owned and are never offered for mutation."""
-    sources = [str(p) for p in gitworkspace.config_paths(cfg)]
+    sql = config.fleet_sql_selected()
+    sources = [
+        str(source.path) if source.path is not None else f"sql:{source.name}@{source.revision}"
+        for source in gitworkspace.workspace_sources(cfg)
+    ]
     mode = workspace_mode(str(root))
     return {
         "config_path": str(config.config_path()),
         "workspace_root": str(root),
         "workspace_mode": mode,
-        "workspace_seeded": mode != "internal" or gitworkspace.is_seeded(root),
+        "workspace_seeded": sql or mode != "internal" or gitworkspace.is_seeded(root),
         "git_workspace": {"enabled": bool(sources), "sources": sources},
     }
 
@@ -1150,7 +1154,7 @@ def _this_host_manifest() -> hosts.HostManifest | None:
     except FileNotFoundError:
         return None
     hq_dir = config.hq_dir()
-    if not (hq_dir / ".beads").is_dir():
+    if not config.fleet_sql_selected() and not (hq_dir / ".beads").is_dir():
         return None
     try:
         return hosts.load(hq_dir, host_id)

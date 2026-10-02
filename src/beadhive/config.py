@@ -227,7 +227,23 @@ def load_host():
 
 
 def load_fleet():
-    return _config_store.load_path(_facade(), fleet_path(), missing_ok=True)
+    return _config_store.load_fleet(_facade())
+
+
+def fleet_sql_selected() -> bool:
+    return _config_store.sql_selected(_facade())
+
+
+def fleet_snapshot():
+    return _config_store.fleet_snapshot(_facade())
+
+
+def publish_fleet_document(path: str, content: str | None):
+    return _config_store.publish_fleet_document(_facade(), path, content)
+
+
+def fleet_transaction_active() -> bool:
+    return _config_store.fleet_transaction_active()
 
 
 def _leaf_paths(node, prefix: str = ""):
@@ -287,6 +303,8 @@ def load_reconciling() -> dict:
 
 
 def _write_transaction(scope: str):
+    if scope == SCOPE_FLEET:
+        return _config_store.fleet_mutation(_facade())
     path = fleet_path() if scope == SCOPE_FLEET else config_path()
     return _config_store.mutation(path)
 

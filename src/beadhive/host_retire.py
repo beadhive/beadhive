@@ -63,7 +63,6 @@ from . import (
     config,
     host_cli,
     host_lease,
-    hosts,
     hq,
     registry,
     safety,
@@ -71,6 +70,7 @@ from . import (
     worktree,
     wt_status,
 )
+from . import fleet_roster as hosts
 
 # Aliased: this module's own public orchestrator is ALSO named `retire` (the CLI-facing name,
 # `host_retire.retire(...)`) — importing the sibling hive-level module under its own name would
@@ -506,7 +506,8 @@ def _step_deregister(hq_dir, host_id, label: str, held_after, *, dry_run: bool) 
         return StepResult(
             "deregister host manifest", "skipped", "no manifest registered for this host"
         )
-    hq._commit_if_dirty(hq_dir, f"chore(host): retire {host_id} ({label})")
+    if not config.fleet_sql_selected():
+        hq._commit_if_dirty(hq_dir, f"chore(host): retire {host_id} ({label})")
     return StepResult("deregister host manifest", "done", f"removed {removed}")
 
 
@@ -518,6 +519,7 @@ def _step_push_hq(*, dry_run: bool) -> StepResult:
     return StepResult("push HQ", "would" if dry_run else "done", "")
 
 
+@hosts.original_revision
 def retire(
     *, dry_run: bool = False, backup: bool = False, confirm: bool = False, purge: bool = False
 ) -> list[StepResult]:
