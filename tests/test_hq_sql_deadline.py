@@ -75,7 +75,8 @@ def test_expired_operator_budget_never_opens_a_new_connection(monkeypatch):
     from beadhive import hq_sql_operator
 
     monkeypatch.setattr(
-        hq_sql_operator, "connect",
+        hq_sql_operator,
+        "connect",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("expired operation reopened SQL")
         ),

@@ -433,9 +433,7 @@ class SqlFleetConfigRevisionStore:
                     raise SqlConfigError("committed publication parent is not an ancestor")
                 sequence, _, digest = rows[0]
             connection.rollback()
-            return PublicationRecovery(
-                publication_id, expected_revision, head, sequence, digest
-            )
+            return PublicationRecovery(publication_id, expected_revision, head, sequence, digest)
         except SqlConfigError:
             raise
         except Exception:

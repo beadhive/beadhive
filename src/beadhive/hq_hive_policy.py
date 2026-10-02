@@ -46,7 +46,8 @@ def validate_sql_hive_policies(
             or item["config_head"] != config_head
             or type(item["valid_until"]) not in (int, float)
             or not math.isfinite(item["valid_until"])
-            or require_fresh and now >= item["valid_until"]
+            or require_fresh
+            and now >= item["valid_until"]
             or type(item["evict_after_s"]) not in (int, float)
             or not math.isfinite(item["evict_after_s"])
             or item["evict_after_s"] <= 0
@@ -72,11 +73,7 @@ def project_hive_policies(
     at = time.time() if now is None else now
     if type(at) not in (int, float) or not math.isfinite(at) or at >= snapshot.valid_until:
         raise HivePolicyError("committed catalog snapshot expired")
-    if (
-        type(valid_until) not in (int, float)
-        or not math.isfinite(valid_until)
-        or valid_until <= at
-    ):
+    if type(valid_until) not in (int, float) or not math.isfinite(valid_until) or valid_until <= at:
         raise HivePolicyError("finite future operator policy expiry required")
     if not re.fullmatch(r"[0-9a-v]{32}", snapshot.commit_revision):
         raise HivePolicyError("committed Dolt config head invalid")

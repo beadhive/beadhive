@@ -1251,15 +1251,18 @@ class SqlControlPlane:
 
     def fetch_config(self, frame, *, holder_identity=None):
         try:
-            (_head, _state, route, _slot, record, _snapshot, _policies,
-             _observation, _lease) = self._runtime_authority().read_frame_composite()
+            (_head, _state, route, _slot, record, _snapshot, _policies, _observation, _lease) = (
+                self._runtime_authority().read_frame_composite()
+            )
             if frame != route.frame_id or (
                 holder_identity is not None and holder_identity != route.holder_identity
             ):
                 raise ControlPlaneError("frame config identity differs from authenticated grant")
             return {
-                **record["desired"], "state": record["state"],
-                "cordoned": record["cordoned"], "authority": record["authority"],
+                **record["desired"],
+                "state": record["state"],
+                "cordoned": record["cordoned"],
+                "authority": record["authority"],
             }
         except ValueError as exc:
             if isinstance(exc, ControlPlaneError):
@@ -1273,8 +1276,9 @@ class SqlControlPlane:
 
     def watch_state(self, frame):
         try:
-            (head, state, route, slot, record, _snapshot, _policies,
-             row, _lease) = self._runtime_authority().read_frame_composite()
+            (head, state, route, slot, record, _snapshot, _policies, row, _lease) = (
+                self._runtime_authority().read_frame_composite()
+            )
             if frame != route.frame_id:
                 return None
             return self._authority_snapshot(state, route, slot, record, row)
@@ -1301,18 +1305,26 @@ class SqlControlPlane:
             sequence, digest = row[0], row[1]
             first_seen = row[2] - observation.lease.leaseDurationSeconds
         return AuthoritySnapshot(
-            authority, checked, validity, sequence, digest, first_seen,
-            record["state"], record["state"] == "active" and not record["cordoned"],
+            authority,
+            checked,
+            validity,
+            sequence,
+            digest,
+            first_seen,
+            record["state"],
+            record["state"] == "active" and not record["cordoned"],
             f"sql:observation/{route.principal}/{route.epoch}",
         )
 
     def load_config_authority_snapshot(self, frame, *, revision=None):
         try:
-            (head, state, route, slot, record, snapshot, _policies,
-             row, _lease) = self._runtime_authority().read_frame_composite()
+            (head, state, route, slot, record, snapshot, _policies, row, _lease) = (
+                self._runtime_authority().read_frame_composite()
+            )
             if (
                 frame != route.frame_id
-                or revision is not None and revision != snapshot.commit_revision
+                or revision is not None
+                and revision != snapshot.commit_revision
             ):
                 raise ControlPlaneError(
                     "SQL config/authority snapshot identity or revision mismatch"
@@ -1320,7 +1332,8 @@ class SqlControlPlane:
             authority = self._authority_snapshot(state, route, slot, record, row)
             return ConfigAuthoritySnapshot(
                 HqConsistencyToken(snapshot.backend_identity, snapshot.generation, head),
-                snapshot, authority,
+                snapshot,
+                authority,
             )
         except ValueError as exc:
             if isinstance(exc, ControlPlaneError):
@@ -1331,8 +1344,9 @@ class SqlControlPlane:
         from .hq_framelease_contracts import HeartbeatLease
 
         lease = HeartbeatLease.model_validate(lease)
-        (_head, _state, route, _slot, record, _snapshot, _policies,
-         _row, _lease) = self._runtime_authority().read_frame_composite()
+        (_head, _state, route, _slot, record, _snapshot, _policies, _row, _lease) = (
+            self._runtime_authority().read_frame_composite()
+        )
         authority = record["authority"]
         if (
             lease.frame_id != route.frame_id
@@ -1357,8 +1371,9 @@ class SqlControlPlane:
         if deadline is None:
             deadline = time.monotonic() + self.settings["runtime"]["operation_timeout"]
         try:
-            (head, _state, route, _slot, record, _snapshot, _policies,
-             _observation, _lease) = runtime.read_frame_composite(deadline=deadline)
+            (head, _state, route, _slot, record, _snapshot, _policies, _observation, _lease) = (
+                runtime.read_frame_composite(deadline=deadline)
+            )
             authority = record["authority"]
             if (
                 manifest.frame_id != route.frame_id
@@ -1382,8 +1397,11 @@ class SqlControlPlane:
                 "manifest": manifest.model_dump(mode="json", exclude_none=True),
             }
             _, digest = runtime.publish_inbox(
-                "registration", sign_registration(request, signing_key=signing_key),
-                binding=route, expected_head=head, request_id=request_id,
+                "registration",
+                sign_registration(request, signing_key=signing_key),
+                binding=route,
+                expected_head=head,
+                request_id=request_id,
                 deadline=deadline,
             )
             return digest
@@ -1409,14 +1427,13 @@ class SqlControlPlane:
                 self._runtime_authority().read_frame_composite(deadline=deadline)
             )
             documents = [
-                document for document in snapshot.documents
+                document
+                for document in snapshot.documents
                 if document.path == f"hosts/{manifest}.yaml"
             ]
             if len(documents) != 1:
                 raise ControlPlaneError("committed host manifest unavailable")
-            record = hosts.HostManifest.model_validate(
-                YAML(typ="safe").load(documents[0].content)
-            )
+            record = hosts.HostManifest.model_validate(YAML(typ="safe").load(documents[0].content))
         else:
             raise ControlPlaneError("validated registration manifest required")
         key = host.signing_key()
@@ -1452,9 +1469,8 @@ class SqlControlPlane:
                 or authority.candidate_expires_at is None
                 or authority.candidate_expires_at <= self.clock()
                 or fingerprint(public_key) != authority.key_fingerprint
-                or authority.key_fingerprint == fingerprint(
-                    self.settings["runtime_operator_public_key"]
-                )
+                or authority.key_fingerprint
+                == fingerprint(self.settings["runtime_operator_public_key"])
                 or any(
                     record["authority"]["key_fingerprint"] == authority.key_fingerprint
                     or record["authority"]["holder_identity"] == authority.holder_identity
@@ -1470,12 +1486,19 @@ class SqlControlPlane:
             if entry["candidate"] is not None or authority.epoch <= entry["epoch_floor"]:
                 raise ControlPlaneError("candidate exists or epoch does not advance")
             entry["candidate"] = {
-                "authority": asdict(authority), "public_key": public_key.strip(),
-                "state": "pending", "desired": desired, "cordoned": False,
+                "authority": asdict(authority),
+                "public_key": public_key.strip(),
+                "state": "pending",
+                "desired": desired,
+                "cordoned": False,
                 "drain_deadline": None,
                 "receipt": {
-                    "sequence": 0, "sha": "", "first_seen": None,
-                    "consecutive": 0, "lease": None, "registration": None,
+                    "sequence": 0,
+                    "sha": "",
+                    "first_seen": None,
+                    "consecutive": 0,
+                    "lease": None,
+                    "registration": None,
                 },
             }
             entry["epoch_floor"] = authority.epoch
@@ -1485,10 +1508,16 @@ class SqlControlPlane:
             guard.validate_state(state)
             principal = SqlRuntimeOperator.principal_for(authority)
             return operator.publish(
-                state, expected_revision=expected, operator_key=operator_key,
+                state,
+                expected_revision=expected,
+                operator_key=operator_key,
                 provisioned_route=(
-                    principal, authority.frame_id, authority.holder_identity,
-                    authority.instance_ref, authority.epoch, authority.key_fingerprint,
+                    principal,
+                    authority.frame_id,
+                    authority.holder_identity,
+                    authority.instance_ref,
+                    authority.epoch,
+                    authority.key_fingerprint,
                 ),
                 deadline=budget,
             )
@@ -1518,7 +1547,9 @@ class SqlControlPlane:
             state["issued_at"] = self.clock()
             state["expires_at"] = self.clock() + duration
             return operator.publish(
-                state, expected_revision=expected, operator_key=operator_key,
+                state,
+                expected_revision=expected,
+                operator_key=operator_key,
                 deadline=budget,
             )
         except ValueError as exc:
@@ -1537,10 +1568,11 @@ class SqlControlPlane:
             if entry is None:
                 raise ControlPlaneError("unknown frame observation")
             selected = [
-                record for record in (entry["active"], entry["candidate"])
-                if record is not None and (
-                    not holder_identity
-                    or record["authority"]["holder_identity"] == holder_identity
+                record
+                for record in (entry["active"], entry["candidate"])
+                if record is not None
+                and (
+                    not holder_identity or record["authority"]["holder_identity"] == holder_identity
                 )
             ]
             if len(selected) != 1:
@@ -1567,7 +1599,9 @@ class SqlControlPlane:
             state["issued_at"] = self.clock()
             state["expires_at"] = state["issued_at"] + 3600
             return operator.publish(
-                state, expected_revision=head, operator_key=operator_key,
+                state,
+                expected_revision=head,
+                operator_key=operator_key,
                 deadline=budget,
             )
         except ValueError as exc:
@@ -1576,9 +1610,19 @@ class SqlControlPlane:
             raise ControlPlaneError("SQL protected observation unavailable") from None
 
     def lifecycle(
-        self, verb, frame, action="plan", *, expected="", expected_host_id="",
-        expected_release="", operator_key="", confirm=False, supersede=False,
-        deadline=None, _sql_deadline=None,
+        self,
+        verb,
+        frame,
+        action="plan",
+        *,
+        expected="",
+        expected_host_id="",
+        expected_release="",
+        operator_key="",
+        confirm=False,
+        supersede=False,
+        deadline=None,
+        _sql_deadline=None,
     ):
         operator = self._operator()
         budget = _sql_deadline or self._operator_deadline()
@@ -1589,16 +1633,17 @@ class SqlControlPlane:
                 raise ControlPlaneError("frame has no operator grant")
             selected = [
                 (slot, record)
-                for slot, record in (("active", entry["active"]),
-                                     ("candidate", entry["candidate"]))
-                if record is not None and (
+                for slot, record in (("active", entry["active"]), ("candidate", entry["candidate"]))
+                if record is not None
+                and (
                     not expected_host_id
                     or record["authority"]["holder_identity"] == expected_host_id
                 )
             ]
             if not selected and expected_host_id:
                 selected = [
-                    ("retired", record) for record in reversed(entry["retired"])
+                    ("retired", record)
+                    for record in reversed(entry["retired"])
                     if record["authority"]["holder_identity"] == expected_host_id
                 ][:1]
             if not selected:
@@ -1611,7 +1656,9 @@ class SqlControlPlane:
             receipts = []
             if slot != "retired":
                 _evidence_record, registration, receipts = operator.evidence(
-                    frame, authority["holder_identity"], expected_revision=head,
+                    frame,
+                    authority["holder_identity"],
+                    expected_revision=head,
                     deadline=budget,
                 )
             latest = receipts[0][3] if receipts else None
@@ -1635,16 +1682,13 @@ class SqlControlPlane:
                 "release": release,
                 "toplevel": latest.toplevel if latest else None,
                 "image": latest.image if latest else None,
-                "capabilities": (
-                    registration.capabilities.model_dump() if registration else None
-                ),
+                "capabilities": (registration.capabilities.model_dump() if registration else None),
                 "attestor_evidence_kind": "ed25519-runtime-signature",
                 "consecutive_verified_beats": streak,
-                "conformance": (
-                    latest.conformance.model_dump() if latest else None
-                ),
+                "conformance": (latest.conformance.model_dump() if latest else None),
                 "prior_active": entry["active"]["authority"]
-                if slot == "candidate" and entry["active"] else None,
+                if slot == "candidate" and entry["active"]
+                else None,
             }
             if action in {"plan", "check"}:
                 return result
@@ -1715,9 +1759,7 @@ class SqlControlPlane:
                 if verb not in transitions or record["state"] not in transitions[verb][0]:
                     raise ControlPlaneError("illegal lifecycle transition")
                 destination = transitions[verb][1]
-                if record["state"] == destination and not (
-                    verb == "resume" and record["cordoned"]
-                ):
+                if record["state"] == destination and not (verb == "resume" and record["cordoned"]):
                     return result
                 if verb == "drain":
                     if type(deadline) not in (int, float) or deadline <= now:
@@ -1728,11 +1770,16 @@ class SqlControlPlane:
             state["issued_at"] = now
             state["expires_at"] = now + 3600
             operator.publish(
-                state, expected_revision=head, operator_key=operator_key,
+                state,
+                expected_revision=head,
+                operator_key=operator_key,
                 deadline=budget,
             )
             return self.lifecycle(
-                verb, frame, "check", expected_host_id=expected_host_id,
+                verb,
+                frame,
+                "check",
+                expected_host_id=expected_host_id,
                 _sql_deadline=budget,
             )
         except ValueError as exc:
@@ -1816,11 +1863,17 @@ class SqlControlPlane:
             ):
                 raise ControlPlaneError("manifest or desired policy differs from current grant")
             desired = {
-                **record["desired"], "state": record["state"],
-                "cordoned": record["cordoned"], "authority": record["authority"],
+                **record["desired"],
+                "state": record["state"],
+                "cordoned": record["cordoned"],
+                "authority": record["authority"],
             }
-            return head, desired, self._public_observation(
-                row, route, slot, granted_public_key=record["public_key"], now=at
+            return (
+                head,
+                desired,
+                self._public_observation(
+                    row, route, slot, granted_public_key=record["public_key"], now=at
+                ),
             )
         except ValueError as exc:
             if isinstance(exc, ControlPlaneError):
@@ -1832,10 +1885,17 @@ class SqlControlPlane:
         from .hq_sql_signatures import canonical
 
         try:
-            (_head, _state, route, slot, record, _snapshot, policies,
-             observation_row, lease_row) = self._runtime_authority().read_frame_composite(
-                prefix=prefix
-            )
+            (
+                _head,
+                _state,
+                route,
+                slot,
+                record,
+                _snapshot,
+                policies,
+                observation_row,
+                lease_row,
+            ) = self._runtime_authority().read_frame_composite(prefix=prefix)
             if lease_row is None:
                 return "", None
             revision, body, _request_id, _request_sha = lease_row
@@ -1850,8 +1910,10 @@ class SqlControlPlane:
             if (
                 not isinstance(raw, dict)
                 or set(raw) != {"host_id", "label", "epoch", "adopted_at", "expires_at"}
-                or any(type(raw[key]) is not str for key in
-                       ("host_id", "label", "adopted_at", "expires_at"))
+                or any(
+                    type(raw[key]) is not str
+                    for key in ("host_id", "label", "adopted_at", "expires_at")
+                )
                 or type(raw["epoch"]) is not int
                 or raw["epoch"] < 1
                 or _parse_stamp(raw["adopted_at"]) <= 0
@@ -1862,14 +1924,15 @@ class SqlControlPlane:
             if holder_identity is not None:
                 policy = policies.get(prefix)
                 observation = self._public_observation(
-                    observation_row, route, slot,
-                    granted_public_key=record["public_key"], now=self.clock()
+                    observation_row,
+                    route,
+                    slot,
+                    granted_public_key=record["public_key"],
+                    now=self.clock(),
                 )
                 if (
                     holder_identity != route.holder_identity
-                    or envelope["authority"] != {
-                        "frame_id": route.frame_id, **record["authority"]
-                    }
+                    or envelope["authority"] != {"frame_id": route.frame_id, **record["authority"]}
                     or lease.host_id != holder_identity
                     or lease.is_expired(self.clock())
                     or slot != "active"
@@ -1942,8 +2005,10 @@ class SqlControlPlane:
             ):
                 raise ControlPlaneError("heartbeat does not match current granted incarnation")
             _, digest = runtime.publish_inbox(
-                "heartbeat", sign_heartbeat(lease, signing_key=signing_key),
-                binding=binding, expected_head=head,
+                "heartbeat",
+                sign_heartbeat(lease, signing_key=signing_key),
+                binding=binding,
+                expected_head=head,
                 deadline=deadline,
             )
             return digest
@@ -1986,8 +2051,10 @@ class SqlControlPlane:
                 or record["authority"]["key_fingerprint"] != binding.signer_fingerprint
                 or operation in {"adopt", "renew"}
                 and (record["state"] != "active" or record["cordoned"])
-                or operation != "release" and lease.host_id != binding.holder_identity
-                or operation == "release" and lease.host_id != ""
+                or operation != "release"
+                and lease.host_id != binding.holder_identity
+                or operation == "release"
+                and lease.host_id != ""
             ):
                 raise ControlPlaneError("hive lease proposal requires exact active incarnation")
             authority = record["authority"]
@@ -2011,8 +2078,11 @@ class SqlControlPlane:
                 "lease": lease.to_record(),
             }
             _, digest = runtime.publish_inbox(
-                "hive_lease", sign_hive_request(request, signing_key=signing_key),
-                binding=binding, expected_head=head, request_id=request_id,
+                "hive_lease",
+                sign_hive_request(request, signing_key=signing_key),
+                binding=binding,
+                expected_head=head,
+                request_id=request_id,
                 deadline=deadline,
             )
             return request_id, digest.removeprefix("sha256:"), binding, authority["audience"]
@@ -2033,8 +2103,13 @@ class SqlControlPlane:
             if time.monotonic() >= deadline:
                 raise ControlPlaneError("hive lease signing deadline exceeded")
             request_id, digest, binding, audience = self.propose_hive_lease(
-                prefix, lease, expected=expected, operation=operation, force=force,
-                signing_key=signing_key, deadline=deadline,
+                prefix,
+                lease,
+                expected=expected,
+                operation=operation,
+                force=force,
+                signing_key=signing_key,
+                deadline=deadline,
             )
         except InboxUnknown as exc:
             raise HqLeaseUnknown(exc.request_id, exc.payload_sha256, expected) from None

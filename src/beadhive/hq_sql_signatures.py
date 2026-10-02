@@ -76,9 +76,11 @@ def sign_heartbeat(lease, *, signing_key: str) -> dict:
         private = serialization.load_ssh_private_key(Path(signing_key).read_bytes(), password=None)
         if not isinstance(private, Ed25519PrivateKey):
             raise ValueError()
-        public = private.public_key().public_bytes(
-            serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH
-        ).decode()
+        public = (
+            private.public_key()
+            .public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH)
+            .decode()
+        )
         envelope = _unsigned_envelope(lease)
         if envelope["spec"]["key_id"] != fingerprint(public):
             raise SqlSignatureError("frame key does not match lease key identity")
@@ -133,9 +135,11 @@ def sign_hive_request(request: dict, *, signing_key: str) -> dict:
         private = serialization.load_ssh_private_key(Path(signing_key).read_bytes(), password=None)
         if not isinstance(private, Ed25519PrivateKey):
             raise ValueError()
-        public = private.public_key().public_bytes(
-            serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH
-        ).decode()
+        public = (
+            private.public_key()
+            .public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH)
+            .decode()
+        )
         if request.get("key_fingerprint") != fingerprint(public):
             raise SqlSignatureError("hive request signer differs from granted key identity")
         if request.get("domain") != HIVE_LEASE_DOMAIN.rstrip(b"\x00").decode():
@@ -195,9 +199,11 @@ def sign_registration(request: dict, *, signing_key: str) -> dict:
         private = serialization.load_ssh_private_key(Path(signing_key).read_bytes(), password=None)
         if not isinstance(private, Ed25519PrivateKey):
             raise ValueError()
-        public = private.public_key().public_bytes(
-            serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH
-        ).decode()
+        public = (
+            private.public_key()
+            .public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH)
+            .decode()
+        )
         if (
             request.get("key_fingerprint") != fingerprint(public)
             or request.get("domain") != REGISTRATION_DOMAIN.rstrip(b"\x00").decode()
@@ -206,7 +212,9 @@ def sign_registration(request: dict, *, signing_key: str) -> dict:
         result = {
             "request": request,
             "signature": {
-                "keyId": fingerprint(public), "algorithm": "ed25519", "scope": "payload",
+                "keyId": fingerprint(public),
+                "algorithm": "ed25519",
+                "scope": "payload",
                 "value": base64.b64encode(
                     private.sign(REGISTRATION_DOMAIN + canonical(request))
                 ).decode(),
@@ -286,6 +294,12 @@ def verify_heartbeat(envelope: dict, *, granted_public_key: str):
     except SqlSignatureError:
         raise
     except (
-        KeyError, TypeError, ValueError, OSError, ValidationError, InvalidSignature, binascii.Error
+        KeyError,
+        TypeError,
+        ValueError,
+        OSError,
+        ValidationError,
+        InvalidSignature,
+        binascii.Error,
     ):
         raise SqlSignatureError("SQL FrameLease authentication failed") from None

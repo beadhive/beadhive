@@ -119,16 +119,20 @@ def test_explicit_sql_host_switch_ignores_local_fleet_and_never_memoizes_outage(
     binding = {
         "enabled": True,
         "reader": {
-            "host": "sql.example.test", "database": "beadhive_hq_config",
-            "user": "reader", "server_name": "sql.example.test",
+            "host": "sql.example.test",
+            "database": "beadhive_hq_config",
+            "user": "reader",
+            "server_name": "sql.example.test",
             "ca_file": str(tmp_path / "ca.pem"),
             "credential": {
                 "config_path": str(tmp_path / "fnox.toml"),
-                "profile": "test", "key": "SQL_READER",
+                "profile": "test",
+                "key": "SQL_READER",
             },
         },
         "floor_path": str(tmp_path / "floor.json"),
-        "backend_identity": "fixture", "generation": "fixture-generation",
+        "backend_identity": "fixture",
+        "generation": "fixture-generation",
         "initial_revision": "a" * 32,
     }
 
@@ -146,9 +150,11 @@ def test_explicit_sql_host_switch_ignores_local_fleet_and_never_memoizes_outage(
         if unavailable:
             raise hq_control_plane.ControlPlaneError("committed SQL config unavailable")
         return None, SimpleNamespace(
-            documents=(FleetConfigDocument(
-                "fleet.yaml", "hq:\n  mode: dolt-server\nwork:\n  validate_cmd: central\n"
-            ),)
+            documents=(
+                FleetConfigDocument(
+                    "fleet.yaml", "hq:\n  mode: dolt-server\nwork:\n  validate_cmd: central\n"
+                ),
+            )
         )
 
     monkeypatch.setattr(hq_control_plane, "attach_fleet_config", sql_snapshot)
@@ -177,7 +183,8 @@ def test_explicit_sql_host_switch_ignores_local_fleet_and_never_memoizes_outage(
             return signature(path)
 
         local.setattr(
-            config_store, "_file_signature",
+            config_store,
+            "_file_signature",
             unreadable_signature,
         )
         assert config.load()["work"]["validate_cmd"] == "central"  # unreadable local fleet

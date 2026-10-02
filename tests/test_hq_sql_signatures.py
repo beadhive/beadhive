@@ -30,9 +30,11 @@ def _key(tmp_path, name):
             serialization.NoEncryption(),
         )
     )
-    public = private.public_key().public_bytes(
-        serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH
-    ).decode()
+    public = (
+        private.public_key()
+        .public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH)
+        .decode()
+    )
     return path, public
 
 
@@ -97,7 +99,9 @@ def test_sql_hive_request_signature_binds_original_cas_and_request_id(tmp_path):
         "operation": "adopt",
         "force": False,
         "lease": {
-            "host_id": "host-1", "label": "fixture", "epoch": 1,
+            "host_id": "host-1",
+            "label": "fixture",
+            "epoch": 1,
             "adopted_at": "2026-10-02T00:00:00Z",
             "expires_at": "2026-10-02T00:30:00Z",
         },

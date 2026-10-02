@@ -52,8 +52,11 @@ def _runtime_commit_hashes(port):
     import pymysql
 
     root = pymysql.connect(
-        host="127.0.0.1", port=port, user="root",
-        database="beadhive_hq_runtime", autocommit=True,
+        host="127.0.0.1",
+        port=port,
+        user="root",
+        database="beadhive_hq_runtime",
+        autocommit=True,
     )
     try:
         with root.cursor() as cursor:
@@ -719,14 +722,18 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
             # result or observer floor; restoring the original signed bytes
             # allows exactly that original request to be accepted below.
             tamper = pymysql.connect(
-                host="127.0.0.1", port=port, user="root",
-                database="beadhive_hq_runtime", autocommit=True,
+                host="127.0.0.1",
+                port=port,
+                user="root",
+                database="beadhive_hq_runtime",
+                autocommit=True,
             )
             try:
                 with tamper.cursor() as cursor:
                     cursor.execute(
                         "SELECT payload,payload_sha256 FROM hq_live_inbox_frame_a_1 "
-                        "WHERE request_id=%s", (request_id,),
+                        "WHERE request_id=%s",
+                        (request_id,),
                     )
                     original_payload, original_payload_sha = cursor.fetchone()
                     forged_envelope = json.loads(original_payload)
@@ -738,16 +745,21 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
                         (forged_payload, hashlib.sha256(forged_payload).hexdigest(), request_id),
                     )
                     forged = subprocess.run(
-                        [sys.executable, str(worker), str(receiver_settings_path),
-                         "frame_a", request_id],
+                        [
+                            sys.executable,
+                            str(worker),
+                            str(receiver_settings_path),
+                            "frame_a",
+                            request_id,
+                        ],
                         cwd=Path(__file__).parent.parent,
-                        capture_output=True, text=True, timeout=20,
+                        capture_output=True,
+                        text=True,
+                        timeout=20,
                     )
                     assert forged.returncode != 0
                     assert "authentication failed" in forged.stderr
-                    cursor.execute(
-                        "SELECT sequence FROM hq_live_floors WHERE frame_id='frame-1'"
-                    )
+                    cursor.execute("SELECT sequence FROM hq_live_floors WHERE frame_id='frame-1'")
                     assert cursor.fetchone() == (0,)
                     cursor.execute(
                         "SELECT request_id FROM hq_live_results WHERE request_id=%s",
@@ -763,25 +775,32 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
             finally:
                 tamper.close()
             killed_before_commit = subprocess.run(
-                [sys.executable, str(worker), str(receiver_settings_path),
-                 "frame_a", request_id, "--abort-before-commit"],
+                [
+                    sys.executable,
+                    str(worker),
+                    str(receiver_settings_path),
+                    "frame_a",
+                    request_id,
+                    "--abort-before-commit",
+                ],
                 cwd=Path(__file__).parent.parent,
-                capture_output=True, text=True, timeout=20,
+                capture_output=True,
+                text=True,
+                timeout=20,
             )
             assert killed_before_commit.returncode == 77
             crash_check = pymysql.connect(
-                host="127.0.0.1", port=port, user="root",
-                database="beadhive_hq_runtime", autocommit=True,
+                host="127.0.0.1",
+                port=port,
+                user="root",
+                database="beadhive_hq_runtime",
+                autocommit=True,
             )
             try:
                 with crash_check.cursor() as cursor:
-                    cursor.execute(
-                        "SELECT sequence FROM hq_live_floors WHERE frame_id='frame-1'"
-                    )
+                    cursor.execute("SELECT sequence FROM hq_live_floors WHERE frame_id='frame-1'")
                     assert cursor.fetchone() == (0,)
-                    cursor.execute(
-                        "SELECT COUNT(*) FROM hq_live_receipts WHERE frame_id='frame-1'"
-                    )
+                    cursor.execute("SELECT COUNT(*) FROM hq_live_receipts WHERE frame_id='frame-1'")
                     assert cursor.fetchone() == (0,)
                     cursor.execute(
                         "SELECT COUNT(*) FROM hq_live_results WHERE request_id=%s",
@@ -791,10 +810,18 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
             finally:
                 crash_check.close()
             killed_after_commit = subprocess.run(
-                [sys.executable, str(worker), str(receiver_settings_path),
-                 "frame_a", request_id, "--abort-after-commit"],
+                [
+                    sys.executable,
+                    str(worker),
+                    str(receiver_settings_path),
+                    "frame_a",
+                    request_id,
+                    "--abort-after-commit",
+                ],
                 cwd=Path(__file__).parent.parent,
-                capture_output=True, text=True, timeout=20,
+                capture_output=True,
+                text=True,
+                timeout=20,
             )
             assert killed_after_commit.returncode == 78
             crash_recovery = {
@@ -811,10 +838,18 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
             crash_recovery_path = tmp_path / "lost-ack-request.json"
             crash_recovery_path.write_text(json.dumps(crash_recovery))
             recovered_after_crash = subprocess.run(
-                [sys.executable, str(worker), str(receiver_settings_path),
-                 "frame_a", request_id, str(crash_recovery_path)],
+                [
+                    sys.executable,
+                    str(worker),
+                    str(receiver_settings_path),
+                    "frame_a",
+                    request_id,
+                    str(crash_recovery_path),
+                ],
                 cwd=Path(__file__).parent.parent,
-                capture_output=True, text=True, timeout=20,
+                capture_output=True,
+                text=True,
+                timeout=20,
             )
             assert recovered_after_crash.returncode == 0, recovered_after_crash.stderr
             assert recovered_after_crash.stdout.strip() == published_digest
@@ -845,24 +880,27 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
             )
             expired_digest = plane.heartbeat(expired_lease, signing_key=str(frame_key))
             expired_root = pymysql.connect(
-                host="127.0.0.1", port=port, user="root",
-                database="beadhive_hq_runtime", autocommit=True,
+                host="127.0.0.1",
+                port=port,
+                user="root",
+                database="beadhive_hq_runtime",
+                autocommit=True,
             )
             try:
                 with expired_root.cursor() as cursor:
                     cursor.execute(
-                        "SELECT request_id FROM hq_live_inbox_frame_a_1 "
-                        "WHERE payload_sha256=%s",
+                        "SELECT request_id FROM hq_live_inbox_frame_a_1 WHERE payload_sha256=%s",
                         (expired_digest.removeprefix("sha256:"),),
                     )
                     expired_id = cursor.fetchone()[0]
             finally:
                 expired_root.close()
             late = subprocess.run(
-                [sys.executable, str(worker), str(receiver_settings_path),
-                 "frame_a", expired_id],
+                [sys.executable, str(worker), str(receiver_settings_path), "frame_a", expired_id],
                 cwd=Path(__file__).parent.parent,
-                capture_output=True, text=True, timeout=20,
+                capture_output=True,
+                text=True,
+                timeout=20,
             )
             assert late.returncode != 0
             assert "expired or future-skewed" in late.stderr
@@ -929,7 +967,9 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
             assert repeated.stdout.strip() == hive_revision
             renewals = [
                 HostLease(
-                    host_id="host-1", label="fixture", epoch=1,
+                    host_id="host-1",
+                    label="fixture",
+                    epoch=1,
                     adopted_at=hive_lease.adopted_at,
                     expires_at=now_stamp(now + duration),
                 )
@@ -937,17 +977,28 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
             ]
             competing = [
                 plane.propose_hive_lease(
-                    "bh", candidate, expected=hive_revision,
-                    operation="renew", signing_key=str(frame_key),
+                    "bh",
+                    candidate,
+                    expected=hive_revision,
+                    operation="renew",
+                    signing_key=str(frame_key),
                 )
                 for candidate in renewals
             ]
             workers = [
                 subprocess.Popen(
-                    [sys.executable, str(worker), str(receiver_settings_path),
-                     "frame_a", proposal[0], "--hive"],
+                    [
+                        sys.executable,
+                        str(worker),
+                        str(receiver_settings_path),
+                        "frame_a",
+                        proposal[0],
+                        "--hive",
+                    ],
                     cwd=Path(__file__).parent.parent,
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
                 )
                 for proposal in competing
             ]
@@ -966,7 +1017,8 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
             hive_revision = results[winner][0].strip()
             hive_lease = renewals[winner]
             assert plane.read_hive_lease_record("bh", holder_identity="host-1") == (
-                hive_revision, hive_lease
+                hive_revision,
+                hive_lease,
             )
             manifest_identity = SimpleNamespace(
                 frame_id="frame-1", host_id="host-1", instance_ref="vm-1"
@@ -976,9 +1028,7 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
             assert_common_membership_reads(plane, manifest_identity, published_digest)
             # The authenticated read cache can expire without expiring the
             # separately signed durable policy. A new read must requalify HEAD.
-            short_cache_plane = SqlControlPlane(
-                {**settings, "cache_ttl": 1}, broker=Broker()
-            )
+            short_cache_plane = SqlControlPlane({**settings, "cache_ttl": 1}, broker=Broker())
             short_cache_snapshot = short_cache_plane.config_store().load_snapshot()
             time.sleep(1.1)
             assert time.time() > short_cache_snapshot.valid_until
@@ -1304,11 +1354,13 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
                         raise AssertionError("owned runtime Dolt restart failed") from None
                     time.sleep(0.1)
             assert plane.observe(manifest_identity).sha == pre_restart_observation.sha
-            assert operator.evidence(
-                "frame-1", "host-1", expected_revision=initial
-            )[2][0][1:3] == pre_restart_receipts[0][1:3]
+            assert (
+                operator.evidence("frame-1", "host-1", expected_revision=initial)[2][0][1:3]
+                == pre_restart_receipts[0][1:3]
+            )
             assert plane.read_hive_lease_record("bh", holder_identity="host-1") == (
-                hive_revision, hive_lease,
+                hive_revision,
+                hive_lease,
             )
 
             operator_plane = SqlControlPlane(operator_settings, broker=Broker())
@@ -1440,13 +1492,12 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
             git_equivalent_policy = {**policies["bh"], "config_head": "f" * 40}
             guard.validate_hive_policies({"bh": git_equivalent_policy})
             pending_facts = EligibilityFacts(pending_observation, pending_desired)
-            pending_sql = eligible(
-                manifest2, policies["bh"], pending_facts
-            )
+            pending_sql = eligible(manifest2, policies["bh"], pending_facts)
             assert not pending_sql.allowed
-            assert pending_sql.predicates == eligible(
-                manifest2, git_equivalent_policy, pending_facts
-            ).predicates
+            assert (
+                pending_sql.predicates
+                == eligible(manifest2, git_equivalent_policy, pending_facts).predicates
+            )
             for sequence in (1, 2, 3):
                 second_lease = HeartbeatLease(
                     audience="fixture-fleet",
@@ -1522,42 +1573,34 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
             active_facts = EligibilityFacts(second_observation, second_desired)
             active_sql = eligible(manifest2, policies["bh"], active_facts)
             assert active_sql.allowed
-            assert active_sql.predicates == eligible(
-                manifest2, git_equivalent_policy, active_facts
-            ).predicates
+            assert (
+                active_sql.predicates
+                == eligible(manifest2, git_equivalent_policy, active_facts).predicates
+            )
             stale_observation = second_plane.read_eligibility(
                 second_identity, now=time.time() + second_lease.leaseDurationSeconds + 1
             )[2]
             assert not eligible(
-                manifest2, policies["bh"],
+                manifest2,
+                policies["bh"],
                 EligibilityFacts(stale_observation, second_desired),
             ).allowed
             with pytest.raises(ControlPlaneError):
                 second_plane.read_eligibility(
-                    SimpleNamespace(
-                        frame_id="frame-2", host_id="wrong-host", instance_ref="vm-2"
-                    )
+                    SimpleNamespace(frame_id="frame-2", host_id="wrong-host", instance_ref="vm-2")
                 )
             wrong_release = manifest2.model_copy(
                 update={
-                    "release": manifest2.release.model_copy(
-                        update={"digest": "sha256:" + "3" * 64}
-                    )
+                    "release": manifest2.release.model_copy(update={"digest": "sha256:" + "3" * 64})
                 }
             )
-            assert not eligible(
-                wrong_release, policies["bh"], active_facts
-            ).allowed
+            assert not eligible(wrong_release, policies["bh"], active_facts).allowed
             changed_caps = manifest2.model_copy(
                 update={
-                    "capabilities": manifest2.capabilities.model_copy(
-                        update={"max_sessions": 2}
-                    )
+                    "capabilities": manifest2.capabilities.model_copy(update={"max_sessions": 2})
                 }
             )
-            assert not eligible(
-                changed_caps, policies["bh"], active_facts
-            ).allowed
+            assert not eligible(changed_caps, policies["bh"], active_facts).allowed
             # A different active holder cannot take over while the incumbent
             # still has a live protected receipt and an unexpired hive lease.
             takeover = HostLease(
@@ -1569,13 +1612,22 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
             )
             takeover_id, takeover_sha, takeover_route, takeover_audience = (
                 second_plane.propose_hive_lease(
-                    "bh", takeover, expected=hive_revision,
-                    operation="adopt", signing_key=str(second_key),
+                    "bh",
+                    takeover,
+                    expected=hive_revision,
+                    operation="adopt",
+                    signing_key=str(second_key),
                 )
             )
             denied_takeover = subprocess.run(
-                [sys.executable, str(worker), str(receiver_settings_path),
-                 second_principal, takeover_id, "--hive"],
+                [
+                    sys.executable,
+                    str(worker),
+                    str(receiver_settings_path),
+                    second_principal,
+                    takeover_id,
+                    "--hive",
+                ],
                 cwd=Path(__file__).parent.parent,
                 capture_output=True,
                 text=True,
@@ -1583,15 +1635,19 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
             )
             assert denied_takeover.returncode != 0
             assert "live incumbent is not evictable" in denied_takeover.stderr
-            assert second_plane._runtime_authority().read_public_result(
-                takeover_id,
-                request_sha256=takeover_sha,
-                principal=takeover_route,
-                audience=takeover_audience,
-                expected_revision=hive_revision,
-            ) is None
+            assert (
+                second_plane._runtime_authority().read_public_result(
+                    takeover_id,
+                    request_sha256=takeover_sha,
+                    principal=takeover_route,
+                    audience=takeover_audience,
+                    expected_revision=hive_revision,
+                )
+                is None
+            )
             assert plane.read_hive_lease_record("bh", holder_identity="host-1") == (
-                hive_revision, hive_lease,
+                hive_revision,
+                hive_lease,
             )
             # Publishing even identical canonical documents changes the
             # committed config HEAD. The old signed runtime projection cannot
@@ -1602,16 +1658,10 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
             config_writer_settings = {
                 **settings,
                 "runtime": None,
-                "publisher": _binding(
-                    tmp_path, port, "config_publisher", "beadhive_hq_config"
-                ),
+                "publisher": _binding(tmp_path, port, "config_publisher", "beadhive_hq_config"),
             }
-            config_writer = SqlFleetConfigRevisionStore(
-                config_writer_settings, broker=Broker()
-            )
-            republished = config_writer.publish_snapshot(
-                documents, expected_revision=config_head
-            )
+            config_writer = SqlFleetConfigRevisionStore(config_writer_settings, broker=Broker())
+            republished = config_writer.publish_snapshot(documents, expected_revision=config_head)
             assert republished.commit_revision != config_head
             with pytest.raises(ValueError):
                 second_plane.eligibility_authority_status()
@@ -1709,12 +1759,13 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
                 confirm=True,
             )
             assert drain["state"] == "draining" and drain["cordoned"]
-            draining_head, draining_desired, draining_observation = (
-                second_plane.read_eligibility(second_identity)
+            draining_head, draining_desired, draining_observation = second_plane.read_eligibility(
+                second_identity
             )
             assert draining_head == drain["revision"]
             assert not eligible(
-                manifest2, policies["bh"],
+                manifest2,
+                policies["bh"],
                 EligibilityFacts(draining_observation, draining_desired),
             ).allowed
             drained_lease = second_lease.model_copy(
@@ -1838,7 +1889,8 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
             # provisioned host pinned to the latest known signed HEAD.
             trusted_head = retired_two["revision"]
             _cli(
-                tmp_path, port,
+                tmp_path,
+                port,
                 f"USE beadhive_hq_runtime; CALL DOLT_RESET('--hard','{initial}')",
             )
             with pytest.raises(ValueError, match="rollback|amended|history fork"):

@@ -41,9 +41,7 @@ def test_sql_bootstrap_selector_is_explicit_and_strict(monkeypatch):
 
 
 @pytest.mark.parametrize("role", ["reader", "publisher", "observer", "authority_writer"])
-def test_invalid_inline_sql_secret_is_redacted_at_binding_and_cli_boundaries(
-    monkeypatch, role
-):
+def test_invalid_inline_sql_secret_is_redacted_at_binding_and_cli_boundaries(monkeypatch, role):
     from beadhive import config_store, config_validate
 
     canary = "DUMMY_INLINE_SECRET_xyz"
@@ -51,9 +49,7 @@ def test_invalid_inline_sql_secret_is_redacted_at_binding_and_cli_boundaries(
     with pytest.raises(ValueError) as construction:
         hq_control_plane.SqlControlPlane(sql)
     assert canary not in str(construction.value)
-    monkeypatch.setattr(
-        hq_control_plane.config, "load_host", lambda: {"hq": {"sql": sql}}
-    )
+    monkeypatch.setattr(hq_control_plane.config, "load_host", lambda: {"hq": {"sql": sql}})
     with pytest.raises(ValueError) as selector:
         hq_control_plane.control_plane(hq_dir="/tmp/unused-hq")
     assert canary not in str(selector.value)

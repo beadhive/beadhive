@@ -113,9 +113,21 @@ def _negative_server_certificates(tmp_path):
         "extendedKeyUsage=serverAuth\nsubjectAltName=DNS:wrong.fixture.invalid\n"
     )
     _openssl(
-        tmp_path, "x509", "-req", "-in", "server.csr", "-CA", "ca.crt",
-        "-CAkey", "ca.key", "-out", "wrong-name.crt", "-days", "2",
-        "-extfile", "wrong-name.ext",
+        tmp_path,
+        "x509",
+        "-req",
+        "-in",
+        "server.csr",
+        "-CA",
+        "ca.crt",
+        "-CAkey",
+        "ca.key",
+        "-out",
+        "wrong-name.crt",
+        "-days",
+        "2",
+        "-extfile",
+        "wrong-name.ext",
     )
     (tmp_path / "ca-index").write_text("")
     (tmp_path / "ca-serial").write_text("1000\n")
@@ -127,16 +139,26 @@ def _negative_server_certificates(tmp_path):
         f"private_key={tmp_path / 'ca.key'}\ndefault_md=sha256\n"
         "policy=policy_any\n[policy_any]\ncommonName=supplied\n"
     )
-    (tmp_path / "expired.ext").write_text(
-        "[server_cert]\n" + (tmp_path / "server.ext").read_text()
-    )
+    (tmp_path / "expired.ext").write_text("[server_cert]\n" + (tmp_path / "server.ext").read_text())
     now = datetime.now(UTC)
     _openssl(
-        tmp_path, "ca", "-batch", "-config", "ca.conf", "-in", "server.csr",
-        "-out", "expired.crt",
-        "-startdate", (now - timedelta(days=2)).strftime("%y%m%d%H%M%SZ"),
-        "-enddate", (now - timedelta(days=1)).strftime("%y%m%d%H%M%SZ"),
-        "-extensions", "server_cert", "-extfile", "expired.ext",
+        tmp_path,
+        "ca",
+        "-batch",
+        "-config",
+        "ca.conf",
+        "-in",
+        "server.csr",
+        "-out",
+        "expired.crt",
+        "-startdate",
+        (now - timedelta(days=2)).strftime("%y%m%d%H%M%SZ"),
+        "-enddate",
+        (now - timedelta(days=1)).strftime("%y%m%d%H%M%SZ"),
+        "-extensions",
+        "server_cert",
+        "-extfile",
+        "expired.ext",
     )
 
 
@@ -213,10 +235,10 @@ def _missing_client_ssl_relay(server_port):
                     payload = greeting[4:]
                     capability_offset = payload.index(0, 1) + 14
                     capabilities = int.from_bytes(
-                        payload[capability_offset:capability_offset + 2], "little"
+                        payload[capability_offset : capability_offset + 2], "little"
                     )
                     evidence["server_advertised_tls"] = bool(capabilities & 0x800)
-                    greeting[4 + capability_offset:4 + capability_offset + 2] = (
+                    greeting[4 + capability_offset : 4 + capability_offset + 2] = (
                         capabilities & ~0x800
                     ).to_bytes(2, "little")
                     client.sendall(greeting)
@@ -250,7 +272,9 @@ def _probe_installed_application(executable, binding, *, expected, tmp_path):
         [executable, "-c", probe, json.dumps(binding)],
         cwd=tmp_path,
         env={**os.environ, "PEX_INTERPRETER": "1", "PEX_ROOT": str(tmp_path / "pex-root")},
-        capture_output=True, text=True, timeout=20,
+        capture_output=True,
+        text=True,
+        timeout=20,
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == expected
@@ -360,7 +384,9 @@ def test_committed_sql_config_publication_and_floor(tmp_path, monkeypatch):
             from beadhive.hq_sql_transport import connect
 
             hostname_binding = {
-                **settings["reader"], "host": "localhost", "server_name": "localhost"
+                **settings["reader"],
+                "host": "localhost",
+                "server_name": "localhost",
             }
             hostname_connection = connect(
                 hostname_binding, _Broker(), deadline=time.monotonic() + 5
@@ -396,28 +422,43 @@ def test_committed_sql_config_publication_and_floor(tmp_path, monkeypatch):
                 relay_port, relay_thread, relay_evidence = _missing_client_ssl_relay(port)
                 try:
                     _probe_installed_application(
-                        artifact, {**settings["reader"], "port": relay_port},
-                        expected="denied", tmp_path=tmp_path,
+                        artifact,
+                        {**settings["reader"], "port": relay_port},
+                        expected="denied",
+                        tmp_path=tmp_path,
                     )
                 finally:
                     relay_thread.join(timeout=5)
                 assert not relay_thread.is_alive()
                 assert relay_evidence["client_bytes_after_greeting"] == 0
             _openssl(
-                tmp_path, "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-                "-keyout", "wrong-ca.key", "-out", "wrong-ca.crt", "-days", "2",
-                "-subj", "/CN=untrusted-fixture-ca",
+                tmp_path,
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-keyout",
+                "wrong-ca.key",
+                "-out",
+                "wrong-ca.crt",
+                "-days",
+                "2",
+                "-subj",
+                "/CN=untrusted-fixture-ca",
             )
             with pytest.raises(SqlTransportError, match="verified SQL connection unavailable"):
                 connect(
                     {**settings["reader"], "ca_file": str(tmp_path / "wrong-ca.crt")},
-                    _Broker(), deadline=time.monotonic() + 4,
+                    _Broker(),
+                    deadline=time.monotonic() + 4,
                 )
             for artifact in artifacts:
                 _probe_installed_application(
                     artifact,
                     {**settings["reader"], "ca_file": str(tmp_path / "wrong-ca.crt")},
-                    expected="denied", tmp_path=tmp_path,
+                    expected="denied",
+                    tmp_path=tmp_path,
                 )
             store = SqlFleetConfigRevisionStore(settings, broker=_Broker())
             loaded = store.load_snapshot()
@@ -523,9 +564,7 @@ def test_committed_sql_config_publication_and_floor(tmp_path, monkeypatch):
                 fcntl.flock(floor_lock, fcntl.LOCK_EX)
                 began = time.monotonic()
                 with pytest.raises(SqlConfigError, match="floor custody wait exceeded deadline"):
-                    SqlFleetConfigRevisionStore(
-                        locked_settings, broker=_Broker()
-                    ).load_snapshot()
+                    SqlFleetConfigRevisionStore(locked_settings, broker=_Broker()).load_snapshot()
                 assert time.monotonic() - began < 1.5
             _cli(
                 tmp_path,
@@ -588,9 +627,15 @@ def test_committed_sql_config_publication_and_floor(tmp_path, monkeypatch):
                 )
                 with (tmp_path / f"server-{certificate}.log").open("w") as log:
                     server = subprocess.Popen(
-                        [shutil.which("dolt"), "sql-server", "--config",
-                         str(tmp_path / "server.yaml")],
-                        cwd=tmp_path, stdout=log, stderr=subprocess.STDOUT,
+                        [
+                            shutil.which("dolt"),
+                            "sql-server",
+                            "--config",
+                            str(tmp_path / "server.yaml"),
+                        ],
+                        cwd=tmp_path,
+                        stdout=log,
+                        stderr=subprocess.STDOUT,
                     )
                 started_by = time.monotonic() + 10
                 while True:

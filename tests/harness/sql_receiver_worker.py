@@ -14,8 +14,7 @@ from beadhive.hq_sql_receiver import SqlTrustedReceiver
 class FixtureBroker:
     def get(self, reference, *, deadline):
         if (
-            reference
-            != {"config_path": "/fixture/fnox.toml", "profile": "fixture", "key": "SQL"}
+            reference != {"config_path": "/fixture/fnox.toml", "profile": "fixture", "key": "SQL"}
             or time.monotonic() >= deadline
         ):
             raise ValueError("fixture observer credential reference unavailable")

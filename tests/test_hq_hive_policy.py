@@ -34,8 +34,10 @@ def test_projection_is_canonical_explicit_and_bound_to_exact_head():
     )
     assert project_hive_policies(snapshot, valid_until=500, now=101) == {
         "bh": {
-            "config_revision": "desired-7", "config_head": "a" * 32,
-            "valid_until": 500, "requires": {"max_sessions": 2, "isolation": "sandbox"},
+            "config_revision": "desired-7",
+            "config_head": "a" * 32,
+            "valid_until": 500,
+            "requires": {"max_sessions": 2, "isolation": "sandbox"},
             "evict_after_s": 900,
         }
     }
@@ -99,36 +101,53 @@ def test_git_and_sql_share_full_backend_qualified_eligibility_matrix(case, allow
     guard.validate_hive_policies({"bh": git_policy})
     manifest = HostManifest.model_validate(
         {
-            "frame_id": "frame-one", "host_id": "host-one", "instance_ref": "vm-one",
-            "label": "fixture", "os": "linux", "arch": "x86_64", "role": "executor",
+            "frame_id": "frame-one",
+            "host_id": "host-one",
+            "instance_ref": "vm-one",
+            "label": "fixture",
+            "os": "linux",
+            "arch": "x86_64",
+            "role": "executor",
             "identity": {"kind": "none", "value": ""},
             "release": {"id": "fixture", "digest": "sha256:" + "1" * 64},
             "capabilities": {
-                "isolation": "container", "trust_zone": "self-hosted", "arch": "x86_64",
-                "harnesses": ["claude"], "max_sessions": 2,
+                "isolation": "container",
+                "trust_zone": "self-hosted",
+                "arch": "x86_64",
+                "harnesses": ["claude"],
+                "max_sessions": 2,
             },
         }
     )
     lease = HeartbeatLease.model_validate(
         {
-            "audience": "fixture-fleet", "frame_id": "frame-one",
-            "holderIdentity": "host-one", "instance_ref": "vm-one",
-            "key_id": "SHA256:fixture", "epoch": 1,
-            "config_revision": "desired-7", "seq": 1,
-            "renewTime": "2026-10-02T00:00:00+00:00", "state_seen": "active",
+            "audience": "fixture-fleet",
+            "frame_id": "frame-one",
+            "holderIdentity": "host-one",
+            "instance_ref": "vm-one",
+            "key_id": "SHA256:fixture",
+            "epoch": 1,
+            "config_revision": "desired-7",
+            "seq": 1,
+            "renewTime": "2026-10-02T00:00:00+00:00",
+            "state_seen": "active",
             "release": manifest.release.model_dump(),
             "report_digest": "sha256:" + "2" * 64,
             "conformance": {
-                "profile": "fixture", "status": "conformant",
+                "profile": "fixture",
+                "status": "conformant",
                 "checks": [{"id": "required", "status": "pass"}],
             },
         }
     )
     desired = {
-        "state": "active", "declared": True, "cordoned": False,
+        "state": "active",
+        "declared": True,
+        "cordoned": False,
         "authority": {"holder_identity": "host-one", "instance_ref": "vm-one"},
         "release": manifest.release.model_dump(),
-        "caps": manifest.capabilities.model_dump(), "profile": "fixture",
+        "caps": manifest.capabilities.model_dump(),
+        "profile": "fixture",
     }
     observation = VerifiedObservation(
         "verified", verified=True, fresh=True, age_seconds=1, lease=lease
@@ -150,9 +169,7 @@ def test_git_and_sql_share_full_backend_qualified_eligibility_matrix(case, allow
             ),
         )
     elif case == "release_mismatch":
-        desired = {
-            **desired, "release": {"id": "other", "digest": "sha256:" + "3" * 64}
-        }
+        desired = {**desired, "release": {"id": "other", "digest": "sha256:" + "3" * 64}}
     elif case == "capabilities_mismatch":
         desired = {**desired, "caps": {**desired["caps"], "max_sessions": 1}}
     elif case == "config_unavailable":

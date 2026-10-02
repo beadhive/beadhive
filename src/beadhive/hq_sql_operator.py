@@ -95,9 +95,7 @@ class SqlRuntimeOperator:
         finally:
             connection.close()
 
-    def evidence(
-        self, frame: str, holder_identity: str, *, expected_revision: str, deadline=None
-    ):
+    def evidence(self, frame: str, holder_identity: str, *, expected_revision: str, deadline=None):
         """Read protected registration and consecutive accepted observer receipts."""
         from .host_manifest_contracts import HostManifest
 
@@ -360,9 +358,7 @@ class SqlRuntimeOperator:
                     raise AuthorityPublicationUnknown(expected_revision)
                 new_head = committed[0]
             connection.commit()
-            verify_head, verify_state, verify_ref, verify_policies = self.load(
-                deadline=deadline
-            )
+            verify_head, verify_state, verify_ref, verify_policies = self.load(deadline=deadline)
             if (
                 verify_head != new_head
                 or verify_state != state
