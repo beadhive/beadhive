@@ -5,7 +5,8 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from .bd import err_line
+from beadhive_bd_cli import err_line
+
 from .gitref import GIT_TIMEOUT
 from .run import run
 
