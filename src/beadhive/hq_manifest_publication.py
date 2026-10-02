@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import importlib
 import tempfile
 from pathlib import Path
 
-from .bd import err_line
 from .gitref import GIT_TIMEOUT
 from .run import run
+
+
+def err_line(res) -> str:
+    """Resolve the shared diagnostic parser on use, preserving root's lazy package boundary."""
+    return str(importlib.import_module("beadhive_bd_cli").err_line(res))
 
 
 def _git(args: list[str], cwd: Path):

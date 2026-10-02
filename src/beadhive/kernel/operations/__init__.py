@@ -130,6 +130,7 @@ host dispatch logs|hive:string:o,lines:integer:o,as_json:boolean:o
 host dispatch run|hive:string:r,passes:integer:o,dry_run:boolean:o,seat_binary:string:o
 host dispatch runs|hive:string:o,as_json:boolean:o
 host dispatch status|hive:string:o,all_hives:boolean:o,as_json:boolean:o
+host eligible|identity:string:o,hive:string:o,as_json:boolean:o
 host heartbeat|record:string:r,as_json:boolean:o
 host admit|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o
 host cordon|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o

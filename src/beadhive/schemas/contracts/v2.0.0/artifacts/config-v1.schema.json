@@ -1232,6 +1232,12 @@
         "frame_bridge": {
           "$ref": "#/$defs/FrameBridgeIdentityConfig"
         },
+        "frame_id": {
+          "default": "",
+          "description": "Enrollment-owned Fleet identity; config storage does not enroll a host.",
+          "title": "Frame Id",
+          "type": "string"
+        },
         "lease": {
           "$ref": "#/$defs/HostLeaseConfig"
         }
@@ -1307,6 +1313,12 @@
           "title": "Backend",
           "type": "string"
         },
+        "enabled": {
+          "default": true,
+          "description": "Allow frame intake; legacy hosts retain lease policy.",
+          "title": "Enabled",
+          "type": "boolean"
+        },
         "max_epics_in_flight": {
           "default": 3,
           "description": "How many `bh work loop <epic>` child processes the hive-level picker (`bh host dispatch run`) runs at once. Deliberately dumb: kicked-off epics in `bd ready` order, bounded by this cap — NO cross-hive arbitration, NO budget reasoning (both belong to the director loop at the second-hive trigger, operator decision 2026-08-10). This is NOT the per-epic seat concurrency cap (`work.dispatch.max_concurrency`), which bounds seats WITHIN one epic's loop.",
@@ -1333,6 +1345,12 @@
       "additionalProperties": false,
       "description": "**Host-lease** timing (``host.lease``) — the TTL/renewal contract behind\n``refs/bh/lease/<prefix>`` in HQ (``docs/design/multi-host-model-adr.md``, Amendment 1\n§3; implemented in :mod:`beadhive.host_lease`).\n\n\"Host lease\" is host ↔ hive, deliberately distinct from ``bd``'s *worker* lease\n(worker ↔ issue: ``lease_expires_at``, ``bd heartbeat`` / ``bd reclaim``) — Amendment 1\n§5. Nothing here configures bd's.\n\nBoth keys are **fleet-scoped** (``config_partition.FLEET_PREFIXES``) on purpose: expiry is\na shared judgement. If two hosts disagreed about when a lease lapses, one would consider a\nhive free while the other still considered itself primary — the exact split-brain the\nfence exists to prevent. Per-host variation is expressed through the host's ``role``\n(``hosts/<host_id>.yaml``), which SCALES this baseline\n(:func:`beadhive.host_lease.ttl_for_role`) — never by per-host overrides of these keys.",
       "properties": {
+        "evict_after_s": {
+          "default": 900.0,
+          "exclusiveMinimum": 0,
+          "title": "Evict After S",
+          "type": "number"
+        },
         "renew_interval": {
           "default": 300.0,
           "description": "Seconds between host-lease renewals while a dispatcher has active workers (no daemon, no cron). ADR Amendment 1 §3 default: 300 (5 min). Must stay comfortably below `host.lease.ttl`.",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
 import math
@@ -262,6 +263,193 @@ def parentless_payload(sha, filename):
     return json.loads(git("show", f"{sha}:{filename}"))
 
 
+def validate_hive_policies(policies):
+    if not isinstance(policies, dict):
+        raise ValueError("invalid canonical hive policy projection")
+    for prefix, item in policies.items():
+        if (
+            not isinstance(prefix, str)
+            or not re.fullmatch(r"[a-z][a-z0-9-]*", prefix)
+            or not isinstance(item, dict)
+            or set(item)
+            != {"config_revision", "config_head", "valid_until", "requires", "evict_after_s"}
+            or not isinstance(item["config_revision"], str)
+            or not item["config_revision"]
+            or not isinstance(item["config_head"], str)
+            or (item["config_head"] and not re.fullmatch(r"[0-9a-f]{40}", item["config_head"]))
+            or type(item["valid_until"]) not in (int, float)
+            or not math.isfinite(item["valid_until"])
+            or type(item["evict_after_s"]) not in (int, float)
+            or not math.isfinite(item["evict_after_s"])
+            or item["evict_after_s"] <= 0
+            or not isinstance(item["requires"], dict)
+        ):
+            raise ValueError("invalid canonical hive policy projection")
+        requirements(item["requires"], None)
+
+
+def requirements(requires, caps):
+    for key, value in requires.items():
+        if key == "max_sessions":
+            valid = type(value) is int and value > 0
+            satisfied = caps is None or (type(caps.get(key)) is int and caps[key] >= value)
+        elif key in {"isolation", "trust_zone", "arch", "harness"}:
+            valid = isinstance(value, str) and bool(value)
+            satisfied = caps is None or (
+                value in caps.get("harnesses", []) if key == "harness" else caps.get(key) == value
+            )
+        elif key == "harnesses":
+            valid = isinstance(value, list) and all(isinstance(v, str) and v for v in value)
+            satisfied = caps is None or (valid and all(v in caps.get(key, []) for v in value))
+        else:
+            valid = satisfied = False
+        if not valid or not satisfied:
+            raise ValueError("hive capability requirements unsatisfied")
+
+
+def enforce_hive_lease(old, new, reference, state, policy, head):
+    envelope = parentless_payload(new, "hive-lease.json")
+    if set(envelope) != {
+        "domain",
+        "authority_revision",
+        "expected_lease_sha",
+        "operation",
+        "prefix",
+        "authority",
+        "lease",
+    }:
+        raise ValueError("invalid frame hive lease envelope")
+    prefix = reference.removeprefix("refs/bh/lease/")
+    hive = policy.get("hive_policies", {}).get(prefix)
+    if (
+        envelope["domain"] != "beadhive-frame-hive-lease-v1"
+        or envelope["prefix"] != prefix
+        or envelope["authority_revision"] != head
+        or envelope["expected_lease_sha"] != ("" if old == ZERO else old)
+    ):
+        raise ValueError("hive lease policy/revision/CAS unavailable")
+    matches = [
+        (f, r)
+        for f, r in records(state)
+        if envelope["authority"] == {"frame_id": f, **r["authority"]}
+    ]
+    if len(matches) != 1:
+        raise ValueError("hive lease incarnation unavailable")
+    frame, record = matches[0]
+    signed_by(new, record)
+    authority, lease = record["authority"], envelope["lease"]
+    fields = {"host_id", "label", "epoch", "adopted_at", "expires_at"}
+    if (
+        not isinstance(lease, dict)
+        or set(lease) != fields
+        or type(lease["epoch"]) is not int
+        or lease["epoch"] < 1
+        or any(not isinstance(lease[k], str) for k in fields - {"epoch"})
+    ):
+        raise ValueError("invalid frame hive lease record")
+
+    def timestamp(value):
+        return (
+            datetime.datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+            .replace(tzinfo=datetime.UTC)
+            .timestamp()
+        )
+
+    expiry = timestamp(lease["expires_at"])
+    now = time.time()
+    previous = None
+    if old != ZERO:
+        if git("cat-file", "-t", old) == "commit":
+            previous = parentless_payload(old, "hive-lease.json")
+        else:
+            previous = {"lease": json.loads(git("cat-file", "-p", old)), "authority": None}
+    prior = previous["lease"] if previous else None
+    operation = envelope["operation"]
+    if operation == "release":
+        if (
+            prior is None
+            or prior["host_id"] != authority["holder_identity"]
+            or previous["authority"] != envelope["authority"]
+            or lease["host_id"]
+            or lease["epoch"] != prior["epoch"]
+            or lease["adopted_at"] != prior["adopted_at"]
+            or expiry > now
+        ):
+            raise ValueError("release requires exact incumbent incarnation/epoch")
+        return
+    if (
+        hive is None
+        or hive["config_head"] != git("for-each-ref", "--format=%(objectname)", CONFIG_HEAD)
+        or now >= hive["valid_until"]
+    ):
+        raise ValueError("hive lease policy/revision/CAS unavailable")
+    if (
+        operation not in {"adopt", "renew"}
+        or record["state"] != "active"
+        or record["cordoned"]
+        or lease["host_id"] != authority["holder_identity"]
+        or authority["config_revision"] != hive["config_revision"]
+        or (
+            authority["candidate_expires_at"] is not None
+            and now >= authority["candidate_expires_at"]
+        )
+        or expiry <= now
+        or expiry > now + 86400
+    ):
+        raise ValueError("frame not authorized for hive lease")
+    receipt = record["receipt"]
+    beat = receipt["lease"]
+    if git("rev-parse", f"refs/bh/heartbeat/{frame}") != receipt["sha"]:
+        raise ValueError("hive lease requires accepted current heartbeat")
+    if (
+        not beat
+        or now < receipt["first_seen"]
+        or now - receipt["first_seen"] >= beat["leaseDurationSeconds"]
+        or beat["release"] != record["desired"]["release"]
+        or beat["conformance"]["status"] != "conformant"
+        or beat["conformance"]["profile"] != record["desired"]["profile"]
+        or any(c["status"] == "fail" for c in beat["conformance"]["checks"])
+    ):
+        raise ValueError("hive lease requires fresh conformant protected receipt")
+    caps = record["desired"]["caps"]
+    if type(caps.get("max_sessions")) is not int or caps["max_sessions"] <= 0:
+        raise ValueError("no frame intake capacity")
+    requirements(hive["requires"], caps)
+    if operation == "renew":
+        if (
+            prior is None
+            or previous["authority"] != envelope["authority"]
+            or prior["host_id"] != lease["host_id"]
+            or timestamp(prior["expires_at"]) <= now
+            or lease["epoch"] != prior["epoch"]
+            or lease["adopted_at"] != prior["adopted_at"]
+        ):
+            raise ValueError("renew requires current live exact-incarnation hive holder")
+    elif prior:
+        if lease["epoch"] <= prior["epoch"]:
+            raise ValueError("adopt hive epoch must advance")
+        if (
+            prior["host_id"]
+            and prior["host_id"] != lease["host_id"]
+            and timestamp(prior["expires_at"]) > now
+        ):
+            incumbents = [
+                r
+                for f, r in records(state)
+                if previous["authority"] == {"frame_id": f, **r["authority"]}
+            ]
+            if len(incumbents) != 1:
+                raise ValueError("incumbent incarnation unavailable")
+            incumbent = incumbents[0]
+            r = incumbent["receipt"]
+            if incumbent["state"] not in {"retired", "quarantined"} and (
+                not r["lease"]
+                or now - r["first_seen"] <= hive["evict_after_s"]
+                or now - r["first_seen"] < r["lease"]["leaseDurationSeconds"]
+            ):
+                raise ValueError("live incumbent is not evictable")
+
+
 def enforce_runtime(updates, policy):
     from manifest_guard import parse_manifest, validate
 
@@ -306,6 +494,9 @@ def enforce_runtime(updates, policy):
                 break
             if not matched:
                 raise ValueError("frame main publication requires signed own granted manifest")
+            continue
+        if reference.startswith("refs/bh/lease/"):
+            enforce_hive_lease(old, new, reference, state, policy, sha)
             continue
         matched = False
         for frame, slot, record in available:
