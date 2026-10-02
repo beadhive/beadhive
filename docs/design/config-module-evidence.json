@@ -103,6 +103,6 @@
   },
   "current_inventory_update": {
     "bead": "bh-bfb2y",
-    "reason": "Regenerate the current schema, live config dependency ledger, and structural metrics from the combined SQL HOST contracts and foreground dispatch description. The current patch inventory includes fresh U7 admission and lease-renewal reads; the prior SQL and U3 measurements remain in signed history. Historical extraction evidence and the distinct pinned wire snapshot are unchanged."
+    "reason": "Regenerate the current schema, live config dependency ledger, and structural metrics from the combined SQL HOST contracts and foreground dispatch description. The current patch inventory measures 291 sites, including fresh U7 admission and lease-renewal reads plus SQL-selected integration tests; the prior SQL and U3 measurements remain in signed history. Historical extraction evidence and the distinct pinned wire snapshot are unchanged."
   }
 }

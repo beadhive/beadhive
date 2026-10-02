@@ -16,7 +16,7 @@
     "successor_contracts": "beadhive.modules.config.contracts"
   },
   "current": {
-    "config_patch_point_count": 290,
+    "config_patch_point_count": 291,
     "config_patch_points": [
       {
         "facade_target": "beadhive.config.save_fleet",
@@ -476,58 +476,65 @@
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 64,
+        "line": 124,
         "path": "tests/test_dispatch_process.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 93,
+        "line": 153,
         "path": "tests/test_dispatch_process.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 112,
+        "line": 172,
         "path": "tests/test_dispatch_process.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 114,
+        "line": 174,
         "path": "tests/test_dispatch_process.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 125,
+        "line": 185,
         "path": "tests/test_dispatch_process.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 154,
+        "line": 214,
         "path": "tests/test_dispatch_process.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 176,
+        "line": 236,
         "path": "tests/test_dispatch_process.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 193,
+        "line": 253,
         "path": "tests/test_dispatch_process.py",
         "target": "beadhive.config.load"
+      },
+      {
+        "facade_target": "beadhive.config.work_identity",
+        "kind": "direct-facade",
+        "line": 324,
+        "path": "tests/test_dispatch_process.py",
+        "target": "beadhive.config.work_identity"
       },
       {
         "facade_target": "beadhive.config.worktrees_root",

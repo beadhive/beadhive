@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import signal
 import subprocess
@@ -13,8 +14,67 @@ from types import SimpleNamespace
 
 import pytest
 
-from beadhive import config, frame_eligibility, guard, localloop
+from beadhive import (
+    config,
+    config_store,
+    dispatch_log,
+    dispatch_supervisor,
+    frame_eligibility,
+    guard,
+    host,
+    hosts,
+    hq_control_plane,
+    identity,
+    localloop,
+    registry,
+)
 from beadhive import dispatch_hive_run as dhr
+from beadhive.modules.config.domain.ports import FleetConfigDocument
+
+
+@pytest.fixture
+def sql_config(monkeypatch, tmp_path):
+    """Exercise the real HOST selector and facade without a live SQL server."""
+    monkeypatch.setenv("BH_HOME", str(tmp_path))
+    binding = {
+        "enabled": True,
+        "reader": {
+            "host": "sql.example.test",
+            "database": "beadhive_hq_config",
+            "user": "reader",
+            "server_name": "sql.example.test",
+            "ca_file": str(tmp_path / "ca.pem"),
+            "credential": {
+                "config_path": str(tmp_path / "fnox.toml"),
+                "profile": "test",
+                "key": "SQL_READER",
+            },
+        },
+        "floor_path": str(tmp_path / "floor.json"),
+        "backend_identity": "fixture",
+        "generation": "fixture-generation",
+        "initial_revision": "a" * 32,
+    }
+    config.config_path().write_text(json.dumps({"hq": {"sql": binding}}))
+    config_store.clear_load_cache()
+    state = {"revision": "r1", "available": True, "reads": 0}
+
+    def snapshot(*, bootstrap):
+        assert bootstrap["sql"]["enabled"] is True
+        state["reads"] += 1
+        if not state["available"]:
+            raise hq_control_plane.ControlPlaneError("SQL credential=secret unavailable")
+        return None, SimpleNamespace(
+            documents=(
+                FleetConfigDocument(
+                    "fleet.yaml",
+                    f"hq:\n  mode: dolt-server\nwork:\n  validate_cmd: {state['revision']}\n",
+                ),
+            )
+        )
+
+    monkeypatch.setattr(hq_control_plane, "attach_fleet_config", snapshot)
+    return state
 
 
 def test_fence_is_rechecked_before_each_spawn(tmp_path):
@@ -202,6 +262,159 @@ def test_shared_keeper_factory_refreshes_config_for_systemd_too(monkeypatch, tmp
     denied = keeper.renew(active=False)
     assert not denied.held
     assert denied.detail == "central config expired"
+
+
+@pytest.mark.parametrize("change", ["revision", "outage"])
+def test_sql_selected_picker_requalifies_before_each_spawn(
+    monkeypatch, tmp_path, sql_config, change
+):
+    monkeypatch.setattr(
+        frame_eligibility,
+        "require_local",
+        lambda hive, *, cfg, hive_dir: frame_eligibility.EligibilityDecision(
+            (("current_sql_revision", cfg["work"]["validate_cmd"] == "r1"),)
+        ),
+    )
+    monkeypatch.setattr(
+        frame_eligibility,
+        "authoritative_primary",
+        lambda *a, **kw: ("fixture", "frame-id", SimpleNamespace(held_by=lambda _: True)),
+    )
+    monkeypatch.setattr(
+        guard, "primary_state", lambda *a, **kw: pytest.fail("frame used legacy lease")
+    )
+    spawned = []
+    driver = dhr.HiveDispatchRun(
+        hive_dir=tmp_path,
+        hive="fixture/hive",
+        actor="dev/test",
+        sink_path=tmp_path / "dispatch.jsonl",
+        pick=lambda: ["one", "two"],
+        eligible=lambda: dhr.process_eligible("fixture/hive", hive_dir=tmp_path),
+    )
+
+    async def spawn(epic):
+        spawned.append(epic)
+        if change == "revision":
+            sql_config["revision"] = "r2"
+        else:
+            sql_config["available"] = False
+        return dhr._Child(epic, SimpleNamespace(returncode=None))
+
+    driver._spawn = spawn
+    asyncio.run(driver.run_pass())
+    assert spawned == ["one"]
+    assert sql_config["reads"] == 3  # before pick, first spawn, second spawn
+
+
+@pytest.mark.parametrize("backend", ["process", "systemd"])
+@pytest.mark.parametrize("change", ["revision", "outage"])
+def test_sql_selected_keeper_requalifies_for_both_dispatch_backends(
+    monkeypatch, tmp_path, sql_config, backend, change
+):
+    monkeypatch.setattr(
+        dispatch_supervisor,
+        "get_supervisor_backend",
+        lambda cfg: SimpleNamespace(name=backend),
+    )
+    monkeypatch.setattr(registry, "hive_dir_for", lambda cfg, hive: tmp_path)
+    monkeypatch.setattr(registry, "entry_for_dir", lambda cfg, main: {})
+    monkeypatch.setattr(dispatch_log, "ensure_sink_dir", lambda: None)
+    monkeypatch.setattr(dispatch_log, "sink_path", lambda cfg, entry: tmp_path / "sink")
+    monkeypatch.setattr(config, "work_identity", lambda cfg, entry: {"name": "dev/test"})
+    monkeypatch.setattr(identity, "resolve_actor", lambda actor, fallback: actor or fallback)
+    monkeypatch.setattr(frame_eligibility, "require_local", lambda *a, **kw: None)
+    monkeypatch.setattr(guard, "primary_state", lambda *a, **kw: None)
+
+    def require_intake(hive, *, cfg, hive_dir):
+        assert hive_dir == tmp_path
+        if cfg["work"]["validate_cmd"] != "r1":
+            raise frame_eligibility.EligibilityError("central revision revoked")
+
+    monkeypatch.setattr(frame_eligibility, "require_intake", require_intake)
+    driver = dhr.build_run("fixture/hive", cfg=config.load())
+    assert driver.lease.renew(active=False).held
+    if change == "revision":
+        sql_config["revision"] = "r2"
+    else:
+        sql_config["available"] = False
+    denied = driver.lease.renew(active=False)
+    assert not denied.held
+    assert denied.detail == (
+        "central revision revoked" if change == "revision" else "configuration unavailable"
+    )
+    assert "secret" not in denied.detail
+    assert sql_config["reads"] == 3  # build, first renew, second renew
+
+
+@pytest.mark.parametrize("claim", ["claim_issue", "claim_next"])
+@pytest.mark.parametrize("change", ["revision", "outage"])
+def test_sql_selected_claim_rechecks_current_intake(
+    monkeypatch, tmp_path, sql_config, claim, change
+):
+    calls = []
+    session = SimpleNamespace(
+        claim_issue=lambda *a, **kw: calls.append("issue"),
+        claim_next=lambda *a, **kw: calls.append("next"),
+    )
+    monkeypatch.setattr(host, "host_id", lambda: "frame-id")
+    monkeypatch.setattr(registry, "entry_for_dir", lambda cfg, main: {"prefix": "fixture"})
+
+    def require_eligible(host_id, hive, *, cfg):
+        if cfg["work"]["validate_cmd"] != "r1":
+            raise frame_eligibility.EligibilityError("current_sql_revision")
+        return frame_eligibility.EligibilityDecision((("current_sql_revision", True),))
+
+    monkeypatch.setattr(frame_eligibility, "require_eligible", require_eligible)
+    monkeypatch.setattr(
+        frame_eligibility,
+        "authoritative_primary",
+        lambda *a, **kw: ("fixture", "frame-id", SimpleNamespace(held_by=lambda _: True)),
+    )
+    guarded = frame_eligibility.GuardedClaimSession(session, tmp_path)
+    getattr(guarded, claim)()
+    if change == "revision":
+        sql_config["revision"] = "r2"
+        with pytest.raises(frame_eligibility.EligibilityError, match="current_sql_revision"):
+            getattr(guarded, claim)()
+    else:
+        sql_config["available"] = False
+        with pytest.raises(hq_control_plane.ControlPlaneError, match="unavailable"):
+            getattr(guarded, claim)()
+    assert calls == ["issue" if claim == "claim_issue" else "next"]
+    assert sql_config["reads"] == 3  # two checks at allowed claim, one at denied claim
+
+
+@pytest.mark.parametrize(
+    ("primary", "expected"), [(None, True), ("held", True), ("foreign", False)]
+)
+def test_sql_config_only_legacy_host_keeps_legacy_lease_policy(
+    monkeypatch, tmp_path, sql_config, primary, expected
+):
+    monkeypatch.setattr(host, "host_id", lambda: "legacy-id")
+    monkeypatch.setattr(hosts, "load", lambda *a, **kw: (_ for _ in ()).throw(FileNotFoundError()))
+    monkeypatch.setattr(
+        hq_control_plane,
+        "control_plane",
+        lambda *a, **kw: pytest.fail("config-only legacy host enrolled into SQL runtime"),
+    )
+    monkeypatch.setattr(
+        guard,
+        "primary_state",
+        lambda *a, **kw: (
+            None
+            if primary is None
+            else (
+                "fixture",
+                "legacy-id",
+                SimpleNamespace(
+                    held_by=lambda identity: primary == "held" and identity == "legacy-id"
+                ),
+            )
+        ),
+    )
+    assert dhr.process_eligible("fixture/hive", hive_dir=tmp_path) is expected
+    assert sql_config["reads"] >= 1
 
 
 def test_sigterm_checkpoints_child_and_exits_zero(tmp_path):
