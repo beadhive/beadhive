@@ -15,6 +15,7 @@ Covers both halves named in the bead:
 
 from __future__ import annotations
 
+import pytest
 from structlog.testing import capture_logs
 
 from beadhive import config, config_schema, doctor, log
@@ -127,6 +128,16 @@ def test_warn_literal_violations_names_key_value_and_allowed_set():
     assert "docker" in w["allowed"] and "colima" in w["allowed"]
     assert w["effective"] == "docker"
     assert "dolt.backend" in w["hint"] and "shared-server" in w["hint"] and "docker" in w["hint"]
+
+
+def test_warn_literal_violations_malformed_yaml_error_is_value_free():
+    config.config_path().write_text("schema_version: [raw-secret-canary\n")
+
+    with pytest.raises(config.ConfigError) as captured:
+        config.warn_literal_violations_if_needed()
+
+    assert "host configuration YAML syntax invalid" in str(captured.value)
+    assert "raw-secret-canary" not in str(captured.value)
 
 
 def test_warn_literal_violations_clean_config_is_silent():

@@ -184,7 +184,7 @@ def migrate_home_if_needed() -> None:
     rewritten: list[str] = []
     repaired: list[str] = []
     try:
-        cfg = config.load_host()  # rewrites the host's own paths; never the merged view
+        cfg = config.load_host_raw_for_repair()  # opaque source, never the merged usable view
         rewritten = _rewrite_stale_home_paths(
             cfg, config._DEFAULT_HOME_OLD, config._DEFAULT_HOME_NEW
         )

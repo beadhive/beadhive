@@ -22,7 +22,7 @@ class _FacadeMigrationStore:
         del missing_ok
         if scope != ConfigScope.HOST:
             raise ValueError(f"unsupported migration scope: {scope}")
-        return self._api.load_host()
+        return self._api.load_host_raw_for_repair()
 
     def save_document(self, scope: ConfigScope, document) -> None:
         if scope != ConfigScope.HOST:
@@ -45,19 +45,31 @@ def migrate_hive_keys_if_needed(api) -> None:
 
 
 def warn_stale_schema_version_if_needed(api) -> None:
+    # This is a diagnostic over opaque source, not a usable settings read. An
+    # explicit old/invalid version must still be reported when normal load()
+    # correctly refuses it; no candidate is published from this path.
     try:
-        cfg = api.load()
+        cfg = api.load_host_raw_for_repair()
     except FileNotFoundError:
-        return
+        cfg = {}
+    if "schema_version" not in cfg:
+        try:
+            fleet = api.load_fleet_raw_for_repair()
+        except FileNotFoundError:
+            fleet = {}
+        if "schema_version" in fleet:
+            cfg = fleet
+        elif not cfg and not fleet:
+            return
     from .modules.config.contracts import SCHEMA_VERSION
 
     found = cfg.get("schema_version")
-    if isinstance(found, int) and found >= SCHEMA_VERSION:
+    if type(found) is int and found >= SCHEMA_VERSION:
         return
     api._warning(
         "config_schema_version_stale",
         logger_name=api.__name__,
-        found=found,
+        found=found if type(found) is int else "missing" if found is None else "invalid",
         current=SCHEMA_VERSION,
         hint=f"run `{api.BINARY_ALIAS} config validate` to check your config",
     )

@@ -22,6 +22,14 @@ class FleetConfigDocument:
 
 
 @dataclass(frozen=True)
+class RawFleetConfigRevision:
+    """Privileged repair input, never a usable settings or admission snapshot."""
+
+    expected_revision: str
+    documents: tuple[FleetConfigDocument, ...]
+
+
+@dataclass(frozen=True)
 class FleetConfigSnapshot:
     """Committed raw documents plus provenance outside persisted settings keys."""
 
@@ -134,6 +142,7 @@ __all__ = (
     "ConfigScope",
     "EnvironmentSourcePort",
     "FleetConfigDocument",
+    "RawFleetConfigRevision",
     "FleetConfigSnapshot",
     "FleetConfigRevisionPort",
 )

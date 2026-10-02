@@ -115,11 +115,15 @@ def test_work_issue_facade_executes_the_module_local_bd_patch_point(monkeypatch)
 
 def test_config_load_facade_executes_layer_patch_points_and_preserves_precedence(monkeypatch):
     calls = []
-    monkeypatch.setattr(config, "load_fleet", lambda: calls.append("fleet") or {"shared": 1})
+    monkeypatch.setattr(
+        config,
+        "load_fleet",
+        lambda: calls.append("fleet") or {"work": {"validate_cmd": "fleet"}},
+    )
     monkeypatch.setattr(
         config,
         "load_host",
-        lambda: calls.append("host") or {"local": 2},
+        lambda: calls.append("host") or {"otel": {"hive": "local"}},
     )
     monkeypatch.setattr(
         config,
@@ -129,10 +133,10 @@ def test_config_load_facade_executes_layer_patch_points_and_preserves_precedence
 
     effective = config.load()
 
-    assert effective == {"shared": 1, "local": 2}
+    assert effective == {"work": {"validate_cmd": "fleet"}, "otel": {"hive": "local"}}
     # HOST selects SQL before any local fleet access; Git still reaches the
     # historical load_fleet and override-guard facade patch points.
-    assert calls == ["host", "fleet", ("guard", {"local": 2})]
+    assert calls == ["host", "fleet", ("guard", {"otel": {"hive": "local"}})]
 
 
 def test_worktree_run_init_facade_executes_the_module_local_runner(monkeypatch, tmp_path):

@@ -26,11 +26,11 @@
         "target": "beadhive.config.save_fleet"
       },
       {
-        "facade_target": "beadhive.config.load_host",
+        "facade_target": "beadhive.config.load_host_raw_for_repair",
         "kind": "direct-facade",
         "line": 98,
         "path": "tests/contracts/test_config_resolution_compatibility.py",
-        "target": "beadhive.config.load_host"
+        "target": "beadhive.config.load_host_raw_for_repair"
       },
       {
         "facade_target": "beadhive.config.save",
@@ -47,11 +47,11 @@
         "target": "beadhive.config._warning"
       },
       {
-        "facade_target": "beadhive.config.load_host",
+        "facade_target": "beadhive.config.load_host_raw_for_repair",
         "kind": "direct-facade",
         "line": 121,
         "path": "tests/contracts/test_config_resolution_compatibility.py",
-        "target": "beadhive.config.load_host"
+        "target": "beadhive.config.load_host_raw_for_repair"
       },
       {
         "facade_target": "beadhive.config.save",
@@ -938,28 +938,28 @@
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 1267,
+        "line": 1328,
         "path": "tests/test_hq_authority_backend.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 1268,
+        "line": 1329,
         "path": "tests/test_hq_authority_backend.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 1520,
+        "line": 1581,
         "path": "tests/test_hq_authority_backend.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 1529,
+        "line": 1590,
         "path": "tests/test_hq_authority_backend.py",
         "target": "beadhive.config.load_host"
       },
@@ -1708,14 +1708,14 @@
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 119,
+        "line": 123,
         "path": "tests/test_structural_facade_contracts.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config._reject_fleet_overrides",
         "kind": "direct-facade",
-        "line": 124,
+        "line": 128,
         "path": "tests/test_structural_facade_contracts.py",
         "target": "beadhive.config._reject_fleet_overrides"
       },
@@ -1727,11 +1727,11 @@
         "target": "beadhive.config.load"
       },
       {
-        "facade_target": "beadhive.config.load_fleet",
+        "facade_target": "beadhive.config.load_fleet_raw_for_repair",
         "kind": "direct-facade",
         "line": 100,
         "path": "tests/test_validation_bypass.py",
-        "target": "beadhive.config.load_fleet"
+        "target": "beadhive.config.load_fleet_raw_for_repair"
       },
       {
         "facade_target": "beadhive.config.save_fleet",
