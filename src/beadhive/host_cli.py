@@ -1975,3 +1975,65 @@ def rm_cmd(
     removed = hosts.remove(hq_dir, host_id)
     hq._commit_if_dirty(hq_dir, f"chore(host): remove {host_id} ({manifest.label})")
     typer.echo(f"✓ removed {removed}")
+
+
+@app.command("eligible", help="explain frame eligibility and optional hive lease ownership")
+def eligible_cmd(
+    identity: str = typer.Argument("", help="host or frame ID; defaults to this host"),
+    hive: str = typer.Option("", "--hive", help="hive whose requirements are checked"),
+    as_json: bool = _AS_JSON,
+):
+    from . import frame_eligibility
+
+    cfg = config.load()
+    identity = identity or _require_host_id()
+    hq_dir = config.hq_dir()
+    matching = [m.host_id for m, _ in iter_manifests(hq_dir) if m.frame_id == identity]
+    if matching:
+        if len(matching) != 1:
+            typer.echo("ambiguous frame incarnation; specify host ID", err=True)
+            raise typer.Exit(1)
+        identity = matching[0]
+    entry = registry.resolve_hive(cfg, hive) if hive else {}
+    decision = frame_eligibility.decision_for(identity, entry, hq_dir=hq_dir, cfg=cfg)
+    payload = (
+        decision.as_dict()
+        if decision
+        else {
+            "eligible": True,
+            "predicates": {"legacy_lease_policy": True},
+            "reason": "legacy lease policy",
+        }
+    )
+    if hive:
+        payload["candidate_eligible"] = payload["eligible"]
+        try:
+            if decision is not None:
+                from .hq_control_plane import control_plane
+
+                lease = control_plane(hq_dir).read_hive_lease(
+                    str(entry["prefix"]), holder_identity=identity
+                )
+            else:
+                lease = host_lease.read("origin", str(entry["prefix"]), cwd=hq_dir)
+            held = bool(lease and lease.held_by(identity))
+        except (ValueError, OSError, RuntimeError):
+            held = False
+        payload["predicates"]["current_hive_lease_holder"] = held
+        payload["eligible"] = payload["eligible"] and held
+        if not held:
+            payload["reason"] += ", current_hive_lease_holder"
+    if as_json:
+        typer.echo(json.dumps(payload))
+    else:
+        typer.echo(
+            render_table(
+                [
+                    {"predicate": key, "result": "pass" if value else "fail"}
+                    for key, value in payload["predicates"].items()
+                ],
+                (("predicate", "PREDICATE"), ("result", "RESULT")),
+            )
+        )
+    if not payload["eligible"]:
+        raise typer.Exit(1)

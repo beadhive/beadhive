@@ -1003,6 +1003,8 @@ class HostLeaseConfig(_Section):
     (:func:`beadhive.host_lease.ttl_for_role`) — never by per-host overrides of these keys.
     """
 
+    evict_after_s: float = Field(900.0, gt=0, allow_inf_nan=False)
+
     renew_interval: float = Field(
         300.0,
         description=(
@@ -1030,6 +1032,8 @@ class HostDispatchConfig(_Section):
     Per-HOST, not fleet-scoped like ``host.lease``: which supervisor exists (systemd vs
     launchd vs a container's own restart policy) is a fact about THIS machine, not a shared
     fleet judgement."""
+
+    enabled: bool = Field(True, description="Allow frame intake; legacy hosts retain lease policy.")
 
     backend: str = Field(
         "systemd",
@@ -1085,6 +1089,10 @@ class HostConfig(_Section):
     :mod:`beadhive.hosts`): that file describes ONE machine; this section is the fleet-wide
     policy every machine applies."""
 
+    frame_id: str = Field(
+        "",
+        description="Enrollment-owned Fleet identity; config storage does not enroll a host.",
+    )
     frame_bridge: FrameBridgeIdentityConfig = Field(default_factory=FrameBridgeIdentityConfig)
     lease: HostLeaseConfig = Field(default_factory=HostLeaseConfig)
     dispatch: HostDispatchConfig = Field(default_factory=HostDispatchConfig)

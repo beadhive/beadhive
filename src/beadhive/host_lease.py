@@ -218,8 +218,24 @@ def ttl_for_role(role: str, base_ttl: float = DEFAULT_TTL) -> float:
     return base_ttl * ROLE_TTL_SCALE.get(role, 1.0)
 
 
+def _frame_plane(cwd):
+    from . import host, hosts
+    from .hq_control_plane import control_plane
+
+    try:
+        identity = host.host_id()
+        manifest = hosts.load(cwd, identity)
+    except FileNotFoundError:
+        return None
+    if manifest.frame_id:
+        return control_plane(cwd)
+    return None
+
+
 def _read(remote: str, prefix: str, *, cwd: Path) -> tuple[str, HostLease | None]:
     """``(sha, lease)`` currently at HQ for `prefix`; ``("", None)`` when never adopted."""
+    if plane := _frame_plane(cwd):
+        return plane.read_hive_lease_record(prefix)
     sha, record = gitref.read_remote(remote, lease_ref(prefix), cwd=cwd)
     if record is None:
         return "", None
@@ -236,8 +252,28 @@ class LeaseOutcome:
     previous: HostLease | None
 
 
-def _cas_or_reject(remote, prefix, lease, *, expected, cwd, previous, what) -> LeaseOutcome:
+def _cas_or_reject(
+    remote, prefix, lease, *, expected, cwd, previous, what, force=False, at=None
+) -> LeaseOutcome:
     """CAS `lease` into HQ or raise :class:`HostLeaseRejected` carrying git's own message."""
+    if what in {"adopt", "renew"}:
+        from . import frame_eligibility
+
+        frame_eligibility.require_eligible(lease.host_id, {"prefix": prefix}, hq_dir=cwd, at=at)
+        if (
+            what == "adopt"
+            and previous is not None
+            and previous.host_id != lease.host_id
+            and not previous.is_expired(at)
+            and not force
+            and not frame_eligibility.evictable(previous.host_id, hq_dir=cwd, at=at)
+        ):
+            raise HostLeaseRejected("incumbent no longer evictable before host-lease CAS")
+    if plane := _frame_plane(cwd):
+        sha = plane.publish_hive_lease(
+            prefix, lease, expected=expected, operation=what, force=force
+        )
+        return LeaseOutcome(lease=lease, sha=sha, previous=previous)
     result = gitref.cas(remote, lease_ref(prefix), lease.to_record(), expected=expected, cwd=cwd)
     if not result.ok:
         raise HostLeaseRejected(
@@ -280,9 +316,12 @@ def adopt(
     Raises :class:`beadhive.gitref.RemoteUnreachable` when HQ cannot be read — adopting needs
     the remote by construction (Limitation 1), and guessing offline is the one thing this
     design must never do."""
+    from . import frame_eligibility
+
+    frame_eligibility.require_eligible(host_id, {"prefix": prefix}, hq_dir=cwd, at=at)
     sha, current = _read(remote, prefix, cwd=cwd)
     if current is not None and not current.is_expired(at) and current.host_id != host_id:
-        if not force:
+        if not force and not frame_eligibility.evictable(current.host_id, hq_dir=cwd, at=at):
             raise HostLeaseRejected(
                 f"{prefix} is held by another host — host lease: {current.describe()}.\n"
                 f"  Wait for it to expire, have that host release it, or force a takeover "
@@ -317,6 +356,8 @@ def adopt(
         cwd=cwd,
         previous=current,
         what="adopt",
+        force=force,
+        at=at,
     )
 
 
@@ -340,6 +381,11 @@ def renew(
     the ref has moved and the renewal is rejected. The expiry is what invites a takeover; the
     CAS is what prevents one from being overwritten. A late renewal is logged so a chronically
     lapsing renewer is visible."""
+    from . import frame_eligibility
+
+    frame_decision = frame_eligibility.require_eligible(
+        host_id, {"prefix": prefix}, hq_dir=cwd, at=at
+    )
     sha, current = _read(remote, prefix, cwd=cwd)
     if current is None:
         raise HostLeaseRejected(
@@ -349,6 +395,8 @@ def renew(
         raise HostLeaseRejected(
             f"cannot renew {prefix}: this host does not hold it — host lease: {current.describe()}"
         )
+    if frame_decision is not None and current.is_expired(at):
+        raise HostLeaseRejected("frame ineligible: current_hive_lease_holder")
     if current.is_expired(at):
         log.get_logger(__name__).warning(
             "host_lease_renew_after_expiry",
@@ -549,7 +597,12 @@ def renew_if_due(
     (``guard_primary`` is the only place that decision is made). This function only ever tries
     to push the expiry further out; failing to do so just means the next call tries again."""
     clock = at if at is not None else time.time()
-    cached = read_cached(prefix, cwd=cwd)
+    plane = _frame_plane(cwd)
+    cached = (
+        plane.read_hive_lease(prefix, holder_identity=host_id)
+        if plane
+        else read_cached(prefix, cwd=cwd)
+    )
     if cached is None or cached.host_id != host_id:
         return None  # nothing of ours locally to renew
     due_at = _parse_stamp(cached.expires_at) - renew_interval
@@ -557,7 +610,9 @@ def renew_if_due(
         return None  # not due yet — no HQ round trip within the interval
 
     try:
-        outcome = renew(remote, prefix, host_id=host_id, cwd=cwd, ttl=ttl, at=clock)
+        outcome = renew(
+            remote, prefix, host_id=host_id, cwd=cwd, ttl=ttl, at=at if plane else clock
+        )
     except (HostLeaseError, gitref.RemoteUnreachable) as exc:
         log.get_logger(__name__).warning(
             "host_lease_renew_if_due_failed",

@@ -77,7 +77,12 @@ class HqControlPlane(Protocol):
     def heartbeat(self, lease, *, signing_key: str) -> str: ...
     def watch_state(self, frame: str): ...
     def authority_status(self) -> dict: ...
+    def eligibility_authority_status(self) -> dict: ...
     def observe(self, manifest, *, now=None, observer_dir=None): ...
+    def read_eligibility(self, manifest, *, now=None): ...
+    def read_hive_lease(self, prefix, *, holder_identity=None): ...
+    def read_hive_lease_record(self, prefix, *, holder_identity=None): ...
+    def publish_hive_lease(self, prefix, lease, *, expected, operation, force=False): ...
     def config_store(self, *, operator_key=None, duration=3600): ...
     def load_config_authority_snapshot(
         self, frame: str, *, revision: str | None = None
@@ -143,10 +148,17 @@ def _hook_text(remote, policy):
 
 
 def install_guard(
-    hq_dir, operator_public_key, generation, *, interpreter=None, confirm_server_custody=False
+    hq_dir,
+    operator_public_key,
+    generation,
+    *,
+    interpreter=None,
+    confirm_server_custody=False,
+    hive_policies=None,
 ):
     if not confirm_server_custody or not generation:
         raise ControlPlaneError("explicit operator server custody and recovery generation required")
+    guard.validate_hive_policies(hive_policies or {})
     url = _git(hq_dir, "remote", "get-url", "origin")
     if url.startswith("file://"):
         url = url[7:]
@@ -205,6 +217,7 @@ def install_guard(
         executable = str(Path(executable).resolve())
         executables[name] = {"path": executable, "digest": _digest(executable)}
     policy = {
+        "hive_policies": hive_policies or {},
         "generation": generation,
         "server_root": str(remote),
         "operator_signers": str(anchor),
@@ -286,6 +299,11 @@ def registration_ref(authority):
     return ref_name(authority["frame_id"]).replace("/heartbeat/", "/registration/") + "/" + suffix
 
 
+def verified_anchor_role(hq_dir, anchor):
+    """Classify only an anchor with verified custody, digest and recovery generation."""
+    return GitControlPlane(hq_dir, authority_anchor=anchor)._policy()["client"]["role"]
+
+
 class GitControlPlane:
     def __init__(self, hq_dir, *, authority_anchor=None, clock=time.time, policy_digest=""):
         self.hq_dir, self.clock = Path(hq_dir), clock
@@ -309,6 +327,37 @@ class GitControlPlane:
             "state": state,
             "authority_ready": bool(sha) and self.clock() < state["expires_at"],
         }
+
+    def eligibility_authority_status(self):
+        revision, state, _ = self._read()
+        return {"revision": revision, "state": state, "authority_ready": True}
+
+    def read_eligibility(self, manifest, *, now=None):
+        """Qualify constituent reads against one protected monotonic authority revision.
+
+        This is a Git read bracket, not an atomic SQL composite snapshot promise.
+        Every read verifies protected policy/witnesses and current validity.
+        """
+        revision, _, _ = self._read()
+        desired = self.fetch_config(manifest.frame_id, holder_identity=manifest.host_id)
+        observation = self.observe(manifest, now=now)
+        current, _, _ = self._read()
+        if current != revision:
+            raise ControlPlaneError("authority changed during eligibility read")
+        return revision, desired, observation
+
+    def read_hive_lease_record(self, prefix, *, holder_identity=None):
+        from .hq_frame_lease import read
+
+        return read(self, prefix, holder_identity=holder_identity)
+
+    def read_hive_lease(self, prefix, *, holder_identity=None):
+        return self.read_hive_lease_record(prefix, holder_identity=holder_identity)[1]
+
+    def publish_hive_lease(self, prefix, lease, *, expected, operation, force=False):
+        from .hq_frame_lease import publish
+
+        return publish(self, prefix, lease, expected=expected, operation=operation, force=force)
 
     def observe(self, manifest, *, now=None, observer_dir=None):
         from . import host_heartbeat_core as hb
