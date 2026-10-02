@@ -71,11 +71,11 @@ last_verified_commit = "bh-3qkmk.5"
 expiry_trigger = "Move the released Development Frame Bridge runtime behind adapters/frame_bridge after its compatibility consumers reach zero."
 
 [cycle_snapshot]
-sha256 = "f6726a4fb391925da04f6d72d5658ca108214cc40f721d69a0ffa49f4eda2b42"
+sha256 = "a3b51f4f4bacd3a0f1ea72e161e9d4a9d15b947f523539420a2dba392ffa5685"
 components = 8
 modules = 58
-edges = 151
-symbols = 174
+edges = 147
+symbols = 170
 
 [[cycle_exception]]
 id = "cycle-edge-001"
@@ -1053,14 +1053,14 @@ expiry_trigger = "Remove this exact edge when beadhive.frame_eligibility no long
 
 [[cycle_exception]]
 id = "cycle-fleet-composition-004"
-status = "active"
+status = "removed"
 importer = "beadhive.frame_eligibility"
 importer_path = "src/beadhive/frame_eligibility.py"
 imported_module = "beadhive.hosts"
 symbols = ["beadhive.hosts"]
 target_owner_package = "src/beadhive Fleet application composition"
 successor = "Fleet composition steward: dev/fleet-eligibility"
-reason = "Load validated manifest capabilities and incarnation for the pure predicate. introduced edge or changed exact symbols relative to d2485d67; retained concrete composition, not deferred cleanup."
+reason = "Load validated manifest capabilities and incarnation for the pure predicate. introduced edge or changed exact symbols relative to d2485d67; retained concrete composition, not deferred cleanup. Neutral HostManifest extraction in bh-v0k3i removed this exact cyclic dependency; the entry remains as historical ownership evidence."
 consumer_inventory = { production = "beadhive.frame_eligibility exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
 executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
 test_closure = "just architecture-structural-check; just check-native"
@@ -1155,14 +1155,14 @@ expiry_trigger = "Remove this exact edge when beadhive.host_heartbeat_core no lo
 
 [[cycle_exception]]
 id = "cycle-fleet-composition-010"
-status = "active"
+status = "removed"
 importer = "beadhive.host_heartbeat_core"
 importer_path = "src/beadhive/host_heartbeat_core.py"
 imported_module = "beadhive.hosts"
 symbols = ["beadhive.hosts"]
 target_owner_package = "src/beadhive Fleet application composition"
 successor = "Fleet composition steward: dev/fleet-eligibility"
-reason = "Shared manifest release schema and typed incarnation data preserve authentication identity. preexisting edge promoted into SCC relative to d2485d67; retained concrete composition, not deferred cleanup."
+reason = "Shared manifest release schema and typed incarnation data preserve authentication identity. preexisting edge promoted into SCC relative to d2485d67; retained concrete composition, not deferred cleanup. Neutral HostManifest extraction in bh-v0k3i removed this exact cyclic dependency; the entry remains as historical ownership evidence."
 consumer_inventory = { production = "beadhive.host_heartbeat_core exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
 executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
 test_closure = "just architecture-structural-check; just check-native"
@@ -1295,7 +1295,7 @@ status = "active"
 importer = "beadhive.hq_control_plane"
 importer_path = "src/beadhive/hq_control_plane.py"
 imported_module = "beadhive.host_heartbeat_core"
-symbols = ["beadhive.host_heartbeat_core", "beadhive.host_heartbeat_core.AuthoritySnapshot", "beadhive.host_heartbeat_core.HeartbeatLease", "beadhive.host_heartbeat_core.ObservationAuthority", "beadhive.host_heartbeat_core._authority_matches", "beadhive.host_heartbeat_core.ref_name"]
+symbols = ["beadhive.host_heartbeat_core", "beadhive.host_heartbeat_core.AuthoritySnapshot", "beadhive.host_heartbeat_core.HeartbeatLease", "beadhive.host_heartbeat_core.ObservationAuthority", "beadhive.host_heartbeat_core.VerifiedObservation", "beadhive.host_heartbeat_core._authority_matches", "beadhive.host_heartbeat_core.ref_name"]
 target_owner_package = "src/beadhive Fleet application composition"
 successor = "Fleet composition steward: dev/fleet-eligibility"
 reason = "Existing provider implements trusted snapshots, authenticated observations, heartbeat publication and epoch matching using shared types. preexisting edge promoted into SCC relative to d2485d67; retained concrete composition, not deferred cleanup."
@@ -1308,14 +1308,14 @@ expiry_trigger = "Remove this exact edge when beadhive.hq_control_plane no longe
 
 [[cycle_exception]]
 id = "cycle-fleet-composition-019"
-status = "active"
+status = "removed"
 importer = "beadhive.hq_control_plane"
 importer_path = "src/beadhive/hq_control_plane.py"
 imported_module = "beadhive.hosts"
 symbols = ["beadhive.hosts", "beadhive.hosts.HostManifest"]
 target_owner_package = "src/beadhive Fleet application composition"
 successor = "Fleet composition steward: dev/fleet-eligibility"
-reason = "Existing provider validates exact registration manifest and authenticated membership schemas. preexisting edge promoted into SCC relative to d2485d67; retained concrete composition, not deferred cleanup."
+reason = "Existing provider validates exact registration manifest and authenticated membership schemas. preexisting edge promoted into SCC relative to d2485d67; retained concrete composition, not deferred cleanup. Neutral HostManifest extraction in bh-v0k3i removed this exact cyclic dependency; the entry remains as historical ownership evidence."
 consumer_inventory = { production = "beadhive.hq_control_plane exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
 executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
 test_closure = "just architecture-structural-check; just check-native"
@@ -1410,14 +1410,14 @@ expiry_trigger = "Remove this exact edge when beadhive.hq_manifest_publication n
 
 [[cycle_exception]]
 id = "cycle-fleet-composition-025"
-status = "active"
+status = "removed"
 importer = "beadhive.hq_manifest_publication"
 importer_path = "src/beadhive/hq_manifest_publication.py"
 imported_module = "beadhive.hosts"
 symbols = ["beadhive.hosts"]
 target_owner_package = "src/beadhive Fleet application composition"
 successor = "Fleet composition steward: dev/fleet-eligibility"
-reason = "Existing exact registration publication validates manifest identity and preserves schema. preexisting edge promoted into SCC relative to d2485d67; retained concrete composition, not deferred cleanup."
+reason = "Existing exact registration publication validates manifest identity and preserves schema. preexisting edge promoted into SCC relative to d2485d67; retained concrete composition, not deferred cleanup. Neutral HostManifest extraction in bh-v0k3i removed this exact cyclic dependency; the entry remains as historical ownership evidence."
 consumer_inventory = { production = "beadhive.hq_manifest_publication exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
 executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
 test_closure = "just architecture-structural-check; just check-native"

@@ -451,7 +451,8 @@ def enforce_hive_lease(old, new, reference, state, policy, head):
 
 
 def enforce_runtime(updates, policy):
-    from manifest_guard import parse_manifest, validate
+    # Resolved from the separately copied bh-guard-libs directory in the server hook.
+    from manifest_guard import parse_manifest, validate  # pants: no-infer-dep
 
     sha = git("rev-parse", HEAD)
     state = read_state(sha)

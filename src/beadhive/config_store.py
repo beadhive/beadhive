@@ -88,13 +88,32 @@ def fleet_override_violations(host) -> list[str]:
 
 
 def _load_uncached(api):
-    fleet = api.load_fleet()
     try:
         host = api.load_host()
     except FileNotFoundError:
+        fleet = api.load_fleet()
         if not fleet:
             raise
         return fleet
+    sql = host.get("hq", {}).get("sql", {})
+    if sql.get("enabled", False):
+        from io import StringIO
+
+        from ruamel.yaml import YAML
+
+        from .hq_control_plane import attach_fleet_config
+
+        _, snapshot = attach_fleet_config(bootstrap=host.get("hq", {}))
+        document = next((item for item in snapshot.documents if item.path == "fleet.yaml"), None)
+        if document is None:
+            raise api.ConfigError("committed SQL fleet document missing")
+        fleet = YAML(typ="safe").load(StringIO(document.content))
+        if not isinstance(fleet, Mapping):
+            raise api.ConfigError("committed SQL fleet document invalid")
+        if fleet.get("hq", {}).get("mode") != "dolt-server":
+            raise api.ConfigError("committed HQ mode does not match SQL host binding")
+    else:
+        fleet = api.load_fleet()
     if not fleet:
         return host
     api._reject_fleet_overrides(host)
@@ -110,6 +129,22 @@ def load(api):
     74.06 ms for reparsing; comment-preserving mutation paths still use ``load_host`` /
     ``load_fleet`` directly.  Path and stat metadata make external edits self-invalidating.
     """
+    # An authenticated SQL revision has its own short validity; filesystem stat
+    # memoization must never extend it through an outage or authority change.
+    try:
+        host = api.load_host()
+    except FileNotFoundError:
+        host = {}
+    from .modules.config.contracts import HqSqlConfig
+
+    try:
+        sql = HqSqlConfig.model_validate(host.get("hq", {}).get("sql", {}))
+    except (ValueError, TypeError):
+        # Pydantic's raw input rendering can include an accidentally inlined
+        # credential value.  The SQL bootstrap boundary reports only its phase.
+        raise ValueError("invalid SQL HOST bootstrap") from None
+    if sql.enabled:
+        return json.loads(json.dumps(_load_uncached(api)))
     key = (_file_signature(api.fleet_path()), _file_signature(api.config_path()))
     with _load_cache_lock:
         payload = _load_cache.get(key)
