@@ -1877,7 +1877,10 @@ def test_identity_policy_refresh_refuses_later_config_head(backend):
     assert after_adoption.beadyard_id == adopted.beadyard_id
     store.publish_snapshot(
         (
-            FleetConfigDocument("fleet.yaml", "schema_version: 1\nmanaged_repos: [other]\n"),
+            FleetConfigDocument(
+                "fleet.yaml",
+                "schema_version: 1\nmanaged_repos: []\nwork:\n  validate_cmd: just check\n",
+            ),
             *(doc for doc in after_adoption.documents if doc.path != "fleet.yaml"),
         ),
         expected_revision=after_adoption.commit_revision,
@@ -1923,7 +1926,12 @@ def test_git_adoption_keeps_pinned_config_parent_when_another_operator_advances(
     with monkeypatch.context() as independent_host:
         independent_host.setattr(hq_fleet_config, "read_identity", lambda _root: None)
         advanced = store.publish_snapshot(
-            (FleetConfigDocument("fleet.yaml", "schema_version: 1\nmanaged_repos: [other]\n"),),
+            (
+                FleetConfigDocument(
+                    "fleet.yaml",
+                    "schema_version: 1\nmanaged_repos: []\nwork:\n  validate_cmd: just check\n",
+                ),
+            ),
             expected_revision=legacy.commit_revision,
         )
     with pytest.raises(hq_beadyard.BeadyardOperationError, match="config changed"):

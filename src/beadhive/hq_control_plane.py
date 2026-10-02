@@ -2044,8 +2044,8 @@ class SqlControlPlane:
                 manifest.frame_id != route.frame_id
                 or manifest.host_id != route.holder_identity
                 or manifest.instance_ref != route.instance_ref
-                or manifest.beadyard_id != _snapshot.beadyard_id
-                or manifest.beadyard_id != record["authority"].get("beadyard_id")
+                or getattr(manifest, "beadyard_id", None) != _snapshot.beadyard_id
+                or getattr(manifest, "beadyard_id", None) != record["authority"].get("beadyard_id")
                 or not any(
                     policy["config_revision"] == record["authority"]["config_revision"]
                     for policy in policies.values()

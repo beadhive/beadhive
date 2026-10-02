@@ -7,6 +7,7 @@ import subprocess
 
 import pytest
 
+from beadhive.beadyard_identity import new_document, parse_document
 from beadhive.hive_schema import HiveSchemaRecord as LegacyHiveSchemaRecord
 from beadhive.hive_schema_contracts import HiveSchemaRecord
 from beadhive.hq_document_validation import (
@@ -68,6 +69,23 @@ def test_ordered_snapshot_requires_exact_unique_documents():
         validate_documents((fleet, fleet))
     with pytest.raises(DocumentValidationError, match="required"):
         validate_documents((workspace,))
+
+
+def test_beadyard_identity_document_is_validated_in_normal_and_repair_views():
+    fleet = FleetConfigDocument("fleet.yaml", "schema_version: 1\n")
+    identity = FleetConfigDocument("beadyard.json", new_document())
+    assert parse_document(identity.content)
+    validate_documents((fleet, identity))
+    validate_repair_carrier((fleet, identity))
+    for malformed in (
+        '{"beadyard_id":"00000000-0000-0000-0000-000000000000"}',
+        '{"beadyard_id":"not-a-uuid"}',
+        '{"beadyard_id":"not-a-uuid","beadyard_id":"not-a-uuid"}',
+    ):
+        invalid = (fleet, FleetConfigDocument("beadyard.json", malformed))
+        for validator in (validate_documents, validate_repair_carrier):
+            with pytest.raises(DocumentValidationError, match="canonical_uuid4"):
+                validator(invalid)
 
 
 def test_raw_repair_view_retains_invalid_schema_but_rejects_unsafe_carriers():

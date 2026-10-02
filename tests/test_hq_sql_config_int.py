@@ -678,6 +678,17 @@ def test_committed_sql_config_publication_and_floor(tmp_path, monkeypatch):
             ):
                 with pytest.raises(SqlConfigError, match="beadyard identity publication conflict"):
                     restarted.publish_snapshot(attempt, expected_revision=bound.commit_revision)
+                with pytest.raises(SqlConfigError, match="beadyard identity publication conflict"):
+                    restarted.repair_snapshot(attempt, expected_revision=bound.commit_revision)
+            malformed_identity = tuple(
+                FleetConfigDocument(doc.path, '{"beadyard_id":"foreign"}')
+                if doc.path == DOCUMENT_PATH else doc
+                for doc in bound.documents
+            )
+            with pytest.raises(SqlConfigError, match="beadyard"):
+                restarted.repair_snapshot(
+                    malformed_identity, expected_revision=bound.commit_revision
+                )
             assert restarted.load_snapshot().commit_revision == bound.commit_revision
             _cli(
                 tmp_path,

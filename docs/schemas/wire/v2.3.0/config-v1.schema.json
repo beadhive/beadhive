@@ -6,7 +6,7 @@
       "properties": {
         "disk_free_floor_mb": {
           "default": 10240,
-          "description": "Host-root filesystem free-space floor in MB. Below this, `bh alerts show` asks an operator to reclaim capacity from the filesystem mounted at `/`. 0 disables this alert.",
+          "description": "Host free-disk floor in MB. Below this, `bh alerts show` asks an operator to dispatch cleanup. 0 disables this alert.",
           "minimum": 0,
           "title": "Disk Free Floor Mb",
           "type": "integer"
@@ -16,13 +16,6 @@
           "description": "Per-hive managed-worktree footprint cap in MB. Above this, `bh alerts show` asks an operator to dispatch cleanup. 0 disables this alert.",
           "minimum": 0,
           "title": "Worktree Cap Mb",
-          "type": "integer"
-        },
-        "worktree_filesystem_free_floor_mb": {
-          "default": 10240,
-          "description": "Free-space floor in MB for the filesystem containing the configured worktree root. Below this, `bh alerts show` asks an operator to prune worktrees or move the root to a filesystem with more capacity. When omitted from an existing config, inherits `disk_free_floor_mb`. 0 disables this alert.",
-          "minimum": 0,
-          "title": "Worktree Filesystem Free Floor Mb",
           "type": "integer"
         }
       },
@@ -54,194 +47,6 @@
         }
       },
       "title": "ArchiveConfig",
-      "type": "object"
-    },
-    "AttestConfig": {
-      "additionalProperties": false,
-      "description": "The attest key catalog and impact resolver (Attested Green ADR, Amendment 1). Absent (the\ndefault) is today's behavior: no keys, native-full.",
-      "properties": {
-        "impact": {
-          "$ref": "#/$defs/AttestImpactConfig",
-          "description": "Impact resolver backend selection."
-        },
-        "keys": {
-          "description": "Named attest keys, each an opaque command with a policy and selectors.",
-          "items": {
-            "$ref": "#/$defs/AttestKeyConfig"
-          },
-          "title": "Keys",
-          "type": "array"
-        },
-        "semantic": {
-          "$ref": "#/$defs/AttestSemanticConfig",
-          "description": "Advisory semantic key selection; never produces carryable proof."
-        },
-        "trivial": {
-          "$ref": "#/$defs/AttestTrivialConfig",
-          "description": "Policy short-circuit for trivially non-behavioral changes."
-        }
-      },
-      "title": "AttestConfig",
-      "type": "object"
-    },
-    "AttestImpactConfig": {
-      "additionalProperties": false,
-      "description": "Which impact resolver backend decides which keys a change invalidates.",
-      "properties": {
-        "backend": {
-          "default": "native-full",
-          "description": "Impact resolver backend. native-full (default) invalidates every key on every change — today's all-or-nothing gate, byte for byte. Any other name must be a backend bound on this host; an unavailable one degrades to native-full.",
-          "title": "Backend",
-          "type": "string"
-        },
-        "on_unresolved": {
-          "default": "fallback",
-          "description": "Policy when the impact resolver cannot answer. fallback (the production default) runs every key; strict is a development diagnostic that exits before any key runs.",
-          "enum": [
-            "fallback",
-            "strict"
-          ],
-          "title": "On Unresolved",
-          "type": "string"
-        },
-        "timeout_seconds": {
-          "default": 300.0,
-          "description": "Wall-clock budget for one backend answer; a slower answer is discarded and the resolution falls back to native-full.",
-          "exclusiveMinimum": 0,
-          "title": "Timeout Seconds",
-          "type": "number"
-        }
-      },
-      "title": "AttestImpactConfig",
-      "type": "object"
-    },
-    "AttestKeyConfig": {
-      "additionalProperties": false,
-      "description": "One attest key (Attested Green ADR, Amendment 1): an OPAQUE command bh runs verbatim and\nnever parses, an execution state, an evidence policy, and per-backend selectors only the\nnamed impact backend reads.",
-      "properties": {
-        "cmd": {
-          "description": "The command, run verbatim like validate_cmd. bh never parses it.",
-          "minLength": 1,
-          "title": "Cmd",
-          "type": "string"
-        },
-        "disabled_reason": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Required non-blank operator reason whenever enabled is false.",
-          "title": "Disabled Reason"
-        },
-        "disabled_until": {
-          "anyOf": [
-            {
-              "format": "date-time",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Optional timezone-aware expiry. Once reached, a disabled key automatically runs again (fail-closed) even while enabled remains false.",
-          "title": "Disabled Until"
-        },
-        "enabled": {
-          "default": true,
-          "description": "Whether this key executes. Disabled keys are deliberately absent: they neither run, block, satisfy the aggregate, nor produce carryable proof.",
-          "title": "Enabled",
-          "type": "boolean"
-        },
-        "name": {
-          "description": "Stable key name, a lowercase slug (letters, digits, '.', '_', '-'). Receipts and verdict records cite it.",
-          "title": "Name",
-          "type": "string"
-        },
-        "policy": {
-          "default": "required",
-          "description": "required (default) blocks when the key is absent or red | optional passes when absent but still blocks on a real failure.",
-          "enum": [
-            "required",
-            "optional"
-          ],
-          "title": "Policy",
-          "type": "string"
-        },
-        "selectors": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "description": "Opaque {backend: selector} map (e.g. a build-graph tag) read only by that impact backend. A key with no selector for the active backend is invalidated by any change — give none to a key that reads git metadata.",
-          "title": "Selectors",
-          "type": "object"
-        }
-      },
-      "required": [
-        "name",
-        "cmd"
-      ],
-      "title": "AttestKeyConfig",
-      "type": "object"
-    },
-    "AttestSemanticConfig": {
-      "additionalProperties": false,
-      "description": "Optional fail-closed policy selector for attest keys.\n\nThe command is an adviser, not an evidence backend: skipped keys produce no carryable\nproof.  It receives ``--base`` and ``--head`` and must emit the ``jevwrap/select/1`` JSON\nenvelope.  Any absence, error, timeout, or malformed/partial answer selects every key.",
-      "properties": {
-        "command": {
-          "default": "jevwrap select",
-          "minLength": 1,
-          "title": "Command",
-          "type": "string"
-        },
-        "enabled": {
-          "default": false,
-          "title": "Enabled",
-          "type": "boolean"
-        },
-        "timeout_seconds": {
-          "default": 30.0,
-          "exclusiveMinimum": 0,
-          "title": "Timeout Seconds",
-          "type": "number"
-        }
-      },
-      "title": "AttestSemanticConfig",
-      "type": "object"
-    },
-    "AttestTrivialConfig": {
-      "additionalProperties": false,
-      "description": "A POLICY short-circuit: changes whose every path is trivially non-behavioral run a\nreduced key set instead of the full one.\n\nThis is deliberately NOT an impact-resolver concern. A receipt answers \"what did this\nchange touch\", proved from ownership and selectors; this answers \"what do we choose to\ntest\", which carries no proof at all. Keeping them apart is what stops a policy skip from\nbeing recorded as carried evidence: the keys this drops are treated exactly like a\ndisabled key -- they neither run, block, satisfy the aggregate, nor produce carryable\nproof, so `all_keys_green` still refuses to call the revision fully attested.",
-      "properties": {
-        "enabled": {
-          "default": false,
-          "description": "Whether the trivial-change short-circuit applies. Off by default: a hive must choose to trade coverage for latency.",
-          "title": "Enabled",
-          "type": "boolean"
-        },
-        "keys": {
-          "description": "Key names that still run for a trivial change. Every other key is skipped by policy. An empty list disables the short-circuit rather than skipping everything.",
-          "items": {
-            "type": "string"
-          },
-          "title": "Keys",
-          "type": "array"
-        },
-        "paths": {
-          "description": "fnmatch glob patterns, matched against every changed path. The short-circuit applies ONLY when EVERY changed path matches one of them, so a single unmatched path restores the normal route. NOTE: these are fnmatch patterns, not pathlib globs -- '*' CROSSES directory separators and '**' has no special meaning, so 'docs/*.md' matches any depth and 'docs/*' also matches 'docs/schemas/x.json'. Prefer the narrowest extension-anchored pattern you can write; the semantic triage exists to veto a pattern that turns out broader than intended.",
-          "items": {
-            "type": "string"
-          },
-          "title": "Paths",
-          "type": "array"
-        }
-      },
-      "title": "AttestTrivialConfig",
       "type": "object"
     },
     "BackupConfig": {
@@ -280,25 +85,6 @@
         }
       },
       "title": "BackupConfig",
-      "type": "object"
-    },
-    "BeadsConfig": {
-      "additionalProperties": false,
-      "description": "How the migrated work/planning cohorts reach Beads (``work.beads``, bh-m36pc).",
-      "properties": {
-        "route": {
-          "default": "api",
-          "description": "Which Beads route the migrated cohorts (assign / claim / resume / abandon / submit state, plan file, ready / schedule / claim-next, dispatch reads) may take. api (default): the supervised Beads service only; when no capable session can be opened the command fails closed, naming `bh host beads start --hive <hive>`. api+cli-fallback: the API when a capable session opens, else the bd CLI route selected before the first Beads operation (never a retry). cli: always the bd CLI route. An unknown value is refused, never defaulted.",
-          "enum": [
-            "api",
-            "api+cli-fallback",
-            "cli"
-          ],
-          "title": "Route",
-          "type": "string"
-        }
-      },
-      "title": "BeadsConfig",
       "type": "object"
     },
     "ClaudeConfig": {
@@ -1013,104 +799,6 @@
       "title": "ExcludeConfig",
       "type": "object"
     },
-    "FrameBridgeIdentityConfig": {
-      "additionalProperties": false,
-      "description": "Enrollment-owned identity of the private Factory bridge.",
-      "properties": {
-        "factory_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Factory Id"
-        },
-        "host_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Host Id"
-        },
-        "instance_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Instance Id"
-        },
-        "primary_hive_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Primary Hive Id"
-        }
-      },
-      "title": "FrameBridgeIdentityConfig",
-      "type": "object"
-    },
-    "FrameHivePolicy": {
-      "additionalProperties": false,
-      "description": "Canonical fleet-owned frame admission policy for one managed hive.",
-      "properties": {
-        "config_revision": {
-          "minLength": 1,
-          "title": "Config Revision",
-          "type": "string"
-        },
-        "evict_after_s": {
-          "exclusiveMinimum": 0,
-          "title": "Evict After S",
-          "type": "number"
-        },
-        "requires": {
-          "additionalProperties": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "integer"
-              },
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              }
-            ]
-          },
-          "title": "Requires",
-          "type": "object"
-        }
-      },
-      "required": [
-        "config_revision",
-        "evict_after_s"
-      ],
-      "title": "FrameHivePolicy",
-      "type": "object"
-    },
     "GenaiConfig": {
       "additionalProperties": false,
       "description": "EXPERIMENTAL agentic GenAI span attributes (``otel.genai``).",
@@ -1271,15 +959,6 @@
         "dispatch": {
           "$ref": "#/$defs/HostDispatchConfig"
         },
-        "frame_bridge": {
-          "$ref": "#/$defs/FrameBridgeIdentityConfig"
-        },
-        "frame_id": {
-          "default": "",
-          "description": "Enrollment-owned Fleet identity; config storage does not enroll a host.",
-          "title": "Frame Id",
-          "type": "string"
-        },
         "lease": {
           "$ref": "#/$defs/HostLeaseConfig"
         }
@@ -1347,19 +1026,13 @@
     },
     "HostDispatchConfig": {
       "additionalProperties": false,
-      "description": "Unattended-dispatch supervision (``host.dispatch``, bh-e7r9q.4/.5) — the backend\nselection for ``bh host dispatch run --hive <hive>`` and the dumb picker it drives.\n\nPer-HOST, not fleet-scoped like ``host.lease``: which supervisor exists (systemd vs\nlaunchd vs a container's own restart policy) is a fact about THIS machine, not a shared\nfleet judgement.",
+      "description": "Unattended-dispatch supervision (``host.dispatch``, bh-e7r9q.4/.5) — the backend that\nkeeps ``bh host dispatch run --hive <hive>`` alive across restarts/reboots, and the dumb\npicker it drives.\n\nPer-HOST, not fleet-scoped like ``host.lease``: which supervisor exists (systemd vs\nlaunchd vs a container's own restart policy) is a fact about THIS machine, not a shared\nfleet judgement.",
       "properties": {
         "backend": {
           "default": "systemd",
-          "description": "Dispatch supervision: 'systemd' installs and persists per-hive systemd --user units (the default). 'process' runs bh host dispatch run in the foreground under an external supervisor, which owns restart and status. 'container' and 'launchd' select that same process runtime; they do not install services. Stop the foreground process with SIGTERM for bounded draining.",
+          "description": "Which supervisor backend installs/starts/persists the per-hive dispatch loop: 'systemd' (only one implemented — systemd --user template units, one instance per hive) | 'launchd' | 'container' (both known names, NOT implemented — see beadhive.dispatch_supervisor's module docstring for what each would need to supply).",
           "title": "Backend",
           "type": "string"
-        },
-        "enabled": {
-          "default": true,
-          "description": "Allow frame intake; legacy hosts retain lease policy.",
-          "title": "Enabled",
-          "type": "boolean"
         },
         "max_epics_in_flight": {
           "default": 3,
@@ -1387,12 +1060,6 @@
       "additionalProperties": false,
       "description": "**Host-lease** timing (``host.lease``) — the TTL/renewal contract behind\n``refs/bh/lease/<prefix>`` in HQ (``docs/design/multi-host-model-adr.md``, Amendment 1\n§3; implemented in :mod:`beadhive.host_lease`).\n\n\"Host lease\" is host ↔ hive, deliberately distinct from ``bd``'s *worker* lease\n(worker ↔ issue: ``lease_expires_at``, ``bd heartbeat`` / ``bd reclaim``) — Amendment 1\n§5. Nothing here configures bd's.\n\nBoth keys are **fleet-scoped** (``config_partition.FLEET_PREFIXES``) on purpose: expiry is\na shared judgement. If two hosts disagreed about when a lease lapses, one would consider a\nhive free while the other still considered itself primary — the exact split-brain the\nfence exists to prevent. Per-host variation is expressed through the host's ``role``\n(``hosts/<host_id>.yaml``), which SCALES this baseline\n(:func:`beadhive.host_lease.ttl_for_role`) — never by per-host overrides of these keys.",
       "properties": {
-        "evict_after_s": {
-          "default": 900.0,
-          "exclusiveMinimum": 0,
-          "title": "Evict After S",
-          "type": "number"
-        },
         "renew_interval": {
           "default": 300.0,
           "description": "Seconds between host-lease renewals while a dispatcher has active workers (no daemon, no cron). ADR Amendment 1 §3 default: 300 (5 min). Must stay comfortably below `host.lease.ttl`.",
@@ -1413,262 +1080,14 @@
       "additionalProperties": false,
       "description": "Factory HQ remote (``hq``) — where the factory's central HQ store publishes to.",
       "properties": {
-        "admission_policy": {
-          "const": "manual",
-          "default": "manual",
-          "title": "Admission Policy",
-          "type": "string"
-        },
-        "authority_anchor": {
-          "default": "",
-          "title": "Authority Anchor",
-          "type": "string"
-        },
-        "beadyard_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "HOST-local pin copied from canonical HQ beadyard.json at explicit frame bootstrap; never generated by config reads or stored as a second SQL column.",
-          "title": "Beadyard Id"
-        },
-        "mode": {
-          "default": "git",
-          "enum": [
-            "git",
-            "dolt-server"
-          ],
-          "title": "Mode",
-          "type": "string"
-        },
         "remote": {
           "default": "",
-          "description": "HQ repo remote: `<owner>/beadhive-hq`, an absolute local path, or local `file://` URL. Empty (default) derives `<owner>` from the logged-in `gh` identity at read time (`config.hq_remote`) — host identity, so the answer does not vary by which hive you invoke from; an explicit value here always overrides the derivation. `bh hq init`/`clone` confirm the result interactively unless `--auto` is passed.",
+          "description": "HQ repo remote, `<owner>/beadhive-hq` form. Empty (default) derives `<owner>` from the logged-in `gh` identity at read time (`config.hq_remote`) — host identity, so the answer does not vary by which hive you invoke from; an explicit value here always overrides the derivation. `bh hq init`/`clone` confirm the result interactively unless `--auto` is passed.",
           "title": "Remote",
           "type": "string"
-        },
-        "sql": {
-          "$ref": "#/$defs/HqSqlConfig"
         }
       },
       "title": "HqConfig",
-      "type": "object"
-    },
-    "HqFnoxRef": {
-      "additionalProperties": false,
-      "description": "Host-local fnox lookup; the value itself is never configuration.",
-      "properties": {
-        "config_path": {
-          "default": "",
-          "title": "Config Path",
-          "type": "string"
-        },
-        "key": {
-          "default": "",
-          "title": "Key",
-          "type": "string"
-        },
-        "profile": {
-          "default": "",
-          "title": "Profile",
-          "type": "string"
-        }
-      },
-      "title": "HqFnoxRef",
-      "type": "object"
-    },
-    "HqSqlConfig": {
-      "additionalProperties": false,
-      "description": "Dedicated config service and optional, separately credentialed runtime.",
-      "properties": {
-        "authority_writer": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/HqSqlConnection"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "backend_identity": {
-          "default": "",
-          "title": "Backend Identity",
-          "type": "string"
-        },
-        "cache_ttl": {
-          "default": 30,
-          "maximum": 300,
-          "minimum": 1,
-          "title": "Cache Ttl",
-          "type": "integer"
-        },
-        "enabled": {
-          "default": false,
-          "title": "Enabled",
-          "type": "boolean"
-        },
-        "floor_path": {
-          "default": "",
-          "title": "Floor Path",
-          "type": "string"
-        },
-        "generation": {
-          "default": "",
-          "title": "Generation",
-          "type": "string"
-        },
-        "initial_revision": {
-          "default": "",
-          "title": "Initial Revision",
-          "type": "string"
-        },
-        "minimum_sequence": {
-          "default": 1,
-          "minimum": 1,
-          "title": "Minimum Sequence",
-          "type": "integer"
-        },
-        "observer": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/HqSqlConnection"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "publisher": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/HqSqlConnection"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "reader": {
-          "$ref": "#/$defs/HqSqlConnection"
-        },
-        "runtime": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/HqSqlConnection"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "runtime_backend_identity": {
-          "default": "",
-          "title": "Runtime Backend Identity",
-          "type": "string"
-        },
-        "runtime_floor_path": {
-          "default": "",
-          "title": "Runtime Floor Path",
-          "type": "string"
-        },
-        "runtime_generation": {
-          "default": "",
-          "title": "Runtime Generation",
-          "type": "string"
-        },
-        "runtime_initial_revision": {
-          "default": "",
-          "title": "Runtime Initial Revision",
-          "type": "string"
-        },
-        "runtime_operator_public_key": {
-          "default": "",
-          "title": "Runtime Operator Public Key",
-          "type": "string"
-        }
-      },
-      "title": "HqSqlConfig",
-      "type": "object"
-    },
-    "HqSqlConnection": {
-      "additionalProperties": false,
-      "description": "One explicitly scoped SQL principal and verified transport.",
-      "properties": {
-        "ca_file": {
-          "default": "",
-          "title": "Ca File",
-          "type": "string"
-        },
-        "connect_timeout": {
-          "default": 5,
-          "maximum": 30,
-          "minimum": 1,
-          "title": "Connect Timeout",
-          "type": "integer"
-        },
-        "credential": {
-          "$ref": "#/$defs/HqFnoxRef"
-        },
-        "database": {
-          "default": "",
-          "title": "Database",
-          "type": "string"
-        },
-        "host": {
-          "default": "",
-          "title": "Host",
-          "type": "string"
-        },
-        "operation_timeout": {
-          "default": 15,
-          "maximum": 60,
-          "minimum": 1,
-          "title": "Operation Timeout",
-          "type": "integer"
-        },
-        "port": {
-          "default": 3308,
-          "maximum": 65535,
-          "minimum": 1,
-          "title": "Port",
-          "type": "integer"
-        },
-        "read_timeout": {
-          "default": 5,
-          "maximum": 30,
-          "minimum": 1,
-          "title": "Read Timeout",
-          "type": "integer"
-        },
-        "server_name": {
-          "default": "",
-          "title": "Server Name",
-          "type": "string"
-        },
-        "user": {
-          "default": "",
-          "title": "User",
-          "type": "string"
-        },
-        "write_timeout": {
-          "default": 5,
-          "maximum": 30,
-          "minimum": 1,
-          "title": "Write Timeout",
-          "type": "integer"
-        }
-      },
-      "title": "HqSqlConnection",
       "type": "object"
     },
     "IdentityConfig": {
@@ -1764,28 +1183,6 @@
       "title": "IdentityConfig",
       "type": "object"
     },
-    "LegacyBeadsConfig": {
-      "additionalProperties": true,
-      "description": "Legacy top-level Beads section with one live selector and opaque extensions.",
-      "properties": {
-        "engine": {
-          "anyOf": [
-            {
-              "const": "bd",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Installed Beads engine; absent, null, or empty selects bd.",
-          "title": "Engine"
-        }
-      },
-      "title": "LegacyBeadsConfig",
-      "type": "object"
-    },
     "LogConfig": {
       "additionalProperties": false,
       "description": "Diagnostics logging (structlog dual-mode pipeline).",
@@ -1847,18 +1244,6 @@
           "default": null,
           "description": "Marks a hive as a Contribution-plane target. Today only `pull` (upstream is a read rail; nothing yet consumes it as a push/PR target).",
           "title": "Contribution"
-        },
-        "frame_policy": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/FrameHivePolicy"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Explicit fleet-owned frame requirements for this hive."
         },
         "furnish": {
           "anyOf": [
@@ -2458,46 +1843,6 @@
       "title": "RoutingTierConfig",
       "type": "object"
     },
-    "ValidationPriorityConfig": {
-      "additionalProperties": false,
-      "description": "Best-effort host scheduling controls for validation subprocesses.",
-      "properties": {
-        "enabled": {
-          "default": true,
-          "description": "Apply reduced CPU and I/O scheduling priority when host facilities are available. BH_VALIDATION_PRIORITY temporarily overrides this setting.",
-          "title": "Enabled",
-          "type": "boolean"
-        },
-        "ionice_class": {
-          "default": 2,
-          "description": "Linux I/O scheduling class: 2 is best-effort; 3 is idle. Realtime class 1 is intentionally rejected.",
-          "enum": [
-            2,
-            3
-          ],
-          "title": "Ionice Class",
-          "type": "integer"
-        },
-        "ionice_priority": {
-          "default": 7,
-          "description": "Best-effort I/O priority from 0 (highest) to 7 (lowest); ignored for idle class 3.",
-          "maximum": 7,
-          "minimum": 0,
-          "title": "Ionice Priority",
-          "type": "integer"
-        },
-        "nice": {
-          "default": 10,
-          "description": "Process nice level. Only non-negative values are accepted.",
-          "maximum": 19,
-          "minimum": 0,
-          "title": "Nice",
-          "type": "integer"
-        }
-      },
-      "title": "ValidationPriorityConfig",
-      "type": "object"
-    },
     "WorkConfig": {
       "additionalProperties": false,
       "description": "Integration-plane driver (`bh work`) settings — drives a bead assigned -> merged.",
@@ -2508,18 +1853,11 @@
           "title": "Always Run",
           "type": "string"
         },
-        "attest": {
-          "$ref": "#/$defs/AttestConfig",
-          "description": "Attest key catalog + impact resolver (Attested Green ADR, Amendment 1). Absent is today's whole-tree gate: no keys, native-full."
-        },
         "batch_max_size": {
           "default": 5,
           "description": "Max issues a planner-declared batch:<group> may hold as one unit.",
           "title": "Batch Max Size",
           "type": "integer"
-        },
-        "beads": {
-          "$ref": "#/$defs/BeadsConfig"
         },
         "conflict": {
           "$ref": "#/$defs/ConflictConfig"
@@ -2558,7 +1896,7 @@
           "type": "string"
         },
         "junk_globs": {
-          "description": "Disposable paths excluded before stat/walk (per-hive replaces global); bd's live and rotated backup stores remain excluded regardless of overrides.",
+          "description": "Disposable paths excluded before stat/walk (per-hive replaces global).",
           "items": {
             "type": "string"
           },
@@ -2666,16 +2004,6 @@
           "title": "Validation Artifact Root",
           "type": "string"
         },
-        "validation_bypass": {
-          "default": false,
-          "description": "Emergency per-hive switch that bypasses validation command execution without changing configured commands or creating green attestations.",
-          "title": "Validation Bypass",
-          "type": "boolean"
-        },
-        "validation_priority": {
-          "$ref": "#/$defs/ValidationPriorityConfig",
-          "description": "Host scheduling policy for validation children: nice/ionice and a weighted user systemd scope when available."
-        },
         "validation_protocol": {
           "default": "none",
           "description": "Explicit opt-in typed runner result protocol. v1 exports BH_VALIDATION_RESULT_PATH; absent/invalid output remains ordinary process semantics.",
@@ -2755,13 +2083,6 @@
           },
           "title": "Init",
           "type": "array"
-        },
-        "manager": {
-          "const": "native",
-          "default": "native",
-          "description": "The one worktree manager that creates/attaches/removes this fleet's worktrees. native (git) is the default and only value; anything else is refused.",
-          "title": "Manager",
-          "type": "string"
         },
         "path": {
           "anyOf": [
@@ -2844,18 +2165,6 @@
     },
     "backup": {
       "$ref": "#/$defs/BackupConfig"
-    },
-    "beads": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/LegacyBeadsConfig"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "description": "Legacy Beads settings with a validated engine selector."
     },
     "claude": {
       "$ref": "#/$defs/ClaudeConfig"
@@ -3165,5 +2474,5 @@
   },
   "title": "BeadhiveConfig",
   "type": "object",
-  "version": 2
+  "version": 1
 }

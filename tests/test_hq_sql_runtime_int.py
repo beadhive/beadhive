@@ -236,6 +236,11 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
                 "hq:\n  mode: dolt-server\nmanaged_repos:\n"
                 "- provider: github\n  org: bee\n  repo: hive\n  prefix: bh\n"
                 "  frame_policy:\n    config_revision: desired-1\n"
+                "    requires: {max_sessions: 1}\n    evict_after_s: 900\n"
+                # A second existing hive lets the bound-incarnation proof
+                # exercise a fresh ADOPT without evicting the live bh lease.
+                "- provider: github\n  org: bee\n  repo: identity\n  prefix: bi\n"
+                "  frame_policy:\n    config_revision: desired-1\n"
                 "    requires: {max_sessions: 1}\n    evict_after_s: 900\n",
             )
             manifest = HostManifest.model_validate(
@@ -524,7 +529,7 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
                 "TO 'observer'@'localhost'; "
                 "GRANT SELECT,INSERT,UPDATE ON beadhive_hq_runtime.hq_live_public_observations "
                 "TO 'observer'@'localhost'; "
-                "GRANT SELECT,INSERT ON beadhive_hq_runtime.hq_live_registrations "
+                "GRANT SELECT,INSERT,UPDATE ON beadhive_hq_runtime.hq_live_registrations "
                 "TO 'observer'@'localhost'; "
                 "GRANT SELECT ON beadhive_hq_config.hq_config_meta TO 'observer'@'localhost'; "
                 "GRANT SELECT ON beadhive_hq_config.hq_config_documents "
@@ -1672,6 +1677,234 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
             )
             assert projection_head != admitted["revision"]
             assert second_plane.read_eligibility(second_identity)[2].verified
+
+            # Bind the same committed HQ to its existing SQL incarnations.
+            # The old signed beat and registration remain recorded, but cannot
+            # authorize a new lease until matching bound evidence is accepted.
+            # A prior negative fixture left frame-1's latest floor on an
+            # accepted nonconformant beat; publish a fresh conformant legacy
+            # beat without changing that historical receipt.
+            legacy_refresh = lease.model_copy(
+                update={"seq": 3, "renewTime": datetime.now(UTC).isoformat()}
+            )
+            legacy_refresh_digest = plane.heartbeat(
+                legacy_refresh, signing_key=str(frame_key)
+            )
+            refresh_reader = pymysql.connect(
+                host="127.0.0.1", port=port, user="root",
+                database="beadhive_hq_runtime", autocommit=True,
+            )
+            try:
+                with refresh_reader.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT request_id FROM hq_live_inbox_frame_a_1 "
+                        "WHERE payload_sha256=%s",
+                        (legacy_refresh_digest.removeprefix("sha256:"),),
+                    )
+                    legacy_refresh_id = cursor.fetchone()[0]
+            finally:
+                refresh_reader.close()
+            refresh_result = subprocess.run(
+                [sys.executable, str(worker), str(receiver_settings_path),
+                 "frame_a", legacy_refresh_id],
+                cwd=Path(__file__).parent.parent, capture_output=True, text=True,
+                timeout=20,
+            )
+            assert refresh_result.returncode == 0, refresh_result.stderr
+            from beadhive import config as config_facade
+            from beadhive.beadyard_identity import DOCUMENT_PATH, new_document, parse_document
+
+            identity_doc = FleetConfigDocument(DOCUMENT_PATH, new_document())
+            owner = parse_document(identity_doc.content)
+            bound_manifest = manifest.model_copy(update={"beadyard_id": owner})
+            bound_manifest2 = manifest2.model_copy(update={"beadyard_id": owner})
+            bound_documents = (
+                fleet_document,
+                FleetConfigDocument(
+                    host_document.path,
+                    json.dumps(bound_manifest.model_dump(mode="json", exclude_none=True)),
+                ),
+                FleetConfigDocument(
+                    host2_document.path,
+                    json.dumps(bound_manifest2.model_dump(mode="json", exclude_none=True)),
+                ),
+                identity_doc,
+            )
+            bound_config = config_writer.publish_snapshot(
+                bound_documents, expected_revision=republished.commit_revision,
+                explicit_adoption=True,
+            )
+            assert bound_config.beadyard_id == owner
+            monkeypatch.setattr(
+                config_facade, "load_host", lambda: {"hq": {"beadyard_id": owner}}
+            )
+            prior_frames = json.loads(json.dumps(operator.load()[1]["frames"]))
+            projection_head = operator_plane.bind_beadyard(
+                expected=projection_head, operator_key=str(key)
+            )
+            bound_frames = operator.load()[1]["frames"]
+            for frame_id in ("frame-1", "frame-2"):
+                prior = prior_frames[frame_id]["active"]
+                current = bound_frames[frame_id]["active"]
+                assert current["authority"] == {**prior["authority"], "beadyard_id": owner}
+                assert {k: v for k, v in current.items() if k != "authority"} == {
+                    k: v for k, v in prior.items() if k != "authority"
+                }
+
+            def identity_request_id(digest, *, inbox="hq_live_inbox_frame_a_1"):
+                reader = pymysql.connect(
+                    host="127.0.0.1", port=port, user="root",
+                    database="beadhive_hq_runtime", autocommit=True,
+                )
+                try:
+                    with reader.cursor() as cursor:
+                        cursor.execute(
+                            f"SELECT request_id FROM {inbox} WHERE payload_sha256=%s",
+                            (digest.removeprefix("sha256:"),),
+                        )
+                        return cursor.fetchone()[0]
+                finally:
+                    reader.close()
+
+            def receive_identity(request_id, *, principal="frame_a", kind="--hive"):
+                arguments = [sys.executable, str(worker), str(receiver_settings_path),
+                             principal, request_id]
+                if kind is not None:
+                    arguments.append(kind)
+                return subprocess.run(
+                    arguments,
+                    cwd=Path(__file__).parent.parent, capture_output=True, text=True,
+                    timeout=20,
+                )
+
+            new_hive_lease = HostLease(
+                host_id="host-1", label="fixture", epoch=1,
+                adopted_at=now_stamp(), expires_at=now_stamp(time.time() + 900),
+            )
+            new_hive_id, *_ = plane.propose_hive_lease(
+                "bi", new_hive_lease, expected="", operation="adopt",
+                signing_key=str(frame_key),
+            )
+            denied_old_beat = receive_identity(new_hive_id)
+            assert denied_old_beat.returncode != 0
+            assert "fresh conformant receipt" in denied_old_beat.stderr
+
+            bridge_id, *_ = plane.propose_hive_lease(
+                "bh", hive_lease, expected=hive_revision, operation="renew",
+                signing_key=str(frame_key),
+            )
+            bridge = receive_identity(bridge_id)
+            assert bridge.returncode == 0, bridge.stderr
+            hive_revision = bridge.stdout.strip()
+            assert plane.read_hive_lease_record("bh", holder_identity="host-1") == (
+                hive_revision, hive_lease,
+            )
+            repeated_bridge_id, *_ = plane.propose_hive_lease(
+                "bh", hive_lease, expected=hive_revision, operation="renew",
+                signing_key=str(frame_key),
+            )
+            repeated_bridge = receive_identity(repeated_bridge_id)
+            assert repeated_bridge.returncode != 0
+            assert "fresh conformant receipt" in repeated_bridge.stderr
+
+            bound_beat = lease.model_copy(
+                update={"seq": 4, "domain": "beadhive/frame-heartbeat/v2", "beadyard_id": owner,
+                        "renewTime": datetime.now(UTC).isoformat()}
+            )
+            bound_beat_digest = plane.heartbeat(bound_beat, signing_key=str(frame_key))
+            bound_beat_result = receive_identity(
+                identity_request_id(bound_beat_digest), kind=None
+            )
+            assert bound_beat_result.returncode == 0, bound_beat_result.stderr
+            from uuid import uuid4
+
+            foreign_beat = bound_beat.model_copy(
+                update={"seq": 5, "beadyard_id": str(uuid4())}
+            )
+            frame_runtime = plane._runtime_authority()
+            frame_head, _state, _crossref, _policies = frame_runtime.load_state()
+            frame_binding = frame_runtime.load_frame_binding(expected_head=frame_head)
+            foreign_id, _foreign_digest = frame_runtime.publish_inbox(
+                "heartbeat", sign_heartbeat(foreign_beat, signing_key=str(frame_key)),
+                binding=frame_binding, expected_head=frame_head, request_id=str(uuid4()),
+            )
+            denied_foreign_beat = receive_identity(foreign_id, kind=None)
+            assert denied_foreign_beat.returncode != 0
+            assert "differs from protected grant" in denied_foreign_beat.stderr
+            denied_old_registration = receive_identity(new_hive_id)
+            assert denied_old_registration.returncode != 0
+            assert "current signed registration" in denied_old_registration.stderr
+            bound_registration = plane.publish_registration_evidence(
+                bound_manifest, signing_key=str(frame_key)
+            )
+            registered_bound = receive_identity(
+                identity_request_id(bound_registration), kind="--registration"
+            )
+            assert registered_bound.returncode == 0, registered_bound.stderr
+            registration_reader = pymysql.connect(
+                host="127.0.0.1", port=port, user="root",
+                database="beadhive_hq_runtime", autocommit=True,
+            )
+            try:
+                with registration_reader.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT request_id,manifest_json FROM hq_live_registrations "
+                        "WHERE frame_id='frame-1' AND holder_identity='host-1' "
+                        "AND instance_ref='vm-1' AND epoch=1"
+                    )
+                    bound_row = cursor.fetchone()
+                    assert bound_row[0] == identity_request_id(bound_registration)
+                    assert json.loads(bound_row[1]) == bound_manifest.model_dump(
+                        mode="json", exclude_none=True
+                    )
+                    cursor.execute(
+                        "SELECT status FROM hq_live_results WHERE request_id=%s",
+                        (registration_id,),
+                    )
+                    assert cursor.fetchone() == ("accepted",)
+            finally:
+                registration_reader.close()
+            adopted_bound = receive_identity(new_hive_id)
+            assert adopted_bound.returncode == 0, adopted_bound.stderr
+            assert plane.read_hive_lease_record("bi", holder_identity="host-1")[1] == (
+                new_hive_lease
+            )
+            ordinary_renew_id, *_ = plane.propose_hive_lease(
+                "bh", hive_lease, expected=hive_revision, operation="renew",
+                signing_key=str(frame_key),
+            )
+            ordinary_renew = receive_identity(ordinary_renew_id)
+            assert ordinary_renew.returncode == 0, ordinary_renew.stderr
+            hive_revision = ordinary_renew.stdout.strip()
+
+            second_registration_bound = second_plane.publish_registration_evidence(
+                bound_manifest2, signing_key=str(second_key)
+            )
+            second_registered = receive_identity(
+                identity_request_id(second_registration_bound, inbox=second_inbox),
+                principal=second_principal, kind="--registration",
+            )
+            assert second_registered.returncode == 0, second_registered.stderr
+            second_lease = second_lease.model_copy(
+                update={"seq": 4, "domain": "beadhive/frame-heartbeat/v2", "beadyard_id": owner,
+                        "renewTime": datetime.now(UTC).isoformat()}
+            )
+            second_bound_digest = second_plane.heartbeat(
+                second_lease, signing_key=str(second_key)
+            )
+            second_bound_result = receive_identity(
+                identity_request_id(second_bound_digest, inbox=second_inbox),
+                principal=second_principal, kind=None,
+            )
+            assert second_bound_result.returncode == 0, second_bound_result.stderr
+            projection_head = operator_plane.accept_observation(
+                "frame-2", expected=projection_head, operator_key=str(key),
+                holder_identity="host-2",
+            )
+            manifest2 = bound_manifest2
+            manifest_identity.beadyard_id = owner
+            second_identity.beadyard_id = owner
+            assert second_plane.read_eligibility(second_identity)[2].verified
             assert operator_plane.lifecycle("cordon", "frame-1")["state"] == "active"
             cordoned = operator_plane.lifecycle(
                 "cordon",
@@ -1770,7 +2003,7 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
             ).allowed
             drained_lease = second_lease.model_copy(
                 update={
-                    "seq": 4,
+                    "seq": 5,
                     "state_seen": "drained",
                     "renewTime": datetime.now(UTC).isoformat(),
                 }
@@ -1881,7 +2114,7 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
                 )
             with pytest.raises(ControlPlaneError):
                 second_plane.heartbeat(
-                    drained_lease.model_copy(update={"seq": 5}),
+                    drained_lease.model_copy(update={"seq": 6}),
                     signing_key=str(second_key),
                 )
             # A fixture-only branch restoration below the trusted authority

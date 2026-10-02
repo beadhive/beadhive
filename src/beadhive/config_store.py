@@ -135,7 +135,8 @@ def load_fleet_raw_for_repair(api):
 
 
 def _validated_selection(api, host) -> tuple[bool, str]:
-    """Validate the HOST selector and fingerprint the exact SQL bootstrap."""
+    """Validate the HOST selector and pin the selected backend plus HQ identity."""
+    from .beadyard_identity import parse_id
     from .modules.config.contracts import HqSqlConfig
 
     error_type = getattr(api, "ConfigError", ValueError)
@@ -143,9 +144,17 @@ def _validated_selection(api, host) -> tuple[bool, str]:
         hq = host.get("hq", {})
         sql = HqSqlConfig.model_validate(hq.get("sql", {}))
         mode = hq.get("mode", "git")
+        selected = sql.enabled
+        beadyard_id = hq.get("beadyard_id")
+        if beadyard_id is not None:
+            beadyard_id = parse_id(beadyard_id)
         fingerprint = hashlib.sha256(
             json.dumps(
-                {"mode": mode, "sql": sql.model_dump(mode="json")},
+                {
+                    "mode": mode,
+                    "beadyard_id": beadyard_id,
+                    **({"sql": sql.model_dump(mode="json")} if selected else {}),
+                },
                 sort_keys=True,
                 separators=(",", ":"),
             ).encode()
@@ -154,7 +163,6 @@ def _validated_selection(api, host) -> tuple[bool, str]:
         # Minimal facade collaborators also call this port; never leak Pydantic's
         # rejected values, even when they do not expose the public ConfigError.
         raise error_type("invalid SQL HOST bootstrap") from None
-    selected = sql.enabled
     if mode not in ("git", "dolt-server") or (not selected and mode != "git"):
         raise error_type("unsupported HQ configuration mode")
     return selected, fingerprint
@@ -170,7 +178,7 @@ def sql_selected(api, host=None) -> bool:
     selected, fingerprint = _validated_selection(api, host)
     active = _fleet_transaction.get()
     if active is not None and (
-        selected != active.sql_selected or (selected and fingerprint != active.binding_fingerprint)
+        selected != active.sql_selected or fingerprint != active.binding_fingerprint
     ):
         raise api.ConfigError("selected HOST binding changed during fleet transaction")
     return selected

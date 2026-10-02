@@ -24,6 +24,7 @@ from .beadyard_identity import (
 from .hq_document_validation import (
     DocumentValidationError,
     validate_documents,
+    validate_repair_carrier,
 )
 from .hq_sql_deadline import flock_until
 from .hq_sql_transport import FnoxBroker, SqlTransportError, connect
@@ -308,6 +309,11 @@ class SqlFleetConfigRevisionStore:
                 validate_documents(documents)
             except DocumentValidationError as exc:
                 raise SqlConfigError(str(exc)) from None
+        else:
+            try:
+                validate_repair_carrier(documents)
+            except DocumentValidationError as exc:
+                raise SqlConfigError(str(exc)) from None
         if len(documents) != count or _digest(documents) != digest:
             raise SqlConfigError("HQ config publication digest mismatch")
         cursor.execute(
@@ -445,7 +451,7 @@ class SqlFleetConfigRevisionStore:
                 self._identity(cursor, "publisher")
                 cursor.execute("START TRANSACTION")
                 head = self._head(cursor)
-                backend, generation, sequence, documents = self._committed(
+                backend, generation, sequence, documents, _version = self._committed(
                     cursor, head, validate_semantics=False
                 )
                 self._check_floor(cursor, backend, generation, sequence, head, deadline=deadline)

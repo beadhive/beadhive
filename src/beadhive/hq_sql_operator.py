@@ -189,9 +189,25 @@ class SqlRuntimeOperator:
                             or lease.key_id != signer
                             or lease.audience != authority["audience"]
                             or lease.config_revision != authority["config_revision"]
-                            or lease.beadyard_id != authority.get("beadyard_id")
                         ):
                             raise SqlOperatorError("protected accepted receipt identity invalid")
+                        if lease.beadyard_id != authority.get("beadyard_id"):
+                            # Earlier signed v1 beats remain in protected history
+                            # after binding. They never count toward a new bound
+                            # admission streak, and the latest floor must already
+                            # be a verified beat for the current HQ identity.
+                            if not (
+                                authority.get("beadyard_id") is not None
+                                and lease.beadyard_id is None
+                                and receipts
+                                and receipts[0][0] == floor[0]
+                                and receipts[0][3].beadyard_id == authority["beadyard_id"]
+                                and sequence < floor[0]
+                            ):
+                                raise SqlOperatorError(
+                                    "protected accepted receipt identity invalid"
+                                )
+                            continue
                         receipts.append((sequence, digest, first_seen, lease))
                     if not receipts or (receipts[0][0], receipts[0][1], receipts[0][2]) != floor:
                         raise SqlOperatorError("protected accepted receipt floor mismatch")

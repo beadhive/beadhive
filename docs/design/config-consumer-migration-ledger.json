@@ -16,7 +16,7 @@
     "successor_contracts": "beadhive.modules.config.contracts"
   },
   "current": {
-    "config_patch_point_count": 297,
+    "config_patch_point_count": 302,
     "config_patch_points": [
       {
         "facade_target": "beadhive.config.save_fleet",
@@ -115,6 +115,20 @@
         "line": 914,
         "path": "tests/test_backup.py",
         "target": "beadhive.config.load"
+      },
+      {
+        "facade_target": "beadhive.config.home",
+        "kind": "direct-facade",
+        "line": 175,
+        "path": "tests/test_beadyard_identity.py",
+        "target": "beadhive.config.home"
+      },
+      {
+        "facade_target": "beadhive.config.load_host",
+        "kind": "direct-facade",
+        "line": 241,
+        "path": "tests/test_beadyard_identity.py",
+        "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.load",
@@ -574,112 +588,126 @@
       {
         "facade_target": "beadhive.config.hq_dir",
         "kind": "direct-facade",
-        "line": 372,
+        "line": 406,
         "path": "tests/test_fleet_config_consumers.py",
         "target": "beadhive.config.hq_dir"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 419,
+        "line": 453,
         "path": "tests/test_fleet_config_consumers.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 423,
+        "line": 457,
         "path": "tests/test_fleet_config_consumers.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 449,
+        "line": 483,
         "path": "tests/test_fleet_config_consumers.py",
         "target": "beadhive.config.load_host"
       },
       {
+        "facade_target": "beadhive.config.hq_dir",
+        "kind": "direct-facade",
+        "line": 92,
+        "path": "tests/test_frame_eligibility.py",
+        "target": "beadhive.config.hq_dir"
+      },
+      {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 145,
+        "line": 96,
         "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 147,
+        "line": 178,
         "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 149,
+        "line": 180,
         "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 164,
+        "line": 182,
         "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 181,
+        "line": 197,
+        "path": "tests/test_frame_eligibility.py",
+        "target": "beadhive.config.load_host"
+      },
+      {
+        "facade_target": "beadhive.config.load_host",
+        "kind": "direct-facade",
+        "line": 214,
         "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.hq_dir",
         "kind": "direct-facade",
-        "line": 191,
+        "line": 224,
         "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.hq_dir"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 192,
+        "line": 225,
         "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 195,
+        "line": 228,
         "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 288,
+        "line": 321,
         "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 289,
+        "line": 322,
         "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.hq_dir",
         "kind": "direct-facade",
-        "line": 290,
+        "line": 323,
         "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.hq_dir"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 384,
+        "line": 417,
         "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.load_host"
       },
@@ -938,30 +966,37 @@
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 1328,
+        "line": 2107,
         "path": "tests/test_hq_authority_backend.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 1329,
+        "line": 2108,
         "path": "tests/test_hq_authority_backend.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 1581,
+        "line": 2360,
         "path": "tests/test_hq_authority_backend.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 1590,
+        "line": 2369,
         "path": "tests/test_hq_authority_backend.py",
         "target": "beadhive.config.load_host"
+      },
+      {
+        "facade_target": "beadhive.config.home",
+        "kind": "direct-facade",
+        "line": 621,
+        "path": "tests/test_hq_sql_config_int.py",
+        "target": "beadhive.config.home"
       },
       {
         "facade_target": "beadhive.config.load",
@@ -2098,7 +2133,7 @@
         "target": "beadhive.config.load"
       }
     ],
-    "production_config_importer_count": 84,
+    "production_config_importer_count": 85,
     "production_config_importers": [
       "src/beadhive/activity_publisher.py",
       "src/beadhive/agent_run_summary_reader.py",
@@ -2149,6 +2184,7 @@
       "src/beadhive/host_retire.py",
       "src/beadhive/hq.py",
       "src/beadhive/hq_authority_cli.py",
+      "src/beadhive/hq_beadyard.py",
       "src/beadhive/hq_control_plane.py",
       "src/beadhive/hq_restore.py",
       "src/beadhive/hub.py",
@@ -2441,6 +2477,11 @@
       },
       {
         "owner": "bh-18hud.5 compatibility migration ledger",
+        "path": "src/beadhive/hq_beadyard.py",
+        "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
+      },
+      {
+        "owner": "bh-18hud.5 compatibility migration ledger",
         "path": "src/beadhive/hq_control_plane.py",
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       },
@@ -2615,7 +2656,7 @@
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       }
     ],
-    "test_config_importer_count": 152,
+    "test_config_importer_count": 155,
     "test_config_importers": [
       "tests/contracts/test_config_contract_compatibility.py",
       "tests/contracts/test_config_resolution_compatibility.py",
@@ -2625,6 +2666,7 @@
       "tests/test_alerts.py",
       "tests/test_always_run.py",
       "tests/test_backup.py",
+      "tests/test_beadyard_identity.py",
       "tests/test_bh.py",
       "tests/test_check_verify_env.py",
       "tests/test_claim_authority.py",
@@ -2715,6 +2757,8 @@
       "tests/test_hq_local_bootstrap_int.py",
       "tests/test_hq_push.py",
       "tests/test_hq_remote.py",
+      "tests/test_hq_sql_config_int.py",
+      "tests/test_hq_sql_runtime_int.py",
       "tests/test_hub.py",
       "tests/test_identity.py",
       "tests/test_localloop.py",
