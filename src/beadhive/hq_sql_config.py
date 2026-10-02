@@ -15,9 +15,17 @@ from pathlib import Path
 
 from ruamel.yaml import YAML
 
+from .hq_document_validation import (
+    DocumentValidationError,
+    validate_documents,
+)
 from .hq_sql_deadline import flock_until
 from .hq_sql_transport import FnoxBroker, SqlTransportError, connect
-from .modules.config.domain.ports import FleetConfigDocument, FleetConfigSnapshot
+from .modules.config.domain.ports import (
+    FleetConfigDocument,
+    FleetConfigSnapshot,
+    RawFleetConfigRevision,
+)
 
 TABLES = ("hq_config_meta", "hq_config_documents", "hq_config_publications")
 MAX_BYTES = 4 * 1024 * 1024
@@ -81,7 +89,8 @@ def _kind(path):
     raise SqlConfigError("unsupported configuration document path")
 
 
-def _validate(documents):
+def _validate_carrier(documents):
+    """Mandatory SQL carrier, partition and secret checks, including for repair."""
     if not isinstance(documents, tuple) or not documents:
         raise SqlConfigError("ordered configuration documents required")
     seen = set()
@@ -154,6 +163,14 @@ def _validate(documents):
                 raise SqlConfigError("credential-bearing URI cannot enter committed config")
 
         reject_secret_values(source)
+
+
+def _validate(documents):
+    _validate_carrier(documents)
+    try:
+        validate_documents(documents)
+    except DocumentValidationError as exc:
+        raise SqlConfigError(str(exc)) from None
 
 
 class _BoundedCursor:
@@ -234,7 +251,7 @@ class SqlFleetConfigRevisionStore:
             raise SqlConfigError("HQ SQL principal, schema, branch or version mismatch")
 
     @staticmethod
-    def _committed(cursor, head):
+    def _committed(cursor, head, *, validate_semantics=True):
         # Dolt accepts parameterized revision expressions with AS OF. All three
         # reads use the *captured* immutable hash, never a moving HEAD alias.
         cursor.execute(
@@ -270,7 +287,12 @@ class SqlFleetConfigRevisionStore:
             except UnicodeError:
                 raise SqlConfigError("HQ config document encoding invalid") from None
         documents = tuple(documents)
-        _validate(documents)
+        _validate_carrier(documents)
+        if validate_semantics:
+            try:
+                validate_documents(documents)
+            except DocumentValidationError as exc:
+                raise SqlConfigError(str(exc)) from None
         if len(documents) != count or _digest(documents) != digest:
             raise SqlConfigError("HQ config publication digest mismatch")
         cursor.execute(
@@ -393,6 +415,36 @@ class SqlFleetConfigRevisionStore:
         finally:
             connection.close()
 
+    def inspect_raw_for_repair(self):
+        """Return authenticated raw bytes and original HEAD to a publisher only.
+
+        Integrity, publication witness and HOST floor remain mandatory. Semantic
+        validation is deferred solely for this explicit repair view; it cannot be
+        used for settings, runtime authority, or admission.
+        """
+        connection, deadline = self._open("publisher")
+        try:
+            binding = self.settings["publisher"]
+            timeout = min(binding["read_timeout"], binding["write_timeout"])
+            with _bounded_cursor(connection, deadline, timeout) as cursor:
+                self._identity(cursor, "publisher")
+                cursor.execute("START TRANSACTION")
+                head = self._head(cursor)
+                backend, generation, sequence, documents = self._committed(
+                    cursor, head, validate_semantics=False
+                )
+                self._check_floor(cursor, backend, generation, sequence, head, deadline=deadline)
+            connection.rollback()
+            return RawFleetConfigRevision(head, documents)
+        except SqlConfigError:
+            raise
+        except Exception:
+            raise SqlConfigError(
+                "committed HQ configuration repair inspection unavailable"
+            ) from None
+        finally:
+            connection.close()
+
     def recover_publication(self, publication_id, *, expected_revision):
         """Read committed current history for an uncertain original publication.
 
@@ -442,6 +494,19 @@ class SqlFleetConfigRevisionStore:
             connection.close()
 
     def publish_snapshot(self, documents, *, expected_revision):
+        return self._publish_snapshot(documents, expected_revision=expected_revision)
+
+    def repair_snapshot(self, documents, *, expected_revision):
+        """Replace a semantically invalid prior HEAD by its exact original CAS.
+
+        The candidate is fully validated before any DML. Only the privileged
+        publisher may inspect the invalid prior carrier; normal reads still deny.
+        """
+        return self._publish_snapshot(
+            documents, expected_revision=expected_revision, allow_invalid_previous=True
+        )
+
+    def _publish_snapshot(self, documents, *, expected_revision, allow_invalid_previous=False):
         _validate(documents)
         if not isinstance(expected_revision, str) or not expected_revision:
             raise SqlConfigError("original expected configuration revision required")
@@ -471,7 +536,10 @@ class SqlFleetConfigRevisionStore:
                 visible = {row[0] for row in cursor.fetchall()}
                 if visible != set(TABLES):
                     raise SqlConfigError("HQ config schema table allowlist changed")
-                backend, generation, sequence, _ = self._committed(cursor, head)
+                backend, generation, sequence, _ = self._committed(
+                    cursor, head, validate_semantics=not allow_invalid_previous
+                )
+                self._check_floor(cursor, backend, generation, sequence, head, deadline=deadline)
                 cursor.execute(
                     "UPDATE hq_config_meta SET publication_sequence=%s,publication_id=%s,"
                     "documents_sha256=%s,document_count=%s "

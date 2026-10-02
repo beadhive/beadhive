@@ -1,7 +1,7 @@
 """ws config get/set/unset — dotted-path mutation over the round-trip CommentedMap.
 
 Covers coercion (bool/int/str + --json), validation (otel.protocol enum, *.enabled bool,
-unknown-section warn), auto-vivification, and — the load-bearing acceptance — round-trip
+unknown-section refusal), auto-vivification, and — the load-bearing acceptance — round-trip
 preservation of comments + flow-style managed_repos when set/unset rewrite config.yaml.
 """
 
@@ -73,11 +73,14 @@ def test_enabled_must_be_bool(cfg_path):
     assert config.get_value("otel.enabled")["value"] is True
 
 
-def test_unknown_top_level_section_warns_not_rejects(cfg_path):
+def test_unknown_top_level_section_is_not_published(cfg_path):
+    before = cfg_path.read_bytes()
     res = config.set_value("mycustom.flag", "1")
-    assert res["ok"] is True  # warn, not reject
+    assert res["ok"] is False
     assert any(p["level"] == "warning" for p in res["problems"])
-    assert config.get_value("mycustom.flag")["value"] == 1
+    assert any(p["level"] == "error" for p in res["problems"])
+    assert cfg_path.read_bytes() == before
+    assert config.get_value("mycustom.flag")["ok"] is False
 
 
 # ---- did-you-mean (bh-5cgm.4) ------------------------------------------------
@@ -103,12 +106,13 @@ def test_get_hopelessly_wrong_key_gets_no_suggestion(cfg_path):
 
 
 def test_set_typo_section_suggests_correct_key(cfg_path):
-    """A typo'd top-level section on `config set` also gets a did-you-mean, alongside the
-    existing "unknown config section" warning (still a warn, not a reject)."""
+    """A typo gets a did-you-mean diagnostic but cannot be persisted."""
+    before = cfg_path.read_bytes()
     res = config.set_value("otle.enabled", "true")
-    assert res["ok"] is True
+    assert res["ok"] is False
     warnings = [p["message"] for p in res["problems"] if p["level"] == "warning"]
     assert any("unknown config section" in m and "otel.enabled" in m for m in warnings)
+    assert cfg_path.read_bytes() == before
 
 
 def test_cli_get_typo_key_reports_suggestion(cfg_path):

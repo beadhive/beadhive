@@ -90,7 +90,7 @@ def validate(api, parts: list[str], value) -> list[dict]:
             allowed = "|".join(str(choice) for choice in choices)
             problems.append(problem("error", f"{dotted} must be one of {allowed}, got {value!r}"))
     if parts[0] not in api.KNOWN_SECTIONS:
-        message = f"unknown config section '{parts[0]}' — writing it anyway"
+        message = f"unknown config section '{parts[0]}' — publication requires a declared schema"
         suggestion = suggest_key(dotted)
         if suggestion:
             message += f" (did you mean '{suggestion}'?)"
@@ -192,7 +192,11 @@ def _set_in(api, dotted: str, raw: str, as_json: bool, cfg, *, persist: bool, sc
             problems.append(api._problem("error", str(exc)))
             return {"ok": False, "problems": problems, "old": None, "new": None}
     if persist:
-        cfg = api.load_fleet() if scope == api.SCOPE_FLEET else api.load_host()
+        cfg = (
+            api.load_fleet_raw_for_repair()
+            if scope == api.SCOPE_FLEET
+            else api.load_host_raw_for_repair()
+        )
         try:
             api._assert_mutable_schema_version(cfg, scope)
         except api.ConfigError as exc:
@@ -215,7 +219,11 @@ def _set_in(api, dotted: str, raw: str, as_json: bool, cfg, *, persist: bool, sc
         return {"ok": False, "problems": problems, "old": old, "new": None}
     node[leaf] = value
     if persist:
-        api.save_fleet(cfg) if scope == api.SCOPE_FLEET else api.save(cfg)
+        try:
+            api.save_fleet(cfg) if scope == api.SCOPE_FLEET else api.save(cfg)
+        except api.ConfigError as exc:
+            problems.append(api._problem("error", str(exc)))
+            return {"ok": False, "problems": problems, "old": old, "new": None}
     return {"ok": True, "problems": problems, "old": old, "new": value}
 
 
@@ -245,7 +253,7 @@ def set_hive_value(api, hive_id: str, dotted: str, raw: str, as_json: bool = Fal
     from . import registry
 
     with api._write_transaction(api.SCOPE_FLEET):
-        cfg = api.load_fleet()
+        cfg = api.load_fleet_raw_for_repair()
         try:
             api._assert_mutable_schema_version(cfg, api.SCOPE_FLEET)
         except api.ConfigError as exc:
@@ -274,14 +282,26 @@ def set_hive_value(api, hive_id: str, dotted: str, raw: str, as_json: bool = Fal
             scope=api.SCOPE_FLEET,
         )
         if result["ok"]:
-            api.save_fleet(cfg)
+            try:
+                api.save_fleet(cfg)
+            except api.ConfigError as exc:
+                return {
+                    "ok": False,
+                    "problems": [api._problem("error", str(exc))],
+                    "old": result["old"],
+                    "new": None,
+                }
         return result
 
 
 def _unset_in(api, dotted: str, cfg, *, persist: bool, scope: str) -> dict:
     parts = api._split_key(dotted)
     if persist:
-        cfg = api.load_fleet() if scope == api.SCOPE_FLEET else api.load_host()
+        cfg = (
+            api.load_fleet_raw_for_repair()
+            if scope == api.SCOPE_FLEET
+            else api.load_host_raw_for_repair()
+        )
         try:
             api._assert_mutable_schema_version(cfg, scope)
         except api.ConfigError as exc:
@@ -319,7 +339,15 @@ def _unset_in(api, dotted: str, cfg, *, persist: bool, scope: str) -> dict:
             break
         del chain[ancestor - 1][parts[ancestor - 1]]
     if persist:
-        api.save_fleet(cfg) if scope == api.SCOPE_FLEET else api.save(cfg)
+        try:
+            api.save_fleet(cfg) if scope == api.SCOPE_FLEET else api.save(cfg)
+        except api.ConfigError as exc:
+            return {
+                "ok": False,
+                "problems": [api._problem("error", str(exc))],
+                "old": old,
+                "new": None,
+            }
     return {"ok": True, "problems": [], "old": old, "new": None}
 
 

@@ -68,6 +68,25 @@ def test_remote_only_hives_round_trip_as_host_local_placement_intent(tmp_path):
     assert hosts.load(hq_dir, manifest.host_id).remote_only_hives == ["hl", "orca"]
 
 
+def test_mutated_roster_candidate_cannot_replace_prior_file(tmp_path):
+    manifest = _manifest()
+    path = hosts.save(tmp_path, manifest)
+    prior = path.read_bytes()
+    manifest.role = "invalid-role"
+    with pytest.raises(hosts.ManifestError, match="role"):
+        hosts.save(tmp_path, manifest)
+    assert path.read_bytes() == prior
+
+
+def test_roster_read_rejects_mismatched_path_identity(tmp_path):
+    manifest = _manifest()
+    path = hosts.save(tmp_path, manifest)
+    other = hosts.manifest_path(tmp_path, "other-host")
+    other.write_bytes(path.read_bytes())
+    with pytest.raises(hosts.ManifestError, match="path identity mismatch"):
+        hosts.load(tmp_path, "other-host")
+
+
 # ---- role: closed set, one round-trip per value --------------------------------
 
 

@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import threading
 from datetime import UTC, datetime
+from io import StringIO
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -91,10 +92,23 @@ def manifest_path(hq_dir: Path, provider: str, org: str, repo: str) -> Path:
 def save(hq_dir: Path, record: HiveSchemaRecord) -> Path:
     """Write ``record`` to its manifest path, creating parent directories as needed. `record` is
     already-validated (a `HiveSchemaRecord` instance cannot exist in an invalid shape)."""
+    from .hq_document_validation import DocumentValidationError, validate_document
+
     p = manifest_path(hq_dir, record.provider, record.org, record.repo)
+    with _yaml_lock:
+        stream = StringIO()
+        try:
+            _yaml.dump(record.model_dump(mode="json", warnings=False), stream)
+        except Exception:
+            raise ManifestError("hive schema candidate serialization invalid") from None
+    try:
+        validate_document(
+            f"hives/{record.provider}/{record.org}/{record.repo}.yaml", stream.getvalue()
+        )
+    except DocumentValidationError as exc:
+        raise ManifestError(str(exc)) from None
     p.parent.mkdir(parents=True, exist_ok=True)
-    with p.open("w") as f, _yaml_lock:
-        _yaml.dump(record.model_dump(mode="json"), f)
+    p.write_text(stream.getvalue())
     return p
 
 
@@ -114,7 +128,10 @@ def load(hq_dir: Path, provider: str, org: str, repo: str) -> HiveSchemaRecord:
     with _yaml_lock:
         raw = _yaml.load(text) or {}
     try:
-        return HiveSchemaRecord.model_validate(raw)
+        record = HiveSchemaRecord.model_validate(raw)
+        if (record.provider, record.org, record.repo) != (provider, org, repo):
+            raise ManifestError("hive schema record path identity mismatch")
+        return record
     except ValidationError as exc:
         lines = [f"malformed hive schema record at {p}:"]
         for err in exc.errors():

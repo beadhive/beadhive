@@ -9,10 +9,11 @@ import pytest
 
 from beadhive.hive_schema import HiveSchemaRecord as LegacyHiveSchemaRecord
 from beadhive.hive_schema_contracts import HiveSchemaRecord
-from beadhive.modules.config.application.document_validation import (
+from beadhive.hq_document_validation import (
     DocumentValidationError,
     validate_document,
     validate_documents,
+    validate_repair_carrier,
     validate_settings_mapping,
 )
 from beadhive.modules.config.contracts import BeadhiveConfig
@@ -44,6 +45,15 @@ def test_legacy_missing_version_checks_full_shape_without_stamping():
         validate_settings_mapping({"work": {"max_commits": "3"}}, scope="fleet")
 
 
+def test_legacy_beads_section_validates_live_engine_and_keeps_opaque_extensions():
+    for beads in (None, {}, {"engine": None}, {"engine": ""}, {"engine": "bd"}):
+        validate_settings_mapping({"beads": beads}, scope="host")
+    validate_settings_mapping({"beads": {"engine": "bd", "extension": {"future": 1}}}, scope="host")
+    for beads in (3, "bd", [], {"engine": 3}, {"engine": "br"}):
+        with pytest.raises(DocumentValidationError):
+            validate_settings_mapping({"beads": beads}, scope="host")
+
+
 def test_validation_does_not_consult_ambient_settings(monkeypatch):
     monkeypatch.setenv("BH_DOLT__BACKEND", "invalid-ambient-backend")
     validate_settings_mapping({}, scope="fleet")
@@ -58,6 +68,22 @@ def test_ordered_snapshot_requires_exact_unique_documents():
         validate_documents((fleet, fleet))
     with pytest.raises(DocumentValidationError, match="required"):
         validate_documents((workspace,))
+
+
+def test_raw_repair_view_retains_invalid_schema_but_rejects_unsafe_carriers():
+    invalid_version = (FleetConfigDocument("fleet.yaml", "schema_version: true\n"),)
+    validate_repair_carrier(invalid_version)
+    with pytest.raises(DocumentValidationError, match="schema_version"):
+        validate_documents(invalid_version)
+    for unsafe in (
+        FleetConfigDocument("fleet.yaml", "password: dummy-canary\n"),
+        FleetConfigDocument("fleet.yaml", "url: https://user:dummy-canary@example.invalid\n"),
+        FleetConfigDocument("../escape.yaml", "safe: true\n"),
+        FleetConfigDocument("fleet.yaml", "invalid: [\n"),
+    ):
+        with pytest.raises(DocumentValidationError) as caught:
+            validate_repair_carrier((unsafe,))
+        assert "dummy-canary" not in str(caught.value)
 
 
 def test_raw_schema_blocks_coercion_but_preserves_canonical_enum_strings_and_defaults():
@@ -88,8 +114,19 @@ def test_raw_schema_blocks_coercion_but_preserves_canonical_enum_strings_and_def
 def test_generated_schema_is_actual_canonical_contract():
     schema = BeadhiveConfig.model_json_schema()
     assert schema["properties"]["schema_version"]["default"] == 1
-    assert schema["$defs"]["RoutingTierConfig"]["properties"]["floor"]["type"] == "string"
-    assert "string" in str(schema["$defs"]["ManagedRepoEntry"]["properties"]["kind"])
+    # Published v1 keeps its historical output schema. The private HQ raw
+    # validator derives its accepted input exceptions from these model owners.
+    assert schema["$defs"]["RoutingTierConfig"]["properties"]["floor"]["$ref"] == (
+        "#/$defs/ComplexityTier"
+    )
+    assert schema["$defs"]["ManagedRepoEntry"]["properties"]["kind"]["anyOf"][0]["enum"] == [
+        "org-native",
+        "personal",
+        "prototype",
+        "fork",
+        "external",
+        "hq",
+    ]
 
 
 def test_failure_never_renders_rejected_values_or_dynamic_keys():
@@ -122,6 +159,8 @@ def test_manifest_contracts_validate_identity_and_observed_beads_count():
         "role: executor\nidentity:\n  kind: none\n"
     )
     validate_document("hosts/frame-1.yaml", host)
+    with pytest.raises(DocumentValidationError, match="schema_type"):
+        validate_document("hosts/frame-1.yaml", host + "remote_only_hives: not-a-list\n")
     with pytest.raises(DocumentValidationError, match="path_identity_mismatch"):
         validate_document("hosts/frame-2.yaml", host)
     hive = (
@@ -129,6 +168,10 @@ def test_manifest_contracts_validate_identity_and_observed_beads_count():
         'observed_at: "2026-08-01T00:00:00Z"\n'
     )
     validate_document("hives/github/acme/app.yaml", hive)
+    with pytest.raises(DocumentValidationError, match="schema_type"):
+        validate_document(
+            "hives/github/acme/app.yaml", hive.replace("schema_version: 59", "schema_version: '59'")
+        )
     with pytest.raises(DocumentValidationError, match="path_identity_mismatch"):
         validate_document("hives/github/acme/other.yaml", hive)
 

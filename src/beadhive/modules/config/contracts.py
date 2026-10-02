@@ -67,9 +67,9 @@ SUBSET_PLACEHOLDER = "{tests}"
 # that needs a transform) — see the module docstring.
 SCHEMA_VERSION = 1
 
-# ``beads`` predates the typed model and remains a supported compatibility section until the
-# backend abstraction owns a typed contract. Keep such names explicit beside the canonical model
-# rather than hiding them in the legacy facade.
+# ``beads`` predates the typed model. The canonical compatibility model below
+# validates its live engine selector while preserving opaque historical sibling
+# keys; the inventory name remains explicit for compatibility callers.
 CONFIG_SECTION_COMPATIBILITY_ALIASES = frozenset({"beads"})
 
 # Canonical worktree-safety taxonomy.  The scanner re-exports these names for compatibility,
@@ -419,7 +419,7 @@ class RoutingTierConfig(_Section):
             )
         return value
 
-    @field_validator("floor", "ceiling", mode="before", json_schema_input_type=str)
+    @field_validator("floor", "ceiling", mode="before")
     @classmethod
     def _canonical_complexity_tier(cls, value):
         if isinstance(value, ComplexityTier):
@@ -1740,9 +1740,7 @@ class ManagedRepoEntry(_Section):
         "(upstream is a read rail; nothing yet consumes it as a push/PR target).",
     )
 
-    @field_validator(
-        "kind", "furnish", "contribution", mode="before", json_schema_input_type=str | None
-    )
+    @field_validator("kind", "furnish", "contribution", mode="before")
     @classmethod
     def _empty_string_is_unset(cls, v):
         """`kind: ""` means "unset" to every reader — they all do
@@ -1780,6 +1778,22 @@ class ManagedRepoEntry(_Section):
 # ---- top level ------------------------------------------------------------------
 
 
+class LegacyBeadsConfig(BaseModel):
+    """Legacy top-level Beads section with one live selector and opaque extensions."""
+
+    model_config = ConfigDict(extra="allow")
+
+    engine: Literal["bd"] | None = Field(
+        None,
+        description="Installed Beads engine; absent, null, or empty selects bd.",
+    )
+
+    @field_validator("engine", mode="before")
+    @classmethod
+    def _empty_engine_is_default(cls, value):
+        return None if value == "" else value
+
+
 class BeadhiveConfig(BaseSettings):
     """The bh config schema: ~/.beadhive/config.yaml, validated + discoverable.
 
@@ -1797,6 +1811,9 @@ class BeadhiveConfig(BaseSettings):
 
     schema_version: int = Field(
         SCHEMA_VERSION, description="Config schema version this file was written for."
+    )
+    beads: LegacyBeadsConfig | None = Field(
+        None, description="Legacy Beads settings with a validated engine selector."
     )
     delimiter: str = Field(":", description="Label delimiter.")
     providers: list[str] = Field(

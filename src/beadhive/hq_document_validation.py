@@ -18,11 +18,23 @@ from jsonschema import Draft202012Validator
 from pydantic import ValidationError
 from ruamel.yaml import YAML
 
-from ....hive_schema_contracts import HiveSchemaRecord
-from ....host_manifest_contracts import HostManifest
-from ..contracts import SCHEMA_VERSION, BeadhiveConfig, iter_schema_fields
-from ..domain.ports import FleetConfigDocument
-from .resolution import ConfigResolutionError, ResolutionInputs, resolve_config
+from .complexity import tier_names
+from .hive_schema_contracts import HiveSchemaRecord
+from .host_manifest_contracts import DEPRECATED_ROLE_ALIASES, HostManifest
+from .modules.config.application.resolution import (
+    ConfigResolutionError,
+    ResolutionInputs,
+    resolve_config,
+)
+from .modules.config.contracts import (
+    SCHEMA_VERSION,
+    BeadhiveConfig,
+    LegacyBeadsConfig,
+    ManagedRepoEntry,
+    RoutingTierConfig,
+    iter_schema_fields,
+)
+from .modules.config.domain.ports import FleetConfigDocument
 
 _HOST_PATH = re.compile(r"hosts/([A-Za-z0-9_-]+)\.yaml\Z")
 _HIVE_PATH = re.compile(r"hives/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)\.yaml\Z")
@@ -42,8 +54,52 @@ class DocumentValidationError(ValueError):
 
 @lru_cache(maxsize=1)
 def _settings_validator() -> Draft202012Validator:
-    # The schema is private to this module; no caller receives a mutable copy.
-    return Draft202012Validator(BeadhiveConfig.model_json_schema())
+    # The official v1 JSON Schema is a published compatibility artifact. Its
+    # historical before-validators advertised the *output* enum shape, while
+    # persisted YAML supplies canonical tier names and legacy empty literals.
+    # Derive only those input exceptions from the canonical validators for this
+    # private raw-input gate; leave the public wire schema unchanged.
+    schema = BeadhiveConfig.model_json_schema()
+    routing = schema["$defs"]["RoutingTierConfig"]["properties"]
+    tier_fields = RoutingTierConfig.__pydantic_decorators__.field_validators[
+        "_canonical_complexity_tier"
+    ].info.fields
+    for field in tier_fields:
+        routing[field] = {"type": "string", "enum": list(tier_names())}
+    repo = schema["$defs"]["ManagedRepoEntry"]["properties"]
+    empty_fields = ManagedRepoEntry.__pydantic_decorators__.field_validators[
+        "_empty_string_is_unset"
+    ].info.fields
+    for field in empty_fields:
+        repo[field]["anyOf"].append({"const": ""})
+    beads = schema["$defs"]["LegacyBeadsConfig"]["properties"]
+    legacy_engine_fields = LegacyBeadsConfig.__pydantic_decorators__.field_validators[
+        "_empty_engine_is_default"
+    ].info.fields
+    for field in legacy_engine_fields:
+        beads[field]["anyOf"].append({"const": ""})
+    return Draft202012Validator(schema)
+
+
+@lru_cache(maxsize=1)
+def _host_validator() -> Draft202012Validator:
+    schema = HostManifest.model_json_schema()
+    # The canonical before-validator still accepts these explicitly deprecated
+    # spellings so existing enrolled hosts remain readable until re-recorded.
+    schema["properties"]["role"]["enum"].extend(DEPRECATED_ROLE_ALIASES)
+    return Draft202012Validator(schema)
+
+
+@lru_cache(maxsize=1)
+def _hive_validator() -> Draft202012Validator:
+    return Draft202012Validator(HiveSchemaRecord.model_json_schema())
+
+
+def _check_raw_schema(kind: str, validator: Draft202012Validator, raw: Mapping) -> None:
+    for violation in validator.iter_errors(raw):
+        raise DocumentValidationError(
+            kind, _safe_path(violation.absolute_path), f"schema_{violation.validator}"
+        ) from None
 
 
 def _type_failure(kind: str, exc: ValidationError) -> DocumentValidationError:
@@ -93,9 +149,7 @@ def validate_settings_mapping(document: Mapping[str, Any], *, scope: str) -> Non
         version = document["schema_version"]
         if type(version) is not int or version != SCHEMA_VERSION:
             raise DocumentValidationError(scope, "schema_version", "unsupported_schema_version")
-    for violation in _settings_validator().iter_errors(document):
-        path = _safe_path(violation.absolute_path)
-        raise DocumentValidationError(scope, path, f"schema_{violation.validator}") from None
+    _check_raw_schema(scope, _settings_validator(), document)
     try:
         if scope == "fleet":
             resolve_config(ResolutionInputs(fleet=document))
@@ -169,6 +223,7 @@ def validate_document(path: str, content: str) -> None:
         # Existing hosts.load and fleet_roster.load read an unstamped legacy
         # manifest as active, including older pre-frame records.
         raw.setdefault("state", "active")
+        _check_raw_schema("host", _host_validator(), raw)
         try:
             manifest = HostManifest.model_validate(raw)
         except ValidationError as exc:
@@ -178,6 +233,7 @@ def validate_document(path: str, content: str) -> None:
         return
     if match := _HIVE_PATH.fullmatch(path):
         raw = _parse_yaml(content, "hive")
+        _check_raw_schema("hive", _hive_validator(), raw)
         try:
             record = HiveSchemaRecord.model_validate(raw)
         except ValidationError as exc:
@@ -189,7 +245,7 @@ def validate_document(path: str, content: str) -> None:
         _validate_workspace(content)
         return
     if path == "allowed_signers":
-        from ....signer_policy import SignerPolicyError, validate_allowed_signers
+        from .signer_policy import SignerPolicyError, validate_allowed_signers
 
         try:
             validate_allowed_signers(content)
@@ -218,9 +274,65 @@ def validate_documents(documents: tuple[FleetConfigDocument, ...]) -> None:
         raise DocumentValidationError("snapshot", "fleet.yaml", "required")
 
 
+def validate_repair_carrier(documents: tuple[FleetConfigDocument, ...]) -> None:
+    """Check a privileged opaque repair view without granting settings validity.
+
+    A malformed declared schema may be repaired, but the carrier still has to
+    be bounded, parseable, on an allowed path, and free of embedded credentials.
+    The bytes and order are left untouched.
+    """
+    if not isinstance(documents, tuple) or not documents:
+        raise DocumentValidationError("snapshot", "<root>", "tuple_required")
+    seen: set[str] = set()
+    size = 0
+
+    def reject_secrets(node: Any) -> None:
+        if isinstance(node, Mapping):
+            for key, value in node.items():
+                if re.fullmatch(
+                    r"(?i)(?:password|secret|token|api[_-]?key|private[_-]?key|credential)",
+                    str(key),
+                ):
+                    raise DocumentValidationError("snapshot", "<root>", "credential_key")
+                reject_secrets(value)
+        elif isinstance(node, list):
+            for item in node:
+                reject_secrets(item)
+        elif isinstance(node, str) and re.search(r"://[^/@\s]+:[^/@\s]+@", node):
+            raise DocumentValidationError("snapshot", "<root>", "credential_uri")
+
+    for document in documents:
+        if not isinstance(document, FleetConfigDocument) or not isinstance(document.content, str):
+            raise DocumentValidationError("snapshot", "<root>", "document_required")
+        path = document.path
+        if not isinstance(path, str) or path in seen:
+            raise DocumentValidationError("snapshot", "<root>", "duplicate_or_invalid_path")
+        seen.add(path)
+        size += len(path.encode("utf-8")) + len(document.content.encode("utf-8"))
+        if size > 4 * 1024 * 1024:
+            raise DocumentValidationError("snapshot", "<root>", "size_bound")
+        if path == "allowed_signers":
+            if "PRIVATE KEY" in document.content:
+                raise DocumentValidationError("snapshot", "<root>", "private_key")
+            continue
+        if _WORKSPACE_PATH.fullmatch(path):
+            try:
+                parsed = tomllib.loads(document.content)
+            except (ValueError, UnicodeError):
+                raise DocumentValidationError("snapshot", "<root>", "toml_syntax") from None
+        elif path == "fleet.yaml" or _HOST_PATH.fullmatch(path) or _HIVE_PATH.fullmatch(path):
+            parsed = _parse_yaml(document.content, "snapshot")
+        else:
+            raise DocumentValidationError("snapshot", "<root>", "unsupported_path")
+        reject_secrets(parsed)
+    if "fleet.yaml" not in seen:
+        raise DocumentValidationError("snapshot", "fleet.yaml", "required")
+
+
 __all__ = (
     "DocumentValidationError",
     "validate_document",
     "validate_documents",
+    "validate_repair_carrier",
     "validate_settings_mapping",
 )

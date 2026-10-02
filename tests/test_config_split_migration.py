@@ -238,10 +238,10 @@ def test_split_flat_config_merges_onto_an_existing_fleet_base(bh_home):
     """A second host running this migration folds its own fleet keys into whatever fleet.yaml
     already exists (e.g. from a first host's earlier migration) rather than discarding it —
     a key ONLY the existing fleet base sets (not in this host's own flat config) survives."""
-    (bh_home / "hq" / "fleet.yaml").write_text("release: {branch: main}\n")
+    (bh_home / "hq" / "fleet.yaml").write_text("release: {strategy: stable-versioning}\n")
 
     config_split_migration.split_flat_config()
 
     fleet = config.load_fleet()
-    assert fleet["release"]["branch"] == "main"  # preserved, not clobbered
+    assert fleet["release"]["strategy"] == "stable-versioning"  # preserved, not clobbered
     assert fleet["delimiter"] == ":"  # this host's own fleet key still lands

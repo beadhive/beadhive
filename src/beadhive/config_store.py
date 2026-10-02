@@ -13,7 +13,12 @@ from io import StringIO
 from pathlib import Path
 
 from ruamel.yaml.comments import CommentedMap
+from ruamel.yaml.error import YAMLError
 
+from .hq_document_validation import (
+    DocumentValidationError,
+    validate_settings_mapping,
+)
 from .modules.config.adapters.yaml_store import RoundTripYamlStore, round_trip_yaml
 from .modules.config.application.resolution import deep_merge
 from .modules.config.domain.ports import ConfigScope, FleetConfigDocument
@@ -74,6 +79,34 @@ def load_path(api, path: Path, *, missing_ok: bool = False):
     return _store(api).load_path(path, missing_ok=missing_ok)
 
 
+def _validate_settings(api, document, *, scope: str) -> None:
+    try:
+        validate_settings_mapping(document, scope=scope)
+    except DocumentValidationError as exc:
+        raise getattr(api, "ConfigError", ValueError)(str(exc)) from None
+
+
+def load_host_raw_for_repair(api):
+    """Read opaque HOST YAML for an explicit editor/migration, never for admission."""
+    return load_path(api, api.config_path())
+
+
+def load_host(api):
+    try:
+        document = load_host_raw_for_repair(api)
+    except YAMLError:
+        raise api.ConfigError("host configuration YAML syntax invalid") from None
+    _validate_settings(api, document, scope="host")
+    return document
+
+
+def load_fleet_raw_for_repair(api):
+    """Read local Git source for repair; SQL remains a qualified committed read."""
+    if sql_selected(api):
+        return load_fleet(api)
+    return load_path(api, api.fleet_path(), missing_ok=True)
+
+
 def _validated_selection(api, host) -> tuple[bool, str]:
     """Validate the HOST selector and fingerprint the exact SQL bootstrap."""
     from .modules.config.contracts import HqSqlConfig
@@ -131,6 +164,7 @@ def _fleet_document(api, snapshot):
         fleet = api._yaml.load(StringIO(document.content))
     if not isinstance(fleet, Mapping):
         raise api.ConfigError("committed SQL fleet document invalid")
+    _validate_settings(api, fleet, scope="fleet")
     if (fleet.get("hq") or {}).get("mode") != "dolt-server":
         raise api.ConfigError("committed HQ mode does not match SQL host binding")
     return fleet
@@ -141,7 +175,12 @@ def load_fleet(api):
     # read may reuse the HOST it just selected at the facade boundary.
     host = None if _fleet_transaction.get() is not None else _fleet_read_host.get()
     if not sql_selected(api, host):
-        return load_path(api, api.fleet_path(), missing_ok=True)
+        try:
+            fleet = load_path(api, api.fleet_path(), missing_ok=True)
+        except YAMLError:
+            raise api.ConfigError("fleet configuration YAML syntax invalid") from None
+        _validate_settings(api, fleet, scope="fleet")
+        return fleet
     active = _fleet_transaction.get()
     snapshot = active.snapshot if active is not None else _sql_attachment(api)[1]
     return _fleet_document(api, snapshot)
@@ -260,7 +299,9 @@ def _load_uncached(api):
     if not fleet:
         return host, False
     api._reject_fleet_overrides(host)
-    return api._deep_merge(fleet, host), False
+    merged = api._deep_merge(fleet, host)
+    _validate_settings(api, merged, scope="host")
+    return merged, False
 
 
 def _load_fleet_for_host(api, host):
@@ -276,7 +317,9 @@ def _load_sql(api, host):
     snapshot = fleet_snapshot(api)
     fleet = _fleet_document(api, snapshot)
     api._reject_fleet_overrides(host)
-    return api._deep_merge(fleet, host)
+    merged = api._deep_merge(fleet, host)
+    _validate_settings(api, merged, scope="host")
+    return merged
 
 
 def load(api):
@@ -341,6 +384,7 @@ def atomic_dump(api, data, path: Path) -> None:
 
 def save_host(api, data) -> None:
     api._guard_hq_registry_controller()
+    _validate_settings(api, data, scope="host")
     if _fleet_transaction.get() is not None:
         sql_selected(api)  # reject a changed on-disk selector before HOST cleanup
     if sql_selected(api, data):
@@ -351,6 +395,7 @@ def save_host(api, data) -> None:
 
 
 def save_fleet(api, data) -> None:
+    _validate_settings(api, data, scope="fleet")
     if not sql_selected(api):
         _store(api).save_document(ConfigScope.FLEET, data)
         clear_load_cache()
