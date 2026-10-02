@@ -34,6 +34,7 @@ class _FleetTransaction:
 _fleet_transaction: ContextVar[_FleetTransaction | None] = ContextVar(
     "fleet_transaction", default=None
 )
+_fleet_read_host: ContextVar[Mapping | None] = ContextVar("fleet_read_host", default=None)
 
 
 def fleet_transaction_active() -> bool:
@@ -136,7 +137,10 @@ def _fleet_document(api, snapshot):
 
 
 def load_fleet(api):
-    if not sql_selected(api):
+    # A transaction must recheck the live binding; only an ordinary effective
+    # read may reuse the HOST it just selected at the facade boundary.
+    host = None if _fleet_transaction.get() is not None else _fleet_read_host.get()
+    if not sql_selected(api, host):
         return load_path(api, api.fleet_path(), missing_ok=True)
     active = _fleet_transaction.get()
     snapshot = active.snapshot if active is not None else _sql_attachment(api)[1]
@@ -246,17 +250,26 @@ def _load_uncached(api):
     try:
         host = api.load_host()
     except FileNotFoundError:
-        fleet = api.load_fleet()
+        fleet = _load_fleet_for_host(api, CommentedMap())
         if not fleet:
             raise
         return fleet, False
     if sql_selected(api, host):
         return host, True
-    fleet = api.load_fleet()
+    fleet = _load_fleet_for_host(api, host)
     if not fleet:
         return host, False
     api._reject_fleet_overrides(host)
     return api._deep_merge(fleet, host), False
+
+
+def _load_fleet_for_host(api, host):
+    """Keep the public facade seam without parsing the already-selected HOST again."""
+    token = _fleet_read_host.set(host)
+    try:
+        return api.load_fleet()
+    finally:
+        _fleet_read_host.reset(token)
 
 
 def _load_sql(api, host):
