@@ -381,3 +381,28 @@ def test_real_repository_packages_classify_and_pass() -> None:
 
     assert MODULE.check(MODULE.ROOT) == ()
     assert MODULE.check_root_tests(MODULE.ROOT) == ()
+
+
+def test_exported_class_is_not_a_differently_cased_private_module(tmp_path: Path) -> None:
+    _make_package(tmp_path, "producer", "sdk")
+    models = _package_dir(tmp_path, "producer", "sdk") / "models"
+    _write(models / "__init__.py", "from .ref import Ref\n__all__ = ('Ref',)\n")
+    _write(models / "ref.py", "class Ref: pass\n")
+    _make_package(tmp_path, "consumer", "consumer", init="from sdk.models import Ref\n")
+
+    owner = MODULE._owner_map(MODULE._discover_packages(tmp_path))["sdk"]
+    assert MODULE._module_file(owner, "sdk.models.Ref") is None
+    assert MODULE._module_file(owner, "sdk.models.ref") == models / "ref.py"
+    assert MODULE.check(tmp_path) == ()
+
+    for source in (
+        "from sdk.models import ref\n",
+        "import sdk.models.ref\n",
+        "import sdk.models.Ref\n",
+        "from sdk.Models import Ref\n",
+        "from sdk.models import hidden\n",
+    ):
+        _write(_package_dir(tmp_path, "consumer", "consumer") / "__init__.py", source)
+        violations = MODULE.check(tmp_path)
+        assert len(violations) == 1, source
+        assert "public" in violations[0].reason

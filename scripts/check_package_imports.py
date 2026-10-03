@@ -124,16 +124,27 @@ def _resolve_owner(owner_map: dict[str, PackageInfo], dotted: str) -> PackageInf
 
 
 def _module_file(owner: PackageInfo, dotted: str) -> Path | None:
+    # Path.is_file() accepts differently cased names on APFS: the exported class Ref
+    # would otherwise resolve to private ref.py. Python module names remain case-sensitive.
     base = owner.path / "src"
-    for part in dotted.split("."):
-        base = base / part
-    package_init = base / "__init__.py"
-    if package_init.is_file():
-        return package_init
-    module_file = base.parent / f"{base.name}.py"
-    if module_file.is_file():
-        return module_file
-    return None
+    parts = dotted.split(".")
+    try:
+        for part in parts[:-1]:
+            directories = {child.name: child for child in base.iterdir() if child.is_dir()}
+            if part not in directories:
+                return None
+            base = directories[part]
+        children = {child.name: child for child in base.iterdir()}
+        package = children.get(parts[-1])
+        if package is not None and package.is_dir():
+            files = {child.name: child for child in package.iterdir()}
+            package_init = files.get("__init__.py")
+            if package_init is not None and package_init.is_file():
+                return package_init
+        module = children.get(f"{parts[-1]}.py")
+        return module if module is not None and module.is_file() else None
+    except OSError:
+        return None
 
 
 def _module_all(path: Path) -> frozenset[str] | None:
@@ -167,7 +178,7 @@ def _public_surface_violation(owner_map: dict[str, PackageInfo], edge: Edge) -> 
     if edge.names is None:
         target = _module_file(owner, edge.module)
         if target is None:
-            return None
+            return f"{edge.module} has no exact-case public module"
         if _module_all(target) is None:
             return f"{edge.module} has no public __all__ surface"
         return None
@@ -180,7 +191,7 @@ def _public_surface_violation(owner_map: dict[str, PackageInfo], edge: Edge) -> 
             continue
         target = _module_file(owner, edge.module)
         if target is None:
-            continue
+            return f"{edge.module} has no exact-case public module"
         all_names = _module_all(target)
         if all_names is None:
             return f"{edge.module} has no public __all__ surface"
