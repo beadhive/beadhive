@@ -957,10 +957,18 @@ def test_claim_as_flag_overrides_identity(hive, fakebd):
     assert ("dev/alice", ["update", "mr-1", "--claim"]) in fakebd.calls
 
 
-def test_claim_twice_reattaches(hive, fakebd):
+def test_claim_twice_reattaches(hive, fakebd, capsys):
     fakebd.seed("mr-1", title="t")
     work.claim(bead="mr-1", as_="", hive="myrepo")
+    first = capsys.readouterr().out
+    assert "✓ claimed mr-1 as dev/default" in first
+    assert "reattached" not in first
     work.claim(bead="mr-1", as_="", hive="myrepo")  # no exception
+    second = capsys.readouterr().out
+    assert "✓ reattached mr-1 as dev/default" in second
+    assert "existing lease unchanged (no heartbeat renewal)" in second
+    assert "✓ claimed" not in second
+    assert sum(args == ["update", "mr-1", "--claim"] for _actor, args in fakebd.calls) == 1
     assert _wt(hive, "mr-1").exists()
 
 
