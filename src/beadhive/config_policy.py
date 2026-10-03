@@ -31,7 +31,8 @@ class _FacadeMigrationStore:
             raise ValueError(f"unsupported migration scope: {scope}")
         if self._original_bytes is None:
             raise ValueError("migration has no original HOST document")
-        self._api._save_host_legacy_migration(document, original_bytes=self._original_bytes)
+        with self._api._legacy_migration_scope(self._original_bytes):
+            self._api.save(document)
 
 
 def migrate_hive_keys_if_needed(api) -> None:
