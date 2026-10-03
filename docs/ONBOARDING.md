@@ -654,23 +654,26 @@ than a second description of the verb.
 This section is the **walkthrough**. Whether to do it at all — what it buys, what it costs, and
 what is not finished yet — is [ADOPTION.md's rung 4](ADOPTION.md#rung-4--a-linux-executor-adopted-into-hq).
 
-### Read this first: your new machine needs an HQ *remote*
+### Read this first: choose the fleet config mode
 
-A second machine joins by cloning Factory HQ, and **you cannot clone something that only
-exists on one laptop.** If you followed the single-machine path, your HQ is deliberately
-local-only — no remote, because a remote earns its keep only for backup or a second host.
-Adding a second machine is exactly when it starts earning it.
+A second machine uses the explicitly selected `hq.mode`; an HQ Git remote is required only for
+the Git compatibility path. `hq.mode: git` uses the signed Git HQ and requires its remote to be
+wired and current. `hq.mode: dolt-server` reads the committed central config snapshot using
+HOST-local trust metadata and broker references; it needs no HQ checkout or HQ GitHub
+credential. Both paths still need ordinary provider access to clone source repositories.
 
-So the graduation step comes **first**, on the machine you already have:
+For Git mode, create or wire the private HQ remote on the existing machine, then verify it:
 
 ```sh
-# create an empty private repo for HQ under your account or org, then:
-bh hq push        # refuses if no remote is configured — configure it, then re-run
-bh hq status      # confirm the remote is wired and current
+bh hq push        # publishes the Git HQ and HQ-origin Beads halves
+bh hq status      # read-only ahead/behind report for both halves
 ```
 
-Do this before touching the new machine. Otherwise you meet the requirement as a provisioning
-failure halfway through setting up the new machine, which is the same lesson learned twice.
+For a central config cutover, do not treat `bh hq push` as a seed or selector command. The
+current source must be reviewed, seeded and read back before the guarded HOST switch. Follow
+the [config migration runbook](design/dolt-hq-config-migration-runbook.md); it is an operator
+procedure and this onboarding guide does not report that production deployment occurred.
+See [frame fleet membership](FRAME-FLEET-MEMBERSHIP.md) for the modes and readiness states.
 
 ### Who does what
 
@@ -740,7 +743,7 @@ lease or it does not, and any non-`viewer` host may take it when it is free.
 Install `bh` ([INSTALL.md](../INSTALL.md), managed path), then:
 
 ```sh
-bh host provision --role executor    # clones HQ from the remote you just wired
+bh host provision --role executor    # provisions against the selected HQ config mode
 ```
 
 For an `executor`/`transient` role this also installs the `bh@beadhive` Claude Code plugin
