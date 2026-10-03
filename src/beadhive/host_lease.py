@@ -136,14 +136,21 @@ def _frame_plane(cwd):
     from . import host, hosts
     from .hq_control_plane import control_plane
 
+    selected_sql = host.sql_hq_selected()
     host_config_present, enrolled = host.frame_binding()
     try:
         identity = host.host_id()
     except FileNotFoundError:
+        if selected_sql:
+            raise HostLeaseRejected(
+                "AUTHORITY_NOT_READY: SQL frame has no local host identity"
+            ) from None
         if enrolled:
             raise HostLeaseRejected("enrolled frame has no local host identity") from None
         return None
     if not host_config_present:
+        if selected_sql:
+            raise HostLeaseRejected("AUTHORITY_NOT_READY: SQL frame binding absent")
         # Historical raw recovery has no selector yet, but a declared Git frame
         # still requires the protected plane rather than a legacy lease.
         try:
@@ -153,6 +160,8 @@ def _frame_plane(cwd):
         return control_plane(cwd) if raw.frame_id else None
 
     plane = control_plane(cwd)
+    if selected_sql and getattr(plane, "config_backend", None) != "sql":
+        raise HostLeaseRejected("AUTHORITY_NOT_READY: SQL control-plane binding unavailable")
     try:
         manifest = plane.load_host_manifest(identity)
     except FileNotFoundError as exc:
@@ -160,6 +169,10 @@ def _frame_plane(cwd):
             exc
         ):
             raise
+        if getattr(plane, "config_backend", None) == "sql":
+            raise HostLeaseRejected(
+                "AUTHORITY_NOT_READY: SQL host has no committed host manifest"
+            ) from None
         if enrolled:
             raise HostLeaseRejected("enrolled frame has no committed host manifest") from None
         return None
@@ -167,6 +180,8 @@ def _frame_plane(cwd):
         raise HostLeaseRejected("enrolled frame has no committed frame binding")
     if manifest.frame_id:
         return plane
+    if getattr(plane, "config_backend", None) == "sql":
+        raise HostLeaseRejected("AUTHORITY_NOT_READY: SQL host has no bound runtime frame")
     return None
 
 
@@ -445,7 +460,16 @@ def read_cached(prefix: str, *, cwd: Path) -> HostLease | None:
 
 
 def cache(prefix: str, outcome: LeaseOutcome, *, cwd: Path) -> None:
-    """Mirror a won CAS into the LOCAL ref so :func:`read_cached` can answer offline."""
+    """Mirror a Git CAS locally; SQL's protected lease is read through its authority.
+
+    A selected SQL host may have no HQ Git checkout at all. Writing a local Git
+    ref after its protected lease CAS would turn a successful adopt/release into
+    an apparent failure and leave the caller unable to resume safely.
+    """
+    from . import host
+
+    if host.sql_hq_selected():
+        return
     gitref.set_local(lease_ref(prefix), outcome.sha, cwd=cwd)
 
 
