@@ -17,17 +17,21 @@ LEGACY_KEY_REMOVALS = (("git_workspace", "enabled"),)
 class _FacadeMigrationStore:
     def __init__(self, api) -> None:
         self._api = api
+        self._original_bytes: bytes | None = None
 
     def load_document(self, scope: ConfigScope, *, missing_ok: bool = False):
         del missing_ok
         if scope != ConfigScope.HOST:
             raise ValueError(f"unsupported migration scope: {scope}")
+        self._original_bytes = self._api.config_path().read_bytes()
         return self._api.load_host_raw_for_repair()
 
     def save_document(self, scope: ConfigScope, document) -> None:
         if scope != ConfigScope.HOST:
             raise ValueError(f"unsupported migration scope: {scope}")
-        self._api.save(document)
+        if self._original_bytes is None:
+            raise ValueError("migration has no original HOST document")
+        self._api._save_host_legacy_migration(document, original_bytes=self._original_bytes)
 
 
 def migrate_hive_keys_if_needed(api) -> None:

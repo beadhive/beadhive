@@ -312,6 +312,11 @@ def save(data) -> None:
     _config_store.save_host(_facade(), data)
 
 
+def _save_host_legacy_migration(data, *, original_bytes: bytes) -> None:
+    """Persist a known legacy-key repair against its exact original HOST carrier."""
+    _config_store.save_host_legacy_migration(_facade(), data, original_bytes=original_bytes)
+
+
 def save_after_verified_hq_export(data, receipt, mirror_plan) -> None:
     """Select Git only after exact live SQL and signed Git export qualification."""
     _config_store.save_host_after_verified_export(_facade(), data, receipt, mirror_plan)

@@ -440,6 +440,29 @@ def save_host(api, data) -> None:
     clear_load_cache()
 
 
+def save_host_legacy_migration(api, data, *, original_bytes: bytes) -> None:
+    """Repair only the explicit legacy key migration without a usable invalid read.
+
+    The migration's raw input can contain removed core keys. Its result must be
+    valid, and neither the selected backend nor its HOST binding may change.
+    """
+    api._guard_hq_registry_controller()
+    _validate_settings(api, data, scope="host")
+    path = api.config_path()
+    with mutation(path):
+        if path.read_bytes() != original_bytes:
+            raise api.ConfigError("HOST changed during legacy key migration")
+        current = api.load_host_raw_for_repair()
+        selected, binding = _validated_selection(api, current)
+        proposed_selected, proposed_binding = _validated_selection(api, data)
+        if (selected, binding) != (proposed_selected, proposed_binding):
+            raise api.ConfigError("HOST binding changed during legacy key migration")
+        if selected:
+            _fleet_document(api, _sql_attachment(api, data)[1])
+        _store(api).save_document(ConfigScope.HOST, data)
+    clear_load_cache()
+
+
 def _restore_host_bytes(api, original: bytes, *, written: bytes) -> None:
     """Restore the exact prior HOST carrier only if our own write still owns it."""
     path = api.config_path()

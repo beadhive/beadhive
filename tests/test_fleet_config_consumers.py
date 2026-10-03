@@ -558,7 +558,9 @@ def test_roster_documents_publish_without_hq_checkout(selected_sql, tmp_path):
     assert not hq_dir.exists()
 
 
-def test_missing_selected_manifest_denies_sql_lease_and_enrolled_frame(monkeypatch, tmp_path):
+def test_missing_selected_manifest_denies_sql_lease_and_enrolled_frame(
+    selected_sql_host, monkeypatch, tmp_path
+):
     class ConfigOnlyPlane(hq_control_plane.SqlControlPlane):
         def __init__(self):
             pass
@@ -573,16 +575,13 @@ def test_missing_selected_manifest_denies_sql_lease_and_enrolled_frame(monkeypat
 
     monkeypatch.setattr(host, "host_id", lambda: "fixture-host")
     monkeypatch.setattr(hq_control_plane, "control_plane", lambda _root: ConfigOnlyPlane())
-    monkeypatch.setattr(config, "load_host", lambda: {"hq": {"mode": "dolt-server"}})
+    _store, _host_path, bootstrap = selected_sql_host
+    monkeypatch.setattr(config, "load_host", lambda: bootstrap)
     with pytest.raises(host_lease.HostLeaseRejected, match="AUTHORITY_NOT_READY"):
         host_lease._frame_plane(tmp_path)
     assert frame_eligibility.decision_for("fixture-host", hq_dir=tmp_path) is None
 
-    monkeypatch.setattr(
-        config,
-        "load_host",
-        lambda: {"hq": {"mode": "dolt-server"}, "host": {"frame_id": "frame"}},
-    )
+    bootstrap["host"] = {"frame_id": "frame"}
     with pytest.raises(host_lease.HostLeaseRejected, match="no committed host manifest"):
         host_lease._frame_plane(tmp_path)
     assert not frame_eligibility.decision_for("fixture-host", hq_dir=tmp_path).allowed
@@ -596,7 +595,9 @@ def test_missing_selected_manifest_denies_sql_lease_and_enrolled_frame(monkeypat
         FileNotFoundError("reader credential absent"),
     ],
 )
-def test_selected_roster_failure_never_looks_like_unbound_legacy(monkeypatch, tmp_path, failure):
+def test_selected_roster_failure_never_looks_like_unbound_legacy(
+    selected_sql_host, monkeypatch, tmp_path, failure
+):
     class BrokenPlane(hq_control_plane.SqlControlPlane):
         def __init__(self):
             pass
@@ -604,7 +605,8 @@ def test_selected_roster_failure_never_looks_like_unbound_legacy(monkeypatch, tm
         def load_host_manifest(self, host_id):
             raise failure
 
-    monkeypatch.setattr(config, "load_host", lambda: {"hq": {"mode": "dolt-server"}})
+    _store, _host_path, bootstrap = selected_sql_host
+    monkeypatch.setattr(config, "load_host", lambda: bootstrap)
     monkeypatch.setattr(hq_control_plane, "control_plane", lambda _root: BrokenPlane())
     decision = frame_eligibility.decision_for("fixture-host", hq_dir=tmp_path)
     assert decision is not None
