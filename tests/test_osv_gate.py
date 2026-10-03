@@ -7,6 +7,7 @@ osv-scanner is stubbed on PATH so these run anywhere, including CI without the s
 """
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -33,11 +34,15 @@ def run_gate_without_scanner(tmp_path, mode="enforce", label="license gate"):
     """Invoke osv-gate.sh with NO osv-scanner anywhere on PATH."""
     empty = tmp_path / "emptybin"
     empty.mkdir()
+    # Keep only the interpreter needed by the real gate, never ambient system tools.
+    bash = shutil.which("bash")
+    assert bash is not None
+    (empty / "bash").symlink_to(bash)
     return subprocess.run(
         [str(GATE), mode, label, "scan", "source"],
         capture_output=True,
         text=True,
-        env={"PATH": f"{empty}:/usr/bin:/bin", "HOME": str(tmp_path)},
+        env={"PATH": str(empty), "HOME": str(tmp_path)},
     )
 
 

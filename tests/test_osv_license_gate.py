@@ -17,6 +17,7 @@ took every `just check` in this repo to exit 127.
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -201,11 +202,14 @@ def run_license_gate_without_scanner(tmp_path, mode="enforce", label="license ga
     """Invoke osv-license-gate.sh with NO osv-scanner anywhere on PATH."""
     empty = tmp_path / "emptybin"
     empty.mkdir()
+    bash = shutil.which("bash")
+    assert bash is not None
+    (empty / "bash").symlink_to(bash)
     return subprocess.run(
         [str(GATE), mode, label, "scan", "source"],
         capture_output=True,
         text=True,
-        env={"PATH": f"{empty}:/usr/bin:/bin", "HOME": str(tmp_path)},
+        env={"PATH": str(empty), "HOME": str(tmp_path)},
     )
 
 
@@ -213,14 +217,27 @@ def run_license_gate_without_jq(tmp_path, mode="enforce", label="license gate"):
     """Invoke osv-license-gate.sh with a stub osv-scanner present but NO jq anywhere on PATH."""
     minimal = tmp_path / "minimalbin"
     minimal.mkdir()
+    # System directories can contain jq (including /usr/bin/jq on macOS). Expose only Bash,
+    # required by the real gate's shebang, and the scanner stub; jq must genuinely be absent.
+    bash = shutil.which("bash")
+    assert bash is not None
+    (minimal / "bash").symlink_to(bash)
     stub = minimal / "osv-scanner"
     stub.write_text(_stub_source(CLEAN_REPORT, 0))
     stub.chmod(0o755)
+    env = {"PATH": str(minimal), "HOME": str(tmp_path)}
+    probe = subprocess.run(
+        [str(minimal / "bash"), "-c", "command -v osv-scanner && ! command -v jq"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert probe.returncode == 0, probe.stderr
     return subprocess.run(
         [str(GATE), mode, label, "scan", "source"],
         capture_output=True,
         text=True,
-        env={"PATH": f"{minimal}:/usr/bin:/bin", "HOME": str(tmp_path)},
+        env=env,
     )
 
 
