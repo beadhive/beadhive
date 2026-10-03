@@ -18,8 +18,8 @@
   "static_test_blast_radius": {
     "historical_documented_files": 129,
     "exact_ast_files_at_baseline": 135,
-    "exact_ast_files_after": 157,
-    "delta_explanation": "The historical 129 used an older static graph snapshot. Re-running the checked AST definition at the exact implementation base finds 135 after repository growth; the config module candidate and later workspace, precious-worktree, host-daemon, process dispatch, fleet consumer, and HQ seed/bootstrap suites account for the current exact AST inventory. This static count does not claim a smaller dynamic closure. The bh-qa7vc Factory enrollment and daemon-origin coverage is included in the current exact AST inventory.",
+    "exact_ast_files_after": 158,
+    "delta_explanation": "The historical 129 used an older static graph snapshot. Re-running the checked AST definition at the exact implementation base finds 135 after repository growth; the config module candidate and later workspace, precious-worktree, host-daemon, process dispatch, fleet consumer, HQ seed/bootstrap, and fleet membership end-to-end suites account for the current exact AST inventory. This static count does not claim a smaller dynamic closure. The bh-qa7vc Factory enrollment and daemon-origin coverage is included in the current exact AST inventory.",
     "owner": "configuration compatibility suite and bh-18hud.5 migration ledger"
   },
   "import_graph": {
@@ -116,5 +116,9 @@
   "seed_bootstrap_inventory_update": {
     "beads": ["bh-4shu3", "bh-b5urp"],
     "reason": "The live generated ledger measures 87 production config importers, 5 schema importers, 157 test config importers, and 328 patch sites after central seed, verified rollback, and SQL-selected host bootstrap. Current structural metrics are 84 classes, 122 functions, mean cyclomatic complexity 3.746, and maximum 25. Historical extraction, pinned baseline, and the earlier 7344-test full-gate receipt remain unchanged; the current group's managed validation has separate tree-bound receipts."
+  },
+  "fleet_e2e_inventory_update": {
+    "bead": "bh-nnhsc",
+    "reason": "The live generated ledger now measures 158 test config importers after the new fleet membership end-to-end integration fixture. Production importers, schema importers, patch sites, historical extraction counts, pinned baseline, and earlier full-gate receipts are unchanged."
   }
 }
