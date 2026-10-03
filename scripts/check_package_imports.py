@@ -172,16 +172,20 @@ def _public_surface_violation(owner_map: dict[str, PackageInfo], edge: Edge) -> 
             return f"{edge.module} has no public __all__ surface"
         return None
 
+    target = _module_file(owner, edge.module)
+    all_names = _module_all(target) if target is not None else None
     for name in edge.names:
+        # Explicit exports take precedence over a same-named module, including a
+        # differently-cased filename on case-insensitive filesystems.
+        if all_names is not None and name in all_names:
+            continue
         deeper = _module_file(owner, f"{edge.module}.{name}")
         if deeper is not None:
             if _module_all(deeper) is None:
                 return f"{edge.module}.{name} has no public __all__ surface"
             continue
-        target = _module_file(owner, edge.module)
         if target is None:
             continue
-        all_names = _module_all(target)
         if all_names is None:
             return f"{edge.module} has no public __all__ surface"
         if name not in all_names:
