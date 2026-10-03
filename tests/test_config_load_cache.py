@@ -9,7 +9,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from ruamel.yaml.error import YAMLError
 
 from beadhive import config, config_store, hq_control_plane
 from beadhive.modules.config.domain.ports import FleetConfigDocument
@@ -37,7 +36,7 @@ def test_repeated_load_parses_each_unchanged_layer_once(tmp_path, monkeypatch):
 
     monkeypatch.setattr(config_store, "load_path", counted)
     assert config.load() == config.load()
-    assert calls == [config.fleet_path(), config.config_path()]
+    assert calls == [config.config_path(), config.fleet_path()]
 
 
 def test_concurrent_first_legacy_load_parses_each_layer_once(tmp_path, monkeypatch):
@@ -66,7 +65,7 @@ def test_concurrent_first_legacy_load_parses_each_layer_once(tmp_path, monkeypat
         worker.join(timeout=5)
         assert not worker.is_alive()
     assert values[0] == values[1]
-    assert calls == [config.fleet_path(), config.config_path()]
+    assert calls == [config.config_path(), config.fleet_path()]
 
 
 def test_caller_mutation_cannot_corrupt_the_cached_view(tmp_path, monkeypatch):
@@ -190,7 +189,7 @@ def test_explicit_sql_host_switch_ignores_local_fleet_and_never_memoizes_outage(
         assert config.load()["work"]["validate_cmd"] == "central"  # unreadable local fleet
 
     set_host(False)
-    with pytest.raises(YAMLError):
+    with pytest.raises(config.ConfigError, match="fleet configuration YAML syntax invalid"):
         config.load()  # disabled selector does not ignore malformed local fleet
     fleet.write_text("work:\n  validate_cmd: local\n")
     assert config.load()["work"]["validate_cmd"] == "local"
@@ -200,5 +199,28 @@ def test_explicit_sql_host_switch_ignores_local_fleet_and_never_memoizes_outage(
     set_host(True)
     assert config.load()["work"]["validate_cmd"] == "central"
     set_host("false")
-    with pytest.raises(ValueError, match="invalid SQL HOST bootstrap"):
+    with pytest.raises(config.ConfigError, match="hq.sql.enabled: schema_type"):
         config.load()
+
+
+@pytest.mark.parametrize("enabled", [True, "false"])
+def test_diagnostic_raw_host_with_sql_selected_never_reads_local_git_mirror(
+    tmp_path, monkeypatch, enabled
+):
+    monkeypatch.setenv("BH_HOME", str(tmp_path))
+    host = config.config_path()
+    host.parent.mkdir(parents=True, exist_ok=True)
+    host.write_text(json.dumps({"hq": {"sql": {"enabled": enabled}}, "unknown_core": 1}))
+    original_load_path = config_store.load_path
+
+    def local_mirror_forbidden(api, path, *, missing_ok=False):
+        if path == config.fleet_path():
+            raise AssertionError("selected SQL diagnostics consulted local Git mirror")
+        return original_load_path(api, path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(config_store, "load_path", local_mirror_forbidden)
+    with pytest.raises(config.ConfigError, match="schema_additionalProperties"):
+        config.load()
+    raw = config.load_raw_for_diagnostics()
+    assert raw["hq"]["sql"]["enabled"] == enabled
+    assert raw["unknown_core"] == 1

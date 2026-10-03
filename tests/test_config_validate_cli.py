@@ -75,6 +75,29 @@ def test_unknown_key_typo_surfaces_a_did_you_mean(cfg_at):
     assert "did you mean `providers`" in result.output
 
 
+def test_malformed_host_yaml_has_value_free_diagnostic(cfg_at):
+    cfg_at("schema_version: [secret-canary\n")
+
+    result = runner.invoke(app, ["config", "validate"])
+
+    assert result.exit_code == 1
+    assert "host configuration YAML syntax invalid" in result.output
+    assert "secret-canary" not in result.output
+
+
+def test_malformed_fleet_yaml_has_value_free_diagnostic(cfg_at):
+    cfg_at("schema_version: 1\n")
+    fleet = config.fleet_path()
+    fleet.parent.mkdir(parents=True, exist_ok=True)
+    fleet.write_text("schema_version: [fleet-secret-canary\n")
+
+    result = runner.invoke(app, ["config", "validate"])
+
+    assert result.exit_code == 1
+    assert "fleet configuration YAML syntax invalid" in result.output
+    assert "fleet-secret-canary" not in result.output
+
+
 def test_missing_config_gives_guidance_not_traceback(tmp_path, monkeypatch):
     monkeypatch.setenv("BH_CONFIG", str(tmp_path / "does-not-exist.yaml"))
     result = runner.invoke(app, ["config", "validate"])

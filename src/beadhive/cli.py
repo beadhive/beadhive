@@ -16,6 +16,7 @@ import shutil
 import sys
 import time
 from pathlib import Path
+from typing import Annotated
 
 import typer
 from typer.core import TyperGroup
@@ -1206,6 +1207,143 @@ def hq_status(
     from . import hq
 
     hq.status(as_json=as_json)
+
+
+@hq_app.command(
+    "migrate",
+    help="plan or explicitly switch HQ configuration authority between signed Git and Dolt",
+)
+def hq_migrate_cmd(
+    to: str = typer.Option(..., "--to", help="dolt-server or git"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="inspect only; never publish or switch"),
+    confirm: bool = typer.Option(False, "--confirm", help="authorize the reviewed transition"),
+    intent: str = typer.Option("", "--intent", help="private durable transition receipt"),
+    mirror_journal: str = typer.Option("", "--mirror-journal"),
+    operator_key: str = typer.Option("", "--operator-key"),
+    suspension_artifact: str = typer.Option("", "--suspension-artifact"),
+    suspension_signature: str = typer.Option("", "--suspension-signature"),
+    expected_sql_revision: str = typer.Option("", "--expected-sql-revision"),
+    expected_git_revision: str = typer.Option("", "--expected-git-revision"),
+):
+    from .hq_migrate_cli import migrate_cmd
+
+    migrate_cmd(
+        to,
+        dry_run=dry_run,
+        confirm=confirm,
+        intent=Path(intent) if intent else None,
+        mirror_journal=Path(mirror_journal) if mirror_journal else None,
+        operator_key=Path(operator_key) if operator_key else None,
+        suspension_artifact=Path(suspension_artifact) if suspension_artifact else None,
+        suspension_signature=Path(suspension_signature) if suspension_signature else None,
+        expected_sql_revision=expected_sql_revision,
+        expected_git_revision=expected_git_revision,
+    )
+
+
+@hq_app.command(
+    "beadyard",
+    help="inspect the canonical HQ instance ID or explicitly adopt a legacy HQ at an "
+    "observed original revision; config-only Dolt inspection needs no Git HQ checkout.",
+)
+def hq_beadyard_cmd(
+    as_json: bool = typer.Option(False, "--json", help="emit backend, state, ID and revision"),
+):
+    from . import hq_beadyard
+
+    try:
+        result = hq_beadyard.inspect()
+    except hq_beadyard.BeadyardOperationError as exc:
+        typer.echo(f"HQ beadyard identity unavailable: {exc}", err=True)
+        raise typer.Exit(1) from None
+    except Exception:
+        typer.echo("HQ beadyard identity authority unavailable", err=True)
+        raise typer.Exit(1) from None
+    _render_beadyard(result, as_json=as_json)
+
+
+@hq_app.command(
+    "beadyard-adopt",
+    help="explicitly bind a legacy HQ using an observed original revision and operator custody",
+)
+def hq_beadyard_adopt_cmd(
+    expected_revision: str = typer.Option(
+        ..., "--expected-revision", help="exact revision shown by inspection"
+    ),
+    confirm: bool = typer.Option(False, "--confirm", help="confirm legacy identity adoption"),
+    operator_key: str = typer.Option("", "--operator-key", help="Git main SSH commit signing key"),
+    as_json: bool = typer.Option(False, "--json", help="emit backend, state, ID and revision"),
+):
+    from . import hq_beadyard
+
+    if not confirm:
+        typer.echo("HQ identity adoption requires --confirm", err=True)
+        raise typer.Exit(1)
+    try:
+        result = hq_beadyard.adopt_legacy(
+            expected_revision=expected_revision,
+            operator_key=Path(operator_key) if operator_key else None,
+        )
+    except hq_beadyard.BeadyardOperationError as exc:
+        typer.echo(f"HQ beadyard identity adoption failed: {exc}", err=True)
+        raise typer.Exit(1) from None
+    except Exception:
+        typer.echo("HQ beadyard identity adoption authority unavailable", err=True)
+        raise typer.Exit(1) from None
+    _render_beadyard(result, as_json=as_json)
+
+
+@hq_app.command(
+    "beadyard-policy-refresh",
+    help="explicitly refresh protected Git hive config-head pins after exact identity adoption",
+)
+def hq_beadyard_policy_refresh_cmd(
+    expected_policy_digest: str = typer.Option(..., "--expected-policy-digest"),
+    expected_config_head: str = typer.Option(..., "--expected-config-head"),
+    expected_config_parent: str = typer.Option(..., "--expected-config-parent"),
+    anchor: Annotated[
+        list[Path], typer.Option("--anchor", help="repeat for every protected anchor")
+    ] = ...,
+    operator_anchor: Annotated[Path, typer.Option("--operator-anchor")] = ...,
+    confirm: bool = typer.Option(False, "--confirm"),
+):
+    from . import hq_beadyard_policy
+
+    if not confirm:
+        typer.echo("protected policy refresh requires --confirm", err=True)
+        raise typer.Exit(1)
+    try:
+        digest = hq_beadyard_policy.refresh_after_adoption(
+            config.hq_dir(),
+            expected_policy_digest=expected_policy_digest,
+            expected_config_head=expected_config_head,
+            expected_config_parent=expected_config_parent,
+            anchors=tuple(anchor),
+            operator_anchor=operator_anchor,
+        )
+    except hq_beadyard_policy.PolicyRefreshError as exc:
+        typer.echo(f"protected HQ policy refresh refused: {exc}", err=True)
+        raise typer.Exit(1) from None
+    except Exception:
+        typer.echo("protected HQ policy refresh unavailable or conflicted", err=True)
+        raise typer.Exit(1) from None
+    typer.echo(json.dumps({"policy_digest": digest}, sort_keys=True))
+
+
+def _render_beadyard(result, *, as_json: bool) -> None:
+    payload = {
+        "backend": result.backend,
+        "state": result.state,
+        "beadyard_id": result.beadyard_id,
+        "revision": result.revision,
+    }
+    if as_json:
+        typer.echo(json.dumps(payload, sort_keys=True))
+    else:
+        typer.echo(
+            f"HQ beadyard: {result.state} ({result.backend}); "
+            f"id={result.beadyard_id or '-'} revision={result.revision or '-'}"
+        )
 
 
 @hq_app.command(
@@ -3496,15 +3634,27 @@ def config_schema_cmd(as_json: bool = typer.Option(False, "--json", help="machin
 
 
 def _load_config_or_exit():
-    """Load the resolved config; exit 1 with `config init` guidance instead of a traceback
-    when no config file exists yet."""
+    """Return (usable or diagnostic-only source, rejection) for config validate."""
     try:
-        return config.load()
+        return config.load(), None
     except FileNotFoundError:
         typer.echo(
             f"no config found — scaffold it with `{config.BINARY_ALIAS} config init`.", err=True
         )
         raise typer.Exit(1) from None
+    except config.ConfigError as exc:
+        # Validation is an explicit repair-only diagnostic. A rejected source
+        # cannot become a usable settings view, but its raw keys must remain
+        # available for actionable typo/rename/version messages.
+        from ruamel.yaml.error import YAMLError
+
+        try:
+            return config.load_raw_for_diagnostics(), str(exc)
+        except (YAMLError, OSError, config.ConfigError):
+            # The original usable-read rejection is already value-free. A
+            # second failed parse/inspection must not expose raw YAML content.
+            typer.echo(f"✗ {exc}", err=True)
+            raise typer.Exit(1) from None
 
 
 def _print_fix_prompt(cv, cfg) -> None:
@@ -3554,13 +3704,18 @@ def config_validate(
     `bh config init` guidance rather than a traceback."""
     from . import config_validate as cv
 
-    cfg = _load_config_or_exit()
+    cfg, rejection = _load_config_or_exit()
 
     if fix:
         _print_fix_prompt(cv, cfg)
+        if rejection is not None:
+            typer.echo(f"✗ {rejection}", err=True)
+            raise typer.Exit(1)
         return
 
     problems = cv.validate_config(cfg)
+    if rejection is not None:
+        problems.append(config._problem("error", rejection))
     if not problems:
         typer.echo(f"✓ config is valid (schema v{cv.SCHEMA_VERSION}).")
         return

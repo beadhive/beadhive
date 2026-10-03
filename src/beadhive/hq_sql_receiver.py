@@ -124,7 +124,7 @@ class SqlTrustedReceiver:
         )
         row = cursor.fetchone()
         if row is None:
-            return "", None, None
+            return "", None, None, None, None
         body = row[1]
         if isinstance(body, memoryview):
             body = body.tobytes()
@@ -133,7 +133,94 @@ class SqlTrustedReceiver:
         envelope = json.loads(body)
         if body != canonical(envelope) or set(envelope) != {"authority", "lease"}:
             raise ReceiverError("protected incumbent lease invalid")
-        return row[0], envelope["authority"], SqlTrustedReceiver._lease_record(envelope["lease"])
+        return (
+            row[0],
+            envelope["authority"],
+            SqlTrustedReceiver._lease_record(envelope["lease"]),
+            row[2],
+            row[3],
+        )
+
+    @staticmethod
+    def _accepted_prior_request(
+        cursor, route, request_id, request_sha, result_revision, kind, public_key
+    ):
+        """Verify an immutable prior inbox signature and its accepted result witness."""
+        envelope, digest = SqlTrustedReceiver._inbox(cursor, route, request_id, kind)
+        verify = verify_hive_request if kind == "hive_lease" else verify_registration
+        request, signed_sha = verify(envelope, granted_public_key=public_key)
+        cursor.execute(
+            "SELECT request_sha256,principal,frame_id,holder_identity,instance_ref,"
+            "epoch,signer_fingerprint,result_revision,status FROM hq_live_results "
+            "WHERE request_id=%s",
+            (request_id,),
+        )
+        expected = (
+            request_sha,
+            route.principal,
+            route.frame_id,
+            route.holder_identity,
+            route.instance_ref,
+            route.epoch,
+            route.signer_fingerprint,
+            result_revision,
+            "accepted",
+        )
+        if (
+            digest != request_sha
+            or signed_sha != request_sha
+            or request.get("request_id") != request_id
+            or cursor.fetchone() != expected
+        ):
+            raise ReceiverError("original signed incumbent evidence unavailable")
+        return request
+
+    @staticmethod
+    def _bound_registration(cursor, route, record, owner):
+        from .host_manifest_contracts import HostManifest
+
+        cursor.execute(
+            "SELECT request_id,request_sha256,manifest_json,signer_fingerprint "
+            "FROM hq_live_registrations WHERE frame_id=%s AND holder_identity=%s "
+            "AND instance_ref=%s AND epoch=%s",
+            (route.frame_id, route.holder_identity, route.instance_ref, route.epoch),
+        )
+        row = cursor.fetchone()
+        if row is None or row[3] != route.signer_fingerprint:
+            raise ReceiverError("bound hive adoption requires current signed registration")
+        stored_body = row[2].tobytes() if isinstance(row[2], memoryview) else row[2]
+        request = SqlTrustedReceiver._accepted_prior_request(
+            cursor,
+            route,
+            row[0],
+            row[1],
+            "sha256:" + row[1],
+            "registration",
+            record["public_key"],
+        )
+        manifest = HostManifest.model_validate_json(stored_body)
+        body = canonical(manifest.model_dump(mode="json", exclude_none=True))
+        if (
+            request.get("domain") != "beadhive/sql-registration/v2"
+            or request.get("beadyard_id") != owner
+            or request.get("principal") != route.principal
+            or request.get("frame_id") != route.frame_id
+            or request.get("holder_identity") != route.holder_identity
+            or request.get("instance_ref") != route.instance_ref
+            or request.get("epoch") != route.epoch
+            or request.get("key_fingerprint") != route.signer_fingerprint
+            or request.get("manifest") != manifest.model_dump(mode="json", exclude_none=True)
+            or body != (stored_body.encode() if isinstance(stored_body, str) else stored_body)
+            or manifest.beadyard_id != owner
+            or manifest.frame_id != route.frame_id
+            or manifest.host_id != route.holder_identity
+            or manifest.instance_ref != route.instance_ref
+            or manifest.release is None
+            or manifest.release.model_dump() != record["desired"]["release"]
+            or manifest.capabilities is None
+            or manifest.capabilities.model_dump() != record["desired"]["caps"]
+        ):
+            raise ReceiverError("bound hive adoption requires current signed registration")
 
     def accept_hive_lease(self, principal: str, request_id: str) -> str:
         """Accept an authenticated proposal with one protected global lease CAS.
@@ -182,7 +269,7 @@ class SqlTrustedReceiver:
                 request, signed_sha = verify_hive_request(
                     envelope, granted_public_key=record["public_key"]
                 )
-                if signed_sha != request_sha or set(request) != {
+                expected_fields = {
                     "domain",
                     "request_id",
                     "principal",
@@ -199,7 +286,10 @@ class SqlTrustedReceiver:
                     "operation",
                     "force",
                     "lease",
-                }:
+                }
+                if authority.get("beadyard_id") is not None:
+                    expected_fields.add("beadyard_id")
+                if signed_sha != request_sha or set(request) != expected_fields:
                     raise ReceiverError("signed hive request shape or digest invalid")
                 from .host_lease_contracts import lease_ref
 
@@ -214,6 +304,7 @@ class SqlTrustedReceiver:
                     or request["key_fingerprint"] != route.signer_fingerprint
                     or request["audience"] != authority["audience"]
                     or request["config_revision"] != authority["config_revision"]
+                    or request.get("beadyard_id") != authority.get("beadyard_id")
                     or request["authority_revision"] != head
                     or request["force"] is not False
                     or request["operation"] not in {"adopt", "renew", "release"}
@@ -222,7 +313,9 @@ class SqlTrustedReceiver:
                     raise ReceiverError("signed hive request differs from current grant")
                 lease = self._lease_record(request["lease"])
                 prefix = request["prefix"]
-                old_revision, old_authority, old_lease = self._read_prior(cursor, prefix)
+                old_revision, old_authority, old_lease, old_request_id, old_request_sha = (
+                    self._read_prior(cursor, prefix)
+                )
                 cursor.execute(
                     "SELECT request_sha256,principal,frame_id,holder_identity,instance_ref,"
                     "epoch,audience,signer_fingerprint,expected_revision,result_revision,status "
@@ -256,11 +349,12 @@ class SqlTrustedReceiver:
                     "frame_id": route.frame_id,
                     **authority,
                 }
+                same_incumbent = guard.same_incumbent_after_binding(old_authority, identity)
                 operation = request["operation"]
                 if operation == "release":
                     if (
                         old_lease is None
-                        or old_authority != identity
+                        or not same_incumbent
                         or old_lease.host_id != route.holder_identity
                         or lease.host_id != ""
                         or lease.epoch != old_lease.epoch
@@ -310,11 +404,56 @@ class SqlTrustedReceiver:
                     beat, verified_digest = verify_heartbeat(
                         json.loads(envelope_body), granted_public_key=record["public_key"]
                     )
+                    matching_beat = self._matches(beat, route, authority)
+                    legacy_bridge = False
+                    if (
+                        not matching_beat
+                        and operation == "renew"
+                        and authority.get("beadyard_id") is not None
+                        and beat.beadyard_id is None
+                        and old_authority is not None
+                        and old_lease is not None
+                        and old_authority
+                        == {key: value for key, value in identity.items() if key != "beadyard_id"}
+                        and self._matches(
+                            beat,
+                            route,
+                            {
+                                key: value
+                                for key, value in authority.items()
+                                if key != "beadyard_id"
+                            },
+                        )
+                    ):
+                        old_request = self._accepted_prior_request(
+                            cursor,
+                            route,
+                            old_request_id,
+                            old_request_sha,
+                            old_revision,
+                            "hive_lease",
+                            record["public_key"],
+                        )
+                        legacy_bridge = (
+                            old_request.get("domain") == "beadhive/sql-hive-lease/v1"
+                            and "beadyard_id" not in old_request
+                            and old_request.get("operation") in {"adopt", "renew"}
+                            and old_request.get("principal") == route.principal
+                            and old_request.get("frame_id") == route.frame_id
+                            and old_request.get("holder_identity") == route.holder_identity
+                            and old_request.get("instance_ref") == route.instance_ref
+                            and old_request.get("epoch") == route.epoch
+                            and old_request.get("key_fingerprint") == route.signer_fingerprint
+                            and old_request.get("audience") == authority["audience"]
+                            and old_request.get("config_revision") == authority["config_revision"]
+                            and old_request.get("prefix") == prefix
+                            and old_request.get("lease") == old_lease.to_record()
+                        )
                     if (
                         verified_digest != floor[1]
                         or canonical(beat.model_dump(mode="json", exclude_none=True))
                         != (receipt[0].encode() if isinstance(receipt[0], str) else receipt[0])
-                        or not self._matches(beat, route, authority)
+                        or not (matching_beat or legacy_bridge)
                         or now < floor[2]
                         or now - floor[2] >= beat.leaseDurationSeconds
                         or beat.release.model_dump() != record["desired"]["release"]
@@ -323,6 +462,8 @@ class SqlTrustedReceiver:
                         or any(check.status == "fail" for check in beat.conformance.checks)
                     ):
                         raise ReceiverError("hive lease requires fresh conformant receipt")
+                    if operation == "adopt" and authority.get("beadyard_id") is not None:
+                        self._bound_registration(cursor, route, record, authority["beadyard_id"])
                     caps = record["desired"]["caps"]
                     if type(caps.get("max_sessions")) is not int or caps["max_sessions"] <= 0:
                         raise ReceiverError("no frame intake capacity")
@@ -330,7 +471,7 @@ class SqlTrustedReceiver:
                     if operation == "renew":
                         if (
                             old_lease is None
-                            or old_authority != identity
+                            or not same_incumbent
                             or old_lease.host_id != lease.host_id
                             or old_lease.is_expired(now)
                             or lease.epoch != old_lease.epoch
@@ -529,6 +670,7 @@ class SqlTrustedReceiver:
                         "authority_revision",
                         "manifest",
                     }
+                    | ({"beadyard_id"} if authority.get("beadyard_id") is not None else set())
                     or (
                         request["request_id"],
                         request["principal"],
@@ -553,6 +695,8 @@ class SqlTrustedReceiver:
                     )
                 ):
                     raise ReceiverError("registration identity differs from protected grant")
+                if request.get("beadyard_id") != authority.get("beadyard_id"):
+                    raise ReceiverError("registration belongs to a different beadyard")
                 manifest = HostManifest.model_validate(request["manifest"])
                 if (
                     manifest.frame_id != route.frame_id
@@ -565,6 +709,11 @@ class SqlTrustedReceiver:
                 ):
                     raise ReceiverError("registration differs from declared desired frame")
                 snapshot = self.authority.load_config_at(cursor, crossref, deadline=deadline)
+                if (
+                    manifest.beadyard_id != snapshot.beadyard_id
+                    or manifest.beadyard_id != authority.get("beadyard_id")
+                ):
+                    raise ReceiverError("registration belongs to a different beadyard")
                 documents = [
                     document
                     for document in snapshot.documents
@@ -579,36 +728,106 @@ class SqlTrustedReceiver:
                 if canonical_manifest != manifest:
                     raise ReceiverError("registration differs from committed host manifest")
                 cursor.execute(
-                    "SELECT request_id,request_sha256,manifest_json FROM hq_live_registrations "
+                    "SELECT request_id,request_sha256,manifest_json,signer_fingerprint "
+                    "FROM hq_live_registrations "
                     "WHERE frame_id=%s AND holder_identity=%s AND instance_ref=%s AND epoch=%s",
                     (route.frame_id, route.holder_identity, route.instance_ref, route.epoch),
                 )
                 prior = cursor.fetchone()
                 manifest_body = canonical(manifest.model_dump(mode="json", exclude_none=True))
+                legacy_upgrade = False
                 if prior is not None:
-                    if prior != (request_id, request_sha, manifest_body):
-                        raise ReceiverError(
-                            "registration incarnation already has different evidence"
-                        )
-                    connection.rollback()
-                    return "sha256:" + request_sha
-                self.authority.fresh_config_head_fence(crossref[2], deadline=deadline)
-                self.authority.fresh_runtime_head_fence(head, deadline=deadline)
-                now = self.clock()
-                cursor.execute(
-                    "INSERT INTO hq_live_registrations VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                    (
-                        route.frame_id,
-                        route.holder_identity,
-                        route.instance_ref,
-                        route.epoch,
+                    prior_body = (
+                        prior[2].tobytes() if isinstance(prior[2], memoryview) else prior[2]
+                    )
+                    if isinstance(prior_body, str):
+                        prior_body = prior_body.encode()
+                    if (prior[0], prior[1], prior_body, prior[3]) == (
                         request_id,
                         request_sha,
                         manifest_body,
-                        now,
                         route.signer_fingerprint,
-                    ),
-                )
+                    ):
+                        connection.rollback()
+                        return "sha256:" + request_sha
+                    old_manifest = HostManifest.model_validate_json(prior_body)
+                    old_fields = old_manifest.model_dump(mode="json", exclude_none=True)
+                    next_fields = manifest.model_dump(mode="json", exclude_none=True)
+                    if (
+                        authority.get("beadyard_id") is None
+                        or prior[3] != route.signer_fingerprint
+                        or old_manifest.beadyard_id is not None
+                        or next_fields != {**old_fields, "beadyard_id": authority["beadyard_id"]}
+                        or canonical(old_fields) != prior_body
+                    ):
+                        raise ReceiverError(
+                            "registration incarnation already has different evidence"
+                        )
+                    original = self._accepted_prior_request(
+                        cursor,
+                        route,
+                        prior[0],
+                        prior[1],
+                        "sha256:" + prior[1],
+                        "registration",
+                        record["public_key"],
+                    )
+                    if (
+                        original.get("domain") != "beadhive/sql-registration/v1"
+                        or "beadyard_id" in original
+                        or original.get("manifest") != old_fields
+                        or original.get("principal") != route.principal
+                        or original.get("frame_id") != route.frame_id
+                        or original.get("holder_identity") != route.holder_identity
+                        or original.get("instance_ref") != route.instance_ref
+                        or original.get("epoch") != route.epoch
+                        or original.get("key_fingerprint") != route.signer_fingerprint
+                        or original.get("audience") != authority["audience"]
+                    ):
+                        raise ReceiverError("original signed registration identity unavailable")
+                    legacy_upgrade = True
+                self.authority.fresh_config_head_fence(crossref[2], deadline=deadline)
+                self.authority.fresh_runtime_head_fence(head, deadline=deadline)
+                now = self.clock()
+                if legacy_upgrade:
+                    cursor.execute(
+                        "UPDATE hq_live_registrations SET request_id=%s,request_sha256=%s,"
+                        "manifest_json=%s,accepted_at=%s WHERE frame_id=%s "
+                        "AND holder_identity=%s AND instance_ref=%s AND epoch=%s "
+                        "AND request_id=%s AND request_sha256=%s AND manifest_json=%s "
+                        "AND signer_fingerprint=%s",
+                        (
+                            request_id,
+                            request_sha,
+                            manifest_body,
+                            now,
+                            route.frame_id,
+                            route.holder_identity,
+                            route.instance_ref,
+                            route.epoch,
+                            prior[0],
+                            prior[1],
+                            prior_body,
+                            route.signer_fingerprint,
+                        ),
+                    )
+                    if cursor.rowcount != 1:
+                        raise ReceiverError("original registration row CAS conflict")
+                else:
+                    cursor.execute(
+                        "INSERT INTO hq_live_registrations VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                        (
+                            route.frame_id,
+                            route.holder_identity,
+                            route.instance_ref,
+                            route.epoch,
+                            request_id,
+                            request_sha,
+                            manifest_body,
+                            now,
+                            route.signer_fingerprint,
+                        ),
+                    )
                 cursor.execute(
                     "INSERT INTO hq_live_results VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                     (
@@ -966,6 +1185,7 @@ class SqlTrustedReceiver:
             lease.key_id,
             lease.audience,
             lease.config_revision,
+            lease.beadyard_id,
         ) == (
             route.frame_id,
             route.holder_identity,
@@ -974,4 +1194,5 @@ class SqlTrustedReceiver:
             route.signer_fingerprint,
             authority["audience"],
             authority["config_revision"],
+            authority.get("beadyard_id"),
         )

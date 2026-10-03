@@ -372,7 +372,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             encoding="utf-8",
         )
         REPORT_PATH.write_text(render_report(evidence), encoding="utf-8")
-        print(f"wrote {EVIDENCE_PATH.relative_to(ROOT)}")
+        # Worktree-scoped evidence can live under the shared git directory,
+        # outside this checkout. Writing succeeded; only the display path differs.
+        try:
+            shown_evidence = EVIDENCE_PATH.relative_to(ROOT)
+        except ValueError:
+            shown_evidence = EVIDENCE_PATH
+        print(f"wrote {shown_evidence}")
         print(f"wrote {REPORT_PATH.relative_to(ROOT)}")
         return 0
     evidence = build_checked_evidence()

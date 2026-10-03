@@ -43,12 +43,14 @@ from __future__ import annotations
 
 import threading
 from datetime import UTC, datetime
+from io import StringIO
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import ValidationError
 from ruamel.yaml import YAML
 
 from . import dolt_health
+from .hive_schema_contracts import HiveSchemaRecord
 
 _yaml = YAML()
 _yaml.indent(mapping=2, sequence=4, offset=2)
@@ -74,32 +76,6 @@ DEFAULT_STALE_AFTER_SECONDS = 7 * 24 * 3600.0  # 7 days
 _TIMESTAMP_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
 
-class HiveSchemaRecord(BaseModel):
-    """One hive's last-OBSERVED bd schema version — ``hives/<provider>/<org>/<repo>.yaml`` in
-    HQ. Every field here was measured, never guessed (see module docstring)."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    provider: str = Field(..., description="Repo-group path segment (registry.py's `provider`).")
-    org: str = Field(..., description="Org segment of the hive's identity triplet.")
-    repo: str = Field(..., description="Repo segment of the hive's identity triplet.")
-    schema_version: int = Field(
-        ..., description="The real bd/Dolt migration-count integer (e.g. 59), not a decoy field."
-    )
-    dolt_mode: str = Field(
-        "", description="bd's reported engine mode at observation time (embedded/server/...)."
-    )
-    observed_at: str = Field(
-        ..., description="UTC timestamp (see _TIMESTAMP_FMT) the probe actually ran."
-    )
-    observed_by_host: str = Field(
-        "", description="host_id (beadhive.host.host_id()) of the host that ran the probe."
-    )
-    observed_by_bd_version: str = Field(
-        "", description="`bd --version` output of the bd binary that produced this observation."
-    )
-
-
 def hives_dir(hq_dir: Path) -> Path:
     """The ``hives/`` directory under a given HQ store root. Purely a path computation — mirrors
     `hosts.hosts_dir`; does not create it (`save` does, on write)."""
@@ -116,10 +92,23 @@ def manifest_path(hq_dir: Path, provider: str, org: str, repo: str) -> Path:
 def save(hq_dir: Path, record: HiveSchemaRecord) -> Path:
     """Write ``record`` to its manifest path, creating parent directories as needed. `record` is
     already-validated (a `HiveSchemaRecord` instance cannot exist in an invalid shape)."""
+    from .hq_document_validation import DocumentValidationError, validate_document
+
     p = manifest_path(hq_dir, record.provider, record.org, record.repo)
+    with _yaml_lock:
+        stream = StringIO()
+        try:
+            _yaml.dump(record.model_dump(mode="json", warnings=False), stream)
+        except Exception:
+            raise ManifestError("hive schema candidate serialization invalid") from None
+    try:
+        validate_document(
+            f"hives/{record.provider}/{record.org}/{record.repo}.yaml", stream.getvalue()
+        )
+    except DocumentValidationError as exc:
+        raise ManifestError(str(exc)) from None
     p.parent.mkdir(parents=True, exist_ok=True)
-    with p.open("w") as f, _yaml_lock:
-        _yaml.dump(record.model_dump(mode="json"), f)
+    p.write_text(stream.getvalue())
     return p
 
 
@@ -139,7 +128,10 @@ def load(hq_dir: Path, provider: str, org: str, repo: str) -> HiveSchemaRecord:
     with _yaml_lock:
         raw = _yaml.load(text) or {}
     try:
-        return HiveSchemaRecord.model_validate(raw)
+        record = HiveSchemaRecord.model_validate(raw)
+        if (record.provider, record.org, record.repo) != (provider, org, repo):
+            raise ManifestError("hive schema record path identity mismatch")
+        return record
     except ValidationError as exc:
         lines = [f"malformed hive schema record at {p}:"]
         for err in exc.errors():

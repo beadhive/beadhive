@@ -69,8 +69,11 @@ step ran once — a plugin removed later, or a host provisioned before this bead
 
 from __future__ import annotations
 
+import json
 import shutil
 import stat
+import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -85,11 +88,11 @@ from . import (
     hive_sync,
     host,
     host_cli,
-    hosts,
     hq,
     registry,
     store_locator,
 )
+from . import fleet_roster as hosts
 from .bd import err_line
 from .hive import _install_plugin_claude, _is_plugin_installed
 from .identity import workspace_root
@@ -305,48 +308,66 @@ def _link_workspace_config(sources: list[Path]) -> Path | None:
 
 
 def _step_git_workspace_update(*, dry_run: bool) -> StepResult:
-    cfg = _cfg_or_none()
-    if cfg is None:
-        return StepResult(
-            "git workspace update", "skipped", "no config.yaml yet — see config init above"
-        )
-    sources = gitworkspace.config_paths(cfg)
-    if not sources:
-        return StepResult(
-            "git workspace update",
-            "skipped",
-            f"no workspace*.toml under {workspace_root()}, {config.hq_dir()} or "
-            "git_workspace.path — place one, or `bh hq clone` a fleet that carries one",
-        )
-    if dry_run:
-        return StepResult("git workspace update", "would", "would run `git workspace update`")
+    from contextlib import nullcontext
 
-    linked = _link_workspace_config(sources)
+    sql = config.fleet_sql_selected()
+    transaction = config._write_transaction(config.SCOPE_FLEET) if sql else nullcontext()
+    with transaction:
+        cfg = _cfg_or_none()
+        if cfg is None:
+            return StepResult(
+                "git workspace update", "skipped", "no config.yaml yet — see config init above"
+            )
+        sources = gitworkspace.workspace_sources(cfg)
+        if not sources:
+            return StepResult(
+                "git workspace update",
+                "skipped",
+                f"no workspace*.toml under {workspace_root()}, {config.hq_dir()} or "
+                "git_workspace.path — place one, or `bh hq clone` a fleet that carries one",
+            )
+        if dry_run:
+            return StepResult("git workspace update", "would", "would run `git workspace update`")
 
-    # `github_token=True` and no `env=`: the child environment is CONSTRUCTED by `run` itself
-    # (bh-9qor). git-workspace resolves its root from $GIT_WORKSPACE and queries every provider's
-    # GraphQL API with the token its `env_var` names — on beadhive-factory neither was set in the
-    # invoking shell, and bh knew both. Nothing is written to disk: the token is derived fresh
-    # from `gh auth token` into this one child's environment.
-    res = run(
-        ["git", "workspace", "update"],
-        check=False,
-        capture=True,
-        timeout=GIT_WORKSPACE_TIMEOUT,
-        github_token=True,
-    )
-    if res.returncode != 0:
-        return StepResult("git workspace update", "failed", err_line(res))
-    detail = "repos cloned/updated from providers"
-    if linked is not None:
-        detail += f"; linked {linked} -> {sources[0]}"
-    return StepResult("git workspace update", "done", detail)
+        root = Path(workspace_root())
+        lock = gitworkspace.workspace_projection_lock(root) if sql else nullcontext()
+        with lock:
+            if sql:
+                snapshot = config.fleet_snapshot()
+                if time.time() >= snapshot.valid_until:
+                    raise ValueError("committed workspace configuration validity expired")
+                locked = gitworkspace.lock_committed_workspace_sources(cfg, root, run_child=run)
+                if locked.returncode != 0:
+                    return StepResult("git workspace update", "failed", err_line(locked))
+                materialized = sources
+                linked = None
+            else:
+                linked = _link_workspace_config(gitworkspace.config_paths(cfg))
+                materialized = []
+            # The child environment is constructed by run, including provider token references.
+            res = run(
+                ["git", "workspace", "update"],
+                check=False,
+                capture=True,
+                timeout=GIT_WORKSPACE_TIMEOUT,
+                github_token=True,
+            )
+        if res.returncode != 0:
+            return StepResult("git workspace update", "failed", err_line(res))
+        detail = "repos cloned/updated from providers"
+        if linked is not None:
+            detail += f"; linked {linked} -> {sources[0].path}"
+        if materialized:
+            detail += f"; selected {len(materialized)} workspace source(s)"
+        return StepResult("git workspace update", "done", detail)
 
 
 # ---- step 3: hq.remote (resolve + confirm + persist) --------------------------
 
 
 def _step_hq_remote(*, auto: bool, dry_run: bool) -> StepResult:
+    if config.fleet_sql_selected():
+        return StepResult("hq.remote", "skipped", "central config binding selected")
     cfg = _cfg_or_none()
     if cfg is None:
         return StepResult("hq.remote", "skipped", "no config.yaml yet — see config init above")
@@ -391,6 +412,15 @@ def _reconcile_host_config_after_clone() -> list[str]:
 
 
 def _step_hq_clone(*, dry_run: bool) -> StepResult:
+    if config.fleet_sql_selected():
+        if dry_run:
+            return StepResult("hq clone", "would", "would verify central config attachment")
+        snapshot = config.fleet_snapshot()
+        dropped = config.reconcile_host_after_fleet()
+        detail = f"central config attached at revision {snapshot.commit_revision}"
+        if dropped:
+            detail += f"; reconciled host keys: {', '.join(dropped)}"
+        return StepResult("hq clone", "done", detail)
     hq_dir = config.hq_dir()
     if hq_dir.exists():
         dropped = [] if dry_run else _reconcile_host_config_after_clone()
@@ -458,11 +488,11 @@ def _step_host_init(*, role: str, force: bool, dry_run: bool) -> StepResult:
         return StepResult("host init", "skipped", "no host identity yet — see config init above")
 
     hq_dir = config.hq_dir()
-    if not hq_dir.exists():
+    if not config.fleet_sql_selected() and not hq_dir.exists():
         return StepResult("host init", "skipped", "no local HQ yet — see the hq clone step above")
 
     target = hosts.manifest_path(hq_dir, host_id)
-    exists = target.exists()
+    exists = hosts.exists(hq_dir, host_id)
     if exists and not force:
         return StepResult("host init", "skipped", f"already registered at {target}")
     if dry_run:
@@ -484,6 +514,7 @@ def _step_host_init(*, role: str, force: bool, dry_run: bool) -> StepResult:
 STORE_READY = "ready"  # a local database exists — sync it
 STORE_UNBOOTSTRAPPED = "unbootstrapped"  # published config, no database yet — bootstrap first
 STORE_UNPUBLISHED = "unpublished"  # nothing to bootstrap FROM — the origin never committed one
+STORE_UNAVAILABLE = "unavailable"  # selected engine or origin cannot prove a usable store
 
 
 #: The ref a hive's bead store is published under on its origin. The store travels as this
@@ -539,6 +570,49 @@ def _store_state(hive_dir: Path) -> str:
     return STORE_READY if has_db else STORE_UNBOOTSTRAPPED
 
 
+def _sql_store_state(hive_dir: Path, cfg: dict) -> str:
+    """Probe a selected-SQL host's existing Beads engine before calling it ready.
+
+    A directory alone can be an abandoned or mismatched shared-server database.
+    An unusable recorded store is never bootstrapped over. When there is no
+    database, the hive's own origin decides whether supported `bd bootstrap`
+    can hydrate it; an unreachable origin remains explicitly unavailable.
+    """
+    hive_dir = Path(hive_dir)
+    beads = hive_dir / ".beads"
+    metadata_present = (beads / "metadata.json").is_file()
+    database = store_locator.database_dir(hive_dir)
+    if metadata_present and database.exists():
+        if database.is_symlink() or not (database / ".dolt").is_dir():
+            return STORE_UNAVAILABLE
+        try:
+            probe = engine.get_engine(cfg).invoke(
+                ["list", "--json", "--limit", "1", "--readonly"],
+                cwd=hive_dir,
+                capture=True,
+                timeout=15,
+            )
+            payload = json.loads(probe.stdout or "") if probe.returncode == 0 else None
+            return STORE_READY if isinstance(payload, list) else STORE_UNAVAILABLE
+        except (OSError, ValueError, TypeError, subprocess.TimeoutExpired):
+            return STORE_UNAVAILABLE
+    if database.exists():
+        return STORE_UNAVAILABLE  # database residue without bd's own binding
+    try:
+        source = run(
+            ["git", "ls-remote", "origin", STORE_DATA_REF],
+            cwd=str(hive_dir),
+            check=False,
+            capture=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return STORE_UNAVAILABLE
+    if source.returncode != 0:
+        return STORE_UNAVAILABLE
+    return STORE_UNBOOTSTRAPPED if (source.stdout or "").strip() else STORE_UNPUBLISHED
+
+
 def _bootstrap_hive(cfg, entry: dict) -> str:
     """Hydrate one hive's bead database from its committed remote — ``""`` on success, else the
     error line.
@@ -584,7 +658,7 @@ def _step_bead_sync(*, dry_run: bool, hives: list[str] | None = None) -> StepRes
     and an EMPTY list is a legitimate answer meaning "carry none" — which is why the filter
     distinguishes None (all) from [] (none) rather than treating both as falsey.
     """
-    if not config.hq_dir().exists():
+    if not config.fleet_sql_selected() and not config.hq_dir().exists():
         return StepResult("bead sync", "skipped", "no local HQ yet — see the hq clone step above")
     present = _present_hive_entries(_cfg_or_none())
     if not present:
@@ -604,9 +678,20 @@ def _step_bead_sync(*, dry_run: bool, hives: list[str] | None = None) -> StepRes
         STORE_READY: [],
         STORE_UNBOOTSTRAPPED: [],
         STORE_UNPUBLISHED: [],
+        STORE_UNAVAILABLE: [],
     }
     for entry in selected:
-        by_state[_store_state(registry.hive_dir(entry))].append(entry)
+        state = (
+            _sql_store_state(registry.hive_dir(entry), cfg)
+            if config.fleet_sql_selected()
+            else _store_state(registry.hive_dir(entry))
+        )
+        by_state[state].append(entry)
+    if by_state[STORE_UNAVAILABLE]:
+        prefixes = ", ".join(str(entry["prefix"]) for entry in by_state[STORE_UNAVAILABLE])
+        return StepResult(
+            "bead sync", "failed", f"Beads engine or hive origin unavailable: {prefixes}"
+        )
     unpublished = [str(e["prefix"]) for e in by_state[STORE_UNPUBLISHED]]
     # REPORTED, never bootstrapped or synced: there is nothing on the origin to hydrate from,
     # and calling that a sync failure would send the operator looking at this host.
@@ -749,7 +834,7 @@ def status(cfg=None) -> list[Check]:
             cfg = config.load()
         except FileNotFoundError:
             cfg = None
-        except config.ConfigError as exc:
+        except (ValueError, OSError) as exc:
             cfg = None
             load_error = str(exc)
 
@@ -766,29 +851,37 @@ def status(cfg=None) -> list[Check]:
     )
 
     hq_dir = config.hq_dir()
+    sql = config.fleet_sql_selected()
     hq_present = (hq_dir / ".beads").is_dir()
-    checks.append(Check("HQ local store", hq_present, str(hq_dir)))
-
-    remote = ""
-    if hq_present:
-        got = run(
-            ["git", "-C", str(hq_dir), "remote", "get-url", "origin"],
-            check=False,
-            capture=True,
-            timeout=GIT_TIMEOUT,
-        )
-        remote = (got.stdout or "").strip() if got.returncode == 0 else ""
-    checks.append(Check("HQ remote wired", bool(remote), remote or "no `origin` remote"))
+    if sql:
+        try:
+            snapshot = config.fleet_snapshot()
+            attached, detail = True, f"committed revision {snapshot.commit_revision}"
+        except (ValueError, OSError) as exc:
+            attached, detail = False, str(exc)
+        checks.append(Check("HQ config attachment", attached, detail))
+    else:
+        checks.append(Check("HQ local store", hq_present, str(hq_dir)))
+        remote = ""
+        if hq_present:
+            got = run(
+                ["git", "-C", str(hq_dir), "remote", "get-url", "origin"],
+                check=False,
+                capture=True,
+                timeout=GIT_TIMEOUT,
+            )
+            remote = (got.stdout or "").strip() if got.returncode == 0 else ""
+        checks.append(Check("HQ remote wired", bool(remote), remote or "no `origin` remote"))
 
     manifest_ok = False
     manifest_detail = "no host identity — cannot resolve host_id"
-    if hq_present:
+    if sql or hq_present:
         try:
             hid = host.host_id()
         except FileNotFoundError:
             pass
         else:
-            manifest_ok = hosts.manifest_path(hq_dir, hid).exists()
+            manifest_ok = hosts.exists(hq_dir, hid)
             manifest_detail = (
                 f"hosts/{hid}.yaml"
                 if manifest_ok
@@ -871,6 +964,14 @@ def _step_verify() -> StepResult:
     if failed:
         return StepResult("verify", "failed", "; ".join(f"{c.label}: {c.detail}" for c in failed))
     hives = _present_hive_entries(_cfg_or_none())
+    if config.fleet_sql_selected():
+        return StepResult(
+            "verify",
+            "done",
+            "CONFIG_READY: committed central config, host identity and roster verified; "
+            f"{len(hives)} hive clone(s) present; BEADS_READY and ADMITTED require "
+            "separate engine/runtime checks",
+        )
     if not hives:
         return StepResult(
             "verify",

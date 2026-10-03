@@ -6,6 +6,14 @@
 > Companion work: the config-validation epic (schema model, `bh config validate`, `bh config
 > schema`, lightest version detection, agentic-update offer) and a deferred **migration-engine**
 > bead that this ADR's linear-chain design is written for.
+>
+> Publication rule (bh-hjyir): a present `schema_version` must be the actual
+> integer `SCHEMA_VERSION` (currently `1`), including on a HOST or FLEET
+> fragment. Boolean, string, null, zero, older, and future declarations refuse
+> publication and usable reads. An absent version is legacy input: validate its
+> current canonical shape without stamping, normalizing, or migrating its bytes.
+> This settings version is separate from the HQ Dolt storage schema version and
+> from a hive manifest's observed Beads/Dolt migration count.
 
 ## Context
 

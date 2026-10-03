@@ -139,6 +139,8 @@ def adopt(
     # has it" case costs nothing and leaves no half-state at all.
     evict = (
         lease is not None
+        and not lease.is_tombstone
+        and not lease.is_expired(at)
         and lease.host_id != host_id
         and frame_eligibility.evictable(lease.host_id, hq_dir=hq_cwd, at=at)
     )

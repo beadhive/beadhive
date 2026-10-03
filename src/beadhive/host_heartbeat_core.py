@@ -20,7 +20,7 @@ from jsonschema import Draft202012Validator, FormatChecker, ValidationError
 
 from . import config, gitref, hosts
 from .hq_framelease_contracts import (
-    DOMAIN,
+    DOMAIN_V2,
     HeartbeatError,
     HeartbeatLease,
 )
@@ -45,6 +45,7 @@ class ObservationAuthority:
     audience: str
     config_revision: str
     candidate_expires_at: float | None = None
+    beadyard_id: str | None = None
 
     def __post_init__(self):
         for value in (
@@ -64,6 +65,10 @@ class ObservationAuthority:
             or not math.isfinite(self.candidate_expires_at)
         ):
             raise HeartbeatError("candidate expiry must be finite")
+        if self.beadyard_id is not None:
+            from .beadyard_identity import parse_id
+
+            parse_id(self.beadyard_id)
 
 
 @dataclass(frozen=True)
@@ -192,6 +197,7 @@ def _authority_matches(lease: HeartbeatLease, authority: ObservationAuthority) -
         lease.epoch,
         lease.audience,
         lease.config_revision,
+        lease.beadyard_id,
     ) == (
         authority.frame_id,
         authority.holder_identity,
@@ -200,22 +206,22 @@ def _authority_matches(lease: HeartbeatLease, authority: ObservationAuthority) -
         authority.epoch,
         authority.audience,
         authority.config_revision,
+        authority.beadyard_id,
     )
 
 
 def _binding(lease: HeartbeatLease) -> str:
     # Policy/config revision can change without replacing the runtime incarnation.
-    return hashlib.sha256(
-        gitref.encode(
-            {
-                "frame": lease.frame_id,
-                "host": lease.holderIdentity,
-                "instance": lease.instance_ref,
-                "key": lease.key_id,
-                "audience": lease.audience,
-            }
-        ).encode()
-    ).hexdigest()
+    values = {
+        "frame": lease.frame_id,
+        "host": lease.holderIdentity,
+        "instance": lease.instance_ref,
+        "key": lease.key_id,
+        "audience": lease.audience,
+    }
+    if lease.beadyard_id is not None:
+        values["beadyard_id"] = lease.beadyard_id
+    return hashlib.sha256(gitref.encode(values).encode()).hexdigest()
 
 
 def publish(
@@ -297,7 +303,7 @@ def publish(
     commit = _required(
         ["-c", "gpg.format=ssh", "-c", f"user.signingkey={signing_key}", "commit-tree", "-S", tree],
         hq_dir,
-        f"{DOMAIN}\n",
+        f"{lease.domain}\n",
     )
     if snapshot is not None:
         at = time.time() if now is None else now
@@ -366,12 +372,15 @@ def framelease_envelope(hq_dir: Path, sha: str, trust: Path) -> dict:
         "value": "".join(line.strip() for line in match[1].splitlines()),
     }
     envelope = {
-        "apiVersion": "frame.beadhive.ai/v1alpha1",
+        "apiVersion": "frame.beadhive.ai/v1alpha2"
+        if lease.domain == DOMAIN_V2
+        else "frame.beadhive.ai/v1alpha1",
         "kind": "FrameLease",
         "metadata": {"name": lease.frame_id},
         "spec": spec,
     }
-    schema_path = Path(__file__).parent / "schemas/frame/v1alpha1/framelease.schema.json"
+    schema_version = "v1alpha2" if lease.domain == DOMAIN_V2 else "v1alpha1"
+    schema_path = Path(__file__).parent / f"schemas/frame/{schema_version}/framelease.schema.json"
     schema = json.loads(schema_path.read_text())
     try:
         Draft202012Validator(schema, format_checker=FormatChecker()).validate(envelope)
@@ -425,6 +434,8 @@ def _identity_matches(lease, fingerprint, manifest, authority):
         (lease.epoch, authority.epoch),
         (lease.audience, authority.audience),
         (lease.config_revision, authority.config_revision),
+        (lease.beadyard_id, authority.beadyard_id),
+        (manifest.beadyard_id, authority.beadyard_id),
         (lease.holderIdentity, manifest.host_id),
         (lease.frame_id, manifest.frame_id or manifest.host_id),
     )

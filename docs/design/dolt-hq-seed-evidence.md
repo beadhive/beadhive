@@ -1,0 +1,470 @@
+# Redacted HQ seed inspection evidence
+
+This value-free index supplements [the seed inventory](dolt-hq-current-seed-inventory.md).
+It is review documentation, not the access-controlled migration snapshot. Source mappings
+and exact canonical identities remain in the restricted capture specified by that decision.
+
+```json
+{
+  "canonical_hive_ids_sha256": "1f0eca46095a3401ed29a50ae039336333d170617f4afb81071fba29bdbf9b6a",
+  "central_workspace_seed": "reconciled-current-effective-provider-projection",
+  "effective_workspace_source": "external-host-workspace",
+  "files": [
+    {
+      "sha256": "e03d0a6b8df03f212aaee6c7c53c1313cf94e6e5a7b55cf9f6491d5223161e15",
+      "source": "fleet:01"
+    },
+    {
+      "sha256": "97ebdd94689ec37c18a58a1188cfe43b8a6f06f5cc68f9ce1176349c4f9c08e4",
+      "source": "workspace:01"
+    },
+    {
+      "sha256": "c92a691966b3f53c49759a9474064d27db99436f66432547aaeafd5bb6e30b36",
+      "source": "public-signer-policy:01"
+    },
+    {
+      "sha256": "93f0ef7b4a89c3fcaa2efceac9aefde230093714e4ede89f28176ab44fcaeb3e",
+      "source": "host-manifest:01"
+    },
+    {
+      "sha256": "9251981a5ea606c30dc6aa8c2b4a47fb97db51e9fd1d917e07cc376376532e02",
+      "source": "host-manifest:02"
+    },
+    {
+      "sha256": "7b109d46304f8a9488b3c583825d75b11b09410af66cc18315f4ce2bcd41ff8d",
+      "source": "observed-hive-manifest:01"
+    },
+    {
+      "sha256": "c9ad8d4dec465426d830637cb24627b5072929762f09aa134c1b628db4756ee9",
+      "source": "observed-hive-manifest:02"
+    },
+    {
+      "sha256": "9cceb9c0053e707127dd7692d9df2e636c8714c601e0c8650f0c7a43b5ec28d2",
+      "source": "observed-hive-manifest:03"
+    },
+    {
+      "sha256": "f9aef18e6776d79fd3b2fdc187dc0104b924b74a7f4392949314b96aa39edd75",
+      "source": "observed-hive-manifest:04"
+    },
+    {
+      "sha256": "0e0a49714c8c98288cd38693f1611a538129de55e62de7d9d1ee29b39f4bf83a",
+      "source": "observed-hive-manifest:05"
+    },
+    {
+      "sha256": "1b4b4e112f809c733cc369e7c46fe57e76d474577a6f9999fa3e9770e19ff815",
+      "source": "observed-hive-manifest:06"
+    },
+    {
+      "sha256": "96d6777d2e27169a5dceb4dba6803b50c68db8687e0f5e5f87cb7166c2717c50",
+      "source": "observed-hive-manifest:07"
+    },
+    {
+      "sha256": "bf539d9c7eebdf3186525d4a6ae703d7e7e87e35e9d86a194f6c02df2804c602",
+      "source": "observed-hive-manifest:08"
+    },
+    {
+      "sha256": "4c5ac08941f793e5b3a4a97323485337c6b0d9454703a5a7b089c110244ae590",
+      "source": "observed-hive-manifest:09"
+    },
+    {
+      "sha256": "3c9ae5a54020d23a76ddecf1d051a857d89d24bcb2a1d4e43407de57803b95c9",
+      "source": "observed-hive-manifest:10"
+    },
+    {
+      "sha256": "bc626c3044ef70a52a0b9daccc900749ebc6f6b67759ff8e0683fc32865e379e",
+      "source": "observed-hive-manifest:11"
+    },
+    {
+      "sha256": "33f52b211b282c16d5b293714230e8b8638191a5b4865230d1473ad2a753ae98",
+      "source": "observed-hive-manifest:12"
+    },
+    {
+      "sha256": "0e5335b6279edc7499fed593585372994af6d2ad33fb935884da6ff2e7a9d5a1",
+      "source": "observed-hive-manifest:13"
+    },
+    {
+      "sha256": "afb23dd1b3e0a163de695c11567757627bd6d9edce594576ff5f3b026ded587f",
+      "source": "observed-hive-manifest:14"
+    },
+    {
+      "sha256": "c68d250622bd090ea08b1e82cd64474eb6065ed702b97031ccf248ce332e87c7",
+      "source": "observed-hive-manifest:15"
+    },
+    {
+      "sha256": "bf64b243cfe129f074de9d8fdcc61a9a63c754cbc6a1b28caa09d09449160fa3",
+      "source": "observed-hive-manifest:16"
+    },
+    {
+      "sha256": "1bcb720aa1e1590c941b6e6649aa18a749a8d1a59fa26719df7a24e1a13483e5",
+      "source": "observed-hive-manifest:17"
+    },
+    {
+      "sha256": "8b25492ceda74771f57d048c363bfa142f3883a4eaebdfe63095b61568e41d31",
+      "source": "observed-hive-manifest:18"
+    },
+    {
+      "sha256": "66d668949506bb4e1a4c726b68b5f8176e901c68445bb15d26a7aaecdabd6df6",
+      "source": "observed-hive-manifest:19"
+    },
+    {
+      "sha256": "f8e0ee5c4f3c2d38b9879bbf29bd0659286f8158571e5c3166deda77161a61e9",
+      "source": "observed-hive-manifest:20"
+    },
+    {
+      "sha256": "1191a6c84293c82f1c3871977f2e0094800094c061731be7abd8d140629c3116",
+      "source": "observed-hive-manifest:21"
+    },
+    {
+      "sha256": "ed329c4fd3b8766e1f469cb4186684e12b86b147bfe275ba6057f511167d2c5e",
+      "source": "observed-hive-manifest:22"
+    },
+    {
+      "sha256": "d02926f647ad98feaa7e3356030e8927d18ac778fcaa8c6c34318bedf86546d2",
+      "source": "observed-hive-manifest:23"
+    },
+    {
+      "sha256": "091c8f7152da251df2fffe4c477c888c6270f2e69aea66cef592fed96cd08386",
+      "source": "observed-hive-manifest:24"
+    },
+    {
+      "sha256": "1a4c95617eb23ec8a46589e067a787d707cddbb7c83e625ae7b8b073f3e29b63",
+      "source": "observed-hive-manifest:25"
+    },
+    {
+      "sha256": "d8c92a6c31393778d849dacb028fdc63cbb7c0b2531b423341a8361675e56702",
+      "source": "observed-hive-manifest:26"
+    },
+    {
+      "sha256": "bc6dfd243f5517a22fa980c5cf78e44e27d929294c4470ac061514a9a42a4d7a",
+      "source": "observed-hive-manifest:27"
+    },
+    {
+      "sha256": "9614e984f7b670c96dc1271ccd4e3349e84c5584eb102e6322124be9d5c1f23d",
+      "source": "source-host-config:01"
+    },
+    {
+      "sha256": "d4a8e232a9900a6bc873cd391c0fd296b614c23c1ce28ff11c068690e024ce00",
+      "source": "hive-beads-config:01"
+    },
+    {
+      "sha256": "406a6d9fddba3a5040678fa7965d12d692b7622f687a1f883794140a42f28ac3",
+      "source": "hive-beads-metadata:01"
+    },
+    {
+      "sha256": "0ee8f3464ffefce1af1b6c4f281b660a0bce42dbd279badfdb77a6025f641517",
+      "source": "effective-external-workspace:01"
+    },
+    {
+      "sha256": "772a74a98da4b5bd2b9479c8f6c051fd69cd08d703cdfe0fea160461574a5433",
+      "source": "effective-external-workspace:02"
+    }
+  ],
+  "fleet_field_ownership": {
+    "delimiter": "fleet",
+    "dimensions.component.description": "fleet",
+    "dimensions.harness.description": "fleet",
+    "dimensions.harness.values.0": "fleet",
+    "dimensions.harness.values.1": "fleet",
+    "dimensions.model.description": "fleet",
+    "dimensions.model.values.0": "fleet",
+    "dimensions.model.values.1": "fleet",
+    "dimensions.model.values.2": "fleet",
+    "dimensions.origin.description": "fleet",
+    "dimensions.origin.values.0": "fleet",
+    "dimensions.tag.description": "fleet",
+    "exclude.orgs.0": "fleet",
+    "exclude.orgs.1": "fleet",
+    "exclude.orgs.2": "fleet",
+    "exclude.orgs.3": "fleet",
+    "managed_repos.0.kind": "fleet",
+    "managed_repos.0.org": "fleet",
+    "managed_repos.0.prefix": "fleet",
+    "managed_repos.0.provider": "fleet",
+    "managed_repos.0.repo": "fleet",
+    "managed_repos.0.work.validate_cmd": "fleet",
+    "managed_repos.1.kind": "fleet",
+    "managed_repos.1.org": "fleet",
+    "managed_repos.1.prefix": "fleet",
+    "managed_repos.1.provider": "fleet",
+    "managed_repos.1.repo": "fleet",
+    "managed_repos.10.furnish": "fleet",
+    "managed_repos.10.kind": "fleet",
+    "managed_repos.10.org": "fleet",
+    "managed_repos.10.prefix": "fleet",
+    "managed_repos.10.provider": "fleet",
+    "managed_repos.10.repo": "fleet",
+    "managed_repos.11.furnish": "fleet",
+    "managed_repos.11.kind": "fleet",
+    "managed_repos.11.org": "fleet",
+    "managed_repos.11.prefix": "fleet",
+    "managed_repos.11.provider": "fleet",
+    "managed_repos.11.repo": "fleet",
+    "managed_repos.12.furnish": "fleet",
+    "managed_repos.12.kind": "fleet",
+    "managed_repos.12.org": "fleet",
+    "managed_repos.12.prefix": "fleet",
+    "managed_repos.12.provider": "fleet",
+    "managed_repos.12.repo": "fleet",
+    "managed_repos.13.furnish": "fleet",
+    "managed_repos.13.kind": "fleet",
+    "managed_repos.13.org": "fleet",
+    "managed_repos.13.prefix": "fleet",
+    "managed_repos.13.provider": "fleet",
+    "managed_repos.13.repo": "fleet",
+    "managed_repos.14.furnish": "fleet",
+    "managed_repos.14.kind": "fleet",
+    "managed_repos.14.org": "fleet",
+    "managed_repos.14.prefix": "fleet",
+    "managed_repos.14.provider": "fleet",
+    "managed_repos.14.repo": "fleet",
+    "managed_repos.15.furnish": "fleet",
+    "managed_repos.15.kind": "fleet",
+    "managed_repos.15.org": "fleet",
+    "managed_repos.15.prefix": "fleet",
+    "managed_repos.15.provider": "fleet",
+    "managed_repos.15.repo": "fleet",
+    "managed_repos.16.kind": "fleet",
+    "managed_repos.16.org": "fleet",
+    "managed_repos.16.prefix": "fleet",
+    "managed_repos.16.provider": "fleet",
+    "managed_repos.16.repo": "fleet",
+    "managed_repos.17.furnish": "fleet",
+    "managed_repos.17.kind": "fleet",
+    "managed_repos.17.org": "fleet",
+    "managed_repos.17.prefix": "fleet",
+    "managed_repos.17.provider": "fleet",
+    "managed_repos.17.repo": "fleet",
+    "managed_repos.18.furnish": "fleet",
+    "managed_repos.18.kind": "fleet",
+    "managed_repos.18.org": "fleet",
+    "managed_repos.18.prefix": "fleet",
+    "managed_repos.18.provider": "fleet",
+    "managed_repos.18.repo": "fleet",
+    "managed_repos.19.contribution": "fleet",
+    "managed_repos.19.furnish": "fleet",
+    "managed_repos.19.kind": "fleet",
+    "managed_repos.19.org": "fleet",
+    "managed_repos.19.prefix": "fleet",
+    "managed_repos.19.provider": "fleet",
+    "managed_repos.19.repo": "fleet",
+    "managed_repos.19.upstream": "fleet",
+    "managed_repos.2.kind": "fleet",
+    "managed_repos.2.org": "fleet",
+    "managed_repos.2.prefix": "fleet",
+    "managed_repos.2.provider": "fleet",
+    "managed_repos.2.repo": "fleet",
+    "managed_repos.20.kind": "fleet",
+    "managed_repos.20.org": "fleet",
+    "managed_repos.20.prefix": "fleet",
+    "managed_repos.20.provider": "fleet",
+    "managed_repos.20.repo": "fleet",
+    "managed_repos.20.work.validate_cmd": "fleet",
+    "managed_repos.21.furnish": "fleet",
+    "managed_repos.21.kind": "fleet",
+    "managed_repos.21.org": "fleet",
+    "managed_repos.21.prefix": "fleet",
+    "managed_repos.21.provider": "fleet",
+    "managed_repos.21.repo": "fleet",
+    "managed_repos.22.furnish": "fleet",
+    "managed_repos.22.kind": "fleet",
+    "managed_repos.22.observaloop.enabled": "fleet",
+    "managed_repos.22.org": "fleet",
+    "managed_repos.22.prefix": "fleet",
+    "managed_repos.22.provider": "fleet",
+    "managed_repos.22.repo": "fleet",
+    "managed_repos.23.furnish": "fleet",
+    "managed_repos.23.kind": "fleet",
+    "managed_repos.23.org": "fleet",
+    "managed_repos.23.prefix": "fleet",
+    "managed_repos.23.provider": "fleet",
+    "managed_repos.23.repo": "fleet",
+    "managed_repos.23.upstream": "fleet",
+    "managed_repos.23.work.dispatch.mode": "fleet",
+    "managed_repos.23.work.validate.merge": "fleet",
+    "managed_repos.23.work.validate.molecule": "fleet",
+    "managed_repos.23.work.validate.submit": "fleet",
+    "managed_repos.23.work.validate_cmd": "fleet",
+    "managed_repos.23.work.validation": "fleet",
+    "managed_repos.23.worktree_init.0.if_exists": "fleet",
+    "managed_repos.23.worktree_init.0.run": "fleet",
+    "managed_repos.23.worktree_init.0.verify": "fleet",
+    "managed_repos.24.furnish": "fleet",
+    "managed_repos.24.kind": "fleet",
+    "managed_repos.24.org": "fleet",
+    "managed_repos.24.prefix": "fleet",
+    "managed_repos.24.provider": "fleet",
+    "managed_repos.24.repo": "fleet",
+    "managed_repos.25.kind": "fleet",
+    "managed_repos.25.org": "fleet",
+    "managed_repos.25.prefix": "fleet",
+    "managed_repos.25.provider": "fleet",
+    "managed_repos.25.repo": "fleet",
+    "managed_repos.26.furnish": "fleet",
+    "managed_repos.26.kind": "fleet",
+    "managed_repos.26.orca.enabled": "fleet",
+    "managed_repos.26.org": "fleet",
+    "managed_repos.26.prefix": "fleet",
+    "managed_repos.26.provider": "fleet",
+    "managed_repos.26.repo": "fleet",
+    "managed_repos.3.kind": "fleet",
+    "managed_repos.3.org": "fleet",
+    "managed_repos.3.prefix": "fleet",
+    "managed_repos.3.provider": "fleet",
+    "managed_repos.3.repo": "fleet",
+    "managed_repos.3.work.validate.submit": "fleet",
+    "managed_repos.3.work.validate_cmd": "fleet",
+    "managed_repos.4.furnish": "fleet",
+    "managed_repos.4.kind": "fleet",
+    "managed_repos.4.org": "fleet",
+    "managed_repos.4.prefix": "fleet",
+    "managed_repos.4.provider": "fleet",
+    "managed_repos.4.repo": "fleet",
+    "managed_repos.4.work.validate_cmd": "fleet",
+    "managed_repos.5.furnish": "fleet",
+    "managed_repos.5.kind": "fleet",
+    "managed_repos.5.org": "fleet",
+    "managed_repos.5.prefix": "fleet",
+    "managed_repos.5.provider": "fleet",
+    "managed_repos.5.repo": "fleet",
+    "managed_repos.5.work.attest.impact.backend": "fleet",
+    "managed_repos.5.work.attest.impact.on_unresolved": "fleet",
+    "managed_repos.5.work.attest.keys.0.cmd": "fleet",
+    "managed_repos.5.work.attest.keys.0.name": "fleet",
+    "managed_repos.5.work.attest.keys.0.selectors.paths": "fleet",
+    "managed_repos.5.work.attest.keys.1.cmd": "fleet",
+    "managed_repos.5.work.attest.keys.1.name": "fleet",
+    "managed_repos.5.work.attest.keys.1.selectors.paths": "fleet",
+    "managed_repos.5.work.attest.keys.2.cmd": "fleet",
+    "managed_repos.5.work.attest.keys.2.name": "fleet",
+    "managed_repos.5.work.attest.keys.2.selectors.paths": "fleet",
+    "managed_repos.5.work.attest.keys.3.cmd": "fleet",
+    "managed_repos.5.work.attest.keys.3.name": "fleet",
+    "managed_repos.5.work.attest.keys.3.selectors.paths": "fleet",
+    "managed_repos.5.work.attest.keys.4.cmd": "fleet",
+    "managed_repos.5.work.attest.keys.4.name": "fleet",
+    "managed_repos.5.work.attest.keys.4.selectors.paths": "fleet",
+    "managed_repos.5.work.attest.keys.5.cmd": "fleet",
+    "managed_repos.5.work.attest.keys.5.name": "fleet",
+    "managed_repos.5.work.attest.keys.5.selectors.paths": "fleet",
+    "managed_repos.5.work.attest.keys.6.cmd": "fleet",
+    "managed_repos.5.work.attest.keys.6.name": "fleet",
+    "managed_repos.5.work.attest.keys.6.selectors.paths": "fleet",
+    "managed_repos.5.work.attest.keys.7.cmd": "fleet",
+    "managed_repos.5.work.attest.keys.7.name": "fleet",
+    "managed_repos.5.work.attest.keys.7.selectors.paths": "fleet",
+    "managed_repos.5.work.attest.keys.8.cmd": "fleet",
+    "managed_repos.5.work.attest.keys.8.name": "fleet",
+    "managed_repos.5.work.attest.keys.8.selectors.paths": "fleet",
+    "managed_repos.5.work.attest.semantic.enabled": "fleet",
+    "managed_repos.5.work.attest.trivial.enabled": "fleet",
+    "managed_repos.5.work.beads.route": "fleet",
+    "managed_repos.5.work.demo_cmd": "fleet",
+    "managed_repos.5.work.validate.merge": "fleet",
+    "managed_repos.5.work.validate.merge-main": "fleet",
+    "managed_repos.5.work.validate.molecule": "fleet",
+    "managed_repos.5.work.validate.postland": "fleet",
+    "managed_repos.5.work.validate.push-main": "fleet",
+    "managed_repos.5.work.validate.submit": "fleet",
+    "managed_repos.5.work.validate.union": "fleet",
+    "managed_repos.5.work.validate_cmd": "fleet",
+    "managed_repos.5.work.validation": "fleet",
+    "managed_repos.5.work.validation_bypass": "fleet",
+    "managed_repos.6.furnish": "fleet",
+    "managed_repos.6.kind": "fleet",
+    "managed_repos.6.org": "fleet",
+    "managed_repos.6.prefix": "fleet",
+    "managed_repos.6.provider": "fleet",
+    "managed_repos.6.repo": "fleet",
+    "managed_repos.6.work.demo_cmd": "fleet",
+    "managed_repos.6.work.validate.push-main": "fleet",
+    "managed_repos.7.furnish": "fleet",
+    "managed_repos.7.kind": "fleet",
+    "managed_repos.7.org": "fleet",
+    "managed_repos.7.prefix": "fleet",
+    "managed_repos.7.provider": "fleet",
+    "managed_repos.7.repo": "fleet",
+    "managed_repos.8.furnish": "fleet",
+    "managed_repos.8.kind": "fleet",
+    "managed_repos.8.org": "fleet",
+    "managed_repos.8.prefix": "fleet",
+    "managed_repos.8.provider": "fleet",
+    "managed_repos.8.repo": "fleet",
+    "managed_repos.9.furnish": "fleet",
+    "managed_repos.9.kind": "fleet",
+    "managed_repos.9.org": "fleet",
+    "managed_repos.9.prefix": "fleet",
+    "managed_repos.9.provider": "fleet",
+    "managed_repos.9.repo": "fleet",
+    "orgs.agentguides.code": "fleet",
+    "orgs.agentguides.policy": "fleet",
+    "orgs.beadhive.code": "fleet",
+    "orgs.beadhive.policy": "fleet",
+    "orgs.briancripe.code": "fleet",
+    "orgs.briancripe.policy": "fleet",
+    "passthrough.bd_enabled": "fleet",
+    "schema_version": "fleet",
+    "work.beads.route": "fleet",
+    "work.dispatch.mode": "fleet",
+    "work.dispatch.review_mode": "fleet",
+    "work.dispatch.reviewer_cross_seat": "fleet",
+    "work.enforce_signing": "fleet",
+    "work.identity.email": "host",
+    "work.identity.name": "host",
+    "work.routing.policy": "fleet",
+    "work.routing.tiers.0.ceiling": "fleet",
+    "work.routing.tiers.0.floor": "fleet",
+    "work.routing.tiers.0.model": "fleet",
+    "work.routing.tiers.1.ceiling": "fleet",
+    "work.routing.tiers.1.floor": "fleet",
+    "work.routing.tiers.1.model": "fleet",
+    "work.routing.tiers.2.ceiling": "fleet",
+    "work.routing.tiers.2.floor": "fleet",
+    "work.routing.tiers.2.model": "fleet",
+    "work.routing.tiers.3.ceiling": "fleet",
+    "work.routing.tiers.3.floor": "fleet",
+    "work.routing.tiers.3.model": "fleet",
+    "work.routing.tiers.4.ceiling": "fleet",
+    "work.routing.tiers.4.floor": "fleet",
+    "work.routing.tiers.4.model": "fleet",
+    "work.routing.tiers.5.ceiling": "fleet",
+    "work.routing.tiers.5.floor": "fleet",
+    "work.routing.tiers.5.model": "fleet",
+    "work.routing.tiers.6.ceiling": "fleet",
+    "work.routing.tiers.6.floor": "fleet",
+    "work.routing.tiers.6.model": "fleet",
+    "work.validation": "fleet",
+    "worktrees.ephemeral": "fleet",
+    "worktrees.init.0.if_exists": "fleet",
+    "worktrees.init.0.run": "fleet",
+    "worktrees.init.0.verify": "fleet",
+    "worktrees.init.1.if_exists": "fleet",
+    "worktrees.init.1.run": "fleet",
+    "worktrees.init.1.verify": "fleet",
+    "worktrees.init.2.if_exists": "fleet",
+    "worktrees.init.2.run": "fleet",
+    "worktrees.init.3.if_exists": "fleet",
+    "worktrees.init.3.run": "fleet",
+    "worktrees.init.3.verify": "fleet",
+    "worktrees.init.4.if_exists": "fleet",
+    "worktrees.init.4.run": "fleet"
+  },
+  "format": "beadhive.hq-seed-evidence.v1",
+  "host_count": 2,
+  "host_field_ownership": {
+    "dolt.backend": "host",
+    "host.daemon.auth.credential_file": "host",
+    "host.daemon.enabled": "host",
+    "hq.remote": "host",
+    "work.validation_slots": "host"
+  },
+  "inspected_at": "2026-10-01",
+  "managed_hive_count": 27,
+  "observed_hive_count": 27,
+  "observed_without_registration_count": 1,
+  "registered_without_observation_count": 1,
+  "source_git_dirty": [
+    "fleet.yaml"
+  ],
+  "source_git_head": "5a2015cd94c93df7b917f5847f366c52786f1105"
+}
+```

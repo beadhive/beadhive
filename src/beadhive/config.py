@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import sys
 import tempfile  # noqa: F401  # compatibility: callers patch config.tempfile.gettempdir
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 from . import config_edit as _config_edit
@@ -35,6 +37,9 @@ _Env = _config_paths.Env
 _DEFAULT_HOME_OLD = Path("~/.ws").expanduser()
 _DEFAULT_HOME_NEW = Path("~/.beadhive").expanduser()
 _UNSET = object()
+_legacy_migration_original: ContextVar[bytes | None] = ContextVar(
+    "legacy_migration_original", default=None
+)
 
 _yaml = _config_store.yaml
 _yaml_lock = _config_store.yaml_lock
@@ -61,6 +66,13 @@ KNOWN_SECTIONS = _known_sections()
 
 def _facade():
     return sys.modules[__name__]
+
+
+def _workspace_root_for_transition() -> Path:
+    """Composition port for the canonical post-switch workspace root."""
+    from . import identity
+
+    return Path(identity.workspace_root())
 
 
 def _warning(event: str, *, logger_name: str | None = None, **fields) -> None:
@@ -223,11 +235,42 @@ def fleet_path() -> Path:
 
 
 def load_host():
-    return _config_store.load_path(_facade(), config_path())
+    return _config_store.load_host(_facade())
+
+
+def load_host_raw_for_repair():
+    """Opaque HOST source for explicit repair only; never a usable config view."""
+    return _config_store.load_host_raw_for_repair(_facade())
+
+
+def load_raw_for_diagnostics():
+    """Opaque source for explicit validation messages, never for runtime use."""
+    return _config_store.load_raw_for_diagnostics(_facade())
 
 
 def load_fleet():
-    return _config_store.load_path(_facade(), fleet_path(), missing_ok=True)
+    return _config_store.load_fleet(_facade())
+
+
+def load_fleet_raw_for_repair():
+    """Opaque local Git FLEET source for explicit repair only."""
+    return _config_store.load_fleet_raw_for_repair(_facade())
+
+
+def fleet_sql_selected() -> bool:
+    return _config_store.sql_selected(_facade())
+
+
+def fleet_snapshot():
+    return _config_store.fleet_snapshot(_facade())
+
+
+def publish_fleet_document(path: str, content: str | None):
+    return _config_store.publish_fleet_document(_facade(), path, content)
+
+
+def fleet_transaction_active() -> bool:
+    return _config_store.fleet_transaction_active()
 
 
 def _leaf_paths(node, prefix: str = ""):
@@ -271,7 +314,33 @@ def _guard_hq_registry_controller() -> None:
 
 
 def save(data) -> None:
-    _config_store.save_host(_facade(), data)
+    original_bytes = _legacy_migration_original.get()
+    if original_bytes is None:
+        _config_store.save_host(_facade(), data)
+    else:
+        _config_store.save_host_legacy_migration(_facade(), data, original_bytes=original_bytes)
+
+
+@contextmanager
+def _legacy_migration_scope(original_bytes: bytes):
+    """Keep the public save seam while pinning a known raw HOST repair."""
+    token = _legacy_migration_original.set(original_bytes)
+    try:
+        yield
+    finally:
+        _legacy_migration_original.reset(token)
+
+
+def save_after_verified_hq_export(data, receipt, mirror_plan) -> None:
+    """Select Git only after exact live SQL and signed Git export qualification."""
+    _config_store.save_host_after_verified_export(_facade(), data, receipt, mirror_plan)
+
+
+def save_after_verified_hq_seed(data, *, revision: str, beadyard_id: str) -> None:
+    """Select SQL only after exact committed seed and post-switch readback."""
+    _config_store.save_host_after_verified_seed(
+        _facade(), data, revision=revision, beadyard_id=beadyard_id
+    )
 
 
 def save_fleet(data) -> None:
@@ -287,6 +356,8 @@ def load_reconciling() -> dict:
 
 
 def _write_transaction(scope: str):
+    if scope == SCOPE_FLEET:
+        return _config_store.fleet_mutation(_facade())
     path = fleet_path() if scope == SCOPE_FLEET else config_path()
     return _config_store.mutation(path)
 

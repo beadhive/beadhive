@@ -29,6 +29,7 @@ never a silent partial read.
 
 from __future__ import annotations
 
+from io import StringIO
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -96,10 +97,20 @@ def save(hq_dir: Path, manifest: HostManifest) -> Path:
     directory if needed. ``manifest`` is already-validated — a :class:`HostManifest` instance
     cannot exist in an invalid shape — so this never writes something :func:`load` would then
     reject."""
+    from .hq_document_validation import DocumentValidationError, validate_document
+
     p = manifest_path(hq_dir, manifest.host_id)
+    stream = StringIO()
+    try:
+        _yaml.dump(manifest.model_dump(mode="json", warnings=False), stream)
+    except Exception:
+        raise ManifestError("host manifest candidate serialization invalid") from None
+    try:
+        validate_document(f"hosts/{manifest.host_id}.yaml", stream.getvalue())
+    except DocumentValidationError as exc:
+        raise ManifestError(str(exc)) from None
     p.parent.mkdir(parents=True, exist_ok=True)
-    with p.open("w") as f:
-        _yaml.dump(manifest.model_dump(mode="json"), f)
+    p.write_text(stream.getvalue())
     return p
 
 
@@ -135,7 +146,10 @@ def load(hq_dir: Path, host_id: str) -> HostManifest:
     if isinstance(raw, dict) and "state" not in raw:
         raw = {**raw, "state": "active"}
     try:
-        return HostManifest.model_validate(raw)
+        manifest = HostManifest.model_validate(raw)
+        if manifest.host_id != host_id:
+            raise ManifestError("host manifest path identity mismatch")
+        return manifest
     except ValidationError as exc:
         raise ManifestError(_format_error(p, exc)) from exc
 

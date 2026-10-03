@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 from collections.abc import Callable, Mapping, MutableMapping
 from contextlib import AbstractContextManager
@@ -21,6 +22,27 @@ class FleetConfigDocument:
     content: str
 
 
+def ordered_documents_digest(documents) -> str:
+    """Canonical ordered raw-document digest shared by both config adapters."""
+    digest = hashlib.sha256()
+    for document in documents:
+        path = document.path.encode("utf-8")
+        content = document.content.encode("utf-8")
+        digest.update(len(path).to_bytes(4, "big"))
+        digest.update(path)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()
+
+
+@dataclass(frozen=True)
+class RawFleetConfigRevision:
+    """Privileged repair input, never a usable settings or admission snapshot."""
+
+    expected_revision: str
+    documents: tuple[FleetConfigDocument, ...]
+
+
 @dataclass(frozen=True)
 class FleetConfigSnapshot:
     """Committed raw documents plus provenance outside persisted settings keys."""
@@ -31,6 +53,18 @@ class FleetConfigSnapshot:
     fetched_at: float
     valid_until: float
     documents: tuple[FleetConfigDocument, ...]
+
+    @property
+    def beadyard_id(self) -> str | None:
+        """Portable HQ instance binding; ``None`` is explicit legacy absence.
+
+        It is derived from the one raw document, never a second stored copy or
+        a generated default. Signed Git and committed Dolt adapters retain the
+        document unchanged through export/import and backend switches.
+        """
+        from .beadyard_identity import identity_in_documents
+
+        return identity_in_documents(self.documents, required=False)
 
     def __post_init__(self):
         if any(
@@ -122,6 +156,8 @@ __all__ = (
     "ConfigScope",
     "EnvironmentSourcePort",
     "FleetConfigDocument",
+    "RawFleetConfigRevision",
     "FleetConfigSnapshot",
     "FleetConfigRevisionPort",
+    "ordered_documents_digest",
 )

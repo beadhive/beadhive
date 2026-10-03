@@ -23,6 +23,7 @@ import pytest
 import typer
 
 from beadhive import config, hq, hub, registry, validate
+from beadhive.beadyard_identity_file import read_identity
 from harness.beads import skip_if_no_bd
 from harness.world import git
 
@@ -126,6 +127,36 @@ def test_hq_init_refuses_failed_main_initialization(world, monkeypatch):
     assert registry.hive_of_kind(config.load(), registry.HQ_KIND) is None
 
 
+def test_hq_init_recovers_pending_new_store_after_branch_failure(world, monkeypatch):
+    from subprocess import CompletedProcess
+
+    _stub_store_and_sync(monkeypatch)
+    original_git = hq._git
+    monkeypatch.setattr(
+        hq, "_git", lambda args, cwd: CompletedProcess(args, 1, "", "branch initialization denied")
+    )
+    with pytest.raises(RuntimeError, match="cannot initialize HQ main branch"):
+        hq.init()
+    assert (config.hq_dir() / ".git").exists()
+    assert read_identity(config.hq_dir()) is None
+    assert registry.hive_of_kind(config.load(), registry.HQ_KIND) is None
+
+    monkeypatch.setattr(hq, "_git", original_git)
+    hq.init()
+    assert read_identity(config.hq_dir()) is not None
+    assert registry.hive_of_kind(config.load(), registry.HQ_KIND) is not None
+    assert not list(config.hq_dir().parent.glob(".beadyard-hq-*.pending"))
+
+
+def test_hq_init_does_not_mint_for_preexisting_legacy_store(world, monkeypatch):
+    _stub_store_and_sync(monkeypatch)
+    old_hq = config.hq_dir()
+    old_hq.mkdir(parents=True)
+    git("init", "-b", "main", str(old_hq))
+    hq.init()
+    assert read_identity(old_hq) is None
+
+
 def test_hq_init_registers_synthetic_identity_and_does_not_aggregate(world, monkeypatch):
     """bh-89wxf.2: standing HQ up has nothing to do with hydrating the fleet. `hub.sync()` used
     to run here to "move the aggregation role onto HQ" — which is exactly what put a derived
@@ -133,6 +164,7 @@ def test_hq_init_registers_synthetic_identity_and_does_not_aggregate(world, monk
     calls = _stub_store_and_sync(monkeypatch)
 
     hq.init()
+    assert read_identity(config.hq_dir()) is not None
 
     # the store was stood up at hq_dir() with the reserved prefix …
     assert calls["ensure"] == [(config.hq_dir(), registry.HQ_PREFIX)]
@@ -173,8 +205,10 @@ def test_hq_init_second_call_is_a_clean_no_op(world, monkeypatch, capsys):
     longer raises, it just skips straight to (idempotent) remote wiring."""
     calls = _stub_store_and_sync(monkeypatch)
     hq.init()  # first HQ
+    original_beadyard_id = read_identity(config.hq_dir())
 
     hq.init()  # second call — must NOT raise
+    assert read_identity(config.hq_dir()) == original_beadyard_id
     capsys.readouterr()
 
     # the guard tripped before any store/sync work of the second call.

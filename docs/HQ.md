@@ -157,6 +157,70 @@ and unavailable observations. Its retirement intent is advisory: incomplete fact
 retain, and consumers still own proof that a target is plugin-owned and locally safe to remove.
 The command remains read-only in every state.
 
+### Canonical HQ instance identity
+
+`beadyard.json` carries one anonymous, canonical UUID4 named `beadyard_id`. It identifies the
+HQ instance across its Git and Dolt config carriers, portable snapshots, and backups. It does
+not authenticate an operator, replace a signing key, or identify a storage backend. A new HQ
+generates it once during explicit setup; ordinary loads and config publications never mint or
+replace it. Copying or migrating the same HQ preserves its ID. A separately created HQ gets a
+different ID even when its human name, repository name, or database name matches.
+
+`bh hq beadyard --json` inspects the selected Git or Dolt config backend. Its `legacy` state
+means no identity has been published; `pending` means an explicit Git adoption has durable
+local intent and may be retried against its **original** main revision; `incomplete` means Git
+main carries an ID while protected fleet config still needs its matching v2 publication.
+Unavailable authority returns an error rather than a guessed legacy state. The separate
+identity view leaves the published `bh hq status --json` v1 shape unchanged.
+
+Legacy adoption is an explicit operator operation. After recording the revision from
+inspection, use `bh hq beadyard-adopt --expected-revision <original> --confirm`; protected
+Git also requires `--operator-key <approved-ssh-private-key>`. Git adoption checks and signs
+the original main parent, then publishes the same ID under the original protected config
+revision and its immutable witness. A lost reply can be retried with the **same** original
+revision against a durable, owner-held completion receipt. Recovery verifies the signed
+first main child, its unchanged identity, and the first protected config witness, even if
+ordinary main or config edits followed. A later unrelated writer does not silently become a
+new adoption parent. Selected
+Dolt config-only adoption uses the original committed config CAS and a durable publication
+receipt without creating a Git or Beads HQ checkout. A copied foreign ID, missing intent,
+changed original parent, or mismatch between local and committed IDs refuses.
+
+Protected legacy authority grants remain recorded during adoption. New frame admission
+stays denied until an operator explicitly runs `bh hq authority bind-beadyard
+--expected-revision <authority-sha> --operator-key <approved-ssh-private-key> --confirm` and
+the same frame signer publishes fresh, correctly bound registration and heartbeats for the
+ordinary observer to accept. Binding preserves the frame, holder, instance, key, epoch,
+receipt, grant expiry, epoch floors, and retired history; it cannot revive an expired grant.
+Historical unbound heartbeats and hive leases do not qualify new intake. An existing holder
+may renew or release its exact live lease under a signed v2 carrier, the original lease CAS,
+current bound authority and config, and the established expiry/drain rules. No actor, branch,
+signing key, or hive lease is automatically reset or retired by adoption.
+
+For a protected Git server, the committed config change also fences the server's old
+`hive_policies[*].config_head` projection. An operator must explicitly run
+`bh hq beadyard-policy-refresh --expected-policy-digest <original-sha256>
+--expected-config-head <original-config-sha-or-empty> --operator-anchor <operator-anchor>
+--expected-config-parent <signed-v1-config-sha> --anchor <operator-anchor>
+--anchor <each-frame-anchor>
+--confirm` before a new bound lease renewal. The command requires the complete, explicitly
+named protected anchor set. It verifies that the latest signed config commit added only this
+HQ's identity to the original v1 config, then changes only the projected config head and each
+anchor's matching policy digest. Generation, signer, executable/runtime bytes, projected hive
+requirements, validity, and lease fields stay pinned. The broker's receive lock covers the
+original-head check and the entire rotation. If interrupted, old and new anchor bytes may be
+temporarily mixed; readers fail closed until the same operator retries the exact original
+request against its durable intent. A completed rotation retains an operator-owned receipt;
+the same original request can recover a lost final reply only while the signed config head
+and all published policy/anchor bytes still match. Ordinary reads never refresh an anchor
+automatically. A newer config head or foreign anchor bytes refuses recovery. This is an
+operator filesystem custody operation on the server; it does not authenticate with a private
+key, deploy, or contact
+an external HQ. The separate adoption and authority-bind commits still require approved
+operator signatures. A blank original policy projection is accepted only when the pinned
+signed v1 config parent is its first publication and the v2 child contains only the identity
+addition.
+
 Both depend on `main` carrying upstream tracking, which `bh hq init`'s first push now sets
 (`git push -u origin main`) — a bare `git push`/`git pull` in `~/.beadhive/hq`, and the
 ahead/behind detection itself, both silently failed/hid drift without it.

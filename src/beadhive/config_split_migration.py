@@ -33,6 +33,7 @@ from collections.abc import Mapping
 import typer
 
 from . import config, config_partition
+from .hq_document_validation import validate_settings_mapping
 
 #: Suffix appended to `config.config_path()` for the pre-split backup (bh-e0y8.7's
 #: reversibility requirement) — taken once, right before the host file is overwritten.
@@ -123,7 +124,7 @@ def split_flat_config(*, dry_run: bool = False) -> None:
     truth for what this host has been running with.
     """
     try:
-        host = config.load_host()
+        host = config.load_host_raw_for_repair()
     except FileNotFoundError:
         typer.echo(f"no config found at {config.config_path()} — nothing to split.")
         return
@@ -133,7 +134,13 @@ def split_flat_config(*, dry_run: bool = False) -> None:
         return
 
     fleet_portion, host_portion = split_leaves(host)
-    merged_fleet = config._deep_merge(config.load_fleet(), fleet_portion)
+    merged_fleet = config._deep_merge(config.load_fleet_raw_for_repair(), fleet_portion)
+
+    # Check both candidates before the first persistent write. A legacy source
+    # may be read opaquely for repair, but it must not become a usable fragment
+    # merely because this migration can split its keys.
+    validate_settings_mapping(merged_fleet, scope="fleet")
+    validate_settings_mapping(host_portion, scope="host")
 
     if dry_run:
         typer.echo(f"DRY-RUN would split {config.config_path()}:\n")
@@ -145,7 +152,11 @@ def split_flat_config(*, dry_run: bool = False) -> None:
         return
 
     shutil.copy2(config.config_path(), _backup_path())
-    config.save_fleet(merged_fleet)
+    with config._write_transaction(config.SCOPE_FLEET):
+        # Rebuild from the same revision that publication will compare against.
+        merged_fleet = config._deep_merge(config.load_fleet_raw_for_repair(), fleet_portion)
+        validate_settings_mapping(merged_fleet, scope="fleet")
+        config.save_fleet(merged_fleet)
     config.save(host_portion)
     typer.echo(f"✓ backed up original to {_backup_path()}")
     typer.echo(f"✓ wrote fleet keys to {config.fleet_path()}")

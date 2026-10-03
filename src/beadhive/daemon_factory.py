@@ -23,12 +23,12 @@ from . import (
     config,
     dolt_health,
     host_lease,
-    hosts,
     operator_contract,
     registry,
     source_descriptors,
     store_locator,
 )
+from . import fleet_roster as hosts
 from .daemon_contract import (
     DaemonStatus,
     DependencyStatus,

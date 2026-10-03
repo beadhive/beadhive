@@ -64,6 +64,26 @@ def test_record_round_trips_through_save_and_load(tmp_path):
     assert loaded == record
 
 
+def test_mutated_hive_candidate_cannot_replace_prior_file(tmp_path):
+    record = _record()
+    path = hive_schema.save(tmp_path, record)
+    prior = path.read_bytes()
+    record.schema_version = "not-an-integer"
+    with pytest.raises(hive_schema.ManifestError, match="schema_version"):
+        hive_schema.save(tmp_path, record)
+    assert path.read_bytes() == prior
+
+
+def test_hive_read_rejects_mismatched_path_identity(tmp_path):
+    record = _record()
+    path = hive_schema.save(tmp_path, record)
+    other = hive_schema.manifest_path(tmp_path, "github", "acme", "other")
+    other.parent.mkdir(parents=True, exist_ok=True)
+    other.write_bytes(path.read_bytes())
+    with pytest.raises(hive_schema.ManifestError, match="path identity mismatch"):
+        hive_schema.load(tmp_path, "github", "acme", "other")
+
+
 def test_manifest_path_is_the_identity_triplet_as_a_real_subpath(tmp_path):
     hq_dir = tmp_path / "hq"
     assert hive_schema.manifest_path(hq_dir, "github", "acme", "zf") == (

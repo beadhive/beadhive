@@ -2,6 +2,21 @@
 
 Status: accepted
 
+> Publication update (bh-hjyir): the historical raw editor rule described below
+> no longer permits an unknown or invalid core settings key to be persisted by a
+> normal edit. Git and Dolt publishers and typed local saves validate the raw
+> candidate against the declared canonical schema before writing. Opaque raw
+> inspection remains available only for explicit repair; it supplies no usable
+> settings or admission view. Generic arbitrary-path YAML storage remains generic.
+> The shared `hq_document_validation` boundary checks raw shape with a private
+> view derived from the canonical Pydantic schema, then runs the pure typed
+> resolver. The published v1 wire schema keeps its historical representation
+> of routing enums and legacy empty literals; the private input view admits
+> exactly the canonical tier names and documented empty aliases. It does not
+> normalize persisted bytes. Git and Dolt immutable reads use the same boundary;
+> a publisher-only repair inspection checks carrier integrity and secrets while
+> withholding a usable settings snapshot.
+
 Date: 2026-08-31
 
 Decision owners: configuration module workstream `bh-18hud`

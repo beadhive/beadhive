@@ -374,6 +374,10 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     # Git-owned store detection and operator-owned bare protection metadata;
     # these exact reads never authorize worker-private state outside .bh/.
     _owned("hq.py", "init_store", ".git")
+    | _owned("hq_beadyard.py", "inspect", ".git")
+    # The explicit SQL adoption journal is server-local beside the HQ path;
+    # this lock is confined to that private, custody-checked journal.
+    | _owned("hq_beadyard.py", "_sql_adoption_lock", ".lock")
     | _owned("hq_authority_guard.py", "main", "bh-authority-policy.json")
     | _owned("hq_git_broker.py", "serve", "bh-authority-policy.json")
     # Beads/Dolt own their repository and embedded-store roots.
@@ -403,6 +407,9 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     | _owned("host_fence.py", "transport_lookup", ".beads")
     | _owned("host_provision.py", "_beads_dirs", ".beads")
     | _owned("host_provision.py", "_store_state", ".beads")
+    # The selected-SQL readiness probe reads Beads' own binding and Dolt
+    # directory; it does not create worker-private state in either root.
+    | _owned("host_provision.py", "_sql_store_state", ".beads", ".dolt")
     | _owned("host_provision.py", "status", ".beads")
     | _owned("host_retire.py", "_hq_fold", ".beads")
     | _owned("hq.py", "_hq_dir_or_exit", ".beads")
@@ -463,6 +470,8 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     | _owned("guard.py", "primary_state", ".git")
     | _owned("herdr_plugin.py", "_managed_worktree", ".git")
     | _owned("hive.py", "_git_exclude", ".git", ".git/info/exclude")
+    # Seed planning inspects the Git-owned checkout marker without writing it.
+    | _owned("hq_seed.py", "plan", ".git")
     | _owned("hive.py", "_remove_stealth_exclude", ".git/info/exclude")
     | _owned("hive.py", "_ensure_stealth_exclude", ".git/info/exclude")
     | _owned("hive.py", "_ensure_export_exclude", ".git/info/exclude")

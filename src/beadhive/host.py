@@ -71,6 +71,24 @@ def path() -> Path:
     return config.home() / "host.yaml"
 
 
+def frame_binding() -> tuple[bool, bool]:
+    """Return HOST presence and its durable frame enrollment marker; never use a fleet cache."""
+    try:
+        settings = config.load_host()
+    except FileNotFoundError:
+        return False, False
+    return True, bool(settings.get("host", {}).get("frame_id"))
+
+
+def sql_hq_selected() -> bool:
+    """Read the explicit HOST bootstrap selector without a fleet/runtime read."""
+    return config.fleet_sql_selected()
+
+
+def frame_enrolled() -> bool:
+    return frame_binding()[1]
+
+
 def _default_label() -> str:
     return socket.gethostname()
 

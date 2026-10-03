@@ -1,17 +1,34 @@
 """Committed Git fleet documents behind the configuration revision port.
 
-This adapter does not resolve settings, import a working checkout, mutate Beads,
-or infer frame admission. Configuration consumers own semantic/secret validation.
+This adapter validates ordered raw documents with the pure shared contract before
+publication and on immutable read. It does not load a working checkout, mutate
+Beads, or infer frame admission.
 """
 
 from __future__ import annotations
 
 import hashlib
+import uuid
 from dataclasses import asdict
 
 from . import gitref
 from . import hq_authority_guard as guard
-from .modules.config.domain.ports import FleetConfigDocument, FleetConfigSnapshot
+from .beadyard_identity import (
+    BeadyardIdentityError,
+    identity_in_documents,
+    validate_publication_identity,
+)
+from .beadyard_identity_file import read_identity
+from .hq_document_validation import (
+    DocumentValidationError,
+    validate_documents,
+    validate_repair_carrier,
+)
+from .modules.config.domain.ports import (
+    FleetConfigDocument,
+    FleetConfigSnapshot,
+    RawFleetConfigRevision,
+)
 
 
 class FleetConfigError(ValueError):
@@ -25,7 +42,7 @@ class GitFleetConfigRevisionStore:
         self.plane, self.git = plane, git
         self.operator_key, self.duration = operator_key, duration
 
-    def _read(self, *, allow_expired=False):
+    def _read(self, *, allow_expired=False, allow_legacy_bound=False):
         plane, git = self.plane, self.git
         policy = plane._policy()
         remote = plane._remote(policy)
@@ -64,6 +81,16 @@ class GitFleetConfigRevisionStore:
 
         state = json.loads(git(plane.hq_dir, "show", f"{sha}:config.json"))
         guard.validate_config_state(state)
+        try:
+            committed_id = identity_in_documents(
+                (FleetConfigDocument(**doc) for doc in state["documents"]), required=False
+            )
+            local_id = read_identity(plane.hq_dir)
+        except BeadyardIdentityError:
+            raise FleetConfigError("committed or local beadyard identity invalid") from None
+        if committed_id != local_id:
+            if not (allow_legacy_bound and committed_id is None and local_id is not None):
+                raise FleetConfigError("committed beadyard identity conflicts with local HQ")
         if (
             not witnesses
             or witnesses[-1] != f"{guard.CONFIG_WITNESS}{state['revision']:020d}"
@@ -77,6 +104,11 @@ class GitFleetConfigRevisionStore:
         return sha, state, policy
 
     def _snapshot(self, sha, state, policy):
+        documents = tuple(FleetConfigDocument(**doc) for doc in state["documents"])
+        try:
+            validate_documents(documents)
+        except DocumentValidationError as exc:
+            raise FleetConfigError(str(exc)) from None
         identity = hashlib.sha256(
             (policy["server_root"] + "\0" + policy["client"]["policy_digest"]).encode()
         ).hexdigest()
@@ -86,7 +118,7 @@ class GitFleetConfigRevisionStore:
             generation=state["generation"],
             fetched_at=self.plane.clock(),
             valid_until=state["expires_at"],
-            documents=tuple(FleetConfigDocument(**doc) for doc in state["documents"]),
+            documents=documents,
         )
 
     def load_snapshot(self, *, revision=None):
@@ -98,19 +130,57 @@ class GitFleetConfigRevisionStore:
             raise FleetConfigError("requested configuration revision is no longer current")
         return self._snapshot(sha, state, policy)
 
-    def publish_snapshot(self, documents, *, expected_revision):
+    def inspect_raw_for_repair(self):
+        """Expose the signed original carrier only to the operator repair capability."""
+        if not self.operator_key:
+            raise FleetConfigError("configuration repair requires operator custody")
+        sha, state, policy = self._read(allow_expired=True)
+        if not sha or policy["client"]["role"] != "operator":
+            raise FleetConfigError("configuration repair requires operator custody")
+        documents = tuple(FleetConfigDocument(**doc) for doc in state["documents"])
+        try:
+            validate_repair_carrier(documents)
+        except DocumentValidationError as exc:
+            raise FleetConfigError(str(exc)) from None
+        return RawFleetConfigRevision(sha, documents)
+
+    def publish_snapshot(
+        self, documents, *, expected_revision, explicit_adoption=False, publication_id=None
+    ):
+        if publication_id is not None:
+            try:
+                parsed_id = uuid.UUID(publication_id)
+                if parsed_id.version != 4 or str(parsed_id) != publication_id:
+                    raise ValueError()
+            except (TypeError, ValueError, AttributeError):
+                raise FleetConfigError("configuration publication ID invalid") from None
+        try:
+            validate_documents(documents)
+        except DocumentValidationError as exc:
+            raise FleetConfigError(str(exc)) from None
         if not self.operator_key or not 1 <= self.duration <= 86400:
             raise FleetConfigError(
                 "configuration publication requires operator key/bounded validity"
             )
-        previous_sha, previous, policy = self._read(allow_expired=True)
+        previous_sha, previous, policy = self._read(
+            allow_expired=True, allow_legacy_bound=explicit_adoption
+        )
         if policy["client"]["role"] != "operator":
             raise FleetConfigError("configuration publication requires operator custody")
         if previous_sha != expected_revision:
             raise FleetConfigError("expected configuration revision changed")
+        try:
+            proposed_id = validate_publication_identity(
+                tuple(FleetConfigDocument(**doc) for doc in previous.get("documents", ())),
+                documents,
+                local_id=read_identity(self.plane.hq_dir),
+                explicit_adoption=explicit_adoption,
+            )
+        except BeadyardIdentityError:
+            raise FleetConfigError("beadyard identity publication conflict") from None
         now = self.plane.clock()
         state = {
-            "domain": guard.CONFIG_DOMAIN,
+            "domain": guard.CONFIG_DOMAIN_V2 if proposed_id is not None else guard.CONFIG_DOMAIN,
             "generation": policy["generation"],
             "revision": previous.get("revision", 0) + 1,
             "issued_at": now,
@@ -135,7 +205,10 @@ class GitFleetConfigRevisionStore:
         ]
         if expected_revision:
             args += ["-p", expected_revision]
-        sha = git(directory, *args, data=f"Fleet configuration revision {state['revision']}\n")
+        message = f"Fleet configuration revision {state['revision']}\n"
+        if publication_id is not None:
+            message += f"\nHQ export publication ID: {publication_id}\n"
+        sha = git(directory, *args, data=message)
         witness = f"{guard.CONFIG_WITNESS}{state['revision']:020d}"
         git(
             directory,

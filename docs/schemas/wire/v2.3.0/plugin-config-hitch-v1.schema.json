@@ -1,0 +1,49 @@
+{
+  "$id": "urn:beadhive:wire-schema:plugin-config:hitch:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Optional integration with agent-hitch (docs/design/managed-harness-config-adr.md,\nAmendment 2) — resolves a seat's Hitch Pack profile into a Config Directory and launches a\nharness against it via `bh plugin hitch up <target> <profile>`.\n\nNo AND-gate on another plugin (unlike orca, which requires git-workspace because it\nregisters git-workspace's own clones): hitch shares no data or state with git-workspace /\norca / observaloop, so it is independently enable-able.",
+  "properties": {
+    "command": {
+      "default": "hitch",
+      "description": "Override the hitch CLI command/path.",
+      "title": "Command",
+      "type": "string"
+    },
+    "enabled": {
+      "default": false,
+      "description": "Enable the hitch launch integration.",
+      "title": "Enabled",
+      "type": "boolean"
+    },
+    "repo": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Path to the agent-hitch checkout providing profiles/local.yaml + catalogs/local.yaml + packs/. Required to actually launch.",
+      "title": "Repo"
+    },
+    "root": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Persistent Config Directory root (ephemeral=false only); default ~/.beadhive/hitch.",
+      "title": "Root"
+    }
+  },
+  "title": "HitchConfig",
+  "type": "object",
+  "version": 1
+}

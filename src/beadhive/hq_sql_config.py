@@ -15,14 +15,65 @@ from pathlib import Path
 
 from ruamel.yaml import YAML
 
+from .beadyard_identity import (
+    DOCUMENT_PATH,
+    BeadyardIdentityError,
+    parse_document,
+    validate_publication_identity,
+)
+from .hq_document_validation import (
+    DocumentValidationError,
+    validate_documents,
+    validate_repair_carrier,
+)
 from .hq_sql_deadline import flock_until
 from .hq_sql_transport import FnoxBroker, SqlTransportError, connect
-from .modules.config.domain.ports import FleetConfigDocument, FleetConfigSnapshot
+from .modules.config.domain.ports import (
+    FleetConfigDocument,
+    FleetConfigSnapshot,
+    RawFleetConfigRevision,
+    ordered_documents_digest,
+)
 
 TABLES = ("hq_config_meta", "hq_config_documents", "hq_config_publications")
+_SCHEMA_COLUMNS = {
+    "hq_config_meta": (
+        ("singleton_id", "tinyint"),
+        ("schema_version", "int"),
+        ("backend_identity", "varchar(128)"),
+        ("generation", "varchar(128)"),
+        ("publication_sequence", "bigint unsigned"),
+        ("publication_id", "char(36)"),
+        ("documents_sha256", "char(64)"),
+        ("document_count", "int unsigned"),
+        ("initial_attempt_nonce", "char(36)"),
+    ),
+    "hq_config_documents": (
+        ("path", "varchar(512)"),
+        ("ordinal", "int unsigned"),
+        ("kind", "varchar(32)"),
+        ("content", "longblob"),
+        ("content_sha256", "char(64)"),
+    ),
+    "hq_config_publications": (
+        ("publication_id", "char(36)"),
+        ("publication_sequence", "bigint unsigned"),
+        ("generation", "varchar(128)"),
+        ("expected_parent_revision", "varchar(128)"),
+        ("documents_sha256", "char(64)"),
+        ("document_count", "int unsigned"),
+    ),
+}
+_SCHEMA_UNIQUE = {
+    ("hq_config_meta", "singleton_id"),
+    ("hq_config_documents", "path"),
+    ("hq_config_documents", "ordinal"),
+    ("hq_config_publications", "publication_id"),
+    ("hq_config_publications", "publication_sequence"),
+}
 MAX_BYTES = 4 * 1024 * 1024
 PATH = re.compile(
-    r"fleet\.yaml|workspace(?:-[A-Za-z0-9_-]+)?\.toml|allowed_signers|"
+    r"beadyard\.json|fleet\.yaml|workspace(?:-[A-Za-z0-9_-]+)?\.toml|allowed_signers|"
     r"hosts/[A-Za-z0-9_-]+\.yaml|"
     r"hives/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\.yaml"
 )
@@ -55,19 +106,47 @@ class PublicationRecovery:
     documents_sha256: str
 
 
-def _digest(documents):
-    h = hashlib.sha256()
-    for document in documents:
-        path = document.path.encode("utf-8")
-        content = document.content.encode("utf-8")
-        h.update(len(path).to_bytes(4, "big"))
-        h.update(path)
-        h.update(len(content).to_bytes(8, "big"))
-        h.update(content)
-    return h.hexdigest()
+@dataclass(frozen=True)
+class InitialSeedReceipt:
+    """The original immutable first config commit, distinct from current HEAD."""
+
+    publication_id: str
+    expected_schema_parent: str
+    committed_revision: str
+    observed_head: str
+    backend_identity: str
+    generation: str
+    documents_sha256: str
+    document_count: int
+    beadyard_id: str
+
+
+@dataclass(frozen=True)
+class InitialDestination:
+    """Authenticated read-only preflight; neither a reservation nor authority."""
+
+    schema_revision: str
+    empty: bool
+    backend_identity: str
+    generation: str
+
+
+_digest = ordered_documents_digest
+
+
+def _publication_uuid(value: str) -> str:
+    try:
+        parsed = uuid.UUID(value)
+    except (TypeError, ValueError):
+        raise SqlConfigError("immutable publication ID invalid") from None
+    if parsed.version != 4 or str(parsed) != value:
+        raise SqlConfigError("immutable publication ID invalid")
+    return value
 
 
 def _kind(path):
+    if path == DOCUMENT_PATH:
+        return "beadyard"
     if path == "fleet.yaml":
         return "fleet"
     if path.startswith("workspace"):
@@ -81,7 +160,8 @@ def _kind(path):
     raise SqlConfigError("unsupported configuration document path")
 
 
-def _validate(documents):
+def _validate_carrier(documents, *, version=None):
+    """Mandatory SQL carrier, partition and secret checks, including for repair."""
     if not isinstance(documents, tuple) or not documents:
         raise SqlConfigError("ordered configuration documents required")
     seen = set()
@@ -98,8 +178,15 @@ def _validate(documents):
         size += len(document.path.encode()) + len(document.content.encode())
         if size > MAX_BYTES:
             raise SqlConfigError("configuration snapshot exceeds size bound")
+        if document.path == DOCUMENT_PATH:
+            try:
+                parse_document(document.content)
+            except BeadyardIdentityError:
+                raise SqlConfigError("beadyard identity document invalid") from None
     if "fleet.yaml" not in seen:
         raise SqlConfigError("fleet document required")
+    if version is not None and (version == 1) == (DOCUMENT_PATH in seen):
+        raise SqlConfigError("HQ config storage version and beadyard identity disagree")
     from .modules.config.application.partition import HOST, partition_of
 
     fleet = next(doc.content for doc in documents if doc.path == "fleet.yaml")
@@ -128,7 +215,7 @@ def _validate(documents):
                 source = tomllib.loads(document.content)
             except (ValueError, UnicodeError):
                 raise SqlConfigError("workspace configuration syntax invalid") from None
-        elif document.path == "allowed_signers":
+        elif document.path in ("allowed_signers", DOCUMENT_PATH):
             continue
         else:
             try:
@@ -154,6 +241,14 @@ def _validate(documents):
                 raise SqlConfigError("credential-bearing URI cannot enter committed config")
 
         reject_secret_values(source)
+
+
+def _validate(documents):
+    _validate_carrier(documents)
+    try:
+        validate_documents(documents)
+    except DocumentValidationError as exc:
+        raise SqlConfigError(str(exc)) from None
 
 
 class _BoundedCursor:
@@ -221,6 +316,44 @@ class SqlFleetConfigRevisionStore:
             raise SqlConfigError("committed HQ config head unavailable")
         return head
 
+    @staticmethod
+    def _schema_contract(cursor):
+        """Pin the committed provisioning layout, including singleton CAS keys."""
+        cursor.execute(
+            "SELECT table_name,column_name,column_type,is_nullable,ordinal_position,"
+            "collation_name "
+            "FROM information_schema.columns WHERE table_schema=DATABASE() "
+            "AND table_name IN ('hq_config_meta','hq_config_documents',"
+            "'hq_config_publications') ORDER BY table_name,ordinal_position"
+        )
+        columns = {table: [] for table in TABLES}
+        for table, name, kind, nullable, ordinal, collation in cursor.fetchall():
+            columns[table].append((name, kind.lower(), nullable, ordinal, collation))
+        for table, expected in _SCHEMA_COLUMNS.items():
+            actual = columns[table]
+            if [
+                (name, kind, nullable, position) for name, kind, nullable, position, _ in actual
+            ] != [(name, kind, "NO", index) for index, (name, kind) in enumerate(expected, 1)] or (
+                table == "hq_config_documents" and actual[0][4] != "utf8mb4_bin"
+            ):
+                raise SqlConfigError("HQ config committed schema layout changed")
+        cursor.execute(
+            "SELECT table_name,index_name,column_name,non_unique,seq_in_index "
+            "FROM information_schema.statistics WHERE table_schema=DATABASE() "
+            "AND table_name IN ('hq_config_meta','hq_config_documents',"
+            "'hq_config_publications')"
+        )
+        indexes = {}
+        for table, index, name, non_unique, position in cursor.fetchall():
+            indexes.setdefault((table, index), []).append((position, name, non_unique))
+        unique = {
+            (table, columns[0][1])
+            for (table, _index), columns in indexes.items()
+            if len(columns) == 1 and columns[0][0] == 1 and columns[0][2] == 0
+        }
+        if unique != _SCHEMA_UNIQUE:
+            raise SqlConfigError("HQ config singleton/ordinal uniqueness changed")
+
     def _identity(self, cursor, role):
         binding = self.settings[role]
         cursor.execute("SELECT CURRENT_USER(),DATABASE(),ACTIVE_BRANCH(),DOLT_VERSION()")
@@ -234,7 +367,7 @@ class SqlFleetConfigRevisionStore:
             raise SqlConfigError("HQ SQL principal, schema, branch or version mismatch")
 
     @staticmethod
-    def _committed(cursor, head):
+    def _committed(cursor, head, *, validate_semantics=True):
         # Dolt accepts parameterized revision expressions with AS OF. All three
         # reads use the *captured* immutable hash, never a moving HEAD alias.
         cursor.execute(
@@ -247,8 +380,26 @@ class SqlFleetConfigRevisionStore:
         if len(rows) != 1:
             raise SqlConfigError("HQ config metadata missing or duplicated")
         (singleton, version, backend, generation, sequence, publication_id, digest, count) = rows[0]
-        if singleton != 1 or version != 1 or not backend or not generation or sequence < 1:
+        if (
+            singleton != 1
+            or version not in (1, 2, 3)
+            or not backend
+            or not generation
+            or sequence < 1
+        ):
             raise SqlConfigError("HQ config schema or authority metadata invalid")
+        if version == 3:
+            cursor.execute(
+                "SELECT initial_attempt_nonce FROM hq_config_meta AS OF %s WHERE singleton_id=1",
+                (head,),
+            )
+            nonce_row = cursor.fetchone()
+            if nonce_row is None:
+                raise SqlConfigError("HQ config initial arbitration witness missing")
+            try:
+                _publication_uuid(nonce_row[0])
+            except SqlConfigError:
+                raise SqlConfigError("HQ config initial arbitration witness invalid") from None
         cursor.execute(
             "SELECT path,ordinal,kind,content,content_sha256 "
             "FROM hq_config_documents AS OF %s ORDER BY ordinal",
@@ -270,7 +421,17 @@ class SqlFleetConfigRevisionStore:
             except UnicodeError:
                 raise SqlConfigError("HQ config document encoding invalid") from None
         documents = tuple(documents)
-        _validate(documents)
+        _validate_carrier(documents, version=version)
+        if validate_semantics:
+            try:
+                validate_documents(documents)
+            except DocumentValidationError as exc:
+                raise SqlConfigError(str(exc)) from None
+        else:
+            try:
+                validate_repair_carrier(documents)
+            except DocumentValidationError as exc:
+                raise SqlConfigError(str(exc)) from None
         if len(documents) != count or _digest(documents) != digest:
             raise SqlConfigError("HQ config publication digest mismatch")
         cursor.execute(
@@ -281,12 +442,12 @@ class SqlFleetConfigRevisionStore:
         witness = cursor.fetchone()
         if witness != (sequence, generation, digest, count):
             raise SqlConfigError("HQ config publication witness mismatch")
-        return backend, generation, sequence, documents
+        return backend, generation, sequence, documents, version
 
     def _snapshot(self, cursor, head, *, revision=None, deadline=None):
         if revision is not None and revision != head:
             raise SqlConfigError("requested configuration revision is no longer current")
-        backend, generation, sequence, documents = self._committed(cursor, head)
+        backend, generation, sequence, documents, _version = self._committed(cursor, head)
         self._check_floor(cursor, backend, generation, sequence, head, deadline=deadline)
         now = self.clock()
         return FleetConfigSnapshot(
@@ -393,6 +554,75 @@ class SqlFleetConfigRevisionStore:
         finally:
             connection.close()
 
+    def inspect_initial_destination(self) -> InitialDestination:
+        """Describe a clean committed v3 schema without manufacturing config."""
+        connection, deadline = self._open("publisher")
+        try:
+            binding = self.settings["publisher"]
+            timeout = min(binding["read_timeout"], binding["write_timeout"])
+            with _bounded_cursor(connection, deadline, timeout) as cursor:
+                self._identity(cursor, "publisher")
+                cursor.execute("START TRANSACTION")
+                head = self._head(cursor)
+                cursor.execute("SELECT * FROM dolt_status")
+                if cursor.fetchall():
+                    raise SqlConfigError("HQ config working tree is dirty")
+                cursor.execute(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema=DATABASE() AND table_type='BASE TABLE' "
+                    "AND table_name NOT LIKE 'dolt\\_%' ORDER BY table_name"
+                )
+                if {row[0] for row in cursor.fetchall()} != set(TABLES):
+                    raise SqlConfigError("HQ config schema table allowlist changed")
+                self._schema_contract(cursor)
+                counts = []
+                for table in TABLES:
+                    cursor.execute(f"SELECT COUNT(*) FROM {table} AS OF %s", (head,))
+                    counts.append(cursor.fetchone()[0])
+            connection.rollback()
+            return InitialDestination(
+                head,
+                counts == [0, 0, 0],
+                self.settings["backend_identity"],
+                self.settings["generation"],
+            )
+        except SqlConfigError:
+            raise
+        except Exception:
+            raise SqlConfigError("HQ config initial destination unavailable") from None
+        finally:
+            connection.close()
+
+    def inspect_raw_for_repair(self):
+        """Return authenticated raw bytes and original HEAD to a publisher only.
+
+        Integrity, publication witness and HOST floor remain mandatory. Semantic
+        validation is deferred solely for this explicit repair view; it cannot be
+        used for settings, runtime authority, or admission.
+        """
+        connection, deadline = self._open("publisher")
+        try:
+            binding = self.settings["publisher"]
+            timeout = min(binding["read_timeout"], binding["write_timeout"])
+            with _bounded_cursor(connection, deadline, timeout) as cursor:
+                self._identity(cursor, "publisher")
+                cursor.execute("START TRANSACTION")
+                head = self._head(cursor)
+                backend, generation, sequence, documents, _version = self._committed(
+                    cursor, head, validate_semantics=False
+                )
+                self._check_floor(cursor, backend, generation, sequence, head, deadline=deadline)
+            connection.rollback()
+            return RawFleetConfigRevision(head, documents)
+        except SqlConfigError:
+            raise
+        except Exception:
+            raise SqlConfigError(
+                "committed HQ configuration repair inspection unavailable"
+            ) from None
+        finally:
+            connection.close()
+
     def recover_publication(self, publication_id, *, expected_revision):
         """Read committed current history for an uncertain original publication.
 
@@ -441,11 +671,334 @@ class SqlFleetConfigRevisionStore:
         finally:
             connection.close()
 
-    def publish_snapshot(self, documents, *, expected_revision):
+    def initialize_snapshot(self, documents, *, expected_schema_parent, publication_id):
+        """First publication against a committed, empty three-table schema.
+
+        The caller must persist the UUID and exact source digest before entering
+        this method. An ambiguous DOLT_COMMIT never authorizes a new UUID or a
+        refreshed parent. Normal load remains unavailable until a verified seed
+        commit has been installed as the host's initial floor.
+        """
+        _validate(documents)
+        _publication_uuid(publication_id)
+        if not isinstance(expected_schema_parent, str) or not expected_schema_parent:
+            raise SqlConfigError("original schema parent required")
+        try:
+            owner = next(doc.content for doc in documents if doc.path == DOCUMENT_PATH)
+            beadyard_id = parse_document(owner)
+        except (StopIteration, BeadyardIdentityError):
+            raise SqlConfigError("first publication requires canonical beadyard identity") from None
+        backend = self.settings.get("backend_identity")
+        generation = self.settings.get("generation")
+        if not backend or not generation or self.settings.get("minimum_sequence") != 1:
+            raise SqlConfigError("first publication backend/generation pin unavailable")
+        _validate_carrier(documents, version=2)
+        digest = _digest(documents)
+        connection, deadline = self._open("publisher")
+        crossed_commit = False
+        try:
+            binding = self.settings["publisher"]
+            timeout = min(binding["read_timeout"], binding["write_timeout"])
+            with _bounded_cursor(connection, deadline, timeout) as cursor:
+                self._identity(cursor, "publisher")
+                cursor.execute("START TRANSACTION")
+                head = self._head(cursor)
+                if head != expected_schema_parent:
+                    raise SqlConfigError("expected schema parent changed")
+                cursor.execute("SELECT * FROM dolt_status")
+                if cursor.fetchall():
+                    raise SqlConfigError("HQ config working tree is dirty")
+                cursor.execute(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema=DATABASE() AND table_type='BASE TABLE' "
+                    "AND table_name NOT LIKE 'dolt\\_%' ORDER BY table_name"
+                )
+                if {row[0] for row in cursor.fetchall()} != set(TABLES):
+                    raise SqlConfigError("HQ config schema table allowlist changed")
+                self._schema_contract(cursor)
+                for table in TABLES:
+                    cursor.execute(f"SELECT COUNT(*) FROM {table} AS OF %s", (head,))
+                    if cursor.fetchone()[0] != 0:
+                        raise SqlConfigError("HQ config destination is already initialized")
+                # This absent-key INSERT is the first data write. Competing
+                # sessions contend on the same PK; a preceding SELECT is no lock.
+                cursor.execute(
+                    "INSERT INTO hq_config_meta VALUES (1,3,%s,%s,1,%s,%s,%s,%s)",
+                    (
+                        backend,
+                        generation,
+                        publication_id,
+                        digest,
+                        len(documents),
+                        str(uuid.uuid4()),
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise SqlConfigError("first publication singleton conflict")
+                for ordinal, document in enumerate(documents):
+                    body = document.content.encode("utf-8")
+                    cursor.execute(
+                        "INSERT INTO hq_config_documents "
+                        "(path,ordinal,kind,content,content_sha256) VALUES (%s,%s,%s,%s,%s)",
+                        (
+                            document.path,
+                            ordinal,
+                            _kind(document.path),
+                            body,
+                            hashlib.sha256(body).hexdigest(),
+                        ),
+                    )
+                cursor.execute(
+                    "INSERT INTO hq_config_publications VALUES (%s,1,%s,%s,%s,%s)",
+                    (publication_id, generation, expected_schema_parent, digest, len(documents)),
+                )
+                cursor.execute(
+                    "CALL DOLT_ADD('hq_config_meta','hq_config_documents','hq_config_publications')"
+                )
+                crossed_commit = True
+                cursor.execute(
+                    "CALL DOLT_COMMIT('-m',%s,'--author',%s)",
+                    (
+                        f"HQ config initial publication {publication_id}",
+                        "HQ operator <hq-operator@localhost>",
+                    ),
+                )
+                row = cursor.fetchone()
+                if not row or not isinstance(row[0], str):
+                    raise PublicationUnknown(publication_id, expected_schema_parent)
+                committed = row[0]
+            receipt = self._initial_receipt_at(
+                committed,
+                expected_schema_parent,
+                publication_id,
+                digest,
+                len(documents),
+                beadyard_id,
+                deadline=deadline,
+            )
+            return receipt
+        except SqlConfigError as exc:
+            if not crossed_commit:
+                connection.rollback()
+                raise
+            if isinstance(exc, PublicationUnknown):
+                raise
+            raise PublicationUnknown(publication_id, expected_schema_parent) from None
+        except Exception as exc:
+            if not crossed_commit:
+                connection.rollback()
+                if getattr(exc, "args", (None,))[0] in (1213, 1205, 1062):
+                    raise SqlConfigError("first publication singleton conflict") from None
+                raise SqlConfigError("first publication failed") from None
+            raise PublicationUnknown(publication_id, expected_schema_parent) from None
+        finally:
+            connection.close()
+
+    def _initial_receipt_at(
+        self,
+        committed,
+        expected_parent,
+        publication_id,
+        digest,
+        count,
+        beadyard_id,
+        *,
+        deadline=None,
+    ):
+        connection, deadline = self._open("publisher", deadline=deadline)
+        try:
+            binding = self.settings["publisher"]
+            timeout = min(binding["read_timeout"], binding["write_timeout"])
+            with _bounded_cursor(connection, deadline, timeout) as cursor:
+                self._identity(cursor, "publisher")
+                cursor.execute("START TRANSACTION")
+                observed = self._head(cursor)
+                if observed != committed:
+                    cursor.execute("SELECT HAS_ANCESTOR(%s,%s)", (observed, committed))
+                    if cursor.fetchone()[0] != 1:
+                        raise SqlConfigError("initial publication is not current ancestry")
+                backend, generation, sequence, documents, version = self._committed(
+                    cursor, committed
+                )
+                if (
+                    version != 3
+                    or sequence != 1
+                    or backend != self.settings["backend_identity"]
+                    or generation != self.settings["generation"]
+                    or len(documents) != count
+                    or _digest(documents) != digest
+                    or parse_document(
+                        next(doc.content for doc in documents if doc.path == DOCUMENT_PATH)
+                    )
+                    != beadyard_id
+                ):
+                    raise SqlConfigError("initial publication immutable content mismatch")
+                cursor.execute(
+                    "SELECT expected_parent_revision FROM hq_config_publications AS OF %s "
+                    "WHERE publication_id=%s",
+                    (committed, publication_id),
+                )
+                row = cursor.fetchone()
+                if row != (expected_parent,):
+                    raise SqlConfigError("initial publication original parent mismatch")
+                cursor.execute(
+                    "SELECT commit_hash FROM dolt_log WHERE commit_hash=%s", (committed,)
+                )
+                if cursor.fetchone() != (committed,):
+                    raise SqlConfigError("initial publication is not reachable on main")
+                cursor.execute(
+                    "SELECT parent_hash FROM dolt_commit_ancestors WHERE commit_hash=%s",
+                    (committed,),
+                )
+                if cursor.fetchall() != ((expected_parent,),):
+                    raise SqlConfigError("initial publication direct parent mismatch")
+            connection.rollback()
+            return InitialSeedReceipt(
+                publication_id,
+                expected_parent,
+                committed,
+                observed,
+                backend,
+                generation,
+                digest,
+                count,
+                beadyard_id,
+            )
+        except SqlConfigError:
+            raise
+        except Exception:
+            raise SqlConfigError("initial publication immutable receipt unavailable") from None
+        finally:
+            connection.close()
+
+    def recover_initial_snapshot(
+        self,
+        *,
+        publication_id,
+        expected_schema_parent,
+        documents_sha256,
+        document_count,
+        beadyard_id,
+    ):
+        """Resolve one original first commit after an uncertain acknowledgment.
+
+        An unchanged publication row appears in history at every later commit;
+        direct-parent evidence selects only the original first commit. Absence is
+        not permission to retry with a new parent or publication identity.
+        """
+        _publication_uuid(publication_id)
+        if (
+            not isinstance(expected_schema_parent, str)
+            or not expected_schema_parent
+            or not isinstance(documents_sha256, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", documents_sha256)
+            or type(document_count) is not int
+            or document_count < 1
+        ):
+            raise SqlConfigError("initial publication intent invalid")
+        try:
+            from .beadyard_identity import parse_id
+
+            parse_id(beadyard_id)
+        except BeadyardIdentityError:
+            raise SqlConfigError("initial publication beadyard identity invalid") from None
+        connection, deadline = self._open("publisher")
+        try:
+            binding = self.settings["publisher"]
+            timeout = min(binding["read_timeout"], binding["write_timeout"])
+            with _bounded_cursor(connection, deadline, timeout) as cursor:
+                self._identity(cursor, "publisher")
+                cursor.execute("START TRANSACTION")
+                observed = self._head(cursor)
+                # A fresh schema with no seed is a pending outcome, never a
+                # usable configuration or a safe refreshed-parent retry.
+                cursor.execute("SELECT COUNT(*) FROM hq_config_meta AS OF %s", (observed,))
+                if cursor.fetchone()[0] == 0:
+                    connection.rollback()
+                    return None
+                self._committed(cursor, observed)
+                cursor.execute(
+                    "SELECT h.commit_hash FROM dolt_history_hq_config_publications h "
+                    "JOIN dolt_commit_ancestors a ON a.commit_hash=h.commit_hash "
+                    "JOIN dolt_log l ON l.commit_hash=h.commit_hash "
+                    "WHERE h.publication_id=%s AND h.publication_sequence=1 "
+                    "AND h.generation=%s AND h.expected_parent_revision=%s "
+                    "AND h.documents_sha256=%s AND h.document_count=%s "
+                    "AND a.parent_hash=%s AND a.parent_index=0",
+                    (
+                        publication_id,
+                        self.settings["generation"],
+                        expected_schema_parent,
+                        documents_sha256,
+                        document_count,
+                        expected_schema_parent,
+                    ),
+                )
+                candidates = {row[0] for row in cursor.fetchall()}
+                if len(candidates) > 1:
+                    raise SqlConfigError("initial publication history is ambiguous")
+                if not candidates:
+                    connection.rollback()
+                    return None
+                committed = candidates.pop()
+            connection.rollback()
+            return self._initial_receipt_at(
+                committed,
+                expected_schema_parent,
+                publication_id,
+                documents_sha256,
+                document_count,
+                beadyard_id,
+                deadline=deadline,
+            )
+        except SqlConfigError:
+            raise
+        except Exception:
+            raise SqlConfigError("initial publication recovery unavailable") from None
+        finally:
+            connection.close()
+
+    def publish_snapshot(
+        self, documents, *, expected_revision, explicit_adoption=False, publication_id=None
+    ):
+        return self._publish_snapshot(
+            documents,
+            expected_revision=expected_revision,
+            explicit_adoption=explicit_adoption,
+            publication_id=publication_id,
+        )
+
+    def repair_snapshot(self, documents, *, expected_revision):
+        """Replace a semantically invalid prior HEAD by its exact original CAS.
+
+        The candidate is fully validated before any DML. Only the privileged
+        publisher may inspect the invalid prior carrier; normal reads still deny.
+        """
+        return self._publish_snapshot(
+            documents, expected_revision=expected_revision, allow_invalid_previous=True
+        )
+
+    def _publish_snapshot(
+        self,
+        documents,
+        *,
+        expected_revision,
+        allow_invalid_previous=False,
+        explicit_adoption=False,
+        publication_id=None,
+    ):
         _validate(documents)
         if not isinstance(expected_revision, str) or not expected_revision:
             raise SqlConfigError("original expected configuration revision required")
-        publication_id = str(uuid.uuid4())
+        if publication_id is None:
+            publication_id = str(uuid.uuid4())
+        else:
+            try:
+                parsed_publication = uuid.UUID(publication_id)
+            except (TypeError, ValueError):
+                raise SqlConfigError("immutable publication ID invalid") from None
+            if parsed_publication.version != 4 or str(parsed_publication) != publication_id:
+                raise SqlConfigError("immutable publication ID invalid")
         digest = _digest(documents)
         connection, deadline = self._open("publisher")
         crossed_commit = False
@@ -471,12 +1024,33 @@ class SqlFleetConfigRevisionStore:
                 visible = {row[0] for row in cursor.fetchall()}
                 if visible != set(TABLES):
                     raise SqlConfigError("HQ config schema table allowlist changed")
-                backend, generation, sequence, _ = self._committed(cursor, head)
+                backend, generation, sequence, previous_documents, previous_version = (
+                    self._committed(cursor, head, validate_semantics=not allow_invalid_previous)
+                )
+                try:
+                    proposed_id = validate_publication_identity(
+                        previous_documents, documents, explicit_adoption=explicit_adoption
+                    )
+                except BeadyardIdentityError:
+                    raise SqlConfigError("beadyard identity publication conflict") from None
+                target_version = max(previous_version, 2 if proposed_id is not None else 1)
+                if target_version < previous_version:
+                    raise SqlConfigError("HQ config storage version cannot regress")
+                _validate_carrier(documents, version=target_version)
+                self._check_floor(cursor, backend, generation, sequence, head, deadline=deadline)
                 cursor.execute(
-                    "UPDATE hq_config_meta SET publication_sequence=%s,publication_id=%s,"
+                    "UPDATE hq_config_meta SET schema_version=%s,"
+                    "publication_sequence=%s,publication_id=%s,"
                     "documents_sha256=%s,document_count=%s "
                     "WHERE singleton_id=1 AND publication_sequence=%s",
-                    (sequence + 1, publication_id, digest, len(documents), sequence),
+                    (
+                        target_version,
+                        sequence + 1,
+                        publication_id,
+                        digest,
+                        len(documents),
+                        sequence,
+                    ),
                 )
                 if cursor.rowcount != 1:
                     raise SqlConfigError("configuration publication CAS conflict")

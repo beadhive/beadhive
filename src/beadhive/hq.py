@@ -25,11 +25,13 @@ register the synthetic identity so ``bh hq bd ready`` resolves to it. See ``clon
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import re
 import stat
+import subprocess
 import sys
 import tarfile
 import time
@@ -52,6 +54,7 @@ from . import (
 )
 from .bd import err_line
 from .bd import run as run_bd
+from .beadyard_identity_file import create_identity
 from .hq_manifest_publication import HostPublicationError as HostPublicationError
 from .hq_manifest_publication import _publish_host_manifest_git as _publish_host_manifest_git
 from .run import run
@@ -106,22 +109,58 @@ def init_store() -> None:
     the very thing that put a derived per-host aggregate and HQ's authoritative beads on one
     Dolt remote path. Standing up HQ has nothing to do with hydrating the fleet; `bh sync`
     owns that, and lands it in the hub."""
-    # Create the durable store FIRST (prefix hq) — so a bd-init failure never leaves a dangling
-    # registration — then register the synthetic identity in the ws registry.
-    fresh_git = not (config.hq_dir() / ".git").exists()
-    hq = hub.ensure_store(config.hq_dir(), registry.HQ_PREFIX)
-    if fresh_git:
-        # All HQ transport/clone operations use main, independent of machine Git defaults.
-        initialized = _git(["branch", "-M", "main"], hq)
-        if initialized.returncode:
-            raise RuntimeError(f"cannot initialize HQ main branch: {err_line(initialized)}")
-    registry.register(
-        registry.HQ_PROVIDER,
-        registry.HQ_ORG,
-        registry.HQ_REPO,
-        registry.HQ_PREFIX,
-        registry.HQ_KIND,
-    )
+    hq_dir = config.hq_dir()
+    hq_dir.parent.mkdir(parents=True, exist_ok=True)
+    # The local HQ path is already governed by the host's protected BH_HOME custody.
+    # Serialize fresh setup, including its marker and registry registration, by path.
+    tag = hashlib.sha256(str(hq_dir.absolute()).encode()).hexdigest()[:20]
+    lock_path = hq_dir.parent / f".beadyard-hq-{tag}.lock"
+    pending = hq_dir.parent / f".beadyard-hq-{tag}.pending"
+    lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        if hq_dir.is_symlink():
+            raise RuntimeError("HQ path cannot be a symlink during identity setup")
+        fresh_git = not (hq_dir / ".git").exists()
+        if fresh_git and not pending.exists():
+            marker_fd = os.open(
+                pending,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            try:
+                os.fsync(marker_fd)
+            finally:
+                os.close(marker_fd)
+            directory_fd = os.open(hq_dir.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        # Create the store before registration. The durable marker distinguishes
+        # a partially created new HQ from an existing, unbound legacy HQ.
+        hq = hub.ensure_store(hq_dir, registry.HQ_PREFIX)
+        if pending.exists():
+            initialized = _git(["branch", "-M", "main"], hq)
+            if initialized.returncode:
+                raise RuntimeError(f"cannot initialize HQ main branch: {err_line(initialized)}")
+            create_identity(hq)
+        registry.register(
+            registry.HQ_PROVIDER,
+            registry.HQ_ORG,
+            registry.HQ_REPO,
+            registry.HQ_PREFIX,
+            registry.HQ_KIND,
+        )
+        if pending.exists():
+            pending.unlink()
+            directory_fd = os.open(hq_dir.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+    finally:
+        os.close(lock_fd)
     typer.echo(f"✓ Factory HQ store initialized at {hq} (prefix '{registry.HQ_PREFIX}', kind=hq)")
 
 
@@ -137,6 +176,11 @@ def init(*, dry_run: bool = False, auto: bool = False, create: bool = False) -> 
     # bh-17eb: self-heal a stale un-migrated host config before validating — an idempotent
     # re-run on a host that already joined a fleet must not hard-fail here, before this host's
     # own `_wire_remote`/`scaffold_layout` even get a chance to run.
+    if config.fleet_sql_selected():
+        snapshot = config.fleet_snapshot()
+        prefix = "DRY-RUN " if dry_run else ""
+        typer.echo(f"{prefix}central HQ config attached at revision {snapshot.commit_revision}")
+        return
     cfg = config.load_reconciling()
     existing = registry.hive_of_kind(cfg, registry.HQ_KIND)
     if existing is None:
@@ -308,6 +352,25 @@ def local_readiness(hq_dir: Path) -> str:
     return "ready"
 
 
+def _beads_channel_status(hq_dir: Path, *, local_ready: bool) -> dict[str, str]:
+    """Probe retained HQ Beads with a bounded, read-only DB-backed status command."""
+    if not local_ready:
+        return {"state": "unavailable", "reason_code": "hq_not_initialized"}
+    try:
+        from . import bd_cli
+
+        result = bd_cli.status_snapshot(hq_dir, timeout=10)
+        if result.returncode == 0:
+            parsed = json.loads(result.stdout or "null")
+            summary = parsed.get("summary") if isinstance(parsed, dict) else None
+            count = summary.get("total_issues") if isinstance(summary, dict) else None
+            if type(count) is int and count >= 0:
+                return {"state": "available", "reason_code": "beads_status_readable"}
+    except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired):
+        pass
+    return {"state": "unavailable", "reason_code": "beads_status_unavailable"}
+
+
 def status_payload(*, generated_at: int | None = None) -> dict[str, object]:
     """Build the v1 machine projection for the local Factory HQ singleton.
 
@@ -315,6 +378,81 @@ def status_payload(*, generated_at: int | None = None) -> dict[str, object]:
     ``retirement.intent`` is advisory input for a consumer that independently proves plugin
     ownership and local safety; it never authorizes a Beadhive lifecycle transition.
     """
+
+    if config.fleet_sql_selected():
+        now = generated_at if generated_at is not None else time.time_ns() // 1_000_000
+        hq_dir = config.hq_dir()
+        local = local_readiness(hq_dir)
+        try:
+            snapshot = config.fleet_snapshot()
+            config_state = {
+                "state": "available",
+                "backend_identity": snapshot.backend_identity,
+                "revision": snapshot.commit_revision,
+                "generation": snapshot.generation,
+                "valid_until": snapshot.valid_until,
+            }
+        except Exception:
+            config_state = {"state": "unavailable", "reason_code": "config_sql_unavailable"}
+        remote = None
+        if local == "ready":
+            try:
+                remote = _hq_remote_status(safety.scan(hq_dir, fetch=True))
+            except OSError:
+                pass
+        remote_observable = remote is not None
+        beads_channel = _beads_channel_status(hq_dir, local_ready=local == "ready")
+        observation = {
+            "identity": _hq_identity(),
+            "cwd": str(hq_dir) if local == "ready" else None,
+            "availability": {
+                "state": "available" if remote_observable else "unavailable",
+                "reason_code": "hq_initialized" if remote_observable else "hq_status_unavailable",
+            },
+            "coverage": {
+                "state": "complete" if remote_observable else "partial",
+                "sources": {
+                    "identity": {"state": "complete"},
+                    "path": {"state": "complete" if local == "ready" else "unavailable"},
+                    "status": {"state": "complete" if remote_observable else "unavailable"},
+                },
+            },
+            "remote": remote,
+            "retirement": {
+                "intent": "retain",
+                "reason_code": "hq_available" if remote_observable else "hq_facts_incomplete",
+                "advisory": True,
+            },
+            "config_authority": config_state,
+            "beads_channel": beads_channel,
+        }
+        return jsonout.envelope(
+            "hq status",
+            _HQ_STATUS_SCHEMA_VERSION,
+            {
+                "source_revision": _hq_status_revision(observation),
+                "generated_at": now,
+                "freshness": {
+                    "state": (
+                        "fresh"
+                        if remote_observable and config_state["state"] == "available"
+                        else "unknown"
+                    ),
+                    "as_of": (
+                        now if remote_observable and config_state["state"] == "available" else None
+                    ),
+                },
+                **observation,
+                "warnings": []
+                if config_state["state"] == "available"
+                else [
+                    {
+                        "code": "config_sql_unavailable",
+                        "detail": "Committed SQL configuration could not be observed.",
+                    }
+                ],
+            },
+        )
 
     now = generated_at if generated_at is not None else time.time_ns() // 1_000_000
     identity = _hq_identity()
@@ -425,6 +563,19 @@ def status(*, as_json: bool = False) -> None:
         jsonout.emit(status_payload())
         return
 
+    if config.fleet_sql_selected():
+        snapshot = config.fleet_snapshot()
+        typer.echo(f"HQ config: committed SQL revision {snapshot.commit_revision}")
+        hq_dir = config.hq_dir()
+        if local_readiness(hq_dir) != "ready":
+            typer.echo("HQ-origin Beads: local store unavailable")
+            return
+        result = safety.scan(hq_dir, fetch=True)
+        typer.echo(f"HQ-origin Beads ({hq_dir})")
+        typer.echo(f"  git:  {_branch_status_line(_hq_main_branch(result))}")
+        typer.echo(f"  dolt: {_dolt_status_line(result.dolt_ref)}")
+        return
+
     hq_dir = _hq_dir_or_exit()
     result = safety.scan(hq_dir, fetch=True)
     if not result.has_origin:
@@ -479,6 +630,22 @@ def push(*, dry_run: bool = False) -> None:
     cross-hive aggregate is the HUB's, is derived and per-host, and is never pushed by anyone —
     `bh sync` refreshes it. That separation is the whole point of the split: HQ's remote path
     now carries exactly one database, which is bd's own rule for a path."""
+    if config.fleet_sql_selected():
+        snapshot = config.fleet_snapshot()
+        typer.echo(f"HQ config: committed SQL revision {snapshot.commit_revision}")
+        hq_dir = config.hq_dir()
+        if local_readiness(hq_dir) != "ready":
+            typer.echo("HQ Beads: no local store to publish")
+            return
+        if dry_run:
+            typer.echo("DRY-RUN: would publish HQ-origin Beads state")
+            return
+        pushed = engine.get_engine(config.load()).push_state(hq_dir, message="hq push")
+        if pushed.returncode:
+            typer.echo(f"✗ HQ Beads push failed: {err_line(pushed)}", err=True)
+            raise typer.Exit(1)
+        typer.echo("✓ HQ-origin Beads state published")
+        return
     hq_dir = _hq_dir_or_exit()
     already = _git(["remote", "get-url", "origin"], hq_dir)
     if already.returncode != 0:
@@ -669,6 +836,11 @@ def clone(*, auto: bool = False) -> None:
     bootstrap branch already activates ``BEADS_DOLT_SHARED_SERVER=1`` for, and HQ is a fleet
     store like any other (`docs/design/dolt-server-mode-adr.md` / bh-ukit.4). Without it this
     bootstrap landed embedded on the cloning host — the same drift ``_fetch_cache`` had."""
+    if config.fleet_sql_selected():
+        snapshot = config.fleet_snapshot()
+        config.reconcile_host_after_fleet()
+        typer.echo(f"✓ central HQ config attached at revision {snapshot.commit_revision}")
+        return
     hq_dir = config.hq_dir()
     if hq_dir.exists():
         typer.echo(
@@ -945,6 +1117,18 @@ def _wire_remote(
 
 
 def _commit_if_dirty(hq_dir: Path, message: str) -> None:
+    # The checkout is a Git mirror of HQ documents. Validate every canonical
+    # source before git add/commit, including unchanged files that a later push
+    # would otherwise carry as a usable fleet view.
+    from .hq_document_validation import validate_document
+
+    candidates = [hq_dir / "fleet.yaml", hq_dir / "allowed_signers"]
+    candidates.extend(sorted(hq_dir.glob("workspace*.toml")))
+    candidates.extend(sorted((hq_dir / "hosts").glob("*.yaml")))
+    candidates.extend(sorted((hq_dir / "hives").glob("*/*/*.yaml")))
+    for path in candidates:
+        if path.is_file():
+            validate_document(path.relative_to(hq_dir).as_posix(), path.read_text())
     status = _git(["status", "--porcelain"], hq_dir)
     if not (status.stdout or "").strip():
         return
@@ -964,21 +1148,33 @@ def scaffold_layout(hq_dir: Path, cfg: dict) -> list[Path]:
     sane home: it is the operator's by construction and is already the durable central store
     every host clones. Scaffolded EMPTY (comment header only) — bh never invents a trusted key;
     each host enrolls its own public key here when it runs ``bh host identity``."""
-    written: list[Path] = []
+    from .hq_document_validation import validate_document
+
     fleet = hq_dir / "fleet.yaml"
-    if not fleet.exists():
-        fleet.write_text(_fleet_yaml(cfg))
-        written.append(fleet)
     workspace = hq_dir / "workspace.toml"
-    if not workspace.exists():
-        workspace.write_text(_workspace_toml(cfg))
-        written.append(workspace)
     signers = hq_dir / git_identity.ALLOWED_SIGNERS
+    fleet_content = _fleet_yaml(cfg) if not fleet.exists() else ""
+    workspace_content = _workspace_toml(cfg) if not workspace.exists() else ""
+    signers_content = (
+        "# Fleet-wide trusted SSH signers (bh). One `<principal> <key>` per line;\n"
+        "# hosts append their own PUBLIC key here as they are provisioned.\n"
+    )
+    # Preflight all scaffold candidates together, before creating any file.
+    if not fleet.exists():
+        validate_document("fleet.yaml", fleet_content)
+    if not workspace.exists():
+        validate_document("workspace.toml", workspace_content)
     if not signers.exists():
-        signers.write_text(
-            "# Fleet-wide trusted SSH signers (bh). One `<principal> <key>` per line;\n"
-            "# hosts append their own PUBLIC key here as they are provisioned.\n"
-        )
+        validate_document("allowed_signers", signers_content)
+    written: list[Path] = []
+    if not fleet.exists():
+        fleet.write_text(fleet_content)
+        written.append(fleet)
+    if not workspace.exists():
+        workspace.write_text(workspace_content)
+        written.append(workspace)
+    if not signers.exists():
+        signers.write_text(signers_content)
         written.append(signers)
     hosts = hq_dir / "hosts"
     hosts.mkdir(exist_ok=True)
@@ -1010,11 +1206,8 @@ def _workspace_toml(cfg: dict) -> str:
     operator's own workspace*.toml content when resolvable, else a placeholder a later host can
     fill in. git-workspace is a required dep (bh-hsus.4), not a config toggle, so this reads
     `config_paths` unconditionally rather than gating on an enabled flag."""
-    for path in gitworkspace.config_paths(cfg):
-        try:
-            return path.read_text()
-        except OSError:
-            continue
+    for source in gitworkspace.workspace_sources(cfg):
+        return source.content
     return "# git-workspace providers — none configured on this host yet.\n"
 
 
