@@ -27,6 +27,7 @@ def _env(tmp_path: Path, **values: str) -> dict[str, str]:
 def test_default_and_override_ephemeral_roots_are_app_scoped(tmp_path, monkeypatch) -> None:
     checkout = Path("/tmp/bh-worktrees/example/repository")
     target = checkout / ".venv"
+    monkeypatch.setattr(cache_locality, "_filesystem_type", lambda _path: "tmpfs")
     monkeypatch.setattr(cache_locality, "_device", lambda _path: 42)
     monkeypatch.setattr(cache_locality, "_capacity", lambda _path: (10**9, 10**6))
     monkeypatch.setattr(cache_locality, "_prepare_managed", lambda root, app: root / app)

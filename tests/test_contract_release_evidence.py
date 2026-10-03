@@ -235,7 +235,7 @@ def test_historical_artifact_path_cannot_follow_symlink(tmp_path: Path) -> None:
 def test_wheel_contains_the_exact_checksum_verified_release(tmp_path: Path) -> None:
     out = tmp_path / "dist"
     result = subprocess.run(
-        ["uv", "build", "--offline", "--wheel", "--out-dir", str(out)],
+        ["uv", "build", "--offline", "--no-build-isolation", "--wheel", "--out-dir", str(out)],
         cwd=ROOT,
         check=False,
         capture_output=True,

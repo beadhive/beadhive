@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -71,8 +72,17 @@ def test_architecture_key_owns_the_bootstrap_safe_gate_recipe() -> None:
     assert "architecture-check" not in MODULE.KEY_RECIPES["architecture-contracts"][1]
 
 
+def _tracked_build_text(root: Path) -> str:
+    paths = (
+        subprocess.check_output(["git", "ls-files", "-z", "--", "BUILD", "**/BUILD"], cwd=root)
+        .decode()
+        .split("\0")
+    )
+    return "\n".join((root / path).read_text() for path in paths if path)
+
+
 def test_catalog_names_match_pants_tag_slugs() -> None:
-    build_text = "\n".join(path.read_text() for path in ROOT.rglob("BUILD"))
+    build_text = _tracked_build_text(ROOT)
     for key in MODULE.KEY_RECIPES:
         assert f"attest:{key}" in build_text
 
@@ -103,3 +113,15 @@ def test_root_prose_and_exact_doc_reader_input_have_narrow_owners() -> None:
     assert 'tags=["category:docs", "attest:docs"]' in root_build
     assert '"dependencies": ["//docs:docs-root", "//:root-guide-doc"]' in tests_build
     assert "//:root-config" not in tests_build
+
+
+def test_dependency_build_artifacts_cannot_supply_catalog_tags(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    tracked = tmp_path / "BUILD"
+    tracked.write_text('tags = ["attest:owned"]\n')
+    subprocess.run(["git", "add", "BUILD"], cwd=tmp_path, check=True)
+    dependency = tmp_path / ".venv" / "dependency"
+    (dependency / "cli" / "BUILD").mkdir(parents=True)
+    (dependency / "BUILD").write_text('tags = ["attest:untracked"]\n')
+
+    assert _tracked_build_text(tmp_path) == tracked.read_text()

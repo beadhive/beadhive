@@ -25,6 +25,7 @@ from beadhive import (
     orca,
     plugins,
     registry,
+    validation_admission,
     validation_ledger,
     validation_records,
     worktree,
@@ -2278,7 +2279,16 @@ def test_clean_checkout_missing_binary_preserves_disabled_priority_policy(tmp_pa
     assert run["priority"]["mechanism"] == "disabled"
 
 
-def test_clean_checkout_existing_relative_executable_exit_127_stays_red(tmp_path, monkeypatch):
+@pytest.fixture
+def _fresh_validation_priority(monkeypatch):
+    # Launch-path tests exercise the supported-wrapper branch, independently of a native
+    # gate which has already lowered the pytest parent's priority to the requested value.
+    monkeypatch.setattr(validation_admission, "_current_nice", lambda: 0)
+
+
+def test_clean_checkout_existing_relative_executable_exit_127_stays_red(
+    tmp_path, monkeypatch, _fresh_validation_priority
+):
     cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     executable = repo / "gate-127"
     executable.write_text("#!/bin/sh\nexit 127\n")
@@ -2338,7 +2348,9 @@ def test_clean_checkout_crlf_shebang_preserves_kernel_missing_interpreter(tmp_pa
     assert run["priority"]["applied"] is False
 
 
-def test_clean_checkout_resolves_relative_launch_path_in_child_environment(tmp_path, monkeypatch):
+def test_clean_checkout_resolves_relative_launch_path_in_child_environment(
+    tmp_path, monkeypatch, _fresh_validation_priority
+):
     cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     executable = repo / "validation-bin" / "relative-gate"
     executable.parent.mkdir()
@@ -2360,7 +2372,9 @@ def test_clean_checkout_resolves_relative_launch_path_in_child_environment(tmp_p
     assert run["priority"]["applied"] is True
 
 
-def test_clean_checkout_path_skips_missing_interpreter_and_uses_later_entry(tmp_path, monkeypatch):
+def test_clean_checkout_path_skips_missing_interpreter_and_uses_later_entry(
+    tmp_path, monkeypatch, _fresh_validation_priority
+):
     cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     broken = repo / "broken-bin" / "path-gate"
     valid = repo / "valid-bin" / "path-gate"
@@ -4077,3 +4091,28 @@ def test_rebind_with_herdr_down_fails_loudly_and_keeps_the_intent(tmp_path, monk
     assert exc.value.exit_code == 1
     assert worktree_bindings.STORE.read(target)["herdr"].pending
     assert target.is_dir()
+
+
+def test_clean_checkout_preserves_already_inherited_priority_without_new_wrapper(
+    tmp_path, monkeypatch
+):
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    executable = repo / "inherited-gate"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o755)
+    _git("add", "inherited-gate", cwd=repo)
+    _git("commit", "-qm", "test: add inherited-priority gate", cwd=repo)
+    monkeypatch.setattr(validation_admission, "_current_nice", lambda: 10)
+    monkeypatch.setattr(validation_admission, "_priority_prefix_available", lambda _prefix: False)
+
+    assert worktree.clean_checkout(entry, "main", "./inherited-gate", cfg=cfg) == 0
+    run = json.loads(next((repo / ".git/bh/validation/runs").glob("*/manifest.json")).read_text())
+    assert (run["lifecycle"], run["verdict"], run["reason"]) == (
+        "completed",
+        "green",
+        "command_exit",
+    )
+    assert run["priority"]["enabled"] is True
+    assert run["priority"]["applied"] is False
+    assert run["priority"]["inherited_nice"] == run["priority"]["requested_nice"] == 10
+    assert run["priority"]["effective_nice"] == 10
