@@ -374,6 +374,10 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     # Git-owned store detection and operator-owned bare protection metadata;
     # these exact reads never authorize worker-private state outside .bh/.
     _owned("hq.py", "init_store", ".git")
+    | _owned("hq_beadyard.py", "inspect", ".git")
+    # The explicit SQL adoption journal is server-local beside the HQ path;
+    # this lock is confined to that private, custody-checked journal.
+    | _owned("hq_beadyard.py", "_sql_adoption_lock", ".lock")
     | _owned("hq_authority_guard.py", "main", "bh-authority-policy.json")
     | _owned("hq_git_broker.py", "serve", "bh-authority-policy.json")
     # Beads/Dolt own their repository and embedded-store roots.

@@ -1139,9 +1139,11 @@ def test_fetch_config_selects_exact_active_and_candidate_desired_binding(backend
     ):
         actual = plane.fetch_config("frame-one", holder_identity=holder)
         assert all(actual[k] == v for k, v in expected.items())
-        assert actual["authority"] == asdict(
+        expected_authority = asdict(
             replace(binding, candidate_expires_at=None) if holder == "host-one" else binding
         )
+        expected_authority.pop("beadyard_id")
+        assert actual["authority"] == expected_authority
     with pytest.raises(ControlPlaneError, match="unknown, expired or retired"):
         plane.fetch_config("frame-one", holder_identity="not-granted")
 
