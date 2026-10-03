@@ -134,8 +134,11 @@ class SqlTrustedReceiver:
         if body != canonical(envelope) or set(envelope) != {"authority", "lease"}:
             raise ReceiverError("protected incumbent lease invalid")
         return (
-            row[0], envelope["authority"], SqlTrustedReceiver._lease_record(envelope["lease"]),
-            row[2], row[3],
+            row[0],
+            envelope["authority"],
+            SqlTrustedReceiver._lease_record(envelope["lease"]),
+            row[2],
+            row[3],
         )
 
     @staticmethod
@@ -153,9 +156,15 @@ class SqlTrustedReceiver:
             (request_id,),
         )
         expected = (
-            request_sha, route.principal, route.frame_id, route.holder_identity,
-            route.instance_ref, route.epoch, route.signer_fingerprint,
-            result_revision, "accepted",
+            request_sha,
+            route.principal,
+            route.frame_id,
+            route.holder_identity,
+            route.instance_ref,
+            route.epoch,
+            route.signer_fingerprint,
+            result_revision,
+            "accepted",
         )
         if (
             digest != request_sha
@@ -181,7 +190,12 @@ class SqlTrustedReceiver:
             raise ReceiverError("bound hive adoption requires current signed registration")
         stored_body = row[2].tobytes() if isinstance(row[2], memoryview) else row[2]
         request = SqlTrustedReceiver._accepted_prior_request(
-            cursor, route, row[0], row[1], "sha256:" + row[1], "registration",
+            cursor,
+            route,
+            row[0],
+            row[1],
+            "sha256:" + row[1],
+            "registration",
             record["public_key"],
         )
         manifest = HostManifest.model_validate_json(stored_body)
@@ -400,17 +414,25 @@ class SqlTrustedReceiver:
                         and old_authority is not None
                         and old_lease is not None
                         and old_authority
-                        == {key: value for key, value in identity.items()
-                            if key != "beadyard_id"}
+                        == {key: value for key, value in identity.items() if key != "beadyard_id"}
                         and self._matches(
-                            beat, route,
-                            {key: value for key, value in authority.items()
-                             if key != "beadyard_id"},
+                            beat,
+                            route,
+                            {
+                                key: value
+                                for key, value in authority.items()
+                                if key != "beadyard_id"
+                            },
                         )
                     ):
                         old_request = self._accepted_prior_request(
-                            cursor, route, old_request_id, old_request_sha, old_revision,
-                            "hive_lease", record["public_key"],
+                            cursor,
+                            route,
+                            old_request_id,
+                            old_request_sha,
+                            old_revision,
+                            "hive_lease",
+                            record["public_key"],
                         )
                         legacy_bridge = (
                             old_request.get("domain") == "beadhive/sql-hive-lease/v1"
@@ -423,8 +445,7 @@ class SqlTrustedReceiver:
                             and old_request.get("epoch") == route.epoch
                             and old_request.get("key_fingerprint") == route.signer_fingerprint
                             and old_request.get("audience") == authority["audience"]
-                            and old_request.get("config_revision")
-                            == authority["config_revision"]
+                            and old_request.get("config_revision") == authority["config_revision"]
                             and old_request.get("prefix") == prefix
                             and old_request.get("lease") == old_lease.to_record()
                         )
@@ -442,9 +463,7 @@ class SqlTrustedReceiver:
                     ):
                         raise ReceiverError("hive lease requires fresh conformant receipt")
                     if operation == "adopt" and authority.get("beadyard_id") is not None:
-                        self._bound_registration(
-                            cursor, route, record, authority["beadyard_id"]
-                        )
+                        self._bound_registration(cursor, route, record, authority["beadyard_id"])
                     caps = record["desired"]["caps"]
                     if type(caps.get("max_sessions")) is not int or caps["max_sessions"] <= 0:
                         raise ReceiverError("no frame intake capacity")
@@ -724,7 +743,10 @@ class SqlTrustedReceiver:
                     if isinstance(prior_body, str):
                         prior_body = prior_body.encode()
                     if (prior[0], prior[1], prior_body, prior[3]) == (
-                        request_id, request_sha, manifest_body, route.signer_fingerprint
+                        request_id,
+                        request_sha,
+                        manifest_body,
+                        route.signer_fingerprint,
                     ):
                         connection.rollback()
                         return "sha256:" + request_sha
@@ -742,8 +764,13 @@ class SqlTrustedReceiver:
                             "registration incarnation already has different evidence"
                         )
                     original = self._accepted_prior_request(
-                        cursor, route, prior[0], prior[1], "sha256:" + prior[1],
-                        "registration", record["public_key"],
+                        cursor,
+                        route,
+                        prior[0],
+                        prior[1],
+                        "sha256:" + prior[1],
+                        "registration",
+                        record["public_key"],
                     )
                     if (
                         original.get("domain") != "beadhive/sql-registration/v1"
@@ -770,9 +797,18 @@ class SqlTrustedReceiver:
                         "AND request_id=%s AND request_sha256=%s AND manifest_json=%s "
                         "AND signer_fingerprint=%s",
                         (
-                            request_id, request_sha, manifest_body, now, route.frame_id,
-                            route.holder_identity, route.instance_ref, route.epoch,
-                            prior[0], prior[1], prior_body, route.signer_fingerprint,
+                            request_id,
+                            request_sha,
+                            manifest_body,
+                            now,
+                            route.frame_id,
+                            route.holder_identity,
+                            route.instance_ref,
+                            route.epoch,
+                            prior[0],
+                            prior[1],
+                            prior_body,
+                            route.signer_fingerprint,
                         ),
                     )
                     if cursor.rowcount != 1:
@@ -781,8 +817,15 @@ class SqlTrustedReceiver:
                     cursor.execute(
                         "INSERT INTO hq_live_registrations VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                         (
-                            route.frame_id, route.holder_identity, route.instance_ref, route.epoch,
-                            request_id, request_sha, manifest_body, now, route.signer_fingerprint,
+                            route.frame_id,
+                            route.holder_identity,
+                            route.instance_ref,
+                            route.epoch,
+                            request_id,
+                            request_sha,
+                            manifest_body,
+                            now,
+                            route.signer_fingerprint,
                         ),
                     )
                 cursor.execute(

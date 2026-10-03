@@ -641,9 +641,7 @@ def test_committed_sql_config_publication_and_floor(tmp_path, monkeypatch):
             monkeypatch.setattr(restarted, "publish_snapshot", actual_publish)
             first_bound = restarted.load_snapshot(revision=adopted.revision)
             later_documents = (
-                FleetConfigDocument(
-                    "fleet.yaml", "hq:\n  mode: dolt-server\nmanaged_repos: []\n"
-                ),
+                FleetConfigDocument("fleet.yaml", "hq:\n  mode: dolt-server\nmanaged_repos: []\n"),
                 *(doc for doc in first_bound.documents if doc.path != "fleet.yaml"),
             )
             later_bound = restarted.publish_snapshot(
@@ -682,7 +680,8 @@ def test_committed_sql_config_publication_and_floor(tmp_path, monkeypatch):
                     restarted.repair_snapshot(attempt, expected_revision=bound.commit_revision)
             malformed_identity = tuple(
                 FleetConfigDocument(doc.path, '{"beadyard_id":"foreign"}')
-                if doc.path == DOCUMENT_PATH else doc
+                if doc.path == DOCUMENT_PATH
+                else doc
                 for doc in bound.documents
             )
             with pytest.raises(SqlConfigError, match="beadyard"):

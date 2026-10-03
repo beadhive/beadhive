@@ -518,8 +518,10 @@ class SqlFleetConfigRevisionStore:
         self, documents, *, expected_revision, explicit_adoption=False, publication_id=None
     ):
         return self._publish_snapshot(
-            documents, expected_revision=expected_revision,
-            explicit_adoption=explicit_adoption, publication_id=publication_id,
+            documents,
+            expected_revision=expected_revision,
+            explicit_adoption=explicit_adoption,
+            publication_id=publication_id,
         )
 
     def repair_snapshot(self, documents, *, expected_revision):
@@ -533,8 +535,13 @@ class SqlFleetConfigRevisionStore:
         )
 
     def _publish_snapshot(
-        self, documents, *, expected_revision, allow_invalid_previous=False,
-        explicit_adoption=False, publication_id=None,
+        self,
+        documents,
+        *,
+        expected_revision,
+        allow_invalid_previous=False,
+        explicit_adoption=False,
+        publication_id=None,
     ):
         _validate(documents)
         if not isinstance(expected_revision, str) or not expected_revision:
@@ -574,9 +581,7 @@ class SqlFleetConfigRevisionStore:
                 if visible != set(TABLES):
                     raise SqlConfigError("HQ config schema table allowlist changed")
                 backend, generation, sequence, previous_documents, previous_version = (
-                    self._committed(
-                        cursor, head, validate_semantics=not allow_invalid_previous
-                    )
+                    self._committed(cursor, head, validate_semantics=not allow_invalid_previous)
                 )
                 try:
                     proposed_id = validate_publication_identity(

@@ -200,9 +200,8 @@ def test_sql_principal_preserves_existing_incarnation_across_beadyard_binding():
     )
     original = SqlRuntimeOperator.principal_for(legacy)
     assert original.startswith("frame_")
-    assert SqlRuntimeOperator.principal_for(
-        replace(legacy, beadyard_id=str(uuid4()))
-    ) == original
-    assert SqlRuntimeOperator.principal_for(
-        replace(legacy, instance_ref="another-incarnation")
-    ) != original
+    assert SqlRuntimeOperator.principal_for(replace(legacy, beadyard_id=str(uuid4()))) == original
+    assert (
+        SqlRuntimeOperator.principal_for(replace(legacy, instance_ref="another-incarnation"))
+        != original
+    )

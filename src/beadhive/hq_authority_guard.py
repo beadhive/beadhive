@@ -255,8 +255,10 @@ def legacy_binding_upgrade(before, after, issued, trusted_now):
     return (
         owner is not None
         and (
-            expiry is None and before["state"] in {"active", "draining", "drained", "parked"}
-            or expiry is not None and expiry > max(issued, trusted_now)
+            expiry is None
+            and before["state"] in {"active", "draining", "drained", "parked"}
+            or expiry is not None
+            and expiry > max(issued, trusted_now)
         )
         and after["authority"] == {**before["authority"], "beadyard_id": owner}
         and {key: value for key, value in after.items() if key != "authority"}
@@ -504,8 +506,7 @@ def enforce_hive_lease(old, new, reference, state, policy, head):
             beat_id != authority_id
             or (receipt["registration"] or {}).get("beadyard_id") != authority_id
             or (receipt["registration"] or {}).get("release") != record["desired"]["release"]
-            or (receipt["registration"] or {}).get("capabilities")
-            != record["desired"]["caps"]
+            or (receipt["registration"] or {}).get("capabilities") != record["desired"]["caps"]
         ):
             raise ValueError("bound hive adoption requires fresh matching identity evidence")
         if operation == "renew" and beat_id != authority_id:
@@ -520,8 +521,11 @@ def enforce_hive_lease(old, new, reference, state, policy, head):
                 and isinstance(previous.get("authority"), dict)
                 and "beadyard_id" not in previous["authority"]
                 and previous["authority"]
-                == {key: value for key, value in envelope["authority"].items()
-                    if key != "beadyard_id"}
+                == {
+                    key: value
+                    for key, value in envelope["authority"].items()
+                    if key != "beadyard_id"
+                }
             )
             if not first_legacy_bridge:
                 raise ValueError("bound hive renewal requires matching identity evidence")

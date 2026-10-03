@@ -48,7 +48,7 @@ class FleetConfigSnapshot:
         a generated default. Signed Git and committed Dolt adapters retain the
         document unchanged through export/import and backend switches.
         """
-        from ....beadyard_identity import identity_in_documents
+        from .beadyard_identity import identity_in_documents
 
         return identity_in_documents(self.documents, required=False)
 

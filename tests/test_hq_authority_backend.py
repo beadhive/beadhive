@@ -1229,9 +1229,7 @@ def test_signed_git_config_v2_binds_immutable_beadyard_identity(backend):
     b = backend
     store = b["plane"].config_store(operator_key=str(b["operator"]))
     create_identity(b["op_repo"])
-    identity_doc = FleetConfigDocument(
-        DOCUMENT_PATH, (b["op_repo"] / DOCUMENT_PATH).read_text()
-    )
+    identity_doc = FleetConfigDocument(DOCUMENT_PATH, (b["op_repo"] / DOCUMENT_PATH).read_text())
     documents = (
         FleetConfigDocument("fleet.yaml", "schema_version: 1\nmanaged_repos: []\n"),
         identity_doc,
@@ -1357,9 +1355,7 @@ print(plane.publish_hive_lease("bh",lease,expected="",operation="adopt"))
         plane.read_eligibility(bound_manifest)
     with pytest.raises(ControlPlaneError, match="exact legacy authority revision"):
         plane.bind_beadyard(expected="wrong", operator_key=str(b["operator"]))
-    bound_revision = plane.bind_beadyard(
-        expected=before_revision, operator_key=str(b["operator"])
-    )
+    bound_revision = plane.bind_beadyard(expected=before_revision, operator_key=str(b["operator"]))
     after_revision, after_state, _policy = plane._operator_read()
     assert after_revision == bound_revision != before_revision
     assert after_state["domain"] == guard.DOMAIN_V2
@@ -1367,7 +1363,8 @@ print(plane.publish_hive_lease("bh",lease,expected="",operation="adopt"))
     after_record = after_state["frames"]["frame-one"]["active"]
     assert before_record is not None and after_record is not None
     assert after_record["authority"] == {
-        **before_record["authority"], "beadyard_id": adopted.beadyard_id
+        **before_record["authority"],
+        "beadyard_id": adopted.beadyard_id,
     }
     assert {k: v for k, v in after_record.items() if k != "authority"} == {
         k: v for k, v in before_record.items() if k != "authority"
@@ -1405,7 +1402,9 @@ print(plane.publish_hive_lease("bh",lease,expected="",operation="adopt"))
     from beadhive.hq_beadyard_policy import refresh_after_adoption
 
     renewed_policy = refresh_after_adoption(
-        b["op_repo"], expected_policy_digest=b["digest"], expected_config_head="",
+        b["op_repo"],
+        expected_policy_digest=b["digest"],
+        expected_config_head="",
         expected_config_parent=legacy.commit_revision,
         anchors=(b["op_anchor"], b["frame_anchor"]),
         operator_anchor=b["op_anchor"],
@@ -1414,7 +1413,8 @@ print(plane.publish_hive_lease("bh",lease,expected="",operation="adopt"))
     for failure in ("downgrade", "foreign"):
         forged = json.loads(json.dumps(old_lease_envelope))
         forged.update(
-            operation="renew", authority_revision=plane._read()[0],
+            operation="renew",
+            authority_revision=plane._read()[0],
             expected_lease_sha=old_lease_sha,
         )
         if failure == "foreign":
@@ -1425,8 +1425,14 @@ print(plane.publish_hive_lease("bh",lease,expected="",operation="adopt"))
         blob = git(b["repo"], "hash-object", "-w", "--stdin", data=json.dumps(forged))
         tree = git(b["repo"], "mktree", data=f"100644 blob {blob}\thive-lease.json\n")
         commit = git(
-            b["repo"], "-c", "gpg.format=ssh", "-c",
-            f"user.signingkey={b['runtime']}", "commit-tree", "-S", tree,
+            b["repo"],
+            "-c",
+            "gpg.format=ssh",
+            "-c",
+            f"user.signingkey={b['runtime']}",
+            "commit-tree",
+            "-S",
+            tree,
             data=f"foreign {failure} renewal\n",
         )
         result = raw_frame_push(b, f"{commit}:refs/bh/lease/bh")
@@ -1498,23 +1504,36 @@ def test_bound_hive_adopt_requires_fresh_bound_heartbeat_at_signed_broker(backen
         authority = current["frames"]["frame-one"]["active"]["authority"]
         envelope = {
             "domain": (
-                "beadhive-frame-hive-lease-v2" if authority.get("beadyard_id")
+                "beadhive-frame-hive-lease-v2"
+                if authority.get("beadyard_id")
                 else "beadhive-frame-hive-lease-v1"
             ),
-            "authority_revision": revision, "expected_lease_sha": expected,
-            "operation": operation, "prefix": "bh",
-            "authority": {"frame_id": "frame-one", **authority}, "lease": lease,
+            "authority_revision": revision,
+            "expected_lease_sha": expected,
+            "operation": operation,
+            "prefix": "bh",
+            "authority": {"frame_id": "frame-one", **authority},
+            "lease": lease,
         }
         blob = git(b["repo"], "hash-object", "-w", "--stdin", data=json.dumps(envelope))
         tree = git(b["repo"], "mktree", data=f"100644 blob {blob}\thive-lease.json\n")
         signed = git(
-            b["repo"], "-c", "gpg.format=ssh", "-c", f"user.signingkey={b['runtime']}",
-            "commit-tree", "-S", tree, data=title + "\n",
+            b["repo"],
+            "-c",
+            "gpg.format=ssh",
+            "-c",
+            f"user.signingkey={b['runtime']}",
+            "commit-tree",
+            "-S",
+            tree,
+            data=title + "\n",
         )
         return signed, raw_frame_push(b, f"{signed}:refs/bh/lease/bh")
 
     legacy_lease = {
-        "host_id": "host-one", "label": "fixture", "epoch": 1,
+        "host_id": "host-one",
+        "label": "fixture",
+        "epoch": 1,
         "adopted_at": host_lease.now_stamp(),
         "expires_at": host_lease.now_stamp(time.time() + 900),
     }
@@ -1531,9 +1550,12 @@ def test_bound_hive_adopt_requires_fresh_bound_heartbeat_at_signed_broker(backen
     previous, _state, _policy = plane._operator_read()
     plane.bind_beadyard(expected=previous, operator_key=str(b["operator"]))
     refresh_after_adoption(
-        b["op_repo"], expected_policy_digest=b["digest"], expected_config_head="",
+        b["op_repo"],
+        expected_policy_digest=b["digest"],
+        expected_config_head="",
         expected_config_parent=legacy.commit_revision,
-        anchors=(b["op_anchor"], b["frame_anchor"]), operator_anchor=b["op_anchor"],
+        anchors=(b["op_anchor"], b["frame_anchor"]),
+        operator_anchor=b["op_anchor"],
     )
     _head, state, _policy = plane._operator_read()
     record = state["frames"]["frame-one"]["active"]
@@ -1541,7 +1563,8 @@ def test_bound_hive_adopt_requires_fresh_bound_heartbeat_at_signed_broker(backen
     assert record["receipt"]["lease"].get("beadyard_id") is None
     assert git(b["remote"], "rev-parse", hb.ref_name("frame-one")) == old_beat
     fresh_adoption = {
-        **legacy_lease, "epoch": 2,
+        **legacy_lease,
+        "epoch": 2,
         "adopted_at": host_lease.now_stamp(),
         "expires_at": host_lease.now_stamp(time.time() + 900),
     }
@@ -1557,14 +1580,19 @@ def test_bound_hive_adopt_requires_fresh_bound_heartbeat_at_signed_broker(backen
     assert bridge_result.returncode == 0, bridge_result.stderr + bridge_result.stdout
     assert git(b["remote"], "rev-parse", "refs/bh/lease/bh") == bridge_sha
     _signed, rejected_again = direct_push(
-        "renew", {**bridge_lease, "expires_at": host_lease.now_stamp(time.time() + 1100)},
-        bridge_sha, "Second renewal with stale unbound heartbeat",
+        "renew",
+        {**bridge_lease, "expires_at": host_lease.now_stamp(time.time() + 1100)},
+        bridge_sha,
+        "Second renewal with stale unbound heartbeat",
     )
     assert rejected_again.returncode != 0 and "pre-receive hook declined" in rejected_again.stderr
     assert git(b["remote"], "rev-parse", "refs/bh/lease/bh") == bridge_sha
-    assert publish_result(
-        b, b["lease"](4, domain="beadhive/frame-heartbeat/v2", beadyard_id=owner)
-    ).returncode == 0
+    assert (
+        publish_result(
+            b, b["lease"](4, domain="beadhive/frame-heartbeat/v2", beadyard_id=owner)
+        ).returncode
+        == 0
+    )
     with pytest.raises(ControlPlaneError, match="registration incarnation mismatch"):
         plane.accept_observation(
             "frame-one", expected=plane._read()[0], operator_key=str(b["operator"])
@@ -1580,9 +1608,12 @@ def test_bound_hive_adopt_requires_fresh_bound_heartbeat_at_signed_broker(backen
         "frame-one", expected=plane._read()[0], operator_key=str(b["operator"])
     )
     for sequence in (5, 6):
-        assert publish_result(
-            b, b["lease"](sequence, domain="beadhive/frame-heartbeat/v2", beadyard_id=owner)
-        ).returncode == 0
+        assert (
+            publish_result(
+                b, b["lease"](sequence, domain="beadhive/frame-heartbeat/v2", beadyard_id=owner)
+            ).returncode
+            == 0
+        )
         plane.accept_observation(
             "frame-one", expected=plane._read()[0], operator_key=str(b["operator"])
         )
@@ -1600,9 +1631,7 @@ def test_bound_hive_adopt_requires_fresh_bound_heartbeat_at_signed_broker(backen
 
 
 @pytest.mark.parametrize("bound", [False, True])
-def test_signed_authority_receive_rejects_reused_signer_holder_and_ungranted_epoch(
-    backend, bound
-):
+def test_signed_authority_receive_rejects_reused_signer_holder_and_ungranted_epoch(backend, bound):
     from beadhive import hq_beadyard
     from beadhive.modules.config.domain.ports import FleetConfigDocument
 
@@ -1644,15 +1673,27 @@ def test_signed_authority_receive_rejects_reused_signer_holder_and_ungranted_epo
         blob = git(b["op_repo"], "hash-object", "-w", "--stdin", data=json.dumps(state))
         tree = git(b["op_repo"], "mktree", data=f"100644 blob {blob}\tauthority.json\n")
         signed = git(
-            b["op_repo"], "-c", "gpg.format=ssh", "-c",
-            f"user.signingkey={b['operator']}", "commit-tree", "-S", tree,
-            "-p", original_head, data=f"invalid {failure}\n",
+            b["op_repo"],
+            "-c",
+            "gpg.format=ssh",
+            "-c",
+            f"user.signingkey={b['operator']}",
+            "commit-tree",
+            "-S",
+            tree,
+            "-p",
+            original_head,
+            data=f"invalid {failure}\n",
         )
         remote = plane._remote(policy)
         result = git(
-            b["op_repo"], "push", "--atomic", remote,
+            b["op_repo"],
+            "push",
+            "--atomic",
+            remote,
             f"{signed}:{guard.HEAD}",
-            f"{signed}:{guard.WITNESS}{state['revision']:020d}", check=False,
+            f"{signed}:{guard.WITNESS}{state['revision']:020d}",
+            check=False,
         )
         assert result.returncode != 0 and "pre-receive hook declined" in result.stderr, failure
         assert plane._read()[0] == original_head
@@ -1698,9 +1739,7 @@ def test_legacy_binding_predicate_preserves_live_grant_bytes_and_rejects_expiry_
     expired = json.loads(json.dumps(original))
     expired["frames"]["frame-one"]["candidate"]["authority"]["candidate_expires_at"] = now - 1
     with pytest.raises(ValueError, match="incarnation beyond UUID"):
-        guard.validate_legacy_binding_transition(
-            expired, bound_copy(expired), trusted_now=now
-        )
+        guard.validate_legacy_binding_transition(expired, bound_copy(expired), trusted_now=now)
 
 
 def test_explicit_git_identity_policy_refresh_recovers_partial_rotation(backend, monkeypatch):
@@ -1710,9 +1749,13 @@ def test_explicit_git_identity_policy_refresh_recovers_partial_rotation(backend,
     from beadhive.modules.config.domain.ports import FleetConfigDocument
 
     b = backend
-    legacy = b["plane"].config_store(operator_key=str(b["operator"])).publish_snapshot(
-        (FleetConfigDocument("fleet.yaml", "schema_version: 1\nmanaged_repos: []\n"),),
-        expected_revision="",
+    legacy = (
+        b["plane"]
+        .config_store(operator_key=str(b["operator"]))
+        .publish_snapshot(
+            (FleetConfigDocument("fleet.yaml", "schema_version: 1\nmanaged_repos: []\n"),),
+            expected_revision="",
+        )
     )
     original_main = git(b["op_repo"], "rev-parse", "main")
     hq_beadyard.adopt_legacy(
@@ -1723,7 +1766,8 @@ def test_explicit_git_identity_policy_refresh_recovers_partial_rotation(backend,
     original_policy = (b["remote"] / guard.POLICY).read_bytes()
     original_anchor = b["frame_anchor"].read_bytes()
     options = dict(
-        expected_policy_digest=b["digest"], expected_config_head="",
+        expected_policy_digest=b["digest"],
+        expected_config_head="",
         expected_config_parent=legacy.commit_revision,
         anchors=(b["op_anchor"], b["frame_anchor"]),
         operator_anchor=b["op_anchor"],
@@ -1817,10 +1861,21 @@ def test_explicit_git_identity_policy_refresh_recovers_partial_rotation(backend,
     cli_retry = CliRunner().invoke(
         app,
         [
-            "hq", "beadyard-policy-refresh", "--expected-policy-digest", b["digest"],
-            "--expected-config-head", "", "--expected-config-parent", legacy.commit_revision,
-            "--anchor", str(b["op_anchor"]), "--anchor", str(b["frame_anchor"]),
-            "--operator-anchor", str(b["op_anchor"]), "--confirm",
+            "hq",
+            "beadyard-policy-refresh",
+            "--expected-policy-digest",
+            b["digest"],
+            "--expected-config-head",
+            "",
+            "--expected-config-parent",
+            legacy.commit_revision,
+            "--anchor",
+            str(b["op_anchor"]),
+            "--anchor",
+            str(b["frame_anchor"]),
+            "--operator-anchor",
+            str(b["op_anchor"]),
+            "--confirm",
         ],
     )
     assert cli_retry.exit_code == 0, cli_retry.output
@@ -1887,14 +1942,17 @@ def test_identity_policy_refresh_refuses_later_config_head(backend):
     )
     with pytest.raises(hq_beadyard_policy.PolicyRefreshError, match="original config HEAD"):
         hq_beadyard_policy.refresh_after_adoption(
-            b["op_repo"], expected_policy_digest=b["digest"], expected_config_head="",
+            b["op_repo"],
+            expected_policy_digest=b["digest"],
+            expected_config_head="",
             expected_config_parent=legacy.commit_revision,
             anchors=(b["op_anchor"], b["frame_anchor"]),
             operator_anchor=b["op_anchor"],
         )
-    assert json.loads((b["remote"] / guard.POLICY).read_text())["hive_policies"]["bh"][
-        "config_head"
-    ] == ""
+    assert (
+        json.loads((b["remote"] / guard.POLICY).read_text())["hive_policies"]["bh"]["config_head"]
+        == ""
+    )
 
 
 def test_git_adoption_keeps_pinned_config_parent_when_another_operator_advances(
@@ -1994,7 +2052,8 @@ def test_git_adoption_recovers_lost_completion_after_later_config_edit(backend, 
     assert store.load_snapshot().documents == later.documents
     with pytest.raises(hq_beadyard.BeadyardOperationError, match="original revision"):
         hq_beadyard.adopt_legacy(
-            hq_dir=b["op_repo"], expected_revision=later.commit_revision,
+            hq_dir=b["op_repo"],
+            expected_revision=later.commit_revision,
             operator_key=b["operator"],
         )
 

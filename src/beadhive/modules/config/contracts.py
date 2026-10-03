@@ -1106,10 +1106,11 @@ class HqConfig(_Section):
     @classmethod
     def _canonical_beadyard_id(cls, value):
         if value is not None:
-            from ...beadyard_identity import parse_id
+            from .domain.beadyard_identity import parse_id
 
             return parse_id(value)
         return value
+
     authority_anchor: str = ""
     admission_policy: Literal["manual"] = "manual"
     sql: HqSqlConfig = Field(default_factory=HqSqlConfig)

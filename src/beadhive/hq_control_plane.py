@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from . import beadyard_identity, config, gitref, hq_git_broker, hq_manifest_guard
+from . import config, gitref, hq_git_broker, hq_manifest_guard
 from . import hq_authority_guard as guard
 from .run import run
 
@@ -222,7 +222,11 @@ def install_guard(
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(source.read_bytes())
     (libraries / "manifest_guard.py").write_bytes(Path(hq_manifest_guard.__file__).read_bytes())
-    (libraries / "beadyard_identity.py").write_bytes(Path(beadyard_identity.__file__).read_bytes())
+    # The receive hook imports this file as a standalone module from its sealed runtime.
+    # Copy the pure source, not the public compatibility surface with package imports.
+    from .modules.config.domain import beadyard_identity as identity_contract
+
+    (libraries / "beadyard_identity.py").write_bytes(Path(identity_contract.__file__).read_bytes())
     (libraries / "host-manifest.schema.json").write_text(
         gitref.encode(HostManifest.model_json_schema())
     )
@@ -884,7 +888,7 @@ class GitControlPlane:
 
     def grant(self, authority, public_key, desired, *, expected, operator_key):
         from .beadyard_identity_file import read_identity
-        from .host_heartbeat_core import authority_payload
+        from .hq_authority_payload import authority_payload
 
         if authority.beadyard_id != read_identity(self.hq_dir):
             raise ControlPlaneError("candidate belongs to a different beadyard")
@@ -977,14 +981,21 @@ class GitControlPlane:
         for record in live:
             authority = record["authority"]
             expiry = authority["candidate_expires_at"]
-            if "beadyard_id" in authority or (
-                expiry is None
-                and record["state"] not in {"active", "draining", "drained", "parked"}
-            ) or (expiry is not None and expiry <= now):
+            if (
+                "beadyard_id" in authority
+                or (
+                    expiry is None
+                    and record["state"] not in {"active", "draining", "drained", "parked"}
+                )
+                or (expiry is not None and expiry <= now)
+            ):
                 raise ControlPlaneError("expired or already bound grant cannot be rebound")
             authority["beadyard_id"] = owner
         return self._write(
-            state, expected, operator_key, duration=remaining,
+            state,
+            expected,
+            operator_key,
+            duration=remaining,
             expires_at_cap=state["expires_at"],
         )
 
@@ -1033,10 +1044,9 @@ class GitControlPlane:
         age = now - lease.observed_at
         if age < -30 or age >= lease.leaseDurationSeconds:
             raise ControlPlaneError("first observation is expired or future-skewed")
-        same_identity = (
-            receipt["lease"] is None
-            or receipt["lease"].get("beadyard_id") == payload.get("beadyard_id")
-        )
+        same_identity = receipt["lease"] is None or receipt["lease"].get(
+            "beadyard_id"
+        ) == payload.get("beadyard_id")
         streak = (
             receipt["consecutive"] + 1
             if same_identity and lease.seq == receipt["sequence"] + 1
@@ -1583,7 +1593,8 @@ class SqlControlPlane:
         return time.monotonic() + binding["operation_timeout"]
 
     def grant(self, authority, public_key, desired, *, expected, operator_key):
-        from .host_heartbeat_core import ObservationAuthority, authority_payload
+        from .host_heartbeat_core import ObservationAuthority
+        from .hq_authority_payload import authority_payload
         from .hq_sql_operator import SqlRuntimeOperator
         from .hq_sql_signatures import fingerprint
 
@@ -1692,10 +1703,14 @@ class SqlControlPlane:
             for record in live:
                 authority = record["authority"]
                 expiry = authority["candidate_expires_at"]
-                if "beadyard_id" in authority or (
-                    expiry is None
-                    and record["state"] not in {"active", "draining", "drained", "parked"}
-                ) or (expiry is not None and expiry <= now):
+                if (
+                    "beadyard_id" in authority
+                    or (
+                        expiry is None
+                        and record["state"] not in {"active", "draining", "drained", "parked"}
+                    )
+                    or (expiry is not None and expiry <= now)
+                ):
                     raise ControlPlaneError("expired or already bound grant cannot be rebound")
                 authority["beadyard_id"] = owner
             state.update(

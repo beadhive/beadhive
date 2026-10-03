@@ -159,9 +159,7 @@ def test_active_git_edit_rejects_switch_to_sql_before_read(selected_sql_host):
 
 
 @pytest.mark.parametrize("selected", [False, True])
-def test_active_fleet_edit_rejects_changed_beadyard_pin_before_write(
-    selected_sql_host, selected
-):
+def test_active_fleet_edit_rejects_changed_beadyard_pin_before_write(selected_sql_host, selected):
     from uuid import uuid4
 
     store, host_path, bootstrap = selected_sql_host

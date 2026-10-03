@@ -59,7 +59,7 @@ class SqlRuntimeOperator:
     @staticmethod
     def principal_for(authority) -> str:
         """Stable SQL account for one incarnation across its HQ-ID binding."""
-        from .host_heartbeat_core import authority_payload
+        from .hq_authority_payload import authority_payload
 
         identity = authority_payload(authority)
         identity.pop("beadyard_id", None)
@@ -298,9 +298,13 @@ class SqlRuntimeOperator:
                 guard.validate_state(state)
                 if current["domain"] == guard.DOMAIN_V2 and state["domain"] != guard.DOMAIN_V2:
                     raise SqlOperatorError("bound authority carrier cannot downgrade")
-                if current["domain"] == guard.DOMAIN and state["domain"] == guard.DOMAIN_V2 and any(
-                    entry["active"] is not None or entry["candidate"] is not None
-                    for entry in current["frames"].values()
+                if (
+                    current["domain"] == guard.DOMAIN
+                    and state["domain"] == guard.DOMAIN_V2
+                    and any(
+                        entry["active"] is not None or entry["candidate"] is not None
+                        for entry in current["frames"].values()
+                    )
                 ):
                     guard.validate_legacy_binding_transition(
                         current, state, trusted_now=self.clock()

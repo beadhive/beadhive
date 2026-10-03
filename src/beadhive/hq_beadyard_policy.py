@@ -153,20 +153,24 @@ def _qualified_config(
         raise PolicyRefreshError("unprojected config had later legacy changes")
     for sha, revision in ((parent, old["revision"]), (head, new["revision"])):
         _git(
-            remote, "-c", f"gpg.ssh.allowedSignersFile={policy['operator_signers']}",
-            "-c", f"gpg.ssh.program={policy['executables']['ssh_keygen']['path']}",
-            "verify-commit", sha,
+            remote,
+            "-c",
+            f"gpg.ssh.allowedSignersFile={policy['operator_signers']}",
+            "-c",
+            f"gpg.ssh.program={policy['executables']['ssh_keygen']['path']}",
+            "verify-commit",
+            sha,
         )
         witness = _git(
-            remote, "for-each-ref", "--format=%(objectname)",
+            remote,
+            "for-each-ref",
+            "--format=%(objectname)",
             f"{guard.CONFIG_WITNESS}{revision:020d}",
         )
         if witness != sha:
             raise PolicyRefreshError("config adoption witness differs")
     witnesses = _git(remote, "for-each-ref", "--format=%(refname)", guard.CONFIG_WITNESS)
-    if max(witnesses.splitlines(), default="") != (
-        f"{guard.CONFIG_WITNESS}{new['revision']:020d}"
-    ):
+    if max(witnesses.splitlines(), default="") != (f"{guard.CONFIG_WITNESS}{new['revision']:020d}"):
         raise PolicyRefreshError("later config witness prevents policy refresh")
     return head
 
@@ -181,9 +185,13 @@ def _assert_static_policy(policy: dict, remote: Path) -> None:
         raise PolicyRefreshError("protected policy server binding changed")
     hook = remote / "hooks/pre-receive"
     protected = (
-        remote / "hooks", hook, remote / guard.POLICY,
-        remote / "bh-authority-guard.py", remote / "bh-git-broker.py",
-        Path(policy["operator_signers"]), remote / "bh-guard-libs",
+        remote / "hooks",
+        hook,
+        remote / guard.POLICY,
+        remote / "bh-authority-guard.py",
+        remote / "bh-git-broker.py",
+        Path(policy["operator_signers"]),
+        remote / "bh-guard-libs",
     )
     _assert_custody(remote, protected)
     if _read(hook) != _hook_text(remote, policy).encode() or not os.access(hook, os.X_OK):
@@ -232,8 +240,15 @@ def _intended_bytes(remote: Path, policy_bytes: bytes, anchors: tuple[Path, ...]
         record = json.loads(original)
         if (
             set(record)
-            != {"server_root", "socket", "policy_digest", "generation", "role",
-                "client_interpreter", "client_interpreter_digest"}
+            != {
+                "server_root",
+                "socket",
+                "policy_digest",
+                "generation",
+                "role",
+                "client_interpreter",
+                "client_interpreter_digest",
+            }
             or record["server_root"] != str(remote)
             or record["generation"] != policy["generation"]
             or record["policy_digest"] != old_digest
@@ -276,7 +291,12 @@ def _load_intent(path: Path):
     try:
         record = json.loads(_read(path, limit=2 * 1024 * 1024))
         if set(record) != {
-            "old_digest", "old_head", "config_parent", "new_head", "policy", "anchors"
+            "old_digest",
+            "old_head",
+            "config_parent",
+            "new_head",
+            "policy",
+            "anchors",
         }:
             raise ValueError
         old, new = (_unpack_bytes(item) for item in record["policy"])
@@ -331,8 +351,13 @@ def _write_intent(remote: Path, record: dict) -> None:
 
 
 def refresh_after_adoption(
-    hq_dir: Path, *, expected_policy_digest: str, expected_config_head: str,
-    expected_config_parent: str, anchors: tuple[Path, ...], operator_anchor: Path,
+    hq_dir: Path,
+    *,
+    expected_policy_digest: str,
+    expected_config_head: str,
+    expected_config_parent: str,
+    anchors: tuple[Path, ...],
+    operator_anchor: Path,
 ) -> str:
     """Explicitly rotate only the server's config-head projection and its known anchors."""
     from .hq_control_plane import GitControlPlane

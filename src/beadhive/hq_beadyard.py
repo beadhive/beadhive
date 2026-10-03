@@ -82,7 +82,11 @@ def _adoption_record(marker: Path) -> dict[str, object] | None:
     except (UnicodeError, ValueError):
         raise BeadyardOperationError("HQ adoption intent is invalid") from None
     if not isinstance(record, dict) or set(record) != {
-        "expected_revision", "config_revision", "config_sequence", "documents_digest", "key_digest"
+        "expected_revision",
+        "config_revision",
+        "config_sequence",
+        "documents_digest",
+        "key_digest",
     }:
         raise BeadyardOperationError("HQ adoption intent is invalid")
     expected = record["expected_revision"]
@@ -148,9 +152,10 @@ def _start_git_adoption(root: Path, expected_revision: str, operator_key: Path) 
         from .hq_control_plane import fingerprint
 
         policy = protected[0]._policy()
-        if fingerprint(_operator_public(operator_key).decode()) not in policy[
-            "operator_fingerprints"
-        ]:
+        if (
+            fingerprint(_operator_public(operator_key).decode())
+            not in policy["operator_fingerprints"]
+        ):
             raise BeadyardOperationError("operator signing key is not protected HQ custody")
     config_revision = protected[1] if protected else ""
     config_state = protected[2] if protected else {}
@@ -229,9 +234,11 @@ def inspect(hq_dir: Path | None = None) -> BeadyardStatus:
             from .hq_control_plane import GitControlPlane
 
             try:
-                revision, signed, _policy = GitControlPlane(
-                    root, authority_anchor=anchor
-                ).config_store()._read(allow_expired=True)
+                revision, signed, _policy = (
+                    GitControlPlane(root, authority_anchor=anchor)
+                    .config_store()
+                    ._read(allow_expired=True)
+                )
             except Exception:
                 raise BeadyardOperationError(
                     "protected Git config could not qualify HQ identity"
@@ -254,9 +261,7 @@ def _protected_git_adoption_state(root: Path, owner: str | None):
             allow_expired=True, allow_legacy_bound=True
         )
     except Exception:
-        raise BeadyardOperationError(
-            "protected Git authority could not qualify adoption"
-        ) from None
+        raise BeadyardOperationError("protected Git authority could not qualify adoption") from None
     # Existing v1 grants remain recorded through adoption. Bound intake denies
     # their unbound authority until bootstrap publishes fresh bound evidence;
     # in-flight claims retain their preexisting lease/drain policy.
@@ -428,7 +433,10 @@ def _confirmed_git_config_adoption(plane, current_sha: str, owner: str, intent) 
         return False
     try:
         chain = _git(
-            plane.hq_dir, "rev-list", "--first-parent", "--reverse",
+            plane.hq_dir,
+            "rev-list",
+            "--first-parent",
+            "--reverse",
             f"{original}..{current_sha}",
         )
         first = chain.splitlines()[0]
@@ -498,9 +506,9 @@ def _publish_protected_git_identity(
     committed = _git(["show", f"main:{DOCUMENT_PATH}"], root)
     if committed.returncode or parse_document(committed.stdout) != owner:
         raise BeadyardOperationError("HQ main identity unavailable for protected publication")
-    documents = tuple(
-        FleetConfigDocument(**item) for item in current_state["documents"]
-    ) + (FleetConfigDocument(DOCUMENT_PATH, committed.stdout),)
+    documents = tuple(FleetConfigDocument(**item) for item in current_state["documents"]) + (
+        FleetConfigDocument(DOCUMENT_PATH, committed.stdout),
+    )
     try:
         plane.config_store(operator_key=str(operator_key)).publish_snapshot(
             documents, expected_revision=original_revision, explicit_adoption=True
@@ -582,9 +590,7 @@ def _prepare_sql_pending(pending: Path) -> None:
 
 @contextmanager
 def _sql_adoption_lock(pending: Path):
-    fd = os.open(
-        pending / ".lock", os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600
-    )
+    fd = os.open(pending / ".lock", os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
         metadata = os.fstat(fd)
         if (
@@ -763,8 +769,7 @@ def adopt_legacy(
                 raise BeadyardOperationError("SQL HQ identity is already bound or foreign")
             content = (pending / DOCUMENT_PATH).read_text()
             if not any(
-                doc.path == DOCUMENT_PATH and doc.content == content
-                for doc in snapshot.documents
+                doc.path == DOCUMENT_PATH and doc.content == content for doc in snapshot.documents
             ):
                 raise BeadyardOperationError("SQL adoption document changed after publication")
             return BeadyardStatus(backend, "bound", snapshot.beadyard_id, snapshot.commit_revision)
@@ -796,8 +801,7 @@ def adopt_legacy(
                 "SQL HQ adoption outcome unavailable; retry original revision"
             ) from None
         if not _confirmed_sql_adoption(store, intent, committed) or not any(
-            doc.path == DOCUMENT_PATH and doc.content == content
-            for doc in committed.documents
+            doc.path == DOCUMENT_PATH and doc.content == content for doc in committed.documents
         ):
             raise BeadyardOperationError("SQL HQ identity adoption conflicted")
         return BeadyardStatus("dolt-server", "bound", owner, committed.commit_revision)

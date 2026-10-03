@@ -13,7 +13,7 @@ import re
 import sqlite3
 import time
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 
 from jsonschema import Draft202012Validator, FormatChecker, ValidationError
@@ -69,14 +69,6 @@ class ObservationAuthority:
             from .beadyard_identity import parse_id
 
             parse_id(self.beadyard_id)
-
-
-def authority_payload(authority: ObservationAuthority) -> dict:
-    """Preserve exact legacy v1 shape; bound v2 includes its signed HQ ID."""
-    data = asdict(authority)
-    if data["beadyard_id"] is None:
-        del data["beadyard_id"]
-    return data
 
 
 @dataclass(frozen=True)

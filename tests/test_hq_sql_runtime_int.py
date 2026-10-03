@@ -1687,27 +1687,34 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
             legacy_refresh = lease.model_copy(
                 update={"seq": 3, "renewTime": datetime.now(UTC).isoformat()}
             )
-            legacy_refresh_digest = plane.heartbeat(
-                legacy_refresh, signing_key=str(frame_key)
-            )
+            legacy_refresh_digest = plane.heartbeat(legacy_refresh, signing_key=str(frame_key))
             refresh_reader = pymysql.connect(
-                host="127.0.0.1", port=port, user="root",
-                database="beadhive_hq_runtime", autocommit=True,
+                host="127.0.0.1",
+                port=port,
+                user="root",
+                database="beadhive_hq_runtime",
+                autocommit=True,
             )
             try:
                 with refresh_reader.cursor() as cursor:
                     cursor.execute(
-                        "SELECT request_id FROM hq_live_inbox_frame_a_1 "
-                        "WHERE payload_sha256=%s",
+                        "SELECT request_id FROM hq_live_inbox_frame_a_1 WHERE payload_sha256=%s",
                         (legacy_refresh_digest.removeprefix("sha256:"),),
                     )
                     legacy_refresh_id = cursor.fetchone()[0]
             finally:
                 refresh_reader.close()
             refresh_result = subprocess.run(
-                [sys.executable, str(worker), str(receiver_settings_path),
-                 "frame_a", legacy_refresh_id],
-                cwd=Path(__file__).parent.parent, capture_output=True, text=True,
+                [
+                    sys.executable,
+                    str(worker),
+                    str(receiver_settings_path),
+                    "frame_a",
+                    legacy_refresh_id,
+                ],
+                cwd=Path(__file__).parent.parent,
+                capture_output=True,
+                text=True,
                 timeout=20,
             )
             assert refresh_result.returncode == 0, refresh_result.stderr
@@ -1731,13 +1738,12 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
                 identity_doc,
             )
             bound_config = config_writer.publish_snapshot(
-                bound_documents, expected_revision=republished.commit_revision,
+                bound_documents,
+                expected_revision=republished.commit_revision,
                 explicit_adoption=True,
             )
             assert bound_config.beadyard_id == owner
-            monkeypatch.setattr(
-                config_facade, "load_host", lambda: {"hq": {"beadyard_id": owner}}
-            )
+            monkeypatch.setattr(config_facade, "load_host", lambda: {"hq": {"beadyard_id": owner}})
             prior_frames = json.loads(json.dumps(operator.load()[1]["frames"]))
             projection_head = operator_plane.bind_beadyard(
                 expected=projection_head, operator_key=str(key)
@@ -1753,8 +1759,11 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
 
             def identity_request_id(digest, *, inbox="hq_live_inbox_frame_a_1"):
                 reader = pymysql.connect(
-                    host="127.0.0.1", port=port, user="root",
-                    database="beadhive_hq_runtime", autocommit=True,
+                    host="127.0.0.1",
+                    port=port,
+                    user="root",
+                    database="beadhive_hq_runtime",
+                    autocommit=True,
                 )
                 try:
                     with reader.cursor() as cursor:
@@ -1767,22 +1776,35 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
                     reader.close()
 
             def receive_identity(request_id, *, principal="frame_a", kind="--hive"):
-                arguments = [sys.executable, str(worker), str(receiver_settings_path),
-                             principal, request_id]
+                arguments = [
+                    sys.executable,
+                    str(worker),
+                    str(receiver_settings_path),
+                    principal,
+                    request_id,
+                ]
                 if kind is not None:
                     arguments.append(kind)
                 return subprocess.run(
                     arguments,
-                    cwd=Path(__file__).parent.parent, capture_output=True, text=True,
+                    cwd=Path(__file__).parent.parent,
+                    capture_output=True,
+                    text=True,
                     timeout=20,
                 )
 
             new_hive_lease = HostLease(
-                host_id="host-1", label="fixture", epoch=1,
-                adopted_at=now_stamp(), expires_at=now_stamp(time.time() + 900),
+                host_id="host-1",
+                label="fixture",
+                epoch=1,
+                adopted_at=now_stamp(),
+                expires_at=now_stamp(time.time() + 900),
             )
             new_hive_id, *_ = plane.propose_hive_lease(
-                "bi", new_hive_lease, expected="", operation="adopt",
+                "bi",
+                new_hive_lease,
+                expected="",
+                operation="adopt",
                 signing_key=str(frame_key),
             )
             denied_old_beat = receive_identity(new_hive_id)
@@ -1790,17 +1812,24 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
             assert "fresh conformant receipt" in denied_old_beat.stderr
 
             bridge_id, *_ = plane.propose_hive_lease(
-                "bh", hive_lease, expected=hive_revision, operation="renew",
+                "bh",
+                hive_lease,
+                expected=hive_revision,
+                operation="renew",
                 signing_key=str(frame_key),
             )
             bridge = receive_identity(bridge_id)
             assert bridge.returncode == 0, bridge.stderr
             hive_revision = bridge.stdout.strip()
             assert plane.read_hive_lease_record("bh", holder_identity="host-1") == (
-                hive_revision, hive_lease,
+                hive_revision,
+                hive_lease,
             )
             repeated_bridge_id, *_ = plane.propose_hive_lease(
-                "bh", hive_lease, expected=hive_revision, operation="renew",
+                "bh",
+                hive_lease,
+                expected=hive_revision,
+                operation="renew",
                 signing_key=str(frame_key),
             )
             repeated_bridge = receive_identity(repeated_bridge_id)
@@ -1808,25 +1837,28 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
             assert "fresh conformant receipt" in repeated_bridge.stderr
 
             bound_beat = lease.model_copy(
-                update={"seq": 4, "domain": "beadhive/frame-heartbeat/v2", "beadyard_id": owner,
-                        "renewTime": datetime.now(UTC).isoformat()}
+                update={
+                    "seq": 4,
+                    "domain": "beadhive/frame-heartbeat/v2",
+                    "beadyard_id": owner,
+                    "renewTime": datetime.now(UTC).isoformat(),
+                }
             )
             bound_beat_digest = plane.heartbeat(bound_beat, signing_key=str(frame_key))
-            bound_beat_result = receive_identity(
-                identity_request_id(bound_beat_digest), kind=None
-            )
+            bound_beat_result = receive_identity(identity_request_id(bound_beat_digest), kind=None)
             assert bound_beat_result.returncode == 0, bound_beat_result.stderr
             from uuid import uuid4
 
-            foreign_beat = bound_beat.model_copy(
-                update={"seq": 5, "beadyard_id": str(uuid4())}
-            )
+            foreign_beat = bound_beat.model_copy(update={"seq": 5, "beadyard_id": str(uuid4())})
             frame_runtime = plane._runtime_authority()
             frame_head, _state, _crossref, _policies = frame_runtime.load_state()
             frame_binding = frame_runtime.load_frame_binding(expected_head=frame_head)
             foreign_id, _foreign_digest = frame_runtime.publish_inbox(
-                "heartbeat", sign_heartbeat(foreign_beat, signing_key=str(frame_key)),
-                binding=frame_binding, expected_head=frame_head, request_id=str(uuid4()),
+                "heartbeat",
+                sign_heartbeat(foreign_beat, signing_key=str(frame_key)),
+                binding=frame_binding,
+                expected_head=frame_head,
+                request_id=str(uuid4()),
             )
             denied_foreign_beat = receive_identity(foreign_id, kind=None)
             assert denied_foreign_beat.returncode != 0
@@ -1842,8 +1874,11 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
             )
             assert registered_bound.returncode == 0, registered_bound.stderr
             registration_reader = pymysql.connect(
-                host="127.0.0.1", port=port, user="root",
-                database="beadhive_hq_runtime", autocommit=True,
+                host="127.0.0.1",
+                port=port,
+                user="root",
+                database="beadhive_hq_runtime",
+                autocommit=True,
             )
             try:
                 with registration_reader.cursor() as cursor:
@@ -1870,7 +1905,10 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
                 new_hive_lease
             )
             ordinary_renew_id, *_ = plane.propose_hive_lease(
-                "bh", hive_lease, expected=hive_revision, operation="renew",
+                "bh",
+                hive_lease,
+                expected=hive_revision,
+                operation="renew",
                 signing_key=str(frame_key),
             )
             ordinary_renew = receive_identity(ordinary_renew_id)
@@ -1882,23 +1920,29 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
             )
             second_registered = receive_identity(
                 identity_request_id(second_registration_bound, inbox=second_inbox),
-                principal=second_principal, kind="--registration",
+                principal=second_principal,
+                kind="--registration",
             )
             assert second_registered.returncode == 0, second_registered.stderr
             second_lease = second_lease.model_copy(
-                update={"seq": 4, "domain": "beadhive/frame-heartbeat/v2", "beadyard_id": owner,
-                        "renewTime": datetime.now(UTC).isoformat()}
+                update={
+                    "seq": 4,
+                    "domain": "beadhive/frame-heartbeat/v2",
+                    "beadyard_id": owner,
+                    "renewTime": datetime.now(UTC).isoformat(),
+                }
             )
-            second_bound_digest = second_plane.heartbeat(
-                second_lease, signing_key=str(second_key)
-            )
+            second_bound_digest = second_plane.heartbeat(second_lease, signing_key=str(second_key))
             second_bound_result = receive_identity(
                 identity_request_id(second_bound_digest, inbox=second_inbox),
-                principal=second_principal, kind=None,
+                principal=second_principal,
+                kind=None,
             )
             assert second_bound_result.returncode == 0, second_bound_result.stderr
             projection_head = operator_plane.accept_observation(
-                "frame-2", expected=projection_head, operator_key=str(key),
+                "frame-2",
+                expected=projection_head,
+                operator_key=str(key),
                 holder_identity="host-2",
             )
             manifest2 = bound_manifest2

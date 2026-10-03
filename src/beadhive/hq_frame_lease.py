@@ -66,9 +66,7 @@ def read(plane, prefix, *, git, error, decode, lease_ref, json_decode, holder_id
         matches = [
             (f, r, True)
             for f, r in guard.records(state)
-            if guard.same_incumbent_after_binding(
-                authority, {"frame_id": f, **r["authority"]}
-            )
+            if guard.same_incumbent_after_binding(authority, {"frame_id": f, **r["authority"]})
         ]
     if len(matches) != 1:
         raise error("frame hive lease incarnation unavailable")

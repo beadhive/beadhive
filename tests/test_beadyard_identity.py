@@ -156,7 +156,11 @@ def test_sql_adoption_recovery_refuses_unprivate_journal_before_publication(tmp_
     from beadhive import config
 
     original = FleetConfigSnapshot(
-        "backend-one", "original-revision", "generation-one", 1, 2,
+        "backend-one",
+        "original-revision",
+        "generation-one",
+        1,
+        2,
         (FleetConfigDocument("fleet.yaml", "schema_version: 1\n"),),
     )
 
@@ -187,8 +191,11 @@ def test_sql_adoption_recovery_refuses_unprivate_journal_before_publication(tmp_
     lock.write_text("")
     lock.chmod(0o600)
     for artifact in (
-        pending.parent, pending, pending / identity.DOCUMENT_PATH,
-        pending / "adoption.json", lock,
+        pending.parent,
+        pending,
+        pending / identity.DOCUMENT_PATH,
+        pending / "adoption.json",
+        lock,
     ):
         mode = artifact.stat().st_mode & 0o777
         artifact.chmod(mode | 0o044)
@@ -219,7 +226,11 @@ def test_git_legacy_adoption_is_signed_original_head_cas_and_retryable(tmp_path,
 
     def git(*args, data=None):
         result = subprocess.run(
-            ["git", *args], cwd=root, check=True, capture_output=True, text=True,
+            ["git", *args],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
             input=data,
         )
         return result.stdout.strip()
@@ -266,8 +277,15 @@ def test_git_legacy_adoption_is_signed_original_head_cas_and_retryable(tmp_path,
             rows += f"100644 blob {extra}\tzz-extra.txt\n"
         tree = git("mktree", data=rows)
         return git(
-            "-c", "gpg.format=ssh", "-c", f"user.signingkey={signer}",
-            "commit-tree", "-S", tree, "-p", original,
+            "-c",
+            "gpg.format=ssh",
+            "-c",
+            f"user.signingkey={signer}",
+            "commit-tree",
+            "-S",
+            tree,
+            "-p",
+            original,
             data="Adopt canonical beadyard identity\n",
         )
 
@@ -311,9 +329,7 @@ def test_git_legacy_adoption_is_signed_original_head_cas_and_retryable(tmp_path,
     assert hq_beadyard._completed_original(root) is not None
     assert hq_beadyard._pending_original(root) is None
     monkeypatch.setattr(hq_beadyard, "_finish_git_adoption", original_finish)
-    bound = hq_beadyard.adopt_legacy(
-        hq_dir=root, expected_revision=original, operator_key=key
-    )
+    bound = hq_beadyard.adopt_legacy(hq_dir=root, expected_revision=original, operator_key=key)
     assert bound.state == "bound"
     assert bound.beadyard_id == pending.beadyard_id
     assert bound.revision != original
@@ -324,9 +340,12 @@ def test_git_legacy_adoption_is_signed_original_head_cas_and_retryable(tmp_path,
     git("commit", "-qm", "Preserve staged edit")
     assert git("status", "--porcelain") == ""
     assert git("ls-remote", "origin", "refs/heads/main").split()[0] == original
-    assert hq_beadyard.adopt_legacy(
-        hq_dir=root, expected_revision=original, operator_key=key
-    ).beadyard_id == bound.beadyard_id
+    assert (
+        hq_beadyard.adopt_legacy(
+            hq_dir=root, expected_revision=original, operator_key=key
+        ).beadyard_id
+        == bound.beadyard_id
+    )
     with pytest.raises(hq_beadyard.BeadyardOperationError, match="original revision"):
         hq_beadyard.adopt_legacy(hq_dir=root, expected_revision=bound.revision, operator_key=key)
     with pytest.raises(hq_beadyard.BeadyardOperationError, match="operator signing key"):
