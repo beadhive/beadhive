@@ -1,19 +1,44 @@
 # HQ configuration cutover and deprecation readiness
 
-Assessment scope: config-only cutover readiness for `bh-zg0lp`. This document records the merged implementation and isolated proof, identifies what an authorized deployer must still verify, and keeps eventual repository retirement as a separate decision. It does not report a production cutover.
+Assessment scope: config-only cutover readiness for `bh-zg0lp`. This document records the merged
+implementation and isolated proof, identifies what an authorized deployer must still verify, and
+keeps eventual repository retirement as a separate decision. It does not report a production
+cutover.
 
 ## Current assessment
 
-- **Implementation:** public seed, guarded selector, latest-authority Git export, config-only bootstrap, and the composed local lifecycle have passed managed review and isolated tests in the nested integration tree. This worktree starts from nested commit `8cb0c5a595314a1937a6faf9ab93720415c40524` (tree `f8c7f02cb8cc51499e56b469eea23cf2b2b75775`); it is not a final-main or public-release pin. The final E2E change is source commit `2d347746` and is represented by the merged [fleet membership E2E evidence](fleet-membership-e2e-evidence.md).
-- **`CONFIG_CUTOVER_READY`: PENDING live deployment.** No central endpoint, production HOST selector, source-HQ identity, writer freeze, deployment grant, or deployed fresh-host readback was changed or verified by these fixtures. Do not mark the old configuration historical or claim automatic publication has stopped yet.
-- **`BEADS_READY`, `AUTHORITY_READY`, and `ADMITTED/ELIGIBLE`: separate statuses.** Local SQL configuration attachment does not prove the Beads store is usable, runtime authority is current, or a frame is admitted and eligible. Production observations remain pending.
-- **`REPOSITORY_RETIREMENT_NOT_READY`.** HQ-origin data, signer/custody, credentials, replication and restore paths have not all been independently restored and verified. Config cutover alone does not authorize archive, deletion, or credential revocation.
+- **Implementation:** public seed, guarded selector, latest-authority Git export, config-only
+  bootstrap, and the composed local lifecycle have passed managed review and isolated tests in the
+  nested integration tree. This worktree starts from nested commit
+  `8cb0c5a595314a1937a6faf9ab93720415c40524` (tree `f8c7f02cb8cc51499e56b469eea23cf2b2b75775`); it
+  is not a final-main or public-release pin. The final E2E change is source commit `2d347746` and
+  is represented by the merged [fleet membership E2E evidence](fleet-membership-e2e-evidence.md).
+- **`CONFIG_CUTOVER_READY`: PENDING live deployment.** No central endpoint, production HOST
+  selector, source-HQ identity, writer freeze, deployment grant, or deployed fresh-host readback
+  was changed or verified by these fixtures. Do not mark the old configuration historical or claim
+  automatic publication has stopped yet.
+- **`BEADS_READY`, `AUTHORITY_READY`, and `ADMITTED/ELIGIBLE`: separate statuses.** Local SQL
+  configuration attachment does not prove the Beads store is usable, runtime authority is current,
+  or a frame is admitted and eligible. Production observations remain pending.
+- **`REPOSITORY_RETIREMENT_NOT_READY`.** HQ-origin data, signer/custody, credentials, replication
+  and restore paths have not all been independently restored and verified. Config cutover alone
+  does not authorize archive, deletion, or credential revocation.
 
-The accepted E2E managed review covers an isolated TLS Dolt fixture and signed synthetic runtime. It does not contact a production endpoint, modify an existing Beads installation or HOST selector, enroll an actual actor, or execute a real worker issue. The managed gate reports nine stock groups green; the stateful run reports 9,337 passed / 12 skipped, and the integration run reports 76 passed / 4 skipped. Source and evidence are in [the E2E design record](fleet-membership-e2e-evidence.md), including its explicit test boundaries.
+The accepted E2E managed review covers an isolated TLS Dolt fixture and signed synthetic runtime.
+It does not contact a production endpoint, modify an existing Beads installation or HOST selector,
+enroll an actual actor, or execute a real worker issue. The managed gate reports nine stock groups
+green; the stateful run reports 9,337 passed / 12 skipped, and the integration run reports 76
+passed / 4 skipped. Source and evidence are in [the E2E design
+record](fleet-membership-e2e-evidence.md), including its explicit test boundaries.
 
 ## Config consumers, writers and enrollment paths
 
-The [config consumer migration ledger](config-consumer-migration-ledger.json) is the exhaustive static importer inventory for the inspected source: 87 production config importers, 5 production schema importers, 158 test config importers, 27 test schema importers, 328 config patch points, and 87 recorded broad dependencies. The ledger describes code dependencies; it does not prove that any live host currently selected Dolt. Most consumers reach config through the shared facade, not by connecting directly to HQ.
+The [config consumer migration ledger](config-consumer-migration-ledger.json) is the exhaustive
+static importer inventory for the inspected source: 87 production config importers, 5 production
+schema importers, 158 test config importers, 27 test schema importers, 328 config patch points,
+and 87 recorded broad dependencies. The ledger describes code dependencies; it does not prove that
+any live host currently selected Dolt. Most consumers reach config through the shared facade, not
+by connecting directly to HQ.
 
 | Surface | Source path and behavior | Accepted isolated proof | Live cutover evidence still required |
 |---|---|---|---|
@@ -27,21 +52,39 @@ The [config consumer migration ledger](config-consumer-migration-ledger.json) is
 
 ### Identity and compatibility contract
 
-The immutable identity is the canonical UUID4 field `beadyard_id` in `beadyard.json`; the filename is not `beadyard_id`. A new HQ creates this once during explicit setup. Normal reads and publications never generate or replace it. Git signed config uses carrier domain `beadhive/fleet-config/v2` and retains the explicit legacy v1 compatibility path. HOST `hq.beadyard_id` is a pin to the same identity, not a second identity or credential.
+The immutable identity is the canonical UUID4 field `beadyard_id` in `beadyard.json`; the filename
+is not `beadyard_id`. A new HQ creates this once during explicit setup. Normal reads and
+publications never generate or replace it. Git signed config uses carrier domain
+`beadhive/fleet-config/v2` and retains the explicit legacy v1 compatibility path. HOST
+`hq.beadyard_id` is a pin to the same identity, not a second identity or credential.
 
 Version names describe different layers and must stay distinct:
 
-- Beadhive settings YAML has `SCHEMA_VERSION = 1` ([config contracts](../../src/beadhive/modules/config/contracts.py), [versioning ADR](config-schema-versioning.md)).
-- Fresh dedicated HQ SQL configuration storage is metadata v3 with three config tables; existing storage v1/v2 remain readable and are not automatically altered ([provisioning contract](../../scripts/hq-config/README.md)).
-- Signed Git fleet-config carrier is `beadhive/fleet-config/v2`; the older v1 carrier is a legacy compatibility route.
-- Signed frame heartbeat uses envelope domain `beadhive/frame-heartbeat/v2` and JSON API `frame.beadhive.ai/v1alpha2` ([frame schema](../../src/beadhive/schemas/frame/v1alpha2/framelease.schema.json)).
-- Package contract-bundle, `docs/schemas/wire` release, frame payload, SQL storage metadata, and YAML settings versions are separate. None implies a settings migration or a new v3 wire contract.
+- Beadhive settings YAML has `SCHEMA_VERSION = 1` ([config
+  contracts](../../src/beadhive/modules/config/contracts.py), [versioning
+  ADR](config-schema-versioning.md)).
+- Fresh dedicated HQ SQL configuration storage is metadata v3 with three config tables; existing
+  storage v1/v2 remain readable and are not automatically altered ([provisioning
+  contract](../../scripts/hq-config/README.md)).
+- Signed Git fleet-config carrier is `beadhive/fleet-config/v2`; the older v1 carrier is a legacy
+  compatibility route.
+- Signed frame heartbeat uses envelope domain `beadhive/frame-heartbeat/v2` and JSON API
+  `frame.beadhive.ai/v1alpha2` ([frame
+  schema](../../src/beadhive/schemas/frame/v1alpha2/framelease.schema.json)).
+- Package contract-bundle, `docs/schemas/wire` release, frame payload, SQL storage metadata, and
+  YAML settings versions are separate. None implies a settings migration or a new v3 wire
+  contract.
 
-For legacy HQ identity, use the separately reviewed explicit adoption flow against its original revision. Do not invent a production UUID or treat the temporary identity in a fixture as actual HQ adoption. Fresh config attachment carries no secret values; TLS and broker inputs remain host-local references.
+For legacy HQ identity, use the separately reviewed explicit adoption flow against its original
+revision. Do not invent a production UUID or treat the temporary identity in a fixture as actual
+HQ adoption. Fresh config attachment carries no secret values; TLS and broker inputs remain
+host-local references.
 
 ## HQ-origin dependency inventory
 
-Configuration is only one responsibility of the old HQ. The config migration neither restores nor relocates its Beads database or changes any remote. Current code paths and evidence do not establish an independently verified replacement and restore path for these items:
+Configuration is only one responsibility of the old HQ. The config migration neither restores nor
+relocates its Beads database or changes any remote. Current code paths and evidence do not
+establish an independently verified replacement and restore path for these items:
 
 | HQ-origin dependency | Relevant source/evidence | Independent durable path and restore proof | Retirement effect |
 |---|---|---|---|
@@ -53,26 +96,74 @@ Configuration is only one responsibility of the old HQ. The config migration nei
 | Git/Dolt replication and authority histories | [`HQ.md`](../HQ.md), [`dolt-hq-config-migration-runbook.md`](dolt-hq-config-migration-runbook.md), `hq_seed.py`, `hq_transition.py`. | Local latest SQL → signed Git export/readback is tested. Production replica consistency, independent history backup and restore of HQ-origin Beads remotes are not qualified. Keep any still-needed Beads replication channel separate from config publication. | Blocking |
 | Current fleet/workspace configuration and historical source | [current seed inventory](dolt-hq-current-seed-inventory.md) and [redacted seed evidence](dolt-hq-seed-evidence.md). The latter is a value-free hash/ownership index, not the private migration manifest or an authority snapshot. | The implementation can reconstruct configuration from current committed SQL plus a signed Git export, but this assessment has no live SQL snapshot or independent backup/restore receipt. The current legacy checkout is addressable by `BH_HQ` (default `BH_HOME/hq`); that is a recovery input, not a verified archived copy. | Pending protected snapshot and restore proof |
 
-Do not convert `unknown` or `not proven` into “no dependency.” Retirement requires a named owner, restricted artifact location, content/commit hashes, restore procedure and successful independent readback for every remaining HQ-origin item.
+Do not convert `unknown` or `not proven` into “no dependency.” Retirement requires a named owner,
+restricted artifact location, content/commit hashes, restore procedure and successful independent
+readback for every remaining HQ-origin item.
 
 ## Operator deprecation and cutover checklist
 
-This is a future deployer checklist. It identifies required steps and evidence; it does not authorize or record their execution.
+This is a future deployer checklist. It identifies required steps and evidence; it does not
+authorize or record their execution.
 
-1. **Freeze and plan from actual source.** Confirm who owns the selected HQ source and freeze its config writers for the approved window. Re-run the public value-free migration plan against current Git HEAD, staged/dirty/untracked status, exact selected workspace source order and bytes, HOST ownership, and current destination. Reject inline secrets before capture. Resolve explicit legacy identity adoption and every HOST/fleet conflict before approving the plan. A previous capture, the committed seed inventory, or a fixture is not current authority.
-2. **Record protected retention.** Before switching, record the exact last Git config source revision and a named operator-controlled snapshot location with commit/content hash, owner and restore instructions. Restrict raw manifest/journal directories to 0700 and files to 0600. Keep the source checkout and signed/SQL receipts available. The documented current `BH_HQ` location is not itself an independent snapshot. Do not label the config historical until the switch/readback is verified.
-3. **Provision and seed the dedicated config store.** Use the reviewed `scripts/hq-config` instructions for a fresh dedicated empty schema. Verify native TLS, CA and server name, explicit port/root-auth choice, effective reader/publisher grants and broker references. Apply the same reviewed source plan and durable original intent to the exact schema parent. Read back the committed revision and canonical identity. Do not initialize, move or alter a Beads database.
-4. **Switch one config authority.** Persist the SQL HOST selector only after exact committed readback, preserving the current host identity, keys, Beads engine binding, attachments, clone roots, actors, branches and host leases. Verify selected config revision and source/semantic parity through normal readers. Prove no old HQ config writer continues publishing Git fleet/workspace config. Do not infer this from code or a successful local fixture.
-5. **Prove config-only fresh-host attachment.** With non-secret endpoint/trust metadata and broker access, verify a host without HQ checkout/GitHub credential reads the seeded config. Record `CONFIG_READY`. Separately qualify Beads store readiness (`BEADS_READY`), trusted current runtime (`AUTHORITY_READY`), and operator admission/current eligibility (`ADMITTED/ELIGIBLE`). Do not re-enroll an existing executor or reset an incumbent lease to pass the test.
-6. **Prove latest-authority rollback after edits.** Freeze all SQL publishers using signed, current grant evidence and clean Dolt stage. Export the latest committed SQL docs and same identity to the supported signed Git layout. Compare source/current parity, identity, revision lineage and replay/custody floors; install and read back the Git mirror. Only then use the guarded HOST selector to switch. Retry an uncertain export with the original intent/heads. Never point rollback at an untouched stale checkout.
-7. **Mark the old config historical only after cutover proof.** Record the old source revision, the immutable retained snapshot URI/path and digest, central committed revision, fresh-host readback, stopped config writers, export/rollback receipts and effective credentials/grants. Preserve Git mode for other fleets. Do not archive/delete the repo or revoke credentials as part of this config assessment.
-8. **Resolve all retirement dependencies independently.** For each HQ-origin row above, demonstrate an owner-controlled durable path, independent restore, content/readback verification and continuity result. Keep `REPOSITORY_RETIREMENT_NOT_READY` until production enrollment/admission and every remaining HQ-origin dependency have qualified paths. A later retirement requires its own explicit deployment decision.
+1. **Freeze and plan from actual source.** Confirm who owns the selected HQ source and freeze
+   its config writers for the approved window. Re-run the public value-free migration plan against
+   current Git HEAD, staged/dirty/untracked status, exact selected workspace source order and
+   bytes, HOST ownership, and current destination. Reject inline secrets before capture. Resolve
+   explicit legacy identity adoption and every HOST/fleet conflict before approving the plan. A
+   previous capture, the committed seed inventory, or a fixture is not current authority.
+1. **Record protected retention.** Before switching, record the exact last Git config source
+   revision and a named operator-controlled snapshot location with commit/content hash, owner and
+   restore instructions. Restrict raw manifest/journal directories to 0700 and files to 0600. Keep
+   the source checkout and signed/SQL receipts available. The documented current `BH_HQ` location
+   is not itself an independent snapshot. Do not label the config historical until the
+   switch/readback is verified.
+1. **Provision and seed the dedicated config store.** Use the reviewed `scripts/hq-config`
+   instructions for a fresh dedicated empty schema. Verify native TLS, CA and server name,
+   explicit port/root-auth choice, effective reader/publisher grants and broker references. Apply
+   the same reviewed source plan and durable original intent to the exact schema parent. Read back
+   the committed revision and canonical identity. Do not initialize, move or alter a Beads
+   database.
+1. **Switch one config authority.** Persist the SQL HOST selector only after exact committed
+   readback, preserving the current host identity, keys, Beads engine binding, attachments, clone
+   roots, actors, branches and host leases. Verify selected config revision and source/semantic
+   parity through normal readers. Prove no old HQ config writer continues publishing Git
+   fleet/workspace config. Do not infer this from code or a successful local fixture.
+1. **Prove config-only fresh-host attachment.** With non-secret endpoint/trust metadata and
+   broker access, verify a host without HQ checkout/GitHub credential reads the seeded config.
+   Record `CONFIG_READY`. Separately qualify Beads store readiness (`BEADS_READY`), trusted
+   current runtime (`AUTHORITY_READY`), and operator admission/current eligibility
+   (`ADMITTED/ELIGIBLE`). Do not re-enroll an existing executor or reset an incumbent lease to
+   pass the test.
+1. **Prove latest-authority rollback after edits.** Freeze all SQL publishers using signed,
+   current grant evidence and clean Dolt stage. Export the latest committed SQL docs and same
+   identity to the supported signed Git layout. Compare source/current parity, identity, revision
+   lineage and replay/custody floors; install and read back the Git mirror. Only then use the
+   guarded HOST selector to switch. Retry an uncertain export with the original intent/heads.
+   Never point rollback at an untouched stale checkout.
+1. **Mark the old config historical only after cutover proof.** Record the old source revision,
+   the immutable retained snapshot URI/path and digest, central committed revision, fresh-host
+   readback, stopped config writers, export/rollback receipts and effective credentials/grants.
+   Preserve Git mode for other fleets. Do not archive/delete the repo or revoke credentials as
+   part of this config assessment.
+1. **Resolve all retirement dependencies independently.** For each HQ-origin row above,
+   demonstrate an owner-controlled durable path, independent restore, content/readback
+   verification and continuity result. Keep `REPOSITORY_RETIREMENT_NOT_READY` until production
+   enrollment/admission and every remaining HQ-origin dependency have qualified paths. A later
+   retirement requires its own explicit deployment decision.
 
 ## Related decisions and evidence
 
-- [Dolt-first cutover ADR](dolt-first-hq-config-cutover-adr.md) — source selection, authority boundary and no-retirement scope.
-- [HQ config seed and rollback runbook](dolt-hq-config-migration-runbook.md) — supported plan/apply and latest-authority return-to-Git steps.
-- [Current seed ownership inventory](dolt-hq-current-seed-inventory.md) and [redacted seed evidence](dolt-hq-seed-evidence.md) — value-free source inventory; neither is a substitute for a new protected migration manifest.
-- [Public seed/bootstrap source](../../scripts/hq-config/README.md) — fresh SQL config schema and grants; no deployment is performed by the resources.
-- [Final composed E2E proof](fleet-membership-e2e-evidence.md) — isolated signed lifecycle, config bootstrap and boundaries.
-- Managed readiness implementation is reviewed in its own bead; `bh-yka1n` operator-documentation edits follow the nested molecule and must not assert production facts absent deployment receipts.
+- [Dolt-first cutover ADR](dolt-first-hq-config-cutover-adr.md) — source selection, authority
+  boundary and no-retirement scope.
+- [HQ config seed and rollback runbook](dolt-hq-config-migration-runbook.md) — supported
+  plan/apply and latest-authority return-to-Git steps.
+- [Current seed ownership inventory](dolt-hq-current-seed-inventory.md) and [redacted seed
+  evidence](dolt-hq-seed-evidence.md) — value-free source inventory; neither is a substitute for a
+  new protected migration manifest.
+- [Public seed/bootstrap source](../../scripts/hq-config/README.md) — fresh SQL config schema and
+  grants; no deployment is performed by the resources.
+- [Final composed E2E proof](fleet-membership-e2e-evidence.md) — isolated signed lifecycle, config
+  bootstrap and boundaries.
+- Managed readiness implementation is reviewed in its own bead; `bh-yka1n` operator-documentation
+  edits follow the nested molecule and must not assert production facts absent deployment
+  receipts.
