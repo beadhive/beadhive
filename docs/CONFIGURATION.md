@@ -8,7 +8,7 @@ Everything `bh` owns on a machine lives under **`~/.beadhive/`** (module: `confi
 |---|---|---|---|
 | home | `~/.beadhive/` | `BH_HOME` (legacy alias `WS_HOME`) | base for everything below |
 | config | `~/.beadhive/config.yaml` | `BH_CONFIG` (legacy alias `WS_CONFIG`) | host-local config (this file) |
-| fleet config | `~/.beadhive/hq/fleet.yaml` | via `BH_HQ` (legacy alias `WS_HQ`) | fleet-wide base layered *under* the host config — see [Fleet + host config](#fleet-host) |
+| Git-mode fleet config | `~/.beadhive/hq/fleet.yaml` | via `BH_HQ` (legacy alias `WS_HQ`) | Git compatibility source; SQL mode reads the selected committed central snapshot |
 | hub | `~/.beadhive/hub/` | `BH_HUB` (legacy alias `WS_HUB`) | cross-hive aggregation hub (built by `bh sync`) — [HUB](HUB.md) |
 | cache | `~/.beadhive/cache/` | `BH_CACHE` (legacy alias `WS_CACHE`) | minimal-clone caches for uncloned hives |
 | generated docs | `~/.beadhive/labels.md` | — | `bh label docs` output |
@@ -34,10 +34,11 @@ Templates ship inside the package (`src/beadhive/templates/`).
 
 ## Fleet + host config {#fleet-host}
 
-`config.load()` resolves **one effective config** from two files: the fleet-wide base
-(`fleet.yaml` in the HQ store — identical on every host) with the host-local `config.yaml`
-deep-merged over it. Nested sections merge key-by-key, so a host setting `worktrees.path`
-keeps the fleet's `worktrees.ephemeral`; scalars and lists are replaced wholesale.
+`config.load()` resolves one effective config from the selected fleet source and the
+host-local `config.yaml`. In Git mode, the fleet source is `fleet.yaml` in the HQ store;
+in `dolt-server` mode it is the committed shared SQL snapshot. The host file is deep-merged
+over fleet data. Nested sections merge key-by-key, so a host setting `worktrees.path` keeps
+the fleet's `worktrees.ephemeral`; scalars and lists are replaced wholesale.
 
 Which keys belong to which side is **data**, not branching: `config_partition.py` owns the
 fleet/host split (`FLEET_PREFIXES` / `HOST_PREFIXES`, longest match wins) plus
@@ -47,9 +48,9 @@ persistent worktrees when the fleet default is ephemeral.
 
 | Situation | Behavior |
 |---|---|
-| both files present | merged; host wins only on host keys + allowlisted fleet keys |
+| fleet source and host file present | merged; host wins only on host keys + allowlisted fleet keys |
 | host sets a non-allowlisted **fleet** key | `ConfigError` naming every offending key — never silently ignored, never silently applied |
-| no `fleet.yaml` (host has not cloned HQ) | host-only config, unchanged; `bh` warns once per invocation if an HQ store exists but has no `fleet.yaml` |
+| no fleet source (not attached to Git HQ or SQL) | host-only config, unchanged; Git mode warns when an HQ store exists but has no `fleet.yaml` |
 | no `config.yaml` | fleet-only config |
 | neither file | `FileNotFoundError` pointing at `bh config init` |
 
@@ -57,11 +58,50 @@ persistent worktrees when the fleet default is ephemeral.
 (`bh config set/unset`, the hive registry, `bh hive enable/disable`) loads through it, so
 `save()` can never bake fleet-wide truth into a host's own file.
 
-`managed_repos` is one of those fleet-scoped keys: once a host is fleet-managed, the hive
-registry (`bh hive init`/`add`/`rm`) writes it straight into the HQ working copy's
-`fleet.yaml`, not this host's `config.yaml` — see
-[HQ — Fleet writes after init](HQ.md#fleet-writes-after-init) for the local-only-write
-caveat and the manual commit/push reconciliation step.
+`managed_repos` is fleet-scoped. The hive registry (`bh hive init`/`add`/`rm`) writes it through
+the selected backend, not this host's config. In Git mode, the working copy remains a Git
+publication responsibility; in SQL mode, the selected committed SQL store is authoritative.
+See [HQ](HQ.md#fleet-writes-after-init) for Git behavior and the
+[migration runbook](design/dolt-hq-config-migration-runbook.md) for a guarded mode transition.
+
+## HQ configuration authority {#hq-configuration-authority}
+
+The `hq` section configures the fleet **configuration** backend and its separate runtime
+authority bindings. It is distinct from the local HQ Beads database, the local Dolt engine
+(`dolt.backend`), and `beads.engine`. A host with `hq.mode: dolt-server` needs explicit
+non-secret endpoint, TLS and broker-reference metadata. Credentials are resolved from the
+configured secret broker and never belong in this file. See the
+[frame fleet membership guide](FRAME-FLEET-MEMBERSHIP.md) for a redacted example and readiness
+boundaries.
+
+| Config key | Purpose |
+|---|---|
+| `hq.mode` | `git` compatibility mode or `dolt-server`; selects fleet config only. |
+| `hq.remote` | Git HQ repository remote. It is not the SQL server address. |
+| `hq.beadyard_id` | HOST-local canonical HQ UUID pin; normal reads never create it. |
+| `hq.authority_anchor` | HOST-local path to the protected operator authority-anchor file. |
+| `hq.admission_policy` | Currently `manual`; frame admission remains an explicit protected action. |
+| `hq.sql.enabled` | Selects SQL only when true and the reader/trust binding validates. |
+| `hq.sql.reader` | Required SQL configuration reader connection. |
+| `hq.sql.publisher` | Optional separately credentialed fleet-config publisher connection. |
+| `hq.sql.runtime` | Optional frame runtime connection; cannot coexist in one HOST binding with `observer` or `authority_writer`. |
+| `hq.sql.observer` | Optional protected observer/read connection; mutually exclusive with a runtime binding on that HOST. |
+| `hq.sql.authority_writer` | Optional protected authority publication connection; mutually exclusive with a runtime binding on that HOST. |
+| `hq.sql.runtime_backend_identity`, `runtime_generation`, `runtime_initial_revision` | Separate runtime-authority backend pins. |
+| `hq.sql.runtime_floor_path`, `runtime_operator_public_key` | Host-local runtime replay-floor path and operator public-key reference used to verify signed runtime authority. |
+| `hq.sql.floor_path`, `backend_identity`, `generation`, `minimum_sequence`, `initial_revision` | Reader-side trust floor, backend/generation and initial revision pin. |
+| `hq.sql.cache_ttl` | Bounded config cache age; it never waives revision or revocation checks. |
+| `hq.sql.<role>.*` | Per role (`reader`, `publisher`, `runtime`, `observer`, `authority_writer`): `host`, `port`, `database`, `user`, `server_name`, `ca_file`, `credential.config_path/profile/key`, and `connect_timeout`, `read_timeout`, `write_timeout`, `operation_timeout`. |
+| `managed_repos[].frame_policy.config_revision` | Required policy revision label for a frame-managed hive. |
+| `managed_repos[].frame_policy.requires` | Optional requirements: `isolation`, `trust_zone`, `arch`, `harness`, `harnesses`, and positive `max_sessions`. |
+| `managed_repos[].frame_policy.evict_after_s` | Required positive finite interval used by protected takeover policy. |
+
+`bh config schema --json` lists the public config rows. The current authoritative generated
+package schema is
+[`config-v1.schema.json`](../src/beadhive/schemas/contracts/v2.0.0/artifacts/config-v1.schema.json).
+Settings `schema_version: 1`, SQL storage metadata v3, signed Git carrier v2, frame heartbeat
+domain/API versions and the versioned `docs/schemas/wire` snapshots are separate contracts;
+an added config key does not itself require a wire-schema bump.
 
 ## `config.yaml` schema
 
@@ -566,6 +606,5 @@ bh config set work.dispatch.auto_budget 12        # let auto absorb a bigger epi
 bh config set work.dispatch.review_mode fresh     # independent reviewer per bead (depth 2)
 ```
 
-The dispatcher seat that reads these keys is documented in
-[skills/dispatcher/SKILL.md](../skills/dispatcher/SKILL.md); the collapsed variants it dispatches
-are `dispatcher @ batch` (depth 1) and `dispatcher @ batch` + `sub-dispatch:1` (depth 2).
+The dispatcher seat reads these keys; the collapsed variants it dispatches are
+`dispatcher @ batch` (depth 1) and `dispatcher @ batch` + `sub-dispatch:1` (depth 2).

@@ -13,15 +13,16 @@ need:**
 
 - **Rung 3 is orthogonal.** The managed toolchain is about tool *integrity*, not reach. Take it
   before rung 2, after rung 4, or never.
-- **Rung 4 hard-requires rung 2.** A second machine joins by **cloning HQ**, and you cannot
-  clone an HQ that exists only on one laptop. There is no way around this one.
+- **Rung 4 uses the selected HQ config mode.** Git mode needs rung 2's wired remote to clone
+  HQ. SQL mode needs the reviewed central config seed and HOST attachment, but no HQ checkout
+  or HQ GitHub credential. Both modes need source-repository provider access.
 
 | Rung | Shape | Buys | Costs |
 |---|---|---|---|
 | **1** | one laptop, local-only | the whole loop on one repo | no backup; no second machine yet |
 | **2** | HQ has a remote | backup + more than one repo | a private repo, and a push discipline |
 | **3** | the managed toolchain (nix) | four driven tools, pinned together | root for the nix install; ~130s, 2–3 GB cold |
-| **4** | a Linux executor in HQ | a machine that keeps working while you sleep | rung 2 first; a VM to run |
+| **4** | a Linux executor in the fleet | a machine that keeps working while you sleep | Git remote or central config; a VM to run |
 
 ---
 
@@ -61,8 +62,8 @@ Create an empty **private** repo for HQ under your account or org, then:
 
 ```sh
 bh hq init --create     # or wire hq.remote yourself, then:
-bh hq push              # publishes BOTH halves; refuses if no remote is configured
-bh hq status            # ahead/behind for the git half AND the Dolt half
+bh hq push              # publishes the Git and HQ Beads halves; needs a wired remote
+bh hq status            # read-only ahead/behind for the Git and HQ Beads halves
 ```
 
 With a remote wired, more than one hive starts paying off:
@@ -74,8 +75,10 @@ bh hub bd ready                           # one ready list across every hive
 bh hub intake                             # fleet-wide untriaged inbox
 ```
 
-**Buys.** A durable backup of HQ (the git half *and* the Dolt half), the cross-repo aggregate
-view, and the precondition for rung 4.
+**Buys.** A durable backup of the Git HQ repository and its HQ-origin Beads database, the
+cross-repo aggregate view, and the precondition for the Git-mode rung 4 path. `bh hq push` does
+not rebuild the aggregate; run `bh sync` for the per-host hub view. Central Dolt config is a
+separate fleet-configuration mode and does not require this Git remote for config reads.
 
 **Costs.** A private repo, and a push discipline — `bh hq push` is not automatic.
 
@@ -130,10 +133,14 @@ bh setup check    # 4 of 4 → rung 3. Anything less is an unmanaged toolchain.
 
 ---
 
-## Rung 4 — a Linux executor, adopted into HQ
+## Rung 4 — a Linux executor, joined to the fleet {#rung-4--a-linux-executor-adopted-into-hq}
 
-The laptop stops executing and starts supervising. **Requires rung 2** — the new host joins by
-cloning HQ from its remote.
+The laptop stops executing and starts supervising. In Git config mode, the new host joins by
+cloning HQ from its remote, so that route requires rung 2. In SQL config mode, the host attaches
+to the committed central config snapshot from HOST-local TLS/trust metadata and broker references;
+it does not need an HQ checkout or HQ GitHub credential. Source repository permissions still
+follow the configured provider. See [frame fleet membership and HQ modes](FRAME-FLEET-MEMBERSHIP.md)
+and the [config cutover runbook](design/dolt-hq-config-migration-runbook.md).
 
 The summary and the decision tables are below; the step-by-step walkthrough lives in
 [ONBOARDING.md's "Adding a second machine"](ONBOARDING.md#adding-a-second-machine--the-daily-driver-stays-hq),
@@ -143,7 +150,7 @@ section to actually do it.
 On the VM, with `bh` installed:
 
 ```sh
-bh host provision --role executor    # clones HQ from the wired remote, then adopts this host
+bh host provision --role executor    # provisions against the selected HQ config mode
 ```
 
 From a checkout, `just local-install posture=host` runs the same path unattended with the

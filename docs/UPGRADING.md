@@ -439,7 +439,7 @@ Factory HQ (`~/.beadhive/hq/`) is the fleet's durable, remote-backed store — f
 |---|---|
 | `bh hq init [--create] [--dry-run]` | Stand up (or idempotently re-wire) HQ: `bd`-init the local store (first run only), take a verified pre-push backup, scaffold `fleet.yaml`/`workspace.toml`/`hosts/`, then wire + push the remote. `--create` makes the remote as a private, empty repo when it doesn't exist yet. |
 | `bh hq clone` | Bootstrap a **second** host with no local HQ: clone `main`, hydrate bead state from `refs/dolt/data`, register the `local/factory/hq` identity. Refuses if `~/.beadhive/hq` already exists — never clobbers. |
-| `bh hq push [--dry-run]` | Publish HQ again after `init`: refresh the aggregate, commit any dirty `fleet.yaml` drift, push both the git half and the Dolt half. |
+| `bh hq push [--dry-run]` | Git mode commits/publishes tracked HQ config and HQ-owned Beads; SQL mode publishes only HQ Beads state. It never refreshes the hub aggregate; run `bh sync` for that. |
 | `bh hq status` | Read-only ahead/behind for both halves against the wired remote. |
 | `bh hq restore [--list] [--from DIR] [--level auto\|tar\|jsonl] [--dry-run] [--confirm]` | Restore HQ from a pre-push backup — `--level tar` replaces the Dolt store, `--level jsonl` upserts the portable export (works even with no readable store). |
 
