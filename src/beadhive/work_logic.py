@@ -796,6 +796,52 @@ def _reviewed_epic_spine(
     return [*nested_spine, *spine[1:]], {sha} | refresh_topology, []
 
 
+def _reviewed_child_absorption_spine(entry, main, rows, branch_sha, base, children):
+    """Prove one reviewed leaf imported the exact base through its integration bubble.
+
+    A child refreshed onto main can bring that main into an older container as parent two.
+    No refresh commit is then needed (or possible): main is already reachable. Only a landed,
+    durably linked child with approval for its exact second-parent SHA permits the excluded old
+    ancestor boundary. This returns no topology allowance; the ordinary epic audit must still
+    account every bubble and introduced commit, and merge's signing gate remains unchanged.
+    """
+    spine, errors = _first_parent_spine(
+        rows,
+        branch_sha,
+        base,
+        ancestor_boundary=lambda boundary: _is_ancestor_of(entry, boundary, base),
+    )
+    if errors or any(
+        str(row.get("subject") or "").startswith("chore(merge): compose") for row in spine
+    ):
+        return [], False
+    direct = {str(child.get("id") or ""): child for child in children}
+    for row in spine:
+        parents = [str(parent) for parent in (row.get("parents") or [])]
+        match = _INTEGRATION_BUBBLE.fullmatch(str(row.get("subject") or ""))
+        if len(parents) != 2 or not match or match.group(1) != "bead":
+            continue
+        child = direct.get(match.group(2))
+        if (
+            child is None
+            or str(child.get("issue_type") or "") == "epic"
+            or not _landed_child(child)
+            or str(row.get("sha") or "") not in git_linkage.commits_from_data(child)
+            or not _is_ancestor_of(entry, base, parents[1])
+            or _is_ancestor_of(entry, base, parents[0])
+        ):
+            continue
+        open_reviews, resolved_reviews = review_gates(str(child["id"]), main)
+        if not open_reviews and any(
+            str(gate.get("status") or "") == "closed"
+            and is_approved_review_gate(gate)
+            and resolved_review_gate_sha(str(gate.get("description") or ""), main) == parents[1]
+            for gate in resolved_reviews
+        ):
+            return spine, True
+    return [], False
+
+
 def epic_history_policy(
     entry,
     main,
@@ -839,6 +885,14 @@ def epic_history_policy(
     spine, topology_commits, spine_errors = _reviewed_epic_spine(
         entry, rows, branch_sha, base, epic, composition_target, branch, refresh_upstream
     )
+    if spine_errors and all(
+        error.startswith("first-parent spine leaves the review range at ") for error in spine_errors
+    ):
+        absorbed_spine, proven = _reviewed_child_absorption_spine(
+            entry, main, rows, branch_sha, base, children
+        )
+        if proven:
+            spine, spine_errors = absorbed_spine, []
     errors.extend(spine_errors)
     unsafe_refresh = any(error.startswith("unsafe container refresh") for error in spine_errors)
     accounted: set[str] = set(topology_commits)
