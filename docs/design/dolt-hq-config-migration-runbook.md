@@ -98,3 +98,10 @@ own qualified receipts. Git and SQL histories are distinct; this protocol
 does not assert a cross-database atomic commit. A rollback cannot authorize
 work from stale observations: current protected policy and a fresh signed
 heartbeat still govern frame eligibility.
+
+## Readiness and deprecation assessment
+
+The runbook is an operator procedure, not a record that a deployment occurred. See the
+[HQ config cutover and deprecation readiness assessment](hq-config-deprecation-readiness.md)
+for the implementation evidence boundary, consumer/writer inventory, independent HQ-origin
+retirement dependencies, and evidence required before live readiness or retirement claims.
