@@ -383,7 +383,21 @@ def guard_primary(hive: str = "", *, cfg=None, verb: str = "") -> None:
     and writing through it is the split-brain path.
 
     `verb` is cosmetic (it appears in the log line); the decision never depends on it."""
-    state = primary_state(hive, cfg=cfg)
+    from . import frame_eligibility
+
+    try:
+        frame_decision = frame_eligibility.require_intake(hive, cfg=cfg)
+    except frame_eligibility.EligibilityError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
+    state = (
+        frame_eligibility.authoritative_primary(hive, cfg=cfg)
+        if frame_decision is not None
+        else primary_state(hive, cfg=cfg)
+    )
+    if state is None and frame_decision is not None:
+        typer.echo("frame ineligible: current_hive_lease_holder", err=True)
+        raise typer.Exit(1)
     if state is None:
         return  # multi-host model not in force here (see `primary_state`)
     prefix, this_host, lease = state
@@ -449,8 +463,8 @@ def live_epoch(hive: str = "", *, cfg=None) -> int:
     """The ADOPT generation currently in force for `hive`, or ``0`` when nothing has been
     adopted (an un-fenced, single-host factory).
 
-    **Sourced from the cached host lease**, not from ``refs/bh/epoch`` on the hive's remote,
-    and that is a deliberate choice with two reasons:
+    Git mode is **sourced from the cached host lease**, not from ``refs/bh/epoch`` on the
+    hive's remote, and that is a deliberate choice with two reasons:
 
       1. *Cheap and local.* This is read on the claim hot path, and "workers must not poll" is
          the framing constraint. ``host_lease.read_cached`` is a local ref read in this host's
@@ -462,12 +476,21 @@ def live_epoch(hive: str = "", *, cfg=None) -> int:
          1's `epoch` explicitly, precisely so they cannot drift — and ``renew`` holds the epoch
          fixed. So the cached lease's epoch IS the fence's epoch for any completed adopt.
 
-    No local reading is remote authority. Managed publication re-reads and CAS-reserves the
+    A selected SQL host reads the authenticated current lease after intake qualification;
+    it never treats a missing HQ Git checkout as epoch zero. No local reading is remote
+    authority. Managed publication re-reads and CAS-reserves the
     remote fence before invoking bd, then verifies it afterward (Amendment 1 §2). This cached
     check remains the early, legible refusal at the bead-write boundary; a stale remote fence
     is independently rejected by that managed preflight. Current bd prevents the reservation
     and data update from being atomic, a limitation doctor exposes."""
-    state = primary_state(hive, cfg=cfg)
+    if config.fleet_sql_selected():
+        from . import frame_eligibility
+
+        if frame_eligibility.require_intake(hive, cfg=cfg) is None:
+            raise frame_eligibility.EligibilityError("frame ineligible: AUTHORITY_NOT_READY")
+        state = frame_eligibility.authoritative_primary(hive, cfg=cfg)
+    else:
+        state = primary_state(hive, cfg=cfg)
     return state[2].epoch if state is not None else 0
 
 
@@ -516,7 +539,20 @@ def guard_claim_epoch(record, hive: str = "", *, cfg=None, verb: str = "") -> No
     shows up in the log stream and not only in one worker's terminal."""
     if record is None or not record.is_fenced():
         return
-    state = primary_state(hive, cfg=cfg)
+    if config.fleet_sql_selected():
+        # A submit is finishing an existing claim. Draining or a stale beat may
+        # bar NEW intake while the incumbent's recorded lease/epoch still
+        # authorizes finishing. Read the unfiltered protected lease through the
+        # bound SQL port, then compare the original claim token below.
+        from . import frame_eligibility
+
+        try:
+            state = frame_eligibility.incumbent_primary(hive, cfg=cfg)
+        except (ValueError, OSError, RuntimeError, KeyError) as exc:
+            typer.echo("frame ineligible: authoritative_hive_lease_available", err=True)
+            raise typer.Exit(1) from exc
+    else:
+        state = primary_state(hive, cfg=cfg)
     live = state[2].epoch if state is not None else 0
     if not record.is_stale(live):
         return
@@ -905,7 +941,19 @@ def bd_write_refusal(args, cwd, *, cfg=None) -> str:
     # bug this whole bead exists to close, reintroduced one layer down. Load it here instead:
     # only writes pay for it, and reads (the hot path) still skip it entirely.
     cfg = cfg if cfg else config.load()
-    state = primary_state(cfg=cfg, hive_dir=cwd)
+    from . import frame_eligibility
+
+    try:
+        frame_decision = frame_eligibility.require_intake(cfg=cfg, hive_dir=cwd)
+        state = (
+            frame_eligibility.authoritative_primary(cfg=cfg, hive_dir=cwd)
+            if frame_decision is not None
+            else primary_state(cfg=cfg, hive_dir=cwd)
+        )
+    except frame_eligibility.EligibilityError as exc:
+        return str(exc)
+    if state is None and frame_decision is not None:
+        return "frame ineligible: current_hive_lease_holder"
     if state is None:
         return ""  # multi-host model not in force here (see `primary_state`)
     prefix, this_host, lease = state

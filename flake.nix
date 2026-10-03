@@ -17,8 +17,17 @@
   description = "beadhive local-install toolchain";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs.uv2nix.url = "github:pyproject-nix/uv2nix";
+  inputs.uv2nix.inputs.nixpkgs.follows = "nixpkgs";
+  inputs.uv2nix.inputs.pyproject-nix.follows = "pyproject-nix";
+  inputs.pyproject-nix.url = "github:pyproject-nix/pyproject.nix";
+  inputs.pyproject-nix.inputs.nixpkgs.follows = "nixpkgs";
+  inputs.pyproject-build-systems.url = "github:pyproject-nix/build-system-pkgs";
+  inputs.pyproject-build-systems.inputs.nixpkgs.follows = "nixpkgs";
+  inputs.pyproject-build-systems.inputs.pyproject-nix.follows = "pyproject-nix";
+  inputs.pyproject-build-systems.inputs.uv2nix.follows = "uv2nix";
 
-  outputs = { self, nixpkgs }:
+  outputs = { self, nixpkgs, uv2nix, pyproject-nix, pyproject-build-systems }:
     let
       # aarch64-darwin is SUPPORTED for local-install as of 2026-08-06 (bh-vmdq.1, amending
       # ADR Decision 5 / bh-q160.12, which previously scoped macOS out). macOS DEVELOPMENT
@@ -39,6 +48,21 @@
       systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
       forAll = nixpkgs.lib.genAttrs systems;
       pkgsFor = system: import nixpkgs { inherit system; };
+      bhVersion = (builtins.fromTOML (builtins.readFile ./pyproject.toml)).project.version;
+      # The runtime graph comes from uv.lock. Build each locked wheel in a sandbox and
+      # expose only this project's console scripts from the assembled environment.
+      bhFor = pkgs:
+        let
+          workspace = uv2nix.lib.workspace.loadWorkspace { workspaceRoot = ./.; };
+          python = pkgs.python312;
+          pythonBase = pkgs.callPackage pyproject-nix.build.packages { inherit python; };
+          pythonSet = pythonBase.overrideScope (pkgs.lib.composeManyExtensions [
+            pyproject-build-systems.overlays.wheel
+            (workspace.mkPyprojectOverlay { sourcePreference = "wheel"; })
+          ]);
+          venv = pythonSet.mkVirtualEnv "beadhive-env" { beadhive = [ "otel" ]; };
+          inherit (pkgs.callPackages pyproject-nix.build.util { }) mkApplication;
+        in mkApplication { inherit venv; package = pythonSet.beadhive; };
 
       # Package the immutable upstream release archives, rather than rebuilding either CLI from
       # source. The version, release commit and GitHub-published archive digests are kept together
@@ -70,6 +94,12 @@
             inherit (release) hash;
           };
           sourceRoot = ".";
+          # Upstream Linux bd uses the conventional glibc ELF interpreter. Relocate
+          # it into the Nix closure; Darwin's archive needs no ELF relocation.
+          nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+            pkgs.autoPatchelfHook
+          ];
+          buildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.glibc ];
           installPhase = ''
             runHook preInstall
             install -Dm755 bd "$out/bin/bd"
@@ -256,6 +286,7 @@
       packages = forAll (system:
         let pkgs = pkgsFor system; in {
           beads = beadsRelease pkgs;
+          bh = bhFor pkgs;
           default = pkgs.buildEnv {
             name = "beadhive-local-install-toolchain";
             paths = toolchainFor pkgs;
@@ -270,6 +301,54 @@
           # build would have to compute it. This just builds.
           metadata = pkgs.writeText "beadhive-toolchain-metadata.json" (metadataFor pkgs);
         });
+
+      checks = forAll (system:
+        let pkgs = pkgsFor system; in
+        if system == "x86_64-linux" then {
+          bh-no-nix-ld = pkgs.testers.runNixOSTest {
+            name = "bh-no-nix-ld";
+            # CI workers without /dev/kvm still have to boot and assert the VM.
+            requiredFeatures.kvm = false;
+            qemu.forceAccel = false;
+            globalTimeout = 1800;
+            nodes.machine = { ... }: {
+              programs.nix-ld.enable = false;
+              environment.systemPackages = [
+                self.packages.${system}.bh
+                self.packages.${system}.beads
+                (doltRelease pkgs)
+                pkgs.git
+              ];
+            };
+            testScript = ''
+              import time
+              machine.start()
+              # TCG can need more than the driver's fixed 300s shell-connect
+              # window to boot. Let QEMU run before starting that window; full
+              # multi-user readiness and every executable assertion remain required.
+              time.sleep(240)
+              machine.wait_for_unit("multi-user.target")
+              machine.succeed("test \"$(bh --version)\" = \"${bhVersion}\"")
+              machine.succeed("bh-host-daemon --help >/dev/null")
+              machine.succeed("beadhive-frame-bridge --help >/dev/null")
+              machine.succeed("bd --version")
+              machine.succeed("git config --global user.name 'Beads VM Proof'")
+              machine.succeed("git config --global user.email 'beads@proof.invalid'")
+              machine.succeed("mkdir -p /tmp/beads-smoke")
+              machine.succeed(
+                "cd /tmp/beads-smoke && "
+                "BEADS_SHARED_SERVER_DIR=/tmp/beads-server BEADS_DOLT_SERVER_PORT=3310 "
+                "bd init --prefix proof --shared-server --skip-agents --skip-hooks --non-interactive",
+                timeout=180,
+              )
+              machine.succeed(
+                "BEADS_SHARED_SERVER_DIR=/tmp/beads-server BEADS_DOLT_SERVER_PORT=3310 "
+                "bd -C /tmp/beads-smoke status --json",
+                timeout=120,
+              )
+            '';
+          };
+        } else { });
 
       # `nix develop` for a shell with the toolchain on PATH — how install.sh drives it.
       devShells = forAll (system:

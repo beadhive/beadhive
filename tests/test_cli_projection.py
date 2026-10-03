@@ -80,7 +80,16 @@ def test_migration_inventory_names_every_catalog_group() -> None:
 def test_assembled_tree_is_entirely_catalog_derived_and_idempotent() -> None:
     declarations = command_declarations()
     parents = parent_declarations()
-    assert len(declarations) == 221
+    assert len(declarations) == 235
+    assert {
+        "hq.beadyard",
+        "hq.beadyard-adopt",
+        "hq.beadyard-policy-refresh",
+    } <= {row.operation for row in declarations}
+    assert (
+        next(row for row in declarations if row.operation == "host.eligible").path
+        == "host eligible"
+    )
     assert len(parents) == 37
     assert cli.CLI_PROJECTION.paths == tuple(row.path for row in declarations)
     assert cli.CLI_PROJECTION.operations == tuple(row.operation for row in declarations)

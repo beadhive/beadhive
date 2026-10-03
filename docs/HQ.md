@@ -1,16 +1,11 @@
 # Factory HQ — the fleet's durable, authoritative store
 
-**Factory HQ** is the one durable central store a fleet of hives can share (module: `hq.py`).
-It plays two roles at once:
-
-1. **Aggregation primary** — the same cross-hive read-cache role the [hub](HUB.md) plays
-   (`bd repo add` every registered hive + sync), but durable and, once distributed,
-   **shared across hosts** instead of purely local.
-2. **Authoritative fleet store** — it holds `hq`-prefixed control-plane beads created
-   directly in HQ (escalations, fleet-wide work — these *originate* in HQ, they are not
-   derived from any hive), and, since `bh-e0y8`, the fleet-wide config base (`fleet.yaml`)
-   every host's `config.load()` merges its own config under (see
-   [CONFIGURATION — Fleet + host config](CONFIGURATION.md#fleet-host)).
+**Factory HQ** is the fleet's authoritative home for HQ-origin Beads and HQ configuration
+(module: `hq.py`). The cross-hive read aggregate is a separate, disposable per-host [hub](HUB.md)
+built by `bh sync`. Fleet configuration uses explicit `hq.mode`: Git mode reads `fleet.yaml`;
+`dolt-server` mode reads a committed shared SQL config snapshot. Selecting a config backend does
+not move HQ's own Beads database. See [fleet membership and HQ modes](FRAME-FLEET-MEMBERSHIP.md)
+and [CONFIGURATION](CONFIGURATION.md#hq-configuration-authority).
 
 It is registered as a **singleton** (`kind=hq`) under the reserved synthetic identity
 `local/factory/hq` — local infra like the hub/cache, never a git-workspace provider, never
@@ -18,8 +13,10 @@ a real repo you clone by hand.
 
 ## Where it lives
 
-`~/.beadhive/hq/` (override `$BH_HQ`, legacy alias `$WS_HQ`) — a durable git + `bd` store
-(embedded Dolt under `.beads/`, prefix `hq`).
+`~/.beadhive/hq/` (override `$BH_HQ`, legacy alias `$WS_HQ`) — the local Git HQ checkout and
+`bd` store (embedded Dolt under `.beads/`, prefix `hq`). Fleet configuration can select this
+Git carrier or a separate shared Dolt config service; that selection does not relocate the HQ
+Beads store.
 
 HQ holds only what originates in HQ. Cross-hive aggregation belongs to the [hub](HUB.md) and
 always lands there (`bh sync`, read with `bh hub bd ready` / `bh hub intake`); `bh hq bd …` and
@@ -33,8 +30,8 @@ else. `bh hq init` scaffolds the distributable layout the first time it wires a 
 
 ```text
 ~/.beadhive/hq/
-├── .beads/            # embedded Dolt — hq-prefixed beads + the cross-hive aggregate
-├── fleet.yaml         # fleet-wide config base (CONFIGURATION.md#fleet-host)
+├── .beads/            # embedded Dolt — HQ-origin Beads
+├── fleet.yaml         # Git-mode fleet config base (CONFIGURATION.md#fleet-host)
 ├── workspace.toml     # git-workspace providers — fleet truth (the clone PATH stays host-local)
 └── hosts/
     └── README.md      # placeholder — per-host manifests land here as `<host_id>.yaml`.
@@ -44,8 +41,9 @@ else. `bh hq init` scaffolds the distributable layout the first time it wires a 
                         # lives in each host's own local ~/.beadhive/config.yaml.
 ```
 
-`fleet.yaml` is written from the subset of the initializing host's own resolved config that
-belongs to the fleet partition (`schema_version`, `delimiter`, `orgs`, `dimensions`,
+In Git mode, `fleet.yaml` is written from the subset of the initializing
+host's own resolved config that belongs to the fleet partition (`schema_version`,
+`delimiter`, `orgs`, `dimensions`,
 `exclude`, `managed_repos`, `work`, `passthrough` — see
 [config_partition.py](../src/beadhive/config_partition.py)). `workspace.toml` copies that
 host's own `workspace*.toml` when the git-workspace integration is enabled and resolvable,
@@ -53,7 +51,7 @@ else a placeholder a later host fills in.
 
 ## Naming pattern
 
-The distributable remote is always `<owner>/beadhive-hq` on GitHub. `config.hq_remote()`
+In Git mode, the distributable remote is `<owner>/beadhive-hq` on GitHub. `config.hq_remote()`
 resolves it: an explicit `hq.remote` config key wins; otherwise `<owner>` is derived from the
 resolved workspace identity's org. Set it explicitly with:
 
@@ -64,18 +62,20 @@ bh config set hq.remote <owner>/beadhive-hq
 `hq.remote` is host-scoped config (it derives from the identity resolved *on this host*), so
 it is not itself carried inside `fleet.yaml`.
 
-## `bh hq init` — stand up, scaffold, wire, push {#hq-init}
+## `bh hq init` — initialize or attach HQ {#hq-init}
 
 ```sh
-bh hq init             # stand up (first call) / scaffold + wire + push (idempotent)
-bh hq init --dry-run   # preview the pre-push backup plan; no writes
+bh hq init             # Git mode: stand up/scaffold/wire/push; SQL mode: report selected attachment
+bh hq init --dry-run   # Git mode: preview the pre-push backup plan; SQL mode: inspect attachment
 ```
 
-**First call ever** (no `hq`-kind hive registered): `bd`-inits the store at `~/.beadhive/hq`
-(prefix `hq`), registers the synthetic `local/factory/hq` identity, then `bd repo add`s every
-registered hive and syncs — aggregation moves off the disposable hub onto HQ.
+**First call in Git mode** (no `hq`-kind hive registered): `bd`-inits the store at
+`~/.beadhive/hq` (prefix `hq`) and registers the synthetic `local/factory/hq` identity. It does
+not aggregate the fleet. `bh sync` builds the disposable per-host hub. If SQL config is already
+selected, `bh hq init` reports the committed central attachment and returns without wiring a
+Git remote.
 
-**Every call** (including the first) then wires the remote, which is itself idempotent:
+**Every call in Git mode** (including the first) then wires the remote, which is itself idempotent:
 
 - Already has a `git remote origin`? Prints its URL and no-ops.
 - No `hq.remote` resolvable? Skips wiring with a hint to set one.
@@ -91,35 +91,33 @@ registered hive and syncs — aggregation moves off the disposable hub onto HQ.
   commits if anything changed, `git remote add origin` + `git push origin main`, then `bd dolt
   remote add origin` + push `refs/dolt/data`.
 
-Re-running `bh hq init` once the remote is wired is a clean no-op.
+Re-running `bh hq init` once the Git remote is wired is a clean no-op.
 
-### Fleet writes after init — routine commands leave HQ dirty {#fleet-writes-after-init}
+### Git-mode fleet writes after init {#fleet-writes-after-init}
 
-Once this host has a real `fleet.yaml` (i.e. `bh hq init`/`bh hq clone` has run), `managed_repos`
-becomes fleet-scoped truth, so **every** `bh hive init` / `bh hive add` / `bh hive rm` on this
-host writes the updated list straight into the HQ working copy's `fleet.yaml`
-(`~/.beadhive/hq/fleet.yaml`) instead of the host's own `config.yaml` — not just once at
-init time, but on every one of those routine calls from then on.
+When `hq.mode: git` is selected and this host has a real `fleet.yaml`, `managed_repos` is
+fleet-scoped truth. Hive registry changes update that Git-mode config source. This section does
+not describe `hq.mode: dolt-server`, where the committed SQL snapshot is authoritative.
 
-That write is **local-only** to the HQ working copy: nothing commits or pushes it. So after any
-`bh hive init`/`add`/`rm`, `~/.beadhive/hq` is left git-dirty with no automatic next step. Publish
-it with `bh hq push` (below) — it commits the dirty `fleet.yaml`, refreshes the aggregate, and
-pushes both halves in one call:
+Git HQ config edits remain local until published. In Git mode, `bh hq push` commits dirty
+tracked HQ config and publishes the Git and HQ Beads halves; it does not refresh the per-host
+hub or switch config authority. SQL mode reads the selected committed snapshot and does not
+publish central config. `bh sync` builds the per-host hub view separately:
 
 ```sh
-bh hq push
+bh hq push       # publish in Git mode; in SQL mode, publish HQ Beads only if a local store exists
+bh sync          # rebuild the local cross-hive hub
 ```
 
-You can skip this if you don't yet need other hosts to see the change — the local HQ working
-copy stays correct and usable for this host either way; it's just unsynced from the fleet until
-pushed.
+For central SQL config setup, source review, initial seed and guarded switch, follow the
+[migration runbook](design/dolt-hq-config-migration-runbook.md).
 
 ## `bh hq push` — publish HQ again, after `init` {#hq-push}
 
 ```sh
-bh hq push             # push both halves of HQ; reports what moved on each
+bh hq push             # Git mode: auto-commit tracked config changes, then publish Git and HQ Beads
 bh hq push --dry-run   # preview only; no writes
-bh hq status           # read-only: ahead/behind for BOTH halves, no push
+bh hq status           # read-only status of available Git and HQ Beads observations
 bh hq status --json    # versioned identity, location, availability, and freshness contract
 ```
 
@@ -129,33 +127,85 @@ nothing. Before `bh hq push` existed, keeping HQ current took three hand-run, ha
 commands (`bh sync`, `git -C ~/.beadhive/hq push`, `cd ~/.beadhive/hq && bd dolt push`), with
 nothing in the CLI surfacing that HQ had drifted from its remote at all (bh-z9hl).
 
-`bh hq push`:
+`bh hq push` does not run `bh sync`; the derived cross-hive aggregate belongs to the hub and is
+per-host. In Git mode it commits dirty tracked HQ config, then publishes `main` and HQ's own
+Dolt Beads state when either has changes. In SQL mode it reads and reports the selected committed
+config revision, then publishes only HQ-origin Beads state when a local HQ Beads store exists;
+without a local store, that Beads action is a no-op. It does not publish central config. The only
+preview option is `--dry-run`; `--no-sync` and `--git-only` are not supported.
 
-1. Refreshes the aggregate (`bh sync`) — the SAME fleet-wide walk that can block `bh hive
-   onboard` for many minutes on a large fleet (bh-d5jhc). An operator who only wants to
-   publish fleet config (the git half — `fleet.yaml`/`workspace.toml`/`hosts/`) should not pay
-   this: `--no-sync` skips the refresh but still publishes both halves as they already are;
-   `--git-only` also skips the Dolt half, since there is then nothing freshly aggregated to
-   push there anyway.
-2. Commits any dirty tracked content (e.g. the `fleet.yaml` drift above) — safe to auto-commit
-   because HQ's tracked files are fleet configuration, not arbitrary work-in-progress.
-3. Pushes the git half (`main` — fleet.yaml/workspace.toml/hosts/) if it's ahead of `origin/main`.
-4. Pushes the Dolt half (`bd dolt push` via the Engine seam) if it has anything to push.
-5. Reports what moved on each half; idempotent — prints "nothing to push" cleanly when there's
-   nothing to do.
-
-`bh hq status` is the read-only half of the same machinery (`safety.scan(hq_dir, fetch=True)` —
-the same ahead/behind primitive `bh hive sync-remote` and `bh doctor`'s fleet-health section
-already trust): it reports ahead/behind for both halves without pushing anything, paying for one
-real network call (`bd federation status`) so the Dolt count is verified rather than guessed.
-
-`bh hq status --json` emits the v1 machine contract documented by
+`bh hq status` reports available Git, config and HQ Beads observations. `bh hq status --json`
+emits the v1 machine contract documented by
 [`docs/schemas/hq-status-v1.schema.json`](schemas/hq-status-v1.schema.json). Its canonical
-`cwd` comes from Beadhive's own `BH_HQ` → `BH_HOME/hq` resolution, so an integration must not
-reconstruct or guess the path. The projection distinguishes available, authoritatively absent,
-and unavailable observations. Its retirement intent is advisory: incomplete facts always say
-retain, and consumers still own proof that a target is plugin-owned and locally safe to remove.
+`cwd` comes from Beadhive's own `BH_HQ` → `BH_HOME/hq` resolution. The projection distinguishes
+available, authoritatively absent, and unavailable observations. Its retirement intent is
+advisory: incomplete facts always say retain, and consumers still own proof that a target is
+plugin-owned and locally safe to remove.
 The command remains read-only in every state.
+
+### Canonical HQ instance identity
+
+`beadyard.json` carries one anonymous, canonical UUID4 named `beadyard_id`. It identifies the
+HQ instance across its Git and Dolt config carriers, portable snapshots, and backups. It does
+not authenticate an operator, replace a signing key, or identify a storage backend. A new HQ
+generates it once during explicit setup; ordinary loads and config publications never mint or
+replace it. Copying or migrating the same HQ preserves its ID. A separately created HQ gets a
+different ID even when its human name, repository name, or database name matches.
+
+`bh hq beadyard --json` inspects the selected Git or Dolt config backend. Its `legacy` state
+means no identity has been published; `pending` means an explicit Git adoption has durable
+local intent and may be retried against its **original** main revision; `incomplete` means Git
+main carries an ID while protected fleet config still needs its matching v2 publication.
+Unavailable authority returns an error rather than a guessed legacy state. The separate
+identity view leaves the published `bh hq status --json` v1 shape unchanged.
+
+Legacy adoption is an explicit operator operation. After recording the revision from
+inspection, use `bh hq beadyard-adopt --expected-revision <original> --confirm`; protected
+Git also requires `--operator-key <approved-ssh-private-key>`. Git adoption checks and signs
+the original main parent, then publishes the same ID under the original protected config
+revision and its immutable witness. A lost reply can be retried with the **same** original
+revision against a durable, owner-held completion receipt. Recovery verifies the signed
+first main child, its unchanged identity, and the first protected config witness, even if
+ordinary main or config edits followed. A later unrelated writer does not silently become a
+new adoption parent. Selected
+Dolt config-only adoption uses the original committed config CAS and a durable publication
+receipt without creating a Git or Beads HQ checkout. A copied foreign ID, missing intent,
+changed original parent, or mismatch between local and committed IDs refuses.
+
+Protected legacy authority grants remain recorded during adoption. New frame admission
+stays denied until an operator explicitly runs `bh hq authority bind-beadyard
+--expected-revision <authority-sha> --operator-key <approved-ssh-private-key> --confirm` and
+the same frame signer publishes fresh, correctly bound registration and heartbeats for the
+ordinary observer to accept. Binding preserves the frame, holder, instance, key, epoch,
+receipt, grant expiry, epoch floors, and retired history; it cannot revive an expired grant.
+Historical unbound heartbeats and hive leases do not qualify new intake. An existing holder
+may renew or release its exact live lease under a signed v2 carrier, the original lease CAS,
+current bound authority and config, and the established expiry/drain rules. No actor, branch,
+signing key, or hive lease is automatically reset or retired by adoption.
+
+For a protected Git server, the committed config change also fences the server's old
+`hive_policies[*].config_head` projection. An operator must explicitly run
+`bh hq beadyard-policy-refresh --expected-policy-digest <original-sha256>
+--expected-config-head <original-config-sha-or-empty> --operator-anchor <operator-anchor>
+--expected-config-parent <signed-v1-config-sha> --anchor <operator-anchor>
+--anchor <each-frame-anchor>
+--confirm` before a new bound lease renewal. The command requires the complete, explicitly
+named protected anchor set. It verifies that the latest signed config commit added only this
+HQ's identity to the original v1 config, then changes only the projected config head and each
+anchor's matching policy digest. Generation, signer, executable/runtime bytes, projected hive
+requirements, validity, and lease fields stay pinned. The broker's receive lock covers the
+original-head check and the entire rotation. If interrupted, old and new anchor bytes may be
+temporarily mixed; readers fail closed until the same operator retries the exact original
+request against its durable intent. A completed rotation retains an operator-owned receipt;
+the same original request can recover a lost final reply only while the signed config head
+and all published policy/anchor bytes still match. Ordinary reads never refresh an anchor
+automatically. A newer config head or foreign anchor bytes refuses recovery. This is an
+operator filesystem custody operation on the server; it does not authenticate with a private
+key, deploy, or contact
+an external HQ. The separate adoption and authority-bind commits still require approved
+operator signatures. A blank original policy projection is accepted only when the pinned
+signed v1 config parent is its first publication and the v2 child contains only the identity
+addition.
 
 Both depend on `main` carrying upstream tracking, which `bh hq init`'s first push now sets
 (`git push -u origin main`) — a bare `git push`/`git pull` in `~/.beadhive/hq`, and the
@@ -187,15 +237,17 @@ accurate when it was written and is no longer true.
 
 | | [hub](HUB.md) — `~/.beadhive/hub/` | HQ — `~/.beadhive/hq/` |
 |---|---|---|
-| What it holds | every hive's beads, hydrated | HQ's own `hq-`prefixed beads + fleet config |
-| Where truth lives | in each hive | here |
-| Remote | none, ever | `hq.remote` (git + `refs/dolt/data`) |
+| What it holds | every hive's beads, hydrated | HQ-origin `hq-` prefixed beads; Git-mode config files may also live here |
+| Where truth lives | in each hive | HQ Beads here; fleet config in the selected Git or SQL backend |
+| Remote | none, ever | Git mode: `hq.remote` for Git and `refs/dolt/data`; SQL config has its own endpoint |
 | Rebuildable | yes — `rm -rf` + `bh sync` | no; it is the original |
 | Issues ids | **no** | yes (`hq-…`) |
-| Refreshed by | `bh sync` | nothing — it is authored, not derived |
+| Refreshed by | `bh sync` | HQ Beads are authored; central config is published through its selected backend |
 | Read with | `bh hub bd …` | `bh hq bd …` |
 
-**Why they had to split.** bd's own sync-concepts and bucket-federation guides give one rule:
+**Why they had to split.** The historical rows described below are migration context; current HQ
+contains HQ-origin beads, while each host builds its own derived hub. bd's sync-concepts and
+bucket-federation guides give one rule:
 **one database per remote path**, and "one path, multiple databases" is named there as creating
 irreconcilable divergence. HQ's path was carrying two — HQ's authoritative beads, and a
 per-host derived aggregate that *every* host rebuilt wholesale and pushed. Since every mutation
@@ -211,8 +263,9 @@ So each half went to the side of the line bd already draws:
 - **DOLT REPLICATION** (`bd dolt push`, one database, many hosts) → HQ. Authoritative,
   exactly one database on its path.
 
-`bh hq push` therefore no longer refreshes anything, and the `--no-sync` / `--git-only` flags
-that existed only to dodge that refresh are gone with it.
+`bh hq push` does not refresh the hub. In Git mode it publishes HQ's Git and Beads halves; in
+SQL mode it reports the central config revision and publishes HQ-origin Beads only when a local
+HQ store exists. The `--no-sync` and `--git-only` flags are gone.
 
 ### `intake` — the naming, said out loud {#intake-naming}
 

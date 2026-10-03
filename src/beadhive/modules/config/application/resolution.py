@@ -139,6 +139,12 @@ def _schema_version_diagnostic(
             layer=layer,
             schema_version=found,
         )
+    if found < 1 or found < SCHEMA_VERSION:
+        return ResolutionDiagnostic(
+            code="invalid_schema_version",
+            path="schema_version",
+            layer=layer,
+        )
     return None
 
 

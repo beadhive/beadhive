@@ -140,6 +140,8 @@ jobs:
           # wrongly rather than erroring.
           fetch-depth: 0
 
+      - uses: cachix/install-nix-action@v31
+
       - name: Fast-forward `latest` to the published tag
         env:
           TAG: ${{ github.ref_name }}
@@ -161,7 +163,7 @@ jobs:
           # A published Python package is not enough to make a valid Nix channel target. Check
           # the TAG tree (rather than the workflow checkout by accident) and refuse an obsolete,
           # prerelease, missing, or metadata-skewed Beads derivation before moving the branch.
-          if ! policy="$(python3 scripts/check-channel-toolchain.py --ref "${TAG}" 2>&1)"; then
+          if ! policy="$(python3 scripts/check-channel-toolchain.py --ref "${TAG}" --verify-bh 2>&1)"; then
             refuse "refusing to move 'latest': ${TAG} has an ineligible Nix toolchain." "${policy}"
           fi
           echo "${policy}"

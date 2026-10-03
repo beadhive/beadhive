@@ -17,7 +17,7 @@ from . import (
     host,
     host_adopt,
     host_lease,
-    hosts,
+    hq_control_plane,
     identity,
     jsonout,
     operator_actions,
@@ -29,6 +29,7 @@ from . import (
     work_group,
     worktree,
 )
+from . import fleet_roster as hosts
 from .agent_launch_profile import AgentLaunchReceipt
 from .herdr_launch_profile import (
     HerdrAgentLaunchProfile,
@@ -51,6 +52,7 @@ _implementation.configure_legacy_dependencies(
     host=host,
     host_adopt=host_adopt,
     host_lease=host_lease,
+    hq_control_plane=hq_control_plane,
     hosts=hosts,
     identity=identity,
     jsonout=jsonout,

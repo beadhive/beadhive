@@ -62,6 +62,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
+from typing import Annotated
 
 import typer
 
@@ -78,13 +79,14 @@ from . import (
     host,
     host_adopt,
     host_fence,
+    host_heartbeat,
     host_lease,
-    hosts,
     hq,
     jsonout,
     otel,
     registry,
 )
+from . import fleet_roster as hosts
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -604,6 +606,8 @@ def _last_seen(path: Path) -> str:
     """Human-facing "last-seen" for one manifest: its FILE mtime — local-zone ISO-8601,
     seconds precision (matches :mod:`beadhive.worktree`'s validation-verdict timestamp
     convention). Never a schema field; see module docstring."""
+    if config.fleet_sql_selected():
+        return "unknown"  # a committed document has no local file mtime
     return datetime.fromtimestamp(path.stat().st_mtime).astimezone().isoformat(timespec="seconds")
 
 
@@ -621,6 +625,8 @@ def _stale_after(cfg: dict) -> float:
 def _is_stale(path: Path, threshold: float, *, at: float | None = None) -> bool:
     """Whether ``path`` (a manifest file) hasn't been touched more recently than
     ``threshold`` seconds ago."""
+    if config.fleet_sql_selected():
+        return True  # no local mtime is evidence of liveness
     now = at if at is not None else time.time()
     return (now - path.stat().st_mtime) > threshold
 
@@ -634,11 +640,8 @@ def iter_manifests(hq_dir: Path) -> list[tuple[hosts.HostManifest, Path]]:
     ``host_id`` for a stable rendering order. A malformed manifest is skipped — with a
     warning on stderr — rather than aborting the whole roster read; one broken host must
     not black out visibility into every other one."""
-    manifest_dir = hosts.hosts_dir(hq_dir)
-    if not manifest_dir.is_dir():
-        return []
     out: list[tuple[hosts.HostManifest, Path]] = []
-    for p in sorted(manifest_dir.glob("*.yaml")):
+    for p in hosts.manifest_paths(hq_dir):
         try:
             out.append((hosts.load(hq_dir, p.stem), p))
         except hosts.ManifestError as exc:
@@ -647,8 +650,8 @@ def iter_manifests(hq_dir: Path) -> list[tuple[hosts.HostManifest, Path]]:
 
 
 def manifest_row(
-    manifest: hosts.HostManifest, path: Path, *, stale: bool = False
-) -> dict[str, str]:
+    manifest: hosts.HostManifest, path: Path, *, stale: bool = False, last_seen: str | None = None
+) -> dict[str, object]:
     """One roster row's base fields. A dict, not a tuple/dataclass, on purpose: a later
     caller (bh-ytbb.13) builds its OWN rows the same way — this manifest-only dict plus an
     extra lease-state key — and passes an extended column spec to :func:`render_table`
@@ -659,7 +662,13 @@ def manifest_row(
         "host_id": manifest.host_id,
         "label": manifest.label,
         "role": manifest.role,
-        "last_seen": _last_seen(path),
+        "frame_id": manifest.frame_id,
+        "state": manifest.state,
+        "release": manifest.release.model_dump(mode="json") if manifest.release else None,
+        "capabilities": (
+            manifest.capabilities.model_dump(mode="json") if manifest.capabilities else None
+        ),
+        "last_seen": _last_seen(path) if last_seen is None else last_seen,
         "stale": "stale" if stale else "",
     }
 
@@ -670,12 +679,22 @@ BASE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("host_id", "HOST_ID"),
     ("label", "LABEL"),
     ("role", "ROLE"),
+    ("frame_id", "FRAME_ID"),
+    ("state", "STATE"),
+    ("release", "RELEASE"),
+    ("capabilities", "CAPABILITIES"),
     ("last_seen", "LAST_SEEN"),
     ("stale", "STALE"),
+    ("heartbeat_status", "HEARTBEAT"),
+    ("heartbeat_verified", "VERIFIED"),
+    ("heartbeat_age", "BEAT_AGE"),
+    ("heartbeat_age_basis", "AGE_BASIS"),
+    ("heartbeat_candidate", "CANDIDATE"),
+    ("liveness_source", "LIVENESS"),
 )
 
 
-def render_table(rows: Sequence[dict[str, str]], columns: Sequence[tuple[str, str]]) -> str:
+def render_table(rows: Sequence[dict[str, object]], columns: Sequence[tuple[str, str]]) -> str:
     """Render already-assembled row dicts against a ``(row key, header)`` column spec as a
     padded plain-text table. Generic on purpose — the seam a later caller (bh-ytbb.13) uses
     to add a lease-state column: it builds rows + an extended `columns` tuple and calls this
@@ -684,13 +703,21 @@ def render_table(rows: Sequence[dict[str, str]], columns: Sequence[tuple[str, st
     row yet) still renders."""
     if not rows:
         return "(no hosts registered)"
+
+    def _cell(value: object) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, separators=(",", ":"))
+        return str(value)
+
     widths = {
-        key: max(len(header), *(len(str(row.get(key, ""))) for row in rows))
+        key: max(len(header), *(len(_cell(row.get(key))) for row in rows))
         for key, header in columns
     }
 
-    def _line(values: dict[str, str]) -> str:
-        return "  ".join(f"{str(values.get(key, '')):<{widths[key]}}" for key, _h in columns)
+    def _line(values: dict[str, object]) -> str:
+        return "  ".join(f"{_cell(values.get(key)):<{widths[key]}}" for key, _h in columns)
 
     lines = [_line(dict(columns))]
     lines.extend(_line(row) for row in rows)
@@ -722,32 +749,37 @@ def ensure_manifest(
 
     Returns ``(path, wrote)`` — ``wrote=False`` when an existing manifest was left completely
     untouched (`path` is still the manifest's location either way)."""
-    hq_dir = config.hq_dir()
-    hid = host.host_id()
-    target = hosts.manifest_path(hq_dir, hid)
-    existing = hosts.load(hq_dir, hid) if target.exists() else None
-    if existing is not None and not force:
-        return target, False
+    from contextlib import nullcontext
 
-    os_name, arch = _local_os_arch()
-    manifest = hosts.HostManifest(
-        host_id=hid,
-        label=label or host.label(),
-        os=os_name,
-        arch=arch,
-        role=role,
-        identity=hosts.IdentityMechanism(kind=identity_kind, value=identity_value),
-        # An ordinary re-init must not accidentally turn an intentionally remote-only
-        # hive into a missing-clone warning. Passing the repeatable CLI option is the
-        # deliberate replacement operation; absent that, retain the recorded intent.
-        remote_only_hives=(
-            list(remote_only_hives)
-            if remote_only_hives is not None
-            else (list(existing.remote_only_hives) if existing is not None else [])
-        ),
+    transaction = (
+        config._write_transaction(config.SCOPE_FLEET)
+        if config.fleet_sql_selected()
+        else nullcontext()
     )
-    written = hosts.save(hq_dir, manifest)
-    return written, True
+    with transaction:
+        hq_dir = config.hq_dir()
+        hid = host.host_id()
+        target = hosts.manifest_path(hq_dir, hid)
+        existing = hosts.load(hq_dir, hid) if hosts.exists(hq_dir, hid) else None
+        if existing is not None and not force:
+            return target, False
+
+        os_name, arch = _local_os_arch()
+        manifest = hosts.HostManifest(
+            host_id=hid,
+            label=label or host.label(),
+            os=os_name,
+            arch=arch,
+            role=role,
+            identity=hosts.IdentityMechanism(kind=identity_kind, value=identity_value),
+            remote_only_hives=(
+                list(remote_only_hives)
+                if remote_only_hives is not None
+                else (list(existing.remote_only_hives) if existing is not None else [])
+            ),
+        )
+        written = hosts.save(hq_dir, manifest)
+        return written, True
 
 
 @app.command("init", help="mint/write THIS host's own manifest into HQ (hosts/<host_id>.yaml).")
@@ -838,18 +870,38 @@ def identity_cmd(
         raise typer.Exit(1)
 
 
-def list_payload(hq_dir: Path, cfg: dict | None = None) -> list[dict[str, str]]:
+def list_payload(hq_dir: Path, cfg: dict | None = None) -> list[dict[str, object]]:
     """The rows :func:`render_table` renders for ``list`` — the JSON payload shape too.
     Split out from the command so tests (and a future MCP resource) can call it directly.
-    ``cfg`` (default: :func:`beadhive.config.load`) sizes the STALE marker's threshold
-    (:func:`_stale_after`) — accepted rather than always reloaded so a caller that already
-    has one (:func:`list_cmd`) doesn't pay a second read."""
+    Signed observation freshness drives frame rows. Legacy manifests without a heartbeat
+    use the configured mtime threshold, explicitly labeled legacy-mtime."""
     cfg = cfg if cfg is not None else config.load()
     threshold = _stale_after(cfg)
     now = time.time()
-    return [
-        manifest_row(m, p, stale=_is_stale(p, threshold, at=now)) for m, p in iter_manifests(hq_dir)
-    ]
+    rows = []
+    for manifest, path in iter_manifests(hq_dir):
+        observation = host_heartbeat.observe(hq_dir, manifest, now=now)
+        legacy = not manifest.frame_id and observation.status == "absent"
+        row = manifest_row(
+            manifest,
+            path,
+            stale=(_is_stale(path, threshold, at=now) if legacy else not observation.fresh),
+            last_seen=None
+            if legacy
+            else (observation.lease.renewTime if observation.lease else ""),
+        )
+        row.update(
+            heartbeat_status=observation.status,
+            heartbeat_verified=observation.verified,
+            heartbeat_age=observation.age_seconds,
+            heartbeat_age_basis=observation.age_basis,
+            heartbeat_candidate=observation.candidate,
+            liveness_source="legacy-mtime" if legacy else "signed-heartbeat",
+        )
+        if not legacy:
+            row["last_seen"] = observation.lease.renewTime if observation.lease else ""
+        rows.append(row)
+    return rows
 
 
 # The column spec `list --lease-hive` renders — BASE_COLUMNS plus the lease-state column
@@ -858,8 +910,8 @@ LEASE_COLUMNS: tuple[tuple[str, str], ...] = (*BASE_COLUMNS, ("lease", "LEASE"))
 
 
 def with_lease_state(
-    rows: list[dict[str, str]], prefix: str, lease: host_lease.HostLease | None, state: str
-) -> tuple[list[dict[str, str]], str]:
+    rows: list[dict[str, object]], prefix: str, lease: host_lease.HostLease | None, state: str
+) -> tuple[list[dict[str, object]], str]:
     """`rows` (as :func:`list_payload` built them) enriched with a ``lease`` key on the
     HOLDER's row only, plus a one-line human summary — a fully ``"free"`` lease leaves no
     row visibly different at all (nobody is `held`), so the summary is what actually says so.
@@ -884,6 +936,38 @@ def with_lease_state(
     return enriched, summary
 
 
+_HEARTBEAT_RECORD = typer.Argument(
+    ..., help="JSON observation record; authority is separately operator owned"
+)
+
+
+@app.command("heartbeat", help="publish a signed, bounded observation for this host")
+def heartbeat_cmd(
+    record: Path = _HEARTBEAT_RECORD,
+    as_json: bool = _AS_JSON,
+) -> None:
+    """Publish caller-observed runtime facts; never mint admission or authority."""
+    try:
+        lease = host_heartbeat.HeartbeatLease.model_validate_json(record.read_text())
+        if lease.holderIdentity != host.host_id():
+            raise host_heartbeat.HeartbeatError("heartbeat holder must be this host")
+        key = host.signing_key()
+        if not key:
+            raise host_heartbeat.HeartbeatError("no recorded host signing key")
+        from .hq_control_plane import control_plane
+
+        plane = control_plane(config.hq_dir())
+        reference = plane.heartbeat_reference(lease)
+        sha = plane.heartbeat(lease, signing_key=key)
+    except (ValueError, OSError, RuntimeError) as exc:
+        typer.echo(f"heartbeat refused: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    if as_json:
+        typer.echo(json.dumps({"sha": sha, "ref": reference}))
+    else:
+        typer.echo(f"published heartbeat {sha}")
+
+
 @app.command(
     "list",
     help="render every host manifest in HQ (label, role, last-seen, stale); "
@@ -899,8 +983,8 @@ def list_cmd(
     ),
 ):
     """Every ``hosts/<host_id>.yaml`` manifest in Factory HQ, one row per host. Reads refs
-    only — no daemon, no live probe (last-seen is the manifest file's own mtime; STALE is
-    derived from it too — see :func:`_stale_after`).
+    with bounded signed heartbeat verification against HQ authority. Legacy hosts with
+    no heartbeat retain explicitly labeled manifest-mtime observations.
 
     Deliberately ``--lease-hive``, NOT the reserved ``--hive`` (cli-mcp-naming-conventions-adr
     §5d/§5d-i): the ADR's ``--hive`` means "target ONE hive, default the cwd's" and is scoped
@@ -973,6 +1057,13 @@ def show_cmd(
     typer.echo(f"host_id:    {manifest.host_id}")
     typer.echo(f"label:      {manifest.label}")
     typer.echo(f"role:       {manifest.role}")
+    typer.echo(f"frame_id:   {manifest.frame_id or '(none)'}")
+    typer.echo(f"state:      {manifest.state}")
+    typer.echo(f"release:    {manifest.release.model_dump() if manifest.release else '(none)'}")
+    typer.echo(
+        f"capabilities: {manifest.capabilities.model_dump() if manifest.capabilities else '(none)'}"
+    )
+    typer.echo(f"instance_ref: {manifest.instance_ref or '(none)'}")
     typer.echo(f"os/arch:    {manifest.os}/{manifest.arch}")
     typer.echo(f"last_seen:  {_last_seen(path)}")
     typer.echo(f"identity:   {manifest.identity.kind} ({manifest.identity.value or '—'})")
@@ -988,6 +1079,12 @@ def _require_hq_dir() -> Path:
     verb below is pointless without one (unlike `list`/`show`, which degrade gracefully to an
     empty roster)."""
     hq_dir = config.hq_dir()
+    if config.fleet_sql_selected():
+        # The returned path is only context for hive clones/local lease caches;
+        # protected SQL config and runtime are selected independently. The
+        # lease port must still deny AUTHORITY_NOT_READY when unbound.
+        config.fleet_snapshot()
+        return hq_dir
     if not (hq_dir / ".git").exists():
         typer.echo(
             f"✗ no Factory HQ clone at {hq_dir} — the host lease lives there.\n"
@@ -997,6 +1094,14 @@ def _require_hq_dir() -> Path:
         )
         raise typer.Exit(1)
     return hq_dir
+
+
+def _roster_hq_dir() -> Path:
+    """Selected config roster may be committed without a local HQ Git checkout."""
+    if config.fleet_sql_selected():
+        config.fleet_snapshot()  # qualify the selected attachment; errors cannot fall back to Git
+        return config.hq_dir()
+    return _require_hq_dir()
 
 
 def _require_host_id() -> str:
@@ -1028,12 +1133,24 @@ def _scan_leases(
     `packup_cmd` (releases everything found) and `remove_cmd` (bh-salu: refuses to remove a
     host that still holds one, unless `--force`)."""
     renew_interval = config.host_lease_renew_interval(cfg)
+    selected_sql = config.fleet_sql_selected()
+    plane = None
+    if selected_sql:
+        from .hq_control_plane import control_plane
+
+        plane = control_plane(hq_dir)
     held: list[tuple[str, host_lease.HostLease]] = []
     unreadable: list[tuple[str, str]] = []
     for prefix, _hive_dir in registry.all_hive_targets(cfg):
         try:
-            lease = host_lease.read("origin", prefix, cwd=hq_dir)
-        except gitref.RemoteUnreachable as exc:
+            # A holder-filtered SQL read can hide a stale incumbent; release
+            # enumeration needs the authenticated unfiltered protected record.
+            lease = (
+                plane.read_hive_lease_record(prefix)[1]
+                if plane is not None
+                else host_lease.read("origin", prefix, cwd=hq_dir)
+            )
+        except (gitref.RemoteUnreachable, ValueError) as exc:
             unreadable.append((prefix, str(exc)))
             continue
         if lease is None or lease.host_id != host_id:
@@ -1049,6 +1166,10 @@ def _require_manifest(hq_dir: Path, host_id: str) -> hosts.HostManifest:
     (`host_lease.ttl_for_role`); a host with no manifest has never declared one, so there is
     nothing safe to derive tenure from."""
     try:
+        if config.fleet_sql_selected():
+            from .hq_control_plane import control_plane
+
+            return control_plane(hq_dir).load_host_manifest(host_id)
         return hosts.load(hq_dir, host_id)
     except FileNotFoundError:
         typer.echo(
@@ -1173,8 +1294,8 @@ def release_cmd(hive: str = _HIVE_ARG_OPT, all_hives: bool = _ALL_HELD):
     epoch that invalidates every prior token, regardless of what this host's now-vacated fence
     token still says in the meantime — so touching the fence here would either be a no-op or
     require inventing a "released but still fenced" state nothing else in this design checks
-    for. The local cache mirrors the tombstone immediately, so THIS host's own future
-    `guard_primary` calls refuse right away rather than waiting out the TTL."""
+    for. Git mode mirrors the tombstone into its local cache immediately; SQL mode reads the
+    protected current lease projection. This host's next guarded write refuses in either mode."""
     if all_hives == (hive is not None):
         typer.echo("✗ pass exactly one of <hive> or --all", err=True)
         raise typer.Exit(1)
@@ -1216,7 +1337,7 @@ def provision_cmd(
     answers: str = typer.Option(
         "",
         "--answers",
-        help="declarative plan (role, hq.remote, hives, adopt) — for unattended installs.",
+        help="declarative plan (role, hq.remote, hq.push, hives, adopt) — for unattended installs.",
     ),
     auto: bool = typer.Option(
         False,
@@ -1233,6 +1354,7 @@ def provision_cmd(
         help="re-mint this host's manifest even if one is already registered "
         "(never re-mints host_id/host.yaml itself)",
     ),
+    push: bool = typer.Option(False, "--push", help="publish only this host's manifest to HQ"),
 ):
     """Thin CLI wrapper over :func:`beadhive.host_provision.provision` — see that module's
     docstring for the full pipeline + the hard requirements it holds itself to (never clobber
@@ -1269,6 +1391,7 @@ def provision_cmd(
         auto=auto or plan is not None,  # an answers file IS the answer — never prompt with one
         dry_run=dry_run,
         force_manifest=force,
+        push=push or (plan.hq_push if plan else False),
         adopt=plan.adopt if plan else None,
         hives=plan.hives if plan else None,
     )
@@ -1283,7 +1406,10 @@ def provision_cmd(
     if any(r.status == "failed" for r in results):
         typer.echo("\n✗ provisioning incomplete — see the failed step(s) above.", err=True)
         raise typer.Exit(1)
-    typer.echo("\n✓ host fully provisioned.")
+    if config.fleet_sql_selected():
+        typer.echo("\n✓ CONFIG_READY; Beads engine and runtime admission remain separate checks.")
+    else:
+        typer.echo("\n✓ host fully provisioned.")
 
 
 def _release_every_held(cfg: dict, hq_dir: Path, host_id: str) -> None:
@@ -1336,15 +1462,28 @@ def _ensure_lease_for_enable(hive: str, cfg: dict) -> tuple[bool, str]:
     """Verify (or adopt) the host lease before `enable` installs anything. Never starts a loop
     that will silently idle because the operator did not notice — a lease held elsewhere is a
     REFUSAL with the actionable next command, never a warning `enable` proceeds past."""
-    state_info = guard.primary_state(hive, cfg=cfg)
+    if config.fleet_sql_selected():
+        from . import frame_eligibility
+
+        try:
+            entry = registry.resolve_hive(cfg, hive)
+            prefix = str(entry["prefix"])
+            identity = _require_host_id()
+            frame_eligibility.require_eligible(identity, entry, cfg=cfg, hq_dir=config.hq_dir())
+            lease = host_lease.read("origin", prefix, cwd=config.hq_dir())
+            state_info = prefix, identity, lease
+        except (ValueError, OSError, RuntimeError, KeyError):
+            return False, "AUTHORITY_NOT_READY: protected SQL admission or lease unavailable"
+    else:
+        state_info = guard.primary_state(hive, cfg=cfg)
     if state_info is None:
         # The multi-host model is not in force for this hive (no HQ clone / never adopted) —
         # single-host default. `dispatch_hive_run`'s NullLeaseKeeper agrees: `held=True` always.
         return True, "no host lease in force for this hive (single-host default)"
     _prefix, this_host, lease = state_info
-    if lease.held_by(this_host):
+    if lease is not None and lease.held_by(this_host):
         return True, f"lease already held — {lease.describe()}"
-    if lease.is_tombstone or lease.is_expired():
+    if lease is None or lease.is_tombstone or lease.is_expired():
         try:
             outcome = adopt_one(hive)
         except (
@@ -1693,6 +1832,81 @@ def retire_cmd(
         raise typer.Exit(1)
 
 
+def _frame_lifecycle(
+    verb,
+    action,
+    frame_id,
+    expected,
+    expected_host_id,
+    expected_release,
+    operator_key,
+    confirm,
+    supersede,
+    deadline,
+):
+    from .hq_control_plane import control_plane
+
+    try:
+        result = control_plane().lifecycle(
+            verb,
+            frame_id,
+            action,
+            expected=expected,
+            expected_host_id=expected_host_id,
+            expected_release=expected_release,
+            operator_key=str(operator_key) if operator_key else "",
+            confirm=confirm,
+            supersede=supersede,
+            deadline=deadline,
+        )
+        typer.echo(json.dumps(result, sort_keys=True))
+    except (ValueError, OSError, RuntimeError) as exc:
+        typer.echo(f"{verb} refused: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+
+def _lifecycle_command(verb: str, *, operation: str | None = None):
+    operation = operation or verb
+
+    def command(
+        action: str = typer.Argument(..., help="plan, apply, or check"),
+        frame_id: str = typer.Argument(...),
+        expected: str = typer.Option("", "--expected-revision"),
+        expected_host_id: str = typer.Option("", "--expected-host-id"),
+        expected_release: str = typer.Option("", "--expected-release"),
+        operator_key: Annotated[Path | None, typer.Option("--operator-key")] = None,
+        confirm: bool = typer.Option(False, "--confirm"),
+        supersede: bool = typer.Option(False, "--supersede"),
+        deadline: float | None = typer.Option(
+            None, "--deadline", help="drain deadline, Unix seconds"
+        ),
+    ) -> None:
+        _frame_lifecycle(
+            verb,
+            action,
+            frame_id,
+            expected,
+            expected_host_id,
+            expected_release,
+            operator_key,
+            confirm,
+            supersede,
+            deadline,
+        )
+
+    command.__name__ = f"{operation.replace('-', '_')}_cmd"
+    command.__doc__ = (
+        f"{verb.capitalize()} a declared frame using plan/apply/check and exact expected authority."
+    )
+    return otel.trace_verb(f"host.{operation}")(command)
+
+
+for _verb in ("admit", "cordon", "drain", "park", "resume", "quarantine"):
+    app.command(_verb)(_lifecycle_command(_verb))
+
+app.command("frame-retire")(_lifecycle_command("retire", operation="frame-retire"))
+
+
 # ---- remove: drop an orphaned manifest from HQ (bh-salu) ------------------------------
 
 
@@ -1703,6 +1917,7 @@ def retire_cmd(
     "by accident. Requires --confirm; --dry-run previews with zero mutation.",
 )
 @otel.trace_verb("host.rm")
+@hosts.original_revision
 def rm_cmd(
     host_id: str = typer.Argument(..., metavar="<host_id>", help="host_id from `bh host list`"),
     dry_run: bool = typer.Option(
@@ -1748,7 +1963,7 @@ def rm_cmd(
         typer.echo("✗ pass one of --dry-run or --confirm, not both", err=True)
         raise typer.Exit(1)
 
-    hq_dir = _require_hq_dir()
+    hq_dir = _roster_hq_dir()
     try:
         manifest = hosts.load(hq_dir, host_id)
     except FileNotFoundError:
@@ -1776,7 +1991,7 @@ def rm_cmd(
         raise typer.Exit(1)
 
     path = hosts.manifest_path(hq_dir, host_id)
-    if not _is_stale(path, _stale_after(cfg)) and not force:
+    if (config.fleet_sql_selected() or not _is_stale(path, _stale_after(cfg))) and not force:
         typer.echo(
             f"✗ {host_id} was last seen {_last_seen(path)} — recently enough it is plausibly "
             f"still alive; pass --force to remove anyway.",
@@ -1811,5 +2026,68 @@ def rm_cmd(
         typer.echo(f"  ✓ released {prefix} (was held by {host_id})")
 
     removed = hosts.remove(hq_dir, host_id)
-    hq._commit_if_dirty(hq_dir, f"chore(host): remove {host_id} ({manifest.label})")
+    if not config.fleet_sql_selected():
+        hq._commit_if_dirty(hq_dir, f"chore(host): remove {host_id} ({manifest.label})")
     typer.echo(f"✓ removed {removed}")
+
+
+@app.command("eligible", help="explain frame eligibility and optional hive lease ownership")
+def eligible_cmd(
+    identity: str = typer.Argument("", help="host or frame ID; defaults to this host"),
+    hive: str = typer.Option("", "--hive", help="hive whose requirements are checked"),
+    as_json: bool = _AS_JSON,
+):
+    from . import frame_eligibility
+
+    cfg = config.load()
+    identity = identity or _require_host_id()
+    hq_dir = config.hq_dir()
+    matching = [m.host_id for m, _ in iter_manifests(hq_dir) if m.frame_id == identity]
+    if matching:
+        if len(matching) != 1:
+            typer.echo("ambiguous frame incarnation; specify host ID", err=True)
+            raise typer.Exit(1)
+        identity = matching[0]
+    entry = registry.resolve_hive(cfg, hive) if hive else {}
+    decision = frame_eligibility.decision_for(identity, entry, hq_dir=hq_dir, cfg=cfg)
+    payload = (
+        decision.as_dict()
+        if decision
+        else {
+            "eligible": True,
+            "predicates": {"legacy_lease_policy": True},
+            "reason": "legacy lease policy",
+        }
+    )
+    if hive:
+        payload["candidate_eligible"] = payload["eligible"]
+        try:
+            if decision is not None:
+                from .hq_control_plane import control_plane
+
+                lease = control_plane(hq_dir).read_hive_lease(
+                    str(entry["prefix"]), holder_identity=identity
+                )
+            else:
+                lease = host_lease.read("origin", str(entry["prefix"]), cwd=hq_dir)
+            held = bool(lease and lease.held_by(identity))
+        except (ValueError, OSError, RuntimeError):
+            held = False
+        payload["predicates"]["current_hive_lease_holder"] = held
+        payload["eligible"] = payload["eligible"] and held
+        if not held:
+            payload["reason"] += ", current_hive_lease_holder"
+    if as_json:
+        typer.echo(json.dumps(payload))
+    else:
+        typer.echo(
+            render_table(
+                [
+                    {"predicate": key, "result": "pass" if value else "fail"}
+                    for key, value in payload["predicates"].items()
+                ],
+                (("predicate", "PREDICATE"), ("result", "RESULT")),
+            )
+        )
+    if not payload["eligible"]:
+        raise typer.Exit(1)

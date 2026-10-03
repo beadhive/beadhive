@@ -68,6 +68,25 @@ def test_remote_only_hives_round_trip_as_host_local_placement_intent(tmp_path):
     assert hosts.load(hq_dir, manifest.host_id).remote_only_hives == ["hl", "orca"]
 
 
+def test_mutated_roster_candidate_cannot_replace_prior_file(tmp_path):
+    manifest = _manifest()
+    path = hosts.save(tmp_path, manifest)
+    prior = path.read_bytes()
+    manifest.role = "invalid-role"
+    with pytest.raises(hosts.ManifestError, match="role"):
+        hosts.save(tmp_path, manifest)
+    assert path.read_bytes() == prior
+
+
+def test_roster_read_rejects_mismatched_path_identity(tmp_path):
+    manifest = _manifest()
+    path = hosts.save(tmp_path, manifest)
+    other = hosts.manifest_path(tmp_path, "other-host")
+    other.write_bytes(path.read_bytes())
+    with pytest.raises(hosts.ManifestError, match="path identity mismatch"):
+        hosts.load(tmp_path, "other-host")
+
+
 # ---- role: closed set, one round-trip per value --------------------------------
 
 
@@ -273,3 +292,142 @@ def test_an_unknown_role_is_still_rejected(tmp_path):
 def test_canonical_role_passes_an_unknown_value_through_untouched():
     assert hosts.canonical_role("nonsense") == "nonsense"
     assert hosts.canonical_role("executor") == "executor"
+
+
+def test_neutral_manifest_reexport_preserves_structured_deprecated_role_warning():
+    import io
+    import json
+
+    from beadhive import log
+    from beadhive.host_manifest_contracts import HostManifest
+
+    assert hosts.HostManifest is HostManifest
+    output = io.StringIO()
+    log.configure(level="WARNING", fmt="json", stream=output)
+    try:
+        assert hosts.canonical_role("worker") == "viewer"
+    finally:
+        log.configure()
+    warning = json.loads(output.getvalue().splitlines()[-1])
+    assert warning["event"] == "deprecated_host_role"
+    assert warning["deprecated"] == "worker"
+    assert warning["replacement"] == "viewer"
+    assert "bh host init --role viewer --force" in warning["reason"]
+
+
+# Captured from the factory HQ on 2026-09-30, before frame membership fields.
+def test_real_pre_frame_hq_manifest_loads_unchanged_as_active(tmp_path):
+    from pathlib import Path
+
+    source = Path(__file__).parent / "fixtures/hosts/pre-frame-factory.yaml"
+    target = hosts.manifest_path(tmp_path, "6ae345b9-81a8-4c9b-8661-c5a4420fc12d")
+    target.parent.mkdir(parents=True)
+    target.write_bytes(source.read_bytes())
+    loaded = hosts.load(tmp_path, target.stem)
+    assert loaded.state == "active"
+    assert loaded.frame_id is None
+    assert loaded.label == "beadhive-factory"
+    assert loaded.capacity == loaded.harnesses == {}
+    assert target.read_bytes() == source.read_bytes()
+
+
+@pytest.mark.parametrize("state", hosts.FRAME_STATES)
+def test_frame_membership_round_trips_every_state(tmp_path, state):
+    manifest = _manifest(
+        frame_id="frame-01",
+        state=state,
+        instance_ref="vm-123",
+        release={"id": "v0.20.2", "digest": "sha256:abc"},
+        capabilities={
+            "isolation": "kvm",
+            "trust_zone": "self-hosted",
+            "arch": "x86_64",
+            "harnesses": ["claude", "codex"],
+            "max_sessions": 2,
+        },
+    )
+    hosts.save(tmp_path, manifest)
+    assert hosts.load(tmp_path, manifest.host_id) == manifest
+
+
+@pytest.mark.parametrize("isolation", hosts.FRAME_ISOLATIONS)
+@pytest.mark.parametrize("trust_zone", hosts.FRAME_TRUST_ZONES)
+def test_frame_capability_enums(isolation, trust_zone):
+    caps = hosts.FrameCapabilities(
+        isolation=isolation, trust_zone=trust_zone, arch="aarch64", harnesses=[], max_sessions=0
+    )
+    assert caps.isolation == isolation
+    assert caps.trust_zone == trust_zone
+
+
+def test_new_frame_is_written_pending_but_ordinary_host_stays_active(tmp_path):
+    frame = _manifest(frame_id="frame-new")
+    assert frame.state == "pending"
+    hosts.save(tmp_path, frame)
+    assert hosts.load(tmp_path, frame.host_id).state == "pending"
+    assert "state: pending" in hosts.manifest_path(tmp_path, frame.host_id).read_text()
+    assert _manifest().state == "active"
+
+
+@pytest.mark.parametrize(
+    "field,value", [("state", "stale"), ("state", "eligible"), ("stale", True), ("eligible", True)]
+)
+def test_derived_or_unknown_frame_state_is_not_stored(field, value):
+    with pytest.raises(ValidationError):
+        _manifest(**{field: value})
+
+
+@pytest.mark.parametrize(
+    "extra", [{"bogus": 1}, {"isolation": "vm"}, {"trust_zone": "public"}, {"max_sessions": -1}]
+)
+def test_capabilities_reject_unknown_fields_and_invalid_values(extra):
+    with pytest.raises(ValidationError):
+        hosts.FrameCapabilities.model_validate(
+            {
+                "isolation": "container",
+                "trust_zone": "vendor-hosted",
+                "arch": "x86_64",
+                "harnesses": [],
+                "max_sessions": 1,
+                **extra,
+            }
+        )
+
+
+def test_release_rejects_unknown_fields():
+    with pytest.raises(ValidationError):
+        hosts.FrameRelease(id="v1", digest="abc", bogus=True)
+
+
+def test_frame_contract_names_and_closed_enums():
+    assert hosts.FRAME_STATES == (
+        "pending",
+        "active",
+        "draining",
+        "drained",
+        "parked",
+        "quarantined",
+        "retired",
+    )
+    assert hosts.FRAME_ISOLATIONS == ("kvm", "microvm", "container")
+    assert hosts.FRAME_TRUST_ZONES == ("self-hosted", "vendor-hosted")
+    assert set(hosts.FrameRelease.model_fields) == {"id", "digest"}
+    assert set(hosts.FrameCapabilities.model_fields) == {
+        "isolation",
+        "trust_zone",
+        "arch",
+        "harnesses",
+        "max_sessions",
+    }
+
+
+def test_reading_historical_frame_without_state_is_active(tmp_path):
+    manifest = _manifest(frame_id="existing-frame")
+    data = manifest.model_dump(mode="json")
+    del data["state"]
+    target = hosts.manifest_path(tmp_path, manifest.host_id)
+    target.parent.mkdir(parents=True)
+    import json
+
+    target.write_text(json.dumps(data))
+    assert hosts.load(tmp_path, manifest.host_id).state == "active"

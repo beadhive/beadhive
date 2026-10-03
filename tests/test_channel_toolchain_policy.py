@@ -130,3 +130,42 @@ def test_missing_beads_row_is_refused(tmp_path: Path, metadata: object) -> None:
     root = _candidate(tmp_path, metadata=metadata)
     with pytest.raises(ValueError, match="exactly one bd"):
         POLICY.check(root)
+
+
+def test_tagged_nix_bh_must_exist_and_match_project_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / "package"
+    (package / "bin").mkdir(parents=True)
+    for name in ("bh", "bh-host-daemon", "beadhive-frame-bridge"):
+        (package / "bin" / name).touch()
+    monkeypatch.setattr(POLICY, "_read", lambda root, ref, path: '[project]\nversion = "0.20.2"')
+    observed: list[list[str]] = []
+
+    def run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        observed.append(argv)
+        if argv[0] == "git":
+            return subprocess.CompletedProcess(argv, 0, "a" * 40 + "\n", "")
+        if argv[0] == "nix":
+            return subprocess.CompletedProcess(argv, 0, str(package) + "\n", "")
+        return subprocess.CompletedProcess(argv, 0, "0.20.2\n", "")
+
+    monkeypatch.setattr(POLICY.subprocess, "run", run)
+    assert POLICY.verify_bh(tmp_path, "v0.20.2") == "0.20.2"
+    assert observed[1][0:4] == ["nix", "build", "--no-link", "--print-out-paths"]
+    assert observed[1][-1].endswith("?rev=" + "a" * 40 + "#bh")
+
+    (package / "bin" / "bh-host-daemon").unlink()
+    with pytest.raises(ValueError, match="omits bh-host-daemon"):
+        POLICY.verify_bh(tmp_path, "v0.20.2")
+    (package / "bin" / "bh-host-daemon").touch()
+
+    def wrong_version(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        result = run(argv, **kwargs)
+        if argv[0] == str(package / "bin" / "bh"):
+            return subprocess.CompletedProcess(argv, 0, "0.20.1\n", "")
+        return result
+
+    monkeypatch.setattr(POLICY.subprocess, "run", wrong_version)
+    with pytest.raises(ValueError, match="reports '0.20.1'"):
+        POLICY.verify_bh(tmp_path, "v0.20.2")

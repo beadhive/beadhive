@@ -223,6 +223,22 @@ class TelemetryLifecycleObserver:
         )
 
 
+class GuardedFrameLease:
+    """Keep the authorization check adjacent to each CLI claim write."""
+
+    def __init__(self, leases, main):
+        self.leases, self.main = leases, main
+
+    def __getattr__(self, name):
+        return getattr(self.leases, name)
+
+    def acquire(self, bead, *, actor):
+        from . import frame_eligibility
+
+        frame_eligibility.require_intake(hive_dir=self.main)
+        return self.leases.acquire(bead, actor=actor)
+
+
 @contextmanager
 def commands(cfg: Any, hive: str, main: Path, entry: Any) -> Iterator[Any]:
     """One command's ``LifecycleCommands`` with every port bound; closes any session it opened."""
@@ -231,7 +247,7 @@ def commands(cfg: Any, hive: str, main: Path, entry: Any) -> Iterator[Any]:
     with ExitStack() as stack:
         yield core.LifecycleCommands(
             SelectedIssues(main, entry, stack),
-            bd_cli.leases(main),
+            GuardedFrameLease(bd_cli.leases(main), main),
             bd_cli.state_operations(main),
             bd_cli.state_reads(main),
             bd_cli.gate_operations(main),

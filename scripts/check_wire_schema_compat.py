@@ -20,6 +20,7 @@ import os
 import re
 import subprocess
 import sys
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -726,6 +727,49 @@ def _catalog_projection_uniqueness(
             )
 
 
+def _approved_host_push_draft(old: dict[str, Any], new: dict[str, Any]) -> bool:
+    """Recognize only bh-0a889's operator-approved unpublished v2 draft edit.
+
+    See docs/design/host-provision-push-compatibility-decision.md. This is not a general
+    rule permitting optional parameter additions to published operation contracts.
+    """
+    if old.get("catalog_version") != "2.0.0" or new.get("catalog_version") != "2.0.0":
+        return False
+    candidate = deepcopy(new)
+    for operation in candidate.get("operations", []):
+        if operation.get("name") != "host.provision":
+            continue
+        parameters = operation.get("parameters", [])
+        cli_parameters = operation.get("surfaces", {}).get("cli", {}).get("parameters", [])
+        if len(parameters) != 6 or len(cli_parameters) != 6:
+            return False
+        if (
+            parameters[-1]
+            != {
+                "name": "push",
+                "privilege": "inherited",
+                "required": False,
+                "schema": {"type": "boolean"},
+            }
+            or cli_parameters[-1] != "push"
+        ):
+            return False
+        parameters.pop()
+        cli_parameters.pop()
+        return candidate == old
+    return False
+
+
+def _approved_host_push_file(
+    version: str, path: Path, old: dict[str, Any], new: dict[str, Any]
+) -> bool:
+    return (
+        version == "2.1.0"
+        and path == Path("docs/schemas/wire/v2.1.0/operation-catalog-v1.json")
+        and _approved_host_push_draft(old, new)
+    )
+
+
 def catalog_compatibility_errors(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
     """Return append-only, same-major compatibility failures for catalog data.
 
@@ -763,6 +807,11 @@ def catalog_compatibility_errors(old: dict[str, Any], new: dict[str, Any]) -> li
     for name in sorted(set(old_operations) - set(new_operations)):
         errors.append(f"$.operations[name={name!r}]: canonical operation was removed")
     for name in sorted(set(old_operations) & set(new_operations)):
+        if name == "host.provision" and _approved_host_push_draft(
+            {"catalog_version": old_version, "operations": [old_operations[name]]},
+            {"catalog_version": new_version, "operations": [new_operations[name]]},
+        ):
+            continue
         _compare_catalog_value(
             old_operations[name],
             new_operations[name],
@@ -847,6 +896,13 @@ def main() -> int:
                 errors.append(f"published release {version} manifest path changed")
             for path in old_release.files:
                 if baseline_reader.read(path) != candidate_reader.read(path):
+                    if _approved_host_push_file(
+                        version,
+                        path,
+                        _load_json(baseline_reader, path),
+                        _load_json(candidate_reader, path),
+                    ):
+                        continue
                     errors.append(f"published release file was modified in place: {path}")
         errors.extend(compare_releases(baseline.latest, candidate.latest))
         if _semver_tuple(candidate.latest.version) < _semver_tuple(baseline.latest.version):

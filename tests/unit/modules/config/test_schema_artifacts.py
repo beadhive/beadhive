@@ -14,6 +14,7 @@ from pathlib import Path
 from jsonschema import Draft202012Validator
 from ruamel.yaml import YAML
 
+from beadhive.contract_release import release_root
 from beadhive.modules.config.application.schema_artifacts import (
     CONFIG_SCHEMA_ARTIFACT_ID,
     CONFIG_SCHEMA_ARTIFACT_VERSION,
@@ -23,7 +24,7 @@ from beadhive.modules.config.application.schema_artifacts import (
 
 ROOT = Path(__file__).parents[4]
 WIRE = ROOT / "docs/schemas/wire/v1.5.0"
-ARTIFACT = ROOT / "src/beadhive/schemas/contracts/v1.0.0/artifacts/config-v1.schema.json"
+ARTIFACT = release_root() / "artifacts/config-v1.schema.json"
 
 
 def test_schema_generation_is_deterministic_and_matches_checked_artifact():
@@ -31,7 +32,13 @@ def test_schema_generation_is_deterministic_and_matches_checked_artifact():
     second = generate_config_json_schema_bytes()
     document = json.loads(first)
 
-    assert first == second == ARTIFACT.read_bytes()
+    assert first == second
+    from beadhive.contract_release import RELEASE_VERSION, render_release
+
+    canonical = render_release()[Path("artifacts/config-v1.schema.json")]
+    assert canonical == ARTIFACT.read_bytes()
+    normalized = dict(document, version=int(RELEASE_VERSION.split(".")[0]))
+    assert json.loads(canonical) == normalized
     assert document["$id"] == CONFIG_SCHEMA_ARTIFACT_ID
     assert document["version"] == CONFIG_SCHEMA_ARTIFACT_VERSION == 1
     assert document["properties"]["schema_version"]["default"] == 1

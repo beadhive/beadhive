@@ -47,7 +47,7 @@ class _Res:
 
 
 def test_plan_has_one_name_per_step_and_every_glyph_status_is_mapped():
-    assert len(host_provision.PLAN) == 12
+    assert len(host_provision.PLAN) == 13
     assert host_provision.PLAN[-1] == "adopt"
     # bh-1kzc: the gate provision used to require out of band is now its own first step.
     assert host_provision.PLAN[0] == "setup check"
@@ -992,6 +992,7 @@ _STEP_FUNCS = (
     "_step_fix_permissions",
     "_step_harness_plugin",
     "_step_verify",
+    "_step_hq_publish",
     "_step_adopt",
 )
 
@@ -1139,10 +1140,11 @@ def test_setup_check_step_reports_failure_rather_than_aborting(monkeypatch):
 
 
 def test_adopt_is_the_final_step():
-    """It is the only fleet-visible, racing step. Everything before it is local and reversible,
-    so it goes after the verifying gate — that ordering IS the safety property."""
+    """Adoption follows verified registration publication, so a failed publication cannot
+    take a primary lease. Both fleet-visible steps follow verification."""
     assert host_provision.PLAN[-1] == "adopt"
-    assert host_provision.PLAN[-2] == "verify"
+    assert host_provision.PLAN[-2] == "hq publish"
+    assert host_provision.PLAN[-3] == "verify"
 
 
 def test_adopt_does_nothing_when_the_answers_file_asks_for_nothing():
@@ -1247,3 +1249,24 @@ def test_an_unreachable_origin_does_not_claim_a_store_exists(tmp_path):
     reports False, so we skip rather than attempt a bootstrap we cannot know will work."""
     d = _clone_without_beads(tmp_path, "no-origin")
     assert host_provision._origin_publishes_store(d) is False
+
+
+@pytest.mark.parametrize("via_answers", [False, True])
+def test_cli_forwards_opt_in_publication(monkeypatch, tmp_path, via_answers):
+    calls = []
+
+    def fake_provision(**kwargs):
+        calls.append(kwargs)
+        return []
+
+    monkeypatch.setattr(host_provision, "provision", fake_provision)
+    args = ["host", "provision", "--auto"]
+    if via_answers:
+        answers = tmp_path / "answers.yaml"
+        answers.write_text("role: viewer\nhq.push: true\n")
+        args += ["--answers", str(answers)]
+    else:
+        args += ["--role", "viewer", "--push"]
+    result = runner.invoke(app, args)
+    assert result.exit_code == 0, result.output
+    assert calls[0]["push"] is True

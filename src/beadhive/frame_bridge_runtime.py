@@ -34,11 +34,16 @@ from .frame_bridge import (
     StaleEventCursor,
     build_development_frame_bridge_application,
 )
+from .frame_bridge_daemon import (
+    DEFAULT_DAEMON_ORIGIN,
+    configured_daemon_origin,
+    validate_daemon_origin,
+)
 
 APP_ORIGIN = CLOUD_APP_ORIGIN
 GATEWAY_ORIGIN = CLOUD_GATEWAY_ORIGIN
 AUDIENCE = "beadhive-gateway-dev"
-LOOPBACK_ORIGIN = "http://127.0.0.1:8420"
+LOOPBACK_ORIGIN = DEFAULT_DAEMON_ORIGIN
 HIVE_ID = "github/beadhive/beadhive"
 HIVE_SUBSCRIPTION_ID = operator_contract.hive_subscription_id(HIVE_ID)
 _HIVE_PATH = "/api/v1/hives/github%2Fbeadhive%2Fbeadhive"
@@ -123,18 +128,20 @@ class LoopbackGatewayReadSource:
         daemon_bearer: daemon_auth.SecretBearer,
         authorized_subjects: frozenset[str],
         client: httpx.AsyncClient | None = None,
+        daemon_origin: str = LOOPBACK_ORIGIN,
     ) -> None:
         if not isinstance(daemon_bearer, daemon_auth.SecretBearer):
             raise TypeError("daemon_bearer must be a SecretBearer")
         if not authorized_subjects:
             raise ValueError("authorized_subjects must not be empty")
+        daemon_origin = validate_daemon_origin(daemon_origin)
         self._client = client or httpx.AsyncClient(
-            base_url=LOOPBACK_ORIGIN,
+            base_url=daemon_origin,
             timeout=httpx.Timeout(5.0, read=None),
             trust_env=False,
         )
-        if str(self._client.base_url).rstrip("/") != LOOPBACK_ORIGIN:
-            raise ValueError("Frame Bridge daemon client must use the fixed loopback origin")
+        if str(self._client.base_url).rstrip("/") != daemon_origin:
+            raise ValueError("Frame Bridge daemon client must use the configured loopback origin")
         self._daemon_auth = _LoopbackDaemonAuth(daemon_bearer)
         self._authorized_subjects = authorized_subjects
         self._cache_boundary = uuid.uuid4().hex
@@ -576,16 +583,18 @@ class LoopbackDemoRuntime:
         *,
         daemon_bearer: daemon_auth.SecretBearer,
         client: httpx.AsyncClient | None = None,
+        daemon_origin: str = LOOPBACK_ORIGIN,
     ) -> None:
         if not isinstance(daemon_bearer, daemon_auth.SecretBearer):
             raise TypeError("daemon_bearer must be a SecretBearer")
+        daemon_origin = validate_daemon_origin(daemon_origin)
         self._client = client or httpx.AsyncClient(
-            base_url=LOOPBACK_ORIGIN,
+            base_url=daemon_origin,
             timeout=httpx.Timeout(5.0, read=None),
             trust_env=False,
         )
-        if str(self._client.base_url).rstrip("/") != LOOPBACK_ORIGIN:
-            raise ValueError("Frame Bridge daemon client must use the fixed loopback origin")
+        if str(self._client.base_url).rstrip("/") != daemon_origin:
+            raise ValueError("Frame Bridge daemon client must use the configured loopback origin")
         self._daemon_auth = _LoopbackDaemonAuth(daemon_bearer)
 
     @property
@@ -733,7 +742,8 @@ def create_application():
     if source_mode not in {"generated", "live"}:
         raise RuntimeError(f"{SOURCE_MODE_ENV} must be explicitly set to generated or live")
     daemon_bearer = daemon_auth.load_bearer_file(daemon_bearer_path)
-    runtime = LoopbackDemoRuntime(daemon_bearer=daemon_bearer)
+    daemon_origin = configured_daemon_origin(bh_config.load())
+    runtime = LoopbackDemoRuntime(daemon_bearer=daemon_bearer, daemon_origin=daemon_origin)
     if source_mode == "generated":
         read_source = gateway_read.load_packaged_development_source(
             authorized_subjects=authorized_subjects
@@ -746,6 +756,7 @@ def create_application():
             daemon_bearer=daemon_bearer,
             authorized_subjects=authorized_subjects,
             client=runtime.client,
+            daemon_origin=daemon_origin,
         )
         experience_source = None
     instance = RemoteInstance(

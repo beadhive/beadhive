@@ -2,13 +2,99 @@
 
 from __future__ import annotations
 
+import hashlib
+import math
 from collections.abc import Callable, Mapping, MutableMapping
 from contextlib import AbstractContextManager
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol, TypeVar, runtime_checkable
 
 ConfigDocument = MutableMapping[str, Any]
 EditResult = TypeVar("EditResult")
+
+
+@dataclass(frozen=True)
+class FleetConfigDocument:
+    """One non-secret source document; tuple order preserves workspace precedence."""
+
+    path: str
+    content: str
+
+
+def ordered_documents_digest(documents) -> str:
+    """Canonical ordered raw-document digest shared by both config adapters."""
+    digest = hashlib.sha256()
+    for document in documents:
+        path = document.path.encode("utf-8")
+        content = document.content.encode("utf-8")
+        digest.update(len(path).to_bytes(4, "big"))
+        digest.update(path)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()
+
+
+@dataclass(frozen=True)
+class RawFleetConfigRevision:
+    """Privileged repair input, never a usable settings or admission snapshot."""
+
+    expected_revision: str
+    documents: tuple[FleetConfigDocument, ...]
+
+
+@dataclass(frozen=True)
+class FleetConfigSnapshot:
+    """Committed raw documents plus provenance outside persisted settings keys."""
+
+    backend_identity: str
+    commit_revision: str
+    generation: str
+    fetched_at: float
+    valid_until: float
+    documents: tuple[FleetConfigDocument, ...]
+
+    @property
+    def beadyard_id(self) -> str | None:
+        """Portable HQ instance binding; ``None`` is explicit legacy absence.
+
+        It is derived from the one raw document, never a second stored copy or
+        a generated default. Signed Git and committed Dolt adapters retain the
+        document unchanged through export/import and backend switches.
+        """
+        from .beadyard_identity import identity_in_documents
+
+        return identity_in_documents(self.documents, required=False)
+
+    def __post_init__(self):
+        if any(
+            not isinstance(value, str) or not value
+            for value in (self.backend_identity, self.commit_revision, self.generation)
+        ):
+            raise ValueError("committed configuration provenance is required")
+        if (
+            any(
+                type(value) not in (int, float) or not math.isfinite(value)
+                for value in (self.fetched_at, self.valid_until)
+            )
+            or self.valid_until <= self.fetched_at
+        ):
+            raise ValueError("committed configuration validity is inconsistent")
+        if not isinstance(self.documents, tuple) or any(
+            not isinstance(document, FleetConfigDocument) for document in self.documents
+        ):
+            raise ValueError("committed configuration documents must be immutable")
+
+
+@runtime_checkable
+class FleetConfigRevisionPort(Protocol):
+    """Publish against the originally loaded revision, then verify committed readback."""
+
+    def load_snapshot(self, *, revision: str | None = None) -> FleetConfigSnapshot: ...
+
+    def publish_snapshot(
+        self, documents: tuple[FleetConfigDocument, ...], *, expected_revision: str
+    ) -> FleetConfigSnapshot: ...
 
 
 class ConfigScope(StrEnum):
@@ -69,4 +155,9 @@ __all__ = (
     "ConfigDocumentSavePort",
     "ConfigScope",
     "EnvironmentSourcePort",
+    "FleetConfigDocument",
+    "RawFleetConfigRevision",
+    "FleetConfigSnapshot",
+    "FleetConfigRevisionPort",
+    "ordered_documents_digest",
 )

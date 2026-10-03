@@ -55,6 +55,12 @@ Do not edit a published release by hand. `just wire-schema-compat` rejects any i
 a 1.5.0-or-later release. It also rejects a new release that removes or changes an operation, an
 artifact, or a schema constraint that the previous supported release published.
 
+The operator approved one amendment to the unpublished v2 draft on 2026-09-30:
+[host provision publication decision](../../design/host-provision-push-compatibility-decision.md).
+The checker permits only its exact optional `push` tail on `host.provision` and its matching
+CLI projection in the existing v2.1.0 catalog. Other in-place edits and operation changes
+remain rejected; this does not change the general optional parameter compatibility policy.
+
 ## Artifacts by release
 
 The artifacts below were introduced in releases that are now deprecated. Release 1.5.0 carries

@@ -18,7 +18,11 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         "work.validation_priority",
         "work.dispatch.max_beads_per_session",
         "work.dispatch.auto_budget",
+        "beads",
         "hq.remote",
+        "hq.beadyard_id",
+        "hq.authority_anchor",
+        "hq.sql",
         "dolt",
         "git_workspace",
         "log",
@@ -33,12 +37,15 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         "hitch",
         "herdr",
         "host.daemon",
+        "host.frame_bridge",
     }
 )
 
 FLEET_PREFIXES: frozenset[str] = frozenset(
     {
         "schema_version",
+        "hq.mode",
+        "hq.admission_policy",
         "delimiter",
         "providers",
         "orgs",

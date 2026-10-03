@@ -44,20 +44,34 @@ Typer-free: every failure is an exception a CLI layer maps to an exit code.
 
 from __future__ import annotations
 
-import calendar
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from . import gitref, log
+from .host_lease_contracts import (
+    LEASE_REF_ROOT as LEASE_REF_ROOT,
+)
+from .host_lease_contracts import (
+    HostLease as HostLease,
+)
+from .host_lease_contracts import (
+    _parse_stamp,
+)
+from .host_lease_contracts import (
+    lease_ref as lease_ref,
+)
+from .host_lease_contracts import (
+    now_stamp as now_stamp,
+)
 
 # ``refs/bh/lease/<prefix>`` — outside ``refs/heads/*`` and outside ``refs/dolt/*``, so it
 # never participates in a branch merge or a Dolt merge (Decision 2's "the ref lives outside
 # refs/dolt/data" property, restated for HQ's own store).
-LEASE_REF_ROOT = "refs/bh/lease/"
+
 
 # ISO-8601 UTC, matching claim_authority.py / metadata.py's stamp format.
-_TIMESTAMP_FMT = "%Y-%m-%dT%H:%M:%SZ"
+
 
 # Amendment 1 §3 defaults: renew every 5 min, TTL 30 min. These are the *code* defaults behind
 # the `host.lease.renew_interval` / `host.lease.ttl` config keys (config_schema.HostLeaseConfig)
@@ -91,106 +105,6 @@ class HostLeaseRejected(HostLeaseError):
     caller learns it won."""
 
 
-def lease_ref(prefix: str) -> str:
-    """The HQ ref carrying `prefix`'s host lease. Raises on an empty prefix rather than
-    computing ``refs/bh/lease/`` — a directory-shaped ref that would collide with every
-    hive's."""
-    if not prefix:
-        raise ValueError("a hive prefix is required to name a host-lease ref")
-    return LEASE_REF_ROOT + prefix
-
-
-def now_stamp(at: float | None = None) -> str:
-    """`at` (epoch seconds; default: now) as an ISO-8601 UTC stamp."""
-    return time.strftime(_TIMESTAMP_FMT, time.gmtime(at if at is not None else time.time()))
-
-
-def _parse_stamp(text: str) -> float:
-    """An ISO-8601 UTC stamp back to epoch seconds. A malformed/empty stamp reads as 0.0 —
-    i.e. *long expired*, which is the fail-closed direction for an expiry comparison (a
-    corrupt lease must not read as an infinitely valid one).
-
-    ``calendar.timegm`` is the documented inverse of ``time.gmtime``, which is what
-    :func:`now_stamp` writes these stamps with — so parse and format are the same clock by
-    construction, with no local-time or DST notion anywhere in the round trip.
-
-    It replaces ``time.mktime(...) - time.timezone`` (bh-nf902), a well-known DST-broken
-    idiom: ``mktime`` reads the struct as LOCAL time and applies whatever offset is in force
-    (PDT, UTC-7), while ``time.timezone`` is always the STANDARD offset (PST, UTC-8). The two
-    disagree by exactly one hour whenever DST is active, so every stamp parsed an hour early.
-    A 30-minute lease — ``DEFAULT_TTL``, and the ``transient`` baseline a laptop gets — was
-    therefore born expired, locking that host out of every write to an adopted hive. An
-    ``executor``'s 4x tenure merely lost an hour of runway, silently, which is why the
-    always-on host never surfaced it."""
-    try:
-        return calendar.timegm(time.strptime(text, _TIMESTAMP_FMT))
-    except (ValueError, TypeError):
-        return 0.0
-
-
-@dataclass(frozen=True)
-class HostLease:
-    """One host lease record. Immutable — every operation returns a NEW record."""
-
-    host_id: str
-    label: str
-    epoch: int
-    adopted_at: str
-    expires_at: str
-
-    @property
-    def is_tombstone(self) -> bool:
-        """A released lease: same five fields, empty ``host_id``. Deliberately a record and
-        not a deleted ref — see :func:`release`."""
-        return not self.host_id
-
-    def is_expired(self, at: float | None = None) -> bool:
-        """Whether the lease's TTL has elapsed. A tombstone is always expired."""
-        if self.is_tombstone:
-            return True
-        clock = at if at is not None else time.time()
-        return _parse_stamp(self.expires_at) <= clock
-
-    def held_by(self, host_id: str, at: float | None = None) -> bool:
-        """Whether `host_id` holds this lease AND it is still live."""
-        return bool(host_id) and self.host_id == host_id and not self.is_expired(at)
-
-    def describe(self) -> str:
-        """One line naming the holder and its expiry — the text a refusal shows an operator,
-        who otherwise cannot tell *what to do* about being blocked."""
-        if self.is_tombstone:
-            return f"released (no holder; epoch {self.epoch})"
-        return (
-            f"{self.label or '?'} ({self.host_id}), epoch {self.epoch}, expires {self.expires_at}"
-        )
-
-    def to_record(self) -> dict:
-        return {
-            "host_id": self.host_id,
-            "label": self.label,
-            "epoch": self.epoch,
-            "adopted_at": self.adopted_at,
-            "expires_at": self.expires_at,
-        }
-
-    @classmethod
-    def from_record(cls, record: dict) -> HostLease:
-        """Build from a decoded blob. Raises ``ValueError`` on a record missing the shape —
-        loud, never a best-effort partial read (hosts.py's convention)."""
-        missing = [
-            k for k in ("host_id", "label", "epoch", "adopted_at", "expires_at") if k not in record
-        ]
-        if missing:
-            raise ValueError(f"host-lease record missing field(s): {', '.join(missing)}")
-        return cls(
-            host_id=str(record["host_id"]),
-            label=str(record["label"]),
-            epoch=int(record["epoch"]),
-            adopted_at=str(record["adopted_at"]),
-            expires_at=str(record["expires_at"]),
-        )
-
-
 def ttl_for_role(role: str, base_ttl: float = DEFAULT_TTL) -> float:
     """The lease TTL a host in `role` should take, from the configured `base_ttl`
     (``host.lease.ttl``) scaled by :data:`ROLE_TTL_SCALE`.
@@ -218,8 +132,63 @@ def ttl_for_role(role: str, base_ttl: float = DEFAULT_TTL) -> float:
     return base_ttl * ROLE_TTL_SCALE.get(role, 1.0)
 
 
+def _frame_plane(cwd):
+    from . import host, hosts
+    from .hq_control_plane import control_plane
+
+    selected_sql = host.sql_hq_selected()
+    host_config_present, enrolled = host.frame_binding()
+    try:
+        identity = host.host_id()
+    except FileNotFoundError:
+        if selected_sql:
+            raise HostLeaseRejected(
+                "AUTHORITY_NOT_READY: SQL frame has no local host identity"
+            ) from None
+        if enrolled:
+            raise HostLeaseRejected("enrolled frame has no local host identity") from None
+        return None
+    if not host_config_present:
+        if selected_sql:
+            raise HostLeaseRejected("AUTHORITY_NOT_READY: SQL frame binding absent")
+        # Historical raw recovery has no selector yet, but a declared Git frame
+        # still requires the protected plane rather than a legacy lease.
+        try:
+            raw = hosts.load(cwd, identity)
+        except FileNotFoundError:
+            return None
+        return control_plane(cwd) if raw.frame_id else None
+
+    plane = control_plane(cwd)
+    if selected_sql and getattr(plane, "config_backend", None) != "sql":
+        raise HostLeaseRejected("AUTHORITY_NOT_READY: SQL control-plane binding unavailable")
+    try:
+        manifest = plane.load_host_manifest(identity)
+    except FileNotFoundError as exc:
+        if getattr(plane, "config_backend", None) == "sql" and not plane.verified_manifest_absence(
+            exc
+        ):
+            raise
+        if getattr(plane, "config_backend", None) == "sql":
+            raise HostLeaseRejected(
+                "AUTHORITY_NOT_READY: SQL host has no committed host manifest"
+            ) from None
+        if enrolled:
+            raise HostLeaseRejected("enrolled frame has no committed host manifest") from None
+        return None
+    if enrolled and not manifest.frame_id:
+        raise HostLeaseRejected("enrolled frame has no committed frame binding")
+    if manifest.frame_id:
+        return plane
+    if getattr(plane, "config_backend", None) == "sql":
+        raise HostLeaseRejected("AUTHORITY_NOT_READY: SQL host has no bound runtime frame")
+    return None
+
+
 def _read(remote: str, prefix: str, *, cwd: Path) -> tuple[str, HostLease | None]:
     """``(sha, lease)`` currently at HQ for `prefix`; ``("", None)`` when never adopted."""
+    if plane := _frame_plane(cwd):
+        return plane.read_hive_lease_record(prefix)
     sha, record = gitref.read_remote(remote, lease_ref(prefix), cwd=cwd)
     if record is None:
         return "", None
@@ -236,8 +205,28 @@ class LeaseOutcome:
     previous: HostLease | None
 
 
-def _cas_or_reject(remote, prefix, lease, *, expected, cwd, previous, what) -> LeaseOutcome:
+def _cas_or_reject(
+    remote, prefix, lease, *, expected, cwd, previous, what, force=False, at=None
+) -> LeaseOutcome:
     """CAS `lease` into HQ or raise :class:`HostLeaseRejected` carrying git's own message."""
+    if what in {"adopt", "renew"}:
+        from . import frame_eligibility
+
+        frame_eligibility.require_eligible(lease.host_id, {"prefix": prefix}, hq_dir=cwd, at=at)
+        if (
+            what == "adopt"
+            and previous is not None
+            and previous.host_id != lease.host_id
+            and not previous.is_expired(at)
+            and not force
+            and not frame_eligibility.evictable(previous.host_id, hq_dir=cwd, at=at)
+        ):
+            raise HostLeaseRejected("incumbent no longer evictable before host-lease CAS")
+    if plane := _frame_plane(cwd):
+        sha = plane.publish_hive_lease(
+            prefix, lease, expected=expected, operation=what, force=force
+        )
+        return LeaseOutcome(lease=lease, sha=sha, previous=previous)
     result = gitref.cas(remote, lease_ref(prefix), lease.to_record(), expected=expected, cwd=cwd)
     if not result.ok:
         raise HostLeaseRejected(
@@ -280,9 +269,12 @@ def adopt(
     Raises :class:`beadhive.gitref.RemoteUnreachable` when HQ cannot be read — adopting needs
     the remote by construction (Limitation 1), and guessing offline is the one thing this
     design must never do."""
+    from . import frame_eligibility
+
+    frame_eligibility.require_eligible(host_id, {"prefix": prefix}, hq_dir=cwd, at=at)
     sha, current = _read(remote, prefix, cwd=cwd)
     if current is not None and not current.is_expired(at) and current.host_id != host_id:
-        if not force:
+        if not force and not frame_eligibility.evictable(current.host_id, hq_dir=cwd, at=at):
             raise HostLeaseRejected(
                 f"{prefix} is held by another host — host lease: {current.describe()}.\n"
                 f"  Wait for it to expire, have that host release it, or force a takeover "
@@ -317,6 +309,8 @@ def adopt(
         cwd=cwd,
         previous=current,
         what="adopt",
+        force=force,
+        at=at,
     )
 
 
@@ -340,6 +334,11 @@ def renew(
     the ref has moved and the renewal is rejected. The expiry is what invites a takeover; the
     CAS is what prevents one from being overwritten. A late renewal is logged so a chronically
     lapsing renewer is visible."""
+    from . import frame_eligibility
+
+    frame_decision = frame_eligibility.require_eligible(
+        host_id, {"prefix": prefix}, hq_dir=cwd, at=at
+    )
     sha, current = _read(remote, prefix, cwd=cwd)
     if current is None:
         raise HostLeaseRejected(
@@ -349,6 +348,8 @@ def renew(
         raise HostLeaseRejected(
             f"cannot renew {prefix}: this host does not hold it — host lease: {current.describe()}"
         )
+    if frame_decision is not None and current.is_expired(at):
+        raise HostLeaseRejected("frame ineligible: current_hive_lease_holder")
     if current.is_expired(at):
         log.get_logger(__name__).warning(
             "host_lease_renew_after_expiry",
@@ -459,7 +460,16 @@ def read_cached(prefix: str, *, cwd: Path) -> HostLease | None:
 
 
 def cache(prefix: str, outcome: LeaseOutcome, *, cwd: Path) -> None:
-    """Mirror a won CAS into the LOCAL ref so :func:`read_cached` can answer offline."""
+    """Mirror a Git CAS locally; SQL's protected lease is read through its authority.
+
+    A selected SQL host may have no HQ Git checkout at all. Writing a local Git
+    ref after its protected lease CAS would turn a successful adopt/release into
+    an apparent failure and leave the caller unable to resume safely.
+    """
+    from . import host
+
+    if host.sql_hq_selected():
+        return
     gitref.set_local(lease_ref(prefix), outcome.sha, cwd=cwd)
 
 
@@ -549,7 +559,12 @@ def renew_if_due(
     (``guard_primary`` is the only place that decision is made). This function only ever tries
     to push the expiry further out; failing to do so just means the next call tries again."""
     clock = at if at is not None else time.time()
-    cached = read_cached(prefix, cwd=cwd)
+    plane = _frame_plane(cwd)
+    cached = (
+        plane.read_hive_lease(prefix, holder_identity=host_id)
+        if plane
+        else read_cached(prefix, cwd=cwd)
+    )
     if cached is None or cached.host_id != host_id:
         return None  # nothing of ours locally to renew
     due_at = _parse_stamp(cached.expires_at) - renew_interval
@@ -557,7 +572,9 @@ def renew_if_due(
         return None  # not due yet — no HQ round trip within the interval
 
     try:
-        outcome = renew(remote, prefix, host_id=host_id, cwd=cwd, ttl=ttl, at=clock)
+        outcome = renew(
+            remote, prefix, host_id=host_id, cwd=cwd, ttl=ttl, at=at if plane else clock
+        )
     except (HostLeaseError, gitref.RemoteUnreachable) as exc:
         log.get_logger(__name__).warning(
             "host_lease_renew_if_due_failed",

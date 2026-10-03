@@ -92,3 +92,8 @@ def ready_rows(cwd: Any, args: Any = ()) -> list | None:
     """`bd ready <args> --json`'s rows, or None on failure — the pick/claim loop's and the local
     loop poll's CLI-compatibility read."""
     return package().reads.ready_rows(transport(), cwd, args)
+
+
+def status_snapshot(cwd: Any, *, timeout: float = 10.0) -> Any:
+    """Bounded, read-only HQ Beads status through the named package route."""
+    return package().reads.status_snapshot(transport(), cwd, timeout=timeout)

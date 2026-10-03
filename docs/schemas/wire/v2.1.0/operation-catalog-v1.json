@@ -6514,6 +6514,14 @@
           "schema": {
             "type": "boolean"
           }
+        },
+        {
+          "name": "push",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
         }
       ],
       "privilege": "ordinary-mutation",
@@ -6548,7 +6556,8 @@
             "answers",
             "auto",
             "dry_run",
-            "force"
+            "force",
+            "push"
           ],
           "path": "host provision",
           "progress": {

@@ -1,47 +1,9 @@
-"""The unattended-dispatch **supervision backend seam** (bh-e7r9q.4).
+"""Per-hive unattended dispatch supervision.
 
-"Keep this loop running" is a backend choice, not a hard-coded systemd assumption. Three
-planes, three supervisors, and they do not share an answer: `systemd --user` on Linux,
-`launchd` on macOS, and a container whose PID 1 is already an interactive bash with
-`init: true`. This fleet already spans two of them — beadhive-factory (executor, Linux) and
-xeno-mac.lan (transient, macOS) — so baking systemd in would fork the product the first time
-someone runs a dispatcher on the Mac.
-
-Follows :mod:`beadhive.engine` (`Engine` Protocol + `get_engine`) and :mod:`beadhive.dolt`
-(container-backend dispatch) verbatim in shape AND in restraint: a config key selects ONE
-thin implementation, not a plugin framework. `SystemdUserBackend` is the only real one; a
-second implementation (`RecordingBackend`) exists purely to prove the seam is an abstraction
-and not an assertion — see `tests/test_dispatch_supervisor.py`.
-
-ONE INSTANCE PER HIVE, not one process for all hives. The host lease is per-hive
-(`refs/bh/lease/<prefix>`), so a single process would renew N refs and reason about partial
-ownership; per-hive instances make "what am I driving" answerable and keep a wedged store or
-poisoned worktree in one hive from stopping every other one. Enforced here through systemd
-**template units** (`bh-dispatch@.service`, instantiated as `bh-dispatch@<hive-slug>.service`)
-so there is never a hand-edited unit file — the template is written/refreshed once and every
-hive gets an *instance* of it.
-
-THE LEASE-ABSENT DEGRADATION PATH lives one layer up, in :mod:`beadhive.dispatch_hive_run` (the
-process this backend supervises): an enabled instance for a hive this host does NOT hold the
-lease on IDLES READ-ONLY and says so in the aggregate log — that is the multi-host model's
-specified degradation, not an error. This module only starts/stops/persists the OS-level
-process; it has no opinion about what that process does once running.
-
-WHAT THIS SEAM DOES NOT DO: it is not a general-purpose service manager and it is not the
-director loop. It answers exactly one question — "is bh-dispatch-run for hive X installed /
-running / persisted across reboot" — through `enable` / `disable` / `status`, idempotently.
-
-macOS (`launchd`) and container backends are NOT implemented. Each would have to supply:
-
-  * macOS/launchd  — a per-hive `LaunchAgent` plist under `~/Library/LaunchAgents/`, templated
-    the same way the systemd unit is, `launchctl bootstrap`/`bootout` for install/remove, and
-    `launchctl print` (or `kickstart`) for status. `KeepAlive` covers restart-on-crash;
-    persistence across reboot is a LaunchAgent's default (no separate "enable" step exists).
-  * container    — PID 1 in an `init: true` container already reaps zombies and has no unit
-    concept at all; there is nothing for `enable`/`disable` to install. The real seam there is
-    the CONTAINER'S OWN restart policy (`restart: always` / `RestartPolicy`) plus this backend
-    reporting `running` from a liveness probe (e.g. a marker file the driver touches per pass)
-    rather than from a supervisor query, since there IS no supervisor to query.
+Systemd user units are the default. ``process`` runs the picker in the foreground
+under container init, Kubernetes, frame-agent, or launchd. The legacy ``container``
+and ``launchd`` backend names select process mode; they do not install services.
+External supervisors own restart policy and send SIGTERM for bounded draining.
 """
 
 from __future__ import annotations
@@ -67,9 +29,15 @@ SYSTEMD_TEMPLATE_NAME = "bh-dispatch@.service"
 BACKEND_SYSTEMD = "systemd"
 BACKEND_LAUNCHD = "launchd"
 BACKEND_CONTAINER = "container"
+BACKEND_PROCESS = "process"
 #: Closed set — mirrors `dolt.backend`'s `colima | docker | podman | none` shape. Only
-#: `systemd` is implemented; the others are documented, not built (see module docstring).
-KNOWN_BACKENDS: tuple[str, ...] = (BACKEND_SYSTEMD, BACKEND_LAUNCHD, BACKEND_CONTAINER)
+#: Systemd owns service installation; process mode uses an external supervisor.
+KNOWN_BACKENDS: tuple[str, ...] = (
+    BACKEND_SYSTEMD,
+    BACKEND_LAUNCHD,
+    BACKEND_CONTAINER,
+    BACKEND_PROCESS,
+)
 
 
 @dataclass(frozen=True)
@@ -324,20 +292,43 @@ class RecordingBackend:
 
 
 def get_supervisor_backend(cfg: dict | None = None) -> SupervisorBackend:
-    """The configured backend (`host.dispatch.backend`, default `systemd`) — the ONE place a
-    config key becomes an implementation, mirroring `engine.get_engine` / `dolt`'s
-    `compose.backend()`. `launchd` and `container` are known names (so config validation
-    accepts them) but not yet implemented; selecting either raises with a message naming what
-    the implementation would need to supply (see the module docstring)."""
+    """Select systemd or the externally supervised foreground process runtime."""
     if cfg is None:
         cfg = config.load()
     name = config.dispatch_supervisor_backend(cfg)
     if name == BACKEND_SYSTEMD:
         return SystemdUserBackend()
-    if name in (BACKEND_LAUNCHD, BACKEND_CONTAINER):
-        raise NotImplementedError(
-            f"host.dispatch.backend={name!r} is a known backend name but not yet implemented "
-            f"— see the module docstring on beadhive.dispatch_supervisor for what it would "
-            f"need to supply. Only {BACKEND_SYSTEMD!r} ships today."
-        )
+    if name in (BACKEND_PROCESS, BACKEND_CONTAINER, BACKEND_LAUNCHD):
+        return ProcessBackend()
     raise ValueError(f"unknown host.dispatch.backend {name!r} — expected one of {KNOWN_BACKENDS}")
+
+
+class ProcessBackend:
+    """Foreground dispatch owned by container init, Kubernetes, or launchd.
+
+    No background process is created and no OS service is installed. The external
+    supervisor invokes ``bh host dispatch run --hive <hive>`` and owns restart policy.
+    ``container`` and ``launchd`` select this same runtime for compatibility.
+    """
+
+    name = BACKEND_PROCESS
+
+    def enable(
+        self, hive_slug: str, *, exec_argv: list[str], env: dict[str, str]
+    ) -> SupervisorState:
+        raise ValueError(
+            "host.dispatch.backend=process requires an external supervisor: run "
+            "`bh host dispatch run --hive <hive>` in the foreground; configure restart "
+            "policy in container init, Kubernetes, or launchd"
+        )
+
+    def disable(self, hive_slug: str) -> SupervisorState:
+        raise ValueError(
+            "host.dispatch.backend=process is externally supervised; send SIGTERM to "
+            "the foreground dispatch process to drain it"
+        )
+
+    def status(self, hive_slug: str) -> SupervisorState:
+        return SupervisorState(
+            detail="externally supervised; query container init, Kubernetes, or launchd"
+        )

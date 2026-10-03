@@ -40,6 +40,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    StrictBool,
     TypeAdapter,
     ValidationError,
     field_serializer,
@@ -66,9 +67,9 @@ SUBSET_PLACEHOLDER = "{tests}"
 # that needs a transform) — see the module docstring.
 SCHEMA_VERSION = 1
 
-# ``beads`` predates the typed model and remains a supported compatibility section until the
-# backend abstraction owns a typed contract. Keep such names explicit beside the canonical model
-# rather than hiding them in the legacy facade.
+# ``beads`` predates the typed model. The canonical compatibility model below
+# validates its live engine selector while preserving opaque historical sibling
+# keys; the inventory name remains explicit for compatibility callers.
 CONFIG_SECTION_COMPATIBILITY_ALIASES = frozenset({"beads"})
 
 # Canonical worktree-safety taxonomy.  The scanner re-exports these names for compatibility,
@@ -962,13 +963,164 @@ class WorkConfig(_Section):
 # ---- hq (Factory HQ remote, bh-e0y8.1) ----------------------------------------
 
 
+class HqFnoxRef(_Section):
+    """Host-local fnox lookup; the value itself is never configuration."""
+
+    config_path: str = ""
+    profile: str = ""
+    key: str = ""
+
+    @model_validator(mode="after")
+    def valid_ref(self):
+        if self.config_path and not Path(self.config_path).is_absolute():
+            raise ValueError("fnox config path must be absolute")
+        if self.profile and not re.fullmatch(r"[A-Za-z0-9_-]+", self.profile):
+            raise ValueError("invalid fnox profile")
+        if self.key and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", self.key):
+            raise ValueError("invalid fnox key")
+        return self
+
+
+class HqSqlConnection(_Section):
+    """One explicitly scoped SQL principal and verified transport."""
+
+    host: str = ""
+    port: int = Field(3308, ge=1, le=65535, strict=True)
+    database: str = ""
+    user: str = ""
+    server_name: str = ""
+    ca_file: str = ""
+    credential: HqFnoxRef = Field(default_factory=HqFnoxRef)
+    connect_timeout: int = Field(5, ge=1, le=30, strict=True)
+    read_timeout: int = Field(5, ge=1, le=30, strict=True)
+    write_timeout: int = Field(5, ge=1, le=30, strict=True)
+    operation_timeout: int = Field(15, ge=1, le=60, strict=True)
+
+    @model_validator(mode="after")
+    def valid_binding(self):
+        if self.host and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{0,252}", self.host):
+            raise ValueError("invalid SQL endpoint hostname")
+        if self.database and not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", self.database):
+            raise ValueError("invalid SQL database identifier")
+        if self.user and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]{0,31}", self.user):
+            raise ValueError("invalid SQL principal name")
+        if self.ca_file and not Path(self.ca_file).is_absolute():
+            raise ValueError("SQL CA path must be absolute")
+        if self.server_name and self.server_name != self.host:
+            raise ValueError("SQL server name must match endpoint hostname")
+        return self
+
+
+class HqSqlConfig(_Section):
+    """Dedicated config service and optional, separately credentialed runtime."""
+
+    enabled: StrictBool = False
+    reader: HqSqlConnection = Field(default_factory=HqSqlConnection)
+    publisher: HqSqlConnection | None = None
+    runtime: HqSqlConnection | None = None
+    observer: HqSqlConnection | None = None
+    authority_writer: HqSqlConnection | None = None
+    runtime_backend_identity: str = ""
+    runtime_generation: str = ""
+    runtime_initial_revision: str = ""
+    runtime_floor_path: str = ""
+    runtime_operator_public_key: str = ""
+    cache_ttl: int = Field(30, ge=1, le=300, strict=True)
+    floor_path: str = ""
+    backend_identity: str = ""
+    generation: str = ""
+    minimum_sequence: int = Field(1, ge=1, strict=True)
+    initial_revision: str = ""
+
+    @model_validator(mode="after")
+    def valid_bootstrap(self):
+        if self.runtime is not None and (
+            self.observer is not None or self.authority_writer is not None
+        ):
+            raise ValueError("frame runtime binding cannot carry observer/operator credentials")
+        if self.floor_path and not Path(self.floor_path).is_absolute():
+            raise ValueError("SQL floor path must be absolute")
+        if self.enabled and not all(
+            (
+                self.reader.host,
+                self.reader.database,
+                self.reader.user,
+                self.reader.ca_file,
+                self.reader.server_name,
+                self.reader.credential.config_path,
+                self.reader.credential.profile,
+                self.reader.credential.key,
+                self.floor_path,
+                self.backend_identity,
+                self.generation,
+                self.initial_revision,
+            )
+        ):
+            raise ValueError("enabled SQL bootstrap requires explicit trust and reader binding")
+        if self.initial_revision and not re.fullmatch(r"[0-9a-v]{32}", self.initial_revision):
+            raise ValueError("invalid initial Dolt revision")
+        if self.runtime is not None and not all(
+            (
+                self.runtime.host,
+                self.runtime.database,
+                self.runtime.user,
+                self.runtime.ca_file,
+                self.runtime.server_name,
+                self.runtime.credential.config_path,
+                self.runtime.credential.profile,
+                self.runtime.credential.key,
+                self.runtime_backend_identity,
+                self.runtime_generation,
+                self.runtime_initial_revision,
+                self.runtime_floor_path,
+                self.runtime_operator_public_key,
+            )
+        ):
+            raise ValueError("runtime binding requires separate explicit authority trust")
+        if self.runtime_initial_revision and not re.fullmatch(
+            r"[0-9a-v]{32}", self.runtime_initial_revision
+        ):
+            raise ValueError("invalid initial runtime Dolt revision")
+        if self.runtime_floor_path and not Path(self.runtime_floor_path).is_absolute():
+            raise ValueError("runtime floor path must be absolute")
+        if self.runtime_operator_public_key and not self.runtime_operator_public_key.startswith(
+            "ssh-ed25519 "
+        ):
+            raise ValueError("runtime operator key must be an Ed25519 public key")
+        return self
+
+
 class HqConfig(_Section):
     """Factory HQ remote (``hq``) — where the factory's central HQ store publishes to."""
+
+    mode: Literal["git", "dolt-server"] = "git"
+    beadyard_id: str | None = Field(
+        None,
+        description=(
+            "HOST-local pin copied from canonical HQ beadyard.json at explicit frame bootstrap; "
+            "never generated by config reads or stored as a second SQL column."
+        ),
+    )
+
+    @field_validator("beadyard_id")
+    @classmethod
+    def _canonical_beadyard_id(cls, value):
+        if value is not None:
+            from .domain.beadyard_identity import parse_id
+
+            return parse_id(value)
+        return value
+
+    authority_anchor: str = ""
+    admission_policy: Literal["manual"] = "manual"
+    sql: HqSqlConfig = Field(default_factory=HqSqlConfig)
 
     remote: str = Field(
         "",
         description=(
-            "HQ repo remote, `<owner>/beadhive-hq` form. Empty (default) derives `<owner>` "
+            "HQ repo remote: `<owner>/beadhive-hq`, an absolute local path, "
+            "or local `file://` URL. "
+            "Empty (default) derives `<owner>` "
             "from the logged-in `gh` identity at read time (`config.hq_remote`) — host "
             "identity, so the answer does not vary by which hive you invoke from; an "
             "explicit value here always overrides the derivation. `bh hq init`/`clone` "
@@ -997,6 +1149,8 @@ class HostLeaseConfig(_Section):
     (:func:`beadhive.host_lease.ttl_for_role`) — never by per-host overrides of these keys.
     """
 
+    evict_after_s: float = Field(900.0, gt=0, allow_inf_nan=False)
+
     renew_interval: float = Field(
         300.0,
         description=(
@@ -1017,22 +1171,23 @@ class HostLeaseConfig(_Section):
 
 
 class HostDispatchConfig(_Section):
-    """Unattended-dispatch supervision (``host.dispatch``, bh-e7r9q.4/.5) — the backend that
-    keeps ``bh host dispatch run --hive <hive>`` alive across restarts/reboots, and the dumb
-    picker it drives.
+    """Unattended-dispatch supervision (``host.dispatch``, bh-e7r9q.4/.5) — the backend
+    selection for ``bh host dispatch run --hive <hive>`` and the dumb picker it drives.
 
     Per-HOST, not fleet-scoped like ``host.lease``: which supervisor exists (systemd vs
     launchd vs a container's own restart policy) is a fact about THIS machine, not a shared
     fleet judgement."""
 
+    enabled: bool = Field(True, description="Allow frame intake; legacy hosts retain lease policy.")
+
     backend: str = Field(
         "systemd",
         description=(
-            "Which supervisor backend installs/starts/persists the per-hive dispatch loop: "
-            "'systemd' (only one implemented — systemd --user template units, one instance "
-            "per hive) | 'launchd' | 'container' (both known names, NOT implemented — see "
-            "beadhive.dispatch_supervisor's module docstring for what each would need to "
-            "supply)."
+            "Dispatch supervision: 'systemd' installs and persists per-hive systemd --user "
+            "units (the default). 'process' runs bh host dispatch run in the foreground "
+            "under an external supervisor, which owns restart and status. 'container' and "
+            "'launchd' select that same process runtime; they do not install services. "
+            "Stop the foreground process with SIGTERM for bounded draining."
         ),
     )
     max_epics_in_flight: int = Field(
@@ -1063,6 +1218,15 @@ class HostDispatchConfig(_Section):
     )
 
 
+class FrameBridgeIdentityConfig(_Section):
+    """Enrollment-owned identity of the private Factory bridge."""
+
+    host_id: str | None = None
+    instance_id: str | None = None
+    factory_id: str | None = None
+    primary_hive_id: str | None = None
+
+
 class HostConfig(_Section):
     """Multi-host model policy (``host``) — how this factory arbitrates who may write a hive.
 
@@ -1070,6 +1234,11 @@ class HostConfig(_Section):
     :mod:`beadhive.hosts`): that file describes ONE machine; this section is the fleet-wide
     policy every machine applies."""
 
+    frame_id: str = Field(
+        "",
+        description="Enrollment-owned Fleet identity; config storage does not enroll a host.",
+    )
+    frame_bridge: FrameBridgeIdentityConfig = Field(default_factory=FrameBridgeIdentityConfig)
     lease: HostLeaseConfig = Field(default_factory=HostLeaseConfig)
     dispatch: HostDispatchConfig = Field(default_factory=HostDispatchConfig)
     daemon: HostDaemonConfig = Field(
@@ -1518,6 +1687,46 @@ class HerdrConfig(_Section):
 # ---- managed_repos -------------------------------------------------------------
 
 
+class FrameHivePolicy(_Section):
+    """Canonical fleet-owned frame admission policy for one managed hive."""
+
+    config_revision: str = Field(min_length=1, strict=True)
+    requires: dict[str, str | int | list[str]] = Field(default_factory=dict)
+    evict_after_s: float = Field(gt=0, allow_inf_nan=False)
+
+    @field_validator("requires", mode="before")
+    @classmethod
+    def valid_raw_requirements(cls, value):
+        if not isinstance(value, dict):
+            raise ValueError("frame capability requirements must be a mapping")
+        for key, item in value.items():
+            if key == "max_sessions":
+                valid = type(item) is int and item > 0
+            elif key in {"isolation", "trust_zone", "arch", "harness"}:
+                valid = type(item) is str and bool(item)
+            elif key == "harnesses":
+                valid = type(item) is list and all(type(part) is str and part for part in item)
+            else:
+                valid = False
+            if not valid:
+                raise ValueError("invalid frame capability requirement")
+        return value
+
+    @field_validator("evict_after_s", mode="before")
+    @classmethod
+    def valid_raw_eviction(cls, value):
+        if type(value) not in (int, float):
+            raise ValueError("frame eviction duration must be a number")
+        return value
+
+    @field_validator("config_revision")
+    @classmethod
+    def valid_revision(cls, value):
+        if value != value.strip():
+            raise ValueError("frame policy revision must be trimmed")
+        return value
+
+
 class ManagedRepoEntry(_Section):
     """One entry in ``managed_repos`` — a hive `bh hive init` maintains, with optional
     per-hive overrides of the sections above."""
@@ -1526,6 +1735,9 @@ class ManagedRepoEntry(_Section):
     org: str = Field("", description="Org/account the repo belongs to.")
     repo: str = Field("", description="Repo name.")
     prefix: str = Field("", description="Short stable bead-id prefix for this hive.")
+    frame_policy: FrameHivePolicy | None = Field(
+        None, description="Explicit fleet-owned frame requirements for this hive."
+    )
     kind: Literal["org-native", "personal", "prototype", "fork", "external", "hq"] | None = Field(
         None,
         description="Hive kind; forks also carry `upstream`. `hq` marks the Factory HQ "
@@ -1583,6 +1795,22 @@ class ManagedRepoEntry(_Section):
 # ---- top level ------------------------------------------------------------------
 
 
+class LegacyBeadsConfig(BaseModel):
+    """Legacy top-level Beads section with one live selector and opaque extensions."""
+
+    model_config = ConfigDict(extra="allow")
+
+    engine: Literal["bd"] | None = Field(
+        None,
+        description="Installed Beads engine; absent, null, or empty selects bd.",
+    )
+
+    @field_validator("engine", mode="before")
+    @classmethod
+    def _empty_engine_is_default(cls, value):
+        return None if value == "" else value
+
+
 class BeadhiveConfig(BaseSettings):
     """The bh config schema: ~/.beadhive/config.yaml, validated + discoverable.
 
@@ -1600,6 +1828,9 @@ class BeadhiveConfig(BaseSettings):
 
     schema_version: int = Field(
         SCHEMA_VERSION, description="Config schema version this file was written for."
+    )
+    beads: LegacyBeadsConfig | None = Field(
+        None, description="Legacy Beads settings with a validated engine selector."
     )
     delimiter: str = Field(":", description="Label delimiter.")
     providers: list[str] = Field(

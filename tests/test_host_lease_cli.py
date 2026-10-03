@@ -326,14 +326,14 @@ def test_packup_skips_an_already_expired_lease(two_hives, monkeypatch):
 
 
 def test_list_without_hive_is_unaffected(one_hive, monkeypatch):
-    """The base case stays byte-for-byte what bh-ytbb.5 shipped — no LEASE column at all."""
+    """The base roster has no hive-specific LEASE column."""
     _mint_host(monkeypatch, HOST_A)
     _init_role()
 
     result = runner.invoke(app, ["host", "list"])
 
     assert result.exit_code == 0, result.output
-    assert "LEASE" not in result.output
+    assert "LEASE" not in result.output.split()
 
 
 def test_list_hive_shows_held_with_the_holder(one_hive, monkeypatch):

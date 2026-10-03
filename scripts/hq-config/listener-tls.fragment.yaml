@@ -1,0 +1,14 @@
+# REVIEW FRAGMENT ONLY: merge with operator-owned existing server configuration.
+# Never replace the complete shared-server config or change existing database paths.
+listener:
+  tls_key: /run/secrets/dolt-hq-server-key.pem
+  tls_cert: /run/secrets/dolt-hq-server-chain.pem
+# Preserve the existing require_secure_transport setting. Do NOT newly enable
+# global enforcement in the current config-only rollout: existing clients may
+# still use plaintext. HQ config client itself requires TLS before authentication.
+# Certificate SAN must include dolt.apps.xenophon.dev. Use the actual trusted CA.
+# Adding certificate/key availability still requires a coordinated server restart.
+# Before any future global enforcement, inventory current clients and qualify
+# their TLS readiness; coordinate a maintenance/restart plan separately.
+# A separate TLS-capable listener/service may be safer if existing clients cannot
+# migrate. Do not silently break or weaken other shared-server connections.

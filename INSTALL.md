@@ -152,10 +152,35 @@ thing out cleanly if you're only evaluating.
 **b. Install the toolchain and `bh`:**
 
 ```sh
-nix profile add github:beadhive/beadhive/latest#default       # bd, dolt, gh, git-workspace, git, uv, just
-uv tool install --force 'beadhive[otel]'                      # bh itself (uv came from the line above)
-bh --version                                                  # must print the released version
+# Until the first published release includes Fleet membership APIs, pin the
+# approved source commit and managed-check closure from its handoff:
+nix profile add github:beadhive/beadhive/<fleet-commit>#default
+uv tool install --force 'beadhive[otel] @ git+https://github.com/beadhive/beadhive.git@<fleet-commit>'
+bh --version
 ```
+
+Do not substitute the floating `latest` channel or infer API availability from
+version `0.20.2`. Use the exact source revision and matching validation closure
+recorded in the approved Fleet handoff. After a release passes the channel
+build/version checks, use that published release's documented install pins.
+
+On NixOS, install the `bh` package from the same exact revision when you want
+the CLI, host daemon, and Frame Bridge from Nix rather than a UV-managed CLI:
+
+```sh
+nix profile add github:beadhive/beadhive/<fleet-commit>#default
+nix profile add github:beadhive/beadhive/<fleet-commit>#bh
+bh --version
+```
+
+`packages.bh` uses the committed `uv.lock`, includes the `otel` extra, and
+provides `bh`, `bh-host-daemon`, and `beadhive-frame-bridge`. It runs on NixOS
+without `programs.nix-ld`. Keep the UV command above for non-Nix installations
+and existing UV-managed setups. The `latest` channel and PyPI wheel install the
+published release; Fleet membership APIs require the exact approved source
+revision and matching managed-check closure until their first channel-qualified
+release is published. The later runtime catalog bead `bh-h441d.1`
+consumes this one package; it owns the broader catalog and deployment work.
 
 `--force` is load-bearing if you **already have `bh`**. Without it `uv tool
 install` prints "already installed", exits 0, and leaves the old `bh` in place —
@@ -195,7 +220,7 @@ step b, almost all of it download rather than compilation.
   use it.
 
 **Optional add-ons for plugins** (Orca and friends) are **plain nixpkgs installs**, not flake
-outputs — `flake.nix` exposes only `beads`, `default`, `image` and `metadata`, and there is
+outputs — `flake.nix` exposes `bh` and the toolchain outputs `beads`, `default`, `image` and `metadata`, and there is
 deliberately no per-plugin output. Add what a plugin needs to the same profile:
 
 ```sh
@@ -358,7 +383,7 @@ Run these in order.
    **Optional here, not on a fleet host.** This step is the whole reason a role
    skill exists for a seat to read at all — for a single machine you're
    configuring by hand it's a real convenience you can decline, but
-   [`bh host provision`](ONBOARDING.md#adding-a-second-machine--the-daily-driver-stays-hq)
+   [`bh host provision`](docs/ONBOARDING.md#adding-a-second-machine--the-daily-driver-stays-hq)
    (the verb that onboards an `executor`/`transient` fleet host) treats it as
    part of what "provisioned" means and performs it itself whenever a `claude`
    CLI is on that host's PATH — see its own module docs (`host_provision.py`)

@@ -26,6 +26,19 @@ def test_is_seeded_false_when_only_lockfile_present(tmp_path):
     assert gitworkspace.is_seeded(tmp_path) is False
 
 
+def test_generated_sql_projection_does_not_block_later_git_seed(tmp_path, monkeypatch):
+    from beadhive import config
+
+    monkeypatch.setattr(config, "fleet_sql_selected", lambda: False)
+    projected = tmp_path / "workspace-bh-000-old.toml"
+    projected.write_text("# derived central document\n")
+
+    assert gitworkspace.is_seeded(tmp_path) is False
+    assert gitworkspace.ensure_seeded(tmp_path) is True
+    assert (tmp_path / "workspace.toml").is_file()
+    assert projected.read_text() == "# derived central document\n"
+
+
 def test_is_seeded_true_with_workspace_toml(tmp_path):
     (tmp_path / "workspace.toml").write_text("")
     assert gitworkspace.is_seeded(tmp_path) is True

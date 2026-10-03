@@ -9,17 +9,17 @@
   },
   "fan_in": {
     "production_config_importers_before": 95,
-    "production_config_importers_after": 78,
+    "production_config_importers_after": 87,
     "production_config_schema_importers_before": 8,
-    "production_config_schema_importers_after": 3,
+    "production_config_schema_importers_after": 5,
     "remaining_dependency_owner": "bh-18hud.5 compatibility migration ledger",
     "remaining_dependency_rationale": "Every remaining path is enumerated in the dependency ledger with an owner and a separately bounded port plus reverse-dependent closure as its removal gate."
   },
   "static_test_blast_radius": {
     "historical_documented_files": 129,
     "exact_ast_files_at_baseline": 135,
-    "exact_ast_files_after": 144,
-    "delta_explanation": "The historical 129 used an older static graph snapshot. Re-running the checked AST definition at the exact implementation base finds 135 after repository growth; the config module candidate and later workspace, precious-worktree, and host-daemon compatibility suites account for the current exact AST inventory. This static count does not claim a smaller dynamic closure.",
+    "exact_ast_files_after": 158,
+    "delta_explanation": "The historical 129 used an older static graph snapshot. Re-running the checked AST definition at the exact implementation base finds 135 after repository growth; the config module candidate and later workspace, precious-worktree, host-daemon, process dispatch, fleet consumer, HQ seed/bootstrap, and fleet membership end-to-end suites account for the current exact AST inventory. This static count does not claim a smaller dynamic closure. The bh-qa7vc Factory enrollment and daemon-origin coverage is included in the current exact AST inventory.",
     "owner": "configuration compatibility suite and bh-18hud.5 migration ledger"
   },
   "import_graph": {
@@ -96,5 +96,29 @@
     "warning_rationale": "Expected Pydantic serializer warning from the invalid plugin-fragment default rejection test."
   },
   "selective_ci_graduation_claimed": false,
-  "graduation_note": "No closure is promoted to authoritative CI selection solely from this extraction; just check remains the submission decision."
+  "graduation_note": "No closure is promoted to authoritative CI selection solely from this extraction; just check remains the submission decision.",
+  "previous_inventory_update": {
+    "bead": "bh-v0k3i",
+    "reason": "Synchronize measured SQL HOST contracts and shared membership test locations. The live config-module mean complexity rose from the previously reviewed 3.441 to 3.731 as four typed SQL contract classes were added; the historical baseline remains 3.654 and the live maximum remains 25. The old mean-below-baseline assertion no longer describes the current source. Generated dependency and metric files are checked against source; historical extraction and full-gate receipts are unchanged."
+  },
+  "intervening_inventory_update": {
+    "bead": "bh-bfb2y",
+    "reason": "Regenerate the current schema, live config dependency ledger, and structural metrics from the combined SQL HOST contracts and foreground dispatch description. The current patch inventory measures 291 sites, including fresh U7 admission and lease-renewal reads plus SQL-selected integration tests; the prior SQL and U3 measurements remain in signed history. Historical extraction evidence and the distinct pinned wire snapshot are unchanged."
+  },
+  "current_inventory_update": {
+    "bead": "bh-9ej9n",
+    "reason": "Regenerate the live dependency ledger after selected fleet config, roster, and workspace consumers and the process-dispatch test integration. The current AST inventory measures 84 production config importers, 5 schema importers, 152 test config importers, and 297 config patch sites. The prior SQL and process-dispatch observations remain above and in signed history; historical extraction, full-gate receipts, and the distinct pinned wire snapshot are unchanged."
+  },
+  "beadyard_identity_inventory_update": {
+    "bead": "bh-yoobc",
+    "reason": "The live generated ledger now measures 85 production config importers, 5 schema importers, 155 test config importers, and 302 patch sites after the HQ identity contract and its focused tests. The pure portable identity parser adds one config domain file and the current structural metrics are regenerated. Historical extraction counts, the pinned baseline, and the 7344-test full-gate receipt remain unchanged."
+  },
+  "seed_bootstrap_inventory_update": {
+    "beads": ["bh-4shu3", "bh-b5urp"],
+    "reason": "The live generated ledger measures 87 production config importers, 5 schema importers, 157 test config importers, and 328 patch sites after central seed, verified rollback, and SQL-selected host bootstrap. Current structural metrics are 84 classes, 122 functions, mean cyclomatic complexity 3.746, and maximum 25. Historical extraction, pinned baseline, and the earlier 7344-test full-gate receipt remain unchanged; the current group's managed validation has separate tree-bound receipts."
+  },
+  "fleet_e2e_inventory_update": {
+    "bead": "bh-nnhsc",
+    "reason": "The live generated ledger now measures 158 test config importers after the new fleet membership end-to-end integration fixture. Production importers, schema importers, patch sites, historical extraction counts, pinned baseline, and earlier full-gate receipts are unchanged."
+  }
 }
