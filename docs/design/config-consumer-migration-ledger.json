@@ -2850,7 +2850,7 @@
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       }
     ],
-    "test_config_importer_count": 157,
+    "test_config_importer_count": 158,
     "test_config_importers": [
       "tests/contracts/test_config_contract_compatibility.py",
       "tests/contracts/test_config_resolution_compatibility.py",
@@ -2906,6 +2906,7 @@
       "tests/test_engine.py",
       "tests/test_fleet_config_consumers.py",
       "tests/test_fleet_config_consumers_int.py",
+      "tests/test_fleet_membership_e2e_int.py",
       "tests/test_frame_bridge_daemon.py",
       "tests/test_frame_eligibility.py",
       "tests/test_git_identity.py",
