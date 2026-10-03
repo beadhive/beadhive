@@ -123,6 +123,57 @@ def test_active_sql_edit_rejects_switch_to_git_before_any_write(selected_sql_hos
     assert not config.fleet_path().exists()
 
 
+def test_public_host_save_cannot_disable_sql_without_latest_export(selected_sql_host):
+    store, host_path, bootstrap = selected_sql_host
+    original = host_path.read_bytes()
+    proposed = json.loads(json.dumps(bootstrap))
+    proposed["hq"]["mode"] = "git"
+    proposed["hq"]["sql"]["enabled"] = False
+    with pytest.raises(config.ConfigError, match="verified latest-export transition"):
+        config.save(proposed)
+    assert host_path.read_bytes() == original
+    assert store.revision == 1
+
+
+@pytest.mark.parametrize("foreign_edit", [False, True])
+def test_seed_selector_readback_failure_restores_only_own_host_write(
+    selected_sql_host, monkeypatch, foreign_edit
+):
+    from beadhive.beadyard_identity import new_document, parse_document
+
+    store, host_path, bootstrap = selected_sql_host
+    identity_raw = new_document()
+    owner = parse_document(identity_raw)
+    bootstrap["hq"]["mode"] = "git"
+    bootstrap["hq"]["beadyard_id"] = owner
+    bootstrap["hq"]["sql"]["enabled"] = False
+    host_path.write_text(json.dumps(bootstrap))
+    original = host_path.read_bytes()
+    store.documents = (
+        FleetConfigDocument("beadyard.json", identity_raw),
+        FleetConfigDocument("fleet.yaml", "hq:\n  mode: dolt-server\n"),
+    )
+    proposed = json.loads(json.dumps(bootstrap))
+    proposed["hq"]["sql"]["enabled"] = True
+    config_store.clear_load_cache()
+
+    def failed_readback():
+        if foreign_edit:
+            host_path.write_text("foreign: true\n")
+        raise ValueError("post-switch readback unavailable")
+
+    monkeypatch.setattr(config, "fleet_snapshot", failed_readback)
+    if foreign_edit:
+        with pytest.raises(config.ConfigError, match="manual recovery required"):
+            config.save_after_verified_hq_seed(proposed, revision="1", beadyard_id=owner)
+        assert host_path.read_text() == "foreign: true\n"
+    else:
+        with pytest.raises(config.ConfigError, match="original HOST restored"):
+            config.save_after_verified_hq_seed(proposed, revision="1", beadyard_id=owner)
+        assert host_path.read_bytes() == original
+    assert store.revision == 1
+
+
 @pytest.mark.parametrize("changed", ["reader", "generation"])
 def test_active_sql_edit_rejects_binding_change_before_publication(selected_sql_host, changed):
     store, host_path, bootstrap = selected_sql_host
@@ -347,10 +398,86 @@ def test_workspace_projection_serializes_revision_switch_and_external_override(
     external = root / "workspace-local.toml"
     external.write_text("[[provider]]\nprovider = 'gitea'\nname = 'local'\n")
     with gitworkspace.workspace_projection_lock(root):
-        assert gitworkspace.materialize_workspace_sources(config.load(), root) == [external]
-    assert [group.account for group in gitworkspace.groups(config.load())] == ["local"]
-    assert not any(root.glob("workspace-bh-*.toml"))
-    assert (root / "workspace-lock.toml").read_text() == "lockfile = 'untouched'\n"
+        with pytest.raises(ValueError, match="shadowed"):
+            gitworkspace.materialize_workspace_sources(config.load(), root)
+
+        def fake_child(cmd, **_kwargs):
+            stage = Path(cmd[3])
+            assert sorted(path.name for path in stage.glob("workspace*.toml")) == sorted(
+                path.name for path in stage.glob("workspace-bh-*.toml")
+            )
+            (stage / "workspace-lock.toml").write_text("repo = []\n")
+            return SimpleNamespace(returncode=0)
+
+        assert (
+            gitworkspace.lock_committed_workspace_sources(
+                config.load(), root, run_child=fake_child
+            ).returncode
+            == 0
+        )
+    assert [group.account for group in gitworkspace.groups(config.load())] == ["first", "second"]
+    assert gitworkspace.config_paths(config.load()) == []
+    assert (root / "workspace-lock.toml").read_text() == "repo = []\n"
+    assert external.read_text().endswith("name = 'local'\n")
+
+
+def test_sql_committed_workspace_edit_overrides_stale_external_source(
+    selected_sql, tmp_path, monkeypatch
+):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "workspace.toml").write_text("[[provider]]\nprovider = 'gitea'\nname = 'stale-local'\n")
+    monkeypatch.setattr(gitworkspace, "workspace_root", lambda: root)
+    assert [group.account for group in gitworkspace.groups(config.load())] == ["first", "second"]
+    with config._write_transaction(config.SCOPE_FLEET):
+        config.publish_fleet_document(
+            "workspace.toml", "[[provider]]\nprovider = 'github'\nname = 'central-latest'\n"
+        )
+    assert [group.account for group in gitworkspace.groups(config.load())] == [
+        "central-latest",
+        "second",
+    ]
+    assert (root / "workspace.toml").read_text().endswith("name = 'stale-local'\n")
+
+
+def test_pinned_git_workspace_child_sees_only_committed_input_with_stale_external(
+    selected_sql, tmp_path, monkeypatch
+):
+    if shutil.which("git-workspace") is None:
+        pytest.skip("git-workspace binary unavailable")
+    root = tmp_path / "workspace"
+    root.mkdir()
+    stale = root / "workspace.toml"
+    stale.write_text('[[provider]]\nprovider = "stale-external-invalid"\nname = "bad"\n')
+    monkeypatch.setattr(gitworkspace, "workspace_root", lambda: root)
+    selected_sql.documents = (
+        selected_sql.documents[0],
+        FleetConfigDocument(
+            "workspace.toml",
+            '[[provider]]\nprovider = "committed-first-invalid"\nname = "one"\n',
+        ),
+    )
+
+    def real_child(cmd, **_kwargs):
+        return subprocess.run(
+            ["git-workspace", "--workspace", cmd[3], "lock"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+
+    previous_lock = root / "workspace-lock.toml"
+    previous_lock.write_text("repo = []\n")
+    with gitworkspace.workspace_projection_lock(root):
+        result = gitworkspace.lock_committed_workspace_sources(
+            config.load(), root, run_child=real_child
+        )
+    assert result.returncode != 0
+    assert "committed-first-invalid" in result.stderr
+    assert "stale-external-invalid" not in result.stderr
+    assert stale.read_text().endswith('provider = "stale-external-invalid"\nname = "bad"\n')
+    assert previous_lock.read_text() == "repo = []\n"
 
 
 def _assert_child_reads_first_projected_source(root, projected):
@@ -431,9 +558,7 @@ def test_roster_documents_publish_without_hq_checkout(selected_sql, tmp_path):
     assert not hq_dir.exists()
 
 
-def test_missing_selected_manifest_keeps_unbound_legacy_and_denies_enrolled_frame(
-    monkeypatch, tmp_path
-):
+def test_missing_selected_manifest_denies_sql_lease_and_enrolled_frame(monkeypatch, tmp_path):
     class ConfigOnlyPlane(hq_control_plane.SqlControlPlane):
         def __init__(self):
             pass
@@ -449,7 +574,8 @@ def test_missing_selected_manifest_keeps_unbound_legacy_and_denies_enrolled_fram
     monkeypatch.setattr(host, "host_id", lambda: "fixture-host")
     monkeypatch.setattr(hq_control_plane, "control_plane", lambda _root: ConfigOnlyPlane())
     monkeypatch.setattr(config, "load_host", lambda: {"hq": {"mode": "dolt-server"}})
-    assert host_lease._frame_plane(tmp_path) is None
+    with pytest.raises(host_lease.HostLeaseRejected, match="AUTHORITY_NOT_READY"):
+        host_lease._frame_plane(tmp_path)
     assert frame_eligibility.decision_for("fixture-host", hq_dir=tmp_path) is None
 
     monkeypatch.setattr(

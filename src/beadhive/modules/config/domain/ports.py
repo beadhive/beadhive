@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 from collections.abc import Callable, Mapping, MutableMapping
 from contextlib import AbstractContextManager
@@ -19,6 +20,19 @@ class FleetConfigDocument:
 
     path: str
     content: str
+
+
+def ordered_documents_digest(documents) -> str:
+    """Canonical ordered raw-document digest shared by both config adapters."""
+    digest = hashlib.sha256()
+    for document in documents:
+        path = document.path.encode("utf-8")
+        content = document.content.encode("utf-8")
+        digest.update(len(path).to_bytes(4, "big"))
+        digest.update(path)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()
 
 
 @dataclass(frozen=True)
@@ -145,4 +159,5 @@ __all__ = (
     "RawFleetConfigRevision",
     "FleetConfigSnapshot",
     "FleetConfigRevisionPort",
+    "ordered_documents_digest",
 )

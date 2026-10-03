@@ -1210,6 +1210,38 @@ def hq_status(
 
 
 @hq_app.command(
+    "migrate",
+    help="plan or explicitly switch HQ configuration authority between signed Git and Dolt",
+)
+def hq_migrate_cmd(
+    to: str = typer.Option(..., "--to", help="dolt-server or git"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="inspect only; never publish or switch"),
+    confirm: bool = typer.Option(False, "--confirm", help="authorize the reviewed transition"),
+    intent: str = typer.Option("", "--intent", help="private durable transition receipt"),
+    mirror_journal: str = typer.Option("", "--mirror-journal"),
+    operator_key: str = typer.Option("", "--operator-key"),
+    suspension_artifact: str = typer.Option("", "--suspension-artifact"),
+    suspension_signature: str = typer.Option("", "--suspension-signature"),
+    expected_sql_revision: str = typer.Option("", "--expected-sql-revision"),
+    expected_git_revision: str = typer.Option("", "--expected-git-revision"),
+):
+    from .hq_migrate_cli import migrate_cmd
+
+    migrate_cmd(
+        to,
+        dry_run=dry_run,
+        confirm=confirm,
+        intent=Path(intent) if intent else None,
+        mirror_journal=Path(mirror_journal) if mirror_journal else None,
+        operator_key=Path(operator_key) if operator_key else None,
+        suspension_artifact=Path(suspension_artifact) if suspension_artifact else None,
+        suspension_signature=Path(suspension_signature) if suspension_signature else None,
+        expected_sql_revision=expected_sql_revision,
+        expected_git_revision=expected_git_revision,
+    )
+
+
+@hq_app.command(
     "beadyard",
     help="inspect the canonical HQ instance ID or explicitly adopt a legacy HQ at an "
     "observed original revision; config-only Dolt inspection needs no Git HQ checkout.",

@@ -63,6 +63,13 @@ def _facade():
     return sys.modules[__name__]
 
 
+def _workspace_root_for_transition() -> Path:
+    """Composition port for the canonical post-switch workspace root."""
+    from . import identity
+
+    return Path(identity.workspace_root())
+
+
 def _warning(event: str, *, logger_name: str | None = None, **fields) -> None:
     """Emit a config diagnostic without making implementation modules import ``log``."""
     from . import log
@@ -303,6 +310,18 @@ def _guard_hq_registry_controller() -> None:
 
 def save(data) -> None:
     _config_store.save_host(_facade(), data)
+
+
+def save_after_verified_hq_export(data, receipt, mirror_plan) -> None:
+    """Select Git only after exact live SQL and signed Git export qualification."""
+    _config_store.save_host_after_verified_export(_facade(), data, receipt, mirror_plan)
+
+
+def save_after_verified_hq_seed(data, *, revision: str, beadyard_id: str) -> None:
+    """Select SQL only after exact committed seed and post-switch readback."""
+    _config_store.save_host_after_verified_seed(
+        _facade(), data, revision=revision, beadyard_id=beadyard_id
+    )
 
 
 def save_fleet(data) -> None:

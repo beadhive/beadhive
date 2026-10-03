@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 import threading
 from collections.abc import Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from io import StringIO
 from pathlib import Path
@@ -422,11 +425,230 @@ def save_host(api, data) -> None:
     _validate_settings(api, data, scope="host")
     if _fleet_transaction.get() is not None:
         sql_selected(api)  # reject a changed on-disk selector before HOST cleanup
-    if sql_selected(api, data):
+    current_selected = sql_selected(api)
+    proposed_selected = sql_selected(api, data)
+    if current_selected and not proposed_selected:
+        # Disabling the SQL selector is a config-authority transition, not an
+        # ordinary HOST edit.  It needs the dedicated verified latest-export
+        # procedure; otherwise any `bh config set hq.sql.enabled false` would
+        # silently revive an older Git config head.
+        raise api.ConfigError("SQL HQ rollback requires a verified latest-export transition")
+    if proposed_selected:
         # A host switch is only persisted after a committed qualified readback.
         _fleet_document(api, _sql_attachment(api, data)[1])
     _store(api).save_document(ConfigScope.HOST, data)
     clear_load_cache()
+
+
+def _restore_host_bytes(api, original: bytes, *, written: bytes) -> None:
+    """Restore the exact prior HOST carrier only if our own write still owns it."""
+    path = api.config_path()
+    if path.read_bytes() != written:
+        raise api.ConfigError("HOST changed during selector readback; manual recovery required")
+    old_mode = path.stat().st_mode & 0o777
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=path.parent, prefix=f".{path.name}.", delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(original)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, old_mode)
+        os.replace(temporary, path)
+        temporary = None
+        RoundTripYamlStore._fsync_directory(path.parent)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    clear_load_cache()
+
+
+def save_host_after_verified_seed(api, data, *, revision: str, beadyard_id: str) -> None:
+    """Switch Git→SQL with exact committed readback or restore original HOST bytes."""
+    from .beadyard_identity import identity_in_documents
+
+    api._guard_hq_registry_controller()
+    _validate_settings(api, data, scope="host")
+    if _fleet_transaction.get() is not None:
+        raise api.ConfigError("HQ seed switch cannot run inside a fleet transaction")
+    with _store(api).transaction(ConfigScope.HOST):
+        current = api.load_host()
+        if sql_selected(api, current) or not sql_selected(api, data):
+            raise api.ConfigError("HQ seed switch requires Git source and proposed SQL")
+        original = api.config_path().read_bytes()
+        before, proposed = deepcopy(dict(current)), deepcopy(dict(data))
+        before_hq, proposed_hq = before.get("hq"), proposed.get("hq")
+        if not isinstance(before_hq, dict) or not isinstance(proposed_hq, dict):
+            raise api.ConfigError("HQ seed HOST selector invalid")
+        before_hq.setdefault("sql", {})["enabled"] = True
+        if before != proposed:
+            raise api.ConfigError("HQ seed HOST edit contains unrelated changes")
+        preflight = _sql_attachment(api, data)[1]
+        if (
+            preflight.commit_revision != revision
+            or identity_in_documents(preflight.documents, required=True) != beadyard_id
+        ):
+            raise api.ConfigError("HQ seed committed revision or identity changed")
+        _store(api).save_document(ConfigScope.HOST, data)
+        written = api.config_path().read_bytes()
+        clear_load_cache()
+        try:
+            readback = api.fleet_snapshot()
+            if (
+                api.load_host() != data
+                or readback.commit_revision != revision
+                or identity_in_documents(readback.documents, required=True) != beadyard_id
+            ):
+                raise api.ConfigError("HQ seed selector readback differs")
+        except Exception:
+            _restore_host_bytes(api, original, written=written)
+            raise api.ConfigError(
+                "HQ seed selector readback failed; original HOST restored"
+            ) from None
+
+
+def save_host_after_verified_export(api, data, receipt, mirror_plan) -> None:
+    """Commit an explicit latest-authority rollback after live dual-backend proof.
+
+    The Git adapter verifies its signed head and witness. The SQL adapter verifies
+    its current protected head and local anti-rollback floor. A local HOST lock
+    serializes this machine's writers; the operator must separately suspend all
+    central SQL publishers before export and keep them suspended through switch.
+    """
+    from .hq_control_plane import attach_fleet_config
+    from .hq_transition import (
+        GitMirrorPlan,
+        RollbackReceipt,
+        TransitionError,
+        receipt_for_export,
+        verify_git_export_lineage,
+        verify_git_mirror,
+        verify_writer_suspension,
+    )
+
+    api._guard_hq_registry_controller()
+    _validate_settings(api, data, scope="host")
+    if _fleet_transaction.get() is not None:
+        raise api.ConfigError("HQ rollback cannot run inside a fleet transaction")
+    if not isinstance(receipt, RollbackReceipt):
+        raise api.ConfigError("HQ rollback requires a typed latest-export receipt")
+    if not isinstance(mirror_plan, GitMirrorPlan) or (
+        mirror_plan.source_revision,
+        mirror_plan.export_revision,
+    ) != (receipt.source_revision, receipt.export_revision):
+        raise api.ConfigError("HQ rollback requires a verified latest Git mirror plan")
+    with _store(api).transaction(ConfigScope.HOST):
+        current = api.load_host()
+        if not sql_selected(api, current) or sql_selected(api, data):
+            raise api.ConfigError("HQ rollback requires selected SQL and proposed Git")
+        before, proposed = deepcopy(dict(current)), deepcopy(dict(data))
+        before_hq, proposed_hq = before.get("hq"), proposed.get("hq")
+        if not isinstance(before_hq, dict) or not isinstance(proposed_hq, dict):
+            raise api.ConfigError("HQ rollback HOST selector invalid")
+        if "mode" in before_hq:
+            before_hq["mode"] = "git"
+        before_hq.setdefault("sql", {})["enabled"] = False
+        if before != proposed:
+            raise api.ConfigError("HQ rollback HOST edit contains unrelated changes")
+        original_bytes = api.config_path().read_bytes()
+
+        def live_receipt():
+            sql_snapshot = _sql_attachment(api, current)[1]
+            git_bootstrap = {
+                "mode": "git",
+                "authority_anchor": current["hq"].get("authority_anchor"),
+            }
+            git_store, git_snapshot = attach_fleet_config(api.hq_dir(), bootstrap=git_bootstrap)
+            verify_git_export_lineage(git_store, receipt)
+            policy = git_store.plane._policy()
+            verify_writer_suspension(
+                receipt.suspension,
+                operator_signers=policy["operator_signers"],
+                ssh_keygen=policy["executables"]["ssh_keygen"]["path"],
+            )
+            verify_git_mirror(mirror_plan, git_snapshot.documents)
+            return receipt_for_export(
+                sql_snapshot,
+                git_snapshot,
+                original_host_bytes=original_bytes,
+                proposed_host=data,
+                suspension=receipt.suspension,
+                export_expected_parent=receipt.export_expected_parent,
+                export_publication_id=receipt.export_publication_id,
+            )
+
+        try:
+            if live_receipt() != receipt:
+                raise TransitionError("current SQL or signed Git export changed")
+            _store(api).save_document(ConfigScope.HOST, data)
+            clear_load_cache()
+            if api.load_host() != data or live_receipt() != receipt:
+                raise TransitionError("HQ rollback readback or authority changed")
+            # The ordinary facade must see the signed Git export after selection.
+            if api.load_fleet() != _fleet_document_git(api, receipt, current):
+                raise TransitionError("HQ rollback public Git readback differs")
+            from .modules.config.adapters.workspace_selection import selected_git_sources
+
+            selected_paths = selected_git_sources(
+                api.load(), root=api._workspace_root_for_transition(), hq_dir=api.hq_dir()
+            )
+            selected = tuple((path.name, path.read_text()) for path in selected_paths)
+            expected_workspace = tuple(
+                (item.path, item.content)
+                for item in attach_fleet_config(
+                    api.hq_dir(),
+                    bootstrap={
+                        "mode": "git",
+                        "authority_anchor": current["hq"].get("authority_anchor"),
+                    },
+                )[1].documents
+                if item.path == "workspace.toml"
+                or (item.path.startswith("workspace-") and item.path.endswith(".toml"))
+            )
+            if selected != expected_workspace:
+                raise TransitionError("HQ rollback public workspace resolver differs")
+        except Exception as exc:
+            # A post-save failure restores the original selected SQL bootstrap.
+            # The external writer freeze is still required across this boundary.
+            if api.config_path().read_bytes() != original_bytes:
+                path = api.config_path()
+                old_mode = path.stat().st_mode & 0o777
+                temporary = None
+                try:
+                    with tempfile.NamedTemporaryFile(
+                        mode="wb", dir=path.parent, prefix=f".{path.name}.", delete=False
+                    ) as stream:
+                        temporary = Path(stream.name)
+                        stream.write(original_bytes)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    os.chmod(temporary, old_mode)
+                    os.replace(temporary, path)
+                    temporary = None
+                    RoundTripYamlStore._fsync_directory(path.parent)
+                finally:
+                    if temporary is not None:
+                        temporary.unlink(missing_ok=True)
+                clear_load_cache()
+            if isinstance(exc, TransitionError):
+                raise api.ConfigError(str(exc)) from None
+            raise api.ConfigError("HQ rollback verification unavailable") from None
+
+
+def _fleet_document_git(api, receipt, previous_host):
+    from .hq_control_plane import attach_fleet_config
+
+    bootstrap = {"mode": "git", "authority_anchor": previous_host["hq"].get("authority_anchor")}
+    snapshot = attach_fleet_config(api.hq_dir(), bootstrap=bootstrap)[1]
+    if snapshot.commit_revision != receipt.export_revision:
+        raise api.ConfigError("signed Git export head changed")
+    document = next((item for item in snapshot.documents if item.path == "fleet.yaml"), None)
+    if document is None:
+        raise api.ConfigError("signed Git fleet document missing")
+    with api._yaml_lock:
+        return api._yaml.load(StringIO(document.content))
 
 
 def save_fleet(api, data) -> None:
