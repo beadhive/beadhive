@@ -16,6 +16,7 @@ import shutil
 import sys
 import time
 from pathlib import Path
+from typing import Annotated
 
 import typer
 from typer.core import TyperGroup
@@ -1206,6 +1207,111 @@ def hq_status(
     from . import hq
 
     hq.status(as_json=as_json)
+
+
+@hq_app.command(
+    "beadyard",
+    help="inspect the canonical HQ instance ID or explicitly adopt a legacy HQ at an "
+    "observed original revision; config-only Dolt inspection needs no Git HQ checkout.",
+)
+def hq_beadyard_cmd(
+    as_json: bool = typer.Option(False, "--json", help="emit backend, state, ID and revision"),
+):
+    from . import hq_beadyard
+
+    try:
+        result = hq_beadyard.inspect()
+    except hq_beadyard.BeadyardOperationError as exc:
+        typer.echo(f"HQ beadyard identity unavailable: {exc}", err=True)
+        raise typer.Exit(1) from None
+    except Exception:
+        typer.echo("HQ beadyard identity authority unavailable", err=True)
+        raise typer.Exit(1) from None
+    _render_beadyard(result, as_json=as_json)
+
+
+@hq_app.command(
+    "beadyard-adopt",
+    help="explicitly bind a legacy HQ using an observed original revision and operator custody",
+)
+def hq_beadyard_adopt_cmd(
+    expected_revision: str = typer.Option(
+        ..., "--expected-revision", help="exact revision shown by inspection"
+    ),
+    confirm: bool = typer.Option(False, "--confirm", help="confirm legacy identity adoption"),
+    operator_key: str = typer.Option("", "--operator-key", help="Git main SSH commit signing key"),
+    as_json: bool = typer.Option(False, "--json", help="emit backend, state, ID and revision"),
+):
+    from . import hq_beadyard
+
+    if not confirm:
+        typer.echo("HQ identity adoption requires --confirm", err=True)
+        raise typer.Exit(1)
+    try:
+        result = hq_beadyard.adopt_legacy(
+            expected_revision=expected_revision,
+            operator_key=Path(operator_key) if operator_key else None,
+        )
+    except hq_beadyard.BeadyardOperationError as exc:
+        typer.echo(f"HQ beadyard identity adoption failed: {exc}", err=True)
+        raise typer.Exit(1) from None
+    except Exception:
+        typer.echo("HQ beadyard identity adoption authority unavailable", err=True)
+        raise typer.Exit(1) from None
+    _render_beadyard(result, as_json=as_json)
+
+
+@hq_app.command(
+    "beadyard-policy-refresh",
+    help="explicitly refresh protected Git hive config-head pins after exact identity adoption",
+)
+def hq_beadyard_policy_refresh_cmd(
+    expected_policy_digest: str = typer.Option(..., "--expected-policy-digest"),
+    expected_config_head: str = typer.Option(..., "--expected-config-head"),
+    expected_config_parent: str = typer.Option(..., "--expected-config-parent"),
+    anchor: Annotated[
+        list[Path], typer.Option("--anchor", help="repeat for every protected anchor")
+    ] = ...,
+    operator_anchor: Annotated[Path, typer.Option("--operator-anchor")] = ...,
+    confirm: bool = typer.Option(False, "--confirm"),
+):
+    from . import hq_beadyard_policy
+
+    if not confirm:
+        typer.echo("protected policy refresh requires --confirm", err=True)
+        raise typer.Exit(1)
+    try:
+        digest = hq_beadyard_policy.refresh_after_adoption(
+            config.hq_dir(),
+            expected_policy_digest=expected_policy_digest,
+            expected_config_head=expected_config_head,
+            expected_config_parent=expected_config_parent,
+            anchors=tuple(anchor),
+            operator_anchor=operator_anchor,
+        )
+    except hq_beadyard_policy.PolicyRefreshError as exc:
+        typer.echo(f"protected HQ policy refresh refused: {exc}", err=True)
+        raise typer.Exit(1) from None
+    except Exception:
+        typer.echo("protected HQ policy refresh unavailable or conflicted", err=True)
+        raise typer.Exit(1) from None
+    typer.echo(json.dumps({"policy_digest": digest}, sort_keys=True))
+
+
+def _render_beadyard(result, *, as_json: bool) -> None:
+    payload = {
+        "backend": result.backend,
+        "state": result.state,
+        "beadyard_id": result.beadyard_id,
+        "revision": result.revision,
+    }
+    if as_json:
+        typer.echo(json.dumps(payload, sort_keys=True))
+    else:
+        typer.echo(
+            f"HQ beadyard: {result.state} ({result.backend}); "
+            f"id={result.beadyard_id or '-'} revision={result.revision or '-'}"
+        )
 
 
 @hq_app.command(

@@ -18,6 +18,7 @@ from jsonschema import Draft202012Validator
 from pydantic import ValidationError
 from ruamel.yaml import YAML
 
+from .beadyard_identity import DOCUMENT_PATH, BeadyardIdentityError, parse_document
 from .complexity import tier_names
 from .hive_schema_contracts import HiveSchemaRecord
 from .host_manifest_contracts import DEPRECATED_ROLE_ALIASES, HostManifest
@@ -218,6 +219,12 @@ def validate_document(path: str, content: str) -> None:
 
     if not isinstance(path, str) or not isinstance(content, str):
         raise DocumentValidationError("document", "<root>", "path_or_content_type")
+    if path == DOCUMENT_PATH:
+        try:
+            parse_document(content)
+        except BeadyardIdentityError:
+            raise DocumentValidationError("beadyard", "beadyard_id", "canonical_uuid4") from None
+        return
     if path == "fleet.yaml":
         validate_settings_mapping(_parse_yaml(content, "fleet"), scope="fleet")
         return
@@ -317,6 +324,9 @@ def validate_repair_carrier(documents: tuple[FleetConfigDocument, ...]) -> None:
         if path == "allowed_signers":
             if "PRIVATE KEY" in document.content:
                 raise DocumentValidationError("snapshot", "<root>", "private_key")
+            continue
+        if path == DOCUMENT_PATH:
+            validate_document(path, document.content)
             continue
         if _WORKSPACE_PATH.fullmatch(path):
             try:

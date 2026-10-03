@@ -58,10 +58,12 @@ class SqlRuntimeOperator:
 
     @staticmethod
     def principal_for(authority) -> str:
-        """Deterministic name for a separately preprovisioned frame SQL account."""
-        from dataclasses import asdict
+        """Stable SQL account for one incarnation across its HQ-ID binding."""
+        from .hq_authority_payload import authority_payload
 
-        return "frame_" + hashlib.sha256(canonical(asdict(authority))).hexdigest()[:20]
+        identity = authority_payload(authority)
+        identity.pop("beadyard_id", None)
+        return "frame_" + hashlib.sha256(canonical(identity)).hexdigest()[:20]
 
     def _identity(self, cursor):
         binding = self.settings["authority_writer"]
@@ -138,6 +140,7 @@ class SqlRuntimeOperator:
                         registration.frame_id != frame
                         or registration.host_id != holder_identity
                         or registration.instance_ref != authority["instance_ref"]
+                        or registration.beadyard_id != authority.get("beadyard_id")
                         or registration.release is None
                         or registration.release.model_dump() != record["desired"]["release"]
                         or registration.capabilities is None
@@ -188,6 +191,23 @@ class SqlRuntimeOperator:
                             or lease.config_revision != authority["config_revision"]
                         ):
                             raise SqlOperatorError("protected accepted receipt identity invalid")
+                        if lease.beadyard_id != authority.get("beadyard_id"):
+                            # Earlier signed v1 beats remain in protected history
+                            # after binding. They never count toward a new bound
+                            # admission streak, and the latest floor must already
+                            # be a verified beat for the current HQ identity.
+                            if not (
+                                authority.get("beadyard_id") is not None
+                                and lease.beadyard_id is None
+                                and receipts
+                                and receipts[0][0] == floor[0]
+                                and receipts[0][3].beadyard_id == authority["beadyard_id"]
+                                and sequence < floor[0]
+                            ):
+                                raise SqlOperatorError(
+                                    "protected accepted receipt identity invalid"
+                                )
+                            continue
                         receipts.append((sequence, digest, first_seen, lease))
                     if not receipts or (receipts[0][0], receipts[0][1], receipts[0][2]) != floor:
                         raise SqlOperatorError("protected accepted receipt floor mismatch")
@@ -276,7 +296,27 @@ class SqlRuntimeOperator:
                 ):
                     raise SqlOperatorError("new authority sequence, time or generation invalid")
                 guard.validate_state(state)
+                if current["domain"] == guard.DOMAIN_V2 and state["domain"] != guard.DOMAIN_V2:
+                    raise SqlOperatorError("bound authority carrier cannot downgrade")
+                if (
+                    current["domain"] == guard.DOMAIN
+                    and state["domain"] == guard.DOMAIN_V2
+                    and any(
+                        entry["active"] is not None or entry["candidate"] is not None
+                        for entry in current["frames"].values()
+                    )
+                ):
+                    guard.validate_legacy_binding_transition(
+                        current, state, trusted_now=self.clock()
+                    )
                 snapshot = self.authority.load_latest_config_at(cursor, deadline=deadline)
+                bound_ids = {
+                    record["authority"].get("beadyard_id")
+                    for _, record in guard.records(state)
+                    if record["authority"].get("beadyard_id") is not None
+                }
+                if bound_ids and bound_ids != {snapshot.beadyard_id}:
+                    raise SqlOperatorError("authority belongs to a different beadyard")
                 policies = project_hive_policies(
                     snapshot, valid_until=state["expires_at"], now=self.clock()
                 )

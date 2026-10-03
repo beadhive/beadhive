@@ -612,6 +612,83 @@ def test_committed_sql_config_publication_and_floor(tmp_path, monkeypatch):
             # Schema allowlisting is checked against the actual committed tree,
             # not just the rows returned by the three known tables.
             _cli(tmp_path, port, "USE beadhive_hq_config; CALL DOLT_RESET('--hard')")
+            from beadhive import config, hq_beadyard
+            from beadhive.beadyard_identity import DOCUMENT_PATH, new_document, parse_document
+
+            monkeypatch.setattr(
+                hq_beadyard, "_selected_store", lambda _root: ("dolt-server", restarted)
+            )
+            monkeypatch.setattr(config, "home", lambda: tmp_path / "identity-home")
+            observed = hq_beadyard.inspect(tmp_path / "config-only-hq")
+            assert observed.state == "legacy"
+            assert observed.revision == winners[0].commit_revision
+            bound_document = FleetConfigDocument(DOCUMENT_PATH, new_document())
+            bound_documents = winners[0].documents + (bound_document,)
+            with pytest.raises(SqlConfigError, match="beadyard identity publication conflict"):
+                restarted.publish_snapshot(
+                    bound_documents, expected_revision=winners[0].commit_revision
+                )
+            actual_publish = restarted.publish_snapshot
+
+            def commit_then_lose_reply(*args, **kwargs):
+                actual_publish(*args, **kwargs)
+                raise PublicationUnknown("identity-fixture-publication", observed.revision)
+
+            monkeypatch.setattr(restarted, "publish_snapshot", commit_then_lose_reply)
+            adopted = hq_beadyard.adopt_legacy(
+                hq_dir=tmp_path / "config-only-hq", expected_revision=observed.revision
+            )
+            monkeypatch.setattr(restarted, "publish_snapshot", actual_publish)
+            first_bound = restarted.load_snapshot(revision=adopted.revision)
+            later_documents = (
+                FleetConfigDocument("fleet.yaml", "hq:\n  mode: dolt-server\nmanaged_repos: []\n"),
+                *(doc for doc in first_bound.documents if doc.path != "fleet.yaml"),
+            )
+            later_bound = restarted.publish_snapshot(
+                later_documents, expected_revision=adopted.revision
+            )
+            retried = hq_beadyard.adopt_legacy(
+                hq_dir=tmp_path / "config-only-hq", expected_revision=observed.revision
+            )
+            assert retried.beadyard_id == adopted.beadyard_id
+            assert retried.revision == later_bound.commit_revision
+            bound = restarted.load_snapshot(revision=later_bound.commit_revision)
+            assert adopted.beadyard_id == bound.beadyard_id
+            assert bound.beadyard_id == parse_document(
+                next(doc.content for doc in bound.documents if doc.path == DOCUMENT_PATH)
+            )
+            assert not (tmp_path / "config-only-hq").exists()
+            version_reader = pymysql.connect(
+                host="127.0.0.1", port=port, user="root", database="beadhive_hq_config"
+            )
+            try:
+                with version_reader.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT schema_version FROM hq_config_meta AS OF %s",
+                        (bound.commit_revision,),
+                    )
+                    assert cursor.fetchone()[0] == 2
+            finally:
+                version_reader.close()
+            for attempt in (
+                winners[0].documents,
+                winners[0].documents + (FleetConfigDocument(DOCUMENT_PATH, new_document()),),
+            ):
+                with pytest.raises(SqlConfigError, match="beadyard identity publication conflict"):
+                    restarted.publish_snapshot(attempt, expected_revision=bound.commit_revision)
+                with pytest.raises(SqlConfigError, match="beadyard identity publication conflict"):
+                    restarted.repair_snapshot(attempt, expected_revision=bound.commit_revision)
+            malformed_identity = tuple(
+                FleetConfigDocument(doc.path, '{"beadyard_id":"foreign"}')
+                if doc.path == DOCUMENT_PATH
+                else doc
+                for doc in bound.documents
+            )
+            with pytest.raises(SqlConfigError, match="beadyard"):
+                restarted.repair_snapshot(
+                    malformed_identity, expected_revision=bound.commit_revision
+                )
+            assert restarted.load_snapshot().commit_revision == bound.commit_revision
             _cli(
                 tmp_path,
                 port,
@@ -631,7 +708,7 @@ def test_committed_sql_config_publication_and_floor(tmp_path, monkeypatch):
                 **settings,
                 "floor_path": str(tmp_path / "fresh-extra-floor.json"),
                 "initial_revision": extra_head,
-                "minimum_sequence": 4,
+                "minimum_sequence": 5,
             }
             extra_store = SqlFleetConfigRevisionStore(extra_settings, broker=_Broker())
             with pytest.raises(SqlConfigError, match="schema table allowlist changed"):

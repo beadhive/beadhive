@@ -1,14 +1,14 @@
 {
   "after": {
-    "classes": 83,
+    "classes": 84,
     "cyclomatic_max": 25,
-    "cyclomatic_mean": 3.734,
-    "cyclomatic_sum": 407,
-    "functions": 109,
+    "cyclomatic_mean": 3.763,
+    "cyclomatic_sum": 444,
+    "functions": 118,
     "functions_over_10": 6,
-    "nonblank_lines": 3019,
-    "physical_lines": 3570,
-    "python_files": 15
+    "nonblank_lines": 3136,
+    "physical_lines": 3714,
+    "python_files": 16
   },
   "before": {
     "classes": 64,
@@ -23,15 +23,15 @@
     "revision": "5e47c61107a67a26676fc5890a89f0fd0b715c78"
   },
   "delta": {
-    "classes": 19,
+    "classes": 20,
     "cyclomatic_max": 0,
-    "cyclomatic_mean": 0.08,
-    "cyclomatic_sum": 111,
-    "functions": 28,
+    "cyclomatic_mean": 0.109,
+    "cyclomatic_sum": 148,
+    "functions": 37,
     "functions_over_10": 4,
-    "nonblank_lines": 677,
-    "physical_lines": 780,
-    "python_files": 1
+    "nonblank_lines": 794,
+    "physical_lines": 924,
+    "python_files": 2
   },
   "metric_definition": {
     "cyclomatic": "AST decision count: function base 1 plus branches, boolean decisions, handlers, match cases, comprehensions, and assertions",

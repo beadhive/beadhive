@@ -127,6 +127,19 @@ class HostManifest(_Section):
     """One host's fleet-visible manifest — ``hosts/<host_id>.yaml`` in HQ."""
 
     frame_id: str | None = Field(None, description="Stable inventory-owned frame identity.")
+    beadyard_id: str | None = Field(
+        None, description="Canonical HQ instance UUID binding for an enrolled frame."
+    )
+
+    @field_validator("beadyard_id")
+    @classmethod
+    def _canonical_beadyard_id(cls, value):
+        if value is not None:
+            from .beadyard_identity import parse_id
+
+            return parse_id(value)
+        return value
+
     state: Literal[
         "pending", "active", "draining", "drained", "parked", "quarantined", "retired"
     ] = "active"

@@ -158,6 +158,38 @@ def test_active_git_edit_rejects_switch_to_sql_before_read(selected_sql_host):
     assert not config.fleet_path().exists()
 
 
+@pytest.mark.parametrize("selected", [False, True])
+def test_active_fleet_edit_rejects_changed_beadyard_pin_before_write(selected_sql_host, selected):
+    from uuid import uuid4
+
+    store, host_path, bootstrap = selected_sql_host
+    if not selected:
+        bootstrap["hq"]["mode"] = "git"
+        bootstrap["hq"]["sql"]["enabled"] = False
+    bootstrap["hq"]["beadyard_id"] = str(uuid4())
+    host_path.write_text(json.dumps(bootstrap))
+    with config._write_transaction(config.SCOPE_FLEET):
+        bootstrap["hq"]["beadyard_id"] = str(uuid4())
+        host_path.write_text(json.dumps(bootstrap))
+        with pytest.raises(config.ConfigError, match="changed during fleet transaction"):
+            config.save_fleet({})
+        with pytest.raises(config.ConfigError, match="changed during fleet transaction"):
+            config.load_fleet()
+    assert store.revision == 1
+    assert not config.fleet_path().exists()
+
+
+def test_active_legacy_git_edit_ignores_unselected_sql_details(selected_sql_host):
+    _store, host_path, bootstrap = selected_sql_host
+    bootstrap["hq"]["mode"] = "git"
+    bootstrap["hq"]["sql"]["enabled"] = False
+    host_path.write_text(json.dumps(bootstrap))
+    with config._write_transaction(config.SCOPE_FLEET):
+        bootstrap["hq"]["sql"]["generation"] = "unselected-generation"
+        host_path.write_text(json.dumps(bootstrap))
+        assert config_store.sql_selected(config) is False
+
+
 def test_binding_drift_blocks_roster_registry_workspace_and_document_publish(
     selected_sql_host, tmp_path, monkeypatch
 ):

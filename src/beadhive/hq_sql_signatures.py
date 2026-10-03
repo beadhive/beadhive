@@ -17,17 +17,32 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from jsonschema import Draft202012Validator, FormatChecker, ValidationError
 
-from .hq_framelease_contracts import HeartbeatLease
+from .beadyard_identity import parse_id
+from .hq_framelease_contracts import DOMAIN_V2, HeartbeatLease
 
 DOMAIN = b"beadhive/sql-framelease/v1\x00"
+DOMAIN_V2_SIGNATURE = b"beadhive/sql-framelease/v2\x00"
 AUTHORITY_DOMAIN = b"beadhive/sql-authority/v1\x00"
 HIVE_LEASE_DOMAIN = b"beadhive/sql-hive-lease/v1\x00"
+HIVE_LEASE_DOMAIN_V2 = b"beadhive/sql-hive-lease/v2\x00"
 REGISTRATION_DOMAIN = b"beadhive/sql-registration/v1\x00"
+REGISTRATION_DOMAIN_V2 = b"beadhive/sql-registration/v2\x00"
 MAX_BYTES = 65536
 
 
 class SqlSignatureError(ValueError):
     """The SQL carrier is malformed or not signed by current operator-granted identity."""
+
+
+def _request_domain(request: dict, legacy: bytes, bound: bytes) -> bytes:
+    """Select exact signed wire version and require v2's canonical HQ binding."""
+    domain = request.get("domain")
+    if domain == legacy.rstrip(b"\x00").decode() and "beadyard_id" not in request:
+        return legacy
+    if domain == bound.rstrip(b"\x00").decode() and "beadyard_id" in request:
+        parse_id(request["beadyard_id"])
+        return bound
+    raise SqlSignatureError("signed request version and beadyard identity disagree")
 
 
 def canonical(document: dict, *, limit: int = MAX_BYTES) -> bytes:
@@ -61,7 +76,9 @@ def _unsigned_envelope(lease) -> dict:
     if not isinstance(lease, HeartbeatLease):
         lease = HeartbeatLease.model_validate(lease)
     return {
-        "apiVersion": "frame.beadhive.ai/v1alpha1",
+        "apiVersion": "frame.beadhive.ai/v1alpha2"
+        if lease.domain == DOMAIN_V2
+        else "frame.beadhive.ai/v1alpha1",
         "kind": "FrameLease",
         "metadata": {"name": lease.frame_id},
         "spec": lease.model_dump(mode="json", exclude_none=True),
@@ -84,7 +101,8 @@ def sign_heartbeat(lease, *, signing_key: str) -> dict:
         envelope = _unsigned_envelope(lease)
         if envelope["spec"]["key_id"] != fingerprint(public):
             raise SqlSignatureError("frame key does not match lease key identity")
-        signature = private.sign(DOMAIN + canonical(envelope))
+        signature_domain = DOMAIN_V2_SIGNATURE if lease.domain == DOMAIN_V2 else DOMAIN
+        signature = private.sign(signature_domain + canonical(envelope))
     except (OSError, TypeError, ValueError):
         raise SqlSignatureError("frame signing key unavailable or invalid") from None
     envelope["spec"]["signature"] = {
@@ -142,9 +160,8 @@ def sign_hive_request(request: dict, *, signing_key: str) -> dict:
         )
         if request.get("key_fingerprint") != fingerprint(public):
             raise SqlSignatureError("hive request signer differs from granted key identity")
-        if request.get("domain") != HIVE_LEASE_DOMAIN.rstrip(b"\x00").decode():
-            raise SqlSignatureError("wrong signed hive lease request domain")
-        signature = private.sign(HIVE_LEASE_DOMAIN + canonical(request))
+        domain = _request_domain(request, HIVE_LEASE_DOMAIN, HIVE_LEASE_DOMAIN_V2)
+        signature = private.sign(domain + canonical(request))
         envelope = {
             "request": request,
             "signature": {
@@ -156,6 +173,8 @@ def sign_hive_request(request: dict, *, signing_key: str) -> dict:
         }
         canonical(envelope)
         return envelope
+    except SqlSignatureError:
+        raise
     except (OSError, TypeError, ValueError):
         raise SqlSignatureError("hive request signing key unavailable or invalid") from None
 
@@ -173,16 +192,16 @@ def verify_hive_request(envelope: dict, *, granted_public_key: str) -> tuple[dic
             or signature["keyId"] != fingerprint(granted_public_key)
             or signature["algorithm"] != "ed25519"
             or signature["scope"] != "payload"
-            or request.get("domain") != HIVE_LEASE_DOMAIN.rstrip(b"\x00").decode()
             or request.get("key_fingerprint") != signature["keyId"]
         ):
             raise SqlSignatureError("hive request signature identity or domain mismatch")
         public = serialization.load_ssh_public_key(granted_public_key.encode())
         if not isinstance(public, Ed25519PublicKey):
             raise SqlSignatureError("hive request signer key type unsupported")
+        domain = _request_domain(request, HIVE_LEASE_DOMAIN, HIVE_LEASE_DOMAIN_V2)
         public.verify(
             base64.b64decode(signature["value"], validate=True),
-            HIVE_LEASE_DOMAIN + canonical(request),
+            domain + canonical(request),
         )
         return request, hashlib.sha256(encoded).hexdigest()
     except SqlSignatureError:
@@ -204,24 +223,22 @@ def sign_registration(request: dict, *, signing_key: str) -> dict:
             .public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH)
             .decode()
         )
-        if (
-            request.get("key_fingerprint") != fingerprint(public)
-            or request.get("domain") != REGISTRATION_DOMAIN.rstrip(b"\x00").decode()
-        ):
+        if request.get("key_fingerprint") != fingerprint(public):
             raise SqlSignatureError("registration identity or domain mismatch")
+        domain = _request_domain(request, REGISTRATION_DOMAIN, REGISTRATION_DOMAIN_V2)
         result = {
             "request": request,
             "signature": {
                 "keyId": fingerprint(public),
                 "algorithm": "ed25519",
                 "scope": "payload",
-                "value": base64.b64encode(
-                    private.sign(REGISTRATION_DOMAIN + canonical(request))
-                ).decode(),
+                "value": base64.b64encode(private.sign(domain + canonical(request))).decode(),
             },
         }
         canonical(result)
         return result
+    except SqlSignatureError:
+        raise
     except (OSError, TypeError, ValueError):
         raise SqlSignatureError("registration signing key unavailable or invalid") from None
 
@@ -239,16 +256,16 @@ def verify_registration(envelope: dict, *, granted_public_key: str) -> tuple[dic
             or signature["keyId"] != fingerprint(granted_public_key)
             or signature["algorithm"] != "ed25519"
             or signature["scope"] != "payload"
-            or request.get("domain") != REGISTRATION_DOMAIN.rstrip(b"\x00").decode()
             or request.get("key_fingerprint") != signature["keyId"]
         ):
             raise SqlSignatureError("registration signer or domain mismatch")
         public = serialization.load_ssh_public_key(granted_public_key.encode())
         if not isinstance(public, Ed25519PublicKey):
             raise SqlSignatureError("registration key type unsupported")
+        domain = _request_domain(request, REGISTRATION_DOMAIN, REGISTRATION_DOMAIN_V2)
         public.verify(
             base64.b64decode(signature["value"], validate=True),
-            REGISTRATION_DOMAIN + canonical(request),
+            domain + canonical(request),
         )
         return request, hashlib.sha256(encoded).hexdigest()
     except SqlSignatureError:
@@ -261,8 +278,11 @@ def verify_heartbeat(envelope: dict, *, granted_public_key: str):
     """Return only a fully authenticated heartbeat and exact carrier digest."""
     try:
         encoded = canonical(envelope)
+        version = (
+            "v1alpha2" if envelope.get("apiVersion") == "frame.beadhive.ai/v1alpha2" else "v1alpha1"
+        )
         schema = json.loads(
-            (Path(__file__).parent / "schemas/frame/v1alpha1/framelease.schema.json").read_text()
+            (Path(__file__).parent / f"schemas/frame/{version}/framelease.schema.json").read_text()
         )
         Draft202012Validator(schema, format_checker=FormatChecker()).validate(envelope)
         signature = envelope["spec"]["signature"]
@@ -287,8 +307,10 @@ def verify_heartbeat(envelope: dict, *, granted_public_key: str):
         public = serialization.load_ssh_public_key(granted_public_key.encode())
         if not isinstance(public, Ed25519PublicKey):
             raise SqlSignatureError("granted FrameLease key type unsupported")
+        signature_domain = DOMAIN_V2_SIGNATURE if lease.domain == DOMAIN_V2 else DOMAIN
         public.verify(
-            base64.b64decode(signature["value"], validate=True), DOMAIN + canonical(unsigned)
+            base64.b64decode(signature["value"], validate=True),
+            signature_domain + canonical(unsigned),
         )
         return lease, "sha256:" + hashlib.sha256(encoded).hexdigest()
     except SqlSignatureError:

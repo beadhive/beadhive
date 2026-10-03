@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .host_manifest_contracts import FrameRelease
 
 DOMAIN = "beadhive/frame-heartbeat/v1"
+DOMAIN_V2 = "beadhive/frame-heartbeat/v2"
 
 
 class HeartbeatError(ValueError):
@@ -43,6 +44,7 @@ class HeartbeatLease(BaseModel):
     domain: str = DOMAIN
     audience: str = Field(min_length=1)
     frame_id: str = Field(pattern=r"^[a-z][a-z0-9-]{0,127}$")
+    beadyard_id: str | None = None
     holderIdentity: str = Field(min_length=1)
     instance_ref: str = Field(min_length=1)
     key_id: str = Field(min_length=1)
@@ -65,8 +67,17 @@ class HeartbeatLease(BaseModel):
 
     @model_validator(mode="after")
     def bounds(self):
-        if self.domain != DOMAIN or self.leaseDurationSeconds < 3 * self.intervalSeconds:
+        if (
+            self.domain not in (DOMAIN, DOMAIN_V2)
+            or self.leaseDurationSeconds < 3 * self.intervalSeconds
+        ):
             raise ValueError("wrong heartbeat domain or ttl below three intervals")
+        if (self.domain == DOMAIN) == (self.beadyard_id is not None):
+            raise ValueError("heartbeat domain and beadyard identity disagree")
+        if self.beadyard_id is not None:
+            from .beadyard_identity import parse_id
+
+            parse_id(self.beadyard_id)
         if self.toplevel and self.image:
             raise ValueError("toplevel and image are mutually exclusive")
         if not self.release.id or not re.fullmatch(r"sha256:[0-9a-f]{64}", self.release.digest):

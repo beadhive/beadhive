@@ -3,6 +3,7 @@
 from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from typer import Exit
@@ -11,6 +12,7 @@ from typer.testing import CliRunner
 from beadhive import config, guard, host, host_adopt, host_lease, hosts
 from beadhive import frame_eligibility as policy
 from beadhive.host_heartbeat_core import HeartbeatLease, VerifiedObservation
+from beadhive.hq_framelease_contracts import DOMAIN_V2
 
 
 @pytest.fixture
@@ -66,6 +68,37 @@ def candidate():
         authority={"holder_identity": "host", "instance_ref": "vm"},
     )
     return frame, policy.EligibilityFacts(beat, desired)
+
+
+def test_enrolled_frame_requires_host_local_beadyard_pin(candidate, tmp_path, monkeypatch):
+    frame, facts = candidate
+    owner = str(uuid4())
+    frame = frame.model_copy(update={"beadyard_id": owner})
+    lease = HeartbeatLease.model_validate(
+        {
+            **facts.observation.lease.model_dump(mode="json", exclude_none=True),
+            "domain": DOMAIN_V2,
+            "beadyard_id": owner,
+        }
+    )
+    facts = replace(
+        facts,
+        observation=replace(facts.observation, lease=lease),
+        desired={
+            **facts.desired,
+            "authority": {**facts.desired["authority"], "beadyard_id": owner},
+        },
+    )
+    monkeypatch.setattr(config, "hq_dir", lambda: tmp_path)
+    monkeypatch.setattr(hosts, "load", lambda _root, _host: frame)
+    monkeypatch.setattr(policy, "load_facts", lambda *_args, **_kwargs: facts)
+    bootstrap = {"host": {"frame_id": "frame"}, "hq": {"beadyard_id": owner}}
+    monkeypatch.setattr(config, "load_host", lambda: bootstrap)
+    assert policy.decision_for("host").allowed
+    bootstrap["hq"]["beadyard_id"] = str(uuid4())
+    assert policy.decision_for("host").reason == "beadyard_binding"
+    del bootstrap["hq"]["beadyard_id"]
+    assert policy.decision_for("host").reason == "beadyard_binding"
 
 
 @pytest.mark.parametrize(

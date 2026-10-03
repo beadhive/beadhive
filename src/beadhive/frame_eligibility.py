@@ -100,6 +100,13 @@ def eligible(frame: hosts.HostManifest, hive: dict, facts: EligibilityFacts) -> 
                 and desired.get("authority", {}).get("holder_identity") == frame.host_id
                 and desired.get("authority", {}).get("instance_ref") == frame.instance_ref,
             ),
+            (
+                "beadyard_binding",
+                lease is not None
+                and frame.beadyard_id
+                == lease.beadyard_id
+                == desired.get("authority", {}).get("beadyard_id"),
+            ),
             ("authenticated_fresh_heartbeat", bool(fresh)),
             (
                 "release_matches",
@@ -196,6 +203,11 @@ def decision_for(host_id, hive=None, *, hq_dir=None, cfg=None, at=None):
         if not enrolled:
             return None
         return EligibilityDecision((("authority_available", False),))
+    # A frame's HOST bootstrap pin is independent of whichever HQ remote is
+    # selected today. Without this equality a same-named foreign HQ whose own
+    # signed documents agree with each other could replace the whole read.
+    if binding.get("beadyard_id") != frame.beadyard_id:
+        return EligibilityDecision((("beadyard_binding", False),))
     return eligible(frame, hive or {}, load_facts(frame, hq_dir=root, cfg=settings, at=at))
 
 
