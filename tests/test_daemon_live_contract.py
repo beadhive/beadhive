@@ -1194,7 +1194,7 @@ def _assert_live_server_cleanup(cleanup: dict[str, Any]) -> None:
         "ownedFeedCalls": 0,
         "hives": {},
         "registryReconcilerRunning": False,
-    }
+    }, cleanup["broker"]
     assert cleanup["operator_sse"] == {"closed": True, "pumps": 0}
     assert cleanup["telemetry"]["started"] is True
     assert cleanup["telemetry"]["stopped"] is True

@@ -25,7 +25,8 @@ The build tests drive the real script against a minimal fixture checkout with `U
 for the reason test_setup_guide_asset.py records at length: `uv build` resolves the build backend
 before building, and left online it reaches PyPI whenever uv's cached index response has aged
 out — making a packaging test into an intermittent network test. Any tree running this suite has
-necessarily been `uv sync`ed, which is what populates hatchling in the cache.
+necessarily installed the locked Hatchling backend; use that interpreter without build isolation
+rather than assuming its package download remains in an unrelated uv cache.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -108,7 +110,12 @@ def _run(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         # UV_OFFLINE is uv's own env knob, so this needs no flag plumbed through the script.
-        env={**os.environ, "UV_OFFLINE": "1"},
+        env={
+            **os.environ,
+            "UV_OFFLINE": "1",
+            "UV_NO_BUILD_ISOLATION": "1",
+            "UV_PYTHON": sys.executable,
+        },
     )
 
 
@@ -163,6 +170,8 @@ def test_the_overlay_is_tar_independent_and_preserves_every_kind_of_addition(tmp
             **os.environ,
             "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
             "UV_OFFLINE": "1",
+            "UV_NO_BUILD_ISOLATION": "1",
+            "UV_PYTHON": sys.executable,
         },
     )
 
