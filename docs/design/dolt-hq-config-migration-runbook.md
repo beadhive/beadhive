@@ -10,7 +10,7 @@ production HOST or Dolt server.
 ## Before first publication
 
 Provision a new dedicated configuration database with the reviewed
-[`ops/hq-config`](../../ops/hq-config/README.md) resources. Its three versioned
+[`scripts/hq-config`](../../scripts/hq-config/README.md) resources. Its three versioned
 tables are initially empty. A reader has only table reads; the trusted publisher
 has table writes plus branch-wide Dolt staging and commit capability. Keep those
 credentials apart from frame, observer, and Beads principals. Native MySQL TLS

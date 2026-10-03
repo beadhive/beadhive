@@ -63,7 +63,7 @@ def _empty_config_server(tmp_path):
                     if server.poll() is not None or time.monotonic() >= deadline:
                         raise AssertionError("owned Dolt fixture did not start") from None
                     time.sleep(0.1)
-            provision = Path(__file__).resolve().parents[1] / "ops/hq-config/provision.py"
+            provision = Path(__file__).resolve().parents[1] / "scripts/hq-config/provision.py"
             render = runpy.run_path(str(provision))["sql"]
             _cli(tmp_path, port, render("127.0.0.1", "fixture-secret", "fixture-secret"))
             import pymysql
