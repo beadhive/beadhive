@@ -354,6 +354,38 @@ def authoritative_primary(hive="", *, cfg=None, hive_dir=None):
     return str(entry["prefix"]), host.host_id(), lease
 
 
+def incumbent_primary(hive="", *, cfg=None, hive_dir=None):
+    """Read a bound incumbent lease for finishing work, without new-intake policy.
+
+    Draining and heartbeat staleness stop new claims, but do not change the
+    protected lease generation on which an existing claim was minted.
+    """
+    from . import config, host, registry
+    from .hq_control_plane import control_plane
+
+    settings = cfg if cfg is not None else config.load()
+    if hive and hive_dir is None:
+        entry = registry.resolve_hive(settings, hive)
+    else:
+        directory = hive_dir if hive_dir is not None else registry.hive_dir_for(settings, hive)
+        entry = registry.entry_for_dir(settings, directory)
+    if not entry or not entry.get("prefix"):
+        raise EligibilityError("frame ineligible: hive_catalog_available")
+    identity = host.host_id()
+    plane = control_plane(config.hq_dir())
+    if getattr(plane, "config_backend", None) != "sql":
+        raise EligibilityError("frame ineligible: AUTHORITY_NOT_READY")
+    try:
+        _revision, lease = plane.read_hive_lease_record(
+            str(entry["prefix"]), incumbent_identity=identity
+        )
+    except (ValueError, OSError, RuntimeError) as exc:
+        raise EligibilityError("frame ineligible: authoritative_hive_lease_available") from exc
+    if lease is None:
+        raise EligibilityError("frame ineligible: current_hive_lease_holder")
+    return str(entry["prefix"]), identity, lease
+
+
 def require_intake(hive="", *, cfg=None, hive_dir=None):
     decision = require_local(hive, cfg=cfg, hive_dir=hive_dir)
     if decision is not None:

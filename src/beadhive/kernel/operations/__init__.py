@@ -158,6 +158,7 @@ hq beadyard-policy-refresh|expected_policy_digest:string:r,expected_config_head:
 hq clone|auto:boolean:o
 hq init|dry_run:boolean:o,auto:boolean:o,create:boolean:o
 hq intake|
+hq migrate|to:string:r,dry_run:boolean:o,confirm:boolean:o,intent:string:o,mirror_journal:string:o,operator_key:string:o,suspension_artifact:string:o,suspension_signature:string:o,expected_sql_revision:string:o,expected_git_revision:string:o
 hq prune-aggregate|dry_run:boolean:o,confirm:boolean:o
 hq push|dry_run:boolean:o
 hq restore|list_only:boolean:o,from_dir:string:o,level:string:o,dry_run:boolean:o,confirm:boolean:o

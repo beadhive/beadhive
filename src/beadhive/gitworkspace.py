@@ -31,10 +31,16 @@ import time
 import tomllib
 from contextlib import contextmanager
 from dataclasses import dataclass
-from glob import glob
 from pathlib import Path
 
 from .identity import workspace_root
+from .modules.config.adapters.workspace_selection import (
+    external_configs as _external_configs,
+)
+from .modules.config.adapters.workspace_selection import (  # noqa: F401 - compatibility export
+    glob_configs,
+    selected_git_sources,
+)
 
 _SEED_TOML = (
     "# seeded by `bh config init` — bh's internal workspace root.\n"
@@ -97,48 +103,29 @@ class RepoGroup:
     exclude: tuple[str, ...] = ()
 
 
-def glob_configs(d: Path) -> list[Path]:
-    """`workspace.toml` + split `workspace-*.toml` configs under *d*, but NOT
-    `workspace-lock.toml` (git-workspace's own output, not an input)."""
-    found = sorted(glob(f"{d}/workspace*.toml"))
-    return [Path(p) for p in found if not p.endswith("-lock.toml")]
-
-
-def _external_configs(root: Path) -> list[Path]:
-    # Generated central files are derived output, never an external source tier.
-    return [path for path in glob_configs(root) if not path.name.startswith(_CENTRAL_PREFIX)]
-
-
 def workspace_sources(cfg) -> list[WorkspaceSource]:
     """Raw ordered files from the first selected workspace tier."""
-    explicit = (cfg.get("git_workspace") or {}).get("path")
-    if explicit:
-        path = Path(explicit).expanduser()
-        paths = [path] if path.exists() else []
-    elif own := _external_configs(Path(workspace_root())):
-        paths = own
-    else:
-        from . import config
+    from . import config
 
-        if config.fleet_sql_selected():
-            snapshot = config.fleet_snapshot()
-            return [
-                WorkspaceSource(
-                    item.path,
-                    item.content,
-                    None,
-                    snapshot.backend_identity,
-                    snapshot.commit_revision,
-                )
-                for item in snapshot.documents
-                if item.path == "workspace.toml"
-                or (
-                    item.path.startswith("workspace-")
-                    and item.path.endswith(".toml")
-                    and item.path != "workspace-lock.toml"
-                )
-            ]
-        paths = glob_configs(config.hq_dir())
+    if config.fleet_sql_selected():
+        snapshot = config.fleet_snapshot()
+        return [
+            WorkspaceSource(
+                item.path,
+                item.content,
+                None,
+                snapshot.backend_identity,
+                snapshot.commit_revision,
+            )
+            for item in snapshot.documents
+            if item.path == "workspace.toml"
+            or (
+                item.path.startswith("workspace-")
+                and item.path.endswith(".toml")
+                and item.path != "workspace-lock.toml"
+            )
+        ]
+    paths = selected_git_sources(cfg, root=Path(workspace_root()), hq_dir=Path(config.hq_dir()))
     return [WorkspaceSource(path.name, path.read_text(), path) for path in paths]
 
 
@@ -151,6 +138,10 @@ def materialize_workspace_sources(cfg, root: Path) -> list[Path]:
     root = Path(root)
     if root.is_symlink():
         raise ValueError("workspace root must not be a symlink")
+    from . import config
+
+    if config.fleet_sql_selected() and _external_configs(root):
+        raise ValueError("committed workspace child input is shadowed by unowned local files")
     root.mkdir(parents=True, exist_ok=True)
     sources = workspace_sources(cfg)
     manifest = root / _GENERATED_MANIFEST
@@ -221,6 +212,55 @@ def materialize_workspace_sources(cfg, root: Path) -> list[Path]:
     return selected
 
 
+def lock_committed_workspace_sources(cfg, root: Path, *, run_child):
+    """Run the pinned child on only committed inputs, then promote its lockfile.
+
+    git-workspace 1.10.1 has no config-path flag: `lock` globs every
+    workspace*.toml directly under --workspace. A private staging root avoids
+    mixing stale external files into its provider input. The resulting lockfile
+    is then atomically installed in the unchanged real clone root, where
+    `update` reads the lockfile and preserves existing repo paths.
+    """
+    root = Path(root)
+    if root.is_symlink():
+        raise ValueError("workspace root must not be a symlink")
+    root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".bh-sql-workspace-", dir=root.parent) as name:
+        stage = Path(name)
+        materialize_workspace_sources(cfg, stage)
+        result = run_child(
+            ["git", "workspace", "--workspace", str(stage), "lock"],
+            check=False,
+            capture=True,
+            timeout=300,
+            github_token=True,
+        )
+        if result.returncode:
+            return result
+        source = stage / "workspace-lock.toml"
+        info = source.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 4 * 1024 * 1024:
+            raise ValueError("committed workspace child lockfile invalid")
+        body = source.read_bytes()
+        try:
+            parsed = tomllib.loads(body.decode("utf-8"))
+        except (UnicodeError, tomllib.TOMLDecodeError):
+            raise ValueError("committed workspace child lockfile invalid") from None
+        if not isinstance(parsed.get("repo"), list):
+            raise ValueError("committed workspace child lockfile invalid")
+        fd, temporary = tempfile.mkstemp(prefix=".bh-workspace-lock-", dir=root)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(body)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, root / "workspace-lock.toml")
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+    return result
+
+
 def config_paths(cfg) -> list[Path]:
     """The workspace*.toml file(s) bh reads the fleet's repo groups from.
 
@@ -251,17 +291,11 @@ def config_paths(cfg) -> list[Path]:
     made reachable to the child (bh-28ha).
     SQL source documents have no local source path; use workspace_sources for reads.
     """
-    explicit = (cfg.get("git_workspace") or {}).get("path")
-    if explicit:
-        p = Path(explicit).expanduser()
-        return [p] if p.exists() else []
-    if own := _external_configs(Path(workspace_root())):
-        return own
     from . import config  # lazy: config imports deps/schema, this module is a leaf reader
 
     if config.fleet_sql_selected():
-        return []  # SQL documents are returned by workspace_sources, not local HQ paths.
-    return glob_configs(config.hq_dir())
+        return []  # Committed SQL documents have no local authoritative path.
+    return selected_git_sources(cfg, root=Path(workspace_root()), hq_dir=Path(config.hq_dir()))
 
 
 def is_seeded(root) -> bool:

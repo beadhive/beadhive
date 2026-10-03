@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import sys
 import tempfile  # noqa: F401  # compatibility: callers patch config.tempfile.gettempdir
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 from . import config_edit as _config_edit
@@ -35,6 +37,9 @@ _Env = _config_paths.Env
 _DEFAULT_HOME_OLD = Path("~/.ws").expanduser()
 _DEFAULT_HOME_NEW = Path("~/.beadhive").expanduser()
 _UNSET = object()
+_legacy_migration_original: ContextVar[bytes | None] = ContextVar(
+    "legacy_migration_original", default=None
+)
 
 _yaml = _config_store.yaml
 _yaml_lock = _config_store.yaml_lock
@@ -61,6 +66,13 @@ KNOWN_SECTIONS = _known_sections()
 
 def _facade():
     return sys.modules[__name__]
+
+
+def _workspace_root_for_transition() -> Path:
+    """Composition port for the canonical post-switch workspace root."""
+    from . import identity
+
+    return Path(identity.workspace_root())
 
 
 def _warning(event: str, *, logger_name: str | None = None, **fields) -> None:
@@ -302,7 +314,33 @@ def _guard_hq_registry_controller() -> None:
 
 
 def save(data) -> None:
-    _config_store.save_host(_facade(), data)
+    original_bytes = _legacy_migration_original.get()
+    if original_bytes is None:
+        _config_store.save_host(_facade(), data)
+    else:
+        _config_store.save_host_legacy_migration(_facade(), data, original_bytes=original_bytes)
+
+
+@contextmanager
+def _legacy_migration_scope(original_bytes: bytes):
+    """Keep the public save seam while pinning a known raw HOST repair."""
+    token = _legacy_migration_original.set(original_bytes)
+    try:
+        yield
+    finally:
+        _legacy_migration_original.reset(token)
+
+
+def save_after_verified_hq_export(data, receipt, mirror_plan) -> None:
+    """Select Git only after exact live SQL and signed Git export qualification."""
+    _config_store.save_host_after_verified_export(_facade(), data, receipt, mirror_plan)
+
+
+def save_after_verified_hq_seed(data, *, revision: str, beadyard_id: str) -> None:
+    """Select SQL only after exact committed seed and post-switch readback."""
+    _config_store.save_host_after_verified_seed(
+        _facade(), data, revision=revision, beadyard_id=beadyard_id
+    )
 
 
 def save_fleet(data) -> None:

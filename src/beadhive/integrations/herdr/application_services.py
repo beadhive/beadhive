@@ -130,6 +130,7 @@ _LEGACY_DEPENDENCY_NAMES = frozenset(
         "host",
         "host_adopt",
         "host_lease",
+        "hq_control_plane",
         "hosts",
         "identity",
         "jsonout",
@@ -161,6 +162,7 @@ if _legacy_dependencies is None:
     host: Any = None
     host_adopt: Any = None
     host_lease: Any = None
+    hq_control_plane: Any = None
     hosts: Any = None
     identity: Any = None
     jsonout: Any = None
@@ -2859,15 +2861,22 @@ def _launch_lease(cfg, entry: dict, hive: str, adopt_expired: bool) -> None:
 def _adopt_expired_lease(cfg, entry: dict):
     """Invoke the normal fence-then-lease adoption core without a force escape hatch."""
     hq_dir = config.hq_dir()
-    git_probe = run.run(
-        ["git", "-C", str(hq_dir), "rev-parse", "--git-dir"], check=False, capture=True
-    )
-    if git_probe.returncode != 0:
-        raise RuntimeError(
-            f"no Factory HQ clone at {hq_dir}; run `bh hq init` or `bh hq clone` first"
-        )
     host_id = host.host_id()
-    manifest = hosts.load(hq_dir, host_id)
+    if config.fleet_sql_selected():
+        plane = hq_control_plane.control_plane(hq_dir)
+        status = plane.authority_status()
+        if not status.get("authority_ready"):
+            raise RuntimeError("AUTHORITY_NOT_READY: SQL runtime binding unavailable")
+        manifest = plane.load_host_manifest(host_id)
+    else:
+        git_probe = run.run(
+            ["git", "-C", str(hq_dir), "rev-parse", "--git-dir"], check=False, capture=True
+        )
+        if git_probe.returncode != 0:
+            raise RuntimeError(
+                f"no Factory HQ clone at {hq_dir}; run `bh hq init` or `bh hq clone` first"
+            )
+        manifest = hosts.load(hq_dir, host_id)
     ttl = host_lease.ttl_for_role(manifest.role, config.host_lease_ttl(cfg))
     return host_adopt.adopt(
         prefix=str(entry["prefix"]),

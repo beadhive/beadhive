@@ -8,6 +8,7 @@ Beads, or infer frame admission.
 from __future__ import annotations
 
 import hashlib
+import uuid
 from dataclasses import asdict
 
 from . import gitref
@@ -143,7 +144,16 @@ class GitFleetConfigRevisionStore:
             raise FleetConfigError(str(exc)) from None
         return RawFleetConfigRevision(sha, documents)
 
-    def publish_snapshot(self, documents, *, expected_revision, explicit_adoption=False):
+    def publish_snapshot(
+        self, documents, *, expected_revision, explicit_adoption=False, publication_id=None
+    ):
+        if publication_id is not None:
+            try:
+                parsed_id = uuid.UUID(publication_id)
+                if parsed_id.version != 4 or str(parsed_id) != publication_id:
+                    raise ValueError()
+            except (TypeError, ValueError, AttributeError):
+                raise FleetConfigError("configuration publication ID invalid") from None
         try:
             validate_documents(documents)
         except DocumentValidationError as exc:
@@ -195,7 +205,10 @@ class GitFleetConfigRevisionStore:
         ]
         if expected_revision:
             args += ["-p", expected_revision]
-        sha = git(directory, *args, data=f"Fleet configuration revision {state['revision']}\n")
+        message = f"Fleet configuration revision {state['revision']}\n"
+        if publication_id is not None:
+            message += f"\nHQ export publication ID: {publication_id}\n"
+        sha = git(directory, *args, data=message)
         witness = f"{guard.CONFIG_WITNESS}{state['revision']:020d}"
         git(
             directory,

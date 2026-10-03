@@ -2085,9 +2085,12 @@ class SqlControlPlane:
                 raise
             raise ControlPlaneError("qualified SQL eligibility unavailable") from None
 
-    def read_hive_lease_record(self, prefix, *, holder_identity=None):
+    def read_hive_lease_record(self, prefix, *, holder_identity=None, incumbent_identity=None):
         from .host_lease_contracts import HostLease, _parse_stamp
         from .hq_sql_signatures import canonical
+
+        if holder_identity is not None and incumbent_identity is not None:
+            raise ControlPlaneError("hive lease identity qualifier ambiguous")
 
         try:
             (
@@ -2126,6 +2129,13 @@ class SqlControlPlane:
             ):
                 raise ControlPlaneError("protected hive lease record invalid")
             lease = HostLease(**raw)
+            if incumbent_identity is not None:
+                if (
+                    incumbent_identity != route.holder_identity
+                    or envelope["authority"] != {"frame_id": route.frame_id, **record["authority"]}
+                    or lease.host_id != incumbent_identity
+                ):
+                    return revision, None
             if holder_identity is not None:
                 policy = policies.get(prefix)
                 observation = self._public_observation(

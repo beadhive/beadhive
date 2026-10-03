@@ -140,6 +140,11 @@ def change(delta):
 
 def leave(*_args):
     global left, signalled
+    # Owner death delivers both the direct-child PDEATHSIG and the watchdog's
+    # group SIGTERM. Ignore the second signal while the first handler durably
+    # decrements the sentinel count under its file lock.
+    if _args:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
     signalled = signalled or bool(_args)
     if not left:
         left = True

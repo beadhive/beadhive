@@ -1025,6 +1025,14 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
                 hive_revision,
                 hive_lease,
             )
+            assert plane.read_hive_lease_record("bh", incumbent_identity="host-1") == (
+                hive_revision,
+                hive_lease,
+            )
+            assert plane.read_hive_lease_record("bh", incumbent_identity="foreign-host") == (
+                hive_revision,
+                None,
+            )
             manifest_identity = SimpleNamespace(
                 frame_id="frame-1", host_id="host-1", instance_ref="vm-1"
             )
@@ -1961,6 +1969,14 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
                 confirm=True,
             )
             assert cordoned["cordoned"] is True
+            assert plane.read_hive_lease_record("bh", holder_identity="host-1") == (
+                hive_revision,
+                None,
+            )
+            assert plane.read_hive_lease_record("bh", incumbent_identity="host-1") == (
+                hive_revision,
+                hive_lease,
+            )
             resumed = operator_plane.lifecycle(
                 "resume",
                 "frame-1",
@@ -1983,6 +1999,8 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
                 confirm=True,
             )
             assert retired["state"] == "retired"
+            with pytest.raises(ControlPlaneError):
+                plane.read_hive_lease_record("bh", incumbent_identity="host-1")
             revoked_head = retired["revision"]
             assert revoked_head != initial
             denied_after_revoke = subprocess.run(

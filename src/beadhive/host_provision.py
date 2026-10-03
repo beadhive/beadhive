@@ -69,8 +69,10 @@ step ran once — a plugin removed later, or a host provisioned before this bead
 
 from __future__ import annotations
 
+import json
 import shutil
 import stat
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -334,7 +336,10 @@ def _step_git_workspace_update(*, dry_run: bool) -> StepResult:
                 snapshot = config.fleet_snapshot()
                 if time.time() >= snapshot.valid_until:
                     raise ValueError("committed workspace configuration validity expired")
-                materialized = gitworkspace.materialize_workspace_sources(cfg, root)
+                locked = gitworkspace.lock_committed_workspace_sources(cfg, root, run_child=run)
+                if locked.returncode != 0:
+                    return StepResult("git workspace update", "failed", err_line(locked))
+                materialized = sources
                 linked = None
             else:
                 linked = _link_workspace_config(gitworkspace.config_paths(cfg))
@@ -509,6 +514,7 @@ def _step_host_init(*, role: str, force: bool, dry_run: bool) -> StepResult:
 STORE_READY = "ready"  # a local database exists — sync it
 STORE_UNBOOTSTRAPPED = "unbootstrapped"  # published config, no database yet — bootstrap first
 STORE_UNPUBLISHED = "unpublished"  # nothing to bootstrap FROM — the origin never committed one
+STORE_UNAVAILABLE = "unavailable"  # selected engine or origin cannot prove a usable store
 
 
 #: The ref a hive's bead store is published under on its origin. The store travels as this
@@ -564,6 +570,49 @@ def _store_state(hive_dir: Path) -> str:
     return STORE_READY if has_db else STORE_UNBOOTSTRAPPED
 
 
+def _sql_store_state(hive_dir: Path, cfg: dict) -> str:
+    """Probe a selected-SQL host's existing Beads engine before calling it ready.
+
+    A directory alone can be an abandoned or mismatched shared-server database.
+    An unusable recorded store is never bootstrapped over. When there is no
+    database, the hive's own origin decides whether supported `bd bootstrap`
+    can hydrate it; an unreachable origin remains explicitly unavailable.
+    """
+    hive_dir = Path(hive_dir)
+    beads = hive_dir / ".beads"
+    metadata_present = (beads / "metadata.json").is_file()
+    database = store_locator.database_dir(hive_dir)
+    if metadata_present and database.exists():
+        if database.is_symlink() or not (database / ".dolt").is_dir():
+            return STORE_UNAVAILABLE
+        try:
+            probe = engine.get_engine(cfg).invoke(
+                ["list", "--json", "--limit", "1", "--readonly"],
+                cwd=hive_dir,
+                capture=True,
+                timeout=15,
+            )
+            payload = json.loads(probe.stdout or "") if probe.returncode == 0 else None
+            return STORE_READY if isinstance(payload, list) else STORE_UNAVAILABLE
+        except (OSError, ValueError, TypeError, subprocess.TimeoutExpired):
+            return STORE_UNAVAILABLE
+    if database.exists():
+        return STORE_UNAVAILABLE  # database residue without bd's own binding
+    try:
+        source = run(
+            ["git", "ls-remote", "origin", STORE_DATA_REF],
+            cwd=str(hive_dir),
+            check=False,
+            capture=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return STORE_UNAVAILABLE
+    if source.returncode != 0:
+        return STORE_UNAVAILABLE
+    return STORE_UNBOOTSTRAPPED if (source.stdout or "").strip() else STORE_UNPUBLISHED
+
+
 def _bootstrap_hive(cfg, entry: dict) -> str:
     """Hydrate one hive's bead database from its committed remote — ``""`` on success, else the
     error line.
@@ -609,7 +658,7 @@ def _step_bead_sync(*, dry_run: bool, hives: list[str] | None = None) -> StepRes
     and an EMPTY list is a legitimate answer meaning "carry none" — which is why the filter
     distinguishes None (all) from [] (none) rather than treating both as falsey.
     """
-    if not config.hq_dir().exists():
+    if not config.fleet_sql_selected() and not config.hq_dir().exists():
         return StepResult("bead sync", "skipped", "no local HQ yet — see the hq clone step above")
     present = _present_hive_entries(_cfg_or_none())
     if not present:
@@ -629,9 +678,20 @@ def _step_bead_sync(*, dry_run: bool, hives: list[str] | None = None) -> StepRes
         STORE_READY: [],
         STORE_UNBOOTSTRAPPED: [],
         STORE_UNPUBLISHED: [],
+        STORE_UNAVAILABLE: [],
     }
     for entry in selected:
-        by_state[_store_state(registry.hive_dir(entry))].append(entry)
+        state = (
+            _sql_store_state(registry.hive_dir(entry), cfg)
+            if config.fleet_sql_selected()
+            else _store_state(registry.hive_dir(entry))
+        )
+        by_state[state].append(entry)
+    if by_state[STORE_UNAVAILABLE]:
+        prefixes = ", ".join(str(entry["prefix"]) for entry in by_state[STORE_UNAVAILABLE])
+        return StepResult(
+            "bead sync", "failed", f"Beads engine or hive origin unavailable: {prefixes}"
+        )
     unpublished = [str(e["prefix"]) for e in by_state[STORE_UNPUBLISHED]]
     # REPORTED, never bootstrapped or synced: there is nothing on the origin to hydrate from,
     # and calling that a sync failure would send the operator looking at this host.
@@ -904,12 +964,19 @@ def _step_verify() -> StepResult:
     if failed:
         return StepResult("verify", "failed", "; ".join(f"{c.label}: {c.detail}" for c in failed))
     hives = _present_hive_entries(_cfg_or_none())
-    if not hives:
-        wiring = "central config" if config.fleet_sql_selected() else "HQ wiring"
+    if config.fleet_sql_selected():
         return StepResult(
             "verify",
             "done",
-            f"host identity, config, {wiring} and roster registration verified — but this host "
+            "CONFIG_READY: committed central config, host identity and roster verified; "
+            f"{len(hives)} hive clone(s) present; BEADS_READY and ADMITTED require "
+            "separate engine/runtime checks",
+        )
+    if not hives:
+        return StepResult(
+            "verify",
+            "done",
+            f"host identity, config, HQ wiring and roster registration verified — but this host "
             f"carries NO hive clones ({workspace_root()} is empty of them), so it can serve none "
             f"yet; `usable` is not claimed",
         )

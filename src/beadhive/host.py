@@ -80,6 +80,11 @@ def frame_binding() -> tuple[bool, bool]:
     return True, bool(settings.get("host", {}).get("frame_id"))
 
 
+def sql_hq_selected() -> bool:
+    """Read the explicit HOST bootstrap selector without a fleet/runtime read."""
+    return config.fleet_sql_selected()
+
+
 def frame_enrolled() -> bool:
     return frame_binding()[1]
 

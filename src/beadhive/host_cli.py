@@ -1079,6 +1079,12 @@ def _require_hq_dir() -> Path:
     verb below is pointless without one (unlike `list`/`show`, which degrade gracefully to an
     empty roster)."""
     hq_dir = config.hq_dir()
+    if config.fleet_sql_selected():
+        # The returned path is only context for hive clones/local lease caches;
+        # protected SQL config and runtime are selected independently. The
+        # lease port must still deny AUTHORITY_NOT_READY when unbound.
+        config.fleet_snapshot()
+        return hq_dir
     if not (hq_dir / ".git").exists():
         typer.echo(
             f"✗ no Factory HQ clone at {hq_dir} — the host lease lives there.\n"
@@ -1127,12 +1133,24 @@ def _scan_leases(
     `packup_cmd` (releases everything found) and `remove_cmd` (bh-salu: refuses to remove a
     host that still holds one, unless `--force`)."""
     renew_interval = config.host_lease_renew_interval(cfg)
+    selected_sql = config.fleet_sql_selected()
+    plane = None
+    if selected_sql:
+        from .hq_control_plane import control_plane
+
+        plane = control_plane(hq_dir)
     held: list[tuple[str, host_lease.HostLease]] = []
     unreadable: list[tuple[str, str]] = []
     for prefix, _hive_dir in registry.all_hive_targets(cfg):
         try:
-            lease = host_lease.read("origin", prefix, cwd=hq_dir)
-        except gitref.RemoteUnreachable as exc:
+            # A holder-filtered SQL read can hide a stale incumbent; release
+            # enumeration needs the authenticated unfiltered protected record.
+            lease = (
+                plane.read_hive_lease_record(prefix)[1]
+                if plane is not None
+                else host_lease.read("origin", prefix, cwd=hq_dir)
+            )
+        except (gitref.RemoteUnreachable, ValueError) as exc:
             unreadable.append((prefix, str(exc)))
             continue
         if lease is None or lease.host_id != host_id:
@@ -1148,6 +1166,10 @@ def _require_manifest(hq_dir: Path, host_id: str) -> hosts.HostManifest:
     (`host_lease.ttl_for_role`); a host with no manifest has never declared one, so there is
     nothing safe to derive tenure from."""
     try:
+        if config.fleet_sql_selected():
+            from .hq_control_plane import control_plane
+
+            return control_plane(hq_dir).load_host_manifest(host_id)
         return hosts.load(hq_dir, host_id)
     except FileNotFoundError:
         typer.echo(
@@ -1272,8 +1294,8 @@ def release_cmd(hive: str = _HIVE_ARG_OPT, all_hives: bool = _ALL_HELD):
     epoch that invalidates every prior token, regardless of what this host's now-vacated fence
     token still says in the meantime — so touching the fence here would either be a no-op or
     require inventing a "released but still fenced" state nothing else in this design checks
-    for. The local cache mirrors the tombstone immediately, so THIS host's own future
-    `guard_primary` calls refuse right away rather than waiting out the TTL."""
+    for. Git mode mirrors the tombstone into its local cache immediately; SQL mode reads the
+    protected current lease projection. This host's next guarded write refuses in either mode."""
     if all_hives == (hive is not None):
         typer.echo("✗ pass exactly one of <hive> or --all", err=True)
         raise typer.Exit(1)
@@ -1384,7 +1406,10 @@ def provision_cmd(
     if any(r.status == "failed" for r in results):
         typer.echo("\n✗ provisioning incomplete — see the failed step(s) above.", err=True)
         raise typer.Exit(1)
-    typer.echo("\n✓ host fully provisioned.")
+    if config.fleet_sql_selected():
+        typer.echo("\n✓ CONFIG_READY; Beads engine and runtime admission remain separate checks.")
+    else:
+        typer.echo("\n✓ host fully provisioned.")
 
 
 def _release_every_held(cfg: dict, hq_dir: Path, host_id: str) -> None:
@@ -1437,15 +1462,28 @@ def _ensure_lease_for_enable(hive: str, cfg: dict) -> tuple[bool, str]:
     """Verify (or adopt) the host lease before `enable` installs anything. Never starts a loop
     that will silently idle because the operator did not notice — a lease held elsewhere is a
     REFUSAL with the actionable next command, never a warning `enable` proceeds past."""
-    state_info = guard.primary_state(hive, cfg=cfg)
+    if config.fleet_sql_selected():
+        from . import frame_eligibility
+
+        try:
+            entry = registry.resolve_hive(cfg, hive)
+            prefix = str(entry["prefix"])
+            identity = _require_host_id()
+            frame_eligibility.require_eligible(identity, entry, cfg=cfg, hq_dir=config.hq_dir())
+            lease = host_lease.read("origin", prefix, cwd=config.hq_dir())
+            state_info = prefix, identity, lease
+        except (ValueError, OSError, RuntimeError, KeyError):
+            return False, "AUTHORITY_NOT_READY: protected SQL admission or lease unavailable"
+    else:
+        state_info = guard.primary_state(hive, cfg=cfg)
     if state_info is None:
         # The multi-host model is not in force for this hive (no HQ clone / never adopted) —
         # single-host default. `dispatch_hive_run`'s NullLeaseKeeper agrees: `held=True` always.
         return True, "no host lease in force for this hive (single-host default)"
     _prefix, this_host, lease = state_info
-    if lease.held_by(this_host):
+    if lease is not None and lease.held_by(this_host):
         return True, f"lease already held — {lease.describe()}"
-    if lease.is_tombstone or lease.is_expired():
+    if lease is None or lease.is_tombstone or lease.is_expired():
         try:
             outcome = adopt_one(hive)
         except (

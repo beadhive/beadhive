@@ -6,17 +6,22 @@ import fcntl
 import hashlib
 import json
 import os
+import runpy
 import shutil
 import socket
 import subprocess
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
 from beadhive.hq_sql_config import (
+    InitialSeedReceipt,
     PublicationUnknown,
     SqlConfigError,
     SqlFleetConfigRevisionStore,
@@ -25,6 +30,308 @@ from beadhive.hq_sql_config import (
 from beadhive.hq_sql_transport import SqlTransportError
 from beadhive.modules.config.domain.ports import FleetConfigDocument
 from harness.world import dolt_server_slot, free_port
+
+
+@contextmanager
+def _empty_config_server(tmp_path):
+    """Real TLS Dolt fixture ending at the committed *empty* three-table schema."""
+    _certificates(tmp_path)
+    data = tmp_path / "data"
+    data.mkdir()
+    port = free_port()
+    (tmp_path / "server.yaml").write_text(
+        f"data_dir: {data}\nlistener:\n  host: 127.0.0.1\n  port: {port}\n"
+        f"  tls_key: {tmp_path / 'server.key'}\n"
+        f"  tls_cert: {tmp_path / 'server.crt'}\n"
+        "  require_secure_transport: false\n"
+    )
+    with dolt_server_slot(test_id="sql-config-initial-publication"):
+        with (tmp_path / "server.log").open("w") as log:
+            server = subprocess.Popen(
+                [shutil.which("dolt"), "sql-server", "--config", str(tmp_path / "server.yaml")],
+                cwd=tmp_path,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+            )
+        try:
+            deadline = time.monotonic() + 20
+            while True:
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                        break
+                except OSError:
+                    if server.poll() is not None or time.monotonic() >= deadline:
+                        raise AssertionError("owned Dolt fixture did not start") from None
+                    time.sleep(0.1)
+            provision = Path(__file__).resolve().parents[1] / "scripts/hq-config/provision.py"
+            render = runpy.run_path(str(provision))["sql"]
+            _cli(tmp_path, port, render("127.0.0.1", "fixture-secret", "fixture-secret"))
+            import pymysql
+
+            root = pymysql.connect(
+                host="127.0.0.1", port=port, user="root", database="beadhive_hq_config"
+            )
+            try:
+                with root.cursor() as cursor:
+                    cursor.execute("SELECT DOLT_HASHOF('HEAD')")
+                    parent = cursor.fetchone()[0]
+            finally:
+                root.close()
+            settings = {
+                "reader": _binding(tmp_path, port, "bh_hq_config_reader"),
+                "publisher": _binding(tmp_path, port, "bh_hq_config_publisher"),
+                "backend_identity": "fixture-backend",
+                "generation": "fixture-generation",
+                "minimum_sequence": 1,
+                "initial_revision": parent,
+                "floor_path": str(tmp_path / "floor.json"),
+                "cache_ttl": 10,
+            }
+            yield port, parent, settings
+        finally:
+            server.terminate()
+            server.wait(timeout=10)
+
+
+def test_public_initial_seed_and_original_receipt_survive_later_publication(tmp_path):
+    from beadhive.beadyard_identity import new_document, parse_document
+
+    with _empty_config_server(tmp_path) as (port, parent, settings):
+        store = SqlFleetConfigRevisionStore(settings, broker=_Broker())
+        identity_raw = new_document()
+        owner = parse_document(identity_raw)
+        documents = (
+            FleetConfigDocument("beadyard.json", identity_raw),
+            FleetConfigDocument("fleet.yaml", "hq:\n  mode: dolt-server\n"),
+        )
+        publication_id = str(uuid.uuid4())
+        receipt = store.initialize_snapshot(
+            documents, expected_schema_parent=parent, publication_id=publication_id
+        )
+        assert isinstance(receipt, InitialSeedReceipt)
+        assert receipt.expected_schema_parent == parent
+        assert receipt.beadyard_id == owner
+        assert receipt.documents_sha256 == _digest(documents)
+        assert receipt.observed_head == receipt.committed_revision
+        assert (
+            store.recover_initial_snapshot(
+                publication_id=publication_id,
+                expected_schema_parent=parent,
+                documents_sha256=_digest(documents),
+                document_count=len(documents),
+                beadyard_id=owner,
+            )
+            == receipt
+        )
+        with pytest.raises(SqlConfigError, match="already initialized|expected schema parent"):
+            store.initialize_snapshot(
+                documents, expected_schema_parent=parent, publication_id=str(uuid.uuid4())
+            )
+        import pymysql
+
+        root = pymysql.connect(
+            host="127.0.0.1", port=port, user="root", database="beadhive_hq_config"
+        )
+        try:
+            with root.cursor() as cursor:
+                cursor.execute("SELECT COUNT(*) FROM hq_config_meta")
+                assert cursor.fetchone() == (1,)
+                cursor.execute("SELECT COUNT(*) FROM hq_config_publications")
+                assert cursor.fetchone() == (1,)
+                cursor.execute("SELECT DOLT_HASHOF('HEAD')")
+                assert cursor.fetchone() == (receipt.committed_revision,)
+        finally:
+            root.close()
+        # Seed verification does not construct a usable host floor. Setup binds
+        # the exact acknowledged commit before normal publication/reads.
+        settings["initial_revision"] = receipt.committed_revision
+        later = (
+            documents[0],
+            FleetConfigDocument("fleet.yaml", "hq:\n  mode: invalid-mode\n"),
+        )
+        # Semantic validation will reject incomplete workspace source before DML.
+        with pytest.raises(SqlConfigError):
+            store.publish_snapshot(later, expected_revision=receipt.committed_revision)
+        later = (
+            documents[0],
+            FleetConfigDocument("fleet.yaml", "hq:\n  mode: dolt-server\n# later\n"),
+        )
+        published = store.publish_snapshot(later, expected_revision=receipt.committed_revision)
+        recovered = store.recover_initial_snapshot(
+            publication_id=publication_id,
+            expected_schema_parent=parent,
+            documents_sha256=_digest(documents),
+            document_count=len(documents),
+            beadyard_id=owner,
+        )
+        assert recovered is not None
+        assert recovered.committed_revision == receipt.committed_revision
+        assert recovered.observed_head == published.commit_revision
+        assert recovered.documents_sha256 == _digest(documents)
+
+
+@pytest.mark.parametrize("same_intent", [False, True])
+def test_two_publishers_compete_for_one_empty_config_singleton(tmp_path, monkeypatch, same_intent):
+    from beadhive.beadyard_identity import new_document, parse_document
+
+    with _empty_config_server(tmp_path) as (port, parent, settings):
+        identity_raw = new_document()
+        owner = parse_document(identity_raw)
+        documents = (
+            FleetConfigDocument("beadyard.json", identity_raw),
+            FleetConfigDocument("fleet.yaml", "hq:\n  mode: dolt-server\n"),
+        )
+        ids = [str(uuid.uuid4()) for _ in range(1 if same_intent else 2)]
+        if same_intent:
+            ids *= 2
+        barrier = threading.Barrier(2, timeout=10)
+        stores = [SqlFleetConfigRevisionStore(settings, broker=_Broker()) for _ in ids]
+        from beadhive import hq_sql_config
+
+        original_execute = hq_sql_config._BoundedCursor.execute
+
+        def contend(cursor, sql, params=None):
+            if sql.startswith("INSERT INTO hq_config_meta"):
+                barrier.wait()  # both passed all empty-schema/HEAD preflights
+            return original_execute(cursor, sql, params)
+
+        monkeypatch.setattr(hq_sql_config._BoundedCursor, "execute", contend)
+
+        def attempt(index):
+            try:
+                return stores[index].initialize_snapshot(
+                    documents, expected_schema_parent=parent, publication_id=ids[index]
+                )
+            except (SqlConfigError, PublicationUnknown) as exc:
+                return exc
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(attempt, (0, 1)))
+        import pymysql
+
+        root = pymysql.connect(
+            host="127.0.0.1", port=port, user="root", database="beadhive_hq_config"
+        )
+        try:
+            with root.cursor() as cursor:
+                cursor.execute("SELECT publication_id FROM hq_config_publications")
+                published_ids = [row[0] for row in cursor.fetchall()]
+                cursor.execute("SELECT COUNT(*) FROM hq_config_meta")
+                assert cursor.fetchone() == (1,)
+                cursor.execute("SELECT COUNT(*) FROM hq_config_documents")
+                assert cursor.fetchone() == (len(documents),)
+                cursor.execute(
+                    "SELECT COUNT(*) FROM dolt_log "
+                    "WHERE message LIKE 'HQ config initial publication %'"
+                )
+                assert cursor.fetchone() == (1,)
+                cursor.execute("SELECT COUNT(*) FROM dolt_status")
+                assert cursor.fetchone() == (0,)
+        finally:
+            root.close()
+        assert len(published_ids) == 1
+        assert published_ids[0] in ids
+        assert sum(isinstance(item, InitialSeedReceipt) for item in outcomes) == 1
+        assert sum(isinstance(item, SqlConfigError) for item in outcomes) == 1
+        for publication_id in ids:
+            result = stores[0].recover_initial_snapshot(
+                publication_id=publication_id,
+                expected_schema_parent=parent,
+                documents_sha256=_digest(documents),
+                document_count=len(documents),
+                beadyard_id=owner,
+            )
+            assert (result is not None) == (publication_id == published_ids[0])
+
+
+@pytest.mark.parametrize("crossed_commit", [False, True])
+def test_first_publication_uncertain_transport_keeps_original_intent(
+    tmp_path, monkeypatch, crossed_commit
+):
+    from beadhive import hq_sql_config
+    from beadhive.beadyard_identity import new_document, parse_document
+
+    with _empty_config_server(tmp_path) as (_port, parent, settings):
+        store = SqlFleetConfigRevisionStore(settings, broker=_Broker())
+        identity_raw = new_document()
+        owner = parse_document(identity_raw)
+        documents = (
+            FleetConfigDocument("beadyard.json", identity_raw),
+            FleetConfigDocument("fleet.yaml", "hq:\n  mode: dolt-server\n"),
+        )
+        publication_id = str(uuid.uuid4())
+        original_execute = hq_sql_config._BoundedCursor.execute
+        failed = [False]
+
+        def drop_response(cursor, sql, params=None):
+            target = "CALL DOLT_COMMIT" if crossed_commit else "INSERT INTO hq_config_publications"
+            if not failed[0] and sql.startswith(target):
+                failed[0] = True
+                if crossed_commit:
+                    original_execute(cursor, sql, params)
+                raise ConnectionResetError("synthetic fixture connection loss")
+            return original_execute(cursor, sql, params)
+
+        monkeypatch.setattr(hq_sql_config._BoundedCursor, "execute", drop_response)
+        if crossed_commit:
+            with pytest.raises(PublicationUnknown) as error:
+                store.initialize_snapshot(
+                    documents, expected_schema_parent=parent, publication_id=publication_id
+                )
+            assert error.value.publication_id == publication_id
+            assert error.value.expected_revision == parent
+        else:
+            with pytest.raises(SqlConfigError, match="first publication failed"):
+                store.initialize_snapshot(
+                    documents, expected_schema_parent=parent, publication_id=publication_id
+                )
+        assert failed == [True]
+        recovery = store.recover_initial_snapshot(
+            publication_id=publication_id,
+            expected_schema_parent=parent,
+            documents_sha256=_digest(documents),
+            document_count=len(documents),
+            beadyard_id=owner,
+        )
+        if crossed_commit:
+            assert recovery is not None
+            assert recovery.publication_id == publication_id
+            assert recovery.expected_schema_parent == parent
+            later_settings = {
+                **settings,
+                "initial_revision": recovery.committed_revision,
+                "floor_path": str(tmp_path / "later-publisher-floor.json"),
+            }
+            later_store = SqlFleetConfigRevisionStore(later_settings, broker=_Broker())
+            later_documents = (
+                documents[0],
+                FleetConfigDocument("fleet.yaml", "hq:\n  mode: dolt-server\n# later\n"),
+            )
+            later = later_store.publish_snapshot(
+                later_documents, expected_revision=recovery.committed_revision
+            )
+            restarted = SqlFleetConfigRevisionStore(settings, broker=_Broker())
+            original = restarted.recover_initial_snapshot(
+                publication_id=publication_id,
+                expected_schema_parent=parent,
+                documents_sha256=_digest(documents),
+                document_count=len(documents),
+                beadyard_id=owner,
+            )
+            assert original is not None
+            assert original.committed_revision == recovery.committed_revision
+            assert original.observed_head == later.commit_revision
+            with pytest.raises(SqlConfigError, match="expected schema parent"):
+                store.initialize_snapshot(
+                    documents, expected_schema_parent=parent, publication_id=publication_id
+                )
+        else:
+            assert recovery is None
+            retry = store.initialize_snapshot(
+                documents, expected_schema_parent=parent, publication_id=publication_id
+            )
+            assert retry.publication_id == publication_id
+
 
 pytestmark = [pytest.mark.integration, pytest.mark.dolt_server]
 
