@@ -211,6 +211,7 @@ def test_low_space_or_cross_device_ephemeral_cache_falls_back_visibly(
 ) -> None:
     checkout = Path("/tmp/bh-worktrees/example/repository")
     env = _env(tmp_path, BH_CACHE_MIN_FREE_BYTES="100")
+    monkeypatch.setattr(cache_locality, "_filesystem_type", lambda _path: "tmpfs")
     monkeypatch.setattr(cache_locality, "_capacity", lambda _path: (50, 50))
     monkeypatch.setattr(cache_locality, "_device", lambda _path: 1)
 

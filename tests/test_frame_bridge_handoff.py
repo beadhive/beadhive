@@ -42,7 +42,7 @@ def test_wheel_contains_only_the_frame_bridge_core_entry_point(tmp_path: Path) -
     """Prove the installed artifact, not only the source manifest, carries the rename."""
     output = tmp_path / "dist"
     subprocess.run(
-        ["uv", "build", "--offline", "--wheel", "--out-dir", str(output)],
+        ["uv", "build", "--offline", "--no-build-isolation", "--wheel", "--out-dir", str(output)],
         cwd=ROOT,
         check=True,
         capture_output=True,

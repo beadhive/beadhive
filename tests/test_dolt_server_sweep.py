@@ -88,7 +88,8 @@ def isolated_sweep_root():
     with tempfile.TemporaryDirectory(
         prefix="bh-dolt-sweep-proof-", dir=tempfile.gettempdir()
     ) as root:
-        yield Path(root)
+        # Match the physically scoped root used by the sweep; macOS aliases /var to /private/var.
+        yield Path(root).resolve()
 
 
 def test_nested_sweep_root_is_outside_controller_sweep_root(isolated_sweep_root):
@@ -97,8 +98,11 @@ def test_nested_sweep_root_is_outside_controller_sweep_root(isolated_sweep_root)
     This mirrors the production controller's no-``--basetemp`` calculation.  In an xdist worker,
     the old fixture put its directory directly below this root and this assertion failed.
     """
-    controller_sweep_root = Path(tempfile.gettempdir()) / f"pytest-of-{getpass.getuser()}"
+    controller_sweep_root = (
+        Path(tempfile.gettempdir()) / f"pytest-of-{getpass.getuser()}"
+    ).resolve()
 
+    assert isolated_sweep_root == isolated_sweep_root.resolve()
     assert not isolated_sweep_root.is_relative_to(controller_sweep_root)
 
 

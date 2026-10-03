@@ -147,16 +147,16 @@ def test_built_wheel_actually_contains_every_guide_file(tmp_path: Path) -> None:
 
     Offline is also the HONEST scope: whether the built wheel contains the guide files is a
     question about this repo's packaging declaration and has no business consulting an index. Any
-    tree the gate runs in has necessarily been `uv sync`ed (there is no .venv to run pytest from
-    otherwise), and that sync is what populates the backend in the cache. On a genuinely cold
-    cache uv now fails in under a second saying exactly that, instead of timing out.
+    tree the gate runs in has the locked Hatchling backend installed by the declared dev group.
+    Use that installed backend, so an isolated test HOME needs no second cached copy of the
+    build requirements. Missing installed build requirements still make the actual build fail.
 
     Unconditional rather than "offline only when fenced" — a test that behaves differently
     depending on where it runs is the class of thing this whole epic exists to remove.
     """
     out = tmp_path / "dist"
     subprocess.run(
-        ["uv", "build", "--offline", "--wheel", "--out-dir", str(out)],
+        ["uv", "build", "--offline", "--no-build-isolation", "--wheel", "--out-dir", str(out)],
         cwd=_REPO,
         check=True,
         capture_output=True,
