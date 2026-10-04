@@ -288,6 +288,10 @@ class CliRoutes:
     def public_snapshot_export(self, output: Path) -> Any:
         return self._bd.run(public_snapshot_argv(output), self._cwd)
 
+    def database_ping(self, *, timeout: float = 20.0) -> Any:
+        """Raw JSON process result for ``bd ping``: the hive database's reachability probe."""
+        return self._bd.run(["ping", "--json"], self._cwd, capture=True, timeout=timeout)
+
     def merge_slot_create(self) -> Any:
         return self._bd.run(["merge-slot", "create"], self._cwd)
 

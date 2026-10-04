@@ -325,3 +325,14 @@ def test_public_snapshot_route_is_narrow_and_shared_with_the_root_contract() -> 
     assert public_snapshot_argv(output) == ["export", "-o", str(output)]
     CliRoutes(bd, "/hive").public_snapshot_export(output)
     assert bd.calls[-1][1] == public_snapshot_argv(output)
+
+
+def test_database_ping_route_owns_its_argv_and_timeout() -> None:
+    class Timed(RecordingBd):
+        def run(self, args, cwd, actor="", capture=False, text_input=None, **kwargs):
+            self.calls.append(("run", list(args), cwd, capture, kwargs.get("timeout")))
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+    bd = Timed()
+    CliRoutes(bd, "/hive").database_ping(timeout=7)
+    assert bd.calls == [("run", ["ping", "--json"], "/hive", True, 7)]
