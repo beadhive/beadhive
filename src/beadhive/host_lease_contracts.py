@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import calendar
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 LEASE_REF_ROOT = "refs/bh/lease/"
 _TIMESTAMP_FMT = "%Y-%m-%dT%H:%M:%SZ"
@@ -56,6 +56,11 @@ class HostLease:
     epoch: int
     adopted_at: str
     expires_at: str
+    #: Not part of the record (never serialized, never compared). Set by the SQL reader in
+    #: ``hq.sql.liveness: signed`` mode: the holder's liveness is then its signed heartbeat,
+    #: so ``expires_at`` is only a failover hint and no longer ends a live holder's tenure.
+    #: A tombstone is still always expired.
+    advisory_expiry: bool = field(default=False, compare=False, repr=False)
 
     @property
     def is_tombstone(self) -> bool:
@@ -64,9 +69,12 @@ class HostLease:
         return not self.host_id
 
     def is_expired(self, at: float | None = None) -> bool:
-        """Whether the lease's TTL has elapsed. A tombstone is always expired."""
+        """Whether the lease's TTL has elapsed. A tombstone is always expired; an
+        :attr:`advisory_expiry` holder lease never is."""
         if self.is_tombstone:
             return True
+        if self.advisory_expiry:
+            return False
         clock = at if at is not None else time.time()
         return _parse_stamp(self.expires_at) <= clock
 

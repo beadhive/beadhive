@@ -524,6 +524,8 @@ def lease_state(
     this lease", never a separately-tuned threshold."""
     if lease is None or lease.is_expired(at):
         return "free"
+    if lease.advisory_expiry:
+        return "held"  # signed liveness: expiry is a hint, the holder is not "expiring"
     clock = at if at is not None else time.time()
     remaining = _parse_stamp(lease.expires_at) - clock
     return "expiring" if remaining <= renew_interval else "held"
@@ -551,13 +553,23 @@ def renew_if_due(
 
     Returns the :class:`LeaseOutcome` of a renewal that actually happened, or ``None`` when:
     nothing was due yet, the cache names no lease (or another host's), or the renewal attempt
-    itself failed. A failure — HQ unreachable, or the CAS lost to a takeover — is LOGGED and
-    SWALLOWED, never raised: an opportunistic boundary check must never crash the write verb
-    it is piggybacking on. Per Amendment 1 §4 an established primary keeps working on its
+    itself failed. A failure — HQ unreachable (git remote or SQL control plane), or the CAS
+    lost to a takeover — is LOGGED and SWALLOWED, never raised: an opportunistic boundary
+    check must never crash the write verb it is piggybacking on. Per Amendment 1 §4 an
+    established primary keeps working on its
     EXISTING cached lease regardless of whether THIS renewal attempt succeeded — it is that
     cache's own `expires_at`, not this function's return value, that decides when writes stop
     (``guard_primary`` is the only place that decision is made). This function only ever tries
     to push the expiry further out; failing to do so just means the next call tries again."""
+    from . import host
+    from .hq_control_plane import control_plane
+
+    if host.sql_hq_selected() and getattr(control_plane(cwd), "signed_liveness", False):
+        # hq.sql.liveness (or $BH_HQ_SQL_LIVENESS): signed — a holder's tenure rests on its
+        # signed heartbeat, not on pushing expires_at out, so the write path makes no
+        # receiver round trip at all. Selecting the plane is local config validation only,
+        # and an invalid override raises there rather than silently renewing.
+        return None
     clock = at if at is not None else time.time()
     plane = _frame_plane(cwd)
     cached = (
@@ -571,11 +583,24 @@ def renew_if_due(
     if clock < due_at:
         return None  # not due yet — no HQ round trip within the interval
 
+    # The SQL control plane raises its own ValueError-family errors (HqLeaseUnknown /
+    # ControlPlaneError, SqlRuntimeError, SqlTransportError), none of which are HostLeaseError
+    # or RemoteUnreachable. Imported lazily, as _frame_plane does, to keep the import graph flat.
+    from .hq_control_plane import ControlPlaneError
+    from .hq_sql_runtime import SqlRuntimeError
+    from .hq_sql_transport import SqlTransportError
+
     try:
         outcome = renew(
             remote, prefix, host_id=host_id, cwd=cwd, ttl=ttl, at=at if plane else clock
         )
-    except (HostLeaseError, gitref.RemoteUnreachable) as exc:
+    except (
+        HostLeaseError,
+        gitref.RemoteUnreachable,
+        ControlPlaneError,
+        SqlRuntimeError,
+        SqlTransportError,
+    ) as exc:
         log.get_logger(__name__).warning(
             "host_lease_renew_if_due_failed",
             hive_prefix=prefix,
