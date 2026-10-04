@@ -276,7 +276,6 @@ def emergency_review_required(record):
     return bool(record.get("emergency", {}).get("review_required"))
 
 
-
 def records(state):
     for identity, entry in state["frames"].items():
         for record in (entry["active"], entry["candidate"], *entry["retired"]):

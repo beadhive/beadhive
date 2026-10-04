@@ -507,6 +507,9 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     | _owned("doctor.py", "_devshell_only_warnings", ".nix-profile")
     | _owned("doctor.py", "_data_layout", ".git")
     | _owned("host.py", "discover_signing_key", ".ssh")
+    # The protected macOS mise fnox install below the passwd-database account home (not HOME,
+    # not a repository): a read-only, ownership/mode-checked lookup of one pinned binary.
+    | _owned("hq_sql_transport.py", "_fnox_binary", ".local/share/mise/installs/fnox/1.36.0/fnox")
     | _owned("install_plane.py", "<module>", ".nix-profile")
     # Bounded compatibility readers/inventory for retired top-level `.git/bh-*` paths.
     | _owned("claim_authority.py", "_legacy_record_path", "bh-claim.json")

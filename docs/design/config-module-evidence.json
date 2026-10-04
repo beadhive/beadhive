@@ -9,7 +9,7 @@
   },
   "fan_in": {
     "production_config_importers_before": 95,
-    "production_config_importers_after": 87,
+    "production_config_importers_after": 88,
     "production_config_schema_importers_before": 8,
     "production_config_schema_importers_after": 5,
     "remaining_dependency_owner": "bh-18hud.5 compatibility migration ledger",
@@ -120,5 +120,9 @@
   "fleet_e2e_inventory_update": {
     "bead": "bh-nnhsc",
     "reason": "The live generated ledger now measures 158 test config importers after the new fleet membership end-to-end integration fixture. Production importers, schema importers, patch sites, historical extraction counts, pinned baseline, and earlier full-gate receipts are unchanged."
+  },
+  "heartbeat_report_inventory_update": {
+    "bead": "bh-426zh",
+    "reason": "The live generated ledger now measures 88 production config importers after src/beadhive/heartbeat_report.py (measured frame conformance heartbeats) began reading host and effective configuration through the beadhive.config facade; it is enumerated in the dependency ledger under the bh-18hud.5 compatibility owner. Schema importers, test config importers, historical extraction counts, the pinned baseline, and earlier full-gate receipts are unchanged."
   }
 }
