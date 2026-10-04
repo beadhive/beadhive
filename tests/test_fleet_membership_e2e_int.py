@@ -343,6 +343,7 @@ def _observed_predicates(frame, policy):
         "authority_available",
         "admitted_active",
         "not_cordoned",
+        "reviewed_admission_or_emergency",
         "current_frame_incarnation",
         "beadyard_binding",
         "authenticated_fresh_heartbeat",
@@ -355,6 +356,9 @@ def _observed_predicates(frame, policy):
         "dispatch_enabled",
         "current_hive_lease_holder",
     }
+    # This lifecycle uses ordinary reviewed admission and never declares an
+    # emergency, so no emergency review is required and the predicate holds.
+    assert predicates["reviewed_admission_or_emergency"] is True
     return predicates
 
 
