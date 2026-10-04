@@ -17,6 +17,10 @@ Builds directly on bh-e0y8.5's fleet/host split (`config.py`'s `load_fleet`/`loa
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+
 import pytest
 from typer.testing import CliRunner
 
@@ -197,6 +201,60 @@ def test_cli_set_scope_fleet_and_host_roundtrip(bh_home):
     r = runner.invoke(app, ["config", "set", "release.strategy", "cadence", "--scope", "fleet"])
     assert r.exit_code == 0
     assert config.get_value("release.strategy", scope=config.SCOPE_FLEET)["value"] == "cadence"
+
+
+def test_host_frame_marker_roundtrip_and_fresh_cli_startup(bh_home):
+    from beadhive import frame_eligibility
+
+    _write_fleet(bh_home, FLEET_YAML + "host:\n  dispatch:\n    enabled: false\n")
+    _write_host(bh_home, HOST_YAML)
+    fleet_before = config.fleet_path().read_bytes()
+    result = CliRunner().invoke(
+        app, ["config", "set", "host.frame_id", "frame-builder", "--scope", "host"]
+    )
+    assert result.exit_code == 0, result.output
+    assert config.load_host()["host"]["frame_id"] == "frame-builder"
+    assert config.load()["host"] == {
+        "dispatch": {"enabled": False},
+        "frame_id": "frame-builder",
+    }
+    assert config.fleet_path().read_bytes() == fleet_before
+    assert "frame_id" not in config.load_fleet()["host"]
+    decision = frame_eligibility.decision_for("missing-host", hq_dir=bh_home / "hq")
+    assert decision is not None  # A saved enrollment marker never selects legacy recovery.
+    assert not decision.allowed
+
+    # Import the CLI after enrollment in a fresh process: its plugin inventory loads
+    # effective config at import time, before Click can run any command.
+    started = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from beadhive.cli_entrypoint import main; main()",
+            "config",
+            "get",
+            "host.frame_id",
+        ],
+        env=os.environ.copy(),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert started.returncode == 0, started.stdout + started.stderr
+    assert "frame-builder" in started.stdout
+
+
+def test_enrollment_marker_does_not_allow_host_dispatch_override(bh_home):
+    _write_fleet(bh_home, FLEET_YAML)
+    _write_host(bh_home, HOST_YAML + "host:\n  frame_id: frame-builder\n")
+    result = config.set_value("host.dispatch.enabled", "true", scope=config.SCOPE_HOST)
+    assert result["ok"] is False
+    _write_host(
+        bh_home,
+        HOST_YAML + "host:\n  frame_id: frame-builder\n  dispatch:\n    enabled: true\n",
+    )
+    with pytest.raises(ValueError, match="host.dispatch.enabled"):
+        config.load()
 
 
 def test_cli_set_scope_host_can_override_worktrees_ephemeral(bh_home):

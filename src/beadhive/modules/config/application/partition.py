@@ -38,6 +38,7 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         "herdr",
         "host.daemon",
         "host.frame_bridge",
+        "host.frame_id",
     }
 )
 

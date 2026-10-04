@@ -149,3 +149,10 @@ def test_authority_config_ownership():
     assert partition_of("hq.beadyard_id") == HOST
     assert partition_of("hq.mode") == FLEET
     assert partition_of("hq.admission_policy") == FLEET
+
+
+def test_frame_enrollment_is_host_owned_but_dispatch_remains_fleet_owned():
+    assert partition_of("host.frame_id") == HOST
+    assert "host.frame_id" in HOST_KEYS
+    assert partition_of("host.dispatch.enabled") == FLEET
+    assert not is_host_overridable("host.dispatch.enabled")
