@@ -59,12 +59,16 @@ def test_backend_neutral_structural_gate_owns_shared_contract_checks() -> None:
         "test_closure_shadow_policy.py --check",
         "test_closure_promotion_policy.py --check",
         "test_closure_operational_report.py --check",
-        "transport-artifact-check",
-        "wire-schema-compat",
         "validation-evidence-refresh",
     ):
         assert required in neutral
     assert "pants" not in neutral.lower()
+
+    # The transport/wire sub-recipes stay standalone entry points; the structural gate flattens
+    # their commands into its concurrent pool, so each must stay in lockstep with its source.
+    for sub_recipe in ("transport-artifact-check", "wire-schema-compat"):
+        for command in _recipe_body(justfile, sub_recipe):
+            assert f'"{command}"' in neutral, f"{sub_recipe}: {command} missing from the pool"
 
     pants = "\n".join(_recipe_body(justfile, "architecture-pants-check"))
     for required in (
@@ -100,3 +104,12 @@ def test_recursive_pants_artifact_is_excluded_only_from_native_profile() -> None
     assert "@pytest.mark.pants_profile\n@pytest.mark.skipif(" in test_source
     assert "pants_profile: executes the Pants engine" in pyproject
     assert "test_bh_pex_contains_and_resolves_the_backend" in artifact
+
+
+def test_structural_gate_refreshes_evidence_serially_before_the_concurrent_pool() -> None:
+    body = _recipe_body(
+        (ROOT / "justfile").read_text(encoding="utf-8"), "architecture-structural-check"
+    )
+    assert body[0] == "just validation-evidence-refresh"
+    assert body[1].startswith("uv run python scripts/run_checks_concurrently.py")
+    assert all(line.startswith('"uv run ') for line in body[2:])
