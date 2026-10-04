@@ -31,8 +31,9 @@ _ACTOR_ID = re.compile(r"^[a-z][a-z0-9-]*/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _PLUGIN_ID = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 _SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 _UTC_TIMESTAMP = re.compile(
-    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:"
-    r"[0-9]{2}(?:\.[0-9]{1,6})?Z$"
+    # Keep the schema's clock bounds explicit: Python's ISO parser can normalize 24:00:00.
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T(?:[01][0-9]|2[0-3]):[0-5][0-9]:"
+    r"[0-5][0-9](?:\.[0-9]{1,6})?Z$"
 )
 _ERROR_CODE = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$")
 _TRACE_ID = re.compile(r"^[0-9a-f]{32}$")

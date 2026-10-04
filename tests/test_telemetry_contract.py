@@ -262,6 +262,7 @@ def test_schema_and_model_reject_span_without_trace() -> None:
         "2024-02-29T23:59:59Z",
         "2026-01-01T00:00:00.1Z",
         "2026-12-31T23:59:59.123456Z",
+        "2026-01-01T23:59:59.999999Z",
     ],
 )
 def test_schema_and_model_accept_utc_timestamp_boundaries(occurred_at: str) -> None:
@@ -278,6 +279,7 @@ def test_schema_and_model_accept_utc_timestamp_boundaries(occurred_at: str) -> N
         "2026-04-31T00:00:00Z",
         "0000-01-01T00:00:00Z",
         "2026-01-01T24:00:00Z",
+        "2026-01-01T24:00:00.000000Z",
         "2026-01-01T00:60:00Z",
         "2026-01-01T00:00:60Z",
         "2026-01-01T00:00:00.1234567Z",
