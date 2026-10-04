@@ -19,15 +19,17 @@ The current SQL grant API also rejects a holder identity or signer fingerprint
 already present in an active, candidate or retired record (`hq_control_plane.py`,
 `SqlControlPlane.grant`; `hq_authority_guard.py`, `records`). Retiring the pending
 incarnation therefore does not enable a replacement grant that preserves its
-host UUID and signer. There is currently no supported API for a release upgrade
-of this pending registration that preserves both. Do not edit accepted evidence,
+host UUID and signer. Version 0.21.2 has no supported API for a release upgrade
+of this pending registration that preserves both. Version 0.21.3 adds the explicit
+pending-only operation described in [Frame recovery](frame-recovery-0.21.3.md).
+Do not edit accepted evidence,
 replace its digest, remove the enrollment marker, or claim that retirement and
 regranting provide that upgrade.
 
 Keep the host UUID, canonical HQ identity and signer intact. A supported,
-operator-reviewed release/incarnation upgrade mechanism is a prerequisite for
+operator-reviewed release/incarnation upgrade is a prerequisite for
 upgrading that pending enrollment; it remains separate from this ownership fix.
-Once such a mechanism is available, the corrected measured artifact must supply
+After the 0.21.3 release upgrade, the corrected measured artifact must supply
 new signed registration and at least three consecutive fresh accepted heartbeats
 matching the protected desired release, capabilities and conformance profile.
 Admission still requires the reviewed operator plan/apply/check flow described

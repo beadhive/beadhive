@@ -299,6 +299,7 @@ _READ_PATHS = {
     "host dispatch logs",
     "host dispatch runs",
     "host dispatch status",
+    "host heartbeat-report",
     "host list",
     "host show",
     "hq intake",
