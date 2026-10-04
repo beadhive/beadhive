@@ -310,8 +310,8 @@ def claim_group(cfg, hive, group_arg, as_):
     # Provision the epic container first (idempotent) so the batch branch forks off
     # wt/bead/epic/<epic>, not main — makes planner-batch and schedule-driven groups land into the
     # container too, matching per-bead claim's _maybe_open_molecule behavior (bh-n5z3.2).
-    epic, sep, _ = members[0].rpartition(".")
-    if sep:
+    epic = work_logic.parent_epic(members[0], main, datas[members[0]])
+    if epic:
         work_logic.ensure_container(cfg, hive, epic, main)
     entry, target, branch = worktree.ensure(
         cfg, hive, branch=f"{BATCH_PREFIX}{group}", base_bead=members[0]

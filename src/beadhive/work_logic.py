@@ -1384,13 +1384,31 @@ def _signing_ok(rows, branch, base):
     )
 
 
+def parent_epic(bead, main, data=None) -> str:
+    """The epic whose container a child dispatches into, or '' for a bead with no parent.
+
+    Resolved from the bd parent-child link first (`bd show` -> `parent`): `bh plan file` molecules
+    carry hash ids (`bh-ab12c`) whose only link to their epic is that field. A bead the link does
+    not answer for falls back to the dotted-id convention (`<epic>.<n>` -> `<epic>`), so dotted
+    children keep working when bd omits or cannot read the parent (bh-bd8hq). Pass `data` (an
+    already-fetched `bd show` object) to skip the extra read."""
+    if data is None:
+        data = bd.show(bead, main)
+    parent = str((data or {}).get("parent") or "").strip()
+    if parent:
+        return parent
+    stem, sep, _ = bead.rpartition(".")
+    return stem if sep else ""
+
+
 def ensure_container(cfg, hive, epic, main) -> None:
     """Lazily open the epic's container branch (the coordinator seat `wt/bead/epic/<epic>`) and
     refresh it from its integration base, so a child worktree (or a collapsed batch) forks off the
     container, not `main`. Gated on the epic being `kickoff=approved` (a never-kicked-off epic keeps
     the fork-off-main behavior). Idempotent via `worktree.ensure`. Shared by per-bead claim/assign
-    (via the dotted-id wrapper `_maybe_open_molecule`) and the collapsed/group claim paths — but it
-    does NOT claim the epic or stamp dispatcher identity; that stays `start`'s job (bh-n5z3.2)."""
+    (via the parent-resolving wrapper `_maybe_open_molecule`) and the collapsed/group claim paths —
+    but it does NOT claim the epic or stamp dispatcher identity; that stays `start`'s job
+    (bh-n5z3.2)."""
     if bd.state(epic, "kickoff", main) != "approved":
         return
     entry, _seat, container = worktree.ensure(cfg, hive, bead=epic, kind="epic")
