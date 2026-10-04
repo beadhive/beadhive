@@ -13,6 +13,12 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.21.1 (2026-10-04)
+
+### Fix
+
+- **hq**: support explicit host-local plaintext SQL bindings
+
 ## v0.21.0 (2026-10-04)
 
 ### Feat
