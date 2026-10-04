@@ -340,7 +340,13 @@ def claim(
         typer.echo("✗ pass a bead <id> (or --group <ids> for a batch)", err=True)
         raise typer.Exit(1)
     result = work._claim_single_bead(cfg, hive, bead, as_)
-    typer.echo(f"✓ claimed {bead} as {result.actor}; worktree {result.worktree}")
+    if result.disposition == "reattached":
+        typer.echo(
+            f"✓ reattached {bead} as {result.actor}; worktree {result.worktree}; "
+            "existing lease unchanged (no heartbeat renewal)"
+        )
+    else:
+        typer.echo(f"✓ claimed {bead} as {result.actor}; worktree {result.worktree}")
     work._print_brief(cfg, result.entry, bead, result.bead)
     if not work.worktree.in_bead_worktree(result.worktree):
         typer.echo(
