@@ -699,13 +699,15 @@ stateful_workers := "16"
 root-composition-validate:
     uv run python scripts/root_composition_tests.py --validate-only
 
-# Stateful tests consume the digest-bound closure evidence produced by the structural
-# architecture phase. Keep this edge here as well as in check-native's sibling list: selective
-# validation can invoke `attest-stateful` on its own, and that run may start before the
-# architecture-contracts key in a different worker.
+# Stateful tests consume the digest-bound closure evidence (certification, shadow-policy and
+# promotion-policy JSON) that `validation-evidence-refresh` writes. Depend on that minimal producer
+# rather than the whole structural check: selective validation can invoke `attest-stateful` on its
+# own, and that run may start before the architecture-contracts key in a different worker, but it
+# needs only fresh evidence, not the import/transport/wire-schema checks (those run once, in
+# architecture-structural-check).
 # Work stealing redistributes unstarted tests when an uneven fixture-heavy batch leaves idle
 # workers. Keep the same complete collection, fixed worker bound, and watchdog deadline.
-stateful-native: root-composition-validate architecture-structural-check
+stateful-native: root-composition-validate validation-evidence-refresh
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
         ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{stateful_workers}} tests --dist worksteal \
         -m "not integration and not pants_profile" \
