@@ -129,9 +129,12 @@ def locally_active(record, prefix, now):
     if not guard.emergency_active(record, prefix, now):
         return False
     try:
-        from .heartbeat_report import installed_release
+        from . import release_measurement
 
-        matched = installed_release()["digest"] == record["emergency"]["execution_digest"]
+        matched = (
+            release_measurement.installed_release()["digest"]
+            == record["emergency"]["execution_digest"]
+        )
         if matched:
             audit("local-use-attempt", record, prefix=prefix)
         return matched

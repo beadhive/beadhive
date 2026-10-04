@@ -7,9 +7,7 @@ protected operator authority, not the runtime sender.
 from __future__ import annotations
 
 import hashlib
-import importlib.metadata
 import json
-import subprocess
 from datetime import UTC, datetime
 
 import typer
@@ -18,27 +16,7 @@ from ruamel.yaml import YAML
 from . import config, host, hosts, registry
 from .config_validate import validate_config
 from .hq_framelease_contracts import DOMAIN_V2, HeartbeatError, HeartbeatLease
-
-
-def installed_release() -> dict[str, str]:
-    """Hash installed package files using the original enrollment measurement."""
-    distribution = importlib.metadata.distribution("beadhive")
-    digest = hashlib.sha256()
-    count = 0
-    for item in sorted(distribution.files or [], key=str):
-        name = str(item)
-        path = distribution.locate_file(item)
-        if (
-            name.startswith("beadhive/")
-            and "__pycache__" not in name
-            and not name.endswith(".pyc")
-            and path.is_file()
-        ):
-            digest.update(name.encode() + b"\0" + hashlib.sha256(path.read_bytes()).digest())
-            count += 1
-    if not count:
-        raise HeartbeatError("installed package files unavailable; editable installs cannot attest")
-    return {"id": distribution.version, "digest": "sha256:" + digest.hexdigest()}
+from .release_measurement import installed_release
 
 
 def config_valid() -> bool:
@@ -49,19 +27,13 @@ def config_valid() -> bool:
 
 def hive_ready(entry: dict) -> bool:
     """Measure readiness and database reachability without retaining command output."""
+    from . import bd
     from .hive_ready import probe_readiness
 
     directory = registry.hive_dir(entry)
     if not directory.is_dir() or not probe_readiness(cwd=directory).ready:
         return False
-    result = subprocess.run(
-        ["bd", "ping", "--json"],
-        cwd=directory,
-        capture_output=True,
-        text=True,
-        timeout=20,
-        check=False,
-    )
+    result = bd.routes(directory).database_ping(timeout=20)
     return result.returncode == 0 and json.loads(result.stdout).get("status") == "ok"
 
 
@@ -70,6 +42,9 @@ def generate(plane, *, free_sessions: int = 0) -> HeartbeatLease:
     if type(free_sessions) is not int or not 0 <= free_sessions <= 1024:
         raise HeartbeatError("free sessions must be between zero and 1024")
     try:
+        # ``row`` is the receiver's accepted observation, or in ``hq.sql.liveness: signed``
+        # mode the newest verified heartbeat in this frame's own inbox — so the next seq
+        # follows the last beat actually sent and never stalls behind a lagging receiver.
         _, _, route, _, record, snapshot, _, row, _ = (
             plane._runtime_authority().read_frame_composite()
         )

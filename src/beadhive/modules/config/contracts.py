@@ -1032,6 +1032,17 @@ class HqSqlConfig(_Section):
     generation: str = ""
     minimum_sequence: int = Field(1, ge=1, strict=True)
     initial_revision: str = ""
+    liveness: Literal["receiver", "signed"] = Field(
+        "receiver",
+        description=(
+            "Frame liveness source for this HOST. `receiver` (default) trusts the "
+            "SqlTrustedReceiver's public observation and renews the hive lease through it. "
+            "`signed` verifies this frame's newest signed heartbeat from its own inbox at "
+            "read time, treats hive-lease expiry as an advisory failover hint, and makes no "
+            "receiver round trip on the dev path. Adopt, release and failover still need a "
+            "receiver. BH_HQ_SQL_LIVENESS, when set, overrides this value."
+        ),
+    )
 
     @model_validator(mode="after")
     def valid_bootstrap(self):

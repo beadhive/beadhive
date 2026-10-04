@@ -91,6 +91,8 @@ boundaries.
 | `hq.sql.runtime_floor_path`, `runtime_operator_public_key` | Host-local runtime replay-floor path and operator public-key reference used to verify signed runtime authority. |
 | `hq.sql.floor_path`, `backend_identity`, `generation`, `minimum_sequence`, `initial_revision` | Reader-side trust floor, backend/generation and initial revision pin. |
 | `hq.sql.cache_ttl` | Bounded config cache age; it never waives revision or revocation checks. |
+| `hq.sql.liveness` | `receiver` (default, unchanged behavior) or `signed`. `signed` reads this frame's newest verified signed heartbeat from its own inbox at read time, treats hive-lease expiry as an advisory hint, and skips receiver renewal on write verbs. Tombstones, foreign holders, epoch fences and admission are unchanged; adopt, release and failover still need a receiver. |
+| `BH_HQ_SQL_LIVENESS` (env) | Process-level override for `hq.sql.liveness`: `receiver` or `signed`. When set it wins over the config key, so a newer bh can run signed without adding the key to a HOST file an older bh (strict schema) also reads. Any other value is an error, not a fallback. |
 | `hq.sql.<role>.*` | Per role (`reader`, `publisher`, `runtime`, `observer`, `authority_writer`): `host`, `port`, `database`, `user`, `tls_mode`, `server_name`, `ca_file`, `credential.config_path/profile/key`, and `connect_timeout`, `read_timeout`, `write_timeout`, `operation_timeout`. |
 | `managed_repos[].frame_policy.config_revision` | Required policy revision label for a frame-managed hive. |
 | `managed_repos[].frame_policy.requires` | Optional requirements: `isolation`, `trust_zone`, `arch`, `harness`, `harnesses`, and positive `max_sessions`. |

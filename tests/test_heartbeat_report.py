@@ -1,3 +1,4 @@
+import subprocess
 from io import StringIO
 from types import SimpleNamespace
 
@@ -5,6 +6,7 @@ import pytest
 from ruamel.yaml import YAML
 
 from beadhive import heartbeat_report as report
+from beadhive import release_measurement
 from beadhive.hq_framelease_contracts import HeartbeatError
 
 
@@ -104,10 +106,10 @@ def test_capacity_requires_committed_capacity(plane):
 
 def test_empty_installed_distribution_fails(monkeypatch):
     monkeypatch.setattr(
-        report.importlib.metadata, "distribution", lambda _: SimpleNamespace(files=[])
+        release_measurement.importlib.metadata, "distribution", lambda _: SimpleNamespace(files=[])
     )
     with pytest.raises(HeartbeatError, match="editable"):
-        report.installed_release()
+        release_measurement.installed_release()
 
 
 def test_send_remeasures_and_only_publishes(plane, monkeypatch):
@@ -144,11 +146,16 @@ def test_installed_measurement_matches_original_algorithm(monkeypatch, tmp_path)
         version="0.21.3",
         locate_file=lambda item: tmp_path / item,
     )
-    monkeypatch.setattr(report.importlib.metadata, "distribution", lambda _: distribution)
+    monkeypatch.setattr(
+        release_measurement.importlib.metadata, "distribution", lambda _: distribution
+    )
     digest = hashlib.sha256()
     for name in sorted(files[:2]):
         digest.update(name.encode() + b"\0" + hashlib.sha256(name.encode()).digest())
-    assert report.installed_release() == {"id": "0.21.3", "digest": "sha256:" + digest.hexdigest()}
+    assert release_measurement.installed_release() == {
+        "id": "0.21.3",
+        "digest": "sha256:" + digest.hexdigest(),
+    }
 
 
 def test_host_validation_uses_effective_fleet_schema_version(monkeypatch):
@@ -162,3 +169,122 @@ def test_host_validation_uses_effective_fleet_schema_version(monkeypatch):
     )
     assert report.config_valid()
     assert checked == ["raw-host"]
+
+
+def _stub_hive(monkeypatch, tmp_path, *, ready=True, ping=None, calls=None):
+    """Point ``hive_ready`` at an existing hive dir; capture every bd invocation via ``bd.run``."""
+    from beadhive import bd, hive_ready
+
+    monkeypatch.setattr(report.registry, "hive_dir", lambda _entry: tmp_path)
+    monkeypatch.setattr(hive_ready, "probe_readiness", lambda **_kw: SimpleNamespace(ready=ready))
+
+    def run(args, cwd, actor="", capture=False, text_input=None, **kwargs):
+        if calls is not None:
+            calls.append((list(args), cwd, capture, kwargs.get("timeout")))
+        if isinstance(ping, BaseException):
+            raise ping
+        return ping
+
+    monkeypatch.setattr(bd, "run", run)
+
+
+def _ping(returncode=0, stdout='{"status": "ok"}'):
+    return subprocess.CompletedProcess(["bd"], returncode, stdout, "")
+
+
+def test_hive_ready_pings_database_through_the_bd_package_route(monkeypatch, tmp_path):
+    calls = []
+    _stub_hive(monkeypatch, tmp_path, ping=_ping(), calls=calls)
+    assert report.hive_ready({}) is True
+    assert calls == [(["ping", "--json"], tmp_path, True, 20)]
+
+
+@pytest.mark.parametrize(
+    "ping",
+    [_ping(1, ""), _ping(124, ""), _ping(0, '{"status": "error"}')],
+    ids=["unreachable", "timed-out", "not-ok"],
+)
+def test_hive_ready_is_false_when_the_database_is_unreachable(monkeypatch, tmp_path, ping):
+    _stub_hive(monkeypatch, tmp_path, ping=ping)
+    assert report.hive_ready({}) is False
+
+
+def test_hive_ready_skips_the_ping_when_not_ready(monkeypatch, tmp_path):
+    calls = []
+    _stub_hive(monkeypatch, tmp_path, ready=False, ping=_ping(), calls=calls)
+    assert report.hive_ready({}) is False
+    assert calls == []
+
+
+def test_signed_liveness_seq_advances_from_newest_verified_inbox_row(plane, tmp_path):
+    """hq.sql.liveness: signed — the composite row is the newest *verified* beat in the
+    frame's own inbox, so seq follows what was actually sent even with no receiver."""
+    from datetime import UTC, datetime
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from beadhive.hq_framelease_contracts import DOMAIN_V2, HeartbeatLease
+    from beadhive.hq_sql_runtime import PrincipalBinding, newest_signed_heartbeat
+    from beadhive.hq_sql_signatures import canonical, fingerprint, sign_heartbeat
+
+    _head, _state, route, slot, record, snapshot, policies, _row, lease_row = (
+        plane._runtime_authority().read_frame_composite()
+    )
+    key = tmp_path / "frame.key"
+    private = Ed25519PrivateKey.generate()
+    key.write_bytes(
+        private.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.OpenSSH,
+            serialization.NoEncryption(),
+        )
+    )
+    public = (
+        private.public_key()
+        .public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH)
+        .decode()
+    )
+    route = PrincipalBinding(
+        "frame_a",
+        "factory",
+        "host-a",
+        "instance-a",
+        2,
+        "hq_live_inbox_frame_a_2",
+        fingerprint(public),
+    )
+    record = {
+        **record,
+        "public_key": public,
+        "authority": {**record["authority"], "key_fingerprint": route.signer_fingerprint},
+    }
+    now = datetime.now(UTC).timestamp()
+
+    def beat(seq, age):
+        lease = HeartbeatLease(
+            domain=DOMAIN_V2,
+            beadyard_id=record["authority"]["beadyard_id"],
+            audience=record["authority"]["audience"],
+            frame_id="factory",
+            holderIdentity="host-a",
+            instance_ref="instance-a",
+            key_id=route.signer_fingerprint,
+            epoch=2,
+            config_revision="rev",
+            seq=seq,
+            renewTime=datetime.fromtimestamp(now - age, UTC).isoformat(),
+            state_seen="active",
+            release=record["desired"]["release"],
+            report_digest="sha256:" + "2" * 64,
+            conformance={"profile": "factory-v1", "status": "conformant", "checks": []},
+        )
+        return (canonical(sign_heartbeat(lease, signing_key=str(key))),)
+
+    row = newest_signed_heartbeat(
+        [beat(40, 900), beat(41, 600), beat(42, 30), (b"junk",)], route, record, now=now
+    )
+    assert row[0] == 42
+    composite = ("head", {}, route, slot, record, snapshot, policies, row, lease_row)
+    plane._runtime_authority = lambda: SimpleNamespace(read_frame_composite=lambda: composite)
+    assert report.generate(plane).seq == 43

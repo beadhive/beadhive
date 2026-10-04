@@ -343,6 +343,7 @@ def _observed_predicates(frame, policy):
         "authority_available",
         "admitted_active",
         "not_cordoned",
+        "reviewed_admission_or_emergency",
         "current_frame_incarnation",
         "beadyard_binding",
         "authenticated_fresh_heartbeat",
@@ -355,6 +356,9 @@ def _observed_predicates(frame, policy):
         "dispatch_enabled",
         "current_hive_lease_holder",
     }
+    # This lifecycle uses ordinary reviewed admission and never declares an
+    # emergency, so no emergency review is required and the predicate holds.
+    assert predicates["reviewed_admission_or_emergency"] is True
     return predicates
 
 
@@ -985,3 +989,256 @@ def test_public_seed_then_signed_two_frame_lifecycle_with_one_clock(tmp_path, mo
         recovered = apply(seed_plan, intent, config_store, fresh_plan=fresh_plan)
         assert recovered == replace(seed_receipt, observed_head=latest.commit_revision)
         assert config_store.load_snapshot() == latest
+
+
+def _public_observations(port: int):
+    connection = _root(port, "beadhive_hq_runtime")
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT frame_id,sequence,digest,accepted_until FROM hq_live_public_observations "
+                "ORDER BY frame_id"
+            )
+            return cursor.fetchall()
+    finally:
+        connection.close()
+
+
+def _inject_inbox(port: int, inbox: str, body: bytes, *, created_at: float):
+    """Write a raw inbox row as the server root, bypassing the sender's own checks."""
+    import uuid
+
+    connection = _root(port, "beadhive_hq_runtime")
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"INSERT INTO {inbox} (request_id,kind,payload,payload_sha256,created_at) "
+                "VALUES (%s,'heartbeat',%s,%s,%s)",
+                (str(uuid.uuid4()), body, hashlib.sha256(body).hexdigest(), created_at),
+            )
+    finally:
+        connection.close()
+
+
+def _liveness_predicates(frame, policy):
+    """Named intake facts plus the qualified holder read, without pinning the predicate set
+    (that census belongs to the lifecycle test above)."""
+    _head, desired, observation = frame["plane"].read_eligibility(frame["manifest"])
+    predicates = dict(
+        eligible(frame["manifest"], policy, EligibilityFacts(observation, desired)).predicates
+    )
+    qualified = frame["plane"].read_hive_lease_record(
+        "bh", holder_identity=frame["manifest"].host_id
+    )[1]
+    predicates["current_hive_lease_holder"] = qualified is not None and qualified.held_by(
+        frame["manifest"].host_id
+    )
+    assert "authenticated_fresh_heartbeat" in predicates
+    return predicates
+
+
+def _liveness_transition(frame, policy, *, false, holder):
+    predicates = _liveness_predicates(frame, policy)
+    assert {name for name, value in predicates.items() if not value} == set(false)
+    physical = frame["plane"].read_hive_lease_record("bh")[1]
+    assert (None if physical is None else (physical.host_id, physical.epoch)) == holder
+    return predicates
+
+
+def test_signed_liveness_needs_no_receiver_for_eligibility_or_holder_writes(tmp_path):
+    """hq.sql.liveness: signed against a pinned Dolt server with NO receiver after admission.
+
+    The receiver admits frame A and accepts its first adopt; from then on it never runs, so
+    ``hq_live_public_observations`` stays frozen. The default-mode plane goes stale; the
+    signed-mode plane stays fresh on each new signed beat, honours the exclusive 300 s TTL,
+    never lets an older valid envelope outrank a newer one, skips wrong-key / wrong-epoch /
+    wrong-frame / malformed rows (whatever their client ``created_at``), and keeps a holder
+    whose hive lease lapsed three hours ago — same epoch — while default mode drops it.
+    """
+    from beadhive.hq_sql_signatures import sign_heartbeat
+
+    clock = Clock()
+    git_hq, owner, manifests = _source_git(tmp_path)
+    sql_dir = tmp_path / "sql"
+    sql_dir.mkdir()
+    with _empty_config_server(sql_dir) as (port, _schema_parent, config_settings):
+        config_store = SqlFleetConfigRevisionStore(config_settings, broker=_Broker(), clock=clock)
+
+        def fresh_plan():
+            return plan(
+                hq_dir=git_hq,
+                fleet_path=git_hq / "fleet.yaml",
+                workspace_sources=(),
+                destination=config_store,
+            )
+
+        seed_plan = fresh_plan()
+        intent = tmp_path / "seed-intent.json"
+        prepare(seed_plan, intent)
+        seed_receipt = apply(seed_plan, intent, config_store, fresh_plan=fresh_plan)
+        config_settings["initial_revision"] = seed_receipt.committed_revision
+        snapshot = config_store.load_snapshot()
+
+        _runtime_schema(sql_dir, port)
+        _runtime_roles(sql_dir, port)
+        operator_key = tmp_path / "operator.key"
+        operator_public = _key(operator_key)
+        runtime_head = _signed_initial_runtime(
+            port, snapshot, owner, operator_key, operator_public, clock
+        )
+        common_settings = {
+            **config_settings,
+            "enabled": True,
+            "runtime_floor_path": str(tmp_path / "runtime-floor.json"),
+            "runtime_backend_identity": "fixture-runtime-backend",
+            "runtime_generation": "fixture-runtime-generation",
+            "runtime_initial_revision": runtime_head,
+            "runtime_operator_public_key": operator_public,
+        }
+        operator = SqlControlPlane(
+            {
+                **common_settings,
+                "runtime": None,
+                "authority_writer": _runtime_binding(sql_dir, port, "authority_writer"),
+            },
+            broker=_Broker(),
+            clock=clock,
+        )
+        receiver = SqlTrustedReceiver(
+            {
+                **common_settings,
+                "runtime": None,
+                "observer": _runtime_binding(sql_dir, port, "observer"),
+            },
+            broker=_Broker(),
+            clock=clock,
+        )
+        a = _frame(
+            tmp_path, sql_dir, port, common_settings, runtime_head, owner, manifests["a"], 1, clock
+        )
+        head = operator.grant(
+            a["authority"],
+            a["public"],
+            {
+                "declared": True,
+                "release": a["manifest"].release.model_dump(),
+                "caps": a["manifest"].capabilities.model_dump(),
+                "profile": "fixture",
+            },
+            expected=runtime_head,
+            operator_key=str(operator_key),
+        )
+        digest = a["plane"].publish_registration_evidence(a["manifest"], signing_key=str(a["key"]))
+        assert receiver.accept_registration(a["principal"], _request_id(port, a["inbox"], digest))
+        for sequence in (1, 2, 3):
+            digest = _signed_beat(a, owner, clock, sequence, state="pending")
+            assert receiver.accept_heartbeat(a["principal"], _request_id(port, a["inbox"], digest))
+        admitted = operator.lifecycle(
+            "admit",
+            "frame-a",
+            "apply",
+            expected=head,
+            expected_host_id="host-a",
+            expected_release=a["manifest"].release.digest,
+            operator_key=str(operator_key),
+            confirm=True,
+        )
+        assert admitted["state"] == "active"
+        a_lease = HostLease(
+            host_id="host-a",
+            label="host-a",
+            epoch=1,
+            adopted_at=now_stamp(clock()),
+            expires_at=now_stamp(clock() + 1200),
+        )
+        proposal, *_ = a["plane"].propose_hive_lease(
+            "bh", a_lease, expected="", operation="adopt", signing_key=str(a["key"])
+        )
+        receiver.accept_hive_lease(a["principal"], proposal)
+        # ---- the receiver never runs again below this line ----
+        frozen = _public_observations(port)
+        assert [row[:2] for row in frozen] == [("frame-a", 3)]
+
+        signed = {
+            **a,
+            "plane": SqlControlPlane(
+                {**a["plane"].settings, "liveness": "signed"}, broker=_Broker(), clock=clock
+            ),
+        }
+        policy = project_hive_policies(snapshot, valid_until=clock() + 3600, now=clock())["bh"]
+
+        # Both modes go stale once nothing new is signed.
+        clock.advance(600)
+        assert not _liveness_predicates(a, policy)["authenticated_fresh_heartbeat"]
+        assert not _liveness_predicates(signed, policy)["authenticated_fresh_heartbeat"]
+
+        # A new signed beat with no receiver: only signed mode sees it.
+        _signed_beat(signed, owner, clock, 4)
+        _liveness_transition(signed, policy, false=set(), holder=("host-a", 1))
+        _liveness_transition(
+            a,
+            policy,
+            false={"authenticated_fresh_heartbeat", "current_hive_lease_holder"},
+            holder=("host-a", 1),
+        )
+        observation = signed["plane"].read_eligibility(signed["manifest"])[2]
+        assert observation.lease.seq == 4 and observation.age_seconds == 0
+        assert observation.age_basis == "signed-envelope-reader-clock"
+
+        # Exclusive TTL on the signed renewTime: < 300 s passes, >= 300 s fails.
+        clock.advance(299)
+        assert _liveness_predicates(signed, policy)["authenticated_fresh_heartbeat"]
+        clock.advance(1)
+        assert not _liveness_predicates(signed, policy)["authenticated_fresh_heartbeat"]
+
+        _signed_beat(signed, owner, clock, 5)
+        assert _liveness_predicates(signed, policy)["authenticated_fresh_heartbeat"]
+        # An authentic but OLDER envelope (higher seq, earlier renewTime) never outranks it.
+        _signed_beat(signed, owner, lambda: clock() - 200, 6)
+        assert signed["plane"].read_eligibility(signed["manifest"])[2].lease.seq == 5
+
+        # Newer-dated rows that must not count, with absurd client created_at values.
+        other_key = tmp_path / "intruder.key"
+        _key(other_key)
+        base = signed["beat"]
+        newer = datetime.fromtimestamp(clock() + 5, UTC).isoformat()
+
+        def resigned(key, **update):
+            beat = HeartbeatLease.model_validate(
+                {**base.model_dump(mode="json"), "renewTime": newer, "seq": 50, **update}
+            )
+            return canonical(sign_heartbeat(beat, signing_key=str(key)))
+
+        intruder_public = Path(str(other_key) + ".pub").read_text().strip()
+        rejected = [
+            resigned(other_key, key_id=fingerprint(intruder_public)),
+            resigned(a["key"], epoch=2),
+            resigned(a["key"], frame_id="frame-b"),
+            b"{not json",
+            resigned(a["key"]).replace(b"{", b"{ ", 1),
+        ]
+        for body in rejected:
+            _inject_inbox(port, a["inbox"], body, created_at=clock() + 10**9)
+        observation = signed["plane"].read_eligibility(signed["manifest"])[2]
+        assert observation.lease.seq == 5 and observation.fresh
+        assert _public_observations(port) == frozen
+
+        # The holder's lease lapsed three hours ago (same record, same epoch).
+        connection = _root(port, "beadhive_hq_runtime")
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT lease_json FROM hq_live_hive_leases WHERE prefix='bh'")
+                envelope = json.loads(cursor.fetchone()[0])
+                envelope["lease"]["expires_at"] = now_stamp(clock() - 3 * 3600)
+                cursor.execute(
+                    "UPDATE hq_live_hive_leases SET lease_json=%s WHERE prefix='bh'",
+                    (canonical(envelope),),
+                )
+        finally:
+            connection.close()
+        _signed_beat(signed, owner, clock, 7)
+        _liveness_transition(signed, policy, false=set(), holder=("host-a", 1))
+        held = signed["plane"].read_hive_lease_record("bh", holder_identity="host-a")[1]
+        assert held.advisory_expiry and held.held_by("host-a", clock()) and held.epoch == 1
+        assert a["plane"].read_hive_lease_record("bh", holder_identity="host-a")[1] is None
+        assert _public_observations(port) == frozen

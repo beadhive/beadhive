@@ -168,9 +168,10 @@ Per hive, one of:
   compare-and-swap. The spike measures that cost. The primary merges the branch into `main`.
   This is the "proposal" flow done natively in Dolt, with no publication service.
 
-Single-writer `main` makes #4796 (child-ID collisions) go away by construction and reduces
-#5157 (push contention) to retries on the shared manifest ref. #4657 still matters for agents running concurrently on the primary, and
-`work_next.claim_won` already works around it by reading the bead back.
+Single-writer `main` makes #4796 (child-ID collisions) go away by construction and reduces push
+contention (#5157) to retries on the shared manifest ref. #4657 still matters for agents running
+concurrently on the primary, and `work_next.claim_won` already works around it by reading the
+bead back.
 
 ### 5. Liveness and conformance without a receiver
 

@@ -18,6 +18,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,
 from jsonschema import Draft202012Validator, FormatChecker, ValidationError
 
 from .beadyard_identity import parse_id
+from .hq_authority_payload import authority_payload
 from .hq_framelease_contracts import DOMAIN_V2, HeartbeatLease
 
 DOMAIN = b"beadhive/sql-framelease/v1\x00"
@@ -55,6 +56,13 @@ def canonical(document: dict, *, limit: int = MAX_BYTES) -> bytes:
     if len(body) > limit:
         raise SqlSignatureError("signed SQL document exceeds size bound")
     return body
+
+
+def sql_principal(authority) -> str:
+    """Stable SQL account for one incarnation across its HQ-ID binding."""
+    identity = authority_payload(authority)
+    identity.pop("beadyard_id", None)
+    return "frame_" + hashlib.sha256(canonical(identity)).hexdigest()[:20]
 
 
 def fingerprint(public_key: str) -> str:
