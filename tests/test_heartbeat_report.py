@@ -214,3 +214,77 @@ def test_hive_ready_skips_the_ping_when_not_ready(monkeypatch, tmp_path):
     _stub_hive(monkeypatch, tmp_path, ready=False, ping=_ping(), calls=calls)
     assert report.hive_ready({}) is False
     assert calls == []
+
+
+def test_signed_liveness_seq_advances_from_newest_verified_inbox_row(plane, tmp_path):
+    """hq.sql.liveness: signed — the composite row is the newest *verified* beat in the
+    frame's own inbox, so seq follows what was actually sent even with no receiver."""
+    from datetime import UTC, datetime
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from beadhive.hq_framelease_contracts import DOMAIN_V2, HeartbeatLease
+    from beadhive.hq_sql_runtime import PrincipalBinding, newest_signed_heartbeat
+    from beadhive.hq_sql_signatures import canonical, fingerprint, sign_heartbeat
+
+    _head, _state, route, slot, record, snapshot, policies, _row, lease_row = (
+        plane._runtime_authority().read_frame_composite()
+    )
+    key = tmp_path / "frame.key"
+    private = Ed25519PrivateKey.generate()
+    key.write_bytes(
+        private.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.OpenSSH,
+            serialization.NoEncryption(),
+        )
+    )
+    public = (
+        private.public_key()
+        .public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH)
+        .decode()
+    )
+    route = PrincipalBinding(
+        "frame_a",
+        "factory",
+        "host-a",
+        "instance-a",
+        2,
+        "hq_live_inbox_frame_a_2",
+        fingerprint(public),
+    )
+    record = {
+        **record,
+        "public_key": public,
+        "authority": {**record["authority"], "key_fingerprint": route.signer_fingerprint},
+    }
+    now = datetime.now(UTC).timestamp()
+
+    def beat(seq, age):
+        lease = HeartbeatLease(
+            domain=DOMAIN_V2,
+            beadyard_id=record["authority"]["beadyard_id"],
+            audience=record["authority"]["audience"],
+            frame_id="factory",
+            holderIdentity="host-a",
+            instance_ref="instance-a",
+            key_id=route.signer_fingerprint,
+            epoch=2,
+            config_revision="rev",
+            seq=seq,
+            renewTime=datetime.fromtimestamp(now - age, UTC).isoformat(),
+            state_seen="active",
+            release=record["desired"]["release"],
+            report_digest="sha256:" + "2" * 64,
+            conformance={"profile": "factory-v1", "status": "conformant", "checks": []},
+        )
+        return (canonical(sign_heartbeat(lease, signing_key=str(key))),)
+
+    row = newest_signed_heartbeat(
+        [beat(40, 900), beat(41, 600), beat(42, 30), (b"junk",)], route, record, now=now
+    )
+    assert row[0] == 42
+    composite = ("head", {}, route, slot, record, snapshot, policies, row, lease_row)
+    plane._runtime_authority = lambda: SimpleNamespace(read_frame_composite=lambda: composite)
+    assert report.generate(plane).seq == 43
