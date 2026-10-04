@@ -2300,7 +2300,9 @@ class SqlControlPlane:
                 or _parse_stamp(raw["expires_at"]) <= 0
             ):
                 raise ControlPlaneError("protected hive lease record invalid")
-            lease = HostLease(**raw)
+            # Signed liveness: expiry is an advisory failover hint (not part of the record);
+            # tombstones and foreign holders are still refused below and by every caller.
+            lease = HostLease(**raw, advisory_expiry=signed)
             from .frame_emergency import locally_active
             from .hq_authority_guard import emergency_review_required
 
@@ -2332,7 +2334,7 @@ class SqlControlPlane:
                     holder_identity != route.holder_identity
                     or envelope["authority"] != {"frame_id": route.frame_id, **record["authority"]}
                     or lease.host_id != holder_identity
-                    or lease.is_expired(self.clock())
+                    or (not signed and lease.is_expired(self.clock()))
                     or slot != "active"
                     or record["state"] != "active"
                     or record["cordoned"]

@@ -524,6 +524,8 @@ def lease_state(
     this lease", never a separately-tuned threshold."""
     if lease is None or lease.is_expired(at):
         return "free"
+    if lease.advisory_expiry:
+        return "held"  # signed liveness: expiry is a hint, the holder is not "expiring"
     clock = at if at is not None else time.time()
     remaining = _parse_stamp(lease.expires_at) - clock
     return "expiring" if remaining <= renew_interval else "held"
@@ -559,6 +561,15 @@ def renew_if_due(
     cache's own `expires_at`, not this function's return value, that decides when writes stop
     (``guard_primary`` is the only place that decision is made). This function only ever tries
     to push the expiry further out; failing to do so just means the next call tries again."""
+    from . import host
+    from .hq_control_plane import control_plane
+
+    if host.sql_hq_selected() and getattr(control_plane(cwd), "signed_liveness", False):
+        # hq.sql.liveness (or $BH_HQ_SQL_LIVENESS): signed — a holder's tenure rests on its
+        # signed heartbeat, not on pushing expires_at out, so the write path makes no
+        # receiver round trip at all. Selecting the plane is local config validation only,
+        # and an invalid override raises there rather than silently renewing.
+        return None
     clock = at if at is not None else time.time()
     plane = _frame_plane(cwd)
     cached = (
