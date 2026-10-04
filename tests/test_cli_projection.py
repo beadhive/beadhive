@@ -80,7 +80,7 @@ def test_migration_inventory_names_every_catalog_group() -> None:
 def test_assembled_tree_is_entirely_catalog_derived_and_idempotent() -> None:
     declarations = command_declarations()
     parents = parent_declarations()
-    assert len(declarations) == 235
+    assert len(declarations) == 240
     assert {
         "hq.beadyard",
         "hq.beadyard-adopt",

@@ -201,7 +201,7 @@ def test_reviewed_cas_and_bounded_target_fail_closed(fixture, field, value):
 @pytest.mark.parametrize(
     "field,value",
     [
-        ("beadyard_id", str(uuid4())),
+        ("beadyard_id", "00000000-0000-4000-8000-000000000001"),
         ("host_id", "another-host"),
         ("instance_ref", "another-vm"),
         ("frame_id", "another-frame"),
