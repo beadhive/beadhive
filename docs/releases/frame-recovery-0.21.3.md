@@ -36,6 +36,8 @@ Activation, use and revocation emit structured warning events, and the
 signed authority record retains the reason, scope and expiry. Configure the existing
 log/telemetry collector to alert on these events. This release does not provision a
 notification destination or claim delivery to an unconfigured external service.
+Alert on `event=frame_emergency_admission`; the `action` field distinguishes
+activation, revocation and use attempts across the client and receiver logs.
 An operator-controlled signing key is the permission boundary; possession of that
 key must be limited independently of frame and observer credentials.
 

@@ -665,7 +665,8 @@ def enforce_hive_lease(old, new, reference, state, policy, head):
             json.dumps(
                 {
                     "warning": "frame_emergency_admission",
-                    "event": "lease-use-attempt",
+                    "event": "frame_emergency_admission",
+                    "action": "lease-use-attempt",
                     "frame_id": frame,
                     "prefix": prefix,
                     "expires_at": record["emergency"]["expires_at"],
