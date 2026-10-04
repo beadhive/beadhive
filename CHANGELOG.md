@@ -13,6 +13,62 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.21.0 (2026-10-04)
+
+### Feat
+
+- **host**: bootstrap SQL frames without an HQ checkout
+- **hq**: seed committed Dolt config and verify rollback
+- **hq**: complete bound identity validation and SQL continuity
+- **config**: enforce declared schemas at HQ publication boundaries
+- **config**: add pure HQ document schema validation
+- **hq**: support explicit beadyard identity adoption and continuity
+- **config**: route fleet consumers through committed SQL revisions
+- **hq**: bind portable beadyard identity to signed carriers
+- **dispatch**: qualify foreground intake and drain outcomes
+- **dispatch**: add foreground process runtime and bounded signal drain
+- **hq**: bind shared Dolt config and runtime authority
+- **fleet**: enforce frame eligibility and signed hive lease custody
+- **hq**: add committed fleet config port and coherent read contract
+- **fleet**: enforce protected Git authority and admission bootstrap
+- **host**: checkpoint signed heartbeat observations
+- **nix**: package bh from uv.lock and gate release channels
+- **host**: publish provisioned registration without unrelated HQ changes
+- **fleet**: add frame membership to host manifests
+
+### Fix
+
+- **config**: preserve public legacy migration save seam
+- **hq**: preserve legacy repair and attest provisioning assets
+- **hq**: classify provisioning assets in native validation
+- **hq**: keep identity contracts inside config domain
+- **config**: preserve safe diagnostics under schema validation
+- **hq**: bind live lease acceptance to current identity evidence
+- **hq**: guard SQL identity adoption recovery custody
+- reuse selected HOST during Git config read
+- route HQ Beads status through named CLI read
+- **config**: pin selected backend through fleet transactions
+- **config**: retain legacy lease policy with selected roster reads
+- **config**: preserve legacy cache on SQL host selection
+- **validation**: redistribute queued native tests across idle workers
+- **fleet**: preserve unbound legacy lease recovery
+- **fleet**: preserve lazy publication package diagnostics
+- **fleet**: use narrow publication diagnostic helper
+- **fleet**: authenticate frame writes through bd passthrough
+- **fleet**: prove foreign takeover and invert lease helper dependencies
+- **fleet**: preserve denials and qualify hermetic authority tests
+- **nix**: relocate Linux Beads ELF into its runtime closure
+- **host**: preserve retire API with separate frame lifecycle command
+- **nix**: allow TCG boot before VM driver shell timeout
+- **nix**: start VM test shell early under TCG
+- **nix**: run bh VM acceptance under TCG without KVM
+- **frame-bridge**: load enrolled identity and daemon listener config
+- **contracts**: apply approved host publication change to v2 draft
+
+### Refactor
+
+- **fleet**: separate authority composition from signed transport
+
 ## v0.20.2 (2026-09-30)
 
 ### Fix
