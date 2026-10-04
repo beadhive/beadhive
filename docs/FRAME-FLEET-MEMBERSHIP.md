@@ -33,6 +33,7 @@ hq:
       port: 3308
       database: beadhive_config
       user: bh_config_reader
+      tls_mode: required
       server_name: config.example.invalid
       ca_file: /etc/beadhive/config-ca.pem
       credential:
@@ -45,9 +46,10 @@ hq:
     initial_revision: "<32-character-dolt-revision>"
 ```
 
-This is a shape example, not a deployable endpoint. The reader needs native
-TLS, CA verification, matching `server_name`, broker access and the pinned
-backend/generation/revision floor. `hq.sql.enabled: false` prepares a binding
+This is a shape example, not a deployable endpoint. With the default
+`tls_mode: required`, the reader needs native MySQL TLS, CA verification, matching
+`server_name`, broker access and the pinned backend/generation/revision floor.
+`hq.sql.enabled: false` prepares a binding
 without selecting SQL. Configure `hq.sql.publisher` only for the trusted
 publisher; runtime, observer and authority-writer principals use their own
 separate bindings and grants. The publisher can stage and commit a Dolt branch;

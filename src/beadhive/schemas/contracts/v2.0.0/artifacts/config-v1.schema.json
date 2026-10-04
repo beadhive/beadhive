@@ -1602,7 +1602,7 @@
     },
     "HqSqlConnection": {
       "additionalProperties": false,
-      "description": "One explicitly scoped SQL principal and verified transport.",
+      "description": "One scoped SQL principal with an explicit host-local transport policy.",
       "properties": {
         "ca_file": {
           "default": "",
@@ -1653,6 +1653,15 @@
         "server_name": {
           "default": "",
           "title": "Server Name",
+          "type": "string"
+        },
+        "tls_mode": {
+          "default": "required",
+          "enum": [
+            "required",
+            "disabled"
+          ],
+          "title": "Tls Mode",
           "type": "string"
         },
         "user": {

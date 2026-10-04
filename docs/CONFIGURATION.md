@@ -91,10 +91,26 @@ boundaries.
 | `hq.sql.runtime_floor_path`, `runtime_operator_public_key` | Host-local runtime replay-floor path and operator public-key reference used to verify signed runtime authority. |
 | `hq.sql.floor_path`, `backend_identity`, `generation`, `minimum_sequence`, `initial_revision` | Reader-side trust floor, backend/generation and initial revision pin. |
 | `hq.sql.cache_ttl` | Bounded config cache age; it never waives revision or revocation checks. |
-| `hq.sql.<role>.*` | Per role (`reader`, `publisher`, `runtime`, `observer`, `authority_writer`): `host`, `port`, `database`, `user`, `server_name`, `ca_file`, `credential.config_path/profile/key`, and `connect_timeout`, `read_timeout`, `write_timeout`, `operation_timeout`. |
+| `hq.sql.<role>.*` | Per role (`reader`, `publisher`, `runtime`, `observer`, `authority_writer`): `host`, `port`, `database`, `user`, `tls_mode`, `server_name`, `ca_file`, `credential.config_path/profile/key`, and `connect_timeout`, `read_timeout`, `write_timeout`, `operation_timeout`. |
 | `managed_repos[].frame_policy.config_revision` | Required policy revision label for a frame-managed hive. |
 | `managed_repos[].frame_policy.requires` | Optional requirements: `isolation`, `trust_zone`, `arch`, `harness`, `harnesses`, and positive `max_sessions`. |
 | `managed_repos[].frame_policy.evict_after_s` | Required positive finite interval used by protected takeover policy. |
+
+Each HOST-local `hq.sql.<role>.tls_mode` independently accepts `required` (the default)
+or `disabled`. `required` verifies the configured CA and matching `server_name`, requires
+TLS 1.2 or newer and native MySQL `CLIENT_SSL` advertisement before authentication, and
+never falls back to plaintext after a TLS failure. Existing bindings retain that behavior
+when the setting is omitted.
+
+`disabled` is an explicit operator choice for a plaintext MySQL listener, including a raw
+Caddy layer4 TCP proxy. It does not require `ca_file` or `server_name`. Credentials and SQL
+traffic can be exposed on the network; the proxy alone provides no TLS protection. Keep
+this choice in HOST configuration and select it separately for each intended principal.
+Endpoint validation, fnox broker retrieval, driver pinning, deadlines, redacted errors,
+reconnect refusal, and signed runtime authority/admission checks still apply. Runtime
+cross-database transactions require matching endpoint and transport policy for their
+config and runtime bindings so a plaintext runtime connection cannot bypass a required
+config-reader TLS policy. See the [migration examples](design/dolt-hq-config-migration-runbook.md#host-local-sql-transport).
 
 `bh config schema --json` lists the public config rows. The current authoritative generated
 package schema is

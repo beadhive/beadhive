@@ -18,7 +18,7 @@ from beadhive.hq_sql_transport import (
     _strict_driver,
 )
 from beadhive.modules.config.application.partition import HOST, partition_of
-from beadhive.modules.config.contracts import HqSqlConfig
+from beadhive.modules.config.contracts import HqSqlConfig, HqSqlConnection
 
 
 def test_sql_bootstrap_selector_is_explicit_and_strict(monkeypatch):
@@ -192,7 +192,8 @@ def test_failed_connection_constructor_closes_partially_owned_socket(monkeypatch
         peer.close()
 
 
-def test_pinned_driver_aborts_a_dripping_response_at_total_deadline():
+@pytest.mark.parametrize("tls_mode", ["required", "disabled"])
+def test_pinned_driver_aborts_a_dripping_response_at_total_deadline(tls_mode):
     connection_type = _strict_driver()
     connection = connection_type(
         host="127.0.0.1",
@@ -201,6 +202,7 @@ def test_pinned_driver_aborts_a_dripping_response_at_total_deadline():
         defer_connect=True,
         read_timeout=1,
         operation_deadline=time.monotonic() + 0.2,
+        tls_mode=tls_mode,
     )
     client, server = socket.socketpair()
     connection._sock = client
@@ -226,3 +228,163 @@ def test_pinned_driver_aborts_a_dripping_response_at_total_deadline():
         connection.close()
         server.close()
         writer.join(timeout=1)
+
+
+@pytest.mark.parametrize("role", ["reader", "publisher", "runtime", "observer", "authority_writer"])
+def test_tls_mode_is_host_local_and_does_not_propagate_between_bindings(role):
+    assert partition_of(f"hq.sql.{role}.tls_mode") == HOST
+    assert HqSqlConnection().tls_mode == "required"
+    if role == "runtime":
+        # Runtime completeness has a separate authority validator; a staged
+        # connection can be validated independently of those authority pins.
+        assert HqSqlConnection(tls_mode="disabled").tls_mode == "disabled"
+    else:
+        settings = HqSqlConfig.model_validate({role: {"tls_mode": "disabled"}})
+        assert getattr(settings, role).tls_mode == "disabled"
+        for other in ("reader", "publisher", "observer", "authority_writer"):
+            binding = getattr(settings, other)
+            if other != role and binding is not None:
+                assert binding.tls_mode == "required"
+
+
+@pytest.mark.parametrize("mode", ["preferred", "auto", "off", "", None, True, 0])
+def test_unknown_tls_modes_fail_before_broker_and_redact_values(mode):
+    from beadhive.hq_sql_transport import connect
+
+    class RefusingBroker:
+        def get(self, *_args, **_kwargs):
+            raise AssertionError("invalid binding must not retrieve credentials")
+
+    with pytest.raises(ValueError):
+        HqSqlConnection.model_validate({"tls_mode": mode})
+    with pytest.raises(SqlTransportError, match="invalid SQL connection binding"):
+        connect({"tls_mode": mode}, RefusingBroker(), deadline=time.monotonic() + 1)
+
+
+def test_disabled_bootstrap_preserves_authority_pins_without_tls_metadata():
+    binding = {
+        "tls_mode": "disabled",
+        "host": "sql.example.test",
+        "database": "config",
+        "user": "reader",
+        "credential": {
+            "config_path": "/fixture/fnox.toml",
+            "profile": "test",
+            "key": "SQL",
+        },
+    }
+    bootstrap = {
+        "enabled": True,
+        "reader": binding,
+        "floor_path": "/fixture/floor.json",
+        "backend_identity": "fixture",
+        "generation": "fixture",
+        "initial_revision": "a" * 32,
+    }
+    assert HqSqlConfig.model_validate(bootstrap).reader.tls_mode == "disabled"
+    with pytest.raises(ValueError):
+        HqSqlConfig.model_validate({**bootstrap, "reader": {**binding, "tls_mode": "required"}})
+    with pytest.raises(ValueError):
+        HqSqlConfig.model_validate({**bootstrap, "initial_revision": ""})
+    runtime = {**binding, "database": "runtime", "user": "frame"}
+    bootstrap.update(
+        {
+            "runtime": runtime,
+            "runtime_backend_identity": "runtime",
+            "runtime_generation": "gen",
+            "runtime_initial_revision": "a" * 32,
+            "runtime_floor_path": "/fixture/runtime.json",
+            "runtime_operator_public_key": "ssh-ed25519 fixture",
+        }
+    )
+    assert HqSqlConfig.model_validate(bootstrap).runtime.tls_mode == "disabled"
+    with pytest.raises(ValueError):
+        HqSqlConfig.model_validate({**bootstrap, "runtime_operator_public_key": ""})
+
+
+@pytest.mark.parametrize("role", ["runtime", "observer", "authority_writer"])
+@pytest.mark.parametrize(
+    "reader_mode, runtime_mode", [("required", "disabled"), ("disabled", "required")]
+)
+def test_cross_database_reads_refuse_transport_policy_mismatch(role, reader_mode, runtime_mode):
+    from beadhive.hq_sql_runtime import SqlRuntimeAuthority, SqlRuntimeError
+
+    binding = {"host": "127.0.0.1", "port": 3308, "database": "config"}
+    authority = SqlRuntimeAuthority(
+        {
+            "reader": {**binding, "tls_mode": reader_mode},
+            role: {**binding, "database": "runtime", "tls_mode": runtime_mode},
+        }
+    )
+    with pytest.raises(SqlRuntimeError, match="endpoint or transport policy mismatch"):
+        authority.load_latest_config_at(None)
+    with pytest.raises(SqlRuntimeError, match="endpoint mismatch"):
+        authority.fresh_config_head_fence("a" * 32, deadline=time.monotonic() + 1)
+
+
+@pytest.mark.parametrize("failure", ["endpoint", "broker", "driver", "pin"])
+def test_plaintext_failures_redact_and_keep_validation_broker_and_driver_guards(
+    monkeypatch, failure
+):
+    from beadhive import hq_sql_transport
+
+    canary = "SECRET_MUST_NOT_ESCAPE_123"
+    binding = {
+        "tls_mode": "disabled",
+        "host": "127.0.0.1",
+        "database": "config",
+        "user": "reader",
+        "credential": {"config_path": "/fixture/fnox.toml", "profile": "test", "key": "SQL"},
+    }
+    calls = []
+
+    class Broker:
+        def get(self, reference, *, deadline):
+            calls.append(reference)
+            if failure == "broker":
+                raise RuntimeError(canary)
+            return canary
+
+    if failure == "endpoint":
+        binding["host"] = f"bad://{canary}"
+    elif failure == "driver":
+
+        def bad_driver():
+            def fail(**kwargs):
+                assert kwargs["ssl"] is None and kwargs["tls_mode"] == "disabled"
+                raise RuntimeError(kwargs["password"])
+
+            return fail
+
+        monkeypatch.setattr(hq_sql_transport, "_strict_driver", bad_driver)
+    elif failure == "pin":
+        monkeypatch.setattr(hq_sql_transport.importlib.metadata, "version", lambda _name: "0.0.0")
+    with pytest.raises(SqlTransportError) as error:
+        hq_sql_transport.connect(binding, Broker(), deadline=time.monotonic() + 1)
+    assert canary not in str(error.value)
+    assert bool(calls) == (failure != "endpoint")
+    if failure == "pin":
+        assert "unsupported PyMySQL" in str(error.value)
+
+
+@pytest.mark.parametrize("tls_mode", ["required", "disabled"])
+def test_incomplete_credential_reference_fails_before_broker(tls_mode):
+    from beadhive.hq_sql_transport import connect
+
+    class RefusingBroker:
+        def get(self, *_args, **_kwargs):
+            raise AssertionError("incomplete credential must fail before broker")
+
+    with pytest.raises(SqlTransportError, match="incomplete SQL connection binding"):
+        connect(
+            {
+                "tls_mode": tls_mode,
+                "host": "127.0.0.1",
+                "user": "reader",
+                "database": "config",
+                "ca_file": "/fixture/ca.pem",
+                "server_name": "127.0.0.1",
+            },
+            RefusingBroker(),
+            deadline=time.monotonic() + 1,
+        )

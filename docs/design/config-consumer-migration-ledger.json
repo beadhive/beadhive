@@ -1176,7 +1176,7 @@
       {
         "facade_target": "beadhive.config.home",
         "kind": "direct-facade",
-        "line": 928,
+        "line": 1032,
         "path": "tests/test_hq_sql_config_int.py",
         "target": "beadhive.config.home"
       },
