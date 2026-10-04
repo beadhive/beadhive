@@ -13,6 +13,24 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.22.0 (2026-10-04)
+
+### Feat
+
+- **fleet**: advisory hive-lease expiry and no receiver renewal in signed mode
+- **fleet**: verify signed heartbeats at read time in signed liveness mode
+- **config**: add hq.sql.liveness receiver|signed switch
+
+### Fix
+
+- **arch**: record cycle snapshot for renew_if_due control-plane catch
+- **lint**: move host_cli heartbeat_report import to top block for ruff E402
+- **fleet**: route heartbeat_report readiness ping through the bd package boundary
+- **arch**: break fleet import cycles back to the recorded snapshot
+- **test**: expect reviewed_admission_or_emergency in fleet membership e2e
+- **test**: make frame release upgrade parametrization deterministic across xdist workers
+- **fleet**: swallow control-plane failures in renew_if_due
+
 ## v0.21.3 (2026-10-04)
 
 ### Fix
