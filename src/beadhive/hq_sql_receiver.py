@@ -349,7 +349,12 @@ class SqlTrustedReceiver:
                     "frame_id": route.frame_id,
                     **authority,
                 }
-                same_incumbent = guard.same_incumbent_after_binding(old_authority, identity)
+                # A reviewed active release rotation advances the grant epoch; its
+                # signed archive keeps the lease (and its claim fencing epoch) with
+                # the same identity lineage instead of forcing a re-adopt.
+                same_incumbent = guard.same_incumbent_after_binding(
+                    old_authority, identity
+                ) or guard.same_incumbent_after_rotation(old_authority, route.frame_id, record)
                 operation = request["operation"]
                 if operation == "release":
                     if (
@@ -505,6 +510,7 @@ class SqlTrustedReceiver:
                                 r
                                 for frame, r in guard.records(state)
                                 if old_authority == {"frame_id": frame, **r["authority"]}
+                                or guard.same_incumbent_after_rotation(old_authority, frame, r)
                             ]
                             if len(former) != 1:
                                 raise ReceiverError("incumbent incarnation unavailable")
