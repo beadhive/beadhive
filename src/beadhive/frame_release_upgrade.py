@@ -9,9 +9,9 @@ import math
 from ruamel.yaml import YAML
 
 from . import hq_authority_guard as guard
-from .host_heartbeat_core import ObservationAuthority
 from .host_manifest_contracts import HostManifest
-from .hq_sql_signatures import canonical
+from .hq_framelease_contracts import ObservationAuthority
+from .hq_sql_signatures import canonical, sql_principal
 
 
 def candidate(state, frame):
@@ -168,10 +168,8 @@ def prepare(original, frame, head, snapshot, request, *, now):
 
 
 def route_for(state, frame):
-    from .hq_sql_operator import SqlRuntimeOperator
-
     authority = state["frames"][frame]["candidate"]["authority"]
-    principal = SqlRuntimeOperator.principal_for(ObservationAuthority(**authority))
+    principal = sql_principal(ObservationAuthority(**authority))
     return (
         principal,
         frame,

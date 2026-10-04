@@ -5,6 +5,7 @@ import pytest
 from ruamel.yaml import YAML
 
 from beadhive import heartbeat_report as report
+from beadhive import release_measurement
 from beadhive.hq_framelease_contracts import HeartbeatError
 
 
@@ -104,10 +105,10 @@ def test_capacity_requires_committed_capacity(plane):
 
 def test_empty_installed_distribution_fails(monkeypatch):
     monkeypatch.setattr(
-        report.importlib.metadata, "distribution", lambda _: SimpleNamespace(files=[])
+        release_measurement.importlib.metadata, "distribution", lambda _: SimpleNamespace(files=[])
     )
     with pytest.raises(HeartbeatError, match="editable"):
-        report.installed_release()
+        release_measurement.installed_release()
 
 
 def test_send_remeasures_and_only_publishes(plane, monkeypatch):
@@ -144,11 +145,16 @@ def test_installed_measurement_matches_original_algorithm(monkeypatch, tmp_path)
         version="0.21.3",
         locate_file=lambda item: tmp_path / item,
     )
-    monkeypatch.setattr(report.importlib.metadata, "distribution", lambda _: distribution)
+    monkeypatch.setattr(
+        release_measurement.importlib.metadata, "distribution", lambda _: distribution
+    )
     digest = hashlib.sha256()
     for name in sorted(files[:2]):
         digest.update(name.encode() + b"\0" + hashlib.sha256(name.encode()).digest())
-    assert report.installed_release() == {"id": "0.21.3", "digest": "sha256:" + digest.hexdigest()}
+    assert release_measurement.installed_release() == {
+        "id": "0.21.3",
+        "digest": "sha256:" + digest.hexdigest(),
+    }
 
 
 def test_host_validation_uses_effective_fleet_schema_version(monkeypatch):
