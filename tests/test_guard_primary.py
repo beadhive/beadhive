@@ -781,3 +781,96 @@ def test_bh_1pg77_not_primary_collidable_create_refused_list_allowed(
         != ""
     )
     assert guard.bd_write_refusal(["list"], hq / "x", cfg={}) == ""
+
+
+# ---- hq.sql.liveness: signed (bh-7y6b2) ------------------------------------------------
+# A SQL frame's write gate reads the authenticated holder lease. In signed liveness mode the
+# reader marks its expiry advisory, so a holder whose expires_at lapsed hours ago keeps
+# writing; and the opportunistic renewal makes no receiver round trip at all.
+
+
+@pytest.fixture
+def sql_frame(hive, this_host, monkeypatch):
+    from beadhive import frame_eligibility, hq_control_plane
+    from beadhive.hq_control_plane import SqlControlPlane
+
+    published = []
+    monkeypatch.setattr(
+        SqlControlPlane, "publish_hive_lease", lambda *a, **k: published.append(("publish", a))
+    )
+    monkeypatch.setattr(
+        SqlControlPlane, "propose_hive_lease", lambda *a, **k: published.append(("propose", a))
+    )
+    monkeypatch.setattr(host, "sql_hq_selected", lambda: True)
+    monkeypatch.setattr(
+        frame_eligibility,
+        "require_intake",
+        lambda *a, **k: frame_eligibility.EligibilityDecision(()),
+    )
+    monkeypatch.delenv("BH_HQ_SQL_LIVENESS", raising=False)
+    # The refusal branch's HQ re-read is out of scope here; decide from the read lease.
+    monkeypatch.setattr(guard, "_refresh_expired", lambda _prefix, lease: (lease, "fixture"))
+    state = {}
+
+    def select(liveness, lease):
+        state["lease"] = lease
+        state["plane"] = SqlControlPlane({"liveness": liveness})
+        # The authenticated holder read is the reader's job (unit-tested in
+        # test_hq_sql_signed_liveness.py); here it returns the lease under test.
+        state["plane"].read_hive_lease = lambda prefix, holder_identity=None: state["lease"]
+
+    monkeypatch.setattr(hq_control_plane, "control_plane", lambda *_a, **_k: state["plane"])
+    return select, published
+
+
+def _lapsed(host_id, *, advisory):
+    # expires_at three hours in the past; same five-field record either way.
+    return host_lease.HostLease(
+        host_id=host_id,
+        label="frame",
+        epoch=5,
+        adopted_at=host_lease.now_stamp(T0 - 4 * 3600),
+        expires_at=host_lease.now_stamp(T0 - 3 * 3600),
+        advisory_expiry=advisory,
+    )
+
+
+def test_signed_mode_holder_with_lease_three_hours_past_may_write(sql_frame, monkeypatch):
+    select, published = sql_frame
+    monkeypatch.setattr(host_lease.time, "time", lambda: T0)
+    lease = _lapsed(THIS_HOST, advisory=True)
+    select("signed", lease)
+    guard.guard_primary("", cfg={})  # no raise
+    assert published == []  # zero publish_hive_lease / propose: no receiver round trip
+    assert lease.epoch == 5
+
+
+def test_signed_mode_env_override_alone_skips_renewal(sql_frame, monkeypatch):
+    select, published = sql_frame
+    monkeypatch.setattr(host_lease.time, "time", lambda: T0)
+    select("receiver", _lapsed(THIS_HOST, advisory=True))
+    monkeypatch.setenv("BH_HQ_SQL_LIVENESS", "signed")
+    guard.guard_primary("", cfg={})
+    assert published == []
+
+
+def test_default_mode_refuses_the_same_lapsed_holder_lease(sql_frame, monkeypatch):
+    select, published = sql_frame
+    monkeypatch.setattr(host_lease.time, "time", lambda: T0)
+    select("receiver", _lapsed(THIS_HOST, advisory=False))
+    with pytest.raises(typer.Exit):
+        guard.guard_primary("", cfg={})
+    assert published == []
+
+
+@pytest.mark.parametrize("liveness", ["receiver", "signed"])
+@pytest.mark.parametrize("holder", ["", OTHER_HOST])
+def test_tombstone_and_foreign_holder_refused_in_both_modes(
+    sql_frame, monkeypatch, liveness, holder
+):
+    select, published = sql_frame
+    monkeypatch.setattr(host_lease.time, "time", lambda: T0)
+    select(liveness, _lapsed(holder, advisory=liveness == "signed"))
+    with pytest.raises(typer.Exit):
+        guard.guard_primary("", cfg={})
+    assert published == []

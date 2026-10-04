@@ -343,3 +343,14 @@ def test_suggest_key_no_match_for_a_merely_unset_but_unrelated_key():
 def test_suggest_key_returns_none_for_an_exact_match():
     """An exact known key never "suggests itself"."""
     assert suggest_key("otel.protocol") is None
+
+
+def test_hq_sql_liveness_is_a_described_closed_choice_defaulting_to_receiver():
+    """bh-0acs8: the signed-liveness switch is schema-visible, documented, default-off."""
+    field = {f.path: f for f in iter_schema_fields()}["hq.sql.liveness"]
+    assert field.default == '"receiver"'
+    assert "receiver" in field.type and "signed" in field.type
+    assert "BH_HQ_SQL_LIVENESS" in field.description
+    assert BeadhiveConfig(hq={"sql": {"liveness": "signed"}}).hq.sql.liveness == "signed"
+    with pytest.raises(ValidationError):
+        BeadhiveConfig(hq={"sql": {"liveness": "maybe"}})

@@ -42,6 +42,9 @@ def generate(plane, *, free_sessions: int = 0) -> HeartbeatLease:
     if type(free_sessions) is not int or not 0 <= free_sessions <= 1024:
         raise HeartbeatError("free sessions must be between zero and 1024")
     try:
+        # ``row`` is the receiver's accepted observation, or in ``hq.sql.liveness: signed``
+        # mode the newest verified heartbeat in this frame's own inbox — so the next seq
+        # follows the last beat actually sent and never stalls behind a lagging receiver.
         _, _, route, _, record, snapshot, _, row, _ = (
             plane._runtime_authority().read_frame_composite()
         )
