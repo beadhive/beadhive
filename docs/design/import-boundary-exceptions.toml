@@ -1227,10 +1227,10 @@ status = "active"
 importer = "beadhive.host_lease"
 importer_path = "src/beadhive/host_lease.py"
 imported_module = "beadhive.hq_control_plane"
-symbols = ["beadhive.hq_control_plane.control_plane"]
+symbols = ["beadhive.hq_control_plane.ControlPlaneError", "beadhive.hq_control_plane.control_plane"]
 target_owner_package = "src/beadhive Fleet application composition"
 successor = "Fleet composition steward: dev/fleet-eligibility"
-reason = "Select the protected lease publication/read adapter for enrolled frames; legacy path remains separate. introduced edge or changed exact symbols relative to d2485d67; retained concrete composition, not deferred cleanup."
+reason = "Select the protected lease publication/read adapter for enrolled frames, and classify its control-plane failures so an opportunistic renewal is logged and swallowed; legacy path remains separate. introduced edge or changed exact symbols relative to d2485d67; retained concrete composition, not deferred cleanup."
 consumer_inventory = { production = "beadhive.host_lease exact composition consumer", tests = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py", docs = "docs/design/fleet-eligibility-composition-ownership.md", external = "existing bh CLI, frame-agent eligibility/lease consumer; no new direct Python API promised" }
 executable_test = "tests/test_frame_eligibility.py; tests/test_hq_authority_backend.py; tests/test_hq_host_publication.py; tests/test_import_boundaries.py"
 test_closure = "just architecture-structural-check; just check-native"
