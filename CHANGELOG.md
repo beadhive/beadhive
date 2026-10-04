@@ -13,6 +13,13 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.21.2 (2026-10-04)
+
+### Fix
+
+- **credentials**: resolve trusted macOS mise fnox installation
+- **config**: keep frame enrollment marker in host configuration
+
 ## v0.21.1 (2026-10-04)
 
 ### Fix
