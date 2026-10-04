@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -206,10 +207,28 @@ def _stop(process: subprocess.Popen[bytes], grace: float, *, process_group: int 
         process.wait(timeout=max(grace, 1.0))
 
 
+def _diagnostics_parent() -> Path | None:
+    """Use only an existing owned report drop zone already shared with the Linux fence."""
+    value = os.environ.get("BH_TEST_REPORT_DIR")
+    if not value:
+        return None
+    parent = Path(value)
+    if not parent.is_absolute():
+        raise ValueError("watchdog report directory must be absolute")
+    metadata = parent.lstat()
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError("watchdog report directory must be a real directory")
+    if hasattr(os, "getuid") and metadata.st_uid != os.getuid():
+        raise ValueError("watchdog report directory must belong to the current user")
+    return parent
+
+
 def run(command: list[str], *, timeout: float, grace: float) -> int:
     if not command:
         raise ValueError("a command is required after --")
-    with tempfile.TemporaryDirectory(prefix="bh-test-watchdog-") as active_root:
+    with tempfile.TemporaryDirectory(
+        prefix="bh-test-watchdog-", dir=_diagnostics_parent()
+    ) as active_root:
         active_dir = Path(active_root)
         child_env = os.environ.copy()
         child_env["BH_TEST_ACTIVE_DIR"] = str(active_dir)

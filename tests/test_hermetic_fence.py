@@ -81,6 +81,10 @@ def test_selected_uv_cache_and_outer_interpreter_are_available_inside_fence():
 def test_report_drop_zone_outside_checkout_is_writable_inside_fence(tmp_path):
     reports = tmp_path / "reports"
     reports.mkdir()
+    # This independent nested runner owns a different report binding. The outer watchdog's
+    # diagnostic directory is intentionally read-only inside this narrower fence.
+    env = {**os.environ, "BH_TEST_REPORT_DIR": str(reports)}
+    env.pop("BH_TEST_ACTIVE_DIR", None)
     result = subprocess.run(
         [
             str(WRAPPER),
@@ -89,7 +93,7 @@ def test_report_drop_zone_outside_checkout_is_writable_inside_fence(tmp_path):
             "-q",
             "tests/test_pytest_with_report.py::test_unset_environment_preserves_pytest_arguments_byte_for_byte",
         ],
-        env={**os.environ, "BH_TEST_REPORT_DIR": str(reports)},
+        env=env,
         capture_output=True,
         text=True,
         timeout=120,
@@ -504,3 +508,44 @@ def test_the_boundary_properties_are_checked_by_an_ordinary_unfenced_run(tmp_pat
     assert "BOUNDARY-OK" in result.stdout, (
         f"the fence's boundary properties do not hold:\n{result.stdout}\n{result.stderr}"
     )
+
+
+@pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap is Linux-only")
+@pytest.mark.parametrize("times_out", [False, True])
+def test_watchdog_diagnostics_are_writable_through_existing_report_binding(tmp_path, times_out):
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    sentinel = reports / "retained.xml"
+    sentinel.write_text("unchanged")
+    probe = (
+        "import os; from pathlib import Path; "
+        "assert os.environ['BH_HERMETIC_FENCE']=='1'; "
+        "root=Path(os.environ['BH_TEST_ACTIVE_DIR']); "
+        "(root/'child.stack').write_text('actual fenced diagnostic'); print(root, flush=True)"
+        + ("; import time; time.sleep(300)" if times_out else "")
+    )
+    result = subprocess.run(
+        [
+            str(REPO / ".venv/bin/python"),
+            str(REPO / "scripts/test-watchdog.py"),
+            "--timeout",
+            "5" if times_out else "30",
+            "--grace",
+            "0.2",
+            "--",
+            str(WRAPPER),
+            str(REPO / ".venv/bin/python"),
+            "-c",
+            probe,
+        ],
+        env={**os.environ, "BH_TEST_REPORT_DIR": str(reports)},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == (124 if times_out else 0), result.stdout + result.stderr
+    if times_out:
+        assert "TEST WATCHDOG TIMEOUT" in result.stderr
+    assert Path(result.stdout.strip()).parent == reports
+    assert sentinel.read_text() == "unchanged"
+    assert list(reports.iterdir()) == [sentinel]

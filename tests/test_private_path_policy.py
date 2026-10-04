@@ -448,7 +448,7 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     | _owned("role.py", "_local_agent_override", ".claude", ".opencode")
     | _owned("repowise_plugin.py", "_state", ".repowise")
     | _owned("repowise_plugin.py", "readiness", ".repowise")
-    | _owned("repowise_plugin.py", "_backfill_vscode_config", ".repowise/config.yaml")
+    | _owned("repowise_plugin.py", "_backfill_editor_config", ".repowise/config.yaml")
     | _owned("repowise_plugin.py", "_install_workspace_overlay", ".repowise-workspace")
     # Git-native administration and GitHub repository configuration.
     | _owned("config_policy.py", "hq_has_remote", ".git")

@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError
 from typer.testing import CliRunner
 
 from beadhive import repowise_plugin
@@ -341,15 +342,15 @@ def test_refresh_base_runs_before_create_only_when_stale(monkeypatch, tmp_path):
     assert YAML().load(config_path.read_text())["editor_files"]["vscode"] is False
 
 
-def test_backfill_vscode_config_preserves_existing_editor_settings(tmp_path):
+def test_backfill_editor_config_preserves_existing_editor_settings(tmp_path):
     config_path = tmp_path / ".repowise" / "config.yaml"
     config_path.parent.mkdir()
     config_path.write_text("editor_files:\n  claude_md: false\n")
 
-    repowise_plugin._backfill_vscode_config(tmp_path, workspace=False)
+    repowise_plugin._backfill_editor_config(tmp_path, workspace=False)
 
     config = YAML().load(config_path.read_text())
-    assert config["editor_files"] == {"claude_md": False, "vscode": False}
+    assert config["editor_files"] == {"claude_md": False, "agents_md": False, "vscode": False}
 
 
 def test_workspace_index_backfills_each_existing_base_config(monkeypatch, tmp_path):
@@ -359,7 +360,9 @@ def test_workspace_index_backfills_each_existing_base_config(monkeypatch, tmp_pa
     ]
     for config_path in configs:
         config_path.parent.mkdir(parents=True)
-        config_path.write_text("editor_files:\n  claude_md: false\n")
+        config_path.write_text(
+            "editor_files:\n  claude_md: true\n  agents_md: true\n  vscode: true\n"
+        )
     monkeypatch.setattr(repowise_plugin, "capability_error", lambda command=None: None)
     monkeypatch.setattr(
         repowise_plugin.run,
@@ -371,7 +374,7 @@ def test_workspace_index_backfills_each_existing_base_config(monkeypatch, tmp_pa
 
     for config_path in configs:
         config = YAML().load(config_path.read_text())
-        assert config["editor_files"]["vscode"] is False
+        assert config["editor_files"] == {"claude_md": False, "agents_md": False, "vscode": False}
 
 
 def test_refresh_base_skips_missing_and_current_indexes(monkeypatch, tmp_path):
@@ -503,3 +506,127 @@ def test_seed_cleanly_skips_absent_host_overlay(monkeypatch, tmp_path):
     repowise_plugin._seed_worktree({}, {}, main=tmp_path, branch="wt/x", target=target)
 
     assert not (target / ".repowise-workspace.yaml").exists()
+
+
+def test_editor_optouts_replace_preexisting_optins_and_preserve_unrelated_settings(tmp_path):
+    config_path = tmp_path / ".repowise" / "config.yaml"
+    config_path.parent.mkdir()
+    config_path.write_text(
+        "editor_files:\n  claude_md: true\n  agents_md: true\n  vscode: true\n"
+        "  mcp_json: false\nindex:\n  mode: fast\n"
+    )
+    sentinel = tmp_path / "AGENTS.md"
+    sentinel.write_bytes(b"operator-owned guidance\n")
+
+    repowise_plugin._backfill_editor_config(tmp_path, workspace=False)
+
+    assert YAML().load(config_path.read_text()) == {
+        "editor_files": {
+            "claude_md": False,
+            "agents_md": False,
+            "vscode": False,
+            "mcp_json": False,
+        },
+        "index": {"mode": "fast"},
+    }
+    assert sentinel.read_bytes() == b"operator-owned guidance\n"
+    first = config_path.read_bytes()
+    timestamp = config_path.stat().st_mtime_ns
+    repowise_plugin._backfill_editor_config(tmp_path, workspace=False)
+    assert config_path.read_bytes() == first
+    assert config_path.stat().st_mtime_ns == timestamp
+
+
+@pytest.mark.parametrize("operation", ["index", "refresh", "seed"])
+@pytest.mark.parametrize(
+    "content",
+    ["false\n", "[]\n", "editor_files: []\n", "editor_files: true\n", "editor_files: [\n"],
+)
+def test_malformed_editor_config_refuses_before_indexer_spawn(
+    monkeypatch, tmp_path, operation, content
+):
+    config_path = tmp_path / ".repowise" / "config.yaml"
+    config_path.parent.mkdir()
+    config_path.write_text(content)
+    (config_path.parent / "state.json").write_text(json.dumps({"last_sync_commit": "old"}))
+    monkeypatch.setattr(repowise_plugin, "capability_error", lambda command=None: None)
+    calls = []
+    monkeypatch.setattr(repowise_plugin.run, "run", lambda *a, **kw: calls.append((a, kw)))
+    with pytest.raises((RuntimeError, YAMLError)):
+        # The parser's own syntax errors are also refusals; no child may execute.
+        if operation == "index":
+            repowise_plugin._index(tmp_path, workspace=False)
+        elif operation == "refresh":
+            repowise_plugin._refresh_base(
+                {}, {}, main=tmp_path, branch="wt/x", target=tmp_path, start_point="base"
+            )
+        else:
+            repowise_plugin._seed_worktree({}, {}, main=tmp_path, branch="wt/x", target=tmp_path)
+    assert calls == []
+    assert config_path.read_text() == content
+
+
+def test_seed_persists_all_editor_optouts_before_actual_init(monkeypatch, tmp_path):
+    config_path = tmp_path / ".repowise" / "config.yaml"
+    config_path.parent.mkdir()
+    config_path.write_text("editor_files:\n  claude_md: true\n  agents_md: true\n  vscode: true\n")
+    monkeypatch.setattr(repowise_plugin, "capability_error", lambda command=None: None)
+    monkeypatch.setattr(repowise_plugin, "_install_workspace_overlay", lambda *args: None)
+    calls = []
+
+    def invoke(argv, **kwargs):
+        assert YAML().load(config_path.read_text())["editor_files"] == {
+            "claude_md": False,
+            "agents_md": False,
+            "vscode": False,
+        }
+        calls.append(argv)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(repowise_plugin.run, "run", invoke)
+    repowise_plugin._seed_worktree({}, {}, main=tmp_path, branch="wt/x", target=tmp_path)
+    assert calls == [["repowise", "init", *repowise_plugin._BASE_ARGS, "-y"]]
+
+
+def test_refresh_rejects_update_capable_but_init_unsafe_modern_cli(monkeypatch, tmp_path):
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "state.json").write_text(json.dumps({"last_sync_commit": "old"}))
+    monkeypatch.setattr(repowise_plugin, "_branch_point", lambda *args: "new")
+    monkeypatch.setattr(repowise_plugin, "_has_cli", lambda: True)
+    monkeypatch.setattr(
+        repowise_plugin,
+        "capabilities",
+        lambda command: (
+            repowise_plugin._REQUIRED_UPDATE_FLAGS
+            if command == "update"
+            else repowise_plugin._REQUIRED_INIT_FLAGS - {"--no-mcp-json", "--no-vscode"}
+        ),
+    )
+    calls = []
+    monkeypatch.setattr(repowise_plugin.run, "run", lambda *a, **kw: calls.append((a, kw)))
+    with pytest.raises(RuntimeError, match="init missing --no-mcp-json, --no-vscode"):
+        repowise_plugin._refresh_base(
+            {}, {}, main=tmp_path, branch="wt/x", target=tmp_path, start_point="base"
+        )
+    assert calls == []
+
+
+def test_seed_backfills_newly_created_configuration_before_later_refresh(monkeypatch, tmp_path):
+    config_path = tmp_path / ".repowise" / "config.yaml"
+    monkeypatch.setattr(repowise_plugin, "capability_error", lambda command=None: None)
+    monkeypatch.setattr(repowise_plugin, "_install_workspace_overlay", lambda *args: None)
+
+    def invoke(argv, **kwargs):
+        config_path.parent.mkdir()
+        config_path.write_text(
+            "editor_files:\n  claude_md: true\n  agents_md: true\n  vscode: true\n"
+            "index:\n  mode: fast\n"
+        )
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(repowise_plugin.run, "run", invoke)
+    repowise_plugin._seed_worktree({}, {}, main=tmp_path, branch="wt/x", target=tmp_path)
+    assert YAML().load(config_path.read_text()) == {
+        "editor_files": {"claude_md": False, "agents_md": False, "vscode": False},
+        "index": {"mode": "fast"},
+    }

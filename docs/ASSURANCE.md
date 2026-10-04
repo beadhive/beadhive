@@ -185,9 +185,11 @@ That layer is acknowledged here, not audited.
 Claude Code is installed at runtime with `bh dep install claude`, which names the licence before
 acting so accepting those terms is the user's own choice.
 
-The supported repowise build is the fork branch named above; the currently verified checkout
-reports `0.35.0`. The version alone is not the compatibility boundary: fork and stock builds have
-shared version strings while exposing different command surfaces. Beadhive therefore probes
+The supported repowise build is the fork branch named above. Source commit
+`934c19a3170749e3f81fe286ec9c2c07fcbaad0f` reports `0.45.0` and was verified with
+its locked production dependencies on Python 3.12. The version alone is not the compatibility
+boundary: fork and stock builds have shared version strings while exposing different command
+surfaces. Beadhive therefore probes
 both `repowise init --help` and `repowise update --help`, matches exact option tokens, and requires
 every spelling it invokes. A failed help probe is unsupported rather than evidence of an empty
 option set. `bh setup check`, `bh doctor`, and `bh hive ready` report the complete missing-flag
@@ -197,8 +199,19 @@ Every Beadhive-managed init also sets `REPOWISE_SKIP_EDITOR_SETUP=1`, the fork's
 headless/CI contract for suppressing machine-wide editor registration and user hooks. The
 `--no-claude-md`, `--no-codex`, `--no-mcp-json`, and `--no-vscode` flags independently suppress
 project-local editor files, while `-y` keeps provisioning noninteractive. The environment guard
-is deliberately not replaced with the removed `--no-editor-setup` option: it is not advertised by
-the supported CLI and fails before indexing on the verified build.
+is not replaced with `--no-editor-setup`. Stock 0.54.0 advertises that combined init flag,
+but its update path can still change project hook settings under the environment guard. It also
+lacks the required split flags, so managed init and update refuse it rather than weakening the
+no-editor contract.
+
+Before managed index, refresh, and seeded init, Beadhive persists `claude_md`, `agents_md`, and
+`vscode` as false inside the owned `.repowise/config.yaml`. This also covers existing opt-ins:
+the supported fork's update consults these preferences, and init's `--no-codex` alone does not
+clear an inherited `agents_md: true`. Existing unrelated configuration remains intact. Malformed
+configuration refuses execution instead of leaving editor preferences unproven. Successful init
+also backfills newly created configuration before any subsequent update. The verified fork's
+actual init and changed-HEAD update preserved project editor files, MCP files, Git configuration,
+and hooks byte for byte in a synthetic repository with preexisting enabled editor preferences.
 Managed repowise children receive a positive allowlist of operational host settings (`PATH`, home,
 temporary-directory, locale, terminal, and cross-platform process variables) rather than the raw
 ambient environment. Git configuration injection, cloud/provider credentials, and unrelated

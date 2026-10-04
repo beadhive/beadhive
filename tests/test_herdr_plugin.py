@@ -1843,6 +1843,7 @@ def test_spawn_watch_and_reap_success_emit_json_dispositions(tmp_path, monkeypat
     worktree_path.mkdir()
     (worktree_path / ".git").write_text("gitdir: /tmp/example\n")
     monkeypatch.setattr(herdr_plugin, "server_up", lambda: True)
+    monkeypatch.setattr(herdr_plugin, "_has_cli", lambda: True)
     monkeypatch.setattr(herdr_plugin.config, "load", lambda: {})
     monkeypatch.setattr(herdr_plugin, "_managed_worktree", lambda *_args: ({}, worktree_path))
     monkeypatch.setattr(herdr_plugin, "_resolve_kind", lambda kind, *_args: kind)
@@ -3600,6 +3601,7 @@ def test_collapsed_batch_spawn_ps_dispatch_and_cleanup_keep_child_identity_and_s
     tmp_path, monkeypatch
 ):
     """The Herdr lifecycle follows one claimed group worktree without minting a child branch."""
+    monkeypatch.setattr(herdr_plugin, "_has_cli", lambda: True)
     child = "widget-1.2"
     group = "widget-1"
     canonical_hive = "github/acme/widgets"

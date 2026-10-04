@@ -148,9 +148,9 @@ def capability_error(command: str | None = None) -> str | None:
     return None
 
 
-def _require_capabilities(command: str) -> None:
+def _require_capabilities(command: str | None = None) -> None:
     if (error := capability_error(command)) is not None:
-        raise RuntimeError(f"unsupported repowise {command} capability: {error}")
+        raise RuntimeError(f"unsupported repowise {command or 'init/update'} capability: {error}")
 
 
 def enabled(cfg, entry) -> bool:
@@ -208,28 +208,32 @@ _BASE_ARGS = [
 ]
 
 
-def _backfill_vscode_config(path: Path, *, workspace: bool) -> None:
-    """Persist the VS Code opt-out in existing base index configurations.
+def _backfill_editor_config(path: Path, *, workspace: bool) -> None:
+    """Persist every managed editor-file opt-out before no-editor execution.
 
-    ``--no-vscode`` protects init, but ``repowise update`` intentionally relies on
-    its persisted editor configuration.  A workspace invocation therefore updates
-    every existing base config beneath the workspace; a single-repo invocation
-    changes only that clone's config.
+    The supported CLI's update and seeded-init paths consult persisted preferences,
+    even when global registration is disabled. Existing opt-ins must therefore not
+    resurrect CLAUDE.md, AGENTS.md, or VS Code files during managed indexing.
     """
     configs = path.rglob(".repowise/config.yaml") if workspace else [path / ".repowise/config.yaml"]
     yaml = YAML()
     for config_path in configs:
         if not config_path.is_file():
             continue
-        data = yaml.load(config_path.read_text()) or {}
+        data = yaml.load(config_path.read_text())
+        if data is None:
+            data = {}
         if not isinstance(data, dict):
-            continue
+            raise RuntimeError(f"repowise config must be a mapping: {config_path}")
         editor_files = data.get("editor_files")
         if editor_files is None:
             editor_files = data["editor_files"] = {}
-        if not isinstance(editor_files, dict) or editor_files.get("vscode") is False:
+        if not isinstance(editor_files, dict):
+            raise RuntimeError(f"repowise editor_files must be a mapping: {config_path}")
+        keys = ("claude_md", "agents_md", "vscode")
+        if all(editor_files.get(key) is False for key in keys):
             continue
-        editor_files["vscode"] = False
+        editor_files.update(dict.fromkeys(keys, False))
         with config_path.open("w") as stream:
             yaml.dump(data, stream)
 
@@ -239,7 +243,7 @@ def _index(path: Path, *, workspace: bool) -> int:
     if (error := capability_error("init")) is not None:
         typer.echo(f"⚠ repowise disabled: {error}; skipping index", err=True)
         return 0
-    _backfill_vscode_config(path, workspace=workspace)
+    _backfill_editor_config(path, workspace=workspace)
     args = ["repowise", "init", str(path), *_BASE_ARGS]
     if workspace:
         args.append("--all")
@@ -254,6 +258,8 @@ def _index(path: Path, *, workspace: bool) -> int:
         env=_repowise_env(),
         exact_env=True,
     )
+    if result.returncode == 0:
+        _backfill_editor_config(path, workspace=workspace)
     return result.returncode
 
 
@@ -285,7 +291,7 @@ def _branch_point(main: Path, start_point: str) -> str:
 def _refresh_base(cfg, entry, *, main: Path, branch: str, target: Path, start_point: str) -> None:
     """Refresh the seed source before git fixes the new worktree's branch point."""
     del cfg, entry, branch, target
-    _backfill_vscode_config(main, workspace=False)
+    _backfill_editor_config(main, workspace=False)
     state = _state(main)
     last_sync = str(state.get("last_sync_commit") or "")
     if not last_sync:
@@ -296,7 +302,7 @@ def _refresh_base(cfg, entry, *, main: Path, branch: str, target: Path, start_po
         typer.echo("• repowise: base index already current")
         return
 
-    _require_capabilities("update")
+    _require_capabilities()
     started = time.monotonic()
     result = run.run(
         ["repowise", "update", str(main), "--index-only", "--no-workspace"],
@@ -333,6 +339,7 @@ def _seed_worktree(cfg, entry, *, main: Path, branch: str, target: Path) -> None
     """Let repowise auto-detect the linked worktree's validated base and seed from it."""
     del entry, main, branch
     _require_capabilities("init")
+    _backfill_editor_config(target, workspace=False)
     started = time.monotonic()
     result = run.run(
         ["repowise", "init", *_BASE_ARGS, "-y"],
@@ -344,6 +351,7 @@ def _seed_worktree(cfg, entry, *, main: Path, branch: str, target: Path) -> None
     elapsed = time.monotonic() - started
     if result.returncode:
         raise RuntimeError(f"worktree seed/full-init fallback failed after {elapsed:.1f}s")
+    _backfill_editor_config(target, workspace=False)
     _install_workspace_overlay(cfg, target)
     typer.echo(f"✓ repowise seeded worktree in {elapsed:.1f}s")
 
