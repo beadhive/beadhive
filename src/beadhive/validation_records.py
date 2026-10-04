@@ -13,8 +13,9 @@ import os
 import secrets
 import shutil
 import signal
+import statistics
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal
@@ -698,6 +699,50 @@ def latest_run(hive: str | Path, *, tree: str, command_hash: str) -> dict | None
 
     record = state_services.validation_record_service(latest=latest).latest(query)
     return record.to_mapping() if record is not None else None
+
+
+def _wall_seconds(run: dict) -> float | None:
+    try:
+        seconds = (
+            dt.datetime.fromisoformat(str(run["finished_at"]))
+            - dt.datetime.fromisoformat(str(run["started_at"]))
+        ).total_seconds()
+    except (KeyError, TypeError, ValueError):  # absent, malformed, or naive-vs-aware
+        return None
+    return seconds if seconds >= 0 else None
+
+
+def command_durations(
+    hive: str | Path, command_hashes: Iterable[str], *, sample: int = 20
+) -> dict[str, float]:
+    """Median wall seconds of each command's newest completed executions.
+
+    Only real executions count: infrastructure failures and imported legacy history describe
+    neither the command's cost nor its tree. A command with no such run is absent from the
+    answer, so callers can tell "never measured" from "cheap". This is a scheduling hint, never
+    evidence.
+    """
+    wanted = set(command_hashes)
+    root = _validation_root(hive)
+    directory = root / "runs" if root else None
+    if not wanted or directory is None or not directory.is_dir():
+        return {}
+    by_command: dict[str, list[dict]] = {}
+    for value in _read_run_directory(directory):
+        if (
+            value.get("command_hash") in wanted
+            and value.get("lifecycle") == "completed"
+            and value.get("reason") not in INFRASTRUCTURE_REASONS
+            and _run_order_key(value)[0] == 1
+        ):
+            by_command.setdefault(str(value["command_hash"]), []).append(value)
+    durations: dict[str, float] = {}
+    for command_hash, runs in by_command.items():
+        newest = sorted(runs, key=_run_order_key, reverse=True)[: max(1, sample)]
+        seconds = [s for s in map(_wall_seconds, newest) if s is not None]
+        if seconds:
+            durations[command_hash] = statistics.median(seconds)
+    return durations
 
 
 def running_runs(
