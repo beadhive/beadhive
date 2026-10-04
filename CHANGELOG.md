@@ -13,6 +13,13 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.22.1 (2026-10-04)
+
+### Fix
+
+- **work**: resolve the epic container from the parent link, not the dotted id
+- **fleet**: support reviewed release rotation for active frames
+
 ## v0.22.0 (2026-10-04)
 
 ### Feat
