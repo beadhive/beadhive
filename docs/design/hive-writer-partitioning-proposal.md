@@ -1,6 +1,8 @@
 # Hive writer partitioning — epoch in the data, receiver out
 
-**Status:** proposal, 2026-10-04. Not an ADR. The spike molecule's decision bead produces the ADR.
+**Status:** proposal, 2026-10-04; amended 2026-10-04 before kickoff with probe evidence (see
+[Pre-kickoff probe evidence](#pre-kickoff-probe-evidence)). Not an ADR. The spike molecule's
+decision bead produces the ADR.
 **Seat:** planning, with the operator.
 **Amends (if accepted):** [multi-host-model-adr.md](multi-host-model-adr.md) Amendment 1 §§1–4;
 [frame-dolt-server-hq-mode-adr.md](frame-dolt-server-hq-mode-adr.md) binding amendment `bh-v0k3i`
@@ -14,9 +16,11 @@ Beadhive already partitions writes by hive. Each hive has one primary (the host 
 how the model is enforced:
 
 1. **Move the fencing token into the hive's own Dolt data.** A `writer` row holding
-   `{frame, epoch}` is committed on `main`. The remote's non-fast-forward rejection then fences
-   a stale writer *on the data push itself*. This closes the two gaps Amendment 1 §2 records as
-   unfixable: the CAS-to-push race, and raw `bd dolt push` bypassing the fence.
+   `{frame, epoch}` is committed on `main`. The remote's non-fast-forward rejection fences a
+   stale writer's direct push, and a foreign key that retires the old epoch stops a stale
+   writer that pulls first and then pushes. This closes the two gaps Amendment 1 §2 records as
+   unfixable: the CAS-to-push race, and raw `bd dolt push` bypassing the fence. `bd dolt push
+   --force` stays break-glass.
 2. **Make safety independent of clocks.** The epoch and the remote CAS decide who may write.
    Lease time decides only *when to fail over*. A primary no longer degrades to read-only
    because a cached lease expired while HQ was unreachable.
@@ -88,23 +92,39 @@ removing push races, not SQL throughput.
 
 ### 2. Fencing: the epoch lives in the data
 
-Each hive database gains a `bh_writer` table holding one row: `{frame, epoch, placed_at}`.
-Only an adopt writes it.
+Each hive database gains three tables:
+
+- `bh_writer`: one row, `{frame, epoch, placed_at}`. Only an adopt writes it.
+- `bh_epoch_live`: one row, the current epoch.
+- `bh_write_mark`: `{id uuid, epoch}`, with `epoch` a foreign key to `bh_epoch_live`. The write
+  guard (below) inserts one row on every guarded `main` write. The writer may prune rows at any
+  time; each row has its own key, so concurrent writes never contend on one row.
 
 ```text
 adopt(hive, frame):
   1. CAS HQ placement            {old_frame, e} → {frame, e+1}          (decides who)
-  2. pull main; commit bh_writer {frame, e+1}; push                     (enforces it)
+  2. pull main; in one commit: bh_writer := {frame, e+1};               (enforces it)
+     delete bh_write_mark rows and bh_epoch_live row for e; insert bh_epoch_live(e+1); push
      non-fast-forward → pull, re-check placement is still ours, retry; otherwise abandon
 ```
 
 From the moment step 2 lands on the remote:
 
-- **Any push from the old writer is rejected as non-fast-forward.** This holds for managed
-  pushes, raw `bd dolt push` and bd auto-push alike. The fence is the data, so nothing can
-  push around it.
-- The old writer pulls and sees `bh_writer.epoch > held`. It must not push `main` again. bh
-  pushes its unpublished commits to `frame/<id>/orphan` for the new writer to merge.
+- **A direct push from the old writer is rejected as non-fast-forward.** This holds for
+  managed pushes, raw `bd dolt push` and bd auto-push alike.
+- **A pull-then-push from the old writer is stopped by epoch retirement.** Non-fast-forward
+  rejection alone does not cover this: if the old writer pulls, the merge puts the epoch bump
+  under its stale commits, and the following push is a fast-forward. The probe reproduced
+  exactly that. With epoch retirement, the stale commits carry `bh_write_mark` rows for the
+  retired epoch, so the merge produces a foreign-key violation and Dolt refuses to commit it.
+  The push stays rejected. Whether bd's own pull paths respect that refusal is the main
+  question for `bh-vje85`.
+- The old writer sees `bh_writer.epoch > held`. It must not push `main` again. bh pushes its
+  unpublished commits to `frame/<id>/orphan`. The new writer merges them deliberately and
+  re-stamps or drops their marks as part of that merge.
+- **`bd dolt push --force` is break-glass.** It overwrites the remote, and nothing in the data
+  can stop it. GitHub cannot protect `refs/dolt/data`. This is no worse than today, where raw
+  pushes bypass `refs/bh/epoch` entirely. The spikes state what bh can detect afterwards.
 - The old writer never edits `bh_writer`, so the merge applies a one-sided change and has
   no conflict to resolve. Two simultaneous adopters at the same epoch produce a both-changed
   conflict, and `bd sync` halts rather than resolving it. Step 1's CAS already prevents that
@@ -112,15 +132,17 @@ From the moment step 2 lands on the remote:
 
 **A local write guard stops raw bd on stale replicas.** A Dolt trigger on bead tables refuses
 writes on `main` unless `bh_writer.frame` equals this node's identity, which is held in a
-`dolt_ignore`d local table. Non-`main` branches are unrestricted. After a stale writer pulls
-the epoch bump, every further local `main` write fails in SQL, whether it came from bh or raw
-bd.
+`dolt_ignore`d local table. The same trigger inserts the `bh_write_mark` row. Non-`main`
+branches are unrestricted. After a stale writer pulls the epoch bump, every further local
+`main` write fails in SQL, whether it came from bh or raw bd. Triggers do not fire when a pull
+merges, so the guard cannot block the merge that delivers the bump.
 
 This answers Amendment 1's objection to a fence inside the data ("can never be resolved by a
 cell-level merge policy into something both hosts think they hold") with three rules:
 `bh_writer` only ever increases; only adopt writes it; and its conflicts are never
 auto-resolved. That last rule means `hive_sync`'s `ours`/`theirs` strategies must exclude
-`bh_writer`. The spikes must prove these rules hold or report NO-GO.
+`bh_writer`, and no default bd path may commit a merge that carries `bh_write_mark`
+foreign-key violations. The spikes must prove these rules hold or report NO-GO.
 
 ### 3. Safety without clocks; time only drives failover
 
@@ -140,12 +162,14 @@ Per hive, one of:
 - **Forward:** connect bd to the primary's Dolt server over the LAN. The primary is then the
   only place claims are granted, so bd's claim, lease, `heartbeat` and `reclaim` work as
   designed ("enforceable only on the node that granted them").
-- **Branch:** commit to `frame/<id>` and push it. Pushing a branch nobody else writes never
-  contends. The primary merges it into `main`. This is the "proposal" flow done natively in
-  Dolt, with no publication service.
+- **Branch:** commit to `frame/<id>` and push it. No one else writes that branch, so there is no
+  merge contention. On git remotes, though, every branch lives in the single `refs/dolt/data`
+  manifest, so a branch push still competes with `main` pushes for that ref's
+  compare-and-swap. The spike measures that cost. The primary merges the branch into `main`.
+  This is the "proposal" flow done natively in Dolt, with no publication service.
 
-Single-writer `main` makes #4796 (child-ID collisions) and #5157 (push contention) go away by
-construction. #4657 still matters for agents running concurrently on the primary, and
+Single-writer `main` makes #4796 (child-ID collisions) go away by construction and reduces
+#5157 (push contention) to retries on the shared manifest ref. #4657 still matters for agents running concurrently on the primary, and
 `work_next.claim_won` already works around it by reading the bead back.
 
 ### 5. Liveness and conformance without a receiver
@@ -186,8 +210,13 @@ construction. #4657 still matters for agents running concurrently on the primary
 
 1. Is a Dolt push non-fast-forward rejection a true CAS for every remote type in use:
    `git+ssh` (`refs/dolt/data`), `file://`, and remotesapi? Does any bd path force-push?
+   *(Probe: yes for `file://` and `git+file://`. bd has a user-reachable `--force` push.)*
 2. Do Dolt triggers fire on merges, pulls or `bd import`? A trigger that blocks the merge
-   carrying the epoch bump would wedge the fence.
+   carrying the epoch bump would wedge the fence. *(Probe: not on a Dolt CLI merge. bd links
+   its own Dolt build, which must be re-tested.)*
+2a. Does any default bd path commit a merge with foreign-key violations, through
+   `dolt_force_transaction_commit`, the auto-resolver, or `--strategy`? If so, epoch retirement
+   does not hold under bd.
 3. Can `bd sync` or `hive_sync --strategy ours` be made unable to resolve `bh_writer` in a
    stale writer's favour?
 4. What happens to writes a partitioned old primary made before it learned of the new epoch?
@@ -196,6 +225,52 @@ construction. #4657 still matters for agents running concurrently on the primary
 5. Who writes HQ placement without a receiver in `dolt-server` mode: the director with
    authority credentials, or a stored procedure? And what is the HQ-down behaviour?
 6. Mixed-version fleets and a cutover of the live factory frame (epoch 2), including rollback.
+
+## Pre-kickoff probe evidence
+
+Run 2026-10-04 in a scratch directory against Dolt CLI 2.3.5 and bd 1.3.0, before the spike
+molecule was kicked off. It used plain Dolt clones, not bd, so it informs the spikes and
+proves nothing about bd's behaviour.
+
+| Probe | Result |
+|---|---|
+| Stale writer pushes after the epoch bump (`file://`) | Rejected as non-fast-forward. |
+| Same, on a `git+file://` remote | Rejected. Dolt pushes `refs/dolt/data` with `--force-with-lease=refs/dolt/data:<expected>` (git trace2), a true CAS. |
+| Non-writer inserts on `main` with the guard trigger | Refused: `SIGNAL 45000`. |
+| Non-writer inserts on a `frame/<id>` branch | Allowed. |
+| Non-writer pulls a guarded insert through a true (non-fast-forward) merge | Merge succeeds. Triggers do not fire on merge. |
+| **Stale writer: write, push rejected, `dolt pull`, `dolt push`** | **Push succeeds. The stale row lands on `main` after the bump.** This is the hole that epoch retirement closes. |
+| Same, with `bh_write_mark` → `bh_epoch_live` FK and adopt retiring epoch e | `dolt pull` stops with a constraint violation on `bh_write_mark`. The push is still rejected and remote `main` is unchanged. |
+| Trigger whose `INSERT … VALUES` uses a scalar subquery | Dolt bug: "unable to find field with index 5 in row of 4 columns". Assigning to a variable first works. |
+
+bd 1.3's binary contains `DOLT_PUSH('--force', …)`, `dolt_force_transaction_commit`,
+`dolt_allow_commit_conflicts` and `DOLT_CONFLICTS_RESOLVE('--ours'|'--theirs', <table>)`, and
+links Dolt `v0.40.5-0.20260715172757-a6690826d767` rather than the 2.3.5 CLI. `bh-vje85` and
+`bh-sieai` carry these as explicit checks.
+
+Guard and mark shape used by the probe:
+
+```sql
+create table bh_epoch_live(epoch int primary key);
+create table bh_write_mark(id varchar(64) primary key, epoch int,
+  foreign key (epoch) references bh_epoch_live(epoch));
+-- one BEFORE trigger per event on each bead table:
+create trigger guard_ins before insert on issues for each row begin
+  if active_branch() = 'main' then
+    if coalesce((select frame from bh_writer where id = 1), '')
+       <> coalesce((select frame from bh_local_ident where id = 1), '?') then
+      signal sqlstate '45000' set message_text = 'bh not the writer for main';
+    end if;
+    set @bh_e = (select epoch from bh_writer where id = 1);
+    insert into bh_write_mark values (uuid(), @bh_e);
+  end if;
+end;
+-- adopt, one commit:
+update bh_writer set frame = 'B', epoch = 2 where id = 1;
+delete from bh_write_mark where epoch = 1;
+delete from bh_epoch_live where epoch = 1;
+insert into bh_epoch_live values (2);
+```
 
 ## Validation approach
 
@@ -214,7 +289,7 @@ The fixture drives these scenarios:
 | 2 | Handoff while A is mid-write | A's data either lands before the bump or is rejected. Never after the bump. |
 | 3 | A partitioned (remote unreachable), failover to B, A rejoins | A is fenced on reconnect. A's unpublished commits survive on `frame/A/orphan`. |
 | 4 | Two adopters race for the same epoch | Exactly one placement CAS wins. A loser that reached step 2 is rejected and abandons. |
-| 5 | Stale A runs raw `bd dolt push`, `bd sync`, and auto-push | Push is rejected, or the trigger blocks the write. Writes after the epoch never land on `main`. |
+| 5 | Stale A runs raw `bd dolt push`, `bd dolt pull` then `bd dolt push`, `bd sync`, and auto-push | Push is rejected, the trigger blocks the write, or the merge stops on an FK violation. Stale writes never land on `main` after the epoch bump. |
 | 6 | `hive_sync --strategy ours` on a stale replica | `bh_writer` is never reverted. |
 | 7 | HQ unreachable for longer than the lease TTL | The current primary keeps writing. Handoff is refused. |
 | 8 | A non-primary forwards a claim, and a non-primary pushes a branch | One claim winner. The branch merges into `main` through the primary. |

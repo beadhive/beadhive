@@ -46,13 +46,16 @@ issues:
     (tests/harness/world.py) for identities/keys, and harness.processes.process_context for
     per-frame processes. Partition = make the remote path unreachable per frame (permissions or
     remote URL swap); interleaving = explicit barriers between adopt/push steps rather than
-    sleeps. Also probe whether a local Dolt remotesapi remote can be added cheaply so the git+ssh
-    vs remotesapi CAS question in the fencing spike is testable. Record runtime per scenario so
-    the suite can live under integration without blowing the gate budget.
+    sleeps. Use a git+file:// remote (a bare git repo seeded with one commit on a branch; Dolt
+    refuses a branchless git remote) as the production-shaped remote: it exercises the same
+    gitblobstore path as git+ssh, including the --force-with-lease CAS on refs/dolt/data. Also
+    probe whether a local Dolt remotesapi remote can be added cheaply. Record runtime per scenario
+    so the suite can live under integration without blowing the gate budget.
   acceptance: |
     - docs/spikes/<bead-id>-writer-fencing-fixture.md exists with Question/Method/Evidence/Verdict/Recommendation.
     - A test-only fixture exists under tests/harness (no new conftest) that starts >=2 frame replicas, one shared remote, and an HQ placement stand-in, all hermetic.
     - The fixture can partition one frame from the remote, kill a frame process, and deterministically order two frames' push/adopt steps with barriers; each capability has one smoke test marked integration + dolt_server.
+    - The fixture drives writes both through the Dolt CLI and through real bd 1.3 (embedded and shared-server), since bd links its own Dolt build rather than the CLI's.
     - Per-scenario wall time is measured and reported; the verdict states whether the suite fits the integration gate.
     - NO-GO names the missing capability (e.g. remotesapi, partition) and the cheapest substitute.
     - No product code is changed.
@@ -66,23 +69,46 @@ issues:
   deps: [fixture]
   description: |
     Answer: does committing {frame, epoch} into the hive's Dolt main, combined with the remote's
-    non-fast-forward rejection, fence a stale writer on every push path (managed push, raw
-    bd dolt push, bd auto-push, bd sync) and every remote type in use, without the CAS-to-push race
-    that host_fence.py documents?
+    non-fast-forward rejection AND foreign-key epoch retirement, fence a stale writer on every
+    push path (managed push, raw bd dolt push, bd auto-push, bd sync, bd dolt pull then push) and
+    every remote type in use, without the CAS-to-push race that host_fence.py documents?
+
+    Pre-kickoff probe (proposal section "Pre-kickoff probe evidence") showed non-FF rejection
+    alone is NOT enough: a stale writer that pulls (merging the epoch bump under its own stale
+    commits) and then pushes is a fast-forward and lands its stale write on main. Epoch
+    retirement via a foreign key stopped this on the Dolt CLI. This spike must prove it holds
+    under bd.
   design: |
-    Prototype adopt as: CAS placement, pull, commit bh_writer epoch+1, push, retry on non-FF only
-    while placement is still ours. Run proposal scenarios 1-6 in the fixture. Verify for git+ssh-shaped
-    (file:// bare git, refs/dolt/data), file:// Dolt, and remotesapi (if the fixture GO'd it)
-    that no bd code path force-pushes. Check merge behaviour of a one-sided bh_writer change and
+    Prototype adopt as: CAS placement, pull, commit {bh_writer epoch+1, delete bh_epoch_live(e)
+    and its bh_write_mark rows, insert bh_epoch_live(e+1)}, push, retry on non-FF only while
+    placement is still ours. Each guarded main write inserts a bh_write_mark(uuid, epoch) row whose
+    epoch is a foreign key to bh_epoch_live, so a stale commit merged over the bump is a
+    constraint violation, not a clean merge. Run proposal scenarios 1-6 in the fixture.
+
+    bd force paths to pin down (all present as SQL in the bd 1.3 binary): DOLT_PUSH('--force'),
+    dolt_force_transaction_commit, dolt_allow_commit_conflicts, DOLT_CONFLICTS_RESOLVE('--ours' or
+    '--theirs', <any table>), and bd dolt pull --strategy ours|theirs. For each: which bd command
+    or config reaches it, and does it commit a merge carrying bh_write_mark FK violations or
+    resolve bh_writer conflicts? bd dolt push --force cannot be fenced by data and GitHub cannot
+    protect refs/dolt/data, so state it as break-glass and say what bh can detect after the fact.
+
+    Verify for git+ssh-shaped (git+file:// bare repo, refs/dolt/data; probe confirmed Dolt pushes
+    it with --force-with-lease=refs/dolt/data:<expected>), file:// Dolt, and remotesapi (if the
+    fixture GO'd it). Check merge behaviour of a one-sided bh_writer change and
     a both-changed conflict; check hive_sync --strategy ours|theirs and bd sync cannot resolve
     bh_writer in a stale writer's favour, and what guard is needed if they can. Determine what
     happens to commits a partitioned old writer made before learning the new epoch, and whether an
-    orphan-branch diversion (frame/<id>/orphan) preserves them.
+    orphan-branch diversion (frame/<id>/orphan) preserves them. The new writer's deliberate orphan
+    merge will hit the same FK violation: define how it re-stamps or drops those marks on purpose.
+    Measure bh_write_mark growth and confirm the writer can prune marks without conflicting.
   acceptance: |
     - docs/spikes/<bead-id>-in-data-epoch-fencing.md exists with the five sections.
     - Scenarios 1-6 from the proposal's validation table run in the fixture; each records remote head, bh_writer row and outcome before/after.
     - Evidence states, per remote type, whether non-FF rejection is a true CAS and whether any bd path (push, auto-push, sync) can force.
     - Evidence states whether bh_writer can be reverted by bd sync, bd dolt pull, or hive_sync ours/theirs, with the minimal guard if so.
+    - The stale pull-then-push path (raw dolt, bd dolt pull + bd dolt push, bd sync, bd auto-push) is run against FK epoch retirement; evidence states per path whether the merge is refused and remote main is unchanged, with command output.
+    - Every bd force path listed in the design is mapped to the command or config that reaches it and to whether it defeats the fence; bd dolt push --force is stated as break-glass with its after-the-fact detection.
+    - If bd commits FK violations on any default path, the verdict names the minimal bh-side guard or upstream bd fix, or returns NO-GO for in-data fencing.
     - Late writes from a partitioned old writer are shown to be either rejected or preserved on an orphan branch; none land on main after the epoch bump.
     - Verdict explicitly compares against the current refs/bh/epoch reserve/verify race and raw-push bypass.
 - handle: guard
@@ -99,17 +125,31 @@ issues:
     and which write path for non-primary frames - forward to the primary's Dolt server, or commit to
     frame/<id> and let the primary merge - is viable with bd 1.3's claim/lease/reclaim semantics?
   design: |
-    Prototype a node-local dolt_ignore'd identity table and a BEFORE INSERT/UPDATE/DELETE trigger
-    on issues/dependencies/labels/events gated on active_branch()='main'. Test whether triggers
-    fire on dolt merge, bd dolt pull, bd sync, bd import, and bd's migrations; test that non-main
-    branches are unrestricted. For forward: point a second frame's bd at the primary's server and
+    Prototype a node-local dolt_ignore'd identity table and BEFORE INSERT/UPDATE/DELETE triggers
+    on every bead table bd writes (issues, dependencies, labels, events, comments, and any others
+    found in bd 1.3's schema) gated on active_branch()='main'. The same trigger body inserts the
+    bh_write_mark row the fencing spike relies on. Known Dolt bug (CLI 2.3.5): a scalar subquery
+    used directly as an INSERT ... VALUES expression inside a trigger fails with "unable to find
+    field with index N"; assign it to a variable first.
+
+    Probe evidence: on the Dolt CLI, triggers did NOT fire on a true (non-FF) dolt pull merge, so
+    the guard cannot wedge the epoch bump. Re-test that, and everything below, under bd's own
+    engine: bd 1.3 links github.com/dolthub/dolt/go@v0.40.5-0.20260715172757-a6690826d767, not
+    the 2.3.5 CLI, in both embedded and shared-server modes. Test whether triggers fire on bd
+    dolt pull, bd sync, bd import, and bd's migrations; whether a bd migration that rebuilds a
+    table drops its triggers; and whether bd doctor or bd's schema checks object to the extra
+    bh_* tables and triggers. Test that non-main branches are unrestricted. For forward: point a second frame's bd at the primary's server and
     load-test bd update --claim (gastownhall/beads#4657 on bd 1.3) plus work_next.claim_won's
     read-back. For branch: push frame/<id>, merge on the primary, check child-ID allocation
-    (#4796) and label read-then-write (#5657) behaviour. Exercise bd heartbeat/reclaim on the
+    (#4796) and label read-then-write (#5657) behaviour. On git remotes every branch lives in
+    the one refs/dolt/data manifest, so a frame/<id> push still CASes against main pushes:
+    measure that contention (#5157 residue) rather than assuming branch pushes never contend. Exercise bd heartbeat/reclaim on the
     granting replica and reclaim --any-replica after a frame death (scenario 8 and 9 claim halves).
   acceptance: |
     - docs/spikes/<bead-id>-write-guard-and-nonprimary-writes.md exists with the five sections.
-    - Evidence states whether Dolt triggers fire on merge, pull, sync, import and migrations, with command output.
+    - Evidence states whether Dolt triggers fire on merge, pull, sync, import and migrations, with command output, under bd's linked Dolt engine in embedded and shared-server modes (not only the Dolt CLI).
+    - Evidence states whether bd migrations or bd doctor drop or reject the guard triggers and bh_* tables, and the re-install path if they do.
+    - Branch-push contention against main pushes on a git remote is measured.
     - A stale replica's raw bd write to main is shown refused after it pulls the epoch bump, and non-main writes still succeed.
     - Forward and branch paths are each exercised; claim double-win rate under concurrency on bd 1.3 is measured for forward.
     - Recommendation picks forward, branch, or both (per frame role) and names required upstream bd fixes, if any.
@@ -182,7 +222,9 @@ issues:
     interleaving pass (seeded, reproducible) over adopt/push/partition/kill events with an
     invariant checker: at most one frame's commits extend main per epoch; main's bh_writer epoch is
     monotonic; no commit authored under epoch e lands after the bump to e+1 except via an explicit
-    orphan merge. Measure adopt latency, handoff downtime, and write latency for forward vs branch.
+    orphan merge; no merge commit on main contains a bh_write_mark row whose epoch is retired.
+    Include the stale pull-then-push path through bd as an event type. Measure adopt latency,
+    handoff downtime, and write latency for forward vs branch.
   acceptance: |
     - docs/spikes/<bead-id>-writer-partitioning-e2e.md exists with the five sections.
     - All ten proposal scenarios pass or each failure is recorded with the exact step that admitted a stale write.
