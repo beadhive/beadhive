@@ -6941,6 +6941,39 @@ def test_claim_group_dotted_members_provision_container_when_kicked_off(hive, fa
     assert _mol_listed(hive, "mr-3") != ""  # container provisioned before the batch worktree
 
 
+def test_claim_group_hash_id_members_provision_container_when_kicked_off(hive, fakebd):
+    """Members whose ids carry no dotted epic prefix (`bh plan file` hash ids) resolve their epic
+    from the parent link, so claim --group still opens the container (bh-bd8hq)."""
+    fakebd.seed("mr-3", title="epic", issue_type="epic")
+    fakebd.states["mr-3"] = {"kickoff": "approved"}
+    fakebd.seed("mr-ab1", title="a", parent="mr-3", labels=["batch:g"])
+    fakebd.seed("mr-cd2", title="b", parent="mr-3", labels=["batch:g"])
+    work.claim(bead="", as_="dev/group", group="mr-ab1,mr-cd2", hive="myrepo")
+    assert _mol_listed(hive, "mr-3") != ""
+
+
+def test_claim_hash_id_child_opens_container_when_kicked_off(hive, fakebd):
+    """Per-bead claim of a hash-id child opens its epic's container via the parent link."""
+    fakebd.seed("mr-4", title="epic", issue_type="epic")
+    fakebd.states["mr-4"] = {"kickoff": "approved"}
+    fakebd.seed("mr-ef3", title="a", parent="mr-4")
+    work.claim(bead="mr-ef3", as_="dev/child", hive="myrepo")
+    assert _mol_listed(hive, "mr-4") != ""
+
+
+def test_parent_epic_prefers_link_then_dotted_id_then_empty(fakebd, tmp_path):
+    """The epic comes from the bd parent link; a dotted id is the fallback; a bare id with no
+    parent has no epic (bh-bd8hq)."""
+    fakebd.seed("mr-5", title="epic", issue_type="epic")
+    fakebd.seed("mr-gh4", title="hash child", parent="mr-5")
+    fakebd.seed("mr-6.1", title="dotted child")  # no parent field: dotted fallback
+    fakebd.seed("mr-ij5", title="top level")
+    assert work_logic.parent_epic("mr-gh4", tmp_path) == "mr-5"
+    assert work_logic.parent_epic("mr-6.1", tmp_path) == "mr-6"
+    assert work_logic.parent_epic("mr-ij5", tmp_path) == ""
+    assert work_logic.parent_epic("mr-6.1", tmp_path, {"parent": "mr-9"}) == "mr-9"
+
+
 def _claim_and_commit_batch(hive, fakebd, group="samefile", epic="mr-1"):
     """Kick off the container, claim a two-member batch, and lay down one conventional commit per
     bead in the shared batch worktree. Returns the batch worktree path."""
