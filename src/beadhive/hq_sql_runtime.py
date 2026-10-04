@@ -3,6 +3,12 @@
 This module owns no config publisher or frame signer.  It never provisions DDL or
 uses a sender-owned inbox as an authority source.  Eligibility must additionally
 join config and accepted observer evidence at its own qualified read boundary.
+
+The one exception is ``hq.sql.liveness: signed``: the frame's own inbox then
+supplies liveness *evidence* (never authority).  Each row is a heartbeat envelope
+the frame signed with its granted key; only rows that verify against the committed
+grant and bind to its exact incarnation are considered, and the newest signed
+``renewTime`` wins.  See :func:`newest_signed_heartbeat`.
 """
 
 from __future__ import annotations
@@ -20,8 +26,14 @@ from . import hq_authority_guard as guard
 from .hq_hive_policy import project_hive_policies, validate_sql_hive_policies
 from .hq_sql_deadline import flock_until
 from .hq_sql_runtime_schema import inbox_table
-from .hq_sql_signatures import SqlSignatureError, canonical, verify_authority
+from .hq_sql_signatures import SqlSignatureError, canonical, verify_authority, verify_heartbeat
 from .hq_sql_transport import FnoxBroker, SqlTransportError, connect
+
+#: A signed ``renewTime`` up to this far ahead of the reader's clock still counts (its age
+#: clamps to zero); anything further ahead is skipped. Same window the receiver applies.
+SIGNED_LIVENESS_SKEW_SECONDS = 30
+#: Inbox payload ceiling, matching the receiver's heartbeat size bound.
+_MAX_HEARTBEAT_BYTES = 65536
 
 
 class SqlRuntimeError(ValueError):
@@ -46,6 +58,121 @@ class PrincipalBinding:
     epoch: int
     inbox_table: str
     signer_fingerprint: str
+
+
+#: Process-level override for ``hq.sql.liveness``. It lets a newer bh run in signed mode
+#: beside an older install sharing the same HOST file (whose strict schema would reject the
+#: new key). Set, it wins over the config key; an unknown value is an error, never a fallback.
+LIVENESS_ENV = "BH_HQ_SQL_LIVENESS"
+LIVENESS_MODES = ("receiver", "signed")
+
+
+def liveness_mode(settings) -> str:
+    """Resolve the frame liveness mode: ``$BH_HQ_SQL_LIVENESS`` > ``hq.sql.liveness``."""
+    raw = os.environ.get(LIVENESS_ENV)
+    if raw is not None:
+        if raw not in LIVENESS_MODES:
+            raise SqlRuntimeError(
+                f"{LIVENESS_ENV} must be 'receiver' or 'signed' (got {raw[:32]!r}); "
+                "unset it to use hq.sql.liveness"
+            )
+        return raw
+    value = (settings or {}).get("liveness", "receiver")
+    if value not in LIVENESS_MODES:
+        raise SqlRuntimeError("hq.sql.liveness must be 'receiver' or 'signed'")
+    return value
+
+
+def signed_liveness(settings) -> bool:
+    """Whether this HOST selected signed liveness (env override first, then config)."""
+    return liveness_mode(settings) == "signed"
+
+
+def _payload_bytes(value):
+    if isinstance(value, memoryview):
+        value = value.tobytes()
+    if isinstance(value, str):
+        value = value.encode()
+    return value if isinstance(value, bytes) else None
+
+
+def newest_signed_heartbeat(rows, route: PrincipalBinding, record: dict, *, now: float):
+    """Pick the newest authentic heartbeat in the frame's own inbox.
+
+    ``rows`` are ``(payload,)`` tuples of ``kind='heartbeat'`` inbox rows. A row counts only
+    when its canonical envelope verifies against the grant's public key AND its lease binds to
+    the exact committed incarnation (frame, holder, instance, epoch, key, audience, config
+    revision, beadyard). Malformed, foreign-key, wrong-epoch or wrong-frame rows are skipped,
+    never raised: the inbox is sender-written, so one bad row must not mask a good one.
+
+    Candidates are ordered by their *claimed* ``(renewTime, seq)`` and verified newest-first,
+    so the first one that verifies is the greatest signed ``renewTime`` — an older valid
+    envelope can never outrank a newer one, and a forged "newer" row just costs one failed
+    verification. A ``renewTime`` more than :data:`SIGNED_LIVENESS_SKEW_SECONDS` ahead of the
+    reader's clock is skipped. The client-supplied ``created_at`` column is never consulted.
+
+    Returns the same 6-tuple shape as an ``hq_live_public_observations`` row —
+    ``(sequence, digest, accepted_until, lease_json, envelope_json, signer)`` with
+    ``accepted_until = renewTime + leaseDurationSeconds`` — or ``None`` when nothing verifies.
+    """
+    from .hq_framelease_contracts import HeartbeatLease
+
+    authority = record["authority"]
+    expected = (
+        route.frame_id,
+        route.holder_identity,
+        route.instance_ref,
+        route.epoch,
+        route.signer_fingerprint,
+        authority["audience"],
+        authority["config_revision"],
+        authority.get("beadyard_id"),
+    )
+    candidates = []
+    for row in rows:
+        body = _payload_bytes(row[0] if isinstance(row, (tuple, list)) else row)
+        if body is None or len(body) > _MAX_HEARTBEAT_BYTES:
+            continue
+        try:
+            envelope = json.loads(body)
+            if body != canonical(envelope):
+                continue
+            spec = envelope["spec"]
+            claimed = HeartbeatLease.model_validate(
+                {key: value for key, value in spec.items() if key != "signature"}
+            )
+            observed = claimed.observed_at
+        except (ValueError, TypeError, KeyError, AttributeError):
+            continue
+        if observed - now > SIGNED_LIVENESS_SKEW_SECONDS:
+            continue
+        candidates.append((observed, claimed.seq, body, envelope))
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    for _observed, _seq, body, envelope in candidates:
+        try:
+            lease, digest = verify_heartbeat(envelope, granted_public_key=record["public_key"])
+        except (ValueError, TypeError, KeyError):
+            continue
+        if (
+            lease.frame_id,
+            lease.holderIdentity,
+            lease.instance_ref,
+            lease.epoch,
+            lease.key_id,
+            lease.audience,
+            lease.config_revision,
+            lease.beadyard_id,
+        ) != expected:
+            continue
+        return (
+            lease.seq,
+            digest,
+            lease.observed_at + lease.leaseDurationSeconds,
+            canonical(lease.model_dump(mode="json", exclude_none=True)),
+            body,
+            route.signer_fingerprint,
+        )
+    return None
 
 
 def _ascii(value):
@@ -449,7 +576,12 @@ class SqlRuntimeAuthority:
         The caller separately applies candidate/holder eligibility to these
         authenticated facts.  An outside-snapshot head reread fences completed
         publication before the result is returned.
+
+        With ``hq.sql.liveness: signed`` the observation slot is instead the newest
+        verified heartbeat from the frame's own inbox (:func:`newest_signed_heartbeat`),
+        in the same 6-tuple shape, and the public-observation reread fence is skipped.
         """
+        signed = signed_liveness(self.settings)
         connection, deadline = self._open(deadline=deadline)
         try:
             binding = self.settings["runtime"]
@@ -502,14 +634,24 @@ class SqlRuntimeAuthority:
                 )
                 if projected != policies:
                     raise SqlRuntimeError("frame composite policy differs from canonical catalog")
-                cursor.execute(
-                    "SELECT sequence,digest,accepted_until,lease_json,envelope_json,"
-                    "signer_fingerprint "
-                    "FROM hq_live_public_observations WHERE frame_id=%s "
-                    "AND holder_identity=%s AND epoch=%s",
-                    (route.frame_id, route.holder_identity, route.epoch),
-                )
-                observation = cursor.fetchone()
+                if signed:
+                    # Signed liveness: this frame's own inbox (route-derived identifier,
+                    # never sender-named), verified at read time. No receiver projection.
+                    cursor.execute(
+                        f"SELECT payload FROM {route.inbox_table} WHERE kind='heartbeat'"
+                    )
+                    observation = newest_signed_heartbeat(
+                        cursor.fetchall(), route, record, now=self.clock()
+                    )
+                else:
+                    cursor.execute(
+                        "SELECT sequence,digest,accepted_until,lease_json,envelope_json,"
+                        "signer_fingerprint "
+                        "FROM hq_live_public_observations WHERE frame_id=%s "
+                        "AND holder_identity=%s AND epoch=%s",
+                        (route.frame_id, route.holder_identity, route.epoch),
+                    )
+                    observation = cursor.fetchone()
                 if observation is not None and observation[5] != route.signer_fingerprint:
                     raise SqlRuntimeError("public observation signer differs from grant")
                 lease_row = None
@@ -527,7 +669,8 @@ class SqlRuntimeAuthority:
             connection.rollback()
             self.fresh_config_head_fence(crossref[2], deadline=deadline)
             self.fresh_runtime_head_fence(head, deadline=deadline)
-            self.fresh_public_observation_fence(route, observation, deadline=deadline)
+            if not signed:
+                self.fresh_public_observation_fence(route, observation, deadline=deadline)
             if prefix is not None:
                 self.fresh_hive_lease_fence(prefix, lease_row, deadline=deadline)
             return head, state, route, slot, record, snapshot, policies, observation, lease_row

@@ -1407,8 +1407,15 @@ class SqlControlPlane:
         return isinstance(error, CommittedManifestAbsent)
 
     def __init__(self, settings, *, broker=None, clock=time.time):
+        from .hq_sql_runtime import liveness_mode
+
         self.settings = _validated_sql_binding(settings).model_dump()
         self.broker, self.clock = broker, clock
+        try:
+            # Fail at selection, not mid-read, on a malformed BH_HQ_SQL_LIVENESS.
+            liveness_mode(self.settings)
+        except ValueError as exc:
+            raise ControlPlaneError(str(exc)) from None
 
     def load_host_manifest(self, host_id: str):
         from ruamel.yaml import YAML
@@ -1511,7 +1518,12 @@ class SqlControlPlane:
             sequence, digest, first_seen = 0, "", None
         else:
             observation = self._public_observation(
-                row, route, slot, granted_public_key=record["public_key"], now=checked
+                row,
+                route,
+                slot,
+                granted_public_key=record["public_key"],
+                now=checked,
+                signed=self.signed_liveness,
             )
             sequence, digest = row[0], row[1]
             first_seen = row[2] - observation.lease.leaseDurationSeconds
@@ -2124,9 +2136,24 @@ class SqlControlPlane:
                 raise
             raise ControlPlaneError("SQL operator lifecycle unavailable") from None
 
+    @property
+    def signed_liveness(self) -> bool:
+        """``hq.sql.liveness: signed`` — read-time signed heartbeats, advisory lease expiry."""
+        from .hq_sql_runtime import signed_liveness
+
+        return signed_liveness(self.settings)
+
     @staticmethod
-    def _public_observation(row, route, slot, *, granted_public_key, now):
+    def _public_observation(row, route, slot, *, granted_public_key, now, signed=False):
+        """Verify one observation row; ``signed`` rows come from the frame's own inbox.
+
+        A receiver row's freshness is the receiver's first-seen clock. A ``signed`` row
+        (:func:`beadhive.hq_sql_runtime.newest_signed_heartbeat`) carries
+        ``accepted_until = renewTime + leaseDurationSeconds``, so its age is the reader's
+        clock minus the signed ``renewTime``; up to 30 s of future skew clamps to age 0.
+        """
         from .host_heartbeat_core import VerifiedObservation
+        from .hq_sql_runtime import SIGNED_LIVENESS_SKEW_SECONDS
         from .hq_sql_signatures import canonical, verify_heartbeat
 
         if row is None:
@@ -2163,7 +2190,11 @@ class SqlControlPlane:
                 raise ValueError()
             first_seen = accepted_until - lease.leaseDurationSeconds
             age = now - first_seen
-            if age < 0:
+            if signed:
+                if first_seen != lease.observed_at or age < -SIGNED_LIVENESS_SKEW_SECONDS:
+                    raise ValueError()
+                age = max(age, 0)
+            elif age < 0:
                 raise ValueError()
         except (ValueError, TypeError, KeyError):
             raise ControlPlaneError("protected public observation invalid") from None
@@ -2175,7 +2206,7 @@ class SqlControlPlane:
             lease=lease,
             sha=digest,
             candidate=slot == "candidate",
-            age_basis="protected-receiver-first-seen",
+            age_basis="signed-envelope-reader-clock" if signed else "protected-receiver-first-seen",
         )
 
     def read_eligibility(self, manifest, *, now=None):
@@ -2212,7 +2243,12 @@ class SqlControlPlane:
                 head,
                 desired,
                 self._public_observation(
-                    row, route, slot, granted_public_key=record["public_key"], now=at
+                    row,
+                    route,
+                    slot,
+                    granted_public_key=record["public_key"],
+                    now=at,
+                    signed=self.signed_liveness,
                 ),
             )
         except ValueError as exc:
@@ -2226,6 +2262,7 @@ class SqlControlPlane:
 
         if holder_identity is not None and incumbent_identity is not None:
             raise ControlPlaneError("hive lease identity qualifier ambiguous")
+        signed = self.signed_liveness
 
         try:
             (
@@ -2289,6 +2326,7 @@ class SqlControlPlane:
                     slot,
                     granted_public_key=record["public_key"],
                     now=self.clock(),
+                    signed=signed,
                 )
                 if (
                     holder_identity != route.holder_identity
