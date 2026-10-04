@@ -183,7 +183,10 @@ def _strict_driver():
         raise SqlTransportError("pinned SQL driver unavailable") from None
 
     class StrictConnection(Connection):
-        def __init__(self, *, operation_deadline, resolved_ip=None, **kwargs):
+        def __init__(self, *, operation_deadline, resolved_ip=None, tls_mode="required", **kwargs):
+            if tls_mode not in ("required", "disabled"):
+                raise SqlTransportError("invalid SQL TLS mode")
+            self._tls_mode = tls_mode
             self._attempts = 0
             self._deadline = operation_deadline
             self._expired = False
@@ -273,6 +276,10 @@ def _strict_driver():
             return super().ping(reconnect=False)
 
         def _request_authentication(self):
+            if self._tls_mode == "disabled":
+                if self.ssl or self.client_flag & CLIENT.SSL:
+                    raise SqlTransportError("plaintext SQL binding cannot negotiate TLS")
+                return super()._request_authentication()
             ctx = getattr(self, "ctx", None)
             if (
                 not self.ssl
@@ -289,17 +296,28 @@ def _strict_driver():
 
 
 def connect(settings: dict, broker: SecretBroker, *, deadline: float):
-    """Open one selected TCP database with a fresh private TLS context."""
-    required = ("host", "database", "user", "server_name", "ca_file", "credential")
-    if any(not settings.get(key) for key in required):
-        raise SqlTransportError("incomplete SQL connection binding")
-    if settings["server_name"] != settings["host"]:
-        raise SqlTransportError("SQL server name must match the selected endpoint")
+    """Open one TCP connection under its explicit policy; never retry or downgrade."""
+    from .modules.config.contracts import HqSqlConnection
+
     try:
-        ctx = ssl.create_default_context(cafile=settings["ca_file"])
-        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-        if not ctx.check_hostname or ctx.verify_mode != ssl.CERT_REQUIRED:
-            raise SqlTransportError("verified TLS context unavailable")
+        settings = HqSqlConnection.model_validate(settings).model_dump()
+    except ValueError:
+        raise SqlTransportError("invalid SQL connection binding") from None
+    tls_mode = settings["tls_mode"]
+    required = ("host", "database", "user", "credential")
+    if tls_mode == "required":
+        required += ("server_name", "ca_file")
+    if any(not settings.get(key) for key in required) or not all(
+        settings["credential"].get(key) for key in ("config_path", "profile", "key")
+    ):
+        raise SqlTransportError("incomplete SQL connection binding")
+    try:
+        ctx = None
+        if tls_mode == "required":
+            ctx = ssl.create_default_context(cafile=settings["ca_file"])
+            ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+            if not ctx.check_hostname or ctx.verify_mode != ssl.CERT_REQUIRED:
+                raise SqlTransportError("verified TLS context unavailable")
         resolved_ip = _resolve_ipv4(settings["host"], deadline=deadline)
         password = broker.get(settings["credential"], deadline=deadline)
         if not password:
@@ -315,6 +333,7 @@ def connect(settings: dict, broker: SecretBroker, *, deadline: float):
             user=settings["user"],
             password=password,
             ssl=ctx,
+            tls_mode=tls_mode,
             autocommit=False,
             local_infile=False,
             connect_timeout=min(settings["connect_timeout"], remaining),

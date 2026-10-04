@@ -982,12 +982,13 @@ class HqFnoxRef(_Section):
 
 
 class HqSqlConnection(_Section):
-    """One explicitly scoped SQL principal and verified transport."""
+    """One scoped SQL principal with an explicit host-local transport policy."""
 
     host: str = ""
     port: int = Field(3308, ge=1, le=65535, strict=True)
     database: str = ""
     user: str = ""
+    tls_mode: Literal["required", "disabled"] = "required"
     server_name: str = ""
     ca_file: str = ""
     credential: HqFnoxRef = Field(default_factory=HqFnoxRef)
@@ -1045,8 +1046,8 @@ class HqSqlConfig(_Section):
                 self.reader.host,
                 self.reader.database,
                 self.reader.user,
-                self.reader.ca_file,
-                self.reader.server_name,
+                self.reader.tls_mode == "disabled"
+                or (self.reader.ca_file and self.reader.server_name),
                 self.reader.credential.config_path,
                 self.reader.credential.profile,
                 self.reader.credential.key,
@@ -1064,8 +1065,8 @@ class HqSqlConfig(_Section):
                 self.runtime.host,
                 self.runtime.database,
                 self.runtime.user,
-                self.runtime.ca_file,
-                self.runtime.server_name,
+                self.runtime.tls_mode == "disabled"
+                or (self.runtime.ca_file and self.runtime.server_name),
                 self.runtime.credential.config_path,
                 self.runtime.credential.profile,
                 self.runtime.credential.key,

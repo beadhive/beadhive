@@ -13,9 +13,10 @@ Provision a new dedicated configuration database with the reviewed
 [`scripts/hq-config`](../../scripts/hq-config/README.md) resources. Its three versioned
 tables are initially empty. A reader has only table reads; the trusted publisher
 has table writes plus branch-wide Dolt staging and commit capability. Keep those
-credentials apart from frame, observer, and Beads principals. Native MySQL TLS
-advertisement, a trusted CA, server-name verification, a noninteractive broker,
-the exact backend/generation, and server-local operator access are prerequisites.
+credentials apart from frame, observer, and Beads principals. With the default
+`tls_mode: required`, native MySQL TLS advertisement, a trusted CA, and server-name
+verification are prerequisites. A noninteractive broker, the exact backend/generation,
+and server-local operator access remain required in both transport modes.
 
 Prepare the HOST SQL binding with `hq.sql.enabled: false`. Merely preparing the
 endpoint, CA, or reader reference never selects SQL. Preserve the existing HOST
@@ -105,3 +106,53 @@ The runbook is an operator procedure, not a record that a deployment occurred. S
 [HQ config cutover and deprecation readiness assessment](hq-config-deprecation-readiness.md)
 for the implementation evidence boundary, consumer/writer inventory, independent HQ-origin
 retirement dependencies, and evidence required before live readiness or retirement claims.
+
+## HOST-local SQL transport
+
+Existing 0.21.0 bindings need no migration: omitted `tls_mode` means `required`.
+For an explicit verified-TLS reader, the HOST connection portion is:
+
+```yaml
+hq:
+  sql:
+    reader:
+      host: config.example.invalid
+      port: 3308
+      database: beadhive_hq_config
+      user: bh_hq_config_reader
+      tls_mode: required
+      server_name: config.example.invalid
+      ca_file: /etc/beadhive/config-ca.pem
+      credential:
+        config_path: /etc/beadhive/fnox.toml
+        profile: hq
+        key: HQ_CONFIG_READER
+```
+
+For an isolated plaintext deployment, an operator can instead prepare this HOST
+connection portion. These fragments do not include the existing backend/revision/floor
+pins or enable SQL; retain those prerequisites when assembling a complete binding.
+
+```yaml
+hq:
+  sql:
+    reader:
+      host: tcp-proxy.example.invalid
+      port: 3308
+      database: beadhive_hq_config
+      user: bh_hq_config_reader
+      tls_mode: disabled
+      credential:
+        config_path: /etc/beadhive/fnox.toml
+        profile: hq
+        key: HQ_CONFIG_READER
+```
+
+Plaintext can expose authentication material and SQL to network observers. A raw
+Caddy layer4 TCP forwarding listener does not encrypt that traffic. Select `disabled`
+only as an explicit operator decision for the intended network; repeat the decision
+independently for each publisher, runtime, observer, or authority-writer connection
+that should use it. Never store this HOST choice in published fleet documents.
+A TLS negotiation or certificate failure never selects disabled mode automatically.
+Changing this setting does not relax runtime signatures, authority pins, or admission,
+and these examples do not authorize any change to the current deployment.

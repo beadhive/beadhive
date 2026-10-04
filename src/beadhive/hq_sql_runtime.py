@@ -249,10 +249,16 @@ class SqlRuntimeAuthority:
             not observer
             or not config
             or any(
-                observer[key] != config[key] for key in ("host", "port", "server_name", "ca_file")
+                observer.get(key, "required" if key == "tls_mode" else "")
+                != config.get(key, "required" if key == "tls_mode" else "")
+                for key in (
+                    ("host", "port", "tls_mode", "server_name", "ca_file")
+                    if config.get("tls_mode", "required") == "required"
+                    else ("host", "port", "tls_mode")
+                )
             )
         ):
-            raise SqlRuntimeError("HQ config and runtime do not share a verified SQL endpoint")
+            raise SqlRuntimeError("HQ config and runtime SQL endpoint or transport policy mismatch")
         config_database = config["database"]
         runtime_database = observer["database"]
         if (
@@ -290,7 +296,13 @@ class SqlRuntimeAuthority:
             not observer
             or not config
             or any(
-                observer[key] != config[key] for key in ("host", "port", "server_name", "ca_file")
+                observer.get(key, "required" if key == "tls_mode" else "")
+                != config.get(key, "required" if key == "tls_mode" else "")
+                for key in (
+                    ("host", "port", "tls_mode", "server_name", "ca_file")
+                    if config.get("tls_mode", "required") == "required"
+                    else ("host", "port", "tls_mode")
+                )
             )
             or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", config["database"])
         ):

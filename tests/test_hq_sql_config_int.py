@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import runpy
+import selectors
 import shutil
 import socket
 import subprocess
@@ -14,7 +15,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -33,17 +34,21 @@ from harness.world import dolt_server_slot, free_port
 
 
 @contextmanager
-def _empty_config_server(tmp_path):
-    """Real TLS Dolt fixture ending at the committed *empty* three-table schema."""
+def _empty_config_server(tmp_path, *, plaintext=False):
+    """Owned Dolt fixture ending at the committed empty three-table schema."""
     _certificates(tmp_path)
     data = tmp_path / "data"
     data.mkdir()
     port = free_port()
+    tls = (
+        ""
+        if plaintext
+        else f"  tls_key: {tmp_path / 'server.key'}\n  tls_cert: {tmp_path / 'server.crt'}\n"
+    )
     (tmp_path / "server.yaml").write_text(
         f"data_dir: {data}\nlistener:\n  host: 127.0.0.1\n  port: {port}\n"
-        f"  tls_key: {tmp_path / 'server.key'}\n"
-        f"  tls_cert: {tmp_path / 'server.crt'}\n"
-        "  require_secure_transport: false\n"
+        + tls
+        + "  require_secure_transport: false\n"
     )
     with dolt_server_slot(test_id="sql-config-initial-publication"):
         with (tmp_path / "server.log").open("w") as log:
@@ -91,6 +96,105 @@ def _empty_config_server(tmp_path):
         finally:
             server.terminate()
             server.wait(timeout=10)
+
+
+@contextmanager
+def _tcp_forward(server_port):
+    """Owned byte-for-byte TCP relay, matching a layer4 proxy's transport boundary."""
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    listener.settimeout(5)
+    port = listener.getsockname()[1]
+    failures = []
+
+    def relay():
+        try:
+            with listener.accept()[0] as client:
+                with socket.create_connection(("127.0.0.1", server_port), timeout=3) as upstream:
+                    with selectors.DefaultSelector() as selector:
+                        selector.register(client, selectors.EVENT_READ, upstream)
+                        selector.register(upstream, selectors.EVENT_READ, client)
+                        while True:
+                            ready = selector.select(5)
+                            if not ready:
+                                raise TimeoutError("owned TCP relay stalled")
+                            for key, _event in ready:
+                                data = key.fileobj.recv(65536)
+                                if not data:
+                                    return
+                                key.data.sendall(data)
+        except Exception as error:
+            failures.append(error)
+        finally:
+            listener.close()
+
+    thread = threading.Thread(target=relay, daemon=True)
+    thread.start()
+    try:
+        yield port
+    finally:
+        thread.join(timeout=6)
+        listener.close()
+        assert not thread.is_alive()
+        assert not failures
+
+
+def test_explicit_plaintext_query_and_publication_direct_and_through_tcp_proxy(tmp_path):
+    from beadhive.beadyard_identity import new_document
+    from beadhive.hq_sql_transport import connect
+
+    with _empty_config_server(tmp_path, plaintext=True) as (port, parent, settings):
+        # Existing required bindings must fail before sending authentication to a
+        # listener with no CLIENT_SSL. Neither omission nor explicit required retries.
+        for mode in (None, "required"):
+            binding = dict(settings["reader"])
+            if mode is not None:
+                binding["tls_mode"] = mode
+            relay_port, thread, evidence = _missing_client_ssl_relay(port)
+            binding["port"] = relay_port
+            with pytest.raises(SqlTransportError, match="before authentication"):
+                connect(binding, _Broker(), deadline=time.monotonic() + 4)
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+            assert evidence == {
+                "server_advertised_tls": False,
+                "client_bytes_after_greeting": 0,
+            }
+        for role in ("reader", "publisher"):
+            settings[role]["tls_mode"] = "disabled"
+            del settings[role]["ca_file"]
+            del settings[role]["server_name"]
+        store = SqlFleetConfigRevisionStore(settings, broker=_Broker())
+        documents = (
+            FleetConfigDocument("beadyard.json", new_document()),
+            FleetConfigDocument("fleet.yaml", "hq:\n  mode: dolt-server\n"),
+        )
+        store.initialize_snapshot(
+            documents, expected_schema_parent=parent, publication_id=str(uuid.uuid4())
+        )
+        # Exercise authenticated SELECT through both ordinary TCP and a raw proxy.
+        for forwarded in (False, True):
+            with _tcp_forward(port) if forwarded else nullcontext(port) as target:
+                connection = connect(
+                    {**settings["reader"], "port": target},
+                    _Broker(),
+                    deadline=time.monotonic() + 4,
+                )
+                try:
+                    assert not connection.ssl
+                    with connection.cursor() as cursor:
+                        cursor.execute("SELECT CURRENT_USER(), DATABASE(), DOLT_VERSION()")
+                        user, database, version = cursor.fetchone()
+                    assert user.startswith("bh_hq_config_reader@")
+                    assert database == "beadhive_hq_config"
+                    assert version == "2.3.5"
+                    with pytest.raises(SqlTransportError, match="reconnect refused"):
+                        connection.ping(reconnect=True)
+                    with pytest.raises(SqlTransportError, match="reconnect refused"):
+                        connection.connect()
+                finally:
+                    connection.close()
 
 
 def test_public_initial_seed_and_original_receipt_survive_later_publication(tmp_path):
