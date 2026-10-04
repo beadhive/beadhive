@@ -81,6 +81,12 @@ def read(plane, prefix, *, git, error, decode, lease_ref, json_decode, holder_id
     if plane._read()[0] != revision:
         raise error("authority changed during hive lease read")
     if holder_identity is not None:
+        from .frame_emergency import locally_active
+
+        if guard.emergency_review_required(record) and not locally_active(
+            record, prefix, plane.clock()
+        ):
+            return sha, None
         if historical:
             return sha, None
         hive = policy.get("hive_policies", {}).get(prefix)
@@ -135,6 +141,10 @@ def publish(
         or record["authority"].get("beadyard_id") != manifest.beadyard_id
     ):
         raise error("frame hive lease requires exact active incarnation")
+    if operation != "release":
+        from .frame_emergency import cap_lease
+
+        lease = cap_lease(record, prefix, lease, plane.clock())
     data = dict(
         domain=DOMAIN_V2 if manifest.beadyard_id is not None else DOMAIN,
         authority_revision=revision,

@@ -64,7 +64,7 @@ def binding(record):
 
 
 def validate_record(identity, record, issued):
-    if set(record) - {"release_upgrade_history"} != {
+    if set(record) - {"release_upgrade_history", "emergency"} != {
         "authority",
         "public_key",
         "state",
@@ -160,6 +160,8 @@ def validate_record(identity, record, issued):
         raise ValueError("invalid durable receipt")
     if "release_upgrade_history" in record:
         validate_release_upgrade_history(identity, record, issued)
+    if "emergency" in record:
+        validate_emergency(record, issued)
 
 
 def validate_release_upgrade_history(identity, record, issued):
@@ -203,6 +205,76 @@ def validate_release_upgrade_history(identity, record, issued):
         ):
             raise ValueError("release upgrade history identity or epoch changed")
         epoch = old["authority"]["epoch"]
+
+
+def validate_emergency(record, issued):
+    """Bounded operator-signed authorization; runtime credentials cannot mutate it."""
+    grant = record["emergency"]
+    if not isinstance(grant, dict) or set(grant) != {
+        "domain",
+        "prefix",
+        "reason",
+        "issued_at",
+        "expires_at",
+        "revoked_at",
+        "authority",
+        "release",
+        "original_revision",
+        "review_required",
+        "execution_digest",
+    }:
+        raise ValueError("invalid emergency authorization fields")
+    if (
+        grant["domain"] != "beadhive/emergency-admission/v1"
+        or not isinstance(grant["prefix"], str)
+        or not re.fullmatch(r"[a-z][a-z0-9-]{0,127}", grant["prefix"])
+        or not isinstance(grant["reason"], str)
+        or not 1 <= len(grant["reason"].strip()) <= 1024
+        or any(ord(c) < 32 for c in grant["reason"])
+        or not isinstance(grant["original_revision"], str)
+        or not 1 <= len(grant["original_revision"]) <= 128
+        or type(grant["review_required"]) is not bool
+        or grant["authority"] != record["authority"]
+        or grant["release"] != record["desired"]["release"]
+        or not isinstance(grant["execution_digest"], str)
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", grant["execution_digest"])
+    ):
+        raise ValueError("invalid emergency scope/binding")
+    for key in ("issued_at", "expires_at"):
+        if type(grant[key]) not in (int, float) or not math.isfinite(grant[key]):
+            raise ValueError("invalid emergency timestamp")
+    if not 0 < grant["expires_at"] - grant["issued_at"] <= 1800 or grant["issued_at"] > issued:
+        raise ValueError("emergency lifetime exceeds bound")
+    revoked = grant["revoked_at"]
+    if revoked is not None and (
+        type(revoked) not in (int, float)
+        or not math.isfinite(revoked)
+        or not grant["issued_at"] <= revoked <= issued
+    ):
+        raise ValueError("invalid emergency revocation")
+
+
+def emergency_active(record, prefix, now):
+    """Evaluate at every intake/lease write, using current protected authority only."""
+    if "emergency" not in record:
+        return False
+    try:
+        validate_emergency(record, now)
+    except (ValueError, KeyError, TypeError):
+        return False
+    grant = record["emergency"]
+    return (
+        record["state"] == "active"
+        and record["cordoned"] is False
+        and grant["prefix"] == prefix
+        and grant["revoked_at"] is None
+        and grant["issued_at"] <= now < grant["expires_at"]
+    )
+
+
+def emergency_review_required(record):
+    return bool(record.get("emergency", {}).get("review_required"))
+
 
 
 def records(state):
@@ -491,6 +563,7 @@ def enforce_hive_lease(old, new, reference, state, policy, head):
 
     expiry = timestamp(lease["expires_at"])
     now = time.time()
+    emergency = emergency_active(record, prefix, now)
     previous = None
     if old != ZERO:
         if git("cat-file", "-t", old) == "commit":
@@ -511,6 +584,10 @@ def enforce_hive_lease(old, new, reference, state, policy, head):
         ):
             raise ValueError("release requires exact incumbent incarnation/epoch")
         return
+    if emergency_review_required(record) and not emergency:
+        raise ValueError("hive lease emergency authorization expired/revoked or out of scope")
+    if emergency and expiry > record["emergency"]["expires_at"]:
+        raise ValueError("hive lease exceeds emergency authorization lifetime")
     if (
         hive is None
         or hive["config_head"] != git("for-each-ref", "--format=%(objectname)", CONFIG_HEAD)
@@ -538,11 +615,16 @@ def enforce_hive_lease(old, new, reference, state, policy, head):
     if (
         not beat
         or now < receipt["first_seen"]
-        or now - receipt["first_seen"] >= beat["leaseDurationSeconds"]
+        or (not emergency and now - receipt["first_seen"] >= beat["leaseDurationSeconds"])
         or beat["release"] != record["desired"]["release"]
-        or beat["conformance"]["status"] != "conformant"
-        or beat["conformance"]["profile"] != record["desired"]["profile"]
-        or any(c["status"] == "fail" for c in beat["conformance"]["checks"])
+        or (
+            not emergency
+            and (
+                beat["conformance"]["status"] != "conformant"
+                or beat["conformance"]["profile"] != record["desired"]["profile"]
+                or any(c["status"] == "fail" for c in beat["conformance"]["checks"])
+            )
+        )
     ):
         raise ValueError("hive lease requires fresh conformant protected receipt")
     if authority_id is not None:
@@ -578,6 +660,20 @@ def enforce_hive_lease(old, new, reference, state, policy, head):
     if type(caps.get("max_sessions")) is not int or caps["max_sessions"] <= 0:
         raise ValueError("no frame intake capacity")
     requirements(hive["requires"], caps)
+    if emergency:
+        print(
+            json.dumps(
+                {
+                    "warning": "frame_emergency_admission",
+                    "event": "lease-use-attempt",
+                    "frame_id": frame,
+                    "prefix": prefix,
+                    "expires_at": record["emergency"]["expires_at"],
+                    "original_revision": record["emergency"]["original_revision"],
+                }
+            ),
+            file=sys.stderr,
+        )
     if operation == "renew":
         if (
             prior is None
@@ -604,6 +700,8 @@ def enforce_hive_lease(old, new, reference, state, policy, head):
             if len(incumbents) != 1:
                 raise ValueError("incumbent incarnation unavailable")
             incumbent = incumbents[0]
+            if emergency_active(incumbent, prefix, now):
+                raise ValueError("live emergency incumbent is not evictable")
             r = incumbent["receipt"]
             if incumbent["state"] not in {"retired", "quarantined"} and (
                 not r["lease"]

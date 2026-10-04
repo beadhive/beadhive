@@ -149,6 +149,8 @@ host packup|
 host provision|role:string:o,answers:string:o,auto:boolean:o,dry_run:boolean:o,force:boolean:o,push:boolean:o
 host release|hive:string:o,all_hives:boolean:o
 host retire|dry_run:boolean:o,backup:boolean:o,confirm:boolean:o,purge:boolean:o
+host emergency-admit|action:string:r,frame_id:string:r,hive:string:o,reason:string:o,duration:integer:o,execution_digest:string:o,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o
+host emergency-revoke|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o
 host frame-retire|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o
 host release-upgrade|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_epoch:integer:o,expected_release:string:o,expected_config_head:string:o,release_id:string:o,release_digest:string:o,profile:string:o,config_revision:string:o,expires_at:number:o,plan_sha256:string:o,operator_key:string:o,confirm:boolean:o
 host rm|host_id:string:r,dry_run:boolean:o,confirm:boolean:o,force:boolean:o
@@ -895,7 +897,9 @@ def operations() -> tuple[OperationSpec, ...]:
             for parameter_name in surface_params:
                 param_by_name.setdefault(parameter_name, _extra_parameter(parameter_name))
         parameters = list(param_by_name.values())
-        hq_write = name.startswith("hq.") and name not in {_operation_name(p) for p in _HQ_READS}
+        hq_write = (
+            name.startswith("hq.") and name not in {_operation_name(p) for p in _HQ_READS}
+        ) or path in {"host emergency-admit", "host emergency-revoke"}
         secret_material = path in _SECRET_PATHS
         privilege = (
             "privileged"

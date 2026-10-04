@@ -21,6 +21,7 @@ class EligibilityFacts:
     desired: dict
     dispatch_enabled: bool = True
     available: bool = True
+    at: float | None = None
 
 
 @dataclass(frozen=True)
@@ -83,6 +84,39 @@ def eligible(frame: hosts.HostManifest, hive: dict, facts: EligibilityFacts) -> 
         and math.isfinite(age)
         and 0 <= age < lease.leaseDurationSeconds
     )
+    from . import hq_authority_guard as guard
+
+    record = {
+        "desired": desired,
+        "authority": desired.get("authority", {}),
+        "state": desired.get("state"),
+        "cordoned": desired.get("cordoned"),
+    }
+    if "emergency" in desired:
+        record["emergency"] = desired["emergency"]
+    from .frame_emergency import locally_active
+
+    emergency = locally_active(
+        record, hive.get("prefix"), facts.at if facts.at is not None else time.time()
+    )
+    trusted_emergency = (
+        emergency
+        and facts.available
+        and beat.verified
+        and lease is not None
+        and not beat.candidate
+        and type(age) in (int, float)
+        and math.isfinite(age)
+        and age >= 0
+        and lease.key_id == record["authority"].get("key_fingerprint")
+        and lease.epoch == record["authority"].get("epoch")
+        and lease.audience == record["authority"].get("audience")
+        and lease.config_revision == record["authority"].get("config_revision")
+    )
+    if trusted_emergency:
+        from .frame_emergency import audit
+
+        audit("eligibility-use-attempt", record, prefix=hive.get("prefix"))
     return EligibilityDecision(
         (
             ("authority_available", facts.available),
@@ -91,6 +125,10 @@ def eligible(frame: hosts.HostManifest, hive: dict, facts: EligibilityFacts) -> 
                 desired.get("state") == "active" and desired.get("declared") is True,
             ),
             ("not_cordoned", desired.get("cordoned") is False),
+            (
+                "reviewed_admission_or_emergency",
+                not guard.emergency_review_required(record) or bool(trusted_emergency),
+            ),
             (
                 "current_frame_incarnation",
                 lease is not None
@@ -107,7 +145,7 @@ def eligible(frame: hosts.HostManifest, hive: dict, facts: EligibilityFacts) -> 
                 == lease.beadyard_id
                 == desired.get("authority", {}).get("beadyard_id"),
             ),
-            ("authenticated_fresh_heartbeat", bool(fresh)),
+            ("authenticated_fresh_heartbeat", bool(fresh or trusted_emergency)),
             (
                 "release_matches",
                 lease is not None
@@ -118,7 +156,8 @@ def eligible(frame: hosts.HostManifest, hive: dict, facts: EligibilityFacts) -> 
             ),
             (
                 "conformance_pass",
-                lease is not None
+                bool(trusted_emergency)
+                or lease is not None
                 and lease.conformance.status == "conformant"
                 and lease.conformance.profile == desired.get("profile")
                 and all(check.status != "fail" for check in lease.conformance.checks),
@@ -147,7 +186,7 @@ def load_facts(frame, *, hq_dir, cfg=None, at=None):
     try:
         plane = control_plane(hq_dir)
         _revision, desired, observation = plane.read_eligibility(frame, now=at)
-        return EligibilityFacts(observation, desired, enabled)
+        return EligibilityFacts(observation, desired, enabled, True, at)
     except (ValueError, OSError, RuntimeError):
         return EligibilityFacts(VerifiedObservation("authority-unavailable"), {}, enabled, False)
 
@@ -293,6 +332,11 @@ def evictable(host_id, *, hq_dir, at=None, evict_after_s=None):
         if current:
             if current[0].get("state") == "quarantined":
                 return True
+            from .hq_authority_guard import emergency_active
+
+            scope = current[0].get("emergency", {}).get("prefix")
+            if emergency_active(current[0], scope, clock):
+                return False
         elif len(matching) == 1 and matching[0].get("state") == "retired":
             return True
     except (ValueError, OSError, RuntimeError):

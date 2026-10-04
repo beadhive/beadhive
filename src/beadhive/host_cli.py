@@ -1848,6 +1848,7 @@ def _frame_lifecycle(
     confirm,
     supersede,
     deadline,
+    emergency_options=None,
 ):
     from .hq_control_plane import control_plane
 
@@ -1863,7 +1864,26 @@ def _frame_lifecycle(
             confirm=confirm,
             supersede=supersede,
             deadline=deadline,
+            **(emergency_options or {}),
         )
+        if verb == "emergency-admit" and action == "plan":
+            try:
+                from .heartbeat_report import installed_release
+
+                result["local_execution_release"] = installed_release()
+            except (ImportError, OSError, ValueError, RuntimeError):
+                result["local_execution_release"] = None
+            result["waived_predicates"] = ["admission_review", "heartbeat_freshness", "conformance"]
+            result["mandatory_checks"] = [
+                "current_authority",
+                "exact_incarnation_and_signer",
+                "registered_release_and_caps",
+                "canonical_hq",
+                "hive_scope_and_requirements",
+                "dispatch_policy",
+                "lease_exclusivity",
+                "execution_digest",
+            ]
         typer.echo(json.dumps(result, sort_keys=True))
     except (ValueError, OSError, RuntimeError) as exc:
         typer.echo(f"{verb} refused: {exc}", err=True)
@@ -1960,6 +1980,45 @@ def release_upgrade_cmd(
     except (ValueError, OSError, RuntimeError) as exc:
         typer.echo(f"release-upgrade refused: {exc}", err=True)
         raise typer.Exit(1) from exc
+
+
+@app.command("emergency-admit")
+@otel.trace_verb("host.emergency-admit")
+def emergency_admit_cmd(
+    action: str = typer.Argument(..., help="plan, apply, or check"),
+    frame_id: str = typer.Argument(...),
+    hive: str = typer.Option("", "--hive"),
+    reason: str = typer.Option("", "--reason"),
+    duration: int = typer.Option(600, "--duration", help="seconds, maximum 1800"),
+    execution_digest: str = typer.Option("", "--execution-digest"),
+    expected: str = typer.Option("", "--expected-revision"),
+    expected_host_id: str = typer.Option("", "--expected-host-id"),
+    expected_release: str = typer.Option("", "--expected-release"),
+    operator_key: Annotated[Path | None, typer.Option("--operator-key")] = None,
+    confirm: bool = typer.Option(False, "--confirm"),
+) -> None:
+    """Authorize one hive for at most 30 minutes using separate protected operator authority."""
+    _frame_lifecycle(
+        "emergency-admit",
+        action,
+        frame_id,
+        expected,
+        expected_host_id,
+        expected_release,
+        operator_key,
+        confirm,
+        False,
+        None,
+        {
+            "emergency_prefix": hive,
+            "emergency_reason": reason,
+            "emergency_duration": duration,
+            "execution_digest": execution_digest,
+        },
+    )
+
+
+app.command("emergency-revoke")(_lifecycle_command("emergency-revoke"))
 
 
 # ---- remove: drop an orphaned manifest from HQ (bh-salu) ------------------------------

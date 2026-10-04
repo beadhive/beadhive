@@ -124,6 +124,10 @@ class HqControlPlane(Protocol):
         confirm=False,
         supersede=False,
         deadline=None,
+        emergency_prefix="",
+        emergency_reason="",
+        emergency_duration=600,
+        execution_digest="",
     ): ...
 
 
@@ -802,6 +806,7 @@ class GitControlPlane:
         record = available[0]
         return {
             **record["desired"],
+            **({"emergency": record["emergency"]} if "emergency" in record else {}),
             "state": record["state"],
             "cordoned": record["cordoned"],
             "authority": record["authority"],
@@ -1128,6 +1133,10 @@ class GitControlPlane:
         confirm=False,
         supersede=False,
         deadline=None,
+        emergency_prefix="",
+        emergency_reason="",
+        emergency_duration=600,
+        execution_digest="",
     ):
         from .host_heartbeat_core import HeartbeatLease, ref_name
 
@@ -1152,6 +1161,8 @@ class GitControlPlane:
             record = entry["retired"][-1] if entry["retired"] else None
         if record is None:
             raise ControlPlaneError("unknown incarnation")
+        from . import frame_emergency
+
         a, r = record["authority"], record["receipt"]
         lease, current = r["lease"], record["state"]
         release = lease["release"]["digest"] if lease else ""
@@ -1171,6 +1182,7 @@ class GitControlPlane:
             "attestor_evidence_kind": "ssh-runtime-signature",
             "consecutive_verified_beats": r["consecutive"],
             "conformance": lease["conformance"] if lease else None,
+            "emergency": frame_emergency.status(record, self.clock()),
             "prior_active": entry["active"]["authority"]
             if record is entry["candidate"] and entry["active"]
             else None,
@@ -1187,10 +1199,64 @@ class GitControlPlane:
             raise ControlPlaneError("expected authoritative revision/host/release mismatch")
         updates = []
         remote = self._remote(policy)
-        if verb == "admit":
-            if current == "active" and not record["cordoned"]:
+        if verb in {"emergency-admit", "emergency-revoke"}:
+            now = self.clock()
+            if state["expires_at"] <= now:
+                raise ControlPlaneError("emergency mutation requires current authority")
+            if verb == "emergency-admit":
+                from .host_manifest_contracts import HostManifest
+                from .hq_authority_guard import requirements
+
+                hive = policy.get("hive_policies", {}).get(emergency_prefix)
+                if hive is None or now >= hive["valid_until"]:
+                    raise ControlPlaneError("emergency requires explicit current hive scope")
+                requirements(hive["requires"], record["desired"]["caps"])
+                if hive["config_revision"] != a["config_revision"]:
+                    raise ControlPlaneError("emergency hive config revision mismatch")
+                if record is entry["candidate"] and entry["active"]:
+                    raise ControlPlaneError("emergency cannot supersede active incarnation")
+                registration = (
+                    HostManifest.model_validate(r["registration"]) if r["registration"] else None
+                )
+                parsed = HeartbeatLease.model_validate(lease) if lease else None
+                frame_emergency.authorize(
+                    record,
+                    prefix=emergency_prefix,
+                    reason=emergency_reason,
+                    duration=emergency_duration,
+                    revision=sha,
+                    now=now,
+                    registration=registration,
+                    beat=parsed,
+                    execution_digest=execution_digest,
+                )
+                if record is entry["candidate"]:
+                    entry["active"], entry["candidate"] = record, None
+                    reference = ref_name(frame)
+                    updates.append(
+                        (
+                            reference,
+                            gitref.remote_sha(
+                                remote,
+                                reference,
+                                cwd=self.hq_dir,
+                                git_options=["-c", "protocol.ext.allow=always"],
+                            ),
+                            r["sha"],
+                        )
+                    )
+                    updates.append((candidate_ref(frame), r["sha"], ""))
+            else:
+                frame_emergency.revoke(record, now)
+        elif verb == "admit":
+            reviewing_emergency = current == "active" and record.get("emergency", {}).get(
+                "review_required"
+            )
+            if current == "active" and not record["cordoned"] and not reviewing_emergency:
                 return result
-            if record is not entry["candidate"] or current != "pending":
+            if not reviewing_emergency and (
+                record is not entry["candidate"] or current != "pending"
+            ):
                 raise ControlPlaneError("admit requires pending candidate")
             desired, registration = record["desired"], r["registration"]
             if not desired["declared"] or not registration:
@@ -1202,7 +1268,7 @@ class GitControlPlane:
             parsed = HeartbeatLease.model_validate(lease)
             now = self.clock()
             if (
-                now >= a["candidate_expires_at"]
+                (a["candidate_expires_at"] is not None and now >= a["candidate_expires_at"])
                 or now - r["first_seen"] >= parsed.leaseDurationSeconds
                 or now - parsed.observed_at >= parsed.leaseDurationSeconds
                 or now >= state["expires_at"]
@@ -1223,6 +1289,12 @@ class GitControlPlane:
                 or any(c["status"] == "fail" for c in conformance["checks"])
             ):
                 raise ControlPlaneError("admit requires conformant evidence")
+            if reviewing_emergency:
+                record["emergency"].update(review_required=False, revoked_at=now)
+                record["cordoned"] = False
+                self._write(state, sha, operator_key)
+                frame_emergency.audit("reviewed-admission", record, revision=sha)
+                return self.lifecycle(verb, frame, "check", expected_host_id=expected_host_id)
             if entry["active"] and not supersede:
                 raise ControlPlaneError("another active incarnation requires explicit --supersede")
             if entry["active"]:
@@ -1301,6 +1373,8 @@ class GitControlPlane:
                 record["drain_deadline"] = deadline
             record.update(state=target, cordoned=verb != "resume")
         self._write(state, expected, operator_key, updates=updates)
+        if verb in {"emergency-admit", "emergency-revoke"}:
+            frame_emergency.audit(verb, record, revision=sha)
         # Return the exact selected incarnation's authoritative state after readback.
         return self.lifecycle(verb, frame, "check", expected_host_id=expected_host_id)
 
@@ -1396,6 +1470,7 @@ class SqlControlPlane:
                 raise ControlPlaneError("frame config identity differs from authenticated grant")
             return {
                 **record["desired"],
+                **({"emergency": record["emergency"]} if "emergency" in record else {}),
                 "state": record["state"],
                 "cordoned": record["cordoned"],
                 "authority": record["authority"],
@@ -1831,6 +1906,10 @@ class SqlControlPlane:
         confirm=False,
         supersede=False,
         deadline=None,
+        emergency_prefix="",
+        emergency_reason="",
+        emergency_duration=600,
+        execution_digest="",
         _sql_deadline=None,
     ):
         operator = self._operator()
@@ -1878,6 +1957,8 @@ class SqlControlPlane:
                 if index and receipts[index - 1][2] - first_seen >= beat.leaseDurationSeconds:
                     break
                 streak += 1
+            from . import frame_emergency
+
             release = latest.release.digest if latest else ""
             result = {
                 "frame_id": frame,
@@ -1895,6 +1976,7 @@ class SqlControlPlane:
                 "attestor_evidence_kind": "ed25519-runtime-signature",
                 "consecutive_verified_beats": streak,
                 "conformance": (latest.conformance.model_dump() if latest else None),
+                "emergency": frame_emergency.status(record, self.clock()),
                 "prior_active": entry["active"]["authority"]
                 if slot == "candidate" and entry["active"]
                 else None,
@@ -1915,15 +1997,56 @@ class SqlControlPlane:
             now = self.clock()
             if slot == "retired" and verb != "retire":
                 raise ControlPlaneError("retired incarnation cannot transition")
-            if verb == "admit":
-                if slot != "candidate" or record["state"] != "pending":
+            if verb in {"emergency-admit", "emergency-revoke"}:
+                from . import frame_emergency
+
+                if original["expires_at"] <= now:
+                    raise ControlPlaneError("emergency mutation requires current authority")
+                if verb == "emergency-admit":
+                    if slot == "candidate" and target["active"]:
+                        raise ControlPlaneError(
+                            "emergency admission cannot supersede active incarnation"
+                        )
+                    policy = _policies.get(emergency_prefix)
+                    if policy is None or now >= policy["valid_until"]:
+                        raise ControlPlaneError("emergency requires explicit current hive scope")
+                    from .hq_authority_guard import requirements
+
+                    requirements(policy["requires"], record["desired"]["caps"])
+                    if policy["config_revision"] != authority["config_revision"]:
+                        raise ControlPlaneError("emergency hive config revision mismatch")
+                    frame_emergency.authorize(
+                        record,
+                        prefix=emergency_prefix,
+                        reason=emergency_reason,
+                        duration=emergency_duration,
+                        revision=head,
+                        now=now,
+                        registration=registration,
+                        beat=latest,
+                        execution_digest=execution_digest,
+                    )
+                    if slot == "candidate":
+                        target["active"], target["candidate"] = record, None
+                else:
+                    frame_emergency.revoke(record, now)
+            elif verb == "admit":
+                reviewing_emergency = slot == "active" and record.get("emergency", {}).get(
+                    "review_required"
+                )
+                if not reviewing_emergency and (
+                    slot != "candidate" or record["state"] != "pending"
+                ):
                     raise ControlPlaneError("admit requires pending candidate")
                 if (
                     not record["desired"]["declared"]
                     or registration is None
                     or latest is None
                     or streak < 3
-                    or now >= authority["candidate_expires_at"]
+                    or (
+                        authority["candidate_expires_at"] is not None
+                        and now >= authority["candidate_expires_at"]
+                    )
                     or now - receipts[0][2] >= latest.leaseDurationSeconds
                     or latest.release.model_dump() != record["desired"]["release"]
                     or registration.release.model_dump() != record["desired"]["release"]
@@ -1934,13 +2057,16 @@ class SqlControlPlane:
                     or any(check.status == "fail" for check in latest.conformance.checks)
                 ):
                     raise ControlPlaneError("admit requires current complete trusted evidence")
-                if target["active"] and not supersede:
+                if reviewing_emergency:
+                    record["emergency"].update(review_required=False, revoked_at=now)
+                if not reviewing_emergency and target["active"] and not supersede:
                     raise ControlPlaneError("another active incarnation requires supersede")
-                if target["active"]:
+                if not reviewing_emergency and target["active"]:
                     old = target["active"]
                     old.update(state="retired", cordoned=True)
                     target["retired"].append(old)
-                target["active"], target["candidate"] = record, None
+                if not reviewing_emergency:
+                    target["active"], target["candidate"] = record, None
                 record.update(state="active", cordoned=False)
                 record["authority"]["candidate_expires_at"] = None
             elif verb == "retire":
@@ -1984,6 +2110,8 @@ class SqlControlPlane:
                 operator_key=operator_key,
                 deadline=budget,
             )
+            if verb in {"emergency-admit", "emergency-revoke"}:
+                frame_emergency.audit(verb, record, revision=head)
             return self.lifecycle(
                 verb,
                 frame,
@@ -2075,6 +2203,7 @@ class SqlControlPlane:
                 raise ControlPlaneError("manifest or desired policy differs from current grant")
             desired = {
                 **record["desired"],
+                **({"emergency": record["emergency"]} if "emergency" in record else {}),
                 "state": record["state"],
                 "cordoned": record["cordoned"],
                 "authority": record["authority"],
@@ -2135,6 +2264,16 @@ class SqlControlPlane:
             ):
                 raise ControlPlaneError("protected hive lease record invalid")
             lease = HostLease(**raw)
+            from .frame_emergency import locally_active
+            from .hq_authority_guard import emergency_review_required
+
+            emergency = locally_active(record, prefix, self.clock())
+            if (
+                (holder_identity is not None or incumbent_identity is not None)
+                and emergency_review_required(record)
+                and not emergency
+            ):
+                return revision, None
             if incumbent_identity is not None:
                 if (
                     incumbent_identity != route.holder_identity
@@ -2163,7 +2302,7 @@ class SqlControlPlane:
                     or self.clock() >= policy["valid_until"]
                     or policy["config_revision"] != record["authority"]["config_revision"]
                     or not observation.verified
-                    or not observation.fresh
+                    or (not observation.fresh and not emergency)
                 ):
                     return revision, None
             return revision, lease
@@ -2280,6 +2419,10 @@ class SqlControlPlane:
                 and lease.host_id != ""
             ):
                 raise ControlPlaneError("hive lease proposal requires exact active incarnation")
+            if operation != "release":
+                from .frame_emergency import cap_lease
+
+                lease = cap_lease(record, prefix, lease, self.clock())
             authority = record["authority"]
             request_id = str(uuid.uuid4())
             request = {

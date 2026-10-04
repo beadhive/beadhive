@@ -521,3 +521,445 @@ def test_bd_passthrough_uses_authenticated_signed_holder_without_cached_lease(
     assert "current_hive_lease_holder" in guard.bd_write_refusal(
         ["update", "bh-test", "--claim"], tmp_path, cfg={"hq": {}}
     )
+
+
+@pytest.fixture
+def emergency_frame(candidate, monkeypatch):
+    import copy
+
+    from beadhive import frame_emergency, heartbeat_report
+
+    frame, facts = candidate
+    owner = str(uuid4())
+    frame = frame.model_copy(update={"beadyard_id": owner})
+    lease = HeartbeatLease.model_validate(
+        {
+            **facts.observation.lease.model_dump(mode="json", exclude_none=True),
+            "domain": DOMAIN_V2,
+            "beadyard_id": owner,
+            "conformance": {"profile": "profile", "status": "unknown", "checks": []},
+        }
+    )
+    authority = {
+        "frame_id": frame.frame_id,
+        "holder_identity": frame.host_id,
+        "instance_ref": frame.instance_ref,
+        "key_fingerprint": lease.key_id,
+        "epoch": lease.epoch,
+        "audience": lease.audience,
+        "config_revision": lease.config_revision,
+        "candidate_expires_at": 2000,
+        "beadyard_id": owner,
+    }
+    record = {
+        "authority": authority,
+        "desired": {
+            key: copy.deepcopy(facts.desired[key])
+            for key in ("declared", "release", "caps", "profile")
+        },
+        "state": "pending",
+        "cordoned": False,
+    }
+    frame_emergency.authorize(
+        record,
+        prefix="bh",
+        reason="repair broken conformance",
+        duration=600,
+        revision="original",
+        now=1000,
+        registration=frame,
+        beat=lease,
+        execution_digest="sha256:" + "3" * 64,
+    )
+    monkeypatch.setattr(
+        heartbeat_report,
+        "installed_release",
+        lambda: {
+            "id": "executing",
+            "digest": "sha256:" + "3" * 64,
+        },
+    )
+    desired = {
+        **record["desired"],
+        "authority": record["authority"],
+        "state": record["state"],
+        "cordoned": False,
+        "emergency": record["emergency"],
+    }
+    facts = policy.EligibilityFacts(
+        replace(facts.observation, status="stale", fresh=False, age_seconds=999, lease=lease),
+        desired,
+        at=1000,
+    )
+    return frame, facts, record
+
+
+def test_emergency_admission_waives_only_staleness_and_conformance(emergency_frame, caplog):
+    frame, facts, record = emergency_frame
+    assert policy.eligible(frame, {"prefix": "bh"}, facts).allowed
+    assert record["state"] == "active"
+    assert record["emergency"]["review_required"] is True
+    assert record["emergency"]["expires_at"] == 1600
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "expired",
+        "revoked",
+        "wrong-hive",
+        "authority",
+        "unsigned",
+        "quarantined",
+        "cordoned",
+        "disabled",
+        "release",
+        "caps",
+        "hive",
+        "key",
+        "epoch",
+        "hq",
+        "execution-digest",
+    ],
+)
+def test_emergency_does_not_waive_other_security_predicates(emergency_frame, failure, monkeypatch):
+    import copy
+
+    from beadhive import heartbeat_report
+
+    frame, facts, _ = emergency_frame
+    facts = replace(facts, desired=copy.deepcopy(facts.desired))
+    hive = {"prefix": "bh"}
+    if failure == "expired":
+        facts = replace(facts, at=1600)
+    elif failure == "revoked":
+        facts.desired["emergency"]["revoked_at"] = 1000
+    elif failure == "wrong-hive":
+        hive["prefix"] = "other"
+    elif failure == "authority":
+        facts = replace(facts, available=False)
+    elif failure == "unsigned":
+        facts = replace(facts, observation=replace(facts.observation, verified=False))
+    elif failure in {"quarantined", "cordoned"}:
+        facts.desired["state" if failure == "quarantined" else "cordoned"] = (
+            "quarantined" if failure == "quarantined" else True
+        )
+    elif failure == "disabled":
+        facts = replace(facts, dispatch_enabled=False)
+    elif failure == "release":
+        frame = frame.model_copy(update={"release": None})
+    elif failure == "caps":
+        facts.desired["caps"] = {}
+    elif failure == "hive":
+        hive["requires"] = {"arch": "aarch64"}
+    elif failure == "execution-digest":
+        monkeypatch.setattr(heartbeat_report, "installed_release", lambda: {"digest": "different"})
+    else:
+        update = {
+            "key": {"key_id": "wrong"},
+            "epoch": {"epoch": 999},
+            "hq": {"beadyard_id": str(uuid4())},
+        }[failure]
+        lease = facts.observation.lease.model_copy(update=update)
+        facts = replace(facts, observation=replace(facts.observation, lease=lease))
+    assert not policy.eligible(frame, hive, facts).allowed
+
+
+def test_emergency_expiry_never_becomes_normal_admission_with_fresh_evidence(
+    emergency_frame, candidate
+):
+    frame, facts, _ = emergency_frame
+    lease = facts.observation.lease.model_copy(
+        update={"conformance": candidate[1].observation.lease.conformance}
+    )
+    facts = replace(
+        facts,
+        at=1600,
+        observation=replace(
+            facts.observation,
+            fresh=True,
+            age_seconds=1,
+            lease=lease,
+        ),
+    )
+    assert (
+        "reviewed_admission_or_emergency" in policy.eligible(frame, {"prefix": "bh"}, facts).reason
+    )
+
+
+@pytest.mark.parametrize("duration", [0, -1, 1801, float("nan"), float("inf"), True])
+def test_emergency_lifetime_validation(emergency_frame, duration):
+    from beadhive import frame_emergency
+
+    frame, facts, record = emergency_frame
+    with pytest.raises(ValueError):
+        frame_emergency.authorize(
+            record,
+            prefix="bh",
+            reason="repair",
+            duration=duration,
+            revision="original",
+            now=1000,
+            registration=frame,
+            beat=facts.observation.lease,
+            execution_digest="sha256:" + "3" * 64,
+        )
+
+
+def test_emergency_lease_is_capped_and_cannot_renew_after_expiry(emergency_frame):
+    from beadhive import frame_emergency
+    from beadhive.host_lease_contracts import HostLease, _parse_stamp, now_stamp
+
+    _, _, record = emergency_frame
+    lease = HostLease("host", "fixture", 1, now_stamp(1000), now_stamp(10000))
+    assert _parse_stamp(frame_emergency.cap_lease(record, "bh", lease, 1000).expires_at) == 1600
+    for scope, at in (("wrong", 1000), ("bh", 1600)):
+        with pytest.raises(ValueError):
+            frame_emergency.cap_lease(record, scope, lease, at)
+    frame_emergency.revoke(record, 1100)
+    assert frame_emergency.status(record, 1100)["status"] == "revoked"
+    with pytest.raises(ValueError):
+        frame_emergency.cap_lease(record, "bh", lease, 1100)
+
+
+@pytest.mark.parametrize(
+    "reason,prefix,digest",
+    [
+        ("", "bh", "sha256:" + "3" * 64),
+        ("repair\nforged-log", "bh", "sha256:" + "3" * 64),
+        ("repair", "", "sha256:" + "3" * 64),
+        ("repair", "../bh", "sha256:" + "3" * 64),
+        ("repair", "bh", "unpinned"),
+    ],
+)
+def test_emergency_requires_reason_scope_and_execution_digest(
+    emergency_frame, reason, prefix, digest
+):
+    from beadhive import frame_emergency
+
+    frame, facts, record = emergency_frame
+    with pytest.raises(ValueError):
+        frame_emergency.authorize(
+            record,
+            prefix=prefix,
+            reason=reason,
+            duration=600,
+            revision="original",
+            now=1000,
+            registration=frame,
+            beat=facts.observation.lease,
+            execution_digest=digest,
+        )
+
+
+def test_direct_emergency_lease_proposal_checks_executing_bytes(emergency_frame, monkeypatch):
+    from beadhive import frame_emergency, heartbeat_report
+    from beadhive.host_lease_contracts import HostLease, now_stamp
+
+    _, _, record = emergency_frame
+    lease = HostLease("host", "fixture", 1, now_stamp(1000), now_stamp(1100))
+    monkeypatch.setattr(heartbeat_report, "installed_release", lambda: {"digest": "wrong"})
+    with pytest.raises(ValueError):
+        frame_emergency.cap_lease(record, "bh", lease, 1000)
+
+
+def test_emergency_sql_lifecycle_requires_original_cas_and_operator_permission(
+    emergency_frame, candidate
+):
+    import copy
+
+    from beadhive.hq_control_plane import ControlPlaneError, SqlControlPlane
+
+    frame, facts, template = emergency_frame
+    record = copy.deepcopy(template)
+    record.pop("emergency")
+    record["state"] = "pending"
+    record["authority"]["candidate_expires_at"] = 2000
+    record["receipt"] = {}
+    original = {
+        "frames": {"frame": {"active": None, "candidate": record, "retired": []}},
+        "expires_at": 3000,
+        "issued_at": 900,
+        "revision": 1,
+    }
+
+    class Operator:
+        head = "original"
+        state = original
+        published = 0
+
+        def load(self, **kwargs):
+            return (
+                self.head,
+                copy.deepcopy(self.state),
+                None,
+                {
+                    "bh": {
+                        "valid_until": 3000,
+                        "config_revision": "config",
+                        "requires": {"arch": "x86_64"},
+                    },
+                },
+            )
+
+        def evidence(self, *args, **kwargs):
+            return None, frame, [(1, "signed", 1, facts.observation.lease)]
+
+        def publish(self, state, *, operator_key, expected_revision, **kwargs):
+            if operator_key != "operator" or expected_revision != self.head:
+                raise ControlPlaneError("operator permission/CAS denied")
+            self.published += 1
+            self.state, self.head = state, "new-revision"
+
+    operator = Operator()
+    plane = SqlControlPlane.__new__(SqlControlPlane)
+    plane.clock = lambda: 1000
+    plane._operator = lambda: operator
+    plane._operator_deadline = lambda: 999999999
+    options = dict(
+        expected="original",
+        expected_host_id="host",
+        expected_release=frame.release.digest,
+        operator_key="operator",
+        confirm=True,
+        emergency_prefix="bh",
+        emergency_reason="repair",
+        execution_digest="sha256:" + "3" * 64,
+    )
+    for changes in (
+        {"expected": "stale"},
+        {"expected_host_id": "other"},
+        {"expected_release": "wrong"},
+        {"operator_key": "frame"},
+        {"operator_key": ""},
+        {"confirm": False},
+        {"emergency_prefix": "wrong"},
+    ):
+        with pytest.raises(ControlPlaneError):
+            plane.lifecycle("emergency-admit", "frame", "apply", **{**options, **changes})
+        assert operator.published == 0
+    result = plane.lifecycle("emergency-admit", "frame", "apply", **options)
+    assert operator.published == 1
+    assert result["state"] == "active"
+    assert result["emergency"]["review_required"] is True
+    assert operator.state["frames"]["frame"]["candidate"] is None
+    options["expected"] = "new-revision"
+    result = plane.lifecycle("emergency-revoke", "frame", "apply", **options)
+    assert result["emergency"]["status"] == "revoked"
+    with pytest.raises(ControlPlaneError, match="complete trusted evidence"):
+        plane.lifecycle("admit", "frame", "apply", **options)
+    fresh = facts.observation.lease.model_copy(
+        update={"conformance": candidate[1].observation.lease.conformance}
+    )
+    operator.evidence = lambda *args, **kwargs: (
+        None,
+        frame,
+        [(sequence, "signed", 999, fresh) for sequence in (3, 2, 1)],
+    )
+    result = plane.lifecycle("admit", "frame", "apply", **options)
+    assert result["emergency"]["review_required"] is False
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [None, "expired", "overlong-lease", "wrong-hive", "cordoned", "quarantined", "release"],
+)
+def test_git_receive_boundary_enforces_emergency_scope_ttl_and_release(
+    emergency_frame, monkeypatch, failure
+):
+    import copy
+
+    from beadhive import hq_authority_guard as receive
+    from beadhive.host_lease_contracts import now_stamp
+
+    frame, facts, template = emergency_frame
+    record = copy.deepcopy(template)
+    record["receipt"] = {
+        "lease": facts.observation.lease.model_dump(mode="json", exclude_none=True),
+        "sha": "beat",
+        "first_seen": 1,
+        "registration": frame.model_dump(mode="json", exclude_none=True),
+    }
+    state = {"frames": {"frame": {"active": record, "candidate": None, "retired": []}}}
+    envelope = {
+        "domain": "beadhive-frame-hive-lease-v2",
+        "authority_revision": "head",
+        "expected_lease_sha": "",
+        "operation": "adopt",
+        "prefix": "bh",
+        "authority": copy.deepcopy(record["authority"]),
+        "lease": {
+            "host_id": "host",
+            "label": "fixture",
+            "epoch": 1,
+            "adopted_at": now_stamp(1000),
+            "expires_at": now_stamp(1100),
+        },
+    }
+    policy = {
+        "hive_policies": {
+            "bh": {
+                "config_revision": "config",
+                "config_head": "head",
+                "valid_until": 3000,
+                "requires": {"arch": "x86_64"},
+            }
+        }
+    }
+    at = 1600 if failure == "expired" else 1000
+    if failure == "overlong-lease":
+        envelope["lease"]["expires_at"] = now_stamp(1700)
+    elif failure == "wrong-hive":
+        record["emergency"]["prefix"] = "other"
+    elif failure == "cordoned":
+        record["cordoned"] = True
+    elif failure == "quarantined":
+        record["state"] = "quarantined"
+    elif failure == "release":
+        record["receipt"]["lease"]["release"]["digest"] = "sha256:" + "9" * 64
+    monkeypatch.setattr(receive.time, "time", lambda: at)
+    monkeypatch.setattr(receive, "parentless_payload", lambda *args: envelope)
+    monkeypatch.setattr(receive, "signed_by", lambda *args: None)
+    monkeypatch.setattr(receive, "read_config_state", lambda *args: {})
+    monkeypatch.setattr(receive, "config_beadyard_id", lambda *args: frame.beadyard_id)
+    monkeypatch.setattr(receive, "git", lambda *args: "beat" if args[0] == "rev-parse" else "head")
+    if failure:
+        with pytest.raises(ValueError):
+            receive.enforce_hive_lease(
+                receive.ZERO, "new", "refs/bh/lease/bh", state, policy, "head"
+            )
+    else:
+        receive.enforce_hive_lease(receive.ZERO, "new", "refs/bh/lease/bh", state, policy, "head")
+
+
+@pytest.mark.parametrize("missing", ["registration", "heartbeat"])
+def test_emergency_requires_both_trusted_identity_evidence(emergency_frame, missing):
+    from beadhive import frame_emergency
+
+    frame, facts, record = emergency_frame
+    with pytest.raises(ValueError):
+        frame_emergency.authorize(
+            record,
+            prefix="bh",
+            reason="repair",
+            duration=600,
+            revision="original",
+            now=1000,
+            registration=None if missing == "registration" else frame,
+            beat=None if missing == "heartbeat" else facts.observation.lease,
+            execution_digest="sha256:" + "3" * 64,
+        )
+
+
+def test_emergency_commands_are_privileged_and_not_projected_to_mcp():
+    from beadhive.kernel.operations import operations
+
+    selected = [
+        operation
+        for operation in operations()
+        if operation.name in {"host.emergency-admit", "host.emergency-revoke"}
+    ]
+    assert len(selected) == 2
+    assert all(operation.privilege == "privileged" for operation in selected)
+    assert all(operation.constraints["hq_write"] for operation in selected)
+    assert all(operation.surfaces.get("mcp") is None for operation in selected)

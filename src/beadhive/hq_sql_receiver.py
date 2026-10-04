@@ -372,6 +372,16 @@ class SqlTrustedReceiver:
                     policy = policies[prefix]
                     if now >= policy["valid_until"]:
                         raise ReceiverError("protected hive policy expired")
+                    emergency = guard.emergency_active(record, prefix, now)
+                    if guard.emergency_review_required(record) and not emergency:
+                        raise ReceiverError(
+                            "emergency authorization expired/revoked or out of scope"
+                        )
+                    if (
+                        emergency
+                        and _parse_stamp(lease.expires_at) > record["emergency"]["expires_at"]
+                    ):
+                        raise ReceiverError("hive lease exceeds emergency authorization lifetime")
                     if (
                         record["state"] != "active"
                         or record["cordoned"]
@@ -455,11 +465,16 @@ class SqlTrustedReceiver:
                         != (receipt[0].encode() if isinstance(receipt[0], str) else receipt[0])
                         or not (matching_beat or legacy_bridge)
                         or now < floor[2]
-                        or now - floor[2] >= beat.leaseDurationSeconds
+                        or (not emergency and now - floor[2] >= beat.leaseDurationSeconds)
                         or beat.release.model_dump() != record["desired"]["release"]
-                        or beat.conformance.status != "conformant"
-                        or beat.conformance.profile != record["desired"]["profile"]
-                        or any(check.status == "fail" for check in beat.conformance.checks)
+                        or (
+                            not emergency
+                            and (
+                                beat.conformance.status != "conformant"
+                                or beat.conformance.profile != record["desired"]["profile"]
+                                or any(check.status == "fail" for check in beat.conformance.checks)
+                            )
+                        )
                     ):
                         raise ReceiverError("hive lease requires fresh conformant receipt")
                     if operation == "adopt" and authority.get("beadyard_id") is not None:
@@ -494,6 +509,8 @@ class SqlTrustedReceiver:
                             if len(former) != 1:
                                 raise ReceiverError("incumbent incarnation unavailable")
                             incumbent = former[0]
+                            if guard.emergency_active(incumbent, prefix, now):
+                                raise ReceiverError("live emergency incumbent is not evictable")
                             if incumbent["state"] not in {"retired", "quarantined"}:
                                 former_authority = incumbent["authority"]
                                 cursor.execute(
@@ -589,6 +606,10 @@ class SqlTrustedReceiver:
                 )
                 crossed_commit = True
                 connection.commit()
+                if operation != "release" and guard.emergency_active(record, prefix, now):
+                    from .frame_emergency import audit
+
+                    audit("lease-use", record, prefix=prefix, revision=head)
                 return revision
         except ReceiverError:
             if not crossed_commit:
