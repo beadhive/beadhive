@@ -30,45 +30,12 @@ from .hq_framelease_contracts import (
 from .hq_framelease_contracts import (
     HeartbeatConformance as HeartbeatConformance,
 )
+from .hq_framelease_contracts import (
+    ObservationAuthority as ObservationAuthority,
+)
 from .run import run
 
 MAX_BYTES = 65536
-
-
-@dataclass(frozen=True)
-class ObservationAuthority:
-    frame_id: str
-    holder_identity: str
-    instance_ref: str
-    key_fingerprint: str
-    epoch: int
-    audience: str
-    config_revision: str
-    candidate_expires_at: float | None = None
-    beadyard_id: str | None = None
-
-    def __post_init__(self):
-        for value in (
-            self.frame_id,
-            self.holder_identity,
-            self.instance_ref,
-            self.key_fingerprint,
-            self.audience,
-            self.config_revision,
-        ):
-            if not isinstance(value, str) or not value:
-                raise HeartbeatError("authority identity fields must be nonempty strings")
-        if type(self.epoch) is not int or self.epoch < 0:
-            raise HeartbeatError("authority epoch must be a nonnegative integer")
-        if self.candidate_expires_at is not None and (
-            type(self.candidate_expires_at) not in (int, float)
-            or not math.isfinite(self.candidate_expires_at)
-        ):
-            raise HeartbeatError("candidate expiry must be finite")
-        if self.beadyard_id is not None:
-            from .beadyard_identity import parse_id
-
-            parse_id(self.beadyard_id)
 
 
 @dataclass(frozen=True)
