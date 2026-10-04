@@ -388,3 +388,149 @@ def test_incomplete_credential_reference_fails_before_broker(tls_mode):
             RefusingBroker(),
             deadline=time.monotonic() + 1,
         )
+
+
+def _mac_mise_fixture(monkeypatch, tmp_path):
+    import pwd
+    from types import SimpleNamespace
+
+    from beadhive import hq_sql_transport as transport
+
+    home = tmp_path / "account"
+    binary = home / ".local/share/mise/installs/fnox/1.36.0/fnox"
+    binary.parent.mkdir(parents=True)
+    # Fixtures must obey the same permissions as a protected account installation.
+    for directory in (home, *binary.parents):
+        if directory == tmp_path:
+            break
+        directory.chmod(0o755)
+    binary.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = --version ]; then printf 'fnox 1.36.0\\n'; exit 0; fi\n"
+        "printf 'fixture-password\\n'\n"
+    )
+    binary.chmod(0o755)
+    monkeypatch.setattr(transport.sys, "platform", "darwin")
+    monkeypatch.setattr(transport.shutil, "which", lambda name, *, path: None)
+    monkeypatch.setattr(pwd, "getpwuid", lambda uid: SimpleNamespace(pw_dir=str(home)))
+    monkeypatch.setenv("HOME", str(tmp_path / "untrusted-home"))
+    monkeypatch.setenv("MISE_DATA_DIR", str(tmp_path / "untrusted-mise"))
+    monkeypatch.setenv("PATH", str(tmp_path / "untrusted-shims"))
+    return home, binary
+
+
+def test_fnox_resolves_protected_mac_mise_without_path_or_environment_overrides(
+    monkeypatch, tmp_path
+):
+    _, binary = _mac_mise_fixture(monkeypatch, tmp_path)
+    broker = FnoxBroker()
+    assert broker.binary == str(binary)
+    reference = {"config_path": str(tmp_path / "fnox.toml"), "profile": "test", "key": "SQL"}
+    assert broker.get(reference, deadline=time.monotonic() + 2) == "fixture-password"
+
+
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+@pytest.mark.parametrize("directory", ["/usr/local/bin", "/usr/bin", "/run/current-system/sw/bin"])
+def test_fnox_preserves_fixed_administrator_and_nixos_lookup(monkeypatch, platform, directory):
+    from beadhive import hq_sql_transport as transport
+
+    monkeypatch.setattr(transport.sys, "platform", platform)
+
+    def which(name, *, path):
+        assert name == "fnox"
+        assert directory in path.split(":")
+        assert "shims" not in path
+        return directory + "/fnox"
+
+    monkeypatch.setattr(transport.shutil, "which", which)
+    assert FnoxBroker().binary == directory + "/fnox"
+
+
+def test_fnox_mac_homebrew_lookup(monkeypatch):
+    from beadhive import hq_sql_transport as transport
+
+    monkeypatch.setattr(transport.sys, "platform", "darwin")
+
+    def which(name, *, path):
+        assert "/opt/homebrew/bin" in path.split(":")
+        return "/opt/homebrew/bin/fnox"
+
+    monkeypatch.setattr(transport.shutil, "which", which)
+    assert FnoxBroker().binary == "/opt/homebrew/bin/fnox"
+
+
+@pytest.mark.parametrize("component", ["home", ".local", "mise", "version", "binary"])
+@pytest.mark.parametrize("mode", [0o775, 0o757])
+def test_fnox_rejects_writable_mise_components(monkeypatch, tmp_path, component, mode):
+    home, binary = _mac_mise_fixture(monkeypatch, tmp_path)
+    paths = {
+        "home": home,
+        ".local": home / ".local",
+        "mise": home / ".local/share/mise",
+        "version": binary.parent,
+        "binary": binary,
+    }
+    paths[component].chmod(mode)
+    assert FnoxBroker().binary is None
+
+
+def test_fnox_rejects_foreign_owned_mise_component(monkeypatch, tmp_path):
+    import os
+    from types import SimpleNamespace
+
+    home, _ = _mac_mise_fixture(monkeypatch, tmp_path)
+    original = type(home).lstat
+
+    def lstat(path):
+        info = original(path)
+        if path == home / ".local/share/mise":
+            return SimpleNamespace(st_mode=info.st_mode, st_uid=os.getuid() + 10000)
+        return info
+
+    monkeypatch.setattr(type(home), "lstat", lstat)
+    assert FnoxBroker().binary is None
+
+
+@pytest.mark.parametrize("directory", [False, True])
+def test_fnox_rejects_mise_symlink_escape(monkeypatch, tmp_path, directory):
+    _, binary = _mac_mise_fixture(monkeypatch, tmp_path)
+    if directory:
+        original = binary.parent
+        destination = tmp_path / "outside-version"
+        original.rename(destination)
+    else:
+        original = binary
+        destination = tmp_path / "outside-fnox"
+        original.rename(destination)
+    original.symlink_to(destination, target_is_directory=directory)
+    assert FnoxBroker().binary is None
+
+
+@pytest.mark.parametrize("failure", ["missing", "not-executable", "unsupported"])
+def test_fnox_mise_failure_is_actionable_and_secret_safe(monkeypatch, tmp_path, failure):
+    _, binary = _mac_mise_fixture(monkeypatch, tmp_path)
+    if failure == "missing":
+        binary.unlink()
+    elif failure == "not-executable":
+        binary.chmod(0o644)
+    else:
+        binary.write_text("#!/bin/sh\nprintf 'fnox 1.99.0 secret-canary\\n'\n")
+    broker = FnoxBroker()
+    reference = {"config_path": str(tmp_path / "fnox.toml"), "profile": "test", "key": "SQL"}
+    with pytest.raises(SqlTransportError) as error:
+        broker.get(reference, deadline=time.monotonic() + 2)
+    message = str(error.value)
+    assert "secret-canary" not in message
+    assert str(tmp_path) not in message
+    if failure != "unsupported":
+        assert "mise install fnox@1.36.0" in message
+    else:
+        assert message == "unsupported fnox broker version"
+
+
+def test_fnox_does_not_discover_user_mise_on_linux(monkeypatch, tmp_path):
+    from beadhive import hq_sql_transport as transport
+
+    _mac_mise_fixture(monkeypatch, tmp_path)
+    monkeypatch.setattr(transport.sys, "platform", "linux")
+    assert FnoxBroker().binary is None

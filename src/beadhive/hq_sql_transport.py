@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import importlib.metadata
 import ipaddress
+import os
 import re
 import selectors
 import shutil
 import socket
 import ssl
+import stat
 import subprocess
 import sys
 import threading
@@ -99,19 +101,68 @@ def _capture_limited(args, *, deadline, environment, limit):
             process.wait()
 
 
+def _fnox_binary() -> str | None:
+    """Resolve fixed administrator paths, then a protected macOS mise installation.
+
+    Never invoke mise or its shims: they can select repository-controlled tools.
+    The user installation uses the account database, not HOME or mise overrides.
+    """
+    directories = "/run/current-system/sw/bin:/usr/local/bin:/usr/bin"
+    if sys.platform == "darwin":
+        directories += ":/opt/homebrew/bin"
+    binary = shutil.which("fnox", path=directories)
+    if binary or sys.platform != "darwin":
+        return binary
+    import pwd
+
+    try:
+        uid = os.getuid()
+        home = Path(pwd.getpwuid(uid).pw_dir)
+        if not home.is_absolute():
+            return None
+        candidate = home / ".local/share/mise/installs/fnox/1.36.0/fnox"
+        # Protect every component below the account home, including the home itself.
+        # Exact-version directories and the binary must not be alias/escape symlinks.
+        directories = [home]
+        for component in candidate.relative_to(home).parts[:-1]:
+            directories.append(directories[-1] / component)
+        for directory in directories:
+            info = directory.lstat()
+            if (
+                not stat.S_ISDIR(info.st_mode)
+                or info.st_uid not in (0, uid)
+                or info.st_mode & 0o022
+            ):
+                return None
+        info = candidate.lstat()
+        if (
+            stat.S_ISREG(info.st_mode)
+            and info.st_uid in (0, uid)
+            and not info.st_mode & 0o022
+            and os.access(candidate, os.X_OK)
+        ):
+            return str(candidate)
+    except (OSError, KeyError):
+        pass
+    return None
+
+
 class FnoxBroker:
     """Fixed fnox 1.36.0 noninteractive get contract; no configured command."""
 
     def __init__(self, binary: str | None = None):
         # Injection is solely for a controlled test fixture. Production only resolves
-        # the named binary from administrator installation directories.
-        self.binary = binary or shutil.which(
-            "fnox", path="/run/current-system/sw/bin:/usr/local/bin:/usr/bin"
-        )
+        # the named binary from fixed administrator or protected user directories.
+        self.binary = binary or _fnox_binary()
 
     def get(self, reference: dict, *, deadline: float) -> str:
         if not self.binary:
-            raise SqlTransportError("fnox credential broker unavailable")
+            raise SqlTransportError(
+                "fnox credential broker unavailable; install fnox 1.36.0 in an "
+                "administrator binary directory or, on macOS, run mise install fnox@1.36.0 "
+                "in the default account-home installation with no symlinks or "
+                "group/other-writable components"
+            )
         path, profile, key = (
             reference.get("config_path"),
             reference.get("profile"),

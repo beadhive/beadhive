@@ -112,6 +112,20 @@ cross-database transactions require matching endpoint and transport policy for t
 config and runtime bindings so a plaintext runtime connection cannot bypass a required
 config-reader TLS policy. See the [migration examples](design/dolt-hq-config-migration-runbook.md#host-local-sql-transport).
 
+The SQL credential broker requires **fnox 1.36.0**. It searches the fixed administrator
+directories `/run/current-system/sw/bin`, `/usr/local/bin`, and `/usr/bin`, plus
+`/opt/homebrew/bin` on macOS. On macOS it also supports `mise install fnox@1.36.0` in
+the [default mise installation directory](https://mise.jdx.dev/directories.html):
+`~/.local/share/mise/installs/fnox/1.36.0/fnox`. This removes the need for a manual
+`/usr/local/bin/fnox` symlink. The account database determines the home directory;
+`HOME`, `PATH`, mise/XDG directory overrides, repository configuration, and mise shims
+do not select the broker. The account home and every installation path component must
+be owned by the account or root, have no group/other write permission, and contain no
+symlinks. The binary must be a regular executable file. Custom mise layouts require
+an administrator installation in one of the fixed directories. Version checking and
+credential retrieval retain the shared deadline, noninteractive invocation, bounded
+output, and redacted failures.
+
 `bh config schema --json` lists the public config rows. The current authoritative generated
 package schema is
 [`config-v1.schema.json`](../src/beadhive/schemas/contracts/v2.0.0/artifacts/config-v1.schema.json).
