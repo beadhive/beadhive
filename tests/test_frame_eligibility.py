@@ -527,7 +527,7 @@ def test_bd_passthrough_uses_authenticated_signed_holder_without_cached_lease(
 def emergency_frame(candidate, monkeypatch):
     import copy
 
-    from beadhive import frame_emergency, heartbeat_report
+    from beadhive import frame_emergency, release_measurement
 
     frame, facts = candidate
     owner = str(uuid4())
@@ -572,7 +572,7 @@ def emergency_frame(candidate, monkeypatch):
         execution_digest="sha256:" + "3" * 64,
     )
     monkeypatch.setattr(
-        heartbeat_report,
+        release_measurement,
         "installed_release",
         lambda: {
             "id": "executing",
@@ -625,7 +625,7 @@ def test_emergency_admission_waives_only_staleness_and_conformance(emergency_fra
 def test_emergency_does_not_waive_other_security_predicates(emergency_frame, failure, monkeypatch):
     import copy
 
-    from beadhive import heartbeat_report
+    from beadhive import release_measurement
 
     frame, facts, _ = emergency_frame
     facts = replace(facts, desired=copy.deepcopy(facts.desired))
@@ -653,7 +653,9 @@ def test_emergency_does_not_waive_other_security_predicates(emergency_frame, fai
     elif failure == "hive":
         hive["requires"] = {"arch": "aarch64"}
     elif failure == "execution-digest":
-        monkeypatch.setattr(heartbeat_report, "installed_release", lambda: {"digest": "different"})
+        monkeypatch.setattr(
+            release_measurement, "installed_release", lambda: {"digest": "different"}
+        )
     else:
         update = {
             "key": {"key_id": "wrong"},
@@ -753,12 +755,12 @@ def test_emergency_requires_reason_scope_and_execution_digest(
 
 
 def test_direct_emergency_lease_proposal_checks_executing_bytes(emergency_frame, monkeypatch):
-    from beadhive import frame_emergency, heartbeat_report
+    from beadhive import frame_emergency, release_measurement
     from beadhive.host_lease_contracts import HostLease, now_stamp
 
     _, _, record = emergency_frame
     lease = HostLease("host", "fixture", 1, now_stamp(1000), now_stamp(1100))
-    monkeypatch.setattr(heartbeat_report, "installed_release", lambda: {"digest": "wrong"})
+    monkeypatch.setattr(release_measurement, "installed_release", lambda: {"digest": "wrong"})
     with pytest.raises(ValueError):
         frame_emergency.cap_lease(record, "bh", lease, 1000)
 

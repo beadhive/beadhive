@@ -87,14 +87,13 @@ from . import (
     registry,
 )
 from . import fleet_roster as hosts
+from .heartbeat_report import register as _register_heartbeat_reports
 
 app = typer.Typer(
     no_args_is_help=True,
     help=f"{config.BINARY_ALIAS} fleet roster: this host's manifest in Factory HQ.",
 )
 
-
-from .heartbeat_report import register as _register_heartbeat_reports
 
 _register_heartbeat_reports(app)
 

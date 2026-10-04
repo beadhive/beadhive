@@ -1,3 +1,4 @@
+import subprocess
 from io import StringIO
 from types import SimpleNamespace
 
@@ -5,6 +6,7 @@ import pytest
 from ruamel.yaml import YAML
 
 from beadhive import heartbeat_report as report
+from beadhive import release_measurement
 from beadhive.hq_framelease_contracts import HeartbeatError
 
 
@@ -104,10 +106,10 @@ def test_capacity_requires_committed_capacity(plane):
 
 def test_empty_installed_distribution_fails(monkeypatch):
     monkeypatch.setattr(
-        report.importlib.metadata, "distribution", lambda _: SimpleNamespace(files=[])
+        release_measurement.importlib.metadata, "distribution", lambda _: SimpleNamespace(files=[])
     )
     with pytest.raises(HeartbeatError, match="editable"):
-        report.installed_release()
+        release_measurement.installed_release()
 
 
 def test_send_remeasures_and_only_publishes(plane, monkeypatch):
@@ -144,11 +146,16 @@ def test_installed_measurement_matches_original_algorithm(monkeypatch, tmp_path)
         version="0.21.3",
         locate_file=lambda item: tmp_path / item,
     )
-    monkeypatch.setattr(report.importlib.metadata, "distribution", lambda _: distribution)
+    monkeypatch.setattr(
+        release_measurement.importlib.metadata, "distribution", lambda _: distribution
+    )
     digest = hashlib.sha256()
     for name in sorted(files[:2]):
         digest.update(name.encode() + b"\0" + hashlib.sha256(name.encode()).digest())
-    assert report.installed_release() == {"id": "0.21.3", "digest": "sha256:" + digest.hexdigest()}
+    assert release_measurement.installed_release() == {
+        "id": "0.21.3",
+        "digest": "sha256:" + digest.hexdigest(),
+    }
 
 
 def test_host_validation_uses_effective_fleet_schema_version(monkeypatch):
@@ -162,3 +169,48 @@ def test_host_validation_uses_effective_fleet_schema_version(monkeypatch):
     )
     assert report.config_valid()
     assert checked == ["raw-host"]
+
+
+def _stub_hive(monkeypatch, tmp_path, *, ready=True, ping=None, calls=None):
+    """Point ``hive_ready`` at an existing hive dir; capture every bd invocation via ``bd.run``."""
+    from beadhive import bd, hive_ready
+
+    monkeypatch.setattr(report.registry, "hive_dir", lambda _entry: tmp_path)
+    monkeypatch.setattr(hive_ready, "probe_readiness", lambda **_kw: SimpleNamespace(ready=ready))
+
+    def run(args, cwd, actor="", capture=False, text_input=None, **kwargs):
+        if calls is not None:
+            calls.append((list(args), cwd, capture, kwargs.get("timeout")))
+        if isinstance(ping, BaseException):
+            raise ping
+        return ping
+
+    monkeypatch.setattr(bd, "run", run)
+
+
+def _ping(returncode=0, stdout='{"status": "ok"}'):
+    return subprocess.CompletedProcess(["bd"], returncode, stdout, "")
+
+
+def test_hive_ready_pings_database_through_the_bd_package_route(monkeypatch, tmp_path):
+    calls = []
+    _stub_hive(monkeypatch, tmp_path, ping=_ping(), calls=calls)
+    assert report.hive_ready({}) is True
+    assert calls == [(["ping", "--json"], tmp_path, True, 20)]
+
+
+@pytest.mark.parametrize(
+    "ping",
+    [_ping(1, ""), _ping(124, ""), _ping(0, '{"status": "error"}')],
+    ids=["unreachable", "timed-out", "not-ok"],
+)
+def test_hive_ready_is_false_when_the_database_is_unreachable(monkeypatch, tmp_path, ping):
+    _stub_hive(monkeypatch, tmp_path, ping=ping)
+    assert report.hive_ready({}) is False
+
+
+def test_hive_ready_skips_the_ping_when_not_ready(monkeypatch, tmp_path):
+    calls = []
+    _stub_hive(monkeypatch, tmp_path, ready=False, ping=_ping(), calls=calls)
+    assert report.hive_ready({}) is False
+    assert calls == []

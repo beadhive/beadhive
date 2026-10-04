@@ -18,6 +18,7 @@ from .hq_sql_runtime_schema import inbox_table
 from .hq_sql_signatures import (
     canonical,
     sign_authority,
+    sql_principal,
     verify_authority,
     verify_heartbeat,
 )
@@ -59,11 +60,7 @@ class SqlRuntimeOperator:
     @staticmethod
     def principal_for(authority) -> str:
         """Stable SQL account for one incarnation across its HQ-ID binding."""
-        from .hq_authority_payload import authority_payload
-
-        identity = authority_payload(authority)
-        identity.pop("beadyard_id", None)
-        return "frame_" + hashlib.sha256(canonical(identity)).hexdigest()[:20]
+        return sql_principal(authority)
 
     def _identity(self, cursor):
         binding = self.settings["authority_writer"]
