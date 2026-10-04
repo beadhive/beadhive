@@ -94,6 +94,11 @@ app = typer.Typer(
 )
 
 
+from .heartbeat_report import register as _register_heartbeat_reports
+
+_register_heartbeat_reports(app)
+
+
 def daemon_setup_advisories() -> list[dict[str, str]]:
     """Supply daemon diagnostics to setup without reversing setup's import boundary."""
     from . import daemon_supervisor

@@ -132,6 +132,8 @@ host dispatch runs|hive:string:o,as_json:boolean:o
 host dispatch status|hive:string:o,all_hives:boolean:o,as_json:boolean:o
 host eligible|identity:string:o,hive:string:o,as_json:boolean:o
 host heartbeat|record:string:r,as_json:boolean:o
+host heartbeat-report|free_sessions:integer:o
+host heartbeat-send|free_sessions:integer:o
 host admit|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o
 host cordon|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o
 host drain|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o
