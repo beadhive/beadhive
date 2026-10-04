@@ -1,3 +1,4 @@
+import subprocess
 from io import StringIO
 from types import SimpleNamespace
 
@@ -168,3 +169,48 @@ def test_host_validation_uses_effective_fleet_schema_version(monkeypatch):
     )
     assert report.config_valid()
     assert checked == ["raw-host"]
+
+
+def _stub_hive(monkeypatch, tmp_path, *, ready=True, ping=None, calls=None):
+    """Point ``hive_ready`` at an existing hive dir; capture every bd invocation via ``bd.run``."""
+    from beadhive import bd, hive_ready
+
+    monkeypatch.setattr(report.registry, "hive_dir", lambda _entry: tmp_path)
+    monkeypatch.setattr(hive_ready, "probe_readiness", lambda **_kw: SimpleNamespace(ready=ready))
+
+    def run(args, cwd, actor="", capture=False, text_input=None, **kwargs):
+        if calls is not None:
+            calls.append((list(args), cwd, capture, kwargs.get("timeout")))
+        if isinstance(ping, BaseException):
+            raise ping
+        return ping
+
+    monkeypatch.setattr(bd, "run", run)
+
+
+def _ping(returncode=0, stdout='{"status": "ok"}'):
+    return subprocess.CompletedProcess(["bd"], returncode, stdout, "")
+
+
+def test_hive_ready_pings_database_through_the_bd_package_route(monkeypatch, tmp_path):
+    calls = []
+    _stub_hive(monkeypatch, tmp_path, ping=_ping(), calls=calls)
+    assert report.hive_ready({}) is True
+    assert calls == [(["ping", "--json"], tmp_path, True, 20)]
+
+
+@pytest.mark.parametrize(
+    "ping",
+    [_ping(1, ""), _ping(124, ""), _ping(0, '{"status": "error"}')],
+    ids=["unreachable", "timed-out", "not-ok"],
+)
+def test_hive_ready_is_false_when_the_database_is_unreachable(monkeypatch, tmp_path, ping):
+    _stub_hive(monkeypatch, tmp_path, ping=ping)
+    assert report.hive_ready({}) is False
+
+
+def test_hive_ready_skips_the_ping_when_not_ready(monkeypatch, tmp_path):
+    calls = []
+    _stub_hive(monkeypatch, tmp_path, ready=False, ping=_ping(), calls=calls)
+    assert report.hive_ready({}) is False
+    assert calls == []

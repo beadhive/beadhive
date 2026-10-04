@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import subprocess
 from datetime import UTC, datetime
 
 import typer
@@ -28,19 +27,13 @@ def config_valid() -> bool:
 
 def hive_ready(entry: dict) -> bool:
     """Measure readiness and database reachability without retaining command output."""
+    from . import bd
     from .hive_ready import probe_readiness
 
     directory = registry.hive_dir(entry)
     if not directory.is_dir() or not probe_readiness(cwd=directory).ready:
         return False
-    result = subprocess.run(
-        ["bd", "ping", "--json"],
-        cwd=directory,
-        capture_output=True,
-        text=True,
-        timeout=20,
-        check=False,
-    )
+    result = bd.routes(directory).database_ping(timeout=20)
     return result.returncode == 0 and json.loads(result.stdout).get("status") == "ok"
 
 
