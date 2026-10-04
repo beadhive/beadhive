@@ -1,0 +1,241 @@
+epic:
+  title: 'spike(fleet): per-hive writer partitioning with in-data epoch fencing, receiver removal'
+  tag: spike
+  description: |
+    Beadhive partitions hive writes by a primary (host lease in HQ) and a writer epoch fence
+    (refs/bh/epoch beside refs/dolt/data). The fence cannot be made atomic with bd's data push,
+    raw bd push and bd auto-push bypass it, write safety depends on wall-clock lease expiry, and
+    frame liveness depends on a separately deployed trusted receiver whose heartbeat path embeds
+    a ~210 s conformance measurement against a 300 s TTL.
+
+    Proposal: docs/design/hive-writer-partitioning-proposal.md. Keep per-hive partitioning, move
+    the fencing token into each hive's Dolt data (a bh_writer row enforced by the remote's
+    non-fast-forward rejection plus a local write-guard trigger), make safety clock-independent
+    (time only drives failover), and replace the trusted receiver with server-timed per-frame
+    session rows, decoupled conformance evidence, and read-time eligibility.
+
+    This molecule produces evidence, a migration plan and a decision only. Test-only harness and
+    prototype code under tests/ or docs/spikes/artifacts is in scope; no product code ships.
+  design: |
+    One fault-injection fixture is built first and reused by the fencing, write-guard and
+    end-to-end spikes. Placement and liveness spikes run in parallel. The migration spike maps
+    every existing module to keep/narrow/replace/delete once mechanism verdicts exist. The
+    decision bead writes the ADR amending multi-host-model-adr.md Amendment 1 and the bh-v0k3i
+    binding amendment of frame-dolt-server-hq-mode-adr.md, then replans into an implementation
+    molecule on GO.
+
+    Fixture constraints: tests/conftest.py stays the only conftest
+    (docs/TEST-FIXTURE-OWNERSHIP.md); processes via harness.processes.process_context
+    (docs/TEST_PROCESS_POLICY.md); durable bd store tests marked integration + dolt_server.
+issues:
+- handle: fixture
+  title: 'Spike: build a multi-frame Dolt fault-injection fixture for writer-fencing scenarios'
+  type: task
+  tag: spike
+  complexity: COMPLEX
+  priority: 1
+  component: fleet
+  description: |
+    Answer: can a deterministic, hermetic test fixture simulate N frames (each with its own Dolt
+    replica or shared-server sandbox), one shared hive remote, and an HQ placement authority, with
+    controllable network partition, process kill, and interleaving of push/adopt steps?
+    Every other mechanism spike depends on this harness to produce evidence rather than argument.
+  design: |
+    Compose existing parts: stateful_fixtures._bound_concurrent_dolt_servers and
+    _sandbox_shared_server, file:// bare remotes as in test_host_fence_int.py, the World harness
+    (tests/harness/world.py) for identities/keys, and harness.processes.process_context for
+    per-frame processes. Partition = make the remote path unreachable per frame (permissions or
+    remote URL swap); interleaving = explicit barriers between adopt/push steps rather than
+    sleeps. Also probe whether a local Dolt remotesapi remote can be added cheaply so the git+ssh
+    vs remotesapi CAS question in the fencing spike is testable. Record runtime per scenario so
+    the suite can live under integration without blowing the gate budget.
+  acceptance: |
+    - docs/spikes/<bead-id>-writer-fencing-fixture.md exists with Question/Method/Evidence/Verdict/Recommendation.
+    - A test-only fixture exists under tests/harness (no new conftest) that starts >=2 frame replicas, one shared remote, and an HQ placement stand-in, all hermetic.
+    - The fixture can partition one frame from the remote, kill a frame process, and deterministically order two frames' push/adopt steps with barriers; each capability has one smoke test marked integration + dolt_server.
+    - Per-scenario wall time is measured and reported; the verdict states whether the suite fits the integration gate.
+    - NO-GO names the missing capability (e.g. remotesapi, partition) and the cheapest substitute.
+    - No product code is changed.
+- handle: fencing
+  title: 'Spike: prove in-data epoch fencing (bh_writer row + non-fast-forward push) fences stale writers'
+  type: task
+  tag: spike
+  complexity: REASONING
+  priority: 1
+  component: fleet
+  deps: [fixture]
+  description: |
+    Answer: does committing {frame, epoch} into the hive's Dolt main, combined with the remote's
+    non-fast-forward rejection, fence a stale writer on every push path (managed push, raw
+    bd dolt push, bd auto-push, bd sync) and every remote type in use, without the CAS-to-push race
+    that host_fence.py documents?
+  design: |
+    Prototype adopt as: CAS placement, pull, commit bh_writer epoch+1, push, retry on non-FF only
+    while placement is still ours. Run proposal scenarios 1-6 in the fixture. Verify for git+ssh-shaped
+    (file:// bare git, refs/dolt/data), file:// Dolt, and remotesapi (if the fixture GO'd it)
+    that no bd code path force-pushes. Check merge behaviour of a one-sided bh_writer change and
+    a both-changed conflict; check hive_sync --strategy ours|theirs and bd sync cannot resolve
+    bh_writer in a stale writer's favour, and what guard is needed if they can. Determine what
+    happens to commits a partitioned old writer made before learning the new epoch, and whether an
+    orphan-branch diversion (frame/<id>/orphan) preserves them.
+  acceptance: |
+    - docs/spikes/<bead-id>-in-data-epoch-fencing.md exists with the five sections.
+    - Scenarios 1-6 from the proposal's validation table run in the fixture; each records remote head, bh_writer row and outcome before/after.
+    - Evidence states, per remote type, whether non-FF rejection is a true CAS and whether any bd path (push, auto-push, sync) can force.
+    - Evidence states whether bh_writer can be reverted by bd sync, bd dolt pull, or hive_sync ours/theirs, with the minimal guard if so.
+    - Late writes from a partitioned old writer are shown to be either rejected or preserved on an orphan branch; none land on main after the epoch bump.
+    - Verdict explicitly compares against the current refs/bh/epoch reserve/verify race and raw-push bypass.
+- handle: guard
+  title: 'Spike: local write guard (Dolt trigger) and non-primary write paths (forward vs branch) with bd claims'
+  type: task
+  tag: spike
+  complexity: REASONING
+  priority: 1
+  component: fleet
+  deps: [fixture]
+  description: |
+    Answer: can a Dolt trigger on bead tables refuse main writes on any replica that is not
+    bh_writer.frame (raw bd included) without blocking the merge/pull that delivers an epoch bump,
+    and which write path for non-primary frames - forward to the primary's Dolt server, or commit to
+    frame/<id> and let the primary merge - is viable with bd 1.3's claim/lease/reclaim semantics?
+  design: |
+    Prototype a node-local dolt_ignore'd identity table and a BEFORE INSERT/UPDATE/DELETE trigger
+    on issues/dependencies/labels/events gated on active_branch()='main'. Test whether triggers
+    fire on dolt merge, bd dolt pull, bd sync, bd import, and bd's migrations; test that non-main
+    branches are unrestricted. For forward: point a second frame's bd at the primary's server and
+    load-test bd update --claim (gastownhall/beads#4657 on bd 1.3) plus work_next.claim_won's
+    read-back. For branch: push frame/<id>, merge on the primary, check child-ID allocation
+    (#4796) and label read-then-write (#5657) behaviour. Exercise bd heartbeat/reclaim on the
+    granting replica and reclaim --any-replica after a frame death (scenario 8 and 9 claim halves).
+  acceptance: |
+    - docs/spikes/<bead-id>-write-guard-and-nonprimary-writes.md exists with the five sections.
+    - Evidence states whether Dolt triggers fire on merge, pull, sync, import and migrations, with command output.
+    - A stale replica's raw bd write to main is shown refused after it pulls the epoch bump, and non-main writes still succeed.
+    - Forward and branch paths are each exercised; claim double-win rate under concurrency on bd 1.3 is measured for forward.
+    - Recommendation picks forward, branch, or both (per frame role) and names required upstream bd fixes, if any.
+- handle: placement
+  title: 'Spike: HQ placement CAS authority and clock-independent failover policy (git and dolt-server HQ)'
+  type: task
+  tag: spike
+  complexity: MEDIUM
+  priority: 1
+  component: hq
+  description: |
+    Answer: can hive placement {hive, frame, epoch} be held at one linearizable CAS point in both
+    HQ modes without the trusted receiver, and does a failover policy where time only triggers
+    reassignment (never write safety) behave correctly through HQ outage, slow frames, and racing
+    adopters?
+  design: |
+    git mode: reuse refs/bh/lease/<prefix> force-with-lease CAS (gitref.py), dropping expires_at
+    as a write gate. dolt-server mode: compare director-held authority credentials writing one
+    protected placement row vs a stored procedure callable by frame principals vs a frame-written
+    candidacy row decided by one director process; state what each trusts. Define failover_after
+    per host role (executor/transient/viewer) and how it relates to bd's reclaim invariants
+    (grace > sync interval, TTL > sync interval). Map host_adopt's fence-first/lease-second
+    ordering onto placement-first/bh_writer-second and its half-done recovery. Scenarios 4 and 7.
+  acceptance: |
+    - docs/spikes/<bead-id>-placement-authority-and-failover.md exists with the five sections.
+    - A CAS mechanism is identified for each HQ mode with its trust boundary stated; dolt-server mode does not require the trusted receiver.
+    - Racing adopters (scenario 4) and HQ unreachable longer than lease TTL (scenario 7) are exercised, in the fixture or a focused test.
+    - failover_after defaults per role are proposed and checked against bd reclaim invariants.
+    - The half-done adopt state (placement CAS'd, bh_writer not yet pushed) has a defined recovery that never yields two writers.
+- handle: liveness
+  title: 'Spike: replace the trusted receiver with server-timed session rows, decoupled evidence, read-time eligibility'
+  type: task
+  tag: spike
+  complexity: MEDIUM
+  priority: 2
+  component: hq
+  description: |
+    Answer: can frame liveness be a per-frame session row written under the frame's own SQL grant
+    with server NOW(), conformance be a separately scheduled evidence row, and frame_eligibility
+    compute eligibility at read time - removing SqlTrustedReceiver, inbox tables, receipts and
+    floors - without weakening the threat model it was built for?
+  design: |
+    Write the threat model the receiver defends (frame_dolt_server_hq_mode ADR bh-v0k3i) and test
+    each claim against "signing key and SQL credential co-reside on the frame". Prototype per-frame
+    session/evidence tables with Dolt table-level GRANTs on the pinned server used by
+    test_hq_sql_runtime_int.py; confirm a frame principal cannot write another frame's rows or
+    authority. Measure renewal latency; run scenario 10 (probe slower than session TTL). Decide
+    the git-HQ-mode answer: read-time verification of signed records vs scoping execution frames
+    to dolt-server HQ. Identify what audit/history is lost when receipts go and how to retain it.
+  acceptance: |
+    - docs/spikes/<bead-id>-receiver-removal-liveness.md exists with the five sections.
+    - The receiver's threat model is enumerated, and each threat is marked covered/not-covered by DB grants plus read-time checks.
+    - Per-frame grants are proven on the pinned Dolt server: cross-frame and authority writes are refused.
+    - Scenario 10 is exercised: a slow conformance probe does not expire the session; expired evidence alone blocks new execution.
+    - A git-HQ-mode position is stated with its cost.
+- handle: e2e
+  title: 'Spike: end-to-end scenario run of the composed writer-partitioning prototype'
+  type: task
+  tag: spike
+  complexity: REASONING
+  priority: 2
+  component: fleet
+  deps: [fencing, guard, placement]
+  description: |
+    Answer: composed together - placement CAS, in-data epoch, write guard, chosen non-primary
+    write path, failover - does the prototype pass the full validation table under fault
+    injection, with acceptable latency, and with no stale write ever reaching main?
+  design: |
+    Run all ten proposal scenarios in one suite against the composed prototype, plus a randomized
+    interleaving pass (seeded, reproducible) over adopt/push/partition/kill events with an
+    invariant checker: at most one frame's commits extend main per epoch; main's bh_writer epoch is
+    monotonic; no commit authored under epoch e lands after the bump to e+1 except via an explicit
+    orphan merge. Measure adopt latency, handoff downtime, and write latency for forward vs branch.
+  acceptance: |
+    - docs/spikes/<bead-id>-writer-partitioning-e2e.md exists with the five sections.
+    - All ten proposal scenarios pass or each failure is recorded with the exact step that admitted a stale write.
+    - A seeded randomized interleaving run of >=500 schedules completes with the invariant checker, and seeds of any violations are recorded.
+    - Adopt latency, handoff downtime and per-path write latency are reported.
+- handle: migration
+  title: 'Spike: migration map and cutover plan from host lease/epoch fence/receiver to the new model'
+  type: task
+  tag: spike
+  complexity: REASONING
+  priority: 2
+  component: fleet
+  deps: [fencing, guard, placement, liveness]
+  description: |
+    Answer: is there a safe, reversible path to migrate every hive and the live factory frame
+    (epoch 2, signed authority, SQL HQ) fully onto the new model, including mixed-version fleets,
+    and what exactly is kept, narrowed, replaced or deleted?
+  design: |
+    Map each of: host_lease.py, host_lease_contracts.py, host_fence.py (reserve/verify, fenced_push),
+    host_adopt.py, guard.py (guard_primary, guard_claim_epoch), claim_authority.py,
+    frame_eligibility.py, hq_frame_lease.py, hq_framelease_contracts.HeartbeatLease,
+    heartbeat_report.py, hq_sql_receiver.py, hq_sql_runtime(_schema).py inbox/receipt/floor tables,
+    engine.BdEngine.push_state, hive_sync strategies, the bh bd dolt push|sync refusal, and
+    legacy_lease_policy to keep/narrow/replace/delete. Define a per-hive cutover (seed bh_writer
+    from the current refs/bh/epoch epoch so tokens stay monotonic), a coexistence release where
+    both fences are honoured, rollback, and the docs/ADRs to amend (multi-host-model-adr,
+    frame-dolt-server-hq-mode-adr, BEADS-SYNC.md, FRAME-FLEET-MEMBERSHIP.md, HQ.md).
+  acceptance: |
+    - docs/spikes/<bead-id>-writer-partitioning-migration.md exists with the five sections.
+    - Every module listed in the design has a keep/narrow/replace/delete outcome with a reason.
+    - The cutover keeps epochs monotonic across refs/bh/epoch -> bh_writer and has a tested or step-by-step rollback.
+    - Mixed-version behaviour (old bh on one frame, new on another) is stated for each coexistence phase.
+    - A sequenced implementation outline (not filed beads) is ready for replan.
+- handle: decision
+  title: 'DECISION: adopt per-hive in-data epoch fencing and remove the trusted receiver, or retain current model'
+  type: task
+  tag: decision
+  complexity: MEDIUM
+  priority: 1
+  component: fleet
+  deps: [fixture, fencing, guard, placement, liveness, e2e, migration]
+  description: |
+    Read every spike doc in this molecule. On GO run /bh:replan <epic> to file the implementation
+    molecule from the migration spike's outline (linked back to this epic). On NO-GO record the ADR
+    in docs/design and close with the reason. Partial GO (e.g. receiver removal GO, in-data fence
+    NO-GO) is allowed and must say which halves proceed.
+  design: |
+    The ADR amends multi-host-model-adr.md Amendment 1 (fence split, TTL as safety, HQ dependency)
+    and frame-dolt-server-hq-mode-adr.md binding amendment bh-v0k3i (trusted receiver), citing
+    spike evidence. It must state the single placement CAS authority per HQ mode, the non-primary
+    write path, the failover policy, and the git-HQ-mode position.
+  acceptance: |
+    - A committed ADR in docs/design records GO, partial GO, or NO-GO and cites each spike doc.
+    - The ADR states placement authority per HQ mode, fencing mechanism, non-primary write path, failover policy, and receiver disposition.
+    - On GO or partial GO, /bh:replan has filed an implementation molecule linked to this epic; no implementation beads are filed before this decision.
+    - On NO-GO, docs/design/hive-writer-partitioning-proposal.md is marked rejected with a link to the ADR.
