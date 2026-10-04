@@ -1320,6 +1320,12 @@ def _validated_sql_binding(settings):
 class SqlControlPlane:
     """SQL config capability; runtime authority needs an explicit separate binding."""
 
+    def release_upgrade(self, frame, action="plan", **kwargs):
+        """Rotate a pending release through an exact reviewed, operator-signed SQL CAS."""
+        from .frame_release_upgrade import release_upgrade
+
+        return release_upgrade(self, frame, action, **kwargs)
+
     config_backend = "sql"
 
     @staticmethod

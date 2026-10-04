@@ -1912,6 +1912,56 @@ for _verb in ("admit", "cordon", "drain", "park", "resume", "quarantine"):
 app.command("frame-retire")(_lifecycle_command("retire", operation="frame-retire"))
 
 
+@app.command("release-upgrade")
+@otel.trace_verb("host.release-upgrade")
+def release_upgrade_cmd(
+    action: str = typer.Argument(..., help="plan, apply or check; pending SQL candidates only"),
+    frame_id: str = typer.Argument(...),
+    expected: str = typer.Option("", "--expected-revision"),
+    expected_host_id: str = typer.Option("", "--expected-host-id"),
+    expected_epoch: int = typer.Option(-1, "--expected-epoch"),
+    expected_release: str = typer.Option("", "--expected-release"),
+    expected_config_head: str = typer.Option("", "--expected-config-head"),
+    release_id: str = typer.Option("", "--release-id"),
+    release_digest: str = typer.Option("", "--release-digest"),
+    profile: str = typer.Option("", "--profile"),
+    config_revision: str = typer.Option("", "--config-revision"),
+    expires_at: float = typer.Option(0, "--candidate-expires-at"),
+    plan_sha256: str = typer.Option("", "--plan-sha256"),
+    operator_key: Annotated[Path | None, typer.Option("--operator-key")] = None,
+    confirm: bool = typer.Option(False, "--confirm"),
+):
+    """Review a release rotation; fresh signed evidence and normal admission remain required."""
+    from .hq_control_plane import SqlControlPlane, control_plane
+
+    try:
+        plane = control_plane()
+        if not isinstance(plane, SqlControlPlane):
+            raise ValueError("release-upgrade requires the protected SQL control plane")
+        result = plane.release_upgrade(
+            frame_id,
+            action,
+            request={
+                "expected_revision": expected,
+                "host_id": expected_host_id,
+                "epoch": expected_epoch,
+                "old_release": expected_release,
+                "config_head": expected_config_head,
+                "release": {"id": release_id, "digest": release_digest},
+                "profile": profile,
+                "config_revision": config_revision,
+                "expires_at": expires_at,
+            },
+            plan_sha256=plan_sha256,
+            operator_key=str(operator_key) if operator_key else "",
+            confirm=confirm,
+        )
+        typer.echo(json.dumps(result, sort_keys=True))
+    except (ValueError, OSError, RuntimeError) as exc:
+        typer.echo(f"release-upgrade refused: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+
 # ---- remove: drop an orphaned manifest from HQ (bh-salu) ------------------------------
 
 

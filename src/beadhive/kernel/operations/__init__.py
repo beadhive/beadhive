@@ -150,6 +150,7 @@ host provision|role:string:o,answers:string:o,auto:boolean:o,dry_run:boolean:o,f
 host release|hive:string:o,all_hives:boolean:o
 host retire|dry_run:boolean:o,backup:boolean:o,confirm:boolean:o,purge:boolean:o
 host frame-retire|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o
+host release-upgrade|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_epoch:integer:o,expected_release:string:o,expected_config_head:string:o,release_id:string:o,release_digest:string:o,profile:string:o,config_revision:string:o,expires_at:number:o,plan_sha256:string:o,operator_key:string:o,confirm:boolean:o
 host rm|host_id:string:r,dry_run:boolean:o,confirm:boolean:o,force:boolean:o
 host show|host_id:string:r,as_json:boolean:o
 hq bd|
@@ -898,7 +899,7 @@ def operations() -> tuple[OperationSpec, ...]:
         secret_material = path in _SECRET_PATHS
         privilege = (
             "privileged"
-            if hq_write or secret_material
+            if hq_write or secret_material or name == "host.release-upgrade"
             else (
                 "unprivileged-read"
                 if path in _READ_PATHS or name in _MCP_RESOURCES

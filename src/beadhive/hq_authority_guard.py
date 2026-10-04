@@ -64,7 +64,7 @@ def binding(record):
 
 
 def validate_record(identity, record, issued):
-    if set(record) != {
+    if set(record) - {"release_upgrade_history"} != {
         "authority",
         "public_key",
         "state",
@@ -158,6 +158,51 @@ def validate_record(identity, record, issued):
         or not isinstance(r["lease"], dict)
     ):
         raise ValueError("invalid durable receipt")
+    if "release_upgrade_history" in record:
+        validate_release_upgrade_history(identity, record, issued)
+
+
+def validate_release_upgrade_history(identity, record, issued):
+    """Archived grants authorize no runtime signer; bind them to one stable identity."""
+    history = record["release_upgrade_history"]
+    if not isinstance(history, list) or not 1 <= len(history) <= 16:
+        raise ValueError("invalid release upgrade history bound")
+    stable = (
+        "frame_id",
+        "holder_identity",
+        "instance_ref",
+        "key_fingerprint",
+        "audience",
+        "beadyard_id",
+    )
+    epoch = -1
+    for item in history:
+        if not isinstance(item, dict) or set(item) != {
+            "authority_revision",
+            "config_head",
+            "plan_sha256",
+            "record",
+        }:
+            raise ValueError("invalid release upgrade archive")
+        if any(
+            not isinstance(item[key], str) or not 1 <= len(item[key]) <= 128
+            for key in ("authority_revision", "config_head")
+        ) or not re.fullmatch(r"sha256:[0-9a-f]{64}", item["plan_sha256"]):
+            raise ValueError("invalid release upgrade provenance")
+        old = item["record"]
+        if not isinstance(old, dict) or "release_upgrade_history" in old:
+            raise ValueError("recursive release upgrade history forbidden")
+        validate_record(identity, old, issued)
+        if (
+            any(old["authority"].get(key) != record["authority"].get(key) for key in stable)
+            or old["public_key"] != record["public_key"]
+            or old["state"] != "pending"
+            or old["desired"]["caps"] != record["desired"]["caps"]
+            or old["desired"]["declared"] != record["desired"]["declared"]
+            or not epoch < old["authority"]["epoch"] < record["authority"]["epoch"]
+        ):
+            raise ValueError("release upgrade history identity or epoch changed")
+        epoch = old["authority"]["epoch"]
 
 
 def records(state):

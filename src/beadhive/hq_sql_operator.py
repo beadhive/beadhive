@@ -265,6 +265,7 @@ class SqlRuntimeOperator:
         expected_revision: str,
         operator_key: str,
         provisioned_route=None,
+        release_upgrade=None,
         deadline=None,
     ) -> str:
         """Sign current canonical catalog projection and exact authority CAS."""
@@ -310,6 +311,20 @@ class SqlRuntimeOperator:
                         current, state, trusted_now=self.clock()
                     )
                 snapshot = self.authority.load_latest_config_at(cursor, deadline=deadline)
+                from .frame_release_upgrade import preserve_history, validate_publication
+
+                if release_upgrade is None:
+                    preserve_history(current, state)
+                else:
+                    validate_publication(
+                        current,
+                        state,
+                        head,
+                        snapshot,
+                        release_upgrade,
+                        provisioned_route,
+                        now=self.clock(),
+                    )
                 bound_ids = {
                     record["authority"].get("beadyard_id")
                     for _, record in guard.records(state)
