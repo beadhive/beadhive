@@ -1,4 +1,14 @@
-"""Explicit pending-only SQL release rotation, preserving identity and accepted evidence."""
+"""Explicit reviewed SQL release rotation, preserving identity and accepted evidence.
+
+Two exact shapes exist. A *pending* candidate without an active incarnation
+rotates to a new pending epoch and still needs normal admission. A sole
+*active* incarnation rotates in place: the operator-signed plan moves the same
+admitted identity to a new epoch, release, profile and principal route, keeping
+it active (and its cordon bit) while resetting accepted evidence. Eligibility
+then needs a fresh authenticated beat at the new epoch carrying the new digest;
+the archived active grant lets the hive lease (and so every claim fenced by its
+epoch) renew across the rotation. See docs/design/active-frame-release-rotation-adr.md.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +23,10 @@ from .host_manifest_contracts import HostManifest
 from .hq_framelease_contracts import ObservationAuthority
 from .hq_sql_signatures import canonical, sql_principal
 
+PENDING_DOMAIN = "beadhive/sql-release-upgrade/v1"
+ACTIVE_DOMAIN = "beadhive/sql-active-release-rotation/v1"
+HISTORY_LIMIT = 16
+
 
 def candidate(state, frame):
     entry = state.get("frames", {}).get(frame)
@@ -24,13 +38,40 @@ def candidate(state, frame):
         or "emergency" in entry["candidate"]
     ):
         raise ValueError(
-            "release-upgrade supports only a pending candidate without an active incarnation; "
-            "active/quarantined/emergency frames require a separately reviewed upgrade mechanism"
+            "release-upgrade supports only a pending candidate without an active incarnation "
+            "or a sole active incarnation; quarantined/emergency/coexisting frames are unsupported"
         )
     return entry["candidate"]
 
 
-def manifest_for(snapshot, frame, record, request):
+def incumbent(state, frame):
+    """The sole uncontested active incarnation, without a live or unreviewed emergency."""
+    entry = state.get("frames", {}).get(frame)
+    record = None if entry is None else entry["active"]
+    grant = (record or {}).get("emergency")
+    if (
+        record is None
+        or entry["candidate"] is not None
+        or record["state"] != "active"
+        or grant is not None
+        and (grant.get("revoked_at") is None or grant.get("review_required") is not False)
+    ):
+        raise ValueError(
+            "active release rotation requires a sole active incarnation without a candidate "
+            "or live/unreviewed emergency authorization"
+        )
+    return record
+
+
+def selected(state, frame):
+    """``(slot, record)`` for the one supported rotation shape of this frame."""
+    entry = state.get("frames", {}).get(frame) or {}
+    if entry.get("active") is None:
+        return "candidate", candidate(state, frame)
+    return "active", incumbent(state, frame)
+
+
+def manifest_for(snapshot, frame, record, request, *, state="pending"):
     authority = record["authority"]
     documents = [
         item
@@ -51,7 +92,7 @@ def manifest_for(snapshot, frame, record, request):
         or manifest.frame_id != frame
         or manifest.host_id != authority["holder_identity"]
         or manifest.instance_ref != authority["instance_ref"]
-        or manifest.state != "pending"
+        or manifest.state != state
         or manifest.release is None
         or manifest.release.model_dump() != request["release"]
         or manifest.capabilities is None
@@ -82,7 +123,7 @@ def prepare(original, frame, head, snapshot, request, *, now):
     ):
         raise ValueError("invalid release-upgrade request fields")
     guard.validate_state(original)
-    old = candidate(original, frame)
+    slot, old = selected(original, frame)
     a = old["authority"]
     if (
         original["domain"] != guard.DOMAIN_V2
@@ -107,13 +148,14 @@ def prepare(original, frame, head, snapshot, request, *, now):
         or not request["config_revision"].strip()
     ):
         raise ValueError("release-upgrade original CAS, authority freshness or target invalid")
-    manifest = manifest_for(snapshot, frame, old, request)
+    active = slot == "active"
+    manifest = manifest_for(snapshot, frame, old, request, state="active" if active else "pending")
     plan_digest = (
         "sha256:"
         + hashlib.sha256(
             canonical(
                 {
-                    "domain": "beadhive/sql-release-upgrade/v1",
+                    "domain": ACTIVE_DOMAIN if active else PENDING_DOMAIN,
                     "frame": frame,
                     "request": request,
                     "original": original,
@@ -137,12 +179,18 @@ def prepare(original, frame, head, snapshot, request, *, now):
             "record": archived,
         }
     )
+    if active:
+        # Active frames rotate every release; keep the newest bounded archive. Older
+        # evidence stays immutable in SQL under its own epoch; epochs never repeat.
+        history = history[-HISTORY_LIMIT:]
     next_record = copy.deepcopy(old)
+    next_record.pop("emergency", None)  # Bound to the archived authority; kept there.
     next_record["authority"] = {
         **a,
         "epoch": entry["epoch_floor"] + 1,
         "config_revision": request["config_revision"],
-        "candidate_expires_at": request["expires_at"],
+        # An active rotation stays admitted; the request expiry bounds only the plan.
+        "candidate_expires_at": None if active else request["expires_at"],
     }
     next_record["desired"] = {
         **old["desired"],
@@ -158,9 +206,12 @@ def prepare(original, frame, head, snapshot, request, *, now):
         "registration": None,
     }
     next_record.update(
-        state="pending", cordoned=False, drain_deadline=None, release_upgrade_history=history
+        state="active" if active else "pending",
+        cordoned=old["cordoned"] if active else False,
+        drain_deadline=None,
+        release_upgrade_history=history,
     )
-    entry["candidate"] = next_record
+    entry[slot] = next_record
     entry["epoch_floor"] = next_record["authority"]["epoch"]
     state.update(revision=original["revision"] + 1, issued_at=now, expires_at=now + 3600)
     guard.validate_state(state)
@@ -168,7 +219,8 @@ def prepare(original, frame, head, snapshot, request, *, now):
 
 
 def route_for(state, frame):
-    authority = state["frames"][frame]["candidate"]["authority"]
+    entry = state["frames"][frame]
+    authority = (entry["candidate"] or entry["active"])["authority"]
     principal = sql_principal(ObservationAuthority(**authority))
     return (
         principal,
@@ -235,6 +287,8 @@ def release_upgrade(
     snapshot = plane.config_store().load_snapshot()
     state, digest = prepare(original, frame, head, snapshot, request, now=plane.clock())
     route = route_for(state, frame)
+    entry = state["frames"][frame]
+    rotated = entry["candidate"] or entry["active"]
     from .hq_sql_runtime_schema import inbox_table
 
     result = {
@@ -246,10 +300,11 @@ def release_upgrade(
         "new_epoch": route[4],
         "principal": route[0],
         "inbox_table": inbox_table(route[0], route[4]),
-        "authority": state["frames"][frame]["candidate"]["authority"],
+        "authority": rotated["authority"],
         "release": request["release"],
         "profile": request["profile"],
-        "state": "pending",
+        "state": rotated["state"],
+        "rotation": "active" if state["frames"][frame]["active"] is rotated else "pending",
     }
     if action == "plan":
         return result

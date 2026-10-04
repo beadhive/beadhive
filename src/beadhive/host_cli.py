@@ -1934,7 +1934,9 @@ app.command("frame-retire")(_lifecycle_command("retire", operation="frame-retire
 @app.command("release-upgrade")
 @otel.trace_verb("host.release-upgrade")
 def release_upgrade_cmd(
-    action: str = typer.Argument(..., help="plan, apply or check; pending SQL candidates only"),
+    action: str = typer.Argument(
+        ..., help="plan, apply or check; a pending SQL candidate or a sole active incarnation"
+    ),
     frame_id: str = typer.Argument(...),
     expected: str = typer.Option("", "--expected-revision"),
     expected_host_id: str = typer.Option("", "--expected-host-id"),
@@ -1945,12 +1947,21 @@ def release_upgrade_cmd(
     release_digest: str = typer.Option("", "--release-digest"),
     profile: str = typer.Option("", "--profile"),
     config_revision: str = typer.Option("", "--config-revision"),
-    expires_at: float = typer.Option(0, "--candidate-expires-at"),
+    expires_at: float = typer.Option(
+        0,
+        "--candidate-expires-at",
+        help="pending: candidate expiry; active: reviewed plan expiry (Unix seconds, <= 24h)",
+    ),
     plan_sha256: str = typer.Option("", "--plan-sha256"),
     operator_key: Annotated[Path | None, typer.Option("--operator-key")] = None,
     confirm: bool = typer.Option(False, "--confirm"),
 ):
-    """Review a release rotation; fresh signed evidence and normal admission remain required."""
+    """Review a release rotation of a pending or active SQL frame, preserving identity.
+
+    A pending candidate still needs normal admission. An active incarnation stays
+    admitted at a new epoch and principal; fresh signed evidence on the new digest
+    is required before it is eligible again, and its hive lease renews unchanged.
+    """
     from .hq_control_plane import SqlControlPlane, control_plane
 
     try:

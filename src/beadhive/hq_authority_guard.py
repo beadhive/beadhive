@@ -198,7 +198,7 @@ def validate_release_upgrade_history(identity, record, issued):
         if (
             any(old["authority"].get(key) != record["authority"].get(key) for key in stable)
             or old["public_key"] != record["public_key"]
-            or old["state"] != "pending"
+            or old["state"] not in {"pending", "active"}
             or old["desired"]["caps"] != record["desired"]["caps"]
             or old["desired"]["declared"] != record["desired"]["declared"]
             or not epoch < old["authority"]["epoch"] < record["authority"]["epoch"]
@@ -419,6 +419,26 @@ def same_incumbent_after_binding(previous, current):
         and "beadyard_id" not in previous
         and current.get("beadyard_id") is not None
         and previous == {key: value for key, value in current.items() if key != "beadyard_id"}
+    )
+
+
+def same_incumbent_after_rotation(previous, frame, record):
+    """A hive lease minted by a reviewed active-rotation predecessor stays with its lineage.
+
+    Only an archived ``active`` grant inside the current record's operator-signed
+    ``release_upgrade_history`` qualifies. Its stable identity already equals the
+    current record's (validated with the archive), and archives authorize no
+    principal, so this never revives the old epoch; it only lets the current
+    incarnation renew or release the lease without advancing its fencing epoch.
+    """
+    if not isinstance(previous, dict) or not isinstance(record, dict):
+        return False
+    return any(
+        isinstance(item, dict)
+        and isinstance(item.get("record"), dict)
+        and item["record"].get("state") == "active"
+        and previous == {"frame_id": frame, **item["record"]["authority"]}
+        for item in record.get("release_upgrade_history", [])
     )
 
 
