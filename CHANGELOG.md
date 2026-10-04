@@ -13,6 +13,16 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.21.3 (2026-10-04)
+
+### Fix
+
+- **fleet**: publish recovery command contracts and receiver regressions
+- **fleet**: add scoped expiring operator emergency admission
+- **fleet**: rotate pending frame releases through reviewed operator CAS
+- **fleet**: document operator frame recovery boundaries
+- **fleet**: generate measured frame conformance heartbeats
+
 ## v0.21.2 (2026-10-04)
 
 ### Fix
