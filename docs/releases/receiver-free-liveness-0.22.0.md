@@ -1,10 +1,10 @@
-# Receiver-free liveness in 0.21.4
+# Receiver-free liveness in 0.22.0
 
 The factory frame kept losing eligibility because frame liveness and hive-lease
 renewal both depended on the separately deployed SQL trusted receiver. When the
 receiver stalled for 20-30 minutes, heartbeat acceptance stopped, the two hour
 hive lease lapsed, re-adoption bumped the claim epoch and invalidated in-flight
-claims, and `bh work merge` failed with `HqLeaseUnknown`. 0.21.4 removes that
+claims, and `bh work merge` failed with `HqLeaseUnknown`. 0.22.0 removes that
 dependency from the development flow behind one default-off, host-local switch.
 Git HQ mode is untouched.
 
@@ -55,11 +55,11 @@ these before enabling it.
 that contains `hq.sql.liveness` fails to load its configuration. Roll out in
 this order.
 
-1. Upgrade every process that reads `host.yaml` to 0.21.4.
+1. Upgrade every process that reads `host.yaml` to 0.22.0.
 2. Only then set `hq.sql.liveness: signed` in `host.yaml`.
 
-Until every reader runs 0.21.4, leave `host.yaml` alone and set
-`BH_HQ_SQL_LIVENESS=signed` only in the environment of the 0.21.4 `bh`, for
+Until every reader runs 0.22.0, leave `host.yaml` alone and set
+`BH_HQ_SQL_LIVENESS=signed` only in the environment of the 0.22.0 `bh`, for
 example through a small shim that exports the variable and execs that binary.
 
 To revert, unset the variable or set it to `receiver`, and remove or reset
@@ -74,7 +74,7 @@ supported yet. Follow-ups: bh-cszmo, bh-vfrem and bh-rjjjo.
 
 The operator-approved interim for the factory frame is therefore:
 
-- Install 0.21.4 into a parallel `uv tool` environment used only for the
+- Install 0.22.0 into a parallel `uv tool` environment used only for the
   dev-flow `bh`, with `BH_HQ_SQL_LIVENESS=signed` set for it.
 - Leave the heartbeat sender on the attested 0.21.3 environment so the
   measured digest still matches the signed `desired.release`.
