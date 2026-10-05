@@ -13,6 +13,22 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.22.2 (2026-10-05)
+
+### Fix
+
+- **test**: repair zk710 land-gate failures
+- **validation**: run pytest via the current interpreter in the report launcher
+- **validation**: run invalidated keys cheapest-first with an evidence precheck and opt-in fail-fast
+
+### Perf
+
+- **test**: re-entrant Dolt slot and raise the default ceiling 4 -> 8
+- **validation**: run the architecture-structural-check scripts concurrently
+- **config**: memoize pure derivation of identical committed SQL bytes
+- **validation**: resolve workspace root from the lane's loaded cfg
+- **validation**: drop duplicate architecture-structural-check from stateful-native
+
 ## v0.22.1 (2026-10-04)
 
 ### Fix
