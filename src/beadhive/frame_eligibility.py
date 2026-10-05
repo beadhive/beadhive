@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import os
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +17,22 @@ class EligibilityError(ValueError):
     """A frame cannot accept new work under the selected authority."""
 
 
+# Transitional operator escape while the heartbeat/receiver model is removed (bh-qlgmm):
+# ``advisory`` keeps publishing and verifying heartbeats but stops a stale or missing beat
+# from fencing the frame. Every other eligibility predicate still fails closed.
+HEARTBEAT_ENV = "BH_FRAME_HEARTBEAT"
+HEARTBEAT_MODES = ("required", "advisory")
+
+
+def heartbeat_mode() -> str:
+    raw = os.environ.get(HEARTBEAT_ENV, "required").strip() or "required"
+    if raw not in HEARTBEAT_MODES:
+        raise EligibilityError(
+            f"{HEARTBEAT_ENV} must be 'required' or 'advisory' (got {raw[:32]!r})"
+        )
+    return raw
+
+
 @dataclass(frozen=True)
 class EligibilityFacts:
     observation: VerifiedObservation
@@ -22,6 +40,7 @@ class EligibilityFacts:
     dispatch_enabled: bool = True
     available: bool = True
     at: float | None = None
+    heartbeat_advisory: bool = False
 
 
 @dataclass(frozen=True)
@@ -113,6 +132,13 @@ def eligible(frame: hosts.HostManifest, hive: dict, facts: EligibilityFacts) -> 
         and lease.audience == record["authority"].get("audience")
         and lease.config_revision == record["authority"].get("config_revision")
     )
+    waived = not fresh and not trusted_emergency and facts.heartbeat_advisory
+    if waived:
+        print(
+            f"⚠ {HEARTBEAT_ENV}=advisory: frame {frame.frame_id} heartbeat is not fresh "
+            f"(status {beat.status!r}, age {age!r}s) — waived, not fenced",
+            file=sys.stderr,
+        )
     if trusted_emergency:
         from .frame_emergency import audit
 
@@ -145,7 +171,7 @@ def eligible(frame: hosts.HostManifest, hive: dict, facts: EligibilityFacts) -> 
                 == lease.beadyard_id
                 == desired.get("authority", {}).get("beadyard_id"),
             ),
-            ("authenticated_fresh_heartbeat", bool(fresh or trusted_emergency)),
+            ("authenticated_fresh_heartbeat", bool(fresh or trusted_emergency or waived)),
             (
                 "release_matches",
                 lease is not None
@@ -186,7 +212,9 @@ def load_facts(frame, *, hq_dir, cfg=None, at=None):
     try:
         plane = control_plane(hq_dir)
         _revision, desired, observation = plane.read_eligibility(frame, now=at)
-        return EligibilityFacts(observation, desired, enabled, True, at)
+        return EligibilityFacts(
+            observation, desired, enabled, True, at, heartbeat_mode() == "advisory"
+        )
     except (ValueError, OSError, RuntimeError):
         return EligibilityFacts(VerifiedObservation("authority-unavailable"), {}, enabled, False)
 

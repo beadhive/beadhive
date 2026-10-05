@@ -29,7 +29,7 @@ from beadhive.hq_sql_config import SqlFleetConfigRevisionStore
 from beadhive.hq_transition import WriterSuspensionEvidence, project_latest_to_git
 from beadhive.modules.config.adapters.workspace_selection import selected_git_sources
 from beadhive.modules.config.domain.ports import FleetConfigDocument
-from test_hq_authority_backend import backend, git  # noqa: F401
+from test_hq_authority_backend import _prepared_hqs, backend, git  # noqa: F401
 from test_hq_sql_config_int import _Broker, _cli, _empty_config_server
 
 

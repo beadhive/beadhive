@@ -154,11 +154,13 @@ def _maybe_open_molecule(cfg, hive, bead, main):
     fixes landing on main mid-molecule stayed invisible. Refresh is best-effort (warns, never
     blocks dispatch) and lands on the container only, so submit's `base..child` rules hold.
 
-    Thin dotted-id wrapper over `work_logic.ensure_container` (bh-n5z3.2): parse the epic off the
-    dotted bead id, then delegate the kickoff-gate + open + refresh to the shared helper (which the
-    collapsed/group claim paths also call, so a batch lands into the container too)."""
-    epic, sep, _ = bead.rpartition(".")
-    if not sep or not epic:
+    Thin wrapper over `work_logic.ensure_container` (bh-n5z3.2): resolve the epic from the bead's
+    parent-child link (`work_logic.parent_epic`, dotted id as fallback, so hash-id children of
+    `bh plan file` molecules refresh too — bh-bd8hq), then delegate the kickoff-gate + open +
+    refresh to the shared helper (which the collapsed/group claim paths also call, so a batch
+    lands into the container too)."""
+    epic = work_logic.parent_epic(bead, main)
+    if not epic:
         return
     work_logic.ensure_container(cfg, hive, epic, main)
 

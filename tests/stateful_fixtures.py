@@ -65,7 +65,7 @@ def pytest_collection_modifyitems(config, items):
             # Compatibility defaults must establish their empty baseline before an explicit
             # ``world`` or per-test fixture overrides it, matching pytest's former autouse order.
             item.fixturenames.insert(0, "legacy_stateful_test_scope")
-    slots = int(os.environ.get("BH_DOLT_SLOTS", "4"))
+    slots = int(os.environ.get("BH_DOLT_SLOTS", "8"))
     items[:] = _interleave_dolt_items(items, slots)
 
 
@@ -238,6 +238,11 @@ def _sandbox_bh_home(tmp_path_factory, monkeypatch):
     home = tmp_path_factory.mktemp("bh-home")
     monkeypatch.setenv("BH_HOME", str(home))
     monkeypatch.delenv("WS_HOME", raising=False)
+    # `BH_HQ_SQL_LIVENESS` outranks `hq.sql.liveness` in every process that reads it. An operator
+    # shell running signed mode exports it, and it used to flow through the fence into pytest and
+    # its subprocesses, flipping receiver-mode tests to signed. Tests that exercise the override
+    # set it explicitly via monkeypatch after this baseline.
+    monkeypatch.delenv("BH_HQ_SQL_LIVENESS", raising=False)
     # `bd` loads its own global config from HOME (and XDG_CONFIG_HOME), independently of
     # Beadhive's BH_HOME. Keep a developer's global Beads configuration from changing fixture
     # behavior, particularly embedded-vs-shared-server initialization.

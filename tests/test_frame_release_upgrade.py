@@ -235,19 +235,327 @@ def test_prepared_manifest_must_preserve_identity_and_caps(fixture, field, value
         prepare(fixture)
 
 
-def test_active_quarantined_expired_authority_refused(fixture):
-    for state_name in ("active", "quarantined"):
-        fixture.record["state"] = state_name
-        if state_name == "active":
-            entry = fixture.state["frames"]["frame"]
-            entry["active"], entry["candidate"] = fixture.record, None
-        with pytest.raises(ValueError):
-            prepare(fixture)
-    fixture.state["frames"]["frame"].update(active=None, candidate=fixture.record)
+def test_quarantined_coexisting_and_expired_authority_refused(fixture):
+    fixture.record["state"] = "quarantined"
+    with pytest.raises(ValueError, match="release-upgrade supports only"):
+        prepare(fixture)
     fixture.record["state"] = "pending"
+    active = make_active(fixture)
+    # A candidate beside an active incarnation is the supersede/admit shape, never rotation.
+    fixture.state["frames"]["frame"]["candidate"] = copy.deepcopy(fixture.record)
+    with pytest.raises(ValueError):
+        prepare(fixture)
+    fixture.state["frames"]["frame"].update(active=None, candidate=fixture.record)
+    assert active is not fixture.record
+    fixture.manifest["state"] = "pending"
+    replace_manifest(fixture)
     fixture.state["expires_at"] = 1000
     with pytest.raises(ValueError, match="freshness"):
         prepare(fixture)
+
+
+def replace_manifest(fixture):
+    from dataclasses import replace
+
+    document = fixture.snapshot.documents[1]
+    fixture.snapshot = replace(
+        fixture.snapshot,
+        documents=(
+            fixture.snapshot.documents[0],
+            FleetConfigDocument(document.path, json.dumps(fixture.manifest)),
+            *fixture.snapshot.documents[2:],
+        ),
+    )
+
+
+def make_active(fixture):
+    """Turn the fixture into a sole admitted active incarnation with an active manifest."""
+    record = copy.deepcopy(fixture.record)
+    record["state"] = "active"
+    record["authority"]["candidate_expires_at"] = None
+    fixture.state["frames"]["frame"].update(active=record, candidate=None)
+    fixture.manifest["state"] = "active"
+    replace_manifest(fixture)
+    return record
+
+
+def test_active_rotation_keeps_admitted_identity_and_resets_evidence(fixture):
+    old = make_active(fixture)
+    old["cordoned"] = True
+    original = copy.deepcopy(fixture.state)
+    state, digest = prepare(fixture)
+    assert fixture.state == original
+    entry = state["frames"]["frame"]
+    record = entry["active"]
+    assert entry["candidate"] is None
+    assert record["state"] == "active" and record["cordoned"] is True
+    assert record["authority"]["epoch"] == entry["epoch_floor"] == 4
+    assert record["authority"]["candidate_expires_at"] is None  # expiry bounds only the plan
+    assert record["authority"]["config_revision"] == "policy-v2"
+    assert record["desired"]["release"] == fixture.request["release"]
+    assert record["desired"]["profile"] == "new"
+    assert record["receipt"]["sequence"] == 0
+    for field in ("frame_id", "holder_identity", "instance_ref", "beadyard_id", "audience"):
+        assert record["authority"][field] == old["authority"][field]
+    assert record["public_key"] == old["public_key"]
+    assert record["release_upgrade_history"][0]["record"] == old
+    guard.validate_state(state)
+    assert len(list(guard.records(state))) == 1
+    route = upgrade.route_for(state, "frame")
+    assert route[4] == 4
+    assert route[0] != SqlRuntimeOperator.principal_for(ObservationAuthority(**old["authority"]))
+    upgrade.validate_publication(
+        original,
+        state,
+        "runtime-head",
+        fixture.snapshot,
+        {"frame": "frame", "request": fixture.request, "plan_sha256": digest},
+        route,
+        now=1000,
+    )
+    # The pending shape of the same inputs would carry a different reviewed digest domain.
+    assert upgrade.ACTIVE_DOMAIN != upgrade.PENDING_DOMAIN
+    # Ordinary publications still cannot rewrite the active archive.
+    tampered = copy.deepcopy(state)
+    tampered["frames"]["frame"]["active"]["release_upgrade_history"][0]["record"]["cordoned"] = (
+        False
+    )
+    with pytest.raises(ValueError):
+        upgrade.preserve_history(state, tampered)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("expected_revision", "stale"),
+        ("host_id", "foreign"),
+        ("epoch", 4),
+        ("old_release", "sha256:" + "0" * 64),
+        ("config_head", "stale-config"),
+        ("expires_at", 999),
+        ("expires_at", float("nan")),
+        ("expires_at", 90000),
+        ("release", {"id": "same", "digest": "sha256:" + "1" * 64}),
+    ],
+)
+def test_active_rotation_refuses_any_stale_expectation(fixture, field, value):
+    make_active(fixture)
+    fixture.request[field] = value
+    with pytest.raises(ValueError):
+        prepare(fixture)
+
+
+def test_active_rotation_requires_an_active_prepared_manifest(fixture):
+    make_active(fixture)
+    fixture.manifest["state"] = "pending"
+    replace_manifest(fixture)
+    with pytest.raises(ValueError, match="prepared manifest"):
+        prepare(fixture)
+
+
+@pytest.mark.parametrize("shape", ["draining", "parked", "live-emergency", "unreviewed"])
+def test_active_rotation_refuses_unsupported_lifecycle(fixture, shape):
+    record = make_active(fixture)
+    if shape in {"draining", "parked"}:
+        record["state"] = shape
+    else:
+        record["emergency"] = emergency_grant(record, revoked=shape == "unreviewed")
+        record["emergency"]["review_required"] = True
+    with pytest.raises(ValueError):
+        prepare(fixture)
+
+
+def emergency_grant(record, *, revoked):
+    return {
+        "domain": "beadhive/emergency-admission/v1",
+        "prefix": "bh",
+        "reason": "fixture",
+        "issued_at": 800,
+        "expires_at": 1200,
+        "revoked_at": 850 if revoked else None,
+        "authority": copy.deepcopy(record["authority"]),
+        "release": copy.deepcopy(record["desired"]["release"]),
+        "original_revision": "emergency-head",
+        "review_required": False,
+        "execution_digest": "sha256:" + "e" * 64,
+    }
+
+
+def test_active_rotation_archives_reviewed_historical_emergency(fixture):
+    record = make_active(fixture)
+    record["emergency"] = emergency_grant(record, revoked=True)
+    guard.validate_state(fixture.state)
+    state, _digest = prepare(fixture)
+    rotated = state["frames"]["frame"]["active"]
+    assert "emergency" not in rotated
+    assert rotated["release_upgrade_history"][0]["record"]["emergency"] == record["emergency"]
+    guard.validate_state(state)
+
+
+def test_active_history_is_bounded_to_the_newest_rotations(fixture):
+    make_active(fixture)
+    head = "runtime-head"
+    for index in range(upgrade.HISTORY_LIMIT + 2):
+        release = {"id": f"r{index}", "digest": "sha256:" + f"{index + 16:064x}"}
+        fixture.manifest["release"] = release
+        replace_manifest(fixture)
+        record = fixture.state["frames"]["frame"]["active"]
+        fixture.request.update(
+            expected_revision=head,
+            epoch=record["authority"]["epoch"],
+            old_release=record["desired"]["release"]["digest"],
+            release=release,
+        )
+        fixture.state, _digest = upgrade.prepare(
+            fixture.state, "frame", head, fixture.snapshot, fixture.request, now=1000
+        )
+        fixture.state["expires_at"] = 1800
+        head = f"head-{index}"
+    history = fixture.state["frames"]["frame"]["active"]["release_upgrade_history"]
+    assert len(history) == upgrade.HISTORY_LIMIT
+    epochs = [item["record"]["authority"]["epoch"] for item in history]
+    assert (
+        epochs == sorted(epochs)
+        and epochs[-1] == fixture.state["frames"]["frame"]["active"]["authority"]["epoch"] - 1
+    )
+    guard.validate_state(fixture.state)
+
+
+def test_rotated_lease_predecessor_is_the_same_incumbent_only_for_active_archives(fixture):
+    old = make_active(fixture)
+    state, _digest = prepare(fixture)
+    current = state["frames"]["frame"]["active"]
+    predecessor = {"frame_id": "frame", **old["authority"]}
+    assert guard.same_incumbent_after_rotation(predecessor, "frame", current)
+    assert not guard.same_incumbent_after_rotation({**predecessor, "epoch": 2}, "frame", current)
+    assert not guard.same_incumbent_after_rotation(None, "frame", current)
+    # A pending archive never held a hive lease, so it never carries one forward.
+    fixture.state["frames"]["frame"].update(active=None, candidate=fixture.record)
+    fixture.manifest["state"] = "pending"
+    replace_manifest(fixture)
+    pending, _digest = prepare(fixture)
+    candidate = pending["frames"]["frame"]["candidate"]
+    assert not guard.same_incumbent_after_rotation(
+        {"frame_id": "frame", **fixture.record["authority"]}, "frame", candidate
+    )
+
+
+def test_active_apply_check_and_replay_through_the_verb(fixture):
+    make_active(fixture)
+    published = []
+
+    class Operator:
+        def load(self, **kwargs):
+            return ("next-head" if published else "runtime-head"), fixture.state, (), {}
+
+        def publish(self, state, **kwargs):
+            upgrade.validate_publication(
+                fixture.state,
+                state,
+                "runtime-head",
+                fixture.snapshot,
+                kwargs["release_upgrade"],
+                kwargs["provisioned_route"],
+                now=1000,
+            )
+            published.append(kwargs)
+            fixture.state = state
+            return "next-head"
+
+    operator = Operator()
+    plane = SimpleNamespace(
+        _operator=lambda: operator,
+        _operator_deadline=lambda: 100000000000,
+        config_store=lambda: SimpleNamespace(load_snapshot=lambda: fixture.snapshot),
+        clock=lambda: 1000,
+    )
+    plan = upgrade.release_upgrade(plane, "frame", request=fixture.request)
+    assert plan["rotation"] == "active" and plan["state"] == "active"
+    assert plan["new_epoch"] == 4 and plan["authority"]["candidate_expires_at"] is None
+    with pytest.raises(ValueError):
+        upgrade.release_upgrade(
+            plane, "frame", "apply", request=fixture.request, confirm=True, plan_sha256="x"
+        )
+    result = upgrade.release_upgrade(
+        plane,
+        "frame",
+        "apply",
+        request=fixture.request,
+        operator_key="key",
+        confirm=True,
+        plan_sha256=plan["plan_sha256"],
+    )
+    assert result["revision"] == "next-head" and len(published) == 1
+    check = upgrade.release_upgrade(plane, "frame", "check")
+    assert check["state"] == "active" and check["upgraded"]
+    with pytest.raises(ValueError):
+        upgrade.release_upgrade(
+            plane,
+            "frame",
+            "apply",
+            request=fixture.request,
+            operator_key="key",
+            confirm=True,
+            plan_sha256=plan["plan_sha256"],
+        )
+    assert len(published) == 1
+
+
+@pytest.mark.parametrize("beat_release", ["new", "old"])
+def test_active_rotation_eligibility_needs_the_new_digest(fixture, beat_release):
+    from datetime import UTC, datetime
+
+    from beadhive.frame_eligibility import EligibilityFacts, eligible
+    from beadhive.host_heartbeat_core import HeartbeatLease, VerifiedObservation
+    from beadhive.host_manifest_contracts import HostManifest
+
+    old = make_active(fixture)
+    state, _digest = prepare(fixture)
+    record = state["frames"]["frame"]["active"]
+    authority = record["authority"]
+    lease = HeartbeatLease.model_validate(
+        {
+            "domain": "beadhive/frame-heartbeat/v2",
+            "beadyard_id": authority["beadyard_id"],
+            "frame_id": "frame",
+            "holderIdentity": authority["holder_identity"],
+            "instance_ref": authority["instance_ref"],
+            "key_id": authority["key_fingerprint"],
+            "epoch": authority["epoch"],
+            "audience": authority["audience"],
+            "config_revision": authority["config_revision"],
+            "seq": 1,
+            "renewTime": datetime.fromtimestamp(999, UTC).isoformat(),
+            "release": record["desired"]["release"]
+            if beat_release == "new"
+            else old["desired"]["release"],
+            "state_seen": "active",
+            "report_digest": "sha256:" + "2" * 64,
+            "conformance": {
+                "profile": "new",
+                "status": "conformant",
+                "checks": [{"id": "configuration", "status": "pass"}],
+            },
+        }
+    )
+    observation = VerifiedObservation(
+        "fresh", verified=True, fresh=True, age_seconds=1, lease=lease
+    )
+    desired = {
+        **record["desired"],
+        "state": record["state"],
+        "cordoned": False,
+        "authority": authority,
+    }
+    decision = eligible(
+        HostManifest.model_validate(fixture.manifest),
+        {"prefix": "bh", "requires": {}},
+        EligibilityFacts(observation, desired, at=1000),
+    )
+    if beat_release == "new":
+        assert decision.allowed, decision.reason
+    else:
+        assert decision.reason == "release_matches"
 
 
 @pytest.mark.parametrize(
@@ -587,3 +895,12 @@ def test_upgraded_candidate_still_needs_fresh_evidence_for_normal_admission(fixt
         with pytest.raises(ControlPlaneError, match="complete trusted evidence"):
             plane.lifecycle("admit", "frame", "apply", **kwargs)
         assert not published
+
+
+def test_active_shape_never_coexists_with_a_candidate(fixture):
+    record = make_active(fixture)
+    shape = {"frames": {"frame": {"active": record, "candidate": fixture.record}}}
+    with pytest.raises(ValueError, match="sole active incarnation"):
+        upgrade.selected(shape, "frame")
+    shape["frames"]["frame"]["candidate"] = None
+    assert upgrade.selected(shape, "frame") == ("active", record)

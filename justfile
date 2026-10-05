@@ -227,17 +227,39 @@ architecture-check:
 # Lifecycle gates cannot require the full-gate receipt they are in the process of establishing.
 # This explicit entry point checks the same structural evidence and freshness invariants for
 # check, check-all, and selective CI. architecture-check remains the explicit post-receipt audit.
+# The evidence refresh WRITES the closure evidence the checks below read, so it runs serially and
+# first. Every check after it is read-only and independent, so they run through a bounded pool
+# (scripts/run_checks_concurrently.py: per-check buffered output, non-zero exit if any check fails).
+# The transport-artifact-check and wire-schema-compat recipes are flattened into the pool so the
+# slowest single check, not their serial sum, bounds the wall time; tests/test_native_validation_graph.py
+# keeps both lists in lockstep.
+# run the backend-neutral architecture/contract checks (evidence refresh first, then concurrent)
 architecture-structural-check:
     just validation-evidence-refresh
-    uv run python scripts/check_native_impact_map.py
-    uv run python scripts/check_import_boundaries.py
-    uv run python scripts/check_package_imports.py
-    uv run python scripts/test_closure_certification.py --check-structural
-    uv run python scripts/test_closure_shadow_policy.py --check
-    uv run python scripts/test_closure_promotion_policy.py --check
-    uv run python scripts/test_closure_operational_report.py --check
-    just transport-artifact-check
-    just wire-schema-compat
+    uv run python scripts/run_checks_concurrently.py --jobs 4 \
+        "uv run python scripts/render_transport_composition_evidence.py --check" \
+        "uv run python scripts/check_native_impact_map.py" \
+        "uv run python scripts/check_import_boundaries.py" \
+        "uv run python scripts/check_package_imports.py" \
+        "uv run python scripts/test_closure_certification.py --check-structural" \
+        "uv run python scripts/test_closure_shadow_policy.py --check" \
+        "uv run python scripts/test_closure_promotion_policy.py --check" \
+        "uv run python scripts/test_closure_operational_report.py --check" \
+        "uv run python scripts/render_operation_catalog.py --check" \
+        "uv run python scripts/render_transport_inventory.py --check" \
+        "uv run python -m beadhive.daemon_openapi --check" \
+        "uv run python -m beadhive.gateway_contract --check" \
+        "uv run python scripts/render_telemetry_schema.py --check" \
+        "uv run python scripts/generate_contract_release.py --check" \
+        "uv run python scripts/generate_contract_release_evidence.py --check" \
+        "uv run python scripts/check_wire_schema_compat.py"
+
+# Fast (~20 s) early warning that checked-in generated evidence is current, naming the generator
+# to re-run on drift (bh-2kodj). Not a gate step and owned by no attest key: the authoritative
+# tests and architecture-structural-check still prove the same artifacts inside their lanes.
+# Selective validation runs it before any lane when `work.validate.precheck` names it.
+generated-evidence-check:
+    uv run python scripts/check_generated_evidence.py
 
 architecture-pants-check:
     uv run python scripts/check_pants_ownership.py
@@ -699,13 +721,15 @@ stateful_workers := "16"
 root-composition-validate:
     uv run python scripts/root_composition_tests.py --validate-only
 
-# Stateful tests consume the digest-bound closure evidence produced by the structural
-# architecture phase. Keep this edge here as well as in check-native's sibling list: selective
-# validation can invoke `attest-stateful` on its own, and that run may start before the
-# architecture-contracts key in a different worker.
+# Stateful tests consume the digest-bound closure evidence (certification, shadow-policy and
+# promotion-policy JSON) that `validation-evidence-refresh` writes. Depend on that minimal producer
+# rather than the whole structural check: selective validation can invoke `attest-stateful` on its
+# own, and that run may start before the architecture-contracts key in a different worker, but it
+# needs only fresh evidence, not the import/transport/wire-schema checks (those run once, in
+# architecture-structural-check).
 # Work stealing redistributes unstarted tests when an uneven fixture-heavy batch leaves idle
 # workers. Keep the same complete collection, fixed worker bound, and watchdog deadline.
-stateful-native: root-composition-validate architecture-structural-check
+stateful-native: root-composition-validate validation-evidence-refresh
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
         ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{stateful_workers}} tests --dist worksteal \
         -m "not integration and not pants_profile" \

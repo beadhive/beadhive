@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -21,7 +22,7 @@ def _report_path(argv: list[str]) -> Path:
 def test_unset_environment_preserves_pytest_arguments_byte_for_byte() -> None:
     arguments = ["-q", "tests/example.py", "-m", "not integration"]
 
-    assert pytest_argv(arguments, {}) == ["pytest", *arguments]
+    assert pytest_argv(arguments, {}) == [sys.executable, "-m", "pytest", *arguments]
 
 
 def test_report_filenames_are_exclusive_across_concurrent_invocations(tmp_path: Path) -> None:
@@ -39,7 +40,12 @@ def test_unwritable_report_directory_warns_once_without_changing_pytest_argv(
 ) -> None:
     missing = tmp_path / "missing"
 
-    assert pytest_argv(["-q"], {test_report.ENV_VAR: str(missing)}) == ["pytest", "-q"]
+    assert pytest_argv(["-q"], {test_report.ENV_VAR: str(missing)}) == [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+    ]
     assert capsys.readouterr().err.count("running pytest without a report") == 1
 
 

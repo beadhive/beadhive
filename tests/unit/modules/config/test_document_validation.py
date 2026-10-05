@@ -7,13 +7,16 @@ import subprocess
 
 import pytest
 
+from beadhive import hq_document_validation
 from beadhive.beadyard_identity import new_document, parse_document
 from beadhive.hive_schema import HiveSchemaRecord as LegacyHiveSchemaRecord
 from beadhive.hive_schema_contracts import HiveSchemaRecord
 from beadhive.hq_document_validation import (
     DocumentValidationError,
+    clear_validated_snapshots,
     validate_document,
     validate_documents,
+    validate_documents_memoized,
     validate_repair_carrier,
     validate_settings_mapping,
 )
@@ -69,6 +72,38 @@ def test_ordered_snapshot_requires_exact_unique_documents():
         validate_documents((fleet, fleet))
     with pytest.raises(DocumentValidationError, match="required"):
         validate_documents((workspace,))
+
+
+def test_memoized_snapshot_validation_reparses_only_changed_bytes(monkeypatch):
+    """bh-931we: a byte-identical revision is not re-parsed; any change, and every failure,
+    goes through the canonical validator again (a success is the only thing remembered)."""
+    clear_validated_snapshots()
+    seen = []
+    real = hq_document_validation.validate_document
+    monkeypatch.setattr(
+        hq_document_validation,
+        "validate_document",
+        lambda path, content: (seen.append(path), real(path, content))[1],
+    )
+    fleet = FleetConfigDocument("fleet.yaml", "schema_version: 1\n")
+    workspace = FleetConfigDocument("workspace.toml", "# legacy empty provider list\n")
+    validate_documents_memoized((fleet, workspace))
+    validate_documents_memoized((fleet, workspace))
+    assert seen == ["fleet.yaml", "workspace.toml"]
+
+    changed = FleetConfigDocument("fleet.yaml", "schema_version: 1\nmanaged_repos: []\n")
+    validate_documents_memoized((changed, workspace))
+    validate_documents_memoized((workspace, fleet))  # order is part of the identity
+    assert len(seen) == 6
+
+    invalid = FleetConfigDocument("fleet.yaml", "schema_version: 2\n")
+    for _ in range(2):
+        with pytest.raises(DocumentValidationError, match="unsupported_schema_version"):
+            validate_documents_memoized((invalid,))
+    assert seen[-2:] == ["fleet.yaml", "fleet.yaml"]
+    with pytest.raises(DocumentValidationError, match="duplicate_path"):
+        validate_documents_memoized((fleet, fleet))
+    clear_validated_snapshots()
 
 
 def test_beadyard_identity_document_is_validated_in_normal_and_repair_views():

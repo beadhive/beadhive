@@ -2307,6 +2307,12 @@ class SqlControlPlane:
             from .hq_authority_guard import emergency_review_required
 
             emergency = locally_active(record, prefix, self.clock())
+            # The lease names this exact grant, or an archived active predecessor
+            # from a reviewed release rotation of the same identity lineage.
+            same_incarnation = envelope["authority"] == {
+                "frame_id": route.frame_id,
+                **record["authority"],
+            } or guard.same_incumbent_after_rotation(envelope["authority"], route.frame_id, record)
             if (
                 (holder_identity is not None or incumbent_identity is not None)
                 and emergency_review_required(record)
@@ -2316,7 +2322,7 @@ class SqlControlPlane:
             if incumbent_identity is not None:
                 if (
                     incumbent_identity != route.holder_identity
-                    or envelope["authority"] != {"frame_id": route.frame_id, **record["authority"]}
+                    or not same_incarnation
                     or lease.host_id != incumbent_identity
                 ):
                     return revision, None
@@ -2332,7 +2338,7 @@ class SqlControlPlane:
                 )
                 if (
                     holder_identity != route.holder_identity
-                    or envelope["authority"] != {"frame_id": route.frame_id, **record["authority"]}
+                    or not same_incarnation
                     or lease.host_id != holder_identity
                     or (not signed and lease.is_expired(self.clock()))
                     or slot != "active"

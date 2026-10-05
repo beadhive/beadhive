@@ -9,7 +9,9 @@ No validated document is rewritten or normalized here.
 from __future__ import annotations
 
 import re
+import threading
 import tomllib
+from collections import OrderedDict
 from collections.abc import Mapping
 from functools import lru_cache
 from typing import Any
@@ -35,7 +37,7 @@ from .modules.config.contracts import (
     RoutingTierConfig,
     iter_schema_fields,
 )
-from .modules.config.domain.ports import FleetConfigDocument
+from .modules.config.domain.ports import FleetConfigDocument, ordered_documents_digest
 
 _HOST_PATH = re.compile(r"hosts/([A-Za-z0-9_-]+)\.yaml\Z")
 _HIVE_PATH = re.compile(r"hives/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)\.yaml\Z")
@@ -284,6 +286,49 @@ def validate_documents(documents: tuple[FleetConfigDocument, ...]) -> None:
         raise DocumentValidationError("snapshot", "fleet.yaml", "required")
 
 
+#: Ordered-snapshot digests that already passed :func:`validate_documents` in this process.
+#: Bounded: only the current committed revision (plus a few just-superseded ones) is useful.
+_VALIDATED_SNAPSHOTS_MAX = 8
+_validated_snapshots: OrderedDict[str, None] = OrderedDict()
+_validated_snapshots_lock = threading.Lock()
+
+
+def validate_documents_memoized(documents: tuple[FleetConfigDocument, ...]) -> None:
+    """:func:`validate_documents`, skipping a byte-identical snapshot already proven valid.
+
+    Validation is a pure function of the ordered ``(path, content)`` pairs (no env, clock,
+    or ambient settings), so a *success* is keyed by their canonical ordered digest. A
+    failure is never memoized and any content/order/path change is a new key, so this only
+    removes repeated parsing of the same committed revision (bh-931we: ~66 YAML parses per
+    SQL-backed ``config.load()``). It caches no snapshot: callers still read and requalify
+    the committed revision, floor and finite validity on every call.
+    """
+    if not isinstance(documents, tuple) or not all(
+        isinstance(item, FleetConfigDocument)
+        and isinstance(item.path, str)
+        and isinstance(item.content, str)
+        for item in documents
+    ):
+        validate_documents(documents)  # the canonical typed diagnostics
+        return
+    key = ordered_documents_digest(documents)
+    with _validated_snapshots_lock:
+        if key in _validated_snapshots:
+            _validated_snapshots.move_to_end(key)
+            return
+    validate_documents(documents)
+    with _validated_snapshots_lock:
+        _validated_snapshots[key] = None
+        while len(_validated_snapshots) > _VALIDATED_SNAPSHOTS_MAX:
+            _validated_snapshots.popitem(last=False)
+
+
+def clear_validated_snapshots() -> None:
+    """Forget every memoized validation success (tests / explicit invalidation)."""
+    with _validated_snapshots_lock:
+        _validated_snapshots.clear()
+
+
 def validate_repair_carrier(documents: tuple[FleetConfigDocument, ...]) -> None:
     """Check a privileged opaque repair view without granting settings validity.
 
@@ -344,8 +389,10 @@ def validate_repair_carrier(documents: tuple[FleetConfigDocument, ...]) -> None:
 
 __all__ = (
     "DocumentValidationError",
+    "clear_validated_snapshots",
     "validate_document",
     "validate_documents",
+    "validate_documents_memoized",
     "validate_repair_carrier",
     "validate_settings_mapping",
 )

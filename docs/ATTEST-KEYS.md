@@ -280,6 +280,33 @@ may only invalidate more work: it makes unresolved selection an explicit error s
 observe and repair it. Exit 76 is distinct from key UNKNOWN (75) and from the release/decision
 0–3 vocabulary.
 
+### Key order, the evidence precheck, and fail-fast
+
+Keys that must execute run **cheapest first**: each key is ranked by the median wall time of its
+command's last 20 completed runs in the hive's validation ledger. A key with no measured run
+keeps its configured position after the measured ones, so a hive with no history runs in
+catalog order. Ordering is a scheduling hint only; it never changes which keys run or how their
+results combine.
+
+`work.validate.precheck` names an optional cheap command that runs before the first key
+whenever at least one key must execute. This repository uses it for
+`just generated-evidence-check` (`scripts/check_generated_evidence.py`, about 20 s), which checks
+that checked-in generated evidence is current: the config dependency ledger, structural metrics,
+module evidence counts, native impact owners, closure certification, and transport artifacts.
+On drift it names the artifact and the generator to re-run. A red precheck blocks the boundary.
+Unset, nothing extra runs.
+
+```yaml
+work:
+  validate:
+    precheck: just generated-evidence-check
+```
+
+Fail-fast is opt-in per process: `BH_VALIDATION_FAIL_FAST=1` stops launching further keys after
+the first blocking result (a red precheck, a red key, or a required key's UNKNOWN). Keys not
+started are reported as `not run — fail-fast after <key>` and stay unproven, so the boundary
+still fails. Without the variable every key runs and reports, as before.
+
 ## Docs-only timing example
 
 The motivating change, bh-hhpuo, modified two Markdown files and no code. On 2026-09-19 its

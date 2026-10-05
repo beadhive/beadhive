@@ -466,3 +466,240 @@ def test_disabled_key_cannot_satisfy_all_keys_green(monkeypatch) -> None:
     )
 
     assert not selective_validation.all_keys_green({}, {}, "head")
+
+
+# ---- bh-2kodj: cheap-first order, generated-evidence precheck, opt-in fail-fast ----------
+
+_COSTS = {"docs": 9.0, "unit": 3.0, "stateful": 380.0, "integration": 325.0}
+_CATALOG = (
+    {"name": "docs", "cmd": "just docs"},
+    {"name": "unit", "cmd": "just unit"},
+    {"name": "stateful", "cmd": "just stateful"},
+    {"name": "integration", "cmd": "just integration"},
+)
+
+
+def _ordered_run(monkeypatch, runner, *, fail_fast=False, precheck="", keys=_CATALOG):
+    if fail_fast:
+        monkeypatch.setenv(selective_validation.FAIL_FAST_ENV, "1")
+    else:
+        monkeypatch.delenv(selective_validation.FAIL_FAST_ENV, raising=False)
+    monkeypatch.setattr(selective_validation, "historical_costs", lambda *_a: dict(_COSTS))
+    attest = _attest(*keys)
+    monkeypatch.setattr(selective_validation.config, "attest_config", lambda *_: attest)
+    monkeypatch.setattr(selective_validation, "impact_resolver", lambda *_a, **_k: _Resolver())
+    cfg = {"work": {"validate": {"precheck": precheck}}} if precheck else {}
+    return selective_validation.run(
+        {}, cfg, base_rev="base", head_rev="head", repo_path="/repo", runner=runner
+    )
+
+
+def test_cheapest_first_orders_measured_keys_then_unmeasured_in_configured_order() -> None:
+    names = ("stateful", "new-a", "docs", "integration", "new-b", "unit")
+
+    assert selective_validation.cheapest_first(names, _COSTS) == (
+        "unit",
+        "docs",
+        "integration",
+        "stateful",
+        "new-a",
+        "new-b",
+    )
+    assert selective_validation.cheapest_first(names, {}) == names
+
+
+def test_historical_costs_map_ledger_medians_back_to_key_names(monkeypatch) -> None:
+    keys = selective_validation.attest_keys(_attest(*_CATALOG))
+    hash_of = {key.name: selective_validation.validation_ledger.cmd_hash(key.cmd) for key in keys}
+    seen = {}
+
+    def durations(hive, hashes):
+        seen.update(hive=hive, hashes=set(hashes))
+        return {hash_of["unit"]: 3.0, hash_of["stateful"]: 380.0}
+
+    monkeypatch.setattr(selective_validation.validation_records, "command_durations", durations)
+    monkeypatch.setattr("beadhive.registry.hive_dir", lambda _entry: "/hive")
+
+    assert selective_validation.historical_costs({"repo": "x"}, keys) == {
+        "unit": 3.0,
+        "stateful": 380.0,
+    }
+    assert seen == {"hive": "/hive", "hashes": set(hash_of.values())}
+    assert selective_validation.historical_costs({}, keys) == {}
+
+    def unreadable(*_a):
+        raise OSError("ledger gone")
+
+    monkeypatch.setattr(selective_validation.validation_records, "command_durations", unreadable)
+    assert selective_validation.historical_costs({"repo": "x"}, keys) == {}
+
+
+def test_invalidated_keys_run_cheapest_first(monkeypatch, capsys) -> None:
+    calls = []
+
+    rc = _ordered_run(monkeypatch, lambda cmd: calls.append(cmd) or 0)
+
+    assert rc == 0
+    assert calls == ["just unit", "just docs", "just integration", "just stateful"]
+    out = capsys.readouterr().out
+    assert out.index("unit: ran green") < out.index("stateful: ran green")
+
+
+def test_fail_fast_off_by_default_still_runs_every_key_after_a_red_one(monkeypatch, capsys) -> None:
+    calls = []
+
+    rc = _ordered_run(
+        monkeypatch, lambda cmd: calls.append(cmd) or (1 if cmd == "just unit" else 0)
+    )
+
+    assert rc == 1
+    assert calls == ["just unit", "just docs", "just integration", "just stateful"]
+    assert "fail-fast" not in capsys.readouterr().out
+
+
+def test_fail_fast_on_starts_no_further_key_after_a_red_required_key(monkeypatch, capsys) -> None:
+    calls = []
+
+    rc = _ordered_run(
+        monkeypatch,
+        lambda cmd: calls.append(cmd) or (1 if cmd == "just docs" else 0),
+        fail_fast=True,
+    )
+
+    assert rc == 1
+    assert calls == ["just unit", "just docs"]
+    out = capsys.readouterr().out
+    assert "docs: ran red (exit 1)" in out
+    assert "integration: not run — fail-fast after docs (BH_VALIDATION_FAIL_FAST)" in out
+    assert "stateful: not run — fail-fast after docs (BH_VALIDATION_FAIL_FAST)" in out
+
+
+def test_fail_fast_tolerates_an_optional_unknown_key(monkeypatch) -> None:
+    calls = []
+    keys = (
+        {"name": "unit", "cmd": "just unit", "policy": "optional"},
+        {"name": "docs", "cmd": "just docs"},
+    )
+
+    rc = _ordered_run(
+        monkeypatch,
+        lambda cmd: calls.append(cmd) or (75 if cmd == "just unit" else 0),
+        fail_fast=True,
+        keys=keys,
+    )
+
+    assert rc == 0
+    assert calls == ["just unit", "just docs"]
+
+
+def test_fail_fast_switch_parses_only_explicit_truthy_values() -> None:
+    enabled = selective_validation.fail_fast_enabled
+    name = selective_validation.FAIL_FAST_ENV
+
+    assert not enabled({})
+    assert not enabled({name: ""})
+    assert not enabled({name: "0"})
+    assert not enabled({name: "false"})
+    assert all(enabled({name: value}) for value in ("1", "true", "YES", " on "))
+
+
+def test_precheck_runs_before_every_key_and_green_changes_nothing_else(monkeypatch, capsys) -> None:
+    calls = []
+
+    rc = _ordered_run(
+        monkeypatch, lambda cmd: calls.append(cmd) or 0, precheck="just generated-evidence-check"
+    )
+
+    assert rc == 0
+    assert calls[0] == "just generated-evidence-check"
+    assert calls[1:] == ["just unit", "just docs", "just integration", "just stateful"]
+    assert "precheck: ran green" in capsys.readouterr().out
+
+
+def test_red_precheck_blocks_and_names_the_fix_but_default_mode_runs_every_key(
+    monkeypatch, capsys
+) -> None:
+    calls = []
+    precheck = "just generated-evidence-check"
+
+    rc = _ordered_run(
+        monkeypatch,
+        lambda cmd: calls.append(cmd) or (1 if cmd == precheck else 0),
+        precheck=precheck,
+    )
+
+    assert rc == 1
+    assert calls == [precheck, "just unit", "just docs", "just integration", "just stateful"]
+    out = capsys.readouterr().out
+    assert "✗ precheck: ran red (exit 1)" in out
+    assert "re-run the generator it names" in out
+
+
+def test_red_precheck_with_fail_fast_starts_no_key(monkeypatch, capsys) -> None:
+    calls = []
+    precheck = "just generated-evidence-check"
+
+    rc = _ordered_run(
+        monkeypatch,
+        lambda cmd: calls.append(cmd) or (1 if cmd == precheck else 0),
+        precheck=precheck,
+        fail_fast=True,
+    )
+
+    assert rc == 1
+    assert calls == [precheck]
+    out = capsys.readouterr().out
+    assert out.count("not run — fail-fast after precheck") == len(_CATALOG)
+
+
+def test_precheck_is_skipped_when_no_key_needs_to_run(monkeypatch, capsys) -> None:
+    calls = []
+    ledger = selective_validation.validation_ledger
+
+    def current(_entry, rev, key, cfg=None):  # noqa: ARG001
+        return ledger.KeyVerdict(
+            key.name, rev, "cmd-hash", ledger.KeyVerdictState.CURRENT, {"exit_code": 0}
+        )
+
+    monkeypatch.setattr(ledger, "key_verdict", current)
+    monkeypatch.setattr(ledger, "is_qualifying_green", lambda record: record["exit_code"] == 0)
+
+    rc = _ordered_run(
+        monkeypatch, lambda cmd: calls.append(cmd) or 1, precheck="just generated-evidence-check"
+    )
+
+    assert rc == 0
+    assert calls == []
+    assert "precheck" not in capsys.readouterr().out
+
+
+def test_unconfigured_precheck_reads_as_empty() -> None:
+    assert selective_validation.precheck_cmd({}, {}) == ""
+    assert (
+        selective_validation.precheck_cmd({}, {"work": {"validate": {"precheck": " just pre "}}})
+        == "just pre"
+    )
+
+
+def test_precheck_and_reordered_keys_all_resolve_from_the_run_cfg(monkeypatch) -> None:
+    """bh-931we x bh-2kodj: the precheck and every cheapest-first key run inside the selective
+    run's cfg scope, so none of their git/ledger reads reloads config; the scope ends with it."""
+    from beadhive import identity
+
+    scoped = []
+    rc = _ordered_run(
+        monkeypatch,
+        lambda cmd: scoped.append((cmd, identity._scoped_config.get() is not None)) or 0,
+        precheck="just generated-evidence-check",
+    )
+
+    assert rc == 0
+    assert scoped[0] == ("just generated-evidence-check", True)
+    assert [cmd for cmd, _ in scoped[1:]] == [
+        "just unit",
+        "just docs",
+        "just integration",
+        "just stateful",
+    ]
+    assert all(in_scope for _, in_scope in scoped)
+    assert identity._scoped_config.get() is None

@@ -16,7 +16,7 @@
     "successor_contracts": "beadhive.modules.config.contracts"
   },
   "current": {
-    "config_patch_point_count": 328,
+    "config_patch_point_count": 329,
     "config_patch_points": [
       {
         "facade_target": "beadhive.config.save_fleet",
@@ -588,28 +588,28 @@
       {
         "facade_target": "beadhive.config.fleet_snapshot",
         "kind": "direct-facade",
-        "line": 165,
+        "line": 215,
         "path": "tests/test_fleet_config_consumers.py",
         "target": "beadhive.config.fleet_snapshot"
       },
       {
         "facade_target": "beadhive.config.hq_dir",
         "kind": "direct-facade",
-        "line": 531,
+        "line": 581,
         "path": "tests/test_fleet_config_consumers.py",
         "target": "beadhive.config.hq_dir"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 579,
+        "line": 629,
         "path": "tests/test_fleet_config_consumers.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 609,
+        "line": 659,
         "path": "tests/test_fleet_config_consumers.py",
         "target": "beadhive.config.load_host"
       },
@@ -938,56 +938,56 @@
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 176,
+        "line": 228,
         "path": "tests/test_hq_authority_backend.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 177,
+        "line": 229,
         "path": "tests/test_hq_authority_backend.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.hq_dir",
         "kind": "direct-facade",
-        "line": 178,
+        "line": 230,
         "path": "tests/test_hq_authority_backend.py",
         "target": "beadhive.config.hq_dir"
       },
       {
         "facade_target": "beadhive.config.home",
         "kind": "direct-facade",
-        "line": 179,
+        "line": 231,
         "path": "tests/test_hq_authority_backend.py",
         "target": "beadhive.config.home"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 2168,
+        "line": 2242,
         "path": "tests/test_hq_authority_backend.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 2169,
+        "line": 2243,
         "path": "tests/test_hq_authority_backend.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 2421,
+        "line": 2495,
         "path": "tests/test_hq_authority_backend.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 2430,
+        "line": 2504,
         "path": "tests/test_hq_authority_backend.py",
         "target": "beadhive.config.load_host"
       },
@@ -2037,14 +2037,14 @@
       {
         "facade_target": "beadhive.config.validation_mode",
         "kind": "direct-facade",
-        "line": 5929,
+        "line": 5969,
         "path": "tests/test_work.py",
         "target": "beadhive.config.validation_mode"
       },
       {
         "facade_target": "beadhive.config.max_commits",
         "kind": "direct-facade",
-        "line": 7132,
+        "line": 7205,
         "path": "tests/test_work.py",
         "target": "beadhive.config.max_commits"
       },
@@ -2131,6 +2131,13 @@
         "line": 805,
         "path": "tests/test_work_reads.py",
         "target": "beadhive.work.config.release_fix_churn_budget"
+      },
+      {
+        "facade_target": "beadhive.config.load",
+        "kind": "direct-facade",
+        "line": 296,
+        "path": "tests/test_workspace_root.py",
+        "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
@@ -2856,7 +2863,7 @@
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       }
     ],
-    "test_config_importer_count": 158,
+    "test_config_importer_count": 159,
     "test_config_importers": [
       "tests/contracts/test_config_contract_compatibility.py",
       "tests/contracts/test_config_resolution_compatibility.py",
@@ -3008,6 +3015,7 @@
       "tests/test_toolchain.py",
       "tests/test_validation_bypass.py",
       "tests/test_work.py",
+      "tests/test_work_container_refresh_int.py",
       "tests/test_work_next.py",
       "tests/test_work_reads.py",
       "tests/test_work_refine_int.py",
