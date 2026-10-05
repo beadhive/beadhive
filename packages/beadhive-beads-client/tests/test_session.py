@@ -355,3 +355,40 @@ def test_batch_apply_posts_the_ordered_plan_and_resolves_keys() -> None:
     ]
     posted = seen[-1]
     assert posted.headers["Content-Type"] == "application/json"
+
+
+def test_writes_use_the_write_deadline_and_reads_the_request_deadline() -> None:
+    """bh-t0con: a write must not inherit the (short) read/probe deadline."""
+    deadlines: dict[str, float] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        deadlines[f"{request.method} {request.url.path}"] = request.extensions["timeout"]["read"]
+        if request.url.path == "/healthz":
+            return httpx.Response(200, json={"status": "ok"})
+        if request.url.path == "/v0/beads/context":
+            return httpx.Response(200, json=context())
+        if request.method == "POST":
+            raise httpx.ReadTimeout("slow")
+        return httpx.Response(200, json={"items": [], "has_more": False})
+
+    with BeadsSession(
+        RemoteEndpoint("http://127.0.0.1:8080", timeout_seconds=5.0, write_timeout_seconds=90.0),
+        ExpectedContext("expected", "scratch"),
+        transport=httpx.MockTransport(handler),
+    ) as session:
+        session.list_issues(limit=1)
+        with pytest.raises(IndeterminateWrite):
+            session.create_issue(CreateIssueRequest(actor="agent", title="one"))
+    assert deadlines["GET /healthz"] == 5.0
+    assert deadlines["GET /v0/beads/issues"] == 5.0
+    assert deadlines["POST /v0/beads/issues"] == 90.0
+
+
+def test_service_spec_separates_probe_and_write_deadlines() -> None:
+    from beadhive_beads_client import service
+
+    fields = service.ServiceSpec.__dataclass_fields__
+    assert fields["probe_seconds"].default == 5.0
+    assert fields["write_seconds"].default >= 60.0
+    assert fields["write_seconds"].default > fields["request_seconds"].default
+    assert RemoteEndpoint("http://127.0.0.1:1").write_timeout_seconds >= 60.0
