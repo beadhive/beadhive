@@ -1,6 +1,6 @@
 # External issue intake, triage, and human communication
 
-**Status:** Initial design ideas, 2026-10-04; split from [Bead groups](BEAD_GROUPS.md) on
+**Status:** Initial design ideas, 2026-10-04; split from [Bead groups](../BEAD_GROUPS.md) on
 2026-10-05. This document proposes a workflow and skill boundaries; it does not add commands,
 state vocabulary, comment synchronization, or automation.
 
@@ -152,13 +152,14 @@ Do not overwrite the reporter's description to turn it into an evolving internal
 Conflicting human label/state edits need field ownership and reconciliation policy, rather
 than letting the last broad sync arbitrarily win.
 
-Record the local transition and durable communication intent in Beads, with a private
-outbox representation and reconciliation for interrupted writes. The deterministic sender
-applies the same destination, group, binding, and update-only guards [proposed for `bh bd`][guarded-sync],
-plus the content projection policy. Existing issue updates and a new comment on an existing
-issue are permitted operations; creating a new external issue remains explicit enrollment.
-Human approval follows configured publication policy and existing contributor gates, rather
-than requiring a fresh approval for each authorized routine status message.
+Record the local transition and durable communication intent in Beads, with a private outbox
+representation and reconciliation for interrupted writes. The deterministic sender applies
+the same destination, group, binding, and update-only guards [proposed for `bh
+bd`][guarded-sync], plus the content projection policy. Existing issue updates and a new
+comment on an existing issue are permitted operations; creating a new external issue remains
+explicit enrollment. Human approval follows configured publication policy and existing
+contributor gates, rather than requiring a fresh approval for each authorized routine status
+message.
 
 Delivery needs retry and deduplication semantics. Use a stable identity for each binding,
 semantic event, and source revision; persist remote comment IDs and delivery receipts.
@@ -224,7 +225,7 @@ separate implementation decisions.
   [GitHub field mapping][github-mapping] at Beads v1.3.0 (unchanged in v1.3.1).
 - GitHub [webhook events][github-events] and [issue-comment APIs][github-comments].
 
-[guarded-sync]: BEAD_GROUPS.md#guarded-tracker-sync-through-bh-bd
+[guarded-sync]: ../BEAD_GROUPS.md#guarded-tracker-sync-through-bh-bd
 [tracker-engine]: https://github.com/gastownhall/beads/blob/v1.3.0/internal/tracker/engine.go
 [github-tracker]: https://github.com/gastownhall/beads/blob/v1.3.0/internal/github/tracker.go
 [github-mapping]: https://github.com/gastownhall/beads/blob/v1.3.0/internal/github/mapping.go

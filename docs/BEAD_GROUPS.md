@@ -2,15 +2,15 @@
 
 **Status:** Long-term conceptual proposal, 2026-10-04; revised 2026-10-05 to map the proposal
 onto upstream's draft Bead Protocol (BDP) and Memory Beads work, and to move external intake
-into [its own design](external-issue-intake.md). This captures the desired direction for
+into [its own design](design/external-issue-intake.md). This captures the desired direction for
 Beadhive; it is not an implemented contract or an accepted upstream Beads design.
 
 **Reader:** Beadhive maintainers and potential upstream collaborators. After reading, they
 should be able to distinguish project identity, bead ownership, storage, access, and sync,
 and assess an implementation against the proposed boundaries.
 
-Related context: [current hive model](../HIVES.md), [current project design](../DESIGN.md),
-[current aggregate hub](../HUB.md), and [upstream direction](#2-relationship-to-upstream-direction)
+Related context: [current hive model](HIVES.md), [current project design](DESIGN.md),
+[current aggregate hub](HUB.md), and [upstream direction](#2-relationship-to-upstream-direction)
 below.
 
 ## 1. North star
@@ -341,9 +341,10 @@ an actor who can reconfigure and publish the database.
 
 External SQL-server storage and the experimental proxied `--team-server` integration are
 also present. The preview integration branch adds `bd serve --readonly`, a BDP HTTP read
-endpoint; it is not in a release. In team-server mode schema and identity are provisioned externally; the client
-verifies them. `--team` is a setup wizard and is distinct from `--team-server`. This establishes
-deployment support, not evidence that the external service supplies the proposed group ACLs.
+endpoint; it is not in a release. In team-server mode schema and identity are provisioned
+externally; the client verifies them. `--team` is a setup wizard and is distinct from
+`--team-server`. This establishes deployment support, not evidence that the external service
+supplies the proposed group ACLs.
 Sources: [initialization][init-source] and [team-server initialization][team-init-source].
 
 The [replication implementation][remote-source] calls Dolt push with a remote and branch.
@@ -427,7 +428,7 @@ independent replication, or incompatible connector settings.
 ### Guarded tracker sync through `bh bd`
 
 This is a proposed Beadhive contract, not existing passthrough behavior. The
-[current passthrough](../PASSTHROUGH.md) already centralizes other managed-operation guards;
+[current passthrough](PASSTHROUGH.md) already centralizes other managed-operation guards;
 tracker publication should follow that pattern. Higher-level `bh` verbs must invoke the
 same guard rather than provide an alternate unscoped path. Ordinary managed tracker sync
 should mean **pull plus update**, with external creation reserved for explicit enrollment.
@@ -685,7 +686,8 @@ version assessed here. Live documentation may change after this proposal.
   [database-name checks][database-name-source], [prefix admission][prefix-validation],
   [prefix rename][rename-prefix-source], and [doctor prefix checks][doctor-source].
 - [Repo hydration][repo-source], [database push][remote-source], [issue schema][issue-schema],
-  [issue fields][types-source], [ID rename][rename-source], and [ignored local tables][ignored-schema].
+  [issue fields][types-source], [ID rename][rename-source], and
+  [ignored local tables][ignored-schema].
 - [Canonical ignored-table patterns][ignored-patterns].
 - [GitHub integration][github-source], [Linear integration][linear-source],
   [tracker selection flags][selection-source], and [tracker sync engine][tracker-engine].
