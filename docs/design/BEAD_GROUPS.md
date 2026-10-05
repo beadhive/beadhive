@@ -1,14 +1,17 @@
-# Bead groups: a north star for project issue collections
+# Bead groups: a north star for project bead collections
 
-**Status:** Long-term conceptual proposal, 2026-10-04. This captures the desired direction
-for Beadhive; it is not an implemented contract or an accepted upstream Beads design.
+**Status:** Long-term conceptual proposal, 2026-10-04; revised 2026-10-05 to map the proposal
+onto upstream's draft Bead Protocol (BDP) and Memory Beads work, and to move external intake
+into [its own design](external-issue-intake.md). This captures the desired direction for
+Beadhive; it is not an implemented contract or an accepted upstream Beads design.
 
 **Reader:** Beadhive maintainers and potential upstream collaborators. After reading, they
 should be able to distinguish project identity, bead ownership, storage, access, and sync,
 and assess an implementation against the proposed boundaries.
 
 Related context: [current hive model](../HIVES.md), [current project design](../DESIGN.md),
-and [current aggregate hub](../HUB.md).
+[current aggregate hub](../HUB.md), and [upstream direction](#2-relationship-to-upstream-direction)
+below.
 
 ## 1. North star
 
@@ -24,7 +27,7 @@ A contributor's checkout often calls their fork `origin` and the canonical proje
 
 A source origin may be public or private. The default bead-storage mode publishes project
 beads through `refs/dolt/data` on that origin, inheriting the repository's access policy.
-This is a convenient default, not a requirement that source and issues share permissions.
+This is a convenient default, not a requirement that source and beads share permissions.
 
 An alternative mode detaches bead storage from source hosting entirely. The authoritative
 bead endpoint might be a Beads team server, DoltHub, a private Git remote, or another
@@ -34,22 +37,24 @@ choosing a service does not by itself configure durable backup or cross-machine 
 
 ### A hive has multiple associated bead groups
 
-A **bead group** is an independently governed collection of issues associated with a hive.
-The core group contains issues authored directly by people or agents. Core issues need
+A **bead group** is an independently governed collection of beads associated with a hive.
+A group holds beads of any type: tasks, decisions, memories, and goals, not only issues.
+The core group contains beads authored directly by people or agents. Core beads need
 never exist in an external issue tracker. Other groups may contain private planning,
-upstream issues, or mirrors of named external trackers.
+shared team knowledge, upstream beads, or mirrors of named external trackers.
 
 The association means the work concerns this project. It does not imply that the project
 maintainers own every group or can read, edit, or publish all its contents. A planning group
-may also concern several hives; whether associations are many-to-many is an open design
-choice. Group identity should not depend on its current list of project associations.
+may also concern several hives. A team knowledge group, holding the policies and decisions
+that several projects' work cites, is the clearest case for many-to-many association. Group
+identity should not depend on its current list of project associations.
 
 ### Dimensions that must remain independent
 
 | Dimension | Question answered | Examples |
 |---|---|---|
 | Hive identity | Which source project does the work concern? | Canonical project Git location |
-| Group identity | Which durable issue collection is this? | Core, personal planning, named tracker mirror |
+| Group identity | Which durable bead collection is this? | Core, personal planning, named tracker mirror |
 | Authority | Who controls canonical changes to this group? | Project maintainers, a private team, an upstream project |
 | Actor capabilities | What may this actor do here? | Read, claim, edit, create, submit proposals, publish |
 | Audience | Who is allowed to access the group's data? | Public, organization, team, individual |
@@ -72,6 +77,7 @@ to a particular group, not a property that makes all groups in a checkout read-o
 | GitHub mirror | Defined by its connector and source policy | Explicit destinations | Pull-only or bidirectional |
 | Linear mirror | Defined by its connector and source policy | Explicit destinations | Pull-only or bidirectional |
 | Upstream replica | Upstream project | Upstream-authorized replication | Native Beads source |
+| Team knowledge | A team, across several hives | Team destinations only | None required |
 
 The names and prefixes in examples are proposals, not current Beadhive configuration keys.
 For bidirectional tracker groups, authority may be divided by field or operation. The
@@ -83,7 +89,7 @@ that whichever side synced last owns the whole record.
 The desired experience is to work with core beads and external groups alongside one another,
 potentially in the same Dolt database. Each group should have its own permitted replication
 destinations and tracker bindings. Sending a mirrored group to its tracker must not send
-unrelated core issues there.
+unrelated core beads there.
 
 The managed operator interface is `bh bd` and higher-level `bh` verbs wrapping the same
 guards. Project guidance should strongly discourage raw `bd` for managed workflows.
@@ -108,41 +114,84 @@ records and fields into another issue model. They must be configured separately 
 the interface presents both as sync destinations.
 
 Publication covers comments, dependencies, attachments, metadata, and history as well as
-the current issue rows. Cross-group edges need an explicit disclosure policy. A private
-dependency's title or description must not appear in a public issue merely because both
+the current bead rows. Cross-group edges need an explicit disclosure policy. A private
+dependency's title or description must not appear in a public bead merely because both
 are visible in the author's local working view. Retraction cannot undo data already copied
 to a public destination.
+
+Upstream's draft protocol shows the tradeoff a disclosure policy has to take a position on.
+In BDP, a bead's *owned* outgoing links are part of its versioned state, so an authorization
+view that hides a target must also hide every bead owning a link to it: "a Memory that cites
+a hidden Bead is hidden with it." That rule cannot leak a private citation, but it also hides
+public knowledge that happens to cite private work. A disclosure policy should let a group
+publish such a bead with the private edge withheld or replaced by an opaque reference, rather
+than forcing a choice between leaking the edge and withholding the bead.
+
+Replication must preserve history, not only current state. Bead version history is the record
+of when each lifecycle transition happened, so a destination that receives only snapshots, or
+a store that compacts its history away, loses that record permanently. BDP draws the needed
+distinction: **retention** removal is a per-store fact that does not propagate, so an archive
+replica may legitimately keep more history than the authority; **erasure** of content that
+must not exist propagates to every copy. A group's replication binding should be able to name
+an archive destination whose retention is longer than the working store's.
 
 ### Contribution without owning upstream beads
 
 An operator working in a personal fork may read upstream's beads without permission to
-create or change canonical upstream issues. They should still be able to author their own
-planning and work notes in a group they control, and work against upstream issues.
+create or change canonical upstream beads. They should still be able to author their own
+planning and work notes in a group they control, and work against upstream beads.
 
 One possible mechanism is an overlay: local activity and proposed changes reference an
 upstream bead while upstream's canonical record remains owned by upstream. An overlay is a
 proposed feature, not a claim about how Beads currently routes claims or updates.
 
-Direct issue proposals should also be possible without requiring an external tracker:
+Direct bead proposals should also be possible without requiring an external tracker:
 
 1. Author a report in a group the contributor can write.
 2. Submit the report to the upstream group's contribution endpoint.
 3. Upstream accepts, rejects, or requests changes under its own policy.
 4. Acceptance creates or adopts an upstream-owned bead with explicit lineage to the report.
 
-If upstream grants direct issue-creation rights, the actor may create there directly.
+If upstream grants direct bead-creation rights, the actor may create there directly.
 Submission rights should not require general database publication rights. The precise
 acceptance and identity-transfer semantics remain open.
+
+### Every bead has a lifecycle, and history is its journal
+
+Beads differ in how long they live, not in whether they have a lifecycle. A task may open and
+close within a day; a decision stays current until superseded; a memory may stay current for
+years before it is retired. All of them are nodes in one temporal graph whose changes form a
+journal of events.
+
+This proposal distinguishes **lifecycle phase** from **workflow readiness**:
+
+- **Lifecycle phase** is universal. Every bead type declares its phases, for example
+  open → in progress → closed for a task, or current → superseded or retired for a memory. A
+  phase change is a recorded transition event, not an anonymous property edit.
+- **Workflow readiness** (ready, blocked, claimable) applies only to work. A memory or decision
+  having a lifecycle does not make it dispatchable, and a blocking edge to it remains invalid.
+
+Retiring a bead is a phase transition, not a deletion. The retired bead stays readable, keeps
+its links, and can name its successor, so the graph at any past time remains reconstructable.
+Deletion is for a bead that should not exist; erasure is for content that must not exist.
+
+Time has two axes. **Commit time** records when the store learned of a change. **Occurrence
+time** records when it happened in the world, for example when an imported tracker issue was
+opened, or when backfilled work actually started. Both are needed to ask what the graph looked
+like at a given time.
 
 ### Identity beyond readable prefixes
 
 There is no globally coordinated prefix allocator. Unrelated groups can legitimately choose
-the same prefix, and federation must not merge their issues on that basis. Prefixes should
+the same prefix, and federation must not merge their beads on that basis. Prefixes should
 be readable aliases secondary to durable identity.
 
 A candidate identity model is an immutable pair `(group_id, bead_id)`, with a globally unique
 group identifier and a bead identifier unique within that group. The exact allocation
-scheme and serialization are open. For example:
+scheme and serialization are open. Upstream's draft BDP takes a related form: a bead's
+canonical identity is its Scope's base URL plus an immutable local ID, never reused; readable
+names are repointable aliases (see [section 2](#2-relationship-to-upstream-direction)). For
+example:
 
 | Form | Illustrative spelling | Purpose |
 |---|---|---|
@@ -152,13 +201,16 @@ scheme and serialization are open. For example:
 
 The qualified spelling is also an alias: project names and group names can change. Graph
 edges should carry canonical identities. An ambiguous local alias requires qualification;
-it must never silently select a different issue. Alias scope, historical aliases, and
+it must never silently select a different bead. Alias scope, historical aliases, and
 allocation authority should be explicit.
 
 A replica preserves the same group identity. An independent group fork receives a new
 identity with recorded lineage. A tracker mirror records its external binding; that binding
 does not automatically make a tracker record and a bead the same globally canonical object.
 Source-host migration, prefix changes, and remote changes should not rewrite canonical IDs.
+This is the main difference from current BDP, which fuses identity with the canonical URL and
+so treats relocation as a different logical Scope or a redirect. Whether identity can be
+separated from location is the open upstream question in [bdp#2][bdp-2].
 
 ### Decisions still open
 
@@ -170,18 +222,63 @@ This proposal captures direction rather than settling every mechanism. In partic
 - Whether co-located authoritative groups warrant native replication support or should remain
   separate stores behind a unified interface.
 - Which cross-group facts may be disclosed and how unavailable dependencies affect readiness.
+- Which lifecycle phases each bead type declares, and how retirement and supersession are
+  represented, if upstream keeps deletion as the only way to retire a memory.
 - How tracker field authority, divergence, deletions, and offline edits are reconciled.
 
 The invariant is that project association, readable naming, and storage location must not
 silently determine ownership, permissions, or publication.
 
-## 2. What Beads v1.3.0 can support today
+## 2. Relationship to upstream direction
+
+Upstream is designing much of the substrate this proposal needs. As of 2026-10-05 none of it
+has landed in a Beads release; the work lives in a draft protocol, a feature proposal, and a
+preview integration branch that its authors warn is for new projects only.
+
+- The [Beads roadmap][roadmap] (last edited 2026-06-09, before the work below) aims Beads 2.0
+  at stability, a simplified schema v2, and decoupling the database from Git repositories so
+  that "cross-project Beads usage" becomes "a first-class feature." That supports the detached
+  storage mode in section 1.
+- The [Memory Beads proposal][memory-proposal] (Rev 4, 2026-09-22) adds memories as a first-class
+  bead type in the same graph as tasks, with links, keys as names, and addressable versions.
+- The draft [Bead Protocol (BDP) v0][bdp-spec] defines the shared data model and HTTP protocol:
+  typed beads and links, Scopes, revisions, history, events, and changefeed replication. The
+  [announcement post][gascity-post] (2026-10-01) summarizes the preview.
+
+### Concept mapping
+
+| This proposal | Upstream draft | Agreement or gap |
+|---|---|---|
+| Bead group | BDP **Scope**: a bounded graph with one authority and one history; every bead and link belongs to exactly one Scope; a service may host many Scopes | Close match. Authoritative co-location becomes several Scopes on one service, each with an independent history |
+| Canonical identity `(group_id, bead_id)` | Scope base URL plus an immutable local ID, never reused after deletion | Agree on immutability and non-reuse. BDP fuses identity with location; separable identity is open in [bdp#2][bdp-2] |
+| Qualified and local aliases | BDP `alias/` root: repointable, reusable locators resolved to canonical IDs at write time; Memory R2 keys | Match |
+| Per-group authorization | BDP Authorization Views: one per-principal projection of a Scope, closed over owned links | Protocol concept only; no realization in a Beads release |
+| Group-scoped replication | Per-Scope snapshots and changefeed (Transactional profile); retention removal does not propagate, erasure does | Match, including the archive-replica case |
+| Cross-group edges | Cross-Scope References: opaque URIs, accepted without resolving the target; Memory R19 reports an unreachable target as unavailable, not gone | Match. Indexing links whose endpoints are both external is deferred |
+| Stale replicas reported honestly | Strict reads: a replica that is behind must route, wait, or fail rather than serve older state as current | Match |
+| Lifecycle phase for every bead | Readiness, claiming, and closing are client concerns; types cannot declare events; a Memory "has no workflow-state dimension" | **Divergence** |
+| Retirement as a phase | Memory retirement is deletion with history; links that followed the current state are removed and are not restored | **Divergence** |
+| Commit and occurrence time | `changeContext.committedAt` (commit time only, under the optional History capability); callers supply no timestamp | **Gap**: no occurrence time |
+| History as a durable journal | Events only in the Transactional profile; History optional; minimum retention guarantees deferred | **Gap**: no retention floor |
+| Tracker connectors, update-only push, contribution proposals | Not addressed | Beadhive or later upstream work |
+
+BDP and Memory Beads remain drafts. This proposal tracks them as the preferred upstream
+mechanisms where they match, and treats the divergences as positions to argue upstream rather
+than as settled constraints.
+
+## 3. What Beads v1.3.x can support today
 
 ### Research baseline and intended upstream usage
 
 This assessment was researched on 2026-10-04 against the [v1.3.0 source tag][release], the
 official documentation site, and command help from the installed `bd version 1.3.0
-(f45b249ce)`. Source inspection establishes implementation behavior; this research did not
+(f45b249ce)`. v1.3.1 (2026-09-30) was already the latest release. A tag comparison on
+2026-10-05 found every cited source file unchanged in v1.3.1 apart from the changelog, so the
+assessment applies to v1.3.1. One [v1.3.1 change][changelog-131] bears on history: with
+`dolt.auto-commit=batch` or `off`, proxied-server writes no longer create one Dolt commit
+each, so several transitions can share one history version until `bd dolt commit`. Version
+diffs are therefore not a complete transition journal under those settings.
+Source inspection establishes implementation behavior; this research did not
 exercise live tracker accounts, a team-server deployment, or remote publication. Those
 combinations need deployment-specific validation before a workaround is shipped.
 
@@ -226,7 +323,7 @@ stated guarantee cannot be obtained from unmodified v1.3.0 mechanisms alone.
 | Submit a bead proposal without broad upstream write rights | Missing as a native protocol | A Beadhive service or manual maintainer-mediated transfer could supply it |
 | Canonical issue identity independent of its prefix | Missing natively; wrapper approximation | Maintain an external identity/alias map, while Beads still keys records by the readable ID |
 | Two unrelated identical issue IDs in one aggregate database | Missing without projection/remapping | The issue primary key is the ID string, not `(source, ID)` |
-| Per-group authorization inside one database | Missing in the inspected Beads group model | Use separate access boundaries or a mediating service; no native bead-group ACL was found |
+| Per-group authorization inside one database | Missing in v1.3.x | Use separate access boundaries or a mediating service. BDP's Authorization Views define a per-principal projection, but only as draft protocol |
 | Group overlays and a super-global graph | Wrapper approximation | Resolve identity and overlays above Beads; native dependencies do not implement this model |
 
 The evidence and constraints behind these classifications follow. They are limits of
@@ -243,7 +340,8 @@ is configured. These are useful controls for a detached deployment, not enforcem
 an actor who can reconfigure and publish the database.
 
 External SQL-server storage and the experimental proxied `--team-server` integration are
-also present. In team-server mode schema and identity are provisioned externally; the client
+also present. The preview integration branch adds `bd serve --readonly`, a BDP HTTP read
+endpoint; it is not in a release. In team-server mode schema and identity are provisioned externally; the client
 verifies them. `--team` is a setup wizard and is distinct from `--team-server`. This establishes
 deployment support, not evidence that the external service supplies the proposed group ACLs.
 Sources: [initialization][init-source] and [team-server initialization][team-init-source].
@@ -406,7 +504,8 @@ For newly allocated Beadhive aliases, lowercase ASCII with single internal hyphe
 should be preserved where possible. `rename-prefix --repair` consolidates namespaces and
 must not be offered as generic repair for an intentionally multi-prefix collection.
 
-The [issue schema][issue-schema] keys issues by `id VARCHAR(255)`. `source_repo` is a separate
+In v1.3.x the [issue schema][issue-schema] keys issues by `id VARCHAR(255)`; the preview
+graph store uses canonical paths instead. `source_repo` is a separate
 field, not part of that primary key. The column bounds the full ID, including prefix,
 separator, and any hierarchical suffix, rather than defining a 255-character prefix policy.
 Short hashes reduce accidental collisions; they do not
@@ -468,7 +567,7 @@ groups, prefix-independent graph identity, reliable group-aware mutation routing
 reviewed contribution submission. Any cross-store readiness calculation or write-through
 aggregate would be an explicit Beadhive feature with coverage and freshness semantics.
 
-## 3. Changes needed to reach the north star
+## 4. Changes needed to reach the north star
 
 ### Beadhive changes that can precede upstream work
 
@@ -505,23 +604,28 @@ against unrestricted raw SQL, raw `bd`, or remote administrators with broader ri
 
 ### Potential upstream or backend changes
 
-| Area | Potential change | Guarantee it would establish |
-|---|---|---|
-| Group model | First-class immutable group ID and group membership on every issue and related record | Ownership remains explicit when groups share storage |
-| Canonical identity | Immutable bead key separate from aliases; canonical graph endpoints | Prefix changes and namespace collisions do not change identity |
-| Allocation and resolution | Group-aware allocation, qualified lookup, alias history, deterministic ambiguity errors | Native operations select the intended issue and authority |
-| Access enforcement | Group-scoped authorization at the service boundary, including related data and history reads | Read/create/edit/claim/submit/publish rights can differ by group |
-| Replication | Group-scoped replication/export protocol or independent histories per group | Destinations receive only authorized group data and history |
-| Tracker connections | Multiple named connector bindings with stable external IDs and field-level reconciliation | Core and mirror groups sync independently without overwriting one binding |
-| Update-only tracker push | Native mode that rejects absent/foreign bindings and never falls back to create, with destination validation at mutation time | Routine updates cannot accidentally enroll or rebind a bead through the native creation path |
-| Contributions | Proposal ingestion and reviewed acceptance separate from general write access | Contributors can submit beads directly to upstream |
-| Aggregation | Explicit replica/cache semantics and authoritative mutation routing | Imported rows are not mistaken for writable canonical records |
-| Graph federation | Canonical cross-group references, resolution, disclosure policy, and partial-readiness semantics | A global graph works with disconnected or inaccessible authorities |
+| Area | Potential change | Guarantee it would establish | Upstream draft status |
+|---|---|---|---|
+| Group model | First-class immutable group identity and membership for every bead and related record | Ownership remains explicit when groups share storage | BDP Scope |
+| Canonical identity | Immutable bead key separate from aliases and from location; canonical graph endpoints | Prefix changes, host migration, and namespace collisions do not change identity | BDP canonical URL; location independence open ([bdp#2][bdp-2]) |
+| Allocation and resolution | Group-aware allocation, qualified lookup, alias history, deterministic ambiguity errors | Native operations select the intended bead and authority | BDP aliases; Memory keys |
+| Access enforcement | Group-scoped authorization at the service boundary, including related data and history reads | Read/create/edit/claim/submit/publish rights can differ by group | BDP Authorization Views |
+| Replication | Group-scoped replication/export protocol or independent histories per group | Destinations receive only authorized group data and history | BDP per-Scope changefeed |
+| Lifecycle phase | Type-declared lifecycle phases with a generic transition event, separate from workflow readiness | Every bead's transitions are a journal a generic client can read | None; Memory proposal declines it |
+| Retirement | Retirement and supersession as a phase that keeps the bead and its links | Past states of the graph remain reconstructable | None; retirement is deletion with history |
+| Occurrence time | Optional caller-supplied occurrence time beside commit time; time-based reads | Imported and backfilled history keeps when things happened | Commit time only |
+| History retention | An advertised retention floor, including archival, and a minimal event view below the full replication profile | History survives as the lifecycle journal | Deferred in BDP |
+| Tracker connections | Multiple named connector bindings with stable external IDs and field-level reconciliation | Core and mirror groups sync independently without overwriting one binding | None |
+| Update-only tracker push | Native mode that rejects absent/foreign bindings and never falls back to create, with destination validation at mutation time | Routine updates cannot accidentally enroll or rebind a bead through the native creation path | None |
+| Contributions | Proposal ingestion and reviewed acceptance separate from general write access | Contributors can submit beads directly to upstream | None |
+| Aggregation | Explicit replica/cache semantics and authoritative mutation routing | Imported rows are not mistaken for writable canonical records | BDP strict reads |
+| Graph federation | Canonical cross-group references, resolution, disclosure policy, and partial-readiness semantics | A global graph works with disconnected or inaccessible authorities | BDP cross-Scope References; cross-Scope indexing deferred |
 
 Native group-scoped replication cannot be achieved merely by adding a `group_id` column.
 Every synchronized relation, journal, tombstone, configuration record, attachment, and
 historical revision needs a defined boundary. Options include independent group databases,
 separate independently rooted histories, or a new application-level replication protocol.
+BDP's per-Scope history is the independently rooted option.
 Keeping database-wide Dolt push while adding only current-row filtering would fail the
 required publication guarantee.
 
@@ -554,232 +658,27 @@ The following scenarios define useful acceptance evidence:
 - Missing or stale group replicas produce explicit coverage/readiness states rather than
   disappearing blockers or fabricated canonical state.
 - Legacy single-group hives retain their IDs, default routing, and publication behavior.
+- Retiring a bead keeps it readable with its links, and a read of the graph as of an earlier
+  time shows it in its earlier phase.
+- An archive replica retains history that the working store's retention policy has removed,
+  while an erasure still reaches it.
+- An imported or backfilled record keeps its original occurrence time distinct from the
+  time the store recorded it.
 
 The first viable step is the registry and guarded operation layer, using a private mixed
 store for tracker projections and separate stores where database permissions or replication
 must differ. Authoritative co-location with independent database permissions and history
 publication should follow only once its backend guarantees are specified and verified.
 
-## Appendix A. External issue intake, triage, and human communication
-
-**Status:** Initial design ideas. This appendix proposes a workflow and skill boundaries;
-it does not add commands, state vocabulary, comment synchronization, or automation.
-
-The [report-channel proposal](../REPORT-CHANNEL.md) describes where a report can be filed.
-The existing `bh report` and `bh work intake|accept|reject|reroute|promote` surfaces provide
-a common intake queue and dispositions. External trackers should feed that same model,
-with an additional responsibility: a human reporter must be able to follow the outcome
-in their original issue thread without access to the private bead store.
-
-### A.1. Reports, work, and conversations are related but distinct
-
-An external report has a verified tracker binding, reporter identity, original submission,
-and conversation history. Its bead may also be the implementation work item when the
-relationship is one-to-one. When several reports concern the same defect, retain each
-report's binding and link them to one canonical work bead. That work may be private core,
-already tracker-linked, or newly created during triage. Do not transfer a duplicate's
-`external_ref` onto the canonical bead or publish private core merely to explain the link.
-
-This distinction lets GitHub and Linear reports converge on the same work without requiring
-multiple native `external_ref` values on one bead. Each report remains its own connector
-record, with relations to the work it describes. A proposed subscription relation records
-which report threads should receive subsequent work milestones, even if a duplicate report
-has already been closed. Cross-group relations must respect each destination's publication
-policy; a private canonical bead is not itself a public link.
-
-Triage disposition, execution status, release inclusion, and communication delivery should
-remain separate dimensions. Existing intake values are `untriaged`, `accepted`, `rejected`,
-`rerouted`, and `promoted`; waiting for information, reproduction outcomes, duplicates, and
-merged-but-unreleased are proposed extensions or additional dimensions. They need registered
-vocabulary and readiness rules before use. A comment saying "needs reproduction" must not
-leave the implementation bead accidentally eligible for ordinary implementation dispatch.
-
-### A.2. Ingestion through polling or events
-
-Each connector binding declares its destination, target group, intake policy, poll cadence
-or event source, and read/write capabilities. Begin with scheduled pull-only discovery;
-add event-driven wakeups using GitHub's `issues` and `issue_comment` webhooks. Merge and
-release detection can consume `pull_request` and `release` events. GitHub exposes a delivery
-identifier and signature headers for validating and identifying webhook deliveries.
-See [GitHub webhook documentation][github-events].
-
-Both triggers should invoke the same ingestion operation. Record the external identity,
-source revision, timestamps, and reporter separately from the service actor performing the
-import. Deduplicate on connector instance plus stable external object identity, preserve
-the binding through repository renames or issue transfers, and route changes of destination
-through explicit reconciliation. A redelivery or repeated poll updates the existing report.
-Webhook handlers durably record receipt before acknowledging; they enqueue reconciliation
-instead of running a full agent triage session inline.
-
-New reports enter the shared untriaged queue with their connector provenance. Existing
-reports update their source snapshot and conversation, scheduling another triage pass when
-new evidence, edits, or reopening change the decision. A routine poll must not reset every
-accepted report to untriaged. Periodic reconciliation still runs when webhooks are enabled,
-so a missed event does not leave the bead permanently stale. Polling must include relevant
-closed reports and comment changes, with pagination and checkpoints advanced only after
-durable ingestion.
-
-Thread replies are first-class input. Fetching issue title/body/state alone does not collect
-answers in comments. Preserve comment identity, author, revisions, and deletions so the
-triage skill can distinguish new evidence from already-considered material. Exclude pull
-requests from issue intake and recognize our own outbound messages to avoid feedback loops.
-
-### A.3. Triage and evidence gathering
-
-The triage skill uses the following decision sequence. A report retains a reasoned local
-record at every disposition; public communication is a separately selected projection.
-
-| Stage | Local decision and record | Human-facing result |
-|---|---|---|
-| Duplicate review | Search existing open and resolved work, including affected versions and prior fixes. Existing duplicate detection supplies candidates; similarity alone does not authorize closure. Confirm the same underlying defect, retain new evidence, and link to canonical work. | Explain the duplicate decision, link to an accessible public issue when one exists, and close this report in favor of that work. If the canonical work is private, give a permitted explanation without private IDs or links. |
-| Information sufficiency | Evaluate the report against a versioned template for its type: observed/expected behavior, affected version, environment, steps or evidence, and impact as applicable. Require information needed to decide, rather than every field mechanically. | Ask for the specific missing facts and an actionable way to provide them. Keep the report waiting for a reply; explain what investigation is blocked. |
-| Reproduction decision | Schedule a distinct reproduction task when behavior or scope needs verification. Known defects, credible evidence, or an agreed small fix can proceed directly with the reason recorded. Acceptance without reproduction must not be described as a successful reproduction. | Acknowledge what is understood and whether reproduction is pending or unnecessary. |
-| Investigation result | Record verified reproduction, affected and unaffected versions, feature/interface impact, severity, possible solutions, and unresolved uncertainty. A failed attempt distinguishes insufficient evidence, environment mismatch, already-fixed behavior, and a disproven claim. | Summarize findings and any further request. Explain a rejection or existing-version fix when justified; otherwise keep uncertainty explicit. |
-| Backlog disposition | Accept or promote the work with priority and rationale, dependencies, scheduling constraints, and an owner where available. Keep reproduction or missing evidence as an explicit readiness gate when still needed. | Confirm it has been reviewed, give its backlog/blocked status and priority rationale, and say what happens next. Give an ETA only when supported by an actual commitment. |
-
-The reproduction task should produce reusable evidence: minimal steps or a regression test,
-the tested commit/version and environment, observed versus expected behavior, and a bounded
-impact assessment. Run submitted examples in an appropriate isolated checkout and retain
-only shareable excerpts in public messages. Feature requests and straightforward corrections
-may need design assessment rather than reproduction testing.
-
-A human response wakes the waiting report for assessment against the outstanding questions.
-It does not automatically make the issue ready. A clarified report can also reveal a
-duplicate or a broader problem requiring separate work. If the reporter is silent, reminder
-and inactivity closure behavior should be explicit hive policy, with a reopening path;
-do not silently interpret lack of response as proof that the defect does not exist.
-
-Duplicate closure must not imply the underlying fix is complete. If canonical work was
-already closed, check whether the new report is about an old affected release, a regression,
-or a distinct defect before closing it. Rerouting similarly requires a public explanation
-and an accessible destination where permitted, rather than only a private hive relation.
-
-### A.4. Implementation, merge, and release milestones
-
-Once work actually starts, record the execution transition and send an in-progress update
-to linked report threads. Claims, abandoned attempts, and retries need not each generate a
-message; publish meaningful changes in what the reporter can expect. If work becomes blocked
-or is deprioritized, communicate the material change and reason instead of leaving a stale
-in-progress impression.
-
-Merge detection records the actual commit on canonical main, its associated PR when present,
-and the resolved work relations. Use the final merge, squash, or rebased commit identity,
-not only a branch-head hash. The public update links accessible evidence and explicitly says
-the fix is on main and whether it has been released. A merged PR by itself is not evidence
-that a release contains the fix.
-
-A hive should choose a completion policy, with per-type overrides if needed:
-
-| Policy | At merge | At release |
-|---|---|---|
-| Close on merge | Close implementation work and its active report projections; explain that the fix is on main and may be unreleased. | Optionally append the released version and upgrade guidance to the closed reports. |
-| Close on release | Mark implementation complete and delivery `merged/unreleased`; retain an open report or delivery-tracking bead without making completed implementation dispatchable. | Record verified release inclusion, close the remaining delivery/report work, and announce the version. |
-
-These are proposed policies, not additional native Beads statuses. The second policy needs
-separate execution and delivery readiness; a label alone is insufficient. If selected,
-PR closing keywords and tracker state mapping must not close the public report prematurely.
-Canonical work and report projections can have different completion states, especially when
-duplicate reports were closed earlier.
-
-Release association should identify which published version contains the fix and any
-relevant backports. A version bump or release event triggers verification against the
-release commit/artifact; it is not automatic proof of inclusion. Preserve separate merge
-and release facts so a revert, failed release, or regression can reopen the appropriate
-work and send a correction. Availability expectations differ for libraries, applications,
-and deployed services; the hive declares which delivery milestone matters to its users.
-
-Ordinary backlog updates can say that no timeline is committed. Security-specific deadlines
-and disclosure communications would require a future explicit policy and private channel;
-they should not be inferred from priority or posted by the ordinary public flow.
-
-### A.5. Public projection and reliable communication
-
-A proposed communication record contains a target binding, semantic event, source revision,
-public message, permitted label/state changes, and delivery state. Store the reviewed response
-as a bead comment or attached communication record with explicit publication intent. Keep
-ordinary bead comments, internal notes, and agent transcripts private by default.
-Explicitly select public facts, comments, and labels;
-being tracker-linked does not authorize publishing every field on that bead. Duplicate and
-dependency explanations must apply the same rule to referenced beads.
-
-The reporter owns the original submission and human replies. Beadhive owns its published
-comments and configured status/label projection. Preserve the source report separately from
-internal analysis; update a marked maintainer summary only if that is the chosen interface.
-Do not overwrite the reporter's description to turn it into an evolving internal plan.
-Conflicting human label/state edits need field ownership and reconciliation policy, rather
-than letting the last broad sync arbitrarily win.
-
-Record the local transition and durable communication intent in Beads, with a private
-outbox representation and reconciliation for interrupted writes. The deterministic sender
-applies the same destination, group, binding, and update-only guards proposed for `bh bd`,
-plus the content projection policy. Existing issue updates and a new comment on an existing
-issue are permitted operations; creating a new external issue remains explicit enrollment.
-Human approval follows configured publication policy and existing contributor gates, rather
-than requiring a fresh approval for each authorized routine status message.
-
-Delivery needs retry and deduplication semantics. Use a stable identity for each binding,
-semantic event, and source revision; persist remote comment IDs and delivery receipts.
-After an ambiguous timeout, reconcile a message marker or receipt before posting again.
-Do not promise exactly-once remote writes where the API lacks that guarantee. Only one
-publisher owns a pending delivery at a time, stale queued updates are superseded when
-appropriate, and partial label/state/comment updates remain pending until reconciled.
-An unavailable tracker leaves the local work intact and an observable communication backlog.
-
-Messages should state the finding, the requested action or next step, and the reason for
-priority or scheduling when relevant. Prefer a short actionable response to a transcript
-of agent reasoning. Avoid repeated acknowledgements on unchanged polls, invented affected
-versions, and timelines derived from a priority label. A periodic digest or edited summary
-can cover minor changes; durable milestone comments provide a useful human-readable history.
-
-### A.6. Proposed skill and operation boundaries
-
-These are responsibilities for future skills and guarded operations, not newly installed
-skills or a commitment to particular command names:
-
-| Responsibility | Inputs | Durable result |
-|---|---|---|
-| Ingestion operation | Connector configuration, polls/events, external issue and thread revisions | Verified report binding, source snapshot, conversation records, and queued triage work. Transport and checkpointing are deterministic. |
-| Triage skill | Report evidence, type-specific template, duplicate candidates, existing work | Explained disposition, missing-information request, canonical-work relations, and proposed public response. |
-| Reproduction skill | Bounded investigation task, versions/environment, supplied evidence | Reproduction result, regression evidence, impact assessment, and unresolved questions. |
-| Planning skill | Sufficient evidence, candidate solutions, current backlog/dependencies | Accepted/promoted work, priority rationale, readiness gates, and scheduling decision. |
-| Communication skill | Approved public facts, target audience, event and hive policy | A human-readable message and permitted external state/label changes queued for publication. It does not directly run unrestricted tracker sync. |
-| Publisher and milestone operations | Validated outbox records, execution/merge/release evidence | Guarded external updates, receipts, reconciliation, and new milestone intents. |
-
-This extends the common report/triage flow across human and agent reporters. Channel choice
-changes the binding and communication transport; duplicate reasoning, evidence collection,
-planning, and ownership should remain shared. Agents can consume structured outcomes while
-humans receive the relevant explanation in the thread they already use.
-
-### A.7. Current support and first implementation boundary
-
-The existing report and triage modules provide the shared queue, duplicate candidates, and
-basic dispositions. The v1.3.0 GitHub [mapping][github-mapping] pushes title, description,
-state, and labels; the [tracker adapter][github-tracker] and [sync engine][tracker-engine]
-do not transport bead comments or human comment threads. Adding a local comment and running
-`bd github sync` therefore does not implement the communication workflow above. Its body
-and label mapping also requires additional projection controls for a private mixed store.
-
-GitHub provides [issue-comment APIs][github-comments] for reading, creating, and updating
-thread comments. A Beadhive connector could use these for the missing conversation transport
-without first waiting for native Beads comment synchronization. Such transport still needs
-the destination guards, thread provenance, outbox, and field ownership described here.
-Linear or other trackers would need equivalent capability-specific transports.
-
-A useful initial slice is one GitHub binding with scheduled pull-only discovery, comment
-ingestion, triage/missing-information handling, and guarded public replies. Exercise duplicate
-closure without external issue creation, a human reply returning to triage, and timeout
-reconciliation without duplicate messages. Then connect reproduction and planning, followed
-by verified start/merge milestones and optional release tracking. Redelivery, private-note
-exclusion, shared canonical work, and wrong-destination refusal should be acceptance cases
-throughout. Automatic descriptor routing and unattended end-to-end publication remain
-separate implementation decisions.
-
 ## Research sources
 
 Official documentation is useful for intended usage; tag-pinned source links establish the
 version assessed here. Live documentation may change after this proposal.
 
-- [Beads v1.3.0 release][release] and [tagged changelog][changelog].
+- [Beads roadmap][roadmap], [BDP v0 draft specification][bdp-spec], [bdp#2][bdp-2],
+  [Memory Beads proposal][memory-proposal], and the [preview announcement][gascity-post].
+- [Beads v1.3.0 release][release], [tagged changelog][changelog], and
+  [v1.3.1 changelog][changelog-131].
 - [Multi-repo routing][routing-doc], [migration workflows][migration-doc], and
   [Dolt storage and remotes][dolt-doc].
 - [Initialization][init-source], [team-server initialization][team-init-source],
@@ -791,8 +690,6 @@ version assessed here. Live documentation may change after this proposal.
 - [GitHub integration][github-source], [Linear integration][linear-source],
   [tracker selection flags][selection-source], and [tracker sync engine][tracker-engine].
 - [GitHub reference and destination handling][github-tracker].
-- [GitHub field mapping][github-mapping], [webhook events][github-events], and
-  [issue-comment APIs][github-comments].
 
 [release]: https://github.com/gastownhall/beads/releases/tag/v1.3.0
 [changelog]: https://github.com/gastownhall/beads/blob/v1.3.0/CHANGELOG.md
@@ -817,6 +714,9 @@ version assessed here. Live documentation may change after this proposal.
 [linear-source]: https://github.com/gastownhall/beads/blob/v1.3.0/cmd/bd/linear.go
 [selection-source]: https://github.com/gastownhall/beads/blob/v1.3.0/cmd/bd/sync_flags.go
 [tracker-engine]: https://github.com/gastownhall/beads/blob/v1.3.0/internal/tracker/engine.go
-[github-mapping]: https://github.com/gastownhall/beads/blob/v1.3.0/internal/github/mapping.go
-[github-events]: https://docs.github.com/en/webhooks/webhook-events-and-payloads
-[github-comments]: https://docs.github.com/en/rest/issues/comments
+[changelog-131]: https://github.com/gastownhall/beads/blob/v1.3.1/CHANGELOG.md
+[roadmap]: https://github.com/gastownhall/beads/wiki/Roadmap
+[bdp-spec]: https://github.com/gastownhall/bdp/blob/main/docs/specs/bdp.md
+[bdp-2]: https://github.com/gastownhall/bdp/issues/2
+[memory-proposal]: https://github.com/gastownhall/beads/issues/5877
+[gascity-post]: https://blog.gascity.com/posts/extending-beads-memories-versions-and-the-wire-protocol/
