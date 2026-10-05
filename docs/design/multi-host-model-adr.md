@@ -12,6 +12,12 @@ across machines, and records the limitations and upstream dependencies that deci
 > the record splits into a *lease* in the HQ repo and a *fence* beside the hive's data. The
 > amendment revises Decision 1's rejected-names table and Decision 2's implementation, answers
 > Limitation 4, and refines Limitations 1 and 6. Everything else in this ADR stands as filed.
+>
+> **Proposed Amendment 2 (2026-10-05, pending operator confirmation):**
+> [hive-writer-partitioning-adr.md](hive-writer-partitioning-adr.md) moves the fence into each
+> hive's data, renames the HQ lease to placement, makes expiry a failover hint only, and
+> reverses Amendment 1 §4's "writes stop when the cached lease expires". Its
+> "Amendment to multi-host-model-adr.md" table lists every Amendment 1 section it changes.
 
 ---
 

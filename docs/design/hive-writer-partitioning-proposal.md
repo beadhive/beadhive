@@ -3,6 +3,9 @@
 **Status:** proposal, 2026-10-04; amended 2026-10-04 before kickoff with probe evidence (see
 [Pre-kickoff probe evidence](#pre-kickoff-probe-evidence)). Not an ADR. The spike molecule's
 decision bead produces the ADR.
+**Decision:** [hive-writer-partitioning-adr.md](hive-writer-partitioning-adr.md) (`bh-pr889`)
+records **GO, staged**, pending operator confirmation, with the deviations it lists from this
+proposal.
 **Seat:** planning, with the operator.
 **Amends (if accepted):** [multi-host-model-adr.md](multi-host-model-adr.md) Amendment 1 §§1–4;
 [frame-dolt-server-hq-mode-adr.md](frame-dolt-server-hq-mode-adr.md) binding amendment `bh-v0k3i`
