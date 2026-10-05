@@ -7,6 +7,8 @@ policy modules.
 
 from __future__ import annotations
 
+import re
+
 from . import validation_bypass
 
 
@@ -871,37 +873,77 @@ def impl_already_landed(api, entry, branch, base):
     return api.worktree.landed_via_merge(entry, branch, base)
 
 
-def _has_linked_landing_bubble(api, entry, branch, base, bead, bead_data):
-    """Whether this bead owns a recorded no-ff bubble in ``branch..base``.
+# A bead's own no-ff integration bubble, in every subject shape bh has written: the current
+# ``chore(merge): bead <id>`` plus the pre-convention ``merge <id>`` seen in real main history
+# (e4ab0d52).  The id must end at a word boundary so ``bh-x`` never claims ``bh-x.1``'s bubble.
+_OWN_BUBBLE_SUBJECT = re.compile(
+    r"^(?:chore\(merge\): bead|merge(?: bead)?) (?P<id>\S+?)(?=$|[\s:(])"
+)
+
+
+def _names_own_bubble(row, bead):
+    """Whether ``row`` is a two-parent integration bubble whose subject names exactly ``bead``."""
+    if len(row.get("parents") or []) != 2:
+        return False
+    match = _OWN_BUBBLE_SUBJECT.match(str(row.get("subject") or ""))
+    return bool(match) and match.group("id") == bead
+
+
+def _landing_attributed(api, entry, base, bead, bead_data, branch=""):
+    """Whether ``bead`` owns a no-ff bubble on ``base`` that attributes its landed history.
 
     Ancestry alone cannot identify the owner of a commit: two reviewed children can produce the
     same commit object when their tree, parent, identity, message, and second-resolution timestamp
-    match.  Merge records its no-ff bubble before closing the bead, so that bead-specific linkage
-    is the durable provenance needed by the idempotent reconciliation path.
+    match.  Attribution therefore always requires a two-parent bubble whose subject names THIS
+    bead, anchored to this bead's own evidence by one of:
+
+    * the bubble's sha is in the bead's ``git.commits`` linkage (merge records it);
+    * the bubble's second parent is the branch tip or a linked commit — legacy landings whose
+      bubble sha never reached the linkage (bh-ubxn1: bh-9qg02 d26e24a0, bh-p3lg5 6294d216);
+    * the branch tip IS the bubble — a branch moved onto its own merge commit sits on the base's
+      first-parent chain, so ancestry-based ``landed_via_merge`` misses it (bh-8mm0v 46422812).
+
+    Another child's bubble names that child, so a shared commit object can never close this one.
+    Works without the branch (``--rm`` may have deleted it) from the linked commits alone.
     """
     linked = set(api.git_linkage.commits_from_data(bead_data))
-    expected_subject = f"chore(merge): bead {bead}"
-    return any(
-        row.get("sha") in linked
-        and row.get("subject") == expected_subject
-        and len(row.get("parents") or []) == 2
-        for row in api.worktree.commit_rows(entry, branch, base)
-    )
-
-
-def _has_recorded_landing_bubble(api, entry, base, bead, bead_data):
-    """Confirm a closed bead's recorded bubble even if --rm removed its branch."""
-    for sha in api.git_linkage.commits_from_data(bead_data):
-        if not api.worktree.is_merged(entry, sha, base):
+    tip = api.worktree._ref_sha(api.registry.hive_dir(entry), branch) if branch else ""
+    anchors = [tip] if tip else []
+    anchors += sorted(sha for sha in linked if sha != tip)
+    for anchor in anchors:
+        if not api.worktree.is_merged(entry, anchor, base):
             continue
         if any(
-            row.get("sha") == sha
-            and row.get("subject") == f"chore(merge): bead {bead}"
-            and len(row.get("parents") or []) == 2
-            for row in api.worktree.commit_rows(entry, f"{sha}^", sha)
+            row.get("sha") == anchor and _names_own_bubble(row, bead)
+            for row in api.worktree.commit_rows(entry, f"{anchor}^", anchor)
+        ):
+            return True
+        evidence = linked | {anchor}
+        if any(
+            _names_own_bubble(row, bead)
+            and (row.get("sha") in linked or row["parents"][1] in evidence)
+            for row in api.worktree.commit_rows(entry, anchor, base)
         ):
             return True
     return False
+
+
+def _closed_merged_base(api, entry, bead, bead_data, branch, integration):
+    """The base a CLOSED bead's own bubble already sits on, or ``""``.
+
+    Checks the bead's resolved land base (its container) and the integration branch itself, so
+    a re-run over a bead merged into a container — even one that has since landed or closed —
+    reports "already merged" instead of falling through to a guard that rewrites review state."""
+    candidates = []
+    try:
+        candidates.append(api.worktree.integration_base(entry, bead, integration))
+    except Exception:
+        pass
+    candidates.append(integration)
+    for base in dict.fromkeys(c for c in candidates if c):
+        if _landing_attributed(api, entry, base, bead, bead_data, branch):
+            return base
+    return ""
 
 
 def impl__guard_bead_clean_history(
@@ -914,9 +956,24 @@ def impl__guard_bead_clean_history(
     of merging (bh-lvqs); False on the ordinary path. A genuinely empty branch — no commits over
     base and NOT an ancestor of it — still takes the self-refine bounce unchanged."""
     count, subjects = api.worktree.history(entry, branch, base)
+    if count == 0 and bead and _landing_attributed(api, entry, base, bead, bead_data, branch):
+        return True
     if count == 0 and api.already_landed(entry, branch, base):
-        if not bead or _has_linked_landing_bubble(api, entry, branch, base, bead, bead_data):
+        if not bead:
             return True
+        # A concurrent first run may have linked (or closed) the bead since our snapshot: re-read
+        # before bouncing, and never write review state onto a bead that is already closed.
+        fresh = api.bd.show(bead, main) if main is not None else None
+        if fresh and _landing_attributed(api, entry, base, bead, fresh, branch):
+            return True
+        if fresh and str(fresh.get("status")) == "closed":
+            api.typer.echo(
+                f"✗ zero-delta merge for {bead}: {branch} is reachable from {base}, but no "
+                "bead-linked no-ff integration bubble attributes that history to this child; "
+                "the bead is already closed — leaving its review state untouched",
+                err=True,
+            )
+            raise api.typer.Exit(1)
         api.work_logic.record_merge_conflict(entry, branch, base, main, [bead], "merge")
         api.typer.echo(
             f"✗ zero-delta merge for {bead}: {branch} is reachable from {base}, but no "
@@ -946,8 +1003,21 @@ def impl__reconcile_landed_bead(api, cfg, entry, main, bead, bead_data, branch, 
     concurrent merger cannot interleave with the reconcile."""
     slot_attrs = {"bh.merge.kind": "bead", "bh.hive": api._hive(entry)}
     with api.work_group.merge_slot(main, slot_attrs):
-        closed = api.work_logic.close_merged(bead, main, "merged", data=bead_data)
-        api._clear_review_label(bead, bead_data, main)
+        # Re-read under the slot: a concurrent run that landed this bead may have closed it while
+        # we waited, or rolled its bubble back on a red post-land gate.
+        fresh = api.bd.show(bead, main) or bead_data
+        if str(fresh.get("status")) == "closed":
+            api.typer.echo(f"✓ {bead} is already merged on {base}; nothing to reconcile")
+            return
+        if not api.worktree.is_merged(entry, branch, base):
+            api.typer.echo(
+                f"✗ {bead}: {branch} is no longer contained by {base} (a concurrent merge rolled "
+                "it back) — re-run merge to land it",
+                err=True,
+            )
+            raise api.typer.Exit(1)
+        closed = api.work_logic.close_merged(bead, main, "merged", data=fresh)
+        api._clear_review_label(bead, fresh, main)
     if rm:
         try:
             api.worktree.remove(hive, bead, force=True)
@@ -1187,11 +1257,9 @@ def impl__merge_bead(api, cfg, bead, hive, rm, override_reason="", override_acto
     bead_data = api.bd.show(bead, main)
     if bead_data and str(bead_data.get("status")) == "closed":
         integration = api.config.integration_branch(cfg, entry)
-        base = api._guard_bead_land_base(entry, bead, integration)
-        if str(bead_data.get("close_reason")) == "merged" and _has_recorded_landing_bubble(
-            api, entry, base, bead, bead_data
-        ):
-            api.typer.echo(f"✓ {bead} is already merged on {base}; nothing to reconcile")
+        landed_on = _closed_merged_base(api, entry, bead, bead_data, branch, integration)
+        if landed_on:
+            api.typer.echo(f"✓ {bead} is already merged on {landed_on}; nothing to reconcile")
             return
     api._guard_open(bead_data, bead)
     landing_pr = api.config.work_landing(cfg, entry) == "pr"
@@ -1201,8 +1269,9 @@ def impl__merge_bead(api, cfg, bead, hive, rm, override_reason="", override_acto
     # recording review=changes-requested.  A branch already contained by its base needs only
     # bookkeeping, so it is detected BEFORE review-state gating; ordinary bounced work that is
     # not landed still takes the gate refusal.
-    already_contained = api.worktree.history(entry, branch, base)[0] == 0 and api.already_landed(
-        entry, branch, base
+    already_contained = api.worktree.history(entry, branch, base)[0] == 0 and (
+        api.already_landed(entry, branch, base)
+        or _landing_attributed(api, entry, base, bead, bead_data, branch)
     )
     if not already_contained:
         api._guard_bead_merge_gates(bead, main, landing_pr)
