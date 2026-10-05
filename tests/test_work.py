@@ -3691,6 +3691,46 @@ def test_merge_is_idempotent_over_an_already_landed_bead(hive, fakebd, capsys):
     assert _git("rev-parse", "wt/bead/epic/mr-1", cwd=hive.main).stdout.strip() == mol_tip
 
 
+def test_merge_reconciles_already_landed_bead_even_when_postland_bounced(hive, fakebd, capsys):
+    """A shared-main post-land failure records changes-requested, but cannot un-land code.
+
+    A retry must close that already-contained branch rather than rejecting the stale review
+    state before it can reach the reconciliation path.
+    """
+    _mol_branch(hive, "mr-1")
+    fakebd.seed("mr-1.1", title="t")
+    work.claim(bead="mr-1.1", as_="", hive="myrepo")
+    _commit(_wt_of(hive, "mr-1.1"), "feat: the change")
+    work.submit(bead="mr-1.1", hive="myrepo")
+    fakebd.approve("mr-1.1")
+    work.merge(bead="mr-1.1", hive="myrepo", rm=False, molecule=False)
+    mol_tip = _git("rev-parse", "wt/bead/epic/mr-1", cwd=hive.main).stdout.strip()
+    fakebd.beads["mr-1.1"]["status"] = "in_progress"
+    fakebd.states["mr-1.1"]["review"] = "changes-requested"
+    capsys.readouterr()
+
+    work.merge(bead="mr-1.1", hive="myrepo", rm=False, molecule=False)
+
+    assert fakebd.beads["mr-1.1"]["status"] == "closed"
+    assert "already merged" in capsys.readouterr().out
+    assert _git("rev-parse", "wt/bead/epic/mr-1", cwd=hive.main).stdout.strip() == mol_tip
+
+
+def test_merge_refuses_changes_requested_work_that_is_not_already_landed(hive, fakebd, capsys):
+    _mol_branch(hive, "mr-1")
+    fakebd.seed("mr-1.1", title="t")
+    work.claim(bead="mr-1.1", as_="", hive="myrepo")
+    _commit(_wt_of(hive, "mr-1.1"), "feat: the change")
+    work.submit(bead="mr-1.1", hive="myrepo")
+    fakebd.states["mr-1.1"]["review"] = "changes-requested"
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-1.1", hive="myrepo", rm=False, molecule=False)
+
+    assert "changes-requested" in capsys.readouterr().err
+    assert fakebd.beads["mr-1.1"]["status"] != "closed"
+
+
 def test_merge_over_already_landed_bead_never_advises_redoing_the_work(hive, fakebd, capsys):
     """bh-lvqs acceptance (3): no text tells the operator to bounce/self-refine work already on the
     base. The wording IS the defect — a correct exit code with the old message still cost a

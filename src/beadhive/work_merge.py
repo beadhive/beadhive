@@ -1195,9 +1195,17 @@ def impl__merge_bead(api, cfg, bead, hive, rm, override_reason="", override_acto
             return
     api._guard_open(bead_data, bead)
     landing_pr = api.config.work_landing(cfg, entry) == "pr"
-    api._guard_bead_merge_gates(bead, main, landing_pr)
     integration = api.config.integration_branch(cfg, entry)
     base = api._guard_bead_land_base(entry, bead, integration)
+    # A post-land main-gate failure leaves the merge on the shared base (never rewritten) while
+    # recording review=changes-requested.  A branch already contained by its base needs only
+    # bookkeeping, so it is detected BEFORE review-state gating; ordinary bounced work that is
+    # not landed still takes the gate refusal.
+    already_contained = api.worktree.history(entry, branch, base)[0] == 0 and api.already_landed(
+        entry, branch, base
+    )
+    if not already_contained:
+        api._guard_bead_merge_gates(bead, main, landing_pr)
     api.work_logic.guard_container_refresh(
         entry, base, integration, action=f"merge {bead} into {base}"
     )
