@@ -7,6 +7,7 @@ import json
 import os
 import tempfile
 import threading
+from collections import OrderedDict
 from collections.abc import Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -29,6 +30,11 @@ from .modules.config.domain.ports import ConfigScope, FleetConfigDocument
 _mutation_lock = threading.RLock()
 _load_cache_lock = threading.RLock()
 _load_cache: dict[tuple[tuple, tuple], str] = {}
+#: SQL effective-config derivations keyed by exact (fleet.yaml content digest, HOST JSON).
+#: This memoizes pure parsing/validation only, never a snapshot: see ``_load_sql``.
+_SQL_EFFECTIVE_MAX = 4
+_sql_effective: OrderedDict[tuple[str, str], str] = OrderedDict()
+_sql_effective_lock = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -298,6 +304,8 @@ def clear_load_cache() -> None:
     """Invalidate the process-local effective-config memo after an in-process write."""
     with _load_cache_lock:
         _load_cache.clear()
+    with _sql_effective_lock:
+        _sql_effective.clear()
 
 
 def leaf_paths(node, prefix: str = ""):
@@ -351,13 +359,43 @@ def _load_fleet_for_host(api, host):
         _fleet_read_host.reset(token)
 
 
-def _load_sql(api, host):
-    snapshot = fleet_snapshot(api)
+def _load_sql(api, host) -> str:
+    """Return the effective SQL-selected config as a JSON payload.
+
+    ``host`` is the HOST mapping ``_load_uncached`` already parsed and passed through
+    ``sql_selected`` (which also pins an active transaction's binding), so it is not re-read
+    twice more here. The committed snapshot is fetched on EVERY call — that read is what
+    requalifies the current revision, the rollback floor and the snapshot's finite validity,
+    and a revision change or outage surfaces immediately. Only the pure derivation from the
+    returned bytes (fleet.yaml parse + settings validation + merge, ~0.5 s) is memoized,
+    keyed by the exact fleet.yaml content and HOST, so a byte-identical revision is not
+    re-parsed by every seam of a long validation run (bh-931we).
+    """
+    active = _fleet_transaction.get()
+    snapshot = active.snapshot if active is not None else _sql_attachment(api, host)[1]
+    document = next((item for item in snapshot.documents if item.path == "fleet.yaml"), None)
+    key = None
+    if document is not None and isinstance(document.content, str):
+        key = (
+            hashlib.sha256(document.content.encode("utf-8")).hexdigest(),
+            json.dumps(host, separators=(",", ":")),
+        )
+        with _sql_effective_lock:
+            payload = _sql_effective.get(key)
+            if payload is not None:
+                _sql_effective.move_to_end(key)
+                return payload
     fleet = _fleet_document(api, snapshot)
     api._reject_fleet_overrides(host)
     merged = api._deep_merge(fleet, host)
     _validate_settings(api, merged, scope="host")
-    return merged
+    payload = json.dumps(merged, separators=(",", ":"))
+    if key is not None:
+        with _sql_effective_lock:
+            _sql_effective[key] = payload
+            while len(_sql_effective) > _SQL_EFFECTIVE_MAX:
+                _sql_effective.popitem(last=False)
+    return payload
 
 
 def load(api):
@@ -371,7 +409,7 @@ def load(api):
     """
     if _fleet_transaction.get() is not None:
         prepared, selected = _load_uncached(api)
-        return json.loads(json.dumps(_load_sql(api, prepared) if selected else prepared))
+        return json.loads(_load_sql(api, prepared) if selected else json.dumps(prepared))
     # Filesystem memoization applies only to Git. An authenticated SQL read
     # must requalify its finite validity and committed revision on every call.
     key = None
@@ -393,7 +431,7 @@ def load(api):
                 _load_cache[key] = payload
     if payload is None:
         # No global effective-cache mutex is held during broker/SQL I/O.
-        return json.loads(json.dumps(_load_sql(api, prepared)))
+        return json.loads(_load_sql(api, prepared))
     return json.loads(payload)
 
 
