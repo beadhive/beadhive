@@ -168,3 +168,335 @@ This proposal captures direction rather than settling every mechanism. In partic
 
 The invariant is that project association, readable naming, and storage location must not
 silently determine ownership, permissions, or publication.
+
+## 2. What Beads v1.3.0 can support today
+
+### Research baseline and intended upstream usage
+
+This assessment was researched on 2026-10-04 against the [v1.3.0 source tag][release], the
+official documentation site, and command help from the installed `bd version 1.3.0
+(f45b249ce)`. Source inspection establishes implementation behavior; this research did not
+exercise live tracker accounts, a team-server deployment, or remote publication. Those
+combinations need deployment-specific validation before a workaround is shipped.
+
+The official [routing guide][routing-doc] recommends a separate private planning repository,
+normally `~/.beads-planning`, with its own prefix. `bd init --contributor` configures creation
+routing and additional repositories for aggregation. Explicit `--repo` selects a creation
+target; contributor role is routing context, not a group permission system. The
+[migration guide][migration-doc] gives personal experiment, phase, and persona variants.
+Some branch/PR language in the guides remains historical; source behavior takes precedence
+when assessing Dolt publication or command support.
+
+`allowed_prefixes` is an admission list. It accepts explicitly supplied IDs from additional
+prefixes; it does not establish their ownership, select their allocation policy, or choose
+their destinations. It is not exclusively a hydration feature: the changelog describes
+multi-prefix support, while `bd repo sync` itself skips prefix validation. Sources:
+[explicit-ID admission][prefix-validation], [hydration][repo-source], and
+[tagged changelog][changelog].
+
+### Capability assessment
+
+"Native" means a v1.3.0 mechanism already exists. "Wrapper" means Beadhive can approximate
+the behavior while retaining separate stores or additional policy. "Missing" means the
+stated guarantee cannot be obtained from unmodified v1.3.0 mechanisms alone.
+
+| Desired behavior | Assessment | Available mechanism and limit |
+|---|---|---|
+| Core beads stored on the source origin | Native | Configure a Git-protocol Dolt remote; publication uses `refs/dolt/data` |
+| Bead hosting detached from source hosting | Native | Explicit Dolt remote or external database endpoint; configure replication separately |
+| Several groups associated with one hive | Wrapper | Extend Beadhive's registry to associate one project with several stores and group records |
+| Private planning beside public work | Wrapper | Separate private authoritative store plus an authorized local view |
+| Native core beads never sent to a tracker | Native in a separate store; wrapper in a mixed store | Do not configure a tracker for core, or always apply an explicit connector scope |
+| Core and mirror rows in one Dolt database | Native as ordinary rows | Labels, metadata, prefixes, and external references distinguish rows; no group isolation follows |
+| Different Dolt remotes for groups in one authoritative database | Missing as selective replication | A remote selects a destination for a database branch, not a subset of issues |
+| Different remotes with one store per group | Wrapper using native remotes | Invoke each group's configured store; every store can have its own remote bindings |
+| Pull-only and bidirectional tracker exchange | Native for supported adapters | Direction and selection controls are adapter-specific; there is no universal group connector contract |
+| Distinct allocation prefixes per group in a mixed store | Wrapper | Supply explicit IDs and enforce registry policy; there is one default issue prefix |
+| Read upstream beads without publishing local planning there | Wrapper using native routing | Keep the upstream replica and personal planning store separate; restrict upstream credentials |
+| Direct upstream issue creation with granted rights | Native | Create against the authoritative workspace/service within its existing access policy |
+| Submit a bead proposal without broad upstream write rights | Missing as a native protocol | A Beadhive service or manual maintainer-mediated transfer could supply it |
+| Canonical issue identity independent of its prefix | Missing natively; wrapper approximation | Maintain an external identity/alias map, while Beads still keys records by the readable ID |
+| Two unrelated identical issue IDs in one aggregate database | Missing without projection/remapping | The issue primary key is the ID string, not `(source, ID)` |
+| Per-group authorization inside one database | Missing in the inspected Beads group model | Use separate access boundaries or a mediating service; no native bead-group ACL was found |
+| Group overlays and a super-global graph | Wrapper approximation | Resolve identity and overlays above Beads; native dependencies do not implement this model |
+
+The evidence and constraints behind these classifications follow. They are limits of
+available Beads mechanisms, not claims that a custom storage engine or service could never
+implement the desired behavior.
+
+### Detached hosting and group-specific remotes
+
+The [Dolt documentation][dolt-doc] describes Git, DoltHub, bucket, and filesystem remotes.
+Git source origin and the configured Dolt remote can point to different repositories.
+`bd dolt push --remote <name>` selects a named destination. `--no-adopt`, or
+`BD_NO_REMOTE_ADOPT=1`, prevents push from adopting a source-origin-derived remote when none
+is configured. These are useful controls for a detached deployment, not enforcement against
+an actor who can reconfigure and publish the database.
+
+External SQL-server storage and the experimental proxied `--team-server` integration are
+also present. In team-server mode schema and identity are provisioned externally; the client
+verifies them. `--team` is a setup wizard and is distinct from `--team-server`. This establishes
+deployment support, not evidence that the external service supplies the proposed group ACLs.
+Sources: [initialization][init-source] and [team-server initialization][team-init-source].
+
+The [replication implementation][remote-source] calls Dolt push with a remote and branch.
+There is no group/prefix row selector. Additional remotes receive that branch's replicated
+tables and reachable history, subject to Dolt's existing ignored-table behavior. Removing
+private rows from the current snapshot or filtering an export does not remove them from
+reachable history. Separate Dolt branches also share ancestry unless deliberately built as
+independent histories; branch naming is not group isolation.
+
+Workaround: give each independently published group its own authoritative database, even
+when several databases run on one SQL server. A publication projection in a separate store
+could publish selected content from a mixed store, but would be a new Beadhive synchronization
+system with its own identity, deletion, relation, and history semantics. It would not be a
+native selectively replicated branch or a reason to use JSONL as the normal cross-machine
+wire protocol.
+
+### Aggregation is materialization, not a privacy boundary
+
+`bd repo sync` materializes imported issues as ordinary rows, stamps `source_repo`, and
+skips prefix validation. In v1.3.0 local-path hydration reads a passive JSONL export; a remote
+URL path reads issues from a cached store. Local hydration therefore depends on an up-to-date
+export even though authoritative cross-machine replication remains Dolt. The implementation
+is rejected in proxied-server mode. Sources: [repo implementation][repo-source] and
+[routing documentation][routing-doc].
+
+Hydrated regular issues are not placed in a group-specific ignored table. Combined with
+database-branch publication, this means importing private regular issues into a database
+that is subsequently pushed publicly can publish them. This is an inference from the
+hydration and push implementations, not a live public-push experiment.
+
+`source_repo` preserves attribution; it is not a row ACL or an automatic publication filter.
+Hydration alone also does not establish a general bidirectional write-back protocol for
+edits to imported rows. A group-aware wrapper must deliberately target the authoritative
+store for each mutation. Snapshot/remote paths should be checked for comment, dependency,
+deletion, and update fidelity before being used as an operational mirror.
+
+Workaround: use an aggregate that is explicitly non-authoritative and never publicly
+published, or query the group stores without materializing them. If a private aggregate
+combines several audiences, its own audience must be allowed to see every materialized
+group. Beadhive's existing hub is a useful starting point, but currently its hive identity
+and registry assumptions do not express several groups per project.
+
+### Tracker mirrors can be scoped, with important limitations
+
+The [GitHub adapter][github-source] supports pull-only, push-only, and bidirectional sync.
+GitHub and Linear commands register `--issues` for an explicit comma-separated selection
+and `--parent` for push of a subtree. Linear also has push type filters, exclusions, and a
+`linear.push_prefix` allowlist. See [shared selection flags][selection-source] and
+[Linear implementation][linear-source].
+
+These controls can keep a native core out of a tracker, but a mixed-store wrapper must
+always calculate and supply the intended selection. Empty selection must be a no-op:
+the [sync engine][tracker-engine] treats an empty issue-ID filter as unrestricted. A forgotten
+scope can therefore change the operation's meaning dramatically. Linear's push-prefix check
+also uses starts-with matching; allowing `bh` includes `bh-private-*`.
+
+New GitHub and Linear pulls use the configured default issue prefix, not a first-class group
+allocator. For a distinct mirror namespace, the simpler workaround is a dedicated tracker
+store. An import/remapping or projection layer in a mixed database would be custom work.
+The core issue model exposes one `external_ref` and one `source_system`; arbitrary metadata
+is available, but native tracker behavior is not a general many-connector binding registry.
+Sources: [GitHub pull allocation][github-source], [Linear pull allocation][linear-source],
+and [issue fields][types-source].
+
+Workaround: run each connector against a dedicated store and present it alongside core.
+If stores share an audience and publication policy, scoped tracker operations in one store
+can approximate groups. This does not grant independent Dolt publication or per-group ACLs.
+
+### Prefixes, collision handling, and a canonical-identity shim
+
+Prefix checks differ by operation:
+
+- Initialization normalizes dots and trailing hyphens; a prefix-derived database name has
+  a 64-byte limit and an ASCII identifier alphabet.
+- Prefix rename accepts lowercase letters, digits, and hyphens after trimming trailing
+  hyphens, with no explicit prefix-length cap in that validator.
+- Doctor's YAML prefix check permits letters, digits, underscores, and hyphens, starting
+  with a letter, and flags lengths above 20 bytes.
+- Explicit-ID admission checks starts-with against default/allowed prefixes. It does not
+  enforce exact namespace membership when prefixes overlap.
+
+Sources: [init][init-source], [database names][database-name-source],
+[rename][rename-prefix-source], [doctor][doctor-source], and [admission][prefix-validation].
+For newly allocated Beadhive aliases, lowercase ASCII with single internal hyphens and a
+20-character cap would be a proposed conservative convention. Existing external namespaces
+should be preserved where possible. `rename-prefix --repair` consolidates namespaces and
+must not be offered as generic repair for an intentionally multi-prefix collection.
+
+The [issue schema][issue-schema] keys issues by `id VARCHAR(255)`. `source_repo` is a separate
+field, not part of that primary key. The column bounds the full ID, including prefix,
+separator, and any hierarchical suffix, rather than defining a 255-character prefix policy.
+Short hashes reduce accidental collisions; they do not
+provide an immutable identity layer or a guarantee that unrelated stores cannot produce the
+same full ID. Native [rename][rename-source] changes the primary ID and references.
+
+Beads does already provision a persistent `_project_id`/workspace identity, adopted when
+joining existing storage. That can help identify a one-group-per-store wrapper, but it is
+not a per-group key on issue rows or graph edges, and a storage clone does not automatically
+mean a new independent group fork. Sources: [identity initialization][init-source] and
+[team identity adoption][team-init-source].
+
+Workaround: keep `(group_id, existing_bead_id)` in Beadhive's resolver and preserve source IDs
+in separate stores. When IDs collide, query stores separately or assign unique projection
+IDs in the local aggregate and retain a reversible source mapping. Imported dependencies
+must be rewritten consistently. If source IDs are later renamed, an external alias/history
+map needs to preserve continuity; storing an immutable UUID in metadata alone does not make
+native lookups or foreign keys use it.
+
+### Contribution and local-only storage
+
+Contributor routing can direct new work to a separate private store while upstream is read
+through its own replica. It does not introduce per-group permissions or a reviewed bead
+submission queue. A local replica may be writable even when the actor cannot push upstream;
+changes to that replica are not automatically an overlay or an upstream claim. Remote/service
+credentials and a wrapper's operation policy must enforce the intended rights.
+
+A maintainer can manually create or accept a proposed report in upstream's store. A wrapper
+could automate that transfer through a maintainer-controlled service with explicit consent,
+idempotency, attribution, and lineage. That is a new contribution mechanism, not merely
+setting `beads.role contributor`. The [migration guide][migration-doc] explicitly marks its
+issue-migration example as a future feature.
+
+v1.3.0 also has unversioned/no-history and ephemeral storage classes. They route to the
+clone-local ignored wisp plane rather than ordinary replicated issue history. They can
+support local-only scratch behavior, but are not independently replicated private groups:
+ephemeral work is purge-eligible, and unversioned work lacks normal Dolt replication/history.
+Exports or a server actor can still expose local data. See [storage-class behavior][release]
+and [ignored-table patterns][ignored-patterns]. Use a private authoritative store for durable
+private planning with private replication.
+
+### A credible v1.3.0 architecture
+
+The most faithful workaround is **one logical hive, several authoritative stores, one
+authorized working view**. Beadhive would register group identity and policy around native
+workspaces, select the proper workspace for every read/write/sync, and preserve source IDs.
+Group labels or metadata would aid display and selection, not grant authority.
+
+This can approximate most operator-facing behavior without changing upstream's issue schema.
+The major native gaps remain independent publication and ACLs for co-located authoritative
+groups, prefix-independent graph identity, reliable group-aware mutation routing, and direct
+reviewed contribution submission. Any cross-store readiness calculation or write-through
+aggregate would be an explicit Beadhive feature with coverage and freshness semantics.
+
+## 3. Changes needed to reach the north star
+
+### Beadhive changes that can precede upstream work
+
+1. **Group registry and bindings.** Give hives stable identity and a canonical source origin.
+   Register associated groups with identity, authority, audience, storage bindings,
+   replication destinations, connector instances, and operator capabilities. Retain the
+   existing single-prefix hive as a backward-compatible default core group.
+2. **Explicit operation routing.** Select a group for creation, resolve a record's authority
+   for mutations, and require publication to name a permitted binding. The wrapper must
+   distinguish source Git origin from local fork remotes and bead destinations. Ambiguous
+   aliases, absent stores, and insufficient capabilities fail explicitly.
+3. **Identity and alias resolver.** Persist group identity independently of URLs and prefixes.
+   Initially resolve native IDs as `(group_id, legacy_id)` with alias history and projection
+   mappings. Registering a replica preserves identity; registering an independent fork
+   allocates a new identity and records lineage.
+4. **Authorized aggregate and graph.** Build a view from accessible groups, retaining source
+   revision and coverage. Route writes to authoritative stores. Resolve cross-store edges
+   through canonical references, report unavailable/private dependencies honestly, and avoid
+   presenting stale replicas as current authority.
+5. **Connector policy.** Configure each named connector independently, with direction,
+   scope, field ownership, external record mappings, conflict rules, and deletion behavior.
+   Compile selection to supported v1.3.0 controls, make empty selections no-ops, and report
+   unsupported combinations rather than falling back to unscoped sync.
+6. **Contribution service or workflow.** Represent proposals separately from canonical
+   mutations. Preserve authorship, target authority, source revision, lineage, acceptance
+   outcome, and replay protection. Begin with a reviewed maintainer-mediated transfer if
+   no upstream submission endpoint exists.
+
+These are proposed capabilities, not implementation tasks promised by this document. A
+Beadhive-only implementation can mediate its own clients; it cannot enforce group policy
+against unrestricted raw SQL, raw `bd`, or remote administrators with broader rights.
+
+### Potential upstream or backend changes
+
+| Area | Potential change | Guarantee it would establish |
+|---|---|---|
+| Group model | First-class immutable group ID and group membership on every issue and related record | Ownership remains explicit when groups share storage |
+| Canonical identity | Immutable bead key separate from aliases; canonical graph endpoints | Prefix changes and namespace collisions do not change identity |
+| Allocation and resolution | Group-aware allocation, qualified lookup, alias history, deterministic ambiguity errors | Native operations select the intended issue and authority |
+| Access enforcement | Group-scoped authorization at the service boundary, including related data and history reads | Read/create/edit/claim/submit/publish rights can differ by group |
+| Replication | Group-scoped replication/export protocol or independent histories per group | Destinations receive only authorized group data and history |
+| Tracker connections | Multiple named connector bindings with stable external IDs and field-level reconciliation | Core and mirror groups sync independently without overwriting one binding |
+| Contributions | Proposal ingestion and reviewed acceptance separate from general write access | Contributors can submit beads directly to upstream |
+| Aggregation | Explicit replica/cache semantics and authoritative mutation routing | Imported rows are not mistaken for writable canonical records |
+| Graph federation | Canonical cross-group references, resolution, disclosure policy, and partial-readiness semantics | A global graph works with disconnected or inaccessible authorities |
+
+Native group-scoped replication cannot be achieved merely by adding a `group_id` column.
+Every synchronized relation, journal, tombstone, configuration record, attachment, and
+historical revision needs a defined boundary. Options include independent group databases,
+separate independently rooted histories, or a new application-level replication protocol.
+Keeping database-wide Dolt push while adding only current-row filtering would fail the
+required publication guarantee.
+
+Canonical identity needs a migration strategy for existing IDs and links. One approach is
+to assign immutable bead keys, retain existing IDs as scoped aliases, backfill graph endpoints,
+and keep legacy clients on a compatibility view until they can resolve qualified identities.
+Copies, accepted proposals, transfers, and independent forks must have explicit identity rules.
+Authenticating the authority behind a group ID is separate from allocating a unique UUID.
+
+### Validation contracts for a future implementation
+
+The following scenarios define useful acceptance evidence:
+
+- Two unrelated groups contain the same legacy ID and remain distinct after aggregation,
+  replication, alias changes, and graph traversal.
+- A public destination receives no private rows, comments, relation payloads, attachments,
+  or reachable historical content, including after a retry or deletion.
+- A contributor can read upstream and write personal planning, but cannot change upstream
+  ownership or claim state without the required capability.
+- Tracker push touches only the declared group; an empty selection produces zero writes;
+  scoped synchronization does not mutate unrelated relations through a repair pass.
+- Duplicate proposal delivery produces one acceptance result with preserved attribution.
+- Missing or stale group replicas produce explicit coverage/readiness states rather than
+  disappearing blockers or fabricated canonical state.
+- Legacy single-group hives retain their IDs, default routing, and publication behavior.
+
+The first viable step is the registry, routing, and view layer over separate v1.3.0 stores.
+Authoritative co-location with independent permissions and history publication should follow
+only once its backend guarantees are specified and verified.
+
+## Research sources
+
+Official documentation is useful for intended usage; tag-pinned source links establish the
+version assessed here. Live documentation may change after this proposal.
+
+- [Beads v1.3.0 release][release] and [tagged changelog][changelog].
+- [Multi-repo routing][routing-doc], [migration workflows][migration-doc], and
+  [Dolt storage and remotes][dolt-doc].
+- [Initialization][init-source], [team-server initialization][team-init-source],
+  [database-name checks][database-name-source], [prefix admission][prefix-validation],
+  [prefix rename][rename-prefix-source], and [doctor prefix checks][doctor-source].
+- [Repo hydration][repo-source], [database push][remote-source], [issue schema][issue-schema],
+  [issue fields][types-source], [ID rename][rename-source], and [ignored local tables][ignored-schema].
+- [Canonical ignored-table patterns][ignored-patterns].
+- [GitHub integration][github-source], [Linear integration][linear-source],
+  [tracker selection flags][selection-source], and [tracker sync engine][tracker-engine].
+
+[release]: https://github.com/gastownhall/beads/releases/tag/v1.3.0
+[changelog]: https://github.com/gastownhall/beads/blob/v1.3.0/CHANGELOG.md
+[routing-doc]: https://beads.gascity.com/multi-agent/routing
+[migration-doc]: https://beads.gascity.com/multi-agent/multi-repo-migration
+[dolt-doc]: https://beads.gascity.com/architecture/dolt
+[init-source]: https://github.com/gastownhall/beads/blob/v1.3.0/cmd/bd/init.go
+[team-init-source]: https://github.com/gastownhall/beads/blob/v1.3.0/cmd/bd/init_proxied_server.go
+[database-name-source]: https://github.com/gastownhall/beads/blob/v1.3.0/internal/storage/dolt/history.go
+[prefix-validation]: https://github.com/gastownhall/beads/blob/v1.3.0/internal/validation/bead.go
+[rename-prefix-source]: https://github.com/gastownhall/beads/blob/v1.3.0/cmd/bd/rename_prefix.go
+[doctor-source]: https://github.com/gastownhall/beads/blob/v1.3.0/cmd/bd/doctor/config_values.go
+[repo-source]: https://github.com/gastownhall/beads/blob/v1.3.0/cmd/bd/repo.go
+[remote-source]: https://github.com/gastownhall/beads/blob/v1.3.0/internal/storage/versioncontrolops/remotes.go
+[issue-schema]: https://github.com/gastownhall/beads/blob/v1.3.0/internal/storage/schema/migrations/0001_create_issues.up.sql
+[types-source]: https://github.com/gastownhall/beads/blob/v1.3.0/internal/types/types.go
+[rename-source]: https://github.com/gastownhall/beads/blob/v1.3.0/cmd/bd/rename.go
+[ignored-schema]: https://github.com/gastownhall/beads/blob/v1.3.0/internal/storage/schema/migrations/ignored/0001_create_local_state_tables.up.sql
+[ignored-patterns]: https://github.com/gastownhall/beads/blob/v1.3.0/internal/storage/schema/schema.go
+[github-source]: https://github.com/gastownhall/beads/blob/v1.3.0/cmd/bd/github.go
+[linear-source]: https://github.com/gastownhall/beads/blob/v1.3.0/cmd/bd/linear.go
+[selection-source]: https://github.com/gastownhall/beads/blob/v1.3.0/cmd/bd/sync_flags.go
+[tracker-engine]: https://github.com/gastownhall/beads/blob/v1.3.0/internal/tracker/engine.go
