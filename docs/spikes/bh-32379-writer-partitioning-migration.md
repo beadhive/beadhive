@@ -46,7 +46,8 @@ product code, and it observed live HQ and services read-only.
    [`bh-sieai`](bh-sieai-write-guard-and-nonprimary-writes.md). I took each one's binding
    conditions as inputs to the migration.
 2. **Read the code as it stands on `main` at 0.22.0** (`36f93bc8`), not on this spike's
-   container base. These are the modules the design names, plus the places that call them.
+   container base, then **re-verified it at 0.22.3** (`8302e8e9`, step 7). These are the
+   modules the design names, plus the places that call them.
    - **Lease:** `host_lease.py`, `host_lease_contracts.py`.
    - **Fence and adopt:** `host_fence.py`, `host_adopt.py`.
    - **Guards:** `guard.py` (`guard_primary`, `live_epoch`, `guard_claim_epoch`,
@@ -75,6 +76,17 @@ product code, and it observed live HQ and services read-only.
    a `{"epoch", "host_id", "seq"}` JSON blob at `refs/bh/epoch`, moved only by an old-oid CAS.
    The writer is a bd shared-server frame, as the live `bh` hive is. The second replica is a
    Dolt CLI frame.
+7. **Re-verified on 2026-10-05 against 0.22.3**, after the container was refreshed from
+   `main`. The new inputs are:
+   - 0.22.1: active-frame release rotation (`c2edbd25`, `a6a79a87`; `bh-mucmd` under the
+     closed epic `bh-cszmo`) and container refresh for hash-id children (`78d32c26`,
+     `bh-np024`, closed);
+   - 0.22.2: validation and test-infrastructure fixes only (nothing on the migration path);
+   - 0.22.3: `BH_FRAME_HEARTBEAT=advisory` in `frame_eligibility.py` (`051aa9be`);
+   - the composed end-to-end verdict `bh-jbb6r` (GO, merged into this container);
+   - field facts from the factory on 2026-10-05 (L8–L10), and a second read-only observation
+     at 17:24Z: `refs/bh/epoch`, `bh host list --lease-hive bh`, `bh host eligible --hive bh
+     --json`, this bead's own claim record, the heartbeat unit and its script.
 
    ```sh
    uv run pytest tests/spikes/test_bh_32379_cutover_int.py -n0 -q -p no:cacheprovider
@@ -98,9 +110,14 @@ when the proposal was written.
   So the fence ref, the HQ lease and every in-flight token agree on **(beadhive-factory, 221)**.
 - The cutover must read the epoch when it runs, never hard-code it. Re-adopting before then (see
   L6) moves it.
+- **Re-checked 2026-10-05 17:24Z:** the ref is still blob `2a8dd075` (`{221, factory, seq 0}`),
+  and this bead's claim, issued at 17:21:08Z, carries `epoch 221`. The 0.22.1 rotation code did
+  not move it, because nothing has been rotated yet (L9).
 
 **L2. The hive lease is held past its own expiry.** At 20:50:42Z,
-`bh host list --lease-hive bh` reported `held … expires 2026-10-04T20:49:05Z`. 0.22.0's advisory
+`bh host list --lease-hive bh` reported `held … expires 2026-10-04T20:49:05Z`. At 2026-10-05
+17:24Z it reported exactly the same expiry, 20.5 hours stale and still `held`: in signed mode
+nothing renews it. 0.22.0's advisory
 expiry (bh-7y6b2) is working as designed: `HostLease.advisory_expiry` makes `is_expired` false
 for a live holder in signed mode.
 
@@ -135,6 +152,11 @@ founded. Every replica of `bh` should therefore stay in server mode.
   `bh-cszmo` tracks the cleanup.
 - The receiver runs on the operator's laptop. In 0.22.0 it is still required for adopt,
   release, failover and registration, even in signed mode.
+- **Still true on 2026-10-05.** `bh-cszmo` closed when its code (`bh-mucmd`) shipped in 0.22.1.
+  The rotation itself has not been applied to the factory. The frame's grant still names the
+  0.21.3 digest (`sha256:6b508831…`). The shim is still in place, and its header comment still
+  names `bh-cszmo` as the cleanup. The open cleanup bead is now `bh-3q5m9`, and L9 says why it
+  is stuck.
 
 **L6. Every fleet-config publication fences every frame until the operator renews authority.**
 The trigger was `work.validation_bypass`, which was switched on for `bh` and has since been
@@ -151,18 +173,70 @@ to ≥ 222 before cutover.
 `transient`, has no `frame_id`, and shows `liveness legacy-mtime`, `stale`, last seen
 `unknown`. That is the `legacy_lease_policy` path (`frame_eligibility.decision_for` → `None`).
 It must be enrolled or removed before that path is deleted. Before cutover, confirm it holds
-no unpublished `bh` commits (see C1).
+no unpublished `bh` commits (see C1). It was unchanged on 2026-10-05.
 
-### What 0.22.0 already moved
+**L8. The heartbeat sender starves under load, and that fenced every write.** Field facts from
+2026-10-05:
 
-**S1.** Three changes shipped in 0.22.0. All three are default-off or log-only, and all three
-are on the migration path:
+- **What runs.** The factory does not run `heartbeat_report.send`. Its beat comes from an
+  out-of-tree script, `~/.beadhive/factory-local-heartbeat.py`. `beadhive-factory-heartbeat.service`
+  runs it as a `oneshot` on a timer with `TimeoutStartSec=240`, on the attested 0.21.3 env (L5).
+  The script copies the checks from `heartbeat_report.generate`: installed release, config
+  partition, host identity, and **local hives ready** (a `bd` round trip per local hive). It
+  then signs one `HeartbeatLease`.
+- **How slow it is.** About 3.5 minutes per measured beat, with an `intervalSeconds` of 60. The
+  cost is the conformance work, not the publish. `bh-wtsrc` E6 measured a session-row renewal
+  at p50 3 ms.
+- **The lapse.** Under full-gate load no beat landed from 16:22 to 16:38. When a beat's age
+  passed its `leaseDurationSeconds` (300 then), `authenticated_fresh_heartbeat` went false and
+  every lifecycle write refused with `frame ineligible: authenticated_fresh_heartbeat`.
+- **Mitigation 1.** The operator raised the beat's `leaseDurationSeconds` from 300 to 900 in
+  the script. 900 is the **contract ceiling**: `HeartbeatLease.leaseDurationSeconds` is
+  `Field(default=300, ge=1, le=900)` in `hq_framelease_contracts.py`, so there is no headroom
+  left. In-tree `heartbeat_report.generate` still hard-codes 300. Two senders now disagree on
+  the TTL, and the frame chooses its own freshness window.
+- **Mitigation 2.** 0.22.3 added `BH_FRAME_HEARTBEAT=advisory` (S1).
+- This is `bh-wtsrc` E7 in production: one process both renews liveness and proves conformance,
+  so slow conformance expires a healthy frame. It is the strongest field argument for the
+  session/evidence split (P-M9) and for pulling a sender-side split forward as a patch (P-F7).
+
+**L9. Active-frame release rotation exists but cannot run from the factory.**
+`bh host release-upgrade plan|apply|check` accepts a sole active incarnation since 0.22.1. All
+three verbs run in the operator's separately credentialed HOST binding
+(`hq.sql.authority_writer`, `runtime: null`; runbook, "Active frame release rotation"). That
+binding is off-host, on the laptop, so from the factory not even the read-only `check` runs.
+Removing that dependency is `bh-rjjjo`'s scope, with `bh-wj8hu` for renewal. Three consequences:
+
+- L5's mixed-version frame (dev verbs on 0.22.x, heartbeat/daemon/bridge on 0.21.3) persists
+  until an operator session on the laptop rotates the grant.
+- Installing the coexistence release (Φ1) on the factory needs the same session, unless
+  `bh-vfrem` ranges land first.
+- The rotation ADR says "the next lease renewal rebinds the lease to the new grant". **In
+  signed mode nothing renews** (L2, `bh-7y6b2`). The lease therefore stays bound to the
+  archived predecessor, and it survives only through `same_incumbent_after_rotation`.
+  `release_upgrade_history` keeps the newest 16 entries (`HISTORY_LIMIT`). A 17th rotation
+  without a renewal would push the lease's grant out of the archive, and the frame would have
+  to re-adopt at a new writer epoch. I derived this from the code and did not test it. The new
+  model removes the problem: placement names the frame, not the grant epoch (module map,
+  rotation row).
+
+**L10. The live epoch did not move on 2026-10-05.** The ref, the lease and the claims are all
+at 221 (L1). The frame was eligible at 17:24Z on a fresh signed beat: age 186 s, below 900. So
+the advisory waiver was not exercised at that moment. `~/.local/bin/bh` does not set
+`BH_FRAME_HEARTBEAT`. The waiver applies only in processes whose environment sets it.
+
+### What 0.22.x already moved
+
+**S1.** Three changes shipped in 0.22.0, one in 0.22.1 and one in 0.22.3. All are default-off,
+log-only or operator-invoked, and all are on the migration path:
 
 | Change | Code | Effect on the migration |
 |---|---|---|
 | `renew_if_due` swallows SQL control-plane errors (bh-jto52) | `host_lease.py:586-603` | The write verb no longer dies on a receiver timeout. In the new model `renew_if_due` stops being called at all. |
 | `hq.sql.liveness: receiver\|signed` and `BH_HQ_SQL_LIVENESS` (bh-0acs8) | `hq_sql_runtime.liveness_mode` / `newest_signed_heartbeat`, `SqlControlPlane._public_observation(signed=)` | First step of receiver removal: reads are read-time verified. It is a **transitional** mode. It keeps frame-clock freshness (`renewTime`, 30 s skew clamp) and an unpruned inbox, and it is replaced by server-stamped session rows (`bh-wtsrc`). |
 | Advisory hive-lease expiry, no receiver renewals (bh-7y6b2) | `HostLease.advisory_expiry` (non-record field), `read_hive_lease_record(advisory_expiry=signed)`, `lease_state` | This is `bh-cvk70` Recommendation 1 ("remove `expires_at` from every write gate"), done for SQL signed mode only. Until the in-data fence lands, split-brain exposure equals today's raw-push exposure, as the release notes state. |
+| 0.22.1: reviewed active-frame release rotation (bh-mucmd) | `frame_release_upgrade.py` (active branch, own plan-digest domain, `HISTORY_LIMIT = 16`), `hq_authority_guard.same_incumbent_after_rotation`, receiver and `hq_control_plane` incumbent reads, `host_cli release-upgrade` | It advances the **incarnation** epoch (`epoch_floor + 1`) but not the **writer** epoch, and keeps the hive lease with its lineage. That matches this plan's split of the two epochs (L6). It still couples hive-lease continuity to grant authority, which the new model removes (L9). It is operator-only and off-host (L9). |
+| 0.22.3: `BH_FRAME_HEARTBEAT=advisory` | `frame_eligibility.heartbeat_mode`, `EligibilityFacts.heartbeat_advisory`, the `waived` term of `authenticated_fresh_heartbeat` | Transitional escape for L8. A verified but stale beat no longer fences. Each waived decision warns on stderr. Every other predicate still fails closed. It is **not** a waiver for a *missing* or unverified beat: `release_matches`, `conformance_pass`, `current_frame_incarnation` and `beadyard_binding` all need a verified beat, so a frame with no beat at its current incarnation epoch, for example right after a rotation, stays fenced. It does not touch `evictable`, adopt or failover. Default stays `required`. |
 
 **S2. A config key is a version-skew hazard.** `HqSqlConfig` forbids unknown keys, so a 0.21.3
 reader fails on any `host.yaml` that carries `hq.sql.liveness` (release notes, "Rollout order").
@@ -173,13 +247,31 @@ fleet-config key is the switch for any phase.** A hive is cut over when its own 
 switches are data, written by the operator or the adopt, and every bh version can read them or
 ignore them safely.
 
+**S3. The 0.22.3 advisory switch fits that rule, with one caveat.** It is a per-process
+environment variable, not a `host.yaml` or fleet-config key. Setting it costs no authority
+renewal, and older bh ignores it. The caveat: it governs only the processes whose environment
+sets it. Two processes on one frame with different settings decide eligibility differently. It
+also has no expiry. The migration therefore treats it as **operator state to retire**: an
+explicit unset step, gated on evidence, sits in the Φ3 cutover and in rollback (§2, §3, P-D5).
+It is not a feature to keep. Its safety argument rests on there being one executor frame.
+
+- **One executor frame.** The waived frame is the only candidate. Nobody can evict it, so a
+  stale beat only costs observability.
+- **Two executor frames, hive not cut over.** Beat freshness is one of the inputs a frame uses
+  to fence *itself*. It bounds how long a frame whose sender is wedged, or that has lost touch
+  with HQ, keeps admitting work after `evictable` lets another frame adopt. With the waiver on,
+  only the claim-time lease reread bounds that window. Once the hive is cut over, the in-data
+  fence closes the window whatever the waiver says (T3, T4).
+
+That is binding condition 6.
+
 ### Module map
 
 Outcomes: **keep** (unchanged role), **narrow** (smaller role, same module), **replace** (role
 moves to a new mechanism, then the old code goes), **delete**. "Phase" refers to
 [Recommendation §2](#2-phases-coexistence-and-mixed-version-behaviour).
 
-| Module / surface | Outcome | Reason (evidence) | Already changed in 0.22.0 | Phase |
+| Module / surface | Outcome | Reason (evidence) | Already changed in 0.22.x | Phase |
 |---|---|---|---|---|
 | `host_lease.py` (`adopt`, `renew`, `release`, `takeover`, `_cas_or_reject`, `read_cached`, `cache`, `lease_state`, `renew_if_due`, `ttl_for_role`) | **narrow** → the **placement** CAS | `bh-cvk70` E1: the record at `refs/bh/lease/<prefix>` is already `{host_id, epoch}` with a true force-with-lease CAS, so placement needs no new record in git mode. `expires_at` leaves every write gate (`bh-cvk70` R1, E13–E15). `renew_if_due` becomes a no-op in every mode, and so does the `localloop.HostLeaseKeeper` renewal. `ttl_for_role` becomes `failover_after` per role: 60 min executor, 30 min transient, viewer never placed (`bh-cvk70` E20). In SQL mode, `_cas_or_reject` stops going through `plane.publish_hive_lease` (inbox → receiver) and goes through the director CAS. `frame_emergency.cap_lease` keeps capping the hint. | `renew_if_due` is a no-op in SQL signed mode and swallows SQL errors | P-M2, P-M3, P-M8 |
 | `host_lease_contracts.py` (`HostLease`, `lease_ref`, stamps) | **keep** (semantics narrowed) | Wire format and ref are unchanged, so the live `(factory, 221)` lease *is* the placement record (`bh-cvk70` R6). `held_by` becomes "names this host". Expiry is a hint everywhere, so the 0.22.0 `advisory_expiry` flag becomes the default and is then removed. A tombstone is still released. | `advisory_expiry` field (signed SQL only) | P-M3, P-D3 |
@@ -187,23 +279,27 @@ moves to a new mechanism, then the old code goes), **delete**. "Phase" refers to
 | `host_fence.py` `fenced_push`, `_atomic_push`, `_fallback_push`, `probe_atomic`, `atomic_default`, `FORGE_ATOMIC_SUPPORT` | **delete** | No production caller: `BdEngine` cannot own a stable local data ref (module docstring; `git grep` finds no caller outside the module). | — | P-R1 (patch-safe refactor) |
 | `host_fence.py` `install_fence`, `read_fence`, `EpochFence` | **narrow**, then **delete** | `read_fence` seeds the cutover (C1) and feeds the floor check in rollback (R2). `install_fence` is the coexistence adopt's legacy-ref step. Both go when the ref is frozen. | — | P-M2, P-D2 |
 | `host_fence.py` `transport_lookup`, `transport_repos` | **keep** (move) | These are diagnostics used by `doctor`, `prepush` and `hub`. They belong next to `store_locator`. | — | P-R1 |
-| `host_adopt.py` (two-phase, fence first, lease second; `_next_epoch`; `AdoptHalfDone`) | **replace** | Order inverts to placement first, then an idempotent step 2 in data with the `adopt-<e>` sentinel (`bh-cvk70` E10–E11, R3; `bh-vje85` condition 1). Step 2 also: (a) reverts the dead frame's `in_progress` beads (`bh-cvk70` R5, `bh-sieai` R3); (b) re-runs the idempotent guard install and checks for 42 triggers (`bh-sieai` R1). `_next_epoch` survives as `max(refs/bh/epoch, placement, bh_writer, max(dolt_history_bh_writer)) + 1`. The half-done state becomes "adopt incomplete" (`placement_ahead`), recovered by re-running step 2 (test, "adopt-step2-recovery"). | — | P-M2 |
+| `host_adopt.py` (two-phase, fence first, lease second; `_next_epoch`; `AdoptHalfDone`) | **replace** | Order inverts to placement first, then an idempotent step 2 in data with the `adopt-<e>` sentinel (`bh-cvk70` E10–E11, R3; `bh-vje85` condition 1). Step 2 also: (a) reverts the dead frame's `in_progress` beads (`bh-cvk70` R5, `bh-sieai` R3); (b) re-runs the idempotent guard install and checks for 44 `bh_*` triggers: the guard's 42 plus the two monotonic triggers (`bh-sieai` R1, `bh-jbb6r` E6). `_next_epoch` survives as `max(refs/bh/epoch, placement, bh_writer, max(dolt_history_bh_writer)) + 1`. The half-done state becomes "adopt incomplete" (`placement_ahead`), recovered by re-running step 2 (test, "adopt-step2-recovery"). | — | P-M2 |
 | `guard.py` `guard_primary`, `primary_state`, `_refresh_expired`, `_primary_refusal` | **narrow** | On a cut-over hive the write decision is local: `bh_writer.frame == bh_local_ident.frame`, with no clock (`bh-cvk70` E14). `require_intake` stays for new intake. The `renew_if_due` call goes. The lease path stays only for hives not yet cut over. | Renewal swallow and no-op | P-M3 |
 | `guard.py` `live_epoch`, `guard_claim_epoch`, `_stale_claim_refusal` | **keep** (source changes) | The `ClaimRecord.epoch` token stays the fencing token. On a cut-over hive the live epoch is the local `bh_writer.epoch`, and it is seeded *equal* to the lease epoch, so in-flight claims survive cutover (test: `is_stale` is false at 221 and true after the real handoff to 222). | — | P-M3 |
 | `guard.py` `bd_write_refusal` / `is_store_publish` (the `bh bd dolt push\|sync` refusal) | **replace** | Lifted per cut-over hive, because raw push, auto-push, `bd sync` and pull-then-push are fenced in data (`bh-vje85` E5). The same change **adds** refusals on fenced hives (`bh-vje85` R4): (a) `dolt push --force`, `dolt remote reset-data`, `backup restore --force`; (b) any `--strategy`; (c) `conflicts resolve` on `bh_*`; (d) plain `vc merge`. It stays as it is for hives that are not cut over. | — | P-M5 |
 | `claim_authority.py` | **keep** | `ClaimRecord{host_id, epoch}` is already the right token. The optional audit addition is to record the admitted session and evidence stamps in the claim (`bh-wtsrc` R4, threat T15). | — | P-M9 (optional) |
-| `frame_eligibility.py` (`eligible`, `decision_for`, `require_intake`, `GuardedClaimSession`, `authoritative_primary`, `incumbent_primary`) | **narrow** (inputs only) | Predicate names, the decision shape and the claim-time reread all stay (`bh-wtsrc` R1). Inputs change: (a) `authenticated_fresh_heartbeat` ← session fresh by server `UTC_TIMESTAMP`; (b) `conformance_pass` / `release_matches` ← evidence row vs grant (`bh-vfrem` ranges); (c) `current_hive_lease_holder` ← placement names the frame, **and** for writes `bh_writer` names it. | Signed read path | P-M9 |
+| `frame_eligibility.py` (`eligible`, `decision_for`, `require_intake`, `GuardedClaimSession`, `authoritative_primary`, `incumbent_primary`) | **narrow** (inputs only) | Predicate names, the decision shape and the claim-time reread all stay (`bh-wtsrc` R1). Inputs change: (a) `authenticated_fresh_heartbeat` ← session fresh by server `UTC_TIMESTAMP`; (b) `conformance_pass` / `release_matches` ← evidence row vs grant (`bh-vfrem` ranges); (c) `current_hive_lease_holder` ← placement names the frame, **and** for writes `bh_writer` names it. | Signed read path; the advisory waiver (next row) | P-M9 |
+| `frame_eligibility` heartbeat predicate: `fresh = verified ∧ fresh ∧ ¬candidate ∧ 0 ≤ age < lease.leaseDurationSeconds` | **replace** (input) | Today the freshness window is the beat's own, frame-chosen `leaseDurationSeconds` (≤ 900 by contract), measured against the frame's `renewTime` with the reader's clock (`signed-envelope-reader-clock`). L8 shows the window is tied to the slowest part of the sender, conformance. The replacement measures the session row's age with the server's `UTC_TIMESTAMP`, against a window that a code default sets, not the frame (`bh-wtsrc` R1). Conformance and release are judged from the evidence row and its own, longer age limit, so slow conformance can no longer expire liveness. The predicate's name and its place in the decision stay. The emergency branch (`trusted_emergency`) keeps its current shape. | 0.22.3 `waived` term | P-M9 |
+| `BH_FRAME_HEARTBEAT=required\|advisory` (`HEARTBEAT_ENV`, `heartbeat_mode`, `EligibilityFacts.heartbeat_advisory`, `waived`) | **delete** (retire) | This is a transitional escape for L8, so it keeps no role in the new model. Retirement is a procedure before it is a code change (S3). (1) Once the reader is data-switched to session rows (P-M9, Φ3), `authenticated_fresh_heartbeat` no longer reads beat freshness, so the waiver is a no-op for that frame. P-M9 makes it warn `ignored: session liveness` rather than `waived`. (2) After the Φ3 soak shows no session lapses under full-gate load, the operator unsets it in every unit and shim that sets it. (3) P-D5 removes the code. That removal is a `refactor` patch if nothing still sets the variable, because removing a no-op is not breaking. **Do not** delete it while any frame still reads beat freshness: a frame that still sets the variable after it is gone would be fenced again on its next lapse. | Added in 0.22.3 | P-M9, P-D5 |
 | `frame_eligibility.evictable` | **replace** | Today it is a receiver-receipt, first-seen staleness rule. It becomes the director's observed-window rule, `min(server staleness, observed window) > failover_after` (`bh-cvk70` E15), so an HQ outage never evicts a healthy primary. | — | P-M8 |
 | `hq_frame_lease.py` (signed v1/v2 frame hive-lease carrier at `refs/bh/lease`) | **keep** (git HQ) / **narrow** | This is git mode's placement carrier and CAS (`bh-cvk70` E1–E3). The unsigned legacy-blob branch of `read` goes with `legacy_lease_policy`. | — | P-D3 |
 | `hq_framelease_contracts.HeartbeatLease` (embedded conformance) | **narrow** | SQL HQ splits it into a session row and an evidence row, because coupling expires healthy frames (`bh-wtsrc` E7: 40/58 samples blocked by `session_fresh` alone). Git HQ keeps the signed `HeartbeatLease` and `observe` (`bh-wtsrc` E9, R5). `ConformanceCheck` / `HeartbeatConformance` become the evidence payload. `ObservationAuthority` (moved here in 0.22.0) stays. | `ObservationAuthority` moved in | P-M9, P-D4 |
-| `heartbeat_report.py` (`generate`, `send`) | **narrow** (split) | It splits into a session renewal loop (one `UPDATE`, p50 3 ms, `bh-wtsrc` E6) and a conformance job on its own timer that writes evidence. `installed_release` already lives in `release_measurement.py`. `bh-vfrem` decides how the measured digest is compared. | `installed_release` moved; `hive_ready` via `bd` boundary; `seq` from newest verified inbox beat | P-M9 |
+| `heartbeat_report.py` (`generate`, `send`) | **narrow** (split) | It splits into a session renewal loop (one `UPDATE`, p50 3 ms, `bh-wtsrc` E6) and a conformance job on its own timer that writes evidence. `installed_release` already lives in `release_measurement.py`. `bh-vfrem` decides how the measured digest is compared. **Field confirmation (L8):** a coupled beat took about 3.5 min and lapsed under load. Before P-M9, a patch-safe sender-side split (P-F7) can sign beats from cached conformance results, so a beat no longer waits on `hive_ready`. `generate` hard-codes `leaseDurationSeconds: 300`, while the factory runs at 900 (the contract ceiling). The in-tree default and the factory need one source until P-M9 makes the window server-side. | `installed_release` moved; `hive_ready` via `bd` boundary; `seq` from newest verified inbox beat | P-F7, P-M9 |
+| `~/.beadhive/factory-local-heartbeat.py` + `beadhive-factory-heartbeat.service` (out-of-tree, factory only) | **replace**, then **delete** | It is a hand-maintained copy of `generate` that runs on the 0.21.3 env, so the attested digest matches (L5, L8). It drifts from the tree: the 900 s TTL, its own check list, and an `assert` on the release. Its `TimeoutStartSec=240` is shorter than a loaded beat. It is replaced by the in-tree sender, first P-F7 on one env after rotation, then P-M9's session loop and evidence timer as two units. The unit is removed with `bh-3q5m9`. | Lease raised 300 → 900 on 2026-10-05 | P-F7, P-M9 |
+| Release rotation: `frame_release_upgrade.py` active branch, `bh host release-upgrade plan\|apply\|check`, `hq_authority_guard.same_incumbent_after_rotation`, its uses in `hq_sql_receiver` and `hq_control_plane` incumbent/holder reads; [runbook](../design/frame-release-upgrade-runbook.md) | **keep** (grant rotation) / **narrow** (lease continuity) | Rotating the reviewed grant stays. It is how a frame's release is authorized until `bh-vfrem` ranges make it rare, and nothing in the new model replaces it. It advances the incarnation epoch, never the writer epoch, which the cutover depends on (L6). Two parts change. (a) **Lease continuity.** `same_incumbent_after_rotation` exists because the hive lease names the full grant authority, epoch included. Placement in the new model names the frame (`bh-cvk70` R6), and `bh_writer` names the frame and the writer epoch, so a rotation touches neither. The predecessor rule becomes dead in the receiver at P-D1 and in incumbent reads at P-D3. It also removes L9's 16-rotation horizon. (b) **Where it runs.** All three verbs need the off-host `authority_writer` binding (L9). Making `check` read-only from the frame, and moving apply to `bh-rjjjo`'s scoped delegate, are `bh-rjjjo` / `bh-wj8hu` work. They are a prerequisite for a laptop-free Φ1 install, not for the cutover. The runbook's step 8 line, "the next lease renewal rebinds", is wrong for signed mode and needs a docs fix (§5). | Shipped in 0.22.1 | P-M8, P-D1, P-D3 |
 | `hq_sql_receiver.py` (`SqlTrustedReceiver`: `accept_hive_lease`, `accept_registration`, `accept_heartbeat`, `recover_heartbeat`) | **delete** (SQL HQ) | Each job is re-homed first: (a) hive-lease CAS → director credential, design A (`bh-cvk70` E8); (b) registration binding → operator-side check at enrollment (`bh-wtsrc` T19); (c) heartbeats → session rows (`bh-wtsrc` verdict). Git HQ never had a receiver (`bh-wtsrc` E9). The test harness `sql_receiver_worker.py` and `test_emergency_sql_receiver.py` go with it. | Bypassed on heartbeat reads and renewals in signed mode | P-D1 |
 | `hq_sql_runtime.py` | **narrow** | Kept: `verified_state_at`, `load_config_at`, the config and runtime-authority floors (`_check_floor`, HOST floor files), `fresh_hive_lease_fence` (the placement reread), and `load_frame_binding`. Deleted: `publish_inbox`, `read_public_result`, `fresh_public_observation_fence`, `newest_signed_heartbeat` and `liveness_mode` / `signed_liveness`. `read_frame_composite` reads session, evidence and grant. | `liveness_mode`, `newest_signed_heartbeat` added | P-M9, P-D1 |
 | `hq_sql_runtime_schema.py` | **narrow** | `COMMITTED_SCHEMA` stays; the registry's `inbox_table` column now names the incarnation's session and evidence tables. `LIVE_SCHEMA` (inbox) is replaced by per-incarnation `_session` / `_evidence` DDL (`bh-wtsrc` R1). In `PROTECTED_LIVE_SCHEMA`: (a) `hq_live_receipts`, `hq_live_floors`, `hq_live_public_observations` and `hq_live_results` are **deleted**; (b) `hq_live_registrations` becomes an operator enrollment record or is deleted; (c) `hq_live_hive_leases` is **kept** as the placement row. Frames get `SELECT`, the director gets `UPDATE`, and every write rewrites `revision` (`bh-cvk70` E6). | — | P-M8, P-M9, P-D1 |
 | `engine.BdEngine.push_state` | **narrow** | Kept: `bd dolt commit` before push. That is exactly `bh-vje85` R3's mark-staging step. Kept during coexistence, then removed: reserve and verify around `bd dolt push`. Added: fetch and compare `bh_writer.epoch` before pushing, and divert to `frame/<id>/orphan` when superseded (`bh-vje85` E3). `force=True` is refused on fenced hives. `sync_remote.py` and `report.py` inherit all of this. | — | P-M2, P-M6, P-D2 |
 | `engine.BdEngine.sync_state` + `hive_sync` strategies | **narrow** | `--strategy ours\|theirs` is refused on fenced hives (`bh-vje85` R4). Strategy merges skip triggers, and only the sentinel saves `bh_writer` (E11). The reporting gap is fixed independently: `Merged: false`, a non-null `Error`, or a `✗` line currently returns `ok=True` (`bh-vje85` E9). | — | P-F1 (patch-safe), P-M5 |
 | `prepush.py` (transport pre-push hook) | **delete** | bd forces `core.hooksPath=/dev/null`, so the hook never enforces (`BEADS-SYNC.md`). | — | P-D2 |
-| `doctor.py` fence checks (`:1795-1972`) | **replace** | These become `fence_audit` (`stale_marks`, `epoch_regressed`, `placement_ahead`; `bh-vje85` E12), the guard trigger count (42; `bh-sieai` R1) and "adopt incomplete". | — | P-M4 |
+| `doctor.py` fence checks (`:1795-1972`) | **replace** | These become `fence_audit` (`stale_marks`, `epoch_regressed`, `placement_ahead`; `bh-vje85` E12), the `bh_*` trigger count (44; `bh-sieai` R1, `bh-jbb6r` E6) and "adopt incomplete". | — | P-M4 |
 | `legacy_lease_policy` (`frame_eligibility.decision_for → None`, `local_intake_decision(legacy_primary=)`, `host_cli eligible` "legacy lease policy", `host_lease._frame_plane → None`, `hq_frame_lease` unsigned blobs) | **delete** | Retired once every hive has a `bh_writer` row and every host that executes work is an enrolled frame (proposal §6). `xeno-mac.lan` (L7) is the only legacy host observed. | — | P-D3 |
 
 ### What the cutover test showed
@@ -287,6 +383,19 @@ A safe, reversible migration exists for every hive and for the live factory fram
 The fence lives in the replica's own data, so once it is installed it holds whatever bh version
 runs on a host.
 
+**Re-verified at 0.22.3 (2026-10-05): still GO, and it is more urgent.**
+
+- None of 0.22.1–0.22.3 touches the fence ref, the lease record format, `push_state`, the
+  guard or the sync strategies, so T1–T6 stand.
+- Rotation (0.22.1) moves only the incarnation epoch, which the plan already keeps apart from
+  the writer epoch.
+- `BH_FRAME_HEARTBEAT=advisory` (0.22.3) is a waiver on a predicate whose input the plan
+  already replaces. It fits the "data, not config, is the switch" rule (S3).
+- What changed is the cost of waiting. The coupled heartbeat has now fenced the whole factory
+  in production (L8), and its TTL has no headroom left. The operator's only escape is a waiver
+  that is safe only while there is one executor frame. And the active-rotation path cannot run
+  without the laptop (L9).
+
 **Binding conditions:**
 
 1. **The legacy carriers must agree before cutover.** The fence ref and placement must name the
@@ -306,7 +415,12 @@ runs on a host.
      table; failover reverts the dead frame's `in_progress` beads;
    - `bh-vje85`: the sentinel; the singleton live epoch; mark pruning only by adopt or for
      marks already on `origin/main`; force paths are break-glass;
-   - `bh-sieai`: the guard shape and its 14 tables.
+   - `bh-sieai`: the guard shape and its 14 tables;
+   - `bh-jbb6r`: the 44-trigger adopt check; the failover observer's gap reset; distinct remote
+     URLs for frame-private refs on server-mode primaries.
+6. **`BH_FRAME_HEARTBEAT=advisory` is a single-executor-frame escape (S3).** Unset it on every
+   frame before a second executor frame is placed on a hive that is not cut over. Retire it
+   only through the gated procedure in §3, never by deleting the code first.
 
 **On patch releases.** The new model cannot ship entirely as patches. The in-data fence, the
 new adopt, the lifted refusal and the session rows are features. Breaking removals bump the
@@ -340,7 +454,9 @@ cut `bh` over last. The test runs this procedure as `_cutover`.
   - the `dolt_ignore` row `bh_local_%`;
   - `bh_writer(1, holder, E, <fresh revision>)` and `bh_epoch_live(1, E)`;
   - a `cutover-E` sentinel mark;
-  - the `bh-sieai` guard: the procedure plus 42 triggers on 14 tables.
+  - the `bh-sieai` guard: the procedure plus 42 triggers on 14 tables. Install order follows
+    `bh-jbb6r`: the fence tables, then the guard, then the two monotonic triggers last. That
+    gives 44 `bh_*` triggers.
 
   How to run it depends on the engine:
   - **Server mode** (`bh`): send the statements through the server, then `bd dolt commit`.
@@ -356,7 +472,7 @@ cut `bh` over last. The test runs this procedure as `_cutover`.
     script is drop-then-create and idempotent.
 - **C6. Verify.**
   - `fence_audit` is clean.
-  - The trigger count is 42.
+  - The `bh_*` trigger count is 44 (`bh-jbb6r` E6).
   - The holder can write.
   - Each other replica provisions its identity on its next pull. Unprovisioned replicas are
     read-only on `main` (T3).
@@ -366,11 +482,11 @@ cut `bh` over last. The test runs this procedure as `_cutover`.
 
 | Phase | State | Old bh (0.21.3/0.22.x) on another frame | Old bh process on the writer frame (e.g. 0.21.3 heartbeat/daemon) | New bh |
 |---|---|---|---|---|
-| **Φ0** today | Lease + `refs/bh/epoch` + receiver; the 0.22.0 signed interim | Unchanged. | Supported as the 0.22.0 interim (env shim). Mixed *reader* liveness modes against one frame are unsupported (release notes). | — |
+| **Φ0** today | Lease + `refs/bh/epoch` + receiver; the 0.22.x signed interim, optionally with `BH_FRAME_HEARTBEAT=advisory` (0.22.3) on a single-frame fleet | Unchanged. A pre-0.22.3 bh ignores the advisory variable and fences on a stale beat. That is fail-closed, so the only effect is that it is less available than a 0.22.3 process on the same frame. | Supported as the 0.22.x interim (env shim; heartbeat, daemon and bridge on 0.21.3 until rotation, L9). Mixed *reader* liveness modes against one frame are unsupported (release notes). | — |
 | **Φ1** 0.23.0 installed, no hive cut over | No `bh_writer` anywhere | Fully compatible: new bh behaves as 0.22 when there is no `bh_writer` (lease gate, reserve/verify). | Compatible. | Downgrade to 0.22.x is free. |
 | **Φ2** hive H cut over; ref maintained (dual fence) | `bh_writer` on H's `main`; ref and lease kept in lockstep by every new adopt | As a non-writer: every `main` write fails closed (`table not found: bh_local_ident`, T3); reads work; its managed push loses the ref CAS after any adopt (T4). As an adopter: fail-closed stall until roll-forward (T5, condition 3). | Works. The guard identity is per *replica*, not per process, so its bd writes pass and stamp marks. Its managed push still reserves the maintained ref. Its receiver renewals work while the receiver runs. | Writer: data fence plus ref reservation. Non-writers: provisioned and refused, or forwarding to the primary's server (`bh-sieai` forward GO). `bh bd dolt push\|sync` is lifted on H; force and strategy paths are refused. |
-| **Φ3** SQL HQ: director placement + session rows, receiver still running (soak) | `hq_live_hive_leases` written by the director with a fresh 64-hex revision. That is `sha256(record ‖ uuid)`, unique like a UUID but in the receiver's format, so the receiver can take over again. Per-incarnation session and evidence tables exist. Frames dual-write session rows and signed inbox beats. | 0.22 signed readers keep working from the inbox. 0.21.3 receiver-mode readers work while the receiver runs. Old adopt and release still go through the receiver. | Same. | Reads session and evidence when the incarnation's tables exist (the data switch), else signed inbox. |
-| **Φ3b** receiver stopped | No receiver | Old adopt and release fail (`HqLeaseUnknown`), which is fail-closed and also blocks condition 3. 0.21.3 receiver-mode eligibility goes stale, so none may remain (condition 4). | None may remain on 0.21.3. | Unchanged. |
+| **Φ3** SQL HQ: director placement + session rows, receiver still running (soak) | `hq_live_hive_leases` written by the director with a fresh 64-hex revision. That is `sha256(record ‖ uuid)`, unique like a UUID but in the receiver's format, so the receiver can take over again. Per-incarnation session and evidence tables exist. Frames dual-write session rows and signed inbox beats. | 0.22 signed readers keep working from the inbox. 0.21.3 receiver-mode readers work while the receiver runs. Old adopt and release still go through the receiver. | Same. | Reads session and evidence when the incarnation's tables exist (the data switch), else signed inbox. On a data-switched frame `BH_FRAME_HEARTBEAT` is a logged no-op (`ignored: session liveness`). Unset it once the soak exits. |
+| **Φ3b** receiver stopped | No receiver | Old adopt and release fail (`HqLeaseUnknown`), which is fail-closed and also blocks condition 3. 0.21.3 receiver-mode eligibility goes stale, so none may remain (condition 4). A 0.22.x signed-inbox reader still needs fresh beats, so the frame keeps dual-writing them until no such reader remains, and it may still need the advisory waiver. | None may remain on 0.21.3. | Unchanged. The advisory variable is unset everywhere (exit criterion for P-D5). |
 | **Φ4** 0.24.0: ref frozen, removals | No reserve/verify. `refs/bh/epoch` frozen at its last epoch as a floor record (do not delete it). | Must not exist. If one appears, the data fence still stops it, because it is version-independent (T3). | Must not exist. | Delete list in §6 (D-items). |
 
 Git HQ follows the same Φ0–Φ2 and Φ4. It has no receiver and keeps the signed `HeartbeatLease`
@@ -383,20 +499,32 @@ different evidence carriers.
 |---|---|---|
 | Φ1 | Reinstall 0.22.x (for the live frame, the shim's own `ln -sfn` line). | Everything. Nothing was written. |
 | Φ2, before C5's push | `DOLT_RESET('--hard', 'origin/main')` on the holder and drop its local `bh_local_ident`. | Everything. Nothing was published. |
-| Φ2, after cutover (**R1–R5, tested as T6**) | **R1.** Stop new adopts for H; take the rollback on the current `bh_writer` holder. **R2.** Read `floor = max(dolt_history_bh_writer.epoch, refs/bh/epoch, placement)` *before* dropping anything, because the history system table goes with the table. If the ref is below the floor, which coexistence should never allow, first legacy-adopt so the ref and lease are at `floor+1`. **R3.** In one commit: drop the four fence triggers and the 42 guard triggers and procedure, then `bh_write_mark`, `bh_epoch_live`, `bh_writer`. **Keep** the `dolt_ignore` row. **R4.** Push on the managed path (reserve, push, verify). Never `--force`, never `reset-data`, never move the ref back. **R5.** Each replica pulls (a plain fast-forward) and drops its local identity table. The lease gate resumes, and the next adopt is `> floor`. | The legacy model, with epochs still monotonic. Downgrade below 0.23.0 is allowed only after R1–R5. |
-| Φ3 | Keep the receiver deployed and the inbox tables intact for the whole soak. To roll back, restart the receiver and put readers back on `signed` or `receiver` through the 0.22.0 env override. The director's placement revisions are receiver-format (Φ3 row). | Receiver liveness and receiver-written placement. |
+| Φ2, after cutover (**R1–R5, tested as T6**) | **R1.** Stop new adopts for H; take the rollback on the current `bh_writer` holder. **R2.** Read `floor = max(dolt_history_bh_writer.epoch, refs/bh/epoch, placement)` *before* dropping anything, because the history system table goes with the table. If the ref is below the floor, which coexistence should never allow, first legacy-adopt so the ref and lease are at `floor+1`. **R3.** In one commit: drop the two monotonic triggers and the 42 guard triggers and procedure, all 44 `bh_*` triggers (the test's stand-in guard has two, so it drops four), then `bh_write_mark`, `bh_epoch_live`, `bh_writer`. **Keep** the `dolt_ignore` row. **R4.** Push on the managed path (reserve, push, verify). Never `--force`, never `reset-data`, never move the ref back. **R5.** Each replica pulls (a plain fast-forward) and drops its local identity table. The lease gate resumes, and the next adopt is `> floor`. | The legacy model, with epochs still monotonic. Downgrade below 0.23.0 is allowed only after R1–R5. |
+| Φ3 | Keep the receiver deployed and the inbox tables intact for the whole soak. To roll back, restart the receiver and put readers back on `signed` or `receiver` through the 0.22.0 env override. The director's placement revisions are receiver-format (Φ3 row). If readers go back to signed beats and the coupled sender is still in use, re-set `BH_FRAME_HEARTBEAT=advisory` on a single-frame fleet only (condition 6). P-F7 should make that unnecessary. | Receiver liveness and receiver-written placement. |
+| Advisory switch (any phase) | **Retire, gated:** (A1) the frame's eligibility reads session rows, or P-F7's decoupled sender has run with no lapse for one full-gate soak window; (A2) unset `BH_FRAME_HEARTBEAT` in every unit, shim and profile on the frame, then restart those units; (A3) confirm `bh host eligible --hive <prefix> --json` stays eligible through a full gate, with no `waived` warnings in the journal; (A4) only then remove the code (P-D5). **Roll back the retirement:** set `advisory` again in the affected units (single-frame only). It needs no release and no config publication, and it is effective from the next process start. After P-D5 there is nothing to roll back to, so P-D5 waits until no frame reads beat freshness. | Today's L8 mitigation. |
 | Φ4 / P-D1 | No in-place rollback once tables and code are deleted. Delete only after a Φ3b soak, and export `hq_live_*` first (`bh-wtsrc` T15). | — |
 
 ### 4. The live factory frame, in order
 
-1. **Now (Φ0).** Keep the 0.22.0 signed interim. Do not set `hq.sql.liveness` in `host.yaml`
-   while any 0.21.3 process reads it (S2).
-2. **Ship the patch-safe items (P-F1…P-F5)** as 0.22.x. P-F3 (`bh-87l3y`) lands before any step
-   that needs a fleet-config edit.
-3. **`bh-cszmo` / `bh-mucmd`:** rotate the active frame to one release, restart
-   `beadhive-host`, `frame-bridge@factory` and `factory-heartbeat` on one env, and remove the
-   shim (`bh-3q5m9`). This still needs the laptop receiver. Expect the hive lease to be
-   re-bound, and possibly the writer epoch to move past 221 (L6). The cutover reads it then.
+1. **Now (Φ0).** Keep the 0.22.x signed interim. Do not set `hq.sql.liveness` in `host.yaml`
+   while any 0.21.3 process reads it (S2). Keep the beat TTL at 900 (the contract ceiling) and
+   use `BH_FRAME_HEARTBEAT=advisory` only as the single-frame escape (condition 6). Ship P-F7 so
+   the escape stops being needed.
+2. **Ship the patch-safe items (P-F1…P-F8; P-F2 is done)** as 0.22.x. P-F3 (`bh-87l3y`)
+   lands before any step that needs a fleet-config edit. P-F7 is coded now but deployed with
+   step 3.
+3. **Rotate the active frame (code shipped in 0.22.1 as `bh-mucmd`; cleanup is `bh-3q5m9`).**
+   - Run `bh host release-upgrade plan|apply|check` from the operator's laptop binding, because
+     the factory cannot even `check` (L9).
+   - Restart `beadhive-host`, `frame-bridge@factory` and the heartbeat on one env, then remove
+     the shim. Replace the out-of-tree heartbeat script with the in-tree sender (P-F7).
+   - Budget the window. From the config prep until the first verified beat at the new
+     incarnation epoch, the frame is fenced, and the advisory waiver does not cover a *missing*
+     beat (S1). A loaded beat takes about 3.5 min (L8). Rotate when the gate is idle.
+   - In signed mode the hive lease is not renewed. It keeps its writer epoch (221) through
+     `same_incumbent_after_rotation`, so claims survive. That holds for at most 16 rotations
+     before a renewal or re-adopt (L9). If a re-adopt happens instead, the writer epoch moves
+     past 221. The cutover reads it then.
 4. **Install 0.23.0 by the same rotation.** `bh-vfrem` ranges remove the per-patch re-grant
    after that. That is Φ1.
 5. **Cut over a canary hive, then `bh`** (C1–C6). The `bh` store is in server mode (L4), so
@@ -437,9 +565,15 @@ different evidence carriers.
 - **[HQ.md](../HQ.md):** the bound hive-lease paragraphs (around l.179–196) become placement,
   written by the director in SQL mode, and the receiver references go.
 - **Also update:**
-  - [CONFIGURATION.md](../CONFIGURATION.md): deprecate `hq.sql.liveness`;
-  - [frame-release-upgrade-runbook.md](../design/frame-release-upgrade-runbook.md): active
-    rotation (`bh-cszmo`);
+  - [CONFIGURATION.md](../CONFIGURATION.md): deprecate `hq.sql.liveness`. Document
+    `BH_FRAME_HEARTBEAT` as transitional, with condition 6 and the retirement steps from §3. It
+    is not documented anywhere in `docs/` today;
+  - [frame-release-upgrade-runbook.md](../design/frame-release-upgrade-runbook.md) and
+    [active-frame-release-rotation-adr.md](../design/active-frame-release-rotation-adr.md):
+    the active rotation itself shipped in 0.22.1 (`bh-mucmd`). Correct the line "the next lease
+    renewal rebinds the lease" for signed mode, where nothing renews (L9). State the 16-entry
+    archive horizon. Note that `check` needs the off-host authority-writer binding
+    (`bh-rjjjo`). Note that the advisory waiver does not cover the rotation window;
   - the proposal's status line;
   - a release note per release, with the trust delta and rollout order.
 
@@ -452,19 +586,21 @@ These are not filed beads. Order is top to bottom, and `→` marks a hard depend
 | # | Item | Tag | Why it is patch-safe |
 |---|---|---|---|
 | P-F1 | `fix(sync)`: `sync_state` treats `Merged: false`, a non-null `Error` or a `✗` line as failure (`bh-vje85` E9) | patch-safe | Fixes a false `ok=True`. No new surface. |
-| P-F2 | `fix(work)`: resolve the parent epic by link so container refresh works for hash-id children (`bh-np024` / `bh-bd8hq`) | patch-safe | Already filed as a bug. The implementation molecule's containers need it. |
+| P-F2 | ~~`fix(work)`: resolve the parent epic by link so container refresh works for hash-id children~~ **done in 0.22.1** (`78d32c26`, `bh-np024` closed) | patch-safe | This container was refreshed through it on 2026-10-05. |
 | P-F3 | `fix(fleet)`: fleet-config edits must not fence frames (`bh-87l3y`) | patch-safe if done as the bug fix (re-bind in the same publication). A new binding model is `feat`. | Removes the cost of every config edit in the migration (L6). |
 | P-F4 | `test(fence)`: promote the `bh-sieai` and `bh-vje85` Dolt/bd trigger-semantics probes to a canary that re-runs on every Dolt or bd pin bump (`bh-sieai` R5) | patch-safe | Test only. |
 | P-F5 | `chore(ops)` / `docs`: T16 globals watchdog and read-only server config for the HQ server (`bh-wtsrc` R3), and the upstream issue drafts (Dolt globals, bd E7/E8/E9 bugs) | patch-safe | Deployment and docs. |
 | P-R1 | `refactor(fence)`: delete the unused `fenced_push` family, and move `transport_lookup` / `transport_repos` beside `store_locator` | patch-safe | No caller and no behaviour change. |
 | P-F6 | `fix(fleet)`: bound the signed-mode inbox (0.22.0 trust delta "no pruning yet"), only if Φ3 is more than a release away | patch-safe | Fixes unbounded growth. |
+| P-F7 | `fix(fleet)`: decouple the beat from conformance in the **sender**. Run conformance (`hive_ready` and the other checks) on its own timer into a local cache. The beat signs the newest cached result with its measured-at time, and fails conformance if the cache is older than a bound. The beat's TTL comes from one in-tree source, not 300 in `generate` and 900 in the factory script. Ship it as `bh host heartbeat` units that replace `factory-local-heartbeat.py`. | patch-safe | It changes only the sender. The wire contract (`HeartbeatLease`, `le=900`) and every predicate are unchanged. It removes L8's cause without a new surface, and makes the advisory waiver unnecessary before P-M9. Rolling it out needs the rotation (step 3 of §4), because the sender must run the attested release. |
+| P-F8 | `docs(fleet)`: the §5 corrections to the rotation runbook and ADR, plus documenting `BH_FRAME_HEARTBEAT` | patch-safe | Docs only. |
 
 **Requires-minor: the 0.23.0 coexistence release** (one minor; P-M1 → P-M2 → P-M3 → P-M4 →
 P-M5/P-M6; P-M7 with P-M2; P-M8 → P-M9):
 
 | # | Item | Tag | Notes |
 |---|---|---|---|
-| P-M1 | `feat(fence)`: product fence and guard module. Covers the schema, the idempotent install, the 42-trigger check, `bh_local_ident` provisioning (only once the ignore row is present, i.e. after pull on a cut-over hive) and `fence_audit` | requires-minor | Product version of `harness.epoch_fence` plus `harness.write_guard`. |
+| P-M1 | `feat(fence)`: product fence and guard module. Covers the schema, the idempotent install in `bh-jbb6r` order, the 44-trigger check, `bh_local_ident` provisioning (only once the ignore row is present, i.e. after pull on a cut-over hive) and `fence_audit` | requires-minor | Product version of `harness.epoch_fence` plus `harness.write_guard`. |
 | P-M2 | `feat(fleet)`: placement-first adopt with an idempotent step 2 and the sentinel. While the ref exists it also CASes `refs/bh/epoch` (dual write). Epoch is `max(ref, placement, bh_writer, history) + 1`. It reports "adopt incomplete" | requires-minor | Replaces `host_adopt`. `push_state` keeps reserve/verify on cut-over hives. |
 | P-M7 | `feat(fleet)`: step 2 reverts the dead frame's `in_progress` beads exactly once (`bd unclaim --force` on the new writer) | requires-minor | `bh-cvk70` R5, `bh-sieai` R3. `bh-jbb6r` scenario 9. |
 | P-M3 | `feat(guard)`: on cut-over hives, `guard_primary` and `live_epoch` read the local `bh_writer` (clock-free); expiry is advisory in every HQ mode; `renew_if_due` is retired | requires-minor | Dormant until a hive is cut over. |
@@ -474,7 +610,7 @@ P-M5/P-M6; P-M7 with P-M2; P-M8 → P-M9):
 | P-M8 | `feat(fleet)`: SQL placement by director credential on `hq_live_hive_leases` (receiver-format fresh revisions, frames `SELECT`), plus the observed-window failover observer with code-default `failover_after` 60/30 min | requires-minor | Replaces `evictable` and `accept_hive_lease`. No config key (S2). Any override waits for P-F3. |
 | P-M9 | `feat(fleet)`: per-incarnation session and evidence DDL; a renewal loop separate from the conformance job; one-statement `read_eligibility`; data-switched reader; claim-time audit stamps | requires-minor | `bh-wtsrc` R1, R2, R4. Dual-writes inbox beats during Φ3. |
 | P-M10 | `feat(fleet)`: forward write path for non-primary frames (bd pointed at the primary's server) | requires-minor, optional | `bh-sieai` forward GO. Not needed while the factory has one frame. |
-| — | Filed separately, all `feat`: `bh-mucmd` (active rotation, `bh-cszmo`), `bh-kmxyp` (release ranges, `bh-vfrem`), `bh-wj8hu` (laptop-free renewal, `bh-rjjjo`) | requires-minor | Land in the same 0.23.0 if possible, so the frame takes one minor. |
+| — | Filed separately, all `feat`: `bh-kmxyp` (release ranges, `bh-vfrem`), `bh-wj8hu` (laptop-free renewal, `bh-rjjjo`). `bh-rjjjo` also needs a frame-runnable read-only `release-upgrade check` (L9). (`bh-mucmd`, active rotation, already shipped as a `fix` in 0.22.1.) | requires-minor | Land in the same 0.23.0 if possible, so the frame takes one minor. Without `bh-rjjjo`, installing 0.23.0 on the factory needs a laptop session (L9). |
 
 **Requires-minor: the 0.24.0 removals** (breaking; each requires all hives cut over and Φ3b soaked):
 
@@ -484,6 +620,7 @@ P-M5/P-M6; P-M7 with P-M2; P-M8 → P-M9):
 | P-D2 | Stop reserving `refs/bh/epoch`; remove `install_fence`, `read_fence`, `EpochFence` and `prepush`; freeze the ref as a floor | requires-minor (breaking) | Older bh would lose its ref fence, so ship it only after Φ4's precondition. |
 | P-D3 | Remove `legacy_lease_policy` paths and `HostLease.advisory_expiry` | requires-minor (breaking) | Needs `xeno-mac.lan` enrolled or removed. |
 | P-D4 | SQL HQ: remove `HeartbeatLease` embedded conformance from the SQL path; Git HQ keeps it | requires-minor (breaking) | — |
+| P-D5 | Remove `BH_FRAME_HEARTBEAT` (`heartbeat_mode`, `heartbeat_advisory`, `waived`) after §3's A1–A3 | patch-safe `refactor` **if** every frame reads session rows, because the variable is then a no-op; otherwise wait for P-D3 | Retires the 0.22.3 escape. Condition 6. |
 
 **If the operator wants to avoid 0.24.0:** code that no supported configuration reaches can
 stay dormant indefinitely, which needs no release. P-D3's dead branches and P-D2's internal
@@ -492,7 +629,9 @@ deployment and the config-value removals strictly need a minor.
 
 **Hand-offs.**
 
-- `bh-jbb6r`: add the Φ2 mixed-version events (an unprovisioned replica, a legacy adopt) to the
-  randomized event set.
-- `bh-pr889`: the ADR should cite T1–T6 for the cutover and its rollback, and adopt S2's "data
-  is the switch" rule.
+- The implementation molecule's end-to-end test (`bh-jbb6r` is closed): add the Φ2
+  mixed-version events (an unprovisioned replica, a legacy adopt) to `bh-jbb6r`'s randomized
+  event set, and add a "sender stalls longer than the TTL" event to the Φ3 soak.
+- `bh-pr889`: the ADR should cite T1–T6 for the cutover and its rollback, adopt S2's "data is
+  the switch" rule, and record L8 as field evidence for the session/evidence split. It should
+  also state the advisory waiver's end of life (condition 6, §3, P-D5).
