@@ -9,6 +9,9 @@ explicit choice exists so an upgrade never silently relocates existing clones.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import cache
 from pathlib import Path
 
@@ -16,6 +19,37 @@ from .config_binding import FacadeBinding
 from .run import run
 
 _config = FacadeBinding(f"{__package__}.config")
+
+#: An already-loaded effective config that ``workspace_root`` resolves from instead of calling
+#: ``config.load()`` again. Unset (the default) means "load fresh", exactly as before.
+_scoped_config: ContextVar[Mapping | None] = ContextVar("workspace_root_config", default=None)
+
+
+@contextmanager
+def config_scope(cfg: Mapping | None) -> Iterator[None]:
+    """Resolve ``workspace_root`` from ``cfg`` for this (thread/task-local) scope.
+
+    ``workspace_root`` sits under every ``run.run`` child-env fill and every
+    ``registry.hive_dir``, so one validation lane used to call ``config.load()`` ~64 times —
+    each a full committed-SQL read + parse when SQL config is selected (bh-931we). A caller
+    that already holds the cfg for the whole operation (a validation lane, a selective run)
+    threads it here instead. This is the same contract as passing ``cfg=`` down explicitly:
+    the scope ends with the operation, and the next operation loads (and requalifies) anew.
+    ``None`` leaves resolution unchanged; an explicit ``$GIT_WORKSPACE`` still wins.
+    """
+    if cfg is None:
+        yield
+        return
+    token = _scoped_config.set(cfg)
+    try:
+        yield
+    finally:
+        _scoped_config.reset(token)
+
+
+def _effective_config():
+    cfg = _scoped_config.get()
+    return cfg if cfg is not None else _config.load()
 
 
 def _legacy_root() -> Path:
@@ -38,7 +72,7 @@ def _legacy_workspace_populated(root: Path) -> bool:
         return True
 
     try:
-        cfg = _config.load()
+        cfg = _effective_config()
     except FileNotFoundError:
         return False
     return any(
@@ -57,7 +91,7 @@ def workspace_root() -> str:
         from .modules.config.contracts import GitWorkspaceConfig
 
         try:
-            cfg = _config.load()
+            cfg = _effective_config()
         except FileNotFoundError:
             cfg = {}
         raw = cfg.get("git_workspace") or {}

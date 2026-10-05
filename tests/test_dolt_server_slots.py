@@ -130,3 +130,16 @@ def test_unbounded_slot_still_records_release_on_failure(monkeypatch, tmp_path):
         "acquired",
         "released",
     ]
+
+
+def test_nested_acquisition_in_one_thread_does_not_take_a_second_slot():
+    """The marker fixture plus an explicit `dolt_server_slot` must cost ONE slot, not two —
+    otherwise N tests each holding one slot and wanting another deadlock until the wait timeout."""
+    with dolt_server_slot(1, "outer") as outer:
+        started = time.monotonic()
+        with dolt_server_slot(1, "inner") as inner:
+            assert inner == outer
+        assert time.monotonic() - started < 5
+    # fully released: a different thread can now take the only slot immediately
+    with dolt_server_slot(1, "after") as again:
+        assert again == 0

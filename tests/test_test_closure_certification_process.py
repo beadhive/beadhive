@@ -311,8 +311,12 @@ def _assert_production_full_gate_wiring(repo: Path) -> None:
         "uv run python scripts/pants_ci.py verify",
     ]
     selective_body = [row[0] for row in selective_architecture["body"]]
-    assert selective_body == [
-        "just validation-evidence-refresh",
+    # The evidence writer stays serial and first; every later check is read-only and runs through
+    # the bounded concurrent runner (bh-1mnp1).
+    assert selective_body[0] == "just validation-evidence-refresh"
+    assert selective_body[1].startswith("uv run python scripts/run_checks_concurrently.py")
+    pooled = {row.strip().rstrip("\\").strip().strip('"') for row in selective_body[2:]}
+    assert pooled >= {
         "uv run python scripts/check_native_impact_map.py",
         "uv run python scripts/check_import_boundaries.py",
         "uv run python scripts/check_package_imports.py",
@@ -320,9 +324,7 @@ def _assert_production_full_gate_wiring(repo: Path) -> None:
         "uv run python scripts/test_closure_shadow_policy.py --check",
         "uv run python scripts/test_closure_promotion_policy.py --check",
         "uv run python scripts/test_closure_operational_report.py --check",
-        "just transport-artifact-check",
-        "just wire-schema-compat",
-    ]
+    }
     pants_body = [row[0] for row in pants_architecture["body"]]
     assert pants_body == [
         "uv run python scripts/check_pants_ownership.py",

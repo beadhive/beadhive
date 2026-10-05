@@ -17,6 +17,7 @@ import signal
 import socket
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,16 +46,17 @@ def free_port() -> int:
 #: every measurement on a loaded machine untrustworthy and turns a contention failure into a
 #: mystery. It is NOT filed as the fix for bh-njdxk's four unexplained failures (see that bead).
 #:
-#: WHY 4, AND WHAT IT COST. Measured A/B on this box (24 cores), same fenced `-n auto` integration
-#: selection, sampling only the servers the run itself owns:
+#: WHY 8 (re-measured 2026-10-05, bh-8p95e). The August figure (4; unbounded 141s vs 4-slot 141s)
+#: predates ~14 heavy server tests, and a re-entrancy bug (nested acquisition of a second slot by
+#: marked tests, see `dolt_server_slot`) made 4 slots self-deadlock for 300-600s. Integration
+#: selection, 82 passed/4 skipped, fenced, idle host (load<8, >=34 GB available throughout):
 #:
-#:     BH_DOLT_SLOTS=0 (unbounded)   peak 9 servers   wall 141s
-#:     BH_DOLT_SLOTS=4 (default)     peak 6 servers   wall 141s
+#:     -n 4  BH_DOLT_SLOTS=4, before re-entrancy fix   wall 1473s (queue waits up to 525s)
+#:     -n 4  BH_DOLT_SLOTS=4, after fix                wall  474s (no queue wait; 1 unrelated flake)
+#:     -n 8  BH_DOLT_SLOTS=4                           wall  406s
+#:     -n 8  BH_DOLT_SLOTS=8 (3 consecutive runs)      wall  277s / 280s / 278s, all green
 #:
-#: So the ceiling is free here: four server tests still overlap, which is enough to keep the slow
-#: real-bd tests from draining one at a time. The suite's speed is why `-n auto` exists, so this
-#: number is a measurement, not a preference — re-measure before changing it.
-#:
+#: Slots only bind when workers exceed them, so the ceiling is sized for the worker count.
 #: NOTE the unit: this bounds TESTS holding a slot, not server processes. A slot-holding test may
 #: start more than one server (the hq-backup round trip runs a source and a destination store), so
 #: the process ceiling is a small multiple of this — which is why the bound is verified by
@@ -64,7 +66,7 @@ def free_port() -> int:
 #: convenience knob: the acceptance criterion here is a MEASUREMENT ("observed to stay at or under
 #: the bound"), and a measurement needs both arms. It is also the lever for a box that is not this
 #: one — a 4-core laptop may want 1.
-MAX_CONCURRENT_DOLT_SERVER_TESTS = int(os.environ.get("BH_DOLT_SLOTS", "4"))
+MAX_CONCURRENT_DOLT_SERVER_TESTS = int(os.environ.get("BH_DOLT_SLOTS", "8"))
 
 #: Give up waiting for a slot and run anyway. A test that starts a server takes ~30-90s, so this
 #: is many times the worst honest wait. Deliberately non-fatal: a concurrency ceiling that can
@@ -89,8 +91,36 @@ def _slot_event(kind: str, test_id: str, **fields) -> None:
         os.close(handle)
 
 
+_held = threading.local()
+
+
 @contextlib.contextmanager
 def dolt_server_slot(slots: int = MAX_CONCURRENT_DOLT_SERVER_TESTS, test_id: str = "unknown"):
+    """Hold one run-wide slot, RE-ENTRANTLY per thread (nested acquisition is a no-op).
+
+    A `dolt_server`-marked test already holds a slot through the autouse
+    `_bound_concurrent_dolt_servers` fixture, and several of those tests (and their app fixtures)
+    ALSO enter `dolt_server_slot` explicitly. Without re-entrancy that second acquisition took a
+    SECOND slot: once as many tests as there are slots each held one and wanted another, every
+    holder waited on the others until `_SLOT_WAIT_TIMEOUT` — the 300-600 s setup waits in the junit.
+    """
+    if getattr(_held, "depth", 0) > 0:
+        _held.depth += 1
+        try:
+            yield getattr(_held, "slot", -1)
+        finally:
+            _held.depth -= 1
+        return
+    with _acquire_slot(slots, test_id) as slot:
+        _held.depth, _held.slot = 1, slot
+        try:
+            yield slot
+        finally:
+            _held.depth = 0
+
+
+@contextlib.contextmanager
+def _acquire_slot(slots: int, test_id: str):
     """Hold one of *slots* run-wide permits to start a real dolt sql-server.
 
     A file lock rather than an xdist group, and the difference matters: `--dist loadgroup` +

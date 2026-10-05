@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -102,119 +104,212 @@ def key(path):
     return path.with_suffix(".pub").read_text().strip()
 
 
+class _PreparedHq:
+    """One fully provisioned enforced HQ, snapshotted once and restored in place per test.
+
+    Generating keys, installing the guard, binding brokers, granting an authority and signing the
+    registration evidence dominate the cost of each test, and none of it depends on the test.
+    The prepared tree is built once per module and parameterisation, then copied back over a fixed
+    live root before every test (paths embedded in git config, anchors and the broker stay valid).
+    """
+
+    def __init__(self, root: Path, prefixes: tuple[str, ...], stale: bool):
+        self.root = root
+        self.live = root / "live"
+        self.snap = root / "snap"
+        self.values = self._build(prefixes, stale)
+
+    def _build(self, prefixes, stale):
+        tmp_path = self.live
+        tmp_path.mkdir()
+        remote, repo = tmp_path / "hq.git", tmp_path / "client-one"
+        repo.mkdir()
+        git(repo, "init", "--bare", "-q", "-b", "main", str(remote))
+        git(repo, "init", "-q", "-b", "main")
+        git(repo, "config", "user.name", "Fixture")
+        git(repo, "config", "user.email", "fixture@example.invalid")
+        git(repo, "remote", "add", "origin", str(remote))
+        (repo / "unchanged").write_text("main history stays unchanged")
+        git(repo, "add", "unchanged")
+        git(repo, "commit", "-qm", "initial")
+        git(repo, "push", "-q", "origin", "main")
+        op_repo = tmp_path / "operator-client"
+        git(repo, "clone", "-q", str(remote), str(op_repo))
+        git(op_repo, "config", "user.name", "Operator")
+        git(op_repo, "config", "user.email", "operator@example.invalid")
+        operator, runtime = tmp_path / "operator", tmp_path / "runtime"
+        operator_public, runtime_public = key(operator), key(runtime)
+        digest = install_guard(
+            op_repo,
+            operator_public,
+            "recovery-generation-one",
+            confirm_server_custody=True,
+            hive_policies={
+                prefix: {
+                    "config_revision": "config-one",
+                    "config_head": "",
+                    "valid_until": time.time() + 3600,
+                    "requires": {"isolation": "kvm"},
+                    "evict_after_s": 1 if stale else 900,
+                }
+                for prefix in prefixes
+            },
+        )
+        broker_dir = tmp_path / "broker"
+        broker_dir.mkdir()
+        broker_dir.chmod(0o755)
+        endpoint = broker_dir / "git.sock"
+        broker = self.start_broker(remote, endpoint, self.root / "build-broker.log")
+        try:
+            frame_anchor = bind_broker(repo, remote, endpoint, digest, role="frame")
+            op_anchor = bind_broker(op_repo, remote, endpoint, digest, role="operator")
+            frame_home = tmp_path / "frame-home"
+            frame_home.mkdir()
+            frame_env = tmp_path / "frame-env.json"
+            frame_env.write_text(
+                json.dumps(
+                    {
+                        "PYTHONPATH": str(Path(hb.__file__).parents[1]),
+                        "FRAME_AUTHORITY_ANCHOR": str(frame_anchor),
+                    }
+                )
+            )
+            values = dict(
+                repo=repo,
+                op_repo=op_repo,
+                frame_home=frame_home,
+                frame_env=frame_env,
+                frame_anchor=frame_anchor,
+                op_anchor=op_anchor,
+                remote=remote,
+                operator=operator,
+                runtime=runtime,
+                operator_public=operator_public,
+                public=runtime_public,
+                digest=digest,
+                tmp=tmp_path,
+                broker_dir=broker_dir,
+                endpoint=endpoint,
+            )
+            with pytest.MonkeyPatch.context() as patch:
+                self.patch_host(patch, values)
+                self.provision(values)
+        finally:
+            broker.terminate()
+            broker.wait(timeout=5)
+        endpoint.unlink(missing_ok=True)
+        subprocess.run(["cp", "-a", str(self.live), str(self.snap)], check=True)
+        return values
+
+    @staticmethod
+    def start_broker(remote, endpoint, log_path):
+        with log_path.open("w") as log:
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    str(remote / "bh-git-broker.py"),
+                    "serve",
+                    str(remote),
+                    str(endpoint),
+                ],
+                stdout=log,
+                stderr=log,
+            )
+        for _ in range(100):
+            if endpoint.exists() or process.poll() is not None:
+                break
+            time.sleep(0.01)
+        assert endpoint.exists(), "Git broker failed to start"
+        return process
+
+    @staticmethod
+    def patch_host(patch, values):
+        anchor = {"hq": {"authority_anchor": str(values["op_anchor"])}}
+        patch.setattr(config, "load", lambda: anchor)
+        patch.setattr(config, "load_host", lambda: anchor)
+        patch.setattr(config, "hq_dir", lambda: values["op_repo"])
+        patch.setattr(config, "home", lambda: values["tmp"] / "home")
+        patch.setattr(host, "host_id", lambda: "host-one")
+        patch.setattr(host, "signing_key", lambda: str(values["runtime"]))
+
+    def provision(self, values):
+        repo, op_repo = values["repo"], values["op_repo"]
+        release = {"id": "release-one", "digest": "sha256:" + "1" * 64}
+        caps = {
+            "isolation": "kvm",
+            "trust_zone": "self-hosted",
+            "arch": "x86_64",
+            "harnesses": ["codex"],
+            "max_sessions": 2,
+        }
+        manifest = hosts.HostManifest(
+            host_id="host-one",
+            frame_id="frame-one",
+            instance_ref="vm-one",
+            release=release,
+            capabilities=caps,
+            os="linux",
+            arch="x86_64",
+            label="one",
+            role="executor",
+            identity={"kind": "none"},
+        )
+        hosts.save(repo, manifest)
+        authority = hb.ObservationAuthority(
+            "frame-one",
+            "host-one",
+            "vm-one",
+            fingerprint(values["public"]),
+            1,
+            "fleet-one",
+            "config-one",
+            time.time() + 3600,
+        )
+        plane = GitControlPlane(op_repo, authority_anchor=values["op_anchor"])
+        desired = {"declared": True, "release": release, "caps": caps, "profile": "fleet-profile"}
+        git(repo, "remote", "set-url", "origin", plane._remote(plane._policy()))
+        plane.grant(
+            authority, values["public"], desired, expected="", operator_key=str(values["operator"])
+        )
+        plane.publish_registration_evidence(manifest, signing_key=str(values["runtime"]))
+        values.update(authority=authority, manifest=manifest, desired=desired, release=release)
+
+    def restore(self):
+        shutil.rmtree(self.live, ignore_errors=True)
+        subprocess.run(["cp", "-a", str(self.snap), str(self.live)], check=True)
+
+
+@pytest.fixture(scope="module")
+def _prepared_hqs(tmp_path_factory):
+    prepared: dict[tuple[str, ...], _PreparedHq] = {}
+
+    def get(prefixes, stale):
+        if prefixes not in prepared:
+            root = tmp_path_factory.mktemp(f"hq{len(prepared)}")
+            prepared[prefixes] = _PreparedHq(root, prefixes, stale)
+        return prepared[prefixes]
+
+    return get
+
+
 @pytest.fixture
-def backend(tmp_path, monkeypatch, request):
-    remote, repo = tmp_path / "hq.git", tmp_path / "client-one"
-    repo.mkdir()
-    git(repo, "init", "--bare", "-q", "-b", "main", str(remote))
-    git(repo, "init", "-q", "-b", "main")
-    git(repo, "config", "user.name", "Fixture")
-    git(repo, "config", "user.email", "fixture@example.invalid")
-    git(repo, "remote", "add", "origin", str(remote))
-    (repo / "unchanged").write_text("main history stays unchanged")
-    git(repo, "add", "unchanged")
-    git(repo, "commit", "-qm", "initial")
-    git(repo, "push", "-q", "origin", "main")
-    op_repo = tmp_path / "operator-client"
-    git(repo, "clone", "-q", str(remote), str(op_repo))
-    git(op_repo, "config", "user.name", "Operator")
-    git(op_repo, "config", "user.email", "operator@example.invalid")
-    operator, runtime = tmp_path / "operator", tmp_path / "runtime"
-    operator_public, runtime_public = key(operator), key(runtime)
-    digest = install_guard(
-        op_repo,
-        operator_public,
-        "recovery-generation-one",
-        confirm_server_custody=True,
-        hive_policies={
-            prefix: {
-                "config_revision": "config-one",
-                "config_head": "",
-                "valid_until": time.time() + 3600,
-                "requires": {"isolation": "kvm"},
-                "evict_after_s": 1 if hasattr(request, "param") else 900,
-            }
-            for prefix in getattr(request, "param", ("bh",))
-        },
-    )
-    broker_dir = tmp_path / "broker"
-    broker_dir.mkdir()
-    broker_dir.chmod(0o755)
-    endpoint = broker_dir / "git.sock"
-    log = (tmp_path / "broker.log").open("w")
-    process = subprocess.Popen(
-        [sys.executable, str(remote / "bh-git-broker.py"), "serve", str(remote), str(endpoint)],
-        stdout=log,
-        stderr=log,
-    )
+def backend(_prepared_hqs, monkeypatch, request):
+    stale = hasattr(request, "param")
+    prepared = _prepared_hqs(tuple(getattr(request, "param", ("bh",))), stale)
+    prepared.restore()
+    values = copy.deepcopy(prepared.values)
+    remote, op_repo, operator = values["remote"], values["op_repo"], values["operator"]
+    authority, release = values["authority"], values["release"]
+    process = prepared.start_broker(remote, values["endpoint"], prepared.root / "broker.log")
 
     def cleanup():
         if process.poll() is None:
             process.terminate()
         process.wait(timeout=5)
-        log.close()
 
     request.addfinalizer(cleanup)
-    for _ in range(100):
-        if endpoint.exists() or process.poll() is not None:
-            break
-        time.sleep(0.01)
-    assert endpoint.exists(), "Git broker failed to start"
-    frame_anchor = bind_broker(repo, remote, endpoint, digest, role="frame")
-    op_anchor = bind_broker(op_repo, remote, endpoint, digest, role="operator")
-    frame_home = tmp_path / "frame-home"
-    frame_home.mkdir()
-    frame_env = tmp_path / "frame-env.json"
-    frame_env.write_text(
-        json.dumps(
-            {
-                "PYTHONPATH": str(Path(hb.__file__).parents[1]),
-                "FRAME_AUTHORITY_ANCHOR": str(frame_anchor),
-            }
-        )
-    )
-    monkeypatch.setattr(config, "load", lambda: {"hq": {"authority_anchor": str(op_anchor)}})
-    monkeypatch.setattr(config, "load_host", lambda: {"hq": {"authority_anchor": str(op_anchor)}})
-    monkeypatch.setattr(config, "hq_dir", lambda: op_repo)
-    monkeypatch.setattr(config, "home", lambda: tmp_path / "home")
-    monkeypatch.setattr(host, "host_id", lambda: "host-one")
-    monkeypatch.setattr(host, "signing_key", lambda: str(runtime))
-    release = {"id": "release-one", "digest": "sha256:" + "1" * 64}
-    caps = {
-        "isolation": "kvm",
-        "trust_zone": "self-hosted",
-        "arch": "x86_64",
-        "harnesses": ["codex"],
-        "max_sessions": 2,
-    }
-    manifest = hosts.HostManifest(
-        host_id="host-one",
-        frame_id="frame-one",
-        instance_ref="vm-one",
-        release=release,
-        capabilities=caps,
-        os="linux",
-        arch="x86_64",
-        label="one",
-        role="executor",
-        identity={"kind": "none"},
-    )
-    hosts.save(repo, manifest)
-    authority = hb.ObservationAuthority(
-        "frame-one",
-        "host-one",
-        "vm-one",
-        fingerprint(runtime_public),
-        1,
-        "fleet-one",
-        "config-one",
-        time.time() + 3600,
-    )
-    plane = GitControlPlane(op_repo, authority_anchor=op_anchor)
-    desired = {"declared": True, "release": release, "caps": caps, "profile": "fleet-profile"}
-    git(repo, "remote", "set-url", "origin", plane._remote(plane._policy()))
-    plane.grant(authority, runtime_public, desired, expected="", operator_key=str(operator))
-    plane.publish_registration_evidence(manifest, signing_key=str(runtime))
+    prepared.patch_host(monkeypatch, values)
+    plane = GitControlPlane(op_repo, authority_anchor=values["op_anchor"])
 
     def lease(sequence=1, **changes):
         data = dict(
@@ -244,29 +339,8 @@ def backend(tmp_path, monkeypatch, request):
         plane.accept_observation("frame-one", expected=expected, operator_key=str(operator))
         return beat
 
-    result = dict(
-        repo=repo,
-        op_repo=op_repo,
-        frame_home=frame_home,
-        frame_env=frame_env,
-        frame_anchor=frame_anchor,
-        op_anchor=op_anchor,
-        remote=remote,
-        plane=plane,
-        operator=operator,
-        runtime=runtime,
-        operator_public=operator_public,
-        public=runtime_public,
-        authority=authority,
-        manifest=manifest,
-        desired=desired,
-        lease=lease,
-        accept=accept,
-        digest=digest,
-        tmp=tmp_path,
-        broker_dir=broker_dir,
-        endpoint=endpoint,
-    )
+    result = {k: v for k, v in values.items() if k not in ("release",)}
+    result.update(plane=plane, lease=lease, accept=accept)
     yield result
 
 

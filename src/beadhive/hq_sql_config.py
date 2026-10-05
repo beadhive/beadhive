@@ -24,6 +24,7 @@ from .beadyard_identity import (
 from .hq_document_validation import (
     DocumentValidationError,
     validate_documents,
+    validate_documents_memoized,
     validate_repair_carrier,
 )
 from .hq_sql_deadline import flock_until
@@ -424,7 +425,9 @@ class SqlFleetConfigRevisionStore:
         _validate_carrier(documents, version=version)
         if validate_semantics:
             try:
-                validate_documents(documents)
+                # Pure content validation: a byte-identical revision is not re-parsed. The
+                # integrity, witness and floor checks around it still run on every read.
+                validate_documents_memoized(documents)
             except DocumentValidationError as exc:
                 raise SqlConfigError(str(exc)) from None
         else:

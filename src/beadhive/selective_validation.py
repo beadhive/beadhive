@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import os
 import shlex
 import subprocess
 import time
@@ -12,7 +13,7 @@ from collections.abc import Callable, Mapping, Sequence
 import typer
 
 from . import config_work_settings as config
-from . import validation_ledger
+from . import identity, validation_ledger, validation_records
 from .bootstrap.impact import attest_keys, impact_resolver
 
 Runner = Callable[[str], int]
@@ -22,6 +23,73 @@ Runner = Callable[[str], int]
 # impact-analysis protocol did not produce an answer strict mode may act on.
 UNRESOLVED_IMPACT_EXIT = 76
 FULL_GATE_PHASES = ("molecule", "merge-main", "push-main", "postland")
+#: ``work.validate.precheck``: an optional cheap command (e.g. a generated-evidence currency
+#: check) run before any key, so a tree that cannot pass fails in seconds instead of after a
+#: 12-15 minute lane.  Unset (the default) runs nothing extra.
+PRECHECK_PHASE = "precheck"
+#: Opt-in: stop launching further keys after the first blocking result.  Off by default, which
+#: keeps today's behaviour of running and reporting every invalidated key.
+FAIL_FAST_ENV = "BH_VALIDATION_FAIL_FAST"
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def fail_fast_enabled(environ: Mapping[str, str] | None = None) -> bool:
+    """Whether ``BH_VALIDATION_FAIL_FAST`` opts this process into fail-fast key execution."""
+    value = (os.environ if environ is None else environ).get(FAIL_FAST_ENV, "")
+    return value.strip().lower() in _TRUTHY
+
+
+def precheck_cmd(cfg, entry) -> str:
+    """The configured ``work.validate.precheck`` command, or ``""`` when none is set."""
+    per = config.work_value(cfg, entry, "validate", {}) or {}
+    if not isinstance(per, Mapping):
+        return ""
+    return str(per.get(PRECHECK_PHASE) or "").strip()
+
+
+def historical_costs(entry, keys: Sequence) -> dict[str, float]:
+    """Key name -> median wall seconds of its command in this hive's validation ledger.
+
+    A scheduling hint only: any doubt (no hive, unreadable ledger) answers ``{}``, which leaves
+    the configured key order untouched.
+    """
+    if not entry or not keys:
+        return {}
+    names_by_hash: dict[str, list[str]] = {}
+    for key in keys:
+        names_by_hash.setdefault(validation_ledger.cmd_hash(key.cmd), []).append(key.name)
+    try:
+        from . import registry
+
+        durations = validation_records.command_durations(registry.hive_dir(entry), names_by_hash)
+    except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+        return {}
+    return {
+        name: seconds
+        for command_hash, seconds in durations.items()
+        for name in names_by_hash.get(command_hash, ())
+    }
+
+
+def cheapest_first(names: Sequence[str], costs: Mapping[str, float]) -> tuple[str, ...]:
+    """Order keys so the cheapest measured ones run first.
+
+    A cheap red key then surfaces before an expensive lane is even started.  Keys with no
+    measurement follow the measured ones in their configured order, so a hive with no history
+    keeps exactly its configured order.
+    """
+    position = {name: index for index, name in enumerate(names)}
+    return tuple(
+        sorted(
+            names,
+            key=lambda name: (name not in costs, costs.get(name, 0.0), position[name]),
+        )
+    )
+
+
+def _blocks(key, rc) -> bool:
+    """Whether one key result blocks the aggregate (see the policy loop in :func:`run`)."""
+    return rc != 0 and not (rc == 75 and key.policy != "required")
 
 
 def warn_impact_fallback(reason: str) -> None:
@@ -265,6 +333,32 @@ def run(
     Exit 75 is UNKNOWN.  It blocks required keys and is tolerated for optional keys; every
     other non-zero result blocks regardless of policy.
     """
+    # The whole selective run already holds one cfg; the inter-lane verdict/carry/tree reads
+    # resolve the workspace root from it rather than re-loading config per git call (bh-931we).
+    with identity.config_scope(cfg if isinstance(cfg, Mapping) else None):
+        return _run(
+            entry,
+            cfg,
+            base_rev=base_rev,
+            head_rev=head_rev,
+            runner=runner,
+            repo_path=repo_path,
+            full=full,
+            receipt_override=receipt_override,
+        )
+
+
+def _run(
+    entry,
+    cfg,
+    *,
+    base_rev: str,
+    head_rev: str,
+    runner: Runner,
+    repo_path: str | None,
+    full: bool,
+    receipt_override,
+) -> int:
     attest = config.attest_config(cfg, entry)
     keys = attest_keys(attest)
     if not keys:
@@ -352,6 +446,8 @@ def run(
             return True
         return False
 
+    # (name, ran-for-want-of-a-source-verdict) for every key that must execute.
+    pending: list[tuple[str, bool]] = []
     for name in receipt.unaffected_keys:
         key = by_name[name]
         if reuse_exact_tree(key):
@@ -366,29 +462,55 @@ def run(
             )
             outcomes[name] = 0
         elif key.policy == "required":
-            rc, elapsed = run_key(key)
-            outcomes[name] = rc
-            state = "ran green" if rc == 0 else "unknown" if rc == 75 else f"ran red (exit {rc})"
-            typer.echo(
-                f"  {'✓' if rc == 0 else '?' if rc == 75 else '✗'} {name}: {state} "
-                f"(no qualifying source verdict) [{elapsed:.3f}s]"
-            )
+            pending.append((name, True))
         else:
             typer.echo(f"  ? {name}: unknown (no qualifying source verdict)")
             outcomes[name] = None
 
     for name in receipt.invalidated_keys:
+        if not reuse_exact_tree(by_name[name]):
+            pending.append((name, False))
+
+    fail_fast = fail_fast_enabled()
+    stopped_after = ""
+    precheck_red = False
+    precheck = precheck_cmd(cfg, entry) if pending else ""
+    if precheck:
+        started = time.perf_counter()
+        rc = runner(precheck)
+        elapsed = time.perf_counter() - started
+        if rc == 0:
+            typer.echo(f"  ✓ precheck: ran green ({elapsed:.3f}s)")
+        else:
+            precheck_red = True
+            typer.echo(f"  ✗ precheck: ran red (exit {rc}) ({elapsed:.3f}s)")
+            typer.echo(
+                f"    `{precheck}` found this tree cannot pass: re-run the generator it names "
+                "above, commit the result, and validate again."
+            )
+            if fail_fast:
+                stopped_after = "precheck"
+
+    unaffected_run = dict(pending)
+    names = [name for name, _ in pending]
+    for name in cheapest_first(names, historical_costs(entry, [by_name[n] for n in names])):
         key = by_name[name]
-        if reuse_exact_tree(key):
+        if stopped_after:
+            typer.echo(f"  · {name}: not run — fail-fast after {stopped_after} ({FAIL_FAST_ENV})")
+            outcomes[name] = None
             continue
         rc, elapsed = run_key(key)
         outcomes[name] = rc
         state = "ran green" if rc == 0 else "unknown" if rc == 75 else f"ran red (exit {rc})"
-        typer.echo(
-            f"  {'✓' if rc == 0 else '?' if rc == 75 else '✗'} {name}: {state} ({elapsed:.3f}s)"
-        )
+        mark = "✓" if rc == 0 else "?" if rc == 75 else "✗"
+        if unaffected_run[name]:
+            typer.echo(f"  {mark} {name}: {state} (no qualifying source verdict) [{elapsed:.3f}s]")
+        else:
+            typer.echo(f"  {mark} {name}: {state} ({elapsed:.3f}s)")
+        if fail_fast and _blocks(key, rc):
+            stopped_after = name
 
-    blocked = False
+    blocked = precheck_red
     for key in active_keys:
         outcome = outcomes.get(key.name)
         if outcome == 0:
@@ -405,11 +527,17 @@ def run(
 
 
 __all__ = [
+    "FAIL_FAST_ENV",
     "FULL_GATE_PHASES",
+    "PRECHECK_PHASE",
     "UNRESOLVED_IMPACT_EXIT",
     "all_keys_green",
+    "cheapest_first",
     "configured",
     "error_unresolved_impact",
+    "fail_fast_enabled",
+    "historical_costs",
+    "precheck_cmd",
     "run",
     "record_full_gate_keys",
     "warn_impact_fallback",
