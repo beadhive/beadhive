@@ -191,6 +191,22 @@ def test_core_importing_a_librarys_public_submodule_is_accepted(tmp_path: Path) 
     assert MODULE.check(tmp_path) == ()
 
 
+def test_exported_class_sharing_a_submodule_name_up_to_case_is_accepted(tmp_path: Path) -> None:
+    # `Ref` lives in `ref.py` without `__all__`; the package re-exports it. On a
+    # case-insensitive filesystem `Ref.py` must not resolve to `ref.py`.
+    _make_package(
+        tmp_path,
+        "example",
+        "beadhive_example",
+        is_plugin=False,
+        init="from .ref import Ref\n\n__all__ = ['Ref']\n",
+        modules={"ref": "class Ref:\n    pass\n"},
+    )
+    _core(tmp_path, "from beadhive_example import Ref\n")
+
+    assert MODULE.check(tmp_path) == ()
+
+
 # --- package <-> package -----------------------------------------------------------------
 
 

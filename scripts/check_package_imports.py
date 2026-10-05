@@ -123,15 +123,32 @@ def _resolve_owner(owner_map: dict[str, PackageInfo], dotted: str) -> PackageInf
     return owner_map.get(dotted.split(".", maxsplit=1)[0])
 
 
+def _is_exact_file(path: Path, root: Path) -> bool:
+    """`is_file()` with exact-case path components, matching Python's import resolution.
+
+    A case-insensitive filesystem (macOS default) would otherwise resolve the class name
+    `models.Ref` to the submodule file `models/ref.py`.
+    """
+    if not path.is_file():
+        return False
+    current = root
+    for part in path.relative_to(root).parts:
+        if part not in {child.name for child in current.iterdir()}:
+            return False
+        current = current / part
+    return True
+
+
 def _module_file(owner: PackageInfo, dotted: str) -> Path | None:
-    base = owner.path / "src"
+    src = owner.path / "src"
+    base = src
     for part in dotted.split("."):
         base = base / part
     package_init = base / "__init__.py"
-    if package_init.is_file():
+    if _is_exact_file(package_init, src):
         return package_init
     module_file = base.parent / f"{base.name}.py"
-    if module_file.is_file():
+    if _is_exact_file(module_file, src):
         return module_file
     return None
 
