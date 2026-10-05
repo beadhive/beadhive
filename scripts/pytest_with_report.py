@@ -16,9 +16,14 @@ _TRUE = frozenset({"1", "true", "yes", "on"})
 
 
 def pytest_argv(args: Sequence[str], env: Mapping[str, str] | None = None) -> list[str]:
-    """Build pytest's argv without changing the unset-variable path."""
+    """Build pytest's argv without changing the unset-variable path.
+
+    pytest runs as `<this interpreter> -m pytest`, not a bare `pytest` PATH lookup: a caller that
+    reaches this script through the venv interpreter without activating the venv (so its `bin/`
+    is not on PATH) would otherwise die in `execvp` with FileNotFoundError.
+    """
     environ = os.environ if env is None else env
-    command = ["pytest", *args]
+    command = [sys.executable, "-m", "pytest", *args]
     directory = environ.get(ENV_VAR)
     if not directory:
         return command
@@ -34,10 +39,10 @@ def pytest_argv(args: Sequence[str], env: Mapping[str, str] | None = None) -> li
         )
         return command
     os.close(descriptor)
-    command.insert(1, f"--junitxml={filename}")
+    command.insert(3, f"--junitxml={filename}")
     if environ.get(COVERAGE_ENV_VAR, "").lower() in _TRUE:
         coverage = Path(filename).with_name(Path(filename).name.replace("pytest-", "coverage-", 1))
-        command[1:1] = [
+        command[3:3] = [
             "--cov=src/beadhive",
             "--cov-report=",
             f"--cov-report=xml:{coverage}",
