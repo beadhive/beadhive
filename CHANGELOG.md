@@ -13,6 +13,13 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.22.3 (2026-10-05)
+
+### Fix
+
+- **fleet**: BH_FRAME_HEARTBEAT=advisory waives stale-heartbeat fencing
+- **work**: reconcile already-landed bounced beads before review gating
+
 ## v0.22.2 (2026-10-05)
 
 ### Fix
