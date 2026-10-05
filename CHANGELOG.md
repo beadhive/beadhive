@@ -13,6 +13,13 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.22.5 (2026-10-05)
+
+### Fix
+
+- **work**: attribute own merge bubbles and keep closed-bead re-merge a no-op
+- **test**: scrub inherited BH_FRAME_HEARTBEAT in the stateful sandbox
+
 ## v0.22.4 (2026-10-05)
 
 ### Fix
