@@ -4,6 +4,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 SCRIPT = Path(__file__).parents[1] / "scripts" / "check_package_imports.py"
 SPEC = importlib.util.spec_from_file_location("check_package_imports", SCRIPT)
 assert SPEC and SPEC.loader
@@ -144,6 +146,58 @@ def test_core_may_import_a_librarys_public_surface(tmp_path: Path) -> None:
     _core(tmp_path, "from beadhive_example import Widget\n")
 
     assert MODULE.check(tmp_path) == ()
+
+
+@pytest.mark.parametrize("module_name", ["Ref", "ref"])
+def test_explicit_public_export_wins_over_same_named_module(
+    tmp_path: Path, module_name: str
+) -> None:
+    # Ref.py collides on every platform; ref.py reproduces the macOS filesystem case.
+    _make_package(
+        tmp_path,
+        "models",
+        "example_models",
+        modules={
+            "models/__init__": "__all__ = ['Ref']\n\nclass Ref:\n    pass\n",
+            f"models/{module_name}": "def private_helper():\n    pass\n",
+        },
+    )
+    _make_package(
+        tmp_path,
+        "consumer",
+        "example_consumer",
+        init="from example_models.models import Ref\n",
+    )
+    _core(tmp_path, "from example_models.models import Ref\n")
+
+    assert MODULE.check(tmp_path) == ()
+
+
+def test_export_collision_does_not_publish_private_module_or_unlisted_name(
+    tmp_path: Path,
+) -> None:
+    _make_package(
+        tmp_path,
+        "models",
+        "example_models",
+        modules={
+            "models/__init__": "__all__ = ['Ref']\n\nclass Ref:\n    pass\n",
+            "models/Ref": "def private_helper():\n    pass\n",
+            "models/Unlisted": "def private_helper():\n    pass\n",
+        },
+    )
+    _core(
+        tmp_path,
+        "import example_models.models.Ref\nfrom example_models.models import Unlisted\n",
+    )
+
+    violations = MODULE.check(tmp_path)
+
+    assert [violation.edge for violation in violations] == [
+        "example_models.models.Ref",
+        "example_models.models",
+    ]
+    assert all("has no public __all__ surface" in violation.reason for violation in violations)
 
 
 def test_core_importing_a_librarys_private_name_is_rejected(tmp_path: Path) -> None:
