@@ -85,6 +85,12 @@ potentially in the same Dolt database. Each group should have its own permitted 
 destinations and tracker bindings. Sending a mirrored group to its tracker must not send
 unrelated core issues there.
 
+The managed operator interface is `bh bd` and higher-level `bh` verbs wrapping the same
+guards. Project guidance should strongly discourage raw `bd` for managed workflows.
+Routine tracker push should update already-linked records only; creating a new external
+issue is a separate, explicit enrollment operation. Tracker group membership can be defined
+by a validated external binding, independently of the bead's readable prefix.
+
 There are two different meanings of "alongside":
 
 - **Authoritative co-location:** Several groups share a writable database while retaining
@@ -205,12 +211,15 @@ stated guarantee cannot be obtained from unmodified v1.3.0 mechanisms alone.
 | Core beads stored on the source origin | Native | Configure a Git-protocol Dolt remote; publication uses `refs/dolt/data` |
 | Bead hosting detached from source hosting | Native | Explicit Dolt remote or external database endpoint; configure replication separately |
 | Several groups associated with one hive | Wrapper | Extend Beadhive's registry to associate one project with several stores and group records |
-| Private planning beside public work | Wrapper | Separate private authoritative store plus an authorized local view |
+| Private planning beside public work | Wrapper | Separate stores for independently accessible bead data; one private store can also publish selected public tracker projections |
 | Native core beads never sent to a tracker | Native in a separate store; wrapper in a mixed store | Do not configure a tracker for core, or always apply an explicit connector scope |
 | Core and mirror rows in one Dolt database | Native as ordinary rows | Labels, metadata, prefixes, and external references distinguish rows; no group isolation follows |
 | Different Dolt remotes for groups in one authoritative database | Missing as selective replication | A remote selects a destination for a database branch, not a subset of issues |
 | Different remotes with one store per group | Wrapper using native remotes | Invoke each group's configured store; every store can have its own remote bindings |
 | Pull-only and bidirectional tracker exchange | Native for supported adapters | Direction and selection controls are adapter-specific; there is no universal group connector contract |
+| Private core plus public tracker-linked beads with one prefix | Wrapper | Keep the authoritative database private; guarded update-only push publishes only selected linked records |
+| Routine tracker push that never creates external issues | Wrapper approximation; missing native mode | Validate existing bindings and supply nonempty `--issues`; v1.3.0 push remains create-or-update internally |
+| Several disjoint tracker groups in one database | Wrapper | Validate and scope each destination independently; each bead retains one native external reference |
 | Distinct allocation prefixes per group in a mixed store | Wrapper | Supply explicit IDs and enforce registry policy; there is one default issue prefix |
 | Read upstream beads without publishing local planning there | Wrapper using native routing | Keep the upstream replica and personal planning store separate; restrict upstream credentials |
 | Direct upstream issue creation with granted rights | Native | Create against the authoritative workspace/service within its existing access policy |
@@ -293,6 +302,15 @@ the [sync engine][tracker-engine] treats an empty issue-ID filter as unrestricte
 scope can therefore change the operation's meaning dramatically. Linear's push-prefix check
 also uses starts-with matching; allowing `bh` includes `bh-private-*`.
 
+Unscoped push is not implicitly limited to already-linked beads. For each eligible issue,
+the engine creates an external issue when `external_ref` is absent or is not recognized by
+the destination adapter, and successful creation replaces the stored reference. Each sync
+invocation targets one configured tracker; running several unscoped invocations can therefore
+publish the same native issues to several trackers or replace another tracker binding.
+Linear has a conditional project-scoped guard against unlinked creation, but it is not a
+universal linked-only policy. Sources: [push engine][tracker-engine] and
+[Linear push hook][linear-source].
+
 New GitHub and Linear pulls use the configured default issue prefix, not a first-class group
 allocator. For a distinct mirror namespace, the simpler workaround is a dedicated tracker
 store. An import/remapping or projection layer in a mixed database would be custom work.
@@ -301,9 +319,72 @@ is available, but native tracker behavior is not a general many-connector bindin
 Sources: [GitHub pull allocation][github-source], [Linear pull allocation][linear-source],
 and [issue fields][types-source].
 
-Workaround: run each connector against a dedicated store and present it alongside core.
-If stores share an audience and publication policy, scoped tracker operations in one store
-can approximate groups. This does not grant independent Dolt publication or per-group ACLs.
+Workaround: define tracker membership through validated bindings and guard operations through
+`bh bd`. Distinct prefixes are optional. Several disjoint tracker groups can share the same
+private database and prefix. A bead simultaneously mirrored to multiple trackers requires
+additional binding machinery because the native external-reference field holds one value.
+Dedicated connector stores remain an option when groups need different database audiences,
+independent replication, or incompatible connector settings.
+
+### Guarded tracker sync through `bh bd`
+
+This is a proposed Beadhive contract, not existing passthrough behavior. The
+[current passthrough](../PASSTHROUGH.md) already centralizes other managed-operation guards;
+tracker publication should follow that pattern. Higher-level `bh` verbs must invoke the
+same guard rather than provide an alternate unscoped path. Ordinary managed tracker sync
+should mean **pull plus update**, with external creation reserved for explicit enrollment.
+
+The guarded workflow is:
+
+1. **Resolve the destination.** Identify the connector instance, host, repository or
+   workspace/team/project, credentials context, group policy, and source store.
+2. **Pull independently.** A broad pull-only operation discovers new external records and
+   imports their bindings. Keep discovery separate from `--issues` selection so new remote
+   issues are not hidden by a selection of existing local IDs.
+3. **Select linked members.** Build the push set from existing bindings to that exact
+   destination and permitted group. Caller-supplied IDs or subtree selection must satisfy
+   the same checks; specifying an ID is not permission to enroll it.
+4. **Validate before push.** Refuse missing, foreign, malformed, ambiguous, or mismatched
+   bindings in a requested selection. Automatic selection excludes unlinked core beads.
+   Refuse unresolved destination scope rather than guessing from a prefix or URL substring.
+5. **Push the explicit set.** Supply a nonempty `--issues` list and the adapter's push-only
+   direction. An empty computed set is a successful no-op without invoking native push.
+   Unknown or incompatible options fail rather than reverting to unrestricted sync.
+6. **Keep creation separate.** Enrollment explicitly selects a native bead and destination,
+   publishes its permitted content, and records the resulting binding. Routine updates
+   never silently enroll an unlinked bead or recreate a missing external issue.
+
+The guard must cover equivalent command forms, including tracker `push` shortcuts and
+bidirectional `sync`, not just a single flag spelling. A managed bidirectional request can
+be decomposed into pull-only and guarded push-only stages. A subtree selection should be
+expanded and checked before issuing an explicit ID list. Existing lease and publication
+guards continue to apply where relevant.
+
+Binding validation must be stricter than v1.3.0 adapter recognition. For example, the
+[GitHub adapter][github-tracker] recognizes GitHub issue references and extracts their issue
+number without establishing that the URL names the currently configured repository.
+Repository-less shorthand references need a retained, verified destination binding.
+Multiple GitHub targets must not reinterpret the same issue number under a different repo.
+
+This allows **one private authoritative database, one shared prefix, private native core,
+and selected public tracker projections**. The database is never published to the public
+source-origin Dolt ref; its replication and backup destinations remain private. The fields
+deliberately sent to public GitHub Issues are public even though their bead representation
+and database history remain privately stored. Tracker selection is the publication policy
+for that projection, not a row-level ACL inside the private database.
+
+The v1.3.0 workaround approximates update-only semantics by selecting and validating linked
+IDs. It does not change the native engine's create-or-update behavior. If a binding changes
+between validation and execution, native push may still take its creation path. A practical
+implementation needs coordination and binding revalidation; eliminating that race calls for
+an adapter/engine update-only mode that rejects creation at the mutation boundary. Preview
+output is useful review evidence, not an atomic guarantee.
+
+Direct `bd` use is strongly discouraged because it bypasses these guards. This is the same
+managed-client trust model as the existing passthrough, not a requirement to introduce a
+publishing service before the convention is useful. If enforcement against clients holding
+raw tracker write credentials is required, credentials must instead be held by a publisher
+that independently enforces the contract.
 
 ### Prefixes, collision handling, and a canonical-identity shim
 
@@ -369,10 +450,17 @@ private planning with private replication.
 
 ### A credible v1.3.0 architecture
 
-The most faithful workaround is **one logical hive, several authoritative stores, one
-authorized working view**. Beadhive would register group identity and policy around native
-workspaces, select the proper workspace for every read/write/sync, and preserve source IDs.
-Group labels or metadata would aid display and selection, not grant authority.
+There are two useful starting arrangements:
+
+- **One private store with tracker projections:** Core and disjoint tracker-linked groups
+  share a database and prefix. `bh bd` guards public tracker updates; explicit enrollment
+  is the only managed operation that creates a new external issue.
+- **Several independently governed stores with one working view:** Groups that need distinct
+  database access or replication boundaries keep separate authoritative storage. Beadhive
+  associates them with the same logical hive and routes operations to the proper store.
+
+Both need a registry and binding-aware guards. Group labels, metadata, and prefixes can aid
+display and selection, but do not themselves grant authority.
 
 This can approximate most operator-facing behavior without changing upstream's issue schema.
 The major native gaps remain independent publication and ACLs for co-located authoritative
@@ -402,8 +490,10 @@ aggregate would be an explicit Beadhive feature with coverage and freshness sema
    presenting stale replicas as current authority.
 5. **Connector policy.** Configure each named connector independently, with direction,
    scope, field ownership, external record mappings, conflict rules, and deletion behavior.
-   Compile selection to supported v1.3.0 controls, make empty selections no-ops, and report
-   unsupported combinations rather than falling back to unscoped sync.
+   Centralize update-only selection in `bh bd` and reuse it from higher-level verbs. Separate
+   discovery pulls, linked-record updates, and explicit enrollment. Compile validated
+   selections to supported v1.3.0 controls, make empty selections no-ops, and reject unsupported
+   combinations rather than falling back to unscoped sync. Strongly discourage raw `bd`.
 6. **Contribution service or workflow.** Represent proposals separately from canonical
    mutations. Preserve authorship, target authority, source revision, lineage, acceptance
    outcome, and replay protection. Begin with a reviewed maintainer-mediated transfer if
@@ -423,6 +513,7 @@ against unrestricted raw SQL, raw `bd`, or remote administrators with broader ri
 | Access enforcement | Group-scoped authorization at the service boundary, including related data and history reads | Read/create/edit/claim/submit/publish rights can differ by group |
 | Replication | Group-scoped replication/export protocol or independent histories per group | Destinations receive only authorized group data and history |
 | Tracker connections | Multiple named connector bindings with stable external IDs and field-level reconciliation | Core and mirror groups sync independently without overwriting one binding |
+| Update-only tracker push | Native mode that rejects absent/foreign bindings and never falls back to create, with destination validation at mutation time | Routine updates cannot accidentally enroll or rebind a bead through the native creation path |
 | Contributions | Proposal ingestion and reviewed acceptance separate from general write access | Contributors can submit beads directly to upstream |
 | Aggregation | Explicit replica/cache semantics and authoritative mutation routing | Imported rows are not mistaken for writable canonical records |
 | Graph federation | Canonical cross-group references, resolution, disclosure policy, and partial-readiness semantics | A global graph works with disconnected or inaccessible authorities |
@@ -452,14 +543,22 @@ The following scenarios define useful acceptance evidence:
   ownership or claim state without the required capability.
 - Tracker push touches only the declared group; an empty selection produces zero writes;
   scoped synchronization does not mutate unrelated relations through a repair pass.
+- Unlinked core, foreign references, and wrong-repository references cannot enter routine
+  managed tracker push, even through explicit IDs, shortcuts, or a subtree request.
+- Multiple tracker groups share a prefix without exchanging or overwriting each other's
+  references; a changed binding during execution is rejected by the update-only mutation
+  path once that native capability is available.
+- Broad pull discovers new tracker records while targeted update pushes create no external
+  issues; only explicit enrollment creates a new record.
 - Duplicate proposal delivery produces one acceptance result with preserved attribution.
 - Missing or stale group replicas produce explicit coverage/readiness states rather than
   disappearing blockers or fabricated canonical state.
 - Legacy single-group hives retain their IDs, default routing, and publication behavior.
 
-The first viable step is the registry, routing, and view layer over separate v1.3.0 stores.
-Authoritative co-location with independent permissions and history publication should follow
-only once its backend guarantees are specified and verified.
+The first viable step is the registry and guarded operation layer, using a private mixed
+store for tracker projections and separate stores where database permissions or replication
+must differ. Authoritative co-location with independent database permissions and history
+publication should follow only once its backend guarantees are specified and verified.
 
 ## Research sources
 
@@ -477,6 +576,7 @@ version assessed here. Live documentation may change after this proposal.
 - [Canonical ignored-table patterns][ignored-patterns].
 - [GitHub integration][github-source], [Linear integration][linear-source],
   [tracker selection flags][selection-source], and [tracker sync engine][tracker-engine].
+- [GitHub reference and destination handling][github-tracker].
 
 [release]: https://github.com/gastownhall/beads/releases/tag/v1.3.0
 [changelog]: https://github.com/gastownhall/beads/blob/v1.3.0/CHANGELOG.md
@@ -497,6 +597,7 @@ version assessed here. Live documentation may change after this proposal.
 [ignored-schema]: https://github.com/gastownhall/beads/blob/v1.3.0/internal/storage/schema/migrations/ignored/0001_create_local_state_tables.up.sql
 [ignored-patterns]: https://github.com/gastownhall/beads/blob/v1.3.0/internal/storage/schema/schema.go
 [github-source]: https://github.com/gastownhall/beads/blob/v1.3.0/cmd/bd/github.go
+[github-tracker]: https://github.com/gastownhall/beads/blob/v1.3.0/internal/github/tracker.go
 [linear-source]: https://github.com/gastownhall/beads/blob/v1.3.0/cmd/bd/linear.go
 [selection-source]: https://github.com/gastownhall/beads/blob/v1.3.0/cmd/bd/sync_flags.go
 [tracker-engine]: https://github.com/gastownhall/beads/blob/v1.3.0/internal/tracker/engine.go
