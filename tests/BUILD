@@ -23,6 +23,13 @@ python_sources(
     tags=["category:test-only", "attest:stateful"],
 )
 
+# bh-jbb6r randomized soak driver: an opt-in benchmark script, not a collected test.
+python_source(
+    name="jbb6r-soak",
+    source="spikes/bh_jbb6r_soak.py",
+    tags=["category:test-only", "attest:stateful"],
+)
+
 # Fields shared by every pure unit-test target below. `_unit_tests` hands each target only the
 # overrides for files under its own directory and adds that target's owner/role tags.
 _UNIT_TEST_FIELDS = dict(
