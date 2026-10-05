@@ -202,31 +202,64 @@ Adopted as composed in `bh-jbb6r` ([`tests/harness/composed_fence.py`](../../tes
 | Frames that cannot reach the primary | **Branch**, only for non-allocating edits (comments, labels, notes, status of beads already held), published to a frame-private data ref `refs/dolt/frame/<id>` with a distinct remote URL per ref on server-mode primaries. The merge asserts that the private branch differs from `origin/main` after fetch. | **Restricted.** Not built until a need exists. |
 | Branch writes that allocate IDs or claim | — | **NO-GO** until upstream #4796 (frame-scoped child IDs) and a bd branch-write option. |
 
-**Forwarding makes executors principals on the primary's hive server.** Executors are now
-planned (Decision 6), so the forward path needs the same hardening as the HQ server:
+**Forwarding makes executors logins on the primary's hive server, and that exposure cannot
+be closed on Dolt today.** Stated plainly:
+
+- On Dolt 2.3.5 any login can `SET GLOBAL` any variable, including
+  `dolt_force_transaction_commit`, and `SET PERSIST` survives a restart (`bh-wtsrc` E4). The
+  Dolt 2.4.0 and 2.4.1 release notes show no change. Grants and `system_variables` cannot
+  prevent it, and a session-level `SET` is always possible whatever the server does.
+- A forwarder that forces transaction commits on the primary *may* defeat the FK epoch
+  retirement for every writer of that hive. Whether a forced global actually lets a stale write
+  land end to end is **unmeasured**. No spike drove that path.
+- A primary outage stops hive writes for every forwarder until failover or recovery, so
+  placement spreads hives across executors (M8b): one frame's death stalls only the hives it
+  holds.
+
+**Option A, adopted for 0.23.0 (condition 16).** Narrow and detect, do not claim to prevent:
 
 - the primary's hive `dolt sql-server` listens on the LAN only with TLS, and each forwarding
-  frame gets its own host-pinned account (`'<principal>'@'<frame address>'`) instead of a shared
+  frame gets its own host-pinned account (`'<principal>'@'<frame address>'`), never a shared
   root login;
-- `SET GLOBAL` is not privilege-checked on Dolt 2.3.5 (`bh-wtsrc` E4). A forwarder that sets
-  `dolt_force_transaction_commit=1` on the primary disables the FK epoch retirement for every
-  writer of that hive. The globals watchdog (F4) therefore also covers every primary's hive
-  server, and `fence_audit` stays the after-the-fact detector (condition 16);
-- a primary outage stops hive writes for every forwarder until failover or recovery. Placement
-  should spread hives across executors, so one frame's death stalls only the hives it holds.
+- a globals watchdog on every primary's hive server asserts `dolt_force_transaction_commit`,
+  `dolt_allow_commit_conflicts`, `dolt_transaction_commit` and `read_only`;
+- the server runs with a read-only `DOLT_ROOT_PATH` config, so `SET PERSIST` cannot stick;
+- `fence_audit` remains the after-the-fact detector.
+
+None of these stops a session-level `SET`. A forwarder is therefore trusted not to issue one.
+
+**Option B, under spike (M13).** Forward through a bh RPC service on the primary, so executors
+hold no Dolt login at all. The spike also measures whether a forced global on the primary's
+hive server lets a stale write land, which decides how urgent B is. M12 ships option A
+regardless; the spike's verdict only decides whether B replaces it.
+
+B is in tension with "no trusted receiver", and the difference is deliberate. The receiver was
+one fleet-wide, separately deployed component that every frame's liveness and every hive-lease
+CAS waited on. B is a per-hive service run by that hive's primary, inside the bh process that
+already holds the write. It validates nothing on behalf of the fleet and sits on no other
+hive's path. If the primary is down, its hive is down with or without B. It adds no new
+single point of failure, but it is a new trusted network surface, and the spike must show
+that it is smaller than a Dolt login.
 
 ### 4. Failover policy
 
 - **Time triggers reassignment; it never gates a write.** `HostLease.expires_at` leaves every
   write gate (`guard_primary`, `held_by`, `renew_if_due`) and survives only as a failover hint.
   An HQ outage blocks handoff, never writes.
-- **`failover_after` per role**, as a code default with no config key (`bh-32379` S2):
+- **`failover_after` per role, configurable from the start, in data (M8c).** Defaults:
   - `executor`: 60 min. It must ride through the 35.4 min false-stale stretch observed live.
   - `transient`: 30 min.
   - `viewer`: never placed.
 
-  The values are validated at load against the `bh-cvk70` E20 invariants, and a violating value
-  is refused. Any override waits for `bh-87l3y`.
+  Overrides are a per-role, per-hive field on the HQ placement row. They are **never** a
+  `host.yaml` or fleet-config key. That keeps `bh-32379` S2's "data is the switch" rule, avoids
+  the 0.21.3 unknown-key skew, and costs no authority renewal (`bh-87l3y`). A value is
+  validated on load against the `bh-cvk70` E20 invariants and **refused, never clamped**, below
+  its floor:
+  - executors at least about 36 min, above the 35.4 min false-stale stretch (**proposed,
+    operator to confirm**);
+  - at least bd lease TTL plus reclaim grace (15 min);
+  - at least 2 × (session TTL + sync interval).
 - **Staleness source:**
   - In `dolt-server` HQ, the age of the frame's session row by the HQ server's
     `UTC_TIMESTAMP(6)`.
@@ -246,15 +279,26 @@ planned (Decision 6), so the forward path needs the same hardening as the HQ ser
   `bh-sieai` T5). A **failover** adopt reverts claims inside the bump commit: exactly once,
   idempotent, and leaving what `bd unclaim --force` leaves (`bh-jbb6r` E5). A **planned**
   handoff does not run it.
-- **With several executors, reclaim is scoped to the dead frame's claims (condition 17).** The
-  spikes reverted *every* `in_progress` bead, which is right only while one frame does all the
-  work. With forwarding, live agents on surviving executors hold claims granted by the same
-  primary, and a blanket revert would pull their beads from under them. The claiming frame
-  is therefore recorded in hive data at claim time, and the failover bump reverts only beads
-  whose recorded frame is the dead one. Claims by a dead *non-primary* executor need no
-  failover: the primary granted them, so bd's own `reclaim` on the primary handles them
-  (`bh-sieai` T5). How surviving forwarders' bd heartbeats behave against a new primary that
-  has no lease rows is an open check for O9.
+- **What the evidence covers.** Scenario 9 tested only the unscoped revert, with one frame
+  doing all the work. bd's lease reclaim already handles the death of a *non-primary*
+  executor: the primary granted its claims and holds their leases, so they are reclaimed after
+  about 15 min (5 min TTL + 10 min grace; `bh-sieai` T5). It does not handle the death of the
+  *primary*: the new primary has 0 lease rows, so those claims strand (`bh-cvk70` E19).
+- **Scoping the failover revert is deferred (condition 17, open design point).** With several
+  executors, a blanket revert would pull claims from live agents on surviving frames. How to
+  scope it is decided by the state/work pairing design (M14), under the invariant below.
+- **State and work travel together (condition 18, binding).** Bead lifecycle state is never
+  pushed or published unless the corresponding worktree commits are also pushed to a backup
+  location on the remote (`origin`): for example `refs/bh/backup/<bead>` or the bead branch.
+  Losing one side must never leave the other orphaned. On frame loss:
+  - a dead frame's claim whose work is **not** recoverable from the remote backup is rewound
+    to its pre-claim state, as if never done, so it can be claimed again;
+  - a claim whose work **is** backed up may be resumed or reassigned with that work.
+
+  M14 designs where backups live, how they are ordered against bd's push, and the reclaim
+  policy driven by backup presence. It gates M3. Until it lands, bd's lease reclaim covers
+  non-primary death, and manual reclaim is the fallback after a primary's death through the
+  first soak.
 - **`failover_after` is revisited after the Φ3 soak.** The 60 min executor default was sized
   to ride the coupled heartbeat's false-stale stretches. Session rows remove that cause, and
   with four executors forwarding to one primary a shorter window may be wanted. Any change
@@ -318,7 +362,8 @@ planned (Decision 6), so the forward path needs the same hardening as the HQ ser
 
 ## Binding conditions
 
-The GO holds only with all of these. Conditions 1–12 come from the spikes; 13–17 are added here.
+The GO holds only with all of these. Conditions 1–12 come from the spikes; 13–18 are added here.
+Condition 17 is recorded as a deferred open design point and does not bind.
 
 | # | Condition | Source |
 |---|---|---|
@@ -337,8 +382,9 @@ The GO holds only with all of these. Conditions 1–12 come from the spikes; 13�
 | 13 | `BH_FRAME_HEARTBEAT=advisory` is a single-executor-frame escape. **Clearing it is a hard prerequisite for admitting any additional executor frame** (Decision 6): it is unset on every frame, by the gated A1–A4 procedure (O5), before O8 admits a new executor, whether or not the hive is cut over. Never retire it by deleting the code first. | `bh-32379` cond. 6, S3, §3; operator |
 | 14 | Until the cutover, count active-frame rotations per lease. Before a 16th rotation without a renewal or re-adopt, re-adopt deliberately rather than let the lease's grant leave the `HISTORY_LIMIT = 16` archive. | `bh-32379` L9 (code-derived) |
 | 15 | Account hardening (host-pinned principals, required TLS) ships with session rows (P-M9), not after them. No hive database is co-hosted on the HQ server. | `bh-wtsrc` T11, T16, R2–R3 |
-| 16 | The forward path ships hardened: per-frame host-pinned TLS accounts on the primary's hive server, and the globals watchdog covering every primary's hive server. | `bh-wtsrc` E4; this ADR §3 |
-| 17 | With more than one executor, failover reclaim reverts only the dead frame's claims, identified from the claiming frame recorded in hive data. | `bh-jbb6r` R2; this ADR §4 |
+| 16 | The forward path ships with option A: per-frame host-pinned TLS accounts on the primary's hive server; a globals watchdog there for `dolt_force_transaction_commit`, `dolt_allow_commit_conflicts`, `dolt_transaction_commit` and `read_only`; a read-only `DOLT_ROOT_PATH` config; `fence_audit`. This narrows and detects a forwarder forcing a global; it does not prevent a session-level `SET`. | `bh-wtsrc` E4; this ADR §3; operator |
+| 17 | **Deferred — open design point, not binding.** How failover scopes its revert with several executors. Decided by M14 under condition 18. | `bh-jbb6r` R2; operator |
+| 18 | **State and work travel together.** Bead lifecycle state is never published unless the matching worktree commits are pushed to a backup on the remote. On frame loss, an unbacked claim is rewound to its pre-claim state; a backed-up claim may be resumed or reassigned with its work. | operator invariant; this ADR §4 |
 
 ## Amendment to multi-host-model-adr.md Amendment 1 (its Amendment 2)
 
@@ -347,7 +393,7 @@ The GO holds only with all of these. Conditions 1–12 come from the spikes; 13�
 | Admission core: "a managed publisher must win a CAS on a git ref before it invokes bd" | **Replaced on cut-over hives.** The admission CAS is the hive data push itself, plus epoch retirement and the guard. The pre-bd ref reservation remains only during coexistence. |
 | §1 Leases centralize in HQ | **Stands, renamed.** The record at `refs/bh/lease/<prefix>` is now **placement**. `expires_at` is a failover hint only. `adopt` no longer CASes "from expired-or-absent": a placement CAS is a deliberate director, operator or release action. `takeover --force` becomes an ordinary placement CAS by an authorized principal. |
 | §2 The fence splits from the lease | **Superseded.** The fence moves into the data (§2 above). `refs/bh/epoch` is dual-maintained during coexistence, then frozen as a floor. Adopt order inverts from "fence first, lease second" to "placement first, data second", because placement is now what makes an epoch unique to one frame (`bh-cvk70` E10). The half-done state "fails old", not "fails closed", and recovers by rolling forward. The `bh-tfapu` atomicity gap is closed without an upstream bd seam. |
-| §3 Asymmetric roles, TTL 30 min / renew 5 min | **Roles stand. TTL scaling becomes `failover_after` per role** (60/30 min, viewer never placed). Lease renewal from the dispatcher loop is retired; `renew_if_due` is a no-op. |
+| §3 Asymmetric roles, TTL 30 min / renew 5 min | **Roles stand. TTL scaling becomes `failover_after` per role** (60/30 min defaults, viewer never placed, per-hive overrides in the placement row). Lease renewal from the dispatcher loop is retired; `renew_if_due` is a no-op. |
 | §4 HQ as a coordination dependency; "a current primary keeps writing only until its cached lease expires" | **The dependency stands for handoff only.** The quoted failure mode is reversed: an established primary keeps writing indefinitely while HQ is unreachable, because the data, not a cached clock, decides who writes. |
 | §5 Vocabulary | **Extended.** **Placement** is the HQ record (git HQ still spells it `refs/bh/lease/<prefix>` and `bh host list` still calls it the host lease). The **writer epoch** is the hive's `bh_writer.epoch` (221 on `bh` today). The **incarnation epoch** is the frame grant's `hq_principal_registry.epoch`, which release rotation advances and which never moves the writer epoch. The **worker lease** is still bd's. |
 | Consequence: "`ClaimRecord` carries the `epoch`" | **Stands.** On a cut-over hive the live epoch is read from local `bh_writer`, seeded equal to the lease epoch so in-flight tokens survive (`bh-32379` T1). |
@@ -422,31 +468,35 @@ receiver removal` (implements this ADR).
 |---|---|---|
 | M1 | `feat(fence): product fence + guard module — schema, idempotent install in composed order, 44-trigger check, bh_local_ident provisioning, fence_audit` (P-M1) | F3 |
 | M2 | `feat(fleet): placement-first adopt with idempotent step 2, sentinel bump and dual refs/bh/epoch CAS; adopt-incomplete reporting` (P-M2) | M1 |
-| M3 | `feat(fleet): failover adopt reverts the dead frame's in_progress beads in the bump commit, scoped by the claiming frame recorded in hive data` (P-M7; condition 17) | M2 |
+| M3 | `feat(fleet): failover adopt reclaims the dead frame's beads in the bump commit, per the M14 pairing policy` (P-M7; conditions 17–18) | M2, M14 |
 | M4 | `feat(guard): clock-free write gate and live_epoch from local bh_writer on cut-over hives; expiry advisory everywhere; retire renew_if_due` (P-M3) | M2 |
 | M5 | `feat(hive): hidden, temporary bh hive fence cutover\|status\|rollback verb (C1–C6, R1–R5), documented only in the runbook; doctor uses fence_audit` (P-M4) | M1, M4 |
 | M6 | `feat(guard): lift bh bd dolt push\|sync on cut-over hives; refuse force, reset-data, restore --force, --strategy, conflicts resolve on bh_*, plain vc merge` (P-M5) | M4, F1 |
 | M7 | `feat(work): managed push diverts to frame/<id>/orphan when superseded; writer orphan-merge verb` (P-M6) | M4 |
-| M8 | `feat(fleet): SQL placement by director credential with fresh receiver-format revisions; observed-window failover observer with gap reset; code-default failover_after` (P-M8) | M2, F2 |
+| M8 | `feat(fleet): SQL placement by director credential with fresh receiver-format revisions; observed-window failover observer with gap reset` (P-M8) | M2, F2 |
+| M8b | `feat(fleet): spread hive primaries across executors in placement; bh doctor warns when placement is lopsided` | M8 |
+| M8c | `feat(fleet): per-role, per-hive failover_after field on HQ placement rows (defaults 60/30), validated on load against the E20 invariants and refused, never clamped, below the floor` | M8 |
 | M9 | `feat(fleet): per-incarnation session/evidence rows, separate renewal loop and conformance job, one-statement read_eligibility, data-switched reader, claim-time audit stamps, host-pinned TLS accounts` (P-M9) | M8, F7 |
-| M10 | `test(fence): composed integration suite ending in check_invariants; fixed seeds plus Φ2 mixed-version events, multi-executor forwarding and scoped reclaim; sender-stall event for the Φ3 soak` | M2–M7, M9, M12 |
-| M11 | `docs(fleet): BEADS-SYNC, HQ.md, FRAME-FLEET-MEMBERSHIP, CONFIGURATION (deprecate hq.sql.liveness), cutover runbook, proposal status, 0.23.0 release note with trust delta` | M5–M9, M12 |
-| M12 | `feat(fleet): forward write path for non-primary executors — bd pointed at the primary's hive server over TLS with per-frame host-pinned accounts` (P-M10; condition 16) | M4 |
+| M10 | `test(fence): composed integration suite ending in check_invariants; fixed seeds plus Φ2 mixed-version events, multi-executor forwarding and backup-driven reclaim; sender-stall event for the Φ3 soak` | M2–M7, M9, M12 |
+| M11 | `docs(fleet): BEADS-SYNC, HQ.md, FRAME-FLEET-MEMBERSHIP, CONFIGURATION (deprecate hq.sql.liveness; failover_after lives on placement rows), cutover runbook, proposal status, 0.23.0 release note with trust delta` | M5–M9, M8b, M8c, M12 |
+| M12 | `feat(fleet): forward write path for non-primary executors, option A — bd pointed at the primary's hive server over TLS with per-frame host-pinned accounts, globals watchdog, read-only DOLT_ROOT_PATH config` (P-M10; condition 16) | M4; M13 only for choosing option B |
+| M13 | `spike(fleet): forward through a bh RPC service on the primary so executors hold no Dolt login (option B); measure whether a forced global on the primary's hive server lets a stale write land` (early; may land in 0.23.0) | — |
+| M14 | `spike(fleet): DECISION — pair bead state with work: remote backup location for worktree commits, ordering against bd push, backup-driven reclaim policy on frame loss` (condition 18) | — |
 | — | *link* `bh-kmxyp` / `bh-vfrem` (release ranges) and `bh-wj8hu` / `bh-rjjjo` (laptop-free authority); land in 0.23.0 if possible | — |
 
 ### Sub-epic C — operator rollout (procedures; no release)
 
 | # | Bead title | Depends on |
 |---|---|---|
-| O1 | `chore(ops): install 0.23.0 on the factory by active-frame rotation (Φ1), one operator laptop session` | M1–M12, F9 |
+| O1 | `chore(ops): install 0.23.0 on the factory by active-frame rotation (Φ1), one operator laptop session` | M1–M12, M8b, M8c, F9 |
 | O2 | `chore(ops): GitHub-hosted ref CAS canary, then canary hive cutover (Φ2)` | O1 |
 | O3 | `chore(ops): cut the bh hive over (Φ2), seed from the live writer epoch` | O2, O10 |
 | O4 | `chore(ops): SQL Φ3 — provision session/evidence tables, director credential on the HQ host, soak with the receiver running, then stop it (Φ3b, laptop-off acceptance)` | O3, M8, M9, `bh-rjjjo` |
 | O5 | `chore(ops): retire BH_FRAME_HEARTBEAT=advisory by bh-32379 §3 steps A1–A3 (condition 13; hard prerequisite for O8)` | O4, or F9 with a clean full-gate soak |
 | O6 | `chore(ops): bake the executor frame image on the latest working 0.23.x` | O1 |
 | O7 | `chore(ops): deploy three executor frames to PVE from the baked image` | O6 |
-| O8 | `chore(ops): enroll and admit the three new executor frames (grants, host-pinned HQ and hive-server accounts, session/evidence tables)` | O7, O5, O4 |
-| O9 | `test(ops): verify placement, forwarding, scoped reclaim and failover across four executors, including forwarders' bd heartbeats against a new primary` | O8, O3 |
+| O8 | `chore(ops): enroll and admit the three new executor frames (grants, host-pinned HQ and hive-server accounts, session/evidence tables)` | O7, O5, O4, M13 verdict, M14 decision |
+| O9 | `test(ops): verify placement spreading, forwarding, reclaim and failover across four executors, including forwarders' bd heartbeats against a new primary` | O8, O3 |
 | O10 | `chore(ops): upgrade xeno-mac.lan (operator Mac) to the latest release and verify bead management (forwarded writes on a cut-over hive) and HQ administration; confirm it holds no unpublished bh commits before O3` | O1, O2 |
 
 ### Sub-epic E — post-cutover cleanup (scheduled; patch-safe)
@@ -488,8 +538,25 @@ was never officially supported, rather than as a 0.24.0 minor.
    0.23.0. Condition 13 becomes a hard prerequisite before the new frames join (O5 → O8). The
    single-executor assumptions in this ADR were revisited:
    - the forward path's status and hardening (§3, condition 16);
-   - failover reclaim, now scoped to the dead frame's claims (§4, condition 17);
+   - failover reclaim with several executors (§4; now governed by the follow-up decisions);
    - the `failover_after` executor default, revisited after the Φ3 soak (§4);
    - test coverage for forwarding and scoped reclaim (M10) and a four-executor verification (O9).
 7. **Upstream bd and Dolt issues are tracked internally only.** The drafts stay in-tree under
    F4. Nothing is filed upstream at this time.
+
+### Follow-up decisions (operator, 2026-10-05)
+
+1. **Condition 16 is restated honestly.** On Dolt 2.3.5 any login can set any global, and
+   2.4.0/2.4.1 show no change. Option A ships in 0.23.0 to narrow and detect. A spike (M13)
+   explores option B, a per-hive bh RPC service with no Dolt login for executors, and measures
+   whether a forced global actually lets a stale write land. M12 does not wait on it.
+2. **Condition 17 is deferred** as an open design point. The operator's governing principle is
+   binding instead, as condition 18: state and work travel together, and on frame loss unbacked
+   claims are rewound while backed-up claims may be resumed. M14 designs the pairing and gates
+   M3. bd lease reclaim (non-primary death) and manual reclaim (first soak) are the fallbacks.
+3. **Hive primaries spread across executors** (M8b), with a `bh doctor` lopsidedness warning.
+4. **`failover_after` is configurable from the start** (M8c), in data on the placement row,
+   validated and refused below the floor. The about-36-minute executor floor is proposed and
+   awaits operator confirmation. Tune after the Φ3 soak.
+5. **Admitting the three new executors (O8)** also waits on the M13 verdict and the M14
+   decision.
