@@ -441,3 +441,36 @@ def test_legacy_active_migration_refuses_ownership_disagreement(tmp_path, monkey
     )
     assert validation_records.migrate_legacy_active(repo) == 1
     assert not good.exists() and bad.exists()
+
+
+def test_command_durations_are_medians_of_real_completed_runs_only(tmp_path, monkeypatch):
+    """bh-2kodj: the cheapest-first scheduling hint reads only genuine executions."""
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(host, "host_id", lambda: "host")
+    template = validation_records.finish_run(repo, _begin(repo)["run_id"], exit_code=0)
+
+    def run(run_id, command_hash, seconds, **changes):
+        _copy_manifest(
+            repo,
+            template,
+            run_id,
+            command_hash=command_hash,
+            started_at="2026-10-04T10:00:00+00:00",
+            finished_at=f"2026-10-04T10:{seconds // 60:02d}:{seconds % 60:02d}+00:00",
+            **changes,
+        )
+
+    run("run-cheap-1", "cheap", 3)
+    run("run-cheap-2", "cheap", 5)
+    run("run-cheap-3", "cheap", 4)
+    run("run-slow-1", "slow", 600, verdict="red", exit_code=1)  # red still measures cost
+    run("run-slow-2", "slow", 800)
+    run("run-slow-infra", "slow", 1, reason="checkout_failure", verdict="none")
+    run("run-slow-live", "slow", 2, lifecycle="running")
+    run("run-slow-legacy", "slow", 3, phase="legacy-ledger-import")
+    run("run-other", "other", 9)
+
+    durations = validation_records.command_durations(repo, {"cheap", "slow", "absent"})
+
+    assert durations == {"cheap": 4.0, "slow": 700.0}
+    assert validation_records.command_durations(repo, set()) == {}

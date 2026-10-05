@@ -239,6 +239,13 @@ architecture-structural-check:
     just transport-artifact-check
     just wire-schema-compat
 
+# Fast (~20 s) early warning that checked-in generated evidence is current, naming the generator
+# to re-run on drift (bh-2kodj). Not a gate step and owned by no attest key: the authoritative
+# tests and architecture-structural-check still prove the same artifacts inside their lanes.
+# Selective validation runs it before any lane when `work.validate.precheck` names it.
+generated-evidence-check:
+    uv run python scripts/check_generated_evidence.py
+
 architecture-pants-check:
     uv run python scripts/check_pants_ownership.py
     uv run python scripts/check_pants_proven.py
