@@ -283,3 +283,26 @@ def test_no_cache_invalidation_when_populated_workspace_resolves_external(_isola
 
     assert cache.workspace_root == resolved_legacy
     assert "github/acme/api" in cache.repos  # preserved, not coarse-invalidated
+
+
+def test_config_scope_resolves_from_the_threaded_cfg_without_reloading(_isolated, monkeypatch):
+    """bh-931we: a validation lane threads its already-loaded cfg; every `workspace_root` in the
+    scope (one per git spawn's GIT_WORKSPACE fill) reuses it instead of calling `config.load()`
+    — and the scope ends with the operation, so the next one resolves from fresh config."""
+    pinned = tmp = _isolated["home"].parent / "pinned"
+    _write_config(root=str(tmp / "fresh"))
+    loads = []
+    real_load = config.load
+    monkeypatch.setattr(config, "load", lambda: (loads.append(1), real_load())[1])
+
+    with identity.config_scope({"git_workspace": {"root": str(pinned)}}):
+        assert [identity.workspace_root() for _ in range(5)] == [str(pinned.resolve())] * 5
+        assert loads == []
+        monkeypatch.setenv("GIT_WORKSPACE", str(tmp / "env"))
+        assert identity.workspace_root() == str((tmp / "env").resolve())  # env still wins
+        monkeypatch.delenv("GIT_WORKSPACE")
+    assert identity.workspace_root() == str((tmp / "fresh").resolve())
+    assert loads == [1]
+    with identity.config_scope(None):  # no cfg in hand: unchanged fresh resolution
+        identity.workspace_root()
+    assert loads == [1, 1]

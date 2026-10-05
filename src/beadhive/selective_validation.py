@@ -13,7 +13,7 @@ from collections.abc import Callable, Mapping, Sequence
 import typer
 
 from . import config_work_settings as config
-from . import validation_ledger, validation_records
+from . import identity, validation_ledger, validation_records
 from .bootstrap.impact import attest_keys, impact_resolver
 
 Runner = Callable[[str], int]
@@ -333,6 +333,32 @@ def run(
     Exit 75 is UNKNOWN.  It blocks required keys and is tolerated for optional keys; every
     other non-zero result blocks regardless of policy.
     """
+    # The whole selective run already holds one cfg; the inter-lane verdict/carry/tree reads
+    # resolve the workspace root from it rather than re-loading config per git call (bh-931we).
+    with identity.config_scope(cfg if isinstance(cfg, Mapping) else None):
+        return _run(
+            entry,
+            cfg,
+            base_rev=base_rev,
+            head_rev=head_rev,
+            runner=runner,
+            repo_path=repo_path,
+            full=full,
+            receipt_override=receipt_override,
+        )
+
+
+def _run(
+    entry,
+    cfg,
+    *,
+    base_rev: str,
+    head_rev: str,
+    runner: Runner,
+    repo_path: str | None,
+    full: bool,
+    receipt_override,
+) -> int:
     attest = config.attest_config(cfg, entry)
     keys = attest_keys(attest)
     if not keys:

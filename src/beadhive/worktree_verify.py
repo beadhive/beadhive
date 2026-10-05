@@ -26,6 +26,7 @@ from beadhive_worktrees.policy import init_rules
 from . import (
     converge,
     host,
+    identity,
     otel,
     registry,
     test_report,
@@ -1073,6 +1074,35 @@ def impl_clean_checkout(
             cfg = config.load()
         except FileNotFoundError:
             cfg = {}
+    # One lane = one cfg (bh-931we): every git spawn's GIT_WORKSPACE fill and every
+    # `registry.hive_dir` below resolves the workspace root from this cfg instead of
+    # re-loading (and, under SQL config, re-reading the committed snapshot) ~64 times.
+    with identity.config_scope(cfg):
+        return _impl_clean_checkout_scoped(
+            entry,
+            branch,
+            cmd,
+            cfg,
+            reuse,
+            bead=bead,
+            phase=phase,
+            observed_active_run_id=observed_active_run_id,
+            permit=permit,
+        )
+
+
+def _impl_clean_checkout_scoped(
+    entry,
+    branch,
+    cmd,
+    cfg,
+    reuse,
+    *,
+    bead,
+    phase,
+    observed_active_run_id,
+    permit,
+) -> int:
     sha = _branch_sha(entry, branch)
     tree = validation_ledger.tree_of(entry, sha)
     bypass_requested = validation_bypass.enabled(cfg, entry) and (
