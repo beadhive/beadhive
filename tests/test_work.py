@@ -8,6 +8,7 @@ Beads while every git/worktree op runs for real. Non-`bd` calls (the validation 
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import io
 import json
@@ -3729,6 +3730,160 @@ def test_merge_refuses_changes_requested_work_that_is_not_already_landed(hive, f
 
     assert "changes-requested" in capsys.readouterr().err
     assert fakebd.beads["mr-1.1"]["status"] != "closed"
+
+
+def _land_child_then_forget_bubble(hive, fakebd, bead="mr-1.1"):
+    """Merge `bead` into wt/bead/epic/mr-1, then rewind the tracker to a pre-0.22.4 legacy shape:
+    in_progress, review bounced, and the bubble sha absent from `git.commits` (bh-ubxn1)."""
+    _mol_branch(hive, "mr-1")
+    fakebd.seed(bead, title="t")
+    work.claim(bead=bead, as_="", hive="myrepo")
+    _commit(_wt_of(hive, bead), "feat: the change")
+    work.submit(bead=bead, hive="myrepo")
+    fakebd.approve(bead)
+    work.merge(bead=bead, hive="myrepo", rm=False, molecule=False)
+    bubble = _git("rev-parse", "wt/bead/epic/mr-1", cwd=hive.main).stdout.strip()
+    fakebd.beads[bead]["metadata"]["git.commits"] = json.dumps(
+        [sha for sha in _linkage(fakebd, bead) if sha != bubble]
+    )
+    fakebd.beads[bead]["status"] = "in_progress"
+    return bubble
+
+
+def test_merge_attributes_own_bubble_missing_from_linkage(hive, fakebd, capsys):
+    """bh-ubxn1 case 1 (bh-9qg02 / bh-p3lg5): the bead's own `chore(merge): bead <id>` bubble is
+    on the base, but its sha never reached `git.commits`. The bubble names this bead and merges
+    this branch tip, so it attributes the landing: reconcile and close, never bounce."""
+    bubble = _land_child_then_forget_bubble(hive, fakebd)
+    capsys.readouterr()
+
+    work.merge(bead="mr-1.1", hive="myrepo", rm=False, molecule=False)
+
+    assert "already merged" in capsys.readouterr().out
+    assert fakebd.beads["mr-1.1"]["status"] == "closed"
+    assert fakebd.states.get("mr-1.1", {}).get("review") != "changes-requested"
+    assert _git("rev-parse", "wt/bead/epic/mr-1", cwd=hive.main).stdout.strip() == bubble
+
+
+def test_merge_attributes_legacy_merge_subject_bubble(hive, fakebd, capsys):
+    """A pre-convention `merge <id>` bubble (main e4ab0d52) is the same attribution evidence."""
+    _mol_branch(hive, "mr-1")
+    fakebd.seed("mr-1.1", title="t")
+    work.claim(bead="mr-1.1", as_="", hive="myrepo")
+    _commit(_wt_of(hive, "mr-1.1"), "feat: the change")
+    work.submit(bead="mr-1.1", hive="myrepo")
+    fakebd.approve("mr-1.1")
+    _git("checkout", "-q", "wt/bead/epic/mr-1", cwd=hive.main)
+    _git("merge", "-q", "--no-ff", "wt/bead/issue/mr-1.1", "-m", "merge mr-1.1", cwd=hive.main)
+    _git("checkout", "-q", "main", cwd=hive.main)
+    fakebd.states["mr-1.1"]["review"] = "changes-requested"
+    capsys.readouterr()
+
+    work.merge(bead="mr-1.1", hive="myrepo", rm=False, molecule=False)
+
+    assert "already merged" in capsys.readouterr().out
+    assert fakebd.beads["mr-1.1"]["status"] == "closed"
+
+
+def test_merge_counts_branch_whose_tip_is_its_own_bubble_as_contained(hive, fakebd, capsys):
+    """bh-ubxn1 case 2 (bh-8mm0v): the branch was moved onto its own merge bubble, which sits on
+    main's FIRST-parent chain — ancestry-only `landed_via_merge` reads that as never-implemented,
+    so the stale review=changes-requested refused the retry. The tip is this bead's bubble."""
+    fakebd.seed("mr-8", title="t")
+    work.claim(bead="mr-8", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-8"), "fix: the change")
+    work.submit(bead="mr-8", hive="myrepo")
+    fakebd.approve("mr-8")
+    work.merge(bead="mr-8", hive="myrepo", rm=False, molecule=False)
+    bubble = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
+    _git("reset", "-q", "--hard", bubble, cwd=_wt(hive, "mr-8"))
+    fakebd.beads["mr-8"]["metadata"]["git.commits"] = json.dumps(
+        [sha for sha in _linkage(fakebd, "mr-8") if sha != bubble]
+    )
+    fakebd.beads["mr-8"]["status"] = "in_progress"
+    fakebd.states["mr-8"]["review"] = "changes-requested"
+    capsys.readouterr()
+
+    work.merge(bead="mr-8", hive="myrepo", rm=False, molecule=False)
+
+    assert "already merged" in capsys.readouterr().out
+    assert fakebd.beads["mr-8"]["status"] == "closed"
+    assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == bubble
+
+
+@pytest.mark.parametrize("linked_bubble", [True, False])
+def test_remerge_of_closed_container_child_is_a_noop(hive, fakebd, capsys, linked_bubble):
+    """bh-ubxn1 case 3 (bh-32379 into wt/bead/epic/bh-qlgmm): re-running merge over a CLOSED,
+    merged child reports already merged and never writes review state — with or without the
+    bubble in its linkage, and even after the container's epic has closed."""
+    bubble = _land_child_then_forget_bubble(hive, fakebd)
+    if linked_bubble:
+        fakebd.beads["mr-1.1"]["metadata"]["git.commits"] = json.dumps(
+            [*_linkage(fakebd, "mr-1.1"), bubble]
+        )
+    fakebd.beads["mr-1.1"].update(status="closed", close_reason="merged")
+    fakebd.seed("mr-1", title="epic", issue_type="epic", status="closed")
+    calls_before = len(fakebd.calls)
+    capsys.readouterr()
+
+    work.merge(bead="mr-1.1", hive="myrepo", rm=False, molecule=False)
+
+    assert "already merged on wt/bead/epic/mr-1" in capsys.readouterr().out
+    assert fakebd.states.get("mr-1.1", {}).get("review") != "changes-requested"
+    assert not any(
+        "set-state" in args or "update" in args for _actor, args in fakebd.calls[calls_before:]
+    )
+
+
+def test_concurrent_remerge_after_first_run_closed_is_a_noop(hive, fakebd, capsys, monkeypatch):
+    """The bh-32379 race: the second run read the bead before the first run linked and closed it.
+    Its stale snapshot must neither bounce the now-closed bead nor close it twice."""
+    _land_child_then_forget_bubble(hive, fakebd)
+    real_slot = work.work_group.merge_slot
+
+    @contextlib.contextmanager
+    def first_run_finishes(main, attrs):
+        fakebd.beads["mr-1.1"].update(status="closed", close_reason="merged")
+        with real_slot(main, attrs):
+            yield
+
+    monkeypatch.setattr(work.work_group, "merge_slot", first_run_finishes)
+    calls_before = len(fakebd.calls)
+    capsys.readouterr()
+
+    work.merge(bead="mr-1.1", hive="myrepo", rm=False, molecule=False)
+
+    assert "already merged" in capsys.readouterr().out
+    assert fakebd.states.get("mr-1.1", {}).get("review") != "changes-requested"
+    assert not any(
+        ("close" in args or "set-state" in args) and "mr-1.1" in args
+        for _actor, args in fakebd.calls[calls_before:]
+    )
+
+
+def test_merge_still_refuses_closing_another_childs_identical_commit(hive, fakebd, capsys):
+    """The attribution relaxation must keep the shared-commit guard: child 2's branch is the very
+    commit child 1 landed, but the only bubble names child 1 — bounce child 2, never close it."""
+    _mol_branch(hive, "mr-1")
+    for child in ("mr-1.1", "mr-1.2"):
+        fakebd.seed(child, title=child)
+        work.claim(bead=child, as_="", hive="myrepo")
+    _commit(_wt_of(hive, "mr-1.1"), "feat: the change")
+    shared = _git("rev-parse", "HEAD", cwd=_wt_of(hive, "mr-1.1")).stdout.strip()
+    _git("reset", "-q", "--hard", shared, cwd=_wt_of(hive, "mr-1.2"))
+    for child in ("mr-1.1", "mr-1.2"):
+        work.submit(bead=child, hive="myrepo")
+        fakebd.approve(child)
+    work.merge(bead="mr-1.1", hive="myrepo", rm=False, molecule=False)
+    assert shared in _linkage(fakebd, "mr-1.2")
+    capsys.readouterr()
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-1.2", hive="myrepo", rm=False, molecule=False)
+
+    assert "zero-delta" in capsys.readouterr().err
+    assert fakebd.beads["mr-1.2"]["status"] != "closed"
+    assert fakebd.states["mr-1.2"]["review"] == "changes-requested"
 
 
 def test_merge_over_already_landed_bead_never_advises_redoing_the_work(hive, fakebd, capsys):
