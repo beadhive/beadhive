@@ -209,8 +209,10 @@ identity with recorded lineage. A tracker mirror records its external binding; t
 does not automatically make a tracker record and a bead the same globally canonical object.
 Source-host migration, prefix changes, and remote changes should not rewrite canonical IDs.
 This is the main difference from current BDP, which fuses identity with the canonical URL and
-so treats relocation as a different logical Scope or a redirect. Whether identity can be
-separated from location is the open upstream question in [bdp#2][bdp-2].
+so treats relocation as a different logical Scope or a redirect. [bdp#2][bdp-2] raised
+whether identity can be separated from location; its [2026-08-30 ruling][bdp-2-ruling] settled
+naming within a Scope (creation-time canonical paths and repointable aliases), which this
+proposal adopts, but did not decide whether identity survives the Scope itself moving.
 
 ### Decisions still open
 
@@ -250,7 +252,7 @@ preview integration branch that its authors warn is for new projects only.
 | This proposal | Upstream draft | Agreement or gap |
 |---|---|---|
 | Bead group | BDP **Scope**: a bounded graph with one authority and one history; every bead and link belongs to exactly one Scope; a service may host many Scopes | Close match. Authoritative co-location becomes several Scopes on one service, each with an independent history |
-| Canonical identity `(group_id, bead_id)` | Scope base URL plus an immutable local ID, never reused after deletion | Agree on immutability and non-reuse. BDP fuses identity with location; separable identity is open in [bdp#2][bdp-2] |
+| Canonical identity `(group_id, bead_id)` | Scope base URL plus an immutable local ID, never reused after deletion | Agree on immutability and non-reuse. BDP fuses identity with location; [bdp#2][bdp-2] ruled on in-Scope naming, not relocation |
 | Qualified and local aliases | BDP `alias/` root: repointable, reusable locators resolved to canonical IDs at write time; Memory R2 keys | Match |
 | Per-group authorization | BDP Authorization Views: one per-principal projection of a Scope, closed over owned links | Protocol concept only; no realization in a Beads release |
 | Group-scoped replication | Per-Scope snapshots and changefeed (Transactional profile); retention removal does not propagate, erasure does | Match, including the archive-replica case |
@@ -608,7 +610,7 @@ against unrestricted raw SQL, raw `bd`, or remote administrators with broader ri
 | Area | Potential change | Guarantee it would establish | Upstream draft status |
 |---|---|---|---|
 | Group model | First-class immutable group identity and membership for every bead and related record | Ownership remains explicit when groups share storage | BDP Scope |
-| Canonical identity | Immutable bead key separate from aliases and from location; canonical graph endpoints | Prefix changes, host migration, and namespace collisions do not change identity | BDP canonical URL; location independence open ([bdp#2][bdp-2]) |
+| Canonical identity | Immutable bead key separate from aliases and from location; canonical graph endpoints | Prefix changes, host migration, and namespace collisions do not change identity | BDP canonical URL; relocation undecided ([bdp#2][bdp-2]) |
 | Allocation and resolution | Group-aware allocation, qualified lookup, alias history, deterministic ambiguity errors | Native operations select the intended bead and authority | BDP aliases; Memory keys |
 | Access enforcement | Group-scoped authorization at the service boundary, including related data and history reads | Read/create/edit/claim/submit/publish rights can differ by group | BDP Authorization Views |
 | Replication | Group-scoped replication/export protocol or independent histories per group | Destinations receive only authorized group data and history | BDP per-Scope changefeed |
@@ -720,5 +722,6 @@ version assessed here. Live documentation may change after this proposal.
 [roadmap]: https://github.com/gastownhall/beads/wiki/Roadmap
 [bdp-spec]: https://github.com/gastownhall/bdp/blob/main/docs/specs/bdp.md
 [bdp-2]: https://github.com/gastownhall/bdp/issues/2
+[bdp-2-ruling]: https://github.com/gastownhall/bdp/issues/2#issuecomment-5465934277
 [memory-proposal]: https://github.com/gastownhall/beads/issues/5877
 [gascity-post]: https://blog.gascity.com/posts/extending-beads-memories-versions-and-the-wire-protocol/
