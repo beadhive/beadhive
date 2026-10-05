@@ -65,7 +65,7 @@ def pytest_collection_modifyitems(config, items):
             # Compatibility defaults must establish their empty baseline before an explicit
             # ``world`` or per-test fixture overrides it, matching pytest's former autouse order.
             item.fixturenames.insert(0, "legacy_stateful_test_scope")
-    slots = int(os.environ.get("BH_DOLT_SLOTS", "4"))
+    slots = int(os.environ.get("BH_DOLT_SLOTS", "8"))
     items[:] = _interleave_dolt_items(items, slots)
 
 
