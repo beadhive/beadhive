@@ -134,6 +134,9 @@ class RemoteEndpoint:
     url: str
     token: str | None = field(default=None, repr=False)
     timeout_seconds: float = 10.0
+    # Deadline for mutating requests. Distinct from ``timeout_seconds`` (the read/probe
+    # deadline): a large ``batchApply`` legitimately outlives a 5 s readiness probe.
+    write_timeout_seconds: float = 60.0
 
 
 @dataclass(frozen=True)
@@ -144,11 +147,16 @@ class LocalEndpoint:
     token_file: Path | None = None
     startup_seconds: float = 15.0
     timeout_seconds: float = 10.0
+    write_timeout_seconds: float = 60.0
 
     def __post_init__(self) -> None:
         if not 1 <= self.port <= 65535:
             raise ValueError("local Beads service requires a fixed TCP port")
-        if self.startup_seconds <= 0 or self.timeout_seconds <= 0:
+        if (
+            self.startup_seconds <= 0
+            or self.timeout_seconds <= 0
+            or self.write_timeout_seconds <= 0
+        ):
             raise ValueError("Beads service deadlines must be positive")
 
 
@@ -172,6 +180,8 @@ class BeadsSession:
         self._process: subprocess.Popen[bytes] | None = None
         self._http: httpx.Client | None = None
         self._sdk: AuthenticatedClient | None = None
+        self._http_write: httpx.Client | None = None
+        self._sdk_write: AuthenticatedClient | None = None
         self.context: ContextResponse | None = None
 
     def __enter__(self) -> BeadsSession:
@@ -221,6 +231,15 @@ class BeadsSession:
         )
         self._sdk = AuthenticatedClient(base_url=url, token=token or "", timeout=timeout)
         self._sdk.set_httpx_client(self._http)
+        # Writes get their own deadline on a sibling client (same transport and headers).
+        write_timeout = httpx.Timeout(endpoint.write_timeout_seconds)
+        self._http_write = httpx.Client(
+            base_url=url, headers=headers, timeout=write_timeout, transport=self._transport
+        )
+        self._sdk_write = AuthenticatedClient(
+            base_url=url, token=token or "", timeout=write_timeout
+        )
+        self._sdk_write.set_httpx_client(self._http_write)
         try:
             self._negotiate(startup_deadline)
         except Exception:
@@ -249,6 +268,8 @@ class BeadsSession:
                 self.context = context
                 assert self._http is not None
                 self._http.headers["Bd-Project-Id"] = context.project_id
+                assert self._http_write is not None
+                self._http_write.headers["Bd-Project-Id"] = context.project_id
                 self._unwrap(list_ready_work.sync_detailed(client=self._sdk, limit=1))
                 return
             except (httpx.ConnectError, httpx.TimeoutException, ServiceProblem) as exc:
@@ -276,12 +297,13 @@ class BeadsSession:
         if missing:
             raise CapabilityMissing(f"Beads capability missing: {', '.join(sorted(missing))}")
 
-    def _require(self, capability: str) -> AuthenticatedClient:
-        if self.context is None or self._sdk is None:
+    def _require(self, capability: str, *, write: bool = False) -> AuthenticatedClient:
+        client = self._sdk_write if write else self._sdk
+        if self.context is None or client is None:
             raise RuntimeError("Beads session is not open")
         if capability not in self.context.capabilities:
             raise CapabilityMissing(f"Beads capability missing: {capability}")
-        return self._sdk
+        return client
 
     @staticmethod
     def _unwrap(response: Response[T | Problem]) -> T:
@@ -299,7 +321,7 @@ class BeadsSession:
             raise SessionTimeout(f"Beads read timed out: {capability}") from exc
 
     def _write(self, capability: str, call: object, *args: object, **kwargs: object) -> object:
-        client = self._require(capability)
+        client = self._require(capability, write=True)
         try:
             return self._unwrap(call(*args, client=client, **kwargs))  # type: ignore[operator]
         except (httpx.TimeoutException, httpx.TransportError) as exc:
@@ -470,7 +492,11 @@ class BeadsSession:
         if self._http is not None:
             self._http.close()
             self._http = None
+        if self._http_write is not None:
+            self._http_write.close()
+            self._http_write = None
         self._sdk = None
+        self._sdk_write = None
         if self._process is not None:
             process = self._process
             self._process = None

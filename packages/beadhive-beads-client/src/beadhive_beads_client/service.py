@@ -134,6 +134,8 @@ class ServiceSpec:
     startup_seconds: float = 30.0
     stop_seconds: float = 22.0
     probe_seconds: float = 5.0
+    request_seconds: float = 10.0
+    write_seconds: float = 60.0
 
     def expected(self, capabilities: frozenset[str] | None = None) -> ExpectedContext:
         return ExpectedContext(
@@ -405,10 +407,12 @@ def _slot_lock(paths: ServicePaths, deadline_seconds: float) -> Iterator[None]:
 # ---- verification ----------------------------------------------------------------------------
 
 
-def _loopback_endpoint(record: EndpointRecord, timeout: float) -> RemoteEndpoint:
+def _loopback_endpoint(
+    record: EndpointRecord, timeout: float, write_timeout: float = 60.0
+) -> RemoteEndpoint:
     if record.address != LOOPBACK:
         raise IncompatibleService("endpoint record is not bound to loopback")
-    return RemoteEndpoint(record.url, read_token(Path(record.token_file)), timeout)
+    return RemoteEndpoint(record.url, read_token(Path(record.token_file)), timeout, write_timeout)
 
 
 def probe(
@@ -491,7 +495,7 @@ def resolve(
             state=current.state,
             start_command=spec.start_command,
         )
-    return _loopback_endpoint(current.record, spec.probe_seconds)
+    return _loopback_endpoint(current.record, spec.request_seconds, spec.write_seconds)
 
 
 # ---- ownership -------------------------------------------------------------------------------
