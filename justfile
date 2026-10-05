@@ -227,17 +227,32 @@ architecture-check:
 # Lifecycle gates cannot require the full-gate receipt they are in the process of establishing.
 # This explicit entry point checks the same structural evidence and freshness invariants for
 # check, check-all, and selective CI. architecture-check remains the explicit post-receipt audit.
+# The evidence refresh WRITES the closure evidence the checks below read, so it runs serially and
+# first. Every check after it is read-only and independent, so they run through a bounded pool
+# (scripts/run_checks_concurrently.py: per-check buffered output, non-zero exit if any check fails).
+# The transport-artifact-check and wire-schema-compat recipes are flattened into the pool so the
+# slowest single check, not their serial sum, bounds the wall time; tests/test_native_validation_graph.py
+# keeps both lists in lockstep.
+# run the backend-neutral architecture/contract checks (evidence refresh first, then concurrent)
 architecture-structural-check:
     just validation-evidence-refresh
-    uv run python scripts/check_native_impact_map.py
-    uv run python scripts/check_import_boundaries.py
-    uv run python scripts/check_package_imports.py
-    uv run python scripts/test_closure_certification.py --check-structural
-    uv run python scripts/test_closure_shadow_policy.py --check
-    uv run python scripts/test_closure_promotion_policy.py --check
-    uv run python scripts/test_closure_operational_report.py --check
-    just transport-artifact-check
-    just wire-schema-compat
+    uv run python scripts/run_checks_concurrently.py --jobs 4 \
+        "uv run python scripts/render_transport_composition_evidence.py --check" \
+        "uv run python scripts/check_native_impact_map.py" \
+        "uv run python scripts/check_import_boundaries.py" \
+        "uv run python scripts/check_package_imports.py" \
+        "uv run python scripts/test_closure_certification.py --check-structural" \
+        "uv run python scripts/test_closure_shadow_policy.py --check" \
+        "uv run python scripts/test_closure_promotion_policy.py --check" \
+        "uv run python scripts/test_closure_operational_report.py --check" \
+        "uv run python scripts/render_operation_catalog.py --check" \
+        "uv run python scripts/render_transport_inventory.py --check" \
+        "uv run python -m beadhive.daemon_openapi --check" \
+        "uv run python -m beadhive.gateway_contract --check" \
+        "uv run python scripts/render_telemetry_schema.py --check" \
+        "uv run python scripts/generate_contract_release.py --check" \
+        "uv run python scripts/generate_contract_release_evidence.py --check" \
+        "uv run python scripts/check_wire_schema_compat.py"
 
 # Fast (~20 s) early warning that checked-in generated evidence is current, naming the generator
 # to re-run on drift (bh-2kodj). Not a gate step and owned by no attest key: the authoritative
