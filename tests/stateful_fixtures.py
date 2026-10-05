@@ -243,6 +243,10 @@ def _sandbox_bh_home(tmp_path_factory, monkeypatch):
     # its subprocesses, flipping receiver-mode tests to signed. Tests that exercise the override
     # set it explicitly via monkeypatch after this baseline.
     monkeypatch.delenv("BH_HQ_SQL_LIVENESS", raising=False)
+    # `BH_FRAME_HEARTBEAT=advisory` (transitional, bh-qlgmm) waives heartbeat freshness for every
+    # process that reads it. Same leak path as above: an operator shell exporting it must not flip
+    # heartbeat-required tests. Tests exercising it set it explicitly via monkeypatch afterwards.
+    monkeypatch.delenv("BH_FRAME_HEARTBEAT", raising=False)
     # `bd` loads its own global config from HOME (and XDG_CONFIG_HOME), independently of
     # Beadhive's BH_HOME. Keep a developer's global Beads configuration from changing fixture
     # behavior, particularly embedded-vs-shared-server initialization.
