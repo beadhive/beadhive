@@ -4,7 +4,7 @@
 [Pre-kickoff probe evidence](#pre-kickoff-probe-evidence)). Not an ADR. The spike molecule's
 decision bead produces the ADR.
 **Decision:** [hive-writer-partitioning-adr.md](hive-writer-partitioning-adr.md) (`bh-pr889`)
-records **GO, staged**, pending operator confirmation, with the deviations it lists from this
+records **GO, staged**, accepted by the operator on 2026-10-05, with the deviations it lists from this
 proposal.
 **Seat:** planning, with the operator.
 **Amends (if accepted):** [multi-host-model-adr.md](multi-host-model-adr.md) Amendment 1 §§1–4;

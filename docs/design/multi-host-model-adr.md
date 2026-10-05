@@ -13,7 +13,7 @@ across machines, and records the limitations and upstream dependencies that deci
 > amendment revises Decision 1's rejected-names table and Decision 2's implementation, answers
 > Limitation 4, and refines Limitations 1 and 6. Everything else in this ADR stands as filed.
 >
-> **Proposed Amendment 2 (2026-10-05, pending operator confirmation):**
+> **Amendment 2 (accepted by the operator, 2026-10-05):**
 > [hive-writer-partitioning-adr.md](hive-writer-partitioning-adr.md) moves the fence into each
 > hive's data, renames the HQ lease to placement, makes expiry a failover hint only, and
 > reverses Amendment 1 §4's "writes stop when the cached lease expires". Its
