@@ -679,3 +679,27 @@ def test_unconfigured_precheck_reads_as_empty() -> None:
         selective_validation.precheck_cmd({}, {"work": {"validate": {"precheck": " just pre "}}})
         == "just pre"
     )
+
+
+def test_precheck_and_reordered_keys_all_resolve_from_the_run_cfg(monkeypatch) -> None:
+    """bh-931we x bh-2kodj: the precheck and every cheapest-first key run inside the selective
+    run's cfg scope, so none of their git/ledger reads reloads config; the scope ends with it."""
+    from beadhive import identity
+
+    scoped = []
+    rc = _ordered_run(
+        monkeypatch,
+        lambda cmd: scoped.append((cmd, identity._scoped_config.get() is not None)) or 0,
+        precheck="just generated-evidence-check",
+    )
+
+    assert rc == 0
+    assert scoped[0] == ("just generated-evidence-check", True)
+    assert [cmd for cmd, _ in scoped[1:]] == [
+        "just unit",
+        "just docs",
+        "just integration",
+        "just stateful",
+    ]
+    assert all(in_scope for _, in_scope in scoped)
+    assert identity._scoped_config.get() is None
