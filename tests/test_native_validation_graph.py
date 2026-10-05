@@ -83,8 +83,11 @@ def test_stateful_attestation_waits_for_its_closure_evidence_producer() -> None:
     stateful = _dependencies(justfile, "stateful-native")
 
     # `attest-stateful` is a standalone selective-validation key. Its consumer must establish
-    # current-tree evidence itself instead of relying on the architecture key to finish first.
-    assert "architecture-structural-check" in stateful
+    # current-tree evidence itself instead of relying on the architecture key to finish first,
+    # but only through the minimal evidence producer: re-running the whole structural check
+    # here duplicated the architecture-contracts lane (bh-wtrjy).
+    assert "validation-evidence-refresh" in stateful
+    assert "architecture-structural-check" not in stateful
 
 
 def test_recursive_pants_artifact_is_excluded_only_from_native_profile() -> None:
