@@ -1962,10 +1962,11 @@ def release_upgrade_cmd(
     admitted at a new epoch and principal; fresh signed evidence on the new digest
     is required before it is eligible again, and its hive lease renews unchanged.
     """
-    from .hq_control_plane import SqlControlPlane, control_plane
+    from .hq_control_plane import SqlControlPlane
+    from .hq_operator_settings import select_plane
 
     try:
-        plane = control_plane()
+        plane = select_plane()
         if not isinstance(plane, SqlControlPlane):
             raise ValueError("release-upgrade requires the protected SQL control plane")
         result = plane.release_upgrade(

@@ -2036,7 +2036,55 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
             assert recovered.stdout.strip() == published_digest
             with pytest.raises(ValueError):
                 plane.authority_status()
-            restored = operator_plane.renew(expected=renewed, operator_key=str(key), duration=3600)
+            # bh-qtnn4/bh-qfvxz: the released CLI renews from a BH_HQ_OPERATOR_SETTINGS file even
+            # though this process's host.yaml has no authority_writer, and status still reports
+            # the (now expired) authority at top level.
+            import json as _json
+
+            from typer.testing import CliRunner
+
+            from beadhive import hq_operator_settings
+            from beadhive.cli import app as cli_app
+
+            settings_file = tmp_path / "operator-settings.json"
+            settings_file.write_text(_json.dumps({"hq": {"sql": operator_settings}}))
+            monkeypatch.setenv("BH_HQ_OPERATOR_SETTINGS", str(settings_file))
+            monkeypatch.setattr(
+                hq_operator_settings,
+                "operator_plane",
+                lambda path: SqlControlPlane(
+                    hq_operator_settings.load_settings(path), broker=Broker()
+                ),
+            )
+            runner = CliRunner()
+            expired = runner.invoke(
+                cli_app,
+                ["hq", "authority", "status"],
+            )
+            assert expired.exit_code == 0, expired.output
+            expired_status = _json.loads(expired.stdout)
+            assert expired_status["expires_in_s"] <= 0
+            assert expired_status["authority_ready"] is False
+            assert expired_status["revision"] == renewed
+            assert expired_status["config_bound"] is True
+            assert expired_status["expiring_soon"] is True
+            cli_renewed = runner.invoke(
+                cli_app,
+                [
+                    "hq",
+                    "authority",
+                    "renew",
+                    "--expected-revision",
+                    renewed,
+                    "--operator-key",
+                    str(key),
+                    "--duration",
+                    "3600",
+                    "--confirm",
+                ],
+            )
+            assert cli_renewed.exit_code == 0, cli_renewed.output
+            restored = _json.loads(cli_renewed.stdout)["revision"]
             assert restored != renewed
             restored_head, restored_state, _ref, _policy = operator.load()
             assert restored_head == restored

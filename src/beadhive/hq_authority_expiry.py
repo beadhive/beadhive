@@ -15,6 +15,7 @@ import re
 import sys
 
 WARN_ENV = "BH_HQ_AUTHORITY_WARN_WITHIN"
+MIN_REMAINING_ENV = "BH_HQ_AUTHORITY_MIN_REMAINING"
 DEFAULT_WARN_WITHIN = 24 * 3600.0
 RENEW_DURATION = 24 * 3600
 
@@ -56,12 +57,16 @@ def humanize(seconds: float) -> str:
     return f"expired {text} ago" if seconds < 0 else text
 
 
+def min_remaining(env=None) -> float:
+    """Floor from BH_HQ_AUTHORITY_MIN_REMAINING (default 0: only expiry or unbound fail)."""
+    raw = (os.environ if env is None else env).get(MIN_REMAINING_ENV, "")
+    return parse_duration(raw, name=MIN_REMAINING_ENV) if raw else 0.0
+
+
 def renew_command(revision="<revision>", settings_file=None) -> str:
-    binding = (
-        f" --operator-settings {settings_file}" if settings_file else " --operator-settings <file>"
-    )
+    path = settings_file or "<file>"
     return (
-        f"bh hq authority renew{binding} --expected-revision {revision} "
+        f"BH_HQ_OPERATOR_SETTINGS={path} bh hq authority renew --expected-revision {revision} "
         f"--operator-key <key> --duration {RENEW_DURATION} --confirm"
     )
 

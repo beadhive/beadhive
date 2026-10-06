@@ -1,4 +1,4 @@
-"""Authority expiry visibility and the --operator-settings binding (bh-qfvxz, bh-qtnn4)."""
+"""Authority expiry visibility and the operator-settings binding (bh-qfvxz, bh-qtnn4)."""
 
 from __future__ import annotations
 
@@ -179,32 +179,82 @@ def test_cli_operator_settings_threads_through_status_and_refusal(tmp_path, monk
 
     monkeypatch.setattr(hq_operator_settings, "operator_plane", fake_plane)
     runner = CliRunner()
-    result = runner.invoke(app, ["hq", "authority", "status", "--operator-settings", "s.json"])
+    monkeypatch.setenv("BH_HQ_OPERATOR_SETTINGS", "s.json")
+    monkeypatch.setenv("BH_HQ_AUTHORITY_MIN_REMAINING", "6h")
+    result = runner.invoke(app, ["hq", "authority", "status"])
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout)["expires_in_s"] == 100 and seen
-    bad = runner.invoke(
-        app, ["hq", "authority", "check", "--operator-settings", "s.json", "--min-remaining", "6h"]
-    )
+    bad = runner.invoke(app, ["hq", "authority", "check"])
     assert bad.exit_code == 1
-    refused = runner.invoke(app, ["hq", "authority", "install", "--operator-settings", "s.json"])
+    refused = runner.invoke(app, ["hq", "authority", "install"])
     assert refused.exit_code == 1
 
     monkeypatch.setattr(
         hq_operator_settings, "operator_plane", lambda p: hq_operator_settings.load_settings(p)
     )
     bad_file = _write(tmp_path, {"hq": {"sql": {"authority_writer": BINDING, "runtime": BINDING}}})
-    result = runner.invoke(
-        app, ["hq", "authority", "renew", "--operator-settings", str(bad_file), "--confirm"]
-    )
+    monkeypatch.setenv("BH_HQ_OPERATOR_SETTINGS", str(bad_file))
+    result = runner.invoke(app, ["hq", "authority", "renew", "--confirm"])
     assert result.exit_code == 1
 
 
 def test_release_upgrade_accepts_operator_settings(tmp_path, monkeypatch):
     plane = FakeSql(NOW + 100, runtime=False)
     plane.release_upgrade = lambda *a, **k: {"ok": True}
+    monkeypatch.setenv("BH_HQ_OPERATOR_SETTINGS", "s.json")
     monkeypatch.setattr(hq_operator_settings, "operator_plane", lambda p: plane)
-    result = CliRunner().invoke(
-        app, ["host", "release-upgrade", "plan", "frame-1", "--operator-settings", "s.json"]
-    )
+    result = CliRunner().invoke(app, ["host", "release-upgrade", "plan", "frame-1"])
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout) == {"ok": True}
+
+
+def test_operator_settings_ceiling_key_is_carried_not_rejected(tmp_path):
+    path = _write(
+        tmp_path,
+        {
+            "hq": {
+                "sql": {
+                    "reader": READER,
+                    "authority_writer": BINDING,
+                    "authority_max_duration_s": 7200,
+                }
+            }
+        },
+    )
+    assert hq_operator_settings.operator_plane(path).authority_max_duration_s == 7200
+    bad = _write(
+        tmp_path, {"hq": {"sql": {"authority_writer": BINDING, "authority_max_duration_s": -1}}}
+    )
+    with pytest.raises(ControlPlaneError, match="authority_max_duration_s"):
+        hq_operator_settings.load_settings(bad)
+
+
+def test_renew_resolves_ceiling_from_operator_settings(monkeypatch):
+    seen = {}
+    plane = FakeSql(NOW + 100, runtime=False)
+    plane.authority_max_duration_s = "2h"
+
+    def renew(**kwargs):
+        seen.update(kwargs)
+        return "newhead"
+
+    plane.renew = renew
+    monkeypatch.setenv("BH_HQ_OPERATOR_SETTINGS", "s.json")
+    monkeypatch.setattr(hq_operator_settings, "operator_plane", lambda p: plane)
+    result = CliRunner().invoke(
+        app,
+        [
+            "hq",
+            "authority",
+            "renew",
+            "--expected-revision",
+            "r",
+            "--operator-key",
+            "k",
+            "--duration",
+            "1h",
+            "--confirm",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert seen["ceiling"].seconds == 7200 and "operator settings" in seen["ceiling"].source
