@@ -11,7 +11,7 @@ import hashlib
 import uuid
 from dataclasses import asdict
 
-from . import gitref
+from . import gitref, hq_authority_ceiling
 from . import hq_authority_guard as guard
 from .beadyard_identity import (
     BeadyardIdentityError,
@@ -38,9 +38,9 @@ class FleetConfigError(ValueError):
 class GitFleetConfigRevisionStore:
     """Operator-signed config head plus immutable anti-rollback witnesses."""
 
-    def __init__(self, plane, git, *, operator_key=None, duration=3600):
+    def __init__(self, plane, git, *, operator_key=None, duration=3600, ceiling=None):
         self.plane, self.git = plane, git
-        self.operator_key, self.duration = operator_key, duration
+        self.operator_key, self.duration, self.ceiling = operator_key, duration, ceiling
 
     def _read(self, *, allow_expired=False, allow_legacy_bound=False):
         plane, git = self.plane, self.git
@@ -158,10 +158,14 @@ class GitFleetConfigRevisionStore:
             validate_documents(documents)
         except DocumentValidationError as exc:
             raise FleetConfigError(str(exc)) from None
-        if not self.operator_key or not 1 <= self.duration <= 86400:
+        if not self.operator_key:
             raise FleetConfigError(
                 "configuration publication requires operator key/bounded validity"
             )
+        try:
+            hq_authority_ceiling.check_duration(self.duration, self.ceiling)
+        except ValueError as exc:
+            raise FleetConfigError(str(exc)) from None
         previous_sha, previous, policy = self._read(
             allow_expired=True, allow_legacy_bound=explicit_adoption
         )

@@ -311,3 +311,32 @@ its own hive, and `bh sync` puts the cross-hive view back in the hub where it be
 - [CONFIGURATION — Fleet + host config](CONFIGURATION.md#fleet-host) — how `fleet.yaml` merges
   with a host's own config, the override allowlist, `--scope`, and the flat-config migration.
 - [CONTROL-PLANE](CONTROL-PLANE.md) — `bh hub intake`, the fleet-wide untriaged-intake inbox.
+
+## Authority duration ceiling
+
+`bh hq authority renew --duration <seconds|7d|36h>` signs an authority that stays valid for
+that long. `--duration` defaults to 3600 s (1 h) so every renewal is an explicit lifetime
+choice; renew prints the resulting `expires_at`. Use `--duration 7d` for laptop-off operation.
+
+The signing side refuses a duration above a configurable **ceiling**. The default is 7 days
+(`AUTHORITY_MAX_DURATION_DEFAULT_S` = 604800) and there is **no hard maximum**: the operator
+may set any positive, finite ceiling. The same ceiling applies to the SQL and Git backends and
+to Git fleet-config publication. Resolution order, first match wins:
+
+1. `--max-duration` on `bh hq authority renew` (pending: adding a CLI parameter to the published
+   `hq.authority` operation needs a wire-catalog decision; the resolver already accepts it)
+2. `hq.sql.authority_max_duration_s` in the operator settings file (read only through
+   `--operator-settings`; it is never a frame or fleet key)
+3. env `BH_HQ_AUTHORITY_MAX_DURATION`
+4. the 7 day default
+
+A duration above the ceiling is refused with the ceiling and its source in the message.
+Frame verifiers (`verified_state_at`, `validate_state`) enforce each signed `expires_at` and
+have no maximum, so no frame change is needed; they accept 7 d and 30 d authorities and fence
+after expiry.
+
+Trust delta: revocation latency is unchanged. Cordon, retire and emergency actions are
+operator-signed republications and take effect at once. What grows is the window in which a
+stolen or forgotten authority stays valid with no operator action: up to the configured
+ceiling instead of 24 h, for all executors at once because one authority row covers the fleet.
+The operator owns that choice explicitly.
