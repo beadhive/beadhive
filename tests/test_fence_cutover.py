@@ -107,3 +107,19 @@ def test_status_findings_include_a_short_guard_and_unreadable_parts():
     assert findings[0] == "refs/bh/epoch unreadable"
     assert findings[1].startswith("guard: 1 of 44")
     assert st.as_dict()["trigger_count"] == 1
+
+
+def test_the_verb_is_hidden_from_help_and_validates_its_action():
+    from typer.testing import CliRunner
+
+    from beadhive.cli import app
+
+    runner = CliRunner()
+    env = {"COLUMNS": "200", "BH_SKIP_SETUP_CHECK": "1", "NO_COLOR": "1"}
+    for args in ([], ["hive"]):
+        shown = runner.invoke(app, [*args, "--help"], env=env)
+        assert shown.exit_code == 0 and "fence" not in shown.output.split("Commands")[-1]
+    bogus = runner.invoke(app, ["hive", "fence", "adopt", "bh"], env=env)
+    assert bogus.exit_code == 2 and "unknown action" in bogus.output
+    misplaced = runner.invoke(app, ["hive", "fence", "status", "bh", "--others-published"], env=env)
+    assert misplaced.exit_code == 2 and "cutover only" in misplaced.output

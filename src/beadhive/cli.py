@@ -2870,6 +2870,52 @@ def hive_check_push_fence(
     raise typer.Exit(1)
 
 
+# ---- hive fence: the hidden, temporary per-hive cutover verb (bh-oarxp) -----------------
+# Documented ONLY in docs/design/hive-writer-cutover-runbook.md (ADR hive-writer-partitioning
+# Decision 3); hidden from `bh --help`, `bh hive --help` and the CLI reference, and removed (E1)
+# once every hive is cut over. Operator-invoked on the current holder; nothing auto-cuts-over.
+
+_FENCE_ACTIONS = ("cutover", "status", "rollback")
+
+
+@hive_app.command("fence", hidden=True)
+def hive_fence(
+    action: str = typer.Argument(..., metavar="ACTION", help="cutover | status | rollback"),
+    hive_id: str = typer.Argument(..., metavar="HIVE_ID", help="the hive to act on"),
+    others_published: bool = typer.Option(
+        False,
+        "--others-published",
+        help="cutover only: attest that no OTHER host holds unpublished commits for the hive",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="emit the record / status as JSON"),
+):
+    """TEMPORARY operator verb — see docs/design/hive-writer-cutover-runbook.md.
+
+    cutover: cut HIVE_ID over to the in-data epoch fence on this host, its current holder
+    (C1-C6).
+
+    status: read-only — epoch, cutover commit, refs/bh/epoch, fence_audit, trigger count.
+
+    rollback: roll HIVE_ID back to the legacy fence (R1-R5); on a replica of a rolled-back
+    hive, drop its identity (R5)."""
+    from . import hive_fence_cli
+
+    if action not in _FENCE_ACTIONS:
+        typer.echo(
+            f"✗ unknown action {action!r} (expected one of {', '.join(_FENCE_ACTIONS)})", err=True
+        )
+        raise typer.Exit(2)
+    if others_published and action != "cutover":
+        typer.echo("✗ --others-published applies to cutover only", err=True)
+        raise typer.Exit(2)
+    if action == "cutover":
+        hive_fence_cli.impl_cutover(hive_id, others_published=others_published, as_json=as_json)
+    elif action == "status":
+        hive_fence_cli.impl_status(hive_id, as_json=as_json)
+    else:
+        hive_fence_cli.impl_rollback(hive_id, as_json=as_json)
+
+
 # ---- hive hook: git-hook entrypoints for an external dispatcher (bh-smcj) -----
 
 hive_hook_app = typer.Typer(

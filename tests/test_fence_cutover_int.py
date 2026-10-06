@@ -110,7 +110,7 @@ def _cutover(cluster: Cluster, frame: Frame, **kw) -> fc.CutoverOutcome:
         _ref_port(frame),
         prefix=cluster.prefix,
         host_id=frame.name,
-        no_unpublished_elsewhere=kw.pop("attest", True),
+        others_published=kw.pop("attest", True),
         **kw,
     )
 
@@ -150,7 +150,7 @@ def test_c1_refusals_leave_the_hive_untouched(tmp_path):
         a.push().check()
         head = cluster.remote.head()
 
-        with pytest.raises(fc.CutoverRefused, match="--no-unpublished-elsewhere"):
+        with pytest.raises(fc.CutoverRefused, match="--others-published"):
             _cutover(cluster, a, attest=False)
         with pytest.raises(fc.CutoverRefused, match="never been adopted.*bh host lease adopt"):
             _cutover(cluster, a)

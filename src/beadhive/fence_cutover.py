@@ -509,7 +509,7 @@ def cutover(
     *,
     prefix: str,
     host_id: str,
-    no_unpublished_elsewhere: bool,
+    others_published: bool,
     attempts: int = DEFAULT_ATTEMPTS,
     before_push: Callable[[], None] | None = None,
 ) -> CutoverOutcome:
@@ -517,11 +517,11 @@ def cutover(
     (one-shot, between the reservation and the push)."""
     if attempts < 1:
         raise ValueError(f"attempts must be >= 1 (got {attempts})")
-    if not no_unpublished_elsewhere:
+    if not others_published:
         raise CutoverRefused(
             f"{prefix}: C1 refused — confirm that no OTHER host holds unpublished commits for "
             "this hive (commits made before the cutover carry no marks, so the in-data fence "
-            "cannot see them). Check every replica, then pass --no-unpublished-elsewhere."
+            "cannot see them). Check every replica, then pass --others-published."
         )
     try:
         remote = node.remote_writer()
