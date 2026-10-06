@@ -109,28 +109,6 @@ class HqControlPlane(Protocol):
     def read_eligibility(self, manifest, *, now=None): ...
     def read_hive_lease(self, prefix, *, holder_identity=None): ...
     def read_hive_lease_record(self, prefix, *, holder_identity=None): ...
-    def _recognised_signed_proposal(self, prefix, lease, request_id):
-        """Read a just-committed signed proposal back as the resolved lease, or refuse.
-
-        A physical read: acceptance is "this proposal is the lease at the current fence".
-        Holder qualification (fresh heartbeat, admission) stays with every write gate, which
-        reads with ``holder_identity`` exactly as before.
-        """
-        revision, current = self.read_hive_lease_record(prefix)
-        if (
-            current is None
-            or current.epoch != lease.epoch
-            or current.host_id != lease.host_id
-            or current.adopted_at != lease.adopted_at
-        ):
-            raise ControlPlaneError(
-                f"signed hive lease proposal {request_id} for {prefix} is committed but is not "
-                f"the lease at the current epoch fence (resolved: "
-                f"{current.describe() if current is not None else 'no holder'}); nothing may "
-                "write this hive until an unforced adopt completes"
-            )
-        return revision
-
     def publish_hive_lease(self, prefix, lease, *, expected, operation, force=False): ...
     def config_store(self, *, operator_key=None, duration=3600, ceiling=None): ...
     def load_config_authority_snapshot(
@@ -2664,6 +2642,28 @@ class SqlControlPlane:
             if isinstance(exc, ControlPlaneError):
                 raise
             raise ControlPlaneError(str(exc)) from None
+
+    def _recognised_signed_proposal(self, prefix, lease, request_id):
+        """Read a just-committed signed proposal back as the resolved lease, or refuse.
+
+        A physical read: acceptance is "this proposal is the lease at the current fence".
+        Holder qualification (fresh heartbeat, admission) stays with every write gate, which
+        reads with ``holder_identity`` exactly as before.
+        """
+        revision, current = self.read_hive_lease_record(prefix)
+        if (
+            current is None
+            or current.epoch != lease.epoch
+            or current.host_id != lease.host_id
+            or current.adopted_at != lease.adopted_at
+        ):
+            raise ControlPlaneError(
+                f"signed hive lease proposal {request_id} for {prefix} is committed but is not "
+                f"the lease at the current epoch fence (resolved: "
+                f"{current.describe() if current is not None else 'no holder'}); nothing may "
+                "write this hive until an unforced adopt completes"
+            )
+        return revision
 
     def publish_hive_lease(self, prefix, lease, *, expected, operation, force=False):
         from . import host
