@@ -451,12 +451,13 @@ class BdEngine:
         # module at the operation boundary (the architecture checker permits this for legacy
         # modules and still verifies non-legacy dynamic imports).
         host_fence = importlib.import_module("beadhive.host_fence")
+        gitref = importlib.import_module("beadhive.gitref")
         fence_remote = remote or "origin"
         try:
             reservation = host_fence.reserve_managed_push(fence_remote, cwd=cwd, cfg=config.load())
         except (
             host_fence.FenceError,
-            host_fence.RemoteUnreachable,
+            gitref.RemoteUnreachable,
             RuntimeError,
             ValueError,
         ) as exc:
@@ -496,7 +497,7 @@ class BdEngine:
             host_fence.verify_managed_push(fence_remote, cwd=cwd, reservation=reservation)
         except (
             host_fence.FenceError,
-            host_fence.RemoteUnreachable,
+            gitref.RemoteUnreachable,
             RuntimeError,
             ValueError,
         ) as exc:

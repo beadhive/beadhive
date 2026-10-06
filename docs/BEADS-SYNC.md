@@ -164,12 +164,12 @@ here because both are easy to get wrong from the outside:
   `<hive>/.beads/embeddeddolt/<db>/.dolt/git-remote-cache/<hash>/repo.git`, which carries its
   own `origin`. The local source is a short-lived
   `refs/dolt/blobstore/origin/dolt/data/<uuid>`, not a stable ref bh can name before or after
-  the call. `host_fence.transport_lookup()` discovers the repo for diagnostics and mechanism
+  the call. `transport_locator.transport_lookup()` discovers the repo for diagnostics and mechanism
   verification. Shipped bd passes `core.hooksPath=/dev/null` to that real Git push, so hooks
   there are explicitly legacy tooling and do not enforce.
 - **Why receive-pack atomicity does not repair the managed path.** Supported forges may advertise
-  `--atomic`, and the retained `host_fence.fenced_push()` primitive probes that capability for a
-  caller that genuinely owns stable local refs. Production bd does not expose its transient data
+  `--atomic`, but bh no longer carries a primitive that uses it (the legacy `fenced_push` family
+  was deleted in `bh-vwbxy`). Production bd does not expose its transient data
   ref or accept bh's fence ref in the same transaction. Therefore managed publication does not
   claim atomicity on any forge: it reserves by remote CAS immediately before bd and verifies the
   exact reservation afterward. A lost preflight means no data was attempted; a postflight loss
