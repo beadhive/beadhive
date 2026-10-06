@@ -434,6 +434,53 @@ new executor frames). This switch does not itself gate on O8.
   with a host's own config, the override allowlist, `--scope`, and the flat-config migration.
 - [CONTROL-PLANE](CONTROL-PLANE.md) — `bh hub intake`, the fleet-wide untriaged-intake inbox.
 
+## Signed-mode inbox retention
+
+With `hq.sql.liveness: signed` every heartbeat adds one row to the frame's own inbox table
+(`hq_live_inbox_<principal>_<epoch>`). Since bh-ce886 the operator bounds that table:
+
+```sh
+bh hq authority prune-inbox --frame <frame-id>            # dry run: counts only
+bh hq authority prune-inbox --frame <frame-id> --confirm  # delete
+```
+
+It runs with the `authority_writer` credential (directly or through
+`BH_HQ_OPERATOR_SETTINGS`), never on a frame. Grant that account `SELECT, DELETE` on each
+inbox table it should prune. Frames keep `SELECT, INSERT, UPDATE` and gain no DELETE.
+
+**The bound.** A row is deleted only when all of these hold:
+
+1. it is a `heartbeat` row (`registration` and `hive_lease` rows are never touched, because
+   the receiver re-verifies them as prior incumbent evidence);
+2. its claimed signed `renewTime` + `leaseDurationSeconds` + 30 s skew + the retention margin
+   is at or before the operator's clock;
+3. it is not the newest canonical heartbeat that verifies against the incarnation's granted
+   key and binds to that incarnation.
+
+Rule 2 is why the prune never removes a beat anyone still needs. A 0.22.x signed reader
+counts a beat only while its age on the reader's clock is under the lease, with at most 30 s
+of skew, and the receiver refuses a first observation at or past the lease. A row past rule
+2 cannot make the frame eligible for either reader, whether or not its signature verifies.
+Rule 3 keeps the last beat however old, because the heartbeat sender derives its next `seq`
+from it in signed mode. Rows that do not parse are left and counted, so sender misbehaviour
+stays visible.
+
+With an honest sender the table therefore holds at most one row per heartbeat interval
+inside lease + skew + margin, plus the newest verified beat. A frame can still INSERT junk
+into its own inbox; the bound covers honest growth, which was the unbounded part.
+
+**The margin.** Default 1 hour. Resolution order, first match wins:
+
+1. `hq.sql.inbox_retention_s` in the operator settings file;
+2. env `BH_HQ_INBOX_RETENTION`;
+3. the 1 hour default.
+
+There is no `--retention` flag yet: a new parameter on the published `hq.authority`
+operation needs a wire-catalog decision. Deletes commit in batches of 500, so a large first
+backlog that outruns the `authority_writer` `operation_timeout` drains over reruns. The
+result reports `"complete": false` until it has. Nothing prunes on its own; schedule the
+verb if you want it periodic.
+
 ## Authority duration ceiling
 
 `bh hq authority renew --duration <seconds|7d|36h>` signs an authority that stays valid for

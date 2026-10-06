@@ -1281,3 +1281,66 @@ def test_signed_liveness_needs_no_receiver_for_eligibility_or_holder_writes(tmp_
             connection.close()
         # The epoch-1 row's reader (receiver acceptance) never sees epoch 2.
         assert a["plane"].read_hive_lease_record("bh")[1].epoch == 1
+
+        # ---- bh-ce886: operator-side bounded inbox retention --------------------------
+        # Frames still hold no DELETE on their own inbox; only the operator gets one.
+        frame_connection = pymysql.connect(
+            host="127.0.0.1",
+            port=port,
+            user=a["principal"],
+            password="fixture-secret",
+            database="beadhive_hq_runtime",
+            autocommit=True,
+        )
+        try:
+            with frame_connection.cursor() as cursor, pytest.raises(pymysql.MySQLError):
+                cursor.execute(f"DELETE FROM {a['inbox']} WHERE kind='heartbeat'")
+        finally:
+            frame_connection.close()
+        _cli(
+            sql_dir,
+            port,
+            f"GRANT SELECT,DELETE ON beadhive_hq_runtime.{a['inbox']} "
+            "TO 'authority_writer'@'localhost'",
+        )
+
+        def inbox_kinds():
+            connection = _root(port, "beadhive_hq_runtime")
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute(f"SELECT kind,COUNT(*) FROM {a['inbox']} GROUP BY kind")
+                    return dict(cursor.fetchall())
+            finally:
+                connection.close()
+
+        before = inbox_kinds()
+        fresh = signed["plane"].read_eligibility(signed["manifest"])[2]
+        dry = operator.prune_inbox("frame-a", retention_s=60, dry_run=True)
+        assert dry["inboxes"][0]["would_delete"] == 3 and inbox_kinds() == before
+        pruned = operator.prune_inbox("frame-a", retention_s=60)
+        # Beats 1-3 are past lease + skew + retention; everything a reader can count stays.
+        assert pruned["complete"] and pruned["inboxes"][0]["deleted"] == 3
+        after = inbox_kinds()
+        assert after["heartbeat"] == before["heartbeat"] - 3
+        assert after["registration"] == before["registration"]
+        again = signed["plane"].read_eligibility(signed["manifest"])[2]
+        assert (again.lease.seq, again.fresh) == (fresh.lease.seq, fresh.fresh) == (7, True)
+
+        # Hours later the table holds only the newest verified beat and the unparseable row.
+        clock.advance(3 * 3600)
+        pruned = operator.prune_inbox("frame-a", retention_s=60)
+        assert pruned["inboxes"][0]["retained"] == 1
+        assert pruned["inboxes"][0]["unparseable"] == 1
+        assert inbox_kinds()["heartbeat"] == 2
+        # (The fixture authority has itself expired by now, so check the kept row directly.)
+        connection = _root(port, "beadhive_hq_runtime")
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT payload FROM {a['inbox']} WHERE request_id=%s",
+                    (pruned["inboxes"][0]["newest_verified"],),
+                )
+                assert b'"seq":7' in bytes(cursor.fetchone()[0])
+        finally:
+            connection.close()
+        assert _public_observations(port) == frozen

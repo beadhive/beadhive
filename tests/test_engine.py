@@ -598,7 +598,7 @@ def _sync_result(**overrides):
         "Conflicts": None,
         "ConflictsResolved": False,
         "Fetched": True,
-        "Merged": False,
+        "Merged": True,
         "Peer": "hub",
         "PulledCommits": 0,
         "PushError": None,
@@ -667,6 +667,41 @@ def test_sync_state_conflicts_with_strategy_do_not_pause(monkeypatch):
     got = engine.BdEngine().sync_state("/hive", strategy="ours")
 
     assert got == engine.SyncOutcome(ok=True, conflicts=("issues",))
+
+
+def _rc0(monkeypatch, result, stderr=""):
+    payload = json.dumps({"peers": ["hub"], "results": [result], "schema_version": 1})
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: Completed(0, payload, stderr))
+
+
+def test_sync_state_merged_false_is_failure_naming_marker(monkeypatch):
+    _rc0(monkeypatch, _sync_result(Merged=False))
+    got = engine.BdEngine().sync_state("/hive")
+    assert not got.ok and "Merged: false" in got.error
+
+
+def test_sync_state_non_null_error_is_failure_even_when_empty_object(monkeypatch):
+    # Real bd serialises a Go error value as `{}` (bh-vje85 E9).
+    _rc0(monkeypatch, _sync_result(Merged=True, Error={}))
+    got = engine.BdEngine().sync_state("/hive")
+    assert not got.ok and "Error" in got.error
+
+
+def test_sync_state_null_error_stays_ok(monkeypatch):
+    _rc0(monkeypatch, _sync_result(Error=None))
+    assert engine.BdEngine().sync_state("/hive").ok
+
+
+def test_sync_state_cross_line_is_failure(monkeypatch):
+    _rc0(monkeypatch, _sync_result(), stderr="note\n✗ merge refused\n")
+    got = engine.BdEngine().sync_state("/hive")
+    assert not got.ok and "✗" in got.error
+
+
+def test_sync_state_conflict_strategy_with_merged_false_is_failure(monkeypatch):
+    _rc0(monkeypatch, _sync_result(Conflicts=["issues"], Error={}, Merged=False))
+    got = engine.BdEngine().sync_state("/hive", strategy="ours")
+    assert not got.ok
 
 
 def test_sync_state_timeout_is_not_ok(monkeypatch):
