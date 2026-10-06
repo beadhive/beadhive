@@ -36,6 +36,7 @@ from beadhive import hq_authority_guard as authority_guard
 from beadhive.beadyard_identity import parse_document
 from beadhive.beadyard_identity_file import create_identity
 from beadhive.frame_eligibility import EligibilityFacts, eligible
+from beadhive.host_fence import EpochFence
 from beadhive.host_heartbeat_core import HeartbeatLease, ObservationAuthority
 from beadhive.host_lease_contracts import HostLease, now_stamp
 from beadhive.hosts import HostManifest
@@ -1159,10 +1160,16 @@ def test_signed_liveness_needs_no_receiver_for_eligibility_or_holder_writes(tmp_
         frozen = _public_observations(port)
         assert [row[:2] for row in frozen] == [("frame-a", 3)]
 
+        # Signed hive-lease mode resolves the holder at the hive's refs/bh/epoch (bh-qv8ig);
+        # A's receiver-accepted adopt was fenced at epoch 1.
+        fence = [EpochFence(epoch=1, host_id="host-a")]
         signed = {
             **a,
             "plane": SqlControlPlane(
-                {**a["plane"].settings, "liveness": "signed"}, broker=_Broker(), clock=clock
+                {**a["plane"].settings, "liveness": "signed"},
+                broker=_Broker(),
+                clock=clock,
+                fence_reader=lambda _prefix: fence[0],
             ),
         }
         policy = project_hive_policies(snapshot, valid_until=clock() + 3600, now=clock())["bh"]
@@ -1242,3 +1249,35 @@ def test_signed_liveness_needs_no_receiver_for_eligibility_or_holder_writes(tmp_
         assert held.advisory_expiry and held.held_by("host-a", clock()) and held.epoch == 1
         assert a["plane"].read_hive_lease_record("bh", holder_identity="host-a")[1] is None
         assert _public_observations(port) == frozen
+
+        # bh-qv8ig: a NEW tenure with no receiver at all. Once the fence moves to epoch 2 the
+        # receiver's epoch-1 row is superseded (fail closed: the designed adopt half-state)...
+        fence[0] = EpochFence(epoch=2, host_id="host-a")
+        assert signed["plane"].read_hive_lease_record("bh", holder_identity="host-a")[1] is None
+        # ...and the frame's own committed signed adopt, verified at read time against the
+        # real inbox, signed authority history and accepted registration, IS the lease.
+        tenure = HostLease(
+            host_id="host-a",
+            label="host-a",
+            epoch=2,
+            adopted_at=now_stamp(clock()),
+            expires_at=now_stamp(clock() + 1200),
+        )
+        proposal, *_ = signed["plane"].propose_hive_lease(
+            "bh", tenure, expected="", operation="adopt", signing_key=str(a["key"])
+        )
+        revision, held = signed["plane"].read_hive_lease_record("bh", holder_identity="host-a")
+        assert (held.host_id, held.epoch, held.adopted_at) == ("host-a", 2, tenure.adopted_at)
+        assert held.held_by("host-a", clock()) and revision
+        # No acknowledgment was written by anyone: nothing processed the proposal.
+        connection = _root(port, "beadhive_hq_runtime")
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT COUNT(*) FROM hq_live_results WHERE request_id=%s", (proposal,)
+                )
+                assert cursor.fetchone()[0] == 0
+        finally:
+            connection.close()
+        # The epoch-1 row's reader (receiver acceptance) never sees epoch 2.
+        assert a["plane"].read_hive_lease_record("bh")[1].epoch == 1

@@ -1433,14 +1433,19 @@ class SqlControlPlane:
     def verified_manifest_absence(error: BaseException) -> bool:
         return isinstance(error, CommittedManifestAbsent)
 
-    def __init__(self, settings, *, broker=None, clock=time.time):
-        from .hq_sql_runtime import liveness_mode
+    def __init__(self, settings, *, broker=None, clock=time.time, fence_reader=None):
+        from .hq_sql_runtime import hive_lease_mode, liveness_mode
 
         self.settings = _validated_sql_binding(settings).model_dump()
         self.broker, self.clock = broker, clock
+        #: ``prefix -> EpochFence | None``: the hive's current remote ``refs/bh/epoch``.
+        #: Signed hive-lease mode resolves the holder against it (bh-qv8ig).
+        self.fence_reader = fence_reader or _registry_fence_reader
         try:
-            # Fail at selection, not mid-read, on a malformed BH_HQ_SQL_LIVENESS.
+            # Fail at selection, not mid-read, on a malformed BH_HQ_SQL_LIVENESS or
+            # BH_HQ_SQL_HIVE_LEASE.
             liveness_mode(self.settings)
+            hive_lease_mode(self.settings)
         except ValueError as exc:
             raise ControlPlaneError(str(exc)) from None
 
@@ -2166,6 +2171,58 @@ class SqlControlPlane:
 
         return signed_liveness(self.settings)
 
+    @property
+    def signed_hive_lease(self) -> bool:
+        """Signed liveness with proposal-accepted hive leases (no receiver acknowledgment)."""
+        from .hq_sql_runtime import signed_hive_lease
+
+        return signed_hive_lease(self.settings)
+
+    def _hive_fence(self, prefix):
+        """The hive's current remote epoch fence; any failure to read it fails closed."""
+        try:
+            return self.fence_reader(prefix)
+        except ControlPlaneError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - git/registry failures all fail closed
+            raise ControlPlaneError(
+                f"signed hive lease for {prefix} needs its refs/bh/epoch fence, which could not "
+                f"be read ({type(exc).__name__})"
+            ) from None
+
+    def require_hive_policy(self, prefix):
+        """Refuse BEFORE any fence moves when the signed authority confers no hive policy.
+
+        Every hive-lease acceptance path (the receiver, and signed proposals) rejects a prefix
+        outside the operator-signed hive policy. Checking it first keeps adopt from advancing
+        ``refs/bh/epoch`` toward a lease that can never be accepted (bh-qv8ig: agent-hitch
+        burned epochs 18-21 this way). Read-only.
+        """
+        enforce = authority_enforced()
+        try:
+            _head, _state, _route, slot, record, _snapshot, policies, *_ = (
+                self._runtime_authority().read_frame_composite(enforce=enforce)
+            )
+        except ValueError as exc:
+            if isinstance(exc, ControlPlaneError):
+                raise
+            raise ControlPlaneError("qualified SQL hive policy unavailable") from None
+        policy = policies.get(prefix)
+        if policy is None:
+            raise ControlPlaneError(
+                f"PLACEMENT: hive {prefix} has no operator-signed frame policy in the HQ "
+                f"authority, so no hive lease for it can be accepted. Give its fleet.yaml "
+                f"managed_repos entry a frame_policy (config_revision "
+                f"{record['authority']['config_revision']}), publish the config, renew the HQ "
+                f"authority, then adopt again. Nothing was changed."
+            )
+        if slot != "active" or policy["config_revision"] != record["authority"]["config_revision"]:
+            raise ControlPlaneError(
+                f"PLACEMENT: hive {prefix}'s signed frame policy is not bound to this frame's "
+                "active grant (config revision or admission slot differs). Nothing was changed."
+            )
+        return policy
+
     @staticmethod
     def _public_observation(row, route, slot, *, granted_public_key, now, signed=False):
         """Verify one observation row; ``signed`` rows come from the frame's own inbox.
@@ -2290,6 +2347,11 @@ class SqlControlPlane:
         if holder_identity is not None and incumbent_identity is not None:
             raise ControlPlaneError("hive lease identity qualifier ambiguous")
         signed = self.signed_liveness
+        # Signed hive-lease mode (bh-qv8ig): the holder is resolved from the frame's own
+        # signed proposals bound to the hive's current remote epoch fence, read FIRST so the
+        # SQL operation budget is not spent on git.
+        proposals = self.signed_hive_lease
+        fence = self._hive_fence(prefix) if proposals else None
         # BH_HQ_AUTHORITY_ENFORCE=false (UNSUPPORTED, dev-only): skip authority expiry, config
         # binding, cordon/admission state and emergency review; lease ownership still holds.
         enforce = authority_enforced()
@@ -2305,44 +2367,80 @@ class SqlControlPlane:
                 policies,
                 observation_row,
                 lease_row,
-            ) = self._runtime_authority().read_frame_composite(prefix=prefix, enforce=enforce)
-            if lease_row is None:
+                *extra,
+            ) = self._runtime_authority().read_frame_composite(
+                prefix=prefix,
+                enforce=enforce,
+                **({"hive_lease_epoch": fence.epoch} if fence is not None else {}),
+            )
+            receiver = None
+            if lease_row is not None:
+                revision, body, _request_id, _request_sha = lease_row
+                if isinstance(body, memoryview):
+                    body = body.tobytes()
+                if isinstance(body, str):
+                    body = body.encode()
+                envelope = json.loads(body)
+                if body != canonical(envelope) or set(envelope) != {"authority", "lease"}:
+                    raise ControlPlaneError("protected hive lease carrier invalid")
+                raw = envelope["lease"]
+                if (
+                    not isinstance(raw, dict)
+                    or set(raw) != {"host_id", "label", "epoch", "adopted_at", "expires_at"}
+                    or any(
+                        type(raw[key]) is not str
+                        for key in ("host_id", "label", "adopted_at", "expires_at")
+                    )
+                    or type(raw["epoch"]) is not int
+                    or raw["epoch"] < 1
+                    or _parse_stamp(raw["adopted_at"]) <= 0
+                    or _parse_stamp(raw["expires_at"]) <= 0
+                ):
+                    raise ControlPlaneError("protected hive lease record invalid")
+                # Signed liveness: expiry is an advisory failover hint (not part of the
+                # record); tombstones and foreign holders are still refused below and by
+                # every caller.
+                receiver = (revision, HostLease(**raw, advisory_expiry=signed))
+            if proposals:
+                from .hq_signed_hive_lease import SignedHiveLeaseConflict, resolve
+
+                try:
+                    resolved = resolve(
+                        prefix=prefix,
+                        route=route,
+                        slot=slot,
+                        record=record,
+                        fence=fence,
+                        evidence=extra[0] if extra else None,
+                        receiver=receiver,
+                    )
+                except SignedHiveLeaseConflict as exc:
+                    raise ControlPlaneError(f"signed hive lease fails closed: {exc}") from None
+                if resolved.lease is None:
+                    return resolved.revision, None
+                revision, lease = resolved.revision, resolved.lease
+            elif receiver is None:
                 return "", None
-            revision, body, _request_id, _request_sha = lease_row
-            if isinstance(body, memoryview):
-                body = body.tobytes()
-            if isinstance(body, str):
-                body = body.encode()
-            envelope = json.loads(body)
-            if body != canonical(envelope) or set(envelope) != {"authority", "lease"}:
-                raise ControlPlaneError("protected hive lease carrier invalid")
-            raw = envelope["lease"]
-            if (
-                not isinstance(raw, dict)
-                or set(raw) != {"host_id", "label", "epoch", "adopted_at", "expires_at"}
-                or any(
-                    type(raw[key]) is not str
-                    for key in ("host_id", "label", "adopted_at", "expires_at")
-                )
-                or type(raw["epoch"]) is not int
-                or raw["epoch"] < 1
-                or _parse_stamp(raw["adopted_at"]) <= 0
-                or _parse_stamp(raw["expires_at"]) <= 0
-            ):
-                raise ControlPlaneError("protected hive lease record invalid")
-            # Signed liveness: expiry is an advisory failover hint (not part of the record);
-            # tombstones and foreign holders are still refused below and by every caller.
-            lease = HostLease(**raw, advisory_expiry=signed)
+            else:
+                revision, lease = receiver
             from .frame_emergency import locally_active
             from .hq_authority_guard import emergency_review_required
 
             emergency = locally_active(record, prefix, self.clock())
-            # The lease names this exact grant, or an archived active predecessor
-            # from a reviewed release rotation of the same identity lineage.
-            same_incarnation = envelope["authority"] == {
-                "frame_id": route.frame_id,
-                **record["authority"],
-            } or guard.same_incumbent_after_rotation(envelope["authority"], route.frame_id, record)
+            if proposals and resolved.source == "proposal":
+                # Verified against this exact active grant by the resolver.
+                same_incarnation = True
+            elif proposals and resolved.source == "fence":
+                same_incarnation = False  # another host's tenure; never this frame's
+            else:
+                # The lease names this exact grant, or an archived active predecessor
+                # from a reviewed release rotation of the same identity lineage.
+                same_incarnation = envelope["authority"] == {
+                    "frame_id": route.frame_id,
+                    **record["authority"],
+                } or guard.same_incumbent_after_rotation(
+                    envelope["authority"], route.frame_id, record
+                )
             if (
                 enforce
                 and (holder_identity is not None or incumbent_identity is not None)
@@ -2545,6 +2643,28 @@ class SqlControlPlane:
                 raise
             raise ControlPlaneError(str(exc)) from None
 
+    def _recognised_signed_proposal(self, prefix, lease, request_id):
+        """Read a just-committed signed proposal back as the resolved lease, or refuse.
+
+        A physical read: acceptance is "this proposal is the lease at the current fence".
+        Holder qualification (fresh heartbeat, admission) stays with every write gate, which
+        reads with ``holder_identity`` exactly as before.
+        """
+        revision, current = self.read_hive_lease_record(prefix)
+        if (
+            current is None
+            or current.epoch != lease.epoch
+            or current.host_id != lease.host_id
+            or current.adopted_at != lease.adopted_at
+        ):
+            raise ControlPlaneError(
+                f"signed hive lease proposal {request_id} for {prefix} is committed but is not "
+                f"the lease at the current epoch fence (resolved: "
+                f"{current.describe() if current is not None else 'no holder'}); nothing may "
+                "write this hive until an unforced adopt completes"
+            )
+        return revision
+
     def publish_hive_lease(self, prefix, lease, *, expected, operation, force=False):
         from . import host
         from .hq_sql_runtime import InboxUnknown
@@ -2567,6 +2687,11 @@ class SqlControlPlane:
             )
         except InboxUnknown as exc:
             raise HqLeaseUnknown(exc.request_id, exc.payload_sha256, expected) from None
+        if self.signed_hive_lease:
+            # bh-qv8ig: no receiver acknowledgment to await. The committed signed proposal IS
+            # the lease once it verifies at the current fence epoch; prove that by reading it
+            # back through the same resolver every write gate uses.
+            return self._recognised_signed_proposal(prefix, lease, request_id)
         if time.monotonic() >= deadline:
             raise HqLeaseUnknown(request_id, digest, expected)
         runtime = self._runtime_authority()
@@ -2614,6 +2739,30 @@ class SqlControlPlane:
 
             return unavailable
         raise AttributeError(name)
+
+
+def _registry_fence_reader(prefix):
+    """Read `prefix`'s ``refs/bh/epoch`` from its local clone's ``origin`` — the same remote
+    and checkout the two-phase adopt CASes (:func:`beadhive.host_cli` adopt path).
+
+    A hive this host does not carry cannot be resolved here and fails closed.
+    """
+    from . import host_fence, registry
+
+    entries = [
+        entry
+        for entry in config.load().get("managed_repos", []) or []
+        if str(entry.get("prefix") or "") == prefix
+    ]
+    if len(entries) != 1:
+        raise ControlPlaneError(f"hive {prefix} is not exactly one managed hive on this host")
+    hive_dir = registry.hive_dir(entries[0])
+    if not (Path(hive_dir) / ".git").exists():
+        raise ControlPlaneError(
+            f"hive {prefix} is not cloned on this host; its epoch fence cannot be read"
+        )
+    _sha, fence = host_fence.read_fence("origin", cwd=Path(hive_dir))
+    return fence
 
 
 def control_plane(hq_dir=None):
