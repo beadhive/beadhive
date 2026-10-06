@@ -2041,6 +2041,10 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
         for v in config.literal_violations(cfg)
     ]
     warns += _disabled_attest_key_warnings(cfg, hives)
+    # BH_HQ_AUTHORITY_ENFORCE=false: UNSUPPORTED dev-only per-host switch (bh-6pqul).
+    from . import hq_authority_enforce
+
+    warns += hq_authority_enforce.doctor_warnings()
     layout = _data_layout(cfg)
     warns += [
         f"unrecognized ~/.beadhive entry not in the layout contract "

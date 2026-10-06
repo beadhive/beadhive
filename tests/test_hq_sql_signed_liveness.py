@@ -451,7 +451,7 @@ def _lease_plane(frame, settings, lease):
     )
     plane = SqlControlPlane(settings, clock=lambda: NOW)
     plane._runtime_authority = lambda: SimpleNamespace(
-        read_frame_composite=lambda prefix=None: composite
+        read_frame_composite=lambda prefix=None, **_: composite
     )
     return plane
 
@@ -556,3 +556,105 @@ def test_work_loop_keeper_holds_a_lapsed_signed_lease_without_renewing(tmp_path,
     status = keeper.renew(active=True)
     assert status.held and not status.renewed
     assert lease.epoch == 7
+
+
+# ---- BH_HQ_AUTHORITY_ENFORCE=false at the SQL read boundary (UNSUPPORTED, bh-6pqul) ----------
+
+ENFORCE_ENV = "BH_HQ_AUTHORITY_ENFORCE"
+
+
+def _recording_composite(frame, monkeypatch):
+    frozen = _pick(frame, frame.beat(1, NOW - 4000))
+    authority, world = _composite_world(frame, monkeypatch, liveness=None, public=frozen)
+    original = authority.verified_state_at
+    seen = SimpleNamespace(allow_expired=[], config_heads=[])
+
+    def verified(*a, **k):
+        seen.allow_expired.append(k.get("allow_expired", False))
+        return original(*a, **k)
+
+    monkeypatch.setattr(authority, "verified_state_at", verified)
+    monkeypatch.setattr(
+        authority, "fresh_config_head_fence", lambda head, **k: seen.config_heads.append(head)
+    )
+    return authority, seen
+
+
+def test_enforced_composite_is_unchanged(frame, monkeypatch):
+    authority, seen = _recording_composite(frame, monkeypatch)
+    assert authority.read_frame_composite()[5] == "snapshot"
+    assert seen.allow_expired == [False] and seen.config_heads == ["c"]
+
+
+def test_unenforced_composite_tolerates_expiry_and_unbound_config_head(frame, monkeypatch):
+    authority, seen = _recording_composite(frame, monkeypatch)
+    latest = SimpleNamespace(commit_revision="latest-head", beadyard_id=None)
+    monkeypatch.setattr(
+        authority, "load_config_at", lambda *a, **k: pytest.fail("bound config required")
+    )
+    monkeypatch.setattr(authority, "load_latest_config_at", lambda *a, **k: latest)
+    monkeypatch.setattr(
+        runtime, "project_hive_policies", lambda *a, **k: pytest.fail("projection compared")
+    )
+    assert authority.read_frame_composite(enforce=False)[5] is latest
+    # Expiry is accepted; the config fence pins the head actually read, not the cross-reference.
+    assert seen.allow_expired == [True] and seen.config_heads == ["latest-head"]
+
+
+def _eligibility_plane(frame, record, policies):
+    observation = _pick(frame, frame.beat(4, NOW - 5))
+    calls = []
+
+    def composite(**kwargs):
+        calls.append(kwargs)
+        return (
+            "head",
+            {},
+            frame.route,
+            "active",
+            record,
+            SimpleNamespace(beadyard_id=None),
+            policies,
+            observation,
+            None,
+        )
+
+    plane = SqlControlPlane({}, clock=lambda: NOW)
+    plane._runtime_authority = lambda: SimpleNamespace(read_frame_composite=composite)
+    manifest = SimpleNamespace(
+        frame_id="frame-1", host_id="host-1", instance_ref="vm-1", beadyard_id=None
+    )
+    return plane, manifest, calls
+
+
+def test_config_unbound_eligibility_read_fails_closed_unless_disabled(frame, monkeypatch):
+    unbound = {"bh": {"config_revision": "other-revision", "valid_until": NOW + 3600}}
+    plane, manifest, calls = _eligibility_plane(frame, frame.record, unbound)
+    with pytest.raises(ControlPlaneError, match="differs from current grant"):
+        plane.read_eligibility(manifest)
+    monkeypatch.setenv(ENFORCE_ENV, "true")
+    with pytest.raises(ControlPlaneError, match="differs from current grant"):
+        plane.read_eligibility(manifest)
+    monkeypatch.setenv(ENFORCE_ENV, "false")
+    head, desired, observation = plane.read_eligibility(manifest)
+    assert head == "head" and desired["state"] == "active" and observation.verified
+    assert [call["enforce"] for call in calls] == [True, True, False]
+
+
+def test_identity_mismatch_still_fails_closed_when_disabled(frame, monkeypatch):
+    monkeypatch.setenv(ENFORCE_ENV, "false")
+    plane, manifest, _calls = _eligibility_plane(frame, frame.record, {})
+    with pytest.raises(ControlPlaneError, match="differs from current grant"):
+        plane.read_eligibility(SimpleNamespace(**{**vars(manifest), "instance_ref": "vm-2"}))
+
+
+def test_cordoned_holder_lease_waived_only_when_disabled(frame, monkeypatch):
+    cordoned = SimpleNamespace(**{**vars(frame), "record": {**frame.record, "cordoned": True}})
+    lease = _hive_lease(expires=NOW + 3600)
+    plane = _lease_plane(cordoned, {}, lease)
+    assert plane.read_hive_lease_record("bh", holder_identity="host-1") == ("revision-1", None)
+    monkeypatch.setenv(ENFORCE_ENV, "false")
+    assert plane.read_hive_lease_record("bh", holder_identity="host-1") == ("revision-1", lease)
+    # Lease ownership is not authority: a foreign holder is still refused.
+    foreign = _lease_plane(cordoned, {}, _hive_lease("host-2", expires=NOW + 3600))
+    assert foreign.read_hive_lease_record("bh", holder_identity="host-1")[1] is None

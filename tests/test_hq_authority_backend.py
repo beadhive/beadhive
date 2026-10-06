@@ -2327,6 +2327,28 @@ def test_eligibility_bracket_after_new_beat_and_admission(backend):
     assert observation.verified and observation.fresh and observation.lease.seq == 4
 
 
+def test_expired_authority_eligibility_read_only_waived_when_enforcement_disabled(
+    backend, monkeypatch
+):
+    """BH_HQ_AUTHORITY_ENFORCE=false (UNSUPPORTED, bh-6pqul) reads expired Git authority."""
+    b = backend
+    for seq in (1, 2, 3):
+        b["accept"](seq)
+    apply(b, "admit")
+    publish(b, b["lease"](4, state_seen="active"))
+    before, state, _ = b["plane"]._read()
+    expired = b["plane"]._write(state, before, str(b["operator"]), duration=1)
+    time.sleep(1.1)
+    with pytest.raises(ControlPlaneError, match="expired"):
+        b["plane"].read_eligibility(b["manifest"])
+    monkeypatch.setenv("BH_HQ_AUTHORITY_ENFORCE", "false")
+    revision, desired, _observation = b["plane"].read_eligibility(b["manifest"])
+    assert revision == expired and desired["state"] == "active"
+    monkeypatch.setenv("BH_HQ_AUTHORITY_ENFORCE", "true")
+    with pytest.raises(ControlPlaneError, match="expired"):
+        b["plane"].read_eligibility(b["manifest"])
+
+
 def test_hive_ownership_rejects_unrelated_origin(backend):
     b = backend
     assert b["plane"].read_hive_lease("bh") is None

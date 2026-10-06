@@ -366,6 +366,67 @@ BH_HQ_OPERATOR_SETTINGS=settings.json bh hq authority renew \
   --expected-revision <revision> --operator-key <key> --duration 86400 --confirm
 ```
 
+## UNSUPPORTED: disabling HQ authority enforcement {#unsupported-disabling-hq-authority-enforcement}
+
+> **UNSUPPORTED — dev/prototype instances only.** Do not set this on a production executor.
+
+`BH_HQ_AUTHORITY_ENFORCE=false` turns off HQ runtime-authority enforcement for every `bh`
+process that has it in its environment. Unset, empty, or `true` keeps today's fail-closed
+behavior. Any other value is an error, never a fallback: `bh` exits with status 2.
+
+**What stops being enforced on that host:**
+
+- authority expiry, both the signed runtime authority and the candidate grant;
+- the config binding, so a config head that the authority does not cross-reference is
+  tolerated;
+- the authority-derived eligibility predicates, which become satisfied-with-warning:
+  `authority_available`, `admitted_active`, `not_cordoned`,
+  `reviewed_admission_or_emergency`, and the desired-state halves of
+  `current_frame_incarnation`, `beadyard_binding`, `release_matches`, `conformance_pass`
+  and `capabilities_match_admission`;
+- in hive-lease ownership reads: admission state, cordon, and per-hive policy validity.
+
+**What is unchanged:**
+
+- signatures, the replay floor, and the principal-to-incarnation route;
+- the frame-manifest-to-own-lease identity checks;
+- the heartbeat, which follows `BH_FRAME_HEARTBEAT`;
+- hive-lease holder and lease expiry, renewal through the receiver, and validation.
+
+**Trust delta.** With enforcement off, the frame accepts work with no valid operator
+authority. Cordon, release pins, caps and expiry are not enforced there, so the frame is
+**self-asserted**. The scope is one host and one process environment, never the fleet. The
+operator key still never touches the frame.
+
+**How to set it.** It is an environment variable, like `BH_FRAME_HEARTBEAT` and
+`BH_HQ_SQL_LIVENESS`. It needs no fleet-config publish and no `host.yaml` change:
+
+- The host schema rejects unknown keys, and pre-0.22.x readers (the 0.21.3 heartbeat sender)
+  share the HOST file, so a `host.yaml` key would break them.
+- A fleet key would itself need an authority-bound publish.
+
+Set it in the systemd unit environment of **every** `bh` process on that host: the host
+daemon, the frame bridge, and the heartbeat. A `host.yaml` key (`hq.authority.enforce`) may
+replace the variable once no pre-0.22.x reader shares a HOST file. That is a follow-up, not
+part of this switch.
+
+**How it shows up.** While it is disabled:
+
+- every `bh` command, the host daemon and the frame bridge print one stderr banner: "HQ
+  authority enforcement DISABLED on this host — unsupported, dev/prototype only";
+- `bh doctor` lists a WARN;
+- `bh hq authority status` includes `"enforcement": "disabled"` (otherwise `"enabled"`);
+- `bh host eligible` marks each waived predicate `waived`, and its `--json` output carries
+  `"enforcement": "disabled"` and a `"waived"` list.
+
+**Re-enable before admitting new executors.** The operator owns turning enforcement back on
+(unset the variable on every executor) **before the three new executor frames join**. On a
+four-executor fleet, enforcement must be on everywhere before admission. This is the same
+gate as [hive-writer partitioning ADR](design/hive-writer-partitioning-adr.md#binding-conditions)
+binding conditions 13 (no single-executor escape survives admission of another executor) and
+18 (state and work travel together). It precedes outline task O8 (enroll and admit the three
+new executor frames). This switch does not itself gate on O8.
+
 ## See also
 
 - [HUB](HUB.md) — the derived per-host cross-hive aggregate, and its contract.
