@@ -520,8 +520,8 @@ class SqlPlacementDirector:
 
     def survey(self, observe=None) -> Survey:
         """Every placement row plus the operator-signed state, in ONE verified read-only
-        transaction. `observe(cursor, head)` runs inside the same transaction (the failover
-        loop reads session staleness there); its result is :attr:`Survey.observed`."""
+        transaction. `observe(cursor, head, state)` runs inside the same transaction (the
+        failover loop reads session staleness there); its result is :attr:`Survey.observed`."""
         connection = self._open()
         try:
             with connection.cursor() as cursor:
@@ -531,7 +531,7 @@ class SqlPlacementDirector:
                 observed = None
                 if observe is not None:
                     cursor.execute("SELECT DOLT_HASHOF('HEAD')")
-                    observed = observe(cursor, cursor.fetchone()[0])
+                    observed = observe(cursor, cursor.fetchone()[0], state)
             return Survey(state, policies, placements, invalid, observed)
         except PlacementError:
             raise
