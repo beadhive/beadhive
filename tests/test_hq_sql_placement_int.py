@@ -18,6 +18,7 @@ import pytest
 
 from beadhive.host_lease_contracts import HostLease, now_stamp
 from beadhive.hq_sql_placement import (
+    CAUSE_FAILOVER,
     PlacementLost,
     conformance,
     fresh_revision,
@@ -91,7 +92,7 @@ def server(tmp_path):
         server.stop()
 
 
-def _place(server, host, epoch, expected):
+def _place(server, host, epoch, expected, cause=None):
     conn = server.connect(DIRECTOR, autocommit=False)
     try:
         return place_cas(
@@ -100,6 +101,7 @@ def _place(server, host, epoch, expected):
             lease=_held(host, epoch),
             authority={**AUTHORITY, "holder_identity": host},
             expected_revision=expected,
+            cause=cause,
         )
     finally:
         conn.close()
@@ -170,8 +172,13 @@ def test_racing_directors_exactly_one_wins_and_every_loser_is_lost(server):
 
 def test_receiver_cas_round_trips_with_director_rows(server):
     """Φ3 rollback: the receiver's own UPDATE presents a director revision and wins; the
-    director then takes the receiver-written row over by its revision."""
-    director_rev = _place(server, "host-a", 22, server.revision()).revision
+    director then takes the receiver-written row over by its revision. The director's placement
+    cause (bh-16347.6) rides in ``request_id``: the receiver's CAS is indifferent to it and its
+    own row carries none."""
+    director_rev = _place(server, "host-a", 22, server.revision(), CAUSE_FAILOVER).revision
+    conn = server.connect(FRAME, autocommit=False)
+    assert read_row(conn, "ah").cause == CAUSE_FAILOVER  # what the adopting frame reads
+    conn.close()
     lease = _held("host-a", 22, "a")
     body = lease_body(AUTHORITY, lease)
     receiver_rev = fresh_revision({"receiver": True})
@@ -197,7 +204,8 @@ def test_receiver_cas_round_trips_with_director_rows(server):
     conn = server.connect(DIRECTOR, autocommit=False)
     row = read_row(conn, "ah")
     conn.close()
-    assert not row.director and parse_row("ah", (row.revision, body, "x", "e" * 64)).lease == lease
+    assert not row.director and row.cause is None
+    assert parse_row("ah", (row.revision, body, "x", "e" * 64)).lease == lease
     taken = _place(server, "host-b", 23, receiver_rev)
     assert taken.director and taken.lease.epoch == 23
 

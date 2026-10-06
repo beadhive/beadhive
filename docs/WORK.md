@@ -1178,6 +1178,17 @@ adopt reclaims nothing twice: once the bump has landed, the re-run stops at its 
 The hook needs the hive's in-data fence adapter (M1); until a hive's data is cut over it is
 dormant.
 
+Which adopts count as a failover: on a `git`-HQ hive, an adopt that displaces another frame's
+lease is a failover and one that follows a release is a planned handoff. On a director-placed
+hive (`dolt-server` HQ) the frame resumes at the placed epoch, so the displaced placement no
+longer says why. The director writes the reason with the placement instead (`bh-16347.6`):
+`failover` when its failover loop placed because the observer declared the frame dead, and
+`planned` for an operator `bh hq placement place`. The adopting frame reclaims only for
+`failover`. A placement without a reason (written before 0.23.0) and a frame that does not read
+it (0.22.x, or an earlier 0.23 build) both treat the kind as unknown. Unknown reclaims nothing:
+the D5b sweep or the manual runbook (D10) handles those claims, and nothing is ever rewound on
+a guess.
+
 ## The role-binary contract
 
 Every runtime tier (`claude` today; `local`/`temporal` per

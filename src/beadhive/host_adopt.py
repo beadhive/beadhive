@@ -229,7 +229,10 @@ def adopt(
     also reads claims and policy (:class:`beadhive.failover_reclaim.ReclaimData`), a FAILOVER
     adopt reclaims the dead frame's claims in the bump commit per the hive's
     ``bh.reclaim.failover.mode`` (M3, M14 D5a); ``failover`` overrides the kind read from the
-    displaced placement (a released one is a planned handoff). Everything below describes
+    displaced placement (a released one is a planned handoff). On a director-placed hive the
+    kind is the cause the director wrote in the placement CAS (bh-16347.6:
+    :attr:`beadhive.hq_sql_placement.PlacementRecord.failover`), unknown — so no reclaim —
+    for a row that carries none. Everything below describes
     the legacy path, which every other hive keeps unchanged.
 
     ORDERING IS LOAD-BEARING — DO NOT "SIMPLIFY" IT TO LEASE-FIRST.
@@ -437,13 +440,23 @@ class _DirectorPlacement:
     """SQL director placement as the coexistence adopt's :class:`PlacementAuthority`.
 
     Reads the live row through the frame's SELECT grant. The frame cannot CAS it: a ``cas``
-    means the adopt could not resume at the placed epoch, which is the director's call."""
+    means the adopt could not resume at the placed epoch, which is the director's call.
 
-    def __init__(self, plane, prefix: str):
-        self._plane, self._prefix = plane, prefix
+    ``pinned`` is the revision the adopt took its kind (the placement cause) from: the adopt's
+    first read must still be that row, so the kind always belongs to the placement it resumes
+    (bh-16347.6). A moved row refuses before anything is written; re-run the adopt."""
+
+    def __init__(self, plane, prefix: str, *, pinned: str | None = None):
+        self._plane, self._prefix, self._pinned = plane, prefix, pinned
 
     def read(self) -> writer_adopt.PlacementView | None:
         placed = self._plane.read_placement(self._prefix)
+        pinned, self._pinned = self._pinned, None
+        if pinned is not None and (placed is None or placed.revision != pinned):
+            raise PlacementLost(
+                f"PLACEMENT: hive {self._prefix}'s placement moved while the adopt was reading "
+                "it; nothing was changed — re-run the adopt"
+            )
         if placed is None:
             return None
         lease = placed.lease
@@ -477,7 +490,11 @@ def _adopt_director_placed(
     Legacy hive: install ``refs/bh/epoch`` at exactly the placed epoch, so the row's epoch
     equals the fence (the 0.22.8 reader binds the row to it). Cut-over hive: the coexistence
     adopt resumes at the placed epoch (ref in lockstep, then step 2). Idempotent; never
-    publishes a frame proposal and never moves placement."""
+    publishes a frame proposal and never moves placement.
+
+    The adopt kind is ``failover`` when given, else the cause the director wrote with this
+    placement (bh-16347.6): a failover placement runs M3's reclaim in the bump, a planned one
+    applies nothing, a row without a cause (older director) is unknown and writes nothing."""
     lease = placed.lease
     if lease.is_tombstone or lease.host_id != host_id:
         raise HostLeaseRejected(
@@ -489,15 +506,16 @@ def _adopt_director_placed(
     if data is not None:
         plane = host_lease._frame_plane(hq_cwd)
         try:
+            kind = failover if failover is not None else placed.failover
             result = writer_adopt.coexistence_adopt(
                 data,
-                _DirectorPlacement(plane, prefix),
+                _DirectorPlacement(plane, prefix, pinned=placed.revision),
                 _GitEpochRef(remote=hive_remote, cwd=hive_cwd),
                 prefix=prefix,
                 frame=host_id,
                 attempts=attempts,
                 reclaim=failover_reclaim.for_fence_data(data, cwd=Path(hive_cwd)),
-                failover=failover,
+                failover=kind,
             )
         except writer_adopt.NotCutOver:
             pass  # legacy hive (Φ1): carry the placed epoch into refs/bh/epoch below

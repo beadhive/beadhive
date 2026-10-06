@@ -63,6 +63,7 @@ def record_view(record: PlacementRecord | None) -> dict:
         "expires_at": lease.expires_at,
         "released": lease.is_tombstone,
         "source": "director" if record.director else "receiver",
+        "cause": record.cause,
     }
 
 

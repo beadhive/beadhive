@@ -45,7 +45,7 @@ from .failover_observer import (
     session_table,
     sql_session_staleness,
 )
-from .hq_sql_placement import PlacementError, SqlPlacementDirector, Survey
+from .hq_sql_placement import CAUSE_FAILOVER, PlacementError, SqlPlacementDirector, Survey
 
 __all__ = [
     "DEFAULT_ROLE",
@@ -162,7 +162,10 @@ class SqlFailoverPorts:
         return min(candidates)[1] if candidates else None
 
     def place(self, prefix: str, frame: str, expected: str) -> object:
-        return self.director.place(prefix, frame_id=frame, expected_revision=expected)
+        # The cause rides in the same CAS: the adopting frame runs M3's reclaim (bh-16347.6).
+        return self.director.place(
+            prefix, frame_id=frame, expected_revision=expected, cause=CAUSE_FAILOVER
+        )
 
 
 @dataclass

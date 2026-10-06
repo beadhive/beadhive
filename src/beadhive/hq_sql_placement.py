@@ -29,6 +29,18 @@ Rules this module enforces:
   which no receiver-accepted request digest can equal. That is the data switch that retires the
   0.22.8 proposal resolver for the hive (``hq_control_plane``): only the director and the
   receiver can write the row, so the witness is as trustworthy as the grants.
+* **A director row carries its cause** (bh-16347.6) — ``failover`` when the director's
+  :class:`~beadhive.failover_observer.FailoverDirector` placed because the observer declared the
+  placed frame dead, ``planned`` for an operator placement — in the ``request_id`` column of the
+  same CAS, never in ``lease_json``: the carrier and the five-field lease stay exactly the
+  receiver's, which the receiver, 0.22.x readers and the 0.22.8 bridge parse strictly. The
+  column is ``CHAR(36)``; the director already filled it with a random UUID nobody reads (the
+  receiver only looks a director row's ``request_id`` up in its inbox, where it is absent
+  either way). :func:`cause_token` is a UUID-shaped digest bound to the row's prefix and fresh
+  revision, so it cannot be copied from an earlier row; :func:`placement_cause` reads it back
+  and anything else — a pre-0.23.0 director row's random UUID, a receiver row — is
+  ``None`` (unknown). A frame that does not read the cause (any 0.22.x, or an older 0.23
+  build) adopts with the kind unknown, which writes no reclaim: fail safe, never a rewind.
 * **No trigger may sit on a frame-writable HQ table** (condition 6, ``bh-cvk70`` E7d) and frames
   never hold a write right on placement: :func:`check_triggers` and :func:`check_grants` are the
   conformance checks (:func:`conformance` runs them against a server).
@@ -58,6 +70,10 @@ __all__ = [
     "PLACEMENT_TABLE",
     "PROTECTED_TABLES",
     "SERIALIZATION_FAILURE",
+    "CAUSE_DOMAIN",
+    "CAUSE_FAILOVER",
+    "CAUSE_PLANNED",
+    "PLACEMENT_CAUSES",
     "Grant",
     "PlacementError",
     "PlacementLost",
@@ -67,6 +83,7 @@ __all__ = [
     "SqlPlacementDirector",
     "Survey",
     "check_grants",
+    "cause_token",
     "check_triggers",
     "conformance",
     "fresh_revision",
@@ -75,6 +92,7 @@ __all__ = [
     "parse_grant",
     "parse_row",
     "place_cas",
+    "placement_cause",
     "placement_witness",
     "read_row",
     "read_rows",
@@ -86,6 +104,15 @@ __all__ = [
 PLACEMENT_TABLE = "hq_live_hive_leases"
 #: Domain of :func:`placement_witness` — the marker of a director-written row.
 PLACEMENT_DOMAIN = "beadhive/sql-placement/v1"
+#: Domain of :func:`cause_token` — the placement cause carried in a director row's
+#: ``request_id`` (bh-16347.6).
+CAUSE_DOMAIN = "beadhive/sql-placement-cause/v1"
+#: The director's failover loop placed because the observer declared the placed frame dead:
+#: the adopting frame runs M3's failover reclaim (D5a).
+CAUSE_FAILOVER = "failover"
+#: An operator (or any non-failover) placement: a planned handoff, reclaim applies nothing (D5c).
+CAUSE_PLANNED = "planned"
+PLACEMENT_CAUSES = (CAUSE_FAILOVER, CAUSE_PLANNED)
 #: MySQL/Dolt ``ER_LOCK_DEADLOCK``: Dolt's serialization failure at commit. A lost CAS.
 SERIALIZATION_FAILURE = 1213
 #: Default tenure stamped into a director-written lease: the receiver's own 24 h bound. Expiry
@@ -177,6 +204,19 @@ class PlacementRecord:
     request_id: str
     request_sha256: str
     director: bool
+    #: ``failover`` / ``planned`` on a director row that carries its cause; ``None`` when
+    #: unknown (a receiver row, or a director row written before the cause existed).
+    cause: str | None = None
+
+    @property
+    def failover(self) -> bool | None:
+        """The adopt kind this placement implies: ``True`` for a failover placement, ``False``
+        for a planned one, ``None`` when the cause is unknown (no reclaim, fail safe)."""
+        if self.cause == CAUSE_FAILOVER:
+            return True
+        if self.cause == CAUSE_PLANNED:
+            return False
+        return None
 
     @property
     def frame_id(self) -> str:
@@ -223,6 +263,36 @@ def placement_witness(prefix: str, revision: str, body: bytes) -> str:
             }
         )
     ).hexdigest()
+
+
+def cause_token(prefix: str, revision: str, cause: str) -> str:
+    """The ``request_id`` of a director row placed for `cause`: a UUID-shaped (36-char, fits the
+    receiver's ``CHAR(36)`` column) digest under :data:`CAUSE_DOMAIN` over the row's prefix, its
+    fresh revision and the cause. Bound to the revision, so it never survives into another row."""
+    from .hq_sql_signatures import canonical
+
+    if cause not in PLACEMENT_CAUSES:
+        raise PlacementError(f"placement cause must be one of {', '.join(PLACEMENT_CAUSES)}")
+    digest = hashlib.sha256(
+        canonical({"domain": CAUSE_DOMAIN, "prefix": prefix, "revision": revision, "cause": cause})
+    ).hexdigest()[:32]
+    # RFC 9562 version 8 (custom) with the RFC variant, spelled by hand: Python 3.11's
+    # ``uuid.UUID(version=...)`` accepts only 1-5.
+    h = digest[:12] + "8" + digest[13:16] + "89ab"[int(digest[16], 16) & 3] + digest[17:]
+    return f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}"
+
+
+def placement_cause(prefix: str, revision: str, request_id) -> str | None:
+    """The cause a director row's ``request_id`` carries, or ``None`` (unknown). Never raises."""
+    if not isinstance(request_id, str) or not isinstance(revision, str):
+        return None
+    for cause in PLACEMENT_CAUSES:
+        try:
+            if request_id == cause_token(prefix, revision, cause):
+                return cause
+        except Exception:  # noqa: BLE001 - an unhashable row is simply "unknown"
+            return None
+    return None
 
 
 def _bytes(value) -> bytes | None:
@@ -282,6 +352,7 @@ def parse_row(prefix: str, row: Sequence) -> PlacementRecord:
         raise PlacementError("placement row carrier invalid") from None
     if not isinstance(envelope["authority"], dict):
         raise PlacementError("placement row authority invalid")
+    director = is_director_row(prefix, (revision, body, request_id, request_sha))
     return PlacementRecord(
         prefix=prefix,
         revision=revision,
@@ -289,7 +360,8 @@ def parse_row(prefix: str, row: Sequence) -> PlacementRecord:
         lease=_lease(envelope["lease"]),
         request_id=str(request_id),
         request_sha256=str(request_sha),
-        director=is_director_row(prefix, (revision, body, request_id, request_sha)),
+        director=director,
+        cause=placement_cause(prefix, revision, request_id) if director else None,
     )
 
 
@@ -379,8 +451,12 @@ def place_cas(
     lease: HostLease,
     authority: Mapping,
     expected_revision: str,
+    cause: str | None = None,
 ) -> PlacementRecord:
     """Move `prefix`'s placement row to `lease` iff it is still at `expected_revision`.
+
+    `cause` (``failover`` / ``planned``) rides in the same UPDATE as the row's ``request_id``
+    (:func:`cause_token`); ``None`` (a release) writes a random one, which reads as unknown.
 
     One transaction: read the row, check it is the expected one and that the epoch rule holds
     (a placement raises the epoch; a release keeps it as a tombstone), then the single guarded
@@ -390,9 +466,14 @@ def place_cas(
     _check_prefix(prefix)
     if not isinstance(expected_revision, str) or not _HEX64.fullmatch(expected_revision):
         raise PlacementError("expected placement revision must be the row's 64-hex revision")
+    if cause is not None and cause not in PLACEMENT_CAUSES:
+        raise PlacementError(f"placement cause must be one of {', '.join(PLACEMENT_CAUSES)}")
+    if cause is not None and lease.is_tombstone:
+        raise PlacementError("a release carries no placement cause")
     revision = fresh_revision({"prefix": prefix, "lease": lease.to_record()})
     body = lease_body(authority, lease)
     witness = placement_witness(prefix, revision, body)
+    request_id = str(uuid.uuid4()) if cause is None else cause_token(prefix, revision, cause)
     committing = False
     try:
         with connection.cursor() as cursor:
@@ -421,7 +502,7 @@ def place_cas(
             matched = cursor.execute(
                 f"UPDATE {PLACEMENT_TABLE} SET revision=%s,lease_json=%s,request_id=%s,"
                 "request_sha256=%s WHERE prefix=%s AND revision=%s",
-                (revision, body, str(uuid.uuid4()), witness, prefix, expected_revision),
+                (revision, body, request_id, witness, prefix, expected_revision),
             )
             if matched != 1:
                 _rollback(connection)
@@ -442,9 +523,10 @@ def place_cas(
         revision=revision,
         authority=dict(authority),
         lease=lease,
-        request_id="",
+        request_id=request_id,
         request_sha256=witness,
         director=True,
+        cause=cause,
     )
 
 
@@ -575,14 +657,21 @@ class SqlPlacementDirector:
         label: str | None = None,
         tenure_s: float = DEFAULT_TENURE_S,
         at: float | None = None,
+        cause: str = CAUSE_PLANNED,
     ) -> PlacementRecord:
         """Place `frame_id` on `prefix` at `epoch` (default: the row's epoch + 1).
+
+        `cause` defaults to ``planned`` (an operator handoff: the adopting frame reclaims
+        nothing). Only the director's failover loop passes ``failover``
+        (:class:`beadhive.director_failover.SqlFailoverPorts`); it is not an operator flag.
 
         Pass the epoch the adopt will carry when ``refs/bh/epoch`` is ahead of the row
         (``max(refs/bh/epoch, placement, ...) + 1``), so the row's epoch equals the fence the
         frame then installs (0.22.8 bridge invariant)."""
         if not 0 < tenure_s <= DEFAULT_TENURE_S:
             raise PlacementError("placement tenure must be within (0, 86400] seconds")
+        if cause not in PLACEMENT_CAUSES:
+            raise PlacementError(f"placement cause must be one of {', '.join(PLACEMENT_CAUSES)}")
         connection = self._open()
         try:
             with connection.cursor() as cursor:
@@ -611,6 +700,7 @@ class SqlPlacementDirector:
                 lease=lease,
                 authority=identity,
                 expected_revision=expected_revision,
+                cause=cause,
             )
         except PlacementError:
             raise
