@@ -113,6 +113,13 @@ def test_shipped_watched_globals_json_matches_defaults():
     assert W.resolve_watched(config=shipped) == W.DEFAULT_WATCHED
 
 
+def test_product_watched_list_matches_the_watchdog_default():
+    # bh-g7dlo: bh doctor on a forwarding primary reads the same list the operator watchdog does.
+    from beadhive import hive_forward
+
+    assert hive_forward.WATCHED_GLOBALS == W.DEFAULT_WATCHED
+
+
 def test_hive_template_max_connections_matches_the_watched_default():
     text = (ROOT / "deploy" / "dolt" / "hive-server.yaml.example").read_text()
     assert f"max_connections: {W.DEFAULT_WATCHED['max_connections']}" in text
