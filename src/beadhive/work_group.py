@@ -330,12 +330,19 @@ def claim_group(cfg, hive, group_arg, as_):
         )
         raise typer.Exit(1)
     work_logic._stamp(cfg, entry, target, actor)
+    from . import work_backup, work_pairing_policy
+
+    pairing = work_pairing_policy.read(main)
     for m in members:
         from . import frame_eligibility
 
         frame_eligibility.require_intake(hive, cfg=cfg, hive_dir=main)
         if bd_cli.routes(main).issue_claim(m, actor=actor).returncode != 0:
             raise typer.Exit(1)
+        try:  # M14 D4: the claiming frame, best-effort (an unattributed claim is never rewound)
+            work_backup.record_claim_frame(main, m, actor, policy=pairing)
+        except Exception as exc:
+            typer.echo(f"⚠ could not record the claiming frame for {m}: {exc}", err=True)
         otel.count_bead_transition("claimed", {"bh.bead": m, "bh.batch": group})
     typer.echo(
         f"✓ claimed batch {group} ({len(members)} beads: {', '.join(members)}) as {actor}; "
@@ -504,6 +511,24 @@ def submit_group(cfg, hive, group_arg, as_):
         typer.echo(f"✗ clean-checkout validation failed (exit {rc}) — nothing submitted", err=True)
         raise typer.Exit(rc)
     _guard_group_refs(main, branch, head_sha, base, base_sha, boundary="open review")
+    # Condition 18 / M14 rule P: every member's backup lands at the shared tip BEFORE the one
+    # review gate and any member's review=pending is written. A refused push writes nothing.
+    from . import work_backup
+
+    try:
+        work_backup.pair(
+            cfg=cfg,
+            entry=entry,
+            main=main,
+            beads=members,
+            sha=head_sha,
+            verb="submitted",
+            cwd=target,
+            echo=typer.echo,
+        )
+    except work_backup.PairingRefused as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(1) from None
 
     sha = head_sha
     _record_group_commits(members, main, worktree.commit_shas(entry, head_sha, base_sha))
@@ -536,7 +561,9 @@ def submit_group(cfg, hive, group_arg, as_):
     )
 
 
-def _reconcile_landed_group(main, group, branch, base, members, hive, rm=False):
+def _reconcile_landed_group(
+    main, group, branch, base, members, hive, rm=False, cfg=None, entry=None
+):
     """Finish the bookkeeping half of a batch merge whose CODE already landed (bh-lvqs).
 
     The group-shaped twin of `work._reconcile_landed_bead`, and the payoff is larger here: a batch
@@ -549,6 +576,16 @@ def _reconcile_landed_group(main, group, branch, base, members, hive, rm=False):
     datas = {m: bd.show(m, main) for m in members}
     reason = f"merged in batch {group}"
     with merge_slot(main, {"bh.merge.kind": "batch", "bh.batch": group}):
+        if cfg is not None:
+            from . import work_backup
+
+            try:
+                work_backup.pair_container_merge(
+                    cfg=cfg, entry=entry, main=main, base=base, verb="closed", echo=typer.echo
+                )
+            except work_backup.PairingRefused as exc:
+                typer.echo(f"✗ batch {group}: {exc}; no member was closed", err=True)
+                raise typer.Exit(1) from None
         failed = [
             m for m in members if not work_logic.close_merged(m, main, reason, data=datas.get(m))
         ]
@@ -631,7 +668,7 @@ def merge_group(cfg, group_arg, hive, rm):
         # Reconcile every member and exit 0 instead of routing the operator to the
         # cherry-pick-it-back advice below, which would be actively wrong here: the commits are
         # not on some other branch, they are on `base`.
-        _reconcile_landed_group(main, group, branch, base, members, hive, rm)
+        _reconcile_landed_group(main, group, branch, base, members, hive, rm, cfg, entry)
         return
     if count == 0:
         # Distinguish 'work landed on the wrong branch' from a genuinely empty group so the
@@ -754,6 +791,21 @@ def merge_group(cfg, group_arg, hive, rm):
         # `work._merge_bead`'s matching fix. `failed_close` drives the final message + exit
         # code below (bh-3nuo): never claim a member closed without checking.
         reason = f"merged in batch {group}"
+        # Condition 18 / M14 rule P: a batch landing in a container pushes the container's
+        # backup before any member is closed (a land onto the integration branch needs no push).
+        from . import work_backup
+
+        try:
+            work_backup.pair_container_merge(
+                cfg=cfg, entry=entry, main=main, base=base, verb="closed", echo=typer.echo
+            )
+        except work_backup.PairingRefused as exc:
+            typer.echo(
+                f"✗ batch {group} is merged into {base} but {exc}; no member was closed — "
+                "re-run the group merge once the backup remote is reachable",
+                err=True,
+            )
+            raise typer.Exit(1) from None
         failed_close = [
             m for m in members if not work_logic.close_merged(m, main, reason, data=datas.get(m))
         ]
@@ -765,6 +817,16 @@ def merge_group(cfg, group_arg, hive, rm):
         otel.count_bead_transition("merged", {"bh.bead": m, "bh.batch": group})
     if rm:
         worktree.remove(hive, branch, force=True)
+    if base == config.integration_branch(cfg, entry):
+        from . import work_backup
+
+        work_backup.reap_after_land(
+            cfg=cfg,
+            entry=entry,
+            main=main,
+            beads=members,
+            echo=lambda line: typer.echo(line, err=line.startswith("⚠")),
+        )
     if failed_close:
         typer.echo(
             f"✗ merged batch {group} ({len(members)} beads: {', '.join(members)}) "

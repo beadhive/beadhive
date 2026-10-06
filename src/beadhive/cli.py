@@ -3130,6 +3130,73 @@ def hive_disable(
     typer.echo(f"✓ {prefix}: {feature}.enabled = false")
 
 
+# ---- hive policy: per-hive switches held in the hive's own Dolt data (M14 D8/D11) ------------
+
+
+def _policy_value_text(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return '""' if value == "" else str(value)
+
+
+@hive_app.command(
+    "policy",
+    help="per-hive policy held in the hive's own data (bd config rows `bh.*`): state/work "
+    "pairing and reclaim switches, all opt-in and off by default. ACTION: list | get KEY | "
+    "set KEY VALUE | unset KEY (set/unset are writer-only).",
+)
+def hive_policy(
+    action: str = typer.Argument("list", help="list | get | set | unset"),
+    key: str = typer.Argument("", help="policy key, e.g. pairing.enabled"),
+    value: str = typer.Argument("", help="new value for set (validated; never clamped)"),
+    hive_id: str = typer.Option("", "--hive", help="hive id (default: cwd's hive)"),
+    as_json: bool = typer.Option(False, "--json", help="machine-readable list rows"),
+):
+    from . import guard, identity
+    from . import work_pairing_policy as policy_mod
+    from . import worktree as wt_mod
+
+    if action not in ("list", "get", "set", "unset"):
+        typer.echo(f"✗ unknown action {action!r} (list | get | set | unset)", err=True)
+        raise typer.Exit(1)
+    if action != "list" and key not in policy_mod.KEYS:
+        typer.echo(
+            f"✗ unknown or missing policy key {key!r} (known: {', '.join(policy_mod.KEYS)})",
+            err=True,
+        )
+        raise typer.Exit(1)
+    cfg = config.load()
+    main = registry.hive_dir(wt_mod._resolve_entry(cfg, hive_id))
+    if action == "list":
+        rows = policy_mod.rows(policy_mod.read(main))
+        if as_json:
+            typer.echo(json.dumps(rows, indent=2))
+            return
+        for row in rows:
+            line = f"{row['key']} = {_policy_value_text(row['value'])}  ({row['source']})"
+            if row.get("refused"):
+                line += f"  ⚠ refused {row['refused']['raw']!r}: {row['refused']['reason']}"
+            typer.echo(line)
+        return
+    if action == "get":
+        typer.echo(_policy_value_text(policy_mod.read(main).get(key)))
+        return
+    guard.guard_primary(hive_id, cfg=cfg, verb=f"hive policy {action}")
+    actor = identity.resolve_actor("", "")
+    try:
+        if action == "set":
+            stored = policy_mod.write(main, key, value, actor=actor)
+            typer.echo(f"✓ {policy_mod.PREFIX}{key} = {stored}")
+        else:
+            policy_mod.unset(main, key, actor=actor)
+            typer.echo(
+                f"✓ {policy_mod.PREFIX}{key} unset (default {policy_mod.KEYS[key].default!r})"
+            )
+    except policy_mod.PolicyError as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(1) from None
+
+
 # ---- hive archive ------------------------------------------------------------
 
 archive_app = typer.Typer(

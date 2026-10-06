@@ -80,7 +80,7 @@ def test_migration_inventory_names_every_catalog_group() -> None:
 def test_assembled_tree_is_entirely_catalog_derived_and_idempotent() -> None:
     declarations = command_declarations()
     parents = parent_declarations()
-    assert len(declarations) == 240
+    assert len(declarations) == 242
     assert {
         "hq.beadyard",
         "hq.beadyard-adopt",
@@ -142,7 +142,7 @@ def test_generated_projection_preserves_help_and_every_migrated_flag() -> None:
     # These hashes pin the full Click parameter inventory: names, long/short flags, arguments,
     # requiredness, hidden state, passthrough context, command ordering, and parameter types.
     assert _digest(_click_inventory(work.app)) == (
-        "17717f265d4a22431c3778c47d7556ea708f6f4bf36d2167f7a75680746ccc2d"
+        "523f92a84e7bb9b61787123ef9918065a04d4b32e81bf3b1ff67be078f47dcb9"
     )
     assert _digest(_click_inventory(plan.app)) == (
         "7156c6aeee559e071428f3e3856586da7500742420cbec3286bbf95db4493f19"
@@ -152,9 +152,8 @@ def test_generated_projection_preserves_help_and_every_migrated_flag() -> None:
     invocation_env = {"COLUMNS": "120", "BH_SKIP_SETUP_CHECK": "1", "NO_COLOR": "1"}
     expected_help = {
         (): "f29cac19a29f3527cabce08ab78c82700d2887716b7be4653e1b2074d3371fcf",
-        # The atomic-abandon fix documents stale-lease recovery in the command summary;
-        # the parameter inventory above remains unchanged.
-        ("work",): "64b0f4d9b911ce0c9f3738f2309a8507f208e5e26d17fa8eef8a8a879268b950",
+        # `work backup` (state/work pairing, bh-cqvj6) joins the command list.
+        ("work",): "43e2a50c2083f6ad77661641faa7a7f5bcc8de8c14f913dbe9a2b81586299fe5",
         ("plan",): "25562be42291d9cb0489760bb59061838e88562deb07cfe3b1e1fc20dc34af2b",
     }
     for path, digest in expected_help.items():

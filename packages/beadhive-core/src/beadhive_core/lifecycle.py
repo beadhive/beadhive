@@ -248,6 +248,9 @@ class Workspace(Protocol):
         """Persist the fenced claim record naming ``actor`` as the checkout's holder."""
         ...
 
+    # Optional (M14 D4, bh-cqvj6): ``record_frame(bead, actor)`` records the claiming placement
+    # frame in hive data. Looked up with ``getattr`` so a workspace without it keeps working.
+
     def remove(self, bead: str) -> bool:
         """Remove the bead's worktree if it exists; return whether one existed."""
         ...
@@ -545,6 +548,9 @@ class LifecycleCommands:
             if reread is None or not claim_won(reread, actor):
                 raise LifecycleFailed(1)
             issue = reread
+        # The claiming frame is written right after the lease is won and re-read, before
+        # provisioning (M14 D4); an already-held claim re-asserts it, repairing a torn write.
+        self._record_frame(bead, actor)
         try:
             # Provisioning is idempotent and may reattach an existing checkout for a same-actor
             # retry.
@@ -564,6 +570,17 @@ class LifecycleCommands:
         return ClaimOutcome(
             bead, actor, final, "reattached" if already_held else "claimed", checkout
         )
+
+    def _record_frame(self, bead: str, actor: str) -> None:
+        """Best-effort ``claim-frame`` write (M14 D4). A failure only warns: a claim without the
+        dimension is the *unattributed* case, which no failover adopt ever auto-rewinds."""
+        record = getattr(self._workspace, "record_frame", None)
+        if record is None:
+            return
+        try:
+            record(bead, actor)
+        except Exception as exc:  # the claim stands; pairing_audit reports the gap
+            self._out.say(f"⚠ could not record the claiming frame for {bead}: {exc}", error=True)
 
     def try_claim(self, bead: str, actor: str) -> bool:
         """Take the lease, then RE-VERIFY by re-reading: true only when ``actor`` holds it.
@@ -660,6 +677,7 @@ class LifecycleCommands:
             # Re-asserting an already-held claim; the route streamed its own error.
             if exc.detail:
                 self._out.say(f"⚠ {exc.detail}", error=True)
+        self._record_frame(bead, actor)
         self._out.say(f"✓ resumed {bead} as {actor}; worktree {checkout.target}")
         return ResumeOutcome(bead, actor, checkout, group)
 

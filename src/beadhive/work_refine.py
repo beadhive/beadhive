@@ -6,6 +6,8 @@ plan resolution, backup/restore, rewrite, and byte-identical verification.
 
 from __future__ import annotations
 
+from . import work_backup
+
 
 def impl__load_plan(api, plan_arg):
     """Read a squash-plan from a file path or '-' (stdin). Raises on read/JSON errors."""
@@ -212,3 +214,14 @@ def impl_refine(api, bead, plan, autosquash, since, dry_run, hive):
             + ", ".join(result.cleanup_failed),
             err=True,
         )
+    # D2a: a refine rewrites history, so checkpoint the rewritten tip (best-effort, pairing on).
+    entry, main, _target, _branch = api.worktree.locate(cfg, hive, bead)
+    work_backup.checkpoint_worktree(
+        cfg=cfg,
+        entry=entry,
+        main=main,
+        bead=bead,
+        target=result.target,
+        say=api.typer.echo,
+        warn=lambda line: api.typer.echo(line, err=True),
+    )

@@ -57,7 +57,7 @@ import json
 import os
 import time
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -100,6 +100,11 @@ class ClaimRecord:
     attestation: str = "none"
     host_id: str = ""
     epoch: int = 0
+    # State/work pairing (M14 D1, bh-cqvj6): the placement frame that holds this claim (a local
+    # mirror of the hive-data `claim-frame` dimension) and the last sha this frame pushed to its
+    # backup ref `refs/bh/backup/<bead>/<frame>`. Both default empty so older records read cleanly.
+    frame_id: str = ""
+    backup_sha: str = ""
 
     def is_fenced(self) -> bool:
         """Whether this record carries a usable fencing token at all. `epoch` 0 means *no
@@ -297,7 +302,28 @@ def _decode_record(raw: str, worktree) -> ClaimRecord | None:
         attestation=str(data.get("attestation") or "none"),
         host_id=str(data.get("host_id") or ""),
         epoch=_as_epoch(data.get("epoch")),
+        frame_id=str(data.get("frame_id") or ""),
+        backup_sha=str(data.get("backup_sha") or ""),
     )
+
+
+def record_backup(worktree, *, bead: str, frame_id: str, backup_sha: str) -> bool:
+    """Mirror a landed backup push into ``worktree``'s claim record (M14 D1 ``backup_sha``).
+
+    Best-effort and local-trust only: rewrites the central record in place when one exists for
+    ``bead``; never mints a record (a batch member or a merger's materialized checkout has none).
+    Returns whether a record was updated."""
+    path = _record_path(worktree)
+    if path is None or not path.is_file():
+        return False
+    try:
+        record = _decode_record(path.read_text(), worktree)
+    except OSError:
+        return False
+    if record is None or record.bead != bead:
+        return False
+    updated = replace(record, frame_id=frame_id, backup_sha=backup_sha)
+    return _atomic_write(path, json.dumps(asdict(updated)))
 
 
 def _atomic_write(path: Path, raw: str) -> bool:

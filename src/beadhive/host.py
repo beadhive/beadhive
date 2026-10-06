@@ -89,6 +89,15 @@ def frame_enrolled() -> bool:
     return frame_binding()[1]
 
 
+def enrolled_frame_id() -> str:
+    """This HOST's enrolled placement ``frame_id``, or ``""`` when not enrolled / no host file."""
+    try:
+        settings = config.load_host()
+    except FileNotFoundError:
+        return ""
+    return str((settings.get("host") or {}).get("frame_id") or "")
+
+
 def _default_label() -> str:
     return socket.gethostname()
 
