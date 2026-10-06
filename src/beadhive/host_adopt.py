@@ -28,7 +28,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import gitref, host_fence, host_lease, log, writer_adopt
+from . import failover_reclaim, gitref, host_fence, host_lease, log, writer_adopt
 from .host_fence import EpochFence
 from .host_lease import HostLease, HostLeaseRejected
 from .writer_adopt import (  # re-exported: callers catch these from here
@@ -201,6 +201,7 @@ def adopt(
     at: float | None = None,
     fence_data: FenceData | None = None,
     step2_attempts: int | None = None,
+    failover: bool | None = None,
 ) -> AdoptOutcome:
     """Become primary for `prefix`: CAS the hive-side epoch **fence** first, then record the
     **lease** in HQ — or, on a hive whose data is cut over, placement first then data.
@@ -209,7 +210,11 @@ def adopt(
     ``bh_writer`` on the remote head, the order inverts to placement first, ``refs/bh/epoch``
     in lockstep while it exists, then :func:`beadhive.writer_adopt.run_step2`. See
     :func:`beadhive.writer_adopt.coexistence_adopt`; its half-state is "adopt incomplete"
-    (:class:`AdoptIncomplete`), recovered by re-running this adopt. Everything below describes
+    (:class:`AdoptIncomplete`), recovered by re-running this adopt. When the hive's fence adapter
+    also reads claims and policy (:class:`beadhive.failover_reclaim.ReclaimData`), a FAILOVER
+    adopt reclaims the dead frame's claims in the bump commit per the hive's
+    ``bh.reclaim.failover.mode`` (M3, M14 D5a); ``failover`` overrides the kind read from the
+    displaced placement (a released one is a planned handoff). Everything below describes
     the legacy path, which every other hive keeps unchanged.
 
     ORDERING IS LOAD-BEARING — DO NOT "SIMPLIFY" IT TO LEASE-FIRST.
@@ -307,6 +312,7 @@ def adopt(
                 force=force,
                 at=at,
                 attempts=step2_attempts,
+                failover=failover,
             )
         except writer_adopt.NotCutOver:
             pass  # no bh_writer on the remote head (Φ1): legacy adopt, nothing was written
@@ -369,6 +375,7 @@ def _adopt_cut_over(
     force: bool,
     at: float | None,
     attempts: int | None,
+    failover: bool | None = None,
 ) -> AdoptOutcome:
     """Placement-first coexistence adopt on a cut-over hive (bh-4c7p4).
 
@@ -391,6 +398,8 @@ def _adopt_cut_over(
         frame=host_id,
         attempts=attempts,
         on_placed=cache_placed,
+        reclaim=failover_reclaim.for_fence_data(data, cwd=Path(hive_cwd)),
+        failover=failover,
     )
     if placement.outcome is None:  # resumed: placement already named us; mirror what we read
         host_lease.cache(

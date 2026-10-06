@@ -291,3 +291,65 @@ def test_doctor_is_quiet_unless_placement_is_ahead(monkeypatch, tmp_path, data, 
         assert doctor._adopt_incomplete_warning({}, {"prefix": PREFIX}, tmp_path) is None
     finally:
         host_adopt.set_fence_data_resolver(None)
+
+
+# ---- failover reclaim through host_adopt (bh-4z2rx, M3) ------------------------------------
+
+
+class ReclaimingData(Data):
+    """A fence adapter that also reads claims and policy (``ReclaimData``): reclaim switches on."""
+
+    def __init__(self, writer, claims, policy):
+        super().__init__(writer)
+        self._claims, self._policy = claims, policy
+        self.bumps: list[list[str]] = []
+
+    def config_rows(self):
+        return dict(self._policy)
+
+    def claims(self):
+        return list(self._claims)
+
+    def commit_bump(self, statements, message):
+        self.bumps.append(list(statements))
+        super().commit_bump(statements, message)
+
+
+def _reclaiming(world) -> ReclaimingData:
+    from beadhive import failover_reclaim as fr
+
+    assert _adopt(world, host_id=HOST_A).epoch == 1
+    # The backup probe fetches from the hive clone's origin (no backup refs there: unbacked).
+    _git(["remote", "add", "origin", world["hive_remote"]], world["hive_cwd"])
+    claims = [
+        fr.Claim("bh-dead", "dev/x", frozenset({f"claim-frame:{HOST_A}"})),
+        fr.Claim("bh-live", "dev/y", frozenset({"claim-frame:frame-other"})),
+    ]
+    policy = {"bh.pairing.enabled": "true", "bh.reclaim.failover.mode": "apply"}
+    return ReclaimingData(writer_adopt.WriterRow(HOST_A, 1, "seed"), claims, policy)
+
+
+def test_an_expired_primary_is_failed_over_and_its_claims_reclaimed_in_the_bump(world):
+    from beadhive import failover_reclaim as fr
+
+    data = _reclaiming(world)
+    outcome = _adopt(world, host_id=HOST_B, at=T0 + TTL + 1, fence_data=data)
+    plan = outcome.coexistence.step2.reclaim
+    assert plan is not None and plan.applied and plan.dead_frame == HOST_A
+    assert [(r.bead, r.outcome) for r in plan.rows] == [
+        ("bh-dead", fr.Outcome.REWOUND),
+        ("bh-live", fr.Outcome.OTHER_FRAME),
+    ]
+    [bump] = data.bumps
+    assert bump[0].startswith("UPDATE bh_writer")
+    assert any("WHERE id = 'bh-dead'" in s for s in bump)
+    assert not any("bh-live" in s for s in bump)
+
+
+def test_a_released_primary_is_a_planned_handoff_and_reclaims_nothing(world):
+    data = _reclaiming(world)
+    host_lease.release(world["hq_remote"], PREFIX, host_id=HOST_A, cwd=world["hq_cwd"])
+    outcome = _adopt(world, host_id=HOST_B, at=T0 + 1, fence_data=data)
+    plan = outcome.coexistence.step2.reclaim
+    assert plan is not None and not plan.applied and "planned handoff" in plan.skipped
+    assert not any("issues" in s for s in data.bumps[0])
