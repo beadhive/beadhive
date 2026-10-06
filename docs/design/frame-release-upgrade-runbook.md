@@ -109,7 +109,7 @@ binding (`hq.sql.authority_writer`, `runtime: null`).
 
    `check` (like `plan` and `apply`) needs the off-host `hq.sql.authority_writer`
    binding: run it from an operator host with `BH_HQ_OPERATOR_SETTINGS=<file>`
-   (`--operator-settings` on `bh hq authority`, see
+   (a `--operator-settings` flag arrives in 0.23.0; see
    [HQ: Renewing from an operator host](../HQ.md#authority-laptop-renew)). From a
    frame host without that binding it refuses with "separate authority writer
    capability unavailable".
