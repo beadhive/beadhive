@@ -664,3 +664,60 @@ def test_server_engine_reset_kills_forwarder_sessions_before_dolt_reset(tmp_path
     monkeypatch.setenv(hf.QUIESCE_ENV, "off")
     engine.reset_to_remote()
     assert not [c for c in calls if c.startswith("KILL") or "processlist" in c]
+
+
+# ---- bh doctor: the forward section is opt-in per frame ---------------------------------------
+
+
+def test_doctor_forward_section_is_silent_unless_this_frame_opted_in(tmp_path):
+    from beadhive import doctor
+
+    hive = _hive(tmp_path)
+    doctor._forward_cache.clear()
+    assert doctor._forward_status({}, {"prefix": DB}, hive) is None
+    off = {"host": {"forward": {"enabled": False, "serve": {"enabled": False}}}}
+    assert doctor._forward_status(off, {"prefix": DB}, hive) is None
+
+
+def test_doctor_reports_a_refused_forwarder_as_a_warning(tmp_path):
+    from beadhive import doctor
+
+    hive = _hive(tmp_path)
+    doctor._forward_cache.clear()
+    hf.refuse(hive, "p is demoted", prefix=DB, self_frame="me", endpoints={"p": EP})
+    cfg = {"host": {"forward": {"enabled": True}}}
+    status = doctor._forward_status(cfg, {"prefix": DB}, hive)
+    assert status["side"] == "forwarder" and status["state"] == "refused"
+    assert doctor._forward_warnings(status) == [
+        f"hive '{DB}': forward path — forwarding refused: p is demoted"
+    ]
+    doctor._forward_cache.clear()
+    hf.point(hive, hf.ForwardTarget("p", 3, EP), prefix=DB, self_frame="me", endpoints={"p": EP})
+    status = doctor._forward_status(cfg, {"prefix": DB}, hive)
+    assert status["state"] == "forwarding" and doctor._forward_warnings(status) == []
+    doctor._forward_cache.clear()
+
+
+def test_doctor_runs_the_primary_report_on_a_serving_frame(tmp_path, monkeypatch):
+    from beadhive import doctor, fence_data, host_adopt
+
+    hive = _hive(tmp_path)
+    doctor._forward_cache.clear()
+    server = FakeServer()
+    server.grant(hf.Account("wide", "10.0.0.3"), "fx.*", "ALL PRIVILEGES")
+
+    class Engine(fence_data.BdServerEngine):
+        pass
+
+    node = fence_data.FenceNode(Engine(hive))
+    node.query = lambda sql: (
+        [{"d": DB}] if sql.startswith("SELECT database()") else server.query(sql)
+    )
+    monkeypatch.setattr(host_adopt, "fence_data_for", lambda prefix, path: node)
+    cfg = {"host": {"forward": {"serve": {"enabled": True, "operators": ["root"]}}}}
+    status = doctor._forward_status(cfg, {"prefix": DB}, hive)
+    assert status["side"] == "primary" and status["database"] == DB
+    warnings = doctor._forward_warnings(status)
+    assert any("'wide'@'10.0.0.3': holds ALL" in w for w in warnings)
+    assert any("DOLT_ROOT_PATH not checked" in w for w in warnings)
+    doctor._forward_cache.clear()
