@@ -519,8 +519,7 @@ def test_renew_if_due_is_a_no_op_in_signed_mode(tmp_path, monkeypatch, mode):
     assert host_lease.renew_if_due("origin", "bh", host_id="host-1", cwd=tmp_path, at=NOW) is None
 
 
-def test_renew_if_due_is_a_no_op_in_receiver_mode_too(tmp_path, monkeypatch):
-    """bh-12hev retired renewal in every mode: even a due receiver-mode lease is not renewed."""
+def test_renew_if_due_still_renews_in_receiver_mode(tmp_path, monkeypatch):
     _select_sql(monkeypatch)
     due = _hive_lease(expires=NOW + 10)
     plane = SimpleNamespace(read_hive_lease=lambda prefix, holder_identity: due)
@@ -529,8 +528,9 @@ def test_renew_if_due_is_a_no_op_in_receiver_mode_too(tmp_path, monkeypatch):
     monkeypatch.setattr(
         host_lease, "renew", lambda *a, **k: renewed.append(k) or SimpleNamespace(sha="s")
     )
-    assert host_lease.renew_if_due("origin", "bh", host_id="host-1", cwd=tmp_path, at=NOW) is None
-    assert renewed == []
+    monkeypatch.setattr(host_lease, "cache", lambda *a, **k: None)
+    assert host_lease.renew_if_due("origin", "bh", host_id="host-1", cwd=tmp_path, at=NOW)
+    assert len(renewed) == 1
 
 
 def test_invalid_env_override_still_fails_at_the_plane_not_at_renewal(tmp_path, monkeypatch):

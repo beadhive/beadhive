@@ -4,8 +4,9 @@ ADR ``docs/design/hive-writer-partitioning-adr.md`` §4: "Time triggers reassign
 gates a write." On a hive whose data carries ``bh_writer``, :func:`guard.guard_primary`,
 :func:`guard.live_epoch` and :func:`guard.guard_claim_epoch` read the LOCAL ``bh_writer`` row
 through the in-data fence adapter (:func:`beadhive.host_adopt.fence_data_for`, the M1 seam) and
-nothing else — no wall clock, no HQ, no frame-authority read. Every other hive keeps the lease
-gate, with ``expires_at`` advisory and no renewal.
+nothing else — no wall clock, no HQ, no frame-authority read, and no lease renewal. Every
+other hive keeps the lease gate, with ``expires_at`` advisory; it is still renewed best-effort
+as a liveness hint (``test_host_lease_renewal.py``), never as a reason to refuse.
 
 The hive's data here is a fake :class:`~beadhive.writer_adopt.FenceData` (only ``writer()`` is
 read); the real-Dolt run against the composed prototype is ``test_guard_writer_gate_int.py``.
@@ -256,32 +257,34 @@ def test_held_by_ignores_expiry_but_is_expired_still_reports_it():
     assert not tombstone.held_by("")
 
 
-def test_a_legacy_primary_keeps_writing_past_its_expiry_and_never_renews(
+def test_a_legacy_primary_keeps_writing_past_its_expiry_even_when_renewal_fails(
     hq, hive, this_host, monkeypatch
 ):
     _cache(hq, _lease(THIS, ttl=600.0))
 
     def boom(*_a, **_k):
-        raise AssertionError("no renewal and no HQ round trip on the allow path")
+        raise RuntimeError("HQ is down")
 
     monkeypatch.setattr(host_lease, "renew", boom)
-    monkeypatch.setattr(host_lease, "renew_if_due", boom)
     monkeypatch.setattr(host_lease, "refresh_cached", boom)
     for at in (T0 + 1, T0 + 599, T0 + 601, FAR_FUTURE):
         _clock(monkeypatch, at)
-        guard.guard_primary("", cfg={})
+        guard.guard_primary("", cfg={})  # no raise: a failed liveness renewal never refuses
 
 
-def test_renew_if_due_is_a_documented_no_op(tmp_path, monkeypatch):
+def test_renew_if_due_is_a_no_op_on_a_cut_over_hive(tmp_path, data, monkeypatch):
     def boom(*_a, **_k):
-        raise AssertionError("renew_if_due must do nothing")
+        raise AssertionError("a cut-over hive must not renew or read the lease")
 
+    data.local = WriterRow(THIS, 7, "seed")
     monkeypatch.setattr(host_lease, "renew", boom)
     monkeypatch.setattr(host_lease, "read_cached", boom)
     monkeypatch.setattr(host_lease, "_frame_plane", boom)
-    out = host_lease.renew_if_due("origin", PREFIX, host_id=THIS, cwd=tmp_path, at=T0 + 599)
+    out = host_lease.renew_if_due(
+        "origin", PREFIX, host_id=THIS, cwd=tmp_path, at=T0 + 599, hive_dir=tmp_path / "hive"
+    )
     assert out is None
-    assert "no-op" in host_lease.renew_if_due.__doc__
+    assert data.reads == 1
 
 
 # ---- acceptance 4: in-flight ClaimRecords survive cutover (seed equality, T1) --------------
