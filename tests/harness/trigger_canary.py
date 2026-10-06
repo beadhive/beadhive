@@ -11,15 +11,17 @@ pieces; ``tests/test_fence_trigger_canary_int.py`` drives the engines and
 
 How it is selected when the pin moves (documented beside the pins in ``flake.nix``):
 
-* :data:`CANARY_PINS` records the Dolt and bd versions the canary last passed on. The fast gate
-  (``just check``) compares it against the pins in ``flake.nix`` and the generated
-  ``docker/toolchain-metadata.json``; a bump that does not also move :data:`CANARY_PINS` fails
-  there, naming ``just fence-canary``.
+* :data:`DEFAULT_RANGES` (overridable via ``BH_FENCE_CANARY_DOLT_RANGE`` /
+  ``BH_FENCE_CANARY_BD_RANGE``, PEP 440 specifiers, malformed refused) are the Dolt and bd
+  versions the canary has been proved on. The fast gate (``just check``) fails only when a pin in
+  ``flake.nix`` or the generated ``docker/toolchain-metadata.json`` falls OUTSIDE its range,
+  naming ``just fence-canary``; a bump inside the range needs no test edit.
 * The canary tests are ``integration`` tests carrying the ``fence_canary`` marker, so the land
   gate's integration pass runs them on every land, and ``docker/**`` (where every pin bump
   regenerates ``toolchain-metadata.json``) selects the ``integration`` attest key.
-* The canary asserts the *installed* ``dolt`` / ``bd`` equal :data:`CANARY_PINS`, so updating the
-  constant without installing and running the bumped binaries also fails.
+* The canary asserts the *installed* ``dolt`` / ``bd`` satisfy the ranges and prints the exact
+  versions it proved, so widening a range without installing and running the new binaries also
+  fails, and a green run still names its binaries.
 
 Every assumption failure raises :class:`AssumptionBroken` with a message naming condition 9 and
 the specific assumption, so a red canary says which guard property the new engine broke.
@@ -31,30 +33,98 @@ import json
 import os
 import re
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
+
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.version import InvalidVersion, Version
 
 from harness import composed_fence as cf
 from harness import write_guard as wg
 
 __all__ = [
-    "CANARY_PINS",
+    "DEFAULT_RANGES",
+    "RANGE_ENV",
     "COMPOSED_TRIGGER_COUNT",
     "CONDITION",
     "AssumptionBroken",
+    "CanaryRangeError",
     "DoltRepo",
     "check_guard_marks",
     "expect",
     "guard_shape_violations",
+    "canary_ranges",
     "installed_versions",
     "pinned_versions",
+    "proof_line",
+    "range_violations",
+    "version_in_range",
 ]
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONDITION = "ADR condition 9 (bh-sieai R5, bh-jbb6r E6)"
 
-#: The Dolt and bd versions this canary last passed against. Move it ONLY after
-#: ``just fence-canary`` is green on the newly pinned binaries.
-CANARY_PINS: dict[str, str] = {"dolt": "2.3.5", "bd": "1.3.0"}
+#: Default PEP 440 ranges of the Dolt and bd versions the canary has been proved on. Each is
+#: overridable by the environment variable below; widen a range ONLY after ``just fence-canary``
+#: is green on the newly installed binaries. Today's pins (2.3.5 / 1.3.0) are inside both.
+DEFAULT_RANGES: dict[str, str] = {"dolt": ">=2.3.5,<2.4", "bd": ">=1.3.0,<1.4"}
+RANGE_ENV: dict[str, str] = {
+    "dolt": "BH_FENCE_CANARY_DOLT_RANGE",
+    "bd": "BH_FENCE_CANARY_BD_RANGE",
+}
+
+
+class CanaryRangeError(ValueError):
+    """A configured canary version range is malformed (refused, never ignored or clamped)."""
+
+
+def canary_ranges(env: Mapping[str, str] | None = None) -> dict[str, SpecifierSet]:
+    """The configured ``{tool: SpecifierSet}``: the environment value, else :data:`DEFAULT_RANGES`.
+
+    A set-but-malformed or empty value raises :class:`CanaryRangeError`; it is never replaced by
+    the default or widened."""
+    source = os.environ if env is None else env
+    out: dict[str, SpecifierSet] = {}
+    for tool, default in DEFAULT_RANGES.items():
+        name = RANGE_ENV[tool]
+        raw = source.get(name, default)
+        try:
+            if not raw.strip():
+                raise InvalidSpecifier("empty range")
+            out[tool] = SpecifierSet(raw)
+        except InvalidSpecifier as exc:
+            raise CanaryRangeError(
+                f"{name}={raw!r} is not a valid PEP 440 version range ({exc}); "
+                f"default is {default!r}"
+            ) from exc
+    return out
+
+
+def version_in_range(version: str | None, spec: SpecifierSet) -> bool:
+    """Whether ``version`` satisfies ``spec``; an unparsable or missing version does not."""
+    if version is None:
+        return False
+    try:
+        return spec.contains(Version(version), prereleases=True)
+    except InvalidVersion:
+        return False
+
+
+def range_violations(
+    versions: Mapping[str, str | None], ranges: Mapping[str, SpecifierSet]
+) -> list[str]:
+    """One message per tool whose version is outside its range."""
+    return [
+        f"{tool} {versions.get(tool)!r} is outside {str(spec)!r} ({RANGE_ENV[tool]})"
+        for tool, spec in ranges.items()
+        if not version_in_range(versions.get(tool), spec)
+    ]
+
+
+def proof_line(versions: Mapping[str, str | None], ranges: Mapping[str, SpecifierSet]) -> str:
+    """``dolt 2.3.5 (in >=2.3.5,<2.4), bd 1.3.0 (in >=1.3.0,<1.4)``: the exact versions proved."""
+    return ", ".join(f"{tool} {versions.get(tool)} (in {ranges[tool]})" for tool in sorted(ranges))
+
 
 #: bh-sieai's 42 guard triggers (14 tables x 3 events) + bh-vje85's two monotonic fence triggers.
 #: Literal on purpose: adopt checks for exactly this number (condition 9), so a change to the
