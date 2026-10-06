@@ -1386,6 +1386,9 @@ def _shutdown_stdio_telemetry_best_effort(cfg: dict) -> None:
 
 def main() -> int:
     """`bh-mcp` console-script entrypoint. Returns an exit code (0 ok, 1 unavailable)."""
+    from . import fence_data
+
+    fence_data.register()  # the product in-data fence resolver, before any guard path (bh-uz46l)
     cfg = _init_stdio_telemetry_best_effort()
     try:
         try:
