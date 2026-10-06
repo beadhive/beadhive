@@ -9327,6 +9327,120 @@
         "secret_material": false
       },
       "kind": "action",
+      "name": "hq.placement",
+      "parameters": [
+        {
+          "name": "action",
+          "privilege": "inherited",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "prefix",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "frame",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "expected",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "epoch",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "integer"
+          }
+        },
+        {
+          "name": "tenure",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "integer"
+          }
+        },
+        {
+          "name": "confirm",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "operator_settings",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "privilege": "privileged",
+      "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "surfaces": {
+        "cli": {
+          "aliases": [],
+          "declared_hidden": true,
+          "effective_hidden": true,
+          "granularity": {
+            "mode": "fine",
+            "reason": null
+          },
+          "interactivity": {
+            "guard_conditions": [],
+            "guard_parameters": [],
+            "mode": "none",
+            "prompt_seams": [],
+            "reason": null
+          },
+          "parameter_map": {},
+          "parameters": [
+            "action",
+            "prefix",
+            "frame",
+            "expected",
+            "epoch",
+            "tenure",
+            "confirm",
+            "operator_settings"
+          ],
+          "path": "hq placement",
+          "progress": {
+            "mode": "stdout",
+            "notification_uris": [],
+            "reason": "CLI reports human-oriented progress on stdout/stderr"
+          }
+        }
+      }
+    },
+    {
+      "alias_of": null,
+      "constraints": {
+        "hq_write": true,
+        "interactive": false,
+        "override_parameters": [],
+        "secret_material": false
+      },
+      "kind": "action",
       "name": "hq.prune-aggregate",
       "parameters": [
         {
