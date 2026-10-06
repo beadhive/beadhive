@@ -40,6 +40,7 @@ from collections.abc import Iterable, Sequence
 
 __all__ = [
     "ADOPT_SENTINEL_PREFIX",
+    "CUTOVER_SENTINEL_PREFIX",
     "EVENTS",
     "FENCE_TABLES",
     "GUARDED_TABLES",
@@ -57,10 +58,13 @@ __all__ = [
     "guard_statements",
     "guard_trigger_names",
     "ident_statements",
+    "cutover_sentinel_statements",
+    "drop_ident_statements",
     "install_statements",
     "monotonic_statements",
     "quote",
     "render_script",
+    "rollback_statements",
     "seed_statements",
     "trigger_names",
 ]
@@ -110,6 +114,10 @@ ROLES: tuple[str, ...] = ("replica", "branch")
 #: Every bump inserts a ``bh_write_mark`` row with this id prefix (condition 1).
 ADOPT_SENTINEL_PREFIX = "adopt-"
 INSTALL_COMMIT_MESSAGE = "bh: install in-data epoch fence and write guard"
+#: The per-hive cutover (``bh-32379`` C3) inserts a ``cutover-<epoch>`` mark beside the seed's
+#: ``adopt-<epoch>`` one, so the cutover commit is recognisable in ``bh_write_mark`` until the
+#: next adopt retires it.
+CUTOVER_SENTINEL_PREFIX = "cutover-"
 
 GUARD_REFUSAL = "bh-guard: this replica is not the bh_writer for main"
 MONOTONIC_REFUSAL = "bh: fence epoch must increase"
@@ -249,6 +257,32 @@ def ident_statements(frame: str, role: str = "replica") -> list[str]:
         "frame VARCHAR(64), role VARCHAR(16) DEFAULT 'replica')",
         f"REPLACE INTO {LOCAL_IDENT_TABLE} VALUES (1, {quote(frame)}, {quote(role)})",
     ]
+
+
+def cutover_sentinel_statements(epoch: int) -> list[str]:
+    """The ``cutover-<epoch>`` sentinel mark (``bh-32379`` C3), committed with the seed."""
+    epoch = int(epoch)
+    return [
+        f"INSERT INTO bh_write_mark (id, epoch, tbl) VALUES "
+        f"({quote(CUTOVER_SENTINEL_PREFIX + str(epoch))}, {epoch}, 'bh_writer')"
+    ]
+
+
+def rollback_statements() -> list[str]:
+    """Rollback R3 (``bh-32379`` §3): drop all :data:`TRIGGER_COUNT` ``bh_*`` triggers and the
+    guard procedure, then the fence tables, FK child before its parent.
+
+    The ``dolt_ignore`` row ``bh_local_%`` is deliberately KEPT: dropping it would let a later
+    ``commit -A`` on a replica stage that replica's leftover identity table."""
+    out = [f"DROP TRIGGER IF EXISTS {name}" for name in trigger_names()]
+    out.append(f"DROP PROCEDURE IF EXISTS {GUARD_PROCEDURE}")
+    out += [f"DROP TABLE IF EXISTS {table}" for table in reversed(FENCE_TABLES)]
+    return out
+
+
+def drop_ident_statements() -> list[str]:
+    """Rollback R5: this node forgets its ``bh_local_ident`` (node-local, never committed)."""
+    return [f"DROP TABLE IF EXISTS {LOCAL_IDENT_TABLE}"]
 
 
 def render_script(statements: Sequence[str]) -> str:
