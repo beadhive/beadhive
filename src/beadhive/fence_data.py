@@ -499,6 +499,7 @@ class FenceNode:
         *,
         revision: str | None = None,
         message: str = INSTALL_COMMIT_MESSAGE,
+        seed_extra: Sequence[str] = (),
     ) -> InstallReport:
         """Install (or re-install) the fence and guard on this node, in the composed order, and
         commit it. Not pushed: publishing is the caller's step.
@@ -512,13 +513,20 @@ class FenceNode:
 
         A drop-then-create leaves a moment without that trigger, so re-install a writer while
         it is quiet. Raises :class:`GuardIncomplete` when the install did not leave all 44
-        ``bh_*`` triggers and the procedure in place."""
+        ``bh_*`` triggers and the procedure in place.
+
+        ``seed_extra`` statements ride the SAME commit, after the install, only when this call
+        seeds (the per-hive cutover's ``cutover-<epoch>`` sentinel, ``bh-32379`` C3); a
+        re-install ignores them like it ignores ``writer`` / ``epoch``."""
         current = self._writer()
         seed = None
         if current is None:
             fresh = revision or writer_adopt.fresh_revision(writer, int(epoch))
             seed = (writer, int(epoch), fresh)
-        self.engine.execute(fence_schema.install_statements(seed))
+        statements = fence_schema.install_statements(seed)
+        if seed is not None:
+            statements += list(seed_extra)
+        self.engine.execute(statements)
         committed = self.engine.commit(message)
         report = self.require_writer_ready()
         row = self._writer()

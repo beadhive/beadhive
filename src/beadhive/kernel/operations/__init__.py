@@ -91,6 +91,7 @@ hive contrib-profile build|hive:string:r
 hive contrib-profile show|hive:string:r,as_json:boolean:o
 hive disable|feature:string:r,hive_id:string:o
 hive enable|feature:string:r,hive_id:string:o
+hive fence|action:string:r,hive_id:string:r,others_published:boolean:o,as_json:boolean:o
 hive hook install|hive_id:string:o
 hive hook pre-push|hive_id:string:o
 hive hook push-main|rev:string:r,gate:string:o,hive_id:string:o
@@ -356,6 +357,7 @@ _READ_PATHS = {
 _HIDDEN_PATHS = {
     "hive check-push-fence",
     "hive context",
+    "hive fence",
     "hive sync-remote",
     "host adopt",
     "host daemon remove",
