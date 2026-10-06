@@ -1,4 +1,14 @@
-"""Two-phase, fail-closed adopt — fence first, lease second (bh-ytbb.8).
+"""Adopt: legacy fence-first (bh-ytbb.8), or placement-first on a cut-over hive (bh-4c7p4).
+
+A hive whose data carries ``bh_writer`` (cut over to the in-data epoch fence) is adopted
+placement first, then by an idempotent data step 2, keeping ``refs/bh/epoch`` in lockstep while
+it exists — :mod:`beadhive.writer_adopt`, ADR ``hive-writer-partitioning-adr.md`` §2. Every other
+hive (Φ1, the default) takes the legacy two-phase path below UNCHANGED. Which one applies is
+decided by the hive's data alone ("data is the switch", condition 12), read through the
+:class:`~beadhive.writer_adopt.FenceData` port; no product adapter for that port is registered
+until M1 (``bh-uz46l``) lands, so the coexistence path is dormant by construction.
+
+Legacy: two-phase, fail-closed adopt — fence first, lease second (bh-ytbb.8).
 
 Becoming a hive's primary touches **two remotes**: the hive's own (where the epoch fence
 lives, :mod:`beadhive.host_fence`) and Factory HQ (where the host lease lives,
@@ -14,16 +24,35 @@ Naming note (Amendment 1 §5): "lease" here is always the **host lease** (host �
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import host_fence, host_lease, log
+from . import gitref, host_fence, host_lease, log, writer_adopt
 from .host_fence import EpochFence
 from .host_lease import HostLease, HostLeaseRejected
+from .writer_adopt import (  # re-exported: callers catch these from here
+    AdoptError,
+    AdoptIncomplete,
+    AdoptLost,
+    EpochRefLost,
+    FenceData,
+    PlacementLost,
+)
 
-
-class AdoptError(RuntimeError):
-    """Adopt could not be completed. Typer-free; the CLI maps it to exit 1."""
+__all__ = [
+    "AdoptError",
+    "AdoptHalfDone",
+    "AdoptIncomplete",
+    "AdoptLost",
+    "AdoptOutcome",
+    "EpochRefLost",
+    "HiveNotCloned",
+    "PlacementLost",
+    "adopt",
+    "fence_data_for",
+    "set_fence_data_resolver",
+]
 
 
 class HiveNotCloned(AdoptError):
@@ -53,6 +82,94 @@ class AdoptOutcome:
     epoch: int
     fence_sha: str  # the `<held>` value subsequent fenced pushes must present
     lease: HostLease
+    #: Set when the hive is cut over and the placement-first path ran (bh-4c7p4).
+    coexistence: writer_adopt.CoexistenceOutcome | None = None
+
+
+# ---- the data switch (M1 seam) ---------------------------------------------------------------
+
+#: ``(prefix, hive_dir) -> FenceData | None``. ``None`` means "no in-data fence adapter for this
+#: hive", and the legacy adopt runs. The product adapter is M1's (bh-uz46l); until it registers
+#: one here, every hive answers ``None`` — the coexistence path is dormant.
+FenceDataResolver = Callable[[str, Path], "FenceData | None"]
+
+
+def _no_fence_data(_prefix: str, _hive_dir: Path) -> FenceData | None:
+    return None
+
+
+_fence_data_resolver: FenceDataResolver = _no_fence_data
+
+
+def set_fence_data_resolver(resolver: FenceDataResolver | None) -> None:
+    """Register the in-data fence adapter (M1); ``None`` restores the dormant default."""
+    global _fence_data_resolver
+    _fence_data_resolver = resolver or _no_fence_data
+
+
+def fence_data_for(prefix: str, hive_dir: Path) -> FenceData | None:
+    """The hive's :class:`~beadhive.writer_adopt.FenceData`, or ``None`` (legacy / dormant)."""
+    return _fence_data_resolver(prefix, Path(hive_dir))
+
+
+class _LeasePlacement:
+    """The HQ host lease as the placement authority (git HQ: ``refs/bh/lease/<prefix>``; SQL
+    HQ: the protected lease row through the frame plane). Every CAS writes a new record, so the
+    CAS token is always rewritten (condition 5)."""
+
+    def __init__(self, *, remote, prefix, cwd, label, ttl, at, force):
+        self._remote, self._prefix, self._cwd = remote, prefix, Path(cwd)
+        self._label, self._ttl, self._at, self._force = label, ttl, at, force
+        self.lease: HostLease | None = None
+        self.outcome: host_lease.LeaseOutcome | None = None
+
+    def read(self) -> writer_adopt.PlacementView | None:
+        sha, lease = host_lease.read_record(self._remote, self._prefix, cwd=self._cwd)
+        self.lease = lease
+        if lease is None:
+            return None
+        return writer_adopt.PlacementView(frame=lease.host_id, epoch=lease.epoch, token=sha)
+
+    def cas(self, frame, epoch, *, expected):
+        try:
+            outcome = host_lease.adopt(
+                self._remote,
+                self._prefix,
+                host_id=frame,
+                label=self._label,
+                cwd=self._cwd,
+                ttl=self._ttl,
+                at=self._at,
+                force=self._force,
+                epoch=epoch,
+                expected=expected.token if expected is not None else gitref.ABSENT,
+            )
+        except HostLeaseRejected as exc:
+            raise PlacementLost(str(exc)) from exc
+        self.outcome, self.lease = outcome, outcome.lease
+        return writer_adopt.PlacementView(frame=frame, epoch=epoch, token=outcome.sha)
+
+
+class _GitEpochRef:
+    """``refs/bh/epoch`` on the hive remote, CASed by ``host_fence.install_fence``."""
+
+    def __init__(self, *, remote, cwd):
+        self._remote, self._cwd = remote, Path(cwd)
+
+    def read(self) -> writer_adopt.RefView | None:
+        sha, fence = host_fence.read_fence(self._remote, cwd=self._cwd)
+        if fence is None:
+            return None
+        return writer_adopt.RefView(frame=fence.host_id, epoch=fence.epoch, sha=sha)
+
+    def cas(self, frame, epoch, *, expected):
+        sha = host_fence.install_fence(
+            self._remote,
+            EpochFence(epoch=epoch, host_id=frame),
+            expected=expected.sha,
+            cwd=self._cwd,
+        )
+        return writer_adopt.RefView(frame=frame, epoch=epoch, sha=sha)
 
 
 def _next_epoch(fence: EpochFence | None, lease: HostLease | None) -> int:
@@ -82,9 +199,18 @@ def adopt(
     ttl: float = host_lease.DEFAULT_TTL,
     force: bool = False,
     at: float | None = None,
+    fence_data: FenceData | None = None,
+    step2_attempts: int | None = None,
 ) -> AdoptOutcome:
     """Become primary for `prefix`: CAS the hive-side epoch **fence** first, then record the
-    **lease** in HQ.
+    **lease** in HQ — or, on a hive whose data is cut over, placement first then data.
+
+    CUT-OVER HIVES (bh-4c7p4). When `fence_data` (default: :func:`fence_data_for`) reports a
+    ``bh_writer`` on the remote head, the order inverts to placement first, ``refs/bh/epoch``
+    in lockstep while it exists, then :func:`beadhive.writer_adopt.run_step2`. See
+    :func:`beadhive.writer_adopt.coexistence_adopt`; its half-state is "adopt incomplete"
+    (:class:`AdoptIncomplete`), recovered by re-running this adopt. Everything below describes
+    the legacy path, which every other hive keeps unchanged.
 
     ORDERING IS LOAD-BEARING — DO NOT "SIMPLIFY" IT TO LEASE-FIRST.
     ================================================================
@@ -163,6 +289,27 @@ def adopt(
     frame_eligibility.require_eligible(host_id, {"prefix": prefix}, hq_dir=hq_cwd, at=at)
     if evict and not force and not frame_eligibility.evictable(lease.host_id, hq_dir=hq_cwd, at=at):
         raise HostLeaseRejected("incumbent eviction authority changed")
+
+    # ---- the data switch: a cut-over hive is adopted placement first (bh-4c7p4) -------
+    data = fence_data if fence_data is not None else fence_data_for(prefix, Path(hive_cwd))
+    if data is not None:
+        try:
+            return _adopt_cut_over(
+                data,
+                prefix=prefix,
+                hive_remote=hive_remote,
+                hq_remote=hq_remote,
+                hive_cwd=hive_cwd,
+                hq_cwd=hq_cwd,
+                host_id=host_id,
+                label=label,
+                ttl=ttl,
+                force=force,
+                at=at,
+                attempts=step2_attempts,
+            )
+        except writer_adopt.NotCutOver:
+            pass  # no bh_writer on the remote head (Φ1): legacy adopt, nothing was written
     # ---- phase 1: ENFORCEMENT (hive remote) -----------------------------------------
     held = host_fence.install_fence(
         hive_remote,
@@ -206,3 +353,57 @@ def adopt(
 
     host_lease.cache(prefix, outcome, cwd=hq_cwd)
     return AdoptOutcome(epoch=epoch, fence_sha=held, lease=outcome.lease)
+
+
+def _adopt_cut_over(
+    data: FenceData,
+    *,
+    prefix: str,
+    hive_remote: str,
+    hq_remote: str,
+    hive_cwd: Path,
+    hq_cwd: Path,
+    host_id: str,
+    label: str,
+    ttl: float,
+    force: bool,
+    at: float | None,
+    attempts: int | None,
+) -> AdoptOutcome:
+    """Placement-first coexistence adopt on a cut-over hive (bh-4c7p4).
+
+    The placement record is cached locally the moment its CAS is won, so this host's own
+    ``bh doctor`` sees an "adopt incomplete" it left behind even with HQ unreachable."""
+    placement = _LeasePlacement(
+        remote=hq_remote, prefix=prefix, cwd=hq_cwd, label=label, ttl=ttl, at=at, force=force
+    )
+    ref = _GitEpochRef(remote=hive_remote, cwd=hive_cwd)
+
+    def cache_placed(_view: writer_adopt.PlacementView) -> None:
+        if placement.outcome is not None:
+            host_lease.cache(prefix, placement.outcome, cwd=hq_cwd)
+
+    result = writer_adopt.coexistence_adopt(
+        data,
+        placement,
+        ref,
+        prefix=prefix,
+        frame=host_id,
+        attempts=attempts,
+        on_placed=cache_placed,
+    )
+    if placement.outcome is None:  # resumed: placement already named us; mirror what we read
+        host_lease.cache(
+            prefix,
+            host_lease.LeaseOutcome(
+                lease=placement.lease, sha=result.placement.token, previous=None
+            ),
+            cwd=hq_cwd,
+        )
+    assert placement.lease is not None
+    return AdoptOutcome(
+        epoch=result.epoch,
+        fence_sha=result.ref.sha if result.ref is not None else "",
+        lease=placement.lease,
+        coexistence=result,
+    )

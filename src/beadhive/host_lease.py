@@ -248,9 +248,16 @@ def adopt(
     at: float | None = None,
     force: bool = False,
     epoch: int | None = None,
+    expected: str | None = None,
 ) -> LeaseOutcome:
     """Become the recorded primary for `prefix`: CAS the HQ lease from expired-or-absent to a
     fresh record at ``epoch + 1``.
+
+    `expected` pins the CAS to the record the caller already read (its sha, or
+    :data:`gitref.ABSENT`): the placement-first coexistence adopt (:mod:`beadhive.writer_adopt`)
+    derives its epoch from that read, so placement moving in between is a lost CAS, raised as
+    :class:`HostLeaseRejected` before anything is written and never retried with the same
+    expectation (ADR condition 5). ``None`` keeps the read-then-CAS behaviour.
 
     `epoch` overrides that computation. The two-phase adopt (:mod:`beadhive.host_adopt`) needs
     it: the fence is installed FIRST and the lease has to record the SAME generation the fence
@@ -273,6 +280,12 @@ def adopt(
 
     frame_eligibility.require_eligible(host_id, {"prefix": prefix}, hq_dir=cwd, at=at)
     sha, current = _read(remote, prefix, cwd=cwd)
+    if expected is not None and sha != expected:
+        raise HostLeaseRejected(
+            f"host-lease adopt for {prefix} lost: placement moved since it was read "
+            f"(now {current.describe() if current is not None else 'absent'}). Re-read and "
+            f"decide again; this is NOT retried with the same expectation."
+        )
     if current is not None and not current.is_expired(at) and current.host_id != host_id:
         if not force and not frame_eligibility.evictable(current.host_id, hq_dir=cwd, at=at):
             raise HostLeaseRejected(
@@ -432,6 +445,12 @@ def takeover(
     how split-brain happens. Mitigation is loud logging and escalation, not prevention — so
     the refusal without `force` and the warning with it are both load-bearing."""
     return adopt(remote, prefix, host_id=host_id, label=label, cwd=cwd, ttl=ttl, at=at, force=force)
+
+
+def read_record(remote: str, prefix: str, *, cwd: Path) -> tuple[str, HostLease | None]:
+    """``(sha, lease)`` at HQ for `prefix` — :func:`read` plus the CAS token a caller that
+    derives a decision from the read must present (``("", None)`` when never adopted)."""
+    return _read(remote, prefix, cwd=cwd)
 
 
 def read(remote: str, prefix: str, *, cwd: Path) -> HostLease | None:
