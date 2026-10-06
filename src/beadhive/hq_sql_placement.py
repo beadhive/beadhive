@@ -65,6 +65,7 @@ __all__ = [
     "PlacementUnknown",
     "PlacementUnseeded",
     "SqlPlacementDirector",
+    "Survey",
     "check_grants",
     "check_triggers",
     "conformance",
@@ -75,6 +76,8 @@ __all__ = [
     "parse_row",
     "place_cas",
     "placement_witness",
+    "read_row",
+    "read_rows",
     "seed_statement",
 ]
 
@@ -343,6 +346,23 @@ def read_row(connection, prefix: str) -> PlacementRecord | None:
         _rollback(connection)
 
 
+def read_rows(cursor) -> tuple[dict[str, PlacementRecord], dict[str, str]]:
+    """Every placement row on `cursor`'s open transaction: ``({prefix: record}, {prefix:
+    reason})``. A row that does not parse is reported, never placed from or failed over."""
+    cursor.execute(
+        f"SELECT prefix,revision,lease_json,request_id,request_sha256 FROM {PLACEMENT_TABLE}"
+    )
+    records, invalid = {}, {}
+    for prefix, *row in cursor.fetchall():
+        prefix = _bytes(prefix).decode() if not isinstance(prefix, str) else prefix
+        try:
+            _check_prefix(prefix)
+            records[prefix] = parse_row(prefix, row)
+        except (PlacementError, UnicodeDecodeError, AttributeError) as exc:
+            invalid[str(prefix)] = str(exc) or "placement row invalid"
+    return records, invalid
+
+
 def _check_prefix(prefix: str) -> None:
     if not isinstance(prefix, str) or not _PREFIX.fullmatch(prefix):
         raise PlacementError("invalid hive prefix")
@@ -429,6 +449,17 @@ def place_cas(
 # =============================================================================================
 
 
+@dataclass(frozen=True)
+class Survey:
+    """One verified read of placement (:meth:`SqlPlacementDirector.survey`)."""
+
+    state: Mapping
+    policies: Mapping
+    placements: Mapping[str, PlacementRecord]
+    invalid: Mapping[str, str]
+    observed: object = None
+
+
 class SqlPlacementDirector:
     """The director/operator side of SQL placement, bound by ``placement_writer`` settings.
 
@@ -485,6 +516,29 @@ class SqlPlacementDirector:
                 self._identity(cursor)
             return read_row(connection, prefix)
         finally:
+            connection.close()
+
+    def survey(self, observe=None) -> Survey:
+        """Every placement row plus the operator-signed state, in ONE verified read-only
+        transaction. `observe(cursor, head)` runs inside the same transaction (the failover
+        loop reads session staleness there); its result is :attr:`Survey.observed`."""
+        connection = self._open()
+        try:
+            with connection.cursor() as cursor:
+                self._identity(cursor)
+                state, policies = self._verified(cursor)
+                placements, invalid = read_rows(cursor)
+                observed = None
+                if observe is not None:
+                    cursor.execute("SELECT DOLT_HASHOF('HEAD')")
+                    observed = observe(cursor, cursor.fetchone()[0])
+            return Survey(state, policies, placements, invalid, observed)
+        except PlacementError:
+            raise
+        except Exception:  # noqa: BLE001 - authority/transport failures never leak details
+            raise PlacementError("verified placement survey unavailable") from None
+        finally:
+            _rollback(connection)
             connection.close()
 
     @staticmethod

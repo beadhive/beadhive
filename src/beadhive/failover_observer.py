@@ -47,6 +47,7 @@ __all__ = [
     "UnattendedFailoverUnsupported",
     "failover_after_for",
     "git_beat_staleness",
+    "session_table",
     "sql_session_staleness",
     "unattended_failover_supported",
 ]
@@ -190,6 +191,19 @@ class FailoverMonitor:
 # =============================================================================================
 # Staleness sources
 # =============================================================================================
+
+
+def session_table(principal: str, epoch: int) -> str:
+    """ADR §5's per-incarnation session table, ``frame_<principal>_<epoch>_session`` (M9,
+    ``bh-owqdg``, provisions it). Refuses anything that would not be a safe identifier."""
+    if (
+        not isinstance(principal, str)
+        or not re.fullmatch(r"[a-z][a-z0-9_]{0,30}", principal)
+        or type(epoch) is not int
+        or not 0 <= epoch <= 9999999999
+    ):
+        raise ValueError("invalid frame principal or incarnation")
+    return f"frame_{principal}_{epoch}_session"
 
 
 def sql_session_staleness(cursor, table: str) -> float | None:
