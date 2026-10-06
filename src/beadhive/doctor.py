@@ -1833,6 +1833,34 @@ def _local_commits_while_not_primary(cfg, entry, path: Path) -> tuple[int, str]:
     return total, (lease.host_id or "nobody")
 
 
+def _adopt_incomplete_warning(cfg, entry, path: Path) -> str | None:
+    """"Adopt incomplete" (``placement_ahead``) on a cut-over hive, with its recovery command
+    (bh-4c7p4, ADR §2): placement names a higher epoch than the hive's ``bh_writer``.
+
+    Dormant unless an in-data fence adapter is registered for the hive
+    (:func:`host_adopt.fence_data_for`, M1) AND the remote head carries ``bh_writer`` — a
+    legacy hive never reports it. Placement is this host's cached lease (the same local read
+    the guard uses), so a host sees the half-state its own interrupted adopt left behind even
+    with HQ unreachable. Never fatal: a read failure is simply no finding."""
+    from . import host_adopt, writer_adopt
+
+    prefix = str(entry.get("prefix", ""))
+    try:
+        data = host_adopt.fence_data_for(prefix, path)
+        if data is None:
+            return None
+        writer = data.remote_writer()
+        state = guard.primary_state(cfg=cfg, entry=entry)
+    except Exception:  # noqa: BLE001 — doctor reports findings; it never crashes on a probe
+        return None
+    if writer is None or state is None:
+        return None
+    _prefix, this_host, lease = state
+    placement = writer_adopt.PlacementView(frame=lease.host_id, epoch=lease.epoch)
+    report = writer_adopt.adopt_report(prefix, placement, writer)
+    return report.describe(host_id=this_host) if report is not None else None
+
+
 def _split_brain_lineage_warning(entry, path: Path) -> str | None:
     """Split-brain, named as such (bh-s9cdk): local and origin's embedded-Dolt histories share
     NO COMMON ANCESTOR — two unrelated DAGs, not the row-level conflict or behind-the-remote
@@ -2159,6 +2187,9 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
             split_brain = _split_brain_lineage_warning(e, path)
             if split_brain:
                 warns.append(split_brain)
+            adopt_incomplete = _adopt_incomplete_warning(cfg, e, path)
+            if adopt_incomplete:
+                warns.append(adopt_incomplete)
     # First: a missing required binary makes everything derived from it untrustworthy, so the
     # operator should read that before any finding it could have manufactured (bh-7m2h9).
     warns = _missing_required_dep_warnings() + warns

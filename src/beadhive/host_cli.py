@@ -1277,6 +1277,12 @@ def adopt_cmd(
         typer.echo(f"✗ {exc}", err=True)
         raise typer.Exit(1) from None
 
+    if outcome.coexistence is not None and outcome.coexistence.resumed:
+        typer.echo(
+            f"✓ adopted {prefix} — resumed the incomplete adopt at epoch {outcome.epoch} "
+            "(placement already named this host; no new epoch minted)"
+        )
+        return
     typer.echo(f"✓ adopted {prefix} — epoch {outcome.epoch}, expires {outcome.lease.expires_at}")
 
 
