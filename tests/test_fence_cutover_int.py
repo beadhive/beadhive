@@ -230,11 +230,15 @@ def test_cutover_status_rerun_and_rollback(tmp_path, kind):
         a.push().check()
 
         # ---- T3: a replica is read-only on main ----------------------------------------
+        with pytest.raises(fc.CutoverRefused, match="has not pulled the cutover"):
+            _cutover(cluster, c, attest=False)
         c.pull().check()
         unprovisioned = c.sql(ISSUE_INSERT.format(id="old-bh-on-c"))
         assert not unprovisioned.ok and "bh_local_ident" in unprovisioned.output
+        replica = _cutover(cluster, c, attest=False)  # C6: the replica provisions its identity
+        assert replica.replica and replica.provisioned and replica.record == out.record
         node_c = _node(c)
-        node_c.provision_ident("c")
+        assert node_c.ident() == ("c", "replica")
         refused = c.sql(ISSUE_INSERT.format(id="non-writer-c"))
         assert not refused.ok and fs.GUARD_REFUSAL in refused.output
         node_c.sync_to_remote()

@@ -2908,12 +2908,16 @@ def hive_fence(
     if others_published and action != "cutover":
         typer.echo("✗ --others-published applies to cutover only", err=True)
         raise typer.Exit(2)
+    entry = registry.resolve_hive(config.load(), hive_id)
+    prefix, hive_dir = str(entry["prefix"]), registry.hive_dir(entry)
     if action == "cutover":
-        hive_fence_cli.impl_cutover(hive_id, others_published=others_published, as_json=as_json)
+        hive_fence_cli.impl_cutover(
+            prefix, hive_dir, others_published=others_published, as_json=as_json
+        )
     elif action == "status":
-        hive_fence_cli.impl_status(hive_id, as_json=as_json)
+        hive_fence_cli.impl_status(prefix, hive_dir, as_json=as_json)
     else:
-        hive_fence_cli.impl_rollback(hive_id, as_json=as_json)
+        hive_fence_cli.impl_rollback(prefix, hive_dir, as_json=as_json)
 
 
 # ---- hive hook: git-hook entrypoints for an external dispatcher (bh-smcj) -----

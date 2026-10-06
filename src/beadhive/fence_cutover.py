@@ -229,9 +229,12 @@ class CutoverOutcome:
     guard: GuardReport
     #: True when the remote head was already cut over for this host (an idempotent re-run).
     already: bool = False
-    #: True when this run provisioned the holder's ``bh_local_ident``.
+    #: True when this run provisioned this node's ``bh_local_ident``.
     provisioned: bool = False
     attempts: int = 1
+    #: True when this host is a replica of an already cut-over hive: only its identity was
+    #: provisioned (it stays read-only on ``main`` until an adopt names it).
+    replica: bool = False
 
 
 @dataclass(frozen=True)
@@ -514,22 +517,25 @@ def cutover(
     attempts: int = DEFAULT_ATTEMPTS,
     before_push: Callable[[], None] | None = None,
 ) -> CutoverOutcome:
-    """C1–C6 on the current holder. Idempotent on re-run. ``before_push`` is a test seam
-    (one-shot, between the reservation and the push)."""
+    """C1–C6 on the current holder. Idempotent on re-run. On a replica of a hive whose remote
+    head is already cut over, provisions that replica's identity instead (nothing else).
+    ``before_push`` is a test seam (one-shot, between the reservation and the push)."""
     if attempts < 1:
         raise ValueError(f"attempts must be >= 1 (got {attempts})")
+    try:
+        remote = node.remote_writer()
+        if remote is not None and remote.frame != host_id:
+            return _provision_replica(node, placement, remote, prefix=prefix, host_id=host_id)
+        if remote is not None:
+            return _already_cut_over(node, placement, remote, prefix=prefix, host_id=host_id)
+    except (FenceError, DataUnreachable) as exc:
+        raise CutoverRefused(f"{prefix}: {exc}; nothing was published") from exc
     if not others_published:
         raise CutoverRefused(
             f"{prefix}: C1 refused — confirm that no OTHER host holds unpublished commits for "
             "this hive (commits made before the cutover carry no marks, so the in-data fence "
             "cannot see them). Check every replica, then pass --others-published."
         )
-    try:
-        remote = node.remote_writer()
-    except (FenceError, DataUnreachable) as exc:
-        raise CutoverRefused(f"{prefix}: C1 refused — cannot read the remote head: {exc}") from exc
-    if remote is not None:
-        return _already_cut_over(node, placement, remote, prefix=prefix, host_id=host_id)
 
     try:
         ref_sha, fence = ref.read()  # C1: both legacy carriers
@@ -697,12 +703,6 @@ def _already_cut_over(
     prefix: str,
     host_id: str,
 ) -> CutoverOutcome:
-    if remote.frame != host_id:
-        raise CutoverRefused(
-            f"{prefix}: already cut over — the remote bh_writer names "
-            f"{remote.frame}@{remote.epoch}, not this host. Nothing to do here: read "
-            "`bh hive fence status`; moving the writer is an adopt, not a cutover."
-        )
     _require_published(node, prefix, "cutover re-run")
     node.sync_to_remote()
     provisioned = False
@@ -716,6 +716,43 @@ def _already_cut_over(
     )
     return CutoverOutcome(
         record=record, audit=audit, guard=guard, already=True, provisioned=provisioned
+    )
+
+
+def _provision_replica(
+    node: FenceNode,
+    placement: PlacementReader,
+    remote: WriterRow,
+    *,
+    prefix: str,
+    host_id: str,
+) -> CutoverOutcome:
+    """C6's "each other replica provisions its identity": a replica that has PULLED the
+    cutover (its ``HEAD`` carries the ignore row) gets its ``bh_local_ident`` so the guard
+    refuses it by name rather than by a missing table, and so a later adopt can name it. Never
+    resets or publishes anything: a replica is not the writer and may hold commits it has not
+    published yet."""
+    if node.writer() is None or not node.ignore_committed():
+        raise CutoverRefused(
+            f"{prefix}: already cut over (bh_writer {remote.frame}@{remote.epoch}) but this "
+            "replica has not pulled the cutover yet — pull (`bh hive sync`), then re-run to "
+            "provision its identity. Moving the writer is an adopt, not a cutover."
+        )
+    provisioned = False
+    if node.ident() is None:
+        node.provision_ident(host_id)
+        provisioned = True
+    audit = audit_mod.fence_audit(node, placement=placement.read())
+    record = _record_from_history(node, prefix, audit.head) or CutoverRecord(
+        prefix, remote.epoch, remote.frame, "", ""
+    )
+    return CutoverOutcome(
+        record=record,
+        audit=audit,
+        guard=node.guard_report(),
+        already=True,
+        provisioned=provisioned,
+        replica=True,
     )
 
 

@@ -553,28 +553,28 @@
       {
         "facade_target": "beadhive.config.worktrees_root",
         "kind": "direct-facade",
-        "line": 2273,
+        "line": 2274,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.worktrees_root"
       },
       {
         "facade_target": "beadhive.config.worktrees_root",
         "kind": "direct-facade",
-        "line": 2343,
+        "line": 2344,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.worktrees_root"
       },
       {
         "facade_target": "beadhive.config.enforce_signing",
         "kind": "direct-facade",
-        "line": 2521,
+        "line": 2522,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.enforce_signing"
       },
       {
         "facade_target": "beadhive.config.enforce_signing",
         "kind": "direct-facade",
-        "line": 2534,
+        "line": 2535,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.enforce_signing"
       },

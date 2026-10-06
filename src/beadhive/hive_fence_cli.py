@@ -16,16 +16,12 @@ from pathlib import Path
 
 import typer
 
-from . import config, fence_cutover, fence_data, fence_schema, registry
+from . import fence_cutover, fence_data, fence_schema
 
 __all__ = ["impl_cutover", "impl_rollback", "impl_status"]
 
 
-def _context(hive_id: str) -> tuple[str, Path, fence_data.FenceNode]:
-    cfg = config.load()
-    entry = registry.resolve_hive(cfg, hive_id)
-    prefix = str(entry["prefix"])
-    hive_dir = registry.hive_dir(entry)
+def _context(prefix: str, hive_dir: Path) -> fence_data.FenceNode:
     node = fence_data.node_for(hive_dir)
     if node is None:
         typer.echo(
@@ -34,7 +30,7 @@ def _context(hive_id: str) -> tuple[str, Path, fence_data.FenceNode]:
             err=True,
         )
         raise typer.Exit(1)
-    return prefix, hive_dir, node
+    return node
 
 
 def _host_and_hq() -> tuple[str, Path]:
@@ -58,9 +54,9 @@ def _emit(payload: dict) -> None:
     typer.echo(json.dumps(payload, indent=2, sort_keys=True))
 
 
-def impl_cutover(hive_id: str, *, others_published: bool, as_json: bool) -> None:
+def impl_cutover(prefix: str, hive_dir: Path, *, others_published: bool, as_json: bool) -> None:
     """C1–C6 on this host (it must be the current holder)."""
-    prefix, hive_dir, node = _context(hive_id)
+    node = _context(prefix, hive_dir)
     host_id, hq_dir = _host_and_hq()
     ref, placement = _ports(prefix, hive_dir, hq_dir)
     try:
@@ -72,7 +68,7 @@ def impl_cutover(hive_id: str, *, others_published: bool, as_json: bool) -> None
             host_id=host_id,
             others_published=others_published,
         )
-    except fence_cutover.CutoverError as exc:
+    except (RuntimeError, ValueError) as exc:  # CutoverError, HQ / git remote failures
         _fail(exc)
         return
     fence_data.reset_probe_cache()  # this process now sees the hive's data switch
@@ -82,13 +78,22 @@ def impl_cutover(hive_id: str, *, others_published: bool, as_json: bool) -> None
                 **out.record.as_dict(),
                 "already": out.already,
                 "provisioned": out.provisioned,
+                "replica": out.replica,
                 "trigger_count": out.guard.count,
                 "fence_audit": out.audit.as_dict(),
             }
         )
         return
-    verb = "already cut over" if out.already else "cut over"
     r = out.record
+    if out.replica:
+        done = "provisioned" if out.provisioned else "already had"
+        typer.echo(
+            f"✓ {prefix}: cut over (holder {r.holder}, epoch {r.epoch}); this replica {done} "
+            f"its {fence_schema.LOCAL_IDENT_TABLE} and stays read-only on main until an adopt "
+            "names it"
+        )
+        return
+    verb = "already cut over" if out.already else "cut over"
     typer.echo(
         f"✓ {prefix}: {verb} to the in-data epoch fence at epoch {r.epoch} (holder {r.holder})"
     )
@@ -104,9 +109,9 @@ def impl_cutover(hive_id: str, *, others_published: bool, as_json: bool) -> None
     )
 
 
-def impl_status(hive_id: str, *, as_json: bool) -> None:
+def impl_status(prefix: str, hive_dir: Path, *, as_json: bool) -> None:
     """Read-only: {hive, E, cutover commit, ref sha, fence_audit, trigger count}."""
-    prefix, hive_dir, node = _context(hive_id)
+    node = _context(prefix, hive_dir)
     placement = None
     ref = fence_cutover.GitLegacyRef(remote="origin", cwd=hive_dir)
     errors: list[str] = []
@@ -131,14 +136,14 @@ def impl_status(hive_id: str, *, as_json: bool) -> None:
         raise typer.Exit(1)
 
 
-def impl_rollback(hive_id: str, *, as_json: bool) -> None:
+def impl_rollback(prefix: str, hive_dir: Path, *, as_json: bool) -> None:
     """R1–R5 on the current bh_writer holder; on a rolled-back hive, R5 only."""
-    prefix, hive_dir, node = _context(hive_id)
+    node = _context(prefix, hive_dir)
     host_id, hq_dir = _host_and_hq()
     ref, placement = _ports(prefix, hive_dir, hq_dir)
     try:
         out = fence_cutover.rollback(node, placement, ref, prefix=prefix, host_id=host_id)
-    except fence_cutover.CutoverError as exc:
+    except (RuntimeError, ValueError) as exc:  # CutoverError, HQ / git remote failures
         _fail(exc)
         return
     fence_data.reset_probe_cache()
