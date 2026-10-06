@@ -32,6 +32,7 @@ from . import (
     home_migration,
     host_cli,
     hq_authority_cli,
+    hq_placement_cli,
     jsonout,
     log,
     otel,
@@ -85,6 +86,11 @@ hq_app = typer.Typer(
 )
 setup_app = typer.Typer(no_args_is_help=True, help="Post-install dependency check + cached gate.")
 hq_app.command("authority")(otel.trace_verb("hq.authority")(hq_authority_cli.authority_cmd))
+# Hidden operator/director placement verb (bh-16347.5): documented only in
+# docs/design/hq-placement-runbook.md while 0.23.0 is dormant, like `bh hive fence`.
+hq_app.command("placement", hidden=True)(
+    otel.trace_verb("hq.placement")(hq_placement_cli.placement_cmd)
+)
 harness_app = typer.Typer(
     no_args_is_help=True,
     help="Aliases onto `bh dep`, filtered to agent harnesses (bh-hsus.6).",

@@ -483,6 +483,42 @@
       "title": "DaemonCorsConfig",
       "type": "object"
     },
+    "DaemonFailoverConfig": {
+      "additionalProperties": false,
+      "description": "The director's unattended failover loop (bh-16347.5). Off by default and opt-in per\nhost; it runs only beside a ``dolt-server`` HQ (startup refuses ``git`` HQ).",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Run the director failover loop in this daemon: observe every placed frame's server-stamped session staleness and CAS a due frame's hives to a successor. Needs dolt-server HQ and the director credential (hq.sql.placement_writer).",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "interval_seconds": {
+          "default": 60.0,
+          "description": "Seconds between failover observations. Must stay well under failover_after / 2, or every observation gap resets the observed window and nothing ever fails over.",
+          "exclusiveMinimum": 0,
+          "maximum": 3600,
+          "title": "Interval Seconds",
+          "type": "number"
+        },
+        "operator_settings": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Absolute path of the operator settings file carrying hq.sql.placement_writer. When unset, BH_HQ_OPERATOR_SETTINGS in the daemon's environment is used.",
+          "title": "Operator Settings"
+        }
+      },
+      "title": "DaemonFailoverConfig",
+      "type": "object"
+    },
     "DaemonHttpConfig": {
       "additionalProperties": false,
       "properties": {
@@ -1309,6 +1345,9 @@
           "default": false,
           "title": "Enabled",
           "type": "boolean"
+        },
+        "failover": {
+          "$ref": "#/$defs/DaemonFailoverConfig"
         },
         "http": {
           "$ref": "#/$defs/DaemonHttpConfig"
