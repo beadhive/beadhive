@@ -277,6 +277,24 @@ def adopt(
             f"first (`git workspace update`), then adopt."
         )
 
+    # ---- director placement (dolt-server HQ, bh-a94qw): the director placed first -----
+    # A director-written placement row owns who should write: this frame neither CASes HQ
+    # nor evicts anyone (frame-side ``evictable`` is not the placement path there); it only
+    # carries the placed epoch into the hive (the fence, and on a cut-over hive step 2).
+    placed = _director_placement(prefix, hq_cwd)
+    if placed is not None:
+        return _adopt_director_placed(
+            placed,
+            prefix=prefix,
+            hive_remote=hive_remote,
+            hive_cwd=hive_cwd,
+            hq_cwd=hq_cwd,
+            host_id=host_id,
+            fence_data=fence_data,
+            attempts=step2_attempts,
+            failover=failover,
+        )
+
     # ---- phase 0: read both sides (free — reads are never gated) --------------------
     fence_sha, fence = host_fence.read_fence(hive_remote, cwd=hive_cwd)
     lease = host_lease.read(hq_remote, prefix, cwd=hq_cwd)
@@ -397,6 +415,115 @@ def adopt(
 
     host_lease.cache(prefix, outcome, cwd=hq_cwd)
     return AdoptOutcome(epoch=epoch, fence_sha=held, lease=outcome.lease)
+
+
+def _director_placement(prefix: str, hq_cwd: Path):
+    """The hive's director-written SQL placement row, or ``None`` (git HQ, legacy plane, an
+    unseeded or receiver-written row). Read-only; an unreadable row refuses the adopt."""
+    plane = host_lease._frame_plane(hq_cwd)
+    if getattr(plane, "config_backend", None) != "sql":
+        return None
+    read = getattr(plane, "read_placement", None)
+    if read is None:
+        return None
+    try:
+        placed = read(prefix)
+    except ValueError as exc:
+        raise HostLeaseRejected(f"{prefix}: adopt refused before the fence moved — {exc}") from None
+    return placed if placed is not None and placed.director else None
+
+
+class _DirectorPlacement:
+    """SQL director placement as the coexistence adopt's :class:`PlacementAuthority`.
+
+    Reads the live row through the frame's SELECT grant. The frame cannot CAS it: a ``cas``
+    means the adopt could not resume at the placed epoch, which is the director's call."""
+
+    def __init__(self, plane, prefix: str):
+        self._plane, self._prefix = plane, prefix
+
+    def read(self) -> writer_adopt.PlacementView | None:
+        placed = self._plane.read_placement(self._prefix)
+        if placed is None:
+            return None
+        lease = placed.lease
+        return writer_adopt.PlacementView(
+            frame=lease.host_id, epoch=lease.epoch, token=placed.revision
+        )
+
+    def cas(self, frame, epoch, *, expected):
+        raise PlacementLost(
+            f"PLACEMENT: hive {self._prefix} is director-placed "
+            f"({expected.frame if expected else 'unplaced'}@{expected.epoch if expected else 0}) "
+            f"and its data cannot converge at that epoch; a frame cannot re-place itself in "
+            f"dolt-server HQ — ask the director to place {frame} at epoch {epoch} or higher"
+        )
+
+
+def _adopt_director_placed(
+    placed,
+    *,
+    prefix: str,
+    hive_remote: str,
+    hive_cwd: Path,
+    hq_cwd: Path,
+    host_id: str,
+    fence_data: FenceData | None,
+    attempts: int | None,
+    failover: bool | None,
+) -> AdoptOutcome:
+    """Carry a director placement into the hive (bh-a94qw): placement first, then data.
+
+    Legacy hive: install ``refs/bh/epoch`` at exactly the placed epoch, so the row's epoch
+    equals the fence (the 0.22.8 reader binds the row to it). Cut-over hive: the coexistence
+    adopt resumes at the placed epoch (ref in lockstep, then step 2). Idempotent; never
+    publishes a frame proposal and never moves placement."""
+    lease = placed.lease
+    if lease.is_tombstone or lease.host_id != host_id:
+        raise HostLeaseRejected(
+            f"PLACEMENT: hive {prefix} is placed by the director ({placed.describe()}), not to "
+            f"{host_id}; a frame cannot place itself in dolt-server HQ. Ask the director or "
+            "operator to place this frame, then adopt. Nothing was changed."
+        )
+    data = fence_data if fence_data is not None else fence_data_for(prefix, Path(hive_cwd))
+    if data is not None:
+        plane = host_lease._frame_plane(hq_cwd)
+        try:
+            result = writer_adopt.coexistence_adopt(
+                data,
+                _DirectorPlacement(plane, prefix),
+                _GitEpochRef(remote=hive_remote, cwd=hive_cwd),
+                prefix=prefix,
+                frame=host_id,
+                attempts=attempts,
+                reclaim=failover_reclaim.for_fence_data(data, cwd=Path(hive_cwd)),
+                failover=failover,
+            )
+        except writer_adopt.NotCutOver:
+            pass  # legacy hive (Φ1): carry the placed epoch into refs/bh/epoch below
+        else:
+            return AdoptOutcome(
+                epoch=result.epoch,
+                fence_sha=result.ref.sha if result.ref is not None else "",
+                lease=lease,
+                coexistence=result,
+            )
+    fence_sha, fence = host_fence.read_fence(hive_remote, cwd=hive_cwd)
+    if fence is not None and (fence.epoch, fence.host_id) == (lease.epoch, host_id):
+        return AdoptOutcome(epoch=lease.epoch, fence_sha=fence_sha, lease=lease)
+    if fence is not None and fence.epoch >= lease.epoch:
+        raise HostLeaseRejected(
+            f"PLACEMENT: hive {prefix}'s refs/bh/epoch is at {fence.epoch} "
+            f"({fence.host_id or 'released'}), not below the placed epoch {lease.epoch}; the "
+            f"director must re-place it at epoch {fence.epoch + 1} or higher. Nothing was changed."
+        )
+    held = host_fence.install_fence(
+        hive_remote,
+        EpochFence(epoch=lease.epoch, host_id=host_id),
+        expected=fence_sha,
+        cwd=hive_cwd,
+    )
+    return AdoptOutcome(epoch=lease.epoch, fence_sha=held, lease=lease)
 
 
 def _adopt_cut_over(

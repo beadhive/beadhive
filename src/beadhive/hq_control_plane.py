@@ -432,6 +432,45 @@ class GitControlPlane:
     def read_hive_lease(self, prefix, *, holder_identity=None):
         return self.read_hive_lease_record(prefix, holder_identity=holder_identity)[1]
 
+    def read_placement(self, prefix):
+        """The raw placement row for `prefix` (bh-a94qw), or ``None`` when unseeded.
+
+        No resolver and no holder qualification: this is what the director last CASed (or the
+        receiver last accepted), read through the frame's own SELECT grant. Callers decide
+        placement-first adopts from it; write gates keep using :meth:`read_hive_lease_record`.
+        """
+        from .hq_sql_placement import PlacementError, parse_row
+
+        try:
+            result = self._runtime_authority().read_frame_composite(
+                prefix=prefix, enforce=authority_enforced()
+            )
+            lease_row = result[8]
+            return None if lease_row is None else parse_row(prefix, lease_row)
+        except PlacementError as exc:
+            raise ControlPlaneError(f"placement row for {prefix} invalid: {exc}") from None
+        except ValueError as exc:
+            if isinstance(exc, ControlPlaneError):
+                raise
+            raise ControlPlaneError("qualified SQL placement row unavailable") from None
+
+    def require_frame_placeable(self, prefix):
+        """Refuse a frame's own hive-lease proposal on a director-placed hive (bh-a94qw).
+
+        In signed hive-lease mode a director-owned row drops the proposal resolver, so a
+        proposal could never become the lease: refuse before anything moves. Receiver mode
+        keeps accepting proposals against director rows (the Φ3 rollback path)."""
+        if not self.signed_hive_lease:
+            return None
+        placed = self.read_placement(prefix)
+        if placed is not None and placed.director:
+            raise ControlPlaneError(
+                f"PLACEMENT: hive {prefix} is placed by the director ({placed.describe()}); a "
+                "frame cannot place itself in dolt-server HQ. Ask the director or operator to "
+                "place this frame, then adopt. Nothing was changed."
+            )
+        return placed
+
     def publish_hive_lease(self, prefix, lease, *, expected, operation, force=False):
         from . import host, hosts
         from .host_lease_contracts import HostLease, lease_ref
@@ -2408,6 +2447,10 @@ class SqlControlPlane:
                 **({"hive_lease_epoch": fence.epoch} if fence is not None else {}),
             )
             receiver = None
+            # bh-a94qw: a director-written placement row (its witness verifies) owns the
+            # hive's placement, so the 0.22.8 proposal resolver is dropped for it — frames'
+            # signed proposals no longer count. The row stays bound to the epoch fence.
+            director_owned = lease_row is not None and _director_row(prefix, lease_row)
             if lease_row is not None:
                 revision, body, _request_id, _request_sha = lease_row
                 if isinstance(body, memoryview):
@@ -2445,7 +2488,7 @@ class SqlControlPlane:
                         slot=slot,
                         record=record,
                         fence=fence,
-                        evidence=extra[0] if extra else None,
+                        evidence=extra[0] if extra and not director_owned else None,
                         receiver=receiver,
                     )
                 except SignedHiveLeaseConflict as exc:
@@ -2525,6 +2568,45 @@ class SqlControlPlane:
 
     def read_hive_lease(self, prefix, *, holder_identity=None):
         return self.read_hive_lease_record(prefix, holder_identity=holder_identity)[1]
+
+    def read_placement(self, prefix):
+        """The raw placement row for `prefix` (bh-a94qw), or ``None`` when unseeded.
+
+        No resolver and no holder qualification: this is what the director last CASed (or the
+        receiver last accepted), read through the frame's own SELECT grant. Callers decide
+        placement-first adopts from it; write gates keep using :meth:`read_hive_lease_record`.
+        """
+        from .hq_sql_placement import PlacementError, parse_row
+
+        try:
+            result = self._runtime_authority().read_frame_composite(
+                prefix=prefix, enforce=authority_enforced()
+            )
+            lease_row = result[8]
+            return None if lease_row is None else parse_row(prefix, lease_row)
+        except PlacementError as exc:
+            raise ControlPlaneError(f"placement row for {prefix} invalid: {exc}") from None
+        except ValueError as exc:
+            if isinstance(exc, ControlPlaneError):
+                raise
+            raise ControlPlaneError("qualified SQL placement row unavailable") from None
+
+    def require_frame_placeable(self, prefix):
+        """Refuse a frame's own hive-lease proposal on a director-placed hive (bh-a94qw).
+
+        In signed hive-lease mode a director-owned row drops the proposal resolver, so a
+        proposal could never become the lease: refuse before anything moves. Receiver mode
+        keeps accepting proposals against director rows (the Φ3 rollback path)."""
+        if not self.signed_hive_lease:
+            return None
+        placed = self.read_placement(prefix)
+        if placed is not None and placed.director:
+            raise ControlPlaneError(
+                f"PLACEMENT: hive {prefix} is placed by the director ({placed.describe()}); a "
+                "frame cannot place itself in dolt-server HQ. Ask the director or operator to "
+                "place this frame, then adopt. Nothing was changed."
+            )
+        return placed
 
     def heartbeat(self, lease, *, signing_key):
         from .hq_framelease_contracts import HeartbeatLease
@@ -2710,6 +2792,7 @@ class SqlControlPlane:
 
         if self.settings.get("runtime") is None:
             raise ControlPlaneError("AUTHORITY_NOT_READY: SQL runtime binding unavailable")
+        self.require_frame_placeable(prefix)
         deadline = time.monotonic() + self.settings["runtime"]["operation_timeout"]
         try:
             signing_key = host.signing_key()
@@ -2794,6 +2877,13 @@ class SqlControlPlane:
 
             return unavailable
         raise AttributeError(name)
+
+
+def _director_row(prefix, lease_row) -> bool:
+    """Whether a raw placement row was written by the director (bh-a94qw)."""
+    from .hq_sql_placement import is_director_row
+
+    return is_director_row(prefix, lease_row)
 
 
 def _managed_hive_dir(entry) -> Path:

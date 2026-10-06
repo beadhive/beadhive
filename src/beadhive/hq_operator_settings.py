@@ -30,8 +30,50 @@ OPTION_HELP = (
 )
 
 
+#: The director/operator placement credential (bh-a94qw): UPDATE on ``hq_live_hive_leases``
+#: only, SELECT on what it verifies. Optional; carried beside ``authority_writer`` or alone in a
+#: director-only file (:func:`load_placement_settings`).
+PLACEMENT_KEY = "placement_writer"
+
+
 def load_settings(path) -> dict:
     """Read and validate an operator settings file, returning the normalized ``hq.sql`` dict."""
+    return _load(path, require="authority_writer")
+
+
+def load_placement_settings(path) -> dict:
+    """A settings file for the director's placement credential (``placement_writer`` required,
+    ``authority_writer`` optional). Refused, like every operator file, when it binds
+    ``runtime``: a frame never carries the placement credential."""
+    return _load(path, require=PLACEMENT_KEY)
+
+
+def placement_director(path=None, *, broker=None, clock=time.time):
+    """A :class:`beadhive.hq_sql_placement.SqlPlacementDirector` from the file named by `path`
+    or ``$BH_HQ_OPERATOR_SETTINGS``."""
+    from .hq_sql_placement import SqlPlacementDirector
+
+    path = path or os.environ.get(ENV)
+    if not path:
+        raise ControlPlaneError(f"director placement needs {ENV} (or a settings path)")
+    settings = load_placement_settings(path)
+    settings.pop(CEILING_KEY, None)
+    settings.pop(RETENTION_KEY, None)
+    return SqlPlacementDirector(settings, broker=broker, clock=clock)
+
+
+def _placement_binding(raw):
+    from pydantic import ValidationError
+
+    from .modules.config.contracts import HqSqlConnection
+
+    try:
+        return HqSqlConnection.model_validate(raw).model_dump()
+    except (ValidationError, TypeError, ValueError):
+        raise ControlPlaneError(f"operator settings key hq.sql.{PLACEMENT_KEY} invalid") from None
+
+
+def _load(path, *, require: str) -> dict:
     from pydantic import ValidationError
     from ruamel.yaml import YAML
 
@@ -54,9 +96,11 @@ def load_settings(path) -> dict:
             "operator settings key hq.sql.runtime must be null: a runtime binding makes the "
             "file a frame, not an authority writer"
         )
-    if not sql.get("authority_writer"):
-        raise ControlPlaneError("operator settings key hq.sql.authority_writer is required")
+    if not sql.get(require):
+        raise ControlPlaneError(f"operator settings key hq.sql.{require} is required")
     sql = dict(sql)
+    placement = sql.pop(PLACEMENT_KEY, None)
+    placement = _placement_binding(placement) if placement is not None else None
     ceiling = sql.pop("authority_max_duration_s", None)
     if ceiling is not None:
         from .hq_authority_ceiling import parse_duration
@@ -89,6 +133,8 @@ def load_settings(path) -> dict:
         settings[CEILING_KEY] = ceiling
     if retention is not None:
         settings[RETENTION_KEY] = retention
+    if placement is not None:
+        settings[PLACEMENT_KEY] = placement
     return settings
 
 
@@ -97,6 +143,7 @@ def operator_plane(path, *, broker=None, clock=time.time) -> SqlControlPlane:
     settings = load_settings(path)
     ceiling = settings.pop(CEILING_KEY, None)
     retention = settings.pop(RETENTION_KEY, None)
+    settings.pop(PLACEMENT_KEY, None)  # the director's credential never rides the control plane
     plane = SqlControlPlane(settings, broker=broker, clock=clock)
     # Passed to hq_authority_ceiling.resolve_ceiling(settings=...) once that lands (bh-od8ve).
     plane.authority_max_duration_s = ceiling
