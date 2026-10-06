@@ -940,20 +940,13 @@ class HostLeaseKeeper:
         self.renew_interval = renew_interval
         self.backend = backend
 
-    def renew(self, *, active: bool) -> LeaseStatus:
+    def renew(self, *, active: bool) -> LeaseStatus:  # noqa: ARG002 - protocol shape
         from . import host_lease
 
+        # Renewal is retired (bh-12hev, ADR §4): ``expires_at`` is a failover hint and no longer
+        # ends this host's tenure, so a long seat run can no longer outlive the lease. The pass
+        # is a pure read of "does the lease still name this host"; ``renewed`` is always False.
         renewed = False
-        if active:
-            outcome = host_lease.renew_if_due(
-                self.REMOTE,
-                self.prefix,
-                host_id=self.host_id,
-                cwd=self.hq_dir,
-                ttl=self.ttl,
-                renew_interval=self.renew_interval,
-            )
-            renewed = outcome is not None
         lease = (
             self.backend.read_hive_lease(self.prefix, holder_identity=self.host_id)
             if self.backend
@@ -967,7 +960,7 @@ class HostLeaseKeeper:
         return LeaseStatus(
             held=held,
             renewed=renewed,
-            detail=f"held until {lease.expires_at}" if held else lease.describe(),
+            detail=f"held (failover hint {lease.expires_at})" if held else lease.describe(),
         )
 
 
@@ -1726,12 +1719,10 @@ class LocalLoop:
             if self.passes == 1:
                 report.orphans_reaped = await self.reap_orphan_seats()
 
-        # 3. The host lease — renewed only while workers are active. A dry pass never has any
-        #    (see below), so `active` is unconditionally False and this call is a pure READ:
-        #    `HostLeaseKeeper.renew(active=False)` skips `host_lease.renew_if_due` and only
-        #    answers "is it held", which is the "must still hold the lease check" requirement —
-        #    a dry pass that skipped this would report what a loop WOULD do in a state it could
-        #    not legally be in.
+        # 3. The host lease — a pure READ of "is it still held" (renewal is retired, bh-12hev;
+        #    `active` is kept for the keeper protocol). That is the "must still hold the lease
+        #    check" requirement — a dry pass that skipped this would report what a loop WOULD
+        #    do in a state it could not legally be in.
         report.lease = self.lease.renew(active=bool(self.in_flight) and not self.dry_run)
         if not report.lease.held:
             if self.dry_run:
