@@ -981,7 +981,18 @@ class SqlFleetConfigRevisionStore:
             documents, expected_revision=expected_revision, allow_invalid_previous=True
         )
 
-    def _publish_snapshot(
+    def _publish_snapshot(self, documents, *, expected_revision, **kwargs):
+        from . import hq_authority_fence_notice as notice
+
+        probe = notice.probe_authority(self)
+        notice.announce_before(probe, expected_revision)
+        published = self._publish_snapshot_core(
+            documents, expected_revision=expected_revision, **kwargs
+        )
+        notice.announce_after(probe, published.commit_revision)
+        return published
+
+    def _publish_snapshot_core(
         self,
         documents,
         *,
