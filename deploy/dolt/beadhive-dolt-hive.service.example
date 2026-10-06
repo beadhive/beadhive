@@ -1,0 +1,23 @@
+# systemd unit sketch: Dolt sql-server for the hive server with a read-only DOLT_ROOT_PATH
+# (bh-ijxif). Provision the root once as the OPERATOR (not the service user), see
+# docs/DOLT-SERVER-HARDENING.md:
+#   /etc/beadhive/dolt-hive/root/.dolt/config_global.json   root:root 0444
+#   /etc/beadhive/dolt-hive/root/.dolt                      root:root 0555
+#   /etc/beadhive/dolt-hive/root/.dolt/eventsData           dolt:dolt 0755 (Dolt needs it)
+[Unit]
+Description=Beadhive Dolt sql-server (hive)
+After=network-online.target
+
+[Service]
+User=dolt
+Environment=DOLT_ROOT_PATH=/etc/beadhive/dolt-hive/root
+Environment=HOME=/var/lib/beadhive/dolt-hive/home
+ExecStart=/usr/local/bin/dolt sql-server --config /etc/beadhive/dolt-hive/server.yaml
+ReadOnlyPaths=/etc/beadhive/dolt-hive
+ReadWritePaths=/etc/beadhive/dolt-hive/root/.dolt/eventsData /var/lib/beadhive/dolt-hive
+NoNewPrivileges=true
+ProtectSystem=strict
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

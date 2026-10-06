@@ -1,0 +1,8 @@
+{
+  "expect": {
+    "dolt_force_transaction_commit": "0",
+    "dolt_allow_commit_conflicts": "0",
+    "dolt_transaction_commit": "0",
+    "read_only": "0"
+  }
+}

@@ -1,0 +1,23 @@
+# systemd unit sketch: Dolt sql-server for the hq server with a read-only DOLT_ROOT_PATH
+# (bh-ijxif). Provision the root once as the OPERATOR (not the service user), see
+# docs/DOLT-SERVER-HARDENING.md:
+#   /etc/beadhive/dolt-hq/root/.dolt/config_global.json   root:root 0444
+#   /etc/beadhive/dolt-hq/root/.dolt                      root:root 0555
+#   /etc/beadhive/dolt-hq/root/.dolt/eventsData           dolt:dolt 0755 (Dolt needs it)
+[Unit]
+Description=Beadhive Dolt sql-server (hq)
+After=network-online.target
+
+[Service]
+User=dolt
+Environment=DOLT_ROOT_PATH=/etc/beadhive/dolt-hq/root
+Environment=HOME=/var/lib/beadhive/dolt-hq/home
+ExecStart=/usr/local/bin/dolt sql-server --config /etc/beadhive/dolt-hq/server.yaml
+ReadOnlyPaths=/etc/beadhive/dolt-hq
+ReadWritePaths=/etc/beadhive/dolt-hq/root/.dolt/eventsData /var/lib/beadhive/dolt-hq
+NoNewPrivileges=true
+ProtectSystem=strict
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
