@@ -221,12 +221,22 @@ be closed on Dolt today.** Stated plainly:
 - the primary's hive `dolt sql-server` listens on the LAN only with TLS, and each forwarding
   frame gets its own host-pinned account (`'<principal>'@'<frame address>'`), never a shared
   root login;
+- each forwarder account is granted **per table, never database-wide** (amended 2026-10-06,
+  M13): DML on bd's tables and `dolt_ignore`, `SELECT` on the fence tables, `SELECT, INSERT`
+  on `bh_write_mark`, and no `DOLT_COMMIT` right. A conformance check in provisioning and
+  `bh doctor` refuses any wider grant (M12);
 - a globals watchdog on every primary's hive server asserts `dolt_force_transaction_commit`,
-  `dolt_allow_commit_conflicts`, `dolt_transaction_commit` and `read_only`;
+  `dolt_transaction_commit`, `read_only` and `max_connections`. `dolt_allow_commit_conflicts`
+  is not watched: it is session-only and cannot be set globally (amended 2026-10-06, M13);
 - the server runs with a read-only `DOLT_ROOT_PATH` config, so `SET PERSIST` cannot stick;
-- `fence_audit` remains the after-the-fact detector.
+- before a demoted primary's divert reset, its forwarder sessions are killed, so an in-flight
+  forwarded write is refused rather than acknowledged and then dropped (amended 2026-10-06,
+  M13 E5);
+- `fence_audit` remains the after-the-fact detector, and gains a history check for late-epoch
+  writes (amended 2026-10-06, M1).
 
 None of these stops a session-level `SET`. A forwarder is therefore trusted not to issue one.
+The per-table grants are the only defence against a forwarder rewriting `bh_local_ident`.
 
 **Option B, under spike (M13).** Forward through a bh RPC service on the primary, so executors
 hold no Dolt login at all. The spike also measures whether a forced global on the primary's
@@ -241,8 +251,9 @@ hive's path. If the primary is down, its hive is down with or without B. It adds
 single point of failure, but it is a new trusted network surface, and the spike must show
 that it is smaller than a Dolt login.
 
-**M13 result (`bh-uhx2r`, proposed, awaiting operator decision): NO-GO for B replacing A in
-0.23.0. B is feasible and is deferred.** Full record:
+**M13 result (`bh-uhx2r`, accepted by the operator 2026-10-06): NO-GO for B replacing A in
+0.23.0. B is feasible and is deferred, filed dormant as `bh-453vk`.** The amendments below
+are adopted into condition 16 (above), M12, M1 and M10. Full record:
 [bh-uhx2r-forward-rpc-option-b.md](../spikes/bh-uhx2r-forward-rpc-option-b.md).
 
 - **A forced global lets no stale write land.** The spike ran 15 honest publish paths under
@@ -258,7 +269,7 @@ that it is smaller than a Dolt login.
   - `SELECT` on the fence tables;
   - `SELECT, INSERT` on `bh_write_mark`;
   - no `DOLT_COMMIT` right.
-- **Proposed amendments to M12, M1, M10 and condition 16** (operator decision):
+- **Amendments to M12, M1, M10 and condition 16** (adopted by the operator 2026-10-06):
   - those table-scoped grants, with a conformance check for them;
   - the watchdog list corrected;
   - forwarder sessions killed before a divert reset, because an in-flight forwarded write is
@@ -266,8 +277,8 @@ that it is smaller than a Dolt login.
   - an I3-style history check added to `fence_audit`.
 - **Option B is feasible.** A prototype RPC service carried create, claim and close with one
   winner per claim race and no added latency. It refused SQL, and it failed closed on demotion.
-  B stays on file for when executors are not operator-controlled, or when per-claim
-  authorization or globals become a need.
+  B stays on file as dormant bead `bh-453vk`, for when executors are not operator-controlled,
+  or when per-claim authorization or globals become a need. Scheduling it needs a replan.
 
 ### 4. Failover policy
 

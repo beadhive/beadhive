@@ -10,8 +10,8 @@ new executors) waits on this verdict. M12 (`option A`) does not.
 [`tests/spikes/test_bh_uhx2r_forward_rpc_int.py`](../../tests/spikes/test_bh_uhx2r_forward_rpc_int.py)
 (`integration`, `dolt_server`; six tests, about 4.5 min at `-n 2`). It runs on the bh-jbb6r
 composed prototype ([`tests/harness/composed_fence.py`](../../tests/harness/composed_fence.py)).
-**Status:** **proposed**, awaiting the operator decisions listed at the end of the
-Recommendation. The verdict is noted on the ADR (§3, "M13 result").
+**Status:** **accepted** by the operator 2026-10-06 (decisions recorded at the end of the
+Recommendation). The verdict is noted on the ADR (§3, "M13 result").
 
 ## Question
 
@@ -325,8 +325,11 @@ No replan is triggered. C/O8 may proceed on option A once M12 carries Recommenda
    bd pin bump (condition 9, F3). A bump that lets `DOLT_COMMIT` honour the forced global would
    turn E1 into a landing path and reopen this verdict.
 
-**Needs an operator decision:**
+**Operator decisions (2026-10-06):**
 
-- accept NO-GO (B deferred);
-- adopt Recommendations 1–4 into M12, M1 and M10 and amend condition 16's text;
-- whether to file B (Recommendation 5) now as a dormant bead or leave it to a future replan.
+- NO-GO accepted: B does not replace A in 0.23.0; B is deferred.
+- Recommendations 1–4 adopted into the acceptance criteria of M12 (`bh-g7dlo`), M1
+  (`bh-uz46l`) and M10 (`bh-7p7rf`), and condition 16's text in the ADR (§3, option A) is
+  amended to match.
+- B (Recommendation 5) is filed now as dormant, deferred bead `bh-453vk`, so this decision and
+  its revisit triggers are not lost. Scheduling it needs a replan.
