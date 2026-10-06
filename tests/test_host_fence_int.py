@@ -23,7 +23,7 @@ import uuid
 
 import pytest
 
-from beadhive import engine, gitref, guard, host_fence
+from beadhive import engine, gitref, guard, host_fence, transport_locator
 from beadhive.run import run
 from harness.world import free_port, reap_dolt_server
 
@@ -144,11 +144,11 @@ def test_the_located_transport_repo_is_the_one_that_pushes(
     assert _bd(["create", "--title", "one", "-t", "task", "-p", "2"], hive).returncode == 0
     # bd stages the transport repo lazily, on the FIRST push — before this there is nothing
     # to hook, which is `transport_lookup`'s NOT_FOUND state.
-    assert host_fence.transport_lookup(hive).state == host_fence.NOT_FOUND
+    assert transport_locator.transport_lookup(hive).state == transport_locator.NOT_FOUND
     assert _bd(["dolt", "push"], hive).returncode == 0
 
-    lookup = host_fence.transport_lookup(hive)
-    assert lookup.state == host_fence.FOUND, lookup.detail
+    lookup = transport_locator.transport_lookup(hive)
+    assert lookup.state == transport_locator.FOUND, lookup.detail
     assert len(lookup.repos) == 1
 
     marker = tmp_path / "fired"

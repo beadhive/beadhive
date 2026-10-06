@@ -404,7 +404,7 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     | _owned("hive_repair.py", "detect_node_id", ".beads")
     | _owned("hive_repair.py", "detect_role", ".beads")
     | _owned("hive_repair.py", "detect_server_database", ".beads")
-    | _owned("host_fence.py", "transport_lookup", ".beads")
+    | _owned("transport_locator.py", "transport_lookup", ".beads")
     | _owned("host_provision.py", "_beads_dirs", ".beads")
     | _owned("host_provision.py", "_store_state", ".beads")
     # The selected-SQL readiness probe reads Beads' own binding and Dolt
