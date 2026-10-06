@@ -37,6 +37,13 @@ class CommittedManifestAbsent(FileNotFoundError):
     """A verified selected snapshot contains no document for this host."""
 
 
+def _reject_reason(stored):
+    """Redacted reason code from a receiver ``rejected`` result's revision column (bh-uy398)."""
+    prefix = "reject:"
+    code = stored[len(prefix) :] if isinstance(stored, str) and stored.startswith(prefix) else ""
+    return code if code and code.replace("_", "").isalnum() and len(code) <= 40 else "unspecified"
+
+
 class HqLeaseUnknown(ControlPlaneError):
     """An exact frame proposal may have been accepted; do not refresh its CAS.
 
@@ -2730,6 +2737,13 @@ class SqlControlPlane:
                     raise HqLeaseUnknown(request_id, digest, expected, "deadline")
                 if result is not None:
                     status, revision = result
+                    if status == "rejected":
+                        # bh-uy398: a durable receiver refusal is definite, not an outage.
+                        raise ControlPlaneError(
+                            f"trusted receiver rejected hive lease proposal {request_id}: "
+                            f"reason={_reject_reason(revision)} (a definite refusal, NOT an HQ "
+                            f"outage; the CAS revision {expected} was not consumed)"
+                        )
                     if status != "accepted" or not revision:
                         raise ControlPlaneError("trusted receiver rejected hive lease proposal")
                     return revision

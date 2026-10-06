@@ -156,3 +156,25 @@ def test_cli_adopt_reports_fence_and_proposal_persisted(monkeypatch, tmp_path):
     assert f"request {RID}" in text and f"sha256:{SHA}" in text and "CAS-0" in text
     assert "Do NOT re-run adopt yet" in text
     assert "bh host list --lease-hive ah" in text
+
+
+def test_observed_rejected_row_is_a_definite_rejection_naming_the_reason(monkeypatch):
+    plane = _plane(monkeypatch, _Runtime(None, ("rejected", "reject:policy_mismatch")))
+    with pytest.raises(ControlPlaneError) as out:
+        _publish(plane)
+    assert not isinstance(out.value, HqLeaseUnknown)
+    text = str(out.value)
+    assert "reason=policy_mismatch" in text and RID in text and "NOT an HQ outage" in text
+
+
+def test_rejected_row_without_or_with_hostile_reason_is_redacted(monkeypatch):
+    for stored in (None, "password=hunter2", "reject:password=hunter2 refused"):
+        with pytest.raises(ControlPlaneError) as out:
+            _publish(_plane(monkeypatch, _Runtime(("rejected", stored))))
+        assert "reason=unspecified" in str(out.value) and "hunter2" not in str(out.value)
+
+
+def test_no_row_still_pends_unknown(monkeypatch):
+    plane = _plane(monkeypatch, _Runtime(rt.SqlRuntimeDeadline("deadline")))
+    with pytest.raises(HqLeaseUnknown):
+        _publish(plane)
