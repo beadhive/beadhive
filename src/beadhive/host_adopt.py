@@ -70,6 +70,20 @@ def _next_epoch(fence: EpochFence | None, lease: HostLease | None) -> int:
     return highest + 1
 
 
+def _require_hive_policy(prefix: str, hq_cwd: Path) -> None:
+    """Fail an SQL-HQ adopt closed, pre-mutation, when `prefix` has no signed hive policy."""
+    plane = host_lease._frame_plane(hq_cwd)
+    if getattr(plane, "config_backend", None) != "sql":
+        return
+    check = getattr(plane, "require_hive_policy", None)
+    if check is None:
+        return
+    try:
+        check(prefix)
+    except ValueError as exc:
+        raise HostLeaseRejected(f"{prefix}: adopt refused before the fence moved — {exc}") from None
+
+
 def adopt(
     *,
     prefix: str,
@@ -158,6 +172,11 @@ def adopt(
         )
 
     epoch = _next_epoch(fence, lease)
+
+    # A SQL HQ accepts a hive lease only for a prefix in the operator-signed hive policy.
+    # Refuse here, before the fence moves, rather than strand the hive one epoch further on a
+    # lease that can never be accepted (bh-qv8ig: agent-hitch burned epochs 18-21 this way).
+    _require_hive_policy(prefix, hq_cwd)
 
     # Recheck after the remote reads, immediately before the first mutation.
     frame_eligibility.require_eligible(host_id, {"prefix": prefix}, hq_dir=hq_cwd, at=at)

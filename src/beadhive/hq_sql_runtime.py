@@ -88,6 +88,54 @@ def signed_liveness(settings) -> bool:
     return liveness_mode(settings) == "signed"
 
 
+#: How a hive lease is accepted under signed liveness (bh-qv8ig, the 0.22.x bridge until the
+#: receiver leaves this path in 0.23). ``proposal`` (the default once liveness is ``signed``):
+#: readers resolve the holder from the frame's own signed hive-lease proposals bound to the
+#: hive's current ``refs/bh/epoch`` fence — no receiver acknowledgment is awaited. ``receiver``
+#: restores the 0.22.7 behavior (only the receiver's protected lease row counts). Ignored, but
+#: still validated, in ``receiver`` liveness mode, which is always receiver-accepted.
+HIVE_LEASE_ENV = "BH_HQ_SQL_HIVE_LEASE"
+HIVE_LEASE_MODES = ("proposal", "receiver")
+
+#: Upper bound on distinct authority revisions examined for one prefix at one fence epoch.
+#: Each costs two reads; more than this at a single epoch is not a real adopt history.
+MAX_PROPOSAL_REVISIONS = 32
+
+
+def hive_lease_mode(settings) -> str:
+    """Resolve hive-lease acceptance: ``$BH_HQ_SQL_HIVE_LEASE`` within signed liveness."""
+    raw = os.environ.get(HIVE_LEASE_ENV)
+    if raw is not None and raw not in HIVE_LEASE_MODES:
+        raise SqlRuntimeError(
+            f"{HIVE_LEASE_ENV} must be 'proposal' or 'receiver' (got {raw[:32]!r}); "
+            "unset it for the default"
+        )
+    if not signed_liveness(settings):
+        return "receiver"
+    return raw or "proposal"
+
+
+def signed_hive_lease(settings) -> bool:
+    """Whether hive leases are accepted from signed proposals (no receiver acknowledgment)."""
+    return hive_lease_mode(settings) == "proposal"
+
+
+@dataclass(frozen=True)
+class HiveLeaseEvidence:
+    """Raw, unverified inputs for :func:`beadhive.hq_signed_hive_lease.resolve`.
+
+    ``rows`` are this frame's own ``kind='hive_lease'`` inbox rows that *claim* the requested
+    prefix and fence epoch; ``policies_at`` maps each claimed authority revision to the
+    operator-signed hive policies in force there (``None`` when not verifiable or not in the
+    current history); ``registration_signer`` is the signer of a receiver-accepted
+    registration result for this exact incarnation, if any.
+    """
+
+    rows: tuple
+    policies_at: dict
+    registration_signer: str | None
+
+
 def _payload_bytes(value):
     if isinstance(value, memoryview):
         value = value.tobytes()
@@ -264,8 +312,12 @@ class SqlRuntimeAuthority:
             finally:
                 temporary.unlink(missing_ok=True)
 
-    def verified_state_at(self, cursor, head, *, deadline=None, allow_expired=False):
-        """Verify exact authority bytes on an already-owned SQL transaction."""
+    def _signed_authority_at(self, cursor, head):
+        """Read one ``hq_authority`` row AS OF `head` and verify its bytes and operator signature.
+
+        Returns ``(backend, generation, sequence, crossref, state, policies)``. No expiry,
+        replay-floor or policy-freshness judgement is made here; callers add those.
+        """
         cursor.execute(
             "SELECT singleton_id,schema_version,backend_identity,generation,revision,"
             "config_backend,config_generation,config_head,state_json,state_sha256,"
@@ -332,6 +384,50 @@ class SqlRuntimeAuthority:
             _ascii(signature),
             granted_public_key=self.settings["runtime_operator_public_key"],
         )
+        return (
+            backend,
+            generation,
+            sequence,
+            (config_backend, config_generation, config_head),
+            state,
+            policies,
+        )
+
+    def signed_policies_at(self, cursor, head, revision):
+        """The operator-signed hive policies in force at an earlier authority `revision`.
+
+        ``None`` unless `revision` is a well-formed commit in `head`'s history whose
+        authority row verifies under the pinned operator key, backend and generation. Used
+        by signed hive-lease acceptance (:mod:`beadhive.hq_signed_hive_lease`) to require
+        that a proposal's prefix was authorized *when the frame signed it*, so a proposal
+        that the receiver would have rejected can never be replayed into a lease later.
+        """
+        if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-v]{32}", revision):
+            return None
+        try:
+            if revision != head:
+                cursor.execute("SELECT HAS_ANCESTOR(%s,%s)", (head, revision))
+                if cursor.fetchone()[0] != 1:
+                    return None
+            backend, generation, _sequence, _crossref, _state, policies = self._signed_authority_at(
+                cursor, revision
+            )
+        except (SqlSignatureError, SqlRuntimeError, ValueError, TypeError, KeyError):
+            return None
+        if (
+            backend != self.settings["runtime_backend_identity"]
+            or generation != self.settings["runtime_generation"]
+            or not isinstance(policies, dict)
+        ):
+            return None
+        return policies
+
+    def verified_state_at(self, cursor, head, *, deadline=None, allow_expired=False):
+        """Verify exact authority bytes on an already-owned SQL transaction."""
+        backend, generation, sequence, crossref, state, policies = self._signed_authority_at(
+            cursor, head
+        )
+        config_head = crossref[2]
         guard.validate_state(state)
         validate_sql_hive_policies(
             policies, config_head=config_head, now=self.clock(), require_fresh=False
@@ -348,7 +444,7 @@ class SqlRuntimeAuthority:
         ):
             raise SqlRuntimeError("protected HQ runtime authority expired or inconsistent")
         self._check_floor(cursor, backend, generation, sequence, head, deadline=deadline)
-        return state, (config_backend, config_generation, config_head), policies
+        return state, crossref, policies
 
     def load_config_at(self, cursor, crossref, *, deadline=None):
         """Read committed config through the same physical cross-database transaction.
@@ -570,7 +666,14 @@ class SqlRuntimeAuthority:
         except Exception:
             raise SqlRuntimeError("fresh hive lease reread unavailable") from None
 
-    def read_frame_composite(self, *, prefix: str | None = None, deadline=None, enforce=True):
+    def read_frame_composite(
+        self,
+        *,
+        prefix: str | None = None,
+        deadline=None,
+        enforce=True,
+        hive_lease_epoch: int | None = None,
+    ):
         """Read current config, grant, observer projection and optional hive lease together.
 
         The caller separately applies candidate/holder eligibility to these
@@ -586,6 +689,10 @@ class SqlRuntimeAuthority:
         the latest committed config is read, the signed policy projection is not compared to it,
         and the config fence pins the head actually read. Signatures, the replay floor, the
         principal route and the incarnation match are verified exactly as when enforcing.
+
+        ``hive_lease_epoch`` (signed hive-lease mode, with `prefix`) additionally gathers
+        :class:`HiveLeaseEvidence` for that prefix at that fence epoch from the frame's own
+        inbox, in the same transaction, and returns it as a tenth element.
         """
         signed = signed_liveness(self.settings)
         connection, deadline = self._open(deadline=deadline)
@@ -677,6 +784,11 @@ class SqlRuntimeAuthority:
                         (prefix,),
                     )
                     lease_row = cursor.fetchone()
+                evidence = None
+                if prefix is not None and hive_lease_epoch is not None:
+                    evidence = self._hive_lease_evidence(
+                        cursor, head, route, prefix, hive_lease_epoch
+                    )
                 if time.monotonic() >= deadline:
                     raise SqlRuntimeError("frame composite deadline exceeded")
             connection.rollback()
@@ -688,13 +800,72 @@ class SqlRuntimeAuthority:
                 self.fresh_public_observation_fence(route, observation, deadline=deadline)
             if prefix is not None:
                 self.fresh_hive_lease_fence(prefix, lease_row, deadline=deadline)
-            return head, state, route, slot, record, snapshot, policies, observation, lease_row
+            result = (head, state, route, slot, record, snapshot, policies, observation, lease_row)
+            return result if evidence is None else (*result, evidence)
         except SqlRuntimeError:
             raise
         except Exception:
             raise SqlRuntimeError("qualified frame composite unavailable") from None
         finally:
             connection.close()
+
+    def _hive_lease_evidence(self, cursor, head, route, prefix, epoch) -> HiveLeaseEvidence:
+        """Collect this frame's proposals claiming `prefix` at fence `epoch` (unverified).
+
+        The inbox is sender-written, so this only *pre-filters* on the claimed prefix and
+        lease epoch to bound the work; every row is fully verified by the resolver. The
+        route-derived inbox identifier is never sender-named.
+        """
+        if type(epoch) is not int or epoch < 1:
+            raise SqlRuntimeError("invalid hive lease fence epoch")
+        cursor.execute(
+            f"SELECT request_id,payload,payload_sha256 FROM {route.inbox_table} "
+            "WHERE kind='hive_lease'"
+        )
+        rows, revisions = [], set()
+        for request_id, payload, payload_sha in cursor.fetchall():
+            body = _payload_bytes(payload)
+            if body is None or len(body) > _MAX_HEARTBEAT_BYTES:
+                continue
+            try:
+                request = json.loads(body)["request"]
+                claimed = (request["prefix"], request["lease"]["epoch"])
+                revision = request["authority_revision"]
+            except (ValueError, TypeError, KeyError):
+                continue
+            if claimed != (prefix, epoch) or not isinstance(revision, str):
+                continue
+            rows.append((request_id, body, payload_sha))
+            revisions.add(revision)
+        if len(revisions) > MAX_PROPOSAL_REVISIONS:
+            raise SqlRuntimeError("too many signed hive lease proposals at one fence epoch")
+        policies_at = {
+            revision: self.signed_policies_at(cursor, head, revision)
+            for revision in sorted(revisions)
+        }
+        # The receiver's protected acceptance witness for this incarnation's registration,
+        # through the frame's own grants (its inbox and the public results table): a result
+        # binds the exact payload digest, so a rewritten inbox row cannot borrow it.
+        cursor.execute(
+            f"SELECT r.signer_fingerprint FROM {route.inbox_table} AS i "
+            "JOIN hq_live_results AS r ON r.request_id=i.request_id "
+            "AND r.request_sha256=i.payload_sha256 "
+            "WHERE i.kind='registration' AND r.status='accepted' AND r.principal=%s "
+            "AND r.frame_id=%s AND r.holder_identity=%s AND r.instance_ref=%s AND r.epoch=%s "
+            "AND r.signer_fingerprint=%s LIMIT 1",
+            (
+                route.principal,
+                route.frame_id,
+                route.holder_identity,
+                route.instance_ref,
+                route.epoch,
+                route.signer_fingerprint,
+            ),
+        )
+        registration = cursor.fetchone()
+        return HiveLeaseEvidence(
+            tuple(rows), policies_at, registration[0] if registration else None
+        )
 
     def load_state(self, *, deadline=None, allow_expired=False):
         """Return (authority commit, validated state, exact config cross-reference)."""
