@@ -44,9 +44,12 @@ import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from . import log
+
+if TYPE_CHECKING:
+    from .failover_reclaim import ReclaimPlan
 
 __all__ = [
     "ADOPT_COMMIT_PREFIX",
@@ -58,6 +61,7 @@ __all__ = [
     "AdoptIncomplete",
     "AdoptLost",
     "AdoptReport",
+    "BumpReclaim",
     "CoexistenceOutcome",
     "DataUnreachable",
     "EpochRef",
@@ -74,6 +78,7 @@ __all__ = [
     "adopt_report",
     "bump_statements",
     "coexistence_adopt",
+    "failover_kind",
     "fresh_revision",
     "next_epoch",
     "recovery_command",
@@ -221,6 +226,20 @@ class EpochRef(Protocol):
         Raises :class:`EpochRefLost` (or the fence's own rejection) on a loss."""
 
 
+class BumpReclaim(Protocol):
+    """The failover reclaim hook (M3, :mod:`beadhive.failover_reclaim`): one plan per step-2
+    round, computed from the head that round just synced, whose statements ride in the bump."""
+
+    def plan(self, *, dead_frame: str, frame: str, epoch: int) -> ReclaimPlan: ...
+
+    def after_landed(self, plan: ReclaimPlan) -> None: ...
+
+    def with_kind(self, failover: bool | None) -> BumpReclaim:
+        """The same hook for an adopt of this kind (``True`` failover, ``False`` planned
+        handoff, ``None`` unknown)."""
+        ...
+
+
 # =============================================================================================
 # Pure pieces
 # =============================================================================================
@@ -309,6 +328,9 @@ class Step2Result:
     #: The revision this run committed, when this run's own bump landed.
     revision: str | None = None
     detail: str = ""
+    #: The failover reclaim plan of the round whose bump landed (``None`` when no hook ran, or
+    #: when the bump had already landed in an earlier run: reclaim happens exactly once).
+    reclaim: ReclaimPlan | None = None
 
     @property
     def landed(self) -> bool:
@@ -324,6 +346,7 @@ def run_step2(
     attempts: int | None = None,
     required_triggers: int = FENCE_TRIGGER_COUNT,
     before_push: Callable[[], None] | None = None,
+    reclaim: BumpReclaim | None = None,
 ) -> Step2Result:
     """Adopt step 2: idempotent, safe to re-run after a crash at any point.
 
@@ -331,7 +354,12 @@ def run_step2(
     (``landed`` iff it names ``(frame, epoch)`` — the crash-after-push case, no second bump),
     when placement no longer names ``(frame, epoch)``, or when this node's guard is short of
     ``required_triggers``. Otherwise it commits the bump and pushes; a non-fast-forward loops
-    back to the data check. ``before_push`` is a test seam (one-shot)."""
+    back to the data check. ``before_push`` is a test seam (one-shot).
+
+    ``reclaim`` (failover adopts only, M3): each round asks it for a plan against the head the
+    round synced — the dead frame is the ``bh_writer`` the bump replaces — and appends the plan's
+    statements to the SAME bump commit. A non-fast-forward recomputes; a landed re-run stops at
+    the data check above before asking, so the reclaim is applied exactly once."""
     rounds = step2_attempts(attempts)
     for attempt in range(1, rounds + 1):
         try:
@@ -373,9 +401,12 @@ def run_step2(
                 detail=f"{have} of {required_triggers} bh_* triggers installed on this node",
             )
         revision = fresh_revision(frame, epoch)
-        data.commit_bump(
-            bump_statements(frame, epoch, revision), f"{ADOPT_COMMIT_PREFIX}{frame}@{epoch}"
-        )
+        plan = None
+        statements = bump_statements(frame, epoch, revision)
+        if reclaim is not None:
+            plan = reclaim.plan(dead_frame=current.frame, frame=frame, epoch=epoch)
+            statements += list(plan.statements)
+        data.commit_bump(statements, f"{ADOPT_COMMIT_PREFIX}{frame}@{epoch}")
         if before_push is not None:
             hook, before_push = before_push, None
             hook()
@@ -384,7 +415,9 @@ def run_step2(
         except DataUnreachable as exc:
             return Step2Result(Step2Outcome.UNREACHABLE, epoch, attempt, detail=str(exc))
         if pushed:
-            return Step2Result(Step2Outcome.LANDED, epoch, attempt, revision=revision)
+            if reclaim is not None and plan is not None:
+                reclaim.after_landed(plan)
+            return Step2Result(Step2Outcome.LANDED, epoch, attempt, revision=revision, reclaim=plan)
     return Step2Result(Step2Outcome.RETRIES_EXHAUSTED, epoch, rounds)
 
 
@@ -471,6 +504,20 @@ def _resumable(
     return ref is None or ref.epoch < e or (ref.epoch == e and ref.frame == frame)
 
 
+def failover_kind(frame: str, displaced: PlacementView | None) -> bool | None:
+    """Is the adopt that displaces ``displaced`` a failover (D5a) or a planned handoff (D5c)?
+
+    ``True`` when the displaced placement names another live frame (expired, evicted or
+    forced: the primary is lost), ``False`` when it was released (a tombstone, empty frame) or
+    absent, ``None`` when it already named ``frame`` (a resumed adopt: the record it displaced
+    is gone, so the kind cannot be read back)."""
+    if displaced is None or not displaced.frame:
+        return False
+    if displaced.frame == frame:
+        return None
+    return True
+
+
 def coexistence_adopt(
     data: FenceData,
     placement: PlacementAuthority,
@@ -482,6 +529,8 @@ def coexistence_adopt(
     required_triggers: int = FENCE_TRIGGER_COUNT,
     on_placed: Callable[[PlacementView], None] | None = None,
     before_push: Callable[[], None] | None = None,
+    reclaim: BumpReclaim | None = None,
+    failover: bool | None = None,
 ) -> CoexistenceOutcome:
     """Placement first, then the legacy ref in lockstep, then the idempotent data step 2.
 
@@ -490,9 +539,14 @@ def coexistence_adopt(
     it CASes the ref to ``E`` only if it is still behind, then runs step 2 at ``E``.
 
     ``on_placed`` runs right after a won placement CAS (the caller caches the lease there, so
-    the host itself sees its own half-state). Raises :class:`NotCutOver` (legacy hive, nothing
-    written), :class:`PlacementLost`, :class:`AdoptLost`, :class:`EpochRefLost` or
-    :class:`AdoptIncomplete`."""
+    the host itself sees its own half-state).
+
+    ``reclaim`` is the failover reclaim hook (M3). It runs only when the adopt is a failover:
+    ``failover`` when given, else :func:`failover_kind` of the placement this run displaced. A
+    planned handoff applies nothing; an unknown kind (resumed adopt) writes nothing.
+
+    Raises :class:`NotCutOver` (legacy hive, nothing written), :class:`PlacementLost`,
+    :class:`AdoptLost`, :class:`EpochRefLost` or :class:`AdoptIncomplete`."""
     logger = log.get_logger(__name__)
     # Decide the path from the remote head WITHOUT moving local main: a legacy hive is left
     # exactly as it was. Only a cut-over hive is reset to the remote head (step 2's rule).
@@ -507,6 +561,9 @@ def coexistence_adopt(
     held = ref.read()
 
     resumed = _resumable(frame, placed, writer, history_max, held)
+    kind = failover if failover is not None else failover_kind(frame, placed)
+    if reclaim is not None:
+        reclaim = reclaim.with_kind(kind)  # a non-failover kind plans "skipped", writes nothing
     if resumed:
         assert placed is not None
         epoch = placed.epoch
@@ -555,6 +612,7 @@ def coexistence_adopt(
         attempts=attempts,
         required_triggers=required_triggers,
         before_push=before_push,
+        reclaim=reclaim,
     )
     if result.landed:
         return CoexistenceOutcome(

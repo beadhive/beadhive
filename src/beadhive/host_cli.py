@@ -1282,8 +1282,13 @@ def adopt_cmd(
             f"✓ adopted {prefix} — resumed the incomplete adopt at epoch {outcome.epoch} "
             "(placement already named this host; no new epoch minted)"
         )
-        return
-    typer.echo(f"✓ adopted {prefix} — epoch {outcome.epoch}, expires {outcome.lease.expires_at}")
+    else:
+        typer.echo(
+            f"✓ adopted {prefix} — epoch {outcome.epoch}, expires {outcome.lease.expires_at}"
+        )
+    plan = outcome.coexistence.step2.reclaim if outcome.coexistence is not None else None
+    for line in plan.describe() if plan is not None else ():
+        typer.echo(f"  {line}")
 
 
 @lease_app.command(
