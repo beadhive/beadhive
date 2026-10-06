@@ -7,6 +7,12 @@ import time
 from dataclasses import dataclass, field
 
 LEASE_REF_ROOT = "refs/bh/lease/"
+
+# A hive's epoch fence, deliberately a SIBLING of the data ref rather than anything under
+# `refs/dolt/`. The fence IO lives in :mod:`beadhive.host_fence`; the value contract lives here
+# so the HQ control plane can resolve signed hive leases against it without importing the
+# fence IO module (which would pull it into the config import cycle, bh-nyuyy.3).
+EPOCH_REF = "refs/bh/epoch"
 _TIMESTAMP_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
 
@@ -116,3 +122,28 @@ class HostLease:
             adopted_at=str(record["adopted_at"]),
             expires_at=str(record["expires_at"]),
         )
+
+
+@dataclass(frozen=True)
+class EpochFence:
+    """The value at ``refs/bh/epoch``."""
+
+    epoch: int
+    host_id: str
+    seq: int = 0
+
+    def to_record(self) -> dict:
+        return {"epoch": self.epoch, "host_id": self.host_id, "seq": self.seq}
+
+    @classmethod
+    def from_record(cls, record: dict) -> EpochFence:
+        if "epoch" not in record:
+            raise ValueError("epoch-fence record missing field: epoch")
+        return cls(
+            epoch=int(record["epoch"]),
+            host_id=str(record.get("host_id", "")),
+            seq=int(record.get("seq", 0)),
+        )
+
+    def describe(self) -> str:
+        return f"epoch {self.epoch} (seq {self.seq}) held by {self.host_id or '?'}"

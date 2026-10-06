@@ -154,12 +154,22 @@ def test_the_second_host_loses_the_fence_when_it_races(world, tmp_path):
 
 def _crash_after_fence(monkeypatch, message="simulated crash between the two phases"):
     """Inject a REAL failure into phase 2. Phase 1 has already run for real by the time this
-    fires, so the state the assertions read back is the state a crashed process leaves."""
+    fires, so the state the assertions read back is the state a crashed process leaves.
 
-    def boom(*_a, **_kw):
-        raise RuntimeError(message)
+    ONE-SHOT: only the first phase 2 crashes; every later call is the real, un-patched
+    `host_lease.adopt`, so recovery runs the real code path WITHOUT `monkeypatch.undo()`. Undo
+    would also drop the BH_HOME/HOME sandbox and send the recovery adopt at this host's live
+    host.yaml and HQ lease (bh-7zu86)."""
+    real = host_lease.adopt
+    fired: list[bool] = []
 
-    monkeypatch.setattr(host_adopt.host_lease, "adopt", boom)
+    def crash_once(*a, **kw):
+        if not fired:
+            fired.append(True)
+            raise RuntimeError(message)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(host_adopt.host_lease, "adopt", crash_once)
 
 
 def test_a_crash_between_the_phases_leaves_the_fence_set_and_the_lease_unrecorded(
@@ -184,7 +194,6 @@ def test_the_half_state_means_nobody_may_write(world, monkeypatch, tmp_path):
     _crash_after_fence(monkeypatch)
     with pytest.raises(host_adopt.AdoptHalfDone):
         _adopt(world)
-    monkeypatch.undo()
 
     assert _lease(world) is None  # nobody is the recorded primary
 
@@ -204,7 +213,7 @@ def test_the_half_state_is_recovered_by_simply_re_adopting(world, monkeypatch):
     _crash_after_fence(monkeypatch)
     with pytest.raises(host_adopt.AdoptHalfDone):
         _adopt(world)
-    monkeypatch.undo()  # the crash is over; the REAL code path runs from here
+    # the crash is over: the one-shot injection has fired, so the REAL code path runs from here
 
     assert (_fence(world).epoch, _lease(world)) == (1, None)  # the half-state, verified
 
@@ -222,7 +231,6 @@ def test_recovery_works_for_a_different_host_too(world, monkeypatch, tmp_path):
     _crash_after_fence(monkeypatch)
     with pytest.raises(host_adopt.AdoptHalfDone):
         _adopt(world, host_id=HOST_A)
-    monkeypatch.undo()
 
     other = {
         **world,
@@ -239,7 +247,6 @@ def test_recovery_never_reuses_the_orphaned_epoch(world, monkeypatch):
     _crash_after_fence(monkeypatch)
     with pytest.raises(host_adopt.AdoptHalfDone):
         _adopt(world)
-    monkeypatch.undo()
     orphaned = _fence(world).epoch
     assert _adopt(world).epoch > orphaned
 
