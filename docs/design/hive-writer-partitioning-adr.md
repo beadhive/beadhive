@@ -241,6 +241,34 @@ hive's path. If the primary is down, its hive is down with or without B. It adds
 single point of failure, but it is a new trusted network surface, and the spike must show
 that it is smaller than a Dolt login.
 
+**M13 result (`bh-uhx2r`, proposed, awaiting operator decision): NO-GO for B replacing A in
+0.23.0. B is feasible and is deferred.** Full record:
+[bh-uhx2r-forward-rpc-option-b.md](../spikes/bh-uhx2r-forward-rpc-option-b.md).
+
+- **A forced global lets no stale write land.** The spike ran 15 honest publish paths under
+  `dolt_force_transaction_commit=1`, alone and with `dolt_transaction_commit=1`, and 0 landed.
+  `DOLT_COMMIT` refuses a constraint violation whatever the global says.
+  `dolt_allow_commit_conflicts` is session-only and cannot be set globally.
+- **The exposure is the grant shape.** A forwarder login granted `ALL` on the hive database
+  lands a stale write with no global at all, and once it re-stamps the marks `fence_audit`
+  cannot see it. Database-wide DML lets a forwarder rewrite `bh_local_ident` and become a
+  second writer that nothing detects.
+- **Table-scoped grants close both, and bd's verbs still work.** The shape is:
+  - DML on bd's tables and `dolt_ignore`;
+  - `SELECT` on the fence tables;
+  - `SELECT, INSERT` on `bh_write_mark`;
+  - no `DOLT_COMMIT` right.
+- **Proposed amendments to M12, M1, M10 and condition 16** (operator decision):
+  - those table-scoped grants, with a conformance check for them;
+  - the watchdog list corrected;
+  - forwarder sessions killed before a divert reset, because an in-flight forwarded write is
+    otherwise acknowledged and then dropped;
+  - an I3-style history check added to `fence_audit`.
+- **Option B is feasible.** A prototype RPC service carried create, claim and close with one
+  winner per claim race and no added latency. It refused SQL, and it failed closed on demotion.
+  B stays on file for when executors are not operator-controlled, or when per-claim
+  authorization or globals become a need.
+
 ### 4. Failover policy
 
 - **Time triggers reassignment; it never gates a write.** `HostLease.expires_at` leaves every
