@@ -1798,6 +1798,20 @@ class SqlControlPlane:
                 raise
             raise ControlPlaneError("SQL candidate grant unavailable") from None
 
+    def prune_inbox(self, frame, *, retention_s, dry_run=False):
+        """Operator-side bounded retention of signed-mode heartbeat inbox rows (bh-ce886)."""
+        operator = self._operator()
+        budget = self._operator_deadline()
+        try:
+            return operator.prune_inbox(
+                frame, retention_s=retention_s, dry_run=dry_run, deadline=budget
+            )
+        except ValueError as exc:
+            if isinstance(exc, ControlPlaneError):
+                raise
+            # SqlOperatorError messages are fixed text, never row or credential content.
+            raise ControlPlaneError(f"SQL inbox prune unavailable: {exc}") from None
+
     def bind_beadyard(self, *, expected, operator_key):
         """Bind the existing SQL authority ledger to its current committed HQ ID."""
         operator = self._operator()
