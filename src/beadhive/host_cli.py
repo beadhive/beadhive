@@ -1966,6 +1966,13 @@ def release_upgrade_cmd(
     plan_sha256: str = typer.Option("", "--plan-sha256"),
     operator_key: Annotated[Path | None, typer.Option("--operator-key")] = None,
     confirm: bool = typer.Option(False, "--confirm"),
+    operator_settings: Annotated[
+        str | None,
+        typer.Option(
+            "--operator-settings",
+            help="operator settings file; overrides $BH_HQ_OPERATOR_SETTINGS",
+        ),
+    ] = None,
 ):
     """Review a release rotation of a pending or active SQL frame, preserving identity.
 
@@ -1977,7 +1984,7 @@ def release_upgrade_cmd(
     from .hq_operator_settings import select_plane
 
     try:
-        plane = select_plane()
+        plane = select_plane(operator_settings)
         if not isinstance(plane, SqlControlPlane):
             raise ValueError("release-upgrade requires the protected SQL control plane")
         result = plane.release_upgrade(

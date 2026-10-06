@@ -63,14 +63,40 @@ def authority_cmd(
     ] = 3600,
     client_interpreter: Annotated[Path | None, typer.Option("--client-interpreter")] = None,
     confirm: bool = typer.Option(False, "--confirm"),
+    operator_settings: Annotated[
+        str | None,
+        typer.Option(
+            "--operator-settings",
+            help="operator settings file (JSON/YAML); overrides $BH_HQ_OPERATOR_SETTINGS",
+        ),
+    ] = None,
+    max_duration: Annotated[
+        str | None,
+        typer.Option(
+            "--max-duration",
+            help="renew: authority duration ceiling, seconds or e.g. 7d; overrides "
+            "operator settings and $BH_HQ_AUTHORITY_MAX_DURATION",
+        ),
+    ] = None,
+    min_remaining: Annotated[
+        str | None,
+        typer.Option(
+            "--min-remaining",
+            help="check: fail when less than this remains, e.g. 6h; overrides "
+            "$BH_HQ_AUTHORITY_MIN_REMAINING",
+        ),
+    ] = None,
 ) -> None:
     try:
-        if hq_operator_settings.configured() and action in {"install", "bind"}:
+        if (operator_settings or hq_operator_settings.configured()) and action in {
+            "install",
+            "bind",
+        }:
             raise hq_control_plane.ControlPlaneError(
-                f"{hq_operator_settings.ENV} applies to renew, grant, observe, bind-beadyard, "
-                "status, check and prune-inbox"
+                f"{hq_operator_settings.ENV} / --operator-settings applies to renew, grant, "
+                "observe, bind-beadyard, status, check and prune-inbox"
             )
-        plane = hq_operator_settings.select_plane()
+        plane = hq_operator_settings.select_plane(operator_settings)
         if action == "status":
             # Per-host, per-process: BH_HQ_AUTHORITY_ENFORCE=false (UNSUPPORTED, bh-6pqul).
             result = {
@@ -79,7 +105,11 @@ def authority_cmd(
             }
         elif action == "check":
             try:
-                floor = hq_authority_expiry.min_remaining()
+                floor = (
+                    hq_authority_expiry.parse_duration(min_remaining, name="--min-remaining")
+                    if min_remaining
+                    else hq_authority_expiry.min_remaining()
+                )
             except ValueError as exc:
                 raise hq_control_plane.ControlPlaneError(str(exc)) from None
             healthy, result, message = hq_authority_expiry.check(plane, min_remaining=floor)
@@ -162,10 +192,11 @@ def authority_cmd(
                         holder_identity=holder_id,
                     )
                 elif action == "renew":
-                    # Precedence: operator-settings hq.sql.authority_max_duration_s, then
-                    # $BH_HQ_AUTHORITY_MAX_DURATION, then the 7 d default (bh-od8ve).
+                    # Precedence: --max-duration, operator-settings
+                    # hq.sql.authority_max_duration_s, $BH_HQ_AUTHORITY_MAX_DURATION, then the
+                    # 7 d default (bh-od8ve). Invalid values are refused, never clamped.
                     ceiling = hq_authority_ceiling.resolve_ceiling(
-                        settings=getattr(plane, "authority_max_duration_s", None)
+                        cli=max_duration, settings=getattr(plane, "authority_max_duration_s", None)
                     )
                     sha = plane.renew(
                         expected=expected,

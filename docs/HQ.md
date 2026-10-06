@@ -315,8 +315,8 @@ the read-only surfaces that make it visible:
   `config_bound` (the authority's config head equals the latest head) and `expiring_soon` at the
   top level. It works on a runtime host and with `BH_HQ_OPERATOR_SETTINGS`, on the SQL and Git
   backends, and still reports once the authority has expired.
-- `bh hq authority check` (floor from `BH_HQ_AUTHORITY_MIN_REMAINING`, e.g. `6h`) exits
-  non-zero, with the exact renew command, when the authority is expired, not bound to the
+- `bh hq authority check` (floor from `--min-remaining` (0.23.0+) or
+  `BH_HQ_AUTHORITY_MIN_REMAINING`, e.g. `6h`) exits non-zero, with the exact renew command, when the authority is expired, not bound to the
   latest config head, or has less than that floor left. It exits 0 when healthy. Use it in
   scripts and as the release-upgrade preflight.
 - `bh work claim|check|submit|merge`, `bh plan file` and the start of every validation gate print
@@ -333,7 +333,8 @@ the HQ config head and a new host key breaks older readers of a shared HOST file
 
 A released `bh` builds its control plane from the running host's `host.yaml`. An operator host
 whose `host.yaml` has no `hq.sql.authority_writer` binds it from a file instead, with
-`BH_HQ_OPERATOR_SETTINGS=<file>` on `bh hq authority renew|grant|observe|bind-beadyard|status|check`
+`BH_HQ_OPERATOR_SETTINGS=<file>` (or, from 0.23.0, `--operator-settings <file>`, which wins
+over the env var) on `bh hq authority renew|grant|observe|bind-beadyard|status|check`
 and `bh host release-upgrade plan|apply|check`. The file is JSON or YAML:
 
 ```json
@@ -492,10 +493,10 @@ The signing side refuses a duration above a configurable **ceiling**. The defaul
 may set any positive, finite ceiling. The same ceiling applies to the SQL and Git backends and
 to Git fleet-config publication. Resolution order, first match wins:
 
-1. `--max-duration` on `bh hq authority renew` (pending: adding a CLI parameter to the published
-   `hq.authority` operation needs a wire-catalog decision; the resolver already accepts it)
+1. `--max-duration` on `bh hq authority renew` (0.23.0+; seconds or e.g. `7d`)
 2. `hq.sql.authority_max_duration_s` in the operator settings file (read only through
-   `--operator-settings`; it is never a frame or fleet key)
+   `BH_HQ_OPERATOR_SETTINGS` (all versions) or `--operator-settings` (0.23.0+); it is never a
+   frame or fleet key)
 3. env `BH_HQ_AUTHORITY_MAX_DURATION`
 4. the 7 day default
 

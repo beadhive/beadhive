@@ -153,11 +153,11 @@ host retire|dry_run:boolean:o,backup:boolean:o,confirm:boolean:o,purge:boolean:o
 host emergency-admit|action:string:r,frame_id:string:r,hive:string:o,reason:string:o,duration:integer:o,execution_digest:string:o,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o
 host emergency-revoke|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o
 host frame-retire|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o
-host release-upgrade|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_epoch:integer:o,expected_release:string:o,expected_config_head:string:o,release_id:string:o,release_digest:string:o,profile:string:o,config_revision:string:o,expires_at:number:o,plan_sha256:string:o,operator_key:string:o,confirm:boolean:o
+host release-upgrade|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_epoch:integer:o,expected_release:string:o,expected_config_head:string:o,release_id:string:o,release_digest:string:o,profile:string:o,config_revision:string:o,expires_at:number:o,plan_sha256:string:o,operator_key:string:o,confirm:boolean:o,operator_settings:string:o
 host rm|host_id:string:r,dry_run:boolean:o,confirm:boolean:o,force:boolean:o
 host show|host_id:string:r,as_json:boolean:o
 hq bd|
-hq authority|action:string:r,record:string:o,frame:string:o,public_key:string:o,generation:string:o,expected:string:o,operator_key:string:o,interpreter:string:o,confirm_server_custody:boolean:o,server_root:string:o,socket_path:string:o,policy_digest:string:o,role:string:o,holder_id:string:o,duration:integer:o,client_interpreter:string:o,confirm:boolean:o
+hq authority|action:string:r,record:string:o,frame:string:o,public_key:string:o,generation:string:o,expected:string:o,operator_key:string:o,interpreter:string:o,confirm_server_custody:boolean:o,server_root:string:o,socket_path:string:o,policy_digest:string:o,role:string:o,holder_id:string:o,duration:integer:o,client_interpreter:string:o,confirm:boolean:o,operator_settings:string:o,max_duration:string:o,min_remaining:string:o
 hq beadyard|as_json:boolean:o
 hq beadyard-adopt|expected_revision:string:r,confirm:boolean:o,operator_key:string:o,as_json:boolean:o
 hq beadyard-policy-refresh|expected_policy_digest:string:r,expected_config_head:string:r,expected_config_parent:string:r,anchor:array:r,operator_anchor:string:r,confirm:boolean:o

@@ -8018,6 +8018,14 @@
           "schema": {
             "type": "boolean"
           }
+        },
+        {
+          "name": "operator_settings",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
         }
       ],
       "privilege": "privileged",
@@ -8054,7 +8062,8 @@
             "expires_at",
             "plan_sha256",
             "operator_key",
-            "confirm"
+            "confirm",
+            "operator_settings"
           ],
           "path": "host release-upgrade",
           "progress": {
@@ -8552,6 +8561,30 @@
           "schema": {
             "type": "boolean"
           }
+        },
+        {
+          "name": "operator_settings",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "max_duration",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "min_remaining",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
         }
       ],
       "privilege": "privileged",
@@ -8590,7 +8623,10 @@
             "holder_id",
             "duration",
             "client_interpreter",
-            "confirm"
+            "confirm",
+            "operator_settings",
+            "max_duration",
+            "min_remaining"
           ],
           "path": "hq authority",
           "progress": {

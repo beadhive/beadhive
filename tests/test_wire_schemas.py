@@ -157,6 +157,34 @@ def test_catalog_compatibility_allows_a_unique_additive_operation() -> None:
     assert catalog_compatibility_errors(old, candidate) == []
 
 
+def _append_string_param(catalog: dict, op_name: str, param: str) -> None:
+    operation = _operation(catalog, op_name)
+    operation["parameters"].append(
+        {
+            "name": param,
+            "privilege": "inherited",
+            "required": False,
+            "schema": {"type": "string"},
+        }
+    )
+    operation["surfaces"]["cli"]["parameters"].append(param)
+
+
+def test_catalog_compatibility_allows_only_the_approved_authority_cli_flags() -> None:
+    old = _catalog()
+    old_ops = {o["name"] for o in old["operations"]}
+    assert {"hq.authority", "host.release-upgrade"} <= old_ops
+    approved = deepcopy(old)
+    _append_string_param(approved, "hq.authority", "operator_settings")
+    assert catalog_compatibility_errors(old, approved) == []
+    unapproved = deepcopy(old)
+    _append_string_param(unapproved, "hq.authority", "surprise")
+    assert catalog_compatibility_errors(old, unapproved)
+    wrong_op = deepcopy(old)
+    _append_string_param(wrong_op, "host.release-upgrade", "max_duration")
+    assert catalog_compatibility_errors(old, wrong_op)
+
+
 def test_catalog_compatibility_rejects_duplicate_operation_and_projection_identities() -> None:
     old = _catalog()
     duplicate_operation = deepcopy(old)

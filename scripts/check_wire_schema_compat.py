@@ -760,6 +760,47 @@ def _approved_host_push_draft(old: dict[str, Any], new: dict[str, Any]) -> bool:
     return False
 
 
+# bh-16347.2 (operator decision 2026-10-05): the authority CLI flags ship in the unpublished
+# 2.5.0 minor as appended OPTIONAL string parameters. Old callers never send them, so the
+# addition is wire-compatible, but the generic rule above still forbids list growth. Only these
+# exact (operation, parameter) pairs are exempt, and only when they are optional strings.
+_APPROVED_OPTIONAL_STRING_PARAMS: dict[str, tuple[str, ...]] = {
+    "host.release-upgrade": ("operator_settings",),
+    "hq.authority": ("operator_settings", "max_duration", "min_remaining"),
+}
+_OPTIONAL_STRING_PARAM = {
+    "privilege": "inherited",
+    "required": False,
+    "schema": {"type": "string"},
+}
+
+
+def _without_approved_params(name: str, operation: dict[str, Any]) -> dict[str, Any]:
+    """Drop the approved appended optional parameters (only when they match exactly)."""
+    approved = _APPROVED_OPTIONAL_STRING_PARAMS.get(name)
+    if not approved:
+        return operation
+    candidate = deepcopy(operation)
+    parameters = candidate.get("parameters")
+    cli = candidate.get("surfaces", {}).get("cli", {})
+    if not isinstance(parameters, list):
+        return operation
+    kept = [
+        item
+        for item in parameters
+        if not (
+            isinstance(item, dict)
+            and item.get("name") in approved
+            and {k: v for k, v in item.items() if k != "name"} == _OPTIONAL_STRING_PARAM
+        )
+    ]
+    dropped = {item["name"] for item in parameters if item not in kept}
+    candidate["parameters"] = kept
+    if isinstance(cli.get("parameters"), list):
+        cli["parameters"] = [item for item in cli["parameters"] if item not in dropped]
+    return candidate
+
+
 def _approved_host_push_file(
     version: str, path: Path, old: dict[str, Any], new: dict[str, Any]
 ) -> bool:
@@ -813,8 +854,8 @@ def catalog_compatibility_errors(old: dict[str, Any], new: dict[str, Any]) -> li
         ):
             continue
         _compare_catalog_value(
-            old_operations[name],
-            new_operations[name],
+            _without_approved_params(name, old_operations[name]),
+            _without_approved_params(name, new_operations[name]),
             f"$.operations[name={name!r}]",
             errors,
         )
