@@ -103,6 +103,29 @@ def _stderr_tail(res) -> str:
     return lines[-1] if lines else ""
 
 
+def _cross_line(res) -> str:
+    """First stdout/stderr line starting with bd's failure glyph `✗`, else ''."""
+    for stream in (getattr(res, "stdout", ""), getattr(res, "stderr", "")):
+        for line in (stream or "").splitlines():
+            if line.strip().startswith("✗"):
+                return line.strip()
+    return ""
+
+
+def _sync_failure_marker(data: dict, res) -> str:
+    """Name the in-band failure marker of a rc=0 federation sync, or '' when it is clean."""
+    for result in data.get("results") or []:
+        if not isinstance(result, dict):
+            continue
+        peer = result.get("Peer") or "?"
+        if result.get("Error") not in (None, ""):
+            return f"Error from peer {peer}: {result['Error']!r}"
+        if result.get("Merged") is False:
+            return f"Merged: false for peer {peer}"
+    cross = _cross_line(res)
+    return f"✗ line: {cross}" if cross else ""
+
+
 #: bd's word for "this store has no peer TOWNS", the one sync error that is not a fault.
 #: Reproduced against the real binary (bd HEAD-af076b6) on a throwaway store whose only remote
 #: was named `origin`: `bd federation sync --json` exits 1 with
@@ -616,7 +639,9 @@ class BdEngine:
         except ValueError:
             data = None
         if not isinstance(data, dict):
-            return SyncOutcome(ok=False, error=_stderr_tail(res) or "parse-error")
+            return SyncOutcome(
+                ok=False, error=_cross_line(res) or _stderr_tail(res) or "parse-error"
+            )
         conflicts = _conflict_tables(data.get("conflicts"))
         for result in data.get("results") or []:
             if isinstance(result, dict):
@@ -631,6 +656,11 @@ class BdEngine:
                 conflicts=tuple(conflicts),
                 no_peers=_NO_PEERS in err.lower(),
             )
+        # bd exits 0 yet reports a refused/failed merge in-band (bh-vje85 E9): `Merged: false`,
+        # a non-null `Error` (Go serialises an error value as `{}`), or a `✗` line.
+        failure = _sync_failure_marker(data, res)
+        if failure:
+            return SyncOutcome(ok=False, error=failure, conflicts=tuple(conflicts))
         return SyncOutcome(ok=True, conflicts=tuple(conflicts))
 
 
