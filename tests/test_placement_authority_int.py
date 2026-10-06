@@ -825,10 +825,12 @@ def test_s7_git_hq_down_past_ttl_primary_keeps_writing_and_handoff_is_refused(tm
     parked = hq.with_name("hq.git.unreachable")
     hq.rename(parked)
     past_ttl = time.time() + 3 * 3600
-    # Today's gate: the cached lease is expired, so guard_primary would degrade A to read-only.
-    assert lease.is_expired(past_ttl) and not lease.held_by("A", past_ttl)
+    # Expiry is advisory (bh-12hev): the lease reads as expired past the TTL, but held_by is
+    # clock-free, so the clock alone never revokes A's write authority.
+    assert lease.is_expired(past_ttl) and lease.held_by("A", past_ttl)
+    assert not lease.held_by("B", past_ttl)
 
-    # Proposed gate: A keeps writing — it reads only its own data, never a clock or HQ.
+    # A keeps writing — it reads only its own data, never a clock or HQ.
     for n in range(3):
         assert a.guarded_write(f"a-offline-{n}")
     assert len(hive.head().rows("SELECT id FROM issues WHERE id LIKE 'a-offline-%'")) == 3
