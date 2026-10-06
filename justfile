@@ -899,6 +899,14 @@ test-integration-land:
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
         ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{integration_workers}} tests -m "integration"
 
+# ADR condition 9 (bh-p07dv): re-run the Dolt/bd trigger-semantics canary. REQUIRED on every Dolt
+# or bd pin bump in flake.nix — `just check` fails (tests/test_fence_trigger_canary_pin.py) until
+# this is green on the new binaries and CANARY_PINS in tests/harness/trigger_canary.py matches.
+# The same tests also run on every land, inside `test-integration-land`.
+# run the Dolt/bd trigger-semantics canary (required on every Dolt or bd pin bump)
+fence-canary:
+    ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n auto tests -m "fence_canary"
+
 # PERIODIC ONLY: compare explicit xdist worker counts for both pytest land partitions. This does
 # not feed `PYTEST_XDIST_AUTO_NUM_WORKERS` back into contract tests or any validation recipe.
 # Historical comparison: workers="6,12,18,24". Current-host example: workers="8,16,24,32".

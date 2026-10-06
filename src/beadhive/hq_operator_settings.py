@@ -20,6 +20,8 @@ from .hq_control_plane import ControlPlaneError, SqlControlPlane
 #: Environment variable naming the settings file (no new CLI parameter on published operations).
 ENV = "BH_HQ_OPERATOR_SETTINGS"
 CEILING_KEY = "authority_max_duration_s"
+#: Operator-only retention margin for ``bh hq authority prune-inbox`` (bh-ce886).
+RETENTION_KEY = "inbox_retention_s"
 
 #: Option help shared by every verb that accepts the binding.
 OPTION_HELP = (
@@ -65,6 +67,16 @@ def load_settings(path) -> dict:
             raise ControlPlaneError(
                 f"operator settings key hq.sql.authority_max_duration_s invalid: {exc}"
             ) from None
+    retention = sql.pop(RETENTION_KEY, None)
+    if retention is not None:
+        from .hq_authority_ceiling import parse_duration
+
+        try:
+            parse_duration(retention)
+        except ValueError as exc:
+            raise ControlPlaneError(
+                f"operator settings key hq.sql.{RETENTION_KEY} invalid: {exc}"
+            ) from None
     try:
         validated = HqSqlConfig.model_validate({**sql, "runtime": None})
     except (ValidationError, TypeError, ValueError):
@@ -75,6 +87,8 @@ def load_settings(path) -> dict:
         # Hook for the authority duration ceiling (bh-od8ve): resolve_ceiling(settings=...)
         # consumes this when present in the base; otherwise it is carried, unused.
         settings[CEILING_KEY] = ceiling
+    if retention is not None:
+        settings[RETENTION_KEY] = retention
     return settings
 
 
@@ -82,9 +96,11 @@ def operator_plane(path, *, broker=None, clock=time.time) -> SqlControlPlane:
     """Build a ``SqlControlPlane`` straight from the file, bypassing ``control_plane()``."""
     settings = load_settings(path)
     ceiling = settings.pop(CEILING_KEY, None)
+    retention = settings.pop(RETENTION_KEY, None)
     plane = SqlControlPlane(settings, broker=broker, clock=clock)
     # Passed to hq_authority_ceiling.resolve_ceiling(settings=...) once that lands (bh-od8ve).
     plane.authority_max_duration_s = ceiling
+    plane.inbox_retention_s = retention
     return plane
 
 

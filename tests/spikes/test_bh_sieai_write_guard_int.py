@@ -111,6 +111,7 @@ def _refusal(res: subprocess.CompletedProcess) -> str:
     return res.stdout + res.stderr
 
 
+@pytest.mark.fence_canary  # ADR condition 9: re-run on every Dolt/bd pin bump (bh-p07dv)
 def test_dolt_trigger_semantics_the_guard_depends_on(tmp_path):
     """Pins four Dolt 2.3.5 trigger behaviours that decide the guard's shape (see
     ``harness.write_guard``) and the guard's own refusals on the Dolt CLI."""

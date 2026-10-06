@@ -415,7 +415,7 @@ updates atomic. The settled managed-push sequence is:
 **Mechanism evidence (`bh-tfapu`, 2026-09-13).** The embedded and shared-server integration
 test traces shipped bd's process tree rather than inferring it. bd does invoke real
 `/usr/bin/git push` from exactly the bare transport repo
-`host_fence.transport_lookup` finds, with a transient local ref
+`transport_locator.transport_lookup` finds, with a transient local ref
 `refs/dolt/blobstore/origin/dolt/data/<uuid>`. It also deliberately injects
 `GIT_CONFIG_PARAMETERS='core.hooksPath=/dev/null'`. Thus a transport `pre-push` hook does not
 run, and the transient ref is gone before bh could combine it with `refs/bh/epoch`. There is no
@@ -540,10 +540,10 @@ for it, and the two are namespaced apart on every surface that shows them (`bh h
   tidiness.
 - **`ClaimRecord` carries the `epoch`** it was minted under, as a fencing token, alongside the
   `host_id` the original Consequences list already required (`bh-ytbb.10`).
-- **Atomic receive-pack is not the current bd enforcement point.** The retained `fenced_push`
-  primitive probes it only for callers that own a stable local data ref. Production bd owns a
-  transient ref and suppresses hooks, so managed publication always uses the explicitly
-  non-atomic reserve-before-bd plus exact-postflight sequence (`bh-tfapu`).
+- **Atomic receive-pack is not the current bd enforcement point.** The legacy `fenced_push`
+  primitive (deleted in `bh-vwbxy`) probed it only for callers that own a stable local data
+  ref. Production bd owns a transient ref and suppresses hooks, so managed publication always
+  uses the explicitly non-atomic reserve-before-bd plus exact-postflight sequence (`bh-tfapu`).
 - The `bh host` CLI group named in the original Consequences gains `adopt` / `release` / `packup`
   (`bh-ytbb.13`) over the lease, and a `guard_primary()` check on the write verbs (`bh-ytbb.9`).
 - `bh host` also gains `remove` (`bh-salu`): since `host_id` is minted once and never

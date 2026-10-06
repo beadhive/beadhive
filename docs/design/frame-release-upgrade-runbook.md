@@ -106,6 +106,13 @@ binding (`hq.sql.authority_writer`, `runtime: null`).
    `epoch`, `config_revision`) and `release`. Record them. The authority must be
    current; renew it through its ordinary operator path first if it expires
    within the procedure.
+
+   `check` (like `plan` and `apply`) needs the off-host `hq.sql.authority_writer`
+   binding: run it from an operator host with `BH_HQ_OPERATOR_SETTINGS=<file>`
+   (a `--operator-settings` flag arrives in 0.23.0; see
+   [HQ: Renewing from an operator host](../HQ.md#authority-laptop-renew)). From a
+   frame host without that binding it refuses with "separate authority writer
+   capability unavailable".
 3. **Budget the lease window.** From step 4 until the first accepted beat at
    the new epoch (step 8) the frame is ineligible, so it neither takes new
    claims nor renews its hive lease. Begin only with more than that window left
@@ -113,6 +120,11 @@ binding (`hq.sql.authority_writer`, `runtime: null`).
    and do not cordon the frame first (a cordoned frame cannot renew). Claims
    already in flight keep finishing: their incumbent lease read accepts the
    reviewed predecessor.
+   `BH_FRAME_HEARTBEAT=advisory` does not cover this window: it waives only
+   the `authenticated_fresh_heartbeat` predicate. With no beat at the new epoch
+   there is no lease evidence, so `current_frame_incarnation`, `release_matches`
+   and the other lease-derived predicates still fail and the frame stays
+   ineligible.
 4. **Prepare config.** Through the separately credentialed config publisher,
    publish the canonical `hosts/<uuid>.yaml` with the new `release` and
    explicit `state: active`, identity and capabilities unchanged
@@ -153,8 +165,12 @@ binding (`hq.sql.authority_writer`, `runtime: null`).
    environment. Publish a new signed registration and heartbeats. Verify with
    `bh host release-upgrade check <frame>` and `bh host eligible --hive
    <prefix>`: every predicate, including `release_matches`, must pass on the new
-   digest. The next lease renewal rebinds the lease to the new grant at the
-   same lease epoch, so claims minted before the rotation stay valid.
+   digest. Claims minted before the rotation stay valid because the lease epoch
+   does not change. Do not expect a renewal to rebind the lease to the new
+   grant: in signed liveness mode nothing renews the lease (`renew_if_due`
+   returns without a round trip), so the lease stays bound to the archived
+   predecessor and survives only through `same_incumbent_after_rotation`. In the
+   legacy receiver mode the next lease renewal does rebind it.
 9. **Retire the old environment** only after the frame is eligible and its
    lease has renewed. The old principal can no longer publish (no current grant
    names its epoch); disabling that SQL account is optional hygiene and must not
@@ -177,7 +193,15 @@ authority revision, config head and plan digest in signed
 `release_upgrade_history`. A pending incarnation's archive is bounded to 16
 upgrades; an active incarnation keeps the newest 16 rotations (older SQL
 evidence stays immutable under its own epoch, and epochs never repeat). The
-archive cannot contain recursive history. Ordinary authority publications
+archive cannot contain recursive history.
+
+**16-entry horizon.** `HISTORY_LIMIT = 16` trims the active archive to the newest
+16 entries on every rotation. In signed mode nothing renews the lease, so it
+stays bound to the grant it was adopted under and survives only while that grant
+is still in the archive. Count active-frame rotations per lease: before a 16th
+rotation without a renewal or re-adopt, re-adopt the lease deliberately, rather
+than let its grant fall out of the archive and force an unplanned re-adopt at a
+new lease epoch (which makes in-flight claims refuse their bead write). Ordinary authority publications
 preserve it exactly. This API retains the global signer/holder uniqueness rule;
 it does not enable general identity reuse, release mutation of an existing
 registration, or legacy admission.

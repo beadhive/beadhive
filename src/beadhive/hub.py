@@ -725,7 +725,7 @@ def _hive_commit(cfg, src) -> str | None:
 
     Chosen over two cheaper-looking alternatives that don't hold up: `refs/dolt/data` is NOT
     reliably a local ref in either embedded or shared-server mode (measured directly —
-    `host_fence.transport_lookup`'s docstring: "the local side of the push is a transient
+    `transport_locator.transport_lookup`'s docstring: "the local side of the push is a transient
     `refs/dolt/blobstore/...` ref"), and this hive's own working-tree `.git` HEAD says nothing
     about the separate Dolt data store. `bd vc status` is bd's own supported "what commit is
     this store's data on right now" surface in every mode, and it is dramatically cheaper than

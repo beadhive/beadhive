@@ -24,6 +24,9 @@ from .hq_sql_signatures import (
 )
 from .hq_sql_transport import FnoxBroker, SqlTransportError, connect
 
+#: Heartbeat rows deleted per statement (and per commit) by ``prune_inbox``.
+PRUNE_BATCH = 500
+
 
 class SqlOperatorError(ValueError):
     """Protected operator authority publication is unavailable or conflicted."""
@@ -429,5 +432,113 @@ class SqlRuntimeOperator:
                 connection.rollback()
                 raise SqlOperatorError("protected authority publication unavailable") from None
             raise AuthorityPublicationUnknown(expected_revision) from None
+        finally:
+            connection.close()
+
+    def prune_inbox(self, frame: str, *, retention_s: float, dry_run=False, deadline=None):
+        """Delete expired signed-mode heartbeat rows from a frame's inboxes (bh-ce886).
+
+        Runs only with the operator's ``authority_writer`` credential, which the operator
+        grants ``SELECT, DELETE`` on each inbox table. Frames gain no DELETE. Which rows go
+        is decided by :func:`beadhive.hq_sql_inbox_retention.plan_prune`; an inbox whose
+        incarnation is no longer in the signed authority is skipped, never emptied blind.
+        """
+        from .hq_sql_inbox_retention import plan_prune
+        from .hq_sql_runtime import PrincipalBinding
+
+        if not isinstance(frame, str) or not frame:
+            raise SqlOperatorError("prune requires a frame identity")
+        connection, deadline = self._open(deadline=deadline)
+        try:
+            with connection.cursor() as cursor:
+                self._identity(cursor)
+                cursor.execute("START TRANSACTION")
+                cursor.execute("SELECT DOLT_HASHOF('HEAD')")
+                head = cursor.fetchone()[0]
+                state, _crossref, _policies = self.authority.verified_state_at(
+                    cursor, head, deadline=deadline, allow_expired=True
+                )
+                cursor.execute(
+                    "SELECT principal,frame_id,holder_identity,instance_ref,epoch,"
+                    "inbox_table,signer_fingerprint FROM hq_principal_registry AS OF %s "
+                    "WHERE frame_id=%s",
+                    (head, frame),
+                )
+                routes = [PrincipalBinding(*row) for row in cursor.fetchall()]
+                if not routes:
+                    raise SqlOperatorError("frame has no provisioned inbox")
+                records = [record for identity, record in guard.records(state) if identity == frame]
+                now = self.clock()
+                inboxes, complete = [], True
+                for route in sorted(routes, key=lambda item: item.epoch):
+                    if route.inbox_table != inbox_table(route.principal, route.epoch):
+                        raise SqlOperatorError("protected principal table routing invalid")
+                    matching = [
+                        record
+                        for record in records
+                        if record["authority"]["holder_identity"] == route.holder_identity
+                        and record["authority"]["instance_ref"] == route.instance_ref
+                        and record["authority"]["epoch"] == route.epoch
+                        and record["authority"]["key_fingerprint"] == route.signer_fingerprint
+                    ]
+                    summary = {"inbox": route.inbox_table, "epoch": route.epoch}
+                    if len(matching) != 1:
+                        inboxes.append({**summary, "skipped": "incarnation not in authority"})
+                        continue
+                    cursor.execute(
+                        f"SELECT request_id,payload FROM {route.inbox_table} WHERE kind='heartbeat'"
+                    )
+                    plan = plan_prune(
+                        cursor.fetchall(),
+                        route,
+                        matching[0]["public_key"],
+                        now=now,
+                        retention_s=retention_s,
+                    )
+                    deleted = 0
+                    if not dry_run:
+                        # Each batch commits on its own: a deadline stops between batches with
+                        # the progress kept, so a large first backlog drains over reruns.
+                        for start in range(0, len(plan.delete), PRUNE_BATCH):
+                            if time.monotonic() >= deadline:
+                                complete = False
+                                break
+                            batch = plan.delete[start : start + PRUNE_BATCH]
+                            cursor.execute(
+                                f"DELETE FROM {route.inbox_table} WHERE kind='heartbeat' "
+                                f"AND request_id IN ({','.join(['%s'] * len(batch))})",
+                                tuple(batch),
+                            )
+                            connection.commit()
+                            deleted += len(batch)
+                    if dry_run:
+                        counts = {"would_delete": len(plan.delete), "retained": plan.retained}
+                    else:
+                        left = plan.retained + len(plan.delete) - deleted
+                        counts = {"deleted": deleted, "retained": left}
+                    inboxes.append(
+                        {
+                            **summary,
+                            **counts,
+                            "unparseable": plan.unparseable,
+                            "newest_verified": plan.newest_verified,
+                        }
+                    )
+                    if not complete:
+                        break
+            connection.rollback()
+            return {
+                "frame": frame,
+                "dry_run": bool(dry_run),
+                "complete": complete,
+                "retention_s": retention_s,
+                "inboxes": inboxes,
+            }
+        except SqlOperatorError:
+            connection.rollback()
+            raise
+        except Exception:
+            connection.rollback()
+            raise SqlOperatorError("inbox prune unavailable") from None
         finally:
             connection.close()

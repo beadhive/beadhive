@@ -19,7 +19,7 @@ it unconditionally. The managed boundary is the remote CAS reservation plus post
 
 **Two install locations, one hive — and only ONE of them ever fires for a data push.**
 `bd dolt push`'s `git push` is issued from a HIDDEN bare repo nested under the database
-directory, `<db>/.dolt/git-remote-cache/<hash>/repo.git` (`host_fence.transport_lookup`), in
+directory, `<db>/.dolt/git-remote-cache/<hash>/repo.git` (`transport_locator.transport_lookup`), in
 **every** storage mode — bh's own push and a raw one both go through that same bd-internal
 transport. Measured, not assumed: `bh-ukit.2` instrumented a real `bd dolt push` with a logging
 hook in each candidate location, embedded and shared-server, and the hive checkout's hook never
@@ -67,7 +67,15 @@ import datetime
 import shlex
 from pathlib import Path
 
-from . import config, guard, host_fence, registry, validation_bypass, validation_ledger
+from . import (
+    config,
+    guard,
+    host_fence,
+    registry,
+    transport_locator,
+    validation_bypass,
+    validation_ledger,
+)
 from .run import run
 
 HOOK_FILENAME = "pre-push"
@@ -189,7 +197,7 @@ def install_for_hive(hive_dir: Path, hive: str) -> list[str]:
     main_hooks = _hooks_dir(hive_dir)
     if main_hooks is not None:
         statuses.append(f"{main_hooks}: {_write_hook(main_hooks, hive)}")
-    lookup = host_fence.transport_lookup(hive_dir)
+    lookup = transport_locator.transport_lookup(hive_dir)
     for repo in lookup.repos:
         repo_hooks = _hooks_dir(repo)
         if repo_hooks is not None:

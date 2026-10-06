@@ -1,0 +1,18 @@
+# Dolt sql-server config for a PRIMARY's hive server (bh-ijxif; ADR conditions 15-16).
+# One hive's databases only; never the HQ database. Forwarding frames connect with their own
+# host-pinned account ('<principal>'@'<frame address>'), never a shared root login.
+#
+# Run it with a READ-ONLY DOLT_ROOT_PATH (see docs/DOLT-SERVER-HARDENING.md and
+# beadhive-dolt-hive.service.example) so SET PERSIST cannot stick. This narrows and detects a
+# forwarder forcing a global; it does not stop a session-level SET.
+log_level: info
+
+listener:
+  host: 0.0.0.0              # LAN only
+  port: 3307
+  max_connections: 100
+  require_secure_transport: true
+  tls_cert: /etc/beadhive/dolt-hive/tls/server.crt
+  tls_key: /etc/beadhive/dolt-hive/tls/server.key
+
+data_dir: /var/lib/beadhive/dolt-hive/data
