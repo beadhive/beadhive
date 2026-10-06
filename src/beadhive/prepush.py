@@ -215,13 +215,23 @@ def check_fence(hive_dir: Path, *, cfg=None) -> tuple[bool, str]:
 
     `ok=True` → allow: either the multi-host model isn't in force for this hive (nothing
     adopted — single-host default) or this host currently holds the cached lease. `ok=False`
-    → refuse; `detail` is the operator-facing message (empty on allow).
+    → refuse; `detail` is the operator-facing message (empty on allow). The lease's
+    ``expires_at`` is advisory (bh-12hev), and a cut-over hive is decided by its local
+    ``bh_writer`` exactly as ``guard_primary`` decides it.
 
     The SAME predicate `guard_primary` uses for `bh work`'s write verbs
     (`guard.primary_state`'s cached-lease read: local-only, no HQ round trip) — applied here
     to a git push itself is about to make, which is exactly the gap `bh work`'s own gate
     cannot close (a direct `bd dolt push` never goes through it)."""
     cfg = cfg if cfg is not None else config.load()
+    try:
+        cut_over = guard.writer_state(cfg=cfg, hive_dir=hive_dir)
+    except guard.WriterUnreadable as exc:
+        return False, f"✗ {PREPUSH_FENCE_REFUSAL_MARKER} {exc}"
+    if cut_over is not None:
+        # Cut-over hive (bh-12hev): the local bh_writer decides, clock- and HQ-free.
+        refusal = guard.writer_refusal(cut_over)
+        return (False, refusal) if refusal else (True, "")
     state = guard.primary_state(cfg=cfg, hive_dir=hive_dir)
     if state is None:
         return True, ""  # multi-host not in force here -- nothing to gate

@@ -121,36 +121,19 @@ def test_this_hosts_live_lease_is_allowed(hq, hive, this_host, monkeypatch):
     guard.guard_primary("", cfg={})  # no raise
 
 
-def test_the_held_by_branch_renews_via_host_lease_and_hq_dir_resolved_locally(
-    hq, hive, this_host, monkeypatch
-):
-    """Regression (bh-ytbb.16): bh-ytbb.9's ``primary_state()`` extraction moved the
-    ``host_lease`` import and ``hq_dir`` computation into ``primary_state``'s own scope;
-    bh-ytbb.11's renewal wiring in the ``held_by`` branch then referenced both names as if
-    they were still in ``guard_primary``'s scope. Both merged clean individually — the break
-    only appeared once combined (caught by ``ruff`` F821, not by any test). This calls
-    ``guard_primary()`` end to end while THIS host holds the lease (exercising the exact
-    ``held_by`` branch that dereferences ``host_lease``/``hq_dir``) and spies on
-    ``host_lease.renew_if_due`` so the test fails on a bare ``NameError`` scope break AND on
-    the renewal call being silently dropped altogether."""
+def test_the_held_by_branch_makes_no_renewal_and_no_hq_round_trip(hq, hive, this_host, monkeypatch):
+    """bh-12hev retired the opportunistic renewal this branch used to run (bh-ytbb.11/.16):
+    ``expires_at`` no longer gates a write, so the allow path is a purely local read."""
     monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 1)
     _record_lease(hq, _lease(THIS_HOST))
 
-    calls: list[tuple[tuple, dict]] = []
+    calls: list[str] = []
+    monkeypatch.setattr(host_lease, "renew_if_due", lambda *a, **k: calls.append("renew_if_due"))
+    monkeypatch.setattr(host_lease, "renew", lambda *a, **k: calls.append("renew"))
 
-    def spy(*args, **kwargs):
-        calls.append((args, kwargs))
-        return None  # stand in for "not due yet" — no real renewal attempted
+    guard.guard_primary("", cfg={})
 
-    monkeypatch.setattr(host_lease, "renew_if_due", spy)
-
-    guard.guard_primary("", cfg={})  # must not NameError on host_lease / hq_dir
-
-    assert len(calls) == 1
-    args, kwargs = calls[0]
-    assert args[:2] == ("origin", PREFIX)
-    assert kwargs["host_id"] == THIS_HOST
-    assert kwargs["cwd"] == hq  # guard_primary resolved the SAME hq_dir primary_state read
+    assert calls == []
 
 
 def test_a_foreign_live_lease_is_refused(hq, hive, this_host, monkeypatch, capsys):
@@ -174,12 +157,12 @@ def test_the_refusal_names_the_holder_and_its_expiry(hq, hive, this_host, monkey
     assert host_lease.now_stamp(T0 + 600.0) in err  # until when
 
 
-def test_this_hosts_LAPSED_lease_is_refused_fail_closed(hq, hive, this_host, monkeypatch):
-    """A lapsed lease is exactly the window another host may have taken over in."""
+def test_this_hosts_LAPSED_lease_still_writes_expiry_is_advisory(hq, hive, this_host, monkeypatch):
+    """bh-12hev (ADR §4): time triggers reassignment, it never gates a write. A takeover moves
+    the holder; a superseded writer is stopped by the epoch fence at publication."""
     monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 9999)
     _record_lease(hq, _lease(THIS_HOST, ttl=600.0))
-    with pytest.raises(typer.Exit):
-        guard.guard_primary("", cfg={})
+    guard.guard_primary("", cfg={})  # no raise
 
 
 def test_a_released_tombstone_is_refused(hq, hive, this_host, monkeypatch, capsys):
@@ -854,13 +837,15 @@ def test_signed_mode_env_override_alone_skips_renewal(sql_frame, monkeypatch):
     assert published == []
 
 
-def test_default_mode_refuses_the_same_lapsed_holder_lease(sql_frame, monkeypatch):
+def test_default_mode_allows_the_same_lapsed_holder_lease_expiry_is_advisory(
+    sql_frame, monkeypatch
+):
+    """bh-12hev: expiry is advisory in every HQ mode, not only under signed liveness."""
     select, published = sql_frame
     monkeypatch.setattr(host_lease.time, "time", lambda: T0)
     select("receiver", _lapsed(THIS_HOST, advisory=False))
-    with pytest.raises(typer.Exit):
-        guard.guard_primary("", cfg={})
-    assert published == []
+    guard.guard_primary("", cfg={})  # no raise
+    assert published == []  # and no renewal round trip
 
 
 @pytest.mark.parametrize("liveness", ["receiver", "signed"])

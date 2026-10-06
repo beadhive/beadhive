@@ -2395,7 +2395,7 @@ registry.entry_for_dir=lambda cfg,directory:{"prefix":"bh","requires":{"isolatio
 keeper=localloop.lease_keeper_for("bh",cfg={"host":{"lease":{"ttl":30,"renew_interval":10000}}},hive_dir=cwd)
 assert isinstance(keeper.keeper,localloop.HostLeaseKeeper)
 status=keeper.renew(active=True)
-assert status.held and status.renewed,status
+assert status.held and not status.renewed,status  # renewal retired (bh-12hev)
 """
     )
     result = frame_process(b, keeper_code)

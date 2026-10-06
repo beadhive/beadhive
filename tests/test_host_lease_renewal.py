@@ -1,24 +1,19 @@
-"""The renewal loop's end-to-end behavior through ``guard_primary`` (bh-ytbb.11).
+"""``guard_primary`` with an unreachable HQ, now that renewal is retired (bh-ytbb.11 -> bh-12hev).
 
-Covers the acceptance bar's HQ-unreachable requirement directly, against REAL git plumbing
-rather than a mocked return code:
+ADR ``hive-writer-partitioning-adr.md`` §4 and its Amendment 2 to Amendment 1 §4: "an
+established primary keeps writing indefinitely while HQ is unreachable." ``expires_at`` is a
+failover hint, :meth:`HostLease.held_by` no longer consults it, and ``renew_if_due`` is a
+documented no-op, so these tests now pin the reversed behaviour against REAL git plumbing:
 
-  * an existing primary keeps writing (``guard_primary`` does not raise) as long as its
-    CACHED lease is unexpired — even once HQ becomes unreachable and every opportunistic
-    renewal at a write-verb boundary starts failing;
-  * once that cached lease's own ``expires_at`` elapses, the SAME host degrades to read-only
-    (``guard_primary`` raises) — never guessing that a renewal it never actually confirmed
-    might have landed;
-  * a reachable companion scenario shows the positive case for contrast: renewal DOES extend
-    the cache and DOES keep the write allowed past what would otherwise have been the
-    original expiry.
+  * an existing primary keeps writing through an unreachable HQ, before AND after its cached
+    ``expires_at`` — and no write-verb boundary ever tries to reach HQ;
+  * the cache is never touched by a write verb, reachable HQ or not;
+  * a control-plane failure can no longer surface through ``guard_primary``, because nothing
+    on the allow path calls the control plane.
 
-"HQ unreachable" here means a REAL git remote pointed at a path that was never created — any
-``git ls-remote``/``git push`` against it fails as a genuine subprocess error
-(``gitref.RemoteUnreachable``), not a monkeypatched short-circuit. The only mocked pieces are
-the wall clock (``host_lease.time.time``, matching this suite's existing convention of
-asserting expiry by arithmetic rather than by sleeping) and hive resolution (this test never
-touches a real registered hive or the operator's ``~/.beadhive``).
+"HQ unreachable" here means a REAL git remote pointed at a path that was never created. The
+only mocked pieces are the wall clock (``host_lease.time.time``) and hive resolution (this test
+never touches a real registered hive or the operator's ``~/.beadhive``).
 """
 
 from __future__ import annotations
@@ -26,7 +21,6 @@ from __future__ import annotations
 import subprocess
 
 import pytest
-import typer
 
 from beadhive import guard, host, host_lease, registry
 from beadhive.hq_control_plane import ControlPlaneError, HqLeaseUnknown
@@ -102,97 +96,43 @@ def _at(monkeypatch, clock):
     monkeypatch.setattr(host_lease.time, "time", lambda: clock)
 
 
-# ---- the AC: HQ unreachable, keep writing until the CACHE expires, then degrade -----------
+def _forbid_network(monkeypatch):
+    def boom(*_a, **_kw):
+        raise AssertionError("a write-verb boundary must not reach HQ")
+
+    monkeypatch.setattr(host_lease, "renew", boom)
+    monkeypatch.setattr(host_lease, "refresh_cached", boom)
 
 
-def test_primary_keeps_writing_through_an_unreachable_hq_until_its_cache_expires(
+# ---- the AC: HQ unreachable, keep writing indefinitely --------------------------------------
+
+
+def test_primary_keeps_writing_through_an_unreachable_hq_past_its_cached_expiry(
     hq_dir, hq_remote_path, hive, this_host, tmp_path, monkeypatch
 ):
     _adopt_and_cache(hq_dir, at=T0, ttl=TTL)  # a REAL adopt, HQ reachable at this point
-
-    _at(monkeypatch, T0 + 1)
-    guard.guard_primary("", cfg={})  # well inside the cache: allowed, no raise
-
     _break_hq_remote(hq_dir, tmp_path)  # HQ becomes unreachable from here on
+    _forbid_network(monkeypatch)
 
-    # Past the renew_interval boundary (due for renewal), still inside the TTL: an
-    # opportunistic renewal is attempted at this write-verb boundary and FAILS (HQ
-    # unreachable) — but the write itself is still ALLOWED, on the still-unexpired cache.
-    _at(monkeypatch, T0 + RENEW_INTERVAL + 1)
-    guard.guard_primary("", cfg={})  # no raise: an established primary keeps working
-
-    # The failed renewal must never have fraudulently extended the cache.
-    cached = host_lease.read_cached(PREFIX, cwd=hq_dir)
-    assert cached.expires_at == host_lease.now_stamp(T0 + TTL)
-
-    # Once the ORIGINAL cached lease genuinely expires — HQ still unreachable, so no renewal
-    # ever could have landed — the SAME host degrades to read-only. Never guessed, never
-    # assumed continued primacy past the number the cache itself carries.
-    _at(monkeypatch, T0 + TTL + 1)
-    with pytest.raises(typer.Exit):
-        guard.guard_primary("", cfg={})
-
-
-def test_multiple_write_verb_boundaries_never_extend_the_cache_while_hq_is_unreachable(
-    hq_dir, hq_remote_path, hive, this_host, tmp_path, monkeypatch
-):
-    """Not just one boundary call — repeated opportunistic-renewal attempts across several
-    write verbs must all fail the same way, never eventually "getting lucky" into extending a
-    lease that was never actually renewed."""
-    _adopt_and_cache(hq_dir, at=T0, ttl=TTL)
-    _break_hq_remote(hq_dir, tmp_path)
-
-    for clock in (T0 + 301, T0 + 400, T0 + 500, T0 + 599):
+    for clock in (T0 + 1, T0 + RENEW_INTERVAL + 1, T0 + TTL + 1, T0 + 100 * TTL):
         _at(monkeypatch, clock)
-        guard.guard_primary("", cfg={})  # still allowed: cache not yet expired
+        guard.guard_primary("", cfg={})  # no raise: an established primary keeps working
         cached = host_lease.read_cached(PREFIX, cwd=hq_dir)
         assert cached.expires_at == host_lease.now_stamp(T0 + TTL)  # never moved
 
-    _at(monkeypatch, T0 + TTL + 1)
-    with pytest.raises(typer.Exit):
-        guard.guard_primary("", cfg={})
 
-
-# ---- the reachable companion: renewal DOES extend primacy past the original expiry --------
-
-
-def test_when_hq_stays_reachable_the_opportunistic_renewal_extends_primacy(
+def test_a_reachable_hq_is_not_renewed_by_write_verbs_either(
     hq_dir, hq_remote_path, hive, this_host, monkeypatch
 ):
-    """Contrast case: same shape, HQ never broken. The boundary call past the renew_interval
-    DOES land a real renewal, so a later call — past what would have been the ORIGINAL
-    expiry — is still allowed, on the strength of the extended cache."""
+    """Contrast case: HQ reachable, still no renewal — the write path is local-only."""
     _adopt_and_cache(hq_dir, at=T0, ttl=TTL)
-
+    _forbid_network(monkeypatch)
     _at(monkeypatch, T0 + RENEW_INTERVAL + 1)
-    guard.guard_primary("", cfg={})  # triggers a real, successful renewal
-
-    cached = host_lease.read_cached(PREFIX, cwd=hq_dir)
-    assert cached.expires_at != host_lease.now_stamp(T0 + TTL)  # extended, not the original
-
-    # past the ORIGINAL cache's expiry (T0 + TTL) — still allowed, because renewal landed
-    _at(monkeypatch, T0 + TTL + 1)
-    guard.guard_primary("", cfg={})  # no raise
+    guard.guard_primary("", cfg={})
+    assert host_lease.read_cached(PREFIX, cwd=hq_dir).expires_at == host_lease.now_stamp(T0 + TTL)
 
 
-def test_no_hq_round_trip_at_all_before_the_renew_interval_elapses(
-    hq_dir, hq_remote_path, hive, this_host, monkeypatch
-):
-    """Structural statement of "no HQ round trip within the interval": break HQ immediately
-    after adopt, then confirm every call inside the renew_interval window is still allowed —
-    proving the guard never even ATTEMPTED to reach the (already-broken) remote."""
-    _adopt_and_cache(hq_dir, at=T0, ttl=TTL)
-
-    def boom(*_a, **_kw):
-        raise AssertionError("renew_if_due must not touch the network before it is due")
-
-    monkeypatch.setattr(host_lease, "renew", boom)
-
-    _at(monkeypatch, T0 + RENEW_INTERVAL - 1)  # just inside the window: not due yet
-    guard.guard_primary("", cfg={})  # no raise, and `renew` (the boom above) was never called
-
-
-# ---- bh-jto52: control-plane (SQL) failures are swallowed exactly like git-mode ones ---------
+# ---- bh-jto52's concern is now structural: the allow path never calls the control plane ----
 
 
 @pytest.mark.parametrize(
@@ -205,32 +145,15 @@ def test_no_hq_round_trip_at_all_before_the_renew_interval_elapses(
     ],
     ids=["HqLeaseUnknown", "ControlPlaneError", "SqlRuntimeError", "SqlTransportError"],
 )
-def test_a_control_plane_renew_failure_inside_guard_primary_allows_the_write_and_logs(
+def test_a_control_plane_failure_cannot_reach_guard_primary(
     hq_dir, hive, this_host, monkeypatch, make_error
 ):
-    """renew_if_due's documented contract is log-and-swallow. The SQL control plane raises
-    ValueError-family errors (not HostLeaseError/RemoteUnreachable), which used to escape
-    through guard_primary into the write verb."""
     _adopt_and_cache(hq_dir, at=T0, ttl=TTL)
-
-    seen: list[tuple] = []
-
-    class _Recorder:
-        def warning(self, event, **kw):
-            seen.append((event, kw))
-
-    monkeypatch.setattr(host_lease.log, "get_logger", lambda *_a, **_k: _Recorder())
 
     def boom(*_a, **_k):
         raise make_error()
 
     monkeypatch.setattr(host_lease, "renew", boom)
-
-    _at(monkeypatch, T0 + RENEW_INTERVAL + 1)  # due for renewal, still inside the TTL
+    _at(monkeypatch, T0 + RENEW_INTERVAL + 1)
     guard.guard_primary("", cfg={})  # no raise: the write is allowed
-
-    failures = [kw for evt, kw in seen if evt == "host_lease_renew_if_due_failed"]
-    assert len(failures) == 1
-    assert failures[0]["hive_prefix"] == PREFIX
-    # The failed renewal never extended the cache.
     assert host_lease.read_cached(PREFIX, cwd=hq_dir).expires_at == host_lease.now_stamp(T0 + TTL)

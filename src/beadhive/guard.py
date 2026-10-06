@@ -417,7 +417,7 @@ def writer_state(hive: str = "", *, cfg=None, hive_dir=None, entry=None):
     return prefix, this_frame, writer
 
 
-def _writer_refusal(prefix: str, this_frame: str, writer) -> str:
+def _writer_refusal_text(prefix: str, this_frame: str, writer) -> str:
     """The refusal for a write on a cut-over hive whose local ``bh_writer`` names another frame.
     Same marker as the lease refusal (:data:`PRIMARY_REFUSAL_MARKER`) so callers and operators
     keep one predicate; the source line says it was decided from data, not from a lease."""
@@ -434,7 +434,7 @@ def _writer_refusal(prefix: str, this_frame: str, writer) -> str:
     )
 
 
-def _writer_decision(state) -> str:
+def writer_refusal(state) -> str:
     """``""`` to allow, else the refusal text, for a cut-over `state` from :func:`writer_state`."""
     prefix, this_frame, writer = state
     if this_frame and writer.frame == this_frame:
@@ -448,7 +448,7 @@ def _writer_decision(state) -> str:
         writer_epoch=writer.epoch,
         frame=this_frame,
     )
-    return _writer_refusal(prefix, this_frame, writer)
+    return _writer_refusal_text(prefix, this_frame, writer)
 
 
 def guard_primary(hive: str = "", *, cfg=None, verb: str = "") -> None:
@@ -485,7 +485,7 @@ def guard_primary(hive: str = "", *, cfg=None, verb: str = "") -> None:
         typer.echo(f"✗ {exc}", err=True)
         raise typer.Exit(1) from exc
     if cut_over is not None:
-        refusal = _writer_decision(cut_over)
+        refusal = writer_refusal(cut_over)
         if refusal:
             typer.echo(refusal, err=True)
             raise typer.Exit(1)
@@ -1057,7 +1057,7 @@ def bd_write_refusal(args, cwd, *, cfg=None) -> str:
     if cut_over is not None:
         if is_store_publish(args):
             return _publish_refusal(cut_over[0], args)  # lifted per cut-over hive by M6, not here
-        return _writer_decision(cut_over)
+        return writer_refusal(cut_over)
     from . import frame_eligibility
 
     try:

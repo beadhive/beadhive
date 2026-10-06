@@ -286,12 +286,14 @@ def test_refuses_when_a_foreign_host_holds_the_lease(
     assert OTHER_HOST in detail
 
 
-def test_refuses_when_this_hosts_lease_has_lapsed(hq, this_host, registered, monkeypatch, tmp_path):
-    """Fail-closed, mirroring guard_primary's own lapsed-lease behavior."""
+def test_allows_when_this_hosts_lease_is_past_its_expiry_hint(
+    hq, this_host, registered, monkeypatch, tmp_path
+):
+    """Mirrors guard_primary: expiry is advisory and never gates a write (bh-12hev)."""
     monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 9999)
     _record_lease(hq, _lease(THIS_HOST, ttl=600.0))
     ok, _detail = prepush.check_fence(tmp_path / "hive", cfg={})
-    assert ok is False
+    assert ok is True
 
 
 def test_refusal_names_no_verify_and_the_managed_boundary(

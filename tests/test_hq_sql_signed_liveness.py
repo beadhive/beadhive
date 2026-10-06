@@ -418,7 +418,8 @@ def test_advisory_expiry_is_not_part_of_the_record():
 
 
 def test_advisory_holder_lease_three_hours_past_is_held():
-    assert not _hive_lease().held_by("host-1", NOW)
+    assert _hive_lease().held_by("host-1", NOW)  # bh-12hev: held_by is clock-free everywhere
+    assert _hive_lease().is_expired(NOW)  # ...while the non-advisory hint still reads lapsed
     advisory = _hive_lease(advisory=True)
     assert advisory.held_by("host-1", NOW)
     assert not advisory.is_expired(NOW)
@@ -518,7 +519,8 @@ def test_renew_if_due_is_a_no_op_in_signed_mode(tmp_path, monkeypatch, mode):
     assert host_lease.renew_if_due("origin", "bh", host_id="host-1", cwd=tmp_path, at=NOW) is None
 
 
-def test_renew_if_due_still_renews_in_receiver_mode(tmp_path, monkeypatch):
+def test_renew_if_due_is_a_no_op_in_receiver_mode_too(tmp_path, monkeypatch):
+    """bh-12hev retired renewal in every mode: even a due receiver-mode lease is not renewed."""
     _select_sql(monkeypatch)
     due = _hive_lease(expires=NOW + 10)
     plane = SimpleNamespace(read_hive_lease=lambda prefix, holder_identity: due)
@@ -527,17 +529,17 @@ def test_renew_if_due_still_renews_in_receiver_mode(tmp_path, monkeypatch):
     monkeypatch.setattr(
         host_lease, "renew", lambda *a, **k: renewed.append(k) or SimpleNamespace(sha="s")
     )
-    monkeypatch.setattr(host_lease, "cache", lambda *a, **k: None)
-    assert host_lease.renew_if_due("origin", "bh", host_id="host-1", cwd=tmp_path, at=NOW)
-    assert len(renewed) == 1
+    assert host_lease.renew_if_due("origin", "bh", host_id="host-1", cwd=tmp_path, at=NOW) is None
+    assert renewed == []
 
 
-def test_invalid_env_override_fails_the_renewal_boundary(tmp_path, monkeypatch):
+def test_invalid_env_override_still_fails_at_the_plane_not_at_renewal(tmp_path, monkeypatch):
     _select_sql(monkeypatch, "signed")
     monkeypatch.setenv(LIVENESS_ENV, "maybe")
     _forbid_receiver(monkeypatch)
+    assert host_lease.renew_if_due("origin", "bh", host_id="host-1", cwd=tmp_path, at=NOW) is None
     with pytest.raises(ControlPlaneError, match=LIVENESS_ENV):
-        host_lease.renew_if_due("origin", "bh", host_id="host-1", cwd=tmp_path, at=NOW)
+        _ = SqlControlPlane({"liveness": "signed"}).signed_liveness
 
 
 def test_work_loop_keeper_holds_a_lapsed_signed_lease_without_renewing(tmp_path, monkeypatch):

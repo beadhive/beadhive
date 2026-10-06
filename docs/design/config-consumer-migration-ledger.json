@@ -16,7 +16,7 @@
     "successor_contracts": "beadhive.modules.config.contracts"
   },
   "current": {
-    "config_patch_point_count": 331,
+    "config_patch_point_count": 332,
     "config_patch_points": [
       {
         "facade_target": "beadhive.config.save_fleet",
@@ -731,6 +731,13 @@
         "line": 613,
         "path": "tests/test_guard_primary.py",
         "target": "beadhive.config.load"
+      },
+      {
+        "facade_target": "beadhive.config.fleet_sql_selected",
+        "kind": "direct-facade",
+        "line": 136,
+        "path": "tests/test_guard_writer_gate.py",
+        "target": "beadhive.config.fleet_sql_selected"
       },
       {
         "facade_target": "beadhive.config.load",
@@ -2877,7 +2884,7 @@
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       }
     ],
-    "test_config_importer_count": 160,
+    "test_config_importer_count": 161,
     "test_config_importers": [
       "tests/contracts/test_config_contract_compatibility.py",
       "tests/contracts/test_config_resolution_compatibility.py",
@@ -2940,6 +2947,7 @@
       "tests/test_gitworkspace_plugin.py",
       "tests/test_gitworkspace_seed.py",
       "tests/test_guard_primary.py",
+      "tests/test_guard_writer_gate.py",
       "tests/test_help_hygiene.py",
       "tests/test_hitch_plugin.py",
       "tests/test_hive_add_rm.py",
