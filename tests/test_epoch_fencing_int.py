@@ -653,9 +653,11 @@ def test_s6_hive_sync_bd_sync_and_pull_never_revert_bh_writer(tmp_path):
                 synced = _evidence(recorder, "s6:hive-sync-one-sided", name, _hive_sync(s, "ours"))
             assert step["after"]["remote"]["main"] == step["before"]["remote"]["main"]
             assert remote_fence(cluster)["writer"][0] == "c"
-            # bh reports success although nothing merged: bd prints the merge failure, exits 0,
-            # and serialises the error as {} in --json (see the doc).
-            assert "ok=True" in synced.stdout, synced.output
+            # bd prints the merge failure, exits 0, and serialises the error as {} in --json (see
+            # the doc). bh used to report that as success; since bh-hpzav it reads the in-band
+            # marker and reports the failed sync honestly.
+            assert "ok=False" in synced.stdout, synced.output
+            assert "Error from peer hub" in synced.stdout, synced.output
             sync_to_remote(s)
 
             # Both-changed: a stale ADOPTER (scenario 4 loser) holding its own bump commit.
@@ -696,7 +698,9 @@ def test_s6_hive_sync_bd_sync_and_pull_never_revert_bh_writer(tmp_path):
             with recorder.step(f"s6:{name}:hive-sync-ours-both-changed", name) as step:
                 synced = _evidence(recorder, "s6:hive-sync-both", name, _hive_sync(s, "ours"))
             assert step["after"]["remote"]["main"] == step["before"]["remote"]["main"]
-            assert "ok=True" in synced.stdout, synced.output
+            # Nothing merged, and since bh-hpzav bh says so instead of reporting success.
+            assert "ok=False" in synced.stdout, synced.output
+            assert "Error from peer hub" in synced.stdout, synced.output
             assert remote_fence(cluster)["writer"] == ("c", current)
             assert fence_audit(cluster)["epoch_regressed"] is False
             sync_to_remote(s)
