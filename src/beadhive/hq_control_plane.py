@@ -2768,13 +2768,45 @@ class SqlControlPlane:
         raise AttributeError(name)
 
 
+def _managed_hive_dir(entry) -> Path:
+    """The local checkout of managed hive `entry` — :func:`beadhive.registry.hive_dir`'s layout.
+
+    Resolved through the config facade's composition ports rather than by importing
+    ``registry``, which would pull this module's import edges into the config import cycle
+    (bh-nyuyy.3). ``tests/test_hq_signed_hive_lease.py`` pins parity with ``registry.hive_dir``.
+    """
+    if str(entry.get("kind", "")) == "hq":  # registry.HQ_KIND: local HQ infra, not a triplet
+        return config.hq_dir()
+    return (
+        config._workspace_root_for_transition()
+        / str(entry["provider"])
+        / str(entry["org"])
+        / str(entry["repo"])
+    )
+
+
+def _is_checkout_root(directory: Path) -> bool:
+    """Whether `directory` is the top level of a Git checkout (``git rev-parse``, no path guess)."""
+    result = run(
+        ["git", "-C", str(directory), "rev-parse", "--show-toplevel"],
+        capture=True,
+        check=False,
+        timeout=gitref.GIT_TIMEOUT,
+    )
+    if result.returncode:
+        return False
+    return Path((result.stdout or "").strip()).resolve() == Path(directory).resolve()
+
+
 def _registry_fence_reader(prefix):
     """Read `prefix`'s ``refs/bh/epoch`` from its local clone's ``origin`` — the same remote
     and checkout the two-phase adopt CASes (:func:`beadhive.host_cli` adopt path).
 
-    A hive this host does not carry cannot be resolved here and fails closed.
+    A hive this host does not carry cannot be resolved here and fails closed. The read is
+    ``host_fence.read_fence`` expressed over ``gitref`` and the neutral fence contract, so this
+    module never imports the fence IO module (bh-nyuyy.3 import boundary).
     """
-    from . import host_fence, registry
+    from .host_lease_contracts import EPOCH_REF, EpochFence
 
     entries = [
         entry
@@ -2783,13 +2815,13 @@ def _registry_fence_reader(prefix):
     ]
     if len(entries) != 1:
         raise ControlPlaneError(f"hive {prefix} is not exactly one managed hive on this host")
-    hive_dir = registry.hive_dir(entries[0])
-    if not (Path(hive_dir) / ".git").exists():
+    hive_dir = _managed_hive_dir(entries[0])
+    if not _is_checkout_root(hive_dir):
         raise ControlPlaneError(
             f"hive {prefix} is not cloned on this host; its epoch fence cannot be read"
         )
-    _sha, fence = host_fence.read_fence("origin", cwd=Path(hive_dir))
-    return fence
+    _sha, record = gitref.read_remote("origin", EPOCH_REF, cwd=Path(hive_dir))
+    return None if record is None else EpochFence.from_record(record)
 
 
 def control_plane(hq_dir=None):
