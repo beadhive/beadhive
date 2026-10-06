@@ -42,9 +42,9 @@ The hive lease envelope names the full grant authority, epoch included. A
 lease whose authority is an archived **active** predecessor of the current
 grant counts as the same incumbent (`same_incumbent_after_rotation`). This
 applies in the receiver's renew/release/eviction checks and in the frame's
-incumbent and holder lease reads. The frame therefore *renews* its lease after
-rotation instead of re-adopting it, and the lease epoch, which is the claim
-fencing token, does not change.
+incumbent and holder lease reads. In receiver mode the frame therefore *renews*
+its lease after rotation instead of re-adopting it, and the lease epoch, which
+is the claim fencing token, does not change.
 
 ## Why this is safe
 
@@ -90,7 +90,15 @@ Claims are fenced by the hive lease epoch, not the frame epoch. During the
 cut-over window the frame is ineligible: no new intake and no lease renewal.
 Finishing an existing claim reads the incumbent lease, which accepts the
 predecessor. After the first accepted new-epoch beat, the routine renewal
-rebinds the lease to the new grant at the same lease epoch. If the window
+rebinds the lease to the new grant at the same lease epoch, but only in receiver
+mode. In signed liveness mode nothing renews, so the lease stays bound to the
+archived predecessor and survives only through `same_incumbent_after_rotation`.
+That makes the 16-entry `HISTORY_LIMIT` archive a horizon: before a 16th
+rotation without a renewal or re-adopt, re-adopt the lease deliberately.
+`release-upgrade check` (like `plan` and `apply`) needs the off-host
+`authority_writer` binding (`BH_HQ_OPERATOR_SETTINGS`, see bh-iru2g). The
+`BH_FRAME_HEARTBEAT=advisory` waiver covers only a stale beat, not the missing
+beat of the rotation window. If the window
 outlasts the lease, the frame re-adopts at a new lease epoch. In-flight claims
 then refuse only their bead write, and re-acking with `bh work claim` recovers
 them. The runbook budgets the window against the lease TTL.
