@@ -316,7 +316,8 @@ the read-only surfaces that make it visible:
   top level. It works on a runtime host and with `BH_HQ_OPERATOR_SETTINGS`, on the SQL and Git
   backends, and still reports once the authority has expired.
 - `bh hq authority check` (floor from `--min-remaining` (0.23.0+) or
-  `BH_HQ_AUTHORITY_MIN_REMAINING`, e.g. `6h`) exits non-zero, with the exact renew command, when the authority is expired, not bound to the
+  `BH_HQ_AUTHORITY_MIN_REMAINING`, e.g. `6h`) exits non-zero,
+  with the exact renew command, when the authority is expired, not bound to the
   latest config head, or has less than that floor left. It exits 0 when healthy. Use it in
   scripts and as the release-upgrade preflight.
 - `bh work claim|check|submit|merge`, `bh plan file` and the start of every validation gate print
