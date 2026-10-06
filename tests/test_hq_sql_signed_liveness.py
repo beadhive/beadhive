@@ -18,6 +18,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from beadhive import host, host_lease, localloop
 from beadhive import hq_sql_runtime as runtime
+from beadhive.host_fence import EpochFence
 from beadhive.host_lease_contracts import HostLease, now_stamp
 from beadhive.hq_control_plane import ControlPlaneError, SqlControlPlane
 from beadhive.hq_framelease_contracts import HeartbeatLease
@@ -450,7 +451,10 @@ def _lease_plane(frame, settings, lease):
         observation,
         ("revision-1", body, "request", "sha"),
     )
-    plane = SqlControlPlane(settings, clock=lambda: NOW)
+    # Signed hive-lease mode resolves against the hive's epoch fence (bh-qv8ig); this fixture's
+    # protected row is the lease at the current fence epoch, held by the row's own host.
+    fence = EpochFence(epoch=lease.epoch, host_id=lease.host_id or "host-1")
+    plane = SqlControlPlane(settings, clock=lambda: NOW, fence_reader=lambda _prefix: fence)
     plane._runtime_authority = lambda: SimpleNamespace(
         read_frame_composite=lambda prefix=None, **_: composite
     )

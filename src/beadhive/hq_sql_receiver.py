@@ -32,6 +32,41 @@ class ReceiverError(ValueError):
     """Trusted observer rejected or could not durably accept a frame request."""
 
 
+# bh-uy398: durable, redacted rejection codes. A rejected proposal records one ``rejected`` row in
+# ``hq_live_results`` whose ``result_revision`` column carries ``REJECT_PREFIX + code`` (the column
+# is otherwise a lease revision; revisions are 64-hex digests, so the prefix cannot collide).
+# Readers that only test ``status == 'accepted'`` therefore treat the row as a rejection. The
+# code is derived from the (already redacted) ReceiverError text and never carries driver or
+# credential text. Messages not listed are transient/infrastructure failures and are NOT recorded
+# (a retry could succeed), so the proposer keeps the unknown/pending classification for them.
+REJECT_PREFIX = "reject:"
+_REJECT_CODES = (
+    ("protected hive policy differs", "policy_mismatch"),
+    ("protected hive policy expired", "policy_expired"),
+    ("CAS conflict", "cas_conflict"),
+    ("routed principal differs", "grant_mismatch"),
+    ("signed hive request differs", "grant_mismatch"),
+    ("no active operator-granted frame", "grant_mismatch"),
+    ("frame not authorized", "not_authorized"),
+    ("emergency", "emergency_denied"),
+    ("shape or digest invalid", "shape_invalid"),
+    ("request ID was reused", "request_reused"),
+    ("fresh conformant receipt", "stale_receipt"),
+    ("release requires", "release_denied"),
+    ("renew requires", "renew_denied"),
+    ("adopt hive epoch must advance", "epoch_not_advanced"),
+    ("incumbent", "incumbent_live"),
+)
+
+
+def reject_code(message: str) -> str | None:
+    """Stable redacted code for a deterministic rejection, or None when it is not recordable."""
+    for needle, code in _REJECT_CODES:
+        if needle in message:
+            return code
+    return None
+
+
 class ReceiverUnknown(ReceiverError):
     """The receiver COMMIT acknowledgment was lost; exact request readback is required."""
 
@@ -222,6 +257,50 @@ class SqlTrustedReceiver:
         ):
             raise ReceiverError("bound hive adoption requires current signed registration")
 
+    def _record_rejection(self, connection, request_id, request_sha, ctx, code):
+        """Best-effort durable ``rejected`` result so the proposer sees a definite refusal.
+
+        Only a signature-verified proposal is recorded (``ctx`` is bound to its exact digest,
+        principal and original CAS revision, which is what the public reader matches), only for a
+        deterministic reason ``code``, and never over an existing result. Any failure here is
+        swallowed: the receiver's own error stays the primary signal and the proposer degrades to
+        the unknown/pending classification exactly as before.
+        """
+        if not ctx or not code or not request_sha:
+            return
+        route = ctx["route"]
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("START TRANSACTION")
+                cursor.execute("SELECT 1 FROM hq_live_results WHERE request_id=%s", (request_id,))
+                if cursor.fetchone() is not None:
+                    connection.rollback()
+                    return
+                cursor.execute(
+                    "INSERT INTO hq_live_results VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (
+                        request_id,
+                        request_sha,
+                        route.principal,
+                        route.frame_id,
+                        route.holder_identity,
+                        route.instance_ref,
+                        route.epoch,
+                        ctx["audience"],
+                        route.signer_fingerprint,
+                        ctx["expected_revision"],
+                        REJECT_PREFIX + code,
+                        "rejected",
+                        self.clock(),
+                    ),
+                )
+                connection.commit()
+        except Exception:
+            try:
+                connection.rollback()
+            except Exception:
+                pass
+
     def accept_hive_lease(self, principal: str, request_id: str) -> str:
         """Accept an authenticated proposal with one protected global lease CAS.
 
@@ -234,6 +313,7 @@ class SqlTrustedReceiver:
         connection, deadline = self._open()
         crossed_commit = False
         request_sha = ""
+        reject_ctx: dict = {}
         try:
             with connection.cursor() as cursor:
                 cursor.execute("SELECT CURRENT_USER(),DATABASE(),ACTIVE_BRANCH(),DOLT_VERSION()")
@@ -269,6 +349,13 @@ class SqlTrustedReceiver:
                 request, signed_sha = verify_hive_request(
                     envelope, granted_public_key=record["public_key"]
                 )
+                if isinstance(request.get("expected_revision"), str):
+                    # The signature verified: the rejection can be bound to this exact proposal.
+                    reject_ctx = {
+                        "route": route,
+                        "audience": authority["audience"],
+                        "expected_revision": request["expected_revision"],
+                    }
                 expected_fields = {
                     "domain",
                     "request_id",
@@ -617,9 +704,12 @@ class SqlTrustedReceiver:
 
                     audit("lease-use", record, prefix=prefix, revision=head)
                 return revision
-        except ReceiverError:
+        except ReceiverError as exc:
             if not crossed_commit:
                 connection.rollback()
+                self._record_rejection(
+                    connection, request_id, request_sha, reject_ctx, reject_code(str(exc))
+                )
                 raise
             raise ReceiverUnknown(request_id, request_sha) from None
         except (SqlSignatureError, SqlRuntimeError, ValueError, KeyError, TypeError):
@@ -631,6 +721,10 @@ class SqlTrustedReceiver:
             if not crossed_commit:
                 connection.rollback()
                 if getattr(exc, "args", (None,))[0] in (1213, 1205, 1062):
+                    if getattr(exc, "args", (None,))[0] == 1062:
+                        self._record_rejection(
+                            connection, request_id, request_sha, reject_ctx, "cas_conflict"
+                        )
                     raise ReceiverError("protected hive lease CAS conflict") from None
                 raise ReceiverError("trusted hive lease acceptance unavailable") from None
             raise ReceiverUnknown(request_id, request_sha) from None

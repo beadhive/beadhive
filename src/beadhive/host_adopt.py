@@ -188,6 +188,20 @@ def _next_epoch(fence: EpochFence | None, lease: HostLease | None) -> int:
     return highest + 1
 
 
+def _require_hive_policy(prefix: str, hq_cwd: Path) -> None:
+    """Fail an SQL-HQ adopt closed, pre-mutation, when `prefix` has no signed hive policy."""
+    plane = host_lease._frame_plane(hq_cwd)
+    if getattr(plane, "config_backend", None) != "sql":
+        return
+    check = getattr(plane, "require_hive_policy", None)
+    if check is None:
+        return
+    try:
+        check(prefix)
+    except ValueError as exc:
+        raise HostLeaseRejected(f"{prefix}: adopt refused before the fence moved — {exc}") from None
+
+
 def adopt(
     *,
     prefix: str,
@@ -291,6 +305,11 @@ def adopt(
 
     epoch = _next_epoch(fence, lease)
 
+    # A SQL HQ accepts a hive lease only for a prefix in the operator-signed hive policy.
+    # Refuse here, before the fence moves, rather than strand the hive one epoch further on a
+    # lease that can never be accepted (bh-qv8ig: agent-hitch burned epochs 18-21 this way).
+    _require_hive_policy(prefix, hq_cwd)
+
     # Recheck after the remote reads, immediately before the first mutation.
     frame_eligibility.require_eligible(host_id, {"prefix": prefix}, hq_dir=hq_cwd, at=at)
     if evict and not force and not frame_eligibility.evictable(lease.host_id, hq_dir=hq_cwd, at=at):
@@ -350,6 +369,24 @@ def adopt(
             ),
             error=str(exc),
         )
+        if getattr(exc, "request_id", None) and hasattr(exc, "expected_revision"):
+            # HqLeaseUnknown (bh-ktw0o): the signed proposal WAS submitted; only its
+            # acknowledgment is unknown. Name the request so the operator reads it back
+            # instead of re-adopting, which would advance the fence epoch again.
+            raise AdoptHalfDone(
+                f"adopted the epoch fence for {prefix} (epoch {epoch}) and the signed HQ lease "
+                f"proposal was submitted, but its acknowledgment is UNKNOWN: {exc}\n"
+                f"  Persisted: remote fence = yes (epoch {epoch}); HQ proposal = committed "
+                f"(request {exc.request_id}, digest sha256:{exc.request_sha256}, original CAS "
+                f"revision {exc.expected_revision}); HQ lease = not yet confirmed.\n"
+                f"  Fail-closed: NO host may write {prefix} until the lease is recorded.\n"
+                f"  Do NOT re-run adopt yet — each re-run advances the fence epoch again. First "
+                f"read back with `bh host list --lease-hive {prefix}` (read-only) and look for "
+                f"request {exc.request_id} in the receiver's result. If the lease now names "
+                f"this host at epoch {epoch}, it was accepted; if the receiver rejected it or "
+                f"stays silent, the receiver/placement owner must act, and only then re-adopt "
+                f"(no manual ref surgery)."
+            ) from exc
         raise AdoptHalfDone(
             f"adopted the epoch fence for {prefix} (epoch {epoch}) but failed to record the "
             f"host lease in HQ: {exc}\n"

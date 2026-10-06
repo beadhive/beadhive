@@ -35,6 +35,134 @@ if TYPE_CHECKING:
 # only the concern fixtures it actually needs.
 STATEFUL_CONSUMER_ROOTS = ("tests/",)
 PURE_CONSUMER_ROOTS = ("tests/unit/",)
+# Host/HQ modules additionally arm the real-home guard (bh-7zu86): they are the tests that can
+# reach a live host lease or HQ control plane if the BH_HOME/HOME sandbox is ever dropped.
+REAL_HOME_GUARDED_MODULES = ("test_host", "test_hq")
+
+
+class RealHomeEscape(BaseException):
+    """A guarded test resolved the operator's REAL home, host.yaml or HQ settings (bh-7zu86).
+
+    A ``BaseException`` so production code's broad ``except Exception`` fallbacks cannot swallow
+    it and carry on against live state; every raise is also recorded and re-checked at teardown.
+    """
+
+
+def _operator_roots() -> tuple[Path, ...]:
+    """The operator's real state locations, captured when pytest imports this plugin — before
+    any per-test sandbox exists. Inside the hermetic fence HOME is already a private tmpfs, so
+    only the Beadhive homes beneath it are claimed there."""
+    env = os.environ
+    roots = [Path(os.path.expanduser("~/.beadhive")), Path(os.path.expanduser("~/.ws"))]
+    if env.get("BH_HERMETIC_FENCE") != "1" and env.get("HOME"):
+        roots.append(Path(env["HOME"]))
+    for name in (
+        "BH_HOME",
+        "WS_HOME",
+        "BH_CONFIG",
+        "WS_CONFIG",
+        "BH_HQ",
+        "WS_HQ",
+        "BH_HUB",
+        "WS_HUB",
+        "BH_HQ_OPERATOR_SETTINGS",
+    ):
+        if env.get(name):
+            roots.append(Path(env[name]).expanduser())
+    return tuple(dict.fromkeys(roots))
+
+
+_OPERATOR_ROOTS = _operator_roots()
+
+
+class _RealHomeGuard:
+    """Process-wide tripwire on every resolver of operator state, armed per guarded test.
+
+    The wrappers are installed ONCE, directly (not through any test's ``monkeypatch``), so a test
+    calling ``monkeypatch.undo()`` — the bh-7zu86 escape — cannot remove them. Each wrapper checks
+    the resolved path BEFORE returning it, so an escape raises before any read or write of it.
+    Paths under pytest's own tmp root are always allowed (TMPDIR may live under the real HOME).
+    """
+
+    def __init__(self, roots: tuple[Path, ...]):
+        self.roots = roots
+        self.allowed: Path | None = None
+        self.escapes: list[str] = []
+        self.installed = False
+
+    @property
+    def armed(self) -> bool:
+        return self.allowed is not None
+
+    def check(self, what: str, path) -> None:
+        if not self.armed or path is None:
+            return
+        target = Path(os.path.abspath(Path(path).expanduser()))
+        allowed = self.allowed
+        if target == allowed or allowed in target.parents:
+            return
+        for root in self.roots:
+            root = Path(os.path.abspath(root))
+            if target == root or root in target.parents:
+                message = f"{what} resolved operator state {target} (under {root})"
+                self.escapes.append(message)
+                raise RealHomeEscape(message)
+
+    def install(self) -> None:
+        if self.installed:
+            return
+        from beadhive import config_paths, hq_operator_settings
+
+        guard = self
+
+        def wrap_path(module, name):
+            real = getattr(module, name)
+
+            def guarded(*args, **kwargs):
+                result = real(*args, **kwargs)
+                guard.check(f"{module.__name__}.{name}()", result)
+                return result
+
+            guarded.__wrapped__ = real
+            setattr(module, name, guarded)
+
+        for name in ("home", "config_path", "named_home"):
+            wrap_path(config_paths, name)
+
+        real_load = hq_operator_settings.load_settings
+
+        def guarded_load(path, *args, **kwargs):
+            guard.check("hq_operator_settings.load_settings()", path)
+            return real_load(path, *args, **kwargs)
+
+        guarded_load.__wrapped__ = real_load
+        hq_operator_settings.load_settings = guarded_load
+
+        real_home = Path.home.__func__
+
+        def guarded_home(cls):
+            result = real_home(cls)
+            guard.check("Path.home()", result)
+            return result
+
+        Path.home = classmethod(guarded_home)
+
+        from beadhive import config, home_migration
+
+        real_migrate = home_migration.migrate_home_if_needed
+
+        def guarded_migrate(*args, **kwargs):
+            # The `~/.ws` -> `~/.beadhive` move works on the default homes whenever BH_HOME is
+            # unset; resolving the home first trips the guard before any move or rmtree.
+            config.home()
+            return real_migrate(*args, **kwargs)
+
+        guarded_migrate.__wrapped__ = real_migrate
+        home_migration.migrate_home_if_needed = guarded_migrate
+        self.installed = True
+
+
+_REAL_HOME_GUARD = _RealHomeGuard(_OPERATOR_ROOTS)
 
 
 def _interleave_dolt_items(items, slots):
@@ -65,6 +193,9 @@ def pytest_collection_modifyitems(config, items):
             # Compatibility defaults must establish their empty baseline before an explicit
             # ``world`` or per-test fixture overrides it, matching pytest's former autouse order.
             item.fixturenames.insert(0, "legacy_stateful_test_scope")
+            if item.path.name.startswith(REAL_HOME_GUARDED_MODULES):
+                # First of all, so it arms before (and disarms after) every monkeypatch.
+                item.fixturenames.insert(0, "real_home_guard")
     slots = int(os.environ.get("BH_DOLT_SLOTS", "8"))
     items[:] = _interleave_dolt_items(items, slots)
 
@@ -251,6 +382,18 @@ def _sandbox_bh_home(tmp_path_factory, monkeypatch):
     # expiry/binding/predicates and prints a banner on every command. A dev host's unit file or
     # shell exporting it must not turn fail-closed tests green or add stderr noise.
     monkeypatch.delenv("BH_HQ_AUTHORITY_ENFORCE", raising=False)
+    # An operator shell's own HQ binding/paths (bh-7zu86) must not leak in either: tests that
+    # exercise them set their own after this baseline.
+    for name in (
+        "BH_HQ_OPERATOR_SETTINGS",
+        "BH_CONFIG",
+        "WS_CONFIG",
+        "BH_HQ",
+        "WS_HQ",
+        "BH_HUB",
+        "WS_HUB",
+    ):
+        monkeypatch.delenv(name, raising=False)
     # `bd` loads its own global config from HOME (and XDG_CONFIG_HOME), independently of
     # Beadhive's BH_HOME. Keep a developer's global Beads configuration from changing fixture
     # behavior, particularly embedded-vs-shared-server initialization.
@@ -275,6 +418,23 @@ def _sandbox_bh_home(tmp_path_factory, monkeypatch):
         "  enabled: false\n"
         "  protocol: grpc\n"
     )
+
+
+@pytest.fixture
+def real_home_guard(tmp_path_factory):
+    """Fail the test if it resolves the operator's real BH_HOME, HOME, host.yaml, HQ dir or HQ
+    operator settings (bh-7zu86). Autouse for host/HQ modules via the collection hook above."""
+    guard = _REAL_HOME_GUARD
+    guard.install()
+    guard.allowed = Path(os.path.abspath(tmp_path_factory.getbasetemp()))
+    guard.escapes.clear()
+    try:
+        yield guard
+    finally:
+        escapes, guard.escapes = list(guard.escapes), []
+        guard.allowed = None
+    if escapes:
+        pytest.fail("test escaped the BH_HOME/HOME sandbox:\n  " + "\n  ".join(escapes))
 
 
 @pytest.fixture

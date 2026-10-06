@@ -198,7 +198,15 @@ def world(monkeypatch):
     connection = SimpleNamespace(
         cursor=lambda: cursor,
         close=lambda: None,
-        commit=lambda: setattr(world, "committed", True),
+        # bh-uy398: a durable rejected-result row also commits; ``committed`` tracks lease writes.
+        commit=lambda: setattr(
+            world,
+            "committed",
+            any(
+                sql.startswith(("UPDATE hq_live_hive_leases", "INSERT INTO hq_live_hive_leases"))
+                for sql, _ in cursor.statements
+            ),
+        ),
         rollback=lambda: setattr(world, "rolled_back", True),
     )
     receiver = object.__new__(SqlTrustedReceiver)
@@ -280,3 +288,63 @@ def test_emergency_cannot_renew_another_incumbent(world):
         world.receiver.accept_hive_lease("frame", "request")
     assert not world.committed
     assert not any(sql.startswith("UPDATE") for sql, _ in world.cursor.statements)
+
+
+def _rejected_rows(world):
+    return [
+        params
+        for sql, params in world.cursor.statements
+        if sql.startswith("INSERT INTO hq_live_results") and params[11] == "rejected"
+    ]
+
+
+def test_cas_loss_records_redacted_rejected_result(world):
+    world.request["expected_revision"] = "wrong"
+    with pytest.raises(ReceiverError, match="CAS conflict"):
+        world.receiver.accept_hive_lease("frame", "request")
+    (row,) = _rejected_rows(world)
+    assert row[0] == "request" and row[9] == "wrong"
+    assert row[10] == "reject:cas_conflict" and row[11] == "rejected"
+    assert not world.committed
+
+
+def test_policy_mismatch_records_rejected_result(world, monkeypatch):
+    monkeypatch.setattr(receiver_module, "project_hive_policies", lambda *a, **k: {})
+    with pytest.raises(ReceiverError, match="differs from canonical catalog"):
+        world.receiver.accept_hive_lease("frame", "request")
+    (row,) = _rejected_rows(world)
+    assert row[10] == "reject:policy_mismatch"
+    assert not any(sql.startswith("UPDATE") for sql, _ in world.cursor.statements)
+
+
+def test_transient_failure_records_no_result(world):
+    world.receiver.authority.fresh_runtime_head_fence = lambda *a, **k: (_ for _ in ()).throw(
+        ReceiverError("trusted receiver deadline exceeded")
+    )
+    with pytest.raises(ReceiverError, match="deadline"):
+        world.receiver.accept_hive_lease("frame", "request")
+    assert not _rejected_rows(world)
+
+
+def test_existing_result_is_never_overwritten_by_rejection(world, monkeypatch):
+    world.request["expected_revision"] = "wrong"
+    original = Cursor.execute
+
+    def execute(self, sql, params=None):
+        original(self, sql, params)
+        if sql.startswith("SELECT 1 FROM hq_live_results"):
+            self.rows = [(1,)]
+
+    monkeypatch.setattr(Cursor, "execute", execute)
+    with pytest.raises(ReceiverError):
+        world.receiver.accept_hive_lease("frame", "request")
+    assert not _rejected_rows(world)
+
+
+def test_accepted_result_row_is_unchanged(world):
+    assert world.receiver.accept_hive_lease("frame", "request")
+    inserts = [
+        p for sql, p in world.cursor.statements if sql.startswith("INSERT INTO hq_live_results")
+    ]
+    assert len(inserts) == 1 and inserts[0][11] == "accepted"
+    assert not inserts[0][10].startswith("reject:")

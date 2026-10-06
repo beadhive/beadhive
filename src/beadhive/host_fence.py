@@ -45,9 +45,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import gitref, log
+from .host_lease_contracts import EPOCH_REF, EpochFence
 
-# The fence, deliberately a SIBLING of the data ref rather than anything under `refs/dolt/`.
-EPOCH_REF = "refs/bh/epoch"
+# ``EPOCH_REF`` / ``EpochFence`` (the fence's ref and value) are owned by the neutral lease
+# contracts and stay importable from here; this module owns the fence IO.
 
 # bd/Dolt's state channel. Mirrors `engine.BdEngine.state_channel()`; callers holding a live
 # Engine should pass `engine.get_engine(cfg).state_channel(cwd)` instead of relying on this
@@ -70,31 +71,6 @@ class FenceViolation(FenceError):
     Rejection happens before the data push. A violation means data may already have landed
     and the two hosts must reconcile before another write.
     """
-
-
-@dataclass(frozen=True)
-class EpochFence:
-    """The value at ``refs/bh/epoch``."""
-
-    epoch: int
-    host_id: str
-    seq: int = 0
-
-    def to_record(self) -> dict:
-        return {"epoch": self.epoch, "host_id": self.host_id, "seq": self.seq}
-
-    @classmethod
-    def from_record(cls, record: dict) -> EpochFence:
-        if "epoch" not in record:
-            raise ValueError("epoch-fence record missing field: epoch")
-        return cls(
-            epoch=int(record["epoch"]),
-            host_id=str(record.get("host_id", "")),
-            seq=int(record.get("seq", 0)),
-        )
-
-    def describe(self) -> str:
-        return f"epoch {self.epoch} (seq {self.seq}) held by {self.host_id or '?'}"
 
 
 @dataclass(frozen=True)

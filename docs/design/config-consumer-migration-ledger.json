@@ -2884,13 +2884,14 @@
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       }
     ],
-    "test_config_importer_count": 161,
+    "test_config_importer_count": 163,
     "test_config_importers": [
       "tests/contracts/test_config_contract_compatibility.py",
       "tests/contracts/test_config_resolution_compatibility.py",
       "tests/harness/hive.py",
       "tests/harness/modalities.py",
       "tests/harness/noisy.py",
+      "tests/stateful_fixtures.py",
       "tests/test_alerts.py",
       "tests/test_always_run.py",
       "tests/test_backup.py",
@@ -2979,6 +2980,7 @@
       "tests/test_host_lease.py",
       "tests/test_host_lease_cli.py",
       "tests/test_host_provision.py",
+      "tests/test_host_real_home_guard.py",
       "tests/test_host_retire.py",
       "tests/test_host_rm_cli.py",
       "tests/test_hq.py",

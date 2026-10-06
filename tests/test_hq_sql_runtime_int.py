@@ -1656,7 +1656,8 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
                     audience=takeover_audience,
                     expected_revision=hive_revision,
                 )
-                is None
+                # bh-uy398: receiver rejections are now recorded durably.
+                == ("rejected", "reject:incumbent_live")
             )
             assert plane.read_hive_lease_record("bh", holder_identity="host-1") == (
                 hive_revision,
@@ -1871,7 +1872,16 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
             denied_foreign_beat = receive_identity(foreign_id, kind=None)
             assert denied_foreign_beat.returncode != 0
             assert "differs from protected grant" in denied_foreign_beat.stderr
-            denied_old_registration = receive_identity(new_hive_id)
+            # bh-uy398: a refused proposal id now holds a durable rejected row and cannot be
+            # re-received; each probe below uses a fresh proposal.
+            registration_probe_id, *_ = plane.propose_hive_lease(
+                "bi",
+                new_hive_lease,
+                expected="",
+                operation="adopt",
+                signing_key=str(frame_key),
+            )
+            denied_old_registration = receive_identity(registration_probe_id)
             assert denied_old_registration.returncode != 0
             assert "current signed registration" in denied_old_registration.stderr
             bound_registration = plane.publish_registration_evidence(
@@ -1907,7 +1917,14 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
                     assert cursor.fetchone() == ("accepted",)
             finally:
                 registration_reader.close()
-            adopted_bound = receive_identity(new_hive_id)
+            adopt_bound_id, *_ = plane.propose_hive_lease(
+                "bi",
+                new_hive_lease,
+                expected="",
+                operation="adopt",
+                signing_key=str(frame_key),
+            )
+            adopted_bound = receive_identity(adopt_bound_id)
             assert adopted_bound.returncode == 0, adopted_bound.stderr
             assert plane.read_hive_lease_record("bi", holder_identity="host-1")[1] == (
                 new_hive_lease
