@@ -318,13 +318,7 @@ class BdServerEngine:
         """bd's own login on the server (``BEADS_DOLT_SERVER_USER``, else the persisted
         ``dolt_server_user``, else ``root``): never a forwarder."""
         env = self.env if self.env is not None else os.environ
-        user = env.get("BEADS_DOLT_SERVER_USER", "")
-        if not user:
-            try:
-                meta = json.loads((self.hive_dir / ".beads" / "metadata.json").read_text())
-                user = str(meta.get("dolt_server_user") or "") if isinstance(meta, dict) else ""
-            except (OSError, ValueError):
-                user = ""
+        user = env.get("BEADS_DOLT_SERVER_USER", "") or store_locator.server_user(self.hive_dir)
         return user or "root"
 
     def reset_to_remote(self) -> None:

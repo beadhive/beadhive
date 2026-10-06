@@ -61,6 +61,8 @@ def _forward_cfg(cfg) -> dict:
 
 
 def _server_node(prefix: str, hive_dir: Path):
+    """The hive's server-mode engine (bd's own login on this frame's hive server): the
+    :class:`beadhive.hive_forward.Sql` the primary-side actions run through."""
     from . import fence_data
 
     node = fence_data.node_for(hive_dir)
@@ -69,7 +71,7 @@ def _server_node(prefix: str, hive_dir: Path):
             f"{prefix}: no server-mode hive store on this host at {hive_dir} — the primary side "
             "runs on the frame whose hive dolt sql-server takes forwarders"
         )
-    return node
+    return node.engine
 
 
 def _database(node) -> str:
@@ -181,7 +183,7 @@ def run(
         return
     if action == "quiesce":
         node = _server_node(prefix, hive_dir)
-        login = node.engine.login()
+        login = node.login()
         killed = hive_forward.quiesce(node, operators=[*serve["operators"], login])
         if as_json:
             _emit({"killed": [str(s) for s in killed]})

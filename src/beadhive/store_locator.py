@@ -80,6 +80,11 @@ def project_id(hive_dir: Path) -> str:
     return str(_read_metadata(hive_dir).get("project_id") or "")
 
 
+def server_user(hive_dir: Path) -> str:
+    """The SQL login bd persisted for a server-mode hive (``dolt_server_user``), or ``""``."""
+    return str(_read_metadata(hive_dir).get("dolt_server_user") or "")
+
+
 def embedded_store_dir(hive_dir: Path) -> Path:
     """Where bd's embedded engine keeps its store under ``hive_dir`` — a pure path join, not a
     probe. Callers check ``.is_dir()`` themselves (see :func:`has_embedded_store`)."""

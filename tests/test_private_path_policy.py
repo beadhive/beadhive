@@ -399,6 +399,9 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     # noms directory to memoise the cut-over probe; it creates nothing there.
     | _owned("fence_data.py", "engine_for", ".dolt")
     | _owned("fence_data.py", "_fingerprint", ".dolt")
+    # The forward path's doctor check (bh-g7dlo) stats the operator-configured hive SERVER's
+    # DOLT_ROOT_PATH (not a repository) to prove it read-only; it creates nothing there.
+    | _owned("hive_forward.py", "root_problems", ".dolt")
     | _owned("hive.py", "cleanup_failed_bd_init", ".beads")
     | _owned("hive_migrate.py", "<module>", ".beads")
     | _owned("hive_ready.py", "_deprecation_checks", ".beads/PRIME.md")

@@ -89,8 +89,6 @@ class FakeServer:
             sql,
         ):
             self.users[_account(m.group(1))] = "ANY" if m.group(2) else ""
-        elif m := re.match(r"ALTER USER (\S+) REQUIRE SSL$", sql):
-            self.users[_account(m.group(1))] = "ANY"
         elif re.match(r"ALTER USER \S+ IDENTIFIED WITH", sql):
             pass
         elif m := re.match(r"GRANT (.+) ON `(\w+)`\.`(\w+)` TO (\S+)$", sql):
@@ -275,7 +273,7 @@ def test_provision_is_idempotent_and_regrants_new_tables():
 
 def test_provision_narrows_a_wider_existing_account():
     s = FakeServer()
-    s.grant(FWD, "fx.*", "SELECT", "INSERT", "UPDATE", "DELETE", ssl="")
+    s.grant(FWD, "fx.*", "SELECT", "INSERT", "UPDATE", "DELETE")
     s.grant(FWD, "fx.bh_local_ident", "SELECT", "UPDATE")
     s.grant(FWD, "fx.issues", "SELECT", "GRANT OPTION")
     report = hf.provision(s, database=DB, account=FWD)
@@ -315,6 +313,18 @@ def test_provision_refuses_when_the_result_is_still_wider():
     with pytest.raises(hf.GrantShapeViolation) as caught:
         hf.provision(s, database=DB, account=FWD)
     assert any("holds ALL" in p for p in caught.value.problems)
+
+
+def test_an_account_without_require_ssl_is_recreated_only_with_a_password():
+    s = FakeServer()
+    s.grant(FWD, "fx.*", "ALL PRIVILEGES", ssl="")
+    with pytest.raises(hf.ForwardError, match="cannot add in place"):
+        hf.provision(s, database=DB, account=FWD)
+    s.processes = [(9, FWD.user, "10.0.0.21")]
+    report = hf.provision(s, database=DB, account=FWD, password="pw")
+    assert report.created and s.users[FWD] == "ANY" and s.processes == []
+    assert f"DROP USER {FWD.sql}" in s.log
+    assert hf.conformance(s, database=DB) == []
 
 
 def test_new_account_needs_a_password():
@@ -477,30 +487,29 @@ def test_preflight_passes_on_the_writer():
 
 
 def _hive(tmp_path):
-    """A hive checkout with a git dir and a tracked-style bd metadata.json."""
+    """A git hive checkout with a tracked-style bd metadata.json."""
+    import subprocess
+
     hive = tmp_path / "hive"
-    (hive / ".git").mkdir(parents=True)
+    hive.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(hive)], check=True)
     (hive / ".beads").mkdir()
     meta = {"database": "dolt", "backend": "dolt", "dolt_mode": "server", "dolt_database": DB}
     (hive / ".beads" / "metadata.json").write_text(json.dumps(meta))
     return hive
 
 
-def test_marker_is_git_private_and_shared_by_worktrees(tmp_path):
+def test_marker_is_git_private(tmp_path):
+    from beadhive import private_paths
+
     hive = _hive(tmp_path)
-    assert hf.marker_path(hive) == hive / ".git" / "bh" / "forward.json"
-    # A linked worktree: .git is a file pointing at .git/worktrees/<name>, whose commondir
-    # leads back to the main repository's git dir.
-    wt_git = hive / ".git" / "worktrees" / "w1"
-    wt_git.mkdir(parents=True)
-    (wt_git / "commondir").write_text("../..\n")
-    worktree = tmp_path / "worktrees" / "w1"
-    (worktree / "src").mkdir(parents=True)
-    (worktree / ".git").write_text(f"gitdir: {wt_git}\n")
-    assert hf.marker_path(worktree / "src") == (hive / ".git" / "bh" / "forward.json").resolve()
+    assert hf.marker_path(hive) == private_paths.git_private_path(hive, hf.MARKER)
+    assert hf.marker_path(hive) == (hive / ".git" / "bh" / "forward.json").resolve()
     plain = tmp_path / "plain"
     plain.mkdir()
-    assert hf.marker_path(plain) == plain / ".beads" / hf.MARKER
+    assert hf.marker_path(plain) is None and hf.read_marker(plain) is None
+    with pytest.raises(hf.ForwardError, match="not a git checkout"):
+        hf.point(plain, hf.ForwardTarget("p", 3, EP), prefix=DB, self_frame="me", endpoints={})
 
 
 def test_point_refuse_stop_round_trip_never_touches_tracked_metadata(tmp_path):
@@ -707,12 +716,10 @@ def test_doctor_runs_the_primary_report_on_a_serving_frame(tmp_path, monkeypatch
     server.grant(hf.Account("wide", "10.0.0.3"), "fx.*", "ALL PRIVILEGES")
 
     class Engine(fence_data.BdServerEngine):
-        pass
+        def query(self, sql):
+            return [{"d": DB}] if sql.startswith("SELECT database()") else server.query(sql)
 
     node = fence_data.FenceNode(Engine(hive))
-    node.query = lambda sql: (
-        [{"d": DB}] if sql.startswith("SELECT database()") else server.query(sql)
-    )
     monkeypatch.setattr(host_adopt, "fence_data_for", lambda prefix, path: node)
     cfg = {"host": {"forward": {"serve": {"enabled": True, "operators": ["root"]}}}}
     status = doctor._forward_status(cfg, {"prefix": DB}, hive)
@@ -721,3 +728,94 @@ def test_doctor_runs_the_primary_report_on_a_serving_frame(tmp_path, monkeypatch
     assert any("'wide'@'10.0.0.3': holds ALL" in w for w in warnings)
     assert any("DOLT_ROOT_PATH not checked" in w for w in warnings)
     doctor._forward_cache.clear()
+
+
+# ---- wiring: bh's bd invocation seam ----------------------------------------------------------
+
+
+def test_bd_engine_forwards_only_a_forwarded_checkout_and_fails_closed(tmp_path, monkeypatch):
+    import subprocess
+
+    from beadhive import bd, engine
+
+    calls = []
+    monkeypatch.setattr(
+        bd,
+        "_run",
+        lambda cmd, **k: calls.append((cmd, k)) or subprocess.CompletedProcess(cmd, 0, "", ""),
+    )
+    monkeypatch.setenv(hf.PASSWORD_ENV, "pw")
+    plain, hive = _hive(tmp_path / "a"), _hive(tmp_path / "b")
+    eng = engine.BdEngine()
+
+    eng.invoke(["list"], cwd=plain)
+    assert "env" not in calls[-1][1]  # an ordinary checkout is untouched
+
+    hf.point(hive, hf.ForwardTarget("p", 3, EP), prefix=DB, self_frame="me", endpoints={"p": EP})
+    eng.invoke(["create", "--title", "x"], cwd=hive)
+    env = calls[-1][1]["env"]
+    assert env["BEADS_DOLT_SERVER_HOST"] == "10.0.0.10" and env["BEADS_DOLT_PASSWORD"] == "pw"
+
+    # State push/pull is the primary's job: skipped, nothing run.
+    n = len(calls)
+    pushed = eng.push_state(hive, message="m")
+    assert pushed.returncode == 0 and "primary publishes" in pushed.stdout
+    assert eng.pull_state(hive).returncode == 0 and len(calls) == n
+
+    hf.refuse(hive, "p is demoted", prefix=DB, self_frame="me", endpoints={"p": EP})
+    refused = eng.invoke(["create", "--title", "y"], cwd=hive, capture=True)
+    assert refused.returncode == 1 and "p is demoted" in refused.stderr
+    assert len(calls) == n  # bd never ran
+
+
+# ---- the hidden operator verb -------------------------------------------------------------------
+
+
+def test_cli_actions_are_opt_in_per_frame(tmp_path, capsys):
+    import typer
+
+    from beadhive import hive_forward_cli as cli
+
+    hive = _hive(tmp_path)
+    entry = {"prefix": DB}
+    for action in ("provision", "check", "quiesce", "revoke"):
+        with pytest.raises(typer.Exit) as exc:
+            cli.run(action, cfg={}, entry=entry, hive_dir=hive, account="'a'@'h'")
+        assert exc.value.exit_code == 1
+        assert "host.forward.serve.enabled" in capsys.readouterr().err
+    with pytest.raises(typer.Exit):
+        cli.run("point", cfg={}, entry=entry, hive_dir=hive)
+    assert "host.forward.enabled" in capsys.readouterr().err
+    cli.run("status", cfg={}, entry=entry, hive_dir=hive)
+    assert "not forwarded" in capsys.readouterr().out
+
+
+def test_cli_provision_check_and_quiesce_on_a_serving_frame(tmp_path, monkeypatch, capsys):
+    import typer
+
+    from beadhive import hive_forward_cli as cli
+
+    hive = _hive(tmp_path)
+    server = FakeServer()
+    server.login = lambda: "root"  # type: ignore[attr-defined]
+    real_query = server.query
+    server.query = lambda sql: (
+        [{"d": DB}] if sql.startswith("SELECT database()") else real_query(sql)
+    )
+    monkeypatch.setattr(cli, "_server_node", lambda prefix, path: server)
+    monkeypatch.setenv(cli.NEW_PASSWORD_ENV, "pw")
+    cfg = {"host": {"forward": {"serve": {"enabled": True}}}}
+    entry = {"prefix": DB}
+    cli.run("provision", cfg=cfg, entry=entry, hive_dir=hive, account="'fwd-e1'@'10.0.0.21'")
+    out = capsys.readouterr().out
+    assert "created" in out and "conformant" in out
+    with pytest.raises(typer.Exit):
+        cli.run("provision", cfg=cfg, entry=entry, hive_dir=hive, account="'root'@'10.0.0.21'")
+    assert "shared, root or operator" in capsys.readouterr().err
+    with pytest.raises(typer.Exit) as exc:  # findings: the root path is not configured
+        cli.run("check", cfg=cfg, entry=entry, hive_dir=hive)
+    assert exc.value.exit_code == 1
+    assert "forwarder grants: conformant" in capsys.readouterr().out
+    server.processes = [(5, "fwd-e1", "10.0.0.21"), (6, "root", "localhost")]
+    cli.run("quiesce", cfg=cfg, entry=entry, hive_dir=hive)
+    assert "killed 1 forwarder session" in capsys.readouterr().out

@@ -147,8 +147,8 @@ _READ = frozenset({"SELECT"})
 _MARK = frozenset({"SELECT", "INSERT"})
 _USAGE = frozenset({"USAGE"})
 
-#: The marker's file name when the checkout is not in git (otherwise :func:`marker_path`).
-MARKER = "bh-forward.json"
+#: The marker's file name below the git-private root (:func:`marker_path`).
+MARKER = "forward.json"
 MARKER_VERSION = 1
 #: A forwarder's password when no fnox reference is configured (tests, operator shells).
 PASSWORD_ENV = "BH_FORWARD_PASSWORD"
@@ -434,8 +434,16 @@ class ProvisionReport:
 
 
 def _base_tables(sql: Sql) -> list[str]:
+    """Base table names. The name column is ``Tables_in_<db>``; ``bd sql --json`` does not keep
+    column order, so it is found by name, never by position."""
     rows = sql.query("SHOW FULL TABLES WHERE Table_type = 'BASE TABLE'")
-    return sorted(str(_first(r)) for r in rows)
+    names = []
+    for row in rows:
+        name = next((v for k, v in row.items() if str(k).lower().startswith("tables_in_")), None)
+        if name is None:
+            raise ForwardError(f"unrecognised SHOW FULL TABLES row: {dict(row)!r}"[:200])
+        names.append(str(name))
+    return sorted(names)
 
 
 def _held(sql: Sql, account: Account) -> list:
@@ -456,23 +464,35 @@ def provision(
     Idempotent and gap-free: it revokes only what exceeds the shape (including any
     database-wide or server-wide grant) and grants only what is missing, from the current
     ``SHOW FULL TABLES``. A new account needs ``password``; an existing one keeps its password
-    unless one is given. Raises :class:`ForwardRefused` for a shared, root, operator or
-    unpinned account and :class:`GrantShapeViolation` if the result is still not conformant."""
+    unless one is given. An existing account without ``REQUIRE SSL`` is recreated (Dolt cannot
+    alter it in place), which needs ``password``. Raises :class:`ForwardRefused` for a shared,
+    root, operator or unpinned account and :class:`GrantShapeViolation` if the result is still
+    not conformant."""
     if not _TABLE.fullmatch(database):
         raise ForwardError(f"not a plain database name: {database!r}")
     problems = account_problems(account, operators)
     if problems:
         raise ForwardRefused(f"{account}: " + "; ".join(problems))
-    existing = [a for a, _ in _accounts(sql) if a.user == account.user]
+    existing = {a: ssl for a, ssl in _accounts(sql) if a.user == account.user}
     others = sorted(a.host for a in existing if a.host != account.host)
     if others:
         raise ForwardRefused(
             f"{account}: principal {account.user!r} already exists for {', '.join(others)} — a "
             "forwarder login is per frame, never shared; pick another principal"
         )
-    created = account not in existing
     statements: list[str] = []
     tls = " REQUIRE SSL" if require_tls else ""
+    created = account not in existing
+    if not created and require_tls and not existing[account]:
+        # Dolt 2.3.5 has no ALTER USER … REQUIRE: an account made without it is recreated.
+        if not password:
+            raise ForwardError(
+                f"{account}: exists without REQUIRE SSL, which Dolt cannot add in place — "
+                "re-provision with a password to recreate it TLS-only"
+            )
+        quiesce(sql, operators=operators, only=[account])
+        statements.append(f"DROP USER {account.sql}")
+        created = True
     if created:
         if not password:
             raise ForwardError(f"{account}: a new forwarder account needs a password")
@@ -480,14 +500,11 @@ def provision(
             f"CREATE USER {account.sql} IDENTIFIED WITH mysql_native_password AS "
             f"{quote(native_password_hash(password))}{tls}"
         )
-    else:
-        if password:
-            statements.append(
-                f"ALTER USER {account.sql} IDENTIFIED WITH mysql_native_password AS "
-                f"{quote(native_password_hash(password))}"
-            )
-        if require_tls:
-            statements.append(f"ALTER USER {account.sql} REQUIRE SSL")
+    elif password:
+        statements.append(
+            f"ALTER USER {account.sql} IDENTIFIED WITH mysql_native_password AS "
+            f"{quote(native_password_hash(password))}"
+        )
     if statements:
         sql.execute(statements)
 
@@ -882,40 +899,28 @@ class Marker:
         }
 
 
-def _git_common_dir(start: Path) -> Path | None:
-    """The git common dir of the checkout holding ``start`` (a worktree resolves to its main
-    repository's), found from the filesystem alone."""
-    for directory in (start, *start.parents):
-        dot = directory / ".git"
-        if dot.is_dir():
-            return dot
-        if dot.is_file():
-            text = dot.read_text(errors="replace").strip()
-            if not text.startswith("gitdir:"):
-                return None
-            gitdir = Path(text.removeprefix("gitdir:").strip())
-            if not gitdir.is_absolute():
-                gitdir = (directory / gitdir).resolve()
-            common = gitdir / "commondir"
-            if common.is_file():
-                target = Path(common.read_text().strip())
-                return target if target.is_absolute() else (gitdir / target).resolve()
-            return gitdir
-    return None
+_marker_paths: dict[str, Path | None] = {}
 
 
-def marker_path(hive_dir: Path | str) -> Path:
-    """``<git common dir>/bh/forward.json``: one marker for a hive checkout and all of its
-    worktrees, never tracked. A directory outside git keeps it in ``.beads/`` instead."""
-    common = _git_common_dir(Path(hive_dir).resolve())
-    if common is None:
-        return Path(hive_dir) / ".beads" / MARKER
-    return common / "bh" / "forward.json"
+def marker_path(hive_dir: Path | str) -> Path | None:
+    """``<git common dir>/bh/forward.json`` (:func:`beadhive.private_paths.git_private_path`):
+    one marker for a hive checkout and all of its worktrees, never tracked. ``None`` outside a
+    git checkout, where nothing can be forwarded. Memoised per directory for the process: bh
+    asks on every bd it runs, and a checkout's git common dir does not move under it."""
+    from .private_paths import git_private_path
+
+    key = str(Path(hive_dir).absolute())
+    if key not in _marker_paths:
+        _marker_paths[key] = git_private_path(hive_dir, MARKER)
+    return _marker_paths[key]
 
 
 def read_marker(hive_dir: Path | str) -> Marker | None:
+    path = marker_path(hive_dir)
+    if path is None:
+        return None
     try:
-        raw = json.loads(marker_path(hive_dir).read_text())
+        raw = json.loads(path.read_text())
     except (OSError, ValueError):
         return None
     if not isinstance(raw, dict) or raw.get("version") != MARKER_VERSION:
@@ -935,8 +940,12 @@ def read_marker(hive_dir: Path | str) -> Marker | None:
 
 
 def _write_marker(hive_dir: Path | str, marker: Marker) -> Marker:
-    path = marker_path(hive_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    from .private_paths import ensure_git_private_root
+
+    root = ensure_git_private_root(hive_dir)
+    if root is None:
+        raise ForwardError(f"{hive_dir} is not a git checkout: nowhere to record forwarding")
+    path = root / MARKER
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(marker.as_dict(), indent=2, sort_keys=True) + "\n")
     os.chmod(tmp, 0o600)
@@ -1006,7 +1015,7 @@ def refuse(
 def stop(hive_dir: Path | str) -> bool:
     """Stop forwarding the checkout. ``False`` when it was not forwarded."""
     path = marker_path(hive_dir)
-    if not path.exists():
+    if path is None or not path.exists():
         return False
     path.unlink()
     return True
@@ -1097,8 +1106,10 @@ def bd_env(hive_dir: Path | str, base: Mapping[str, str] | None = None) -> dict[
 
 
 def _cached_placement(marker: Marker) -> tuple[str, int] | None:
+    """The hive's cached placement in this frame's HQ clone. Raises when the marker names no HQ
+    clone (nothing to compare against: the last decision stands)."""
     if not marker.hq_dir:
-        return None
+        raise LookupError("no HQ clone recorded for this forwarded checkout")
     from . import host_lease  # lazy: the HQ clone's cached lease (the guard's own read)
 
     lease = host_lease.read_cached(marker.prefix, cwd=Path(marker.hq_dir))

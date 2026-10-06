@@ -1985,7 +1985,9 @@ def _forward_status(cfg, entry, path: Path) -> dict | None:
                 settings = hive_forward.serve_settings(cfg)
                 rows = node.query("SELECT database() AS d")
                 database = str(next(iter(rows[0].values()))) if rows else ""
-                report = hive_forward.primary_report(node, database=database, settings=settings)
+                report = hive_forward.primary_report(
+                    node.engine, database=database, settings=settings
+                )
             except Exception as exc:  # noqa: BLE001 — doctor degrades, it never crashes
                 report = {"findings": [f"forward primary checks unreadable: {exc}"]}
             result = {"hive": prefix, "side": "primary", **report}

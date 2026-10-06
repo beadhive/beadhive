@@ -101,6 +101,16 @@ boundaries.
 | `BH_HQ_INBOX_RETENTION` (env) | Retention margin for `bh hq authority prune-inbox` (duration such as `1h`, `2d`; default `1h`). A signed-mode heartbeat row is pruned only once its signed `renewTime` + lease + 30 s skew + this margin has passed, and the newest verified beat is always kept. `hq.sql.inbox_retention_s` in the `BH_HQ_OPERATOR_SETTINGS` file wins over it. Operator-side only; nothing prunes unless the operator runs the verb. See [HQ](HQ.md#signed-mode-inbox-retention). |
 | `BH_HQ_AUTHORITY_MIN_REMAINING` (env) | Floor for `bh hq authority check` (overridden by `--min-remaining`, 0.23.0+; duration, default `0`: fail only when expired or config-unbound). |
 | `BH_HQ_AUTHORITY_WARN_WITHIN` (env) | Lead time for authority-expiry warnings (duration such as `6h`, `2d`; default `24h`). Environment-only by design: a fleet key would move the HQ head and a host key would break older readers. See [HQ](HQ.md#authority-expiry). |
+| `host.forward.enabled` | Opt-in per frame (default `false`): bh's bd for a cut-over hive forwards claim, create and close to the hive's current primary. See [FORWARD-WRITE-PATH.md](FORWARD-WRITE-PATH.md). |
+| `host.forward.endpoints.<frame>.*` | The hive server of primary frame `<frame>`: same fields as `hq.sql.<role>.*` (`host`, `port`, `database`, this frame's `user`, `tls_mode`, `server_name`, `ca_file`, `credential`). `tls_mode: required` needs `ca_file` and `server_name`. |
+| `host.forward.serve.enabled` | Opt-in per frame (default `false`): this frame's hive server takes forwarders; `bh doctor` reports its watched globals, read-only root and grant conformance. |
+| `host.forward.serve.operators` | Logins that are not forwarders (default `root`, `watchdog`; Dolt's built-ins always). Every other account must hold the table-scoped forwarder shape. |
+| `host.forward.serve.require_tls` | Forwarder accounts are created, and must stay, `REQUIRE SSL` (default `true`). |
+| `host.forward.serve.quiesce_before_reset` | Kill forwarder sessions before a divert reset (default `true`). |
+| `host.forward.serve.watched`, `unwatched` | Overrides, additions and removals for the watched globals (default `dolt_force_transaction_commit=0`, `dolt_transaction_commit=0`, `read_only=0`, `max_connections=100`). |
+| `host.forward.serve.root_path` | The hive server's `DOLT_ROOT_PATH`, checked read-only by `bh doctor` (default empty: not checked). |
+| `BH_FORWARD_QUIESCE` (env) | `off` disables the forwarder-session kill before a divert reset. |
+| `BH_FORWARD_PASSWORD` (env) | A forwarder's password when no fnox `credential` is configured. |
 | `managed_repos[].frame_policy.config_revision` | Required policy revision label for a frame-managed hive. |
 | `managed_repos[].frame_policy.requires` | Optional requirements: `isolation`, `trust_zone`, `arch`, `harness`, `harnesses`, and positive `max_sessions`. |
 | `managed_repos[].frame_policy.evict_after_s` | Required positive finite interval used by protected takeover policy. |
