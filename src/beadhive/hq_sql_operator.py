@@ -14,7 +14,12 @@ import time
 from . import hq_authority_guard as guard
 from .hq_hive_policy import project_hive_policies
 from .hq_sql_runtime import SqlRuntimeAuthority
-from .hq_sql_runtime_schema import inbox_table
+from .hq_sql_runtime_schema import (
+    evidence_table,
+    inbox_table,
+    routed_to_inbox,
+    session_table,
+)
 from .hq_sql_signatures import (
     canonical,
     sign_authority,
@@ -342,14 +347,7 @@ class SqlRuntimeOperator:
                 )
                 if provisioned_route is not None:
                     principal, frame_id, holder, instance, epoch, signer = provisioned_route
-                    table = inbox_table(principal, epoch)
-                    cursor.execute(
-                        "SELECT table_name FROM information_schema.tables "
-                        "WHERE table_schema=DATABASE() AND table_name=%s",
-                        (table,),
-                    )
-                    if cursor.fetchone() != (table,):
-                        raise SqlOperatorError("preprovisioned frame inbox table missing")
+                    table = self._provisioned_table(cursor, principal, epoch)
                     cursor.execute(
                         "INSERT INTO hq_principal_registry VALUES (%s,%s,%s,%s,%s,%s,%s)",
                         (principal, frame_id, holder, instance, epoch, table, signer),
@@ -435,6 +433,26 @@ class SqlRuntimeOperator:
         finally:
             connection.close()
 
+    @staticmethod
+    def _provisioned_table(cursor, principal: str, epoch: int) -> str:
+        """The registry ``inbox_table`` for a new incarnation, chosen by what the operator
+        provisioned (data is the switch, bh-owqdg): its signed inbox when one exists (legacy, or
+        Φ3 dual-write beside session tables), else its session table when both session and
+        evidence tables exist (session-only). Anything else is refused."""
+        inbox = inbox_table(principal, epoch)
+        session, evidence = session_table(principal, epoch), evidence_table(principal, epoch)
+        cursor.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema=DATABASE() AND table_name IN (%s,%s,%s)",
+            (inbox, session, evidence),
+        )
+        present = {row[0] for row in cursor.fetchall()}
+        if inbox in present:
+            return inbox
+        if {session, evidence} <= present:
+            return session
+        raise SqlOperatorError("preprovisioned frame inbox or session tables missing")
+
     def prune_inbox(self, frame: str, *, retention_s: float, dry_run=False, deadline=None):
         """Delete expired signed-mode heartbeat rows from a frame's inboxes (bh-ce886).
 
@@ -471,7 +489,16 @@ class SqlRuntimeOperator:
                 now = self.clock()
                 inboxes, complete = [], True
                 for route in sorted(routes, key=lambda item: item.epoch):
-                    if route.inbox_table != inbox_table(route.principal, route.epoch):
+                    if route.inbox_table == session_table(route.principal, route.epoch):
+                        inboxes.append(
+                            {
+                                "inbox": route.inbox_table,
+                                "epoch": route.epoch,
+                                "skipped": "session-only incarnation",
+                            }
+                        )
+                        continue
+                    if not routed_to_inbox(route.inbox_table, route.principal, route.epoch):
                         raise SqlOperatorError("protected principal table routing invalid")
                     matching = [
                         record

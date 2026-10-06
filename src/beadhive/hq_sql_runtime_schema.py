@@ -87,8 +87,18 @@ PROTECTED_LIVE_SCHEMA = (
 )
 
 
-def inbox_table(principal: str, epoch: int) -> str:
-    """Derive a stable SQL identifier; never accept a sender-named table."""
+#: Operator-owned, committed liveness policy for session/evidence rows (bh-owqdg, ADR §5). Frames
+#: hold SELECT only. It is created together with the ``frame_*`` ignore rule, so it exists
+#: whenever any incarnation's session table does (see :mod:`beadhive.hq_sql_session`).
+LIVENESS_POLICY_TABLE = "hq_liveness_policy"
+LIVENESS_POLICY_SCHEMA = (
+    f"CREATE TABLE {LIVENESS_POLICY_TABLE} ("
+    "singleton_id TINYINT PRIMARY KEY CHECK (singleton_id = 1), "
+    "session_ttl_s INT UNSIGNED NOT NULL, evidence_ttl_s INT UNSIGNED NOT NULL)",
+)
+
+
+def _incarnation(principal: str, epoch: int) -> None:
     if (
         not isinstance(principal, str)
         or not re.fullmatch(r"[a-z][a-z0-9_]{0,30}", principal)
@@ -97,7 +107,45 @@ def inbox_table(principal: str, epoch: int) -> str:
         or epoch > 9999999999
     ):
         raise RuntimeSchemaError("invalid provisioned runtime principal or incarnation")
+
+
+def inbox_table(principal: str, epoch: int) -> str:
+    """Derive a stable SQL identifier; never accept a sender-named table."""
+    _incarnation(principal, epoch)
     return f"hq_live_inbox_{principal}_{epoch}"
+
+
+def session_table(principal: str, epoch: int) -> str:
+    """The incarnation's single-row, server-stamped liveness table (bh-owqdg, ADR §5)."""
+    _incarnation(principal, epoch)
+    return f"frame_{principal}_{epoch}_session"
+
+
+def evidence_table(principal: str, epoch: int) -> str:
+    """The incarnation's single-row conformance evidence table (bh-owqdg, ADR §5)."""
+    _incarnation(principal, epoch)
+    return f"frame_{principal}_{epoch}_evidence"
+
+
+def routed_table_valid(table: str, principal: str, epoch: int) -> bool:
+    """Whether a registry ``inbox_table`` value is one this incarnation may be routed to.
+
+    A Φ3 (dual-write) or legacy incarnation is routed to its signed inbox; a session-only
+    incarnation (no inbox provisioned) is routed to its session table, the ADR's "the
+    registry's ``inbox_table`` column names the new tables". Never a sender-named table.
+    """
+    try:
+        return table in (inbox_table(principal, epoch), session_table(principal, epoch))
+    except RuntimeSchemaError:
+        return False
+
+
+def routed_to_inbox(table: str, principal: str, epoch: int) -> bool:
+    """Whether the incarnation still has a signed inbox (legacy, or Φ3 dual-write)."""
+    try:
+        return table == inbox_table(principal, epoch)
+    except RuntimeSchemaError:
+        return False
 
 
 def inbox_ddl(principal: str, epoch: int) -> str:

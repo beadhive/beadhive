@@ -26,6 +26,16 @@ HEARTBEAT_ENV = "BH_FRAME_HEARTBEAT"
 HEARTBEAT_MODES = ("required", "advisory")
 
 
+#: Logged (never raised) when ``BH_FRAME_HEARTBEAT`` is set on a frame whose data has switched
+#: it onto server-stamped session rows (bh-owqdg): the escape no longer applies there.
+HEARTBEAT_IGNORED = "ignored: session liveness"
+
+
+def session_carrier(observation) -> bool:
+    """Whether an observation is the data-switched session-row carrier (bh-owqdg)."""
+    return getattr(observation, "carrier", "") == "session"
+
+
 def heartbeat_mode() -> str:
     raw = os.environ.get(HEARTBEAT_ENV, "required").strip() or "required"
     if raw not in HEARTBEAT_MODES:
@@ -68,6 +78,9 @@ class EligibilityDecision:
     predicates: tuple[tuple[str, bool], ...]
     waived: tuple[str, ...] = ()
     enforcement_disabled: bool = False
+    # The admitted session/evidence stamps on a data-switched frame (bh-owqdg); recorded in the
+    # claim record at claim time. Empty on every other carrier. Not part of ``as_dict``.
+    admission: tuple[tuple[str, object], ...] = ()
 
     @property
     def allowed(self):
@@ -95,8 +108,18 @@ def _waive_authority(frame, facts, caps, predicates):
     Only used when ``BH_HQ_AUTHORITY_ENFORCE=false``. Identity comparisons between the frame
     manifest and its own signed lease are kept; comparisons against the operator's desired
     state, grant or policy are dropped. Returns the relaxed predicates and the waived names.
+    On the session carrier the frame-side facts are the evidence row's own values.
     """
-    lease = facts.observation.lease
+    beat = facts.observation
+    lease = beat.lease
+    if session_carrier(beat):
+        relaxed_session = {
+            "current_frame_incarnation": beat.session_epoch_matches,
+            "beadyard_binding": True,
+            "release_matches": frame.release is not None
+            and beat.evidence_release.get("digest") == frame.release.model_dump().get("digest"),
+            "conformance_pass": beat.evidence_status == "conformant",
+        }
     relaxed = {
         "authority_available": True,
         "admitted_active": True,
@@ -115,6 +138,8 @@ def _waive_authority(frame, facts, caps, predicates):
         and all(check.status != "fail" for check in lease.conformance.checks),
         "capabilities_match_admission": bool(caps),
     }
+    if session_carrier(beat):
+        relaxed.update(relaxed_session)
     result, waived = [], []
     for name, value in predicates:
         if not value and name in AUTHORITY_PREDICATES and relaxed[name]:
@@ -132,16 +157,7 @@ def _waive_authority(frame, facts, caps, predicates):
     return tuple(result), tuple(waived)
 
 
-def eligible(frame: hosts.HostManifest, hive: dict, facts: EligibilityFacts) -> EligibilityDecision:
-    """Candidate eligibility, independent of current hive-primary lease ownership.
-
-    Heartbeat TTL is exclusive, matching the authenticated observer's existing boundary.
-    Desired state comes from protected HQ, never the mutable inventory's lifecycle fields.
-    """
-    beat, desired = facts.observation, facts.desired
-    lease = beat.lease
-    age = beat.age_seconds
-    caps = frame.capabilities.model_dump() if frame.capabilities else {}
+def _hive_compatible(hive, caps) -> bool:
     requires = hive.get("requires", {}) if isinstance(hive, dict) else None
     compatible = isinstance(requires, dict)
     if compatible:
@@ -163,6 +179,108 @@ def eligible(frame: hosts.HostManifest, hive: dict, facts: EligibilityFacts) -> 
                     and caps.get(key) == value
                 )
             compatible = compatible and match
+    return compatible
+
+
+def _eligible_session(frame, hive, facts) -> EligibilityDecision:
+    """Candidate eligibility on the data-switched session carrier (bh-owqdg, ADR §5).
+
+    ``authenticated_fresh_heartbeat``, ``conformance_pass`` and ``release_matches`` come from
+    the one eligibility statement (server clock, operator TTLs). The frame-side conjuncts the
+    statement cannot see — the committed manifest's identity and release — are ANDed here.
+    ``BH_FRAME_HEARTBEAT`` is never consulted: a stale session is not waivable.
+    """
+    from . import hq_authority_guard as guard
+    from .frame_emergency import audit, locally_active
+
+    beat, desired = facts.observation, facts.desired
+    authority = desired.get("authority", {})
+    caps = frame.capabilities.model_dump() if frame.capabilities else {}
+    record = {
+        "desired": desired,
+        "authority": authority,
+        "state": desired.get("state"),
+        "cordoned": desired.get("cordoned"),
+    }
+    if "emergency" in desired:
+        record["emergency"] = desired["emergency"]
+    emergency = locally_active(
+        record, hive.get("prefix"), facts.at if facts.at is not None else time.time()
+    )
+    # The emergency path still needs an authenticated, current-incarnation session row.
+    trusted_emergency = bool(
+        emergency and facts.available and beat.session_epoch_matches and not beat.candidate
+    )
+    if trusted_emergency:
+        audit("eligibility-use-attempt", record, prefix=hive.get("prefix"))
+    release = frame.release.model_dump() if frame.release is not None else None
+    decision = EligibilityDecision(
+        (
+            ("authority_available", facts.available),
+            (
+                "admitted_active",
+                desired.get("state") == "active" and desired.get("declared") is True,
+            ),
+            ("not_cordoned", desired.get("cordoned") is False),
+            (
+                "reviewed_admission_or_emergency",
+                not guard.emergency_review_required(record) or trusted_emergency,
+            ),
+            (
+                "current_frame_incarnation",
+                beat.session_epoch_matches
+                and not beat.candidate
+                and authority.get("frame_id", frame.frame_id) == frame.frame_id
+                and authority.get("holder_identity") == frame.host_id
+                and authority.get("instance_ref") == frame.instance_ref,
+            ),
+            (
+                "beadyard_binding",
+                frame.beadyard_id == authority.get("beadyard_id"),
+            ),
+            (
+                "authenticated_fresh_heartbeat",
+                bool(beat.authenticated_fresh_heartbeat or trusted_emergency),
+            ),
+            (
+                "release_matches",
+                bool(beat.release_matches)
+                and release is not None
+                and release == desired.get("release"),
+            ),
+            ("conformance_pass", bool(trusted_emergency or beat.conformance_pass)),
+            ("capabilities_match_admission", bool(caps) and caps == desired.get("caps")),
+            ("hive_requirements", _hive_compatible(hive, caps)),
+            ("executor_role", frame.role != "viewer"),
+            (
+                "available_capacity",
+                type(caps.get("max_sessions")) is int and caps["max_sessions"] > 0,
+            ),
+            ("dispatch_enabled", facts.dispatch_enabled is True),
+        ),
+        admission=tuple(sorted(beat.stamps().items())),
+    )
+    if not facts.authority_waived:
+        return decision
+    predicates, waived_authority = _waive_authority(frame, facts, caps, decision.predicates)
+    return EligibilityDecision(
+        predicates, waived_authority, enforcement_disabled=True, admission=decision.admission
+    )
+
+
+def eligible(frame: hosts.HostManifest, hive: dict, facts: EligibilityFacts) -> EligibilityDecision:
+    """Candidate eligibility, independent of current hive-primary lease ownership.
+
+    Heartbeat TTL is exclusive, matching the authenticated observer's existing boundary.
+    Desired state comes from protected HQ, never the mutable inventory's lifecycle fields.
+    """
+    beat, desired = facts.observation, facts.desired
+    if session_carrier(beat):
+        return _eligible_session(frame, hive, facts)
+    lease = beat.lease
+    age = beat.age_seconds
+    caps = frame.capabilities.model_dump() if frame.capabilities else {}
+    compatible = _hive_compatible(hive, caps)
     fresh = (
         beat.verified
         and beat.fresh
@@ -273,8 +391,25 @@ def eligible(frame: hosts.HostManifest, hive: dict, facts: EligibilityFacts) -> 
     return EligibilityDecision(predicates, waived_authority, enforcement_disabled=True)
 
 
-def load_facts(frame, *, hq_dir, cfg=None, at=None):
-    """Read through the selected provider, rejecting a changed policy around observation."""
+def _heartbeat_advisory(observation, frame) -> bool:
+    """``BH_FRAME_HEARTBEAT=advisory`` — except on a data-switched frame, where the variable is a
+    logged no-op (bh-owqdg): session rows are renewed independently of measurement."""
+    if session_carrier(observation):
+        if os.environ.get(HEARTBEAT_ENV, "").strip():
+            message = (
+                f"{HEARTBEAT_ENV} {HEARTBEAT_IGNORED} "
+                f"(frame {getattr(frame, 'frame_id', '')} renews a server-stamped session row)"
+            )
+            print(f"⚠ {message}", file=sys.stderr)
+        return False
+    return heartbeat_mode() == "advisory"
+
+
+def load_facts(frame, *, hq_dir, cfg=None, at=None, prefix=None):
+    """Read through the selected provider, rejecting a changed policy around observation.
+
+    `prefix` (optional) names the hive, so a data-switched SQL read also reports whether
+    placement names this frame (``current_hive_lease_holder``, recorded with the claim)."""
     from . import config
     from .hq_control_plane import control_plane
 
@@ -286,9 +421,12 @@ def load_facts(frame, *, hq_dir, cfg=None, at=None):
         return EligibilityFacts(VerifiedObservation("invalid-clock"), {}, enabled, False)
     try:
         plane = control_plane(hq_dir)
-        _revision, desired, observation = plane.read_eligibility(frame, now=at)
+        if prefix is not None and getattr(plane, "session_liveness_reader", False) is True:
+            _revision, desired, observation = plane.read_eligibility(frame, now=at, prefix=prefix)
+        else:
+            _revision, desired, observation = plane.read_eligibility(frame, now=at)
         return EligibilityFacts(
-            observation, desired, enabled, True, at, heartbeat_mode() == "advisory", waived
+            observation, desired, enabled, True, at, _heartbeat_advisory(observation, frame), waived
         )
     except AuthorityEnforcementError:
         raise
@@ -358,7 +496,15 @@ def decision_for(host_id, hive=None, *, hq_dir=None, cfg=None, at=None):
     # signed documents agree with each other could replace the whole read.
     if binding.get("beadyard_id") != frame.beadyard_id:
         return EligibilityDecision((("beadyard_binding", False),))
-    return eligible(frame, hive or {}, load_facts(frame, hq_dir=root, cfg=settings, at=at))
+    prefix = (hive or {}).get("prefix") if isinstance(hive, dict) else None
+    facts = load_facts(
+        frame,
+        hq_dir=root,
+        cfg=settings,
+        at=at,
+        **({"prefix": prefix} if isinstance(prefix, str) and prefix else {}),
+    )
+    return eligible(frame, hive or {}, facts)
 
 
 def require_eligible(host_id, hive=None, **kwargs):
@@ -541,10 +687,27 @@ def incumbent_primary(hive="", *, cfg=None, hive_dir=None):
     return str(entry["prefix"]), identity, lease
 
 
+#: The admission stamps of this process's most recent successful claim-time reread
+#: (:func:`require_intake`), consumed by the claim record (bh-owqdg; replaces T15 audit).
+_ADMISSION: dict = {}
+
+
+def last_admission(*, consume: bool = True) -> dict:
+    """The stamps the last :func:`require_intake` admitted on a data-switched frame, or ``{}``.
+
+    One CLI process admits then records one claim, so a process-local hand-off is enough; it
+    is consumed on read so a later claim never inherits an earlier admission."""
+    stamps = dict(_ADMISSION)
+    if consume:
+        _ADMISSION.clear()
+    return stamps
+
+
 def require_intake(hive="", *, cfg=None, hive_dir=None):
     from .hq_authority_expiry import warn_if_expiring
 
     warn_if_expiring()
+    _ADMISSION.clear()
     decision = require_local(hive, cfg=cfg, hive_dir=hive_dir)
     if decision is not None:
         _prefix, identity, lease = authoritative_primary(hive, cfg=cfg, hive_dir=hive_dir)
@@ -552,6 +715,9 @@ def require_intake(hive="", *, cfg=None, hive_dir=None):
             raise EligibilityError("frame ineligible: current_hive_lease_holder")
         # Ownership reads cannot mask a concurrent admission or receipt revocation.
         decision = require_local(hive, cfg=cfg, hive_dir=hive_dir)
+        if decision is not None and decision.admission:
+            _ADMISSION.update(decision.admission)
+            _ADMISSION["admitted_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     return decision
 
 

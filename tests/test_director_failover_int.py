@@ -19,7 +19,12 @@ from beadhive import hq_placement_ops
 from beadhive.director_failover import build_loop
 from beadhive.failover_observer import session_table
 from beadhive.hq_sql_placement import PlacementError, SqlPlacementDirector
-from beadhive.hq_sql_runtime_schema import COMMITTED_SCHEMA, PROTECTED_LIVE_SCHEMA, inbox_ddl
+from beadhive.hq_sql_runtime_schema import (
+    COMMITTED_SCHEMA,
+    PROTECTED_LIVE_SCHEMA,
+    evidence_table,
+    inbox_ddl,
+)
 from beadhive.kernel.daemon.contracts.config import DaemonFailoverConfig
 from test_placement_authority_int import HqServer
 
@@ -190,6 +195,41 @@ def test_conformance_check_on_the_server(server):
     out = hq_placement_ops.check(settings, connect=as_root)
     assert out["problems"] == [
         "'fb'@'%': frame holds ['UPDATE'] on beadhive_hq_runtime.hq_live_hive_leases"
+    ]
+
+
+def test_conformance_passes_an_m9_session_and_evidence_frame(server):
+    """bh-owqdg: a frame provisioned with M9's session + evidence tables (stamp triggers,
+    UPDATE grants) is conformant; a write right on another frame's evidence is still flagged."""
+    from beadhive.hq_sql_session import evidence_ddl, session_ddl
+    from beadhive.hq_sql_session_provision import provision_liveness_schema
+
+    root = server.connect()
+    with root.cursor() as cursor:
+        cursor.execute(
+            "INSERT INTO hq_principal_registry VALUES (%s,%s,%s,%s,%s,%s,%s)",
+            ("fc", "frame-c", "host-frame-c", "vm-frame-c", 1, session_table("fc", 1), "SHA256:fc"),
+        )
+        cursor.execute("CALL DOLT_COMMIT('-am','registry fc')")
+        provision_liveness_schema(cursor)
+        for statement in (*session_ddl("fc", 1), *evidence_ddl("fc", 1)):
+            cursor.execute(statement)
+        cursor.execute("CREATE USER 'fc'@'%' IDENTIFIED BY 'secret'")
+        for table in (session_table("fc", 1), evidence_table("fc", 1)):
+            cursor.execute(f"GRANT SELECT, UPDATE ON {DB}.{table} TO 'fc'@'%'")
+    root.close()
+
+    def as_root(binding):
+        return server.connect(autocommit=False)
+
+    settings = {"placement_writer": {"user": "director", "database": DB}}
+    out = hq_placement_ops.check(settings, connect=as_root)
+    assert out["conformant"], out["problems"]
+    assert "'fc'@'%'" in out["frame_accounts"]
+    server.sql(f"GRANT UPDATE ON {DB}.{evidence_table('fc', 1)} TO 'fa'@'%'")
+    out = hq_placement_ops.check(settings, connect=as_root)
+    assert out["problems"] == [
+        f"'fa'@'%': frame holds ['UPDATE'] on {DB}.{evidence_table('fc', 1)}"
     ]
 
 

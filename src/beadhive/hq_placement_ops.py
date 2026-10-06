@@ -222,8 +222,10 @@ def check(
 
     Runs on the operator's ``authority_writer`` binding when the settings carry one (it can read
     other accounts' grants), else the ``placement_writer``. Frames are the principal registry's
-    accounts; each may write its inbox tables and its session tables, nothing protected."""
+    accounts; each may write its inbox tables and its session and evidence tables (M9,
+    ``bh-owqdg``: the conformance job UPDATEs its own evidence row), nothing protected."""
     from .failover_observer import session_table as default_session_table
+    from .hq_sql_runtime_schema import evidence_table
 
     session_table = session_table or default_session_table
     director_binding = settings.get("placement_writer")
@@ -242,6 +244,7 @@ def check(
                 tables = writable.setdefault(str(principal), set())
                 tables.add(str(inbox))
                 tables.add(session_table(str(principal), int(epoch)))
+                tables.add(evidence_table(str(principal), int(epoch)))
             frames = {
                 account: sorted(tables)
                 for principal, tables in sorted(writable.items())
