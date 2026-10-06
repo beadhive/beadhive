@@ -420,6 +420,67 @@ def test_two_adopters_race_and_exactly_one_holds(tmp_path):
     assert view.host_id == fence.host_id and not view.is_expired(NOW)
 
 
+# ---- the default fence reader (no host_fence / registry import, bh-nyuyy.3) ---------------
+
+
+def _hive_layout(tmp_path, monkeypatch, *, clone=True):
+    from beadhive import hq_control_plane
+
+    workspace = tmp_path / "ws"
+    remote = tmp_path / "hive-remote.git"
+    _git("init", "--bare", "-q", str(remote), cwd=tmp_path)
+    checkout = workspace / "github" / "acme" / "hive"
+    checkout.parent.mkdir(parents=True)
+    if clone:
+        _git("clone", "-q", str(remote), str(checkout), cwd=tmp_path)
+    entry = {"prefix": "hv", "provider": "github", "org": "acme", "repo": "hive"}
+    ports = SimpleNamespace(
+        load=lambda: {"managed_repos": [entry]},
+        hq_dir=lambda: tmp_path / "hq",
+        _workspace_root_for_transition=lambda: workspace,
+    )
+    monkeypatch.setattr(hq_control_plane, "config", ports)
+    return hq_control_plane, checkout
+
+
+def test_default_fence_reader_matches_host_fence_read_fence(tmp_path, monkeypatch):
+    plane_module, checkout = _hive_layout(tmp_path, monkeypatch)
+    assert plane_module._registry_fence_reader("hv") is None  # never fenced
+    host_fence.install_fence("origin", EpochFence(7, "host-a", 2), expected="", cwd=checkout)
+    fence = plane_module._registry_fence_reader("hv")
+    assert fence == host_fence.read_fence("origin", cwd=checkout)[1] == EpochFence(7, "host-a", 2)
+
+
+def test_default_fence_reader_fails_closed_without_a_checkout(tmp_path, monkeypatch):
+    plane_module, checkout = _hive_layout(tmp_path, monkeypatch, clone=False)
+    with pytest.raises(ControlPlaneError, match="not cloned on this host"):
+        plane_module._registry_fence_reader("hv")
+    # A directory nested inside some other checkout is still not this hive's clone.
+    _git("init", "-q", str(checkout.parent), cwd=tmp_path)
+    checkout.mkdir()
+    with pytest.raises(ControlPlaneError, match="not cloned on this host"):
+        plane_module._registry_fence_reader("hv")
+    with pytest.raises(ControlPlaneError, match="not exactly one managed hive"):
+        plane_module._registry_fence_reader("other")
+
+
+def test_managed_hive_dir_matches_registry_layout(tmp_path, monkeypatch):
+    from beadhive import hq_control_plane, registry
+
+    monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path / "ws"))
+    triplet = {"prefix": "hv", "provider": "github", "org": "acme", "repo": "hive"}
+    hq = {"prefix": "hq", "kind": registry.HQ_KIND, "provider": "local", "org": "f", "repo": "hq"}
+    for entry in (triplet, hq):
+        assert hq_control_plane._managed_hive_dir(entry) == registry.hive_dir(entry)
+
+
+def test_epoch_fence_contract_is_shared_with_host_fence():
+    from beadhive import host_lease_contracts
+
+    assert host_fence.EpochFence is host_lease_contracts.EpochFence
+    assert host_fence.EPOCH_REF == host_lease_contracts.EPOCH_REF == "refs/bh/epoch"
+
+
 # ---- the control plane: readers, mode switch, publish ------------------------------------
 
 
