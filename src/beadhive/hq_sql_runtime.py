@@ -40,6 +40,14 @@ class SqlRuntimeError(ValueError):
     """The protected runtime binding is absent, stale, inconsistent or inaccessible."""
 
 
+class SqlRuntimeDeadline(SqlRuntimeError):
+    """The operation budget ran out (before or during a read/open) — not evidence of an outage."""
+
+
+class SqlRuntimeUnavailable(SqlRuntimeError):
+    """A connection/credential/transport failure with budget still remaining."""
+
+
 class InboxUnknown(SqlRuntimeError):
     """A frame evidence COMMIT may have succeeded; inspect its immutable request ID."""
 
@@ -248,11 +256,16 @@ class SqlRuntimeAuthority:
         own_deadline = time.monotonic() + binding["operation_timeout"]
         deadline = min(deadline, own_deadline) if deadline is not None else own_deadline
         if time.monotonic() >= deadline:
-            raise SqlRuntimeError("HQ runtime operation deadline exceeded")
+            raise SqlRuntimeDeadline("HQ runtime operation deadline exceeded")
         try:
             return connect(binding, self.broker, deadline=deadline), deadline
-        except SqlTransportError:
-            raise SqlRuntimeError("verified HQ runtime connection unavailable") from None
+        except SqlTransportError as exc:
+            # A connect that ran out of the operation budget is deadline exhaustion, never a
+            # claim that HQ is unreachable (bh-ktw0o). The transport message is a fixed,
+            # secret-free string; only its deadline classification is consulted here.
+            if time.monotonic() >= deadline or "deadline" in str(exc):
+                raise SqlRuntimeDeadline("HQ runtime operation deadline exceeded") from None
+            raise SqlRuntimeUnavailable("verified HQ runtime connection unavailable") from None
 
     def _check_floor(self, cursor, backend, generation, sequence, head, *, deadline=None):
         settings = self.settings
@@ -1059,7 +1072,7 @@ class SqlRuntimeAuthority:
                 row = cursor.fetchone()
                 if row is None:
                     if time.monotonic() >= deadline:
-                        raise SqlRuntimeError("public result deadline exceeded")
+                        raise SqlRuntimeDeadline("public result deadline exceeded")
                     return None
                 if row[:9] != (
                     request_sha256,
@@ -1073,12 +1086,16 @@ class SqlRuntimeAuthority:
                     expected_revision,
                 ):
                     raise SqlRuntimeError("public result does not match original signed request")
-                if row[10] not in {"accepted", "rejected"} or time.monotonic() >= deadline:
+                if row[10] in {"accepted", "rejected"} and time.monotonic() >= deadline:
+                    raise SqlRuntimeDeadline("public result state invalid or deadline exceeded")
+                if row[10] not in {"accepted", "rejected"}:
                     raise SqlRuntimeError("public result state invalid or deadline exceeded")
                 return row[10], row[9]
         except SqlRuntimeError:
             raise
         except Exception:
-            raise SqlRuntimeError("public result unavailable") from None
+            if time.monotonic() >= deadline:
+                raise SqlRuntimeDeadline("public result deadline exceeded") from None
+            raise SqlRuntimeUnavailable("public result unavailable") from None
         finally:
             connection.close()

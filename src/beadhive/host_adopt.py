@@ -215,6 +215,24 @@ def adopt(
             ),
             error=str(exc),
         )
+        if getattr(exc, "request_id", None) and hasattr(exc, "expected_revision"):
+            # HqLeaseUnknown (bh-ktw0o): the signed proposal WAS submitted; only its
+            # acknowledgment is unknown. Name the request so the operator reads it back
+            # instead of re-adopting, which would advance the fence epoch again.
+            raise AdoptHalfDone(
+                f"adopted the epoch fence for {prefix} (epoch {epoch}) and the signed HQ lease "
+                f"proposal was submitted, but its acknowledgment is UNKNOWN: {exc}\n"
+                f"  Persisted: remote fence = yes (epoch {epoch}); HQ proposal = committed "
+                f"(request {exc.request_id}, digest sha256:{exc.request_sha256}, original CAS "
+                f"revision {exc.expected_revision}); HQ lease = not yet confirmed.\n"
+                f"  Fail-closed: NO host may write {prefix} until the lease is recorded.\n"
+                f"  Do NOT re-run adopt yet — each re-run advances the fence epoch again. First "
+                f"read back with `bh host list --lease-hive {prefix}` (read-only) and look for "
+                f"request {exc.request_id} in the receiver's result. If the lease now names "
+                f"this host at epoch {epoch}, it was accepted; if the receiver rejected it or "
+                f"stays silent, the receiver/placement owner must act, and only then re-adopt "
+                f"(no manual ref surgery)."
+            ) from exc
         raise AdoptHalfDone(
             f"adopted the epoch fence for {prefix} (epoch {epoch}) but failed to record the "
             f"host lease in HQ: {exc}\n"

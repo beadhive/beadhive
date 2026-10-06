@@ -38,15 +38,28 @@ class CommittedManifestAbsent(FileNotFoundError):
 
 
 class HqLeaseUnknown(ControlPlaneError):
-    """An exact frame proposal may have been accepted; do not refresh its CAS."""
+    """An exact frame proposal may have been accepted; do not refresh its CAS.
 
-    def __init__(self, request_id, request_sha256, expected_revision):
+    ``reason`` says why the acknowledgment is unknown: ``"deadline"`` (the operation budget ran
+    out while polling), ``"transport"`` (a connection/credential failure after the proposal
+    committed) or ``"unknown"`` (the submit COMMIT itself was uncertain). The text carries only
+    the request id, digest and original CAS revision — never a credential or driver exception.
+    """
+
+    def __init__(self, request_id, request_sha256, expected_revision, reason="unknown"):
         self.request_id = request_id
         self.request_sha256 = request_sha256
         self.expected_revision = expected_revision
+        self.reason = reason
+        cause = {
+            "deadline": "the operation deadline was exhausted while awaiting the result",
+            "transport": "the result read failed after the proposal committed",
+        }.get(reason, "the proposal COMMIT outcome is uncertain")
         super().__init__(
             f"HQ hive lease acknowledgment unknown for request {request_id} "
-            f"against original revision {expected_revision}"
+            f"(digest sha256:{request_sha256}) against original revision {expected_revision}: "
+            f"{cause}. The signed proposal is committed or may be; this is NOT evidence that "
+            f"HQ is unreachable"
         )
 
 
@@ -2667,7 +2680,12 @@ class SqlControlPlane:
 
     def publish_hive_lease(self, prefix, lease, *, expected, operation, force=False):
         from . import host
-        from .hq_sql_runtime import InboxUnknown
+        from .hq_sql_runtime import (
+            InboxUnknown,
+            SqlRuntimeDeadline,
+            SqlRuntimeUnavailable,
+        )
+        from .hq_sql_transport import SqlTransportError
 
         if self.settings.get("runtime") is None:
             raise ControlPlaneError("AUTHORITY_NOT_READY: SQL runtime binding unavailable")
@@ -2693,26 +2711,35 @@ class SqlControlPlane:
             # back through the same resolver every write gate uses.
             return self._recognised_signed_proposal(prefix, lease, request_id)
         if time.monotonic() >= deadline:
-            raise HqLeaseUnknown(request_id, digest, expected)
-        runtime = self._runtime_authority()
-        while time.monotonic() < deadline:
-            result = runtime.read_public_result(
-                request_id,
-                request_sha256=digest,
-                principal=binding,
-                audience=audience,
-                expected_revision=expected,
-                deadline=deadline,
-            )
-            if time.monotonic() >= deadline:
-                raise HqLeaseUnknown(request_id, digest, expected)
-            if result is not None:
-                status, revision = result
-                if status != "accepted" or not revision:
-                    raise ControlPlaneError("trusted receiver rejected hive lease proposal")
-                return revision
-            time.sleep(min(0.1, max(0, deadline - time.monotonic())))
-        raise HqLeaseUnknown(request_id, digest, expected)
+            raise HqLeaseUnknown(request_id, digest, expected, "deadline")
+        # The proposal is committed from here on: nothing below may surface as a generic
+        # connection error, because that hides the request and invites a repeated adoption
+        # (bh-ktw0o). Budget exhaustion and transport loss both mean "acknowledgment unknown".
+        try:
+            runtime = self._runtime_authority()
+            while time.monotonic() < deadline:
+                result = runtime.read_public_result(
+                    request_id,
+                    request_sha256=digest,
+                    principal=binding,
+                    audience=audience,
+                    expected_revision=expected,
+                    deadline=deadline,
+                )
+                if time.monotonic() >= deadline:
+                    raise HqLeaseUnknown(request_id, digest, expected, "deadline")
+                if result is not None:
+                    status, revision = result
+                    if status != "accepted" or not revision:
+                        raise ControlPlaneError("trusted receiver rejected hive lease proposal")
+                    return revision
+                time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+        except SqlRuntimeDeadline:
+            raise HqLeaseUnknown(request_id, digest, expected, "deadline") from None
+        except (SqlRuntimeUnavailable, SqlTransportError):
+            reason = "deadline" if time.monotonic() >= deadline else "transport"
+            raise HqLeaseUnknown(request_id, digest, expected, reason) from None
+        raise HqLeaseUnknown(request_id, digest, expected, "deadline")
 
     def __getattr__(self, name):
         if name in {
