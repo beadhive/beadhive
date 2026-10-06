@@ -336,3 +336,20 @@ def test_database_ping_route_owns_its_argv_and_timeout() -> None:
     bd = Timed()
     CliRoutes(bd, "/hive").database_ping(timeout=7)
     assert bd.calls == [("run", ["ping", "--json"], "/hive", True, 7)]
+
+
+def test_hive_config_and_captured_label_routes_own_their_argv() -> None:
+    bd = RecordingBd()
+    routes = CliRoutes(bd, "/hive")
+
+    routes.config_list()
+    routes.config_set("bh.pairing.enabled", "true", actor="ops/a")
+    routes.config_unset("bh.pairing.enabled", actor="ops/a")
+    routes.issue_remove_label("bh-1", "claim-frame:f1", actor="dev/a", capture=True)
+
+    assert [call[1] for call in bd.calls] == [
+        ["config", "list"],
+        ["config", "set", "bh.pairing.enabled", "true"],
+        ["config", "unset", "bh.pairing.enabled"],
+        ["label", "remove", "bh-1", "claim-frame:f1"],
+    ]

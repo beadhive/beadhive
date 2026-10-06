@@ -460,11 +460,8 @@ def mark_released(cfg: Any, entry: Any, main: Path, bead: str, actor: str) -> No
                 f"⚠ could not check {bead}'s backup ({verdict.detail}); not marked resumable",
                 err=True,
             )
-        bd.run(
-            ["label", "remove", bead, f"{work_backup.CLAIM_FRAME_DIMENSION}:{frame}"],
-            main,
-            actor=actor,
-            capture=True,
+        routes.issue_remove_label(
+            bead, f"{work_backup.CLAIM_FRAME_DIMENSION}:{frame}", actor=actor, capture=True
         )
     except Exception as exc:
         typer.echo(f"⚠ pairing follow-up after abandon skipped: {exc}", err=True)
