@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from typer._click import types as _click_types
 
 from . import (
     config,
@@ -16,6 +17,20 @@ from . import (
     hq_control_plane,
     hq_operator_settings,
 )
+
+
+class IntDurationSeconds(_click_types.IntParamType):
+    """Integer seconds on the wire; also accepts `36h` / `7d` and converts to whole seconds."""
+
+    name = "integer"
+
+    def convert(self, value, param, ctx):
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        try:
+            return int(hq_authority_ceiling.parse_duration(value))
+        except ValueError as exc:
+            self.fail(str(exc), param, ctx)
 
 
 def authority_cmd(
@@ -39,7 +54,7 @@ def authority_cmd(
         int,
         typer.Option(
             "--duration",
-            parser=hq_authority_ceiling.parse_duration,
+            click_type=IntDurationSeconds(),
             help="seconds or e.g. 7d / 36h",
         ),
     ] = 3600,
