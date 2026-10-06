@@ -7,13 +7,35 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from typer._click import types as _click_types
 
-from . import config, host_heartbeat, hq_authority_ceiling, hq_control_plane
+from . import (
+    config,
+    host_heartbeat,
+    hq_authority_ceiling,
+    hq_authority_expiry,
+    hq_control_plane,
+    hq_operator_settings,
+)
+
+
+class IntDurationSeconds(_click_types.IntParamType):
+    """Integer seconds on the wire; also accepts `36h` / `7d` and converts to whole seconds."""
+
+    name = "integer"
+
+    def convert(self, value, param, ctx):
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        try:
+            return int(hq_authority_ceiling.parse_duration(value))
+        except ValueError as exc:
+            self.fail(str(exc), param, ctx)
 
 
 def authority_cmd(
     action: str = typer.Argument(
-        ..., help="install, bind, bind-beadyard, grant, observe, renew, or status"
+        ..., help="install, bind, bind-beadyard, grant, observe, renew, status, or check"
     ),
     record: Annotated[Path | None, typer.Option("--record")] = None,
     frame: str = typer.Option("", "--frame"),
@@ -32,7 +54,7 @@ def authority_cmd(
         int,
         typer.Option(
             "--duration",
-            parser=hq_authority_ceiling.parse_duration,
+            click_type=IntDurationSeconds(),
             help="seconds or e.g. 7d / 36h",
         ),
     ] = 3600,
@@ -40,9 +62,25 @@ def authority_cmd(
     confirm: bool = typer.Option(False, "--confirm"),
 ) -> None:
     try:
-        plane = hq_control_plane.control_plane()
+        if hq_operator_settings.configured() and action in {"install", "bind"}:
+            raise hq_control_plane.ControlPlaneError(
+                f"{hq_operator_settings.ENV} applies to renew, grant, observe, bind-beadyard, "
+                "status and check"
+            )
+        plane = hq_operator_settings.select_plane()
         if action == "status":
-            result = plane.authority_status()
+            result = hq_authority_expiry.authority_status(plane)
+        elif action == "check":
+            try:
+                floor = hq_authority_expiry.min_remaining()
+            except ValueError as exc:
+                raise hq_control_plane.ControlPlaneError(str(exc)) from None
+            healthy, result, message = hq_authority_expiry.check(plane, min_remaining=floor)
+            typer.echo(message, err=not healthy)
+            typer.echo(json.dumps(result, sort_keys=True))
+            if not healthy:
+                raise SystemExit(1)
+            return
         else:
             if not confirm:
                 raise hq_control_plane.ControlPlaneError("operator mutation requires --confirm")
@@ -99,12 +137,11 @@ def authority_cmd(
                         holder_identity=holder_id,
                     )
                 elif action == "renew":
-                    # bh-od8ve hooks: ``cli=`` takes a future --max-duration value (adding a
-                    # CLI parameter to hq.authority needs a wire-catalog major/amendment) and
-                    # ``settings=`` the operator-settings ``hq.sql.authority_max_duration_s``
-                    # once the --operator-settings loader lands (bh-qtnn4). Until then the
-                    # ceiling resolves from $BH_HQ_AUTHORITY_MAX_DURATION or the 7 d default.
-                    ceiling = hq_authority_ceiling.resolve_ceiling()
+                    # Precedence: operator-settings hq.sql.authority_max_duration_s, then
+                    # $BH_HQ_AUTHORITY_MAX_DURATION, then the 7 d default (bh-od8ve).
+                    ceiling = hq_authority_ceiling.resolve_ceiling(
+                        settings=getattr(plane, "authority_max_duration_s", None)
+                    )
                     sha = plane.renew(
                         expected=expected,
                         operator_key=str(operator_key),

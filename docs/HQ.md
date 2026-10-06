@@ -305,6 +305,67 @@ longer fast-forward to.
 Nothing is lost either way. Every pruned bead is a derived copy of a bead that still lives in
 its own hive, and `bh sync` puts the cross-hive view back in the hub where it belongs.
 
+## Authority expiry and renewal {#authority-expiry}
+
+The protected authority carrier carries an `expires_at`. When it passes, every frame is fenced
+until an operator publishes a renewal. The lapse used to be silent until it fenced. These are
+the read-only surfaces that make it visible:
+
+- `bh hq authority status` reports `expires_at`, `expires_in_s`, `expires_in`, `revision`,
+  `config_bound` (the authority's config head equals the latest head) and `expiring_soon` at the
+  top level. It works on a runtime host and with `BH_HQ_OPERATOR_SETTINGS`, on the SQL and Git
+  backends, and still reports once the authority has expired.
+- `bh hq authority check` (floor from `BH_HQ_AUTHORITY_MIN_REMAINING`, e.g. `6h`) exits
+  non-zero, with the exact renew command, when the authority is expired, not bound to the
+  latest config head, or has less than that floor left. It exits 0 when healthy. Use it in
+  scripts and as the release-upgrade preflight.
+- `bh work claim|check|submit|merge`, `bh plan file` and the start of every validation gate print
+  one stderr `WARN` line (time remaining and the renew command) when expiry is inside the lead
+  time. Nothing is printed outside it, and a warning never fails a command.
+- `bh doctor` reports an `HQ authority expiry` section: WARN inside the lead time, FAIL when
+  expired or config-unbound.
+
+The lead time is the `BH_HQ_AUTHORITY_WARN_WITHIN` environment variable (duration such as
+`90m`, `24h`, `2d`; default `24h`). It is deliberately not a fleet or host key: a fleet edit moves
+the HQ config head and a new host key breaks older readers of a shared HOST file.
+
+### Renewing from an operator host (for example the laptop) {#authority-laptop-renew}
+
+A released `bh` builds its control plane from the running host's `host.yaml`. An operator host
+whose `host.yaml` has no `hq.sql.authority_writer` binds it from a file instead, with
+`BH_HQ_OPERATOR_SETTINGS=<file>` on `bh hq authority renew|grant|observe|bind-beadyard|status|check`
+and `bh host release-upgrade plan|apply|check`. The file is JSON or YAML:
+
+```json
+{
+  "hq": {
+    "sql": {
+      "reader": {"host": "hq.example.net", "port": 3306, "database": "beadhive_hq",
+                 "user": "reader", "tls_mode": "required", "server_name": "hq.example.net",
+                 "ca_file": "/abs/path/ca.crt",
+                 "credential": {"config_path": "/abs/fnox.toml", "profile": "hq", "key": "READER"}},
+      "authority_writer": {"host": "hq.example.net", "port": 3306, "database": "beadhive_hq_runtime",
+                           "user": "authority_writer", "tls_mode": "required",
+                           "server_name": "hq.example.net", "ca_file": "/abs/path/ca.crt",
+                           "credential": {"config_path": "/abs/fnox.toml", "profile": "hq", "key": "WRITER"}},
+      "runtime": null,
+      "runtime_backend_identity": "<pinned>", "runtime_generation": "<pinned>",
+      "runtime_operator_public_key": "ssh-ed25519 AAAA..."
+    }
+  }
+}
+```
+
+Credentials stay references (fnox config path, profile and key); the file holds no secret. It is
+refused with an error naming the key when `hq.sql.runtime` is set or `hq.sql.authority_writer` is
+missing, so it cannot make a frame an authority writer. Renewal:
+
+```sh
+BH_HQ_OPERATOR_SETTINGS=settings.json bh hq authority status      # note `revision`
+BH_HQ_OPERATOR_SETTINGS=settings.json bh hq authority renew \
+  --expected-revision <revision> --operator-key <key> --duration 86400 --confirm
+```
+
 ## See also
 
 - [HUB](HUB.md) — the derived per-host cross-hive aggregate, and its contract.

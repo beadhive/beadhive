@@ -1073,6 +1073,21 @@ def _render_group_auth(d: dict) -> None:
         typer.echo(f"  ⚠ {w}")
 
 
+def _data_authority_expiry() -> dict:
+    """HQ authority expiry: WARN inside the lead time, FAIL when expired or config-unbound."""
+    from .hq_authority_expiry import doctor_data
+
+    return doctor_data()
+
+
+def _render_authority_expiry(d: dict) -> None:
+    if d["level"] == "skip":
+        return
+    typer.echo("\n# HQ authority expiry")
+    glyph = {"ok": "✓", "warn": "⚠ WARN", "fail": "✗ FAIL"}[d["level"]]
+    typer.echo(f"  {glyph} {d['detail']}")
+
+
 def _section_group_auth(cfg):
     """Render the per-group auth section."""
     _render_group_auth(_data_group_auth(cfg))
@@ -2776,6 +2791,7 @@ def _collect(cfg, *, full_seats: bool = False) -> dict:
         "dispatch": _timed(timings, "dispatch", _data_dispatch, cfg),
         "host_daemon": _timed(timings, "host_daemon", _data_host_daemon, cfg),
         "group_auth": _timed(timings, "group_auth", _data_group_auth, cfg),
+        "authority_expiry": _timed(timings, "authority_expiry", _data_authority_expiry),
         "mcp": _timed(timings, "mcp", _data_mcp, cfg),
         "harness_plugin": _timed(timings, "harness_plugin", _data_harness_plugin, cfg),
         "seats": _timed(timings, "seats", _data_seats, cfg, full=full_seats),
@@ -2937,6 +2953,7 @@ def doctor(as_json: bool = False, verbose: bool = False, seats: bool = False):
     _render_dispatch(data["dispatch"])
     _render_host_daemon(data["host_daemon"])
     _render_group_auth(data["group_auth"])
+    _render_authority_expiry(data["authority_expiry"])
     _render_mcp(data["mcp"])
     _render_harness_plugin(data["harness_plugin"])
     _render_seats(data["seats"])

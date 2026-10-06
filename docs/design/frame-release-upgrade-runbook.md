@@ -19,6 +19,9 @@ Quarantined, draining/drained/parked, live or unreviewed emergency, and
 coexisting active/candidate states are explicitly unsupported. Do not retire or
 remove identity records to evade this restriction.
 
+0. Preflight: run `BH_HQ_AUTHORITY_MIN_REMAINING=6h bh hq authority check` (add `BH_HQ_OPERATOR_SETTINGS=<file>`
+   from an off-host operator). It must exit 0; an expired or soon-expiring authority is renewed first
+   ([HQ: Authority expiry and renewal](../HQ.md#authority-expiry)).
 1. Keep the enrollment marker, UUID, canonical HQ and frame signing key intact.
    Measure and review the corrected installed artifact's release ID and SHA-256
    digest and its conformance profile. Record the current runtime authority

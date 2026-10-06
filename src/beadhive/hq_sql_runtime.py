@@ -681,7 +681,7 @@ class SqlRuntimeAuthority:
         finally:
             connection.close()
 
-    def load_state(self, *, deadline=None):
+    def load_state(self, *, deadline=None, allow_expired=False):
         """Return (authority commit, validated state, exact config cross-reference)."""
         connection, deadline = self._open(deadline=deadline)
         try:
@@ -709,7 +709,9 @@ class SqlRuntimeAuthority:
                 execute("START TRANSACTION")
                 execute("SELECT DOLT_HASHOF('HEAD')")
                 head = cursor.fetchone()[0]
-                state, crossref, policies = self.verified_state_at(cursor, head, deadline=deadline)
+                state, crossref, policies = self.verified_state_at(
+                    cursor, head, deadline=deadline, allow_expired=allow_expired
+                )
             connection.rollback()
             return head, state, crossref, policies
         except SqlRuntimeError:

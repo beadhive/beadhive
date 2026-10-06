@@ -9,6 +9,7 @@ fails the publish.
 
 from __future__ import annotations
 
+import importlib
 import sys
 from dataclasses import dataclass
 
@@ -45,9 +46,9 @@ def probe_authority(store) -> AuthorityProbe | None:
     if not settings.get("runtime"):
         return None
     try:
-        from .hq_sql_runtime import SqlRuntimeAuthority
-
-        authority = SqlRuntimeAuthority(settings, broker=store.broker, clock=store.clock)
+        # Resolved by name: a static edge would close hq_sql_config -> hq_sql_runtime cycle.
+        runtime = importlib.import_module(f"{__package__}.hq_sql_runtime")
+        authority = runtime.SqlRuntimeAuthority(settings, broker=store.broker, clock=store.clock)
         head, state, crossref, _policies = authority.load_state()
         return AuthorityProbe(
             bound_head=crossref[2], authority_head=head, frames=_active_frames(state)
