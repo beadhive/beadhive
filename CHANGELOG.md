@@ -13,6 +13,22 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.22.6 (2026-10-06)
+
+### Feat
+
+- **hq**: add unsupported BH_HQ_AUTHORITY_ENFORCE switch to disable authority enforcement (bh-6pqul)
+
+### Fix
+
+- **hq**: keep hq authority --duration an integer on the wire while accepting 7d/36h (bh-qtnn4)
+- **hq**: resolve authority runtime lazily in the fence notice to avoid an import cycle (bh-qtnn4)
+- **hq**: operator authority binding via BH_HQ_OPERATOR_SETTINGS for authority and release-upgrade verbs (bh-qtnn4)
+- **hq**: surface authority expiry and warn before a lapse fences the fleet (bh-qfvxz)
+- **config**: announce when a fleet-config publish unbinds HQ authority
+- **hq**: configurable authority duration ceiling, default 7 d, no hard maximum
+- **build**: own tests/spikes/bh_jbb6r_soak.py
+
 ## v0.22.5 (2026-10-05)
 
 ### Fix
