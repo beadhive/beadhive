@@ -87,8 +87,9 @@ root the persisted value does survive the restart.
 
 ## Upstream drafts
 
-The bd and Dolt issue drafts are in `docs/upstream/` (`bd-writer-fencing-issues.md`, `dolt-writer-fencing-issues.md`), marked "tracked internally, not
-filed upstream" (ADR Decision 7).
+The bd and Dolt issue drafts are in `docs/upstream/` (`bd-writer-fencing-issues.md`,
+`dolt-writer-fencing-issues.md`), marked "tracked internally, not filed upstream" (ADR
+Decision 7).
 
 ## Reuse
 

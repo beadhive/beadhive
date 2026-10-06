@@ -541,9 +541,9 @@ for it, and the two are namespaced apart on every surface that shows them (`bh h
 - **`ClaimRecord` carries the `epoch`** it was minted under, as a fencing token, alongside the
   `host_id` the original Consequences list already required (`bh-ytbb.10`).
 - **Atomic receive-pack is not the current bd enforcement point.** The legacy `fenced_push`
-  primitive (deleted in `bh-vwbxy`) probed it only for callers that own a stable local data ref. Production bd owns a
-  transient ref and suppresses hooks, so managed publication always uses the explicitly
-  non-atomic reserve-before-bd plus exact-postflight sequence (`bh-tfapu`).
+  primitive (deleted in `bh-vwbxy`) probed it only for callers that own a stable local data
+  ref. Production bd owns a transient ref and suppresses hooks, so managed publication always
+  uses the explicitly non-atomic reserve-before-bd plus exact-postflight sequence (`bh-tfapu`).
 - The `bh host` CLI group named in the original Consequences gains `adopt` / `release` / `packup`
   (`bh-ytbb.13`) over the lease, and a `guard_primary()` check on the write verbs (`bh-ytbb.9`).
 - `bh host` also gains `remove` (`bh-salu`): since `host_id` is minted once and never

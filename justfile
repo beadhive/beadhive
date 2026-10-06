@@ -905,7 +905,7 @@ test-integration-land:
 # The same tests also run on every land, inside `test-integration-land`.
 # run the Dolt/bd trigger-semantics canary (required on every Dolt or bd pin bump)
 fence-canary:
-    ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n 2 tests -m "fence_canary"
+    ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n auto tests -m "fence_canary"
 
 # PERIODIC ONLY: compare explicit xdist worker counts for both pytest land partitions. This does
 # not feed `PYTEST_XDIST_AUTO_NUM_WORKERS` back into contract tests or any validation recipe.

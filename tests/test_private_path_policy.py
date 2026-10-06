@@ -503,6 +503,9 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     | _owned("daemon_platform.py", "_systemd_user_dir", ".config")
     | _owned("identity.py", "_legacy_workspace_populated", ".git")
     | _owned("dispatch_supervisor.py", "_systemd_user_dir", ".config")
+    # The heartbeat sender's XDG systemd user-unit dir (~/.config/systemd/user; launchd uses
+    # ~/Library/LaunchAgents): operator unit install location, not repository-private state.
+    | _owned("heartbeat_sender.py", "unit_dir", ".config")
     | _owned("doctor.py", "_missing_required_dep_warnings", ".nix-profile")
     | _owned("doctor.py", "_devshell_only_warnings", ".nix-profile")
     | _owned("doctor.py", "_data_layout", ".git")
