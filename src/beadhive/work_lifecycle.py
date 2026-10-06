@@ -174,6 +174,12 @@ class ShellWorkspace:
             self._cfg, checkout.handle or self._entry, bead, actor, checkout.target, self._hive
         )
 
+    def record_frame(self, bead: str, actor: str) -> None:
+        """Record ``claim-frame=<this frame>`` in hive data when pairing is on (M14 D4)."""
+        from . import work_backup
+
+        work_backup.record_claim_frame(self._main, bead, actor)
+
     def remove(self, bead: str) -> bool:
         worktree = _work().worktree
         target = worktree.locate(self._cfg, self._hive, bead)[2]
@@ -411,6 +417,57 @@ def abandon(bead: str, hive: str, rm: bool) -> None:
     actor = _actor(cfg, entry, os.environ.get("BH_DEV", ""))
     with _failing_closed(), commands(cfg, hive, main, entry) as lifecycle:
         lifecycle.abandon(bead, actor, remove=rm)
+    if not rm:
+        mark_released(cfg, entry, Path(main), bead, actor)
+
+
+def mark_released(cfg: Any, entry: Any, main: Path, bead: str, actor: str) -> None:
+    """Pairing follow-up to a released claim (M14 D2 ``abandon`` row, D4): never push; if the
+    claiming frame's backup carries work, mark the bead ``recovery=resumable`` with its
+    ``<ref>@<sha>``; then clear ``claim-frame``. Best-effort and a no-op with pairing off."""
+    from . import bd, work_backup, work_pairing_policy
+
+    try:
+        policy = work_pairing_policy.read(main)
+        if not policy.enabled:
+            return
+        data = bd.show(bead, main) or {}
+        frame = work_backup.state_label(data, work_backup.CLAIM_FRAME_DIMENSION)
+        if not frame:
+            return
+        remote = work_backup.resolve_remote(policy, cfg, entry)
+        verdict = work_backup.recoverability(
+            main,
+            remote,
+            bead,
+            frame,
+            integration=config.integration_branch(cfg, entry),
+            signature_policy=policy.signature_policy,
+        )
+        routes = bd_cli.routes(main)
+        if verdict.status == work_backup.RECOVERABLE:
+            mine = next(r for r in verdict.refs if r.frame == work_backup.segment(frame))
+            routes.issue_set_state(
+                bead,
+                f"{work_backup.RECOVERY_DIMENSION}={work_backup.RESUMABLE}",
+                reason=f"{mine.ref}@{mine.sha}",
+                actor=actor,
+                capture=True,
+            )
+            typer.echo(f"  {bead} marked resumable from {mine.ref}@{mine.sha[:12]}")
+        elif verdict.status == work_backup.UNKNOWN:
+            typer.echo(
+                f"⚠ could not check {bead}'s backup ({verdict.detail}); not marked resumable",
+                err=True,
+            )
+        bd.run(
+            ["label", "remove", bead, f"{work_backup.CLAIM_FRAME_DIMENSION}:{frame}"],
+            main,
+            actor=actor,
+            capture=True,
+        )
+    except Exception as exc:
+        typer.echo(f"⚠ pairing follow-up after abandon skipped: {exc}", err=True)
 
 
 # ---- submit's bead state ---------------------------------------------------------------------

@@ -389,6 +389,39 @@ def pair(
     return outcomes
 
 
+_CONTAINER_RE = re.compile(r"^wt/bead/epic/(?P<epic>.+)$")
+
+
+def container_of(base: str) -> str:
+    """The epic id whose container branch ``base`` is (``wt/bead/epic/<epic>``), else ''."""
+    match = _CONTAINER_RE.fullmatch(str(base or ""))
+    return match.group("epic") if match else ""
+
+
+def pair_container_merge(*, cfg, entry, main, base: str, verb: str, echo=None, policy=None):
+    """Rule P for a merge INTO a container (M14 D2): the closed child's work now lives in the
+    container, so the container's backup is pushed at the post-merge tip before the close.
+
+    A no-op for a land onto the integration branch (that bead's submit backup is retained until
+    the remote base covers it) and whenever pairing is off. Raises :class:`PairingRefused`."""
+    epic = container_of(base)
+    if not epic:
+        return []
+    res = _git(["rev-parse", "--verify", "--quiet", f"refs/heads/{base}"], main)
+    sha = (res.stdout or "").strip()
+    return pair(
+        cfg=cfg,
+        entry=entry,
+        main=main,
+        beads=[epic],
+        sha=sha,
+        verb=verb,
+        cwd=main,
+        policy=policy,
+        echo=echo,
+    )
+
+
 def checkpoint(
     *,
     cfg,
@@ -424,6 +457,63 @@ def checkpoint(
         return outcome
     except Exception as exc:  # a checkpoint must never break the verb it rides on
         return Outcome(UNREACHABLE, bead, "", sha, "", f"checkpoint error: {exc}")
+
+
+def head_of(target) -> str:
+    res = _git(["rev-parse", "--verify", "--quiet", "HEAD"], target)
+    return (res.stdout or "").strip() if res.returncode == 0 else ""
+
+
+def checkpoint_worktree(
+    *, cfg, entry, main, bead: str, target, say, warn, policy=None
+) -> Outcome | None:
+    """Checkpoint ``target``'s committed HEAD for ``bead`` (D2a) and report it in one line.
+
+    Only committed work is backed up; a checkpoint failure only warns."""
+    sha = head_of(target)
+    if not sha:
+        return None
+    out = checkpoint(
+        cfg=cfg,
+        entry=entry,
+        main=main,
+        bead=bead,
+        sha=sha,
+        cwd=target,
+        worktree=target,
+        policy=policy,
+    )
+    if out is None:
+        return None
+    if out.ok:
+        say(f"  checkpoint: {bead} @ {sha[:12]} → {out.remote} {out.ref}")
+    else:
+        warn(f"⚠ checkpoint backup push {out.status} for {bead}: {out.detail}")
+    return out
+
+
+def record_claim_frame(main, bead: str, actor: str, *, policy=None) -> str:
+    """Record ``claim-frame=<this frame>`` for ``bead`` in hive data (M14 D4); returns the frame,
+    or '' when pairing is off. Idempotent: writes nothing when the dimension already names this
+    frame, so a repeated claim repairs a torn write without churning the audit trail."""
+    from . import bd, bd_cli
+
+    policy = policy if policy is not None else work_pairing_policy.read(main)
+    if not policy.enabled:
+        return ""
+    frame = local_frame_id()
+    if bd.state(bead, CLAIM_FRAME_DIMENSION, main) == frame:
+        return frame
+    res = bd_cli.routes(main).issue_set_state(
+        bead,
+        f"{CLAIM_FRAME_DIMENSION}={frame}",
+        reason=f"claimed by {actor} on frame {frame}",
+        actor=actor,
+        capture=True,
+    )
+    if res.returncode != 0:
+        raise RuntimeError(f"bd set-state {CLAIM_FRAME_DIMENSION} failed: {bd.err_line(res)}")
+    return frame
 
 
 # ---- recoverability (D3) -------------------------------------------------------------------------
@@ -604,10 +694,15 @@ def reap(
     integration: str = "main",
     show: Callable[[str], dict | None],
     beads: Iterable[str] | None = None,
+    judge: Iterable[str] | None = None,
     now: _dt.datetime | None = None,
     dry_run: bool = False,
 ) -> ReapReport:
-    """Apply D7 retention to the backup refs on ``remote`` (optionally only ``beads``')."""
+    """Apply D7 retention to the backup refs on ``remote`` (optionally only ``beads``').
+
+    Covered refs are always reaped. The grace rules (superseded / unlanded / orphan) need the
+    bead's record, so they are judged only for ``judge`` (default: every bead in scope) — a
+    post-land sweep passes just the landed beads and stays one ls-remote plus one fetch."""
     report = ReapReport()
     now = now or _dt.datetime.now(_dt.UTC)
     try:
@@ -632,14 +727,21 @@ def reap(
         report.error = why
         return report
     base_sha = _local_sha(cwd, f"{BASE_NS}/{segment(remote)}/{integration}") if integration else ""
+    judged = {segment(b) for b in judge} if judge is not None else None
     for bead, frames in sorted(by_bead.items()):
-        try:
-            data = show(bead)
-        except Exception:
-            data = None
+        data, looked = None, False
         for frame, sha in sorted(frames.items()):
             ref = f"{BACKUP_NS}/{bead}/{frame}"
             covered = bool(base_sha) and is_ancestor(cwd, sha, base_sha)
+            if not covered and judged is not None and bead not in judged:
+                report.kept.append((ref, "not covered; grace not judged in this sweep"))
+                continue
+            if not covered and not looked:
+                looked = True
+                try:
+                    data = show(bead)
+                except Exception:
+                    data = None
             delete, why = retention_verdict(data, frame, covered=covered, policy=policy, now=now)
             if not delete:
                 report.kept.append((ref, why))
@@ -665,7 +767,7 @@ def reap_after_land(*, cfg, entry, main, beads: Iterable[str], echo, policy=None
             policy=policy,
             integration=config.integration_branch(cfg, entry),
             show=lambda b: bd.show(b, main),
-            beads=beads,
+            judge=list(beads),
         )
         if report.deleted:
             echo(f"  reaped {len(report.deleted)} backup ref(s) per pairing retention")

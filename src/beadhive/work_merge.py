@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-from . import validation_bypass
+from . import validation_bypass, work_backup
 
 
 def impl__delete_branch(api, main, branch):
@@ -439,6 +439,7 @@ def impl__reconcile_landed_molecule(api, cfg, entry, main, epic, epic_data, mol_
     with api.work_group.merge_slot(
         main, {"bh.merge.kind": "molecule", "bh.hive": api._hive(entry)}
     ):
+        _pair_container_or_exit(api, cfg, entry, main, epic, base)
         closed = api.work_logic.close_merged(epic, main, "molecule landed", data=epic_data)
         api._close_molecule_origin_reports(origin_reports, epic, main)
         api._close_swarm_bead(epic, main)
@@ -594,6 +595,7 @@ def impl__merge_molecule(api, cfg, epic, hive, override_reason="", override_acto
         )
         api._record_merge_commit(epic, main, base)
         api.otel.count_merge_outcome({**slot_attrs, "bh.merge.how": "no_ff"})
+        _pair_container_or_exit(api, cfg, entry, main, epic, base)
         closed = api.work_logic.close_merged(epic, main, "molecule landed", data=epic_data)
         api._close_molecule_origin_reports(origin_reports, epic, main)
         api._close_swarm_bead(epic, main)
@@ -613,6 +615,7 @@ def impl__merge_molecule(api, cfg, epic, hive, override_reason="", override_acto
             err=True,
         )
         raise api.typer.Exit(1)
+    _reap_backups_after_land(api, cfg, entry, main, [epic], base)
     api.typer.echo(f"✓ landed molecule {epic} ({mol_branch} --no-ff → {base}); closed {epic}")
 
 
@@ -1019,6 +1022,7 @@ def impl__reconcile_landed_bead(api, cfg, entry, main, bead, bead_data, branch, 
                 err=True,
             )
             raise api.typer.Exit(1)
+        _pair_container_or_exit(api, cfg, entry, main, bead, base)
         closed = api.work_logic.close_merged(bead, main, "merged", data=fresh)
         api._clear_review_label(bead, fresh, main)
     if rm:
@@ -1036,6 +1040,7 @@ def impl__reconcile_landed_bead(api, cfg, entry, main, bead, bead_data, branch, 
         )
         raise api.typer.Exit(1)
     _reap_accepted_safety_refs(api, entry, branch, boundary="merge reconcile")
+    _reap_backups_after_land(api, cfg, entry, main, [bead], base)
     api.typer.echo(
         f"✓ {bead} was already merged ({branch} → {base}) — reconciled bookkeeping "
         "(closed the bead; no re-merge)"
@@ -1354,6 +1359,7 @@ def impl__merge_bead(api, cfg, bead, hive, rm, override_reason="", override_acto
             api._record_merge_commit(bead, main, base)
         if not postland_rc:
             api.otel.count_merge_outcome({**slot_attrs, "bh.merge.how": how})
+        _pair_container_or_exit(api, cfg, entry, main, bead, base)
         try:
             closed = api.work_logic.close_merged(bead, main, "merged", data=bead_data)
             api._clear_review_label(bead, bead_data, main)
@@ -1372,6 +1378,8 @@ def impl__merge_bead(api, cfg, bead, hive, rm, override_reason="", override_acto
             raise
         if closed:
             _reap_accepted_safety_refs(api, entry, branch, boundary="merge close")
+    if closed:
+        _reap_backups_after_land(api, cfg, entry, main, [bead], base)
     api.otel.record_merge_duration(
         api.time.perf_counter() - started, {"bh.merge.kind": "bead", "bh.merge.how": how}
     )
@@ -1417,3 +1425,36 @@ def _reap_accepted_safety_refs(api, entry, branch, *, boundary):
             f"⚠ {boundary} succeeded but safety ref cleanup was refused for: " + ", ".join(failed),
             err=True,
         )
+
+
+def _pair_container_or_exit(api, cfg, entry, main, bead, base):
+    """Condition 18 / M14 rule P for a merge INTO a container: the closed child's work now lives
+    in the container, so the container's backup lands before the child is closed. A refused push
+    leaves the bead open; the merge itself is already on the container, so re-running merge (its
+    idempotent reconcile path) finishes the close once the remote is reachable."""
+    try:
+        work_backup.pair_container_merge(
+            cfg=cfg, entry=entry, main=main, base=base, verb="closed", echo=api.typer.echo
+        )
+    except work_backup.PairingRefused as exc:
+        api.typer.echo(
+            f"✗ {bead} is merged into {base} but {exc}; the bead was NOT closed — re-run "
+            f"`{api.config.BINARY_ALIAS} work merge {bead}` once the backup remote is reachable "
+            "(it reconciles without re-merging)",
+            err=True,
+        )
+        raise api.typer.Exit(1) from None
+
+
+def _reap_backups_after_land(api, cfg, entry, main, beads, base):
+    """Best-effort pairing retention (M14 D7) after a land: reap covered backup refs and judge
+    the landed beads' grace rules. Only a land onto the integration branch can cover anything."""
+    if base != api.config.integration_branch(cfg, entry):
+        return
+    work_backup.reap_after_land(
+        cfg=cfg,
+        entry=entry,
+        main=main,
+        beads=beads,
+        echo=lambda line: api.typer.echo(line, err=line.startswith("⚠")),
+    )

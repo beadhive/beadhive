@@ -9,7 +9,7 @@ from __future__ import annotations
 import contextlib
 from pathlib import Path
 
-from . import validation_bypass
+from . import validation_bypass, work_backup
 
 
 def impl_check(api, bead, hive):
@@ -47,6 +47,17 @@ def _impl_check_unadmitted(api, bead, hive, *, permit=None):
     cmd = api.config.validate_cmd(cfg, entry)
     sha = api.worktree.head_full_sha(target)
     clean_sha = api._checked_sha(target)
+    if not grp:
+        # D2a: `check` is a checkpoint — back up the committed tip (best-effort, pairing on).
+        work_backup.checkpoint_worktree(
+            cfg=cfg,
+            entry=entry,
+            main=main,
+            bead=bead,
+            target=target,
+            say=api.typer.echo,
+            warn=lambda line: api.typer.echo(line, err=True),
+        )
     tree = api.validation_ledger.tree_of(entry, clean_sha) if clean_sha else ""
     try:
         if validation_bypass.maybe_record(
@@ -344,6 +355,11 @@ def impl_submit(api, bead, as_, hive, group, override_validation="", override_ac
             api.typer.echo(f"✗ {exc}", err=True)
             raise api.typer.Exit(1) from None
     api._validate_submit_checkout(entry, branch, cfg, bead=bead, override=override)
+    # Condition 18 / M14 rule P: the validated tip lands on this frame's backup ref BEFORE any
+    # work-asserting state (gate, review=pending) is written. A refused push writes nothing.
+    pair_before_state(
+        api, cfg, entry, main, [bead], api.worktree._branch_sha(entry, branch), target, "submitted"
+    )
     sha = api.worktree.head_sha(target)
     api._record_submit_commits(bead, main, entry, branch, base)
     gate, reuse = api._open_submit_gate(cfg, entry, bead, branch, main, sha, actor, hive)
@@ -354,6 +370,25 @@ def impl_submit(api, bead, as_, hive, group, override_validation="", override_ac
     api.otel.count_bead_transition("review_pending", {"bh.review.gate": gate})
     verb = "reused open" if reuse else "opened"
     api.typer.echo(f"✓ submitted {bead} @ {sha} — {verb} {gate} review gate (worktree left intact)")
+
+
+def pair_before_state(api, cfg, entry, main, beads, sha, worktree, verb):
+    """Rule P (M14 D2) at a verb boundary: push the backups or exit 1 with nothing written."""
+    try:
+        work_backup.pair(
+            cfg=cfg,
+            entry=entry,
+            main=main,
+            beads=beads,
+            sha=sha,
+            verb=verb,
+            cwd=worktree if worktree is not None else main,
+            worktree=worktree,
+            echo=api.typer.echo,
+        )
+    except work_backup.PairingRefused as exc:
+        api.typer.echo(f"✗ {exc}", err=True)
+        raise api.typer.Exit(1) from None
 
 
 def _reap_accepted_safety_refs(api, entry, branch, *, labels, boundary):
