@@ -899,7 +899,11 @@ class NullLeaseKeeper:
 
 
 class HostLeaseKeeper:
-    """Renew this host's lease on the loop's own tick, for as long as it has seats in flight.
+    """Check, on the loop's own tick, that this host still holds the hive's lease.
+
+    RENEWAL IS RETIRED (bh-12hev, ADR §4): ``expires_at`` is a failover hint and no longer ends
+    a holder's tenure, so the failure below can no longer happen by a lease lapsing; the keeper
+    only reads. The history is kept because it is why the loop checks at all.
 
     OBSERVED, NOT THEORISED (2026-08-10): a seat run outlived the 30-minute TTL, `bh work submit`
     then refused on a stale claim-fencing token, and the seat had to re-adopt and re-ack before
