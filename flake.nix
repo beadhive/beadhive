@@ -72,8 +72,11 @@
       #
       # PIN BUMP => TRIGGER CANARY (ADR condition 9, bh-p07dv). The hive write guard is shaped by
       # Dolt/bd trigger behaviour measured on exactly these binaries. Moving the bd version here
-      # (then `just toolchain-metadata`) fails `just check` until `just fence-canary` is green on
-      # the new binary and CANARY_PINS in tests/harness/trigger_canary.py is moved to match.
+      # (then `just toolchain-metadata`) fails `just check` only if it leaves the range the canary
+      # has been proved on (BH_FENCE_CANARY_DOLT_RANGE / BH_FENCE_CANARY_BD_RANGE, defaults
+      # dolt >=2.3.5,<2.4 and bd >=1.3.0,<1.4; docs/CONFIGURATION.md). Then run `just fence-canary`
+      # on the new binary and widen the range deliberately. A bump inside the range needs no test
+      # edit; the canary still runs on every integration land and prints the versions it proved.
       beadsReleaseCommit = "f45b249ce6b40ba62aecc03949e6371e8f7c79d8";
       beadsReleaseAssets = {
         x86_64-linux = {
@@ -129,8 +132,11 @@
       #
       # PIN BUMP => TRIGGER CANARY (ADR condition 9, bh-p07dv). The hive write guard is shaped by
       # Dolt/bd trigger behaviour measured on exactly these binaries. Moving the Dolt version here
-      # (then `just toolchain-metadata`) fails `just check` until `just fence-canary` is green on
-      # the new binary and CANARY_PINS in tests/harness/trigger_canary.py is moved to match.
+      # (then `just toolchain-metadata`) fails `just check` only if it leaves the range the canary
+      # has been proved on (BH_FENCE_CANARY_DOLT_RANGE / BH_FENCE_CANARY_BD_RANGE, defaults
+      # dolt >=2.3.5,<2.4 and bd >=1.3.0,<1.4; docs/CONFIGURATION.md). Then run `just fence-canary`
+      # on the new binary and widen the range deliberately. A bump inside the range needs no test
+      # edit; the canary still runs on every integration land and prints the versions it proved.
       doltReleaseCommit = "ad65af6cc937d10fa3c88e2041fed4325968b581";
       doltReleaseAssets = {
         x86_64-linux = {

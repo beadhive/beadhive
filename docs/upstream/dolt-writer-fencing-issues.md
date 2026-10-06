@@ -57,3 +57,19 @@ that aliases an open one.
 
 *Workaround in bh:* a distinct URL per frame-private remote, plus an assertion that
 `remotes/<frame>/main` differs from `origin/main` after fetch.
+
+## dolt-4: `dolt_diff_<table>` silently drops commits on merged histories
+
+*Evidence:* bh-uz46l (M1) `tests/test_fence_data_int.py`; pinned by the trigger canary
+(`tests/test_fence_trigger_canary_int.py::test_dolt_diff_table_drops_commits_on_merged_histories`,
+bh-vb3yf).
+
+*Observed (2.3.5):* once a branch's history contains a merge commit, `dolt_diff_<table>` omits some
+commits that changed the table (an adopt commit beside a merge vanished from
+`dolt_diff_bh_writer`), while `dolt_history_<table>` still lists every one of them.
+
+*Expected:* `dolt_diff_<table>` lists every commit in the reachable history that changed the table.
+
+*Workaround in bh:* `fence_audit` reads `dolt_history_bh_writer` joined with
+`dolt_log('--parents', <head>)` and never `dolt_diff_<table>`. The canary pins the bug so a Dolt
+bump that fixes or changes it is noticed and the audit's query re-evaluated.

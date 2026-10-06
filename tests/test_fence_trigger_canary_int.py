@@ -42,14 +42,19 @@ pytestmark = [
 expect = tc.expect
 
 
-def test_installed_dolt_and_bd_are_the_canary_pins():
-    """The canary measures the binaries on PATH; they must be the ones CANARY_PINS vouches for,
-    or a green run says nothing about the pin."""
+def test_installed_dolt_and_bd_satisfy_the_configured_ranges(capsys):
+    """The canary measures the binaries on PATH; they must satisfy the configured ranges, or a
+    green run says nothing about the pin. The exact versions proved are always printed (and
+    recorded as a pytest property) so a green canary still names the binaries it ran against."""
+    ranges = tc.canary_ranges()
     installed = tc.installed_versions()
+    violations = tc.range_violations(installed, ranges)
+    with capsys.disabled():
+        print(f"\nfence canary proved: {tc.proof_line(installed, ranges)}")
     expect(
-        installed == tc.CANARY_PINS,
-        "the canary runs on the pinned Dolt/bd binaries",
-        f"installed {installed}, CANARY_PINS {tc.CANARY_PINS}",
+        not violations,
+        "the canary runs on Dolt/bd binaries inside the configured ranges",
+        "; ".join(violations),
     )
 
 
@@ -217,6 +222,57 @@ def test_r5_dolt_trigger_bugs_still_behave_as_the_guard_assumes(tmp_path):
         detached.split() == ["d", "true"],
         "active_branch() is NULL on a detached revision (COALESCE(..., 'main') fails closed)",
         detached,
+    )
+
+
+def test_dolt_diff_table_drops_commits_on_merged_histories(tmp_path):
+    """bh-uz46l (M1) on Dolt 2.3.5: ``dolt_diff_<table>`` silently omits commits once the history
+    contains a merge -- an adopt commit beside a merge vanished from ``dolt_diff_bh_writer``.
+    ``fence_audit`` therefore reads ``dolt_history_<table>`` joined with
+    ``dolt_log('--parents', head)``. Pinned AS A BUG: if a bump fixes (or changes) it, the canary
+    goes red so the audit's workaround is re-evaluated rather than silently kept."""
+    repo = tc.DoltRepo(tmp_path)
+    repo.ok(
+        "sql",
+        "-q",
+        "create table t (id int primary key, v int); call dolt_commit('-Am', 'base')",
+    )
+    repo.ok("checkout", "-b", "side")
+    repo.ok("sql", "-q", "insert into t values (1, 1); call dolt_commit('-Am', 'side')")
+    repo.ok("checkout", "main")
+    repo.ok("sql", "-q", "insert into t values (2, 2); call dolt_commit('-Am', 'main-a')")
+    repo.ok("merge", "side", "--no-ff", "-m", "merge side")
+    repo.ok("sql", "-q", "insert into t values (3, 3); call dolt_commit('-Am', 'beside')")
+
+    changed = {
+        row["message"]
+        for row in repo.rows(
+            "select distinct l.message from dolt_history_t h "
+            "join dolt_log l on l.commit_hash = h.commit_hash"
+        )
+    }
+    expect(
+        {"main-a", "side", "beside"} <= changed,
+        "dolt_history_<table> keeps every commit that touched the table (the audit's source)",
+        f"saw {sorted(changed)}",
+    )
+    diffed = {
+        row["message"]
+        for row in repo.rows(
+            "select distinct l.message from dolt_diff_t d "
+            "join dolt_log l on l.commit_hash = d.to_commit"
+        )
+    }
+    expect(
+        "main-a" not in diffed,
+        "dolt_diff_<table> silently drops a commit on a merged history (fence_audit avoids it)",
+        f"dolt_diff_t now lists {sorted(diffed)}; if Dolt fixed it, re-evaluate fence_audit",
+    )
+    parents = repo.count("select count(*) from dolt_log('--parents', 'main')")
+    expect(
+        parents == 6,
+        "dolt_log('--parents', head) lists the full reachable history (the audit's ancestry)",
+        f"{parents} commits",
     )
 
 

@@ -650,3 +650,21 @@ bh config set work.dispatch.review_mode fresh     # independent reviewer per bea
 
 The dispatcher seat reads these keys; the collapsed variants it dispatches are
 `dispatcher @ batch` (depth 1) and `dispatcher @ batch` + `sub-dispatch:1` (depth 2).
+
+## Dolt/bd trigger canary version ranges {#fence-canary-ranges}
+
+The hive write guard's shape depends on Dolt and bd trigger behaviour (ADR condition 9). The
+canary (`just fence-canary`) is proved against a **range** of each tool, not an exact version. Both
+are test-harness settings read from the process environment; they are not `config.yaml` keys.
+
+| Env var | Default | Notes |
+|---|---|---|
+| `BH_FENCE_CANARY_DOLT_RANGE` | `>=2.3.5,<2.4` | PEP 440 specifier set for the Dolt version (parsed with `packaging.specifiers`). |
+| `BH_FENCE_CANARY_BD_RANGE` | `>=1.3.0,<1.4` | PEP 440 specifier set for the bd version. |
+
+A set-but-empty or malformed value is refused with an error naming the variable; it is never
+ignored, clamped, or replaced by the default. The integration canary passes when the installed
+`dolt`/`bd` satisfy their range and prints the exact versions it proved. The fast-gate tripwire
+(`tests/test_fence_trigger_canary_pin.py`) fails only when a pin in `flake.nix` or
+`docker/toolchain-metadata.json` falls outside its range; widen the range deliberately after
+`just fence-canary` is green on the new binary. A bump inside the range needs no test edit.
