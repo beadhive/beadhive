@@ -195,15 +195,12 @@ class FailoverMonitor:
 
 def session_table(principal: str, epoch: int) -> str:
     """ADR §5's per-incarnation session table, ``frame_<principal>_<epoch>_session`` (M9,
-    ``bh-owqdg``, provisions it). Refuses anything that would not be a safe identifier."""
-    if (
-        not isinstance(principal, str)
-        or not re.fullmatch(r"[a-z][a-z0-9_]{0,30}", principal)
-        or type(epoch) is not int
-        or not 0 <= epoch <= 9999999999
-    ):
-        raise ValueError("invalid frame principal or incarnation")
-    return f"frame_{principal}_{epoch}_session"
+    ``bh-owqdg``, provisions it). Delegates to the one source of the name,
+    :func:`beadhive.hq_sql_runtime_schema.session_table`; raises ``ValueError`` (its
+    ``RuntimeSchemaError``) for anything that would not be a safe identifier."""
+    from .hq_sql_runtime_schema import session_table as provisioned_session_table
+
+    return provisioned_session_table(principal, epoch)
 
 
 def sql_session_staleness(cursor, table: str) -> float | None:

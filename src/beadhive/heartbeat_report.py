@@ -225,6 +225,95 @@ def conformance_cache_path():
     return bh_home() / heartbeat_conformance.CACHE_RELATIVE_PATH
 
 
+def _sql_plane():
+    from .hq_control_plane import SqlControlPlane, control_plane
+
+    plane = control_plane(config.hq_dir())
+    if not isinstance(plane, SqlControlPlane) or plane.settings.get("runtime") is None:
+        return None
+    return plane
+
+
+def _session_opener(plane):
+    """A per-call connection factory on the frame's own runtime principal (strict transport)."""
+    import time
+
+    from .hq_sql_transport import FnoxBroker, connect
+
+    binding = plane.settings["runtime"]
+    broker = plane.broker or FnoxBroker()
+
+    def opener():
+        return connect(binding, broker, deadline=time.monotonic() + binding["operation_timeout"])
+
+    return opener, binding["database"]
+
+
+def session_renewer():
+    """The frame's :class:`~beadhive.hq_sql_session.SessionRenewer`, or ``None`` when this host
+    has no SQL frame runtime (git HQ keeps its signed beat and has no session row)."""
+    from .hq_sql_session import SessionRenewer
+
+    plane = _sql_plane()
+    if plane is None:
+        return None
+    opener, database = _session_opener(plane)
+    return SessionRenewer(opener, database=database)
+
+
+def session_evidence(plane, route):
+    """What the conformance job reports for `route`, from the cache it just refreshed.
+
+    The decoupled beat's own projection (:func:`generate` with ``cached=True``) supplies the
+    release, profile, status and report digest; when the frame cannot build one (release
+    drift, unreadable grant) the row says ``unavailable`` with the installed release, so stale
+    ``conformant`` evidence is overwritten rather than left to age out."""
+    from .hq_sql_session import EvidenceReport
+
+    try:
+        lease = generate(plane, cached=True)
+        release = lease.release.model_dump()
+        return EvidenceReport(
+            route.epoch,
+            str(release["id"]),
+            str(release["digest"]),
+            lease.conformance.profile,
+            lease.conformance.status,
+            lease.report_digest,
+        )
+    except HeartbeatError:
+        measured = installed_release()
+        return EvidenceReport(
+            route.epoch, str(measured["id"]), str(measured["digest"]), "", "unavailable", ""
+        )
+
+
+def publish_session_evidence():
+    """One evidence-row UPDATE after a conformance run, when the data switched this frame on.
+
+    Returns the route written, or ``None`` when there is no SQL runtime; raises
+    :class:`~beadhive.hq_sql_session.NotSwitched` on a legacy incarnation."""
+    from .hq_sql_session import publish_evidence, resolve_route
+
+    plane = _sql_plane()
+    if plane is None:
+        return None
+    opener, database = _session_opener(plane)
+    connection = opener()
+    try:
+        with connection.cursor() as cursor:
+            route = resolve_route(cursor, database=database)
+        connection.rollback()
+    finally:
+        connection.close()
+    report = session_evidence(plane, route)
+    connection = opener()
+    try:
+        return publish_evidence(connection, report, database=database)
+    finally:
+        connection.close()
+
+
 def send_cached_beat(*, free_sessions: int = 0) -> str:
     """One decoupled beat against this host's SQL frame authority (``heartbeat_sender beat``)."""
     from .hq_control_plane import SqlControlPlane, control_plane

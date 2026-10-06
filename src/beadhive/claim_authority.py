@@ -57,7 +57,7 @@ import json
 import os
 import time
 import uuid
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -105,6 +105,11 @@ class ClaimRecord:
     # backup ref `refs/bh/backup/<bead>/<frame>`. Both default empty so older records read cleanly.
     frame_id: str = ""
     backup_sha: str = ""
+    # Claim-time audit on a data-switched SQL frame (bh-owqdg, ADR §5): the session and evidence
+    # stamps the claim-time eligibility reread admitted — ``session_renewed_at``,
+    # ``evidence_measured_at``, ``evidence_digest``, the statement's predicates. It replaces the
+    # receiver's per-beat audit (T15). Empty on every other carrier and on older records.
+    admission: dict = field(default_factory=dict)
 
     def is_fenced(self) -> bool:
         """Whether this record carries a usable fencing token at all. `epoch` 0 means *no
@@ -139,10 +144,12 @@ class ClaimAuthority(Protocol):
     The fencing token (bh-ytbb.10) rides `issue` as KEYWORD-ONLY arguments with unfenced
     defaults, so every existing three-positional-argument call site — and any authority
     implemented against the pre-bh-ytbb.10 shape — keeps working untouched. An authority is
-    free to ignore them; `LocalTrustAuthority` persists them."""
+    free to ignore them; `LocalTrustAuthority` persists them. `admission` (bh-owqdg) is passed
+    only when a data-switched frame admitted the claim, so an authority without it still works
+    everywhere else."""
 
     def issue(
-        self, bead: str, seat: str, worktree, *, host_id: str = "", epoch: int = 0
+        self, bead: str, seat: str, worktree, *, host_id: str = "", epoch: int = 0, **extra
     ) -> ClaimRecord: ...
     def read(self, worktree) -> ClaimRecord | None: ...
     def verify(self, record: ClaimRecord | None, action: str, seat: str) -> bool: ...
@@ -304,6 +311,7 @@ def _decode_record(raw: str, worktree) -> ClaimRecord | None:
         epoch=_as_epoch(data.get("epoch")),
         frame_id=str(data.get("frame_id") or ""),
         backup_sha=str(data.get("backup_sha") or ""),
+        admission=dict(data["admission"]) if isinstance(data.get("admission"), dict) else {},
     )
 
 
@@ -367,7 +375,14 @@ class LocalTrustAuthority:
     signature, no external check."""
 
     def issue(
-        self, bead: str, seat: str, worktree, *, host_id: str = "", epoch: int = 0
+        self,
+        bead: str,
+        seat: str,
+        worktree,
+        *,
+        host_id: str = "",
+        epoch: int = 0,
+        admission: dict | None = None,
     ) -> ClaimRecord:
         record = ClaimRecord(
             bead=bead,
@@ -377,6 +392,7 @@ class LocalTrustAuthority:
             attestation="none",
             host_id=host_id,
             epoch=epoch,
+            admission=dict(admission or {}),
         )
         path = _record_path(worktree, create=True)
         if path is not None:

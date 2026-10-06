@@ -42,7 +42,13 @@ def impl__claim_fence(api, cfg, hive):
 def impl__issue_claim(api, cfg, entry, bead, actor, target, hive):
     authority = api.claim_authority.get_authority(api.config.claim_authority(cfg, entry))
     this_host, epoch = api._claim_fence(cfg, hive)
-    authority.issue(bead, actor, target, host_id=this_host, epoch=epoch)
+    from .frame_eligibility import last_admission
+
+    # The claim-time reread's admitted session/evidence stamps (bh-owqdg), when the frame's data
+    # switched it onto session rows; passed only then, so older authorities keep working.
+    admission = last_admission()
+    extra = {"admission": admission} if admission else {}
+    authority.issue(bead, actor, target, host_id=this_host, epoch=epoch, **extra)
 
 
 def impl__batch_worktree(api, cfg, hive, bead, main):

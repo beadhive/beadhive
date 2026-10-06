@@ -359,3 +359,42 @@ def test_seed_statement_body_is_the_receiver_carrier():
     body_hex = out["statement"].split("X'", 1)[1].split("'", 1)[0]
     lease = HostLease("", "", 2, now_stamp(NOW), now_stamp(NOW))
     assert bytes.fromhex(body_hex) == lease_body({}, lease)
+
+
+def test_check_lets_an_m9_frame_update_its_own_evidence_row_only():
+    """bh-owqdg: the conformance job UPDATEs ``frame_<p>_<e>_evidence``; another frame's is not."""
+    grants = {
+        "'director'@'%'": [
+            f"GRANT SELECT, UPDATE ON `{DB}`.`hq_live_hive_leases` TO `director`@`%`",
+        ],
+        "'frame_a'@'10.0.0.5'": [
+            f"GRANT SELECT, UPDATE ON `{DB}`.`frame_frame_a_1_session` TO `frame_a`@`10.0.0.5`",
+            f"GRANT SELECT, UPDATE ON `{DB}`.`frame_frame_a_1_evidence` TO `frame_a`@`10.0.0.5`",
+        ],
+    }
+    # A session-only incarnation: the registry names its session table (no inbox).
+    registry = [("frame_a", 1, "frame_frame_a_1_session")]
+    out = hq_placement_ops.check(
+        SETTINGS, connect=lambda binding: _conn(GrantCursor(grants, registry))
+    )
+    assert out["conformant"], out["problems"]
+    grants["'frame_a'@'10.0.0.5'"].append(
+        f"GRANT UPDATE ON `{DB}`.`frame_frame_b_1_evidence` TO `frame_a`@`10.0.0.5`"
+    )
+    out = hq_placement_ops.check(
+        SETTINGS, connect=lambda binding: _conn(GrantCursor(grants, registry))
+    )
+    assert out["problems"] == [
+        "'frame_a'@'10.0.0.5': frame holds ['UPDATE'] on "
+        "beadhive_hq_runtime.frame_frame_b_1_evidence"
+    ]
+
+
+def test_observer_session_table_is_the_provisioned_name():
+    from beadhive import failover_observer, hq_sql_runtime_schema
+
+    assert failover_observer.session_table("frame_a", 3) == (
+        hq_sql_runtime_schema.session_table("frame_a", 3)
+    )
+    with pytest.raises(ValueError):
+        failover_observer.session_table("Frame-A", 3)

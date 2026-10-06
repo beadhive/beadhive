@@ -101,10 +101,14 @@ _MAX_ROW_BYTES = 65536
 
 
 def _schema_tables() -> frozenset[str]:
-    from .hq_sql_runtime_schema import COMMITTED_SCHEMA, PROTECTED_LIVE_SCHEMA
+    from .hq_sql_runtime_schema import (
+        COMMITTED_SCHEMA,
+        LIVENESS_POLICY_SCHEMA,
+        PROTECTED_LIVE_SCHEMA,
+    )
 
     names = set()
-    for statement in (*COMMITTED_SCHEMA, *PROTECTED_LIVE_SCHEMA):
+    for statement in (*COMMITTED_SCHEMA, *PROTECTED_LIVE_SCHEMA, *LIVENESS_POLICY_SCHEMA):
         match = re.match(r"CREATE TABLE (\w+)", statement)
         if match:
             names.add(match.group(1))
@@ -800,9 +804,11 @@ def check_triggers(
             problems.append(f"trigger {name} sits on protected table {table}")
         elif named:
             problems.append(f"trigger {name} on {table} touches protected {', '.join(named)}")
-        elif (table in frame_tables or table.startswith("hq_live_inbox_")) and _TRIGGER_DML.search(
-            text
-        ):
+        elif (
+            table in frame_tables
+            or table.startswith("hq_live_inbox_")
+            or re.fullmatch(r"frame_\w+_(session|evidence)", table)
+        ) and _TRIGGER_DML.search(text):
             problems.append(f"trigger {name} on frame-writable {table} runs DML")
     return problems
 

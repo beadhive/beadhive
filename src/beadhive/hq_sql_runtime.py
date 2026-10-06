@@ -25,7 +25,7 @@ from pathlib import Path
 from . import hq_authority_guard as guard
 from .hq_hive_policy import project_hive_policies, validate_sql_hive_policies
 from .hq_sql_deadline import flock_until
-from .hq_sql_runtime_schema import inbox_table
+from .hq_sql_runtime_schema import inbox_table, routed_table_valid, routed_to_inbox
 from .hq_sql_signatures import SqlSignatureError, canonical, verify_authority, verify_heartbeat
 from .hq_sql_transport import FnoxBroker, SqlTransportError, connect
 
@@ -46,6 +46,10 @@ class SqlRuntimeDeadline(SqlRuntimeError):
 
 class SqlRuntimeUnavailable(SqlRuntimeError):
     """A connection/credential/transport failure with budget still remaining."""
+
+
+class SessionOnlyIncarnation(SqlRuntimeError):
+    """The incarnation is routed to its session table and has no signed inbox (bh-owqdg)."""
 
 
 class InboxUnknown(SqlRuntimeError):
@@ -686,6 +690,8 @@ class SqlRuntimeAuthority:
         deadline=None,
         enforce=True,
         hive_lease_epoch: int | None = None,
+        session_liveness: bool = False,
+        session_prefix: str | None = None,
     ):
         """Read current config, grant, observer projection and optional hive lease together.
 
@@ -706,7 +712,18 @@ class SqlRuntimeAuthority:
         ``hive_lease_epoch`` (signed hive-lease mode, with `prefix`) additionally gathers
         :class:`HiveLeaseEvidence` for that prefix at that fence epoch from the frame's own
         inbox, in the same transaction, and returns it as a tenth element.
+
+        ``session_liveness`` (bh-owqdg, ADR §5) asks for the data-switched reader and appends one
+        element: when this incarnation's ``_session``/``_evidence`` tables exist, a
+        :class:`beadhive.hq_sql_session.SessionObservation` from the one eligibility statement
+        (run in this same transaction, ``AS OF`` this head), and the inbox/public observation
+        is then neither read nor fenced (the observation slot is ``None``); otherwise ``None``
+        and the legacy observation as above. The switch is table existence only.
+        ``session_prefix`` names the hive whose placement row feeds the statement's
+        ``current_hive_lease_holder``; unlike `prefix` it reads no lease row and adds no fence.
         """
+        if session_liveness and hive_lease_epoch is not None:
+            raise SqlRuntimeError("session liveness and hive lease evidence are separate reads")
         signed = signed_liveness(self.settings)
         connection, deadline = self._open(deadline=deadline)
         try:
@@ -738,7 +755,7 @@ class SqlRuntimeAuthority:
                 if len(rows) != 1:
                     raise SqlRuntimeError("frame composite principal not provisioned")
                 route = PrincipalBinding(*rows[0])
-                if route.inbox_table != inbox_table(principal, route.epoch):
+                if not routed_table_valid(route.inbox_table, principal, route.epoch):
                     raise SqlRuntimeError("frame composite table routing invalid")
                 entry = state.get("frames", {}).get(route.frame_id)
                 matches = [
@@ -767,7 +784,23 @@ class SqlRuntimeAuthority:
                         )
                 else:
                     snapshot = self.load_latest_config_at(cursor, deadline=deadline)
-                if signed:
+                session = None
+                if session_liveness:
+                    if session_prefix is not None and (
+                        not isinstance(session_prefix, str)
+                        or not re.fullmatch(r"[a-z][a-z0-9-]*", session_prefix)
+                    ):
+                        raise SqlRuntimeError("invalid hive lease prefix")
+                    session = self._session_observation(
+                        cursor, head, route, slot, record, prefix=session_prefix
+                    )
+                has_inbox = routed_to_inbox(route.inbox_table, principal, route.epoch)
+                if session is not None or signed and not has_inbox:
+                    # Switched (bh-owqdg): server-stamped session rows are the liveness
+                    # carrier; the signed inbox is dual-written for 0.22.x readers only, and a
+                    # session-only incarnation has none to read.
+                    observation = None
+                elif signed:
                     # Signed liveness: this frame's own inbox (route-derived identifier,
                     # never sender-named), verified at read time. No receiver projection.
                     cursor.execute(
@@ -809,11 +842,14 @@ class SqlRuntimeAuthority:
                 crossref[2] if enforce else snapshot.commit_revision, deadline=deadline
             )
             self.fresh_runtime_head_fence(head, deadline=deadline)
-            if not signed:
+            if not signed and session is None:
+                # A session-only incarnation reads (and fences) an absent receiver row.
                 self.fresh_public_observation_fence(route, observation, deadline=deadline)
             if prefix is not None:
                 self.fresh_hive_lease_fence(prefix, lease_row, deadline=deadline)
             result = (head, state, route, slot, record, snapshot, policies, observation, lease_row)
+            if session_liveness:
+                return (*result, session)
             return result if evidence is None else (*result, evidence)
         except SqlRuntimeError:
             raise
@@ -821,6 +857,29 @@ class SqlRuntimeAuthority:
             raise SqlRuntimeError("qualified frame composite unavailable") from None
         finally:
             connection.close()
+
+    @staticmethod
+    def _session_observation(cursor, head, route, slot, record, *, prefix=None):
+        """The data switch: ``None`` unless this incarnation's session tables exist, else the
+        one-statement eligibility read (:func:`beadhive.hq_sql_session.read_eligibility`)."""
+        from .hq_sql_session import SessionError, incarnation_switch, read_eligibility
+
+        try:
+            if incarnation_switch(cursor, route.principal, route.epoch) is None:
+                return None
+            desired = record.get("desired", {})
+            return read_eligibility(
+                cursor,
+                head=head,
+                principal=route.principal,
+                epoch=route.epoch,
+                desired_release_digest=str((desired.get("release") or {}).get("digest", "")),
+                desired_profile=str(desired.get("profile", "")),
+                prefix=prefix,
+                candidate=slot == "candidate",
+            )
+        except SessionError as exc:
+            raise SqlRuntimeError(f"session liveness unavailable: {exc}") from None
 
     def _hive_lease_evidence(self, cursor, head, route, prefix, epoch) -> HiveLeaseEvidence:
         """Collect this frame's proposals claiming `prefix` at fence `epoch` (unverified).
@@ -831,6 +890,8 @@ class SqlRuntimeAuthority:
         """
         if type(epoch) is not int or epoch < 1:
             raise SqlRuntimeError("invalid hive lease fence epoch")
+        if not routed_to_inbox(route.inbox_table, route.principal, route.epoch):
+            return HiveLeaseEvidence((), {}, None)
         cursor.execute(
             f"SELECT request_id,payload,payload_sha256 FROM {route.inbox_table} "
             "WHERE kind='hive_lease'"
@@ -955,7 +1016,7 @@ class SqlRuntimeAuthority:
                 if len(rows) != 1:
                     raise SqlRuntimeError("authenticated frame principal is not provisioned")
                 selected = PrincipalBinding(*rows[0])
-                if selected.inbox_table != inbox_table(principal_name, selected.epoch):
+                if not routed_table_valid(selected.inbox_table, principal_name, selected.epoch):
                     raise SqlRuntimeError("protected frame table routing changed")
             connection.rollback()
             if time.monotonic() >= deadline:
@@ -981,6 +1042,10 @@ class SqlRuntimeAuthority:
         """Publish only into the authenticated principal's operator-routed live table."""
         if kind not in {"heartbeat", "registration", "hive_lease"}:
             raise SqlRuntimeError("unsupported frame evidence domain")
+        if routed_table_valid(binding.inbox_table, binding.principal, binding.epoch) and not (
+            routed_to_inbox(binding.inbox_table, binding.principal, binding.epoch)
+        ):
+            raise SessionOnlyIncarnation("session-only incarnation has no signed inbox")
         if binding.inbox_table != inbox_table(binding.principal, binding.epoch):
             raise SqlRuntimeError("frame inbox identifier changed")
         body = canonical(payload)

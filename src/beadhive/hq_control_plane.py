@@ -2362,8 +2362,18 @@ class SqlControlPlane:
             age_basis="signed-envelope-reader-clock" if signed else "protected-receiver-first-seen",
         )
 
-    def read_eligibility(self, manifest, *, now=None):
-        """Return one qualified SQL config/authority/observation read boundary."""
+    #: The SQL plane's eligibility read is data-switched onto session rows (bh-owqdg): callers
+    #: may name the hive so the statement also reports ``current_hive_lease_holder``.
+    session_liveness_reader = True
+
+    def read_eligibility(self, manifest, *, now=None, prefix=None):
+        """Return one qualified SQL config/authority/observation read boundary.
+
+        When this incarnation's ``_session``/``_evidence`` tables exist (the data switch,
+        bh-owqdg), the observation is the one-statement
+        :class:`~beadhive.hq_sql_session.SessionObservation`; otherwise the signed or
+        receiver-accepted observation exactly as before.
+        """
         import math
 
         at = self.clock() if now is None else now
@@ -2373,9 +2383,11 @@ class SqlControlPlane:
         # unbound config head are tolerated; the frame-identity comparisons below still hold.
         enforce = authority_enforced()
         try:
-            head, _state, route, slot, record, _snapshot, policies, row, _ = (
-                self._runtime_authority().read_frame_composite(enforce=enforce)
+            result = self._runtime_authority().read_frame_composite(
+                enforce=enforce, session_liveness=True, session_prefix=prefix
             )
+            head, _state, route, slot, record, _snapshot, policies, row, _ = result[:9]
+            session = result[9] if len(result) > 9 else None
             if (
                 manifest.frame_id != route.frame_id
                 or manifest.host_id != route.holder_identity
@@ -2396,6 +2408,8 @@ class SqlControlPlane:
                 "cordoned": record["cordoned"],
                 "authority": record["authority"],
             }
+            if session is not None:
+                return head, desired, session
             return (
                 head,
                 desired,
@@ -2610,7 +2624,7 @@ class SqlControlPlane:
 
     def heartbeat(self, lease, *, signing_key):
         from .hq_framelease_contracts import HeartbeatLease
-        from .hq_sql_runtime import InboxUnknown
+        from .hq_sql_runtime import InboxUnknown, SessionOnlyIncarnation
         from .hq_sql_signatures import sign_heartbeat
 
         if self.settings.get("runtime") is None:
@@ -2670,7 +2684,7 @@ class SqlControlPlane:
                 deadline=deadline,
             )
             return digest
-        except InboxUnknown:
+        except (InboxUnknown, SessionOnlyIncarnation):
             raise
         except ValueError as exc:
             if isinstance(exc, ControlPlaneError):

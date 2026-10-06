@@ -886,13 +886,18 @@ def list_payload(hq_dir: Path, cfg: dict | None = None) -> list[dict[str, object
     for manifest, path in iter_manifests(hq_dir):
         observation = host_heartbeat.observe(hq_dir, manifest, now=now)
         legacy = not manifest.frame_id and observation.status == "absent"
+        # A data-switched SQL frame (bh-owqdg) is live by its server-stamped session row.
+        session = getattr(observation, "carrier", "") == "session"
+        seen = (
+            observation.renewed_at
+            if session
+            else (observation.lease.renewTime if observation.lease else "")
+        )
         row = manifest_row(
             manifest,
             path,
             stale=(_is_stale(path, threshold, at=now) if legacy else not observation.fresh),
-            last_seen=None
-            if legacy
-            else (observation.lease.renewTime if observation.lease else ""),
+            last_seen=None if legacy else seen,
         )
         row.update(
             heartbeat_status=observation.status,
@@ -900,10 +905,12 @@ def list_payload(hq_dir: Path, cfg: dict | None = None) -> list[dict[str, object
             heartbeat_age=observation.age_seconds,
             heartbeat_age_basis=observation.age_basis,
             heartbeat_candidate=observation.candidate,
-            liveness_source="legacy-mtime" if legacy else "signed-heartbeat",
+            liveness_source=(
+                "legacy-mtime" if legacy else "session-row" if session else "signed-heartbeat"
+            ),
         )
         if not legacy:
-            row["last_seen"] = observation.lease.renewTime if observation.lease else ""
+            row["last_seen"] = seen
         rows.append(row)
     return rows
 
