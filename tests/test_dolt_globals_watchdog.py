@@ -42,20 +42,22 @@ def fake(values: dict[str, str], *, persist_ok: bool = False):
 
 GOOD = {
     "dolt_force_transaction_commit": "0",
-    "dolt_allow_commit_conflicts": "0",
     "dolt_transaction_commit": "0",
     "read_only": "0",
-    "max_connections": "151",
+    "max_connections": "100",
 }
 
 
-def test_default_watched_list_is_the_beads_list():
-    assert set(W.DEFAULT_WATCHED) == {
-        "dolt_force_transaction_commit",
-        "dolt_allow_commit_conflicts",
-        "dolt_transaction_commit",
-        "read_only",
+def test_default_watched_list_is_condition_16_as_amended_by_m13():
+    # bh-uhx2r E1: dolt_allow_commit_conflicts is session-only on Dolt 2.3.5, so it is not
+    # watched; max_connections is (bh-wtsrc E4).
+    assert W.DEFAULT_WATCHED == {
+        "dolt_force_transaction_commit": "0",
+        "dolt_transaction_commit": "0",
+        "read_only": "0",
+        "max_connections": "100",
     }
+    assert "dolt_allow_commit_conflicts" not in W.DEFAULT_WATCHED
 
 
 def test_all_match_exits_zero():
@@ -80,7 +82,7 @@ def test_boolean_spellings_normalize():
 
 
 def test_unreadable_variable_is_unverifiable_not_skipped():
-    values = {k: v for k, v in GOOD.items() if k != "dolt_allow_commit_conflicts"}
+    values = {k: v for k, v in GOOD.items() if k != "dolt_transaction_commit"}
     results = W.check_globals(["dolt"], W.resolve_watched(), fake(values))
     assert W.exit_code(results) == 3
     assert "ALERT" in W.render(results, "h:1")
@@ -88,7 +90,7 @@ def test_unreadable_variable_is_unverifiable_not_skipped():
 
 def test_drift_outranks_unverifiable():
     values = {**GOOD, "read_only": "1"}
-    del values["dolt_allow_commit_conflicts"]
+    del values["dolt_transaction_commit"]
     assert W.exit_code(W.check_globals(["dolt"], W.resolve_watched(), fake(values))) == 2
 
 
@@ -96,10 +98,8 @@ def test_watched_list_is_config_driven():
     cfg = {"expect": {"max_connections": "151", "read_only": "1"}}
     assert W.resolve_watched(config=cfg) == {"max_connections": "151", "read_only": "1"}
     # M13-style tweak is pure policy: drop one, add one, no code change.
-    tweaked = W.resolve_watched(
-        drop=["dolt_allow_commit_conflicts"], expect=["max_connections=151"]
-    )
-    assert "dolt_allow_commit_conflicts" not in tweaked
+    tweaked = W.resolve_watched(drop=["read_only"], expect=["max_connections=151"])
+    assert "read_only" not in tweaked
     assert tweaked["max_connections"] == "151"
     assert W.resolve_watched(use_defaults=False) == {}
     with pytest.raises(ValueError):
@@ -111,6 +111,11 @@ def test_watched_list_is_config_driven():
 def test_shipped_watched_globals_json_matches_defaults():
     shipped = json.loads((ROOT / "deploy" / "dolt" / "watched-globals.json").read_text())
     assert W.resolve_watched(config=shipped) == W.DEFAULT_WATCHED
+
+
+def test_hive_template_max_connections_matches_the_watched_default():
+    text = (ROOT / "deploy" / "dolt" / "hive-server.yaml.example").read_text()
+    assert f"max_connections: {W.DEFAULT_WATCHED['max_connections']}" in text
 
 
 def test_odd_variable_name_is_refused_before_any_query():

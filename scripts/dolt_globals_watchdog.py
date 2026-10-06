@@ -17,7 +17,7 @@ Subcommands
 ``root-check``  static check, run as the server's user: the Dolt root's ``.dolt`` directory and
                 ``config_global.json`` must not be writable (only ``eventsData`` may be).
 
-The watched list is data, not code: ``DEFAULT_WATCHED`` is the bead's list; ``--config FILE``
+The watched list is data, not code: ``DEFAULT_WATCHED`` is condition 16's list; ``--config FILE``
 (JSON ``{"expect": {name: value}}``) replaces it, ``--expect NAME=VALUE`` adds or overrides one
 and ``--drop NAME`` removes one. Nothing is hard-wired.
 
@@ -37,13 +37,19 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-# The bead's list (ADR condition 16). Expected values suit a WRITABLE primary / HQ server; a
-# deliberately read-only replica overrides ``read_only`` to 1 in its config.
+# ADR condition 16 as amended by M13 (bh-uhx2r E1, bh-wtsrc E4). Expected values suit a WRITABLE
+# primary hive server built from ``deploy/dolt/hive-server.yaml.example`` (``max_connections:
+# 100``); a deliberately read-only replica overrides ``read_only`` to 1, and a server with another
+# connection cap overrides ``max_connections``, in its config. ``dolt_allow_commit_conflicts`` is
+# NOT watched: it is session-only on Dolt 2.3.5 and cannot be set globally. The watchdog covers
+# availability; a forced global is not an integrity breach of the fence (bh-uhx2r E1).
+# ``deploy/dolt/watched-globals.json`` and ``beadhive.hive_forward.WATCHED_GLOBALS`` carry the same
+# list; a unit test keeps the three equal.
 DEFAULT_WATCHED: dict[str, str] = {
     "dolt_force_transaction_commit": "0",
-    "dolt_allow_commit_conflicts": "0",
     "dolt_transaction_commit": "0",
     "read_only": "0",
+    "max_connections": "100",
 }
 
 OK, DRIFT, UNVERIFIABLE = "ok", "drift", "unverifiable"
