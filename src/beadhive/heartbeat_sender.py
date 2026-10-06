@@ -233,11 +233,14 @@ def remove(platform: str, directory: Path | None = None) -> list[Path]:
 
 
 def status(now: float | None = None) -> dict:
+    from .heartbeat_report import conformance_cache_path
+
     now = time.time() if now is None else now
-    cached = hc.read()
+    path = conformance_cache_path()
+    cached = hc.read(path)
     checks = hc.beat_checks(cached, now=now)
     return {
-        "cache": str(hc.cache_path()),
+        "cache": str(path),
         "measured_at": None if cached is None else hc.stamp(cached.measured_at),
         "age_seconds": None if cached is None else round(now - cached.measured_at, 1),
         "bound_seconds": hc.CONFORMANCE_MAX_AGE_SECONDS,

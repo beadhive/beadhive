@@ -295,10 +295,8 @@ def test_signed_liveness_seq_advances_from_newest_verified_inbox_row(plane, tmp_
 
 @pytest.fixture
 def cache(monkeypatch, tmp_path):
-    from beadhive import heartbeat_conformance
-
     path = tmp_path / "heartbeat" / "conformance.json"
-    monkeypatch.setattr(heartbeat_conformance, "cache_path", lambda: path)
+    monkeypatch.setattr(report, "conformance_cache_path", lambda: path)
     return path
 
 
@@ -336,7 +334,7 @@ def test_cached_beat_signs_newest_cache_with_its_measured_at(plane, cache, monke
     from beadhive import heartbeat_conformance as hc
 
     t0 = 1_800_000_000.0
-    hc.refresh(report.measure_conformance, clock=lambda: t0)
+    hc.refresh(report.measure_conformance, path=cache, clock=lambda: t0)
     _forbid_measurement(monkeypatch)
     lease = report.generate(plane, cached=True, now=t0 + 120)
     checks = _checks(lease)
@@ -353,7 +351,7 @@ def test_cached_beat_fails_conformance_past_the_bound(plane, cache, monkeypatch)
     from beadhive import heartbeat_conformance as hc
 
     t0 = 1_800_000_000.0
-    hc.refresh(report.measure_conformance, clock=lambda: t0)
+    hc.refresh(report.measure_conformance, path=cache, clock=lambda: t0)
     _forbid_measurement(monkeypatch)
     at_bound = report.generate(plane, cached=True, now=t0 + hc.CONFORMANCE_MAX_AGE_SECONDS)
     assert at_bound.conformance.status == "conformant"
@@ -376,7 +374,7 @@ def test_cached_failed_check_stays_nonconformant(plane, cache, monkeypatch):
     from beadhive import heartbeat_conformance as hc
 
     monkeypatch.setattr(report, "hive_ready", lambda _entry: False)
-    hc.refresh(report.measure_conformance)
+    hc.refresh(report.measure_conformance, path=cache)
     lease = report.generate(plane, cached=True)
     assert lease.conformance.status == "non-conformant"
     assert _checks(lease)["hives-ready"].status == "fail"
@@ -393,7 +391,7 @@ def test_slow_conformance_longer_than_ttl_keeps_beats_fresh_then_fails_by_bound(
     from beadhive import heartbeat_conformance as hc
 
     clock = {"now": 1_800_000_000.0}
-    hc.refresh(report.measure_conformance, clock=lambda: clock["now"])
+    hc.refresh(report.measure_conformance, path=cache, clock=lambda: clock["now"])
 
     started, release = threading.Event(), threading.Event()
 
@@ -406,7 +404,7 @@ def test_slow_conformance_longer_than_ttl_keeps_beats_fresh_then_fails_by_bound(
     runner = threading.Thread(
         target=hc.refresh,
         args=(report.measure_conformance,),
-        kwargs={"clock": lambda: clock["now"]},
+        kwargs={"path": cache, "clock": lambda: clock["now"]},
     )
     runner.start()
     try:
@@ -431,7 +429,7 @@ def test_slow_conformance_longer_than_ttl_keeps_beats_fresh_then_fails_by_bound(
     assert aged and set(aged) == {"non-conformant"}
     # The slow run lands stamped with its *start* (the conservative age basis), so a run that
     # took longer than the bound publishes an already-stale result rather than a fresh one.
-    assert hc.read().measured_at == t0
+    assert hc.read(cache).measured_at == t0
     clock["now"] = t0 + hc.LEASE_DURATION_SECONDS + 3 * hc.INTERVAL_SECONDS
     assert report.generate(plane, cached=True, now=clock["now"]).conformance.status == (
         "non-conformant"
@@ -441,7 +439,7 @@ def test_slow_conformance_longer_than_ttl_keeps_beats_fresh_then_fails_by_bound(
 def test_cached_send_publishes_without_measuring(plane, cache, monkeypatch):
     from beadhive import heartbeat_conformance as hc
 
-    hc.refresh(report.measure_conformance)
+    hc.refresh(report.measure_conformance, path=cache)
     _forbid_measurement(monkeypatch)
     published = []
     monkeypatch.setattr(report.host, "signing_key", lambda: "key-reference")
@@ -517,7 +515,7 @@ def test_mixed_version_0_22_reader_accepts_new_sender_beats(plane, cache, tmp_pa
         )
 
     t0 = 1_800_000_000.0
-    hc.refresh(report.measure_conformance, clock=lambda: t0)
+    hc.refresh(report.measure_conformance, path=cache, clock=lambda: t0)
     for age, expected in ((60, True), (hc.CONFORMANCE_MAX_AGE_SECONDS + 60, False)):
         beat_at = t0 + age
         lease = report.generate(plane, cached=True, now=beat_at)

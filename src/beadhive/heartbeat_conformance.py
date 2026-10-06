@@ -64,10 +64,10 @@ def stamp(at: float) -> str:
     return datetime.fromtimestamp(at, UTC).isoformat()
 
 
-def cache_path() -> Path:
-    from .heartbeat_report import bh_home  # the sender's one config-facade consumer
-
-    return bh_home() / "heartbeat" / "conformance.json"
+CACHE_RELATIVE_PATH = Path("heartbeat") / "conformance.json"
+"""Where the cache lives under the bh home. This module stays a leaf (no config import): the
+config-facade consumer, ``heartbeat_report.conformance_cache_path``, resolves the home and
+passes the concrete path in, so the dependency runs one way (report -> conformance)."""
 
 
 def _lock_path(path: Path) -> Path:
@@ -99,9 +99,8 @@ def _exclusive(path: Path) -> Iterator[bool]:
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-def write(cached: CachedConformance, path: Path | None = None) -> Path:
+def write(cached: CachedConformance, path: Path) -> Path:
     """Atomically replace the cache: a reader sees the old or the new file, never a torn one."""
-    path = path or cache_path()
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     document = {
         "format": CACHE_FORMAT,
@@ -123,9 +122,8 @@ def write(cached: CachedConformance, path: Path | None = None) -> Path:
     return path
 
 
-def read(path: Path | None = None) -> CachedConformance | None:
+def read(path: Path) -> CachedConformance | None:
     """The newest cached measurement, or ``None`` when absent or malformed (fail closed)."""
-    path = path or cache_path()
     try:
         document = json.loads(path.read_text())
         if document.get("format") != CACHE_FORMAT:
@@ -147,7 +145,7 @@ def read(path: Path | None = None) -> CachedConformance | None:
 
 
 def refresh(
-    measure: Callable[[], list[dict]], *, path: Path | None = None, clock=None
+    measure: Callable[[], list[dict]], *, path: Path, clock=None
 ) -> CachedConformance | None:
     """Run one conformance measurement and publish it to the cache.
 
@@ -155,7 +153,6 @@ def refresh(
     without measuring when another conformance run already holds the lock, so overlapping
     timer firings never stack up.
     """
-    path = path or cache_path()
     clock = clock or _now
     with _exclusive(path) as acquired:
         if not acquired:

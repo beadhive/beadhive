@@ -82,7 +82,7 @@ def measure_conformance(cfg=_UNSET) -> list[dict]:
 
 def refresh_conformance():
     """One conformance-job run: measure and atomically publish the local cache."""
-    return heartbeat_conformance.refresh(measure_conformance)
+    return heartbeat_conformance.refresh(measure_conformance, path=conformance_cache_path())
 
 
 def generate(
@@ -142,7 +142,7 @@ def generate(
             # Never measure here: sign the newest cached result with its measured_at, and fail
             # by bound once it is too old (bh-i6ggn). The beat cannot block on hive_ready.
             stored = heartbeat_conformance.beat_checks(
-                heartbeat_conformance.read(),
+                heartbeat_conformance.read(conformance_cache_path()),
                 now=beat_at,
             )
             checks = [
@@ -218,6 +218,11 @@ def send(plane, *, free_sessions: int = 0, cached: bool = False) -> str:
 def bh_home():
     """The bh home the heartbeat sender keeps its local cache under."""
     return config.home()
+
+
+def conformance_cache_path():
+    """The sender's local conformance cache under :func:`bh_home` (heartbeat_conformance I/O)."""
+    return bh_home() / heartbeat_conformance.CACHE_RELATIVE_PATH
 
 
 def send_cached_beat(*, free_sessions: int = 0) -> str:

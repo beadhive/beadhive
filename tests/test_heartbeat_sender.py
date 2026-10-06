@@ -18,7 +18,9 @@ PY = "/opt/bh/venv/bin/python"
 @pytest.fixture
 def cache(monkeypatch, tmp_path):
     path = tmp_path / "heartbeat" / "conformance.json"
-    monkeypatch.setattr(hc, "cache_path", lambda: path)
+    from beadhive import heartbeat_report
+
+    monkeypatch.setattr(heartbeat_report, "conformance_cache_path", lambda: path)
     return path
 
 
@@ -27,8 +29,8 @@ def _passing():
 
 
 def test_refresh_writes_measured_at_and_reads_back(cache):
-    cached = hc.refresh(_passing, clock=iter([100.0, 330.0]).__next__)
-    assert cached == hc.read()
+    cached = hc.refresh(_passing, path=cache, clock=iter([100.0, 330.0]).__next__)
+    assert cached == hc.read(cache)
     assert cached.measured_at == 100.0 and cached.duration_seconds == 230.0
     document = json.loads(cache.read_text())
     assert document["format"] == hc.CACHE_FORMAT
@@ -37,7 +39,7 @@ def test_refresh_writes_measured_at_and_reads_back(cache):
 
 
 def test_refresh_forces_unknown_or_missing_checks_to_fail(cache):
-    cached = hc.refresh(lambda: [{"id": "hives-ready", "status": "pass"}])
+    cached = hc.refresh(lambda: [{"id": "hives-ready", "status": "pass"}], path=cache)
     assert dict(cached.checks) == {"host-config-partition": "fail", "hives-ready": "pass"}
 
 
@@ -60,17 +62,17 @@ def test_refresh_forces_unknown_or_missing_checks_to_fail(cache):
 def test_malformed_cache_reads_as_absent(cache, content):
     cache.parent.mkdir(parents=True)
     cache.write_text(content)
-    assert hc.read() is None
+    assert hc.read(cache) is None
 
 
 def test_overlapping_conformance_runs_skip_instead_of_stacking(cache):
     inner = []
 
     def measure():
-        inner.append(hc.refresh(lambda: pytest.fail("second run must not measure")))
+        inner.append(hc.refresh(lambda: pytest.fail("second run must not measure"), path=cache))
         return _passing()
 
-    assert hc.refresh(measure) is not None
+    assert hc.refresh(measure, path=cache) is not None
     assert inner == [None]
 
 
@@ -88,7 +90,7 @@ def test_beat_checks_bound_and_future_skew():
 
 
 def test_status_reports_age_against_bound(cache):
-    hc.refresh(_passing, clock=lambda: 5000.0)
+    hc.refresh(_passing, path=cache, clock=lambda: 5000.0)
     fresh = sender.status(now=5060.0)
     assert fresh["fresh"] and fresh["age_seconds"] == 60.0
     assert fresh["bound_seconds"] == hc.CONFORMANCE_MAX_AGE_SECONDS
@@ -168,7 +170,7 @@ def test_module_entrypoint_prints_units_and_status(cache, monkeypatch, capsys):
     assert sender.main(["units", "--platform", "systemd"]) == 0
     assert "beadhive-heartbeat.timer" in capsys.readouterr().out
     assert sender.main(["status"]) == 1  # no cache yet: not fresh
-    hc.refresh(_passing)
+    hc.refresh(_passing, path=cache)
     assert sender.main(["status"]) == 0
 
 
