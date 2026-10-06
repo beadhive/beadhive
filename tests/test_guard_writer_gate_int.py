@@ -22,7 +22,7 @@ import time
 import pytest
 import typer
 
-from beadhive import claim_authority, guard, host, host_adopt, host_lease, registry
+from beadhive import claim_authority, fence_data_port, guard, host, host_lease, registry
 from beadhive import host_lease_contracts as contracts
 from beadhive import writer_adopt as wa
 from harness import composed_fence as cf
@@ -90,7 +90,7 @@ def test_writer_keeps_writing_with_hq_down_and_a_pre_cutover_claim_survives(tmp_
 
         # The hive's data switches it on: the adapter reads each frame's local bh_writer.
         monkeypatch.setattr(
-            host_adopt,
+            fence_data_port,
             "_fence_data_resolver",
             lambda _prefix, _dir: LocalWriter(world[current["frame"]]),
         )

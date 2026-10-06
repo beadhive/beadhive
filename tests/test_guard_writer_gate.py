@@ -22,6 +22,7 @@ import typer
 from beadhive import (
     claim_authority,
     config,
+    fence_data_port,
     frame_eligibility,
     gitref,
     guard,
@@ -90,7 +91,7 @@ def data(monkeypatch):
         seen.append((prefix, hive_dir))
         return fake
 
-    monkeypatch.setattr(host_adopt, "_fence_data_resolver", resolver)
+    monkeypatch.setattr(fence_data_port, "_fence_data_resolver", resolver)
     fake.seen = seen
     return fake
 

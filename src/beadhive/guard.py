@@ -368,7 +368,7 @@ def primary_state(hive: str = "", *, cfg=None, hive_dir=None, entry=None):
 # established writer keeps writing indefinitely while HQ is unreachable, and a superseded one is
 # stopped by the data (the adopt bump it syncs, and the fence triggers on every push), not by a
 # cached expiry. The adapter that reads ``bh_writer`` is the M1 seam
-# (:func:`beadhive.host_adopt.fence_data_for`); until one is registered every hive answers
+# (:func:`beadhive.fence_data_port.fence_data_for`); until one is registered every hive answers
 # "not cut over" and the legacy gate below runs unchanged — dormant until data switches it on.
 
 WRITER_REFUSAL_SOURCE = "this host's LOCAL copy of the hive's bh_writer (the in-data fence)"
@@ -389,7 +389,7 @@ def writer_state(hive: str = "", *, cfg=None, hive_dir=None, entry=None):
     `hive_dir` / `entry` mirror :func:`primary_state`'s escape hatches.
 
     Raises :class:`WriterUnreadable` when an adapter exists but its read fails."""
-    from . import host, host_adopt, registry  # lazy: keep guard import-light + cycle-free
+    from . import fence_data_port, host, registry  # lazy: keep guard import-light + cycle-free
 
     cfg = cfg if cfg is not None else config.load()
     try:
@@ -401,7 +401,7 @@ def writer_state(hive: str = "", *, cfg=None, hive_dir=None, entry=None):
     prefix = str(entry.get("prefix") or "")
     if not prefix or directory is None:
         return None
-    data = host_adopt.fence_data_for(prefix, directory)
+    data = fence_data_port.fence_data_for(prefix, directory)
     if data is None:
         return None  # no in-data fence adapter: legacy model (dormant default)
     try:

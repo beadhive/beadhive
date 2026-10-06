@@ -1835,7 +1835,7 @@ def _local_commits_while_not_primary(cfg, entry, path: Path) -> tuple[int, str]:
 
 
 def _adopt_incomplete_warning(cfg, entry, path: Path) -> str | None:
-    """"Adopt incomplete" (``placement_ahead``) on a cut-over hive, with its recovery command
+    """ "Adopt incomplete" (``placement_ahead``) on a cut-over hive, with its recovery command
     (bh-4c7p4, ADR §2): placement names a higher epoch than the hive's ``bh_writer``.
 
     Dormant unless an in-data fence adapter is registered for the hive
