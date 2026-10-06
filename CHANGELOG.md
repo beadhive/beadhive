@@ -13,6 +13,18 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.22.8 (2026-10-06)
+
+### Feat
+
+- **hq**: accept signed hive-lease proposals at the epoch fence without a receiver (bh-qv8ig)
+
+### Fix
+
+- **fleet**: keep the signed hive-lease fence reader out of the config import cycle (bh-nyuyy.3)
+- **hq**: record a redacted durable rejected result when the SQL receiver refuses a lease proposal (bh-uy398)
+- **hq**: classify post-submit lease poll deadline/transport loss as pending ack (bh-ktw0o)
+
 ## v0.22.7 (2026-10-06)
 
 ### Feat

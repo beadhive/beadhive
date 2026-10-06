@@ -107,7 +107,7 @@ wheels = [
 
 [[package]]
 name = "beadhive"
-version = "0.22.7"
+version = "0.22.8"
 source = { editable = "." }
 dependencies = [
     { name = "attrs" },
