@@ -69,6 +69,11 @@
       # here so the binary that is qualified is exactly the binary installed. Beads v1.3.0 was
       # cut at f45b249ce6b40ba62aecc03949e6371e8f7c79d8 and supports this hive's v62 -> v66
       # migration; that migration remains a later, explicitly gated operation.
+      #
+      # PIN BUMP => TRIGGER CANARY (ADR condition 9, bh-p07dv). The hive write guard is shaped by
+      # Dolt/bd trigger behaviour measured on exactly these binaries. Moving the bd version here
+      # (then `just toolchain-metadata`) fails `just check` until `just fence-canary` is green on
+      # the new binary and CANARY_PINS in tests/harness/trigger_canary.py is moved to match.
       beadsReleaseCommit = "f45b249ce6b40ba62aecc03949e6371e8f7c79d8";
       beadsReleaseAssets = {
         x86_64-linux = {
@@ -121,6 +126,11 @@
       # governs every database on the server. Dolt 2.3.5 was functionally smoke-tested in
       # bh-28emy.5 from this same official archive; installing it does not authorize opening or
       # migrating a production hive. The release target is ad65af6cc937d10fa3c88e2041fed4325968b581.
+      #
+      # PIN BUMP => TRIGGER CANARY (ADR condition 9, bh-p07dv). The hive write guard is shaped by
+      # Dolt/bd trigger behaviour measured on exactly these binaries. Moving the Dolt version here
+      # (then `just toolchain-metadata`) fails `just check` until `just fence-canary` is green on
+      # the new binary and CANARY_PINS in tests/harness/trigger_canary.py is moved to match.
       doltReleaseCommit = "ad65af6cc937d10fa3c88e2041fed4325968b581";
       doltReleaseAssets = {
         x86_64-linux = {

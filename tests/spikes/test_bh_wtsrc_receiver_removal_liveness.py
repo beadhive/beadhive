@@ -374,6 +374,7 @@ def test_operator_trigger_stamps_server_utc_over_frame_literals_and_time_zone(tm
         assert abs(skew_s("frame_a_evidence", "measured_at")) < 5
 
 
+@pytest.mark.fence_canary  # ADR condition 9: re-run on every Dolt/bd pin bump (bh-p07dv)
 def test_trigger_body_writes_run_with_the_invoking_frame_privileges(tmp_path):
     """Dolt 2.3.5 checks a trigger body's DML against the *invoker*, not the trigger creator.
 
