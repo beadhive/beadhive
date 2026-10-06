@@ -12,13 +12,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from . import config, gitref, hq_git_broker, hq_manifest_guard
+from . import config, gitref, hq_authority_ceiling, hq_git_broker, hq_manifest_guard
 from . import hq_authority_guard as guard
 from .run import run
 
 if TYPE_CHECKING:
     from .host_heartbeat_core import AuthoritySnapshot
     from .modules.config.domain.ports import FleetConfigSnapshot
+
+
+def _check_duration(duration, ceiling):
+    try:
+        hq_authority_ceiling.check_duration(duration, ceiling)
+    except ValueError as exc:
+        raise ControlPlaneError(str(exc)) from None
 
 
 class ControlPlaneError(ValueError):
@@ -102,7 +109,7 @@ class HqControlPlane(Protocol):
     def read_hive_lease(self, prefix, *, holder_identity=None): ...
     def read_hive_lease_record(self, prefix, *, holder_identity=None): ...
     def publish_hive_lease(self, prefix, lease, *, expected, operation, force=False): ...
-    def config_store(self, *, operator_key=None, duration=3600): ...
+    def config_store(self, *, operator_key=None, duration=3600, ceiling=None): ...
     def load_config_authority_snapshot(
         self, frame: str, *, revision: str | None = None
     ) -> ConfigAuthoritySnapshot: ...
@@ -110,7 +117,7 @@ class HqControlPlane(Protocol):
     def publish_registration_evidence(self, manifest, *, signing_key): ...
     def grant(self, authority, public_key, desired, *, expected, operator_key): ...
     def accept_observation(self, frame, *, expected, operator_key, holder_identity=""): ...
-    def renew(self, *, expected, operator_key, duration=3600): ...
+    def renew(self, *, expected, operator_key, duration=3600, ceiling=None): ...
     def lifecycle(
         self,
         verb,
@@ -345,10 +352,12 @@ class GitControlPlane:
 
         return hosts.load(self.hq_dir, host_id)
 
-    def config_store(self, *, operator_key=None, duration=3600):
+    def config_store(self, *, operator_key=None, duration=3600, ceiling=None):
         from .hq_fleet_config import GitFleetConfigRevisionStore
 
-        return GitFleetConfigRevisionStore(self, _git, operator_key=operator_key, duration=duration)
+        return GitFleetConfigRevisionStore(
+            self, _git, operator_key=operator_key, duration=duration, ceiling=ceiling
+        )
 
     def load_config_authority_snapshot(self, frame, *, revision=None):
         raise ControlPlaneError("atomic config/authority snapshot unsupported by Git binding")
@@ -634,11 +643,20 @@ class GitControlPlane:
         return sha, state, policy
 
     def _write(
-        self, state, expected, operator_key, *, duration=3600, updates=(), expires_at_cap=None
+        self,
+        state,
+        expected,
+        operator_key,
+        *,
+        duration=3600,
+        updates=(),
+        expires_at_cap=None,
+        ceiling=None,
     ):
         current, previous, policy = self._operator_read()
-        if current != expected or not 1 <= duration <= 86400:
+        if current != expected:
             raise ControlPlaneError("expected authority revision/duration mismatch")
+        _check_duration(duration, ceiling)
         bound = any(
             record["authority"].get("beadyard_id") is not None for _, record in guard.records(state)
         )
@@ -695,11 +713,11 @@ class GitControlPlane:
             raise ControlPlaneError("authority changed before readback")
         return sha
 
-    def renew(self, *, expected, operator_key, duration=3600):
+    def renew(self, *, expected, operator_key, duration=3600, ceiling=None):
         sha, state, _ = self._operator_read()
         if not sha:
             raise ControlPlaneError("cannot renew absent authority")
-        return self._write(state, expected, operator_key, duration=duration)
+        return self._write(state, expected, operator_key, duration=duration, ceiling=ceiling)
 
     def _trust(self, state):
         path = Path(_git(self.hq_dir, "rev-parse", "--git-path", "bh-authority-signers"))
@@ -1436,7 +1454,7 @@ class SqlControlPlane:
         except Exception:  # noqa: BLE001 - malformed committed input must not expose values
             raise ControlPlaneError("committed host manifest invalid") from None
 
-    def config_store(self, *, operator_key=None, duration=3600):
+    def config_store(self, *, operator_key=None, duration=3600, ceiling=None):
         from .hq_sql_config import SqlFleetConfigRevisionStore
 
         return SqlFleetConfigRevisionStore(self.settings, broker=self.broker, clock=self.clock)
@@ -1822,16 +1840,8 @@ class SqlControlPlane:
                 raise
             raise ControlPlaneError("SQL authority identity binding unavailable") from None
 
-    def renew(self, *, expected, operator_key, duration=3600):
-        import math
-
-        if (
-            type(duration) not in (int, float)
-            or not math.isfinite(duration)
-            or duration <= 0
-            or duration > 86400
-        ):
-            raise ControlPlaneError("bounded authority renewal duration required")
+    def renew(self, *, expected, operator_key, duration=3600, ceiling=None):
+        _check_duration(duration, ceiling)
         operator = self._operator()
         budget = self._operator_deadline()
         try:

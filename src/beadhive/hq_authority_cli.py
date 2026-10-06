@@ -8,7 +8,7 @@ from typing import Annotated
 
 import typer
 
-from . import config, host_heartbeat, hq_control_plane
+from . import config, host_heartbeat, hq_authority_ceiling, hq_control_plane
 
 
 def authority_cmd(
@@ -28,7 +28,14 @@ def authority_cmd(
     policy_digest: str = typer.Option("", "--policy-digest"),
     role: str = typer.Option("frame", "--role"),
     holder_id: str = typer.Option("", "--holder-id"),
-    duration: int = typer.Option(3600, "--duration"),
+    duration: Annotated[
+        int,
+        typer.Option(
+            "--duration",
+            parser=hq_authority_ceiling.parse_duration,
+            help="seconds or e.g. 7d / 36h",
+        ),
+    ] = 3600,
     client_interpreter: Annotated[Path | None, typer.Option("--client-interpreter")] = None,
     confirm: bool = typer.Option(False, "--confirm"),
 ) -> None:
@@ -92,8 +99,17 @@ def authority_cmd(
                         holder_identity=holder_id,
                     )
                 elif action == "renew":
+                    # bh-od8ve hooks: ``cli=`` takes a future --max-duration value (adding a
+                    # CLI parameter to hq.authority needs a wire-catalog major/amendment) and
+                    # ``settings=`` the operator-settings ``hq.sql.authority_max_duration_s``
+                    # once the --operator-settings loader lands (bh-qtnn4). Until then the
+                    # ceiling resolves from $BH_HQ_AUTHORITY_MAX_DURATION or the 7 d default.
+                    ceiling = hq_authority_ceiling.resolve_ceiling()
                     sha = plane.renew(
-                        expected=expected, operator_key=str(operator_key), duration=duration
+                        expected=expected,
+                        operator_key=str(operator_key),
+                        duration=duration,
+                        ceiling=ceiling,
                     )
                 elif action == "bind-beadyard":
                     sha = plane.bind_beadyard(expected=expected, operator_key=str(operator_key))
