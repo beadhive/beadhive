@@ -383,7 +383,7 @@ Condition 17 is recorded as a deferred open design point and does not bind.
 | 14 | Until the cutover, count active-frame rotations per lease. Before a 16th rotation without a renewal or re-adopt, re-adopt deliberately rather than let the lease's grant leave the `HISTORY_LIMIT = 16` archive. | `bh-32379` L9 (code-derived) |
 | 15 | Account hardening (host-pinned principals, required TLS) ships with session rows (P-M9), not after them. No hive database is co-hosted on the HQ server. | `bh-wtsrc` T11, T16, R2–R3 |
 | 16 | The forward path ships with option A: per-frame host-pinned TLS accounts on the primary's hive server; a globals watchdog there for `dolt_force_transaction_commit`, `dolt_allow_commit_conflicts`, `dolt_transaction_commit` and `read_only`; a read-only `DOLT_ROOT_PATH` config; `fence_audit`. This narrows and detects a forwarder forcing a global; it does not prevent a session-level `SET`. | `bh-wtsrc` E4; this ADR §3; operator |
-| 17 | **Deferred — open design point, not binding.** How failover scopes its revert with several executors. Decided by M14 under condition 18. | `bh-jbb6r` R2; operator |
+| 17 | **Deferred — open design point, not binding.** How failover scopes its revert with several executors. Decided by M14 under condition 18; resolved by the [M14 addendum](#addendum-m14--state-and-work-pairing-bh-55vvh) (accepted, operator 2026-10-06). | `bh-jbb6r` R2; operator |
 | 18 | **State and work travel together.** Bead lifecycle state is never published unless the matching worktree commits are pushed to a backup on the remote. On frame loss, an unbacked claim is rewound to its pre-claim state; a backed-up claim may be resumed or reassigned with its work. | operator invariant; this ADR §4 |
 
 ## Amendment to multi-host-model-adr.md Amendment 1 (its Amendment 2)
@@ -481,7 +481,7 @@ receiver removal` (implements this ADR).
 | M11 | `docs(fleet): BEADS-SYNC, HQ.md, FRAME-FLEET-MEMBERSHIP, CONFIGURATION (deprecate hq.sql.liveness; failover_after lives on placement rows), cutover runbook, proposal status, 0.23.0 release note with trust delta` | M5–M9, M8b, M8c, M12 |
 | M12 | `feat(fleet): forward write path for non-primary executors, option A — bd pointed at the primary's hive server over TLS with per-frame host-pinned accounts, globals watchdog, read-only DOLT_ROOT_PATH config` (P-M10; condition 16) | M4; M13 only for choosing option B |
 | M13 | `spike(fleet): forward through a bh RPC service on the primary so executors hold no Dolt login (option B); measure whether a forced global on the primary's hive server lets a stale write land` (early; may land in 0.23.0) | — |
-| M14 | `spike(fleet): DECISION — pair bead state with work: remote backup location for worktree commits, ordering against bd push, backup-driven reclaim policy on frame loss` (condition 18) | — |
+| M14 | `spike(fleet): DECISION — pair bead state with work: remote backup location for worktree commits, ordering against bd push, backup-driven reclaim policy on frame loss` (condition 18) — `bh-55vvh`, see [bh-55vvh-state-work-pairing.md](../spikes/bh-55vvh-state-work-pairing.md) | — |
 | — | *link* `bh-kmxyp` / `bh-vfrem` (release ranges) and `bh-wj8hu` / `bh-rjjjo` (laptop-free authority); land in 0.23.0 if possible | — |
 
 ### Sub-epic C — operator rollout (procedures; no release)
@@ -560,3 +560,44 @@ was never officially supported, rather than as a 0.24.0 minor.
    awaits operator confirmation. Tune after the Φ3 soak.
 5. **Admitting the three new executors (O8)** also waits on the M13 verdict and the M14
    decision.
+
+## Addendum (M14) — state and work pairing (`bh-55vvh`)
+
+**Status:** **accepted** (operator, 2026-10-06). Full decision and the operator's answers:
+[bh-55vvh-state-work-pairing.md](../spikes/bh-55vvh-state-work-pairing.md).
+
+**The operator's global rule.** Every feature below is opt-in and disabled by default, and
+every default is configurable. The master switches are `pairing.enabled`,
+`reclaim.failover.mode` and `reclaim.sweep.mode`, all off by default. They and their sub-keys
+are per-hive values held in the hive's own Dolt data (bd config rows prefixed `bh.`), never
+`host.yaml` or fleet-config keys. Pairing is available on hives that are not cut over too.
+
+- **Where backups live.** `refs/bh/backup/<bead>/<frame>` on the configurable backup remote
+  (`origin` by default, secret-scanned before every push; a private remote is supported). There is
+  one single-writer ref per (bead, frame), and every write is a CAS. Default clones and fetches
+  never see these refs.
+- **Ordering (condition 18).** A `bh work` verb that writes work-asserting state (submit,
+  `submit --group`, a merge that closes a bead into a container) first pushes its backup, and
+  writes state only once the push has landed. A failed push writes nothing. Because the order
+  is at *write* time, every publisher is covered: the managed push, bd auto-push, and the
+  primary publishing a forwarder's write. Work can land without state (orphan work, surfaced
+  and resumable), but never the reverse.
+- **Condition 17, resolved.** `claim` records `claim-frame=<frame>` in hive data. A failover
+  adopt reclaims only the dead primary's claims:
+  - submitted claims are untouched;
+  - recoverable claims (the backup carries work not in base) become `open` and are marked
+    `recovery=resumable`;
+  - unbacked claims are rewound to exactly what `bd unclaim --force` leaves;
+  - if the backup check fails, the claim is left alone (never rewound);
+  - claims of other frames, and claims with no recorded frame, are never touched.
+
+  Under `strict` signature policy, unsigned backups are retained for the operator and never
+  auto-resumed. Non-primary loss stays with bd's lease reclaim. A new `bh fleet reclaim --frame` sweep applies
+  the same table to lease-less claims. Each outcome is recorded on the bead with an audit
+  comment.
+- **Re-lease after failover** is M12's job. O9 measures how bd's heartbeat behaves for a
+  held claim with no lease row. Condition 11's GitHub canary also pushes, CASes and deletes a
+  `refs/bh/backup/*` ref, and confirms no Actions run and no UI branch prompt.
+- **Until M14b and M3 land, through the first soak, and whenever reclaim is not `apply`:**
+  manual reclaim by the runbook procedure in that doc (D10).
+
