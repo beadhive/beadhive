@@ -623,3 +623,44 @@ def test_forward_config_validates_endpoints_and_serve():
 def test_residual_trust_text_names_what_grants_cannot_stop():
     for phrase in ("SET GLOBAL", "SET PERSIST", "any bead row", "watchdog", "fence_audit"):
         assert phrase in hf.RESIDUAL_TRUST
+
+
+# ---- wiring: the server-mode divert reset quiesces forwarders first ---------------------------
+
+
+def test_server_engine_reset_kills_forwarder_sessions_before_dolt_reset(tmp_path, monkeypatch):
+    import subprocess
+
+    from beadhive import fence_data
+
+    hive = _hive(tmp_path)
+    monkeypatch.delenv(hf.QUIESCE_ENV, raising=False)
+    monkeypatch.setenv("BEADS_DOLT_SERVER_USER", "beads")
+    calls: list[str] = []
+    processes = [(11, "fwd-e1", "10.0.0.21"), (12, "beads", "localhost"), (13, "root", "localhost")]
+
+    class Recording(fence_data.BdServerEngine):
+        def _bd(self, *args):
+            statement = args[-1]
+            calls.append(statement)
+            out = "[]"
+            if "information_schema.processlist" in statement:
+                out = json.dumps([{"id": i, "user": u, "host": h} for i, u, h in processes])
+            return subprocess.CompletedProcess(["bd", *args], 0, out, "")
+
+    engine = Recording(hive)
+    assert engine.login() == "beads"
+    defaults = hf.serve_settings({})
+    monkeypatch.setattr(hf, "serve_settings", lambda cfg=None: defaults)
+    engine.reset_to_remote()
+    kills = [c for c in calls if c.startswith("KILL")]
+    assert kills == ["KILL 11"]  # bd's own login and root are never killed
+    assert calls.index("KILL 11") < next(
+        i for i, c in enumerate(calls) if c.startswith("CALL DOLT_RESET")
+    )
+    assert calls[0].startswith("CALL DOLT_FETCH")
+
+    calls.clear()
+    monkeypatch.setenv(hf.QUIESCE_ENV, "off")
+    engine.reset_to_remote()
+    assert not [c for c in calls if c.startswith("KILL") or "processlist" in c]
