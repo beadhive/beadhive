@@ -174,12 +174,12 @@ def test_the_refusal_names_the_holder_and_its_expiry(hq, hive, this_host, monkey
     assert host_lease.now_stamp(T0 + 600.0) in err  # until when
 
 
-def test_this_hosts_LAPSED_lease_is_refused_fail_closed(hq, hive, this_host, monkeypatch):
-    """A lapsed lease is exactly the window another host may have taken over in."""
+def test_this_hosts_LAPSED_lease_still_writes_expiry_is_advisory(hq, hive, this_host, monkeypatch):
+    """bh-12hev (ADR §4): time triggers reassignment, it never gates a write. A takeover moves
+    the holder; a superseded writer is stopped by the epoch fence at publication."""
     monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 9999)
     _record_lease(hq, _lease(THIS_HOST, ttl=600.0))
-    with pytest.raises(typer.Exit):
-        guard.guard_primary("", cfg={})
+    guard.guard_primary("", cfg={})  # no raise
 
 
 def test_a_released_tombstone_is_refused(hq, hive, this_host, monkeypatch, capsys):
@@ -854,13 +854,14 @@ def test_signed_mode_env_override_alone_skips_renewal(sql_frame, monkeypatch):
     assert published == []
 
 
-def test_default_mode_refuses_the_same_lapsed_holder_lease(sql_frame, monkeypatch):
-    select, published = sql_frame
+def test_default_mode_allows_the_same_lapsed_holder_lease_expiry_is_advisory(
+    sql_frame, monkeypatch
+):
+    """bh-12hev: expiry is advisory in every HQ mode, not only under signed liveness."""
+    select, _published = sql_frame
     monkeypatch.setattr(host_lease.time, "time", lambda: T0)
     select("receiver", _lapsed(THIS_HOST, advisory=False))
-    with pytest.raises(typer.Exit):
-        guard.guard_primary("", cfg={})
-    assert published == []
+    guard.guard_primary("", cfg={})  # no raise: a lapsed hint never refuses the holder
 
 
 @pytest.mark.parametrize("liveness", ["receiver", "signed"])

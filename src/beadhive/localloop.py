@@ -899,7 +899,15 @@ class NullLeaseKeeper:
 
 
 class HostLeaseKeeper:
-    """Renew this host's lease on the loop's own tick, for as long as it has seats in flight.
+    """Renew this host's lease on the loop's own tick (legacy hives only), and check it is held.
+
+    Since bh-12hev (ADR §4) expiry never gates a write: ``expires_at`` is a failover hint and
+    :meth:`HostLease.held_by` is clock-free, so the failure below can no longer happen by a lease
+    lapsing. On a hive NOT yet cut over to the in-data ``bh_writer`` fence the keeper still
+    renews while seats are in flight, as a best-effort LIVENESS hint (until M8 placement): it
+    keeps another host's plain ``bh host adopt`` from taking a live primary's lease ~ttl after
+    adopt. A failed or skipped renewal is logged and never stops the loop or refuses a write.
+    A cut-over hive (``liveness_renewal=False``) does not renew; the keeper only reads.
 
     OBSERVED, NOT THEORISED (2026-08-10): a seat run outlived the 30-minute TTL, `bh work submit`
     then refused on a stale claim-fencing token, and the seat had to re-adopt and re-ack before
@@ -932,7 +940,11 @@ class HostLeaseKeeper:
         ttl: float,
         renew_interval: float,
         backend=None,
+        liveness_renewal: bool = True,
+        hive_dir: Path | None = None,
     ):
+        self.liveness_renewal = liveness_renewal
+        self.hive_dir = Path(hive_dir) if hive_dir is not None else None
         self.prefix = prefix
         self.host_id = host_id
         self.hq_dir = Path(hq_dir)
@@ -944,15 +956,22 @@ class HostLeaseKeeper:
         from . import host_lease
 
         renewed = False
-        if active:
-            outcome = host_lease.renew_if_due(
-                self.REMOTE,
-                self.prefix,
-                host_id=self.host_id,
-                cwd=self.hq_dir,
-                ttl=self.ttl,
-                renew_interval=self.renew_interval,
-            )
+        if active and self.liveness_renewal:
+            # Best-effort liveness hint (bh-12hev): renew_if_due swallows its own failures, and
+            # anything escaping it is swallowed here — the held answer below never depends on it.
+            try:
+                outcome = host_lease.renew_if_due(
+                    self.REMOTE,
+                    self.prefix,
+                    host_id=self.host_id,
+                    cwd=self.hq_dir,
+                    ttl=self.ttl,
+                    renew_interval=self.renew_interval,
+                    hive_dir=self.hive_dir,
+                )
+            except Exception as exc:  # noqa: BLE001 - a liveness hint never stops the loop
+                _LOG.warning("lease_liveness_renewal_failed", error_type=type(exc).__name__)
+                outcome = None
             renewed = outcome is not None
         lease = (
             self.backend.read_hive_lease(self.prefix, holder_identity=self.host_id)
@@ -967,7 +986,7 @@ class HostLeaseKeeper:
         return LeaseStatus(
             held=held,
             renewed=renewed,
-            detail=f"held until {lease.expires_at}" if held else lease.describe(),
+            detail=f"held (liveness hint until {lease.expires_at})" if held else lease.describe(),
         )
 
 
@@ -1026,6 +1045,12 @@ def lease_keeper_for(
     prefix, this_host, _lease = state
     from .hq_control_plane import control_plane
 
+    try:
+        # A cut-over hive (local bh_writer present) is decided by data: no lease liveness
+        # renewal. An unreadable bh_writer may be cut over, so it does not renew either.
+        cut_over = guard.writer_state(hive, cfg=cfg, hive_dir=hive_dir) is not None
+    except guard.WriterUnreadable:
+        cut_over = True
     keeper = HostLeaseKeeper(
         prefix=prefix,
         host_id=this_host,
@@ -1033,6 +1058,8 @@ def lease_keeper_for(
         ttl=config.host_lease_ttl(cfg),
         renew_interval=config.host_lease_renew_interval(cfg),
         backend=control_plane(config.hq_dir()) if decision is not None else None,
+        liveness_renewal=not cut_over,
+        hive_dir=hive_dir,
     )
 
     return EligibilityLeaseKeeper(keeper, hive, cfg, hive_dir, fresh_config=fresh_config)
@@ -1726,12 +1753,11 @@ class LocalLoop:
             if self.passes == 1:
                 report.orphans_reaped = await self.reap_orphan_seats()
 
-        # 3. The host lease — renewed only while workers are active. A dry pass never has any
-        #    (see below), so `active` is unconditionally False and this call is a pure READ:
-        #    `HostLeaseKeeper.renew(active=False)` skips `host_lease.renew_if_due` and only
-        #    answers "is it held", which is the "must still hold the lease check" requirement —
-        #    a dry pass that skipped this would report what a loop WOULD do in a state it could
-        #    not legally be in.
+        # 3. The host lease — renewed (legacy hives only, best-effort liveness hint, bh-12hev)
+        #    only while workers are active. A dry pass never has any (see below), so `active`
+        #    is unconditionally False and this call is a pure READ of "is it held", which is
+        #    the "must still hold the lease check" requirement — a dry pass that skipped this
+        #    would report what a loop WOULD do in a state it could not legally be in.
         report.lease = self.lease.renew(active=bool(self.in_flight) and not self.dry_run)
         if not report.lease.held:
             if self.dry_run:

@@ -24,11 +24,18 @@ Naming note (Amendment 1 §5): "lease" here is always the **host lease** (host �
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import failover_reclaim, gitref, host_fence, host_lease, log, writer_adopt
+from . import (
+    failover_reclaim,
+    fence_data_port,
+    gitref,
+    host_fence,
+    host_lease,
+    log,
+    writer_adopt,
+)
 from .host_fence import EpochFence
 from .host_lease import HostLease, HostLeaseRejected
 from .writer_adopt import (  # re-exported: callers catch these from here
@@ -88,28 +95,20 @@ class AdoptOutcome:
 
 # ---- the data switch (M1 seam) ---------------------------------------------------------------
 
-#: ``(prefix, hive_dir) -> FenceData | None``. ``None`` means "no in-data fence adapter for this
-#: hive", and the legacy adopt runs. The product adapter is M1's (bh-uz46l); until it registers
-#: one here, every hive answers ``None`` — the coexistence path is dormant.
-FenceDataResolver = Callable[[str, Path], "FenceData | None"]
-
-
-def _no_fence_data(_prefix: str, _hive_dir: Path) -> FenceData | None:
-    return None
-
-
-_fence_data_resolver: FenceDataResolver = _no_fence_data
+#: ``(prefix, hive_dir) -> FenceData | None``. The registry lives in
+#: :mod:`beadhive.fence_data_port` (bh-12hev) so the write guard can read it without importing
+#: adopt; these two names are the stable surface M1 registers through.
+FenceDataResolver = fence_data_port.FenceDataResolver
 
 
 def set_fence_data_resolver(resolver: FenceDataResolver | None) -> None:
     """Register the in-data fence adapter (M1); ``None`` restores the dormant default."""
-    global _fence_data_resolver
-    _fence_data_resolver = resolver or _no_fence_data
+    fence_data_port.set_fence_data_resolver(resolver)
 
 
 def fence_data_for(prefix: str, hive_dir: Path) -> FenceData | None:
     """The hive's :class:`~beadhive.writer_adopt.FenceData`, or ``None`` (legacy / dormant)."""
-    return _fence_data_resolver(prefix, Path(hive_dir))
+    return fence_data_port.fence_data_for(prefix, hive_dir)
 
 
 class _LeasePlacement:

@@ -1002,8 +1002,8 @@ def list_cmd(
     same shape bh-ytbb.5 shipped, plus bh-salu's STALE marker so an orphaned manifest from a
     wiped/rebuilt host (see :mod:`beadhive.host_cli`'s module docstring) is identifiable
     without cross-referencing by hand. With ``--lease-hive``, a live HQ read (this command is a
-    reporting surface, not the hot-path write guard — see ``guard_primary``/``renew_if_due``
-    for why THAT path stays cache-only) fetches the named hive's current lease and adds a
+    reporting surface, not the hot-path write guard — see ``guard_primary`` for why THAT path
+    stays cache-only) fetches the named hive's current lease and adds a
     LEASE column via :func:`with_lease_state`."""
     hq_dir = config.hq_dir()
     cfg = config.load()

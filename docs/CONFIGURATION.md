@@ -218,13 +218,16 @@ backup:
 # Multi-host policy — the HOST lease (host <-> hive), NOT bd's worker lease (worker <-> issue).
 # See docs/design/multi-host-model-adr.md, Amendment 1 (§3 for these numbers, §5 for the
 # host-lease vs worker-lease vocabulary split).
-# FLEET-scoped, load-bearingly so: two hosts disagreeing about when a lease expires would
-# disagree about who may write. Per-host variation comes from that host's `role` in
-# hosts/<host_id>.yaml, which SCALES the ttl below — never a per-host override of these keys.
+# FLEET-scoped. Per-host variation comes from that host's `role` in hosts/<host_id>.yaml, which
+# SCALES the ttl below — never a per-host override of these keys. Since 0.23.0 (bh-12hev) the
+# lease's expiry never gates a write: it is a failover/liveness HINT only (see
+# docs/design/hive-writer-partitioning-adr.md §4). Legacy hives (no in-data bh_writer) still
+# renew it best-effort from write verbs and the dispatch loop, as a liveness hint until M8
+# placement — a failed renewal is logged, never refused. Cut-over hives don't renew it.
 host:
   lease:
-    renew_interval: 300                # seconds between renewals while workers are active
-    ttl: 1800                          # seconds a lease survives unrenewed before it's takeable
+    renew_interval: 300                # legacy hives: renew when within this of the expiry hint
+    ttl: 1800                          # seconds until the expiry hint; past it a lease is takeable
 
 # One entry per managed hive — maintained by `bh hive init` (add) + `bh label sync`.
 #   kind: org-native | personal | prototype | fork ; forks add upstream: "owner/name"

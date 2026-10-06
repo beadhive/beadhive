@@ -512,18 +512,22 @@ def refresh_cached(remote: str, prefix: str, *, cwd: Path) -> HostLease | None:
     return lease
 
 
-# ---- renewal loop + fleet-visible lease state (bh-ytbb.11) -----------------------------
+# ---- liveness renewal (legacy hives only) + fleet-visible lease state (bh-ytbb.11, bh-12hev)
 #
-# ADR Amendment 1 §3: "Renewal is a loop inside the dispatcher process that runs only while
-# workers are active — no daemon, no cron." In THIS repo the dispatcher is a CLI-driven role
-# (a `bh:dispatcher` session working through `bh work`/`bh plan` verbs), not a resident OS
-# process — so there is no loop to embed a timer in without violating "no background process
-# outside the dispatcher's lifetime". :func:`renew_if_due` is the loop's body instead: a plain
-# function a write-verb boundary calls opportunistically (``guard.guard_primary`` is the one
-# call site every gated write verb already funnels through). While the dispatcher keeps
-# invoking write verbs, the lease keeps getting renewed on schedule; the moment it stops, no
-# further boundary fires, and the lease laps on its own — exactly "an idle host lets its lease
-# lapse, which is the desired handoff, not a bug."
+# ADR Amendment 1 §3 put lease renewal in a loop that runs only while workers are active, and
+# :func:`renew_if_due` is that loop's body: the dispatch loop's ``HostLeaseKeeper`` and the
+# gated write verbs (``guard.guard_primary``) call it opportunistically. "An idle host lets its
+# lease lapse, which is the desired handoff, not a bug."
+#
+# Since bh-12hev (writer-partitioning ADR §4, "Time triggers reassignment; it never gates a
+# write") the renewal no longer protects any write: ``expires_at`` is a failover HINT in every
+# HQ mode and :meth:`HostLease.held_by` never consults it. What renewal still buys, on a hive
+# NOT yet cut over to the in-data ``bh_writer`` fence, is a truthful liveness hint — a live
+# primary's lease keeps getting pushed out, so another host's plain ``bh host adopt`` cannot
+# take it ~ttl after the last adopt. That stays until placement moves (M8). A cut-over hive
+# does not renew (its writer is decided by data), and signed-mode SQL HQ does not renew (its
+# liveness is the signed heartbeat). Renewal is best-effort everywhere: any failure is logged
+# and swallowed, and never blocks or refuses a write.
 
 
 def lease_state(
@@ -538,9 +542,9 @@ def lease_state(
     * ``"expiring"`` — live, but within ONE `renew_interval` of its own `expires_at`.
     * ``"held"``     — live, with more than a `renew_interval` of runway left.
 
-    The SAME boundary :func:`renew_if_due` uses to decide whether a renewal is due — so
-    "expiring" here means exactly "the next opportunistic ``renew_if_due`` call would act on
-    this lease", never a separately-tuned threshold."""
+    The SAME boundary :func:`renew_if_due` uses to decide whether a liveness renewal is due.
+    Reporting only (bh-12hev): ``expires_at`` is a failover hint, so "free" and "expiring"
+    describe what a failover observer may act on, never whether the holder may still write."""
     if lease is None or lease.is_expired(at):
         return "free"
     if lease.advisory_expiry:
@@ -559,35 +563,88 @@ def renew_if_due(
     ttl: float = DEFAULT_TTL,
     renew_interval: float = DEFAULT_RENEW_INTERVAL,
     at: float | None = None,
+    hive_dir: Path | None = None,
 ) -> LeaseOutcome | None:
-    """Opportunistically renew `prefix`'s host lease — the renewal "loop" body a write-verb
-    boundary calls on every pass (see the section docstring above for why it is a plain
-    function rather than a background timer).
+    """Best-effort LIVENESS renewal of `prefix`'s host lease on a legacy hive (bh-12hev).
 
-    Reads the LOCAL CACHE ONLY to decide whether a renewal is due — no HQ round trip merely to
-    check the clock, which is what keeps HQ off the hot path within the interval. Attempts a
-    REAL renew (an HQ round trip + CAS) only when the cache names `host_id` as the current
-    holder AND the cached lease is within `renew_interval` of its own `expires_at`
-    (:func:`lease_state` calls this same boundary "expiring").
+    Expiry never gates a write (:meth:`HostLease.held_by` is clock-free), so this keeps
+    ``expires_at`` a truthful liveness hint for failover observers and nothing more. A no-op
+    returning ``None`` when:
 
-    Returns the :class:`LeaseOutcome` of a renewal that actually happened, or ``None`` when:
-    nothing was due yet, the cache names no lease (or another host's), or the renewal attempt
-    itself failed. A failure — HQ unreachable (git remote or SQL control plane), or the CAS
-    lost to a takeover — is LOGGED and SWALLOWED, never raised: an opportunistic boundary
-    check must never crash the write verb it is piggybacking on. Per Amendment 1 §4 an
-    established primary keeps working on its
-    EXISTING cached lease regardless of whether THIS renewal attempt succeeded — it is that
-    cache's own `expires_at`, not this function's return value, that decides when writes stop
-    (``guard_primary`` is the only place that decision is made). This function only ever tries
-    to push the expiry further out; failing to do so just means the next call tries again."""
+    * the hive is cut over — `hive_dir` is given and its in-data fence adapter
+      (:func:`beadhive.fence_data_port.fence_data_for`) reports a ``bh_writer`` row (or cannot
+      be read: possibly cut over, so leave the hint alone); the data decides who writes;
+    * signed-mode SQL HQ (``hq.sql.liveness: signed``): the signed heartbeat is the liveness;
+    * the local cache names no lease, or another host's;
+    * the cached lease is not within `renew_interval` of its ``expires_at`` (no HQ round trip
+      merely to check the clock).
+
+    Otherwise attempts a REAL renew (HQ round trip + CAS) and returns its
+    :class:`LeaseOutcome`. ANY failure — HQ unreachable, the CAS lost to a takeover, a control
+    plane or config error — is LOGGED and SWALLOWED, returning ``None``: a liveness refresh
+    must never block, crash or refuse the write it piggybacks on."""
+    try:
+        return _renew_if_due(
+            remote,
+            prefix,
+            host_id=host_id,
+            cwd=cwd,
+            ttl=ttl,
+            renew_interval=renew_interval,
+            at=at,
+            hive_dir=hive_dir,
+        )
+    except Exception as exc:  # noqa: BLE001 - best-effort liveness hint; never fails a write
+        log.get_logger(__name__).warning(
+            "host_lease_renew_if_due_failed",
+            hive_prefix=prefix,
+            host_id=host_id,
+            error_type=type(exc).__name__,
+            error=str(exc),
+            reason=(
+                "a best-effort liveness renewal failed (HQ unreachable, the CAS lost to a "
+                "takeover, or a control-plane error) and was swallowed; expires_at is only a "
+                "failover hint and never gates a write (bh-12hev), so nothing is refused"
+            ),
+        )
+        return None
+
+
+def _hive_cut_over(prefix: str, hive_dir: Path | None) -> bool:
+    """Whether `hive_dir`'s data carries ``bh_writer`` (unreadable counts as cut over)."""
+    if hive_dir is None:
+        return False
+    from . import fence_data_port
+
+    data = fence_data_port.fence_data_for(prefix, hive_dir)
+    if data is None:
+        return False
+    try:
+        return data.writer() is not None
+    except Exception:  # noqa: BLE001 - may be cut over; never renew a hint the data may own
+        return True
+
+
+def _renew_if_due(
+    remote: str,
+    prefix: str,
+    *,
+    host_id: str,
+    cwd: Path,
+    ttl: float,
+    renew_interval: float,
+    at: float | None,
+    hive_dir: Path | None,
+) -> LeaseOutcome | None:
+    if _hive_cut_over(prefix, hive_dir):
+        return None  # cut-over hive: bh_writer decides; no lease liveness renewal
     from . import host
     from .hq_control_plane import control_plane
 
     if host.sql_hq_selected() and getattr(control_plane(cwd), "signed_liveness", False):
-        # hq.sql.liveness (or $BH_HQ_SQL_LIVENESS): signed — a holder's tenure rests on its
-        # signed heartbeat, not on pushing expires_at out, so the write path makes no
-        # receiver round trip at all. Selecting the plane is local config validation only,
-        # and an invalid override raises there rather than silently renewing.
+        # hq.sql.liveness (or $BH_HQ_SQL_LIVENESS): signed — a holder's liveness is its signed
+        # heartbeat, not expires_at, so no receiver round trip at all. Selecting the plane is
+        # local config validation only.
         return None
     clock = at if at is not None else time.time()
     plane = _frame_plane(cwd)
@@ -598,41 +655,8 @@ def renew_if_due(
     )
     if cached is None or cached.host_id != host_id:
         return None  # nothing of ours locally to renew
-    due_at = _parse_stamp(cached.expires_at) - renew_interval
-    if clock < due_at:
+    if clock < _parse_stamp(cached.expires_at) - renew_interval:
         return None  # not due yet — no HQ round trip within the interval
-
-    # The SQL control plane raises its own ValueError-family errors (HqLeaseUnknown /
-    # ControlPlaneError, SqlRuntimeError, SqlTransportError), none of which are HostLeaseError
-    # or RemoteUnreachable. Imported lazily, as _frame_plane does, to keep the import graph flat.
-    from .hq_control_plane import ControlPlaneError
-    from .hq_sql_runtime import SqlRuntimeError
-    from .hq_sql_transport import SqlTransportError
-
-    try:
-        outcome = renew(
-            remote, prefix, host_id=host_id, cwd=cwd, ttl=ttl, at=at if plane else clock
-        )
-    except (
-        HostLeaseError,
-        gitref.RemoteUnreachable,
-        ControlPlaneError,
-        SqlRuntimeError,
-        SqlTransportError,
-    ) as exc:
-        log.get_logger(__name__).warning(
-            "host_lease_renew_if_due_failed",
-            hive_prefix=prefix,
-            host_id=host_id,
-            cached_expires_at=cached.expires_at,
-            error=str(exc),
-            reason=(
-                "an opportunistic renewal at a write-verb boundary failed (HQ unreachable, or "
-                "the CAS lost to a takeover) — swallowed rather than raised; the existing "
-                "cached lease keeps backing guard_primary exactly until IT expires "
-                "(Amendment 1 §4), never longer and never shorter for this reason alone"
-            ),
-        )
-        return None
+    outcome = renew(remote, prefix, host_id=host_id, cwd=cwd, ttl=ttl, at=at if plane else clock)
     cache(prefix, outcome, cwd=cwd)
     return outcome

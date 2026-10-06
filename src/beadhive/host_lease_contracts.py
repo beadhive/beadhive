@@ -58,8 +58,9 @@ class HostLease:
     expires_at: str
     #: Not part of the record (never serialized, never compared). Set by the SQL reader in
     #: ``hq.sql.liveness: signed`` mode: the holder's liveness is then its signed heartbeat,
-    #: so ``expires_at`` is only a failover hint and no longer ends a live holder's tenure.
-    #: A tombstone is still always expired.
+    #: so :meth:`is_expired` never reports a live holder expired (failover hint only). Write
+    #: gates do not consult expiry in any mode (:meth:`held_by`). A tombstone is still
+    #: always expired.
     advisory_expiry: bool = field(default=False, compare=False, repr=False)
 
     @property
@@ -78,9 +79,17 @@ class HostLease:
         clock = at if at is not None else time.time()
         return _parse_stamp(self.expires_at) <= clock
 
-    def held_by(self, host_id: str, at: float | None = None) -> bool:
-        """Whether `host_id` holds this lease AND it is still live."""
-        return bool(host_id) and self.host_id == host_id and not self.is_expired(at)
+    def held_by(self, host_id: str, at: float | None = None) -> bool:  # noqa: ARG002
+        """Whether this lease names `host_id` as its holder (a tombstone names nobody).
+
+        Clock-free (bh-12hev, ADR §4 "Time triggers reassignment; it never gates a write"):
+        ``expires_at`` is a failover hint in every HQ mode and never ends a holder's tenure
+        here, so an established primary keeps writing while HQ is unreachable and while its
+        lease is past its hint. Reassignment is a placement change (adopt) that moves
+        ``host_id`` — which this answer follows — not a clock reading. `at` is accepted for
+        call-site compatibility and ignored; :meth:`is_expired` still answers the advisory
+        question for failover and reporting."""
+        return bool(host_id) and self.host_id == host_id
 
     def describe(self) -> str:
         """One line naming the holder and its expiry — the text a refusal shows an operator,
