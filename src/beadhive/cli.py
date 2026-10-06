@@ -405,6 +405,22 @@ def _warn_retired_orca_worktrees_best_effort(ctx: typer.Context) -> None:
         pass
 
 
+def _announce_authority_enforcement(ctx: typer.Context) -> None:
+    """``BH_HQ_AUTHORITY_ENFORCE`` (UNSUPPORTED, dev-only, bh-6pqul): print the disabled banner
+    once on stderr for every command while it is ``false``, and refuse an invalid value outright
+    rather than guessing. ``--help``/completion stay usable so the operator can still read help
+    while fixing the variable."""
+    from . import hq_authority_enforce
+
+    try:
+        hq_authority_enforce.emit_banner()
+    except hq_authority_enforce.AuthorityEnforcementError as exc:
+        if _is_help_or_completion_invocation(ctx):
+            return
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(2) from exc
+
+
 def _init_telemetry_best_effort() -> None:
     """Eager telemetry init: this callback runs before every subcommand, so it's the one place
     that activates OTel for a real `ws` command path (otherwise is_active() is forever False
@@ -496,6 +512,7 @@ def _root(
     ),
 ):
     """Workspace beads CLI. -a/-r route `bd`/`git` across hives (need git_workspace)."""
+    _announce_authority_enforcement(ctx)
     _migrate_home_best_effort()
     _migrate_hive_keys_best_effort()
     _warn_stale_schema_version_best_effort(ctx)

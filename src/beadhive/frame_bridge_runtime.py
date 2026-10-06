@@ -796,6 +796,14 @@ def main() -> None:
     """Serve only on loopback; Cloudflared is the sole external transport."""
     import uvicorn
 
+    from . import hq_authority_enforce
+
+    try:
+        # BH_HQ_AUTHORITY_ENFORCE=false (UNSUPPORTED, bh-6pqul): one banner per process.
+        hq_authority_enforce.emit_banner()
+    except hq_authority_enforce.AuthorityEnforcementError as exc:
+        raise SystemExit(f"\u2717 {exc}") from exc
+
     uvicorn.run(
         "beadhive.frame_bridge_runtime:create_application",
         factory=True,

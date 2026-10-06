@@ -13,6 +13,7 @@ from . import (
     config,
     host_heartbeat,
     hq_authority_ceiling,
+    hq_authority_enforce,
     hq_authority_expiry,
     hq_control_plane,
     hq_operator_settings,
@@ -69,7 +70,11 @@ def authority_cmd(
             )
         plane = hq_operator_settings.select_plane()
         if action == "status":
-            result = hq_authority_expiry.authority_status(plane)
+            # Per-host, per-process: BH_HQ_AUTHORITY_ENFORCE=false (UNSUPPORTED, bh-6pqul).
+            result = {
+                **hq_authority_expiry.authority_status(plane),
+                "enforcement": hq_authority_enforce.status(),
+            }
         elif action == "check":
             try:
                 floor = hq_authority_expiry.min_remaining()

@@ -2202,13 +2202,18 @@ def eligible_cmd(
         payload["eligible"] = payload["eligible"] and held
         if not held:
             payload["reason"] += ", current_hive_lease_holder"
+    # BH_HQ_AUTHORITY_ENFORCE=false (UNSUPPORTED, bh-6pqul) marks each waived predicate.
+    waived = set(payload.get("waived", ()))
     if as_json:
         typer.echo(json.dumps(payload))
     else:
         typer.echo(
             render_table(
                 [
-                    {"predicate": key, "result": "pass" if value else "fail"}
+                    {
+                        "predicate": key,
+                        "result": "waived" if key in waived else "pass" if value else "fail",
+                    }
                     for key, value in payload["predicates"].items()
                 ],
                 (("predicate", "PREDICATE"), ("result", "RESULT")),

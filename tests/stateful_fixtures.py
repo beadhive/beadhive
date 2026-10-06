@@ -247,6 +247,10 @@ def _sandbox_bh_home(tmp_path_factory, monkeypatch):
     # process that reads it. Same leak path as above: an operator shell exporting it must not flip
     # heartbeat-required tests. Tests exercising it set it explicitly via monkeypatch afterwards.
     monkeypatch.delenv("BH_FRAME_HEARTBEAT", raising=False)
+    # `BH_HQ_AUTHORITY_ENFORCE=false` (UNSUPPORTED dev-only switch, bh-6pqul) waives HQ authority
+    # expiry/binding/predicates and prints a banner on every command. A dev host's unit file or
+    # shell exporting it must not turn fail-closed tests green or add stderr noise.
+    monkeypatch.delenv("BH_HQ_AUTHORITY_ENFORCE", raising=False)
     # `bd` loads its own global config from HOME (and XDG_CONFIG_HOME), independently of
     # Beadhive's BH_HOME. Keep a developer's global Beads configuration from changing fixture
     # behavior, particularly embedded-vs-shared-server initialization.
