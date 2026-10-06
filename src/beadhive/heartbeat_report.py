@@ -13,10 +13,12 @@ from datetime import UTC, datetime
 import typer
 from ruamel.yaml import YAML
 
-from . import config, host, hosts, registry
+from . import config, heartbeat_conformance, host, hosts, registry
 from .config_validate import validate_config
 from .hq_framelease_contracts import DOMAIN_V2, HeartbeatError, HeartbeatLease
 from .release_measurement import installed_release
+
+_UNSET = object()
 
 
 def config_valid() -> bool:
@@ -37,10 +39,64 @@ def hive_ready(entry: dict) -> bool:
     return result.returncode == 0 and json.loads(result.stdout).get("status") == "ok"
 
 
-def generate(plane, *, free_sessions: int = 0) -> HeartbeatLease:
-    """Read verified authority and report actual checks; never publish or admit."""
+def _check(name, predicate) -> dict:
+    try:
+        passed = bool(predicate())
+    except Exception:
+        passed = False
+    # Evidence contains fixed text only: errors and subprocess output can contain secrets.
+    return {
+        "id": name,
+        "status": "pass" if passed else "fail",
+        "evidence": "measured check passed" if passed else "measured check failed",
+    }
+
+
+def _load_config():
+    try:
+        return config.load()
+    except Exception:
+        return None
+
+
+def measure_conformance(cfg=_UNSET) -> list[dict]:
+    """The slow host-local conformance checks (:data:`heartbeat_conformance.CACHED_CHECK_IDS`).
+
+    Reads no authority, so the conformance job can run it on its own timer.
+    """
+    config_check = _check("host-config-partition", config_valid)
+    if cfg is _UNSET:
+        cfg = _load_config()
+    return [
+        config_check,
+        _check(
+            "hives-ready",
+            lambda: (
+                cfg is not None
+                and bool(registry.hives(cfg))
+                and all(hive_ready(entry) for entry in registry.hives(cfg))
+            ),
+        ),
+    ]
+
+
+def refresh_conformance():
+    """One conformance-job run: measure and atomically publish the local cache."""
+    return heartbeat_conformance.refresh(measure_conformance)
+
+
+def generate(
+    plane, *, free_sessions: int = 0, cached: bool = False, now: float | None = None
+) -> HeartbeatLease:
+    """Read verified authority and report actual checks; never publish or admit.
+
+    ``cached=True`` is the decoupled beat: conformance comes from the local cache written by
+    the conformance job (:func:`refresh_conformance`) instead of being measured inline.
+    ``now`` (epoch seconds) overrides the beat clock for tests.
+    """
     if type(free_sessions) is not int or not 0 <= free_sessions <= 1024:
         raise HeartbeatError("free sessions must be between zero and 1024")
+    beat_at = datetime.now(UTC).timestamp() if now is None else now
     try:
         # ``row`` is the receiver's accepted observation, or in ``hq.sql.liveness: signed``
         # mode the newest verified heartbeat in this frame's own inbox — so the next seq
@@ -77,41 +133,33 @@ def generate(plane, *, free_sessions: int = 0) -> HeartbeatLease:
             manifest.capabilities is None or free_sessions > manifest.capabilities.max_sessions
         ):
             raise HeartbeatError("free sessions exceed committed frame capacity")
-        checks = []
-
-        def measure(name, predicate):
-            try:
-                passed = bool(predicate())
-            except Exception:
-                passed = False
-            # Evidence contains fixed text only: errors and subprocess output can contain secrets.
-            checks.append(
-                {
-                    "id": name,
-                    "status": "pass" if passed else "fail",
-                    "evidence": "measured check passed" if passed else "measured check failed",
-                }
-            )
-
-        measure("installed-release", lambda: True)
-        measure("host-config-partition", config_valid)
-        cfg = None
-        try:
-            cfg = config.load()
-        except Exception:
-            pass
-        measure(
+        cfg = _load_config()
+        identity = _check(
             "host-identity",
             lambda: cfg is not None and cfg.get("host", {}).get("frame_id") == route.frame_id,
         )
-        measure(
-            "hives-ready",
-            lambda: (
-                cfg is not None
-                and bool(registry.hives(cfg))
-                and all(hive_ready(entry) for entry in registry.hives(cfg))
-            ),
-        )
+        if cached:
+            # Never measure here: sign the newest cached result with its measured_at, and fail
+            # by bound once it is too old (bh-i6ggn). The beat cannot block on hive_ready.
+            stored = heartbeat_conformance.beat_checks(
+                heartbeat_conformance.read(),
+                now=beat_at,
+            )
+            checks = [
+                _check("installed-release", lambda: True),
+                stored["host-config-partition"],
+                identity,
+                stored["hives-ready"],
+                stored[heartbeat_conformance.AGE_CHECK_ID],
+            ]
+        else:
+            measured_checks = {item["id"]: item for item in measure_conformance(cfg)}
+            checks = [
+                _check("installed-release", lambda: True),
+                measured_checks["host-config-partition"],
+                identity,
+                measured_checks["hives-ready"],
+            ]
         conformant = all(item["status"] == "pass" for item in checks)
         report = {
             "method": "installed-package-v1",
@@ -130,9 +178,9 @@ def generate(plane, *, free_sessions: int = 0) -> HeartbeatLease:
                 "epoch": route.epoch,
                 "config_revision": authority["config_revision"],
                 "seq": 1 if row is None else int(row[0]) + 1,
-                "renewTime": datetime.now(UTC).isoformat(),
-                "leaseDurationSeconds": 300,
-                "intervalSeconds": 60,
+                "renewTime": datetime.fromtimestamp(beat_at, UTC).isoformat(),
+                "leaseDurationSeconds": heartbeat_conformance.LEASE_DURATION_SECONDS,
+                "intervalSeconds": heartbeat_conformance.INTERVAL_SECONDS,
                 "release": release,
                 "state_seen": record["state"],
                 "conformance": {
@@ -155,13 +203,31 @@ def generate(plane, *, free_sessions: int = 0) -> HeartbeatLease:
         ) from None
 
 
-def send(plane, *, free_sessions: int = 0) -> str:
-    """Measure again immediately before explicit signed publication."""
-    lease = generate(plane, free_sessions=free_sessions)
+def send(plane, *, free_sessions: int = 0, cached: bool = False) -> str:
+    """Measure again immediately before explicit signed publication.
+
+    With ``cached=True`` conformance is read from the local cache, never measured inline.
+    """
+    lease = generate(plane, free_sessions=free_sessions, cached=cached)
     key = host.signing_key()
     if not key:
         raise HeartbeatError("no recorded host signing key")
     return plane.heartbeat(lease, signing_key=key)
+
+
+def bh_home():
+    """The bh home the heartbeat sender keeps its local cache under."""
+    return config.home()
+
+
+def send_cached_beat(*, free_sessions: int = 0) -> str:
+    """One decoupled beat against this host's SQL frame authority (``heartbeat_sender beat``)."""
+    from .hq_control_plane import SqlControlPlane, control_plane
+
+    plane = control_plane(config.hq_dir())
+    if not isinstance(plane, SqlControlPlane):
+        raise HeartbeatError("measured heartbeat requires SQL frame authority")
+    return send(plane, free_sessions=free_sessions, cached=True)
 
 
 def register(app: typer.Typer) -> None:
