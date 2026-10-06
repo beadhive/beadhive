@@ -12,13 +12,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from . import config, gitref, hq_git_broker, hq_manifest_guard
+from . import config, gitref, hq_authority_ceiling, hq_git_broker, hq_manifest_guard
 from . import hq_authority_guard as guard
+from .hq_authority_enforce import enforced as authority_enforced
 from .run import run
 
 if TYPE_CHECKING:
     from .host_heartbeat_core import AuthoritySnapshot
     from .modules.config.domain.ports import FleetConfigSnapshot
+
+
+def _check_duration(duration, ceiling):
+    try:
+        hq_authority_ceiling.check_duration(duration, ceiling)
+    except ValueError as exc:
+        raise ControlPlaneError(str(exc)) from None
 
 
 class ControlPlaneError(ValueError):
@@ -102,7 +110,7 @@ class HqControlPlane(Protocol):
     def read_hive_lease(self, prefix, *, holder_identity=None): ...
     def read_hive_lease_record(self, prefix, *, holder_identity=None): ...
     def publish_hive_lease(self, prefix, lease, *, expected, operation, force=False): ...
-    def config_store(self, *, operator_key=None, duration=3600): ...
+    def config_store(self, *, operator_key=None, duration=3600, ceiling=None): ...
     def load_config_authority_snapshot(
         self, frame: str, *, revision: str | None = None
     ) -> ConfigAuthoritySnapshot: ...
@@ -110,7 +118,7 @@ class HqControlPlane(Protocol):
     def publish_registration_evidence(self, manifest, *, signing_key): ...
     def grant(self, authority, public_key, desired, *, expected, operator_key): ...
     def accept_observation(self, frame, *, expected, operator_key, holder_identity=""): ...
-    def renew(self, *, expected, operator_key, duration=3600): ...
+    def renew(self, *, expected, operator_key, duration=3600, ceiling=None): ...
     def lifecycle(
         self,
         verb,
@@ -345,10 +353,12 @@ class GitControlPlane:
 
         return hosts.load(self.hq_dir, host_id)
 
-    def config_store(self, *, operator_key=None, duration=3600):
+    def config_store(self, *, operator_key=None, duration=3600, ceiling=None):
         from .hq_fleet_config import GitFleetConfigRevisionStore
 
-        return GitFleetConfigRevisionStore(self, _git, operator_key=operator_key, duration=duration)
+        return GitFleetConfigRevisionStore(
+            self, _git, operator_key=operator_key, duration=duration, ceiling=ceiling
+        )
 
     def load_config_authority_snapshot(self, frame, *, revision=None):
         raise ControlPlaneError("atomic config/authority snapshot unsupported by Git binding")
@@ -621,7 +631,8 @@ class GitControlPlane:
             raise ControlPlaneError("authority rollback or inconsistent witness detected")
         if state["generation"] != policy["generation"] or self.clock() < state["issued_at"] - 30:
             raise ControlPlaneError("authority recovery generation or clock mismatch")
-        if not allow_expired and self.clock() >= state["expires_at"]:
+        if not allow_expired and self.clock() >= state["expires_at"] and authority_enforced():
+            # BH_HQ_AUTHORITY_ENFORCE=false (UNSUPPORTED, dev-only) skips expiry on this host.
             raise ControlPlaneError("authority validity interval expired")
         return sha, state, policy
 
@@ -634,11 +645,20 @@ class GitControlPlane:
         return sha, state, policy
 
     def _write(
-        self, state, expected, operator_key, *, duration=3600, updates=(), expires_at_cap=None
+        self,
+        state,
+        expected,
+        operator_key,
+        *,
+        duration=3600,
+        updates=(),
+        expires_at_cap=None,
+        ceiling=None,
     ):
         current, previous, policy = self._operator_read()
-        if current != expected or not 1 <= duration <= 86400:
+        if current != expected:
             raise ControlPlaneError("expected authority revision/duration mismatch")
+        _check_duration(duration, ceiling)
         bound = any(
             record["authority"].get("beadyard_id") is not None for _, record in guard.records(state)
         )
@@ -695,11 +715,11 @@ class GitControlPlane:
             raise ControlPlaneError("authority changed before readback")
         return sha
 
-    def renew(self, *, expected, operator_key, duration=3600):
+    def renew(self, *, expected, operator_key, duration=3600, ceiling=None):
         sha, state, _ = self._operator_read()
         if not sha:
             raise ControlPlaneError("cannot renew absent authority")
-        return self._write(state, expected, operator_key, duration=duration)
+        return self._write(state, expected, operator_key, duration=duration, ceiling=ceiling)
 
     def _trust(self, state):
         path = Path(_git(self.hq_dir, "rev-parse", "--git-path", "bh-authority-signers"))
@@ -788,11 +808,18 @@ class GitControlPlane:
         entry = state.get("frames", {}).get(frame)
         if entry is None:
             raise ControlPlaneError("unknown declared frame")
+        # BH_HQ_AUTHORITY_ENFORCE=false (UNSUPPORTED, bh-6pqul): an expired grant still names
+        # this frame's desired state; only a retired incarnation is unavailable.
+        enforce = authority_enforced()
         available = [
             record
             for slot in ("active", "candidate")
             if (record := entry[slot]) is not None
-            and self._snapshot(frame, record, state, candidate=slot == "candidate") is not None
+            and (
+                self._snapshot(frame, record, state, candidate=slot == "candidate") is not None
+                if enforce
+                else record["state"] != "retired"
+            )
             and (
                 holder_identity is None or record["authority"]["holder_identity"] == holder_identity
             )
@@ -1436,7 +1463,7 @@ class SqlControlPlane:
         except Exception:  # noqa: BLE001 - malformed committed input must not expose values
             raise ControlPlaneError("committed host manifest invalid") from None
 
-    def config_store(self, *, operator_key=None, duration=3600):
+    def config_store(self, *, operator_key=None, duration=3600, ceiling=None):
         from .hq_sql_config import SqlFleetConfigRevisionStore
 
         return SqlFleetConfigRevisionStore(self.settings, broker=self.broker, clock=self.clock)
@@ -1451,11 +1478,15 @@ class SqlControlPlane:
     def authority_status(self):
         if self.settings.get("runtime") is None:
             return {"revision": "", "state": "AUTHORITY_NOT_READY", "authority_ready": False}
+        enforce = authority_enforced()
         try:
-            revision, state, _, _ = self._runtime_authority().load_state()
+            # Disabled enforcement (UNSUPPORTED, bh-6pqul) still reports an expired authority,
+            # honestly marked not ready, instead of failing the status read.
+            revision, state, _, _ = self._runtime_authority().load_state(allow_expired=not enforce)
         except ValueError as exc:
             raise ControlPlaneError(str(exc)) from None
-        return {"revision": revision, "state": state, "authority_ready": True}
+        ready = enforce or self.clock() < state["expires_at"]
+        return {"revision": revision, "state": state, "authority_ready": ready}
 
     def eligibility_authority_status(self):
         if self.settings.get("runtime") is None:
@@ -1822,16 +1853,8 @@ class SqlControlPlane:
                 raise
             raise ControlPlaneError("SQL authority identity binding unavailable") from None
 
-    def renew(self, *, expected, operator_key, duration=3600):
-        import math
-
-        if (
-            type(duration) not in (int, float)
-            or not math.isfinite(duration)
-            or duration <= 0
-            or duration > 86400
-        ):
-            raise ControlPlaneError("bounded authority renewal duration required")
+    def renew(self, *, expected, operator_key, duration=3600, ceiling=None):
+        _check_duration(duration, ceiling)
         operator = self._operator()
         budget = self._operator_deadline()
         try:
@@ -2216,9 +2239,12 @@ class SqlControlPlane:
         at = self.clock() if now is None else now
         if type(at) not in (int, float) or not math.isfinite(at):
             raise ControlPlaneError("eligibility clock invalid")
+        # BH_HQ_AUTHORITY_ENFORCE=false (UNSUPPORTED, dev-only): expired authority and an
+        # unbound config head are tolerated; the frame-identity comparisons below still hold.
+        enforce = authority_enforced()
         try:
             head, _state, route, slot, record, _snapshot, policies, row, _ = (
-                self._runtime_authority().read_frame_composite()
+                self._runtime_authority().read_frame_composite(enforce=enforce)
             )
             if (
                 manifest.frame_id != route.frame_id
@@ -2226,7 +2252,8 @@ class SqlControlPlane:
                 or manifest.instance_ref != route.instance_ref
                 or getattr(manifest, "beadyard_id", None) != _snapshot.beadyard_id
                 or getattr(manifest, "beadyard_id", None) != record["authority"].get("beadyard_id")
-                or not any(
+                or enforce
+                and not any(
                     policy["config_revision"] == record["authority"]["config_revision"]
                     for policy in policies.values()
                 )
@@ -2263,6 +2290,9 @@ class SqlControlPlane:
         if holder_identity is not None and incumbent_identity is not None:
             raise ControlPlaneError("hive lease identity qualifier ambiguous")
         signed = self.signed_liveness
+        # BH_HQ_AUTHORITY_ENFORCE=false (UNSUPPORTED, dev-only): skip authority expiry, config
+        # binding, cordon/admission state and emergency review; lease ownership still holds.
+        enforce = authority_enforced()
 
         try:
             (
@@ -2275,7 +2305,7 @@ class SqlControlPlane:
                 policies,
                 observation_row,
                 lease_row,
-            ) = self._runtime_authority().read_frame_composite(prefix=prefix)
+            ) = self._runtime_authority().read_frame_composite(prefix=prefix, enforce=enforce)
             if lease_row is None:
                 return "", None
             revision, body, _request_id, _request_sha = lease_row
@@ -2314,7 +2344,8 @@ class SqlControlPlane:
                 **record["authority"],
             } or guard.same_incumbent_after_rotation(envelope["authority"], route.frame_id, record)
             if (
-                (holder_identity is not None or incumbent_identity is not None)
+                enforce
+                and (holder_identity is not None or incumbent_identity is not None)
                 and emergency_review_required(record)
                 and not emergency
             ):
@@ -2336,17 +2367,20 @@ class SqlControlPlane:
                     now=self.clock(),
                     signed=signed,
                 )
+                authority_ok = not enforce or not (
+                    record["state"] != "active"
+                    or record["cordoned"]
+                    or policy is None
+                    or self.clock() >= policy["valid_until"]
+                    or policy["config_revision"] != record["authority"]["config_revision"]
+                )
                 if (
                     holder_identity != route.holder_identity
                     or not same_incarnation
                     or lease.host_id != holder_identity
                     or (not signed and lease.is_expired(self.clock()))
                     or slot != "active"
-                    or record["state"] != "active"
-                    or record["cordoned"]
-                    or policy is None
-                    or self.clock() >= policy["valid_until"]
-                    or policy["config_revision"] != record["authority"]["config_revision"]
+                    or not authority_ok
                     or not observation.verified
                     or (not observation.fresh and not emergency)
                 ):
@@ -2370,8 +2404,9 @@ class SqlControlPlane:
         deadline = time.monotonic() + self.settings["runtime"]["operation_timeout"]
         lease = HeartbeatLease.model_validate(lease)
         runtime = self._runtime_authority()
+        enforce = authority_enforced()
         try:
-            head, state, _, _ = runtime.load_state(deadline=deadline)
+            head, state, _, _ = runtime.load_state(deadline=deadline, allow_expired=not enforce)
             binding = runtime.load_frame_binding(expected_head=head, deadline=deadline)
             entry = state.get("frames", {}).get(lease.frame_id)
             selected = [
@@ -2388,7 +2423,8 @@ class SqlControlPlane:
             authority = selected[0]["authority"]
             if (
                 selected[0]["state"] == "retired"
-                or authority["candidate_expires_at"] is not None
+                or enforce
+                and authority["candidate_expires_at"] is not None
                 and self.clock() >= authority["candidate_expires_at"]
                 or (
                     lease.frame_id,

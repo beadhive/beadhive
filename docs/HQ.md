@@ -305,9 +305,160 @@ longer fast-forward to.
 Nothing is lost either way. Every pruned bead is a derived copy of a bead that still lives in
 its own hive, and `bh sync` puts the cross-hive view back in the hub where it belongs.
 
+## Authority expiry and renewal {#authority-expiry}
+
+The protected authority carrier carries an `expires_at`. When it passes, every frame is fenced
+until an operator publishes a renewal. The lapse used to be silent until it fenced. These are
+the read-only surfaces that make it visible:
+
+- `bh hq authority status` reports `expires_at`, `expires_in_s`, `expires_in`, `revision`,
+  `config_bound` (the authority's config head equals the latest head) and `expiring_soon` at the
+  top level. It works on a runtime host and with `BH_HQ_OPERATOR_SETTINGS`, on the SQL and Git
+  backends, and still reports once the authority has expired.
+- `bh hq authority check` (floor from `BH_HQ_AUTHORITY_MIN_REMAINING`, e.g. `6h`) exits
+  non-zero, with the exact renew command, when the authority is expired, not bound to the
+  latest config head, or has less than that floor left. It exits 0 when healthy. Use it in
+  scripts and as the release-upgrade preflight.
+- `bh work claim|check|submit|merge`, `bh plan file` and the start of every validation gate print
+  one stderr `WARN` line (time remaining and the renew command) when expiry is inside the lead
+  time. Nothing is printed outside it, and a warning never fails a command.
+- `bh doctor` reports an `HQ authority expiry` section: WARN inside the lead time, FAIL when
+  expired or config-unbound.
+
+The lead time is the `BH_HQ_AUTHORITY_WARN_WITHIN` environment variable (duration such as
+`90m`, `24h`, `2d`; default `24h`). It is deliberately not a fleet or host key: a fleet edit moves
+the HQ config head and a new host key breaks older readers of a shared HOST file.
+
+### Renewing from an operator host (for example the laptop) {#authority-laptop-renew}
+
+A released `bh` builds its control plane from the running host's `host.yaml`. An operator host
+whose `host.yaml` has no `hq.sql.authority_writer` binds it from a file instead, with
+`BH_HQ_OPERATOR_SETTINGS=<file>` on `bh hq authority renew|grant|observe|bind-beadyard|status|check`
+and `bh host release-upgrade plan|apply|check`. The file is JSON or YAML:
+
+```json
+{
+  "hq": {
+    "sql": {
+      "reader": {"host": "hq.example.net", "port": 3306, "database": "beadhive_hq",
+                 "user": "reader", "tls_mode": "required", "server_name": "hq.example.net",
+                 "ca_file": "/abs/path/ca.crt",
+                 "credential": {"config_path": "/abs/fnox.toml", "profile": "hq", "key": "READER"}},
+      "authority_writer": {"host": "hq.example.net", "port": 3306, "database": "beadhive_hq_runtime",
+                           "user": "authority_writer", "tls_mode": "required",
+                           "server_name": "hq.example.net", "ca_file": "/abs/path/ca.crt",
+                           "credential": {"config_path": "/abs/fnox.toml", "profile": "hq", "key": "WRITER"}},
+      "runtime": null,
+      "runtime_backend_identity": "<pinned>", "runtime_generation": "<pinned>",
+      "runtime_operator_public_key": "ssh-ed25519 AAAA..."
+    }
+  }
+}
+```
+
+Credentials stay references (fnox config path, profile and key); the file holds no secret. It is
+refused with an error naming the key when `hq.sql.runtime` is set or `hq.sql.authority_writer` is
+missing, so it cannot make a frame an authority writer. Renewal:
+
+```sh
+BH_HQ_OPERATOR_SETTINGS=settings.json bh hq authority status      # note `revision`
+BH_HQ_OPERATOR_SETTINGS=settings.json bh hq authority renew \
+  --expected-revision <revision> --operator-key <key> --duration 86400 --confirm
+```
+
+## UNSUPPORTED: disabling HQ authority enforcement {#unsupported-disabling-hq-authority-enforcement}
+
+> **UNSUPPORTED — dev/prototype instances only.** Do not set this on a production executor.
+
+`BH_HQ_AUTHORITY_ENFORCE=false` turns off HQ runtime-authority enforcement for every `bh`
+process that has it in its environment. Unset, empty, or `true` keeps today's fail-closed
+behavior. Any other value is an error, never a fallback: `bh` exits with status 2.
+
+**What stops being enforced on that host:**
+
+- authority expiry, both the signed runtime authority and the candidate grant;
+- the config binding, so a config head that the authority does not cross-reference is
+  tolerated;
+- the authority-derived eligibility predicates, which become satisfied-with-warning:
+  `authority_available`, `admitted_active`, `not_cordoned`,
+  `reviewed_admission_or_emergency`, and the desired-state halves of
+  `current_frame_incarnation`, `beadyard_binding`, `release_matches`, `conformance_pass`
+  and `capabilities_match_admission`;
+- in hive-lease ownership reads: admission state, cordon, and per-hive policy validity.
+
+**What is unchanged:**
+
+- signatures, the replay floor, and the principal-to-incarnation route;
+- the frame-manifest-to-own-lease identity checks;
+- the heartbeat, which follows `BH_FRAME_HEARTBEAT`;
+- hive-lease holder and lease expiry, renewal through the receiver, and validation.
+
+**Trust delta.** With enforcement off, the frame accepts work with no valid operator
+authority. Cordon, release pins, caps and expiry are not enforced there, so the frame is
+**self-asserted**. The scope is one host and one process environment, never the fleet. The
+operator key still never touches the frame.
+
+**How to set it.** It is an environment variable, like `BH_FRAME_HEARTBEAT` and
+`BH_HQ_SQL_LIVENESS`. It needs no fleet-config publish and no `host.yaml` change:
+
+- The host schema rejects unknown keys, and pre-0.22.x readers (the 0.21.3 heartbeat sender)
+  share the HOST file, so a `host.yaml` key would break them.
+- A fleet key would itself need an authority-bound publish.
+
+Set it in the systemd unit environment of **every** `bh` process on that host: the host
+daemon, the frame bridge, and the heartbeat. A `host.yaml` key (`hq.authority.enforce`) may
+replace the variable once no pre-0.22.x reader shares a HOST file. That is a follow-up, not
+part of this switch.
+
+**How it shows up.** While it is disabled:
+
+- every `bh` command, the host daemon and the frame bridge print one stderr banner: "HQ
+  authority enforcement DISABLED on this host — unsupported, dev/prototype only";
+- `bh doctor` lists a WARN;
+- `bh hq authority status` includes `"enforcement": "disabled"` (otherwise `"enabled"`);
+- `bh host eligible` marks each waived predicate `waived`, and its `--json` output carries
+  `"enforcement": "disabled"` and a `"waived"` list.
+
+**Re-enable before admitting new executors.** The operator owns turning enforcement back on
+(unset the variable on every executor) **before the three new executor frames join**. On a
+four-executor fleet, enforcement must be on everywhere before admission. This is the same
+gate as [hive-writer partitioning ADR](design/hive-writer-partitioning-adr.md#binding-conditions)
+binding conditions 13 (no single-executor escape survives admission of another executor) and
+18 (state and work travel together). It precedes outline task O8 (enroll and admit the three
+new executor frames). This switch does not itself gate on O8.
+
 ## See also
 
 - [HUB](HUB.md) — the derived per-host cross-hive aggregate, and its contract.
 - [CONFIGURATION — Fleet + host config](CONFIGURATION.md#fleet-host) — how `fleet.yaml` merges
   with a host's own config, the override allowlist, `--scope`, and the flat-config migration.
 - [CONTROL-PLANE](CONTROL-PLANE.md) — `bh hub intake`, the fleet-wide untriaged-intake inbox.
+
+## Authority duration ceiling
+
+`bh hq authority renew --duration <seconds|7d|36h>` signs an authority that stays valid for
+that long. `--duration` defaults to 3600 s (1 h) so every renewal is an explicit lifetime
+choice; renew prints the resulting `expires_at`. Use `--duration 7d` for laptop-off operation.
+
+The signing side refuses a duration above a configurable **ceiling**. The default is 7 days
+(`AUTHORITY_MAX_DURATION_DEFAULT_S` = 604800) and there is **no hard maximum**: the operator
+may set any positive, finite ceiling. The same ceiling applies to the SQL and Git backends and
+to Git fleet-config publication. Resolution order, first match wins:
+
+1. `--max-duration` on `bh hq authority renew` (pending: adding a CLI parameter to the published
+   `hq.authority` operation needs a wire-catalog decision; the resolver already accepts it)
+2. `hq.sql.authority_max_duration_s` in the operator settings file (read only through
+   `--operator-settings`; it is never a frame or fleet key)
+3. env `BH_HQ_AUTHORITY_MAX_DURATION`
+4. the 7 day default
+
+A duration above the ceiling is refused with the ceiling and its source in the message.
+Frame verifiers (`verified_state_at`, `validate_state`) enforce each signed `expires_at` and
+have no maximum, so no frame change is needed; they accept 7 d and 30 d authorities and fence
+after expiry.
+
+Trust delta: revocation latency is unchanged. Cordon, retire and emergency actions are
+operator-signed republications and take effect at once. What grows is the window in which a
+stolen or forgotten authority stays valid with no operator action: up to the configured
+ceiling instead of 24 h, for all executors at once because one authority row covers the fleet.
+The operator owns that choice explicitly.

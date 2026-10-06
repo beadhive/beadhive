@@ -11,6 +11,8 @@ from pathlib import Path
 
 from . import hosts
 from .host_heartbeat_core import VerifiedObservation
+from .hq_authority_enforce import AuthorityEnforcementError
+from .hq_authority_enforce import enforced as authority_enforced
 
 
 class EligibilityError(ValueError):
@@ -41,11 +43,31 @@ class EligibilityFacts:
     available: bool = True
     at: float | None = None
     heartbeat_advisory: bool = False
+    # BH_HQ_AUTHORITY_ENFORCE=false (UNSUPPORTED, dev-only, bh-6pqul): authority-derived
+    # predicates are satisfied-with-warning; identity and heartbeat predicates are not.
+    authority_waived: bool = False
+
+
+# Predicates whose failure ``BH_HQ_AUTHORITY_ENFORCE=false`` waives. Each is either wholly
+# authority-derived or is re-evaluated below with only its authority-derived conjunct dropped.
+AUTHORITY_PREDICATES = (
+    "authority_available",
+    "admitted_active",
+    "not_cordoned",
+    "reviewed_admission_or_emergency",
+    "current_frame_incarnation",
+    "beadyard_binding",
+    "release_matches",
+    "conformance_pass",
+    "capabilities_match_admission",
+)
 
 
 @dataclass(frozen=True)
 class EligibilityDecision:
     predicates: tuple[tuple[str, bool], ...]
+    waived: tuple[str, ...] = ()
+    enforcement_disabled: bool = False
 
     @property
     def allowed(self):
@@ -56,11 +78,58 @@ class EligibilityDecision:
         return ", ".join(name for name, value in self.predicates if not value) or "eligible"
 
     def as_dict(self):
-        return {
+        payload = {
             "eligible": self.allowed,
             "predicates": dict(self.predicates),
             "reason": self.reason,
         }
+        if self.enforcement_disabled:
+            payload["enforcement"] = "disabled"
+            payload["waived"] = list(self.waived)
+        return payload
+
+
+def _waive_authority(frame, facts, caps, predicates):
+    """Re-evaluate authority-derived predicates without their desired/authority conjuncts.
+
+    Only used when ``BH_HQ_AUTHORITY_ENFORCE=false``. Identity comparisons between the frame
+    manifest and its own signed lease are kept; comparisons against the operator's desired
+    state, grant or policy are dropped. Returns the relaxed predicates and the waived names.
+    """
+    lease = facts.observation.lease
+    relaxed = {
+        "authority_available": True,
+        "admitted_active": True,
+        "not_cordoned": True,
+        "reviewed_admission_or_emergency": True,
+        "current_frame_incarnation": lease is not None
+        and lease.frame_id == frame.frame_id
+        and lease.holderIdentity == frame.host_id
+        and lease.instance_ref == frame.instance_ref,
+        "beadyard_binding": lease is not None and frame.beadyard_id == lease.beadyard_id,
+        "release_matches": lease is not None
+        and frame.release is not None
+        and lease.release.model_dump() == frame.release.model_dump(),
+        "conformance_pass": lease is not None
+        and lease.conformance.status == "conformant"
+        and all(check.status != "fail" for check in lease.conformance.checks),
+        "capabilities_match_admission": bool(caps),
+    }
+    result, waived = [], []
+    for name, value in predicates:
+        if not value and name in AUTHORITY_PREDICATES and relaxed[name]:
+            value = True
+            waived.append(name)
+        result.append((name, value))
+    if waived:
+        from .hq_authority_enforce import ENFORCE_ENV
+
+        print(
+            f"⚠ {ENFORCE_ENV}=false: frame {frame.frame_id} authority predicates waived "
+            f"({', '.join(waived)}) — UNSUPPORTED, not enforced",
+            file=sys.stderr,
+        )
+    return tuple(result), tuple(waived)
 
 
 def eligible(frame: hosts.HostManifest, hive: dict, facts: EligibilityFacts) -> EligibilityDecision:
@@ -143,7 +212,7 @@ def eligible(frame: hosts.HostManifest, hive: dict, facts: EligibilityFacts) -> 
         from .frame_emergency import audit
 
         audit("eligibility-use-attempt", record, prefix=hive.get("prefix"))
-    return EligibilityDecision(
+    decision = EligibilityDecision(
         (
             ("authority_available", facts.available),
             (
@@ -198,6 +267,10 @@ def eligible(frame: hosts.HostManifest, hive: dict, facts: EligibilityFacts) -> 
             ("dispatch_enabled", facts.dispatch_enabled is True),
         )
     )
+    if not facts.authority_waived:
+        return decision
+    predicates, waived_authority = _waive_authority(frame, facts, caps, decision.predicates)
+    return EligibilityDecision(predicates, waived_authority, enforcement_disabled=True)
 
 
 def load_facts(frame, *, hq_dir, cfg=None, at=None):
@@ -207,16 +280,26 @@ def load_facts(frame, *, hq_dir, cfg=None, at=None):
 
     settings = cfg if cfg is not None else config.load_host()
     enabled = settings.get("host", {}).get("dispatch", {}).get("enabled", True)
+    # Parsed before any read: an invalid value errors rather than silently enforcing.
+    waived = not authority_enforced()
     if at is not None and (type(at) not in (int, float) or not math.isfinite(at)):
         return EligibilityFacts(VerifiedObservation("invalid-clock"), {}, enabled, False)
     try:
         plane = control_plane(hq_dir)
         _revision, desired, observation = plane.read_eligibility(frame, now=at)
         return EligibilityFacts(
-            observation, desired, enabled, True, at, heartbeat_mode() == "advisory"
+            observation, desired, enabled, True, at, heartbeat_mode() == "advisory", waived
         )
+    except AuthorityEnforcementError:
+        raise
     except (ValueError, OSError, RuntimeError):
-        return EligibilityFacts(VerifiedObservation("authority-unavailable"), {}, enabled, False)
+        return EligibilityFacts(
+            VerifiedObservation("authority-unavailable"),
+            {},
+            enabled,
+            False,
+            authority_waived=waived,
+        )
 
 
 def decision_for(host_id, hive=None, *, hq_dir=None, cfg=None, at=None):
@@ -459,6 +542,9 @@ def incumbent_primary(hive="", *, cfg=None, hive_dir=None):
 
 
 def require_intake(hive="", *, cfg=None, hive_dir=None):
+    from .hq_authority_expiry import warn_if_expiring
+
+    warn_if_expiring()
     decision = require_local(hive, cfg=cfg, hive_dir=hive_dir)
     if decision is not None:
         _prefix, identity, lease = authoritative_primary(hive, cfg=cfg, hive_dir=hive_dir)

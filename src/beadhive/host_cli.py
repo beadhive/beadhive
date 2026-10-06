@@ -1962,10 +1962,11 @@ def release_upgrade_cmd(
     admitted at a new epoch and principal; fresh signed evidence on the new digest
     is required before it is eligible again, and its hive lease renews unchanged.
     """
-    from .hq_control_plane import SqlControlPlane, control_plane
+    from .hq_control_plane import SqlControlPlane
+    from .hq_operator_settings import select_plane
 
     try:
-        plane = control_plane()
+        plane = select_plane()
         if not isinstance(plane, SqlControlPlane):
             raise ValueError("release-upgrade requires the protected SQL control plane")
         result = plane.release_upgrade(
@@ -2201,13 +2202,18 @@ def eligible_cmd(
         payload["eligible"] = payload["eligible"] and held
         if not held:
             payload["reason"] += ", current_hive_lease_holder"
+    # BH_HQ_AUTHORITY_ENFORCE=false (UNSUPPORTED, bh-6pqul) marks each waived predicate.
+    waived = set(payload.get("waived", ()))
     if as_json:
         typer.echo(json.dumps(payload))
     else:
         typer.echo(
             render_table(
                 [
-                    {"predicate": key, "result": "pass" if value else "fail"}
+                    {
+                        "predicate": key,
+                        "result": "waived" if key in waived else "pass" if value else "fail",
+                    }
                     for key, value in payload["predicates"].items()
                 ],
                 (("predicate", "PREDICATE"), ("result", "RESULT")),

@@ -570,7 +570,7 @@ class SqlRuntimeAuthority:
         except Exception:
             raise SqlRuntimeError("fresh hive lease reread unavailable") from None
 
-    def read_frame_composite(self, *, prefix: str | None = None, deadline=None):
+    def read_frame_composite(self, *, prefix: str | None = None, deadline=None, enforce=True):
         """Read current config, grant, observer projection and optional hive lease together.
 
         The caller separately applies candidate/holder eligibility to these
@@ -580,6 +580,12 @@ class SqlRuntimeAuthority:
         With ``hq.sql.liveness: signed`` the observation slot is instead the newest
         verified heartbeat from the frame's own inbox (:func:`newest_signed_heartbeat`),
         in the same 6-tuple shape, and the public-observation reread fence is skipped.
+
+        ``enforce=False`` (``BH_HQ_AUTHORITY_ENFORCE=false``, UNSUPPORTED, dev-only) accepts
+        expired signed authority and a config head that the authority does not cross-reference:
+        the latest committed config is read, the signed policy projection is not compared to it,
+        and the config fence pins the head actually read. Signatures, the replay floor, the
+        principal route and the incarnation match are verified exactly as when enforcing.
         """
         signed = signed_liveness(self.settings)
         connection, deadline = self._open(deadline=deadline)
@@ -599,7 +605,9 @@ class SqlRuntimeAuthority:
                 cursor.execute("START TRANSACTION")
                 cursor.execute("SELECT DOLT_HASHOF('HEAD')")
                 head = cursor.fetchone()[0]
-                state, crossref, policies = self.verified_state_at(cursor, head, deadline=deadline)
+                state, crossref, policies = self.verified_state_at(
+                    cursor, head, deadline=deadline, allow_expired=not enforce
+                )
                 cursor.execute(
                     "SELECT principal,frame_id,holder_identity,instance_ref,epoch,"
                     "inbox_table,signer_fingerprint FROM hq_principal_registry AS OF %s "
@@ -628,12 +636,17 @@ class SqlRuntimeAuthority:
                 if len(matches) != 1 or matches[0][1]["state"] == "retired":
                     raise SqlRuntimeError("frame composite incarnation unavailable")
                 slot, record = matches[0]
-                snapshot = self.load_config_at(cursor, crossref, deadline=deadline)
-                projected = project_hive_policies(
-                    snapshot, valid_until=state["expires_at"], now=self.clock()
-                )
-                if projected != policies:
-                    raise SqlRuntimeError("frame composite policy differs from canonical catalog")
+                if enforce:
+                    snapshot = self.load_config_at(cursor, crossref, deadline=deadline)
+                    projected = project_hive_policies(
+                        snapshot, valid_until=state["expires_at"], now=self.clock()
+                    )
+                    if projected != policies:
+                        raise SqlRuntimeError(
+                            "frame composite policy differs from canonical catalog"
+                        )
+                else:
+                    snapshot = self.load_latest_config_at(cursor, deadline=deadline)
                 if signed:
                     # Signed liveness: this frame's own inbox (route-derived identifier,
                     # never sender-named), verified at read time. No receiver projection.
@@ -667,7 +680,9 @@ class SqlRuntimeAuthority:
                 if time.monotonic() >= deadline:
                     raise SqlRuntimeError("frame composite deadline exceeded")
             connection.rollback()
-            self.fresh_config_head_fence(crossref[2], deadline=deadline)
+            self.fresh_config_head_fence(
+                crossref[2] if enforce else snapshot.commit_revision, deadline=deadline
+            )
             self.fresh_runtime_head_fence(head, deadline=deadline)
             if not signed:
                 self.fresh_public_observation_fence(route, observation, deadline=deadline)
@@ -681,7 +696,7 @@ class SqlRuntimeAuthority:
         finally:
             connection.close()
 
-    def load_state(self, *, deadline=None):
+    def load_state(self, *, deadline=None, allow_expired=False):
         """Return (authority commit, validated state, exact config cross-reference)."""
         connection, deadline = self._open(deadline=deadline)
         try:
@@ -709,7 +724,9 @@ class SqlRuntimeAuthority:
                 execute("START TRANSACTION")
                 execute("SELECT DOLT_HASHOF('HEAD')")
                 head = cursor.fetchone()[0]
-                state, crossref, policies = self.verified_state_at(cursor, head, deadline=deadline)
+                state, crossref, policies = self.verified_state_at(
+                    cursor, head, deadline=deadline, allow_expired=allow_expired
+                )
             connection.rollback()
             return head, state, crossref, policies
         except SqlRuntimeError:
