@@ -13,6 +13,12 @@ design evidence, not provisioning instructions. The separate config/runtime sche
 inbox grants, and trusted receiver described in the amendment replace those proposed shapes.
 The binding still requires final qualification and a separate deployment handoff.
 
+**Amendment (accepted by the operator, 2026-10-05):**
+[hive-writer-partitioning-adr.md](hive-writer-partitioning-adr.md) retires the trusted receiver
+in `bh-v0k3i`. Placement moves to a director credential, and liveness to server-stamped
+per-incarnation session and evidence rows. "Identical eligibility semantics" becomes
+"identical predicates, different evidence carriers". Its `bh-v0k3i` table lists what stands.
+
 ## Context and proposed decision
 
 Frame membership needs an authoritative configuration and admission store plus frequent signed
