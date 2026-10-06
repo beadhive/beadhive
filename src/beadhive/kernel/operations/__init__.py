@@ -167,7 +167,7 @@ hq clone|auto:boolean:o
 hq init|dry_run:boolean:o,auto:boolean:o,create:boolean:o
 hq intake|
 hq migrate|to:string:r,dry_run:boolean:o,confirm:boolean:o,intent:string:o,mirror_journal:string:o,operator_key:string:o,suspension_artifact:string:o,suspension_signature:string:o,expected_sql_revision:string:o,expected_git_revision:string:o
-hq placement|action:string:r,prefix:string:o,frame:string:o,expected:string:o,epoch:integer:o,tenure:integer:o,confirm:boolean:o,operator_settings:string:o
+hq placement|action:string:r,prefix:string:o,frame:string:o,expected:string:o,epoch:integer:o,tenure:integer:o,confirm:boolean:o,operator_settings:string:o,failover_after:string:o,executor_floor:string:o
 hq prune-aggregate|dry_run:boolean:o,confirm:boolean:o
 hq push|dry_run:boolean:o
 hq restore|list_only:boolean:o,from_dir:string:o,level:string:o,dry_run:boolean:o,confirm:boolean:o

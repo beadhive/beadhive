@@ -68,6 +68,7 @@ __all__ = [
     "DEFAULT_TENURE_S",
     "PLACEMENT_DOMAIN",
     "PLACEMENT_TABLE",
+    "POLICY_WRITES",
     "PROTECTED_TABLES",
     "SERIALIZATION_FAILURE",
     "CAUSE_DOMAIN",
@@ -118,8 +119,12 @@ SERIALIZATION_FAILURE = 1213
 #: Default tenure stamped into a director-written lease: the receiver's own 24 h bound. Expiry
 #: is a failover hint, never a write gate (bh-12hev); a receiver-mode reader still treats an
 #: elapsed lease as no holder, so on a Φ3 rollback the receiver's renewal keeps it current.
-#: Configurable per call; the per-role ``failover_after`` lives on the row in M8c (bh-4biq8).
+#: Configurable per call. The per-role ``failover_after`` lives beside the row (M8c, bh-4biq8):
+#: :mod:`beadhive.failover_policy`.
 DEFAULT_TENURE_S = 86400.0
+#: The director's only other write surface: the failover policy beside the placement row
+#: (bh-4biq8). It tunes when the director itself acts, never who may write a hive.
+POLICY_WRITES = frozenset({"INSERT", "UPDATE", "DELETE"})
 
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _PREFIX = re.compile(r"[a-z][a-z0-9-]*")
@@ -130,12 +135,18 @@ _MAX_ROW_BYTES = 65536
 def _schema_tables() -> frozenset[str]:
     from .hq_sql_runtime_schema import (
         COMMITTED_SCHEMA,
+        FAILOVER_POLICY_SCHEMA,
         LIVENESS_POLICY_SCHEMA,
         PROTECTED_LIVE_SCHEMA,
     )
 
     names = set()
-    for statement in (*COMMITTED_SCHEMA, *PROTECTED_LIVE_SCHEMA, *LIVENESS_POLICY_SCHEMA):
+    for statement in (
+        *COMMITTED_SCHEMA,
+        *PROTECTED_LIVE_SCHEMA,
+        *LIVENESS_POLICY_SCHEMA,
+        *FAILOVER_POLICY_SCHEMA,
+    ):
         match = re.match(r"CREATE TABLE (\w+)", statement)
         if match:
             names.add(match.group(1))
@@ -452,11 +463,14 @@ def place_cas(
     authority: Mapping,
     expected_revision: str,
     cause: str | None = None,
+    failover_after: Mapping[str, int | None] | None = None,
 ) -> PlacementRecord:
     """Move `prefix`'s placement row to `lease` iff it is still at `expected_revision`.
 
     `cause` (``failover`` / ``planned``) rides in the same UPDATE as the row's ``request_id``
     (:func:`cause_token`); ``None`` (a release) writes a random one, which reads as unknown.
+    `failover_after` (``{role: seconds | None}``) also sets the hive's failover policy in the
+    same transaction (:func:`beadhive.failover_policy.apply_changes`; refused, never clamped).
 
     One transaction: read the row, check it is the expected one and that the epoch rule holds
     (a placement raises the epoch; a release keeps it as a tombstone), then the single guarded
@@ -499,6 +513,14 @@ def place_cas(
                     f"placement must raise the epoch (row at {current.lease.epoch}, "
                     f"asked {lease.epoch})"
                 )
+            if failover_after:
+                from .failover_policy import FailoverPolicyError, apply_changes
+
+                try:
+                    apply_changes(cursor, prefix, failover_after)
+                except FailoverPolicyError as exc:
+                    _rollback(connection)
+                    raise PlacementError(str(exc)) from None
             matched = cursor.execute(
                 f"UPDATE {PLACEMENT_TABLE} SET revision=%s,lease_json=%s,request_id=%s,"
                 "request_sha256=%s WHERE prefix=%s AND revision=%s",
@@ -544,6 +566,8 @@ class Survey:
     placements: Mapping[str, PlacementRecord]
     invalid: Mapping[str, str]
     observed: object = None
+    #: The validated failover policy (:class:`beadhive.failover_policy.FailoverPolicy`).
+    failover: object = None
 
 
 class SqlPlacementDirector:
@@ -607,18 +631,22 @@ class SqlPlacementDirector:
     def survey(self, observe=None) -> Survey:
         """Every placement row plus the operator-signed state, in ONE verified read-only
         transaction. `observe(cursor, head, state)` runs inside the same transaction (the
-        failover loop reads session staleness there); its result is :attr:`Survey.observed`."""
+        failover loop reads session staleness there); its result is :attr:`Survey.observed`.
+        The failover policy is read in the same transaction (:attr:`Survey.failover`)."""
+        from .failover_policy import read_policy
+
         connection = self._open()
         try:
             with connection.cursor() as cursor:
                 self._identity(cursor)
                 state, policies = self._verified(cursor)
                 placements, invalid = read_rows(cursor)
+                failover = read_policy(cursor)
                 observed = None
                 if observe is not None:
                     cursor.execute("SELECT DOLT_HASHOF('HEAD')")
                     observed = observe(cursor, cursor.fetchone()[0], state)
-            return Survey(state, policies, placements, invalid, observed)
+            return Survey(state, policies, placements, invalid, observed, failover)
         except PlacementError:
             raise
         except Exception:  # noqa: BLE001 - authority/transport failures never leak details
@@ -658,8 +686,10 @@ class SqlPlacementDirector:
         tenure_s: float = DEFAULT_TENURE_S,
         at: float | None = None,
         cause: str = CAUSE_PLANNED,
+        failover_after: Mapping[str, int | None] | None = None,
     ) -> PlacementRecord:
-        """Place `frame_id` on `prefix` at `epoch` (default: the row's epoch + 1).
+        """Place `frame_id` on `prefix` at `epoch` (default: the row's epoch + 1), and set the
+        hive's `failover_after` overrides in the same transaction when given.
 
         `cause` defaults to ``planned`` (an operator handoff: the adopting frame reclaims
         nothing). Only the director's failover loop passes ``failover``
@@ -701,12 +731,72 @@ class SqlPlacementDirector:
                 authority=identity,
                 expected_revision=expected_revision,
                 cause=cause,
+                failover_after=failover_after,
             )
         except PlacementError:
             raise
         except Exception:  # noqa: BLE001 - authority/transport failures never leak details
             _rollback(connection)
             raise PlacementError(f"verified placement for {prefix} unavailable") from None
+        finally:
+            connection.close()
+
+    def failover_policy(self, scope: str | None = None, changes: Mapping | None = None):
+        """The validated failover policy (read-only; :mod:`beadhive.failover_policy`). With
+        `changes`, the policy as it WOULD load after them for `scope` — refused, never clamped,
+        exactly as :meth:`set_failover_policy` would refuse — writing nothing."""
+        from .failover_policy import FLEET_SCOPE, FailoverPolicyError, plan_changes, read_policy
+
+        connection = self._open()
+        try:
+            with connection.cursor() as cursor:
+                self._identity(cursor)
+                cursor.execute("START TRANSACTION")
+                if changes:
+                    return plan_changes(cursor, scope or FLEET_SCOPE, changes)
+                return read_policy(cursor)
+        except FailoverPolicyError as exc:
+            raise PlacementError(str(exc)) from None
+        except PlacementError:
+            raise
+        except Exception:  # noqa: BLE001 - transport failures never leak details
+            raise PlacementError("failover policy read unavailable") from None
+        finally:
+            _rollback(connection)
+            connection.close()
+
+    def set_failover_policy(self, scope: str, changes: Mapping[str, int | None]):
+        """Set (``seconds``) or clear (``None``) `scope`'s settings in one transaction;
+        refused, never clamped, when a value would be refused on load. Returns the policy as
+        it now loads. Never retried: a lost or unknown commit is reported; re-read and decide."""
+        from .failover_policy import FailoverPolicyError, apply_changes
+
+        connection = self._open()
+        committing = False
+        try:
+            with connection.cursor() as cursor:
+                self._identity(cursor)
+                cursor.execute("START TRANSACTION")
+                policy = apply_changes(cursor, scope, changes)
+            committing = True
+            connection.commit()
+            return policy
+        except FailoverPolicyError as exc:
+            _rollback(connection)
+            raise PlacementError(str(exc)) from None
+        except PlacementError:
+            _rollback(connection)
+            raise
+        except Exception as exc:  # noqa: BLE001 - classified below; driver text never surfaces
+            _rollback(connection)
+            if _serialization_failure(exc):
+                raise PlacementLost(scope, "", "1213 serialization failure") from None
+            if committing:
+                raise PlacementError(
+                    "failover policy commit acknowledgment unknown; read it back "
+                    "(`bh hq placement policy`) before deciding again"
+                ) from None
+            raise PlacementError("failover policy write unavailable; nothing written") from None
         finally:
             connection.close()
 
@@ -828,6 +918,7 @@ def check_grants(
     """Violations of the placement grant shape for one principal's ``SHOW GRANTS`` lines.
 
     ``role="director"``: must hold UPDATE on ``<database>.hq_live_hive_leases``; may hold
+    INSERT/UPDATE/DELETE on ``<database>.hq_live_failover_policy`` (bh-4biq8); may hold
     SELECT anywhere; holds no other write right anywhere and no grant option.
 
     ``role="frame"``: holds no write right on any protected HQ table, the database or the
@@ -861,16 +952,29 @@ def check_grants(
                 and writes == {"UPDATE"}
             ):
                 can_update = True
+            elif (
+                grant.database == database
+                and grant.table == _policy_table()
+                and writes <= POLICY_WRITES
+            ):
+                pass
             else:
                 problems.append(
                     f"director holds {sorted(writes)} on {scope}; only UPDATE on "
-                    f"{database}.{PLACEMENT_TABLE} is allowed"
+                    f"{database}.{PLACEMENT_TABLE} (and INSERT/UPDATE/DELETE on "
+                    f"{database}.{_policy_table()}) is allowed"
                 )
         elif grant.table in PROTECTED_TABLES or grant.table not in allowed:
             problems.append(f"frame holds {sorted(writes)} on {scope}")
     if role == "director" and not can_update:
         problems.append(f"director lacks UPDATE on {database}.{PLACEMENT_TABLE}")
     return problems
+
+
+def _policy_table() -> str:
+    from .hq_sql_runtime_schema import FAILOVER_POLICY_TABLE
+
+    return FAILOVER_POLICY_TABLE
 
 
 _TRIGGER_DML = re.compile(r"\b(INSERT|UPDATE|DELETE|REPLACE|CALL)\b", re.IGNORECASE)

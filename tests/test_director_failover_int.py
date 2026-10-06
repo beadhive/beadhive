@@ -287,3 +287,45 @@ def test_a_frame_without_a_session_table_never_fails_over(server):
         clock.t += 20
         assert loop.tick() == []
     assert hq_placement_ops.show(director, "ah")["frame_id"] == "frame-a"
+
+
+def test_the_loop_uses_each_hives_failover_after_and_never_clamps_a_refused_row(server):
+    """bh-4biq8: per-hive ``failover_after`` from HQ data. ``ah`` carries 45 min (set in its
+    placement CAS) and fails over then; ``bh`` carries 1000 s, written raw below the 45 min
+    floor, so it is refused — never clamped to the floor — and the 60 min default applies."""
+    from beadhive.failover_policy import provision_statements
+
+    for statement in provision_statements(
+        {"placement_writer": {"user": "director", "database": DB}}
+    ):
+        server.sql(statement.replace("'<host>'", "'%'"))
+    director = server.director()
+    _seed(server, "ah", 1)
+    _seed(server, "bh", 1)
+    rev = hq_placement_ops.show(director, "ah")["revision"]
+    hq_placement_ops.place(
+        director, "ah", frame="frame-a", expected=rev, confirm=True,
+        failover_after={"executor": 2700},
+    )  # fmt: skip
+    rev = hq_placement_ops.show(director, "bh")["revision"]
+    hq_placement_ops.place(director, "bh", frame="frame-a", expected=rev, confirm=True)
+    server.sql("INSERT INTO hq_live_failover_policy VALUES ('bh','executor',1000)")
+    shown = hq_placement_ops.policy(director, "bh")["policy"]
+    assert shown["effective"]["executor"] == 3600.0
+    assert any("bh executor=1000 refused" in r for r in shown["refusals"])
+    server.renew("fa", 9000)
+    clock = SimpleNamespace(t=0.0)
+    loop = build_loop(
+        DaemonFailoverConfig(enabled=True, interval_seconds=60),
+        hq_mode="dolt-server",
+        director=director,
+        clock=lambda: clock.t,
+    )
+    first = {}
+    while clock.t < 3600 + 240 and len(first) < 2:
+        clock.t += 60
+        server.renew("fb", 2)
+        for result in loop.tick():
+            first.setdefault(result.prefix, (clock.t, result.outcome))
+    assert first["ah"][1] == "placed" and 2700 < first["ah"][0] <= 2700 + 120
+    assert first["bh"][1] == "placed" and 3600 < first["bh"][0] <= 3600 + 120

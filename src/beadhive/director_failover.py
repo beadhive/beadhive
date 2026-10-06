@@ -21,9 +21,12 @@ HQ and runs ticks from a long-lived process:
 * **git HQ is refused** at startup (:class:`~beadhive.failover_observer.FailoverDirector`):
   unattended failover needs server-stamped session rows.
 
-``failover_after`` is the per-role code default for an executor (the longest; frames carry no
-role in the signed authority). The per-role, per-hive override on the placement row is M8c
-(``bh-4biq8``).
+**``failover_after``** (M8c, ``bh-4biq8``) is read per hive and role from HQ data in the same
+verified survey (:mod:`beadhive.failover_policy`): the hive's override, else the fleet row,
+else the code default (executor 60 min, transient 30 min). A refused row (below the floor or a
+hard bound) is never clamped: it is logged once and its default applies. The signed authority
+carries no role, so every frame resolves to :data:`DEFAULT_ROLE` (executor, the longest window)
+unless a ``role_for`` port says otherwise.
 """
 
 from __future__ import annotations
@@ -126,11 +129,26 @@ class SqlFailoverPorts:
     """:class:`FailoverDirector`'s four ports over one :class:`SqlPlacementDirector`."""
 
     director: SqlPlacementDirector
-    failover_after: Callable[[str], float | None] = field(
-        default=lambda _frame: failover_after_for(DEFAULT_ROLE)
-    )
+    #: ``failover_after`` for a monitor key: ``(prefix, frame)`` or a bare frame id. Defaults
+    #: to :meth:`policy_failover_after` over the survey's failover policy.
+    failover_after: Callable[[Any], float | None] | None = None
+    #: The frame's role. The signed authority carries none: executor (the longest window).
+    role_for: Callable[[str], str] = field(default=lambda _frame: DEFAULT_ROLE)
     table_for: Callable[[str, int], str] = session_table
     survey: Survey | None = None
+    refusals: tuple[str, ...] = ()
+
+    def after(self, key: Any) -> float | None:
+        """``failover_after`` seconds for a monitor key (``None``: never fails over)."""
+        return (self.failover_after or self.policy_failover_after)(key)
+
+    def policy_failover_after(self, key: Any) -> float | None:
+        prefix, frame = key if isinstance(key, tuple) else ("", key)
+        role = self.role_for(frame)
+        policy = getattr(self.survey, "failover", None)
+        if policy is None:
+            return failover_after_for(role)
+        return policy.failover_after(prefix, role)
 
     def staleness(self) -> Mapping[str, float | None]:
         self.survey = None  # a failed survey leaves nothing to place from
@@ -139,7 +157,15 @@ class SqlFailoverPorts:
                 cursor, head, state, table_for=self.table_for
             )
         )
+        self._report(getattr(self.survey, "failover", None))
         return self.survey.observed or {}
+
+    def _report(self, policy) -> None:
+        refusals = tuple(r.describe() for r in getattr(policy, "refusals", ()))
+        if refusals != self.refusals:
+            for line in refusals:
+                _log.warning("director failover policy: %s; its default applies", line)
+            self.refusals = refusals
 
     def placements(self) -> Mapping[str, object]:
         return dict(self.survey.placements) if self.survey is not None else {}
@@ -151,7 +177,7 @@ class SqlFailoverPorts:
         observed: Mapping[str, float | None] = survey.observed or {}
         candidates = []
         for frame, age in observed.items():
-            after = self.failover_after(frame)
+            after = self.after((prefix, frame))
             if frame == dead or age is None or after is None or age >= after:
                 continue
             try:
@@ -270,7 +296,7 @@ def build_loop(
     try:
         failover = FailoverDirector(
             hq_mode=mode,
-            monitor=FailoverMonitor(ports.failover_after, clock=clock),
+            monitor=FailoverMonitor(ports.after, clock=clock),
             staleness=ports.staleness,
             placements=ports.placements,
             successor=ports.successor,

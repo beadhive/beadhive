@@ -228,3 +228,81 @@ def test_conformance_reads_real_grants_and_triggers(server):
     assert any("trigger escalate" in p and "hq_live_hive_leases" in p for p in problems)
     assert any(p.startswith("'director'@'%'") and "INSERT" in p for p in problems)
     assert any(p.startswith("'frame_a'@'%'") and "UPDATE" in p for p in problems)
+
+
+def _provision_failover_policy(server):
+    """The bh-4biq8 provisioning: the policy table beside placement and the director's grant."""
+    from beadhive.failover_policy import provision_statements
+
+    root = server.connect()
+    try:
+        with root.cursor() as cursor:
+            for statement in provision_statements(
+                {"placement_writer": {"user": "director", "database": DB}}
+            ):
+                cursor.execute(statement.replace("'<host>'", "'%'"))
+            cursor.execute(f"GRANT SELECT ON {DB}.hq_live_failover_policy TO 'frame_a'@'%'")
+    finally:
+        root.close()
+
+
+def test_failover_after_rides_the_placement_cas_and_the_row_stays_receiver_shaped(server):
+    """bh-4biq8: ``place_cas(failover_after=...)`` writes the hive's override in the CAS's own
+    transaction; a refused value writes neither; the placement row keeps the strict five-field
+    receiver carrier (Φ3 rollback); frames read the policy and cannot write it; the director's
+    extra grant is conformant."""
+    import pymysql
+
+    from beadhive.failover_policy import read_policy
+    from beadhive.hq_sql_placement import PlacementError
+
+    _provision_failover_policy(server)
+    seeded = server.revision()
+    conn = server.connect(DIRECTOR, autocommit=False)
+    try:
+        with pytest.raises(PlacementError, match="below the executor floor"):
+            place_cas(
+                conn,
+                prefix="ah",
+                lease=_held("host-a", 22),
+                authority=AUTHORITY,
+                expected_revision=seeded,
+                failover_after={"executor": 1200},
+            )
+        assert server.revision() == seeded  # refused: the placement did not move either
+        placed = place_cas(
+            conn,
+            prefix="ah",
+            lease=_held("host-a", 22),
+            authority=AUTHORITY,
+            expected_revision=seeded,
+            failover_after={"executor": 4500, "transient": 2400},
+        )
+    finally:
+        conn.close()
+    frame = server.connect(FRAME, autocommit=False)
+    try:
+        row = read_row(frame, "ah")  # the strict reader the receiver shares
+        assert row.revision == placed.revision and row.lease.epoch == 22
+        with frame.cursor() as cursor:
+            cursor.execute("START TRANSACTION")
+            policy = read_policy(cursor)
+            assert policy.failover_after("ah", "executor") == 4500.0
+            assert policy.failover_after("ah", "transient") == 2400.0
+            with pytest.raises(pymysql.err.OperationalError):
+                cursor.execute("UPDATE hq_live_failover_policy SET seconds=60 WHERE scope='ah'")
+    finally:
+        frame.close()
+    root = server.connect()
+    try:
+        with root.cursor() as cursor:
+            # Not committed: the runtime database's `hq_live_*` ignore rule covers it, so the
+            # policy never lands in a Dolt commit (no head move, no authority renewal).
+            cursor.execute("SELECT COUNT(*) FROM dolt_log")
+            commits = cursor.fetchone()[0]
+            frames = {"'frame_a'@'%'": (INBOX,)}
+            assert conformance(cursor, database=DB, director="'director'@'%'", frames=frames) == []
+            cursor.execute("SELECT COUNT(*) FROM dolt_log")
+            assert cursor.fetchone()[0] == commits
+    finally:
+        root.close()

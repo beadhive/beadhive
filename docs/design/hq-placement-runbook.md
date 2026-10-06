@@ -57,6 +57,10 @@ CAS can only lose a race. Invalid values are refused, never clamped.
 | `bh hq placement place <prefix> --frame <F> --expected-revision <R> [--epoch <N>] [--tenure <T>] [--confirm]` | Places frame `F` on the hive at epoch `N`. |
 | `bh hq placement release <prefix> --expected-revision <R> [--confirm]` | Releases the hive to a tombstone at the placed epoch (planned handoff). |
 | `bh hq placement check` | Grant and trigger conformance for the director and every frame account. Exits 1 on any finding. |
+| `bh hq placement policy [<prefix>] [--failover-after <ROLE=D,...>] [--executor-floor <D>] [--confirm]` | Shows or sets the failover policy (section 6). |
+
+`place` also takes `--failover-after executor=75m,transient=40m`, which sets the hive's overrides
+in the same transaction as the CAS. A refused value refuses the placement too.
 
 ### Seed a never-placed hive
 
@@ -113,8 +117,8 @@ The check reads `mysql.user`, `SHOW GRANTS` and `information_schema.triggers`. I
 account that can read other accounts' grants (`authority_writer` when the file carries one).
 It reports:
 
-- a director account with any write right other than `UPDATE` on `hq_live_hive_leases`, or
-  without that right;
+- a director account with any write right other than `UPDATE` on `hq_live_hive_leases` and
+  `INSERT`/`UPDATE`/`DELETE` on `hq_live_failover_policy`, or without the first;
 - a frame account (from `hq_principal_registry`) with any write right outside its own inbox and
   session tables;
 - any trigger on a protected table, any trigger body that names one, and any trigger on a
@@ -140,8 +144,8 @@ every placement row, and each active frame's session staleness by the HQ server'
 greater than `failover_after`. The window resets on an unreachable HQ and on any gap between
 observations longer than `failover_after / 2`, so keep `interval_seconds` well below that.
 
-- **`failover_after`** is the executor default (60 min) for every frame. The per-role, per-hive
-  value on the placement row arrives with `bh-4biq8`.
+- **`failover_after`** is read per hive and role in the same verified read (section 6). The
+  signed authority carries no role, so every frame counts as an executor (the longest window).
 - **Successor.** The freshest other frame that is active, uncordoned, bound to the hive's policy
   and observed live. Ties break by frame id. If there is none, nothing is placed. Spreading
   placement across executors is `bh-zncqo`.
@@ -178,3 +182,64 @@ reclaims the dead frame's claims in its bump commit (`bh.reclaim.failover.mode`,
   adopt stops at its data check once the bump has landed, so it never reclaims twice.
 - **The adopt reads the cause from the row it resumes.** If the row moves between that read and
   the adopt, the adopt refuses before anything is written. Re-run it.
+
+## 6. Failover policy (`failover_after` and the executor floor)
+
+`failover_after` is per role and per hive, and it lives in HQ data (ADR §4, `bh-4biq8`). It is
+never a `host.yaml` or fleet-config key, so changing it never moves the config head and never
+needs an authority renewal.
+
+| Setting | Default | Scope |
+|---|---|---|
+| `executor` | 60 min | a hive, or `*` (the fleet default) |
+| `transient` | 30 min | a hive, or `*` |
+| `executor_floor` | 45 min | `*` only |
+| `viewer` | never placed, never fails over | not settable |
+
+The values live in `hq_live_failover_policy`, one row per `(scope, setting)` with whole
+`seconds`. They do not live in the placement row itself. Every older reader of
+`hq_live_hive_leases` is strict: the receiver and 0.22.x readers refuse any extra key in
+`lease_json`, compare `authority` by equality, and insert the row by position. A separate table
+keeps the placement row byte-for-byte what they expect, so a Φ3 rollback still works. The
+`hq_live_` name keeps the table under the runtime database's `dolt_ignore` rule, so it never
+lands in a commit.
+
+### Provision it once
+
+```sh
+bh hq placement policy    # on an unprovisioned HQ, prints "provision": {"statements": [...]}
+```
+
+Run the printed `CREATE TABLE` and `GRANT` with the server-local provisioning account, replacing
+`<host>` with the director account's host. Until the table exists, the code defaults apply.
+
+### Show and set
+
+```sh
+bh hq placement policy                                     # the fleet defaults and the floor
+bh hq placement policy <prefix>                            # one hive's effective values
+bh hq placement policy <prefix> --failover-after executor=75m          # preview
+bh hq placement policy <prefix> --failover-after executor=75m --confirm
+bh hq placement policy <prefix> --failover-after executor=default --confirm   # clear
+bh hq placement policy --executor-floor 40m --confirm      # the fleet floor
+```
+
+### Validation: refused, never clamped
+
+Values are checked when they are written and again whenever they are loaded. The hard bounds
+come from `bh-cvk70` E20:
+
+- at least the bd lease TTL plus reclaim grace (15 min);
+- at least 2 × (session TTL + sync interval). The session TTL is `hq_liveness_policy`'s
+  (default 5 min) and the sync interval is 0 in `dolt-server` HQ, so this bound is 10 min.
+
+An `executor` value below the executor floor is refused. A floor below either hard bound is
+refused, and so is a floor above the executor default it governs. A floor at or above the hard
+bounds but below 35.4 min is accepted with a warning: 35.4 min is the false-stale stretch
+measured live (`bh-cvk70` E17).
+
+A write that would be refused, or that would make an existing row refused (for example, raising
+the floor above a hive's executor override), writes nothing. A row that is refused on load is
+never clamped. The loop logs it once at `WARNING` and uses the default: the fleet `*` row, or
+else the code default. `bh doctor` shows refusals and warnings under **Host Daemon** on a host
+whose failover loop is enabled.

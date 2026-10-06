@@ -1014,14 +1014,43 @@ def _data_host_daemon(cfg) -> dict:
             "detail": "host.daemon.enabled=false",
         }
     try:
-        return {"configured": True, **daemon_supervisor.daemon_service_status().payload()}
+        data = {"configured": True, **daemon_supervisor.daemon_service_status().payload()}
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
-        return {
+        data = {
             "configured": True,
             "state": "diagnostics-unavailable",
             "healthy": False,
             "detail": str(exc),
         }
+    failover = _data_failover_policy(cfg)
+    if failover is not None:
+        data["failover_policy"] = failover
+    return data
+
+
+def _data_failover_policy(cfg) -> dict | None:
+    """The director failover loop's ``failover_after`` policy (bh-4biq8), only on a host that
+    runs the loop (``host.daemon.failover.enabled``; off by default, so silent elsewhere).
+
+    Reads HQ data through the director credential, as the loop does: refused rows (below the
+    executor floor or a hard bound — never clamped) and floor warnings, so an operator sees
+    which default the loop fell back to."""
+    failover = (((cfg or {}).get("host") or {}).get("daemon") or {}).get("failover") or {}
+    if not isinstance(failover, dict) or failover.get("enabled") is not True:
+        return None
+    from . import hq_operator_settings
+    from .failover_policy import effective
+
+    try:
+        director = hq_operator_settings.placement_director(failover.get("operator_settings"))
+        policy = director.failover_policy()
+    except (OSError, RuntimeError, ValueError) as exc:
+        return {"state": "unavailable", "detail": str(exc)}
+    return {
+        "state": "refused" if policy.refusals else "ok",
+        **policy.as_dict(),
+        "effective": effective(policy),
+    }
 
 
 def _render_host_daemon(d: dict) -> None:
@@ -1031,6 +1060,7 @@ def _render_host_daemon(d: dict) -> None:
         return
     if d["state"] == "diagnostics-unavailable":
         typer.echo(f"  ! diagnostics unavailable: {d['detail']}")
+        _render_failover_policy(d.get("failover_policy"))
         return
     glyph = "✓" if d["healthy"] else "!"
     readiness = d["readiness"]
@@ -1047,6 +1077,25 @@ def _render_host_daemon(d: dict) -> None:
     typer.echo(f"    status: {d['guidance']['status']}")
     typer.echo(f"    logs: {d['guidance']['logs']}")
     typer.echo(f"    control: {d['guidance']['control']}")
+    _render_failover_policy(d.get("failover_policy"))
+
+
+def _render_failover_policy(d: dict | None) -> None:
+    if d is None:
+        return
+    if d["state"] == "unavailable":
+        typer.echo(f"  ! failover policy unavailable: {d['detail']}")
+        return
+    glyph = "✓" if d["state"] == "ok" and not d["warnings"] else "!"
+    after = ", ".join(f"{role} {secs:g} s" for role, secs in d["defaults"].items())
+    typer.echo(
+        f"  {glyph} failover policy: {after}; executor floor {d['executor_floor_s']:g} s"
+        + ("" if d["provisioned"] else " (policy table not provisioned: code defaults)")
+    )
+    for line in d["refusals"]:
+        typer.echo(f"    ✗ {line}; its default applies")
+    for line in d["warnings"]:
+        typer.echo(f"    ! {line}")
 
 
 # ---- per-group auth section (bh-4y0r.3) -------------------------------------
