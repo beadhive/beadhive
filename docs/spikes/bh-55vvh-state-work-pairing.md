@@ -5,7 +5,9 @@
 **Feeds decision on:** binding condition 18 and deferred condition 17 of
 [hive-writer-partitioning-adr.md](../design/hive-writer-partitioning-adr.md). It gates M14b
 (`bh-cqvj6`), M3 (`bh-4z2rx`) and C/O8.
-**Status:** proposed. **Operator acceptance: pending** (see [Operator acceptance](#operator-acceptance)).
+**Status:** **accepted** (operator, 2026-10-06), with the answers and the global rule recorded
+under [Operator acceptance](#operator-acceptance). Every behaviour below is **opt-in and off by
+default**, and every default is configurable (D8, D11).
 
 ## Question
 
@@ -27,7 +29,7 @@ lets failover scope its revert so that live agents on surviving frames keep thei
 
 It is **not** asking whether bd's leases can be made to travel (they cannot, `bh-cvk70` E19),
 whether the fence or adopt change (they do not), or how forwarders re-lease on a new primary.
-The last is measured by O9; see open question Q5.
+The operator assigned re-lease to M12, and O9 measures it (Q5).
 
 ## Method
 
@@ -153,13 +155,16 @@ real remote was touched.
 
 Condition 18 is implementable without a bd seam. It needs:
 
-- **per-(bead, frame) custom backup refs on `origin`**;
+- **per-(bead, frame) custom backup refs on the backup remote** (`origin` by default);
 - **ordering at write time, not publish time.** A work-asserting state write happens only after
   its backup has landed. Every publisher (managed push, bd auto-push, the primary publishing a
   forwarder's write) then publishes only state whose work is already on the remote (E2, E3);
 - **a claim-frame state dimension written in hive data**, which turns condition 17 into a
   data-scoped table instead of a blanket revert;
-- **backup presence on `origin` as the single test of recoverability.**
+- **backup presence on the backup remote as the single test of recoverability.**
+
+Per the operator's global rule, all of it ships opt-in and off by default, behind configurable
+switches held in the hive's own data (D8, D11).
 
 The residual non-atomicity is one-sided by construction. Work can land without its state, but
 never the reverse, and work without state is surfaced and resumable rather than lost.
@@ -170,8 +175,11 @@ never the reverse, and work without state is surfaced and resumable rather than 
 
 - **Name.** `refs/bh/backup/<bead-id>/<frame-id>`. `<frame-id>` is the placement frame id the
   principal registry names, with characters outside `[A-Za-z0-9._-]` mapped to `-`.
-- **Remote.** The hive's `config.push_remote` (normally `origin`; the fork for external hives,
-  never `upstream`; `worktree_git.py:296-306`).
+- **Remote.** Configurable as `pairing.remote` (Q2). Empty, the default, means the hive's
+  `config.push_remote`: normally `origin`, the fork for external hives, never `upstream`
+  (`worktree_git.py:296-306`). A separate private backup remote is supported by naming it
+  there. Every frame that pairs must then hold push access to it. Every push is preceded by
+  the secret scan (D7).
 - **Value.** The worktree branch tip (`wt/bead/<type>/<id>`, or `wt/batch/<group>` for a batch,
   `wt/bead/epic/<id>` for a container).
 - **Single writer.** One ref per (bead, frame), and only the frame named in the ref writes it.
@@ -228,10 +236,16 @@ Which writes assert work, and which do not:
 | Comments, notes, labels | No | Unaffected. |
 
 **D2a. Checkpoints.** The recoverable unit is whatever the backup holds, so checkpoints bound
-lost work. Push the backup:
+lost work. With pairing enabled, push the backup:
 
-- from the worker-lease heartbeat tick when the worktree HEAD differs from `backup_sha`,
-  rate-limited to once per 5 min per bead (E9);
+- **on every commit** (`pairing.checkpoint.on_commit`, default `true`). A `post-commit` job
+  calls `bh work backup --from-hook`. The job is installed through the hive's hook entrypoint:
+  a lefthook job in this repo, never a direct `.git/hooks` write (git-hooks-entrypoint ADR).
+  It returns at once, pushes in the background, and is a no-op when pairing is off;
+- **on a timer**, from the worker-lease heartbeat tick when the worktree HEAD differs from
+  `backup_sha` (`pairing.checkpoint.interval_seconds`, default `300`; `0` turns the timer off,
+  E9). The timer catches commits whose hook did not run, such as `--no-verify` or a failed
+  push;
 - on `bh work check` and after `bh work refine`;
 - from a new explicit `bh work backup <id>`.
 
@@ -269,9 +283,10 @@ The outcomes:
 - If the fetch or `ls-remote` fails, the result is **unknown**. Unknown never rewinds: the
   reclaim step is skipped for that run and retried by the next adopt re-run, or by the sweep
   in D5b.
-- In strict mode (open question Q3), a backup with commits not signed by an allowed fleet
-  signer is treated as **suspect**: it is kept and marked for the operator, and is neither
-  auto-resumed nor rewound.
+- With `pairing.resume.signature_policy = strict` (default `off`; the operator turns it on
+  once the four executors are admitted, Q3), a backup with commits not signed by an allowed
+  fleet signer is **suspect**. It is retained and marked for the operator, and is never
+  auto-resumed or rewound. With `off`, signatures are not checked.
 
 For a submitted bead the test is stronger: the recorded submitted sha (`review` reason
 `submitted <sha>`) must be reachable from that bead's backup ref. Anything else is a
@@ -293,6 +308,16 @@ For a submitted bead the test is stronger: the recorded submitted sha (`review` 
   already write any bead row (ADR §3), so the record adds no new trust. D9 covers its abuse.
 
 ### D5. Reclaim decision table (resolves condition 17)
+
+**Configuration.** Reclaim has its own switches, separate from pairing and both off by
+default: `reclaim.failover.mode` for D5a and `reclaim.sweep.mode` for D5b. Each takes one of:
+
+- `off` — nothing is computed or written. Today's behaviour, with the D10 fallback;
+- `report` — compute the plan and report it in the adopt or sweep output, and write nothing;
+- `apply` — write the outcomes below.
+
+`apply` also requires `pairing.enabled`. Without backups and `claim-frame`, every row would
+fall into "unbacked" or "unattributed".
 
 **D5a. Failover adopt (primary death).** This runs in the bump commit, on failover adopts only
 (condition 7), and exactly once (`bh-jbb6r` E5). It covers rows whose `claim-frame` equals the
@@ -361,11 +386,14 @@ done on another executor.
   after each land, and `bh doctor --fix` runs it as a sweep.
 - **Rewound.** Row 3 deletes empty refs in the same adopt.
 - **Superseded by a resumed holder.** Once the new holder's bead is closed as merged, every
-  other frame's ref for that bead is deleted after a **14 d grace**. A refined history is not
-  an ancestor, so ancestry alone cannot prove coverage.
-- **Closed without landing** (rejected, wontfix): deleted after **30 d**.
-- **Orphan work** (bead open, no marker): never auto-deleted. `pairing_audit` reports it, and
-  a custodian removes it after operator confirmation.
+  other frame's ref for that bead is deleted after a grace period:
+  `pairing.retention.superseded_days`, default **14**. A refined history is not an ancestor,
+  so ancestry alone cannot prove coverage.
+- **Closed without landing** (rejected, wontfix): deleted after
+  `pairing.retention.unlanded_days`, default **30**.
+- **Orphan work** (bead open, no marker): `pairing.retention.orphan_days`, default **0**,
+  which means never auto-deleted. `pairing_audit` reports it, and a custodian removes it after
+  operator confirmation.
 
 **Storage.**
 - The refs hold only bead-branch commits, which are small next to `refs/dolt/data`.
@@ -378,10 +406,24 @@ done on another executor.
 - **Exposure.** Backups make in-progress work readable to anyone who can read the remote; on a
   public repo, `ls-remote` lists them. That is a real delta for public hives when the review
   gate is local, because today nothing is pushed before merge. Checkpoints can also publish a
-  secret committed by mistake before review. Mitigation: the backup push runs the same
-  secret-scan the `main-gate` pre-push runs, on the commits new to the remote. This is a bh
-  call, since hooks do not fire for bh's internal push of a sha to a custom ref unless it is
-  invoked through lefthook. **Operator decision Q2.**
+  secret committed by mistake before review.
+
+  **Secret scan (Q2).** Before every backup push, bh runs a configurable scanner over the
+  commits new to the remote (`<remote tip>..<sha>`): `pairing.secret_scan.command`.
+
+  - **The scan is new code.** An earlier draft of this doc said the `main-gate` pre-push
+    already runs one. It does not: nothing in `lefthook.yml`, `justfile` or
+    `scripts/main-push-gate.sh` scans for secrets. M14b adds it.
+  - **The scan is bh code, not a git hook.** bh's push of a sha to a custom ref is a
+    subprocess, and hooks are not a reliable boundary for it.
+  - **Defaults.** The proposed default command is
+    `gitleaks git --no-banner --log-opts={range}`.
+    `pairing.secret_scan.enabled` defaults to `true` when pairing is on: the operator chose a
+    scanned push to `origin`.
+  - **Failure.** A finding refuses the push with its location. A missing scanner also refuses
+    the push, unless the operator sets `pairing.secret_scan.enabled = false`.
+  - **Private remote.** Hives that must not expose work point `pairing.remote` at a private
+    backup remote.
 - **Integrity.** Executors need push access to `origin` (D9). GitHub rulesets and deploy keys
   cannot scope pushes to a ref prefix. A frame able to push backups can delete or overwrite
   another frame's ref. That turns a recoverable claim into an unbacked one (lost work, a
@@ -390,29 +432,65 @@ done on another executor.
 - **Mitigations:**
   - per-frame ref segment plus CAS;
   - `pairing_audit` flags refs whose frame segment never held `claim-frame` for that bead;
-  - the resumer verifies commit signatures against the fleet's allowed signers before
-    auto-resume (strict mode, Q3);
+  - with `pairing.resume.signature_policy = strict`, the resumer verifies commit signatures
+    against the fleet's allowed signers before auto-resuming (Q3);
   - branch protection on `main` stays the integrity boundary for landed code.
 
-### D8. Dormancy: data is the switch
+### D8. Opt-in, off by default, configured in the hive's own data
 
-Pairing (P, the checkpoints and `claim-frame`) is active on a hive whose data has `bh_writer`,
-which means the hive is cut over. This is the same switch as the rest of 0.23.0
-(`bh-32379` S2), so no config key becomes a phase switch (condition 12). A hive that is not cut
-over behaves exactly as on 0.22.x. Whether to offer it earlier as an opt-in is Q1.
+**The operator's global rule (2026-10-06).** Every feature is opt-in and disabled by default,
+and every default is configurable, because there is no real-world execution data yet.
+
+**Master switches.** Each feature has one master switch whose default is off:
+
+- `pairing.enabled`, for P, the checkpoints, `claim-frame`, materialize-from-backup and
+  `pairing_audit`;
+- `reclaim.failover.mode`, for D5a;
+- `reclaim.sweep.mode`, for D5b.
+
+Sub-keys carry the operator's chosen values, such as the 5-minute timer or 14 d retention.
+They take effect only while their master switch is on.
+
+**Where it applies.** Pairing is available on **any** hive (Q1), including a hive that is not
+cut over, such as today's single-primary factory. It is not tied to `bh_writer`. Reclaim
+needs a failover adopt, so on a hive that is not cut over only `reclaim.sweep.mode` has
+anything to act on. A hive with every switch off behaves exactly as on 0.22.x.
+
+**Where the configuration lives.** It is per-hive, in the **hive's own Dolt data**, so it
+travels with the hive and every frame reads the same values from the data it already uses.
+That follows the ADR's "data is the switch" rule (`bh-32379` S2). It is deliberately not a
+`host.yaml` key or a fleet-config key:
+
+- unknown host keys broke 0.21.3 readers;
+- a fleet-config publish fences every frame until authority renewal (`bh-87l3y`, `bh-rjjjo`);
+- a per-frame value could leave frames of one hive disagreeing about the invariant.
+
+**Storage.** The values are stored as bd config rows namespaced `bh.` (for example
+`bd config set bh.pairing.enabled true`, written through a bh verb on the writer). Older bh
+ignores keys it does not know. M14b must first verify that bd's `config` table is versioned
+and travels with `main`.
+
+- If it is not, M14b adds a `bh_policy (key PK, value, set_by, set_at)` table instead. That
+  table must join the guard set, which changes the trigger count condition 9 checks
+  (currently 44). It is installed only when a hive opts in.
+- Either way, values are validated on read: unknown values are refused, never clamped, as
+  `failover_after` is (ADR §4).
+- No environment variable enables anything.
+
+**Changing a switch.** Turning a switch on or off is an ordinary, audited data write.
 
 ### D9. Trust deltas for the 4-executor fleet (O8)
 
 | # | Delta | Before (one executor) | After M14b + M3 (four executors) | Mitigation / residual |
 |---|---|---|---|---|
 | T-a | Executor git credential on the hive remote | Only push-for-`gh:*` gates needed write | **Every executor needs push** to the hive's push remote (custom refs). On GitHub that is whole-repo write. | `main` branch protection; per-frame segment; `pairing_audit`; an operator-held credential per frame, revoked at retirement. Residual: a compromised executor can delete or overwrite other frames' backups (work DoS), which is no worse than its existing ability to write any bead row under option A. |
-| T-b | Work visibility | Work stays on its frame until merge (local gate) | Checkpoints and submitted work are on the remote | Q2. Secret-scan before backup push. |
-| T-c | Resume builds on another frame's commits | Not possible | A resumed bead continues a dead frame's commits | Signature check against allowed signers (Q3); review gate unchanged. |
+| T-b | Work visibility | Work stays on its frame until merge (local gate) | With pairing on: checkpoints and submitted work are on the backup remote | The secret scan runs before every backup push (D7). `pairing.remote` can name a private remote. |
+| T-c | Resume builds on another frame's commits | Not possible | A resumed bead continues a dead frame's commits | `pairing.resume.signature_policy = strict` once the four executors are admitted (Q3). The review gate is unchanged. |
 | T-d | Who rewrites whose claims | The new primary reverts *all* `in_progress` (scenario 9) | It reverts only `claim-frame = dead primary` | The scope rests on data any forwarder can write (D4). A malicious forwarder could mislabel claims to steer a revert. That is within option A's existing trust, and `fence_audit` / `pairing_audit` detect it after the fact. |
-| T-e | New dependency on the remote at submit | Local-gate submit worked offline | Submit on a cut-over hive needs the push remote reachable | Fails closed with nothing written. The forward path already needs the LAN. A transient laptop (`xeno-mac.lan`) cannot submit offline on a cut-over hive. |
+| T-e | New dependency on the remote at submit | Local-gate submit worked offline | Submit on a hive with pairing on needs the backup remote reachable | Fails closed with nothing written. The forward path already needs the LAN. A transient laptop (`xeno-mac.lan`) cannot submit offline on a paired hive. |
 | T-f | Reclaim of non-primary frames | bd only, backup-blind | bd plus `bh fleet reclaim --frame` (director/operator) | The director credential gains no new table grants: it is an ordinary guarded bead write on the primary, through the forward path. |
 
-### D10. First-soak manual fallback (until M14b and M3 land, and through the Φ3 soak)
+### D10. Manual fallback (until M14b and M3 land, through the first soak, and whenever `reclaim.failover.mode` is not `apply`)
 
 The ADR keeps manual reclaim after a primary's death as the fallback (§4). The procedure for
 the runbook (M11), run on the new primary after the adopt lands:
@@ -437,68 +515,120 @@ the runbook (M11), run on the new primary after the adopt lands:
 
 ### D11. Paths that change, and the M14b / M3 implementation outline
 
+**Configuration keys.**
+
+- **Where they live.** Every key lives in the hive's own Dolt data as a bd config row with the
+  `bh.` prefix, for example `bh.pairing.enabled`. If bd's `config` table turns out not to travel
+  with `main`, they move to a `bh_policy` table instead (D8).
+- **Not anywhere else.** There are no `host.yaml` keys, no fleet-config keys and no
+  environment switches.
+- **Setting them.** A writer-only verb, `bh hive policy get|set|list`, with a `--hive` option.
+  The writer is the primary on a cut-over hive.
+- **Defaults.** Master switches default to off. Sub-key defaults are the operator's choices
+  and take effect only under their master switch.
+
+| Key | Type / values | Default | Used by | Meaning |
+|---|---|---|---|---|
+| `pairing.enabled` | bool | **`false`** | M14b | Master switch for P, checkpoints, `claim-frame`, materialize-from-backup and `pairing_audit` (D2–D6). |
+| `pairing.remote` | remote name | `""` (= `work.push_remote` → `origin`) | M14b | Backup remote (D1, Q2). |
+| `pairing.secret_scan.enabled` | bool | `true` | M14b | Scan the new commits before every backup push; a finding or a missing scanner refuses the push (D7). |
+| `pairing.secret_scan.command` | argv template with `{range}` | `gitleaks git --no-banner --log-opts={range}` | M14b | The scanner (D7). |
+| `pairing.checkpoint.on_commit` | bool | `true` | M14b | `post-commit` checkpoint push (D2a, Q6). |
+| `pairing.checkpoint.interval_seconds` | int ≥ 0 | `300` | M14b | Timer checkpoint on the heartbeat tick; `0` = off (D2a, Q6). |
+| `pairing.resume.signature_policy` | `off` \| `strict` | **`off`** | M14b | Signature check before auto-resume; `strict` retains unsigned backups for the operator (D3, Q3). |
+| `pairing.retention.superseded_days` | int ≥ 0 | `14` | M14b | Grace before deleting other frames' refs once a resumed bead lands (D7, Q4). |
+| `pairing.retention.unlanded_days` | int ≥ 0 | `30` | M14b | Grace after a close without landing (D7, Q4). |
+| `pairing.retention.orphan_days` | int ≥ 0 | `0` (never) | M14b | Auto-delete orphan work after N days; `0` = never (D7, Q4). |
+| `reclaim.failover.mode` | `off` \| `report` \| `apply` | **`off`** | M3 | D5a in the failover bump commit; `apply` requires `pairing.enabled`. |
+| `reclaim.sweep.mode` | `off` \| `report` \| `apply` | **`off`** | M3 | D5b `bh fleet reclaim --frame`; `apply` requires `pairing.enabled`. |
+
+Values outside a key's type are refused on read, never clamped. A refused value reads as the
+key's off state, and `bh doctor` reports it.
+
 **M14b (`bh-cqvj6`, `feat(work)`): the state/work pairing.**
 
-1. **A new `beadhive.work_backup` module** (pure policy plus a git adapter):
+1. **Policy reader.** A new `beadhive.work_pairing_policy`:
+   - a typed, validated read of the `bh.pairing.*` and `bh.reclaim.*` keys from hive data;
+   - the writer-only `bh hive policy` verb;
+   - the bd `config` travel check, with the `bh_policy` fallback (D8).
+
+   Every step below starts with `if not policy.pairing.enabled: <0.22.x behaviour>`.
+2. **A new `beadhive.work_backup` module** (pure policy plus a git adapter):
    - `backup_ref(bead, frame)`;
-   - `push_backup(entry, bead, sha, *, expected)` → `Pushed | Refused | Unreachable`, using
-     `gitref.cas` with the push remote, and refusing `upstream`;
+   - `push_backup(entry, bead, sha, *, expected)` → `Pushed | Refused | Unreachable | Leaked`.
+     It runs the configured secret scan first, then `gitref.cas` against `pairing.remote`, and
+     refuses `upstream`;
    - `fetch_backups(entry, beads)`;
-   - `recoverable(entry, bead, frame, base_ref)` → `recoverable | unbacked | unknown | suspect`
-     (D3);
-   - `reap_covered(entry, …)` (D7).
-2. **`ClaimRecord`.** Add `backup_sha` (and `frame_id`, mirroring `host_id`), defaulting to
+   - `recoverable(entry, bead, frame, base_ref, signature_policy)` →
+     `recoverable | unbacked | unknown | suspect` (D3);
+   - `reap_covered(entry, retention)` (D7).
+3. **`ClaimRecord`.** Add `backup_sha` (and `frame_id`, mirroring `host_id`), defaulting to
    empty so old records read cleanly.
-3. **Claim** (`lifecycle.claim` and `ShellWorkspace`):
+4. **Claim** (`lifecycle.claim` and `ShellWorkspace`):
    - after `claim_won`, add `workspace.record_frame(bead, frame)`, which sets
      `claim-frame` through `set_state`;
    - an already-held claim repairs a missing dimension;
    - provisioning consults backups (D6, `--from-backup`).
-4. **Resume.** Re-assert `claim-frame`, and provision from the backup when the branch is
+5. **Resume.** Re-assert `claim-frame`, and provision from the backup when the branch is
    absent.
-5. **Submit** (`impl_submit`):
+6. **Submit** (`impl_submit`):
    - insert `push_backup(S)` after `_validate_submit_checkout` and **before**
      `_open_submit_gate`;
-   - on `Refused` or `Unreachable`, exit 1 with nothing written;
+   - on anything but `Pushed`, exit 1 with nothing written;
    - keep the `gh:*` branch push as it is: it is the review transport, not the backup;
    - `submit --group` (`work_group.py:513`) pushes every member's backup first.
-6. **Merge.**
+7. **Merge.**
    - Materialize a missing local branch from the backup at the submitted sha.
    - Into a container: push the container backup, then close the child.
    - After a land: queue `reap_covered`. It only deletes refs once `origin/main` contains them,
      so it is safe before `main` is pushed.
-7. **Checkpoints.** The `localloop` step-4 heartbeat pushes rate-limited backups (D2a), as do
-   `bh work check`, `bh work refine` and the new `bh work backup <id>`.
-8. **Abandon.** If a backup with work exists, set `recovery=resumable`. Never push.
-9. **`bh doctor` `pairing_audit`.** Reports:
-   - submitted beads without a backup at their sha (violation);
-   - orphan work (info);
-   - unattributed `in_progress` beads (warn);
-   - backup refs whose frame never held `claim-frame` for that bead (warn).
-10. **Dormancy.** Every step is gated on the hive's data having `bh_writer` (D8).
+8. **Checkpoints** (D2a):
+   - a `post-commit` lefthook job, `bh work backup --from-hook`, gated on
+     `pairing.checkpoint.on_commit`;
+   - the `localloop` step-4 timer, gated on `pairing.checkpoint.interval_seconds`;
+   - `bh work check`, `bh work refine`, and the new `bh work backup <id>`.
+9. **Abandon.** If a backup with work exists, set `recovery=resumable`. Never push.
+10. **`bh doctor` `pairing_audit`.** Reports:
+    - submitted beads without a backup at their sha (violation);
+    - orphan work (info);
+    - unattributed `in_progress` beads (warn);
+    - backup refs whose frame never held `claim-frame` for that bead (warn);
+    - refused policy values (warn).
 11. **Tests:**
-    - unit tests of P's ordering with a remote that refuses or is unreachable (no state
-      written);
+    - with every key at its default, behaviour is byte-identical to 0.22.x (no push, no
+      `claim-frame`);
+    - P's ordering with a remote that refuses, is unreachable, or fails the secret scan (no
+      state written);
     - the forward path with the publisher on another frame;
     - the partial-failure rows of D2;
     - the CAS rejection of a zombie push;
-    - a real-git test of D3 on a bare remote (E10).
+    - a real-git test of D3 on a bare remote (E10), under both signature policies;
+    - `pairing.remote` set to a second bare remote.
 
 **M3 (`bh-4z2rx`): failover adopt applies D5a.**
 
-1. The adopt's step 2 takes `reclaim_plan = plan_reclaim(dead_frame, fetched_backups, head)`
-   before building the bump commit. It is pure and computed from the same head the bump starts
-   from.
-2. The bump commit applies rows 2 and 3 as guarded SQL in the same session, through the
-   existing `UPDATE` shape restricted by `claim-frame`, plus the `recovery` state and the audit
-   comment. Rows 1 and 4–6 are reported, never written.
-3. Idempotent by construction: a landed re-run stops at `bh_writer.epoch ≥ mine`, and a
+1. The adopt reads `reclaim.failover.mode` from the hive data at the remote head it adopts.
+   - `off`: unchanged; nothing is computed.
+   - `report`: compute and print the plan, and write nothing.
+   - `apply` without `pairing.enabled`: refused as `report`, with a warning.
+2. With `report` or `apply`, the adopt's step 2 takes
+   `reclaim_plan = plan_reclaim(dead_frame, fetched_backups, head, signature_policy)` before
+   building the bump commit. It is pure and computed from the same head the bump starts from.
+3. With `apply`, the bump commit applies rows 2 and 3 as guarded SQL in the same session,
+   through the existing `UPDATE` shape restricted by `claim-frame`, plus the `recovery` state
+   and the audit comment. Rows 1 and 4–6 are reported, never written.
+4. Idempotent by construction: a landed re-run stops at `bh_writer.epoch ≥ mine`, and a
    non-fast-forward retry recomputes the plan.
-4. `bh fleet reclaim --frame` (D5b) reuses `plan_reclaim` outside the bump.
-5. Re-lease (Q5): on the first failed heartbeat against a new primary, a surviving holder runs
-   `resume`'s re-acquire. M3 or M12 own it, and O9 verifies it.
-6. **Tests** (M10 fixture):
-   - three executors, primary killed: only the dead primary's claims change;
+5. `bh fleet reclaim --frame` (D5b) reuses `plan_reclaim` outside the bump, gated by
+   `reclaim.sweep.mode`.
+6. **Re-lease (Q5) is M12's job, not M3's.** The forward path re-acquires a surviving holder's
+   lease on the new primary after failover. O9 measures how bd's `heartbeat` behaves for a held
+   claim with no lease row.
+7. **Tests** (M10 fixture):
+   - with `off`, the adopt is unchanged;
+   - with `report`, the plan is printed and nothing is written;
+   - with `apply`, three executors and the primary killed: only the dead primary's claims
+     change;
    - a surviving executor's live claim is untouched;
    - a backed-up claim ends `open` plus `recovery=resumable` with its ref intact;
    - an unbacked claim is field-identical to a never-claimed bead;
@@ -507,29 +637,31 @@ the runbook (M11), run on the new primary after the adopt lands:
 
 ## Operator acceptance
 
-**Pending.** This doc proposes; it binds once the operator accepts it. The acceptance is then
-recorded here and in the ADR's M14 addendum. The open questions below need answers or
-confirmation:
+**Accepted by the operator, 2026-10-06.**
 
-- **Q1. Dormancy.** Pairing activates only on cut-over hives (D8). Should it also be an opt-in
-  for non-cut-over hives, which is the single-primary factory today, so local-gate work stops
-  being single-disk before Φ2?
-- **Q2. Exposure on public hives.** Accept that checkpoints and submitted work become readable
-  on the remote before review, with a secret scan on each backup push? Or should public hives
-  back up to a separate private remote? That would amend D1 to "the hive's backup remote,
-  defaulting to the push remote".
-- **Q3. Strict resume.** Require commit signatures from allowed fleet signers before
-  auto-resuming a backup (D3 "suspect")? This is recommended once the four executors are
-  admitted.
-- **Q4. Retention windows.** Confirm 14 d after a superseded holder lands and 30 d after a
-  close without landing. Orphan work is never auto-deleted.
-- **Q5. Re-lease on a new primary.** Surviving forwarders' claims have no lease row after a
-  failover (E8). Confirm that M3 or M12 owns an automatic re-acquire on heartbeat failure.
-  Until then, the runbook step D10.4 applies. O9 must measure bd's `heartbeat` behaviour for a
-  lease-less held claim.
-- **Q6. Checkpoint cadence.** 5 min per bead on the heartbeat tick, plus `check` and `refine`.
-  Is that granularity of lost work acceptable, or should a git `post-commit` job push on every
-  commit?
-- **Q7. The GitHub custom-ref canary.** Extend condition 11's canary to push, CAS and delete a
-  `refs/bh/backup/*` ref on the real remote, and confirm that it triggers no Actions workflow
-  and no UI branch prompt (E12).
+**Global rule.** Every default must be configurable, because there is no real-world execution
+data yet. Every feature is opt-in and disabled by default. D8 and D11 apply the rule.
+
+- **Q1. Scope: accepted as opt-in on all hives.** Pairing is available as an opt-in on hives
+  that are not cut over too, including today's single-primary factory. It is off by default
+  (D8).
+- **Q2. Exposure: accepted with a configurable remote.** The backup remote is configurable.
+  The default target is `origin`, with a secret scan on every push. A separate private backup
+  remote is supported by config (`pairing.remote`, `pairing.secret_scan.*`; D1, D7).
+- **Q3. Strict resume: accepted as a configurable policy.** Auto-resume requires commits signed
+  by a fleet signer once the four executors are admitted. The policy is
+  `pairing.resume.signature_policy = strict|off`, defaulting to `off` under the opt-in rule.
+  Under `strict`, unsigned backups are retained for the operator and never auto-resumed (D3).
+- **Q4. Retention: accepted as configurable defaults.** 14 d and 30 d, as
+  `pairing.retention.superseded_days` and `pairing.retention.unlanded_days`. Orphan work is
+  never auto-deleted: `pairing.retention.orphan_days` is configurable, and its default `0`
+  means never (D7).
+- **Q5. Re-lease: assigned to M12.** M12, the forward path, owns the automatic lease
+  re-acquire after failover. O9 measures how bd's `heartbeat` behaves for a held claim with no
+  lease row. Until then, runbook step D10.4 applies.
+- **Q6. Checkpoints: accepted.** Checkpoint on every commit plus a 5-minute timer, both
+  configurable (`pairing.checkpoint.on_commit`, `pairing.checkpoint.interval_seconds`; D2a).
+- **Q7. Canary: accepted.** Condition 11's GitHub canary is extended to push, CAS and delete a
+  `refs/bh/backup/*` ref on the real remote, and to confirm that this triggers no Actions run
+  and no UI branch prompt (E12). It runs before the first hive enables pairing against a
+  GitHub-hosted remote.
