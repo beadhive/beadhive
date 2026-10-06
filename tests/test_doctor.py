@@ -1258,6 +1258,7 @@ _DOCTOR_SECTIONS = {
     "dispatch",
     "host_daemon",
     "group_auth",
+    "authority_expiry",
     "mcp",
     "harness_plugin",
     "seats",

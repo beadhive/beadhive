@@ -769,6 +769,9 @@ def impl_merge(api, bead, hive, rm, molecule, group, override_validation="", ove
     With `--group <ids>`, lands a whole work-group: validate the shared `wt/batch/<group>` branch
     once, merge it `--no-ff` into the members' molecule as ONE bubble (per-bead commits preserved
     inside, so it stays bisectable), then close every member — release the slot either way."""
+    from .hq_authority_expiry import warn_if_expiring
+
+    warn_if_expiring()
     cfg = api.config.load()
     api.guard.guard_primary(hive, cfg=cfg, verb="work merge")
     if override_actor and not override_validation:

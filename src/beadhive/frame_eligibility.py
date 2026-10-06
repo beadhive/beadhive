@@ -459,6 +459,9 @@ def incumbent_primary(hive="", *, cfg=None, hive_dir=None):
 
 
 def require_intake(hive="", *, cfg=None, hive_dir=None):
+    from .hq_authority_expiry import warn_if_expiring
+
+    warn_if_expiring()
     decision = require_local(hive, cfg=cfg, hive_dir=hive_dir)
     if decision is not None:
         _prefix, identity, lease = authoritative_primary(hive, cfg=cfg, hive_dir=hive_dir)

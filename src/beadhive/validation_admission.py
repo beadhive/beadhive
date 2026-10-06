@@ -235,6 +235,9 @@ def host_slot(cfg: dict, entry=None, *, phase: str = "validation", root: Path | 
     admission facts are emitted through the existing telemetry surface and the authoritative
     execution/use records; no parallel scheduler state is introduced here.
     """
+    from .hq_authority_expiry import warn_if_expiring
+
+    warn_if_expiring()  # before the gate starts, so a long gate is not fenced mid-run
     slots = configured_slots(cfg, entry)
     if slots == 0:
         permit = Permit(-1, 0.0)

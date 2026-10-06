@@ -14,6 +14,9 @@ from . import validation_bypass
 
 def impl_check(api, bead, hive):
     """Resolve the target, then hold admission across its entire validation lifecycle."""
+    from .hq_authority_expiry import warn_if_expiring
+
+    warn_if_expiring()
     cfg = api.config.load()
     entry, _main, _target, _branch = api.worktree.locate(cfg, hive, bead)
     if validation_bypass.enabled(cfg, entry):
@@ -291,6 +294,9 @@ def impl__guard_fork_remote(api, entry, remote):
 
 
 def impl_submit(api, bead, as_, hive, group, override_validation="", override_actor=""):
+    from .hq_authority_expiry import warn_if_expiring
+
+    warn_if_expiring()
     cfg = api.config.load()
     api.guard.guard_primary(hive, cfg=cfg, verb="work submit")
     if override_actor and not override_validation:

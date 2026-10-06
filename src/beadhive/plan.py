@@ -864,6 +864,9 @@ def file(
     """Compile a molecule spec into a beads swarm: validate, then (unless --dry-run) create the
     epic + child issues (deps + labels, identity triplet injected) in dependency order, build the
     swarm, and open the kickoff gate (`bd gate` blocking each root + `kickoff=pending`)."""
+    from .hq_authority_expiry import warn_if_expiring
+
+    warn_if_expiring()
     cfg = config.load()
     cwd = registry.hive_dir_for(cfg, hive)
     try:
