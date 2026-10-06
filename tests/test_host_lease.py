@@ -345,8 +345,7 @@ def test_renew_if_due_makes_no_hq_round_trip_before_the_renew_interval_elapses(
     assert result is None
 
 
-def test_renew_if_due_is_retired_and_never_renews_even_when_due(hq_remote, host_a):
-    """bh-12hev: renewal is retired; a due lease is left exactly as cached."""
+def test_renew_if_due_renews_and_updates_the_local_cache_once_due(hq_remote, host_a):
     out = _adopt(hq_remote, host_a, HOST_A, ttl=600.0)
     host_lease.cache(PREFIX, out, cwd=host_a)
 
@@ -360,8 +359,10 @@ def test_renew_if_due_is_retired_and_never_renews_even_when_due(hq_remote, host_
         at=T0 + 301,
     )
 
-    assert result is None
-    assert host_lease.read_cached(PREFIX, cwd=host_a).expires_at == host_lease.now_stamp(T0 + 600)
+    assert result is not None
+    assert result.lease.expires_at == host_lease.now_stamp(T0 + 301 + 600.0)
+    cached = host_lease.read_cached(PREFIX, cwd=host_a)
+    assert cached.expires_at == host_lease.now_stamp(T0 + 301 + 600.0)
 
 
 def test_renew_if_due_is_a_noop_when_the_cache_names_no_lease(host_a):
@@ -376,15 +377,37 @@ def test_renew_if_due_is_a_noop_when_the_cache_names_another_host(hq_remote, hos
     )
 
 
-def test_renew_if_due_never_reaches_an_unreachable_hq(hq_remote, host_a, tmp_path):
-    """No round trip at all: a REAL unreachable remote is never touched and nothing is raised."""
+def test_renew_if_due_swallows_an_hq_unreachable_failure_and_logs(
+    hq_remote, host_a, tmp_path, monkeypatch
+):
+    """A REAL unreachable remote (a path that never existed) — not a mocked return code — so
+    the failure genuinely exercises gitref's subprocess-failure path."""
     out = _adopt(hq_remote, host_a, HOST_A, ttl=600.0)
     host_lease.cache(PREFIX, out, cwd=host_a)
     bogus_remote = str(tmp_path / "does-not-exist.git")
-    assert (
-        host_lease.renew_if_due(bogus_remote, PREFIX, host_id=HOST_A, cwd=host_a, at=T0 + 301)
-        is None
+
+    seen: list[tuple] = []
+
+    class _Recorder:
+        def warning(self, event, **kw):
+            seen.append((event, kw))
+
+    monkeypatch.setattr(host_lease.log, "get_logger", lambda *_a, **_k: _Recorder())
+
+    result = host_lease.renew_if_due(
+        bogus_remote,
+        PREFIX,
+        host_id=HOST_A,
+        cwd=host_a,
+        renew_interval=300.0,
+        at=T0 + 301,
     )
+
+    assert result is None
+    assert seen and seen[0][0] == "host_lease_renew_if_due_failed"
+    # the cache is UNCHANGED — a failed renewal must never fraudulently extend the expiry
+    cached = host_lease.read_cached(PREFIX, cwd=host_a)
+    assert cached.expires_at == host_lease.now_stamp(T0 + 600.0)
 
 
 def test_renew_if_due_swallows_a_lost_cas_when_another_host_already_took_over(

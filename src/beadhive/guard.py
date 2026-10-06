@@ -451,6 +451,31 @@ def writer_refusal(state) -> str:
     return _writer_refusal_text(prefix, this_frame, writer)
 
 
+def _renew_liveness_hint(prefix: str, this_host: str, cfg) -> None:
+    """Best-effort liveness renewal of a legacy hive's lease from a write-verb boundary.
+
+    Never raises: expiry never gates a write (bh-12hev), so a failed renewal is only logged."""
+    from . import host_lease, log  # lazy: keep guard import-light + cycle-free
+
+    try:
+        host_lease.renew_if_due(
+            "origin",
+            prefix,
+            host_id=this_host,
+            cwd=config.hq_dir(),  # same resolution primary_state() used to reach this lease
+            ttl=config.host_lease_ttl(cfg),
+            renew_interval=config.host_lease_renew_interval(cfg),
+        )
+    except Exception as exc:  # noqa: BLE001 - a liveness hint never refuses a write
+        log.get_logger(__name__).warning(
+            "guard_lease_liveness_renewal_failed",
+            hive_prefix=prefix,
+            host_id=this_host,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+
+
 def guard_primary(hive: str = "", *, cfg=None, verb: str = "") -> None:
     """Refuse a WRITE verb when this host is not `hive`'s primary (ADR Decision 2).
 
@@ -477,8 +502,9 @@ def guard_primary(hive: str = "", *, cfg=None, verb: str = "") -> None:
     **Cut-over hives (bh-12hev).** When the hive's data carries ``bh_writer``
     (:func:`writer_state`), the decision is "does local ``bh_writer`` name this frame?" and
     nothing else — no clock, no HQ, no frame-authority read — so an established writer keeps
-    writing while HQ is down. Every other hive takes the lease gate below, where ``expires_at``
-    is advisory (:meth:`HostLease.held_by`) and there is no renewal."""
+    writing while HQ is down, and the lease is not renewed. Every other hive takes the lease
+    gate below, where ``expires_at`` is advisory (:meth:`HostLease.held_by`) and is still
+    renewed best-effort as a liveness hint (never a reason to refuse)."""
     try:
         cut_over = writer_state(hive, cfg=cfg)
     except WriterUnreadable as exc:
@@ -510,9 +536,14 @@ def guard_primary(hive: str = "", *, cfg=None, verb: str = "") -> None:
         return  # multi-host model not in force here (see `primary_state`)
     prefix, this_host, lease = state
     if lease.held_by(this_host):
-        # Clock-free since bh-12hev: ``held_by`` names the holder, ``expires_at`` is only a
-        # failover hint, and the opportunistic renewal that used to run here is retired
-        # (``host_lease.renew_if_due`` is a documented no-op), so the allow path stays local.
+        # Clock-free since bh-12hev: ``held_by`` names the holder and ``expires_at`` is only a
+        # failover hint, so the ALLOW decision is already made. On this legacy (not cut-over)
+        # hive the lease's expiry still serves as a liveness hint until M8 placement, so refresh
+        # it opportunistically (bh-ytbb.11) — best-effort: ``renew_if_due`` swallows every
+        # failure, and anything that escapes it is swallowed here too, so a failed or skipped
+        # renewal can never turn this allow into a refusal. Renews at the un-scaled
+        # `host.lease.ttl` baseline (no manifest read on the hot path).
+        _renew_liveness_hint(prefix, this_host, cfg)
         return
 
     refusal = _not_primary(

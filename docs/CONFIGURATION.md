@@ -220,11 +220,13 @@ backup:
 # host-lease vs worker-lease vocabulary split).
 # FLEET-scoped. Per-host variation comes from that host's `role` in hosts/<host_id>.yaml, which
 # SCALES the ttl below — never a per-host override of these keys. Since 0.23.0 (bh-12hev) the
-# lease's expiry is a failover HINT only: it never stops the holder writing, and write verbs no
-# longer renew it (see docs/design/hive-writer-partitioning-adr.md §4).
+# lease's expiry never gates a write: it is a failover/liveness HINT only (see
+# docs/design/hive-writer-partitioning-adr.md §4). Legacy hives (no in-data bh_writer) still
+# renew it best-effort from write verbs and the dispatch loop, as a liveness hint until M8
+# placement — a failed renewal is logged, never refused. Cut-over hives don't renew it.
 host:
   lease:
-    renew_interval: 300                # `bh host list` shows "expiring" within this of the hint
+    renew_interval: 300                # legacy hives: renew when within this of the expiry hint
     ttl: 1800                          # seconds until the expiry hint; past it a lease is takeable
 
 # One entry per managed hive — maintained by `bh hive init` (add) + `bh label sync`.
