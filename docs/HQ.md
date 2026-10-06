@@ -315,9 +315,10 @@ the read-only surfaces that make it visible:
   `config_bound` (the authority's config head equals the latest head) and `expiring_soon` at the
   top level. It works on a runtime host and with `BH_HQ_OPERATOR_SETTINGS`, on the SQL and Git
   backends, and still reports once the authority has expired.
-- `bh hq authority check` (floor from `BH_HQ_AUTHORITY_MIN_REMAINING`, e.g. `6h`) exits non-zero, with the exact renew command, when
-  the authority is expired, not bound to the latest config head, or has less than that floor
-  left. It exits 0 when healthy. Use it in scripts and as the release-upgrade preflight.
+- `bh hq authority check` (floor from `BH_HQ_AUTHORITY_MIN_REMAINING`, e.g. `6h`) exits
+  non-zero, with the exact renew command, when the authority is expired, not bound to the
+  latest config head, or has less than that floor left. It exits 0 when healthy. Use it in
+  scripts and as the release-upgrade preflight.
 - `bh work claim|check|submit|merge`, `bh plan file` and the start of every validation gate print
   one stderr `WARN` line (time remaining and the renew command) when expiry is inside the lead
   time. Nothing is printed outside it, and a warning never fails a command.
