@@ -60,7 +60,7 @@ def _now() -> float:
     return time.time()
 
 
-def _stamp(at: float) -> str:
+def stamp(at: float) -> str:
     return datetime.fromtimestamp(at, UTC).isoformat()
 
 
@@ -105,7 +105,7 @@ def write(cached: CachedConformance, path: Path | None = None) -> Path:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     document = {
         "format": CACHE_FORMAT,
-        "measured_at": _stamp(cached.measured_at),
+        "measured_at": stamp(cached.measured_at),
         "duration_seconds": round(cached.duration_seconds, 3),
         "checks": [{"id": name, "status": status} for name, status in cached.checks],
     }
@@ -201,7 +201,7 @@ def beat_checks(
             "evidence": f"no cached conformance measurement; bound {int(max_age)}s",
         }
         return missing
-    measured = _stamp(cached.measured_at)
+    measured = stamp(cached.measured_at)
     out = {
         name: {
             "id": name,
