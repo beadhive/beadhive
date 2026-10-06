@@ -483,6 +483,39 @@ backlog that outruns the `authority_writer` `operation_timeout` drains over reru
 result reports `"complete": false` until it has. Nothing prunes on its own; schedule the
 verb if you want it periodic.
 
+## Session and evidence rows (dolt-server HQ, 0.23) {#session-rows}
+
+0.23 replaces the signed heartbeat on `dolt-server` HQ with two operator-provisioned,
+single-row tables per frame incarnation (ADR §5, bh-owqdg). The data is the switch: a reader
+uses them exactly when both tables exist for the incarnation, and reads the signed inbox (or
+the receiver's observation) otherwise. There is no config key. git HQ is unchanged.
+
+- `frame_<principal>_<epoch>_session` is liveness. The frame renews it with one `UPDATE`
+  per tick (`python -m beadhive.heartbeat_sender renew`, timer `beadhive-session-renew`),
+  and an operator trigger stamps `renewed_at = UTC_TIMESTAMP(6)`.
+- `frame_<principal>_<epoch>_evidence` is conformance. The conformance job writes it after
+  each run, and `measured_at` is server-stamped the same way.
+- `hq_liveness_policy` holds the operator's `session_ttl_s` (default 300) and `evidence_ttl_s`
+  (default 900), committed with the `frame_*` ignore rule. Values outside 1 s to 7 days are
+  refused, never clamped.
+
+Eligibility is one statement joining the grant, both rows, the policy and placement, keeping
+the predicates `authenticated_fresh_heartbeat`, `conformance_pass`, `release_matches` and
+`current_hive_lease_holder`. A claim records the admitted `renewed_at`, `measured_at` and
+evidence digest. On a switched frame `BH_FRAME_HEARTBEAT` is logged as ignored.
+
+Provision with `beadhive.hq_sql_session_provision` as the server-local operator:
+`provision_liveness_schema` once, then `provision_incarnation` per incarnation. It refuses
+unless the ignore rule is committed first, creates `'<principal>'@'<frame address>'` with
+`REQUIRE SSL`, and runs `check_provisioning`. That check refuses a wildcard or TLS-optional
+account for the principal, extra frame write rights, a trigger that does more than stamp
+time, and any hive database on the HQ server.
+
+During Φ3 an incarnation has both tables and its inbox. The registry still names the inbox,
+so 0.22.x readers and the receiver keep working, and the sender dual-writes signed beats.
+An incarnation provisioned without an inbox is registered under its session table name, which
+0.22.x readers refuse: provision session-only incarnations only once no 0.22.x reader remains.
+
 ## Authority duration ceiling
 
 `bh hq authority renew --duration <seconds|7d|36h>` signs an authority that stays valid for
