@@ -123,3 +123,70 @@ def test_the_verb_is_hidden_from_help_and_validates_its_action():
     assert bogus.exit_code == 2 and "unknown action" in bogus.output
     misplaced = runner.invoke(app, ["hive", "fence", "status", "bh", "--others-published"], env=env)
     assert misplaced.exit_code == 2 and "cutover only" in misplaced.output
+
+
+# ---- bh doctor (the writer-fence section and its warnings) ----------------------------------
+
+
+def _audit(**kw):
+    from beadhive.fence_audit import FenceAudit
+
+    base = dict(ref="origin/main", head="h" * 32, cut_over=True, writer_frame="a", writer_epoch=7)
+    return FenceAudit(**{**base, "live_epoch": 7, **kw})
+
+
+def test_doctor_reports_the_fence_audit_and_trigger_count_for_a_cut_over_hive(
+    monkeypatch, tmp_path, capsys
+):
+    from beadhive import doctor, fence_data, host_adopt
+    from beadhive.fence_data import GuardReport
+
+    node = fence_data.FenceNode(engine=None)  # type: ignore[arg-type] - status is stubbed
+    monkeypatch.setattr(host_adopt, "fence_data_for", lambda prefix, path: node)
+    monkeypatch.setattr(doctor.guard, "primary_state", lambda **kw: None)
+    seen = {}
+
+    def fake_status(n, *, prefix, placement=None, ref=None):
+        seen["args"] = (n, prefix, placement, ref)
+        return fc.FenceStatus(
+            prefix,
+            cut_over=True,
+            writer=WriterRow("a", 7),
+            record=fc.CutoverRecord(prefix, 7, "a", "c" * 32, "r" * 40),
+            audit=_audit(stale_mark_count=2, placement_epoch=8, placement_frame="b"),
+            guard=GuardReport(present=frozenset(fs.trigger_names()[:43]), procedure=True),
+        )
+
+    monkeypatch.setattr(fc, "status", fake_status)
+    doctor._fence_status_cache.clear()
+    status = doctor._writer_fence_status({}, {"prefix": "bh"}, tmp_path)
+    assert seen["args"] == (node, "bh", None, None)
+    assert status["epoch"] == 7 and status["trigger_count"] == 43
+    assert status["cutover"]["ref_sha"] == "r" * 40
+    audit = status["fence_audit"]
+    assert (audit["stale_marks"], audit["epoch_regressed"], audit["placement_ahead"]) == (
+        2,
+        False,
+        True,
+    )
+    warns = doctor._writer_fence_warnings(status)
+    assert any("stale_marks: 2" in w for w in warns)
+    assert any("guard: 43 of 44" in w for w in warns)
+    assert not any("placement_ahead" in w for w in warns)  # the adopt-incomplete warning owns it
+    assert doctor._writer_fence_status({}, {"prefix": "bh"}, tmp_path) is status  # one read
+
+    doctor._render_writer_fence([status])
+    out = capsys.readouterr().out
+    assert "# Writer fence" in out and "triggers        43 of 44" in out
+    assert "stale_marks=2" in out and "placement_ahead=True" in out
+
+
+def test_doctor_is_silent_for_a_legacy_hive(monkeypatch, tmp_path, capsys):
+    from beadhive import doctor, host_adopt
+
+    monkeypatch.setattr(host_adopt, "fence_data_for", lambda prefix, path: None)
+    doctor._fence_status_cache.clear()
+    assert doctor._writer_fence_status({}, {"prefix": "bh"}, tmp_path) is None
+    assert doctor._writer_fence_warnings(None) == []
+    doctor._render_writer_fence([])
+    assert capsys.readouterr().out == ""

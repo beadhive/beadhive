@@ -125,39 +125,10 @@ def impl_status(hive_id: str, *, as_json: bool) -> None:
     if as_json:
         _emit(payload)
     else:
-        for line in render_status(payload):
+        for line in fence_cutover.render_status(payload):
             typer.echo(line)
     if payload["findings"]:
         raise typer.Exit(1)
-
-
-def render_status(d: dict) -> list[str]:
-    """Text lines for one :meth:`beadhive.fence_cutover.FenceStatus.as_dict` payload."""
-    hive = d["hive"]
-    if not d["cut_over"]:
-        out = [f"{hive}: not cut over (legacy fence: lease + refs/bh/epoch)"]
-    else:
-        rec = d.get("cutover") or {}
-        audit = d.get("fence_audit") or {}
-        out = [
-            f"{hive}: cut over — bh_writer {d['writer']}@{d['epoch']}",
-            f"  cutover         epoch {rec.get('epoch', '?')}, commit "
-            f"{rec.get('commit') or '?'}, recorded ref {rec.get('ref_sha') or '?'}",
-            f"  fence_audit     stale_marks={audit.get('stale_marks', '?')} "
-            f"epoch_regressed={audit.get('epoch_regressed', '?')} "
-            f"placement_ahead={audit.get('placement_ahead', '?')} "
-            f"late_writes={len(audit.get('late_writes') or [])}",
-            f"  triggers        {d['trigger_count']} of {d['trigger_expected']} on this node",
-            f"  identity        {(d.get('ident') or {}).get('frame') or 'unprovisioned'}",
-        ]
-    if d.get("ref_sha") is not None:
-        ref = d.get("ref") or {}
-        out.append(
-            f"  refs/bh/epoch   {d['ref_sha'] or 'absent'}"
-            + (f" ({ref.get('host_id')}@{ref.get('epoch')}, seq {ref.get('seq')})" if ref else "")
-        )
-    out += [f"  ✗ {f}" for f in d.get("findings") or []]
-    return out
 
 
 def impl_rollback(hive_id: str, *, as_json: bool) -> None:

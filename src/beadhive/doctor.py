@@ -1862,6 +1862,86 @@ def _adopt_incomplete_warning(cfg, entry, path: Path) -> str | None:
     return report.describe(host_id=this_host) if report is not None else None
 
 
+#: ``(prefix, hive dir) -> (monotonic stamp, status)``: the writer-fence section and its warnings
+#: read one status per doctor run, not two (each costs a fetch plus a handful of reads).
+_FENCE_STATUS_TTL = 30.0
+_fence_status_cache: dict[tuple[str, str], tuple[float, dict | None]] = {}
+
+
+def _writer_fence_status(cfg, entry, path: Path) -> dict | None:
+    """The writer-fence status of a hive whose LOCAL data is cut over (bh-oarxp, ADR §2
+    "Detection"): ``{hive, epoch, cutover {commit, ref sha}, fence_audit (stale_marks,
+    epoch_regressed, placement_ahead, late writes), trigger_count}`` — the same payload
+    ``bh hive fence status`` prints. ``None`` for every legacy hive (the data switch,
+    :func:`host_adopt.fence_data_for`, answers no adapter), so a fleet with no cut-over hive
+    pays nothing beyond the probe the adopt-incomplete check already makes. Placement is this
+    host's cached lease (the guard's local read). Never raises: an unreadable part is a finding."""
+    from . import fence_cutover, fence_data, host_adopt, writer_adopt
+
+    prefix = str(entry.get("prefix", ""))
+    key = (prefix, str(path))
+    now = time.monotonic()
+    hit = _fence_status_cache.get(key)
+    if hit is not None and now - hit[0] < _FENCE_STATUS_TTL:
+        return hit[1]
+    result: dict | None = None
+    try:
+        node = host_adopt.fence_data_for(prefix, path)
+    except Exception:  # noqa: BLE001 — the resolver never raises; belt and braces for doctor
+        node = None
+    if isinstance(node, fence_data.FenceNode):
+        placement = None
+        note: list[str] = []
+        try:
+            state = guard.primary_state(cfg=cfg, entry=entry)
+            if state is not None:
+                lease = state[2]
+                placement = writer_adopt.PlacementView(frame=lease.host_id, epoch=lease.epoch)
+        except Exception as exc:  # noqa: BLE001
+            note.append(f"cached placement unreadable: {exc}")
+        result = fence_cutover.status(node, prefix=prefix, placement=placement).as_dict()
+        result["findings"] = note + list(result["findings"])
+    _fence_status_cache[key] = (now, result)
+    return result
+
+
+def _writer_fence_warnings(status: dict | None) -> list[str]:
+    """Doctor warnings for one :func:`_writer_fence_status`. ``placement_ahead`` is left to
+    :func:`_adopt_incomplete_warning`, which carries its recovery command."""
+    if not status:
+        return []
+    return [
+        f"hive '{status['hive']}': writer fence — {finding}"
+        for finding in status.get("findings") or []
+        if not str(finding).startswith("placement_ahead")
+    ]
+
+
+def _data_writer_fence(cfg) -> list[dict]:
+    """Writer-fence section: one :func:`_writer_fence_status` per hive cut over on this host."""
+    root = Path(workspace_root())
+    out = []
+    for e in cfg.get("managed_repos", []) or []:
+        path = root / e["provider"] / e["org"] / e["repo"]
+        if not path.exists():
+            continue
+        status = _writer_fence_status(cfg, e, path)
+        if status is not None:
+            out.append(status)
+    return out
+
+
+def _render_writer_fence(items: list[dict]) -> None:
+    if not items:
+        return
+    from . import fence_cutover
+
+    typer.echo("\n# Writer fence (cut-over hives)")
+    for item in items:
+        for line in fence_cutover.render_status(item):
+            typer.echo(f"  {line}")
+
+
 def _split_brain_lineage_warning(entry, path: Path) -> str | None:
     """Split-brain, named as such (bh-s9cdk): local and origin's embedded-Dolt histories share
     NO COMMON ANCESTOR — two unrelated DAGs, not the row-level conflict or behind-the-remote
@@ -2191,6 +2271,7 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
             adopt_incomplete = _adopt_incomplete_warning(cfg, e, path)
             if adopt_incomplete:
                 warns.append(adopt_incomplete)
+            warns += _writer_fence_warnings(_writer_fence_status(cfg, e, path))
     # First: a missing required binary makes everything derived from it untrustworthy, so the
     # operator should read that before any finding it could have manufactured (bh-7m2h9).
     warns = _missing_required_dep_warnings() + warns
@@ -2834,6 +2915,7 @@ def _collect(cfg, *, full_seats: bool = False) -> dict:
         "install": _timed(timings, "install", _data_install, cfg),
         "observability": _timed(timings, "observability", _data_observability, cfg),
         "build_verify": _timed(timings, "build_verify", _data_build_verify, cfg),
+        "writer_fence": _timed(timings, "writer_fence", _data_writer_fence, cfg),
         "warnings": _timed(
             timings,
             "warnings",
@@ -2889,7 +2971,8 @@ def doctor_payload(*, full_seats: bool = False) -> dict:
     ``worktrees``, ``molecules``,
     ``prefix_mismatches``, ``node_id``, ``beads_role``, ``group_auth``, ``mcp``, ``harness_plugin``,
     ``seats``,
-    ``install``, ``observability``, ``warnings``), plus ``timings`` (section name -> milliseconds
+    ``install``, ``observability``, ``build_verify``, ``writer_fence``, ``warnings``), plus
+    ``timings`` (section name -> milliseconds
     from a monotonic clock, plus ``total`` — bh-8nnh7, metadata for attributing doctor's cost,
     always present regardless of ``--json``/verbosity), under the ``schema_version`` / ``command``
     envelope (:mod:`beadhive.jsonout`). ``seats`` is ``None`` when hitch is disabled/absent
@@ -2996,6 +3079,7 @@ def doctor(as_json: bool = False, verbose: bool = False, seats: bool = False):
     _render_install(data["install"])
     _render_observability(data["observability"])
     _render_build_verify(data["build_verify"])
+    _render_writer_fence(data.get("writer_fence") or [])
     _render_warnings(data["warnings"])
     _offer_workspace_init(data["config"])
     if verbose:
