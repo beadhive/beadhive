@@ -1147,11 +1147,36 @@ invalid values are refused, never clamped, and read as the key's off state):
 | `pairing.retention.superseded_days` | `14` | other frames' refs after a resumed bead lands |
 | `pairing.retention.unlanded_days` | `30` | refs of a bead closed without landing |
 | `pairing.retention.orphan_days` | `0` (never) | orphan work |
-| `reclaim.failover.mode`, `reclaim.sweep.mode` | `off` | read by the failover adopt / sweep (M3); `apply` needs pairing |
+| `reclaim.failover.mode`, `reclaim.sweep.mode` | `off` | read by the failover adopt (below) / the sweep; `apply` needs pairing |
 
 Recoverability (`--status`) is decided by one fresh fetch: the claim-frame's ref exists and its
 tip is not already in the remote integration branch. A failed fetch is `unknown`, which never
 licenses a rewind.
+
+### Failover reclaim (M3)
+
+When a hive's primary dies, bd's worker leases die with it, so its claims would strand on the
+new primary. A **failover** adopt — one that displaces a placement still naming another frame
+(expired, evicted or forced) — reclaims them inside its own adopt bump commit, following the
+D5a table of [the M14 decision record](spikes/bh-55vvh-state-work-pairing.md). A **planned
+handoff** (the old primary released its lease) applies nothing.
+
+| Claim (`in_progress`) | Outcome |
+|---|---|
+| `claim-frame` = dead frame, submitted (`review` pending/approved) | untouched; flagged `pairing-violation` if its backup is missing |
+| `claim-frame` = dead frame, backup carries work | `resumable`: `open`, unassigned, `recovery=resumable` |
+| `claim-frame` = dead frame, no backup or tip already in base | `rewound`: what `bd unclaim --force` leaves; an empty backup ref is deleted after the bump lands |
+| `claim-frame` = dead frame, backup check failed | `reclaim-pending`: untouched this run |
+| `claim-frame` = dead frame, `strict` signatures and unsigned | `suspect`: untouched, for the operator |
+| `claim-frame` = another frame, or none | untouched |
+
+`reclaim.failover.mode` gates it: `off` (default) computes nothing, `report` prints the plan
+in the adopt output and writes nothing, `apply` writes it — and only while `pairing.enabled` is
+on. Each reclaimed bead gets one audit comment authored `ops/adopt@<new frame>` with the
+epoch, the dead frame, the outcome, the backup `<ref>@<sha>` and the UTC time. Re-running the
+adopt reclaims nothing twice: once the bump has landed, the re-run stops at its data check.
+The hook needs the hive's in-data fence adapter (M1); until a hive's data is cut over it is
+dormant.
 
 ## The role-binary contract
 
