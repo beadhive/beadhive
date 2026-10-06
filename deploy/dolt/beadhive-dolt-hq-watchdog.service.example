@@ -1,0 +1,14 @@
+# Operator-run globals watchdog (hq server) (bh-ijxif). A non-zero exit (2 drift, 3
+# unverifiable) fails the unit: wire OnFailure= to your alerting. It never changes a value.
+# Use a client DOLT_ROOT_PATH of its own; DOLT_CLI_PASSWORD comes from the EnvironmentFile.
+[Unit]
+Description=Beadhive Dolt globals watchdog (hq)
+OnFailure=beadhive-dolt-alert@%n.service
+
+[Service]
+Type=oneshot
+Environment=DOLT_ROOT_PATH=/var/lib/beadhive/dolt-watchdog/root
+EnvironmentFile=/etc/beadhive/dolt-hq/watchdog.env
+ExecStart=/usr/bin/python3 /opt/beadhive/scripts/dolt_globals_watchdog.py check --host 127.0.0.1 --port 3306 --user watchdog --tls --config /etc/beadhive/dolt-hq/watched-globals.json
+ExecStart=/usr/bin/python3 /opt/beadhive/scripts/dolt_globals_watchdog.py persist --host 127.0.0.1 --port 3306 --user watchdog --tls
+# root-check must run AS the server user (sudo -u dolt ... root-check), not here.

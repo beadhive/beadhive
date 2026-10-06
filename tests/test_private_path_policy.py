@@ -404,7 +404,7 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     | _owned("hive_repair.py", "detect_node_id", ".beads")
     | _owned("hive_repair.py", "detect_role", ".beads")
     | _owned("hive_repair.py", "detect_server_database", ".beads")
-    | _owned("host_fence.py", "transport_lookup", ".beads")
+    | _owned("transport_locator.py", "transport_lookup", ".beads")
     | _owned("host_provision.py", "_beads_dirs", ".beads")
     | _owned("host_provision.py", "_store_state", ".beads")
     # The selected-SQL readiness probe reads Beads' own binding and Dolt
@@ -503,6 +503,9 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     | _owned("daemon_platform.py", "_systemd_user_dir", ".config")
     | _owned("identity.py", "_legacy_workspace_populated", ".git")
     | _owned("dispatch_supervisor.py", "_systemd_user_dir", ".config")
+    # The heartbeat sender's XDG systemd user-unit dir (~/.config/systemd/user; launchd uses
+    # ~/Library/LaunchAgents): operator unit install location, not repository-private state.
+    | _owned("heartbeat_sender.py", "unit_dir", ".config")
     | _owned("doctor.py", "_missing_required_dep_warnings", ".nix-profile")
     | _owned("doctor.py", "_devshell_only_warnings", ".nix-profile")
     | _owned("doctor.py", "_data_layout", ".git")

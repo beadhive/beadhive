@@ -43,7 +43,8 @@ these before enabling it.
 - **Mixed modes are unsupported.** Do not run some readers in `receiver` mode
   and others in `signed` mode against one frame.
 - **The inbox grows.** Each heartbeat adds about one row to the frame's inbox
-  table, and there is no pruning yet.
+  table, and there is no pruning yet. (Bounded since the 0.22.x patch in
+  [signed-inbox-retention](signed-inbox-retention.md), bh-ce886.)
 - **Split-brain exposure is unchanged.** Because expiry is advisory, a stale
   holder is not stopped by the lease clock. That exposure equals today's
   raw-push exposure. The hive-remote fence and the claim epoch tokens remain

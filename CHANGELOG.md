@@ -13,6 +13,25 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.22.7 (2026-10-06)
+
+### Feat
+
+- **ops**: add read-only Dolt globals watchdog script (bh-ijxif)
+- **fleet**: in-tree heartbeat sender with systemd and launchd units (bh-i6ggn)
+
+### Fix
+
+- **fleet**: clear bh-bj8cw full-gate structural findings (bh-bj8cw.4)
+- **fleet**: bound the signed-mode inbox with operator-side retention (bh-ce886)
+- **fleet**: route heartbeat sender config through heartbeat_report (bh-i6ggn)
+- **fleet**: sign cached conformance in the beat; one in-tree heartbeat TTL (bh-i6ggn)
+- **sync**: sync_state treats Merged:false, non-null Error or ✗ line as failure (bh-hpzav)
+
+### Refactor
+
+- **fence**: delete unused fenced_push family; move transport lookup to transport_locator (bh-vwbxy)
+
 ## v0.22.6 (2026-10-06)
 
 ### Feat

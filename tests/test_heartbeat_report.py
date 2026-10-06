@@ -288,3 +288,241 @@ def test_signed_liveness_seq_advances_from_newest_verified_inbox_row(plane, tmp_
     composite = ("head", {}, route, slot, record, snapshot, policies, row, lease_row)
     plane._runtime_authority = lambda: SimpleNamespace(read_frame_composite=lambda: composite)
     assert report.generate(plane).seq == 43
+
+
+# --- bh-i6ggn: the beat signs cached conformance and never blocks on it -------------------
+
+
+@pytest.fixture
+def cache(monkeypatch, tmp_path):
+    path = tmp_path / "heartbeat" / "conformance.json"
+    monkeypatch.setattr(report, "conformance_cache_path", lambda: path)
+    return path
+
+
+def _forbid_measurement(monkeypatch):
+    def blocked(*_args):
+        pytest.fail("a cached beat must never measure conformance")
+
+    monkeypatch.setattr(report, "hive_ready", blocked)
+    monkeypatch.setattr(report, "config_valid", blocked)
+
+
+def _checks(lease):
+    return {check.id: check for check in lease.conformance.checks}
+
+
+def test_lease_ttl_comes_from_the_one_in_tree_source(plane):
+    from beadhive import heartbeat_conformance as hc
+    from beadhive.hq_framelease_contracts import HeartbeatLease
+
+    lease = report.generate(plane)
+    assert lease.leaseDurationSeconds == hc.LEASE_DURATION_SECONDS
+    assert lease.intervalSeconds == hc.INTERVAL_SECONDS
+    ceiling = next(
+        meta.le
+        for meta in HeartbeatLease.model_fields["leaseDurationSeconds"].metadata
+        if getattr(meta, "le", None) is not None
+    )
+    assert hc.LEASE_DURATION_SECONDS <= ceiling
+    assert hc.LEASE_DURATION_SECONDS >= 3 * hc.INTERVAL_SECONDS
+
+
+def test_cached_beat_signs_newest_cache_with_its_measured_at(plane, cache, monkeypatch):
+    from datetime import UTC, datetime
+
+    from beadhive import heartbeat_conformance as hc
+
+    t0 = 1_800_000_000.0
+    hc.refresh(report.measure_conformance, path=cache, clock=lambda: t0)
+    _forbid_measurement(monkeypatch)
+    lease = report.generate(plane, cached=True, now=t0 + 120)
+    checks = _checks(lease)
+    stamp = datetime.fromtimestamp(t0, UTC).isoformat()
+    assert lease.conformance.status == "conformant"
+    assert lease.observed_at == t0 + 120
+    assert stamp in checks["hives-ready"].evidence
+    assert stamp in checks["host-config-partition"].evidence
+    assert checks[hc.AGE_CHECK_ID].status == "pass"
+    assert f"measured at {stamp}; age 120s" in checks[hc.AGE_CHECK_ID].evidence
+
+
+def test_cached_beat_fails_conformance_past_the_bound(plane, cache, monkeypatch):
+    from beadhive import heartbeat_conformance as hc
+
+    t0 = 1_800_000_000.0
+    hc.refresh(report.measure_conformance, path=cache, clock=lambda: t0)
+    _forbid_measurement(monkeypatch)
+    at_bound = report.generate(plane, cached=True, now=t0 + hc.CONFORMANCE_MAX_AGE_SECONDS)
+    assert at_bound.conformance.status == "conformant"
+    stale = report.generate(plane, cached=True, now=t0 + hc.CONFORMANCE_MAX_AGE_SECONDS + 1)
+    assert stale.conformance.status == "non-conformant"
+    assert _checks(stale)[hc.AGE_CHECK_ID].status == "fail"
+
+
+def test_cached_beat_without_a_cache_is_nonconformant(plane, cache, monkeypatch):
+    from beadhive import heartbeat_conformance as hc
+
+    _forbid_measurement(monkeypatch)
+    lease = report.generate(plane, cached=True)
+    assert lease.conformance.status == "non-conformant"
+    assert _checks(lease)[hc.AGE_CHECK_ID].status == "fail"
+    assert lease.free_sessions == 0
+
+
+def test_cached_failed_check_stays_nonconformant(plane, cache, monkeypatch):
+    from beadhive import heartbeat_conformance as hc
+
+    monkeypatch.setattr(report, "hive_ready", lambda _entry: False)
+    hc.refresh(report.measure_conformance, path=cache)
+    lease = report.generate(plane, cached=True)
+    assert lease.conformance.status == "non-conformant"
+    assert _checks(lease)["hives-ready"].status == "fail"
+    assert _checks(lease)[hc.AGE_CHECK_ID].status == "pass"
+
+
+def test_slow_conformance_longer_than_ttl_keeps_beats_fresh_then_fails_by_bound(
+    plane, cache, monkeypatch
+):
+    """A conformance run that outlasts the TTL never delays a beat: every beat is signed
+    at its own time (fresh), while the cached result ages and then fails by bound."""
+    import threading
+
+    from beadhive import heartbeat_conformance as hc
+
+    clock = {"now": 1_800_000_000.0}
+    hc.refresh(report.measure_conformance, path=cache, clock=lambda: clock["now"])
+
+    started, release = threading.Event(), threading.Event()
+
+    def slow_hive_ready(_entry):
+        started.set()
+        assert release.wait(timeout=30), "test never released the slow conformance run"
+        return True
+
+    monkeypatch.setattr(report, "hive_ready", slow_hive_ready)
+    runner = threading.Thread(
+        target=hc.refresh,
+        args=(report.measure_conformance,),
+        kwargs={"path": cache, "clock": lambda: clock["now"]},
+    )
+    runner.start()
+    try:
+        assert started.wait(timeout=10)
+        t0 = clock["now"]
+        statuses = []
+        # Beat every interval for longer than the TTL while the conformance run is stuck.
+        for tick in range(1, hc.LEASE_DURATION_SECONDS // hc.INTERVAL_SECONDS + 3):
+            clock["now"] = t0 + tick * hc.INTERVAL_SECONDS
+            lease = report.generate(plane, cached=True, now=clock["now"])
+            # Fresh: signed at beat time, never behind a measurement.
+            assert lease.observed_at == clock["now"]
+            assert clock["now"] - lease.observed_at < lease.leaseDurationSeconds
+            statuses.append((clock["now"] - t0, lease.conformance.status))
+        assert runner.is_alive(), "conformance was still running through every beat"
+    finally:
+        release.set()
+        runner.join(timeout=10)
+    fresh = [status for age, status in statuses if age <= hc.CONFORMANCE_MAX_AGE_SECONDS]
+    aged = [status for age, status in statuses if age > hc.CONFORMANCE_MAX_AGE_SECONDS]
+    assert fresh and set(fresh) == {"conformant"}
+    assert aged and set(aged) == {"non-conformant"}
+    # The slow run lands stamped with its *start* (the conservative age basis), so a run that
+    # took longer than the bound publishes an already-stale result rather than a fresh one.
+    assert hc.read(cache).measured_at == t0
+    clock["now"] = t0 + hc.LEASE_DURATION_SECONDS + 3 * hc.INTERVAL_SECONDS
+    assert report.generate(plane, cached=True, now=clock["now"]).conformance.status == (
+        "non-conformant"
+    )
+
+
+def test_cached_send_publishes_without_measuring(plane, cache, monkeypatch):
+    from beadhive import heartbeat_conformance as hc
+
+    hc.refresh(report.measure_conformance, path=cache)
+    _forbid_measurement(monkeypatch)
+    published = []
+    monkeypatch.setattr(report.host, "signing_key", lambda: "key-reference")
+    plane.heartbeat = lambda lease, **kwargs: published.append(lease) or "accepted"
+    assert report.send(plane, cached=True) == "accepted"
+    assert published[0].conformance.status == "conformant"
+
+
+# A 0.22.x reader parses HeartbeatLease with this exact model; the fingerprint is the 0.22.6
+# JSON schema. A change here is a wire break and must not land in a patch release.
+HEARTBEAT_LEASE_SCHEMA_SHA256 = "50c0ca6b20ad20991a42baa58e739fba4ada9f1b4a13c65b41de3dac309f8eee"
+
+
+def test_heartbeat_lease_schema_is_byte_compatible_with_0_22_readers():
+    import hashlib
+    import json
+
+    from beadhive.hq_framelease_contracts import HeartbeatLease
+
+    schema = json.dumps(HeartbeatLease.model_json_schema(), sort_keys=True).encode()
+    assert hashlib.sha256(schema).hexdigest() == HEARTBEAT_LEASE_SCHEMA_SHA256
+
+
+def test_mixed_version_0_22_reader_accepts_new_sender_beats(plane, cache, tmp_path):
+    """New sender (cached conformance), 0.22.x reader: the signed-liveness verifier picks the
+    beat up with accepted_until = renewTime + TTL, and the reader's conformance predicate
+    (status conformant, no failed check) holds exactly while the cache is within bound."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from beadhive import heartbeat_conformance as hc
+    from beadhive.hq_framelease_contracts import HeartbeatLease
+    from beadhive.hq_sql_runtime import PrincipalBinding, newest_signed_heartbeat
+    from beadhive.hq_sql_signatures import canonical, fingerprint, sign_heartbeat
+
+    head, state, _route, slot, record, snapshot, policies, row, lease_row = (
+        plane._runtime_authority().read_frame_composite()
+    )
+    key = tmp_path / "frame.key"
+    private = Ed25519PrivateKey.generate()
+    key.write_bytes(
+        private.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.OpenSSH,
+            serialization.NoEncryption(),
+        )
+    )
+    public = (
+        private.public_key()
+        .public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH)
+        .decode()
+    )
+    route = PrincipalBinding(
+        "frame_a",
+        "factory",
+        "host-a",
+        "instance-a",
+        2,
+        "hq_live_inbox_frame_a_2",
+        fingerprint(public),
+    )
+    record = {
+        **record,
+        "public_key": public,
+        "authority": {**record["authority"], "key_fingerprint": route.signer_fingerprint},
+    }
+    composite = (head, state, route, slot, record, snapshot, policies, row, lease_row)
+    plane._runtime_authority = lambda: SimpleNamespace(read_frame_composite=lambda: composite)
+
+    def reader_conformance_pass(lease):  # frame_eligibility's conformance_pass, verbatim
+        return lease.conformance.status == "conformant" and all(
+            check.status != "fail" for check in lease.conformance.checks
+        )
+
+    t0 = 1_800_000_000.0
+    hc.refresh(report.measure_conformance, path=cache, clock=lambda: t0)
+    for age, expected in ((60, True), (hc.CONFORMANCE_MAX_AGE_SECONDS + 60, False)):
+        beat_at = t0 + age
+        lease = report.generate(plane, cached=True, now=beat_at)
+        envelope = canonical(sign_heartbeat(lease, signing_key=str(key)))
+        row = newest_signed_heartbeat([(envelope,)], route, record, now=beat_at + 1)
+        assert row is not None
+        assert row[2] == beat_at + hc.LEASE_DURATION_SECONDS
+        reread = HeartbeatLease.model_validate_json(row[3])
+        assert reread == lease
+        assert reader_conformance_pass(reread) is expected

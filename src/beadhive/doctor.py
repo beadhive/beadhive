@@ -49,6 +49,7 @@ from . import (
     registry,
     safety,
     store_locator,
+    transport_locator,
     validate_probe,
     worktree,
 )
@@ -1807,7 +1808,7 @@ def _local_commits_while_not_primary(cfg, entry, path: Path) -> tuple[int, str]:
     racks up constantly between pushes and would false-positive on every hive). Checked in
     both places ``refs/dolt/data`` can live (``prepush.py``'s module docstring): the hive's
     own checkout (a non-embedded Dolt storage shape) and any existing bd-embedded
-    git-transport bare repo (``host_fence.transport_repos`` — absent until a first push,
+    git-transport bare repo (``transport_locator.transport_repos`` — absent until a first push,
     which is fine: see that module's docstring for why the gap is harmless). Both are purely
     local reads — no ``ls-remote``, no fetch, no HQ round trip."""
     state = guard.primary_state(cfg=cfg, entry=entry)
@@ -1817,7 +1818,7 @@ def _local_commits_while_not_primary(cfg, entry, path: Path) -> tuple[int, str]:
     if lease.held_by(this_host):
         return 0, ""  # this host IS primary — its local writes are the authoritative ones
     total = 0
-    for repo in (path, *host_fence.transport_repos(path)):
+    for repo in (path, *transport_locator.transport_repos(path)):
         res = hive.run(
             ["git", "rev-list", "--count", f"--since={lease.adopted_at}", host_fence.DATA_REF],
             cwd=str(repo),

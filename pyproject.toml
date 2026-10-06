@@ -1,6 +1,6 @@
 [project]
 name = "beadhive"
-version = "0.22.6"
+version = "0.22.7"
 description = "Beadhive CLI"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -217,6 +217,9 @@ markers = [
     # via `scripts/release-pin.sh` — is therefore never covered by a tree hit and must run
     # whenever one is honored. Select it with `-m always_run`.
     "always_run: asserts on git METADATA, so no tree-keyed verdict can vouch for it (bh-ku9n9.3)",
+    # ADR condition 9 (bh-p07dv): the Dolt/bd trigger-semantics canary. Every Dolt or bd pin
+    # bump re-runs it (`just fence-canary`); see tests/harness/trigger_canary.py.
+    "fence_canary: Dolt/bd trigger-semantics canary re-run on every Dolt or bd pin bump",
 ]
 
 [tool.ruff]

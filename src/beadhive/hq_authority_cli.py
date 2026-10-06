@@ -17,6 +17,7 @@ from . import (
     hq_authority_expiry,
     hq_control_plane,
     hq_operator_settings,
+    hq_sql_inbox_retention,
 )
 
 
@@ -36,7 +37,8 @@ class IntDurationSeconds(_click_types.IntParamType):
 
 def authority_cmd(
     action: str = typer.Argument(
-        ..., help="install, bind, bind-beadyard, grant, observe, renew, status, or check"
+        ...,
+        help="install, bind, bind-beadyard, grant, observe, renew, status, check, or prune-inbox",
     ),
     record: Annotated[Path | None, typer.Option("--record")] = None,
     frame: str = typer.Option("", "--frame"),
@@ -66,7 +68,7 @@ def authority_cmd(
         if hq_operator_settings.configured() and action in {"install", "bind"}:
             raise hq_control_plane.ControlPlaneError(
                 f"{hq_operator_settings.ENV} applies to renew, grant, observe, bind-beadyard, "
-                "status and check"
+                "status, check and prune-inbox"
             )
         plane = hq_operator_settings.select_plane()
         if action == "status":
@@ -86,6 +88,24 @@ def authority_cmd(
             if not healthy:
                 raise SystemExit(1)
             return
+        elif action == "prune-inbox":
+            # Signed-mode inbox retention (bh-ce886): a dry run unless --confirm. The margin
+            # comes from hq.sql.inbox_retention_s > $BH_HQ_INBOX_RETENTION > 1 h; a CLI flag
+            # would change the published hq.authority operation, so there is none yet.
+            if not frame:
+                raise hq_control_plane.ControlPlaneError("prune-inbox requires --frame")
+            if not hasattr(plane, "prune_inbox"):
+                raise hq_control_plane.ControlPlaneError("prune-inbox requires a SQL HQ")
+            try:
+                retention = hq_sql_inbox_retention.resolve_retention(
+                    settings=getattr(plane, "inbox_retention_s", None)
+                )
+            except ValueError as exc:
+                raise hq_control_plane.ControlPlaneError(str(exc)) from None
+            result = {
+                **plane.prune_inbox(frame, retention_s=retention.seconds, dry_run=not confirm),
+                "retention_source": retention.source,
+            }
         else:
             if not confirm:
                 raise hq_control_plane.ControlPlaneError("operator mutation requires --confirm")
