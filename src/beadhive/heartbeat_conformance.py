@@ -65,9 +65,9 @@ def stamp(at: float) -> str:
 
 
 def cache_path() -> Path:
-    from . import config
+    from .heartbeat_report import bh_home  # the sender's one config-facade consumer
 
-    return config.home() / "heartbeat" / "conformance.json"
+    return bh_home() / "heartbeat" / "conformance.json"
 
 
 def _lock_path(path: Path) -> Path:

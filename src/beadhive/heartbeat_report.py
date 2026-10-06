@@ -215,6 +215,21 @@ def send(plane, *, free_sessions: int = 0, cached: bool = False) -> str:
     return plane.heartbeat(lease, signing_key=key)
 
 
+def bh_home():
+    """The bh home the heartbeat sender keeps its local cache under."""
+    return config.home()
+
+
+def send_cached_beat(*, free_sessions: int = 0) -> str:
+    """One decoupled beat against this host's SQL frame authority (``heartbeat_sender beat``)."""
+    from .hq_control_plane import SqlControlPlane, control_plane
+
+    plane = control_plane(config.hq_dir())
+    if not isinstance(plane, SqlControlPlane):
+        raise HeartbeatError("measured heartbeat requires SQL frame authority")
+    return send(plane, free_sessions=free_sessions, cached=True)
+
+
 def register(app: typer.Typer) -> None:
     def execute(free_sessions, publish):
         from .hq_control_plane import SqlControlPlane, control_plane

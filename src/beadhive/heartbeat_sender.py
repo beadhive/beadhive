@@ -75,9 +75,9 @@ class UnitFile:
 
 
 def _environment() -> dict[str, str]:
-    from . import config
+    from .heartbeat_report import bh_home
 
-    values = {"BH_HOME": str(config.home()), "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+    values = {"BH_HOME": str(bh_home()), "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
     workspace = os.environ.get("GIT_WORKSPACE")
     if workspace:
         values["GIT_WORKSPACE"] = workspace
@@ -249,15 +249,9 @@ def status(now: float | None = None) -> dict:
 
 
 def _beat(free_sessions: int) -> str:
-    from . import config
-    from .heartbeat_report import send
-    from .hq_control_plane import SqlControlPlane, control_plane
-    from .hq_framelease_contracts import HeartbeatError
+    from .heartbeat_report import send_cached_beat
 
-    plane = control_plane(config.hq_dir())
-    if not isinstance(plane, SqlControlPlane):
-        raise HeartbeatError("measured heartbeat requires SQL frame authority")
-    return send(plane, free_sessions=free_sessions, cached=True)
+    return send_cached_beat(free_sessions=free_sessions)
 
 
 def _free_sessions(value: str) -> int:
