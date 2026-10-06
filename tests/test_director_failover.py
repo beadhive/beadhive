@@ -103,6 +103,7 @@ class StubDirector:
     def __init__(self, state, observed, placements):
         self.state, self.observed, self.placements = state, observed, placements
         self.placed = []
+        self.causes = []
 
     def survey(self, observe=None):
         if isinstance(self.observed, Exception):
@@ -121,8 +122,9 @@ class StubDirector:
 
         return SqlPlacementDirector.placeable(state, policies, prefix, frame)
 
-    def place(self, prefix, *, frame_id, expected_revision):
+    def place(self, prefix, *, frame_id, expected_revision, cause):
         self.placed.append((prefix, frame_id, expected_revision))
+        self.causes.append(cause)
         return SimpleNamespace(prefix=prefix, frame_id=frame_id)
 
 
@@ -173,6 +175,8 @@ def test_the_loop_fails_a_dead_frame_over_through_the_director():
         ("ah", "frame-a", "frame-b", "placed")
     ]
     assert director.placed == [("ah", "frame-b", "r1")]
+    # The failover cause rides in the same CAS (bh-16347.6): the adopting frame reclaims.
+    assert director.causes == ["failover"]
     assert clock.t > 3600  # never before the executor's failover_after
 
 

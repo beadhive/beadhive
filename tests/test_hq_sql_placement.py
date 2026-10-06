@@ -20,6 +20,8 @@ from beadhive.host_lease_contracts import HostLease, now_stamp
 from beadhive.hq_control_plane import ControlPlaneError
 from beadhive.hq_signed_hive_lease import proposal_revision
 from beadhive.hq_sql_placement import (
+    CAUSE_FAILOVER,
+    CAUSE_PLANNED,
     DEFAULT_TENURE_S,
     PLACEMENT_TABLE,
     PlacementError,
@@ -27,6 +29,7 @@ from beadhive.hq_sql_placement import (
     PlacementUnknown,
     PlacementUnseeded,
     SqlPlacementDirector,
+    cause_token,
     check_grants,
     check_triggers,
     conformance,
@@ -36,6 +39,7 @@ from beadhive.hq_sql_placement import (
     parse_grant,
     parse_row,
     place_cas,
+    placement_cause,
     placement_witness,
     seed_statement,
 )
@@ -424,6 +428,72 @@ def test_director_defaults_to_the_next_epoch_and_refuses_unplaceable_frames():
         )
 
 
+# ---- the placement cause (bh-16347.6) ------------------------------------------------------
+
+
+def test_cause_token_fits_the_receiver_request_id_column_and_is_bound_to_the_row():
+    import uuid
+
+    revision = fresh_revision({"x": 1})
+    token = cause_token("ah", revision, CAUSE_FAILOVER)
+    assert len(token) == 36 and str(uuid.UUID(token)) == token  # CHAR(36), a UUID shape
+    assert uuid.UUID(token).version == 8 and uuid.UUID(token).variant == uuid.RFC_4122
+    assert token != cause_token("ah", revision, CAUSE_PLANNED)
+    assert placement_cause("ah", revision, token) == CAUSE_FAILOVER
+    assert placement_cause("ah", fresh_revision({"x": 1}), token) is None  # another revision
+    assert placement_cause("bh", revision, token) is None  # another hive
+    assert placement_cause("ah", revision, str(uuid.uuid4())) is None  # pre-cause director row
+    assert placement_cause("ah", revision, None) is None  # never raises
+    with pytest.raises(PlacementError, match="cause"):
+        cause_token("ah", revision, "forced")
+
+
+def test_director_place_defaults_to_planned_and_the_cause_rides_in_the_same_cas():
+    connection = _seeded(lease=_lease("host-z", epoch=7))
+    director = _director(connection)
+    planned = director.place("ah", frame_id="frame-a", expected_revision=connection.rows["ah"][0])
+    stored = parse_row("ah", connection.rows["ah"])
+    assert planned.cause == stored.cause == CAUSE_PLANNED and stored.failover is False
+    failed_over = director.place(
+        "ah", frame_id="frame-a", expected_revision=stored.revision, cause=CAUSE_FAILOVER
+    )
+    stored = parse_row("ah", connection.rows["ah"])
+    assert failed_over.cause == stored.cause == CAUSE_FAILOVER and stored.failover is True
+    assert stored.request_id == failed_over.request_id
+    # The carrier is still exactly the receiver's: {authority, lease} and the five-field lease.
+    envelope = json.loads(connection.rows["ah"][1])
+    assert set(envelope) == {"authority", "lease"}
+    assert set(envelope["lease"]) == {"host_id", "label", "epoch", "adopted_at", "expires_at"}
+    assert envelope["authority"] == {"frame_id": "frame-a", **AUTHORITY}
+    (update,) = [s for s, _ in connection.statements if s.startswith("UPDATE")][-1:]
+    assert update.count("request_id=%s") == 1  # one UPDATE, the same CAS
+    with pytest.raises(PlacementError, match="cause"):
+        director.place("ah", frame_id="frame-a", expected_revision=stored.revision, cause="x")
+
+
+def test_releases_seeds_and_receiver_rows_carry_no_cause():
+    connection = _seeded(lease=_lease("host-a", epoch=9))
+    released = _director(connection).release("ah", expected_revision=connection.rows["ah"][0])
+    assert released.cause is None and parse_row("ah", connection.rows["ah"]).cause is None
+    with pytest.raises(PlacementError, match="release carries no placement cause"):
+        place_cas(
+            connection,
+            prefix="ah",
+            lease=released.lease,
+            authority=AUTHORITY,
+            expected_revision=released.revision,
+            cause=CAUSE_PLANNED,
+        )
+    _sql, params = seed_statement("ah", epoch=3, at=NOW)
+    assert parse_row("ah", params[1:]).failover is None
+    # A receiver row whose request_id happens to equal a cause token is still not a director
+    # row, so it never carries a cause (the token is only trusted under the witness).
+    row = _receiver_row("ah", _lease())
+    row[2] = cause_token("ah", row[0], CAUSE_FAILOVER)
+    parsed = parse_row("ah", row)
+    assert not parsed.director and parsed.cause is None and parsed.failover is None
+
+
 def test_director_release_is_a_tombstone_at_the_same_epoch():
     connection = _seeded(lease=_lease("host-a", epoch=9))
     released = _director(connection).release(
@@ -606,7 +676,7 @@ def test_director_takes_over_a_receiver_written_row(world):  # noqa: F811
 # =============================================================================================
 
 
-def _director_row_for(frame, epoch, *, host=None):
+def _director_row_for(frame, epoch, *, host=None, cause=None):
     lease = HostLease(
         host or frame.host, frame.name, epoch, now_stamp(NOW - 60), now_stamp(NOW + 3600)
     )
@@ -616,7 +686,7 @@ def _director_row_for(frame, epoch, *, host=None):
     return (
         revision,
         body,
-        "00000000-0000-4000-8000-000000000abc",
+        cause_token("ah", revision, cause) if cause else "00000000-0000-4000-8000-000000000abc",
         placement_witness("ah", revision, body),
     )
 
@@ -764,6 +834,63 @@ def test_cut_over_adopt_resumes_at_the_director_placed_epoch(tmp_path, monkeypat
     )
     assert outcome.epoch == 23 and outcome.fence_sha == "ref-23"
     assert seen["view"].epoch == 23
+
+
+@pytest.mark.parametrize(
+    "cause,override,kind",
+    [
+        (CAUSE_FAILOVER, None, True),
+        (CAUSE_PLANNED, None, False),
+        (None, None, None),  # a director row written before the cause: unknown, no reclaim
+        (CAUSE_PLANNED, True, True),  # an explicit caller kind still wins
+    ],
+    ids=["failover", "planned", "no-cause", "override"],
+)
+def test_cut_over_adopt_takes_its_kind_from_the_placement_cause(
+    tmp_path, monkeypatch, cause, override, kind
+):
+    """bh-16347.6: the director-placed adopt resumes at the placed epoch, so the displaced
+    placement cannot tell failover from handoff; the cause in the row does."""
+    a = _frame(tmp_path)
+    row = _director_row_for(a, 23, cause=cause)
+    seen = {}
+
+    def coexistence(data, placement, ref, **kwargs):
+        seen["failover"] = kwargs["failover"]
+        seen["view"] = placement.read()
+        return SimpleNamespace(epoch=23, ref=SimpleNamespace(sha="ref-23"))
+
+    _adopt_world(tmp_path, monkeypatch, a, row=row, fence=EpochFence(22, "host-z"))
+    monkeypatch.setattr(writer_adopt, "coexistence_adopt", coexistence)
+    monkeypatch.setattr(host_adopt.failover_reclaim, "for_fence_data", lambda *a, **k: None)
+    monkeypatch.setattr(host_adopt, "fence_data_for", lambda *a: object())
+    host_adopt.adopt(
+        prefix="ah",
+        hive_remote="origin",
+        hq_remote="origin",
+        hive_cwd=tmp_path / "hive",
+        hq_cwd=tmp_path,
+        host_id="host-a",
+        label="a",
+        failover=override,
+    )
+    assert seen["failover"] is kind and seen["view"].epoch == 23
+    # The 0.22.8 write-gate reader is indifferent to the cause: same record, same holder.
+    plane, _ = _plane(a, fence=EpochFence(23, "host-a"), receiver_row=row)
+    revision, lease = plane.read_hive_lease_record("ah", holder_identity="host-a")
+    assert revision == row[0] and lease.held_by("host-a")
+    assert plane.read_placement("ah").cause == cause
+
+
+def test_director_placement_pins_the_row_the_kind_came_from(tmp_path):
+    a = _frame(tmp_path)
+    row = _director_row_for(a, 23, cause=CAUSE_FAILOVER)
+    plane, _ = _plane(a, fence=EpochFence(22, "host-z"), receiver_row=row)
+    moved = host_adopt._DirectorPlacement(plane, "ah", pinned="0" * 64)
+    with pytest.raises(writer_adopt.PlacementLost, match="moved while the adopt was reading"):
+        moved.read()
+    pinned = host_adopt._DirectorPlacement(plane, "ah", pinned=row[0])
+    assert pinned.read().epoch == 23 and pinned.read().token == row[0]  # only the first read
 
 
 def test_git_hq_keeps_the_gitref_cas_placement_path(tmp_path, monkeypatch):

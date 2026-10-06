@@ -89,6 +89,12 @@ bh hq placement place <prefix> --frame <F> --expected-revision <R> --confirm  # 
 
 `release` keeps the epoch and writes a tombstone. The next `place` raises the epoch.
 
+**Cause.** Every `place` records why it placed, in the same CAS. An operator `place` is always
+`planned`: the adopting frame reclaims no claims (M14 D5c). Only the failover loop (§4) writes
+`failover`, and there is no flag to set it by hand. `show` prints it as `"cause"`. It is `null`
+for a seed, a release, a receiver-written row, or a row placed before 0.23.0. See §5 for how
+frames read it.
+
 | Message | Do |
 |---|---|
 | `placement moved` / `CAS … lost` | Someone placed meanwhile. Run `show` again and decide again. |
@@ -147,3 +153,28 @@ The daemon refuses to start, before it binds a socket, when failover is enabled 
 HQ is `git`, no settings file is named, or the file lacks `placement_writer`. It never runs
 without the loop it was configured to run. Each failover is logged at `WARNING`
 (`director failover placed: <prefix> <dead> -> <successor>`).
+
+## 5. The placement cause and mixed versions
+
+The adopting frame needs to know whether a placement was a failover. Only a failover adopt
+reclaims the dead frame's claims in its bump commit (`bh.reclaim.failover.mode`, M3,
+`bh-4z2rx`). The director writes the cause into the row's `request_id` column, in the same
+`UPDATE` as the placement (`bh-16347.6`). It never goes in `lease_json`.
+
+- **Why that column.** The receiver, the 0.22.8 bridge and every 0.22.x reader parse
+  `lease_json` strictly: exactly `{authority, lease}`, the five-field lease, and an authority
+  equal to the frame's grant. `request_id` is `CHAR(36)`. Before 0.23.0 the director filled it
+  with a random UUID that nothing read. The receiver only looks a prior row's `request_id` up
+  in its inbox, and a director row is absent there either way. A Φ3 rollback to the receiver is
+  unchanged.
+- **The token.** `request_id` is a version-8 UUID: a digest of the hive prefix, the row's fresh
+  revision and the cause. It is bound to that one revision, so it cannot carry over to a later
+  row. A frame trusts it only on a director row, where the placement witness verifies.
+- **Mixed versions fail safe.** A frame that does not read the cause (0.22.x, or a 0.23 build
+  before `bh-16347.6`) resumes a director placement with the kind unknown. It reclaims nothing,
+  which is the pre-0.23.0 behaviour. The same holds for a row without a cause. Unknown never
+  rewinds a claim: the D5b sweep or the manual runbook (D10) handles it.
+- **Exactly once.** The reclaim rides in the adopt's single bump commit. A re-run of the same
+  adopt stops at its data check once the bump has landed, so it never reclaims twice.
+- **The adopt reads the cause from the row it resumes.** If the row moves between that read and
+  the adopt, the adopt refuses before anything is written. Re-run it.

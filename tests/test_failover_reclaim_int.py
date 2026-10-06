@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import time
 
 import pytest
 
@@ -224,3 +225,145 @@ def test_a_planned_handoff_reclaims_nothing_on_real_dolt(tmp_path):
         assert out.step2.landed and "planned handoff" in out.step2.reclaim.skipped
         assert _remote_issue(world, bead)["status"] == "in_progress"
         assert _remote_comments(world, bead) == []
+
+
+# ---- director-placed failover: the cause rides the placement CAS (bh-16347.6) ---------------
+
+
+class _FramePlane:
+    """The frame's view of the scratch SQL HQ: placement read through its SELECT grant only."""
+
+    config_backend = "sql"
+
+    def __init__(self, server):
+        self.server = server
+
+    def read_placement(self, prefix):
+        from beadhive.hq_sql_placement import read_row
+        from test_hq_sql_placement_int import FRAME
+
+        conn = self.server.connect(FRAME, autocommit=False)
+        try:
+            return read_row(conn, prefix)
+        finally:
+            conn.close()
+
+
+@pytest.mark.dolt_server
+@pytest.mark.parametrize("cause", ["failover", "planned", "no-cause", "older-frame"])
+def test_a_director_placed_adopt_reclaims_exactly_once_and_only_on_failover(
+    tmp_path, monkeypatch, cause
+):
+    """Scratch SQL HQ (product ``hq_live_hive_leases``, real grants) + the composed fence.
+
+    The director places ``b`` at the next epoch; ``b`` adopts through the director-placed path,
+    which RESUMES at the placed epoch, so the displaced placement cannot say why. The cause the
+    director wrote in the same CAS does: a failover placement reclaims ``a``'s claim once (a
+    re-run reclaims nothing), a planned one reclaims nothing, and a row without a cause or a
+    frame that does not read it (older 0.22.x/0.23 builds) is unknown, which writes nothing."""
+    from beadhive import host_adopt, host_lease
+    from beadhive.host_lease_contracts import HostLease, now_stamp
+    from beadhive.hq_sql_placement import (
+        CAUSE_FAILOVER,
+        CAUSE_PLANNED,
+        place_cas,
+        read_row,
+        seed_statement,
+    )
+    from test_hq_sql_placement_int import DIRECTOR, PlacementServer
+
+    _bare, _work, hive_clone = _backup_remote(tmp_path)
+    server = PlacementServer(tmp_path / "sql-hq")
+    server.start()
+    try:
+        server.provision()
+        with cf.composed_world(tmp_path, FRAMES, hq_mode="git", writer="a") as world:
+            remote = str(world.cluster.remote.path)
+            ref = host_adopt._GitEpochRef(remote=remote, cwd=hive_clone)
+            e0 = world.hq.placement().epoch
+            _seed_ref(ref, "a", e0)
+            a = world["a"]
+            for key, value in (
+                ("bh.pairing.enabled", "true"),
+                ("bh.reclaim.failover.mode", "apply"),
+            ):
+                a.bd("config", "set", key, value).check()
+            bead = _claim(a, "unbacked", "claim-frame:a")
+            a.push().check()
+            a.kill()
+
+            # ---- the director places b (the operator seeded the hive at a's epoch) ----------
+            root = server.connect(autocommit=True)
+            with root.cursor() as cursor:
+                cursor.execute(*seed_statement("fx", epoch=e0))
+            root.close()
+            conn = server.connect(DIRECTOR, autocommit=False)
+            try:
+                seeded = read_row(conn, "fx").revision
+                now = time.time()
+                place_cas(
+                    conn,
+                    prefix="fx",
+                    lease=HostLease("b", "b", e0 + 1, now_stamp(now), now_stamp(now + 3600)),
+                    authority={"frame_id": "b", "holder_identity": "b"},
+                    expected_revision=seeded,
+                    cause={
+                        "failover": CAUSE_FAILOVER,
+                        "planned": CAUSE_PLANNED,
+                        "older-frame": CAUSE_FAILOVER,
+                    }.get(cause),
+                )
+            finally:
+                conn.close()
+
+            # ---- frame b adopts through the director-placed path ----------------------------
+            plane = _FramePlane(server)
+            monkeypatch.setattr(host_lease, "_frame_plane", lambda cwd: plane)
+            data = ReclaimFrameData(world["b"])
+
+            def adopt():
+                if cause == "older-frame":  # a frame that never reads the cause
+                    return wa.coexistence_adopt(
+                        data,
+                        host_adopt._DirectorPlacement(plane, "fx"),
+                        ref,
+                        prefix="fx",
+                        frame="b",
+                        reclaim=fr.for_fence_data(data, cwd=hive_clone),
+                    )
+                placed = host_adopt._director_placement("fx", tmp_path)
+                assert placed is not None and placed.director
+                return host_adopt._adopt_director_placed(
+                    placed,
+                    prefix="fx",
+                    hive_remote=remote,
+                    hive_cwd=hive_clone,
+                    hq_cwd=tmp_path,
+                    host_id="b",
+                    fence_data=data,
+                    attempts=None,
+                    failover=None,
+                ).coexistence
+
+            out = adopt()
+            assert out.resumed and out.epoch == e0 + 1 and out.step2.landed
+            plan = out.step2.reclaim
+            assert _adopt_commits(world) == [f"{wa.ADOPT_COMMIT_PREFIX}b@{e0 + 1}"]
+            if cause == "failover":
+                assert plan.applied and plan.dead_frame == "a"
+                assert {r.bead: r.outcome for r in plan.rows} == {bead: fr.Outcome.REWOUND}
+                assert _remote_issue(world, bead)["status"] == "open"
+                assert len(_remote_comments(world, bead)) == 1
+            else:
+                why = "planned handoff" if cause == "planned" else "adopt kind unknown"
+                assert not plan.applied and why in plan.skipped
+                assert _remote_issue(world, bead)["status"] == "in_progress"
+                assert _remote_comments(world, bead) == []
+
+            # ---- a re-run reclaims nothing twice ----------------------------------------------
+            again = adopt()
+            assert again.resumed and again.step2.reclaim is None
+            assert _adopt_commits(world) == [f"{wa.ADOPT_COMMIT_PREFIX}b@{e0 + 1}"]
+            assert len(_remote_comments(world, bead)) == (1 if cause == "failover" else 0)
+    finally:
+        server.stop()
