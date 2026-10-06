@@ -265,6 +265,9 @@ def _free_sessions(value: str) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from . import fence_data
+
+    fence_data.register()  # the product in-data fence resolver, before any guard path (bh-uz46l)
     parser = argparse.ArgumentParser(
         prog="python -m beadhive.heartbeat_sender",
         description="in-tree frame heartbeat sender: conformance job, beat, units",

@@ -105,6 +105,7 @@ def test_source_has_no_unjustified_raw_bd_invocations():
         ("dolt_health.py", "_read_local_bd_version_string"),
         ("dolt_health.py", "_scratch_probe_local_version"),
         ("dolt_health.py", "probe_server_schema_version"),
+        ("fence_data.py", "_bd"),
         ("fleet.py", "sql"),
         ("hub.py", "bounded_bd"),
         ("registry.py", "report"),

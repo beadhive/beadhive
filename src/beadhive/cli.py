@@ -4512,6 +4512,9 @@ def _handle_cli_error(exc: Exception) -> None:
 
 
 def main():
+    from . import fence_data
+
+    fence_data.register()  # the product in-data fence resolver, before any guard path (bh-uz46l)
     try:
         app()
     except SystemExit:

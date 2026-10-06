@@ -5,8 +5,10 @@ placement first, then by an idempotent data step 2, keeping ``refs/bh/epoch`` in
 it exists — :mod:`beadhive.writer_adopt`, ADR ``hive-writer-partitioning-adr.md`` §2. Every other
 hive (Φ1, the default) takes the legacy two-phase path below UNCHANGED. Which one applies is
 decided by the hive's data alone ("data is the switch", condition 12), read through the
-:class:`~beadhive.writer_adopt.FenceData` port; no product adapter for that port is registered
-until M1 (``bh-uz46l``) lands, so the coexistence path is dormant by construction.
+:class:`~beadhive.writer_adopt.FenceData` port. The default adapter (M1, ``bh-uz46l``,
+:func:`beadhive.fence_data.resolve_cut_over`, via :mod:`beadhive.fence_data_port`) answers only
+for a hive whose data carries ``bh_writer``, so the coexistence path is dormant until a hive's
+data switches it on.
 
 Legacy: two-phase, fail-closed adopt — fence first, lease second (bh-ytbb.8).
 
@@ -102,7 +104,7 @@ FenceDataResolver = fence_data_port.FenceDataResolver
 
 
 def set_fence_data_resolver(resolver: FenceDataResolver | None) -> None:
-    """Register the in-data fence adapter (M1); ``None`` restores the dormant default."""
+    """Override the in-data fence adapter; ``None`` restores the registered default (M1)."""
     fence_data_port.set_fence_data_resolver(resolver)
 
 

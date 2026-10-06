@@ -794,6 +794,9 @@ def create_application():
 
 def main() -> None:
     """Serve only on loopback; Cloudflared is the sole external transport."""
+    from . import fence_data
+
+    fence_data.register()  # the product in-data fence resolver, before any guard path (bh-uz46l)
     import uvicorn
 
     from . import hq_authority_enforce
