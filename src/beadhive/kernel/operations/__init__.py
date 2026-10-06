@@ -99,6 +99,7 @@ hive list|available:boolean:o,as_json:boolean:o,limit:integer:o,cursor:string:o
 hive migrate|hive_id:string:o,dry_run:boolean:o
 hive migrate-storage|hive_id:string:o,dry_run:boolean:o,confirm:boolean:o,keep_pre_migrate:boolean:o
 hive onboard|hive_id:string:r,clone_url:string:o,furnish:boolean:o,claude:boolean:o,skills:boolean:o,observaloop:boolean:o,agents:boolean:o,opencode:boolean:o,codex:boolean:o,global_grant:boolean:o,force:boolean:o,kind:string:o,prefix:string:o,yes:boolean:o,plugin:array:o,dry_run:boolean:o,skip_check:string:o,hub_sync:boolean:o,as_json:boolean:o
+hive policy|action:string:o,key:string:o,value:string:o,hive_id:string:o,as_json:boolean:o
 hive prefix|provider:string:r,org:string:r,repo:string:r,kind:string:o
 hive ready|verbose:boolean:o,as_json:boolean:o
 hive reclaim|hive_id:string:r,dry_run:boolean:o,backup:boolean:o,confirm:boolean:o,purge:boolean:o
@@ -242,6 +243,7 @@ work accept|bead:string:r,type_:string:o,priority:string:o,as_:string:o,hive:str
 work approve|bead:string:r,as_:string:o,hive:string:o
 work artifacts-uploaded|run_id:string:r,hive:string:o
 work assign|bead:string:r,to:string:r,as_:string:o,hive:string:o,preview:boolean:o,as_json:boolean:o
+work backup|bead:string:o,status:boolean:o,as_json:boolean:o,from_hook:boolean:o,reap:boolean:o,dry_run:boolean:o,hive:string:o
 work bounce|bead:string:r,message:string:o,as_:string:o,hive:string:o
 work brief|bead:string:r,hive:string:o
 work check|bead:string:r,hive:string:o

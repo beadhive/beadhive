@@ -1593,6 +1593,30 @@ def abandon(
     return work_lifecycle.abandon(bead, hive, rm)
 
 
+def backup(
+    bead: str = typer.Argument("", metavar="<id>", help="bead id (omit with --reap/--from-hook)"),
+    status: bool = typer.Option(
+        False, "--status", help="report whether the bead's work is recoverable from the remote"
+    ),
+    as_json: bool = typer.Option(False, "--json", help="machine-readable --status output"),
+    from_hook: bool = typer.Option(
+        False, "--from-hook", help="post-commit entrypoint: background checkpoint, never fails"
+    ),
+    reap: bool = typer.Option(False, "--reap", help="apply pairing retention to the hive's refs"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="with --reap: report, delete nothing"),
+    hive: str = _HIVE,
+):
+    """State/work pairing (M14): push the bead worktree's committed tip to this frame's backup
+    ref `refs/bh/backup/<id>/<frame>` now; `--status` reports recoverability (recoverable /
+    unbacked / unknown / suspect) for the claim-frame; `--reap` applies retention. A no-op
+    unless the hive's `bh.pairing.enabled` policy is on (`bh hive policy set`)."""
+    from . import work_backup_cli
+
+    return work_backup_cli.impl_backup(
+        sys.modules[__name__], bead, status, as_json, from_hook, reap, dry_run, hive
+    )
+
+
 # ---- show / review (read-only render verbs; bodies live in work_show) -------
 # Registered onto this app from work_show so the rendering surface sits in one file while the
 # command names stay `ws work show` / `ws work review`. Re-bound here (show = …) so existing
@@ -1731,6 +1755,7 @@ CLI_HANDLERS = {
     "work.merge": merge,
     "work.resume": resume,
     "work.abandon": abandon,
+    "work.backup": backup,
     "work.show": _bind_cli_handler(show, as_json="json_out"),
     "work.review": review,
     "work.refine": refine,
@@ -1767,6 +1792,7 @@ land = _CLI_CALLBACKS["work.land"]
 merge = _CLI_CALLBACKS["work.merge"]
 resume = _CLI_CALLBACKS["work.resume"]
 abandon = _CLI_CALLBACKS["work.abandon"]
+backup = _CLI_CALLBACKS["work.backup"]
 show = _CLI_CALLBACKS["work.show"]
 review = _CLI_CALLBACKS["work.review"]
 refine = _CLI_CALLBACKS["work.refine"]
