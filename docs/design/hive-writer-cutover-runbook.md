@@ -38,8 +38,10 @@ which carries the recovery command.
   0.23.0 before it pulls the cutover. An older replica fails closed (T3): it can read but not
   write `main`.
 - **One hive at a time.** Use a low-traffic hive as the canary, and cut `bh` over last.
-- **GitHub-hosted remotes:** run the `bh-vje85` E13 two-writer push-race canary against that
-  remote first (condition 11).
+- **GitHub-hosted remotes:** run the condition 11 canary against that remote first
+  ([section 2a](#2a-condition-11-the-github-canary)).
+- **Rotation count (condition 14):** while the hive's frame lease is still legacy-bound, check the
+  rotation count ([section 2b](#2b-condition-14-the-rotation-count)).
 - **Quiesce the hive.** A re-install drops each trigger and then re-creates it, so there is a
   moment without that trigger. Stop dispatch and agents on the hive while it is cut over.
 - **Server mode is slow.** The install is about 95 `bd sql` calls, which takes 30 s or more.
@@ -50,6 +52,40 @@ which carries the recovery command.
 - **Publish on the holder.** Run `bh hive sync --push`. The cutover resets the holder to the
   remote head, so it refuses while this node has a dirty working set or local commits. bd's
   clone-local `metadata` table is the one exception.
+
+## 2a. Condition 11: the GitHub canary
+
+Before the **first** cutover of a hive whose remote is GitHub-hosted, show on that real remote
+that the ref compare-and-swap holds. Cutover relies on it twice: the remote's non-fast-forward
+rejection is the writer token's CAS, and C5 reserves `refs/bh/epoch` the same way. The spike
+([`bh-vje85`](../spikes/bh-vje85-in-data-epoch-fencing.md) E13) proved it on `git+file://` and
+`file://` remotes only. No `bh` verb runs this canary; it is an operator procedure with two
+parts, and both must pass before C1.
+
+1. **Two-writer push race.** From two clones of the target remote, commit on the same base and
+   push to the same ref at the same instant, for several rounds (E13 used 8). Each round must
+   have exactly one winner, the loser must get `non-fast-forward`, and the remote ref must equal
+   the winner's commit. Use a scratch ref or a scratch repository on the same provider and
+   protocol, never the hive's real `main` or `refs/dolt/data`.
+2. **Backup-ref lifecycle.** Push a ref under `refs/bh/backup/`, CAS-update it, then delete it
+   (the shape the state/work pairing feature uses; [WORK](../WORK.md#statework-pairing--backups-before-state-condition-18),
+   ADR Addendum M14). Confirm that no GitHub Actions run starts and that the UI shows no
+   "recent branch" prompt.
+
+A round with two winners, or a loser that is not rejected, blocks the cutover: report it and
+keep the hive on the legacy fence.
+
+## 2b. Condition 14: the rotation count
+
+Until the cutover, a signed-mode frame lease stays bound to the grant it was adopted under, and
+survives only while that grant is in the active-rotation archive, which keeps the newest 16
+entries (`HISTORY_LIMIT = 16`, `beadhive.frame_release_upgrade`; see the
+[release-upgrade runbook](frame-release-upgrade-runbook.md#archive)). Count the active frame's
+rotations (`release_upgrade_history` in `bh host release-upgrade check`) per lease. Before a
+**16th** rotation without a renewal or re-adopt, re-adopt the lease deliberately. Otherwise the
+lease's grant falls out of the archive and forces an unplanned re-adopt at a new lease epoch,
+and in-flight claims refuse their bead write. A cut-over hive removes the horizon: placement
+names the frame, and a rotation never moves the writer epoch.
 
 ## 3. Cutover (C1–C6)
 
@@ -161,6 +197,25 @@ floor. Downgrading below 0.23.0 is allowed only after R5 on every replica.
 
 Before C5's push, a rollback is a local reset: `DOLT_RESET('--hard', 'origin/main')` on the
 holder, then drop its identity. The verb does this itself when it refuses.
+
+## 5a. Rollout order and mixed versions
+
+The phases are those of the migration spike (`bh-32379` §2) and the ADR's operator rollout
+outline:
+
+| Phase | State | Notes |
+|---|---|---|
+| Φ1 | 0.23.0 installed, no hive cut over | Behaves as 0.22.x: no `bh_writer`, so the lease gate and reserve/verify. Downgrade is free. |
+| Φ2 | A hive cut over; `refs/bh/epoch` and placement kept in lockstep by every adopt | Cut over **one hive at a time**, canary hive first, `bh` last. An older replica reads but cannot write `main`: install 0.23.0 on every replica before you pull a cutover to it. |
+| Φ3 | `dolt-server` HQ: director placement and session/evidence rows, the receiver still running | The director's revisions are in the receiver's format, so a rollback to the receiver works. Frames dual-write session rows and signed inbox beats. |
+| Φ3b | Receiver stopped | Only after the soak. Old adopt and release then fail closed, and a 0.21.3 receiver-mode reader goes stale, so none may remain. |
+
+`host.forward` is rejected by `bh` older than 0.23.0 (the host schema is strict): set it only on
+frames already running 0.23.0, and agents on a forwarding frame must use `bh bd`, because a raw
+`bd` is not redirected ([forward write path](../FORWARD-WRITE-PATH.md)). The wire release that
+carries the hidden verbs is 2.5.0 (`docs/schemas/wire/v2.5.0/`). Placement and failover are in the
+[placement runbook](hq-placement-runbook.md); trust and the rollout order are summarised in the
+[0.23.0 release note](../releases/hive-writer-partitioning-0.23.0.md).
 
 ## 6. Removal
 
