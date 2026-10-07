@@ -481,12 +481,31 @@ class BdEngine:
         skipped = _forward_noop(cwd, ["dolt", "push"])
         if skipped is not None:
             return skipped
-        self._state_call(["dolt", "commit", "-m", message], cwd, actor=actor)
+        committed = self._state_call(["dolt", "commit", "-m", message], cwd, actor=actor)
         args = ["dolt", "push"]
         if remote:
             args += ["--remote", remote]
         if force:
             args.append("--force")
+        # Cut-over hives only (dormant elsewhere: a legacy hive answers None without a read).
+        # Server mode refuses the push when that commit failed (the guard's marks would stay
+        # behind), and a frame whose remote names a higher bh_writer.epoch never pushes main: it
+        # diverts its unpublished commits to frame/<id>/orphan-<epoch>-<n> and resets (bh-4z3oz).
+        fence_orphan = importlib.import_module("beadhive.fence_orphan")
+        try:
+            cfg = config.load()
+        except (RuntimeError, ValueError) as exc:
+            return subprocess.CompletedProcess(
+                args=["bd", *args],
+                returncode=1,
+                stdout="",
+                stderr=f"epoch-fence preflight refused state push: {exc}",
+            )
+        refused = fence_orphan.managed_preflight(cwd, commit_result=committed, cfg=cfg)
+        if refused:
+            return subprocess.CompletedProcess(
+                args=["bd", *args], returncode=1, stdout="", stderr=refused
+            )
         # Current bd deliberately invokes its internal Git transport with
         # `core.hooksPath=/dev/null`; the transport pre-push hook is therefore not an
         # enforcement point. Reserve the authoritative REMOTE fence immediately before the
@@ -501,7 +520,7 @@ class BdEngine:
         gitref = importlib.import_module("beadhive.gitref")
         fence_remote = remote or "origin"
         try:
-            reservation = host_fence.reserve_managed_push(fence_remote, cwd=cwd, cfg=config.load())
+            reservation = host_fence.reserve_managed_push(fence_remote, cwd=cwd, cfg=cfg)
         except (
             host_fence.FenceError,
             gitref.RemoteUnreachable,
@@ -538,7 +557,21 @@ class BdEngine:
                     "`dolt gc` only when that server is stopped."
                 ),
             )
-        if pushed.returncode or reservation is None:
+        if pushed.returncode:
+            # A push rejected as a non-fast-forward may have lost a race with an adopt that
+            # landed after the preflight: re-check, and divert rather than retry a stale main.
+            rejected = fence_orphan.is_non_fast_forward(pushed)
+            refused = fence_orphan.managed_preflight(cwd, cfg=cfg) if rejected else None
+            if refused:
+                prior = (getattr(pushed, "stderr", "") or "").rstrip()
+                return subprocess.CompletedProcess(
+                    args=getattr(pushed, "args", ["bd", *args]),
+                    returncode=pushed.returncode,
+                    stdout=getattr(pushed, "stdout", "") or "",
+                    stderr=f"{prior}\n{refused}".lstrip(),
+                )
+            return pushed
+        if reservation is None:
             return pushed
         try:
             host_fence.verify_managed_push(fence_remote, cwd=cwd, reservation=reservation)
