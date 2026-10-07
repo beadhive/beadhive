@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from . import config, gitref, hq_authority_ceiling, hq_git_broker, hq_manifest_guard
+from . import hq_authority_enforce as authority_mode
 from . import hq_authority_guard as guard
 from .hq_authority_enforce import enforced as authority_enforced
 from .run import run
@@ -666,15 +667,26 @@ class GitControlPlane:
             self._remote(policy),
             sha,
         )
-        _git(
-            self.hq_dir,
-            "-c",
-            f"gpg.ssh.allowedSignersFile={policy['operator_signers']}",
-            "-c",
-            f"gpg.ssh.program={policy['executables']['ssh_keygen']['path']}",
-            "verify-commit",
-            sha,
-        )
+        # Trusted mode (bh-mk97e) accepts signed and unsigned commits without verifying them;
+        # the witness/rollback floor and generation below still hold.
+        if authority_enforced():
+            try:
+                _git(
+                    self.hq_dir,
+                    "-c",
+                    f"gpg.ssh.allowedSignersFile={policy['operator_signers']}",
+                    "-c",
+                    f"gpg.ssh.program={policy['executables']['ssh_keygen']['path']}",
+                    "verify-commit",
+                    sha,
+                )
+            except ControlPlaneError:
+                header = _git(self.hq_dir, "cat-file", "-p", sha).split("\n\n", 1)[0]
+                if authority_mode.unsigned_commit(header):
+                    raise ControlPlaneError(
+                        authority_mode.unsigned_rejection("HQ authority")
+                    ) from None
+                raise
         if (
             int(_git(self.hq_dir, "cat-file", "-s", f"{sha}:authority.json")) > 4 * 1024 * 1024
             or _git(self.hq_dir, "ls-tree", "--name-only", sha) != "authority.json"
@@ -799,7 +811,9 @@ class GitControlPlane:
         if record is None or record["state"] == "retired":
             return None
         auth = ObservationAuthority(**record["authority"])
-        expiry = min(state["expires_at"], auth.candidate_expires_at or state["expires_at"])
+        expiry = authority_mode.snapshot_validity(
+            self.clock(), state["expires_at"], auth.candidate_expires_at
+        )
         if self.clock() >= expiry:
             return None
         receipt = record["receipt"]
@@ -1605,9 +1619,8 @@ class SqlControlPlane:
 
         authority = ObservationAuthority(**record["authority"])
         checked = self.clock()
-        validity = min(
-            state["expires_at"],
-            authority.candidate_expires_at or state["expires_at"],
+        validity = authority_mode.snapshot_validity(
+            checked, state["expires_at"], authority.candidate_expires_at
         )
         if row is None:
             sequence, digest, first_seen = 0, "", None
@@ -2532,8 +2545,11 @@ class SqlControlPlane:
                 } or guard.same_incumbent_after_rotation(
                     envelope["authority"], route.frame_id, record
                 )
+            # Trusted (bh-mk97e) still honours emergency review, state, cordon and hive scope;
+            # only deprecated BH_HQ_AUTHORITY_ENFORCE=false waives that content.
+            waive = authority_mode.content_waived()
             if (
-                enforce
+                not waive
                 and (holder_identity is not None or incumbent_identity is not None)
                 and emergency_review_required(record)
                 and not emergency
@@ -2556,12 +2572,15 @@ class SqlControlPlane:
                     now=self.clock(),
                     signed=signed,
                 )
-                authority_ok = not enforce or not (
+                authority_ok = waive or not (
                     record["state"] != "active"
                     or record["cordoned"]
                     or policy is None
-                    or self.clock() >= policy["valid_until"]
-                    or policy["config_revision"] != record["authority"]["config_revision"]
+                    or enforce
+                    and (
+                        self.clock() >= policy["valid_until"]
+                        or policy["config_revision"] != record["authority"]["config_revision"]
+                    )
                 )
                 if (
                     holder_identity != route.holder_identity

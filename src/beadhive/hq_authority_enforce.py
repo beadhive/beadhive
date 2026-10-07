@@ -206,6 +206,24 @@ def trusted() -> bool:
     return not enforced()
 
 
+#: Trusted mode has no authority expiry; a heartbeat authority snapshot still needs a finite
+#: ``valid_until`` > ``checked_at``, so trusted snapshots look this far ahead (re-read per use).
+TRUSTED_SNAPSHOT_HORIZON_S = 86400
+
+
+def snapshot_validity(now: float, expires_at: float, candidate_expires_at: float | None) -> float:
+    """``valid_until`` for a heartbeat :class:`AuthoritySnapshot` (Git and SQL planes).
+
+    Signed: the earlier of the authority expiry and the candidate window (unchanged). Trusted:
+    the authority expiry is ignored; the candidate window (operator content: how long a pending
+    incarnation may stay unadmitted) still bounds it."""
+    if enforced():
+        return min(expires_at, candidate_expires_at or expires_at)
+    if candidate_expires_at is not None:
+        return candidate_expires_at
+    return max(expires_at, now + TRUSTED_SNAPSHOT_HORIZON_S)
+
+
 def content_waived() -> bool:
     """Deprecated ``BH_HQ_AUTHORITY_ENFORCE=false`` only: trusted verification PLUS the 0.23
     content waiver (admission, cordon, emergency review, desired release/caps/profile are

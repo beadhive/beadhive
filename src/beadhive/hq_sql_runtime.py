@@ -22,6 +22,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import hq_authority_enforce
 from . import hq_authority_guard as guard
 from .hq_hive_policy import project_hive_policies, validate_sql_hive_policies
 from .hq_sql_deadline import flock_until
@@ -334,6 +335,11 @@ class SqlRuntimeAuthority:
 
         Returns ``(backend, generation, sequence, crossref, state, policies)``. No expiry,
         replay-floor or policy-freshness judgement is made here; callers add those.
+
+        Trusted mode (bh-mk97e) checks the digests and canonical bytes but not the operator
+        signature, and accepts the unsigned marker
+        (:data:`beadhive.hq_authority_enforce.UNSIGNED_SIGNATURE`); signed mode rejects that
+        marker fail-closed with an actionable message.
         """
         cursor.execute(
             "SELECT singleton_id,schema_version,backend_identity,generation,revision,"
@@ -396,11 +402,16 @@ class SqlRuntimeAuthority:
             "state": state,
             "hive_policies": policies,
         }
-        verify_authority(
-            signed,
-            _ascii(signature),
-            granted_public_key=self.settings["runtime_operator_public_key"],
-        )
+        if hq_authority_enforce.enforced():
+            if hq_authority_enforce.unsigned_signature(signature):
+                raise SqlRuntimeError(
+                    hq_authority_enforce.unsigned_rejection("protected HQ runtime authority")
+                )
+            verify_authority(
+                signed,
+                _ascii(signature),
+                granted_public_key=self.settings["runtime_operator_public_key"],
+            )
         return (
             backend,
             generation,
@@ -440,7 +451,13 @@ class SqlRuntimeAuthority:
         return policies
 
     def verified_state_at(self, cursor, head, *, deadline=None, allow_expired=False):
-        """Verify exact authority bytes on an already-owned SQL transaction."""
+        """Verify exact authority bytes on an already-owned SQL transaction.
+
+        Trusted mode (bh-mk97e) skips the signature (see :meth:`_signed_authority_at`) and
+        every expiry judgement; the replay floor and the generation/revision consistency hold.
+        """
+        trusted = hq_authority_enforce.trusted()
+        allow_expired = allow_expired or trusted
         backend, generation, sequence, crossref, state, policies = self._signed_authority_at(
             cursor, head
         )
@@ -449,7 +466,9 @@ class SqlRuntimeAuthority:
         validate_sql_hive_policies(
             policies, config_head=config_head, now=self.clock(), require_fresh=False
         )
-        if any(policy["valid_until"] > state["expires_at"] for policy in policies.values()):
+        if not trusted and any(
+            policy["valid_until"] > state["expires_at"] for policy in policies.values()
+        ):
             raise SqlRuntimeError("protected hive policy exceeds signed authority expiry")
         now = self.clock()
         if (
@@ -485,9 +504,17 @@ class SqlRuntimeAuthority:
         `current_head` is the head actually read, which the caller's fresh config fence
         must pin. Callers still perform a fresh authoritative reread at their
         dispatch/claim point.
+
+        Trusted mode (bh-mk97e) has no head binding: the latest committed config is returned
+        whatever head the authority names (callers skip their projection comparison via
+        :func:`beadhive.hq_authority_enforce.enforced`).
         """
         current = self.load_latest_config_at(cursor, deadline=deadline)
-        if (current.backend_identity, current.generation, current.commit_revision) == crossref:
+        if (
+            current.backend_identity,
+            current.generation,
+            current.commit_revision,
+        ) == crossref or hq_authority_enforce.trusted():
             return current, current.commit_revision
         bound = None
         if policies is not None and valid_until is not None:
@@ -728,7 +755,7 @@ class SqlRuntimeAuthority:
         *,
         prefix: str | None = None,
         deadline=None,
-        enforce=True,
+        enforce=None,
         hive_lease_epoch: int | None = None,
         session_liveness: bool = False,
         session_prefix: str | None = None,
@@ -743,11 +770,12 @@ class SqlRuntimeAuthority:
         verified heartbeat from the frame's own inbox (:func:`newest_signed_heartbeat`),
         in the same 6-tuple shape, and the public-observation reread fence is skipped.
 
-        ``enforce=False`` (``BH_HQ_AUTHORITY_ENFORCE=false``, UNSUPPORTED, dev-only) accepts
-        expired signed authority and a config head that the authority does not cross-reference:
-        the latest committed config is read, the signed policy projection is not compared to it,
-        and the config fence pins the head actually read. Signatures, the replay floor, the
-        principal route and the incarnation match are verified exactly as when enforcing.
+        ``enforce`` defaults to this process's authority mode (signed). ``enforce=False``
+        (trusted, bh-mk97e) accepts expired or unsigned authority and a config head that the
+        authority does not cross-reference: the latest committed config is read, the signed
+        policy projection is not compared to it, and the config fence pins the head actually
+        read. The replay floor, the principal route and the incarnation match are verified
+        exactly as when enforcing.
 
         ``hive_lease_epoch`` (signed hive-lease mode, with `prefix`) additionally gathers
         :class:`HiveLeaseEvidence` for that prefix at that fence epoch from the frame's own
@@ -764,6 +792,8 @@ class SqlRuntimeAuthority:
         """
         if session_liveness and hive_lease_epoch is not None:
             raise SqlRuntimeError("session liveness and hive lease evidence are separate reads")
+        if enforce is None:
+            enforce = hq_authority_enforce.enforced()
         signed = signed_liveness(self.settings)
         connection, deadline = self._open(deadline=deadline)
         try:

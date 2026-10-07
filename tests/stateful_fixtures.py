@@ -382,6 +382,9 @@ def _sandbox_bh_home(tmp_path_factory, monkeypatch):
     # expiry/binding/predicates and prints a banner on every command. A dev host's unit file or
     # shell exporting it must not turn fail-closed tests green or add stderr noise.
     monkeypatch.delenv("BH_HQ_AUTHORITY_ENFORCE", raising=False)
+    # `BH_HQ_AUTHORITY_MODE=trusted` (bh-mk97e) skips operator signature/expiry/binding: an
+    # operator shell running a trusted factory must not turn signed fail-closed tests green.
+    monkeypatch.delenv("BH_HQ_AUTHORITY_MODE", raising=False)
     # An operator shell's own HQ binding/paths (bh-7zu86) must not leak in either: tests that
     # exercise them set their own after this baseline.
     for name in (

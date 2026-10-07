@@ -90,18 +90,26 @@ def read(plane, prefix, *, git, error, decode, lease_ref, json_decode, holder_id
         if historical:
             return sha, None
         hive = policy.get("hive_policies", {}).get(prefix)
+        # Trusted mode (bh-mk97e): no policy expiry and no config-head binding; state,
+        # cordon and hive scope still hold.
+        from .hq_authority_enforce import enforced
+
+        bound = enforced()
         if (
             record["state"] != "active"
             or record["cordoned"]
             or lease.host_id != holder_identity
             or hive is None
-            or plane.clock() >= hive["valid_until"]
-            or record["authority"]["config_revision"] != hive["config_revision"]
+            or bound
+            and (
+                plane.clock() >= hive["valid_until"]
+                or record["authority"]["config_revision"] != hive["config_revision"]
+            )
         ):
             return sha, None
         # Existing config adapter verifies signatures, generation and rollback witnesses.
         config_head, _, _ = plane.config_store()._read()
-        if config_head != hive["config_head"]:
+        if bound and config_head != hive["config_head"]:
             return sha, None
         guard.requirements(hive["requires"], record["desired"]["caps"])
         expiry = record["authority"]["candidate_expires_at"]

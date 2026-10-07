@@ -43,6 +43,8 @@ class GitFleetConfigRevisionStore:
         self.operator_key, self.duration, self.ceiling = operator_key, duration, ceiling
 
     def _read(self, *, allow_expired=False, allow_legacy_bound=False):
+        from . import hq_authority_enforce
+
         plane, git = self.plane, self.git
         policy = plane._policy()
         remote = plane._remote(policy)
@@ -63,15 +65,25 @@ class GitFleetConfigRevisionStore:
                 raise FleetConfigError("configuration head missing with retained witnesses")
             return "", {}, policy
         git(plane.hq_dir, *options, "fetch", "--no-tags", remote, sha)
-        git(
-            plane.hq_dir,
-            "-c",
-            f"gpg.ssh.allowedSignersFile={policy['operator_signers']}",
-            "-c",
-            f"gpg.ssh.program={policy['executables']['ssh_keygen']['path']}",
-            "verify-commit",
-            sha,
-        )
+        # Trusted mode (bh-mk97e): signed or unsigned, unverified; witnesses still hold.
+        if hq_authority_enforce.enforced():
+            try:
+                git(
+                    plane.hq_dir,
+                    "-c",
+                    f"gpg.ssh.allowedSignersFile={policy['operator_signers']}",
+                    "-c",
+                    f"gpg.ssh.program={policy['executables']['ssh_keygen']['path']}",
+                    "verify-commit",
+                    sha,
+                )
+            except ValueError:
+                header = git(plane.hq_dir, "cat-file", "-p", sha).split("\n\n", 1)[0]
+                if hq_authority_enforce.unsigned_commit(header):
+                    raise FleetConfigError(
+                        hq_authority_enforce.unsigned_rejection("HQ fleet configuration")
+                    ) from None
+                raise
         if (
             git(plane.hq_dir, "ls-tree", "--name-only", sha) != "config.json"
             or int(git(plane.hq_dir, "cat-file", "-s", f"{sha}:config.json")) > 4 * 1024 * 1024
@@ -99,7 +111,11 @@ class GitFleetConfigRevisionStore:
             raise FleetConfigError("configuration rollback or inconsistent witness")
         if state["generation"] != policy["generation"] or plane.clock() < state["issued_at"] - 30:
             raise FleetConfigError("configuration generation/clock mismatch")
-        if not allow_expired and plane.clock() >= state["expires_at"]:
+        if (
+            not allow_expired
+            and plane.clock() >= state["expires_at"]
+            and hq_authority_enforce.enforced()
+        ):
             raise FleetConfigError("configuration validity expired")
         return sha, state, policy
 
@@ -112,12 +128,16 @@ class GitFleetConfigRevisionStore:
         identity = hashlib.sha256(
             (policy["server_root"] + "\0" + policy["client"]["policy_digest"]).encode()
         ).hexdigest()
+        from .hq_authority_enforce import snapshot_validity
+
+        fetched = self.plane.clock()
         return FleetConfigSnapshot(
             backend_identity="git:" + identity,
             commit_revision=sha,
             generation=state["generation"],
-            fetched_at=self.plane.clock(),
-            valid_until=state["expires_at"],
+            fetched_at=fetched,
+            # Signed: the carrier expiry. Trusted (bh-mk97e): never expired.
+            valid_until=snapshot_validity(fetched, state["expires_at"], None),
             documents=documents,
         )
 
