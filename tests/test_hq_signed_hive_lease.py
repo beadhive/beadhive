@@ -761,7 +761,7 @@ def _composite(tmp_path, monkeypatch, inbox, *, registered=True):
         "_signed_authority_at",
         lambda cursor, revision: ("backend", "generation", 1, (), {}, signed[revision]),
     )
-    monkeypatch.setattr(authority, "load_config_at", lambda *a, **k: "snapshot")
+    monkeypatch.setattr(authority, "bound_config_at", lambda *a, **k: ("snapshot", "c"))
     monkeypatch.setattr(runtime, "project_hive_policies", lambda *a, **k: signed[head])
     for fence in (
         "fresh_config_head_fence",

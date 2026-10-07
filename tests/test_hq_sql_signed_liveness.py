@@ -316,7 +316,7 @@ def _composite_world(frame, monkeypatch, *, liveness, inbox=(), public=None):
     monkeypatch.setattr(
         authority, "verified_state_at", lambda *a, **k: (state, ("b", "g", "c"), policies)
     )
-    monkeypatch.setattr(authority, "load_config_at", lambda *a, **k: "snapshot")
+    monkeypatch.setattr(authority, "bound_config_at", lambda *a, **k: ("snapshot", "c"))
     monkeypatch.setattr(runtime, "project_hive_policies", lambda *a, **k: policies)
     for fence in (
         "fresh_config_head_fence",
@@ -596,7 +596,7 @@ def test_unenforced_composite_tolerates_expiry_and_unbound_config_head(frame, mo
     authority, seen = _recording_composite(frame, monkeypatch)
     latest = SimpleNamespace(commit_revision="latest-head", beadyard_id=None)
     monkeypatch.setattr(
-        authority, "load_config_at", lambda *a, **k: pytest.fail("bound config required")
+        authority, "bound_config_at", lambda *a, **k: pytest.fail("bound config required")
     )
     monkeypatch.setattr(authority, "load_latest_config_at", lambda *a, **k: latest)
     monkeypatch.setattr(

@@ -73,6 +73,9 @@ _SCHEMA_UNIQUE = {
     ("hq_config_publications", "publication_sequence"),
 }
 MAX_BYTES = 4 * 1024 * 1024
+#: Verified documents of immutable earlier config commits (see ``committed_snapshot_at``).
+_COMMITTED_CACHE: dict[tuple, tuple] = {}
+_COMMITTED_CACHE_LIMIT = 16
 PATH = re.compile(
     r"beadyard\.json|fleet\.yaml|workspace(?:-[A-Za-z0-9_-]+)?\.toml|allowed_signers|"
     r"hosts/[A-Za-z0-9_-]+\.yaml|"
@@ -459,6 +462,42 @@ class SqlFleetConfigRevisionStore:
             generation=generation,
             fetched_at=now,
             valid_until=now + self.settings["cache_ttl"],
+            documents=documents,
+        )
+
+    def committed_snapshot_at(self, cursor, head):
+        """Verify an *earlier* immutable config commit without touching the restore floor.
+
+        Same document-hash, digest, witness and
+        semantic checks as :meth:`_snapshot` and the same backend/generation trust pin, but no
+        floor check: a head older than the floor is expected here (it is the head an
+        authority was signed against), not a rollback. Callers must already have proven
+        `head` is an ancestor of a floor-checked current head. The verified documents of a
+        commit hash are immutable, so they are memoized per process.
+        """
+        settings = self.settings
+        if not isinstance(head, str) or not re.fullmatch(r"[0-9a-v]{32}", head):
+            raise SqlConfigError("HQ config revision invalid")
+        if not settings.get("backend_identity") or not settings.get("generation"):
+            raise SqlConfigError("HQ config host trust/generation pin unavailable")
+        key = (settings["backend_identity"], settings["generation"], head)
+        cached = _COMMITTED_CACHE.get(key)
+        if cached is None:
+            backend, generation, sequence, documents, _version = self._committed(cursor, head)
+            if backend != settings["backend_identity"] or generation != settings["generation"]:
+                raise SqlConfigError("HQ config host trust/generation pin unavailable")
+            cached = (backend, generation, sequence, documents)
+            if len(_COMMITTED_CACHE) >= _COMMITTED_CACHE_LIMIT:
+                _COMMITTED_CACHE.pop(next(iter(_COMMITTED_CACHE)))
+            _COMMITTED_CACHE[key] = cached
+        backend, generation, _sequence, documents = cached
+        now = self.clock()
+        return FleetConfigSnapshot(
+            backend_identity="sql:" + backend,
+            commit_revision=head,
+            generation=generation,
+            fetched_at=now,
+            valid_until=now + settings["cache_ttl"],
             documents=documents,
         )
 
