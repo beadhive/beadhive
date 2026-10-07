@@ -1,8 +1,11 @@
 # Hive writer partitioning — epoch in the data, receiver out
 
-**Status:** proposal, 2026-10-04; amended 2026-10-04 before kickoff with probe evidence (see
+**Status:** **accepted as amended** by the ADR (2026-10-05); **implemented for 0.23.0**
+(coexistence minor, dormant until a hive's data switches it on). The ADR's deviations from this
+text govern, so read it as the original proposal. Originally: proposal, 2026-10-04; amended
+2026-10-04 before kickoff with probe evidence (see
 [Pre-kickoff probe evidence](#pre-kickoff-probe-evidence)). Not an ADR. The spike molecule's
-decision bead produces the ADR.
+decision bead produced the ADR.
 **Decision:** [hive-writer-partitioning-adr.md](hive-writer-partitioning-adr.md) (`bh-pr889`)
 records **GO, staged**, accepted by the operator on 2026-10-05, with the deviations it lists from this
 proposal.

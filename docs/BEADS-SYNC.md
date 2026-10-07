@@ -148,16 +148,109 @@ local case falls out for free.
 
 ## The epoch fence beside the data (multi-host)
 
-`refs/bh/epoch` lives on the hive's own remote beside `refs/dolt/data`. Current bd owns the
-data push and disables its Git hooks, so the two updates are **not atomic**. Managed
+A hive has one of two fences. Which one is in force is decided by the hive's **data**, not by
+any config key ("data is the switch"): a hive whose `main` carries the `bh_writer` table is
+**cut over** to the in-data fence; every other hive keeps the legacy `refs/bh/epoch` fence. 0.23.0
+installs nothing on its own. An operator cuts a hive over, one hive at a time, with the hidden,
+temporary `bh hive fence` verb described only in the
+[cutover runbook](design/hive-writer-cutover-runbook.md). Design:
+[ADR](design/hive-writer-partitioning-adr.md) Decision 2 and its binding conditions.
+
+### Cut-over hives: the fence in the data
+
+A cut-over hive carries its writer token in its own Dolt `main`: `bh_writer` (who writes, at which
+epoch), `bh_epoch_live` (the live epoch, a singleton), `bh_write_mark` (one row per write, stamped
+with the epoch it was written under) and 44 `bh_*` triggers (`src/beadhive/fence_schema.py`,
+`src/beadhive/fence_data.py`). Three things enforce it:
+
+- **The remote's non-fast-forward CAS.** A stale writer that pulls first sees the new writer and
+  stops. One that pushes without pulling loses the race.
+- **Epoch retirement by foreign key.** Each adopt bumps the epoch, so a mark stamped by a retired
+  epoch violates its foreign key and the write fails.
+- **A local guard trigger** on every bd table, which stamps the mark and refuses a replica that is
+  not the writer.
+
+Because the data carries the fence, a raw `bd dolt push` is safe on a cut-over hive: a superseded
+writer's push is refused by the data, not by a bh-side reservation. The consequences for the
+verbs:
+
+- **`bh bd dolt push|sync` are lifted.** On a cut-over hive they pass for the writer frame only
+  (`src/beadhive/guard.py`, `bd_write_refusal`). Legacy hives keep the refusal below.
+- **The write gate is clock-free.** On a cut-over hive "may this frame write?" is answered by the
+  local `bh_writer` row and nothing else: no clock, no HQ read. An established writer keeps
+  writing while HQ is down. Lease expiry is advisory everywhere (a failover hint, never a write
+  gate), and cut-over hives do not renew the lease at all. Legacy hives still renew it best-effort
+  as a liveness hint, and a failed renewal is logged, never refused.
+- **Managed push diverts a superseded writer.** See [Orphans](#orphans-after-a-partitioned-writer-rejoins).
+
+#### Break-glass paths
+
+These forms can rewrite, discard or auto-merge fenced data, so `bh bd` refuses them on a cut-over
+hive (`guard.break_glass_form`):
+
+- `bd dolt push --force` (or `-f`);
+- `bd dolt remote reset-data`;
+- `bd backup restore --force` (or `-f`);
+- any `--strategy` flag (for example `bd federation sync --strategy`);
+- `bd vc merge` (a plain merge);
+- `bd conflicts resolve` on any `bh_*` table, or with no table named.
+
+The refusal names the form and points at `bh doctor`. A raw, OS-level `bd` bypasses `bh bd`,
+and nothing in bh can stop it, so the fence also detects after the fact. `fence_audit`
+(`src/beadhive/fence_audit.py`; `bh doctor` and `bh hive fence status` print it) reads the
+hive's **remote** `main` and HQ placement and reports:
+
+- `stale_marks`: a write stamped by a retired epoch got past the foreign key (a forced commit
+  or merge);
+- `epoch_regressed`: `bh_writer` is below an epoch its own history reached (a `--strategy` merge
+  took a stale side);
+- `placement_ahead`: HQ names a higher epoch than the data (an incomplete adopt, or a force push
+  wiped the bump);
+- `late_writes`: a **history check** of the commits since the live epoch's adopt that carry a
+  lower epoch than the live one. It catches a forwarder that merged the bump into a stale
+  `main` and re-stamped its marks, which leaves the other three clean. Commits that entered
+  through a deliberate `bh: merge frame/...` orphan merge are sanctioned.
+
+The audit is a pure read. A non-writer that writes **at** the live epoch is undetectable from the
+data, which is why the forwarder grants are table-scoped
+([FORWARD-WRITE-PATH](FORWARD-WRITE-PATH.md)).
+
+#### Orphans after a partitioned writer rejoins
+
+On a cut-over hive every managed push commits the working set first. If the remote head's
+`bh_writer.epoch` is above the epoch this frame's committed `main` holds, the frame has been
+superseded and does not push `main`. It pushes its unpublished commits to
+`frame/<id>/orphan-<epoch>-<n>`, checks that the branch landed, and then resets local `main` to
+the remote head. The push reports `superseded` and exits non-zero, and nothing is lost.
+Legacy hives never take this path.
+
+The **writer** lists and merges orphans (`bh hive fence orphans <hive>`,
+`bh hive fence orphan-merge <hive> --branch <branch>`). `orphan-merge` refuses unless this host
+is the writer, the remote writer is not ahead, and the merge raises no conflict; it never
+resolves a conflict and never runs a plain `vc merge`. Operator procedure, refusals and the
+conflict fallback are in the cutover runbook, [section 4a](design/hive-writer-cutover-runbook.md).
+Merging a pending orphan is an operator duty: `bh doctor` lists them.
+
+#### Syncing cut-over hives
+
+`bh hive sync remotes --push` and the work/report flows publish through the managed push, which
+commits first and reserves the maintained `refs/bh/epoch` during coexistence. Through `bh bd`,
+`--strategy` is refused on a cut-over hive. A hive that is not cut over takes the legacy path
+below.
+
+### Hives not cut over: `refs/bh/epoch`
+
+On a legacy hive `refs/bh/epoch` lives on the hive's own remote beside `refs/dolt/data`. Current
+bd owns the data push and disables its Git hooks, so the two updates are **not atomic**. Managed
 reserve-before-bd plus exact postflight verification CASes a fresh fence reservation immediately
-before bd and verifies it immediately afterward — see
+before bd and verifies it immediately afterward, as in
 [design/multi-host-model-adr.md](design/multi-host-model-adr.md) Amendment 1 §2 and
 `src/beadhive/host_fence.py`. A stale preflight guarantees no data was attempted; a takeover
 inside the CAS→push window can land data before postflight detects it. Raw `bd dolt push`
-bypasses bh entirely, so adopted hives publish through `bh hive sync remotes --push`. Two facts
-measured while building it (bh-ytbb.7, corrected by bh-tfapu), recorded
-here because both are easy to get wrong from the outside:
+bypasses bh entirely, so adopted legacy hives publish through `bh hive sync remotes --push`
+(`bh bd dolt push|sync` stays refused there). During coexistence a cut-over hive keeps this ref
+in lockstep with `bh_writer` on every adopt. Two facts measured while building it (bh-ytbb.7,
+corrected by bh-tfapu), recorded here because both are easy to get wrong from the outside:
 
 - **Where the transient data ref actually lives.** A hive's own working clone has **no** local
   `refs/dolt/data`. `bd dolt push` stages through a hidden bare repo at

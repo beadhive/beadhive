@@ -1,4 +1,6 @@
-# Spike `bh-55vvh` — pair bead state with work: where backups live, how they are ordered against bd's push, and how frame loss reclaims
+# Spike `bh-55vvh`: pair bead state with work
+
+Where backups live, how they are ordered against bd's push, and how frame loss reclaims.
 
 **Bead:** `bh-55vvh` (M14) · **Seat:** `dev/pairing` · **Type:** decision spike (no product code)
 **Parent:** `bh-16347` (hive writer partitioning B, 0.23.0)
@@ -58,6 +60,7 @@ The operator assigned re-lease to M12, and O9 measures it (Q5).
 ## Evidence
 
 **E1. Lifecycle state is written in several places, and only some of them publish.**
+
 - `Lifecycle.claim` refreshes, acquires the lease, re-reads, provisions the worktree, then
   writes a worktree-local claim record (`lifecycle.py:532-566`). It never calls
   `workspace.publish`.
@@ -83,6 +86,7 @@ bypasses it (`engine.py:418-424`). On cut-over hives the ADR lifts `bh bd dolt p
 auto-push (§2). Any rule that must hold "on every publish" therefore has to hold at write time.
 
 **E4. Today a bead can be closed or submitted while its work exists only on one disk.**
+
 - With a local review gate, submit pushes nothing. `push_branch` runs only for `gh:*` gates
   (`work_submission.py:604-607`), yet submit publishes `review=pending` at a sha that lives in
   one worktree.
@@ -103,6 +107,7 @@ Scenario 9 had one frame doing all the work. R2 there notes that the revert "rev
 `in_progress` bead".
 
 **E7. bd's lease reclaim covers non-primary death and nothing else.**
+
 - Leases live on the granting replica (the primary), and a dead forwarder's claims are reaped
   after the TTL plus grace, about 15 min (`bh-sieai` T5).
 - After the *primary* dies, the new primary has 0 lease rows. `bd reclaim`, `--any-replica`
@@ -396,6 +401,7 @@ done on another executor.
   operator confirmation.
 
 **Storage.**
+
 - The refs hold only bead-branch commits, which are small next to `refs/dolt/data`.
 - Rewrites leave unreachable objects that the forge collects (E10i).
 - The ref count is bounded by about (open beads × frames that touched them) plus unexpired
@@ -403,6 +409,7 @@ done on another executor.
 - Default clones and fetches never download them (E10f).
 
 **Security.**
+
 - **Exposure.** Backups make in-progress work readable to anyone who can read the remote; on a
   public repo, `ls-remote` lists them. That is a real delta for public hives when the review
   gate is local, because today nothing is pushed before merge. Checkpoints can also publish a
@@ -490,7 +497,9 @@ and travels with `main`.
 | T-e | New dependency on the remote at submit | Local-gate submit worked offline | Submit on a hive with pairing on needs the backup remote reachable | Fails closed with nothing written. The forward path already needs the LAN. A transient laptop (`xeno-mac.lan`) cannot submit offline on a paired hive. |
 | T-f | Reclaim of non-primary frames | bd only, backup-blind | bd plus `bh fleet reclaim --frame` (director/operator) | The director credential gains no new table grants: it is an ordinary guarded bead write on the primary, through the forward path. |
 
-### D10. Manual fallback (until M14b and M3 land, through the first soak, and whenever `reclaim.failover.mode` is not `apply`)
+### D10. Manual fallback
+
+Used until M14b and M3 land, through the first soak, and whenever `reclaim.failover.mode` is not `apply`.
 
 The ADR keeps manual reclaim after a primary's death as the fallback (§4). The procedure for
 the runbook (M11), run on the new primary after the adopt lands:
@@ -505,7 +514,8 @@ the runbook (M11), run on the new primary after the adopt lands:
    - **Submitted with its branch on the remote:** leave it.
    - **Branch on the remote with work beyond base:**
      `bh bd unclaim <id> --force`, then
-     `bh bd comments add <id> "reclaimed after failover of <frame> at epoch <n>: resumable from <ref>@<sha> — ops/<name>"`.
+     `bh bd comments add <id> "reclaimed after failover of <frame> at epoch <n>:
+     resumable from <ref>@<sha> — ops/<name>"`.
    - **Otherwise:** `bh bd unclaim <id> --force` with a "rewound, unbacked" comment.
 
    `bh work abandon` as `ops/` refuses a missing lease, so it cannot be used here (E7).

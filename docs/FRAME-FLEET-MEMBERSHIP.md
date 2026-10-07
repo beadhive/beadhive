@@ -150,7 +150,7 @@ Use these names for different checks:
 |---|---|
 | `CONFIG_READY` | The selected backend returned the expected committed config revision and canonical HQ identity. |
 | `BEADS_READY` | The selected Beads engine reports an existing usable store or a supported recoverable origin, and bootstrap/readback succeeds. |
-| `AUTHORITY_READY` | Current signed runtime authority, policy projection and trusted observer receipts verify. |
+| `AUTHORITY_READY` | Current signed runtime authority and policy projection verify, and the frame's liveness evidence is present: **session and evidence rows** on a data-switched `dolt-server` frame (0.23.0), otherwise the trusted observer's receipts (0.22.x signed or receiver mode, and `git` HQ). |
 | `ADMITTED` | An operator has admitted this declared frame under the current protected authority. |
 | `ELIGIBLE` | All current frame, heartbeat, release, capability, hive-policy and dispatch predicates pass for the requested hive. |
 
@@ -233,6 +233,38 @@ first-seen/replay receipts; sender-provided timestamps cannot make an old beat
 fresh. TTL is exclusive (`age < leaseDurationSeconds`), capped at 900 seconds
 and at least three report intervals. A repeated signed record does not renew
 freshness.
+
+### Session and evidence rows (0.23.0, `dolt-server` HQ)
+
+On `dolt-server` HQ the signed beat is replaced, per frame incarnation, by two operator-provisioned
+single-row tables, `frame_<principal>_<epoch>_session` and `_evidence`
+([HQ](HQ.md#session-rows), ADR §5, `src/beadhive/hq_sql_session.py`). The HQ server stamps both
+times (`UTC_TIMESTAMP(6)`), so a frame's clock cannot make a stale frame look fresh and there is
+no observer receipt to wait for.
+
+- **Renewal** is its own loop, separate from conformance: one `UPDATE` per tick of the session
+  row (`python -m beadhive.heartbeat_sender renew`, unit `beadhive-session-renew`, 60 s). The
+  conformance job writes the evidence row on its own timer (default 300 s).
+- **Expiry** is computed by the reader from the operator's `hq_liveness_policy`:
+  `session_ttl_s` (default 300) for the session, `evidence_ttl_s` (default 900) added to the
+  evidence's `measured_at`.
+- **Data is the switch.** The reader uses these rows exactly when both tables exist for the
+  incarnation, with no config key; otherwise it reads the signed inbox. During the Φ3 soak the
+  sender dual-writes both.
+- **`BH_FRAME_HEARTBEAT` is ignored** on a switched frame (logged as
+  `ignored: session liveness`): a stale session is not waivable.
+- **Claim-time stamps.** A claim records the admitted session `renewed_at`, evidence
+  `measured_at` and evidence digest, replacing the receiver's per-beat audit.
+- **Account hardening** is mandatory: frame accounts are `'<principal>'@'<frame address>'`,
+  `REQUIRE SSL`, and no hive database is co-hosted on the HQ server.
+- `git` HQ keeps the signed `HeartbeatLease`. Execution frames are scoped to `dolt-server` HQ.
+
+**Release ranges (`bh-vfrem`) are not part of 0.23.0.** A frame grant still pins one release;
+`release_matches` compares against it exactly. When release ranges land, `release_matches` and
+`conformance_pass` become range-aware over the evidence row; until then a release change is a
+reviewed grant rotation (`bh host release-upgrade`). The version ranges that do exist in 0.23.0
+belong to the test canary, not to grants
+([CONFIGURATION](CONFIGURATION.md#fence-canary-ranges)).
 
 Inspect a candidate and a hive's policy with:
 
