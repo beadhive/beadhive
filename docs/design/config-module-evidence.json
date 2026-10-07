@@ -9,7 +9,7 @@
   },
   "fan_in": {
     "production_config_importers_before": 95,
-    "production_config_importers_after": 88,
+    "production_config_importers_after": 89,
     "production_config_schema_importers_before": 8,
     "production_config_schema_importers_after": 5,
     "remaining_dependency_owner": "bh-18hud.5 compatibility migration ledger",
@@ -18,7 +18,7 @@
   "static_test_blast_radius": {
     "historical_documented_files": 129,
     "exact_ast_files_at_baseline": 135,
-    "exact_ast_files_after": 162,
+    "exact_ast_files_after": 163,
     "delta_explanation": "The historical 129 used an older static graph snapshot. Re-running the checked AST definition at the exact implementation base finds 135 after repository growth; the config module candidate and later workspace, precious-worktree, host-daemon, process dispatch, fleet consumer, HQ seed/bootstrap, and fleet membership end-to-end suites account for the current exact AST inventory. This static count does not claim a smaller dynamic closure. The bh-qa7vc Factory enrollment and daemon-origin coverage is included in the current exact AST inventory.",
     "owner": "configuration compatibility suite and bh-18hud.5 migration ledger"
   },
@@ -132,5 +132,21 @@
   "dependency_ledger_resync_update": {
     "bead": "bh-nyuyy.4",
     "reason": "The live generated ledger now measures 162 test config importers (331 patch sites unchanged) after tests/stateful_fixtures.py and tests/test_host_real_home_guard.py joined the facade importers; the checked ledger was regenerated with scripts/config_dependency_ledger.py. Production importers, schema importers, historical extraction counts, the pinned baseline, and earlier full-gate receipts are unchanged."
+  },
+  "writer_gate_inventory_update": {
+    "bead": "bh-12hev",
+    "reason": "The live generated ledger now measures 161 test config importers and 332 patch sites after tests/test_guard_writer_gate.py (the clock-free cut-over write gate) patches the beadhive.config.fleet_sql_selected facade read so the gate proves it never consults HQ. Production importers, schema importers, historical extraction counts, the pinned baseline, and earlier full-gate receipts are unchanged."
+  },
+  "forward_write_path_inventory_update": {
+    "bead": "bh-g7dlo",
+    "reason": "The live generated ledger now measures 89 production config importers after src/beadhive/hive_forward.py (the option A forward write path) reads host.forward.serve through the beadhive.config facade when the divert reset's forwarder quiesce runs without a loaded config; it is enumerated in the dependency ledger under the bh-18hud.5 compatibility owner. Schema importers, test config importers, patch sites, historical extraction counts, the pinned baseline, and earlier full-gate receipts are unchanged."
+  },
+  "b_refresh_from_main_update": {
+    "bead": "bh-16347",
+    "reason": "Refreshing the bh-16347 container from main (0.22.8) combines both resyncs above: the regenerated ledger measures 163 test config importers (B's 161 plus tests/stateful_fixtures.py and tests/test_host_real_home_guard.py from bh-7zu86) and 332 patch sites; other counts unchanged."
+  },
+  "failover_policy_inventory_update": {
+    "bead": "bh-4biq8",
+    "reason": "The live generated ledger now measures 28 test config_schema importers after tests/test_failover_policy.py imports beadhive.config_schema.BeadhiveConfig to prove no host.yaml or fleet-config key exists for failover_after or the executor floor. Production config importers, production schema importers, test config importers, patch sites, historical extraction counts, the pinned baseline, and earlier full-gate receipts are unchanged."
   }
 }

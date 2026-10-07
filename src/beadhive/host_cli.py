@@ -886,13 +886,18 @@ def list_payload(hq_dir: Path, cfg: dict | None = None) -> list[dict[str, object
     for manifest, path in iter_manifests(hq_dir):
         observation = host_heartbeat.observe(hq_dir, manifest, now=now)
         legacy = not manifest.frame_id and observation.status == "absent"
+        # A data-switched SQL frame (bh-owqdg) is live by its server-stamped session row.
+        session = getattr(observation, "carrier", "") == "session"
+        seen = (
+            observation.renewed_at
+            if session
+            else (observation.lease.renewTime if observation.lease else "")
+        )
         row = manifest_row(
             manifest,
             path,
             stale=(_is_stale(path, threshold, at=now) if legacy else not observation.fresh),
-            last_seen=None
-            if legacy
-            else (observation.lease.renewTime if observation.lease else ""),
+            last_seen=None if legacy else seen,
         )
         row.update(
             heartbeat_status=observation.status,
@@ -900,10 +905,12 @@ def list_payload(hq_dir: Path, cfg: dict | None = None) -> list[dict[str, object
             heartbeat_age=observation.age_seconds,
             heartbeat_age_basis=observation.age_basis,
             heartbeat_candidate=observation.candidate,
-            liveness_source="legacy-mtime" if legacy else "signed-heartbeat",
+            liveness_source=(
+                "legacy-mtime" if legacy else "session-row" if session else "signed-heartbeat"
+            ),
         )
         if not legacy:
-            row["last_seen"] = observation.lease.renewTime if observation.lease else ""
+            row["last_seen"] = seen
         rows.append(row)
     return rows
 
@@ -1002,8 +1009,8 @@ def list_cmd(
     same shape bh-ytbb.5 shipped, plus bh-salu's STALE marker so an orphaned manifest from a
     wiped/rebuilt host (see :mod:`beadhive.host_cli`'s module docstring) is identifiable
     without cross-referencing by hand. With ``--lease-hive``, a live HQ read (this command is a
-    reporting surface, not the hot-path write guard — see ``guard_primary``/``renew_if_due``
-    for why THAT path stays cache-only) fetches the named hive's current lease and adds a
+    reporting surface, not the hot-path write guard — see ``guard_primary`` for why THAT path
+    stays cache-only) fetches the named hive's current lease and adds a
     LEASE column via :func:`with_lease_state`."""
     hq_dir = config.hq_dir()
     cfg = config.load()
@@ -1277,7 +1284,18 @@ def adopt_cmd(
         typer.echo(f"✗ {exc}", err=True)
         raise typer.Exit(1) from None
 
-    typer.echo(f"✓ adopted {prefix} — epoch {outcome.epoch}, expires {outcome.lease.expires_at}")
+    if outcome.coexistence is not None and outcome.coexistence.resumed:
+        typer.echo(
+            f"✓ adopted {prefix} — resumed the incomplete adopt at epoch {outcome.epoch} "
+            "(placement already named this host; no new epoch minted)"
+        )
+    else:
+        typer.echo(
+            f"✓ adopted {prefix} — epoch {outcome.epoch}, expires {outcome.lease.expires_at}"
+        )
+    plan = outcome.coexistence.step2.reclaim if outcome.coexistence is not None else None
+    for line in plan.describe() if plan is not None else ():
+        typer.echo(f"  {line}")
 
 
 @lease_app.command(
@@ -1955,6 +1973,13 @@ def release_upgrade_cmd(
     plan_sha256: str = typer.Option("", "--plan-sha256"),
     operator_key: Annotated[Path | None, typer.Option("--operator-key")] = None,
     confirm: bool = typer.Option(False, "--confirm"),
+    operator_settings: Annotated[
+        str | None,
+        typer.Option(
+            "--operator-settings",
+            help="operator settings file; overrides $BH_HQ_OPERATOR_SETTINGS",
+        ),
+    ] = None,
 ):
     """Review a release rotation of a pending or active SQL frame, preserving identity.
 
@@ -1966,7 +1991,7 @@ def release_upgrade_cmd(
     from .hq_operator_settings import select_plane
 
     try:
-        plane = select_plane()
+        plane = select_plane(operator_settings)
         if not isinstance(plane, SqlControlPlane):
             raise ValueError("release-upgrade requires the protected SQL control plane")
         result = plane.release_upgrade(

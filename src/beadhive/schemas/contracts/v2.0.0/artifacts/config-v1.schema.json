@@ -483,6 +483,49 @@
       "title": "DaemonCorsConfig",
       "type": "object"
     },
+    "DaemonFailoverConfig": {
+      "additionalProperties": false,
+      "description": "The director's unattended failover loop (bh-16347.5). Off by default and opt-in per\nhost; it runs only beside a ``dolt-server`` HQ (startup refuses ``git`` HQ).",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Run the director failover loop in this daemon: observe every placed frame's server-stamped session staleness and CAS a due frame's hives to a successor. Needs dolt-server HQ and the director credential (hq.sql.placement_writer).",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "interval_seconds": {
+          "default": 60.0,
+          "description": "Seconds between failover observations. Must stay well under failover_after / 2, or every observation gap resets the observed window and nothing ever fails over.",
+          "exclusiveMinimum": 0,
+          "maximum": 3600,
+          "title": "Interval Seconds",
+          "type": "number"
+        },
+        "max_primary_spread": {
+          "default": 2,
+          "description": "bh doctor warns when the busiest eligible executor holds more hive primaries than the least busy one by more than this. Placement spreads primaries (failover picks the executor holding the fewest) but never moves a placed hive just to rebalance.",
+          "minimum": 1,
+          "title": "Max Primary Spread",
+          "type": "integer"
+        },
+        "operator_settings": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Absolute path of the operator settings file carrying hq.sql.placement_writer. When unset, BH_HQ_OPERATOR_SETTINGS in the daemon's environment is used.",
+          "title": "Operator Settings"
+        }
+      },
+      "title": "DaemonFailoverConfig",
+      "type": "object"
+    },
     "DaemonHttpConfig": {
       "additionalProperties": false,
       "properties": {
@@ -1271,6 +1314,10 @@
         "dispatch": {
           "$ref": "#/$defs/HostDispatchConfig"
         },
+        "forward": {
+          "$ref": "#/$defs/HostForwardConfig",
+          "description": "Forward write path to a hive's primary (opt-in per frame; bh-g7dlo)."
+        },
         "frame_bridge": {
           "$ref": "#/$defs/FrameBridgeIdentityConfig"
         },
@@ -1309,6 +1356,9 @@
           "default": false,
           "title": "Enabled",
           "type": "boolean"
+        },
+        "failover": {
+          "$ref": "#/$defs/DaemonFailoverConfig"
         },
         "http": {
           "$ref": "#/$defs/DaemonHttpConfig"
@@ -1381,6 +1431,87 @@
         }
       },
       "title": "HostDispatchConfig",
+      "type": "object"
+    },
+    "HostForwardConfig": {
+      "additionalProperties": false,
+      "description": "The forward write path, option A (``host.forward``, bh-g7dlo; ADR §3, condition 16).\n\nOpt-in per frame. With ``enabled``, `bh hive forward point <hive>` points this frame's bd for\na hive at the current primary's hive server (``endpoints[<primary frame>]``) with this frame's\nown host-pinned TLS login, re-points it when placement moves, and refuses (fails closed) when\nthe placed primary is not the writer.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "This frame forwards bd writes (claim, create, close) to the hive's primary.",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "endpoints": {
+          "additionalProperties": {
+            "$ref": "#/$defs/HqSqlConnection"
+          },
+          "description": "Primary frame id -> its hive server binding (host, port, database, this frame's user, tls_mode, server_name, ca_file, fnox credential).",
+          "title": "Endpoints",
+          "type": "object"
+        },
+        "serve": {
+          "$ref": "#/$defs/HostForwardServeConfig"
+        }
+      },
+      "title": "HostForwardConfig",
+      "type": "object"
+    },
+    "HostForwardServeConfig": {
+      "additionalProperties": false,
+      "description": "This frame's hive server takes forwarders (``host.forward.serve``, bh-g7dlo; ADR §3\ncondition 16). Opt-in per frame: off, ``bh doctor`` reports nothing about forwarding here.\nThe forwarder-session kill before a divert reset runs whatever ``enabled`` says (it only\never kills non-operator logins), unless ``quiesce_before_reset`` is false.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "This frame serves forwarders: `bh doctor` reports the globals watchdog list, the read-only DOLT_ROOT_PATH and forwarder grant conformance for its server-mode hives.",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "operators": {
+          "description": "Logins on the hive server that are NOT forwarders (bd's own, the watchdog's). Every other account must hold the table-scoped forwarder shape; their sessions are killed before a divert reset. Dolt's built-in accounts are always operators.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Operators",
+          "type": "array"
+        },
+        "quiesce_before_reset": {
+          "default": true,
+          "description": "Kill every forwarder session before a demoted primary's DOLT_RESET --hard, so an in-flight forwarded write is refused rather than acknowledged and dropped (M13 E5). BH_FORWARD_QUIESCE=off also disables it.",
+          "title": "Quiesce Before Reset",
+          "type": "boolean"
+        },
+        "require_tls": {
+          "default": true,
+          "description": "Forwarder accounts are created, and must stay, REQUIRE SSL.",
+          "title": "Require Tls",
+          "type": "boolean"
+        },
+        "root_path": {
+          "default": "",
+          "description": "The hive server's DOLT_ROOT_PATH, checked read-only by `bh doctor` (empty: reported as not checked).",
+          "title": "Root Path",
+          "type": "string"
+        },
+        "unwatched": {
+          "description": "Watched globals to drop (a deliberate policy choice).",
+          "items": {
+            "type": "string"
+          },
+          "title": "Unwatched",
+          "type": "array"
+        },
+        "watched": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Overrides or additions to the watched globals (default: dolt_force_transaction_commit=0, dolt_transaction_commit=0, read_only=0, max_connections=100).",
+          "title": "Watched",
+          "type": "object"
+        }
+      },
+      "title": "HostForwardServeConfig",
       "type": "object"
     },
     "HostLeaseConfig": {

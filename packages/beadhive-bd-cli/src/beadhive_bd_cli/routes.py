@@ -206,8 +206,24 @@ class CliRoutes:
     def issue_add_label(self, bead: str, label: str, *, actor: str = "") -> Any:
         return self._bd.run(["label", "add", bead, label], self._cwd, actor=actor)
 
-    def issue_remove_label(self, bead: str, label: str, *, actor: str = "") -> Any:
-        return self._bd.run(["label", "remove", bead, label], self._cwd, actor=actor)
+    def issue_remove_label(
+        self, bead: str, label: str, *, actor: str = "", capture: bool = False
+    ) -> Any:
+        return self._bd.run(
+            ["label", "remove", bead, label], self._cwd, actor=actor, capture=capture
+        )
+
+    def config_list(self) -> Any:
+        """Every hive config row (``bd config list --json``) as a flat key -> value map."""
+        return self._bd.json(["config", "list"], self._cwd)
+
+    def config_set(self, key: str, value: str, *, actor: str = "") -> Any:
+        """Store one hive config row (versioned with the hive's data)."""
+        return self._bd.run(["config", "set", key, value], self._cwd, actor=actor, capture=True)
+
+    def config_unset(self, key: str, *, actor: str = "") -> Any:
+        """Drop one hive config row so its reader falls back to its default."""
+        return self._bd.run(["config", "unset", key], self._cwd, actor=actor, capture=True)
 
     def issue_set_external_ref(
         self, bead: str, external_ref: str, *, actor: str = "", capture: bool = False

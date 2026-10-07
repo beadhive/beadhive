@@ -91,6 +91,8 @@ hive contrib-profile build|hive:string:r
 hive contrib-profile show|hive:string:r,as_json:boolean:o
 hive disable|feature:string:r,hive_id:string:o
 hive enable|feature:string:r,hive_id:string:o
+hive fence|action:string:r,hive_id:string:r,others_published:boolean:o,branch:string:o,as_json:boolean:o
+hive forward|action:string:r,hive_id:string:r,account:string:o,password_stdin:boolean:o,as_json:boolean:o
 hive hook install|hive_id:string:o
 hive hook pre-push|hive_id:string:o
 hive hook push-main|rev:string:r,gate:string:o,hive_id:string:o
@@ -99,6 +101,7 @@ hive list|available:boolean:o,as_json:boolean:o,limit:integer:o,cursor:string:o
 hive migrate|hive_id:string:o,dry_run:boolean:o
 hive migrate-storage|hive_id:string:o,dry_run:boolean:o,confirm:boolean:o,keep_pre_migrate:boolean:o
 hive onboard|hive_id:string:r,clone_url:string:o,furnish:boolean:o,claude:boolean:o,skills:boolean:o,observaloop:boolean:o,agents:boolean:o,opencode:boolean:o,codex:boolean:o,global_grant:boolean:o,force:boolean:o,kind:string:o,prefix:string:o,yes:boolean:o,plugin:array:o,dry_run:boolean:o,skip_check:string:o,hub_sync:boolean:o,as_json:boolean:o
+hive policy|action:string:o,key:string:o,value:string:o,hive_id:string:o,as_json:boolean:o
 hive prefix|provider:string:r,org:string:r,repo:string:r,kind:string:o
 hive ready|verbose:boolean:o,as_json:boolean:o
 hive reclaim|hive_id:string:r,dry_run:boolean:o,backup:boolean:o,confirm:boolean:o,purge:boolean:o
@@ -152,11 +155,11 @@ host retire|dry_run:boolean:o,backup:boolean:o,confirm:boolean:o,purge:boolean:o
 host emergency-admit|action:string:r,frame_id:string:r,hive:string:o,reason:string:o,duration:integer:o,execution_digest:string:o,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o
 host emergency-revoke|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o
 host frame-retire|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o
-host release-upgrade|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_epoch:integer:o,expected_release:string:o,expected_config_head:string:o,release_id:string:o,release_digest:string:o,profile:string:o,config_revision:string:o,expires_at:number:o,plan_sha256:string:o,operator_key:string:o,confirm:boolean:o
+host release-upgrade|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_epoch:integer:o,expected_release:string:o,expected_config_head:string:o,release_id:string:o,release_digest:string:o,profile:string:o,config_revision:string:o,expires_at:number:o,plan_sha256:string:o,operator_key:string:o,confirm:boolean:o,operator_settings:string:o
 host rm|host_id:string:r,dry_run:boolean:o,confirm:boolean:o,force:boolean:o
 host show|host_id:string:r,as_json:boolean:o
 hq bd|
-hq authority|action:string:r,record:string:o,frame:string:o,public_key:string:o,generation:string:o,expected:string:o,operator_key:string:o,interpreter:string:o,confirm_server_custody:boolean:o,server_root:string:o,socket_path:string:o,policy_digest:string:o,role:string:o,holder_id:string:o,duration:integer:o,client_interpreter:string:o,confirm:boolean:o
+hq authority|action:string:r,record:string:o,frame:string:o,public_key:string:o,generation:string:o,expected:string:o,operator_key:string:o,interpreter:string:o,confirm_server_custody:boolean:o,server_root:string:o,socket_path:string:o,policy_digest:string:o,role:string:o,holder_id:string:o,duration:integer:o,client_interpreter:string:o,confirm:boolean:o,operator_settings:string:o,max_duration:string:o,min_remaining:string:o
 hq beadyard|as_json:boolean:o
 hq beadyard-adopt|expected_revision:string:r,confirm:boolean:o,operator_key:string:o,as_json:boolean:o
 hq beadyard-policy-refresh|expected_policy_digest:string:r,expected_config_head:string:r,expected_config_parent:string:r,anchor:array:r,operator_anchor:string:r,confirm:boolean:o
@@ -164,6 +167,7 @@ hq clone|auto:boolean:o
 hq init|dry_run:boolean:o,auto:boolean:o,create:boolean:o
 hq intake|
 hq migrate|to:string:r,dry_run:boolean:o,confirm:boolean:o,intent:string:o,mirror_journal:string:o,operator_key:string:o,suspension_artifact:string:o,suspension_signature:string:o,expected_sql_revision:string:o,expected_git_revision:string:o
+hq placement|action:string:r,prefix:string:o,frame:string:o,expected:string:o,epoch:integer:o,tenure:integer:o,confirm:boolean:o,operator_settings:string:o,failover_after:string:o,executor_floor:string:o
 hq prune-aggregate|dry_run:boolean:o,confirm:boolean:o
 hq push|dry_run:boolean:o
 hq restore|list_only:boolean:o,from_dir:string:o,level:string:o,dry_run:boolean:o,confirm:boolean:o
@@ -242,6 +246,7 @@ work accept|bead:string:r,type_:string:o,priority:string:o,as_:string:o,hive:str
 work approve|bead:string:r,as_:string:o,hive:string:o
 work artifacts-uploaded|run_id:string:r,hive:string:o
 work assign|bead:string:r,to:string:r,as_:string:o,hive:string:o,preview:boolean:o,as_json:boolean:o
+work backup|bead:string:o,status:boolean:o,as_json:boolean:o,from_hook:boolean:o,reap:boolean:o,dry_run:boolean:o,hive:string:o
 work bounce|bead:string:r,message:string:o,as_:string:o,hive:string:o
 work brief|bead:string:r,hive:string:o
 work check|bead:string:r,hive:string:o
@@ -354,12 +359,15 @@ _READ_PATHS = {
 _HIDDEN_PATHS = {
     "hive check-push-fence",
     "hive context",
+    "hive fence",
+    "hive forward",
     "hive sync-remote",
     "host adopt",
     "host daemon remove",
     "host dispatch run",
     "host packup",
     "host release",
+    "hq placement",
     "statusline",
 }
 

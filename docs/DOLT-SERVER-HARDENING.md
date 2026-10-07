@@ -62,15 +62,32 @@ sudo -u dolt dolt_globals_watchdog.py root-check --root /etc/beadhive/dolt-hive/
 
 ### The watched list is data
 
-The default list is the one in the bead: `dolt_force_transaction_commit`,
-`dolt_allow_commit_conflicts`, `dolt_transaction_commit` (each expected `0`) and `read_only`
-(expected `0`, for a writable primary or HQ server).
+The default list is condition 16's, as amended by M13 (`bh-uhx2r`):
+
+| Global | Expected | Why |
+|---|---|---|
+| `dolt_force_transaction_commit` | `0` | moves a violated merge's refusal from the merge to `DOLT_COMMIT` (`bh-uhx2r` E1) |
+| `dolt_transaction_commit` | `0` | makes every transaction a Dolt commit |
+| `read_only` | `0` | a writable primary or HQ server; availability (`bh-wtsrc` E4) |
+| `max_connections` | `100` | the cap in `hive-server.yaml.example`; availability (`bh-wtsrc` E4) |
+
+`dolt_allow_commit_conflicts` is **not** watched: on Dolt 2.3.5 it is session-only and
+`SET GLOBAL` refuses it (`bh-uhx2r` E1), so it can never drift as a global. The watchdog covers
+availability. A forced global is not an integrity breach of the fence: in 15 honest publish
+paths under `dolt_force_transaction_commit=1` no stale write landed, because `DOLT_COMMIT`
+checks constraint violations on its own (`bh-uhx2r` E1).
+
+The same list is `DEFAULT_WATCHED` in the script, `deploy/dolt/watched-globals.json`, and
+`beadhive.hive_forward.WATCHED_GLOBALS` (what `bh doctor` reads on a forwarding primary). A unit
+test keeps the three equal.
 
 - `--config FILE` replaces the whole list (`{"expect": {name: value}}`, see
   `deploy/dolt/watched-globals.json`).
 - `--expect NAME=VALUE` adds or overrides one entry; `--drop NAME` removes one;
   `--no-defaults` starts empty.
 - A deliberately read-only replica sets `read_only=1`.
+- A server with another connection cap sets `max_connections` to it. The HQ template caps at
+  200, so the HQ copy of the file expects `200`.
 
 A variable that cannot be read as a global is reported `UNVERIFIABLE` (exit 3), never skipped
 silently. Booleans compare as 0/1 (`ON`/`OFF`/`true`/`false` normalize).
@@ -93,6 +110,7 @@ Decision 7).
 
 ## Reuse
 
-B/M12 reuses the watchdog for forwarding primaries by pointing it at a primary's hive server
-with its own `--config`. Deployment to the live HQ server and the factory's hive server is C/O0,
-not part of this change.
+B/M12 (`bh-g7dlo`) reuses the watchdog for forwarding primaries by pointing it at a primary's
+hive server with its own `--config`, and `bh doctor` on a forwarding primary reads the same list
+(see [FORWARD-WRITE-PATH.md](FORWARD-WRITE-PATH.md)). Deployment to the live HQ server and the
+factory's hive server is C/O0, not part of this change.

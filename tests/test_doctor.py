@@ -1265,6 +1265,8 @@ _DOCTOR_SECTIONS = {
     "install",
     "observability",
     "build_verify",
+    "writer_fence",
+    "forward",
     "warnings",
     "timings",
 }

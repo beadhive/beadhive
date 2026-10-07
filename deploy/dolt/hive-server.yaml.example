@@ -1,6 +1,9 @@
 # Dolt sql-server config for a PRIMARY's hive server (bh-ijxif; ADR conditions 15-16).
 # One hive's databases only; never the HQ database. Forwarding frames connect with their own
-# host-pinned account ('<principal>'@'<frame address>'), never a shared root login.
+# host-pinned REQUIRE SSL account ('<principal>'@'<frame address>'), never a shared root login,
+# with table-scoped grants only (bh-g7dlo): `bh hive forward provision <hive> --account ...`
+# creates them and `bh hive forward check <hive>` / `bh doctor` verify them. The watched globals
+# expect max_connections = 100 below. See docs/FORWARD-WRITE-PATH.md.
 #
 # Run it with a READ-ONLY DOLT_ROOT_PATH (see docs/DOLT-SERVER-HARDENING.md and
 # beadhive-dolt-hive.service.example) so SET PERSIST cannot stick. This narrows and detects a

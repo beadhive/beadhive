@@ -315,8 +315,9 @@ the read-only surfaces that make it visible:
   `config_bound` (the authority's config head equals the latest head) and `expiring_soon` at the
   top level. It works on a runtime host and with `BH_HQ_OPERATOR_SETTINGS`, on the SQL and Git
   backends, and still reports once the authority has expired.
-- `bh hq authority check` (floor from `BH_HQ_AUTHORITY_MIN_REMAINING`, e.g. `6h`) exits
-  non-zero, with the exact renew command, when the authority is expired, not bound to the
+- `bh hq authority check` (floor from `--min-remaining` (0.23.0+) or
+  `BH_HQ_AUTHORITY_MIN_REMAINING`, e.g. `6h`) exits non-zero,
+  with the exact renew command, when the authority is expired, not bound to the
   latest config head, or has less than that floor left. It exits 0 when healthy. Use it in
   scripts and as the release-upgrade preflight.
 - `bh work claim|check|submit|merge`, `bh plan file` and the start of every validation gate print
@@ -333,7 +334,8 @@ the HQ config head and a new host key breaks older readers of a shared HOST file
 
 A released `bh` builds its control plane from the running host's `host.yaml`. An operator host
 whose `host.yaml` has no `hq.sql.authority_writer` binds it from a file instead, with
-`BH_HQ_OPERATOR_SETTINGS=<file>` on `bh hq authority renew|grant|observe|bind-beadyard|status|check`
+`BH_HQ_OPERATOR_SETTINGS=<file>` (or, from 0.23.0, `--operator-settings <file>`, which wins
+over the env var) on `bh hq authority renew|grant|observe|bind-beadyard|status|check`
 and `bh host release-upgrade plan|apply|check`. The file is JSON or YAML:
 
 ```json
@@ -391,7 +393,10 @@ behavior. Any other value is an error, never a fallback: `bh` exits with status 
 - signatures, the replay floor, and the principal-to-incarnation route;
 - the frame-manifest-to-own-lease identity checks;
 - the heartbeat, which follows `BH_FRAME_HEARTBEAT`;
-- hive-lease holder and lease expiry, renewal through the receiver, and validation.
+- hive-lease holder and lease validation. Renewal through the trusted receiver is the 0.22.x path
+  and is **going**: on a director-placed hive the lease row is placement, written by the director
+  ([below](#hive-placement-by-the-director-dolt-server-hq-023)), and expiry is only a failover
+  hint.
 
 **Trust delta.** With enforcement off, the frame accepts work with no valid operator
 authority. Cordon, release pins, caps and expiry are not enforced there, so the frame is
@@ -435,6 +440,12 @@ new executor frames). This switch does not itself gate on O8.
 - [CONTROL-PLANE](CONTROL-PLANE.md) — `bh hub intake`, the fleet-wide untriaged-intake inbox.
 
 ## Signed-mode inbox retention
+
+> **Going.** The signed inbox and the trusted receiver that reads it are the 0.22.x liveness
+> carrier. 0.23.0 replaces them on `dolt-server` HQ with [session and evidence
+> rows](#session-rows) and director placement. Keep pruning the inbox while a 0.22.x reader or
+> the receiver still runs (the Φ3 soak); deleting the inbox code is a later, unscheduled removal
+> (ADR Decision 5).
 
 With `hq.sql.liveness: signed` every heartbeat adds one row to the frame's own inbox table
 (`hq_live_inbox_<principal>_<epoch>`). Since bh-ce886 the operator bounds that table:
@@ -481,6 +492,113 @@ backlog that outruns the `authority_writer` `operation_timeout` drains over reru
 result reports `"complete": false` until it has. Nothing prunes on its own; schedule the
 verb if you want it periodic.
 
+## Hive placement by the director (dolt-server HQ, 0.23) {#hive-placement-by-the-director-dolt-server-hq-023}
+
+In `dolt-server` HQ, **placement** (which frame should write a hive) is one
+`hq_live_hive_leases` row per hive. Before 0.23.0 the trusted receiver wrote it from a frame's
+signed proposal, and 0.22.8 let a frame resolve it from its own proposals at the hive's
+`refs/bh/epoch`. In 0.23.0 the **director** writes it directly, in SQL, and the receiver is going
+(ADR §1 design A, `bh-a94qw`):
+
+- A compare-and-swap (CAS) on the row's `revision`, issued on the **director credential**: an
+  account with `UPDATE` on that table and no other write right on it. Frames hold `SELECT` only.
+  The director never inserts: a never-placed hive is seeded once by operator provisioning.
+- Every write gets a fresh revision (`sha256(record || uuid)`, the receiver's 64-hex format). A
+  lost CAS, a `1213` serialization failure or `rowcount 0` is never retried with the same
+  expectation, and an unknown commit acknowledgment is read back, never re-issued.
+- The row keeps the receiver's shape (`lease_json` is `{authority, lease}` with the five-field
+  lease), so the receiver, 0.22.x readers and the 0.22.8 bridge all still parse it and a Φ3
+  rollback to the receiver works.
+- A director-written row is self-identifying (`request_sha256` is a witness over the row's own
+  prefix, revision and record). That is the data switch that **retires the 0.22.8 proposal
+  resolver for that hive**: `BH_HQ_SQL_HIVE_LEASE=proposal` still governs hives whose row the
+  receiver wrote and no longer matters for a director-placed hive: a frame's own proposal on
+  such a hive is refused before anything moves. Per hive, not per host.
+- Each placement records its **cause** (`planned` for an operator `place`, `failover` only when
+  the failover loop placed) in the row's `request_id` column. Only a `failover` adopt reclaims
+  the dead frame's claims, and a frame that does not read the cause reclaims nothing.
+- Lease expiry (the tenure) is a failover hint, never a write gate. An HQ outage blocks handoff,
+  never writes.
+
+The operator drives it with the hidden `bh hq placement show|seed|place|release|check|policy`
+verb, documented only in the [placement runbook](design/hq-placement-runbook.md). It binds the
+director credential in an operator settings file (`hq.sql.placement_writer`), never in a frame's
+`host.yaml`; name the file with the `BH_HQ_OPERATOR_SETTINGS` environment variable or, from 0.23.0,
+`--operator-settings`. Git HQ is unchanged: placement stays the `refs/bh/lease/<prefix>`
+CAS.
+
+**Unattended failover** is a host-daemon loop, off by default
+(`host.daemon.failover.enabled`). It fails a hive over only when
+`min(server staleness, observed window) > failover_after`, where staleness is the age of the
+frame's session row on the HQ server's own clock, and it places the successor that holds the
+fewest hive primaries (then the freshest session, then the lowest frame id). A placed hive is
+never moved just to rebalance, and `bh doctor` warns when primaries are lopsided beyond
+`host.daemon.failover.max_primary_spread` (default 2). `failover_after` (defaults 60 min
+executor, 30 min transient) and the executor floor (default 45 min) live in the
+`hq_live_failover_policy` table, not on the placement row and never in `host.yaml` or fleet
+config; see the runbook's section 6 and [CONFIGURATION](CONFIGURATION.md#hq-configuration-authority).
+Advanced scheduling beyond this (the operator may move it to external quorum tooling such as
+ZooKeeper) is deferred.
+
+## Session and evidence rows (dolt-server HQ, 0.23) {#session-rows}
+
+0.23 replaces the signed heartbeat on `dolt-server` HQ with two operator-provisioned,
+single-row tables per frame incarnation (ADR §5, bh-owqdg). The data is the switch: a reader
+uses them exactly when both tables exist for the incarnation, and reads the signed inbox (or
+the receiver's observation) otherwise. There is no config key. git HQ is unchanged.
+
+- `frame_<principal>_<epoch>_session` is liveness. The frame renews it with one `UPDATE`
+  per tick (`python -m beadhive.heartbeat_sender renew`, timer `beadhive-session-renew`),
+  and an operator trigger stamps `renewed_at = UTC_TIMESTAMP(6)`.
+- `frame_<principal>_<epoch>_evidence` is conformance. The conformance job writes it after
+  each run, and `measured_at` is server-stamped the same way.
+- `hq_liveness_policy` holds the operator's `session_ttl_s` (default 300) and `evidence_ttl_s`
+  (default 900), committed with the `frame_*` ignore rule. Values outside 1 s to 7 days are
+  refused, never clamped.
+
+Eligibility is one statement joining the grant, both rows, the policy and placement, keeping
+the predicates `authenticated_fresh_heartbeat`, `conformance_pass`, `release_matches` and
+`current_hive_lease_holder`. A claim records the admitted `renewed_at`, `measured_at` and
+evidence digest. On a switched frame `BH_FRAME_HEARTBEAT` is logged as ignored.
+
+Provision with `beadhive.hq_sql_session_provision` as the server-local operator:
+`provision_liveness_schema` once, then `provision_incarnation` per incarnation. It refuses
+unless the ignore rule is committed first, creates `'<principal>'@'<frame address>'` with
+`REQUIRE SSL`, and runs `check_provisioning`. That check refuses a wildcard or TLS-optional
+account for the principal, extra frame write rights, a trigger that does more than stamp
+time, and any hive database on the HQ server.
+
+During Φ3 an incarnation has both tables and its inbox. The registry still names the inbox,
+so 0.22.x readers and the receiver keep working, and the sender dual-writes signed beats.
+An incarnation provisioned without an inbox is registered under its session table name, which
+0.22.x readers refuse: provision session-only incarnations only once no 0.22.x reader remains.
+
+### Soak check: sender stall (Φ3, O4) {#sender-stall-soak}
+
+The Φ3 soak (O4) must show that a session sender which stalls for longer than `session_ttl_s`
+costs eligibility but not the hive. While the sender is stuck, `authenticated_fresh_heartbeat`
+turns false as soon as the row is older than the TTL. The director fails the frame over only
+after the stall also outlasts `failover_after`, by both server staleness and its own observed
+window. A stall that ends before then leaves a fresh session and no placement change. Time
+decides when to reassign a hive, never who may write: the hive's `bh_writer` decides that.
+
+The M10 suite carries the check as
+`test_sender_stall_longer_than_the_ttl_is_stale_but_fails_over_only_past_failover_after` in
+`tests/test_fence_composed_int.py`. It runs on a private scratch Dolt server: two stalls,
+one shorter and one longer than `failover_after` (four TTLs). The gate runs it with a 2 s TTL.
+For the soak, scale it to the production timer and repeat it while the full gate loads the
+host:
+
+```sh
+BH_M10_SESSION_TTL_S=60 uv run pytest -p no:cacheprovider -s \
+  tests/test_fence_composed_int.py -k sender_stall
+```
+
+Each run prints one `BH_M10` JSON line with the TTL, `failover_after` and the measured
+`due_after_stall_s`. The soak passes when every run is green and the due time stays just
+above `failover_after`. `BH_M10_SEEDS=0,1,…` widens the suite's fixed-seed product schedule
+in the same way.
+
 ## Authority duration ceiling
 
 `bh hq authority renew --duration <seconds|7d|36h>` signs an authority that stays valid for
@@ -492,10 +610,10 @@ The signing side refuses a duration above a configurable **ceiling**. The defaul
 may set any positive, finite ceiling. The same ceiling applies to the SQL and Git backends and
 to Git fleet-config publication. Resolution order, first match wins:
 
-1. `--max-duration` on `bh hq authority renew` (pending: adding a CLI parameter to the published
-   `hq.authority` operation needs a wire-catalog decision; the resolver already accepts it)
+1. `--max-duration` on `bh hq authority renew` (0.23.0+; seconds or e.g. `7d`)
 2. `hq.sql.authority_max_duration_s` in the operator settings file (read only through
-   `--operator-settings`; it is never a frame or fleet key)
+   `BH_HQ_OPERATOR_SETTINGS` (all versions) or `--operator-settings` (0.23.0+); it is never a
+   frame or fleet key)
 3. env `BH_HQ_AUTHORITY_MAX_DURATION`
 4. the 7 day default
 

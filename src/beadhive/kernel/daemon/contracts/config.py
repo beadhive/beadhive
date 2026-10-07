@@ -273,6 +273,52 @@ class DaemonStatusConfig(_DaemonSection):
     )
 
 
+class DaemonFailoverConfig(_DaemonSection):
+    """The director's unattended failover loop (bh-16347.5). Off by default and opt-in per
+    host; it runs only beside a ``dolt-server`` HQ (startup refuses ``git`` HQ)."""
+
+    enabled: bool = Field(
+        False,
+        description=(
+            "Run the director failover loop in this daemon: observe every placed frame's "
+            "server-stamped session staleness and CAS a due frame's hives to a successor. "
+            "Needs dolt-server HQ and the director credential (hq.sql.placement_writer)."
+        ),
+    )
+    interval_seconds: float = Field(
+        60.0,
+        gt=0,
+        le=3_600,
+        description=(
+            "Seconds between failover observations. Must stay well under failover_after / 2, "
+            "or every observation gap resets the observed window and nothing ever fails over."
+        ),
+    )
+    max_primary_spread: int = Field(
+        2,
+        ge=1,
+        description=(
+            "bh doctor warns when the busiest eligible executor holds more hive primaries than "
+            "the least busy one by more than this. Placement spreads primaries (failover picks "
+            "the executor holding the fewest) but never moves a placed hive just to rebalance."
+        ),
+    )
+    operator_settings: Path | None = Field(
+        None,
+        description=(
+            "Absolute path of the operator settings file carrying hq.sql.placement_writer. "
+            "When unset, BH_HQ_OPERATOR_SETTINGS in the daemon's environment is used."
+        ),
+    )
+
+    @field_validator("operator_settings")
+    @classmethod
+    def _absolute(cls, value: Path | None) -> Path | None:
+        if value is not None and not value.is_absolute():
+            raise ValueError("failover operator_settings must be an absolute path")
+        return value
+
+
 class HostDaemonConfig(_DaemonSection):
     """All listener/security/resource limits validated as one host-local boundary."""
 
@@ -290,6 +336,7 @@ class HostDaemonConfig(_DaemonSection):
     terminal: DaemonTerminalConfig = Field(default_factory=DaemonTerminalConfig)
     shutdown: DaemonShutdownConfig = Field(default_factory=DaemonShutdownConfig)
     status: DaemonStatusConfig = Field(default_factory=DaemonStatusConfig)
+    failover: DaemonFailoverConfig = Field(default_factory=DaemonFailoverConfig)
 
     @field_validator("bind")
     @classmethod
@@ -322,6 +369,7 @@ __all__ = (
     "DaemonActivityConfig",
     "DaemonAuthConfig",
     "DaemonCorsConfig",
+    "DaemonFailoverConfig",
     "DaemonHttpConfig",
     "DaemonMcpConfig",
     "DaemonProxyConfig",

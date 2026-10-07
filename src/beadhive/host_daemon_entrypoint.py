@@ -9,6 +9,9 @@ from . import daemon_state_broker, host_daemon
 
 def main() -> None:
     """Run the daemon with the authoritative MCP server factory injected explicitly."""
+    from . import fence_data
+
+    fence_data.register()  # the product in-data fence resolver, before any guard path (bh-uz46l)
     from . import hq_authority_enforce
 
     try:

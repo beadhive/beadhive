@@ -41,6 +41,10 @@ LEASE_DURATION_SECONDS = 900
 INTERVAL_SECONDS = 60
 # The conformance job's own timer.
 CONFORMANCE_INTERVAL_SECONDS = 300
+# The session-row renewal timer on a data-switched SQL frame (bh-owqdg, ADR §5): one UPDATE per
+# tick, independent of the conformance timer. Freshness is the operator's committed
+# ``session_ttl_s`` (``hq_sql_session.DEFAULT_SESSION_TTL_S``), read by the HQ server, not here.
+RENEW_INTERVAL_SECONDS = INTERVAL_SECONDS
 # The documented staleness bound: a cached measurement older than one lease window is as stale
 # as a lapsed beat, so the beat reports ``conformance-age: fail`` (non-conformant) past it. It
 # leaves room for a loaded conformance run (~3.5 min observed, L8) plus the 5-minute timer.

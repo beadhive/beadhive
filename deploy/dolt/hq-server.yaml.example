@@ -9,7 +9,7 @@ log_level: info
 listener:
   host: 0.0.0.0              # LAN only: bind the LAN address, not a public one
   port: 3306
-  max_connections: 200       # watched by the M13 recommendation, not by the default list
+  max_connections: 200       # watched: the HQ watched-globals.json expects 200
   require_secure_transport: true
   tls_cert: /etc/beadhive/dolt-hq/tls/server.crt
   tls_key: /etc/beadhive/dolt-hq/tls/server.key

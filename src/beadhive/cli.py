@@ -32,6 +32,7 @@ from . import (
     home_migration,
     host_cli,
     hq_authority_cli,
+    hq_placement_cli,
     jsonout,
     log,
     otel,
@@ -85,6 +86,11 @@ hq_app = typer.Typer(
 )
 setup_app = typer.Typer(no_args_is_help=True, help="Post-install dependency check + cached gate.")
 hq_app.command("authority")(otel.trace_verb("hq.authority")(hq_authority_cli.authority_cmd))
+# Hidden operator/director placement verb (bh-16347.5): documented only in
+# docs/design/hq-placement-runbook.md while 0.23.0 is dormant, like `bh hive fence`.
+hq_app.command("placement", hidden=True)(
+    otel.trace_verb("hq.placement")(hq_placement_cli.placement_cmd)
+)
 harness_app = typer.Typer(
     no_args_is_help=True,
     help="Aliases onto `bh dep`, filtered to agent harnesses (bh-hsus.6).",
@@ -2870,6 +2876,134 @@ def hive_check_push_fence(
     raise typer.Exit(1)
 
 
+# ---- hive fence: the hidden, temporary per-hive cutover verb (bh-oarxp) -----------------
+# Documented ONLY in docs/design/hive-writer-cutover-runbook.md (ADR hive-writer-partitioning
+# Decision 3); hidden from `bh --help`, `bh hive --help` and the CLI reference, and removed (E1)
+# once every hive is cut over. Operator-invoked on the current holder; nothing auto-cuts-over.
+
+_FENCE_ACTIONS = ("cutover", "status", "rollback", "orphans", "orphan-merge")
+
+
+@hive_app.command("fence", hidden=True)
+def hive_fence(
+    action: str = typer.Argument(
+        ..., metavar="ACTION", help="cutover | status | rollback | orphans | orphan-merge"
+    ),
+    hive_id: str = typer.Argument(..., metavar="HIVE_ID", help="the hive to act on"),
+    others_published: bool = typer.Option(
+        False,
+        "--others-published",
+        help="cutover only: attest that no OTHER host holds unpublished commits for the hive",
+    ),
+    branch: str = typer.Option(
+        "",
+        "--branch",
+        help="orphan-merge only: the frame/<id>/orphan-<epoch>-<n> branch to merge",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="emit the record / status as JSON"),
+):
+    """TEMPORARY operator verb — see docs/design/hive-writer-cutover-runbook.md.
+
+    cutover: cut HIVE_ID over to the in-data epoch fence on this host, its current holder
+    (C1-C6).
+
+    status: read-only — epoch, cutover commit, refs/bh/epoch, fence_audit, trigger count.
+
+    rollback: roll HIVE_ID back to the legacy fence (R1-R5); on a replica of a rolled-back
+    hive, drop its identity (R5).
+
+    orphans: read-only — the orphan branches superseded frames diverted to, not yet merged.
+
+    orphan-merge: on the writer, merge --branch in one SQL session that re-stamps its marks at
+    the live epoch, then publish it through the managed push (bh-4z3oz)."""
+    from . import hive_fence_cli
+
+    if action not in _FENCE_ACTIONS:
+        typer.echo(
+            f"✗ unknown action {action!r} (expected one of {', '.join(_FENCE_ACTIONS)})", err=True
+        )
+        raise typer.Exit(2)
+    if others_published and action != "cutover":
+        typer.echo("✗ --others-published applies to cutover only", err=True)
+        raise typer.Exit(2)
+    if bool(branch) != (action == "orphan-merge"):
+        typer.echo("✗ orphan-merge needs --branch, and --branch applies to it only", err=True)
+        raise typer.Exit(2)
+    entry = registry.resolve_hive(config.load(), hive_id)
+    prefix, hive_dir = str(entry["prefix"]), registry.hive_dir(entry)
+    if action == "cutover":
+        hive_fence_cli.impl_cutover(
+            prefix, hive_dir, others_published=others_published, as_json=as_json
+        )
+    elif action == "status":
+        hive_fence_cli.impl_status(prefix, hive_dir, as_json=as_json)
+    elif action == "orphans":
+        hive_fence_cli.impl_orphans(prefix, hive_dir, as_json=as_json)
+    elif action == "orphan-merge":
+        hive_fence_cli.impl_orphan_merge(prefix, hive_dir, branch=branch, as_json=as_json)
+    else:
+        hive_fence_cli.impl_rollback(prefix, hive_dir, as_json=as_json)
+
+
+# ---- hive forward: the hidden operator verb for the option A forward path (bh-g7dlo) ------
+# Documented ONLY in docs/FORWARD-WRITE-PATH.md (ADR hive-writer-partitioning §3, condition 16).
+# Opt-in per frame on both sides: host.forward.serve.enabled (primary), host.forward.enabled
+# (forwarder).
+
+
+@hive_app.command("forward", hidden=True)
+def hive_forward_cmd(
+    action: str = typer.Argument(
+        ...,
+        metavar="ACTION",
+        help="provision | revoke | check | quiesce (primary); point | stop | status (forwarder)",
+    ),
+    hive_id: str = typer.Argument(..., metavar="HIVE_ID", help="the hive to act on"),
+    account: str = typer.Option(
+        "",
+        "--account",
+        help="provision/revoke: the forwarder account '<principal>'@'<frame address>'",
+    ),
+    password_stdin: bool = typer.Option(
+        False,
+        "--password-stdin",
+        help="provision: read the new account's password from stdin (else BH_FORWARD_NEW_PASSWORD)",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="emit the result as JSON"),
+):
+    """OPERATOR verb — see docs/FORWARD-WRITE-PATH.md.
+
+    Primary side (host.forward.serve.enabled): provision / revoke a per-frame host-pinned TLS
+    forwarder account with table-scoped grants; check the watched globals, the read-only
+    DOLT_ROOT_PATH and grant conformance; quiesce (kill) forwarder sessions.
+
+    Forwarder side (host.forward.enabled): point bh's bd for HIVE_ID at the placed primary's
+    hive server (refused, failing closed, when that primary is not the writer); stop; status."""
+    from . import hive_forward_cli
+
+    if action not in hive_forward_cli.ACTIONS:
+        typer.echo(
+            f"✗ unknown action {action!r} (expected one of {', '.join(hive_forward_cli.ACTIONS)})",
+            err=True,
+        )
+        raise typer.Exit(2)
+    if (account or password_stdin) and action not in ("provision", "revoke"):
+        typer.echo("✗ --account / --password-stdin apply to provision and revoke only", err=True)
+        raise typer.Exit(2)
+    cfg = config.load()
+    entry = registry.resolve_hive(cfg, hive_id)
+    hive_forward_cli.run(
+        action,
+        cfg=cfg,
+        entry=entry,
+        hive_dir=registry.hive_dir(entry),
+        account=account,
+        password_stdin=password_stdin,
+        as_json=as_json,
+        hq_dir=str(config.hq_dir()),
+    )
+
+
 # ---- hive hook: git-hook entrypoints for an external dispatcher (bh-smcj) -----
 
 hive_hook_app = typer.Typer(
@@ -3128,6 +3262,73 @@ def hive_disable(
     prefix = str(entry.get("prefix", hive_id))
     config.save(cfg)
     typer.echo(f"✓ {prefix}: {feature}.enabled = false")
+
+
+# ---- hive policy: per-hive switches held in the hive's own Dolt data (M14 D8/D11) ------------
+
+
+def _policy_value_text(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return '""' if value == "" else str(value)
+
+
+@hive_app.command(
+    "policy",
+    help="per-hive policy held in the hive's own data (bd config rows `bh.*`): state/work "
+    "pairing and reclaim switches, all opt-in and off by default. ACTION: list | get KEY | "
+    "set KEY VALUE | unset KEY (set/unset are writer-only).",
+)
+def hive_policy(
+    action: str = typer.Argument("list", help="list | get | set | unset"),
+    key: str = typer.Argument("", help="policy key, e.g. pairing.enabled"),
+    value: str = typer.Argument("", help="new value for set (validated; never clamped)"),
+    hive_id: str = typer.Option("", "--hive", help="hive id (default: cwd's hive)"),
+    as_json: bool = typer.Option(False, "--json", help="machine-readable list rows"),
+):
+    from . import guard, identity
+    from . import work_pairing_policy as policy_mod
+    from . import worktree as wt_mod
+
+    if action not in ("list", "get", "set", "unset"):
+        typer.echo(f"✗ unknown action {action!r} (list | get | set | unset)", err=True)
+        raise typer.Exit(1)
+    if action != "list" and key not in policy_mod.KEYS:
+        typer.echo(
+            f"✗ unknown or missing policy key {key!r} (known: {', '.join(policy_mod.KEYS)})",
+            err=True,
+        )
+        raise typer.Exit(1)
+    cfg = config.load()
+    main = registry.hive_dir(wt_mod._resolve_entry(cfg, hive_id))
+    if action == "list":
+        rows = policy_mod.rows(policy_mod.read(main))
+        if as_json:
+            typer.echo(json.dumps(rows, indent=2))
+            return
+        for row in rows:
+            line = f"{row['key']} = {_policy_value_text(row['value'])}  ({row['source']})"
+            if row.get("refused"):
+                line += f"  ⚠ refused {row['refused']['raw']!r}: {row['refused']['reason']}"
+            typer.echo(line)
+        return
+    if action == "get":
+        typer.echo(_policy_value_text(policy_mod.read(main).get(key)))
+        return
+    guard.guard_primary(hive_id, cfg=cfg, verb=f"hive policy {action}")
+    actor = identity.resolve_actor("", "")
+    try:
+        if action == "set":
+            stored = policy_mod.write(main, key, value, actor=actor)
+            typer.echo(f"✓ {policy_mod.PREFIX}{key} = {stored}")
+        else:
+            policy_mod.unset(main, key, actor=actor)
+            typer.echo(
+                f"✓ {policy_mod.PREFIX}{key} unset (default {policy_mod.KEYS[key].default!r})"
+            )
+    except policy_mod.PolicyError as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(1) from None
 
 
 # ---- hive archive ------------------------------------------------------------
@@ -4445,6 +4646,9 @@ def _handle_cli_error(exc: Exception) -> None:
 
 
 def main():
+    from . import fence_data
+
+    fence_data.register()  # the product in-data fence resolver, before any guard path (bh-uz46l)
     try:
         app()
     except SystemExit:

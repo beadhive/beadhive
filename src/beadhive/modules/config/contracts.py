@@ -1230,6 +1230,100 @@ class HostDispatchConfig(_Section):
     )
 
 
+class HostForwardServeConfig(_Section):
+    """This frame's hive server takes forwarders (``host.forward.serve``, bh-g7dlo; ADR §3
+    condition 16). Opt-in per frame: off, ``bh doctor`` reports nothing about forwarding here.
+    The forwarder-session kill before a divert reset runs whatever ``enabled`` says (it only
+    ever kills non-operator logins), unless ``quiesce_before_reset`` is false."""
+
+    enabled: StrictBool = Field(
+        False,
+        description=(
+            "This frame serves forwarders: `bh doctor` reports the globals watchdog list, the "
+            "read-only DOLT_ROOT_PATH and forwarder grant conformance for its server-mode hives."
+        ),
+    )
+    operators: list[str] = Field(
+        default_factory=lambda: ["root", "watchdog"],
+        description=(
+            "Logins on the hive server that are NOT forwarders (bd's own, the watchdog's). Every "
+            "other account must hold the table-scoped forwarder shape; their sessions are killed "
+            "before a divert reset. Dolt's built-in accounts are always operators."
+        ),
+    )
+    require_tls: StrictBool = Field(
+        True, description="Forwarder accounts are created, and must stay, REQUIRE SSL."
+    )
+    quiesce_before_reset: StrictBool = Field(
+        True,
+        description=(
+            "Kill every forwarder session before a demoted primary's DOLT_RESET --hard, so an "
+            "in-flight forwarded write is refused rather than acknowledged and dropped (M13 E5). "
+            "BH_FORWARD_QUIESCE=off also disables it."
+        ),
+    )
+    watched: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Overrides or additions to the watched globals (default: dolt_force_transaction_"
+            "commit=0, dolt_transaction_commit=0, read_only=0, max_connections=100)."
+        ),
+    )
+    unwatched: list[str] = Field(
+        default_factory=list, description="Watched globals to drop (a deliberate policy choice)."
+    )
+    root_path: str = Field(
+        "",
+        description=(
+            "The hive server's DOLT_ROOT_PATH, checked read-only by `bh doctor` (empty: reported "
+            "as not checked)."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def valid_serve(self):
+        if self.root_path and not Path(self.root_path).is_absolute():
+            raise ValueError("forward serve root_path must be absolute")
+        for name in (*self.watched, *self.unwatched):
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", name):
+                raise ValueError(f"invalid watched global name {name!r}")
+        for login in self.operators:
+            if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}", login):
+                raise ValueError(f"invalid operator login {login!r}")
+        return self
+
+
+class HostForwardConfig(_Section):
+    """The forward write path, option A (``host.forward``, bh-g7dlo; ADR §3, condition 16).
+
+    Opt-in per frame. With ``enabled``, `bh hive forward point <hive>` points this frame's bd for
+    a hive at the current primary's hive server (``endpoints[<primary frame>]``) with this frame's
+    own host-pinned TLS login, re-points it when placement moves, and refuses (fails closed) when
+    the placed primary is not the writer."""
+
+    enabled: StrictBool = Field(
+        False,
+        description="This frame forwards bd writes (claim, create, close) to the hive's primary.",
+    )
+    endpoints: dict[str, HqSqlConnection] = Field(
+        default_factory=dict,
+        description=(
+            "Primary frame id -> its hive server binding (host, port, database, this frame's "
+            "user, tls_mode, server_name, ca_file, fnox credential)."
+        ),
+    )
+    serve: HostForwardServeConfig = Field(default_factory=HostForwardServeConfig)
+
+    @model_validator(mode="after")
+    def valid_endpoints(self):
+        for frame, endpoint in self.endpoints.items():
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", frame):
+                raise ValueError(f"invalid forward endpoint frame id {frame!r}")
+            if endpoint.tls_mode == "required" and not (endpoint.ca_file and endpoint.server_name):
+                raise ValueError(f"forward endpoint {frame!r} requires ca_file and server_name")
+        return self
+
+
 class FrameBridgeIdentityConfig(_Section):
     """Enrollment-owned identity of the private Factory bridge."""
 
@@ -1256,6 +1350,10 @@ class HostConfig(_Section):
     daemon: HostDaemonConfig = Field(
         default_factory=HostDaemonConfig,
         description="Unified host daemon listener, security, transport, and resource limits.",
+    )
+    forward: HostForwardConfig = Field(
+        default_factory=HostForwardConfig,
+        description="Forward write path to a hive's primary (opt-in per frame; bh-g7dlo).",
     )
 
 
@@ -2165,6 +2263,8 @@ __all__ = (
     "HostConfig",
     "HostDaemonConfig",
     "HostDispatchConfig",
+    "HostForwardConfig",
+    "HostForwardServeConfig",
     "HostLeaseConfig",
     "HqConfig",
     "IdentityConfig",

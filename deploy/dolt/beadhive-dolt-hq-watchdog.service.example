@@ -1,6 +1,7 @@
 # Operator-run globals watchdog (hq server) (bh-ijxif). A non-zero exit (2 drift, 3
 # unverifiable) fails the unit: wire OnFailure= to your alerting. It never changes a value.
 # Use a client DOLT_ROOT_PATH of its own; DOLT_CLI_PASSWORD comes from the EnvironmentFile.
+# The HQ copy of watched-globals.json expects max_connections=200 (hq-server.yaml.example).
 [Unit]
 Description=Beadhive Dolt globals watchdog (hq)
 OnFailure=beadhive-dolt-alert@%n.service

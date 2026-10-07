@@ -900,8 +900,9 @@ test-integration-land:
         ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{integration_workers}} tests -m "integration"
 
 # ADR condition 9 (bh-p07dv): re-run the Dolt/bd trigger-semantics canary. REQUIRED on every Dolt
-# or bd pin bump in flake.nix — `just check` fails (tests/test_fence_trigger_canary_pin.py) until
-# this is green on the new binaries and CANARY_PINS in tests/harness/trigger_canary.py matches.
+# or bd pin bump in flake.nix that leaves the configured range (BH_FENCE_CANARY_DOLT_RANGE /
+# BH_FENCE_CANARY_BD_RANGE, bh-vb3yf) — `just check` fails (tests/test_fence_trigger_canary_pin.py)
+# until this is green on the new binaries and the range is widened deliberately.
 # The same tests also run on every land, inside `test-integration-land`.
 # run the Dolt/bd trigger-semantics canary (required on every Dolt or bd pin bump)
 fence-canary:

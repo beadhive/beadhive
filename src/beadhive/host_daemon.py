@@ -1162,6 +1162,7 @@ def build_product_application(
     allowed_origin: str | None = None,
     cfg: dict | None = None,
     settings: HostDaemonConfig | None = None,
+    failover_loop: Any = None,
 ) -> Starlette:
     """Assemble the installed daemon's current routes on the shared composition seam.
 
@@ -1293,6 +1294,10 @@ def build_product_application(
             control_record.bh_home if control_record is not None else DaemonKey.current().bh_home
         )
         product_components.append(DaemonBeadsSupervision(runtime_root(bh_home)).component())
+    if failover_loop is not None:
+        # The director's unattended failover loop (bh-16347.5): only when
+        # host.daemon.failover.enabled built one in `serve`; off by default.
+        product_components.append(failover_loop.component())
     network_policy = None
     credential_sessions = None
     mcp_sessions = None
@@ -1412,6 +1417,21 @@ def validate_listener(listener_host: str, listener_port: int) -> None:
         raise ListenerConfigurationError("listener port must be between 1 and 65535")
 
 
+def _failover_loop(settings: HostDaemonConfig, cfg: dict | None = None) -> Any:
+    """The director failover loop when ``host.daemon.failover.enabled`` (off by default).
+    A refused configuration (git HQ, no director credential) refuses startup, before any
+    socket is bound — the daemon never runs without the loop it was configured to run."""
+    if not settings.failover.enabled:
+        return None
+    from .director_failover import FailoverRefused, build_loop, host_hq_mode
+
+    try:
+        hq_mode = host_hq_mode(cfg if cfg is not None else config.load())
+        return build_loop(settings.failover, hq_mode=hq_mode)
+    except FailoverRefused as exc:
+        raise DaemonError(str(exc)) from None
+
+
 def serve(
     *,
     state_broker_factory: Callable[..., Any],
@@ -1440,6 +1460,7 @@ def serve(
             effective["port"] = listener_port
         settings = HostDaemonConfig.model_validate(effective)
     validate_for_listener_startup(settings)
+    failover_loop = _failover_loop(settings, raw_config)
 
     listener_host = settings.bind
     listener_port = settings.port
@@ -1466,7 +1487,10 @@ def serve(
             cfg=raw_config,
             settings=settings,
             state_broker_factory=state_broker_factory,
+            failover_loop=failover_loop,
         )
+        if failover_loop is not None:
+            application.state.director_failover = failover_loop
         uvicorn_options: dict[str, Any] = {
             "host": listener_host,
             "port": listener_port,

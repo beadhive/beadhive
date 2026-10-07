@@ -248,7 +248,9 @@ def test_cli_prune_inbox_is_a_dry_run_without_confirm(monkeypatch):
             calls.append((frame, retention_s, dry_run))
             return {"frame": frame, "dry_run": dry_run}
 
-    monkeypatch.setattr(hq_operator_settings, "select_plane", lambda: Plane())
+    monkeypatch.setattr(
+        hq_operator_settings, "select_plane", lambda operator_settings=None: Plane()
+    )
     monkeypatch.delenv(ENV_VAR, raising=False)
     runner = CliRunner()
     dry = runner.invoke(app, ["hq", "authority", "prune-inbox", "--frame", "frame-1"])

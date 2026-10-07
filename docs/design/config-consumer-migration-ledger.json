@@ -16,7 +16,7 @@
     "successor_contracts": "beadhive.modules.config.contracts"
   },
   "current": {
-    "config_patch_point_count": 331,
+    "config_patch_point_count": 332,
     "config_patch_points": [
       {
         "facade_target": "beadhive.config.save_fleet",
@@ -553,28 +553,28 @@
       {
         "facade_target": "beadhive.config.worktrees_root",
         "kind": "direct-facade",
-        "line": 2273,
+        "line": 2275,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.worktrees_root"
       },
       {
         "facade_target": "beadhive.config.worktrees_root",
         "kind": "direct-facade",
-        "line": 2343,
+        "line": 2345,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.worktrees_root"
       },
       {
         "facade_target": "beadhive.config.enforce_signing",
         "kind": "direct-facade",
-        "line": 2521,
+        "line": 2523,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.enforce_signing"
       },
       {
         "facade_target": "beadhive.config.enforce_signing",
         "kind": "direct-facade",
-        "line": 2534,
+        "line": 2536,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.enforce_signing"
       },
@@ -731,6 +731,13 @@
         "line": 613,
         "path": "tests/test_guard_primary.py",
         "target": "beadhive.config.load"
+      },
+      {
+        "facade_target": "beadhive.config.fleet_sql_selected",
+        "kind": "direct-facade",
+        "line": 136,
+        "path": "tests/test_guard_writer_gate.py",
+        "target": "beadhive.config.fleet_sql_selected"
       },
       {
         "facade_target": "beadhive.config.load",
@@ -2336,7 +2343,7 @@
         "target": "beadhive.config.load"
       }
     ],
-    "production_config_importer_count": 88,
+    "production_config_importer_count": 89,
     "production_config_importers": [
       "src/beadhive/activity_publisher.py",
       "src/beadhive/agent_run_summary_reader.py",
@@ -2376,6 +2383,7 @@
       "src/beadhive/herdr_views.py",
       "src/beadhive/hitch_plugin.py",
       "src/beadhive/hive.py",
+      "src/beadhive/hive_forward.py",
       "src/beadhive/hive_migrate.py",
       "src/beadhive/hive_ready.py",
       "src/beadhive/hive_repair.py",
@@ -2624,6 +2632,11 @@
       {
         "owner": "bh-18hud.5 compatibility migration ledger",
         "path": "src/beadhive/hive.py",
+        "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
+      },
+      {
+        "owner": "bh-18hud.5 compatibility migration ledger",
+        "path": "src/beadhive/hive_forward.py",
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       },
       {
@@ -2877,7 +2890,7 @@
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       }
     ],
-    "test_config_importer_count": 162,
+    "test_config_importer_count": 163,
     "test_config_importers": [
       "tests/contracts/test_config_contract_compatibility.py",
       "tests/contracts/test_config_resolution_compatibility.py",
@@ -2941,6 +2954,7 @@
       "tests/test_gitworkspace_plugin.py",
       "tests/test_gitworkspace_seed.py",
       "tests/test_guard_primary.py",
+      "tests/test_guard_writer_gate.py",
       "tests/test_help_hygiene.py",
       "tests/test_hitch_plugin.py",
       "tests/test_hive_add_rm.py",
@@ -3042,7 +3056,7 @@
       "tests/unit/modules/config/test_consumer_settings.py",
       "tests/unit/test_pure_module_independence.py"
     ],
-    "test_config_schema_importer_count": 27,
+    "test_config_schema_importer_count": 28,
     "test_config_schema_importers": [
       "tests/contracts/test_config_contract_compatibility.py",
       "tests/test_attestation_provider.py",
@@ -3063,6 +3077,7 @@
       "tests/test_daemon_contract.py",
       "tests/test_daemon_platform_lifecycle.py",
       "tests/test_deps_characterization.py",
+      "tests/test_failover_policy.py",
       "tests/test_frame_bridge_daemon.py",
       "tests/test_host_lease.py",
       "tests/test_mcp_work_schedule_resource.py",

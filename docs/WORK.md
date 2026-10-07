@@ -1095,6 +1095,100 @@ not atomic and requires reconciliation.
 Doctor reports the degraded atomic posture on every adopted hive, including the raw-bd bypass.
 No hook, local ref, or cached lease is represented as remote write authority.
 
+## State/work pairing — backups before state (condition 18)
+
+**Opt-in, off by default, per hive.** With the hive's `bh.pairing.enabled` policy off (the
+default), every verb behaves exactly as on 0.22.x: no push, no `claim-frame`. The design and
+its reasoning are in [the M14 decision record](spikes/bh-55vvh-state-work-pairing.md) and
+condition 18 of the [writer-partitioning ADR](design/hive-writer-partitioning-adr.md).
+
+The invariant: bead lifecycle state that asserts work is never written unless that work is
+already on a backup on the remote. Backups are custom refs
+`refs/bh/backup/<bead>/<frame>` on the backup remote — one single-writer ref per (bead, frame),
+every write a compare-and-swap, invisible to default clones and fetches. The CAS expectation
+(the sha this frame last landed) is mirrored locally at `refs/bh/backup-pushed/<bead>/<frame>`
+and in the worktree's `ClaimRecord.backup_sha`.
+
+| Verb | With pairing on |
+|---|---|
+| `claim` / `resume` | records `claim-frame=<frame>` in hive data (no push — a claim asserts no work) |
+| `submit`, `submit --group` | secret-scans and pushes every bead's backup at the validated sha, **then** opens the gate and sets `review=pending`; a push that does not land exits 1 with nothing written |
+| `merge` into a container | pushes the container's backup at the post-merge tip before closing the child; a refused push leaves the child open (re-run `merge`, it reconciles) |
+| `merge` / `finish` onto the integration branch | no push (the submit backup is retained); reaps backup refs the remote base now covers |
+| `abandon` | never pushes; marks a bead with recoverable work `recovery=resumable` (`<ref>@<sha>`) and clears `claim-frame` |
+| `check`, `refine`, `backup <id>` | best-effort checkpoint push of the committed tip (warns, never blocks) |
+
+Because the order is enforced when state is *written*, every publisher — the managed push, bd
+auto-push, a primary publishing a forwarder's write — only ever publishes state whose work is
+already on the remote. The residual non-atomicity is one-sided: work may land without its
+state (orphan work, listed by `bh work backup <id> --status`), never the reverse.
+
+```sh
+bh hive policy                       # list every key: value, default, source (refused values flagged)
+bh hive policy set pairing.enabled true      # writer-only; stored as a bd config row bh.pairing.enabled
+bh hive policy set pairing.remote vault      # optional private backup remote (default: work.push_remote)
+bh work backup <id>                  # checkpoint now
+bh work backup <id> --status --json  # recoverable | unbacked | unknown | suspect, per frame
+bh work backup --reap [--dry-run]    # retention sweep
+```
+
+Keys (all in the hive's own Dolt data, never `host.yaml`, fleet config or the environment;
+invalid values are refused, never clamped, and read as the key's off state):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `pairing.enabled` | `false` | master switch |
+| `pairing.remote` | `""` (→ `work.push_remote`) | backup remote; never `upstream` |
+| `pairing.secret_scan.enabled` | `true` | scan new commits before every push; a finding or a missing scanner refuses |
+| `pairing.secret_scan.command` | `gitleaks git --no-banner --log-opts={range}` | scanner argv; `{range}` is `<last backup or remote base>..<sha>` |
+| `pairing.checkpoint.on_commit` | `true` | `bh work backup --from-hook` from a `post-commit` hook pushes in the background |
+| `pairing.checkpoint.interval_seconds` | `300` | heartbeat-tick timer (reserved; not wired yet) |
+| `pairing.resume.signature_policy` | `off` | `strict`: unsigned backups read `suspect`, never auto-resumed |
+| `pairing.retention.superseded_days` | `14` | other frames' refs after a resumed bead lands |
+| `pairing.retention.unlanded_days` | `30` | refs of a bead closed without landing |
+| `pairing.retention.orphan_days` | `0` (never) | orphan work |
+| `reclaim.failover.mode`, `reclaim.sweep.mode` | `off` | read by the failover adopt (below) / the sweep; `apply` needs pairing |
+
+Recoverability (`--status`) is decided by one fresh fetch: the claim-frame's ref exists and its
+tip is not already in the remote integration branch. A failed fetch is `unknown`, which never
+licenses a rewind.
+
+### Failover reclaim (M3)
+
+When a hive's primary dies, bd's worker leases die with it, so its claims would strand on the
+new primary. A **failover** adopt — one that displaces a placement still naming another frame
+(expired, evicted or forced) — reclaims them inside its own adopt bump commit, following the
+D5a table of [the M14 decision record](spikes/bh-55vvh-state-work-pairing.md). A **planned
+handoff** (the old primary released its lease) applies nothing.
+
+| Claim (`in_progress`) | Outcome |
+|---|---|
+| `claim-frame` = dead frame, submitted (`review` pending/approved) | untouched; flagged `pairing-violation` if its backup is missing |
+| `claim-frame` = dead frame, backup carries work | `resumable`: `open`, unassigned, `recovery=resumable` |
+| `claim-frame` = dead frame, no backup or tip already in base | `rewound`: what `bd unclaim --force` leaves; an empty backup ref is deleted after the bump lands |
+| `claim-frame` = dead frame, backup check failed | `reclaim-pending`: untouched this run |
+| `claim-frame` = dead frame, `strict` signatures and unsigned | `suspect`: untouched, for the operator |
+| `claim-frame` = another frame, or none | untouched |
+
+`reclaim.failover.mode` gates it: `off` (default) computes nothing, `report` prints the plan
+in the adopt output and writes nothing, `apply` writes it — and only while `pairing.enabled` is
+on. Each reclaimed bead gets one audit comment authored `ops/adopt@<new frame>` with the
+epoch, the dead frame, the outcome, the backup `<ref>@<sha>` and the UTC time. Re-running the
+adopt reclaims nothing twice: once the bump has landed, the re-run stops at its data check.
+The hook needs the hive's in-data fence adapter (M1); until a hive's data is cut over it is
+dormant.
+
+Which adopts count as a failover: on a `git`-HQ hive, an adopt that displaces another frame's
+lease is a failover and one that follows a release is a planned handoff. On a director-placed
+hive (`dolt-server` HQ) the frame resumes at the placed epoch, so the displaced placement no
+longer says why. The director writes the reason with the placement instead (`bh-16347.6`):
+`failover` when its failover loop placed because the observer declared the frame dead, and
+`planned` for an operator `bh hq placement place`. The adopting frame reclaims only for
+`failover`. A placement without a reason (written before 0.23.0) and a frame that does not read
+it (0.22.x, or an earlier 0.23 build) both treat the kind as unknown. Unknown reclaims nothing:
+the D5b sweep or the manual runbook (D10) handles those claims, and nothing is ever rewound on
+a guess.
+
 ## The role-binary contract
 
 Every runtime tier (`claude` today; `local`/`temporal` per

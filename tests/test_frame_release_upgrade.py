@@ -716,20 +716,24 @@ def test_real_sql_writer_signs_rotation_and_keeps_evidence_tables_untouched(
 
         def execute(self, sql, parameters=None):
             queries.append((sql, parameters))
-            self.sql = sql
+            self.sql, self.parameters = sql, parameters
 
         def fetchone(self):
             if "CURRENT_USER()" in self.sql:
                 return "operator@localhost", "runtime", "main", "2.3.5"
             if "DOLT_HASHOF" in self.sql:
                 return ("runtime-head",)
-            if "information_schema.tables" in self.sql:
-                return None if failure == "inbox" else (table,)
             if "DOLT_COMMIT" in self.sql:
                 return ("next-runtime-head",)
             raise AssertionError(self.sql)
 
         def fetchall(self):
+            if "information_schema.tables" in self.sql:
+                # The operator's provisioned-table lookup (bh-owqdg): which of the new
+                # incarnation's inbox / session / evidence tables exist. This legacy rotation
+                # provisioned only its inbox; the "inbox" scenario provisioned nothing.
+                assert table in self.parameters
+                return [] if failure == "inbox" else [(table,)]
             assert "dolt_status" in self.sql
             return []
 
@@ -791,8 +795,11 @@ def test_real_sql_writer_signs_rotation_and_keeps_evidence_tables_untouched(
     elif failure == "generic":
         kwargs.pop("release_upgrade")
     if failure:
-        with pytest.raises(SqlOperatorError):
+        with pytest.raises(SqlOperatorError) as refused:
             operator.publish(state, **kwargs)
+        if failure == "inbox":
+            # The named refusal, never the publisher's catch-all for a fake that broke.
+            assert "inbox or session tables missing" in str(refused.value)
         assert connection.commits == 0
         assert connection.rollbacks == 1
     else:

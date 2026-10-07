@@ -111,6 +111,8 @@ def test_systemd_units_derive_timing_from_the_in_tree_constants():
         "beadhive-heartbeat.timer",
         "beadhive-heartbeat-conformance.service",
         "beadhive-heartbeat-conformance.timer",
+        "beadhive-session-renew.service",
+        "beadhive-session-renew.timer",
     }
     beat, beat_timer = (
         _ini(units["beadhive-heartbeat.service"]),
@@ -124,6 +126,12 @@ def test_systemd_units_derive_timing_from_the_in_tree_constants():
     assert int(beat["TimeoutStartSec"]) < hc.LEASE_DURATION_SECONDS
     assert int(conf["TimeoutStartSec"]) == hc.CONFORMANCE_MAX_AGE_SECONDS
     assert beat["ExecStart"] == f'"{PY}" "-m" "beadhive.heartbeat_sender" "beat"'
+    # The session renewal (bh-owqdg) has its own timer, independent of conformance.
+    renew = _ini(units["beadhive-session-renew.service"])
+    renew_timer = _ini(units["beadhive-session-renew.timer"])
+    assert int(renew_timer["OnUnitActiveSec"]) == hc.RENEW_INTERVAL_SECONDS
+    assert int(renew["TimeoutStartSec"]) <= hc.RENEW_INTERVAL_SECONDS
+    assert renew["ExecStart"] == f'"{PY}" "-m" "beadhive.heartbeat_sender" "renew"'
     assert conf["ExecStart"].endswith('"conformance"')
     assert (
         'Environment="BH_HOME=/home/frame/.beadhive"'
@@ -139,6 +147,9 @@ def test_launchd_units_derive_timing_from_the_in_tree_constants():
     assert conf["StartInterval"] == hc.CONFORMANCE_INTERVAL_SECONDS
     assert beat["ProgramArguments"] == [PY, "-m", "beadhive.heartbeat_sender", "beat"]
     assert conf["EnvironmentVariables"] == ENV
+    renew = units["dev.beadhive.session-renew.plist"]
+    assert renew["StartInterval"] == hc.RENEW_INTERVAL_SECONDS
+    assert renew["ProgramArguments"] == [PY, "-m", "beadhive.heartbeat_sender", "renew"]
 
 
 def test_ttl_has_one_in_tree_source():
@@ -157,7 +168,7 @@ def test_ttl_has_one_in_tree_source():
 
 def test_units_install_and_remove(tmp_path, monkeypatch):
     monkeypatch.setattr(sender, "_environment", lambda: ENV)
-    for platform, count in (("systemd", 4), ("launchd", 2)):
+    for platform, count in (("systemd", 6), ("launchd", 3)):
         directory = tmp_path / platform
         written = sender.install(platform, directory)
         assert len(written) == count and all(path.is_file() for path in written)

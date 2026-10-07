@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:beadhive:wire-schema:factory.bead-node:1",
+  "title": "Factory BeadNode v1",
+  "type": "object",
+  "required": [
+    "id", "title", "description", "molType", "status", "issueType", "priority", "labels",
+    "assignee", "createdAt", "startedAt", "closedAt"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "id": {"type": "string"},
+    "title": {"type": "string"},
+    "description": {"type": "string"},
+    "molType": {"type": ["string", "null"]},
+    "status": {"type": "string"},
+    "issueType": {"type": "string"},
+    "priority": {"type": "number"},
+    "labels": {"type": "array", "items": {"type": "string"}},
+    "assignee": {"type": ["string", "null"]},
+    "createdAt": {"type": ["number", "null"]},
+    "startedAt": {"type": ["number", "null"]},
+    "closedAt": {"type": ["number", "null"]}
+  }
+}

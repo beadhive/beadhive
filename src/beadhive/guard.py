@@ -361,6 +361,121 @@ def primary_state(hive: str = "", *, cfg=None, hive_dir=None, entry=None):
     return prefix, this_host, lease
 
 
+# ---- the clock-free writer gate on cut-over hives (bh-12hev, ADR §4) ------------------------
+# On a hive whose data carries ``bh_writer`` (cut over to the in-data epoch fence) the question
+# "may this frame write?" is answered by the LOCAL ``bh_writer`` row alone: no wall clock, no HQ
+# read, no frame-authority lookup. "Time triggers reassignment; it never gates a write" — an
+# established writer keeps writing indefinitely while HQ is unreachable, and a superseded one is
+# stopped by the data (the adopt bump it syncs, and the fence triggers on every push), not by a
+# cached expiry. The adapter that reads ``bh_writer`` is the M1 seam
+# (:func:`beadhive.fence_data_port.fence_data_for`); until one is registered every hive answers
+# "not cut over" and the legacy gate below runs unchanged — dormant until data switches it on.
+
+WRITER_REFUSAL_SOURCE = "this host's LOCAL copy of the hive's bh_writer (the in-data fence)"
+
+
+class WriterUnreadable(RuntimeError):
+    """The hive's in-data fence adapter is registered but its local ``bh_writer`` could not be
+    read. Fail closed: the hive may be cut over, and only the data can say who writes."""
+
+
+def writer_state(hive: str = "", *, cfg=None, hive_dir=None, entry=None):
+    """``(prefix, this_frame, WriterRow)`` when `hive` is cut over, else ``None``.
+
+    ``None`` (legacy model, use :func:`primary_state`) covers: an unresolvable or unregistered
+    hive, no registered in-data fence adapter for it, and an adapter whose local ``bh_writer``
+    does not exist (the hive's data has not been cut over). Purely local — the adapter's
+    :meth:`~beadhive.writer_adopt.FenceData.writer` reads local ``main``, never the remote.
+    `hive_dir` / `entry` mirror :func:`primary_state`'s escape hatches.
+
+    Raises :class:`WriterUnreadable` when an adapter exists but its read fails."""
+    from . import fence_data_port, host, registry  # lazy: keep guard import-light + cycle-free
+
+    cfg = cfg if cfg is not None else config.load()
+    try:
+        directory = hive_dir if hive_dir is not None else registry.hive_dir_for(cfg, hive)
+        if entry is None:
+            entry = registry.entry_for_dir(cfg, directory) or {}
+    except Exception:  # noqa: BLE001 — an unresolvable hive is not this guard's error to raise
+        return None
+    prefix = str(entry.get("prefix") or "")
+    if not prefix or directory is None:
+        return None
+    data = fence_data_port.fence_data_for(prefix, directory)
+    if data is None:
+        return None  # no in-data fence adapter: legacy model (dormant default)
+    try:
+        writer = data.writer()
+    except Exception as exc:  # noqa: BLE001 — any adapter failure fails closed, named
+        raise WriterUnreadable(f"{prefix}: cannot read the local bh_writer: {exc}") from exc
+    if writer is None:
+        return None  # the data carries no bh_writer: not cut over
+    try:
+        this_frame = host.host_id()
+    except FileNotFoundError:
+        this_frame = ""  # no minted identity: cannot be the writer
+    return prefix, this_frame, writer
+
+
+def _writer_refusal_text(prefix: str, this_frame: str, writer) -> str:
+    """The refusal for a write on a cut-over hive whose local ``bh_writer`` names another frame.
+    Same marker as the lease refusal (:data:`PRIMARY_REFUSAL_MARKER`) so callers and operators
+    keep one predicate; the source line says it was decided from data, not from a lease."""
+    return (
+        f"✗ this host is {PRIMARY_REFUSAL_MARKER} {prefix} — the hive's writer is "
+        f"{writer.frame or '?'} at epoch {writer.epoch} (this frame: {this_frame or '?'}).\n"
+        f"  Writes (assign/claim/submit/merge, and `{config.BINARY_ALIAS} plan file`) are "
+        f"restricted to the writer frame; reads (ready/list/show/brief/sync) work from "
+        f"anywhere.\n"
+        f"  Decided from {WRITER_REFUSAL_SOURCE}; no clock and no HQ read is consulted.\n"
+        f"  Run the write on the writer frame, or have placement moved to THIS frame and adopt "
+        f"here:\n"
+        f"      {config.BINARY_ALIAS} host adopt {prefix}"
+    )
+
+
+def writer_refusal(state) -> str:
+    """``""`` to allow, else the refusal text, for a cut-over `state` from :func:`writer_state`."""
+    prefix, this_frame, writer = state
+    if this_frame and writer.frame == this_frame:
+        return ""
+    from . import log  # lazy: keep guard free of the log import at load
+
+    log.get_logger(__name__).warning(
+        "writer_guard_refused",
+        hive_prefix=prefix,
+        writer=writer.frame,
+        writer_epoch=writer.epoch,
+        frame=this_frame,
+    )
+    return _writer_refusal_text(prefix, this_frame, writer)
+
+
+def _renew_liveness_hint(prefix: str, this_host: str, cfg) -> None:
+    """Best-effort liveness renewal of a legacy hive's lease from a write-verb boundary.
+
+    Never raises: expiry never gates a write (bh-12hev), so a failed renewal is only logged."""
+    from . import host_lease, log  # lazy: keep guard import-light + cycle-free
+
+    try:
+        host_lease.renew_if_due(
+            "origin",
+            prefix,
+            host_id=this_host,
+            cwd=config.hq_dir(),  # same resolution primary_state() used to reach this lease
+            ttl=config.host_lease_ttl(cfg),
+            renew_interval=config.host_lease_renew_interval(cfg),
+        )
+    except Exception as exc:  # noqa: BLE001 - a liveness hint never refuses a write
+        log.get_logger(__name__).warning(
+            "guard_lease_liveness_renewal_failed",
+            hive_prefix=prefix,
+            host_id=this_host,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+
+
 def guard_primary(hive: str = "", *, cfg=None, verb: str = "") -> None:
     """Refuse a WRITE verb when this host is not `hive`'s primary (ADR Decision 2).
 
@@ -377,12 +492,31 @@ def guard_primary(hive: str = "", *, cfg=None, verb: str = "") -> None:
     when a host adopts, not when this code ships. An absent lease is "unconfigured", not
     "someone else's".
 
-    Refused when: the lease names another host (whether or not it has expired), when it is a
-    tombstone, or when this host's own lease has lapsed. The last one is fail-closed on
-    purpose — a lapsed lease is exactly the window in which another host may have taken over,
-    and writing through it is the split-brain path.
+    Refused when: the lease names another host (whether or not it has expired), or when it is
+    a tombstone. This host's own lease past its ``expires_at`` is NOT refused (bh-12hev, ADR
+    §4): expiry is a failover hint, a takeover is a placement change that moves the holder,
+    and a superseded writer is stopped by the epoch fence at publication, not by a clock.
 
-    `verb` is cosmetic (it appears in the log line); the decision never depends on it."""
+    `verb` is cosmetic (it appears in the log line); the decision never depends on it.
+
+    **Cut-over hives (bh-12hev).** When the hive's data carries ``bh_writer``
+    (:func:`writer_state`), the decision is "does local ``bh_writer`` name this frame?" and
+    nothing else — no clock, no HQ, no frame-authority read — so an established writer keeps
+    writing while HQ is down, and the lease is not renewed. Every other hive takes the lease
+    gate below, where ``expires_at`` is advisory (:meth:`HostLease.held_by`) and is still
+    renewed best-effort as a liveness hint (never a reason to refuse)."""
+    try:
+        cut_over = writer_state(hive, cfg=cfg)
+    except WriterUnreadable as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(1) from exc
+    if cut_over is not None:
+        refusal = writer_refusal(cut_over)
+        if refusal:
+            typer.echo(refusal, err=True)
+            raise typer.Exit(1)
+        return
+
     from . import frame_eligibility
 
     try:
@@ -402,27 +536,14 @@ def guard_primary(hive: str = "", *, cfg=None, verb: str = "") -> None:
         return  # multi-host model not in force here (see `primary_state`)
     prefix, this_host, lease = state
     if lease.held_by(this_host):
-        from . import host_lease  # lazy: keep guard import-light + cycle-free (see primary_state)
-
-        # Opportunistic renewal (bh-ytbb.11): every gated write verb funnels through this one
-        # call site, so it doubles as the renewal loop's body — "runs only while workers are
-        # active" falls out for free, since an idle host simply never calls a write verb and
-        # so never reaches this line. Best-effort and silent: it can only ever EXTEND this
-        # host's own already-valid cached lease, never change the ALLOW decision this call is
-        # already making, so an HQ-unreachable renewal failure here must not (and does not)
-        # turn into a refusal. Renews at the un-scaled `host.lease.ttl` baseline rather than
-        # re-deriving this host's role-scaled tenure (host_lease.ttl_for_role) — that would
-        # need a manifest read on every gated write verb, and the baseline is a safe, cheap
-        # default for "push the expiry a bit further out".
-        hq_dir = config.hq_dir()  # same resolution primary_state() used to reach this lease
-        host_lease.renew_if_due(
-            "origin",
-            prefix,
-            host_id=this_host,
-            cwd=hq_dir,
-            ttl=config.host_lease_ttl(cfg),
-            renew_interval=config.host_lease_renew_interval(cfg),
-        )
+        # Clock-free since bh-12hev: ``held_by`` names the holder and ``expires_at`` is only a
+        # failover hint, so the ALLOW decision is already made. On this legacy (not cut-over)
+        # hive the lease's expiry still serves as a liveness hint until M8 placement, so refresh
+        # it opportunistically (bh-ytbb.11) — best-effort: ``renew_if_due`` swallows every
+        # failure, and anything that escapes it is swallowed here too, so a failed or skipped
+        # renewal can never turn this allow into a refusal. Renews at the un-scaled
+        # `host.lease.ttl` baseline (no manifest read on the hot path).
+        _renew_liveness_hint(prefix, this_host, cfg)
         return
 
     refusal = _not_primary(
@@ -463,6 +584,13 @@ def live_epoch(hive: str = "", *, cfg=None) -> int:
     """The ADOPT generation currently in force for `hive`, or ``0`` when nothing has been
     adopted (an un-fenced, single-host factory).
 
+    **Cut-over hives (bh-12hev)** answer from the local ``bh_writer.epoch`` (:func:`writer_state`)
+    — the writer epoch in data, read with no clock and no HQ. Cutover seeds it EQUAL to the
+    lease epoch (ADR Amendment 2; ``bh-32379`` T1), so a ``ClaimRecord`` minted from the lease
+    just before cutover carries the same number and stays valid after it. Raises
+    :class:`WriterUnreadable` when a registered fence adapter cannot read it. Every other hive
+    answers from the lease, as below.
+
     Git mode is **sourced from the cached host lease**, not from ``refs/bh/epoch`` on the
     hive's remote, and that is a deliberate choice with two reasons:
 
@@ -483,6 +611,9 @@ def live_epoch(hive: str = "", *, cfg=None) -> int:
     check remains the early, legible refusal at the bead-write boundary; a stale remote fence
     is independently rejected by that managed preflight. Current bd prevents the reservation
     and data update from being atomic, a limitation doctor exposes."""
+    cut_over = writer_state(hive, cfg=cfg)
+    if cut_over is not None:
+        return cut_over[2].epoch  # clock-free and HQ-free: the writer epoch in data (bh-12hev)
     if config.fleet_sql_selected():
         from . import frame_eligibility
 
@@ -539,7 +670,16 @@ def guard_claim_epoch(record, hive: str = "", *, cfg=None, verb: str = "") -> No
     shows up in the log stream and not only in one worker's terminal."""
     if record is None or not record.is_fenced():
         return
-    if config.fleet_sql_selected():
+    try:
+        cut_over = writer_state(hive, cfg=cfg)
+    except WriterUnreadable as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(1) from exc
+    if cut_over is not None:
+        # The writer epoch in data, clock- and HQ-free (bh-12hev). Seeded equal to the lease
+        # epoch at cutover, so a token minted from the lease before it is still current (T1).
+        state = cut_over
+    elif config.fleet_sql_selected():
         # A submit is finishing an existing claim. Draining or a stale beat may
         # bar NEW intake while the incumbent's recorded lease/epoch still
         # authorizes finishing. Read the unfiltered protected lease through the
@@ -895,6 +1035,58 @@ def is_store_publish(args) -> bool:
     )
 
 
+_BREAK_GLASS_AUDIT = (
+    "The in-data fence cannot vouch for this form; if it was run raw (outside `bh bd`), "
+    "`bh doctor` detects it after the fact via fence_audit (stale_marks, epoch_regressed, "
+    "placement_ahead) against remote main and HQ."
+)
+
+
+def break_glass_form(args) -> str:
+    """The name of the fence-defeating `bd` form `args` spells, or ``""``.
+
+    These are the break-glass paths of ADR §2 (bd verb policy on cut-over hives): each can
+    rewrite, discard, or auto-merge fenced data so a stale writer's rows land. Refused on a
+    cut-over hive only (see :func:`bd_write_refusal`); legacy hives are unchanged."""
+    args = list(args)
+    if any(a == "--strategy" or a.startswith("--strategy=") for a in args):
+        return "--strategy"
+    pos = _positionals(args)
+    flags = {a.split("=", 1)[0] for a in args if a.startswith("-")}
+    if pos[:2] == ["dolt", "push"] and flags & {"--force", "-f"}:
+        return "dolt push --force"
+    if pos[:3] == ["dolt", "remote", "reset-data"]:
+        return "dolt remote reset-data"
+    if pos[:2] == ["backup", "restore"] and flags & {"--force", "-f"}:
+        return "backup restore --force"
+    if pos[:2] == ["vc", "merge"]:
+        return "vc merge"
+    if pos[:2] == ["conflicts", "resolve"]:
+        tables = pos[2:]
+        if not tables or any(t.startswith("bh_") for t in tables):
+            return "conflicts resolve on bh_* tables"
+    return ""
+
+
+def _break_glass_refusal(prefix: str, form: str) -> str:
+    return (
+        f"✗ {prefix}: `bh bd {form}` is refused on a cut-over hive — it can rewrite or discard "
+        "fenced data (bh_writer / bh_write_mark) and defeat the in-data epoch fence. "
+        f"{_BREAK_GLASS_AUDIT}"
+    )
+
+
+def cut_over_break_glass_refusal(form: str, hive_dir, *, cfg=None, entry=None) -> str:
+    """The refusal for a non-``bh bd`` entry point (e.g. ``bh hive sync --strategy``) that
+    spells break-glass `form` against `hive_dir`, or ``""`` when the hive is not cut over.
+    Shares :func:`writer_state` and :func:`_break_glass_refusal` with :func:`bd_write_refusal`."""
+    try:
+        cut_over = writer_state(cfg=cfg, hive_dir=hive_dir, entry=entry)
+    except WriterUnreadable as exc:
+        return f"✗ {exc}"
+    return _break_glass_refusal(cut_over[0], form) if cut_over is not None else ""
+
+
 def is_bd_write(args) -> bool:
     """Whether `args` names a bd verb that could MUTATE the hive in a way the host lease has
     to serialize — see :data:`BD_READ_VERBS` for why an unknown verb counts as a write,
@@ -933,7 +1125,8 @@ def bd_write_refusal(args, cwd, *, cfg=None) -> str:
     passthrough publication is refused for an adopted hive because it bypasses
     ``Engine.push_state``'s remote reservation. That managed reservation is sequenced rather
     than atomic with current bd; doctor exposes the residual window and raw bypass."""
-    if not is_bd_write(args):
+    break_glass = break_glass_form(args)
+    if not is_bd_write(args) and not break_glass:
         return ""
     # `passthrough` deliberately passes an EMPTY cfg in cwd mode (the common case) to skip a
     # config load on a plain forward. An empty cfg has no `managed_repos`, so `primary_state`
@@ -941,6 +1134,18 @@ def bd_write_refusal(args, cwd, *, cfg=None) -> str:
     # bug this whole bead exists to close, reintroduced one layer down. Load it here instead:
     # only writes pay for it, and reads (the hot path) still skip it entirely.
     cfg = cfg if cfg else config.load()
+    try:
+        cut_over = writer_state(cfg=cfg, hive_dir=cwd)
+    except WriterUnreadable as exc:
+        return f"✗ {exc}"
+    if cut_over is not None:
+        if break_glass:
+            return _break_glass_refusal(cut_over[0], break_glass)
+        # `dolt push|sync` are LIFTED here (bh-9c9hh, ADR §2): the in-data fence refuses a stale
+        # publish, so the passthrough is safe. They stay writes: only the writer frame passes.
+        return writer_refusal(cut_over)
+    if not is_bd_write(args):
+        return ""
     from . import frame_eligibility
 
     try:
@@ -958,13 +1163,7 @@ def bd_write_refusal(args, cwd, *, cfg=None) -> str:
         return ""  # multi-host model not in force here (see `primary_state`)
     prefix, this_host, lease = state
     if is_store_publish(args):
-        return (
-            f"✗ {prefix}: direct `bh bd dolt {_positionals(args)[1]}` is refused while the "
-            "multi-host epoch fence is active, even on the primary. Current bd disables its "
-            "transport Git hooks, so this passthrough would bypass the managed remote-CAS "
-            "reservation. Publish through `bh hive sync remotes --push` instead. A raw `bd dolt "
-            "push` cannot be intercepted by bh and is unsafe."
-        )
+        return _publish_refusal(prefix, args)
     if lease.held_by(this_host):
         return ""
     return _not_primary(
@@ -974,4 +1173,15 @@ def bd_write_refusal(args, cwd, *, cfg=None) -> str:
         verb=f"bd {bd_verb(args)}",
         reason="bd write verb forwarded through the passthrough for a hive this host does not "
         "hold the host lease for",
+    )
+
+
+def _publish_refusal(prefix: str, args) -> str:
+    """Direct ``bh bd dolt push|sync`` refusal while a multi-host fence is active."""
+    return (
+        f"✗ {prefix}: direct `bh bd dolt {_positionals(args)[1]}` is refused while the "
+        "multi-host epoch fence is active, even on the primary. Current bd disables its "
+        "transport Git hooks, so this passthrough would bypass the managed remote-CAS "
+        "reservation. Publish through `bh hive sync remotes --push` instead. A raw `bd dolt "
+        "push` cannot be intercepted by bh and is unsafe."
     )

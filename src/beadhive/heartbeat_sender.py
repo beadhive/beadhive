@@ -8,7 +8,17 @@ Replaces the out-of-tree ``~/.beadhive/factory-local-heartbeat.py`` (and its
   :data:`~beadhive.heartbeat_conformance.CONFORMANCE_INTERVAL_SECONDS`.
 * ``beat`` — sign and publish one ``HeartbeatLease`` carrying the newest cached conformance.
   Never measures, so a slow or stalled conformance run cannot lapse the frame. Runs every
-  :data:`~beadhive.heartbeat_conformance.INTERVAL_SECONDS` with the in-tree TTL.
+  :data:`~beadhive.heartbeat_conformance.INTERVAL_SECONDS` with the in-tree TTL. A
+  session-only incarnation has no signed inbox: the beat is then skipped (exit 0).
+* ``renew`` — on a data-switched ``dolt-server`` frame (its ``_session``/``_evidence`` tables
+  exist; bh-owqdg, ADR §5), renew the server-stamped session row: **one UPDATE per tick**, on its
+  own timer (:data:`~beadhive.heartbeat_conformance.RENEW_INTERVAL_SECONDS`), never waiting on
+  the conformance job. Elsewhere it is a no-op (exit 0). ``renew --loop`` keeps ticking in one
+  process instead of a timer.
+
+On a switched frame the ``conformance`` job also writes its evidence row after each run, and
+during Φ3 the ``beat`` keeps dual-writing signed inbox beats so 0.22.x readers and the receiver
+keep working.
 
 It is a module entrypoint (``python -m beadhive.heartbeat_sender``), not a new ``bh`` leaf, so
 the published operation catalog and every wire schema stay byte-identical for 0.22.x.
@@ -17,6 +27,7 @@ Usage (run with the interpreter of the attested ``bh`` install)::
 
     python -m beadhive.heartbeat_sender conformance      # one conformance-job run
     python -m beadhive.heartbeat_sender beat             # one signed beat (cached conformance)
+    python -m beadhive.heartbeat_sender renew            # one session-row renewal (switched)
     python -m beadhive.heartbeat_sender status           # cache age vs. the documented bound
     python -m beadhive.heartbeat_sender units            # print the units for this platform
     python -m beadhive.heartbeat_sender units --install  # write them (does not start them)
@@ -26,20 +37,24 @@ Start / stop / verify, systemd (Linux)::
 
     systemctl --user daemon-reload
     systemctl --user enable --now beadhive-heartbeat-conformance.timer beadhive-heartbeat.timer
+    systemctl --user enable --now beadhive-session-renew.timer   # switched dolt-server frames
     systemctl --user list-timers 'beadhive-heartbeat*'
     journalctl --user -u beadhive-heartbeat.service -n 20
     python -m beadhive.heartbeat_sender status
     bh host list                                         # the frame's BEAT_AGE stays < 60-ish s
     systemctl --user disable --now beadhive-heartbeat.timer beadhive-heartbeat-conformance.timer
+    systemctl --user disable --now beadhive-session-renew.timer
 
 Start / stop / verify, launchd (macOS)::
 
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.beadhive.heartbeat-conformance.plist
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.beadhive.heartbeat.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.beadhive.session-renew.plist
     launchctl print gui/$(id -u)/dev.beadhive.heartbeat
     python -m beadhive.heartbeat_sender status
     launchctl bootout gui/$(id -u)/dev.beadhive.heartbeat
     launchctl bootout gui/$(id -u)/dev.beadhive.heartbeat-conformance
+    launchctl bootout gui/$(id -u)/dev.beadhive.session-renew
 
 Retiring the factory shim: stop and disable ``beadhive-factory-heartbeat.timer`` /
 ``.service`` *before* enabling these timers, so only one sender advances ``seq``.
@@ -62,10 +77,14 @@ SYSTEMD_BEAT = "beadhive-heartbeat"
 SYSTEMD_CONFORMANCE = "beadhive-heartbeat-conformance"
 LAUNCHD_BEAT = "dev.beadhive.heartbeat"
 LAUNCHD_CONFORMANCE = "dev.beadhive.heartbeat-conformance"
+SYSTEMD_RENEW = "beadhive-session-renew"
+LAUNCHD_RENEW = "dev.beadhive.session-renew"
 # A beat only reads authority, reads the cache and signs; it must finish well inside one
 # interval. A conformance run is killed at the staleness bound: past it the cache already fails.
 BEAT_TIMEOUT_SECONDS = hc.INTERVAL_SECONDS
 CONFORMANCE_TIMEOUT_SECONDS = hc.CONFORMANCE_MAX_AGE_SECONDS
+# A renewal is one UPDATE; it must finish inside its own interval.
+RENEW_TIMEOUT_SECONDS = hc.RENEW_INTERVAL_SECONDS
 
 
 @dataclass(frozen=True)
@@ -160,6 +179,19 @@ def systemd_units(python: str | None = None, env: dict[str, str] | None = None) 
                 hc.CONFORMANCE_INTERVAL_SECONDS,
             ),
         ),
+        UnitFile(
+            f"{SYSTEMD_RENEW}.service",
+            service(
+                "Beadhive session-row renewal (one UPDATE; switched dolt-server frames only)",
+                "renew",
+                RENEW_TIMEOUT_SECONDS,
+                0,
+            ),
+        ),
+        UnitFile(
+            f"{SYSTEMD_RENEW}.timer",
+            timer("Beadhive session-row renewal timer", SYSTEMD_RENEW, hc.RENEW_INTERVAL_SECONDS),
+        ),
     ]
 
 
@@ -192,6 +224,7 @@ def launchd_units(python: str | None = None, env: dict[str, str] | None = None) 
             hc.CONFORMANCE_INTERVAL_SECONDS,
             CONFORMANCE_TIMEOUT_SECONDS,
         ),
+        agent(LAUNCHD_RENEW, "renew", hc.RENEW_INTERVAL_SECONDS, RENEW_TIMEOUT_SECONDS),
     ]
 
 
@@ -257,6 +290,47 @@ def _beat(free_sessions: int) -> str:
     return send_cached_beat(free_sessions=free_sessions)
 
 
+def _renew(*, loop: bool, interval: float) -> int:
+    """One renewal (or ``--loop``); a frame whose data has not switched is a no-op."""
+    import threading
+
+    from .heartbeat_report import session_renewer
+    from .hq_sql_session import NotSwitched
+
+    renewer = session_renewer()
+    if renewer is None:
+        print("session renewal skipped: no dolt-server frame runtime", file=sys.stderr)
+        return 0
+    try:
+        if not loop:
+            route = renewer.tick()
+            print(json.dumps({"renewed": route.session}))
+            return 0
+        stop = threading.Event()
+
+        def report(exc: BaseException) -> None:
+            # Transport exceptions may carry credential references: print the class only.
+            print(f"session renewal failed ({type(exc).__name__}); retrying", file=sys.stderr)
+
+        renewer.run(interval_s=interval, stop=stop.wait, on_error=report)
+        return 0
+    except NotSwitched:
+        print(
+            "session renewal skipped: incarnation not switched (no session tables)", file=sys.stderr
+        )
+        return 0
+
+
+def _publish_evidence() -> None:
+    from .heartbeat_report import publish_session_evidence
+    from .hq_sql_session import NotSwitched
+
+    try:
+        publish_session_evidence()
+    except NotSwitched:
+        return
+
+
 def _free_sessions(value: str) -> int:
     number = int(value)
     if not 0 <= number <= 1024:
@@ -265,6 +339,9 @@ def _free_sessions(value: str) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from . import fence_data
+
+    fence_data.register()  # the product in-data fence resolver, before any guard path (bh-uz46l)
     parser = argparse.ArgumentParser(
         prog="python -m beadhive.heartbeat_sender",
         description="in-tree frame heartbeat sender: conformance job, beat, units",
@@ -273,6 +350,11 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("conformance", help="measure host conformance into the local cache")
     beat = sub.add_parser("beat", help="sign and publish one beat from cached conformance")
     beat.add_argument("--free-sessions", type=_free_sessions, default=0)
+    renew = sub.add_parser("renew", help="renew this frame's server-stamped session row")
+    renew.add_argument("--loop", action="store_true", help="keep renewing every --interval")
+    renew.add_argument(
+        "--interval", type=float, default=float(hc.RENEW_INTERVAL_SECONDS), help="seconds"
+    )
     sub.add_parser("status", help="report the conformance cache age against its bound")
     unit = sub.add_parser("units", help="print, install or remove the sender units")
     unit.add_argument("--platform", choices=("systemd", "launchd"), default=default_platform())
@@ -290,10 +372,30 @@ def main(argv: list[str] | None = None) -> int:
             print("conformance run already in progress; skipped", file=sys.stderr)
             return 0
         print(json.dumps(status(), sort_keys=True))
+        try:
+            _publish_evidence()
+        except Exception:
+            print(
+                "session evidence refused; verify grant, configuration and runtime", file=sys.stderr
+            )
+            return 1
         return 0
+    if args.verb == "renew":
+        try:
+            return _renew(loop=args.loop, interval=args.interval)
+        except Exception:
+            print(
+                "session renewal refused; verify grant, configuration and runtime", file=sys.stderr
+            )
+            return 1
     if args.verb == "beat":
+        from .hq_sql_runtime import SessionOnlyIncarnation
+
         try:
             print(json.dumps({"digest": _beat(args.free_sessions)}))
+        except SessionOnlyIncarnation:
+            print("beat skipped: session-only incarnation (no signed inbox)", file=sys.stderr)
+            return 0
         except Exception:
             # Transport, signing and config exceptions may contain credential references.
             print(

@@ -154,6 +154,44 @@ def _conflict_tables(val) -> list[str]:
     return names
 
 
+def _forwarded(cwd, env):
+    """The forward write path (bh-g7dlo): ``(env, refusal)`` for a bd bh runs in ``cwd``.
+
+    A checkout this frame forwards (``bh hive forward point``) gets bd's server environment for
+    the current primary (re-pointed first when the cached placement moved); every other
+    checkout keeps ``env`` unchanged. A refused forward is returned as ``refusal`` and the
+    caller fails closed without running bd. Resolved dynamically like ``host_fence`` below, to
+    keep the forward module out of this legacy cycle."""
+    if cwd is None:
+        return env, None
+    hive_forward = importlib.import_module("beadhive.hive_forward")
+    try:
+        if hive_forward.ensure_current(cwd) is None:
+            return env, None
+        return hive_forward.bd_env(cwd, base=env), None
+    except hive_forward.ForwardError as exc:
+        return env, str(exc)
+
+
+def _forward_noop(cwd, args):
+    """A state push/pull in a forwarded checkout is the primary's job: report and skip."""
+    if cwd is None:
+        return None
+    hive_forward = importlib.import_module("beadhive.hive_forward")
+    marker = hive_forward.read_marker(cwd)
+    if marker is None:
+        return None
+    return subprocess.CompletedProcess(
+        args=["bd", *args],
+        returncode=0,
+        stdout=(
+            f"forwarded to {marker.frame or '?'}: the hive's primary publishes its data; "
+            f"nothing to {' '.join(args[:2])} here\n"
+        ),
+        stderr="",
+    )
+
+
 class Engine(Protocol):
     """The operations `bh` needs from a beads-compatible backend."""
 
@@ -326,6 +364,12 @@ class BdEngine:
         if actor:
             cmd += ["--actor", actor]
         cmd += list(args)
+        if hive_aware:
+            env, refusal = _forwarded(cwd, env)
+            if refusal is not None:
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=1, stdout="", stderr=f"bh: {refusal}\n"
+                )
         kw = {"check": False, "capture": capture, "timeout": timeout}
         if text_input is not None:
             kw["text_input"] = text_input
@@ -434,12 +478,34 @@ class BdEngine:
         # matching the original — an empty commit is not itself a failure) then push.
         # Both go through `_state_call`: the push is the network leg, and the commit can itself
         # block on the dolt LOCK a wedged sibling process is holding.
-        self._state_call(["dolt", "commit", "-m", message], cwd, actor=actor)
+        skipped = _forward_noop(cwd, ["dolt", "push"])
+        if skipped is not None:
+            return skipped
+        committed = self._state_call(["dolt", "commit", "-m", message], cwd, actor=actor)
         args = ["dolt", "push"]
         if remote:
             args += ["--remote", remote]
         if force:
             args.append("--force")
+        # Cut-over hives only (dormant elsewhere: a legacy hive answers None without a read).
+        # Server mode refuses the push when that commit failed (the guard's marks would stay
+        # behind), and a frame whose remote names a higher bh_writer.epoch never pushes main: it
+        # diverts its unpublished commits to frame/<id>/orphan-<epoch>-<n> and resets (bh-4z3oz).
+        fence_orphan = importlib.import_module("beadhive.fence_orphan")
+        try:
+            cfg = config.load()
+        except (RuntimeError, ValueError) as exc:
+            return subprocess.CompletedProcess(
+                args=["bd", *args],
+                returncode=1,
+                stdout="",
+                stderr=f"epoch-fence preflight refused state push: {exc}",
+            )
+        refused = fence_orphan.managed_preflight(cwd, commit_result=committed, cfg=cfg)
+        if refused:
+            return subprocess.CompletedProcess(
+                args=["bd", *args], returncode=1, stdout="", stderr=refused
+            )
         # Current bd deliberately invokes its internal Git transport with
         # `core.hooksPath=/dev/null`; the transport pre-push hook is therefore not an
         # enforcement point. Reserve the authoritative REMOTE fence immediately before the
@@ -454,7 +520,7 @@ class BdEngine:
         gitref = importlib.import_module("beadhive.gitref")
         fence_remote = remote or "origin"
         try:
-            reservation = host_fence.reserve_managed_push(fence_remote, cwd=cwd, cfg=config.load())
+            reservation = host_fence.reserve_managed_push(fence_remote, cwd=cwd, cfg=cfg)
         except (
             host_fence.FenceError,
             gitref.RemoteUnreachable,
@@ -491,7 +557,21 @@ class BdEngine:
                     "`dolt gc` only when that server is stopped."
                 ),
             )
-        if pushed.returncode or reservation is None:
+        if pushed.returncode:
+            # A push rejected as a non-fast-forward may have lost a race with an adopt that
+            # landed after the preflight: re-check, and divert rather than retry a stale main.
+            rejected = fence_orphan.is_non_fast_forward(pushed)
+            refused = fence_orphan.managed_preflight(cwd, cfg=cfg) if rejected else None
+            if refused:
+                prior = (getattr(pushed, "stderr", "") or "").rstrip()
+                return subprocess.CompletedProcess(
+                    args=getattr(pushed, "args", ["bd", *args]),
+                    returncode=pushed.returncode,
+                    stdout=getattr(pushed, "stdout", "") or "",
+                    stderr=f"{prior}\n{refused}".lstrip(),
+                )
+            return pushed
+        if reservation is None:
             return pushed
         try:
             host_fence.verify_managed_push(fence_remote, cwd=cwd, reservation=reservation)
@@ -512,6 +592,9 @@ class BdEngine:
         return pushed
 
     def pull_state(self, cwd, *, remote=""):
+        skipped = _forward_noop(cwd, ["dolt", "pull"])
+        if skipped is not None:
+            return skipped
         args = ["dolt", "pull"]
         if remote:
             args += ["--remote", remote]

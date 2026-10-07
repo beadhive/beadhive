@@ -1014,14 +1014,66 @@ def _data_host_daemon(cfg) -> dict:
             "detail": "host.daemon.enabled=false",
         }
     try:
-        return {"configured": True, **daemon_supervisor.daemon_service_status().payload()}
+        data = {"configured": True, **daemon_supervisor.daemon_service_status().payload()}
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
-        return {
+        data = {
             "configured": True,
             "state": "diagnostics-unavailable",
             "healthy": False,
             "detail": str(exc),
         }
+    failover = _data_failover_policy(cfg)
+    if failover is not None:
+        data["failover_policy"] = failover
+    return data
+
+
+def _data_failover_policy(cfg) -> dict | None:
+    """The director failover loop's ``failover_after`` policy (bh-4biq8), only on a host that
+    runs the loop (``host.daemon.failover.enabled``; off by default, so silent elsewhere).
+
+    Reads HQ data through the director credential, as the loop does: refused rows (below the
+    executor floor or a hard bound — never clamped) and floor warnings, so an operator sees
+    which default the loop fell back to."""
+    failover = (((cfg or {}).get("host") or {}).get("daemon") or {}).get("failover") or {}
+    if not isinstance(failover, dict) or failover.get("enabled") is not True:
+        return None
+    from . import hq_operator_settings
+    from .failover_policy import effective
+
+    try:
+        director = hq_operator_settings.placement_director(failover.get("operator_settings"))
+        policy = director.failover_policy()
+    except (OSError, RuntimeError, ValueError) as exc:
+        return {"state": "unavailable", "detail": str(exc)}
+    return {
+        "state": "refused" if policy.refusals else "ok",
+        **policy.as_dict(),
+        "effective": effective(policy),
+        "spread": _data_placement_spread(director, failover),
+    }
+
+
+def _data_placement_spread(director, failover: dict) -> dict:
+    """Hive primaries per eligible executor (bh-zncqo): warns past
+    ``host.daemon.failover.max_primary_spread`` (default 2). Read-only, from one verified survey."""
+    from .placement_spread import DEFAULT_MAX_SPREAD, primary_holdings, spread_report
+
+    try:
+        threshold = failover.get("max_primary_spread", DEFAULT_MAX_SPREAD)
+        survey = director.survey()
+        frames = [
+            frame
+            for frame, entry in ((survey.state or {}).get("frames") or {}).items()
+            if ((entry or {}).get("active") or {}).get("state") == "active"
+            and not (entry["active"].get("cordoned"))
+        ]
+        return {
+            "state": "ok",
+            **spread_report(primary_holdings(survey.placements, frames), threshold).as_dict(),
+        }
+    except (OSError, RuntimeError, ValueError) as exc:
+        return {"state": "unavailable", "detail": str(exc)}
 
 
 def _render_host_daemon(d: dict) -> None:
@@ -1031,6 +1083,7 @@ def _render_host_daemon(d: dict) -> None:
         return
     if d["state"] == "diagnostics-unavailable":
         typer.echo(f"  ! diagnostics unavailable: {d['detail']}")
+        _render_failover_policy(d.get("failover_policy"))
         return
     glyph = "✓" if d["healthy"] else "!"
     readiness = d["readiness"]
@@ -1047,6 +1100,38 @@ def _render_host_daemon(d: dict) -> None:
     typer.echo(f"    status: {d['guidance']['status']}")
     typer.echo(f"    logs: {d['guidance']['logs']}")
     typer.echo(f"    control: {d['guidance']['control']}")
+    _render_failover_policy(d.get("failover_policy"))
+
+
+def _render_failover_policy(d: dict | None) -> None:
+    if d is None:
+        return
+    if d["state"] == "unavailable":
+        typer.echo(f"  ! failover policy unavailable: {d['detail']}")
+        return
+    glyph = "✓" if d["state"] == "ok" and not d["warnings"] else "!"
+    after = ", ".join(f"{role} {secs:g} s" for role, secs in d["defaults"].items())
+    typer.echo(
+        f"  {glyph} failover policy: {after}; executor floor {d['executor_floor_s']:g} s"
+        + ("" if d["provisioned"] else " (policy table not provisioned: code defaults)")
+    )
+    for line in d["refusals"]:
+        typer.echo(f"    ✗ {line}; its default applies")
+    for line in d["warnings"]:
+        typer.echo(f"    ! {line}")
+    _render_placement_spread(d.get("spread"))
+
+
+def _render_placement_spread(d: dict | None) -> None:
+    if d is None:
+        return
+    if d["state"] == "unavailable":
+        typer.echo(f"    ! placement spread unavailable: {d['detail']}")
+    elif d["lopsided"]:
+        typer.echo(f"    ! {d['detail']}")
+    else:
+        counts = ", ".join(f"{f} {n}" for f, n in d["counts"].items()) or "no executors"
+        typer.echo(f"    ✓ placement spread: {counts} (spread {d['spread']} <= {d['threshold']})")
 
 
 # ---- per-group auth section (bh-4y0r.3) -------------------------------------
@@ -1834,6 +1919,229 @@ def _local_commits_while_not_primary(cfg, entry, path: Path) -> tuple[int, str]:
     return total, (lease.host_id or "nobody")
 
 
+def _adopt_incomplete_warning(cfg, entry, path: Path) -> str | None:
+    """ "Adopt incomplete" (``placement_ahead``) on a cut-over hive, with its recovery command
+    (bh-4c7p4, ADR §2): placement names a higher epoch than the hive's ``bh_writer``.
+
+    Dormant unless an in-data fence adapter is registered for the hive
+    (:func:`host_adopt.fence_data_for`, M1) AND the remote head carries ``bh_writer`` — a
+    legacy hive never reports it. Placement is this host's cached lease (the same local read
+    the guard uses), so a host sees the half-state its own interrupted adopt left behind even
+    with HQ unreachable. Never fatal: a read failure is simply no finding."""
+    from . import host_adopt, writer_adopt
+
+    prefix = str(entry.get("prefix", ""))
+    try:
+        data = host_adopt.fence_data_for(prefix, path)
+        if data is None:
+            return None
+        writer = data.remote_writer()
+        state = guard.primary_state(cfg=cfg, entry=entry)
+    except Exception:  # noqa: BLE001 — doctor reports findings; it never crashes on a probe
+        return None
+    if writer is None or state is None:
+        return None
+    _prefix, this_host, lease = state
+    placement = writer_adopt.PlacementView(frame=lease.host_id, epoch=lease.epoch)
+    report = writer_adopt.adopt_report(prefix, placement, writer)
+    return report.describe(host_id=this_host) if report is not None else None
+
+
+#: ``(prefix, hive dir) -> (monotonic stamp, status)``: the writer-fence section and its warnings
+#: read one status per doctor run, not two (each costs a fetch plus a handful of reads).
+_FENCE_STATUS_TTL = 30.0
+_fence_status_cache: dict[tuple[str, str], tuple[float, dict | None]] = {}
+
+
+def _writer_fence_status(cfg, entry, path: Path) -> dict | None:
+    """The writer-fence status of a hive whose LOCAL data is cut over (bh-oarxp, ADR §2
+    "Detection"): ``{hive, epoch, cutover {commit, ref sha}, fence_audit (stale_marks,
+    epoch_regressed, placement_ahead, late writes), trigger_count}`` — the same payload
+    ``bh hive fence status`` prints. ``None`` for every legacy hive (the data switch,
+    :func:`host_adopt.fence_data_for`, answers no adapter), so a fleet with no cut-over hive
+    pays nothing beyond the probe the adopt-incomplete check already makes. Placement is this
+    host's cached lease (the guard's local read). Never raises: an unreadable part is a finding."""
+    from . import fence_cutover, fence_data, fence_orphan, host_adopt, writer_adopt
+
+    prefix = str(entry.get("prefix", ""))
+    key = (prefix, str(path))
+    now = time.monotonic()
+    hit = _fence_status_cache.get(key)
+    if hit is not None and now - hit[0] < _FENCE_STATUS_TTL:
+        return hit[1]
+    result: dict | None = None
+    try:
+        node = host_adopt.fence_data_for(prefix, path)
+    except Exception:  # noqa: BLE001 — the resolver never raises; belt and braces for doctor
+        node = None
+    if isinstance(node, fence_data.FenceNode):
+        placement = None
+        note: list[str] = []
+        try:
+            state = guard.primary_state(cfg=cfg, entry=entry)
+            if state is not None:
+                lease = state[2]
+                placement = writer_adopt.PlacementView(frame=lease.host_id, epoch=lease.epoch)
+        except Exception as exc:  # noqa: BLE001
+            note.append(f"cached placement unreadable: {exc}")
+        result = fence_cutover.status(node, prefix=prefix, placement=placement).as_dict()
+        if result.get("cut_over"):
+            # Unmerged orphans a superseded frame diverted to (bh-4z3oz): the status just
+            # fetched, so this is a read of the remote-tracking branches only.
+            try:
+                result["orphans"] = [
+                    o.as_dict() for o in fence_orphan.list_orphans(node, fetch=False)
+                ]
+            except Exception as exc:  # noqa: BLE001 — an unreadable part is a finding
+                note.append(f"orphan branches unreadable: {exc}")
+        result["findings"] = note + list(result["findings"])
+    _fence_status_cache[key] = (now, result)
+    return result
+
+
+def _writer_fence_warnings(status: dict | None) -> list[str]:
+    """Doctor warnings for one :func:`_writer_fence_status`. ``placement_ahead`` is left to
+    :func:`_adopt_incomplete_warning`, which carries its recovery command."""
+    if not status:
+        return []
+    hive = status["hive"]
+    return [
+        f"hive '{hive}': writer fence — {finding}"
+        for finding in status.get("findings") or []
+        if not str(finding).startswith("placement_ahead")
+    ] + [
+        f"hive '{hive}': unmerged orphan {o['branch']} (frame {o['frame']}, epoch {o['epoch']})"
+        f" — on the writer: bh hive fence orphan-merge {hive} --branch {o['branch']}"
+        for o in status.get("orphans") or []
+    ]
+
+
+def _data_writer_fence(cfg) -> list[dict]:
+    """Writer-fence section: one :func:`_writer_fence_status` per hive cut over on this host."""
+    root = Path(workspace_root())
+    out = []
+    for e in cfg.get("managed_repos", []) or []:
+        path = root / e["provider"] / e["org"] / e["repo"]
+        if not path.exists():
+            continue
+        status = _writer_fence_status(cfg, e, path)
+        if status is not None:
+            out.append(status)
+    return out
+
+
+def _render_writer_fence(items: list[dict]) -> None:
+    if not items:
+        return
+    from . import fence_cutover
+
+    typer.echo("\n# Writer fence (cut-over hives)")
+    for item in items:
+        for line in fence_cutover.render_status(item):
+            typer.echo(f"  {line}")
+
+
+_forward_cache: dict[tuple[str, str], tuple[float, dict | None]] = {}
+
+
+def _forward_status(cfg, entry, path: Path) -> dict | None:
+    """The forward write path for one hive on this frame (bh-g7dlo, ADR §3 condition 16).
+
+    Forwarder side (``host.forward.enabled``): the checkout's marker — forwarding to whom, or
+    refused and why. Primary side (``host.forward.serve.enabled``): for a cut-over hive in
+    server mode, :func:`beadhive.hive_forward.primary_report` — the watched globals, the
+    read-only ``DOLT_ROOT_PATH`` and forwarder grant conformance. ``None`` when neither applies
+    (forwarding is opt-in per frame), so a frame that never opted in pays nothing. Never
+    raises: an unreadable part is a finding."""
+    from . import fence_data, hive_forward, host_adopt
+
+    raw = ((cfg or {}).get("host") or {}).get("forward") or {}
+    serve_on = bool((raw.get("serve") or {}).get("enabled"))
+    if not raw.get("enabled") and not serve_on:
+        return None
+    prefix = str(entry.get("prefix", ""))
+    key = (prefix, str(path))
+    now = time.monotonic()
+    hit = _forward_cache.get(key)
+    if hit is not None and now - hit[0] < _FENCE_STATUS_TTL:
+        return hit[1]
+    result: dict | None = None
+    marker = hive_forward.read_marker(path) if raw.get("enabled") else None
+    if marker is not None:
+        result = {"hive": prefix, "side": "forwarder", **marker.as_dict()}
+        result["findings"] = (
+            [] if marker.state == "forwarding" else [f"forwarding refused: {marker.reason}"]
+        )
+    elif serve_on:
+        try:
+            node = host_adopt.fence_data_for(prefix, path)
+        except Exception:  # noqa: BLE001 — the resolver never raises; belt and braces
+            node = None
+        if isinstance(node, fence_data.FenceNode) and isinstance(
+            node.engine, fence_data.BdServerEngine
+        ):
+            try:
+                settings = hive_forward.serve_settings(cfg)
+                rows = node.query("SELECT database() AS d")
+                database = str(next(iter(rows[0].values()))) if rows else ""
+                report = hive_forward.primary_report(
+                    node.engine, database=database, settings=settings
+                )
+            except Exception as exc:  # noqa: BLE001 — doctor degrades, it never crashes
+                report = {"findings": [f"forward primary checks unreadable: {exc}"]}
+            result = {"hive": prefix, "side": "primary", **report}
+    _forward_cache[key] = (now, result)
+    return result
+
+
+def _forward_warnings(status: dict | None) -> list[str]:
+    if not status:
+        return []
+    return [
+        f"hive '{status['hive']}': forward path — {finding}"
+        for finding in status.get("findings") or []
+    ]
+
+
+def _data_forward(cfg) -> list[dict]:
+    """Forward-path section: one :func:`_forward_status` per hive it applies to."""
+    root = Path(workspace_root())
+    out = []
+    for e in cfg.get("managed_repos", []) or []:
+        path = root / e["provider"] / e["org"] / e["repo"]
+        if not path.exists():
+            continue
+        status = _forward_status(cfg, e, path)
+        if status is not None:
+            out.append(status)
+    return out
+
+
+def _render_forward(items: list[dict]) -> None:
+    if not items:
+        return
+    from . import hive_forward_cli
+
+    typer.echo("\n# Forward write path")
+    for item in items:
+        if item.get("side") == "forwarder":
+            state = item.get("state")
+            if state == "forwarding":
+                ep = item.get("endpoint") or {}
+                typer.echo(
+                    f"  ✓ {item['hive']}: forwarding to {item.get('frame')}@{item.get('epoch')} "
+                    f"({ep.get('host')}:{ep.get('port')} as {ep.get('user')})"
+                )
+            else:
+                typer.echo(f"  ✗ {item['hive']}: forwarding REFUSED — {item.get('reason')}")
+        elif "globals" in item:
+            for line in hive_forward_cli.render_primary(item["hive"], item):
+                typer.echo(f"  {line}")
+        else:
+            for finding in item.get("findings") or []:
+                typer.echo(f"  ✗ {item['hive']}: {finding}")
+
+
 def _split_brain_lineage_warning(entry, path: Path) -> str | None:
     """Split-brain, named as such (bh-s9cdk): local and origin's embedded-Dolt histories share
     NO COMMON ANCESTOR — two unrelated DAGs, not the row-level conflict or behind-the-remote
@@ -2160,6 +2468,11 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
             split_brain = _split_brain_lineage_warning(e, path)
             if split_brain:
                 warns.append(split_brain)
+            adopt_incomplete = _adopt_incomplete_warning(cfg, e, path)
+            if adopt_incomplete:
+                warns.append(adopt_incomplete)
+            warns += _writer_fence_warnings(_writer_fence_status(cfg, e, path))
+            warns += _forward_warnings(_forward_status(cfg, e, path))
     # First: a missing required binary makes everything derived from it untrustworthy, so the
     # operator should read that before any finding it could have manufactured (bh-7m2h9).
     warns = _missing_required_dep_warnings() + warns
@@ -2803,6 +3116,8 @@ def _collect(cfg, *, full_seats: bool = False) -> dict:
         "install": _timed(timings, "install", _data_install, cfg),
         "observability": _timed(timings, "observability", _data_observability, cfg),
         "build_verify": _timed(timings, "build_verify", _data_build_verify, cfg),
+        "writer_fence": _timed(timings, "writer_fence", _data_writer_fence, cfg),
+        "forward": _timed(timings, "forward", _data_forward, cfg),
         "warnings": _timed(
             timings,
             "warnings",
@@ -2858,7 +3173,9 @@ def doctor_payload(*, full_seats: bool = False) -> dict:
     ``worktrees``, ``molecules``,
     ``prefix_mismatches``, ``node_id``, ``beads_role``, ``group_auth``, ``mcp``, ``harness_plugin``,
     ``seats``,
-    ``install``, ``observability``, ``warnings``), plus ``timings`` (section name -> milliseconds
+    ``install``, ``observability``, ``build_verify``, ``writer_fence``, ``forward``,
+    ``warnings``), plus
+    ``timings`` (section name -> milliseconds
     from a monotonic clock, plus ``total`` — bh-8nnh7, metadata for attributing doctor's cost,
     always present regardless of ``--json``/verbosity), under the ``schema_version`` / ``command``
     envelope (:mod:`beadhive.jsonout`). ``seats`` is ``None`` when hitch is disabled/absent
@@ -2965,6 +3282,8 @@ def doctor(as_json: bool = False, verbose: bool = False, seats: bool = False):
     _render_install(data["install"])
     _render_observability(data["observability"])
     _render_build_verify(data["build_verify"])
+    _render_writer_fence(data.get("writer_fence") or [])
+    _render_forward(data.get("forward") or [])
     _render_warnings(data["warnings"])
     _offer_workspace_init(data["config"])
     if verbose:

@@ -56,6 +56,7 @@ class Scratch:
             (r / ".dolt" / "config_global.json").write_text(json.dumps(CFG))
         (base / "server.yaml").write_text(
             f"data_dir: {self.data}\nlistener:\n  host: 127.0.0.1\n  port: {self.port}\n"
+            "  max_connections: 100\n"
         )
         self.read_only_root = read_only_root
         if read_only_root:

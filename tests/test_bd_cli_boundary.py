@@ -67,11 +67,17 @@ RAW_BD_INFRASTRUCTURE = frozenset(
 )
 
 RAW_BD_INFRASTRUCTURE_SCOPES = {
+    "fence_data.py": {
+        # The in-data fence adapter's ``bd sql`` runner sits below guard/host_adopt in the import
+        # graph (the write guard consults it) while ``beadhive.bd`` imports ``beadhive.guard``;
+        # routing through the bd adapter would close that cycle. Scoped to the one runner.
+        "_bd",
+    },
     "cli.py": {
         # Passthrough command-name vocabulary, not a spawned argv; keeping it scoped prevents a
         # new literal ``bd`` process command elsewhere in the CLI from inheriting an exemption.
         "_resolve_hive_routing_mode",
-    }
+    },
 }
 
 # No root composition scope may use CliRoutes.forward/json_forward. Opaque terminal presentation
