@@ -289,6 +289,15 @@ def test_provisioning_isolation_server_stamps_and_eligibility(tmp_path):
         b_session, b_evidence = session_table("frame_b", 1), evidence_table("frame_b", 1)
         a_session = session_table("frame_a", 1)
 
+        # --- never renewed: provisioning alone does not make a frame live -----------------
+        # Read before the frame issues ANY statement against its row (bh-eeyxt): the refused
+        # matrix below includes UPDATEs of the row, which fire the stamp trigger.
+        before = _eligibility(a)
+        assert before.status == "missing" and not before.authenticated_fresh_heartbeat
+        assert before.renewed_at == "" and before.age_seconds is None
+        assert not before.conformance_pass and not before.release_matches
+        assert before.current_hive_lease_holder is True  # placement names host-0
+
         # --- a frame cannot write another frame's tables, a second row, or the policy -------
         for statement in (
             f"UPDATE {b_session} SET epoch = epoch WHERE id = 1",
@@ -309,12 +318,6 @@ def test_provisioning_isolation_server_stamps_and_eligibility(tmp_path):
         # --- TLS is required: the same credential without TLS is refused ------------------
         with pytest.raises(pymysql.MySQLError):
             _frame(port, tmp_path, "frame_a", tls=False)
-
-        # --- never renewed: provisioning alone does not make a frame live -----------------
-        before = _eligibility(a)
-        assert before.status == "missing" and not before.authenticated_fresh_heartbeat
-        assert not before.conformance_pass and not before.release_matches
-        assert before.current_hive_lease_holder is True  # placement names host-0
 
         # --- a frame literal is overwritten by server UTC ---------------------------------
         _sql(a, "SET time_zone = '+14:00'")
@@ -362,7 +365,11 @@ def test_provisioning_isolation_server_stamps_and_eligibility(tmp_path):
         _sql(root, "UPDATE hq_liveness_policy SET evidence_ttl_s = 1")
         _sql(root, "CALL DOLT_ADD('hq_liveness_policy')")
         _sql(root, "CALL DOLT_COMMIT('-m','shorter evidence ttl')")
-        time.sleep(1.3)
+        # Wait evidence_ttl_s + 1.1 s, not just past the TTL: Dolt 2.3.5 truncates the
+        # fractional seconds of `DATETIME(6) - INTERVAL n SECOND`, so ELIGIBILITY_SQL's cutoff
+        # can lag by up to 1 s and keep conformance_pass true a little past the TTL (bh-eeyxt;
+        # the product TIMESTAMPDIFF fix is follow-up bead bh-7crof).
+        time.sleep(1 + 1.1)
         renewer = SessionRenewer(lambda: _frame(port, tmp_path, "frame_a"), database=DB)
         renewer.tick()
         expired = _eligibility(a)
