@@ -1125,6 +1125,15 @@ class HqConfig(_Section):
 
     authority_anchor: str = ""
     admission_policy: Literal["manual"] = "manual"
+    authority_mode: Literal["signed", "trusted", "inherit"] = Field(
+        "inherit",
+        description=(
+            "Frame-local HQ authority mode (HOST only, never fleet). `signed` verifies "
+            "authority, heartbeat and config signatures; `trusted` is an opt-in waiver; "
+            "`inherit` (default) follows the fleet default, which resolves to `signed` until "
+            "one is set. BH_HQ_AUTHORITY_MODE, when set, overrides this value."
+        ),
+    )
     sql: HqSqlConfig = Field(default_factory=HqSqlConfig)
 
     remote: str = Field(
