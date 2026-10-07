@@ -24,7 +24,7 @@ class FakePlane:
         self.renewed.append((duration, ceiling))
         from beadhive import hq_authority_ceiling as c
 
-        c.check_duration(duration, ceiling)
+        c.signed_expiry(0, duration, ceiling)
         return "rev1"
 
 
@@ -66,8 +66,18 @@ def test_operator_settings_flag_reaches_select_plane(plane):
     assert plane.seen == ["s.json"]
 
 
-def test_max_duration_flag_raises_ceiling(plane):
-    assert _renew().exit_code == 1  # 10d > 7d default
+def test_renew_without_duration_signs_no_expiry(plane):
+    result = CliRunner().invoke(
+        app, ["hq", "authority", "renew", "--confirm", "--operator-key", "k"]
+    )
+    assert result.exit_code == 0, result.output
+    assert plane.renewed[-1][0] is None
+    assert plane.renewed[-1][1].source.startswith("built-in default")
+
+
+def test_max_duration_flag_raises_ceiling(plane, monkeypatch):
+    assert _renew().exit_code == 0  # default ceiling: unlimited
+    assert _renew("--max-duration", "7d").exit_code == 1  # 10d > explicit 7d
     result = _renew("--max-duration", "30d")
     assert result.exit_code == 0, result.output
     assert json.loads(result.output) == {"revision": "rev1"}
