@@ -13,6 +13,51 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.23.0 (2026-10-07)
+
+### Feat
+
+- **hive**: hidden bh hive fence orphans|orphan-merge actions in wire release 2.5.0 (bh-4z3oz)
+- **doctor**: list unmerged orphan branches per cut-over hive (bh-4z3oz)
+- **work**: managed push diverts a superseded frame to frame/<id>/orphan; writer orphan merge in one SQL session (bh-4z3oz)
+- **fleet**: spread hive primaries across executors in failover placement; doctor warns when lopsided (bh-zncqo)
+- **guard**: lift bh bd dolt push|sync on cut-over hives; refuse break-glass forms (bh-9c9hh)
+- **fleet**: per-role, per-hive failover_after and executor floor in HQ data (bh-4biq8)
+- **doctor**: report the forward write path — forwarder state, or the primary's watched globals, read-only root and grant conformance (bh-g7dlo)
+- **hive**: hidden bh hive forward verb (provision|revoke|check|quiesce|point|stop|status) in wire release 2.5.0 (bh-g7dlo)
+- **fleet**: bh's bd runs forward to the current primary; server-mode divert reset kills forwarder sessions first (bh-g7dlo)
+- **fleet**: forward write path core — table-scoped forwarder grants with conformance, session quiesce, fail-closed re-point, host.forward config (bh-g7dlo)
+- **fleet**: carry the director's placement cause to the adopting frame (bh-16347.6)
+- **fleet**: per-incarnation session/evidence rows with data-switched eligibility (bh-owqdg)
+- **hq**: publish the hidden hq placement leaf in wire release 2.5.0 (bh-16347.5)
+- **hq**: run the director failover loop from the host daemon, opt-in and off by default (bh-16347.5)
+- **hq**: hidden bh hq placement verb over the director placement library (bh-16347.5)
+- **fence**: configurable semver ranges for the trigger canary's Dolt/bd requirement (bh-vb3yf)
+- **hq**: authority CLI flags in wire 2.5.0 (--operator-settings, --max-duration, --min-remaining) (bh-16347.2)
+- **fleet**: SQL placement by director credential with fresh receiver-format revisions; observed-window failover observer with gap reset (bh-a94qw)
+- **hive**: replica identity provisioning and the cutover runbook (bh-oarxp)
+- **doctor**: report the writer fence (fence_audit, 44-trigger count, cutover record) for cut-over hives (bh-oarxp)
+- **hive**: hidden, temporary bh hive fence verb in wire release 2.5.0 (bh-oarxp)
+- **hive**: per-hive fence cutover, status and rollback, C1-C6 and R1-R5 (bh-oarxp)
+- **fence**: product fence + guard module, data-switched adapter, fence_audit (bh-uz46l)
+- **guard**: clock-free writer gate on cut-over hives; expiry advisory; retire renew_if_due (bh-12hev)
+- **fleet**: failover adopt reclaims the dead frame's beads in the bump commit (bh-4z2rx)
+- **work**: bh work backup and bh hive policy verbs in wire release 2.5.0 (bh-cqvj6)
+- **work**: rule P — back up work before any work-asserting state write (bh-cqvj6)
+- **work**: pairing policy in hive data and per-(bead, frame) backup refs (bh-cqvj6)
+- **fleet**: placement-first adopt with idempotent step 2, sentinel bump and dual refs/bh/epoch CAS (bh-4c7p4)
+
+### Fix
+
+- **guard**: refuse bh hive sync --strategy on cut-over hives (bh-16347.10)
+- **work**: route pairing policy and abandon bd calls through beadhive-bd-cli routes (bh-16347.8)
+- **fleet**: watch dolt_force_transaction_commit, dolt_transaction_commit, read_only and max_connections; drop session-only dolt_allow_commit_conflicts (bh-g7dlo)
+- **guard**: keep best-effort liveness renewal on legacy hives (bh-12hev)
+
+### Refactor
+
+- **guard**: fence-data resolver in a leaf port so the write guard need not import adopt (bh-12hev)
+
 ## v0.22.8 (2026-10-06)
 
 ### Feat
