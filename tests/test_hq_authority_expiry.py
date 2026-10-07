@@ -109,7 +109,7 @@ def test_status_operator_path_and_unbound():
 def test_warn_prints_exactly_one_line_inside_lead_only(capsys):
     plane = FakeSql(NOW + 2 * 3600)
     line = expiry.warn_if_expiring(plane)
-    assert line and "2h" in line and "bh hq authority renew" in line
+    assert line and "2h" in line and "bh hq authority rebind" in line
     assert expiry.warn_if_expiring(plane) is None
     err = capsys.readouterr().err
     assert err.count("WARN") == 1
@@ -142,7 +142,7 @@ def test_check_min_remaining():
     ok, _, msg = expiry.check(FakeSql(NOW + 8 * 3600), min_remaining=6 * 3600)
     assert ok and msg.startswith("OK")
     ok, _, msg = expiry.check(FakeSql(NOW + 3600), min_remaining=6 * 3600)
-    assert not ok and "bh hq authority renew" in msg
+    assert not ok and "bh hq authority rebind" in msg
     assert not expiry.check(FakeSql(NOW - 1))[0]
     assert not expiry.check(FakeSql(NOW + 99999, bound=False))[0]
 
@@ -319,7 +319,7 @@ def test_hint_honours_30d_ceiling_and_round_trips(monkeypatch, source):
 
 
 def _renew_flags(words):
-    flags = words[words.index("renew") + 1 :]
+    flags = words[words.index("rebind") + 1 :]
     flags[flags.index("--operator-key") + 1] = "k"
     flags[flags.index("--expected-revision") + 1] = "r"
     return flags
@@ -430,6 +430,8 @@ def test_status_result_shape_is_unchanged(monkeypatch):
         "config_bound",
         "expiring_soon",
         "warn_within_s",
+        "expires_never",
+        "mode",
     }
 
 
@@ -461,3 +463,58 @@ def test_cli_status_and_check_agree_with_frames(monkeypatch, fleet, exit_code, b
     assert json.loads(status.stdout)["config_bound"] is bound
     checked = runner.invoke(app, ["hq", "authority", "check"])
     assert checked.exit_code == exit_code, checked.output
+
+
+# ---- non-expiring authority and mode reporting (bh-oguxa) ----------------------------------
+
+NEVER = 4102444800
+
+
+def _doctor(plane):
+    orig = expiry._frame_plane
+    expiry._frame_plane = lambda: plane
+    try:
+        return expiry.doctor_data(now=NOW)
+    finally:
+        expiry._frame_plane = orig
+
+
+def test_sentinel_authority_is_quiet_on_every_surface(capsys):
+    plane = FakeSql(NEVER)
+    status = expiry.authority_status(plane)
+    assert status["expires_never"] is True and status["expires_in"] == "never"
+    assert status["expiring_soon"] is False and status["authority_ready"] is True
+    assert expiry.warn_if_expiring(plane) is None
+    assert capsys.readouterr().err == ""
+    for floor in (0, 6 * 3600, 10**12):
+        ok, _, msg = expiry.check(plane, min_remaining=floor)
+        assert ok and "WARN" not in msg and "FAIL" not in msg and "rebind" not in msg
+    # a huge lead time must not make it "expiring"
+    assert expiry.authority_status(plane, lead=10**12)["expiring_soon"] is False
+    doc = _doctor(plane)
+    assert doc["level"] == "ok" and "never" in doc["detail"]
+    assert "rebind" not in doc["detail"]
+
+
+def test_sentinel_authority_still_requires_config_binding():
+    assert not expiry.check(FakeSql(NEVER, bound=False))[0]
+
+
+def test_expiring_authority_still_warns_with_rebind_hint():
+    plane = FakeSql(NOW + 3600)
+    status = expiry.authority_status(plane)
+    assert status["expires_never"] is False
+    assert "bh hq authority rebind" in expiry.warning_line(status, plane=plane)
+    assert _doctor(plane)["level"] == "warn"
+
+
+def test_trusted_mode_expiry_is_not_enforced(monkeypatch, capsys):
+    monkeypatch.setenv("BH_HQ_AUTHORITY_MODE", "trusted")
+    plane = FakeSql(NOW + 3600)
+    assert expiry.authority_status(plane)["mode"] == "trusted"
+    assert expiry.warn_if_expiring(plane) is None
+    doc = _doctor(plane)
+    assert doc["level"] == "ok" and "not enforced (trusted)" in doc["detail"]
+    assert doc["mode"] == "trusted"
+    monkeypatch.setenv("BH_HQ_AUTHORITY_MODE", "signed")
+    assert expiry.authority_status(plane)["mode"] == "signed"
