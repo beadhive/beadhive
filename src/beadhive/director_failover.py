@@ -15,9 +15,11 @@ HQ and runs ticks from a long-lived process:
 * **What it writes.** Only the placement CAS, through
   :meth:`~beadhive.hq_sql_placement.SqlPlacementDirector.place` at the row's epoch + 1. A lost CAS
   is recorded and re-decided next tick, never retried with the same expectation.
-* **Successor.** Until placement spreading lands (M8b, ``bh-zncqo``), the successor is the
-  freshest other frame that is active, uncordoned, bound to the hive's signed policy and
-  currently observed live; ties break by frame id. No such frame means no failover.
+* **Successor.** Among the other frames that are active, uncordoned, bound to the hive's
+  signed policy and currently observed live, the one holding the fewest hive primaries (so one
+  frame's death stalls few hives), then the freshest session, then the lowest frame id
+  (:func:`beadhive.placement_spread.pick_successor`). Placements this tick count toward the load.
+  No such frame means no failover. A placed hive is never moved just to rebalance.
 * **git HQ is refused** at startup (:class:`~beadhive.failover_observer.FailoverDirector`):
   unattended failover needs server-stamped session rows.
 
@@ -49,6 +51,7 @@ from .failover_observer import (
     sql_session_staleness,
 )
 from .hq_sql_placement import CAUSE_FAILOVER, PlacementError, SqlPlacementDirector, Survey
+from .placement_spread import pick_successor, primary_holdings
 
 __all__ = [
     "DEFAULT_ROLE",
@@ -137,6 +140,8 @@ class SqlFailoverPorts:
     table_for: Callable[[str, int], str] = session_table
     survey: Survey | None = None
     refusals: tuple[str, ...] = ()
+    #: Primaries this loop placed since the last survey: ``frame -> delta`` (survey is stale).
+    moved: dict[str, int] = field(default_factory=dict)
 
     def after(self, key: Any) -> float | None:
         """``failover_after`` seconds for a monitor key (``None``: never fails over)."""
@@ -152,6 +157,7 @@ class SqlFailoverPorts:
 
     def staleness(self) -> Mapping[str, float | None]:
         self.survey = None  # a failed survey leaves nothing to place from
+        self.moved = {}
         self.survey = self.director.survey(
             lambda cursor, head, state: observe_sessions(
                 cursor, head, state, table_for=self.table_for
@@ -175,6 +181,9 @@ class SqlFailoverPorts:
         if survey is None:
             return None
         observed: Mapping[str, float | None] = survey.observed or {}
+        load = {frame: len(hives) for frame, hives in primary_holdings(survey.placements).items()}
+        for frame, delta in self.moved.items():
+            load[frame] = load.get(frame, 0) + delta
         candidates = []
         for frame, age in observed.items():
             after = self.after((prefix, frame))
@@ -184,14 +193,20 @@ class SqlFailoverPorts:
                 self.director.placeable(survey.state, survey.policies, prefix, frame)
             except PlacementError:
                 continue
-            candidates.append((age, frame))
-        return min(candidates)[1] if candidates else None
+            candidates.append((frame, age))
+        return pick_successor(candidates, load)
 
     def place(self, prefix: str, frame: str, expected: str) -> object:
         # The cause rides in the same CAS: the adopting frame runs M3's reclaim (bh-16347.6).
-        return self.director.place(
+        result = self.director.place(
             prefix, frame_id=frame, expected_revision=expected, cause=CAUSE_FAILOVER
         )
+        record = (self.survey.placements if self.survey is not None else {}).get(prefix)
+        previous = getattr(record, "frame_id", "") or ""
+        if previous:
+            self.moved[previous] = self.moved.get(previous, 0) - 1
+        self.moved[frame] = self.moved.get(frame, 0) + 1
+        return result
 
 
 @dataclass

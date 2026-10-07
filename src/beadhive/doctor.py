@@ -1050,7 +1050,30 @@ def _data_failover_policy(cfg) -> dict | None:
         "state": "refused" if policy.refusals else "ok",
         **policy.as_dict(),
         "effective": effective(policy),
+        "spread": _data_placement_spread(director, failover),
     }
+
+
+def _data_placement_spread(director, failover: dict) -> dict:
+    """Hive primaries per eligible executor (bh-zncqo): warns past
+    ``host.daemon.failover.max_primary_spread`` (default 2). Read-only, from one verified survey."""
+    from .placement_spread import DEFAULT_MAX_SPREAD, primary_holdings, spread_report
+
+    try:
+        threshold = failover.get("max_primary_spread", DEFAULT_MAX_SPREAD)
+        survey = director.survey()
+        frames = [
+            frame
+            for frame, entry in ((survey.state or {}).get("frames") or {}).items()
+            if ((entry or {}).get("active") or {}).get("state") == "active"
+            and not (entry["active"].get("cordoned"))
+        ]
+        return {
+            "state": "ok",
+            **spread_report(primary_holdings(survey.placements, frames), threshold).as_dict(),
+        }
+    except (OSError, RuntimeError, ValueError) as exc:
+        return {"state": "unavailable", "detail": str(exc)}
 
 
 def _render_host_daemon(d: dict) -> None:
@@ -1096,6 +1119,19 @@ def _render_failover_policy(d: dict | None) -> None:
         typer.echo(f"    ✗ {line}; its default applies")
     for line in d["warnings"]:
         typer.echo(f"    ! {line}")
+    _render_placement_spread(d.get("spread"))
+
+
+def _render_placement_spread(d: dict | None) -> None:
+    if d is None:
+        return
+    if d["state"] == "unavailable":
+        typer.echo(f"    ! placement spread unavailable: {d['detail']}")
+    elif d["lopsided"]:
+        typer.echo(f"    ! {d['detail']}")
+    else:
+        counts = ", ".join(f"{f} {n}" for f, n in d["counts"].items()) or "no executors"
+        typer.echo(f"    ✓ placement spread: {counts} (spread {d['spread']} <= {d['threshold']})")
 
 
 # ---- per-group auth section (bh-4y0r.3) -------------------------------------
