@@ -289,6 +289,15 @@ def test_provisioning_isolation_server_stamps_and_eligibility(tmp_path):
         b_session, b_evidence = session_table("frame_b", 1), evidence_table("frame_b", 1)
         a_session = session_table("frame_a", 1)
 
+        # --- never renewed: provisioning alone does not make a frame live -----------------
+        # Read before the frame issues ANY statement against its row (bh-eeyxt): the refused
+        # matrix below includes UPDATEs of the row, which fire the stamp trigger.
+        before = _eligibility(a)
+        assert before.status == "missing" and not before.authenticated_fresh_heartbeat
+        assert before.renewed_at == "" and before.age_seconds is None
+        assert not before.conformance_pass and not before.release_matches
+        assert before.current_hive_lease_holder is True  # placement names host-0
+
         # --- a frame cannot write another frame's tables, a second row, or the policy -------
         for statement in (
             f"UPDATE {b_session} SET epoch = epoch WHERE id = 1",
@@ -309,12 +318,6 @@ def test_provisioning_isolation_server_stamps_and_eligibility(tmp_path):
         # --- TLS is required: the same credential without TLS is refused ------------------
         with pytest.raises(pymysql.MySQLError):
             _frame(port, tmp_path, "frame_a", tls=False)
-
-        # --- never renewed: provisioning alone does not make a frame live -----------------
-        before = _eligibility(a)
-        assert before.status == "missing" and not before.authenticated_fresh_heartbeat
-        assert not before.conformance_pass and not before.release_matches
-        assert before.current_hive_lease_holder is True  # placement names host-0
 
         # --- a frame literal is overwritten by server UTC ---------------------------------
         _sql(a, "SET time_zone = '+14:00'")

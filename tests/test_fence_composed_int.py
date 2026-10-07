@@ -838,6 +838,19 @@ def test_sender_stall_longer_than_the_ttl_is_stale_but_fails_over_only_past_fail
                 time.sleep(0.05)
             return stop.is_set()
 
+        # When each successful renewal STARTED (bh-eeyxt): its server stamp is no earlier, so
+        # the session's server staleness never exceeds the monotonic time since then.
+        renewal_starts: list[float] = []
+        tick = renewer.tick
+
+        def timed_tick():
+            started = time.monotonic()
+            route = tick()
+            renewal_starts.append(started)
+            return route
+
+        renewer.tick = timed_tick
+
         sender = threading.Thread(
             target=renewer.run,
             kwargs={"interval_s": ttl / 4, "stop": wait, "on_error": errors.append},
@@ -875,11 +888,18 @@ def test_sender_stall_longer_than_the_ttl_is_stale_but_fails_over_only_past_fail
             while time.monotonic() - began < failover_after + 6 * ttl:
                 fresh, decision = poll()
                 if decision.due:
-                    due_after = time.monotonic() - began
+                    due_at = time.monotonic()
+                    due_after = due_at - began
+                    since_renewal = due_at - renewal_starts[-1]
                     break
                 time.sleep(0.25)
             stalled.clear()
-            assert due_after is not None and due_after > failover_after, due_after
+            # Measured from the last renewal actually made, not from when the stall was
+            # flagged: the sender's last tick may land up to one interval before `began`, and
+            # a loaded host stretches it further (bh-eeyxt; 7.95 s was seen against 8.0 s).
+            assert due_after is not None, "a stall past failover_after must fail over"
+            assert since_renewal > failover_after, (since_renewal, failover_after)
+            assert decision.staleness > failover_after and decision.window > failover_after
             assert not fresh
         finally:
             stop.set()
