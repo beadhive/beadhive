@@ -89,11 +89,21 @@ def renew_command(revision="<revision>", settings_file=None, plane=None) -> str:
     )
 
 
-def _latest_config_head(plane):
+def _config_bound(plane, crossref, policies, state) -> bool:
+    """Whether frames would accept this authority at the latest committed config head.
+
+    Exact cross-reference or a tolerated descendant head (bh-u67ve, bh-3h6al): the same
+    shared check the frame verifier runs
+    (:meth:`beadhive.hq_sql_config.SqlFleetConfigRevisionStore.authority_binding`), so
+    status, check and doctor agree with the frames.
+    """
     try:
-        return plane.config_store().load_snapshot().commit_revision
+        bound, _head, _snapshot = plane.config_store().authority_binding(
+            crossref, policies, expires_at=state["expires_at"]
+        )
+        return bool(bound)
     except Exception:  # noqa: BLE001 - an unreadable config head means "not provably bound"
-        return None
+        return False
 
 
 def read_state(plane):
@@ -103,12 +113,12 @@ def read_state(plane):
         return sha, state, True
     settings = plane.settings
     if settings.get("runtime") is not None:
-        head, state, crossref, _ = plane._runtime_authority().load_state(allow_expired=True)
+        head, state, crossref, policies = plane._runtime_authority().load_state(allow_expired=True)
     elif settings.get("authority_writer") is not None:
-        head, state, crossref, _ = plane._operator().load()
+        head, state, crossref, policies = plane._operator().load()
     else:
         return "", None, False
-    return head, state, crossref[2] == _latest_config_head(plane)
+    return head, state, _config_bound(plane, crossref, policies, state)
 
 
 def authority_status(plane, *, now=None, lead=None) -> dict:

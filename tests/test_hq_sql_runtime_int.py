@@ -1677,7 +1677,12 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
             }
             config_writer = SqlFleetConfigRevisionStore(config_writer_settings, broker=Broker())
 
+            from beadhive import hq_authority_expiry
+
             def assert_frames_bound_to(signed_head):
+                # bh-3h6al: operator status/check agree with the frames.
+                assert hq_authority_expiry.authority_status(operator_plane)["config_bound"]
+                assert hq_authority_expiry.authority_status(second_plane)["config_bound"]
                 second_plane.eligibility_authority_status()
                 assert second_plane.read_eligibility(second_identity)[2].verified
                 for frame_plane, frame_id in ((plane, "frame-1"), (second_plane, "frame-2")):
@@ -1685,6 +1690,9 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
                     assert joined.config.commit_revision == signed_head
 
             def assert_frames_fenced():
+                assert not hq_authority_expiry.authority_status(operator_plane)["config_bound"]
+                ok, _status, message = hq_authority_expiry.check(operator_plane)
+                assert not ok and "not bound to the latest config head" in message
                 for frame_plane in (plane, second_plane):
                     with pytest.raises(SqlRuntimeError, match="publications are not bound"):
                         frame_plane._runtime_authority().read_frame_composite()
