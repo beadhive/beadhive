@@ -12,6 +12,7 @@ import hashlib
 import json
 import time
 
+from . import hq_authority_enforce
 from . import hq_authority_guard as guard
 from .host_lease_contracts import HostLease, _parse_stamp
 from .hq_framelease_contracts import HeartbeatLease
@@ -462,13 +463,18 @@ class SqlTrustedReceiver:
                         valid_until=state["expires_at"],
                         deadline=deadline,
                     )
-                    projected = project_hive_policies(
-                        snapshot, valid_until=state["expires_at"], now=now
-                    )
-                    if projected != policies or prefix not in policies:
+                    # Trusted mode (bh-mk97e): no config-head binding and no expiry; the
+                    # authority's hive scope, cordon, state and emergency review still hold.
+                    bound = hq_authority_enforce.enforced()
+                    if bound and (
+                        project_hive_policies(snapshot, valid_until=state["expires_at"], now=now)
+                        != policies
+                    ):
+                        raise ReceiverError("protected hive policy differs from canonical catalog")
+                    if prefix not in policies:
                         raise ReceiverError("protected hive policy differs from canonical catalog")
                     policy = policies[prefix]
-                    if now >= policy["valid_until"]:
+                    if bound and now >= policy["valid_until"]:
                         raise ReceiverError("protected hive policy expired")
                     emergency = guard.emergency_active(record, prefix, now)
                     if guard.emergency_review_required(record) and not emergency:
@@ -483,7 +489,8 @@ class SqlTrustedReceiver:
                     if (
                         record["state"] != "active"
                         or record["cordoned"]
-                        or authority["config_revision"] != policy["config_revision"]
+                        or bound
+                        and authority["config_revision"] != policy["config_revision"]
                         or lease.host_id != route.holder_identity
                         or _parse_stamp(lease.expires_at) <= now
                         or _parse_stamp(lease.expires_at) > now + 86400

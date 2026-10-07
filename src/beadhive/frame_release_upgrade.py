@@ -18,6 +18,7 @@ import math
 
 from ruamel.yaml import YAML
 
+from . import hq_authority_enforce
 from . import hq_authority_guard as guard
 from .host_manifest_contracts import HostManifest
 from .hq_framelease_contracts import ObservationAuthority
@@ -125,9 +126,12 @@ def prepare(original, frame, head, snapshot, request, *, now):
     guard.validate_state(original)
     slot, old = selected(original, frame)
     a = old["authority"]
+    # Trusted mode (bh-mk97e): authority/config expiry never blocks the reviewed transition.
+    expiring = hq_authority_enforce.enforced()
     if (
         original["domain"] != guard.DOMAIN_V2
-        or original["expires_at"] <= now
+        or expiring
+        and original["expires_at"] <= now
         or now < original["issued_at"]
         or not old["desired"]["declared"]
         or request["expected_revision"] != head
@@ -141,7 +145,8 @@ def prepare(original, frame, head, snapshot, request, *, now):
         or type(request["expires_at"]) not in (int, float)
         or not math.isfinite(request["expires_at"])
         or not now < request["expires_at"] <= now + 86400
-        or snapshot.valid_until <= now
+        or expiring
+        and snapshot.valid_until <= now
         or not isinstance(request["profile"], str)
         or not request["profile"].strip()
         or not isinstance(request["config_revision"], str)
@@ -257,8 +262,8 @@ def validate_publication(previous, state, head, snapshot, upgrade, route, *, now
         or expected != state
         or route != route_for(expected, upgrade["frame"])
         or upgrade["request"]["expires_at"] <= now
-        or previous["expires_at"] <= now
-        or snapshot.valid_until <= now
+        or hq_authority_enforce.enforced()
+        and (previous["expires_at"] <= now or snapshot.valid_until <= now)
     ):
         raise ValueError("release-upgrade publication differs from the reviewed plan")
 
