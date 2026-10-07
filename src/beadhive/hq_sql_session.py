@@ -413,6 +413,9 @@ _POLICY_SQL = f"SELECT session_ttl_s, evidence_ttl_s FROM {LIVENESS_POLICY_TABLE
 
 #: Eligibility in ONE statement: grant route (committed, ``AS OF`` the authority head) ⋈ session
 #: ⋈ evidence ⋈ policy (committed) ⟕ placement. Ages are by the HQ server's own clock.
+#: Freshness is ``TIMESTAMPDIFF(MICROSECOND, …) < ttl * 1000000``, never
+#: ``UTC_TIMESTAMP(6) - INTERVAL n SECOND``: Dolt 2.3.5 drops the fractional seconds of that
+#: subtraction, which kept rows fresh up to 1 s past their TTL (bh-7crof; upstream draft dolt-5).
 ELIGIBILITY_SQL = (
     "SELECT r.epoch, s.epoch, s.renewed_at, e.epoch, e.release_id, e.release_digest, "
     "e.profile, e.status, e.report_digest, e.measured_at, "
@@ -420,10 +423,12 @@ ELIGIBILITY_SQL = (
     "TIMESTAMPDIFF(MICROSECOND, e.measured_at, UTC_TIMESTAMP(6)) AS evidence_age_us, "
     "p.session_ttl_s, p.evidence_ttl_s, "
     "COALESCE(s.epoch = r.epoch "
-    "AND s.renewed_at > UTC_TIMESTAMP(6) - INTERVAL p.session_ttl_s SECOND, FALSE) "
+    "AND TIMESTAMPDIFF(MICROSECOND, s.renewed_at, UTC_TIMESTAMP(6)) "
+    "< p.session_ttl_s * 1000000, FALSE) "
     "AS authenticated_fresh_heartbeat, "
     "COALESCE(e.epoch = r.epoch AND e.status = 'conformant' AND e.profile = %s "
-    "AND e.measured_at > UTC_TIMESTAMP(6) - INTERVAL p.evidence_ttl_s SECOND, FALSE) "
+    "AND TIMESTAMPDIFF(MICROSECOND, e.measured_at, UTC_TIMESTAMP(6)) "
+    "< p.evidence_ttl_s * 1000000, FALSE) "
     "AS conformance_pass, "
     "COALESCE(e.epoch = r.epoch AND e.release_digest = %s, FALSE) AS release_matches, "
     "COALESCE(l.prefix IS NOT NULL AND JSON_UNQUOTE(JSON_EXTRACT("

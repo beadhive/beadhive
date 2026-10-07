@@ -365,14 +365,20 @@ def test_provisioning_isolation_server_stamps_and_eligibility(tmp_path):
         _sql(root, "UPDATE hq_liveness_policy SET evidence_ttl_s = 1")
         _sql(root, "CALL DOLT_ADD('hq_liveness_policy')")
         _sql(root, "CALL DOLT_COMMIT('-m','shorter evidence ttl')")
-        # Wait evidence_ttl_s + 1.1 s, not just past the TTL: Dolt 2.3.5 truncates the
-        # fractional seconds of `DATETIME(6) - INTERVAL n SECOND`, so ELIGIBILITY_SQL's cutoff
-        # can lag by up to 1 s and keep conformance_pass true a little past the TTL (bh-eeyxt;
-        # the product TIMESTAMPDIFF fix is follow-up bead bh-7crof).
-        time.sleep(1 + 1.1)
+        # Exact expiry (bh-7crof): every read's predicate agrees with the age the same
+        # statement reports, and the first read just past the 1 s TTL is already expired. Under
+        # the old `UTC_TIMESTAMP(6) - INTERVAL n SECOND` cutoff Dolt 2.3.5 truncated the
+        # fractional seconds and kept the evidence fresh up to 1 s longer.
         renewer = SessionRenewer(lambda: _frame(port, tmp_path, "frame_a"), database=DB)
-        renewer.tick()
-        expired = _eligibility(a)
+        deadline = time.monotonic() + 30
+        while True:
+            renewer.tick()
+            expired = _eligibility(a)
+            assert expired.conformance_pass == (expired.evidence_age_seconds < 1), expired
+            assert expired.authenticated_fresh_heartbeat == (expired.age_seconds < 300), expired
+            if expired.evidence_age_seconds >= 1 or time.monotonic() >= deadline:
+                break
+            time.sleep(0.05)
         assert expired.authenticated_fresh_heartbeat and not expired.conformance_pass
         assert expired.evidence_ttl_s == 1 and expired.evidence_age_seconds >= 1
 

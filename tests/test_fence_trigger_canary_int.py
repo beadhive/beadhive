@@ -276,6 +276,31 @@ def test_dolt_diff_table_drops_commits_on_merged_histories(tmp_path):
     )
 
 
+def test_datetime6_minus_interval_drops_fractional_seconds(tmp_path):
+    """bh-7crof on Dolt 2.3.5: ``DATETIME(6) - INTERVAL n SECOND`` loses the fractional seconds
+    (the result is rounded to a whole second), so an ``x > UTC_TIMESTAMP(6) - INTERVAL ttl
+    SECOND`` freshness cutoff is off by up to half a second. M9's ``ELIGIBILITY_SQL`` therefore
+    uses ``TIMESTAMPDIFF(MICROSECOND, ...) < ttl * 1000000``, which this pins as exact. Pinned
+    AS A BUG (docs/upstream dolt-5): a bump that fixes or changes it turns the canary red."""
+    repo = tc.DoltRepo(tmp_path)
+    (row,) = repo.rows(
+        "select cast('2026-01-01 00:00:00.700000' as datetime(6)) - interval 1 second as up, "
+        "cast('2026-01-01 00:00:00.300000' as datetime(6)) - interval 1 second as down, "
+        "timestampdiff(microsecond, cast('2026-01-01 00:00:00' as datetime(6)), "
+        "cast('2026-01-01 00:00:01.700000' as datetime(6))) as us"
+    )
+    expect(
+        int(row["us"]) == 1_700_000,
+        "TIMESTAMPDIFF(MICROSECOND, ...) keeps fractional seconds (M9 freshness relies on it)",
+        f"saw {row['us']}",
+    )
+    expect(
+        (row["up"], row["down"]) == ("2026-01-01 00:00:00", "2025-12-31 23:59:59"),
+        "DATETIME(6) - INTERVAL n SECOND rounds away the fraction (M9 avoids it)",
+        f"saw {row}; if Dolt fixed it, the TIMESTAMPDIFF workaround may be revisited",
+    )
+
+
 @pytest.mark.dolt_server
 def test_r5_commit_ancestors_where_on_a_merge_head_fails_max1row_on_sql_server(tmp_path):
     """R5.7 is sql-server-only: a ``WHERE commit_hash = hashof('HEAD')`` on
