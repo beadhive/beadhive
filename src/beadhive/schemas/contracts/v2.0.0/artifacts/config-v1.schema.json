@@ -1555,6 +1555,17 @@
           "title": "Authority Anchor",
           "type": "string"
         },
+        "authority_mode": {
+          "default": "inherit",
+          "description": "Frame-local HQ authority mode (HOST only, never fleet). `signed` verifies authority, heartbeat and config signatures; `trusted` is an opt-in waiver; `inherit` (default) follows the fleet default, which resolves to `signed` until one is set. BH_HQ_AUTHORITY_MODE, when set, overrides this value.",
+          "enum": [
+            "signed",
+            "trusted",
+            "inherit"
+          ],
+          "title": "Authority Mode",
+          "type": "string"
+        },
         "beadyard_id": {
           "anyOf": [
             {

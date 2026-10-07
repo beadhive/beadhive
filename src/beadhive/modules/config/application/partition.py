@@ -22,6 +22,7 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         "hq.remote",
         "hq.beadyard_id",
         "hq.authority_anchor",
+        "hq.authority_mode",
         "hq.sql",
         "dolt",
         "git_workspace",
