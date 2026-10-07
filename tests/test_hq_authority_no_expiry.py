@@ -298,3 +298,16 @@ def test_git_fleet_config_without_duration_never_expires(backend):  # noqa: F811
         .publish_snapshot(documents, expected_revision=first.commit_revision)
     )
     assert second.valid_until == pytest.approx(time.time() + DAY, abs=120)
+
+
+def test_git_rebind_bumps_revision_keeps_sentinel_and_cas_refuses_stale(backend):  # noqa: F811
+    b = backend
+    plane, key = b["plane"], str(b["operator"])
+    first, before, _ = plane._read()
+    sha = plane.renew(expected=first, operator_key=key)  # rebind == renew in the plane
+    _, after, _ = plane._read()
+    assert after["revision"] == before["revision"] + 1
+    assert after["expires_at"] == AUTHORITY_NO_EXPIRY
+    with pytest.raises(ControlPlaneError, match="mismatch"):
+        plane.renew(expected=first, operator_key=key)  # stale --expected-revision
+    assert plane._read()[0] == sha

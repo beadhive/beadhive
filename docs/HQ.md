@@ -658,6 +658,17 @@ Each run prints one `BH_M10` JSON line with the TTL, `failover_after` and the me
 above `failover_after`. `BH_M10_SEEDS=0,1,…` widens the suite's fixed-seed product schedule
 in the same way.
 
+## Authority rebind
+
+`bh hq authority rebind [--expected-revision N] --operator-key <key> --confirm` re-signs the
+current authority against the current config head (revision + 1, policies re-projected) -
+the fix after a frame-relevant config edit fences frames. With no `--duration` it signs the
+no-expiry sentinel, so it also converts a 0.23.x expiring authority into a non-expiring one;
+pass `--duration <seconds|7d|36h>` to opt into a finite expiry under the ceiling below.
+`bh hq authority renew` is a deprecated alias that prints a deprecation line. `rebind` is a new
+value of the existing `action` argument of the `hq.authority` operation, so the operation
+catalog and wire contract are unchanged.
+
 ## Authority duration ceiling
 
 `bh hq authority renew --duration <seconds|7d|36h>` signs an authority that stays valid for

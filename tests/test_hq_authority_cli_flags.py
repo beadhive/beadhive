@@ -50,7 +50,7 @@ def _renew(*extra):
         [
             "hq",
             "authority",
-            "renew",
+            "rebind",
             "--confirm",
             "--operator-key",
             "k",
@@ -130,3 +130,30 @@ def test_flags_are_in_the_published_catalog():
     rel = [p["name"] for p in ops["host.release-upgrade"]["parameters"]]
     assert "operator_settings" in rel
     assert hq_authority_cli.authority_cmd
+
+
+def test_rebind_signs_no_expiry_without_duration_and_is_not_deprecated(plane):
+    result = CliRunner().invoke(
+        app, ["hq", "authority", "rebind", "--confirm", "--operator-key", "k"]
+    )
+    assert result.exit_code == 0, result.output
+    assert plane.renewed[-1][0] is None
+    assert "deprecated" not in result.output
+
+
+def test_rebind_duration_opts_into_expiry(plane):
+    result = CliRunner().invoke(
+        app,
+        ["hq", "authority", "rebind", "--confirm", "--operator-key", "k", "--duration", "7d"],
+    )
+    assert result.exit_code == 0, result.output
+    assert plane.renewed[-1][0] == 7 * DAY
+
+
+def test_renew_still_works_but_warns_deprecated(plane):
+    result = CliRunner().invoke(
+        app, ["hq", "authority", "renew", "--confirm", "--operator-key", "k"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "deprecated" in result.output and "authority rebind" in result.output
+    assert plane.renewed[-1][0] is None
