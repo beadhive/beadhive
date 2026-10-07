@@ -13,6 +13,16 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.23.1 (2026-10-07)
+
+### Fix
+
+- **hq**: authority status, check, doctor and the publish notice treat a tolerated config head as bound (bh-3h6al)
+- **fleet**: M9 eligibility freshness uses exact TIMESTAMPDIFF, not a truncated INTERVAL cutoff (bh-7crof)
+- **hq**: an unrelated fleet-config publish no longer fences SQL frames (bh-u67ve)
+- **hq**: authority renew hint honours the configured ceiling and durations accept weeks (bh-u4cip)
+- **hq**: keep the signed authority expiry across SQL grant, observe, lifecycle and release-upgrade (bh-oywx8)
+
 ## v0.23.0 (2026-10-07)
 
 ### Feat
