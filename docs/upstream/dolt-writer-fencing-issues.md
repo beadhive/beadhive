@@ -73,3 +73,20 @@ commits that changed the table (an adopt commit beside a merge vanished from
 *Workaround in bh:* `fence_audit` reads `dolt_history_bh_writer` joined with
 `dolt_log('--parents', <head>)` and never `dolt_diff_<table>`. The canary pins the bug so a Dolt
 bump that fixes or changes it is noticed and the audit's query re-evaluated.
+
+## dolt-5: `DATETIME(6) - INTERVAL n SECOND` drops fractional seconds
+
+*Evidence:* bh-eeyxt / bh-7crof `tests/test_hq_sql_session_int.py`; pinned by the trigger canary
+(`tests/test_fence_trigger_canary_int.py::test_datetime6_minus_interval_drops_fractional_seconds`).
+Tracked internally only; not filed upstream.
+
+*Observed (2.3.5):* `UTC_TIMESTAMP(6)` returned `03:48:19.086951` while
+`UTC_TIMESTAMP(6) - INTERVAL 1 SECOND` returned `03:48:18`. The result is rounded to a whole second
+(`00:00:00.700000 - INTERVAL 1 SECOND` is `00:00:00`, `00:00:00.300000 - INTERVAL 1 SECOND` is
+`23:59:59`). `TIMESTAMPDIFF(MICROSECOND, …)` keeps the fraction.
+
+*Expected:* the result keeps the operand's fractional seconds (`23:59:59.700000`).
+
+*Workaround in bh:* M9's `ELIGIBILITY_SQL` tests freshness as
+`TIMESTAMPDIFF(MICROSECOND, <stamp>, UTC_TIMESTAMP(6)) < <ttl> * 1000000`, never against an
+`INTERVAL` cutoff, which had kept session and evidence rows fresh past their TTL.
