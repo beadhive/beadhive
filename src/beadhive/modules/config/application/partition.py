@@ -48,6 +48,7 @@ FLEET_PREFIXES: frozenset[str] = frozenset(
         "schema_version",
         "hq.mode",
         "hq.admission_policy",
+        "hq.default_authority_mode",
         "delimiter",
         "providers",
         "orgs",

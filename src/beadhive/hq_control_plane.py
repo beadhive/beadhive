@@ -167,6 +167,30 @@ class HqControlPlane(Protocol):
     ): ...
 
 
+OPEN_ADMISSION_REFUSED = (
+    "open admission requires a trusted fleet: the operator runs `bh hq authority mode-trusted "
+    "--operator-key <key> --confirm` once; until then a frame joins through `bh hq authority "
+    "grant` and `bh host` lifecycle admit"
+)
+
+
+def open_admission_guard(desired: dict) -> dict:
+    """Open admission (bh-taa04.3): in a TRUSTED fleet a registering frame is admitted directly
+    — one authority write recording its holder identity, instance and runtime key as an
+    ACTIVE, declared incarnation — with no operator grant record, no enrollment/observation
+    gate (``observe`` / ``lifecycle admit``) and no operator key. Cordon, drain and retire
+    still act on the record like on any other.
+
+    Trust delta: in a trusted fleet anything that can reach HQ with write access and register
+    can join. Refused (fail closed) unless this process has learned a trusted fleet default.
+    Returns the desired policy with ``declared`` set."""
+    if not authority_mode.fleet_trusted():
+        raise ControlPlaneError(OPEN_ADMISSION_REFUSED)
+    if not isinstance(desired, dict):
+        raise ControlPlaneError("open admission requires the frame's desired policy")
+    return {**desired, "declared": True}
+
+
 def _git(directory, *args, data=None):
     forbidden = {
         "GIT_DIR",
@@ -679,6 +703,10 @@ class GitControlPlane:
             self._remote(policy),
             sha,
         )
+        try:
+            authority_mode.require_fleet_compatible()
+        except authority_mode.AuthorityModeConflict as exc:
+            raise ControlPlaneError(str(exc)) from None
         # Trusted mode (bh-mk97e) accepts signed and unsigned commits without verifying them;
         # the witness/rollback floor and generation below still hold.
         if authority_enforced():
@@ -694,11 +722,16 @@ class GitControlPlane:
                 )
             except ControlPlaneError:
                 header = _git(self.hq_dir, "cat-file", "-p", sha).split("\n\n", 1)[0]
-                if authority_mode.unsigned_commit(header):
+                if not authority_mode.unsigned_commit(header):
+                    raise
+                # A host that joined after the fleet went trusted learns the operator-signed
+                # fleet default from the config carrier (bh-taa04.3), then re-resolves.
+                if authority_mode.discoverable():
+                    self.config_store().discover_fleet_default(policy)
+                if authority_enforced():
                     raise ControlPlaneError(
-                        authority_mode.unsigned_rejection("HQ authority")
+                        authority_mode.unsigned_refusal("HQ authority")
                     ) from None
-                raise
         if (
             int(_git(self.hq_dir, "cat-file", "-s", f"{sha}:authority.json")) > 4 * 1024 * 1024
             or _git(self.hq_dir, "ls-tree", "--name-only", sha) != "authority.json"
@@ -1013,7 +1046,19 @@ class GitControlPlane:
         )
         return sha
 
-    def grant(self, authority, public_key, desired, *, expected, operator_key):
+    def admit_open(self, authority, public_key, desired, *, expected, operator_key=""):
+        """Open admission (bh-taa04.3): see :func:`open_admission_guard`."""
+        desired = open_admission_guard(desired)
+        return self.grant(
+            authority,
+            public_key,
+            desired,
+            expected=expected,
+            operator_key=operator_key,
+            admitted=True,
+        )
+
+    def grant(self, authority, public_key, desired, *, expected, operator_key, admitted=False):
         from .beadyard_identity_file import read_identity
         from .hq_authority_payload import authority_payload
 
@@ -1022,8 +1067,11 @@ class GitControlPlane:
         sha, state, policy = self._operator_read()
         if (
             sha != expected
-            or authority.candidate_expires_at is None
-            or authority.candidate_expires_at <= self.clock()
+            or not admitted
+            and (
+                authority.candidate_expires_at is None
+                or authority.candidate_expires_at <= self.clock()
+            )
         ):
             raise ControlPlaneError(
                 "candidate grant requires exact revision and bounded future expiry"
@@ -1054,10 +1102,12 @@ class GitControlPlane:
             raise ControlPlaneError(
                 "candidate exists or epoch does not advance operator-granted floor"
             )
-        entry["candidate"] = {
+        if admitted and entry["active"] is not None:
+            raise ControlPlaneError("open admission: frame already has an active incarnation")
+        entry["active" if admitted else "candidate"] = {
             "authority": authority_payload(authority),
             "public_key": public_key.strip(),
-            "state": "pending",
+            "state": "active" if admitted else "pending",
             "desired": desired,
             "cordoned": False,
             "drain_deadline": None,
@@ -1567,6 +1617,12 @@ class SqlControlPlane:
 
         if self.settings.get("runtime") is None:
             raise ControlPlaneError("AUTHORITY_NOT_READY: SQL runtime binding unavailable")
+        try:
+            # Every frame read starts here: a signed pin in a trusted fleet refuses up front with
+            # the actionable message instead of a generic "unavailable" (bh-taa04.3).
+            authority_mode.require_fleet_compatible()
+        except authority_mode.AuthorityModeConflict as exc:
+            raise ControlPlaneError(str(exc)) from None
         return SqlRuntimeAuthority(self.settings, broker=self.broker, clock=self.clock)
 
     def authority_status(self):
@@ -1809,7 +1865,19 @@ class SqlControlPlane:
             raise ControlPlaneError("separate authority writer capability unavailable")
         return time.monotonic() + binding["operation_timeout"]
 
-    def grant(self, authority, public_key, desired, *, expected, operator_key):
+    def admit_open(self, authority, public_key, desired, *, expected, operator_key=""):
+        """Open admission (bh-taa04.3): see :func:`open_admission_guard`."""
+        desired = open_admission_guard(desired)
+        return self.grant(
+            authority,
+            public_key,
+            desired,
+            expected=expected,
+            operator_key=operator_key,
+            admitted=True,
+        )
+
+    def grant(self, authority, public_key, desired, *, expected, operator_key, admitted=False):
         from .host_heartbeat_core import ObservationAuthority
         from .hq_authority_payload import authority_payload
         from .hq_sql_operator import SqlRuntimeOperator
@@ -1825,8 +1893,11 @@ class SqlControlPlane:
             head, original, _crossref, _policies = operator.load(deadline=budget)
             if (
                 head != expected
-                or authority.candidate_expires_at is None
-                or authority.candidate_expires_at <= self.clock()
+                or not admitted
+                and (
+                    authority.candidate_expires_at is None
+                    or authority.candidate_expires_at <= self.clock()
+                )
                 or fingerprint(public_key) != authority.key_fingerprint
                 or authority.key_fingerprint
                 == fingerprint(self.settings["runtime_operator_public_key"])
@@ -1844,10 +1915,12 @@ class SqlControlPlane:
             )
             if entry["candidate"] is not None or authority.epoch <= entry["epoch_floor"]:
                 raise ControlPlaneError("candidate exists or epoch does not advance")
-            entry["candidate"] = {
+            if admitted and entry["active"] is not None:
+                raise ControlPlaneError("open admission: frame already has an active incarnation")
+            entry["active" if admitted else "candidate"] = {
                 "authority": authority_payload(authority),
                 "public_key": public_key.strip(),
-                "state": "pending",
+                "state": "active" if admitted else "pending",
                 "desired": desired,
                 "cordoned": False,
                 "drain_deadline": None,

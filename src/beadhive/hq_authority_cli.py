@@ -53,7 +53,8 @@ def authority_cmd(
     action: str = typer.Argument(
         ...,
         help="install, bind, bind-beadyard, grant, observe, rebind, renew (deprecated alias of "
-        "rebind), status, check, or prune-inbox",
+        "rebind), status, check, prune-inbox, mode (show the fleet default authority mode), "
+        "mode-signed / mode-trusted (set it), or join (open admission in a trusted fleet)",
     ),
     record: Annotated[Path | None, typer.Option("--record")] = None,
     frame: str = typer.Option("", "--frame"),
@@ -104,6 +105,32 @@ def authority_cmd(
     ] = None,
 ) -> None:
     try:
+        # The fleet default rides in the action value (`mode-trusted`), so the published
+        # hq.authority operation keeps its parameter list (bh-taa04.3).
+        if action == "mode" or action.startswith("mode-"):
+            from . import hq_authority_fleet_mode
+
+            result = hq_authority_fleet_mode.mode_cmd(
+                action.removeprefix("mode").removeprefix("-"),
+                operator_settings=operator_settings,
+                operator_key=operator_key,
+                confirm=confirm,
+                max_duration=max_duration,
+            )
+            typer.echo(json.dumps(result, sort_keys=True))
+            return
+        if action == "join":
+            from . import hq_authority_fleet_mode
+
+            result = hq_authority_fleet_mode.join_cmd(
+                frame,
+                public_key,
+                operator_settings=operator_settings,
+                operator_key=operator_key,
+                confirm=confirm,
+            )
+            typer.echo(json.dumps(result, sort_keys=True))
+            return
         if (operator_settings or hq_operator_settings.configured()) and action in {
             "install",
             "bind",

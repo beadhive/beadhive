@@ -669,6 +669,67 @@ pass `--duration <seconds|7d|36h>` to opt into a finite expiry under the ceiling
 value of the existing `action` argument of the `hq.authority` operation, so the operation
 catalog and wire contract are unchanged.
 
+## Fleet default authority mode and open admission {#fleet-authority-mode}
+
+A frame's effective authority mode is its explicit pin (`hq.authority_mode` /
+`BH_HQ_AUTHORITY_MODE`: `signed` or `trusted`), else (`inherit`, the default) the **fleet
+default**, else `signed`. With nothing configured every frame stays `signed`, exactly as in
+0.23.1.
+
+```sh
+bh hq authority mode                                             # show mode, source, fleet default
+bh hq authority mode-trusted --operator-key <key> --confirm     # once; then work key-less
+bh hq authority mode-signed  [--operator-key <key>] --confirm   # back to signed
+```
+
+The value rides in the `action` argument of the existing `hq.authority` operation, so the
+operation catalog and wire contract are unchanged.
+
+**Carrier.** `hq.default_authority_mode` in the committed `fleet.yaml`. It is part of the
+frame-relevant set that `config_head_tolerated` compares, so on SQL HQ a change fences signed
+frames until the authority is re-signed against the new head; `mode-trusted` publishes the key
+and then runs a signed `rebind`. On Git HQ the config carrier commit is itself operator-signed.
+A frame therefore learns `trusted` only from a read whose operator signature or binding it
+verified - a key-less HQ writer cannot downgrade a signed fleet (its edit fences signed frames
+on SQL HQ and is refused by a signed Git guard). Lowering to `signed` is always taken. The
+signed authority state is untouched (0.23.x `validate_state` needs its exact key set).
+
+**Learning.** Each host persists the learned default in `$BH_HOME/state/hq-fleet-authority-
+mode.json`; the resolver costs one `stat` per call. SQL frames learn on every verified
+authority/config read (eligibility, receiver). A host that meets an unsigned record before it
+has learned anything (a frame joining after the fleet went trusted) walks back to the newest
+operator-signed authority (SQL, up to 64 commits) or config commit (Git) and learns that
+one's default. Git frames otherwise learn on their next config-carrier read: run
+`bh hq authority mode` on the frame.
+
+**Open admission.** In a trusted fleet `bh hq authority join [--frame <host_id> --public-key
+<key.pub>] --confirm` admits a frame directly: one key-less authority write records its holder
+identity, instance and runtime key from its committed host manifest as an ACTIVE, declared
+incarnation (audience and conformance profile copied from the fleet) - no grant record, no
+`observe`/`lifecycle admit` enrollment and no operator key. Frame registration
+(`publish_host_manifest`) runs it automatically when the frame holds HQ authority-write access
+(`BH_HQ_OPERATOR_SETTINGS`); otherwise it prints the `join` command to run where HQ is
+writable. Cordon, drain and retire act on the record as on any other. A signed fleet refuses
+`join`. SQL HQ still needs the frame's server-local principal provisioning (account, inbox and
+session tables, for the authority `hq_open_admission.request` derives); that is infrastructure,
+not an authority step.
+
+**Pinned signed frames.** A frame pinned `hq.authority_mode: signed` in a trusted fleet refuses
+to work, fail closed, with a message naming both fixes (unpin to `inherit`, or the operator runs
+`mode-signed`); `bh doctor` shows the same line.
+
+**`bh hq authority check` in trusted mode** reports `OK: ... not enforced (trusted)` instead of
+failing an expired opt-in authority or an unbound head, matching what trusted frames enforce.
+
+**Mixed versions.** 0.23.x frames reject the new fleet key (the fleet schema is strict) and
+reject unsigned records. Upgrade every frame and operator host to 0.24.0 first, then run
+`mode-trusted`. `mode-signed` removes the key, so 0.23.x can read the fleet again once the
+authority is re-signed with the key.
+
+**Trust delta.** In a trusted fleet HQ write access is admin, and anything that can reach HQ
+with write access and register can join. The fleet stays signed until the operator raises it
+with the key once.
+
 ## Authority duration ceiling
 
 `bh hq authority renew --duration <seconds|7d|36h>` signs an authority that stays valid for
