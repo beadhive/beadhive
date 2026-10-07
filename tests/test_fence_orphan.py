@@ -280,3 +280,140 @@ def test_an_unreachable_push_is_not_re_checked(monkeypatch):
     monkeypatch.setattr(host_fence, "reserve_managed_push", lambda *_a, **_k: None)
     result = engine.BdEngine().push_state("/hive", message="m")
     assert checks == [1] and result.returncode == 1
+
+
+# ---- bh doctor lists unmerged orphans per hive -------------------------------------------------
+
+
+def test_doctor_lists_unmerged_orphans_for_a_cut_over_hive(monkeypatch, tmp_path, capsys):
+    from beadhive import doctor, fence_cutover, host_adopt
+
+    node = fence_data.FenceNode(engine=None)  # type: ignore[arg-type] - reads are stubbed
+    monkeypatch.setattr(host_adopt, "fence_data_for", lambda prefix, path: node)
+    monkeypatch.setattr(doctor.guard, "primary_state", lambda **kw: None)
+    monkeypatch.setattr(
+        fence_cutover,
+        "status",
+        lambda n, *, prefix, placement=None, ref=None: fence_cutover.FenceStatus(
+            prefix, cut_over=True, writer=WriterRow("b", 2)
+        ),
+    )
+    orphan = fence_orphan.Orphan("frame/a/orphan-1-1", "a", 1, "1", "c" * 32)
+    seen = {}
+
+    def listed(n, *, fetch=True, include_merged=False):
+        seen["fetch"] = fetch
+        return [orphan]
+
+    monkeypatch.setattr(fence_orphan, "list_orphans", listed)
+    doctor._fence_status_cache.clear()
+    status = doctor._writer_fence_status({}, {"prefix": "bh"}, tmp_path)
+    assert seen["fetch"] is False  # the status already fetched
+    assert status["orphans"] == [orphan.as_dict()]
+    warns = doctor._writer_fence_warnings(status)
+    assert warns == [
+        "hive 'bh': unmerged orphan frame/a/orphan-1-1 (frame a, epoch 1) — on the writer: "
+        "bh hive fence orphan-merge bh --branch frame/a/orphan-1-1"
+    ]
+    doctor._render_writer_fence([status])
+    out = capsys.readouterr().out
+    assert "orphans         1 unmerged" in out and "frame/a/orphan-1-1" in out
+
+
+def test_doctor_is_silent_about_orphans_on_a_legacy_hive(monkeypatch, tmp_path):
+    from beadhive import doctor, host_adopt
+
+    monkeypatch.setattr(host_adopt, "fence_data_for", lambda prefix, path: None)
+    monkeypatch.setattr(
+        fence_orphan, "list_orphans", lambda *_a, **_k: pytest.fail("legacy: never listed")
+    )
+    doctor._fence_status_cache.clear()
+    assert doctor._writer_fence_status({}, {"prefix": "bh"}, tmp_path) is None
+
+
+# ---- the hidden verb: bh hive fence orphans | orphan-merge ------------------------------------
+
+_ENV = {"COLUMNS": "200", "BH_SKIP_SETUP_CHECK": "1", "NO_COLOR": "1"}
+
+
+def _invoke(*args):
+    from typer.testing import CliRunner
+
+    from beadhive.cli import app
+
+    return CliRunner().invoke(app, ["hive", "fence", *args], env=_ENV)
+
+
+def test_orphan_merge_needs_branch_and_branch_needs_orphan_merge():
+    missing = _invoke("orphan-merge", "bh")
+    assert missing.exit_code == 2 and "needs --branch" in missing.output
+    stray = _invoke("status", "bh", "--branch", "frame/a/orphan-1-1")
+    assert stray.exit_code == 2 and "needs --branch" in stray.output
+
+
+@pytest.fixture
+def verb(monkeypatch, tmp_path):
+    from beadhive import cli, hive_fence_cli
+
+    node = fence_data.FenceNode(engine=None)  # type: ignore[arg-type] - stubbed below
+    monkeypatch.setattr(cli.registry, "resolve_hive", lambda cfg, h: {"prefix": h})
+    monkeypatch.setattr(cli.registry, "hive_dir", lambda e: tmp_path)
+    monkeypatch.setattr(cli.config, "load", lambda *a, **k: {})
+    monkeypatch.setattr(hive_fence_cli, "_context", lambda prefix, hive_dir: node)
+    monkeypatch.setattr(hive_fence_cli, "_host_and_hq", lambda: ("b", tmp_path))
+    return node
+
+
+def test_orphans_lists_them_as_json(monkeypatch, verb):
+    orphan = fence_orphan.Orphan("frame/a/orphan-1-1", "a", 1, "1", "c" * 32)
+    monkeypatch.setattr(fence_orphan, "list_orphans", lambda n, **_k: [orphan])
+    res = _invoke("orphans", "bh", "--json")
+    assert res.exit_code == 0, res.output
+    assert json.loads(res.output) == {"hive": "bh", "orphans": [orphan.as_dict()]}
+
+
+def test_orphan_merge_merges_as_this_frame_then_publishes_through_the_managed_push(
+    monkeypatch, verb
+):
+    seen = {}
+
+    def merged(node, branch, *, frame):
+        seen["merge"] = (node, branch, frame)
+        return fence_orphan.MergeResult(branch, "c" * 32, 2, commit="d" * 32, restamped=3)
+
+    class Eng:
+        def push_state(self, cwd, **kw):
+            seen["push"] = kw["message"]
+            return subprocess.CompletedProcess(["bd"], 0, "", "")
+
+    monkeypatch.setattr(fence_orphan, "merge_orphan", merged)
+    monkeypatch.setattr(engine, "get_engine", lambda *a, **k: Eng())
+    res = _invoke("orphan-merge", "bh", "--branch", "frame/a/orphan-1-1")
+    assert res.exit_code == 0, res.output
+    assert seen["merge"] == (verb, "frame/a/orphan-1-1", "b")
+    assert "frame/a/orphan-1-1" in seen["push"]
+    assert "3 mark(s) re-stamped" in res.output and "managed push" in res.output
+
+
+def test_orphan_merge_refusal_and_failed_publish_exit_1(monkeypatch, verb):
+    def refused(*_a, **_k):
+        raise fence_orphan.OrphanMergeRefused("only the writer merges an orphan")
+
+    monkeypatch.setattr(fence_orphan, "merge_orphan", refused)
+    res = _invoke("orphan-merge", "bh", "--branch", "frame/a/orphan-1-1")
+    assert res.exit_code == 1 and "only the writer" in res.output
+
+    monkeypatch.setattr(
+        fence_orphan,
+        "merge_orphan",
+        lambda node, branch, *, frame: fence_orphan.MergeResult(branch, "c" * 32, 2, commit="d"),
+    )
+
+    class Eng:
+        def push_state(self, cwd, **kw):
+            return subprocess.CompletedProcess(["bd"], 1, "", "remote unreachable")
+
+    monkeypatch.setattr(engine, "get_engine", lambda *a, **k: Eng())
+    res = _invoke("orphan-merge", "bh", "--branch", "frame/a/orphan-1-1")
+    assert res.exit_code == 1 and "committed locally" in res.output
+    assert "remote unreachable" in res.output

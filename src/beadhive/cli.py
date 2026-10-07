@@ -2881,17 +2881,24 @@ def hive_check_push_fence(
 # Decision 3); hidden from `bh --help`, `bh hive --help` and the CLI reference, and removed (E1)
 # once every hive is cut over. Operator-invoked on the current holder; nothing auto-cuts-over.
 
-_FENCE_ACTIONS = ("cutover", "status", "rollback")
+_FENCE_ACTIONS = ("cutover", "status", "rollback", "orphans", "orphan-merge")
 
 
 @hive_app.command("fence", hidden=True)
 def hive_fence(
-    action: str = typer.Argument(..., metavar="ACTION", help="cutover | status | rollback"),
+    action: str = typer.Argument(
+        ..., metavar="ACTION", help="cutover | status | rollback | orphans | orphan-merge"
+    ),
     hive_id: str = typer.Argument(..., metavar="HIVE_ID", help="the hive to act on"),
     others_published: bool = typer.Option(
         False,
         "--others-published",
         help="cutover only: attest that no OTHER host holds unpublished commits for the hive",
+    ),
+    branch: str = typer.Option(
+        "",
+        "--branch",
+        help="orphan-merge only: the frame/<id>/orphan-<epoch>-<n> branch to merge",
     ),
     as_json: bool = typer.Option(False, "--json", help="emit the record / status as JSON"),
 ):
@@ -2903,7 +2910,12 @@ def hive_fence(
     status: read-only — epoch, cutover commit, refs/bh/epoch, fence_audit, trigger count.
 
     rollback: roll HIVE_ID back to the legacy fence (R1-R5); on a replica of a rolled-back
-    hive, drop its identity (R5)."""
+    hive, drop its identity (R5).
+
+    orphans: read-only — the orphan branches superseded frames diverted to, not yet merged.
+
+    orphan-merge: on the writer, merge --branch in one SQL session that re-stamps its marks at
+    the live epoch, then publish it through the managed push (bh-4z3oz)."""
     from . import hive_fence_cli
 
     if action not in _FENCE_ACTIONS:
@@ -2914,6 +2926,9 @@ def hive_fence(
     if others_published and action != "cutover":
         typer.echo("✗ --others-published applies to cutover only", err=True)
         raise typer.Exit(2)
+    if bool(branch) != (action == "orphan-merge"):
+        typer.echo("✗ orphan-merge needs --branch, and --branch applies to it only", err=True)
+        raise typer.Exit(2)
     entry = registry.resolve_hive(config.load(), hive_id)
     prefix, hive_dir = str(entry["prefix"]), registry.hive_dir(entry)
     if action == "cutover":
@@ -2922,6 +2937,10 @@ def hive_fence(
         )
     elif action == "status":
         hive_fence_cli.impl_status(prefix, hive_dir, as_json=as_json)
+    elif action == "orphans":
+        hive_fence_cli.impl_orphans(prefix, hive_dir, as_json=as_json)
+    elif action == "orphan-merge":
+        hive_fence_cli.impl_orphan_merge(prefix, hive_dir, branch=branch, as_json=as_json)
     else:
         hive_fence_cli.impl_rollback(prefix, hive_dir, as_json=as_json)
 

@@ -3169,6 +3169,14 @@
           }
         },
         {
+          "name": "branch",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
           "name": "as_json",
           "privilege": "inherited",
           "required": false,
@@ -3200,6 +3208,7 @@
             "action",
             "hive_id",
             "others_published",
+            "branch",
             "as_json"
           ],
           "path": "hive fence",

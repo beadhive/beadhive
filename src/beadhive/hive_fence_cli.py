@@ -1,4 +1,5 @@
-"""``bh hive fence cutover|status|rollback`` — the HIDDEN, TEMPORARY per-hive cutover verb.
+"""``bh hive fence cutover|status|rollback|orphans|orphan-merge`` — the HIDDEN, TEMPORARY per-hive
+cutover verb.
 
 bh-oarxp (P-M4), ADR ``docs/design/hive-writer-partitioning-adr.md`` Decision 3. Documented only
 in ``docs/design/hive-writer-cutover-runbook.md``; outside ``bh --help``, ``bh hive --help`` and
@@ -6,7 +7,9 @@ the CLI reference. Removed by E1 once every hive is cut over. Operator-invoked o
 holder, one hive at a time: nothing calls it automatically and no config key turns it on.
 
 The procedure itself is :mod:`beadhive.fence_cutover`; this module only resolves the hive, this
-host and HQ, renders, and maps refusals to exit 1.
+host and HQ, renders, and maps refusals to exit 1. ``orphans`` / ``orphan-merge`` (bh-4z3oz) list
+and merge the ``frame/<id>/orphan-<epoch>-<n>`` branches a superseded frame's managed push
+diverted to (:mod:`beadhive.fence_orphan`).
 """
 
 from __future__ import annotations
@@ -16,9 +19,9 @@ from pathlib import Path
 
 import typer
 
-from . import fence_cutover, fence_data, fence_schema
+from . import fence_cutover, fence_data, fence_orphan, fence_schema
 
-__all__ = ["impl_cutover", "impl_rollback", "impl_status"]
+__all__ = ["impl_cutover", "impl_orphan_merge", "impl_orphans", "impl_rollback", "impl_status"]
 
 
 def _context(prefix: str, hive_dir: Path) -> fence_data.FenceNode:
@@ -161,3 +164,61 @@ def impl_rollback(prefix: str, hive_dir: Path, *, as_json: bool) -> None:
         "  next: run `bh hive fence rollback` on every other replica after it pulls (R5); "
         "the next adopt mints an epoch above the floor"
     )
+
+
+def impl_orphans(prefix: str, hive_dir: Path, *, as_json: bool) -> None:
+    """Read-only: the orphan branches on the hive's remote not yet merged into its head."""
+    node = _context(prefix, hive_dir)
+    try:
+        orphans = fence_orphan.list_orphans(node)
+    except (RuntimeError, ValueError) as exc:
+        _fail(exc)
+        return
+    if as_json:
+        _emit({"hive": prefix, "orphans": [o.as_dict() for o in orphans]})
+        return
+    if not orphans:
+        typer.echo(f"✓ {prefix}: no unmerged orphan branches")
+        return
+    typer.echo(f"{prefix}: {len(orphans)} unmerged orphan branch(es)")
+    for o in orphans:
+        typer.echo(f"  {o.branch}  {o.commit[:12]}  (frame {o.frame}, epoch {o.epoch})")
+    typer.echo(f"  merge on the writer: bh hive fence orphan-merge {prefix} --branch <branch>")
+
+
+def impl_orphan_merge(prefix: str, hive_dir: Path, *, branch: str, as_json: bool) -> None:
+    """On the writer: merge one orphan in one SQL session (marks re-stamped), then publish it
+    through the managed push."""
+    from . import engine
+
+    node = _context(prefix, hive_dir)
+    host_id = _host_and_hq()[0]
+    try:
+        merged = fence_orphan.merge_orphan(node, branch, frame=host_id)
+    except (RuntimeError, ValueError) as exc:
+        _fail(exc)
+        return
+    published = True
+    detail = ""
+    if not merged.already:
+        res = engine.get_engine().push_state(hive_dir, message=f"bh: publish merge of {branch}")
+        published = res.returncode == 0
+        detail = (f"{res.stdout or ''}{res.stderr or ''}").strip()
+    if as_json:
+        _emit({**merged.as_dict(), "hive": prefix, "published": published, "detail": detail})
+    elif merged.already:
+        typer.echo(f"✓ {prefix}: {branch} is already merged into main ({merged.orphan_commit})")
+    else:
+        typer.echo(
+            f"✓ {prefix}: merged {branch} at epoch {merged.epoch} — {merged.restamped} mark(s) "
+            f"re-stamped, commit {merged.commit}"
+        )
+        if published:
+            typer.echo("  published through the managed push")
+    if not published:
+        typer.echo(
+            f"✗ {prefix}: the merge is committed locally but its publish failed; retry with "
+            f"`bh hive sync remotes --push`.\n  {detail[:600]}",
+            err=True,
+        )
+        raise typer.Exit(1)
