@@ -71,9 +71,12 @@ this ADR:
 - `bd_write_refusal` / `is_store_publish` (`guard.py:888`, `:919`);
 - `fenced_push` has no caller outside `host_fence.py`.
 
-Bead states: `bh-3q5m9`, `bh-kmxyp` and `bh-vfrem` (release ranges) are open. The
-laptop-free authority and fleet-config fencing work (formerly `bh-87l3y`, `bh-wj8hu` and
-`bh-rjjjo`) was delivered by the `bh-iru2g` patch molecule (0.22.x, closed).
+Bead states: `bh-3q5m9`, `bh-kmxyp` and `bh-vfrem` (release ranges) are open. The 0.22.x `bh-iru2g`
+molecule delivered `--operator-settings`, `--duration` up to a configurable ceiling and the
+fleet-config fencing fix (`bh-87l3y`, `bh-wj8hu`); the 0.23.x `bh-81nac` molecule keeps a long
+authority valid and bound. **Laptop-free renewal itself (`bh-rjjjo`, a scoped delegate signing key)
+is not delivered** and is out of scope for 0.23.x: every frame pins the one operator key, so a
+0.23.0 frame would reject a delegate-signed record. It is deferred to 0.24.0.
 
 ### Why GO — the five load-bearing reasons
 
@@ -111,9 +114,12 @@ laptop-free authority and fleet-config fencing work (formerly `bh-87l3y`, `bh-wj
   already relies on the same `--force-with-lease` semantics for `refs/bh/lease/*` and for bd's
   own `refs/dolt/data` pushes. This becomes a canary gate before the first GitHub-hosted cutover
   (condition 11), not a reason to stop.
-- **The factory cannot deploy without the operator's laptop** (`bh-32379` L6, L9). The
-  fleet-config fencing and laptop-free authority work (formerly `bh-87l3y`, `bh-wj8hu` and
-  `bh-rjjjo`) is delivered by `bh-iru2g`. It gated
+- **The factory cannot deploy without the operator's laptop** (`bh-32379` L6, L9). The 0.22.x
+  `bh-iru2g` molecule delivered `--operator-settings`, `--duration` up to a configurable ceiling and
+  the fleet-config fencing fix (`bh-87l3y`, `bh-wj8hu`); the 0.23.x `bh-81nac` molecule keeps a long
+  authority valid and bound. **Laptop-free renewal itself (`bh-rjjjo`, a scoped delegate signing
+  key) is not delivered** and is out of scope for 0.23.x: every frame pins the one operator key, so
+  a 0.23.0 frame would reject a delegate-signed record. It is deferred to 0.24.0. It gated
   *deployment* stages (Φ1 install, Φ3), not the design. The outline makes them explicit
   dependencies. The operator accepted one laptop session for the Φ1 install (Decision 4).
 - **Signed-mode lease continuity has a 16-rotation horizon** (`bh-32379` L9, derived from code
@@ -466,7 +472,8 @@ Condition 17 is recorded as a deferred open design point and does not bind.
 ## Consequences
 
 - **Lifted:** `bh bd dolt push|sync` and bd auto-push on cut-over hives; the receiver as an
-  availability anchor; the laptop LaunchAgent once the `bh-iru2g` laptop-free authority work is in use.
+  availability anchor; the laptop LaunchAgent once `bh-rjjjo` (laptop-free authority, deferred to
+  0.24.0) lands.
 - **New operator duties:** per-hive cutover (C1–C6) and rollback (R1–R5), through a hidden,
   temporary verb that is removed once every hive is cut over (Decision 3); the GitHub canary
   (condition 11); orphan merges after a partitioned writer rejoins; reading `fence_audit` in
@@ -532,7 +539,7 @@ receiver removal` (implements this ADR).
 | M12 | `feat(fleet): forward write path for non-primary executors, option A — bd pointed at the primary's hive server over TLS with per-frame host-pinned accounts, globals watchdog, read-only DOLT_ROOT_PATH config` (P-M10; condition 16) | M4; M13 only for choosing option B |
 | M13 | `spike(fleet): forward through a bh RPC service on the primary so executors hold no Dolt login (option B); measure whether a forced global on the primary's hive server lets a stale write land` (early; may land in 0.23.0) | — |
 | M14 | `spike(fleet): DECISION — pair bead state with work: remote backup location for worktree commits, ordering against bd push, backup-driven reclaim policy on frame loss` (condition 18) — `bh-55vvh`, see [bh-55vvh-state-work-pairing.md](../spikes/bh-55vvh-state-work-pairing.md) | — |
-| — | *link* `bh-kmxyp` / `bh-vfrem` (release ranges) and `bh-iru2g` (laptop-free authority, formerly `bh-wj8hu` / `bh-rjjjo`); land in 0.23.0 if possible | — |
+| — | *link* `bh-kmxyp` / `bh-vfrem` (release ranges) (`bh-wj8hu` and `bh-87l3y` delivered by `bh-iru2g`) and `bh-rjjjo` (laptop-free authority, deferred to 0.24.0); land in 0.23.0 if possible | — |
 
 ### Sub-epic C — operator rollout (procedures; no release)
 
@@ -541,7 +548,7 @@ receiver removal` (implements this ADR).
 | O1 | `chore(ops): install 0.23.0 on the factory by active-frame rotation (Φ1), one operator laptop session` | M1–M12, M8b, M8c, F9 |
 | O2 | `chore(ops): GitHub-hosted ref CAS canary, then canary hive cutover (Φ2)` | O1 |
 | O3 | `chore(ops): cut the bh hive over (Φ2), seed from the live writer epoch` | O2, O10 |
-| O4 | `chore(ops): SQL Φ3 — provision session/evidence tables, director credential on the HQ host, soak with the receiver running, then stop it (Φ3b, laptop-off acceptance)` | O3, M8, M9, `bh-iru2g` |
+| O4 | `chore(ops): SQL Φ3 — provision session/evidence tables, director credential on the HQ host, soak with the receiver running, then stop it (Φ3b, laptop-off acceptance)` | O3, M8, M9; laptop-off acceptance needs `bh-rjjjo` (deferred), so a long authority (`bh-81nac`) bridges it |
 | O5 | `chore(ops): retire BH_FRAME_HEARTBEAT=advisory by bh-32379 §3 steps A1–A3 (condition 13; hard prerequisite for O8)` | O4, or F9 with a clean full-gate soak |
 | O6 | `chore(ops): bake the executor frame image on the latest working 0.23.x` | O1 |
 | O7 | `chore(ops): deploy three executor frames to PVE from the baked image` | O6 |
