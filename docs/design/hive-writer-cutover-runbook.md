@@ -102,6 +102,49 @@ without one as `identity unprovisioned`.
 - `placement_ahead` — adopt incomplete. Re-run `bh host lease adopt <hive>` on the placed host.
 - `late_write` — a commit written before an adopt entered `main` after it (`bh-uhx2r` E2).
 - `guard: N of 44` — this node is short of triggers. Re-run the cutover while the hive is quiet.
+- `unmerged orphan frame/<id>/orphan-<epoch>-<n>` — a superseded frame diverted its unpublished
+  commits there. Merge it on the writer (§4a).
+
+## 4a. Orphans after a partitioned writer rejoins
+
+On a cut-over hive every managed push (`bh hive sync --push`, report publication, the lifecycle
+verbs) commits the working set first. In server mode a failed commit refuses the push, because
+the guard's marks would not travel with the write. The push then fetches without merging. If the
+remote head's `bh_writer.epoch` is above the epoch this frame's committed `main` holds, the frame
+has been superseded and does this instead of pushing `main`:
+
+1. it commits its working set and pushes its unpublished commits to
+   `frame/<id>/orphan-<held epoch>-<n>`, where `<n>` is the next free number;
+2. it checks that the branch landed on the remote, and stops with nothing reset if it did not;
+3. it resets local `main` to the remote head. In server mode the reset first kills every
+   forwarder session (`host.forward.serve.quiesce_before_reset`), so an in-flight forwarded
+   write is refused rather than acknowledged and then dropped.
+
+The push reports `superseded` and exits non-zero. Nothing is lost: the work is on the orphan, and
+a bead's worktree commits are still on its per-(bead, frame) backup ref (rule P). Legacy hives
+never take this path.
+
+List and merge orphans on the **writer**:
+
+```sh
+bh hive fence orphans <hive>                       # read-only; doctor lists them too
+bh hive fence orphan-merge <hive> --branch frame/<id>/orphan-<epoch>-<n>
+```
+
+`orphan-merge` refuses, with nothing written, unless this host is the local `bh_writer` with all
+44 triggers, the remote writer is not ahead, the branch is an orphan on the remote and the merge
+raises no conflict. It never resolves a conflict, on `bh_*` or anywhere else, and it never runs
+a plain `vc merge`. In one SQL session it merges `--no-ff`, re-stamps the orphan's marks to the
+live epoch, clears the foreign-key violation rows and commits `bh: merge frame/…`. That is the
+subject `fence_audit`'s history check sanctions. Every statement after the merge is guarded in
+SQL on the merge being open, because bd's batch does not stop at a failing statement. It then
+publishes through the managed push. A merge that does not land as that exact merge commit is
+aborted, and local `main` is hard-reset to its pre-merge head (in server mode after the
+forwarder sessions are killed), so nothing the failed batch committed can be pushed. Run it
+while the hive is quiet: a write that lands on the writer during a failed merge is discarded
+with it. If the merge
+conflicts, reconcile the beads by hand on the writer (re-apply the orphan's edits as ordinary
+writes), then delete the orphan branch.
 
 ## 5. Rollback (R1–R5)
 

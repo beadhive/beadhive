@@ -91,7 +91,7 @@ hive contrib-profile build|hive:string:r
 hive contrib-profile show|hive:string:r,as_json:boolean:o
 hive disable|feature:string:r,hive_id:string:o
 hive enable|feature:string:r,hive_id:string:o
-hive fence|action:string:r,hive_id:string:r,others_published:boolean:o,as_json:boolean:o
+hive fence|action:string:r,hive_id:string:r,others_published:boolean:o,branch:string:o,as_json:boolean:o
 hive forward|action:string:r,hive_id:string:r,account:string:o,password_stdin:boolean:o,as_json:boolean:o
 hive hook install|hive_id:string:o
 hive hook pre-push|hive_id:string:o

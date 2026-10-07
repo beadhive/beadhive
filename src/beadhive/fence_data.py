@@ -144,7 +144,23 @@ class FenceEngine(Protocol):
 
     def reset_to_remote(self) -> None: ...
 
+    def reset_hard(self, rev: str) -> None:
+        """Abort any open merge, then hard-reset local ``main`` to ``rev`` — the one sanctioned
+        rewind (server mode quiesces forwarders first). Raises :class:`SqlFailed`."""
+        ...
+
     def push(self) -> bool: ...
+
+    def push_branch(self, branch: str) -> None:
+        """Publish local ``main`` to the remote branch ``branch`` (the orphan divert, bh-4z3oz).
+        Raises :class:`DataUnreachable` when the push fails."""
+        ...
+
+    def execute_session(self, statements: Sequence[str]) -> None:
+        """Run ``statements`` in ONE SQL session (session variables persist across them).
+        Raises :class:`SqlFailed`; a later statement may still have run (bd's server batch
+        does not stop on the first error), so the caller verifies the outcome itself."""
+        ...
 
     @property
     def store(self) -> Path: ...
@@ -244,8 +260,24 @@ class DoltCliEngine:
         if res.returncode != 0:
             raise DataUnreachable(f"reset to {self.remote}/{self.branch}: {_output(res)[:400]}")
 
+    def reset_hard(self, rev: str) -> None:
+        self._dolt("merge", "--abort")  # no-op unless a merge is open
+        res = self._dolt("reset", "--hard", rev)
+        if res.returncode != 0:
+            raise SqlFailed(f"reset --hard {rev} in {self.db_dir}: {_output(res)[:400]}")
+
     def push(self) -> bool:
         return _push_outcome(self._dolt("push", self.remote, self.branch), str(self.db_dir))
+
+    def push_branch(self, branch: str) -> None:
+        res = self._dolt("push", self.remote, f"{self.branch}:{branch}")
+        if res.returncode != 0:
+            raise DataUnreachable(
+                f"push {self.branch}:{branch} from {self.db_dir}: {_output(res)[:400]}"
+            )
+
+    def execute_session(self, statements: Sequence[str]) -> None:
+        self.execute(statements)  # one `dolt sql` process: one session
 
 
 class BdServerEngine:
@@ -325,18 +357,49 @@ class BdServerEngine:
         """Fetch, then ``DOLT_RESET --hard`` to the remote head. Every forwarder session on the
         server is killed first (bh-g7dlo, ``bh-uhx2r`` E5): an in-flight forwarded transaction
         is then refused instead of acknowledged and silently dropped by the reset."""
+        self.fetch()
+        try:
+            self.reset_hard(f"{self.remote}/{self.branch}")
+        except SqlFailed as exc:
+            raise DataUnreachable(str(exc)) from exc
+
+    def reset_hard(self, rev: str) -> None:
+        """Kill forwarder sessions (``quiesce_before_reset``), abort any open merge, then
+        ``DOLT_RESET --hard`` to ``rev``."""
         from . import hive_forward  # lazy: the forward path is only consulted on a reset
 
-        self.fetch()
         hive_forward.quiesce_before_reset(self, login=self.login(), logger=log.get_logger(__name__))
-        target = quote(f"{self.remote}/{self.branch}")
-        res = self._bd("sql", f"CALL DOLT_RESET('--hard', {target})")
+        merging = self.query("SELECT is_merging FROM dolt_merge_status")
+        if merging and str(merging[0].get("is_merging")).lower() in {"1", "true"}:
+            self._bd("sql", "CALL DOLT_MERGE('--abort')")
+        res = self._bd("sql", f"CALL DOLT_RESET('--hard', {quote(rev)})")
         if res.returncode != 0:
-            raise DataUnreachable(f"reset to {self.remote}/{self.branch}: {_output(res)[:400]}")
+            raise SqlFailed(f"reset to {rev} via {self.hive_dir}: {_output(res)[:400]}")
 
     def push(self) -> bool:
         args = ["dolt", "push"] + (["--remote", self.remote] if self.remote != _REMOTE else [])
         return _push_outcome(self._bd(*args), str(self.hive_dir))
+
+    def push_branch(self, branch: str) -> None:
+        refspec = quote(f"{self.branch}:{branch}")
+        res = self._bd("sql", f"CALL DOLT_PUSH({quote(self.remote)}, {refspec})")
+        if res.returncode != 0:
+            raise DataUnreachable(
+                f"push {self.branch}:{branch} via {self.hive_dir}: {_output(res)[:400]}"
+            )
+
+    def execute_session(self, statements: Sequence[str]) -> None:
+        """One ``bd sql`` call with the statements joined by ``;``: bd runs them on one
+        connection (measured on bd 1.3 / Dolt 2.3.5). bd does not stop at a failing statement,
+        so the caller must verify the result; no statement may itself contain ``;``."""
+        if not statements:
+            return
+        if any(";" in st for st in statements):
+            raise SqlFailed("execute_session: a statement contains ';' (bd would split it)")
+        joined = "; ".join(statements)
+        res = self._bd("sql", joined)
+        if res.returncode != 0:
+            raise SqlFailed(f"{self.hive_dir}: session batch: {_output(res)[:400]}")
 
 
 # =============================================================================================
