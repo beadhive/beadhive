@@ -200,6 +200,7 @@ def test_no_host_yaml_or_fleet_config_key_exists_for_these_values():
     assert set(DaemonFailoverConfig.model_fields) == {
         "enabled",
         "interval_seconds",
+        "max_primary_spread",
         "operator_settings",
     }
 
@@ -563,7 +564,9 @@ def test_doctor_reports_refusals_only_where_the_loop_runs(monkeypatch, capsys):
 
     def placement_director(path=None, **_):
         seen.append(path)
-        return SimpleNamespace(failover_policy=lambda: policy)
+        return SimpleNamespace(
+            failover_policy=lambda: policy, survey=lambda: SimpleNamespace(state={}, placements={})
+        )
 
     monkeypatch.setattr(hq_operator_settings, "placement_director", placement_director)
     cfg = {"host": {"daemon": {"failover": {"enabled": True, "operator_settings": "/etc/d.yaml"}}}}

@@ -294,6 +294,15 @@ class DaemonFailoverConfig(_DaemonSection):
             "or every observation gap resets the observed window and nothing ever fails over."
         ),
     )
+    max_primary_spread: int = Field(
+        2,
+        ge=1,
+        description=(
+            "bh doctor warns when the busiest eligible executor holds more hive primaries than "
+            "the least busy one by more than this. Placement spreads primaries (failover picks "
+            "the executor holding the fewest) but never moves a placed hive just to rebalance."
+        ),
+    )
     operator_settings: Path | None = Field(
         None,
         description=(

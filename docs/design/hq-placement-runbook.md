@@ -135,6 +135,7 @@ host:
     failover:
       enabled: true                 # default false
       interval_seconds: 60          # default 60; (0, 3600]
+      max_primary_spread: 2         # default 2; >= 1; the doctor warns above it
       operator_settings: /etc/bh/director.yaml   # else BH_HQ_OPERATOR_SETTINGS
 ```
 
@@ -146,9 +147,17 @@ observations longer than `failover_after / 2`, so keep `interval_seconds` well b
 
 - **`failover_after`** is read per hive and role in the same verified read (section 6). The
   signed authority carries no role, so every frame counts as an executor (the longest window).
-- **Successor.** The freshest other frame that is active, uncordoned, bound to the hive's policy
-  and observed live. Ties break by frame id. If there is none, nothing is placed. Spreading
-  placement across executors is `bh-zncqo`.
+- **Successor** (spreads primaries, `bh-zncqo`). Of the other frames that are active,
+  uncordoned, bound to the hive's policy and observed live, the one holding the fewest hive
+  primaries; then the freshest session; then the lowest frame id. Hives failed over in one tick
+  count toward the load, so a dead frame's hives fan out. If there is none, nothing is placed.
+  A placed hive is never moved just to rebalance: a move is a deliberate `place` CAS.
+- **Lopsided placement.** `bh doctor` (Host Daemon section, on a host running the loop) warns
+  when the busiest active, uncordoned executor holds more primaries than the least busy by more
+  than `host.daemon.failover.max_primary_spread` (integer >= 1, default 2; invalid values are
+  refused, never clamped). The warning names every executor and the hives it holds, for example
+  `! hive primaries are lopsided: spread 4 exceeds 2 (host.daemon.failover.max_primary_spread);
+  frame-a holds 4 (h0, h1, h2, h3); frame-b holds 0 (none)`.
 - **Unobserved frames never fail over.** A frame whose incarnation has no session table
   (`bh-owqdg`) has no server-stamped staleness.
 - **Lost CAS.** The loop logs it and decides again on the next tick.
