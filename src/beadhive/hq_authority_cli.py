@@ -38,7 +38,8 @@ class IntDurationSeconds(_click_types.IntParamType):
 def authority_cmd(
     action: str = typer.Argument(
         ...,
-        help="install, bind, bind-beadyard, grant, observe, renew, status, check, or prune-inbox",
+        help="install, bind, bind-beadyard, grant, observe, rebind, renew (deprecated alias of "
+        "rebind), status, check, or prune-inbox",
     ),
     record: Annotated[Path | None, typer.Option("--record")] = None,
     frame: str = typer.Option("", "--frame"),
@@ -58,7 +59,7 @@ def authority_cmd(
         typer.Option(
             "--duration",
             click_type=IntDurationSeconds(),
-            help="renew: opt-in expiry, seconds or e.g. 7d / 36h; omitted, the authority "
+            help="rebind/renew: opt-in expiry, seconds or e.g. 7d / 36h; omitted, the authority "
             "does not expire",
         ),
     ] = None,
@@ -75,7 +76,7 @@ def authority_cmd(
         str | None,
         typer.Option(
             "--max-duration",
-            help="renew: ceiling for an explicit --duration, seconds or e.g. 7d; overrides "
+            help="rebind/renew: ceiling for an explicit --duration, seconds or e.g. 7d; overrides "
             "operator settings and $BH_HQ_AUTHORITY_MAX_DURATION (default unlimited)",
         ),
     ] = None,
@@ -94,8 +95,8 @@ def authority_cmd(
             "bind",
         }:
             raise hq_control_plane.ControlPlaneError(
-                f"{hq_operator_settings.ENV} / --operator-settings applies to renew, grant, "
-                "observe, bind-beadyard, status, check and prune-inbox"
+                f"{hq_operator_settings.ENV} / --operator-settings applies to rebind, renew, "
+                "grant, observe, bind-beadyard, status, check and prune-inbox"
             )
         plane = hq_operator_settings.select_plane(operator_settings)
         if action == "status":
@@ -192,7 +193,18 @@ def authority_cmd(
                         operator_key=str(operator_key),
                         holder_identity=holder_id,
                     )
-                elif action == "renew":
+                elif action in {"rebind", "renew"}:
+                    # rebind re-signs the current authority against the current config head
+                    # (revision + 1, policies re-projected by the plane). Without --duration it
+                    # signs the no-expiry sentinel, so it also converts an expiring 0.23.x
+                    # authority into a non-expiring one; --duration opts back into expiry under
+                    # the ceiling. `renew` is the deprecated alias (bh-qxabp).
+                    if action == "renew":
+                        typer.echo(
+                            "deprecated: 'bh hq authority renew' is now 'bh hq authority rebind' "
+                            "(add --duration <7d|36h|seconds> to keep a finite expiry)",
+                            err=True,
+                        )
                     # Without --duration the authority does not expire (bh-y929l). An explicit
                     # duration is capped by --max-duration, operator-settings
                     # hq.sql.authority_max_duration_s or $BH_HQ_AUTHORITY_MAX_DURATION, else
