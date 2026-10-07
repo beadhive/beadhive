@@ -314,8 +314,21 @@ class BdServerEngine:
         if res.returncode != 0:
             raise DataUnreachable(f"fetch {self.remote} via {self.hive_dir}: {_output(res)[:400]}")
 
+    def login(self) -> str:
+        """bd's own login on the server (``BEADS_DOLT_SERVER_USER``, else the persisted
+        ``dolt_server_user``, else ``root``): never a forwarder."""
+        env = self.env if self.env is not None else os.environ
+        user = env.get("BEADS_DOLT_SERVER_USER", "") or store_locator.server_user(self.hive_dir)
+        return user or "root"
+
     def reset_to_remote(self) -> None:
+        """Fetch, then ``DOLT_RESET --hard`` to the remote head. Every forwarder session on the
+        server is killed first (bh-g7dlo, ``bh-uhx2r`` E5): an in-flight forwarded transaction
+        is then refused instead of acknowledged and silently dropped by the reset."""
+        from . import hive_forward  # lazy: the forward path is only consulted on a reset
+
         self.fetch()
+        hive_forward.quiesce_before_reset(self, login=self.login(), logger=log.get_logger(__name__))
         target = quote(f"{self.remote}/{self.branch}")
         res = self._bd("sql", f"CALL DOLT_RESET('--hard', {target})")
         if res.returncode != 0:

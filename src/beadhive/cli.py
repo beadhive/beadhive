@@ -2926,6 +2926,65 @@ def hive_fence(
         hive_fence_cli.impl_rollback(prefix, hive_dir, as_json=as_json)
 
 
+# ---- hive forward: the hidden operator verb for the option A forward path (bh-g7dlo) ------
+# Documented ONLY in docs/FORWARD-WRITE-PATH.md (ADR hive-writer-partitioning §3, condition 16).
+# Opt-in per frame on both sides: host.forward.serve.enabled (primary), host.forward.enabled
+# (forwarder).
+
+
+@hive_app.command("forward", hidden=True)
+def hive_forward_cmd(
+    action: str = typer.Argument(
+        ...,
+        metavar="ACTION",
+        help="provision | revoke | check | quiesce (primary); point | stop | status (forwarder)",
+    ),
+    hive_id: str = typer.Argument(..., metavar="HIVE_ID", help="the hive to act on"),
+    account: str = typer.Option(
+        "",
+        "--account",
+        help="provision/revoke: the forwarder account '<principal>'@'<frame address>'",
+    ),
+    password_stdin: bool = typer.Option(
+        False,
+        "--password-stdin",
+        help="provision: read the new account's password from stdin (else BH_FORWARD_NEW_PASSWORD)",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="emit the result as JSON"),
+):
+    """OPERATOR verb — see docs/FORWARD-WRITE-PATH.md.
+
+    Primary side (host.forward.serve.enabled): provision / revoke a per-frame host-pinned TLS
+    forwarder account with table-scoped grants; check the watched globals, the read-only
+    DOLT_ROOT_PATH and grant conformance; quiesce (kill) forwarder sessions.
+
+    Forwarder side (host.forward.enabled): point bh's bd for HIVE_ID at the placed primary's
+    hive server (refused, failing closed, when that primary is not the writer); stop; status."""
+    from . import hive_forward_cli
+
+    if action not in hive_forward_cli.ACTIONS:
+        typer.echo(
+            f"✗ unknown action {action!r} (expected one of {', '.join(hive_forward_cli.ACTIONS)})",
+            err=True,
+        )
+        raise typer.Exit(2)
+    if (account or password_stdin) and action not in ("provision", "revoke"):
+        typer.echo("✗ --account / --password-stdin apply to provision and revoke only", err=True)
+        raise typer.Exit(2)
+    cfg = config.load()
+    entry = registry.resolve_hive(cfg, hive_id)
+    hive_forward_cli.run(
+        action,
+        cfg=cfg,
+        entry=entry,
+        hive_dir=registry.hive_dir(entry),
+        account=account,
+        password_stdin=password_stdin,
+        as_json=as_json,
+        hq_dir=str(config.hq_dir()),
+    )
+
+
 # ---- hive hook: git-hook entrypoints for an external dispatcher (bh-smcj) -----
 
 hive_hook_app = typer.Typer(

@@ -1266,6 +1266,7 @@ _DOCTOR_SECTIONS = {
     "observability",
     "build_verify",
     "writer_fence",
+    "forward",
     "warnings",
     "timings",
 }

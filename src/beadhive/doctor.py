@@ -1942,6 +1942,107 @@ def _render_writer_fence(items: list[dict]) -> None:
             typer.echo(f"  {line}")
 
 
+_forward_cache: dict[tuple[str, str], tuple[float, dict | None]] = {}
+
+
+def _forward_status(cfg, entry, path: Path) -> dict | None:
+    """The forward write path for one hive on this frame (bh-g7dlo, ADR §3 condition 16).
+
+    Forwarder side (``host.forward.enabled``): the checkout's marker — forwarding to whom, or
+    refused and why. Primary side (``host.forward.serve.enabled``): for a cut-over hive in
+    server mode, :func:`beadhive.hive_forward.primary_report` — the watched globals, the
+    read-only ``DOLT_ROOT_PATH`` and forwarder grant conformance. ``None`` when neither applies
+    (forwarding is opt-in per frame), so a frame that never opted in pays nothing. Never
+    raises: an unreadable part is a finding."""
+    from . import fence_data, hive_forward, host_adopt
+
+    raw = ((cfg or {}).get("host") or {}).get("forward") or {}
+    serve_on = bool((raw.get("serve") or {}).get("enabled"))
+    if not raw.get("enabled") and not serve_on:
+        return None
+    prefix = str(entry.get("prefix", ""))
+    key = (prefix, str(path))
+    now = time.monotonic()
+    hit = _forward_cache.get(key)
+    if hit is not None and now - hit[0] < _FENCE_STATUS_TTL:
+        return hit[1]
+    result: dict | None = None
+    marker = hive_forward.read_marker(path) if raw.get("enabled") else None
+    if marker is not None:
+        result = {"hive": prefix, "side": "forwarder", **marker.as_dict()}
+        result["findings"] = (
+            [] if marker.state == "forwarding" else [f"forwarding refused: {marker.reason}"]
+        )
+    elif serve_on:
+        try:
+            node = host_adopt.fence_data_for(prefix, path)
+        except Exception:  # noqa: BLE001 — the resolver never raises; belt and braces
+            node = None
+        if isinstance(node, fence_data.FenceNode) and isinstance(
+            node.engine, fence_data.BdServerEngine
+        ):
+            try:
+                settings = hive_forward.serve_settings(cfg)
+                rows = node.query("SELECT database() AS d")
+                database = str(next(iter(rows[0].values()))) if rows else ""
+                report = hive_forward.primary_report(
+                    node.engine, database=database, settings=settings
+                )
+            except Exception as exc:  # noqa: BLE001 — doctor degrades, it never crashes
+                report = {"findings": [f"forward primary checks unreadable: {exc}"]}
+            result = {"hive": prefix, "side": "primary", **report}
+    _forward_cache[key] = (now, result)
+    return result
+
+
+def _forward_warnings(status: dict | None) -> list[str]:
+    if not status:
+        return []
+    return [
+        f"hive '{status['hive']}': forward path — {finding}"
+        for finding in status.get("findings") or []
+    ]
+
+
+def _data_forward(cfg) -> list[dict]:
+    """Forward-path section: one :func:`_forward_status` per hive it applies to."""
+    root = Path(workspace_root())
+    out = []
+    for e in cfg.get("managed_repos", []) or []:
+        path = root / e["provider"] / e["org"] / e["repo"]
+        if not path.exists():
+            continue
+        status = _forward_status(cfg, e, path)
+        if status is not None:
+            out.append(status)
+    return out
+
+
+def _render_forward(items: list[dict]) -> None:
+    if not items:
+        return
+    from . import hive_forward_cli
+
+    typer.echo("\n# Forward write path")
+    for item in items:
+        if item.get("side") == "forwarder":
+            state = item.get("state")
+            if state == "forwarding":
+                ep = item.get("endpoint") or {}
+                typer.echo(
+                    f"  ✓ {item['hive']}: forwarding to {item.get('frame')}@{item.get('epoch')} "
+                    f"({ep.get('host')}:{ep.get('port')} as {ep.get('user')})"
+                )
+            else:
+                typer.echo(f"  ✗ {item['hive']}: forwarding REFUSED — {item.get('reason')}")
+        elif "globals" in item:
+            for line in hive_forward_cli.render_primary(item["hive"], item):
+                typer.echo(f"  {line}")
+        else:
+            for finding in item.get("findings") or []:
+                typer.echo(f"  ✗ {item['hive']}: {finding}")
+
+
 def _split_brain_lineage_warning(entry, path: Path) -> str | None:
     """Split-brain, named as such (bh-s9cdk): local and origin's embedded-Dolt histories share
     NO COMMON ANCESTOR — two unrelated DAGs, not the row-level conflict or behind-the-remote
@@ -2272,6 +2373,7 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
             if adopt_incomplete:
                 warns.append(adopt_incomplete)
             warns += _writer_fence_warnings(_writer_fence_status(cfg, e, path))
+            warns += _forward_warnings(_forward_status(cfg, e, path))
     # First: a missing required binary makes everything derived from it untrustworthy, so the
     # operator should read that before any finding it could have manufactured (bh-7m2h9).
     warns = _missing_required_dep_warnings() + warns
@@ -2916,6 +3018,7 @@ def _collect(cfg, *, full_seats: bool = False) -> dict:
         "observability": _timed(timings, "observability", _data_observability, cfg),
         "build_verify": _timed(timings, "build_verify", _data_build_verify, cfg),
         "writer_fence": _timed(timings, "writer_fence", _data_writer_fence, cfg),
+        "forward": _timed(timings, "forward", _data_forward, cfg),
         "warnings": _timed(
             timings,
             "warnings",
@@ -2971,7 +3074,8 @@ def doctor_payload(*, full_seats: bool = False) -> dict:
     ``worktrees``, ``molecules``,
     ``prefix_mismatches``, ``node_id``, ``beads_role``, ``group_auth``, ``mcp``, ``harness_plugin``,
     ``seats``,
-    ``install``, ``observability``, ``build_verify``, ``writer_fence``, ``warnings``), plus
+    ``install``, ``observability``, ``build_verify``, ``writer_fence``, ``forward``,
+    ``warnings``), plus
     ``timings`` (section name -> milliseconds
     from a monotonic clock, plus ``total`` — bh-8nnh7, metadata for attributing doctor's cost,
     always present regardless of ``--json``/verbosity), under the ``schema_version`` / ``command``
@@ -3080,6 +3184,7 @@ def doctor(as_json: bool = False, verbose: bool = False, seats: bool = False):
     _render_observability(data["observability"])
     _render_build_verify(data["build_verify"])
     _render_writer_fence(data.get("writer_fence") or [])
+    _render_forward(data.get("forward") or [])
     _render_warnings(data["warnings"])
     _offer_workspace_init(data["config"])
     if verbose:

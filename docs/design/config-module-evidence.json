@@ -9,7 +9,7 @@
   },
   "fan_in": {
     "production_config_importers_before": 95,
-    "production_config_importers_after": 88,
+    "production_config_importers_after": 89,
     "production_config_schema_importers_before": 8,
     "production_config_schema_importers_after": 5,
     "remaining_dependency_owner": "bh-18hud.5 compatibility migration ledger",
@@ -136,6 +136,10 @@
   "writer_gate_inventory_update": {
     "bead": "bh-12hev",
     "reason": "The live generated ledger now measures 161 test config importers and 332 patch sites after tests/test_guard_writer_gate.py (the clock-free cut-over write gate) patches the beadhive.config.fleet_sql_selected facade read so the gate proves it never consults HQ. Production importers, schema importers, historical extraction counts, the pinned baseline, and earlier full-gate receipts are unchanged."
+  },
+  "forward_write_path_inventory_update": {
+    "bead": "bh-g7dlo",
+    "reason": "The live generated ledger now measures 89 production config importers after src/beadhive/hive_forward.py (the option A forward write path) reads host.forward.serve through the beadhive.config facade when the divert reset's forwarder quiesce runs without a loaded config; it is enumerated in the dependency ledger under the bh-18hud.5 compatibility owner. Schema importers, test config importers, patch sites, historical extraction counts, the pinned baseline, and earlier full-gate receipts are unchanged."
   },
   "b_refresh_from_main_update": {
     "bead": "bh-16347",
