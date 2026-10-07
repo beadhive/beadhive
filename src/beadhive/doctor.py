@@ -1172,6 +1172,8 @@ def _render_authority_expiry(d: dict) -> None:
     typer.echo("\n# HQ authority expiry")
     glyph = {"ok": "✓", "warn": "⚠ WARN", "fail": "✗ FAIL"}[d["level"]]
     typer.echo(f"  {glyph} {d['detail']}")
+    if d.get("mode"):
+        typer.echo(f"    authority mode: {d['mode']}")
 
 
 def _section_group_auth(cfg):
