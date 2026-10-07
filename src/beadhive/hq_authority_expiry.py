@@ -185,6 +185,10 @@ def check(plane, *, min_remaining=0.0, now=None) -> tuple[bool, dict, str]:
     status = authority_status(plane, now=now)
     if status["expires_at"] is None:
         return False, status, "FAIL: no authority binding available to read expiry"
+    if status.get("mode") == "trusted":
+        # A trusted frame ignores authority expiry and the config-head binding (bh-mk97e), so
+        # the check agrees with it instead of failing an expired opt-in authority (bh-taa04.3).
+        return True, status, f"OK: HQ authority expiry and config binding {NOT_ENFORCED}"
     if not status["config_bound"]:
         return False, status, "FAIL: authority is not bound to the latest config head"
     if status.get("expires_never"):

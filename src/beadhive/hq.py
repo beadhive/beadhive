@@ -608,10 +608,36 @@ def status(*, as_json: bool = False) -> None:
         typer.echo(f"→ run `{config.BINARY_ALIAS} hq push` to publish")
 
 
+def _open_admission(host_id: str) -> None:
+    """Trusted fleet only (bh-taa04.3): open-admit this frame before it registers, through the
+    HQ authority-write binding this host holds (``$BH_HQ_OPERATOR_SETTINGS`` or its own
+    anchor). Without one, registration proceeds and the frame waits for a grant as before."""
+    from . import hq_authority_enforce
+
+    if not hq_authority_enforce.fleet_trusted():
+        return
+    from . import host, hq_authority_fleet_mode, hq_open_admission, hq_operator_settings
+
+    try:
+        if host.host_id() != host_id:
+            return
+        plane = hq_operator_settings.select_plane()
+        hq_open_admission.join(plane, host_id, hq_authority_fleet_mode._local_public_key())
+    except (ValueError, OSError, RuntimeError) as exc:
+        typer.echo(
+            f"⚠ open admission skipped for {host_id}: {exc} (trusted fleet: give this frame HQ "
+            "authority-write access, e.g. BH_HQ_OPERATOR_SETTINGS, or run `bh hq authority join "
+            f"--frame {host_id} --public-key <key.pub> --confirm` where HQ is writable)",
+            err=True,
+        )
+
+
 def publish_host_manifest(hq_dir: Path, host_id: str, *, attempts: int = 3) -> bool:
-    """Publish through the selected HQ control-plane binding."""
+    """Publish through the selected HQ control-plane binding; in a trusted fleet the frame is
+    open-admitted first (:func:`_open_admission`)."""
     from .hq_control_plane import control_plane
 
+    _open_admission(host_id)
     return control_plane(hq_dir).publish_registration(host_id, attempts=attempts)
 
 

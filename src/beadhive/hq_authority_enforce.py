@@ -24,8 +24,10 @@ enforcement on; any other value is an error, never a fallback.
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import sys
+import time
 from contextlib import contextmanager
 from typing import NamedTuple
 
@@ -77,8 +79,10 @@ def resolve(configured: str | None = None) -> Resolution:
     *configured* (the frame-local ``hq.authority_mode`` from host config, or the operator
     settings file) > ``inherit``.
 
-    ``inherit`` resolves to ``signed`` here; the fleet-default lookup (bh-taa04.3) extends
-    this function. An invalid mode value fails closed to ``signed`` with one error line.
+    ``inherit`` (or nothing set) follows the fleet default this host has LEARNED from an
+    operator-authorised read (:func:`fleet_default`, bh-taa04.3): ``trusted`` resolves with
+    source ``"fleet"``, anything else is ``signed``. An explicit ``signed``/``trusted`` pin
+    always wins. An invalid mode value fails closed to ``signed`` with one error line.
     """
     global _deprecation_emitted
     raw = os.environ.get(MODE_ENV, "").strip()
@@ -96,8 +100,10 @@ def resolve(configured: str | None = None) -> Resolution:
             return Resolution("trusted", "enforce-env")
         raw = (configured or "").strip()
         source = "host"
-    if not raw:
-        return Resolution("signed", "default")
+    if not raw or raw == "inherit":
+        if fleet_default() == "trusted":
+            return Resolution("trusted", "fleet")
+        return Resolution("signed", "default" if not raw else source)
     if raw not in MODES:
         if raw not in _invalid_emitted:
             _invalid_emitted.add(raw)
@@ -107,7 +113,7 @@ def resolve(configured: str | None = None) -> Resolution:
                 "failing closed to signed"
             )
         return Resolution("signed", "invalid")
-    return Resolution("signed" if raw == "inherit" else raw, source)
+    return Resolution(raw, source)
 
 
 _configured_cache: tuple[tuple, str | None] | None = None
@@ -172,9 +178,11 @@ def _configured_key(config) -> tuple:
 
 
 def reset_cache() -> None:
-    """Forget the per-process ``hq.authority_mode`` read (tests and config writers)."""
-    global _configured_cache, _path_cache
-    _configured_cache = _path_cache = None
+    """Forget the per-process ``hq.authority_mode`` and fleet-default reads (tests and config
+    writers)."""
+    global _configured_cache, _path_cache, _fleet_cache, _fleet_path_cache
+    _configured_cache = _path_cache = _fleet_cache = _fleet_path_cache = None
+    _committed_defaults.clear()
 
 
 def _configured_mode() -> str | None:
@@ -246,6 +254,204 @@ def snapshot_validity(now: float, expires_at: float, candidate_expires_at: float
     if candidate_expires_at is not None:
         return candidate_expires_at
     return max(expires_at, now + TRUSTED_SNAPSHOT_HORIZON_S)
+
+
+# ---- fleet default authority mode (bh-taa04.3) ------------------------------------------------
+#
+# Carrier: the fleet-config key ``hq.default_authority_mode`` (``signed`` | ``trusted``,
+# default ``signed``) in the committed ``fleet.yaml``. It is in the frame-relevant set of
+# :func:`beadhive.hq_hive_policy.config_head_tolerated`, so on SQL HQ a change fences signed
+# frames until the operator re-signs authority against the new head (``rebind``), and on Git HQ
+# the config carrier commit is itself operator-signed. A signed or inherit frame therefore only
+# ever LEARNS ``trusted`` from a config snapshot whose operator signature/binding it verified
+# (``authorised``); a key-less HQ writer cannot raise it. Lowering to ``signed`` is always taken.
+#
+# The learned value is persisted per host (:data:`FLEET_STATE`, under ``$BH_HOME/state``) so the
+# resolver stays one ``stat`` per call: verification consults the mode on every read.
+
+FLEET_KEY = "default_authority_mode"
+FLEET_MODES = ("signed", "trusted")
+FLEET_STATE = "hq-fleet-authority-mode.json"
+FLEET_DOCUMENT = "fleet.yaml"
+
+_fleet_cache: tuple[tuple, str] | None = None
+_fleet_path_cache: tuple[tuple, str | None] | None = None
+#: committed fleet.yaml content -> its fleet default (bounded memo).
+_committed_defaults: dict[str, str] = {}
+
+
+class AuthorityModeConflict(ValueError):
+    """This frame pins ``signed`` but its fleet runs ``trusted``: it refuses to work."""
+
+
+def _fleet_state_path() -> str | None:
+    """``$BH_HOME/state/hq-fleet-authority-mode.json``, memoized on the home variables."""
+    global _fleet_path_cache
+    try:
+        config = importlib.import_module("beadhive.config")
+    except Exception:  # noqa: BLE001 - no config: nothing learned, signed
+        return None
+    key = (
+        tuple(os.environ.get(name) for name in ("BH_HOME", "WS_HOME", "HOME")),
+        config.home,
+    )
+    if _fleet_path_cache is not None and _fleet_path_cache[0] == key:
+        return _fleet_path_cache[1]
+    try:
+        path = str(config.home() / "state" / FLEET_STATE)
+    except Exception:  # noqa: BLE001 - no home: nothing learned, signed
+        path = None
+    _fleet_path_cache = (key, path)
+    return path
+
+
+def fleet_state() -> dict:
+    """The learned fleet-default record (``{}`` when nothing has been learned)."""
+    path = _fleet_state_path()
+    if not path:
+        return {}
+    try:
+        with open(path, encoding="utf-8") as handle:
+            record = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    return record if isinstance(record, dict) else {}
+
+
+def fleet_default() -> str:
+    """The fleet default this host has learned: ``"trusted"`` or ``"signed"`` (nothing learned,
+    unreadable or invalid state is ``signed``). Memoized on the state file's mtime."""
+    global _fleet_cache
+    path = _fleet_state_path()
+    key = (path, _mtime(path))
+    if _fleet_cache is not None and _fleet_cache[0] == key:
+        return _fleet_cache[1]
+    value = fleet_state().get("mode") if key[1] is not None else None
+    value = value if value in FLEET_MODES else "signed"
+    _fleet_cache = (key, value)
+    return value
+
+
+def fleet_trusted() -> bool:
+    """Whether this host has learned that its fleet runs ``trusted`` (open admission)."""
+    return fleet_default() == "trusted"
+
+
+def committed_fleet_default(snapshot) -> str:
+    """``hq.default_authority_mode`` committed in a config snapshot (or a document sequence):
+    ``"trusted"`` only when explicitly so; absent, invalid or unreadable is ``"signed"``.
+    Memoized on the ``fleet.yaml`` content (verification reads it on every authority read)."""
+    try:
+        documents = getattr(snapshot, "documents", snapshot)
+        content = next(
+            (document.content for document in documents if document.path == FLEET_DOCUMENT),
+            None,
+        )
+    except Exception:  # noqa: BLE001 - an unreadable default never raises trust
+        return "signed"
+    if not isinstance(content, str):
+        return "signed"
+    if content in _committed_defaults:
+        return _committed_defaults[content]
+    try:
+        from ruamel.yaml import YAML
+
+        parsed = YAML(typ="safe").load(content)
+        hq = parsed.get("hq") if isinstance(parsed, dict) else None
+        raw = hq.get(FLEET_KEY) if isinstance(hq, dict) else None
+        value = "trusted" if raw == "trusted" else "signed"
+    except Exception:  # noqa: BLE001 - an unreadable default never raises trust
+        value = "signed"
+    if len(_committed_defaults) >= 16:
+        _committed_defaults.pop(next(iter(_committed_defaults)))
+    _committed_defaults[content] = value
+    return value
+
+
+def record_fleet_default(value: str, *, head: str = "", via: str = "") -> bool:
+    """Persist the learned fleet default; returns whether it changed. Never raises."""
+    global _fleet_cache
+    if value not in FLEET_MODES or value == fleet_default():
+        return False
+    path = _fleet_state_path()
+    if not path:
+        return False
+    body = json.dumps(
+        {"mode": value, "config_head": head, "via": via, "learned_at": time.time()},
+        sort_keys=True,
+    )
+    temporary = f"{path}.{os.getpid()}.tmp"
+    try:
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(body)
+        os.replace(temporary, path)
+    except OSError:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        return False
+    _fleet_cache = None
+    return True
+
+
+def observe_fleet_default(snapshot, *, authorised: bool, via: str = "") -> str:
+    """Learn the fleet default from a config snapshot this process just read.
+
+    *authorised*: the snapshot is the operator-signed/bound one (verified in signed mode). A
+    ``trusted`` value is honoured only then (or when already learned); a ``signed`` value is
+    always honoured — lowering is stricter. Returns the learned default; never raises."""
+    try:
+        value = committed_fleet_default(snapshot)
+        current = fleet_default()
+        if value == current or (value == "trusted" and not authorised):
+            return current
+        record_fleet_default(value, head=str(getattr(snapshot, "commit_revision", "")), via=via)
+        return fleet_default()
+    except Exception:  # noqa: BLE001 - learning is advisory to the verification it rides on
+        return "signed"
+
+
+def pinned() -> str | None:
+    """This process's EXPLICIT mode pin (``signed`` / ``trusted``), or ``None`` for inherit."""
+    raw = os.environ.get(MODE_ENV, "").strip()
+    if not raw:
+        if os.environ.get(ENFORCE_ENV, "").strip() == "false":
+            return "trusted"
+        raw = (_configured_mode() or "").strip()
+    return raw if raw in FLEET_MODES else None
+
+
+def conflict_message() -> str:
+    """The actionable refusal for a frame pinned ``signed`` in a ``trusted`` fleet."""
+    return (
+        "this frame pins hq.authority_mode: signed but its fleet default is trusted (bh hq "
+        "authority mode-trusted): it refuses to work in a trusted fleet. Either unpin it (set "
+        f"hq.authority_mode: inherit, or unset {MODE_ENV}) to follow the fleet, or have the "
+        "operator return the fleet to signed (bh hq authority mode-signed --operator-key "
+        "<key> --confirm)"
+    )
+
+
+def require_fleet_compatible() -> None:
+    """Refuse fail-closed when this frame pins ``signed`` in a ``trusted`` fleet."""
+    if fleet_trusted() and pinned() == "signed":
+        raise AuthorityModeConflict(conflict_message())
+
+
+def unsigned_refusal(carrier: str) -> str:
+    """The message for an unsigned record read in signed mode, naming a pin conflict first."""
+    if fleet_trusted() and pinned() == "signed":
+        return conflict_message()
+    return unsigned_rejection(carrier)
+
+
+def discoverable() -> bool:
+    """Whether an unsigned record may trigger fleet-default discovery: this process resolves
+    signed only because it inherits (no explicit pin) or pins signed (to name the conflict)."""
+    return enforced() and not fleet_trusted()
 
 
 def content_waived() -> bool:
@@ -355,6 +561,10 @@ def doctor_warnings() -> list[str]:
     except AuthorityEnforcementError as exc:
         return [f"hq: {exc} — HQ authority enforcement setting is invalid"]
     if resolved.mode == "signed":
+        try:
+            require_fleet_compatible()
+        except AuthorityModeConflict as exc:
+            return [f"hq: {exc}"]
         return []
     if resolved.source == "enforce-env":
         return [
@@ -363,8 +573,9 @@ def doctor_warnings() -> list[str]:
             "binding, cordon, release pins and caps are not enforced). Unset it before admitting "
             f"new executors ({DOCS})"
         ]
+    source = "fleet default" if resolved.source == "fleet" else resolved.source
     return [
-        f"hq: authority mode is TRUSTED ({resolved.source}) — the operator signature, authority "
+        f"hq: authority mode is TRUSTED ({source}) — the operator signature, authority "
         "expiry and config-head binding are not verified here; HQ write access is admin "
         f"(cordon, release pins and caps are still honoured) ({MODE_DOCS})"
     ]

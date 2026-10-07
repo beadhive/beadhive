@@ -330,7 +330,65 @@ class SqlRuntimeAuthority:
             finally:
                 temporary.unlink(missing_ok=True)
 
-    def _signed_authority_at(self, cursor, head):
+    #: How far back fleet-default discovery walks for the newest operator-signed authority.
+    DISCOVERY_DEPTH = 64
+
+    def _discover_fleet_default(self, cursor, head) -> None:
+        """Learn the fleet default from the newest OPERATOR-SIGNED authority behind `head`.
+
+        Runs when a signed/inherit process meets an unsigned record (bh-taa04.3): a frame that
+        joined after the fleet went trusted never saw the signed rebind that raised the
+        default. Walks first-parent history (bounded by :attr:`DISCOVERY_DEPTH`) to the newest
+        row that verifies under the pinned operator key, reads the config head it is bound to,
+        and learns that head's ``hq.default_authority_mode`` as operator-authorised. Any doubt
+        learns nothing (the caller then refuses as before).
+        """
+        try:
+            for depth in range(1, self.DISCOVERY_DEPTH + 1):
+                revision = f"{head}~{depth}"
+                cursor.execute("SELECT operator_signature FROM hq_authority AS OF %s", (revision,))
+                row = cursor.fetchone()
+                if row is None:
+                    return
+                if hq_authority_enforce.unsigned_signature(row[0]):
+                    continue
+                backend, generation, _sequence, crossref, _state, _policies = (
+                    self._signed_authority_at(cursor, revision, verify=True)
+                )
+                if (
+                    backend != self.settings["runtime_backend_identity"]
+                    or generation != self.settings["runtime_generation"]
+                ):
+                    return
+                snapshot = self._committed_config_at(cursor, crossref)
+                hq_authority_enforce.observe_fleet_default(
+                    snapshot, authorised=True, via="sql-discovery"
+                )
+                return
+        except Exception:  # noqa: BLE001 - discovery only ever adds an authorised fact
+            return
+
+    def _committed_config_at(self, cursor, crossref):
+        """The verified committed config snapshot an authority row is bound to."""
+        from .hq_sql_config import SqlFleetConfigRevisionStore
+
+        config_database = self.settings["reader"]["database"]
+        runtime_database = (
+            self.settings.get("observer")
+            or self.settings.get("runtime")
+            or self.settings.get("authority_writer")
+        )["database"]
+        store = SqlFleetConfigRevisionStore(self.settings, broker=self.broker, clock=self.clock)
+        cursor.execute(f"USE `{config_database}`")
+        try:
+            snapshot = store.committed_snapshot_at(cursor, crossref[2])
+        finally:
+            cursor.execute(f"USE `{runtime_database}`")
+        if (snapshot.backend_identity, snapshot.generation) != tuple(crossref[:2]):
+            raise SqlRuntimeError("HQ config and authority publications are not bound")
+        return snapshot
+
+    def _signed_authority_at(self, cursor, head, *, verify=None):
         """Read one ``hq_authority`` row AS OF `head` and verify its bytes and operator signature.
 
         Returns ``(backend, generation, sequence, crossref, state, policies)``. No expiry,
@@ -402,10 +460,16 @@ class SqlRuntimeAuthority:
             "state": state,
             "hive_policies": policies,
         }
-        if hq_authority_enforce.enforced():
+        if verify is None and hq_authority_enforce.enforced():
+            if hq_authority_enforce.unsigned_signature(signature) and (
+                hq_authority_enforce.discoverable()
+            ):
+                self._discover_fleet_default(cursor, head)
+            verify = hq_authority_enforce.enforced()
+        if verify:
             if hq_authority_enforce.unsigned_signature(signature):
                 raise SqlRuntimeError(
-                    hq_authority_enforce.unsigned_rejection("protected HQ runtime authority")
+                    hq_authority_enforce.unsigned_refusal("protected HQ runtime authority")
                 )
             verify_authority(
                 signed,
@@ -456,11 +520,16 @@ class SqlRuntimeAuthority:
         Trusted mode (bh-mk97e) skips the signature (see :meth:`_signed_authority_at`) and
         every expiry judgement; the replay floor and the generation/revision consistency hold.
         """
-        trusted = hq_authority_enforce.trusted()
-        allow_expired = allow_expired or trusted
+        try:
+            hq_authority_enforce.require_fleet_compatible()
+        except hq_authority_enforce.AuthorityModeConflict as exc:
+            raise SqlRuntimeError(str(exc)) from None
         backend, generation, sequence, crossref, state, policies = self._signed_authority_at(
             cursor, head
         )
+        # Resolved after the read: discovery may just have learned a trusted fleet default.
+        trusted = hq_authority_enforce.trusted()
+        allow_expired = allow_expired or trusted
         config_head = crossref[2]
         guard.validate_state(state)
         validate_sql_hive_policies(
@@ -510,17 +579,23 @@ class SqlRuntimeAuthority:
         :func:`beadhive.hq_authority_enforce.enforced`).
         """
         current = self.load_latest_config_at(cursor, deadline=deadline)
+        signed = hq_authority_enforce.enforced()
         if (
             current.backend_identity,
             current.generation,
             current.commit_revision,
-        ) == crossref or hq_authority_enforce.trusted():
+        ) == crossref or not signed:
+            # Signed: `current` IS the operator-bound head, so its fleet default is authorised.
+            # Trusted: unbound, so only a lowering (or an already-learned trusted) is taken.
+            hq_authority_enforce.observe_fleet_default(current, authorised=signed, via="sql")
             return current, current.commit_revision
         bound = None
         if policies is not None and valid_until is not None:
             bound = self._tolerated_bound_config(cursor, crossref, current, policies, valid_until)
         if bound is None:
             raise SqlRuntimeError("HQ config and authority publications are not bound")
+        # Tolerated H1 carries the same fleet default as the signed H0 (it is frame-relevant).
+        hq_authority_enforce.observe_fleet_default(bound, authorised=True, via="sql")
         return bound, current.commit_revision
 
     def _tolerated_bound_config(self, cursor, crossref, current, policies, valid_until):
