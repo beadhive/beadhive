@@ -1,4 +1,12 @@
-"""UNSUPPORTED, dev-only per-host switch for HQ runtime-authority enforcement (bh-6pqul).
+"""HQ authority mode resolver (bh-dzb8m) and its verification policy (bh-mk97e).
+
+``signed`` (default) verifies operator authority: signature, expiry, config-head binding.
+``trusted`` (frame-local opt-in) skips exactly those three but still honours the content — see
+:func:`trusted`. Unsigned records use the one marker shape documented at
+:data:`UNSIGNED_SIGNATURE`.
+
+Deprecated: the UNSUPPORTED, dev-only per-host switch for HQ runtime-authority enforcement
+(bh-6pqul), now resolved as ``trusted`` plus the 0.23 content waiver (:func:`content_waived`).
 
 ``BH_HQ_AUTHORITY_ENFORCE=false`` makes this process skip HQ runtime-authority enforcement:
 authority expiry, the config-revision binding, and the authority-derived frame eligibility
@@ -101,9 +109,66 @@ def resolve(configured: str | None = None) -> Resolution:
     return Resolution("signed" if raw == "inherit" else raw, source)
 
 
+_configured_cache: tuple[tuple, str | None] | None = None
+
+
+def _mtime(path) -> int | None:
+    try:
+        return os.stat(path).st_mtime_ns
+    except (OSError, TypeError, ValueError):
+        return None
+
+
+_path_cache: tuple[tuple, str | None] | None = None
+
+
+def _host_config_path(config) -> str | None:
+    """This host's config path, memoized on the environment and the path resolvers in force:
+    resolving it is milliseconds, and verification consults the mode on every read."""
+    global _path_cache
+    key = (frozenset(os.environ.items()), config.config_path, getattr(config, "home", None))
+    if _path_cache is not None and _path_cache[0] == key:
+        return _path_cache[1]
+    try:
+        path = str(config.config_path())
+    except Exception:  # noqa: BLE001 - an unknown path only disables reuse
+        path = None
+    _path_cache = (key, path)
+    return path
+
+
+def _configured_key(config) -> tuple:
+    """What `_configured_mode` depends on: the operator settings file or this host's config
+    file (path + mtime) and the reader in force (a monkeypatched ``load_host`` is a new key)."""
+    settings = os.environ.get("BH_HQ_OPERATOR_SETTINGS", "")
+    if settings:
+        return ("operator", settings, _mtime(settings))
+    path = _host_config_path(config)
+    return ("host", config.load_host, path, _mtime(path))
+
+
+def reset_cache() -> None:
+    """Forget the per-process ``hq.authority_mode`` read (tests and config writers)."""
+    global _configured_cache, _path_cache
+    _configured_cache = _path_cache = None
+
+
 def _configured_mode() -> str | None:
     """Frame-local ``hq.authority_mode``: the operator settings file when one is named, else
-    this host's config. Unreadable config never changes the default."""
+    this host's config. Unreadable config never changes the default.
+
+    Memoized per process on :func:`_configured_key` (env + file path + mtime): verification
+    hot paths consult the mode on every read. :func:`reset_cache` forgets it."""
+    global _configured_cache
+    try:
+        # Resolved late on purpose: config's store already reaches this module, so a static
+        # import would close an import cycle.
+        config = importlib.import_module("beadhive.config")
+        key = _configured_key(config)
+    except Exception:  # noqa: BLE001 - selection must stay fail-closed to signed
+        return None
+    if _configured_cache is not None and _configured_cache[0] == key:
+        return _configured_cache[1]
     try:
         if os.environ.get("BH_HQ_OPERATOR_SETTINGS"):
             from pathlib import Path
@@ -113,13 +178,13 @@ def _configured_mode() -> str | None:
             raw = YAML(typ="safe").load(Path(os.environ["BH_HQ_OPERATOR_SETTINGS"]).read_text())
             hq = raw.get("hq", raw) if isinstance(raw, dict) else None
             value = hq.get("authority_mode") if isinstance(hq, dict) else None
-            return None if value is None else str(value)
-        # Resolved late on purpose: config's store already reaches this module, so a static
-        # import would close an import cycle.
-        config = importlib.import_module("beadhive.config")
-        return (config.load_host().get("hq") or {}).get("authority_mode")
+            value = None if value is None else str(value)
+        else:
+            value = (config.load_host().get("hq") or {}).get("authority_mode")
     except Exception:  # noqa: BLE001 - selection must stay fail-closed to signed
         return None
+    _configured_cache = (key, value)
+    return value
 
 
 def mode() -> str:
@@ -128,8 +193,70 @@ def mode() -> str:
 
 
 def enforced() -> bool:
-    """Shim for the pre-modes callers: True unless this process resolves to ``trusted``."""
+    """True when this process verifies operator authority (``signed``): the operator
+    signature, authority/policy expiry and the config-head binding. False in ``trusted``."""
     return mode() == "signed"
+
+
+def trusted() -> bool:
+    """``trusted``: skip the operator signature, expiry and config-head binding, but still
+    read and HONOUR the content (admitted frames, cordon/drain/retire, desired release, caps,
+    beadyard identity), the identity comparisons and the replay floor (revision monotonic).
+    HQ write access is admin on such a frame."""
+    return not enforced()
+
+
+def content_waived() -> bool:
+    """Deprecated ``BH_HQ_AUTHORITY_ENFORCE=false`` only: trusted verification PLUS the 0.23
+    content waiver (admission, cordon, emergency review, desired release/caps/profile are
+    satisfied-with-warning), kept unchanged for the deprecated switch until its removal
+    (bh-ihckx). ``hq.authority_mode: trusted`` / ``BH_HQ_AUTHORITY_MODE=trusted`` never waive
+    content."""
+    return resolve(_configured_mode()).source == "enforce-env"
+
+
+# ---- unsigned records (bh-mk97e) --------------------------------------------------------------
+#
+# The ONE unsigned-record marker shape, written by key-less trusted publication (bh-l4q0s) and
+# accepted only by a trusted frame; a signed frame rejects it fail-closed with
+# :func:`unsigned_rejection`. Trusted frames also accept signed records (and do not check them).
+#
+# * SQL carriers: the ``hq_authority.operator_signature`` column (``BLOB NOT NULL``, so no
+#   NULL) holds exactly the ASCII bytes of :data:`UNSIGNED_SIGNATURE` instead of a base64
+#   Ed25519 signature. ``:`` is outside the base64 alphabet, so the marker never collides with a
+#   real signature.
+# * Git carriers (``authority.json`` / ``config.json`` commits): an ordinary commit with NO
+#   ``gpgsig`` header whose message ends with the trailer line :data:`UNSIGNED_TRAILER`. The
+#   payload documents are byte-identical to a signed publication (same key set, same finite
+#   ``expires_at``); only the signature is absent. Detection keys on the missing ``gpgsig``
+#   header; the trailer is the writer's explicit intent marker for audit.
+UNSIGNED_SIGNATURE = "unsigned:trusted"
+UNSIGNED_TRAILER = "Bh-Authority-Signature: unsigned (trusted)"
+
+
+def unsigned_signature(value) -> bool:
+    """Whether a SQL signature column value is the :data:`UNSIGNED_SIGNATURE` marker."""
+    if isinstance(value, memoryview):
+        value = value.tobytes()
+    if isinstance(value, bytes):
+        value = value.decode("ascii", "replace")
+    return isinstance(value, str) and value.strip() == UNSIGNED_SIGNATURE
+
+
+def unsigned_commit(header: str) -> bool:
+    """Whether a Git commit header (``git cat-file -p`` up to the blank line) carries no
+    signature — the Git unsigned-record shape."""
+    return not any(line.startswith("gpgsig") for line in header.split("\n"))
+
+
+def unsigned_rejection(carrier: str) -> str:
+    """The actionable fail-closed message for an unsigned record read in ``signed`` mode."""
+    return (
+        f"{carrier} is an UNSIGNED record (published key-less by a trusted-mode operator) but "
+        f"this host's authority mode is signed: either set hq.authority_mode: trusted (or "
+        f"{MODE_ENV}=trusted) on this frame, or have the operator republish with "
+        "--operator-key"
+    )
 
 
 def status() -> str:
@@ -166,6 +293,7 @@ def doctor_warnings() -> list[str]:
             f"new executors ({DOCS})"
         ]
     return [
-        f"hq: authority mode is TRUSTED ({resolved.source}) — frames here are self-asserted "
-        f"(expiry, config binding, cordon, release pins and caps are not enforced) ({MODE_DOCS})"
+        f"hq: authority mode is TRUSTED ({resolved.source}) — the operator signature, authority "
+        "expiry and config-head binding are not verified here; HQ write access is admin "
+        f"(cordon, release pins and caps are still honoured) ({MODE_DOCS})"
     ]
