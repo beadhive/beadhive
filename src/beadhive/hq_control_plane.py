@@ -1832,7 +1832,7 @@ class SqlControlPlane:
             entry["epoch_floor"] = authority.epoch
             state["revision"] += 1
             state["issued_at"] = self.clock()
-            state["expires_at"] = state["issued_at"] + 3600
+            state["expires_at"] = guard.operator_signed_expiry(original, state["issued_at"])
             state["domain"] = (
                 guard.DOMAIN_V2
                 if any(
@@ -1994,7 +1994,7 @@ class SqlControlPlane:
                     break
             state["revision"] += 1
             state["issued_at"] = self.clock()
-            state["expires_at"] = state["issued_at"] + 3600
+            state["expires_at"] = guard.operator_signed_expiry(original, state["issued_at"])
             return operator.publish(
                 state,
                 expected_revision=head,
@@ -2216,7 +2216,7 @@ class SqlControlPlane:
                 record.update(state=destination, cordoned=verb != "resume")
             state["revision"] += 1
             state["issued_at"] = now
-            state["expires_at"] = now + 3600
+            state["expires_at"] = guard.operator_signed_expiry(original, now)
             operator.publish(
                 state,
                 expected_revision=head,

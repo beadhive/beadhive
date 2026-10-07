@@ -911,3 +911,13 @@ def test_active_shape_never_coexists_with_a_candidate(fixture):
         upgrade.selected(shape, "frame")
     shape["frames"]["frame"]["candidate"] = None
     assert upgrade.selected(shape, "frame") == ("active", record)
+
+
+@pytest.mark.parametrize(
+    ("expires_at", "expected"), [(1000 + 7 * 86400, 1000 + 7 * 86400), (1800, 1000 + 3600)]
+)
+def test_upgrade_keeps_long_authority_and_floors_short_at_one_hour(fixture, expires_at, expected):
+    fixture.state["expires_at"] = expires_at
+    state, _digest = prepare(fixture)
+    assert state["expires_at"] == expected
+    assert state["revision"] == fixture.state["revision"] + 1

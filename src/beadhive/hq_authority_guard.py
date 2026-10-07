@@ -276,6 +276,11 @@ def emergency_review_required(record):
     return bool(record.get("emergency", {}).get("review_required"))
 
 
+def operator_signed_expiry(original, now):
+    """Expiry for an operator-signed mutation: keep the signed life, 1 h floor."""
+    return max(original["expires_at"], now + 3600)
+
+
 def records(state):
     for identity, entry in state["frames"].items():
         for record in (entry["active"], entry["candidate"], *entry["retired"]):

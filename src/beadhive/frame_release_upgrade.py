@@ -213,7 +213,11 @@ def prepare(original, frame, head, snapshot, request, *, now):
     )
     entry[slot] = next_record
     entry["epoch_floor"] = next_record["authority"]["epoch"]
-    state.update(revision=original["revision"] + 1, issued_at=now, expires_at=now + 3600)
+    state.update(
+        revision=original["revision"] + 1,
+        issued_at=now,
+        expires_at=guard.operator_signed_expiry(original, now),
+    )
     guard.validate_state(state)
     return state, plan_digest
 
