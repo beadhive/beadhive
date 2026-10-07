@@ -50,7 +50,7 @@ def _renew(*extra):
         [
             "hq",
             "authority",
-            "renew",
+            "rebind",
             "--confirm",
             "--operator-key",
             "k",
