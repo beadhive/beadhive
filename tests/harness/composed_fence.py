@@ -49,7 +49,7 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -1283,6 +1283,11 @@ def check_invariants(
     *,
     adopt_in_flight: bool = False,
     acknowledged: Sequence[str] = (),
+    forwarded: Sequence[str] = (),
+    backups: Mapping[str, tuple[str, str]] | None = None,
+    backup_remote: Path | None = None,
+    dead_frames: Sequence[str] = (),
+    history_check: bool = False,
 ) -> dict:
     """The bh-jbb6r invariant checker, judged on remote ``main`` (and HQ) only.
 
@@ -1302,6 +1307,21 @@ def check_invariants(
       knowingly in flight.
     * **I5 no acknowledged write lost** (``acknowledged`` titles): every write whose push was
       acknowledged is still on remote ``main``.
+
+    The product suite (M10, ``bh-7p7rf``) adds, each opt-in so the spikes' calls are unchanged:
+
+    * **I6 no acknowledged forwarded write lost** (``forwarded`` titles): every write a
+      forwarder's bd was told succeeded through the primary is on remote ``main`` (M13 E5: a
+      write in flight across a divert reset must be refused, never acknowledged and dropped).
+    * **I7 no lost backed-up work** (``backups``: bead -> ``(ref, sha)`` on the git
+      ``backup_remote``): the backup ref still exists and still contains ``sha``, and the bead
+      is still on remote ``main``.
+    * **I8 no surviving unbacked claim of a dead frame** (``dead_frames``): no ``in_progress``
+      bead on remote ``main`` is claimed (``claim-frame:<dead>``) by a dead frame unless it is
+      submitted (``review:pending``) or its work is on a backup ref.
+    * **history** (``history_check``): the PRODUCT ``beadhive.fence_audit`` on the observer,
+      whose history check reports a late or re-stamped write that ``stale_marks`` cannot see
+      (M13 E2), and whose findings must otherwise be empty.
     """
     history = read_history(world.cluster)
     fenced = set(history.writer)
@@ -1313,6 +1333,10 @@ def check_invariants(
         "i4_any_commit": [],
         "audit": [],
         "i5_acknowledged_lost": [],
+        "i6_forwarded_lost": [],
+        "i7_backed_up_work_lost": [],
+        "i8_unbacked_dead_claim": [],
+        "history": [],
     }
     # I1 -- outside-in: who moved main, and whom does the moved-to main name?
     moves = world.moves.moves if world.moves is not None else []
@@ -1408,11 +1432,25 @@ def check_invariants(
     if audit["placement_ahead"] and not adopt_in_flight:
         violations["audit"].append(audit)
 
-    if acknowledged:
+    if acknowledged or forwarded:
         titles = ef.remote_fence(world.cluster)["titles"]
         lost = sorted(set(acknowledged) - titles)
         if lost:
             violations["i5_acknowledged_lost"].append(lost)
+        lost = sorted(set(forwarded) - titles)
+        if lost:
+            violations["i6_forwarded_lost"].append(lost)
+
+    if backups or dead_frames:
+        _check_claims(world, violations, backups or {}, backup_remote, dead_frames)
+
+    product_audit = None
+    if history_check:
+        product_audit = _product_audit(world)
+        findings = product_audit.findings()
+        if not product_audit.cut_over or findings:
+            if not (adopt_in_flight and all(f.startswith("placement_ahead") for f in findings)):
+                violations["history"].append(findings or ["not cut over"])
 
     return {
         "ok": not any(violations.values()),
@@ -1422,7 +1460,84 @@ def check_invariants(
         "bumps": len(bumps),
         "orphan_admitted": len(sanctioned),
         "audit": audit,
+        "product_audit": None if product_audit is None else product_audit.as_dict(),
     }
+
+
+def _backup_refs(remote: Path) -> dict[str, str]:
+    out = subprocess.run(
+        ["git", "--git-dir", str(remote), "for-each-ref", "--format=%(refname) %(objectname)"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return dict(line.split() for line in out.splitlines() if line.strip())
+
+
+def _contains(remote: Path, sha: str, tip: str) -> bool:
+    return (
+        sha == tip
+        or subprocess.run(
+            ["git", "--git-dir", str(remote), "merge-base", "--is-ancestor", sha, tip],
+            capture_output=True,
+        ).returncode
+        == 0
+    )
+
+
+def _check_claims(
+    world: World,
+    violations: dict[str, list],
+    backups: Mapping[str, tuple[str, str]],
+    remote: Path | None,
+    dead_frames: Sequence[str],
+) -> None:
+    """I7 and I8 on remote ``main`` plus the git backup remote (M14 pairing, M3 reclaim)."""
+    from beadhive import work_backup  # product naming of refs/bh/backup/<bead>/<frame>
+
+    (rows,) = _observer_docs(
+        world.cluster,
+        "SELECT i.id AS id, i.status AS status, l.label AS label FROM issues i "
+        "LEFT JOIN labels l ON l.issue_id = i.id",
+    )
+    status: dict[str, str] = {}
+    labels: dict[str, set[str]] = {}
+    for row in rows:
+        status[row["id"]] = row["status"]
+        if row.get("label"):
+            labels.setdefault(row["id"], set()).add(row["label"])
+    refs = _backup_refs(remote) if remote is not None else {}
+    for bead, (ref, sha) in sorted(backups.items()):
+        tip = refs.get(ref)
+        if bead not in status or tip is None or not _contains(remote, sha, tip):
+            violations["i7_backed_up_work_lost"].append(
+                {"bead": bead, "ref": ref, "sha": sha, "tip": tip, "on_main": bead in status}
+            )
+    for bead, state in sorted(status.items()):
+        mine = labels.get(bead, set())
+        for dead in dead_frames:
+            if state != "in_progress" or f"claim-frame:{dead}" not in mine:
+                continue
+            if "review:pending" in mine:
+                continue
+            ref = work_backup.backup_ref(bead, dead)
+            if ref in refs:
+                continue
+            violations["i8_unbacked_dead_claim"].append({"bead": bead, "dead_frame": dead})
+
+
+def _product_audit(world: World):
+    """The product ``fence_audit`` (history check included) on the observer's ``origin/main``,
+    against HQ placement."""
+    from beadhive import fence_audit as fa
+    from beadhive import fence_data as fd
+    from beadhive.writer_adopt import PlacementView
+
+    observer = world.cluster.remote
+    node = fd.FenceNode(fd.DoltCliEngine(observer._observer, env=observer._env))
+    placed = world.hq.placement()
+    view = None if placed.writer is None else PlacementView(placed.writer, placed.epoch)
+    return fa.fence_audit(node, placement=view)
 
 
 # =============================================================================================
