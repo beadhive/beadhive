@@ -475,6 +475,8 @@ def test_git_trusted_frame_reads_expired_authority_signed_fails_closed(backend, 
     for seq in (1, 2, 3):
         b["accept"](seq)
     apply(b, "admit")
+    # Authority no longer expires by default (bh-y929l): opt into a one-hour expiry first.
+    b["plane"].renew(expected=b["plane"]._read()[0], operator_key=str(b["operator"]), duration=3600)
     expired, state, _ = b["plane"]._read()
     # Two hours on: past the granted authority's expiry, without racing a 1 s readback.
     b["plane"].clock = lambda: time.time() + 7200

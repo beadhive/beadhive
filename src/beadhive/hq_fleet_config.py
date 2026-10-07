@@ -178,7 +178,10 @@ class GitFleetConfigRevisionStore:
             validate_documents(documents)
         except DocumentValidationError as exc:
             raise FleetConfigError(str(exc)) from None
-        if not self.operator_key:
+        from . import hq_authority_enforce
+
+        # Key-less publication is trusted-mode only (bh-l4q0s): an unsigned carrier commit.
+        if hq_authority_enforce.key_required(self.operator_key):
             raise FleetConfigError(
                 "configuration publication requires operator key/bounded validity"
             )
@@ -219,20 +222,12 @@ class GitFleetConfigRevisionStore:
         git, directory = self.git, self.plane.hq_dir
         blob = git(directory, "hash-object", "-w", "--stdin", data=encoded)
         tree = git(directory, "mktree", data=f"100644 blob {blob}\tconfig.json\n")
-        args = [
-            "-c",
-            "gpg.format=ssh",
-            "-c",
-            f"user.signingkey={self.operator_key}",
-            "commit-tree",
-            "-S",
-            tree,
-        ]
-        if expected_revision:
-            args += ["-p", expected_revision]
         message = f"Fleet configuration revision {state['revision']}\n"
         if publication_id is not None:
             message += f"\nHQ export publication ID: {publication_id}\n"
+        args, message = hq_authority_enforce.commit_tree_args(
+            tree, expected_revision, self.operator_key, message
+        )
         sha = git(directory, *args, data=message)
         witness = f"{guard.CONFIG_WITNESS}{state['revision']:020d}"
         git(

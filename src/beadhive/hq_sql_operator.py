@@ -11,6 +11,7 @@ import hashlib
 import json
 import time
 
+from . import hq_authority_enforce
 from . import hq_authority_guard as guard
 from .hq_hive_policy import project_hive_policies
 from .hq_sql_runtime import SqlRuntimeAuthority
@@ -273,7 +274,10 @@ class SqlRuntimeOperator:
         release_upgrade=None,
         deadline=None,
     ) -> str:
-        """Sign current canonical catalog projection and exact authority CAS."""
+        """Sign current canonical catalog projection and exact authority CAS.
+
+        Without *operator_key* in trusted mode (bh-l4q0s) the row carries the unsigned marker
+        :data:`beadhive.hq_authority_enforce.UNSIGNED_SIGNATURE` instead of a signature."""
         if not isinstance(expected_revision, str) or not expected_revision:
             raise SqlOperatorError("original authority revision required")
         connection, deadline = self._open(deadline=deadline)
@@ -368,12 +372,19 @@ class SqlRuntimeOperator:
                     "state": state,
                     "hive_policies": policies,
                 }
-                signature = sign_authority(signed, signing_key=operator_key)
-                verify_authority(
-                    signed,
-                    signature,
-                    granted_public_key=self.settings["runtime_operator_public_key"],
-                )
+                if operator_key:
+                    signature = sign_authority(signed, signing_key=operator_key)
+                    verify_authority(
+                        signed,
+                        signature,
+                        granted_public_key=self.settings["runtime_operator_public_key"],
+                    )
+                elif hq_authority_enforce.trusted():
+                    # Key-less trusted publication (bh-l4q0s): the unsigned marker, accepted
+                    # only by trusted frames; signed frames refuse it fail-closed.
+                    signature = hq_authority_enforce.UNSIGNED_SIGNATURE
+                else:
+                    raise SqlOperatorError("mutation requires separate --operator-key")
                 cursor.execute(
                     "UPDATE hq_authority SET revision=%s,config_backend=%s,"
                     "config_generation=%s,config_head=%s,state_json=%s,state_sha256=%s,"
@@ -402,7 +413,8 @@ class SqlRuntimeOperator:
                 cursor.execute(
                     "CALL DOLT_COMMIT('-m',%s,'--author',%s)",
                     (
-                        f"HQ signed authority {state['revision']}",
+                        f"HQ {'signed' if operator_key else 'unsigned (trusted)'} authority "
+                        f"{state['revision']}",
                         "HQ operator <hq-operator@localhost>",
                     ),
                 )

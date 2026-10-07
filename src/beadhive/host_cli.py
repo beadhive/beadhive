@@ -1987,32 +1987,35 @@ def release_upgrade_cmd(
     admitted at a new epoch and principal; fresh signed evidence on the new digest
     is required before it is eligible again, and its hive lease renews unchanged.
     """
+    from . import hq_authority_enforce
     from .hq_control_plane import SqlControlPlane
     from .hq_operator_settings import select_plane
 
+    # hq.authority_mode (key-less trusted apply, bh-l4q0s) follows the same settings file.
     try:
-        plane = select_plane(operator_settings)
-        if not isinstance(plane, SqlControlPlane):
-            raise ValueError("release-upgrade requires the protected SQL control plane")
-        result = plane.release_upgrade(
-            frame_id,
-            action,
-            request={
-                "expected_revision": expected,
-                "host_id": expected_host_id,
-                "epoch": expected_epoch,
-                "old_release": expected_release,
-                "config_head": expected_config_head,
-                "release": {"id": release_id, "digest": release_digest},
-                "profile": profile,
-                "config_revision": config_revision,
-                "expires_at": expires_at,
-            },
-            plan_sha256=plan_sha256,
-            operator_key=str(operator_key) if operator_key else "",
-            confirm=confirm,
-        )
-        typer.echo(json.dumps(result, sort_keys=True))
+        with hq_authority_enforce.operator_settings(operator_settings):
+            plane = select_plane(operator_settings)
+            if not isinstance(plane, SqlControlPlane):
+                raise ValueError("release-upgrade requires the protected SQL control plane")
+            result = plane.release_upgrade(
+                frame_id,
+                action,
+                request={
+                    "expected_revision": expected,
+                    "host_id": expected_host_id,
+                    "epoch": expected_epoch,
+                    "old_release": expected_release,
+                    "config_head": expected_config_head,
+                    "release": {"id": release_id, "digest": release_digest},
+                    "profile": profile,
+                    "config_revision": config_revision,
+                    "expires_at": expires_at,
+                },
+                plan_sha256=plan_sha256,
+                operator_key=str(operator_key) if operator_key else "",
+                confirm=confirm,
+            )
+            typer.echo(json.dumps(result, sort_keys=True))
     except (ValueError, OSError, RuntimeError) as exc:
         typer.echo(f"release-upgrade refused: {exc}", err=True)
         raise typer.Exit(1) from exc

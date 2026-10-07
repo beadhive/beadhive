@@ -20,7 +20,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import config
+from . import config, hq_authority_enforce
 from .beadyard_identity import DOCUMENT_PATH, BeadyardIdentityError, parse_document, parse_id
 from .beadyard_identity_file import create_identity, read_identity
 from .modules.config.domain.ports import FleetConfigDocument
@@ -443,15 +443,17 @@ def _confirmed_git_config_adoption(plane, current_sha: str, owner: str, intent) 
         if _git(plane.hq_dir, "show", "-s", "--format=%P", first) != original:
             return False
         policy = plane._policy()
-        _git(
-            plane.hq_dir,
-            "-c",
-            f"gpg.ssh.allowedSignersFile={policy['operator_signers']}",
-            "-c",
-            f"gpg.ssh.program={policy['executables']['ssh_keygen']['path']}",
-            "verify-commit",
-            first,
-        )
+        # Trusted mode (bh-l4q0s): the config carrier may be an unsigned key-less publication.
+        if hq_authority_enforce.enforced():
+            _git(
+                plane.hq_dir,
+                "-c",
+                f"gpg.ssh.allowedSignersFile={policy['operator_signers']}",
+                "-c",
+                f"gpg.ssh.program={policy['executables']['ssh_keygen']['path']}",
+                "verify-commit",
+                first,
+            )
         first_state = json.loads(_git(plane.hq_dir, "show", f"{first}:config.json"))
         old_state = json.loads(_git(plane.hq_dir, "show", f"{original}:config.json"))
         if (

@@ -26,6 +26,7 @@ from __future__ import annotations
 import importlib
 import os
 import sys
+from contextlib import contextmanager
 from typing import NamedTuple
 
 ENFORCE_ENV = "BH_HQ_AUTHORITY_ENFORCE"
@@ -137,10 +138,33 @@ def _host_config_path(config) -> str | None:
     return path
 
 
+#: The operator CLI's ``--operator-settings`` file, in force for one command (bh-l4q0s); it
+#: outranks ``$BH_HQ_OPERATOR_SETTINGS`` exactly as it does for plane selection.
+_settings_override: str | None = None
+
+
+@contextmanager
+def operator_settings(path):
+    """Resolve ``hq.authority_mode`` from the operator settings file *path* (``None``: no
+    override) for the duration of one operator command."""
+    global _settings_override
+    previous = _settings_override
+    if path:
+        _settings_override = str(path)
+    try:
+        yield
+    finally:
+        _settings_override = previous
+
+
+def _settings_path() -> str:
+    return _settings_override or os.environ.get("BH_HQ_OPERATOR_SETTINGS", "")
+
+
 def _configured_key(config) -> tuple:
     """What `_configured_mode` depends on: the operator settings file or this host's config
     file (path + mtime) and the reader in force (a monkeypatched ``load_host`` is a new key)."""
-    settings = os.environ.get("BH_HQ_OPERATOR_SETTINGS", "")
+    settings = _settings_path()
     if settings:
         return ("operator", settings, _mtime(settings))
     path = _host_config_path(config)
@@ -170,12 +194,12 @@ def _configured_mode() -> str | None:
     if _configured_cache is not None and _configured_cache[0] == key:
         return _configured_cache[1]
     try:
-        if os.environ.get("BH_HQ_OPERATOR_SETTINGS"):
+        if settings := _settings_path():
             from pathlib import Path
 
             from ruamel.yaml import YAML
 
-            raw = YAML(typ="safe").load(Path(os.environ["BH_HQ_OPERATOR_SETTINGS"]).read_text())
+            raw = YAML(typ="safe").load(Path(settings).read_text())
             hq = raw.get("hq", raw) if isinstance(raw, dict) else None
             value = hq.get("authority_mode") if isinstance(hq, dict) else None
             value = None if value is None else str(value)
@@ -275,6 +299,35 @@ def unsigned_rejection(carrier: str) -> str:
         f"{MODE_ENV}=trusted) on this frame, or have the operator republish with "
         "--operator-key"
     )
+
+
+# ---- key-less publication (bh-l4q0s) ----------------------------------------------------------
+#
+# Trust delta: with ``hq.authority_mode: trusted`` in the operator's settings (or
+# ``BH_HQ_AUTHORITY_MODE=trusted``), operator mutations publish without an operator key, as the
+# unsigned marker above. Only trusted frames accept such a record. A supplied key still signs,
+# which is how a fleet moves back to signed (rebind with the key). Outside trusted mode a
+# key-less mutation refuses exactly as before.
+
+
+def key_required(operator_key) -> bool:
+    """Whether a key-less operator mutation must refuse: no key and this process is signed."""
+    return not operator_key and enforced()
+
+
+def commit_tree_args(tree: str, parent: str, operator_key, message: str) -> tuple[list, str]:
+    """``git commit-tree`` arguments and message for a Git carrier commit: SSH-signed with the
+    operator key, or — key-less, trusted only — the unsigned shape (no ``gpgsig`` header plus
+    :data:`UNSIGNED_TRAILER`)."""
+    if operator_key:
+        args = ["-c", "gpg.format=ssh", "-c", f"user.signingkey={operator_key}"]
+        args += ["commit-tree", "-S", tree]
+    else:
+        args = ["commit-tree", "--no-gpg-sign", tree]
+        message = f"{message.rstrip(chr(10))}\n\n{UNSIGNED_TRAILER}\n"
+    if parent:
+        args += ["-p", parent]
+    return args, message
 
 
 def status() -> str:

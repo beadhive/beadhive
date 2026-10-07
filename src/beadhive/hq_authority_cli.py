@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 from pathlib import Path
 from typing import Annotated
@@ -35,6 +36,19 @@ class IntDurationSeconds(_click_types.IntParamType):
             self.fail(str(exc), param, ctx)
 
 
+def _operator_mode_scope(command):
+    """Resolve ``hq.authority_mode`` from the same ``--operator-settings`` file that selects the
+    plane (bh-l4q0s); the signature is preserved for Typer."""
+
+    @functools.wraps(command)
+    def wrapped(*args, **kwargs):
+        with hq_authority_enforce.operator_settings(kwargs.get("operator_settings")):
+            return command(*args, **kwargs)
+
+    return wrapped
+
+
+@_operator_mode_scope
 def authority_cmd(
     action: str = typer.Argument(
         ...,
@@ -169,10 +183,12 @@ def authority_cmd(
                 )
                 result = {"authority_anchor": str(anchor), "role": role}
             else:
-                if operator_key is None:
+                # Key-less publication is trusted-mode only (bh-l4q0s); a key always signs.
+                if hq_authority_enforce.key_required(operator_key):
                     raise hq_control_plane.ControlPlaneError(
                         "mutation requires separate --operator-key"
                     )
+                key = str(operator_key) if operator_key is not None else ""
                 if action == "grant":
                     if record is None:
                         raise hq_control_plane.ControlPlaneError("grant requires operator --record")
@@ -184,13 +200,13 @@ def authority_cmd(
                         data["public_key"],
                         data["desired"],
                         expected=expected,
-                        operator_key=str(operator_key),
+                        operator_key=key,
                     )
                 elif action == "observe":
                     sha = plane.accept_observation(
                         frame,
                         expected=expected,
-                        operator_key=str(operator_key),
+                        operator_key=key,
                         holder_identity=holder_id,
                     )
                 elif action in {"rebind", "renew"}:
@@ -214,12 +230,12 @@ def authority_cmd(
                     )
                     sha = plane.renew(
                         expected=expected,
-                        operator_key=str(operator_key),
+                        operator_key=key,
                         duration=duration,
                         ceiling=ceiling,
                     )
                 elif action == "bind-beadyard":
-                    sha = plane.bind_beadyard(expected=expected, operator_key=str(operator_key))
+                    sha = plane.bind_beadyard(expected=expected, operator_key=key)
                 else:
                     raise hq_control_plane.ControlPlaneError("unknown authority action")
                 result = {"revision": sha}
