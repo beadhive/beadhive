@@ -295,10 +295,11 @@ are adopted into condition 16 (above), M12, M1 and M10. Full record:
 
   Overrides are per role and per hive, held in HQ data beside the placement row. They are
   **never** a `host.yaml` or fleet-config key. That keeps `bh-32379` S2's "data is the switch"
-  rule, avoids the 0.21.3 unknown-key skew, and costs no authority renewal (`bh-iru2g` fixed the fence-every-frame behaviour).
+  rule, avoids the 0.21.3 unknown-key skew, and costs no authority renewal (`bh-iru2g` fixed
+  the fence-every-frame behaviour).
   As built, they sit in a sibling table, `hq_live_failover_policy`, not in the placement row's
   `lease_json` or a new column: every older reader of that row is strict (see the
-  [placement runbook](hq-placement-runbook.md#6-failover-policy-failover_after-and-the-executor-floor)).
+  [placement runbook](hq-placement-runbook.md), section 6).
   A value is validated on load against the `bh-cvk70` E20 invariants and **refused, never
   clamped**, below its floor:
   - executors at least the configurable executor floor, **accepted by the operator at 45 min by

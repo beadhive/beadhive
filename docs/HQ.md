@@ -393,7 +393,10 @@ behavior. Any other value is an error, never a fallback: `bh` exits with status 
 - signatures, the replay floor, and the principal-to-incarnation route;
 - the frame-manifest-to-own-lease identity checks;
 - the heartbeat, which follows `BH_FRAME_HEARTBEAT`;
-- hive-lease holder and lease expiry, renewal through the receiver, and validation.
+- hive-lease holder and lease validation. Renewal through the trusted receiver is the 0.22.x path
+  and is **going**: on a director-placed hive the lease row is placement, written by the director
+  ([below](#hive-placement-by-the-director-dolt-server-hq-023)), and expiry is only a failover
+  hint.
 
 **Trust delta.** With enforcement off, the frame accepts work with no valid operator
 authority. Cordon, release pins, caps and expiry are not enforced there, so the frame is
@@ -437,6 +440,12 @@ new executor frames). This switch does not itself gate on O8.
 - [CONTROL-PLANE](CONTROL-PLANE.md) — `bh hub intake`, the fleet-wide untriaged-intake inbox.
 
 ## Signed-mode inbox retention
+
+> **Going.** The signed inbox and the trusted receiver that reads it are the 0.22.x liveness
+> carrier. 0.23.0 replaces them on `dolt-server` HQ with [session and evidence
+> rows](#session-rows) and director placement. Keep pruning the inbox while a 0.22.x reader or
+> the receiver still runs (the Φ3 soak); deleting the inbox code is a later, unscheduled removal
+> (ADR Decision 5).
 
 With `hq.sql.liveness: signed` every heartbeat adds one row to the frame's own inbox table
 (`hq_live_inbox_<principal>_<epoch>`). Since bh-ce886 the operator bounds that table:
@@ -482,6 +491,54 @@ operation needs a wire-catalog decision. Deletes commit in batches of 500, so a 
 backlog that outruns the `authority_writer` `operation_timeout` drains over reruns. The
 result reports `"complete": false` until it has. Nothing prunes on its own; schedule the
 verb if you want it periodic.
+
+## Hive placement by the director (dolt-server HQ, 0.23) {#hive-placement-by-the-director-dolt-server-hq-023}
+
+In `dolt-server` HQ, **placement** (which frame should write a hive) is one
+`hq_live_hive_leases` row per hive. Before 0.23.0 the trusted receiver wrote it from a frame's
+signed proposal, and 0.22.8 let a frame resolve it from its own proposals at the hive's
+`refs/bh/epoch`. In 0.23.0 the **director** writes it directly, in SQL, and the receiver is going
+(ADR §1 design A, `bh-a94qw`):
+
+- A compare-and-swap (CAS) on the row's `revision`, issued on the **director credential**: an
+  account with `UPDATE` on that table and no other write right on it. Frames hold `SELECT` only.
+  The director never inserts: a never-placed hive is seeded once by operator provisioning.
+- Every write gets a fresh revision (`sha256(record || uuid)`, the receiver's 64-hex format). A
+  lost CAS, a `1213` serialization failure or `rowcount 0` is never retried with the same
+  expectation, and an unknown commit acknowledgment is read back, never re-issued.
+- The row keeps the receiver's shape (`lease_json` is `{authority, lease}` with the five-field
+  lease), so the receiver, 0.22.x readers and the 0.22.8 bridge all still parse it and a Φ3
+  rollback to the receiver works.
+- A director-written row is self-identifying (`request_sha256` is a witness over the row's own
+  prefix, revision and record). That is the data switch that **retires the 0.22.8 proposal
+  resolver for that hive**: `BH_HQ_SQL_HIVE_LEASE=proposal` still governs hives whose row the
+  receiver wrote and no longer matters for a director-placed hive: a frame's own proposal on
+  such a hive is refused before anything moves. Per hive, not per host.
+- Each placement records its **cause** (`planned` for an operator `place`, `failover` only when
+  the failover loop placed) in the row's `request_id` column. Only a `failover` adopt reclaims
+  the dead frame's claims, and a frame that does not read the cause reclaims nothing.
+- Lease expiry (the tenure) is a failover hint, never a write gate. An HQ outage blocks handoff,
+  never writes.
+
+The operator drives it with the hidden `bh hq placement show|seed|place|release|check|policy`
+verb, documented only in the [placement runbook](design/hq-placement-runbook.md). It binds the
+director credential in an operator settings file (`hq.sql.placement_writer`), never in a frame's
+`host.yaml`; name the file with the `BH_HQ_OPERATOR_SETTINGS` environment variable or, from 0.23.0,
+`--operator-settings`. Git HQ is unchanged: placement stays the `refs/bh/lease/<prefix>`
+CAS.
+
+**Unattended failover** is a host-daemon loop, off by default
+(`host.daemon.failover.enabled`). It fails a hive over only when
+`min(server staleness, observed window) > failover_after`, where staleness is the age of the
+frame's session row on the HQ server's own clock, and it places the successor that holds the
+fewest hive primaries (then the freshest session, then the lowest frame id). A placed hive is
+never moved just to rebalance, and `bh doctor` warns when primaries are lopsided beyond
+`host.daemon.failover.max_primary_spread` (default 2). `failover_after` (defaults 60 min
+executor, 30 min transient) and the executor floor (default 45 min) live in the
+`hq_live_failover_policy` table, not on the placement row and never in `host.yaml` or fleet
+config; see the runbook's section 6 and [CONFIGURATION](CONFIGURATION.md#hq-configuration-authority).
+Advanced scheduling beyond this (the operator may move it to external quorum tooling such as
+ZooKeeper) is deferred.
 
 ## Session and evidence rows (dolt-server HQ, 0.23) {#session-rows}
 
