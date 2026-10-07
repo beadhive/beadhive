@@ -20,8 +20,8 @@ coexisting active/candidate states are explicitly unsupported. Do not retire or
 remove identity records to evade this restriction.
 
 0. Preflight: run `BH_HQ_AUTHORITY_MIN_REMAINING=6h bh hq authority check` (add `BH_HQ_OPERATOR_SETTINGS=<file>`
-   from an off-host operator). It must exit 0; an expired or soon-expiring authority is renewed first
-   ([HQ: Authority expiry and renewal](../HQ.md#authority-expiry)).
+   from an off-host operator). It must exit 0; an expired or soon-expiring authority is rebound first
+   ([HQ: Authority modes](../HQ.md#authority-expiry)).
 1. Keep the enrollment marker, UUID, canonical HQ and frame signing key intact.
    Measure and review the corrected installed artifact's release ID and SHA-256
    digest and its conformance profile. Record the current runtime authority
@@ -110,7 +110,7 @@ binding (`hq.sql.authority_writer`, `runtime: null`).
    `check` (like `plan` and `apply`) needs the off-host `hq.sql.authority_writer`
    binding: run it from an operator host with `BH_HQ_OPERATOR_SETTINGS=<file>`
    (a `--operator-settings` flag arrives in 0.23.0; see
-   [HQ: Renewing from an operator host](../HQ.md#authority-laptop-renew)). From a
+   [HQ: Rebinding from an operator host](../HQ.md#authority-laptop-renew)). From a
    frame host without that binding it refuses with "separate authority writer
    capability unavailable".
 3. **Budget the lease window.** From step 4 until the first accepted beat at
