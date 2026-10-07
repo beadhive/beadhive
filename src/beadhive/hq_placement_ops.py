@@ -13,6 +13,9 @@ What this module adds is the operator shape the other HQ authority verbs already
   operator's server-local provisioning account; it never executes it.
 * **Conformance** runs :func:`~beadhive.hq_sql_placement.conformance` over the accounts the
   server and the principal registry name.
+* **Failover policy** (bh-4biq8): ``place --failover-after`` sets the hive's per-role overrides in
+  the placement CAS's own transaction; ``policy`` shows or sets a hive's overrides, the fleet
+  defaults and the executor floor (:mod:`beadhive.failover_policy`). Refused, never clamped.
 """
 
 from __future__ import annotations
@@ -34,6 +37,7 @@ __all__ = [
     "ACTIONS",
     "check",
     "place",
+    "policy",
     "record_view",
     "release",
     "render_statement",
@@ -41,7 +45,7 @@ __all__ = [
     "show",
 ]
 
-ACTIONS = ("show", "seed", "place", "release", "check")
+ACTIONS = ("show", "seed", "place", "release", "check", "policy")
 _ACCOUNT_HOST = re.compile(r"[A-Za-z0-9.%:_-]{1,255}")
 _ACCOUNT_USER = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,31}")
 
@@ -154,9 +158,11 @@ def place(
     epoch: int | None = None,
     tenure_s: float = DEFAULT_TENURE_S,
     confirm: bool = False,
+    failover_after: Mapping[str, int | None] | None = None,
 ) -> dict:
-    """Place `frame` on `prefix` at `epoch` (default row + 1; must increase). A dry run
-    unless `confirm`."""
+    """Place `frame` on `prefix` at `epoch` (default row + 1; must increase), and set the hive's
+    `failover_after` overrides in the same transaction when given. A dry run unless
+    `confirm`."""
     if not frame:
         raise PlacementError("place requires --frame")
     _check_tenure(tenure_s)
@@ -164,9 +170,17 @@ def place(
         raise PlacementError("--epoch must be a positive integer")
     if confirm:
         placed = director.place(
-            prefix, frame_id=frame, expected_revision=expected, epoch=epoch, tenure_s=tenure_s
+            prefix,
+            frame_id=frame,
+            expected_revision=expected,
+            epoch=epoch,
+            tenure_s=tenure_s,
+            **({"failover_after": dict(failover_after)} if failover_after else {}),
         )
-        return {"dry_run": False, "placed": record_view(placed)}
+        result = {"dry_run": False, "placed": record_view(placed)}
+        if failover_after:
+            result["failover_after"] = _policy_view(director.failover_policy(), prefix)
+        return result
     survey = director.survey()
     current = _expect(survey.placements.get(prefix), prefix, expected)
     director.placeable(survey.state, survey.policies, prefix, frame)
@@ -175,10 +189,57 @@ def place(
         raise PlacementError(
             f"placement must raise the epoch (row at {current.lease.epoch}, asked {target})"
         )
-    return {
+    result = {
         "dry_run": True,
         "current": record_view(current),
         "would_place": {"prefix": prefix, "frame_id": frame, "epoch": target, "tenure_s": tenure_s},
+    }
+    if failover_after:
+        preview = director.failover_policy(prefix, dict(failover_after))
+        result["would_set_failover_after"] = _policy_view(preview, prefix)
+    return result
+
+
+def _policy_view(policy, prefix: str | None) -> dict:
+    from .failover_policy import effective
+
+    view = policy.as_dict()
+    view["effective"] = effective(policy, prefix)
+    return view
+
+
+def policy(
+    director: SqlPlacementDirector,
+    prefix: str | None = None,
+    *,
+    changes: Mapping[str, int | None] | None = None,
+    confirm: bool = False,
+) -> dict:
+    """Show (no `changes`) or set the failover policy for `prefix`, or the fleet scope (``*``:
+    fleet defaults and the executor floor) when `prefix` is empty. Setting is a dry run unless
+    `confirm`; a refused value is refused, never clamped, and nothing is written."""
+    from .failover_policy import FLEET_SCOPE, POLICY_TABLE, provision_statements
+
+    scope = prefix or FLEET_SCOPE
+    if not changes:
+        current = director.failover_policy()
+        result = {"scope": scope, "policy": _policy_view(current, prefix)}
+        if not current.provisioned:
+            result["provision"] = {
+                "statements": list(provision_statements(director.settings)),
+                "run_as": "the operator's server-local provisioning account",
+                "note": f"{POLICY_TABLE} is absent: code defaults apply until it is created",
+            }
+        return result
+    if confirm:
+        written = director.set_failover_policy(scope, dict(changes))
+        return {"dry_run": False, "scope": scope, "policy": _policy_view(written, prefix)}
+    preview = director.failover_policy(scope, dict(changes))
+    return {
+        "dry_run": True,
+        "scope": scope,
+        "would_set": dict(changes),
+        "policy": _policy_view(preview, prefix),
     }
 
 

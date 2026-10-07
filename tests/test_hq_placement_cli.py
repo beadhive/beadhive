@@ -324,7 +324,12 @@ def test_cli_seed_without_settings_renders_sql_only(run):
         (["show"], "requires a hive PREFIX"),
         (["check", "ah"], "check takes no PREFIX"),
         (["show", "ah", "--frame", "f"], "--frame applies to place only"),
-        (["show", "ah", "--confirm"], "--confirm applies to place and release only"),
+        (["show", "ah", "--confirm"], "--confirm applies to place, release and policy only"),
+        (["show", "ah", "--failover-after", "executor=60m"], "place and policy only"),
+        (["policy", "ah", "--executor-floor", "45m"], "without a PREFIX"),
+        (["policy", "--confirm"], "needs --failover-after or --executor-floor"),
+        (["policy", "--failover-after", "viewer=60m"], "unknown failover setting"),
+        (["policy", "--executor-floor", "-1"], "invalid duration"),
         (["release", "ah", "--epoch", "3"], "--epoch applies to seed and place only"),
         (["check"], "check needs the operator settings file"),
         (
@@ -398,3 +403,102 @@ def test_observer_session_table_is_the_provisioned_name():
     )
     with pytest.raises(ValueError):
         failover_observer.session_table("Frame-A", 3)
+
+
+# =============================================================================================
+# Failover policy (bh-4biq8): place --failover-after and the policy action
+# =============================================================================================
+
+
+class PolicyDirector(StubDirector):
+    """A stub director over the real policy validation (a fake policy cursor)."""
+
+    def __init__(self, record=None, rows=(), *, provisioned=True):
+        super().__init__(record)
+        from test_failover_policy import Cursor
+
+        self.cursor = Cursor(rows, tables=True if provisioned else ())
+        self.settings = {"placement_writer": {"user": "director", "database": "hq"}}
+
+    def failover_policy(self, scope=None, changes=None):
+        from beadhive import failover_policy as fp
+
+        self.calls.append(("failover_policy", scope, changes))
+        if changes:
+            return fp.plan_changes(self.cursor, scope or fp.FLEET_SCOPE, changes)
+        return fp.read_policy(self.cursor)
+
+    def set_failover_policy(self, scope, changes):
+        from beadhive import failover_policy as fp
+
+        self.calls.append(("set_failover_policy", scope, changes))
+        return fp.apply_changes(self.cursor, scope, changes)
+
+    def place(self, prefix, **kwargs):
+        from beadhive import failover_policy as fp
+
+        if kwargs.get("failover_after"):
+            fp.apply_changes(self.cursor, prefix, kwargs["failover_after"])
+        return super().place(prefix, **kwargs)
+
+
+def test_place_sets_failover_after_in_its_cas_and_previews_it_on_a_dry_run(run):
+    director = run.state["director"] = PolicyDirector(_record())
+    result = run(
+        "place", "ah", "--frame", "frame-b", "--expected-revision", REV,
+        "--failover-after", "executor=75m,transient=40m",
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    out = json.loads(result.output)
+    assert out["dry_run"] and out["would_set_failover_after"]["effective"]["executor"] == 4500
+    assert director.cursor.rows == {}  # a dry run writes nothing
+    result = run(
+        "place", "ah", "--frame", "frame-b", "--expected-revision", REV,
+        "--failover-after", "executor=75m", "--confirm",
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["failover_after"]["effective"]["executor"] == 4500
+    place = next(c for c in director.calls if c[0] == "place")
+    assert place[2]["failover_after"] == {"executor": 4500}
+
+
+def test_place_refuses_a_failover_after_below_the_floor_and_writes_nothing(run):
+    director = run.state["director"] = PolicyDirector(_record())
+    for confirm in ((), ("--confirm",)):
+        result = run(
+            "place", "ah", "--frame", "frame-b", "--expected-revision", REV,
+            "--failover-after", "executor=30m", *confirm,
+        )  # fmt: skip
+        assert result.exit_code == 1
+        assert "below the executor floor 2700 s (45 min)" in result.output
+    assert director.cursor.rows == {}
+
+
+def test_policy_shows_sets_and_refuses_the_fleet_floor(run):
+    director = run.state["director"] = PolicyDirector()
+    shown = json.loads(run("policy").output)
+    assert shown["scope"] == "*" and shown["policy"]["executor_floor_s"] == 2700
+    assert shown["policy"]["effective"] == {"executor": 3600.0, "transient": 1800.0, "viewer": None}
+    preview = json.loads(run("policy", "--executor-floor", "30m").output)
+    assert preview["dry_run"] and preview["policy"]["executor_floor_s"] == 1800
+    assert "35.4 min" in preview["policy"]["warnings"][0]
+    assert director.cursor.rows == {}
+    result = run("policy", "--executor-floor", "40m", "--confirm")
+    assert result.exit_code == 0, result.output
+    assert director.cursor.rows == {("*", "executor_floor"): 2400}
+    refused = run("policy", "--executor-floor", "10m", "--confirm")
+    assert refused.exit_code == 1 and "hard bound 900 s (15 min)" in refused.output
+    hive = json.loads(run("policy", "ah", "--failover-after", "transient=20m", "--confirm").output)
+    assert hive["policy"]["effective"]["transient"] == 1200
+    assert director.cursor.rows[("ah", "transient")] == 1200
+
+
+def test_policy_on_an_unprovisioned_hq_renders_the_ddl_and_grant(run):
+    run.state["director"] = PolicyDirector(provisioned=False)
+    out = json.loads(run("policy").output)
+    assert out["policy"]["provisioned"] is False
+    statements = out["provision"]["statements"]
+    assert statements[0].startswith("CREATE TABLE hq_live_failover_policy")
+    assert statements[1].startswith("GRANT SELECT, INSERT, UPDATE, DELETE ON hq.")
+    refused = run("policy", "ah", "--failover-after", "executor=70m", "--confirm")
+    assert refused.exit_code == 1 and "not provisioned" in refused.output

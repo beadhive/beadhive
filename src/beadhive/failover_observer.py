@@ -21,8 +21,10 @@ Unattended failover is a ``dolt-server`` HQ capability only (:class:`FailoverDir
 placement CAS (``refs/bh/lease/<prefix>`` via ``gitref.cas``, unchanged).
 
 ``failover_after`` defaults per role live here (:data:`ROLE_FAILOVER_AFTER_S`); the per-role,
-per-hive override on the placement row is M8c (``bh-4biq8``), which plugs in through
-:func:`failover_after_for`'s ``override``.
+per-hive overrides and the executor floor are HQ data (M8c, ``bh-4biq8``,
+:mod:`beadhive.failover_policy`), validated there and passed in through
+:func:`failover_after_for`'s ``override``. :class:`FailoverDirector` observes each placement
+(hive, frame) on its own window, so two hives on one frame can carry different values.
 
 Pure apart from the SQL helper; every clock and port is injected. Typer-free.
 """
@@ -34,6 +36,9 @@ import re
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from typing import Any
+
+from .failover_policy import ROLE_FAILOVER_AFTER_S, failover_after_for
 
 __all__ = [
     "HQ_MODES",
@@ -52,13 +57,6 @@ __all__ = [
     "unattended_failover_supported",
 ]
 
-#: Code defaults (ADR §4): an executor rides the 35.4 min false-stale stretch observed live; a
-#: transient frame comes and goes; a viewer is never placed, so it never fails over.
-ROLE_FAILOVER_AFTER_S: dict[str, float | None] = {
-    "executor": 3600.0,
-    "transient": 1800.0,
-    "viewer": None,
-}
 HQ_MODES = ("git", "dolt-server")
 
 #: Session-row age by the HQ server's clock (M9 owns the table; one row, ``id = 1``).
@@ -70,24 +68,6 @@ _TABLE = re.compile(r"[a-z][a-z0-9_]{0,63}")
 
 class UnattendedFailoverUnsupported(ValueError):
     """Unattended failover was asked of an HQ mode that has no server-stamped liveness."""
-
-
-def failover_after_for(role: str, *, override: float | None = None) -> float | None:
-    """``failover_after`` seconds for `role`; ``None`` means never fail over (never placed).
-
-    `override` is the hook for the per-role, per-hive field on the HQ placement row (M8c,
-    ``bh-4biq8``), which owns loading and floor validation (refused, never clamped). An unknown
-    role takes the executor default: the longest, so a newer role never fails over early."""
-    from .host_manifest_contracts import canonical_role
-
-    if override is not None:
-        if type(override) not in (int, float) or not math.isfinite(override) or override <= 0:
-            raise ValueError("failover_after override must be a positive, finite number")
-        return float(override)
-    role = canonical_role(role)
-    if role in ROLE_FAILOVER_AFTER_S:
-        return ROLE_FAILOVER_AFTER_S[role]
-    return ROLE_FAILOVER_AFTER_S["executor"]
 
 
 def unattended_failover_supported(hq_mode: str) -> bool:
@@ -160,15 +140,18 @@ class FailoverObserver:
 
 @dataclass
 class FailoverMonitor:
-    """One :class:`FailoverObserver` per placed frame, with per-frame ``failover_after``."""
+    """One :class:`FailoverObserver` per observed key, with per-key ``failover_after``.
 
-    failover_after: Callable[[str], float | None]
+    A key is a frame id, or — as :class:`FailoverDirector` uses it — a placement
+    ``(prefix, frame_id)``, so a per-hive ``failover_after`` gets its own window."""
+
+    failover_after: Callable[[Any], float | None]
     clock: Callable[[], float] = field(default=time.monotonic)
-    observers: dict[str, FailoverObserver] = field(default_factory=dict)
+    observers: dict[Any, FailoverObserver] = field(default_factory=dict)
 
-    def observe(self, staleness: Mapping[str, float | None] | None) -> dict[str, Decision]:
+    def observe(self, staleness: Mapping[Any, float | None] | None) -> dict[Any, Decision]:
         """Feed one poll. ``None`` (HQ unreachable) resets every window and decides nothing.
-        A frame missing from `staleness` is unobserved this round: its window resets."""
+        A key missing from `staleness` is unobserved this round: its window resets."""
         if staleness is None:
             for observer in self.observers.values():
                 observer.reset()
@@ -241,8 +224,10 @@ class FailoverResult:
 
 
 class FailoverDirector:
-    """One tick: observe every placed frame, and for each frame that is due, CAS each of its
-    hives to a successor. Every port is injected:
+    """One tick: observe every placement (hive, frame), and for each that is due, CAS the hive
+    to a successor. The monitor is keyed by ``(prefix, frame_id)``, so its ``failover_after``
+    port sees the hive (per-hive overrides) and a re-placed hive starts a fresh window. Every
+    port is injected:
 
     * ``staleness()`` → ``{frame_id: seconds | None}``; raise or return ``None`` when HQ is
       unreachable (every window resets);
@@ -279,14 +264,23 @@ class FailoverDirector:
             observed = self._staleness()
         except Exception:  # noqa: BLE001 - an unreadable HQ is "unreachable": reset, decide nothing
             observed = None
-        decisions = self.monitor.observe(observed)
-        due = {frame for frame, decision in decisions.items() if decision.due}
+        if observed is None:
+            self.monitor.observe(None)
+            return []
+        placements = dict(self._placements())
+        keyed = {}
+        for prefix, record in placements.items():
+            frame = getattr(record, "frame_id", "")
+            if frame and frame in observed:
+                keyed[(prefix, frame)] = observed[frame]
+        decisions = self.monitor.observe(keyed)
+        due = {key for key, decision in decisions.items() if decision.due}
         if not due:
             return []
         results = []
-        for prefix, record in sorted(self._placements().items()):
+        for prefix, record in sorted(placements.items()):
             dead = getattr(record, "frame_id", "")
-            if dead not in due:
+            if (prefix, dead) not in due:
                 continue
             target = self._successor(prefix, dead)
             if not target or target == dead:

@@ -144,5 +144,9 @@
   "b_refresh_from_main_update": {
     "bead": "bh-16347",
     "reason": "Refreshing the bh-16347 container from main (0.22.8) combines both resyncs above: the regenerated ledger measures 163 test config importers (B's 161 plus tests/stateful_fixtures.py and tests/test_host_real_home_guard.py from bh-7zu86) and 332 patch sites; other counts unchanged."
+  },
+  "failover_policy_inventory_update": {
+    "bead": "bh-4biq8",
+    "reason": "The live generated ledger now measures 28 test config_schema importers after tests/test_failover_policy.py imports beadhive.config_schema.BeadhiveConfig to prove no host.yaml or fleet-config key exists for failover_after or the executor floor. Production config importers, production schema importers, test config importers, patch sites, historical extraction counts, the pinned baseline, and earlier full-gate receipts are unchanged."
   }
 }

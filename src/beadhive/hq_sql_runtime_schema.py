@@ -98,6 +98,19 @@ LIVENESS_POLICY_SCHEMA = (
 )
 
 
+#: Per-role, per-hive ``failover_after`` and the executor floor (bh-4biq8, ADR §4), beside the
+#: placement row and read by no pre-0.23 reader (:mod:`beadhive.failover_policy`). The
+#: ``hq_live_`` name keeps it under the ``dolt_ignore`` rule: a change never commits. Director
+#: credential: SELECT, INSERT, UPDATE, DELETE here; frames: SELECT at most.
+FAILOVER_POLICY_TABLE = "hq_live_failover_policy"
+FAILOVER_POLICY_SCHEMA = (
+    f"CREATE TABLE {FAILOVER_POLICY_TABLE} ("
+    "scope VARCHAR(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, "
+    "setting VARCHAR(32) NOT NULL, seconds BIGINT NOT NULL, "
+    "PRIMARY KEY (scope, setting))",
+)
+
+
 def _incarnation(principal: str, epoch: int) -> None:
     if (
         not isinstance(principal, str)

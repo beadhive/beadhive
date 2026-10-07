@@ -9479,6 +9479,22 @@
           "schema": {
             "type": "string"
           }
+        },
+        {
+          "name": "failover_after",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "executor_floor",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
         }
       ],
       "privilege": "privileged",
@@ -9508,7 +9524,9 @@
             "epoch",
             "tenure",
             "confirm",
-            "operator_settings"
+            "operator_settings",
+            "failover_after",
+            "executor_floor"
           ],
           "path": "hq placement",
           "progress": {

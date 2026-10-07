@@ -5,6 +5,11 @@ outside ``bh --help`` and the CLI reference while 0.23.0 is dormant. Every actio
 :mod:`beadhive.hq_placement_ops` over the bh-a94qw library, bound by the director credential
 (``hq.sql.placement_writer``) in the operator settings file named by ``--operator-settings`` or
 ``$BH_HQ_OPERATOR_SETTINGS``. Mutating actions are dry runs unless ``--confirm``.
+
+``--failover-after ROLE=DURATION[,...]`` (bh-4biq8) sets per-role ``failover_after`` overrides:
+on ``place`` for the hive in the placement CAS's transaction, on ``policy`` for a hive or (no
+PREFIX) the fleet defaults. ``--executor-floor`` sets the fleet-wide executor floor (``policy``
+without a PREFIX). Values are HQ data, never host.yaml or fleet config; refused, never clamped.
 """
 
 from __future__ import annotations
@@ -22,9 +27,11 @@ __all__ = ["placement_cmd"]
 
 
 def placement_cmd(
-    action: str = typer.Argument(..., help="show, seed, place, release, or check"),
+    action: str = typer.Argument(..., help="show, seed, place, release, check, or policy"),
     prefix: str = typer.Argument(
-        "", metavar="[PREFIX]", help="the hive prefix (every action except check)"
+        "",
+        metavar="[PREFIX]",
+        help="the hive prefix (every action except check; optional for policy: fleet scope)",
     ),
     frame: str = typer.Option("", "--frame", help="place: the frame to place on the hive"),
     expected: str = typer.Option(
@@ -45,7 +52,7 @@ def placement_cmd(
         ),
     ] = int(DEFAULT_TENURE_S),
     confirm: bool = typer.Option(
-        False, "--confirm", help="place/release: write (default: dry run)"
+        False, "--confirm", help="place/release/policy: write (default: dry run)"
     ),
     operator_settings: Annotated[
         str | None,
@@ -55,6 +62,17 @@ def placement_cmd(
             "overrides $BH_HQ_OPERATOR_SETTINGS",
         ),
     ] = None,
+    failover_after: str | None = typer.Option(
+        None,
+        "--failover-after",
+        help="place/policy: per-role failover_after, e.g. executor=75m,transient=40m "
+        "(ROLE=default clears an override)",
+    ),
+    executor_floor: str | None = typer.Option(
+        None,
+        "--executor-floor",
+        help="policy (no PREFIX): the fleet executor floor, e.g. 45m (default restores 45 min)",
+    ),
 ) -> None:
     """HIDDEN — see docs/design/hq-placement-runbook.md.
 
@@ -66,21 +84,31 @@ def placement_cmd(
 
     release PREFIX --expected-revision R [--confirm]: release to a tombstone at the same epoch.
 
-    check: grant and trigger conformance for the director and every frame account."""
+    check: grant and trigger conformance for the director and every frame account.
+
+    policy [PREFIX] [--failover-after R=D,...] [--executor-floor D] [--confirm]: show or set the
+    failover policy (a hive's overrides; no PREFIX: fleet defaults and the executor floor)."""
     try:
         if action not in hq_placement_ops.ACTIONS:
             raise ValueError(
                 f"unknown placement action {action!r} "
                 f"(expected one of {', '.join(hq_placement_ops.ACTIONS)})"
             )
-        if action != "check" and not prefix:
+        if action not in ("check", "policy") and not prefix:
             raise ValueError(f"{action} requires a hive PREFIX")
         if action == "check" and prefix:
             raise ValueError("check takes no PREFIX: it covers every account")
         if frame and action != "place":
             raise ValueError("--frame applies to place only")
-        if confirm and action not in ("place", "release"):
-            raise ValueError("--confirm applies to place and release only")
+        if confirm and action not in ("place", "release", "policy"):
+            raise ValueError("--confirm applies to place, release and policy only")
+        if failover_after is not None and action not in ("place", "policy"):
+            raise ValueError("--failover-after applies to place and policy only")
+        if executor_floor is not None and (action != "policy" or prefix):
+            raise ValueError("--executor-floor applies to policy without a PREFIX (fleet-wide)")
+        changes = _policy_changes(failover_after, executor_floor)
+        if action == "policy" and confirm and not changes:
+            raise ValueError("policy --confirm needs --failover-after or --executor-floor")
         if epoch is not None and action not in ("seed", "place"):
             raise ValueError("--epoch applies to seed and place only")
         path = operator_settings or os.environ.get(hq_operator_settings.ENV) or None
@@ -112,6 +140,11 @@ def placement_cmd(
                     epoch=epoch,
                     tenure_s=float(tenure),
                     confirm=confirm,
+                    failover_after=changes,
+                )
+            elif action == "policy":
+                result = hq_placement_ops.policy(
+                    director, prefix or None, changes=changes, confirm=confirm
                 )
             else:
                 result = hq_placement_ops.release(
@@ -121,3 +154,14 @@ def placement_cmd(
     except (ValueError, OSError, RuntimeError) as exc:
         typer.echo(f"placement refused: {exc}", err=True)
         raise typer.Exit(1) from exc
+
+
+def _policy_changes(failover_after: str | None, executor_floor: str | None) -> dict | None:
+    from .failover_policy import FLOOR_SETTING, parse_changes
+
+    changes: dict = {}
+    if failover_after is not None:
+        changes.update(parse_changes(failover_after))
+    if executor_floor is not None:
+        changes.update(parse_changes(f"{FLOOR_SETTING}={executor_floor}", allowed=(FLOOR_SETTING,)))
+    return changes or None
