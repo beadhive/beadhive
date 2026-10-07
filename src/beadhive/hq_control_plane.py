@@ -35,6 +35,12 @@ class ControlPlaneError(ValueError):
     """Unavailable protection, rejected authority, or unsupported binding."""
 
 
+def _require_operator_key(operator_key):
+    """Key-less operator mutations are trusted-mode only (bh-l4q0s); refuse before any I/O."""
+    if authority_mode.key_required(operator_key):
+        raise ControlPlaneError("mutation requires separate --operator-key")
+
+
 class CommittedManifestAbsent(FileNotFoundError):
     """A verified selected snapshot contains no document for this host."""
 
@@ -292,6 +298,11 @@ def install_guard(
         ),
         "custody": "operator-only-filesystem-writes",
     }
+    if authority_mode.trusted():
+        # Provisioned by a trusted-mode operator (bh-l4q0s): the receive guard also admits
+        # key-less (unsigned, trailer-marked) authority/config commits. Pinned with the policy
+        # digest by every client anchor; a signed install's policy bytes are unchanged.
+        policy["authority_mode"] = guard.TRUSTED
     policy_path.write_text(gitref.encode(policy))
     hook.write_text(_hook_text(remote, policy))
     hook.chmod(0o755)
@@ -734,7 +745,12 @@ class GitControlPlane:
         ``renew`` without one signs the no-expiry sentinel; any other operator mutation keeps
         the signed life (``guard.operator_signed_expiry``), so a non-expiring authority stays
         non-expiring and a first-ever authority starts non-expiring (bh-y929l).
+
+        Key-less in trusted mode (bh-l4q0s): an unsigned commit carrying
+        :data:`~beadhive.hq_authority_enforce.UNSIGNED_TRAILER`; the server guard admits it only
+        when provisioned trusted. Signed mode still refuses a key-less mutation.
         """
+        _require_operator_key(operator_key)
         current, previous, policy = self._operator_read()
         if current != expected:
             raise ControlPlaneError("expected authority revision/duration mismatch")
@@ -758,27 +774,20 @@ class GitControlPlane:
         guard.validate_state(state)
         blob = _git(self.hq_dir, "hash-object", "-w", "--stdin", data=gitref.encode(state))
         tree = _git(self.hq_dir, "mktree", data=f"100644 blob {blob}\tauthority.json\n")
-        args = [
-            "-c",
-            "gpg.format=ssh",
-            "-c",
-            f"user.signingkey={operator_key}",
-            "commit-tree",
-            "-S",
-            tree,
-        ]
-        if expected:
-            args += ["-p", expected]
-        sha = _git(self.hq_dir, *args, data=f"HQ authority revision {state['revision']}\n")
-        _git(
-            self.hq_dir,
-            "-c",
-            f"gpg.ssh.allowedSignersFile={policy['operator_signers']}",
-            "-c",
-            f"gpg.ssh.program={policy['executables']['ssh_keygen']['path']}",
-            "verify-commit",
-            sha,
+        args, message = authority_mode.commit_tree_args(
+            tree, expected, operator_key, f"HQ authority revision {state['revision']}\n"
         )
+        sha = _git(self.hq_dir, *args, data=message)
+        if operator_key:
+            _git(
+                self.hq_dir,
+                "-c",
+                f"gpg.ssh.allowedSignersFile={policy['operator_signers']}",
+                "-c",
+                f"gpg.ssh.program={policy['executables']['ssh_keygen']['path']}",
+                "verify-commit",
+                sha,
+            )
         witness = f"{guard.WITNESS}{state['revision']:020d}"
         push = [
             "-c",
@@ -1296,7 +1305,7 @@ class GitControlPlane:
         }
         if action in {"plan", "check"}:
             return result
-        if action != "apply" or not confirm or not operator_key:
+        if action != "apply" or not confirm or authority_mode.key_required(operator_key):
             raise ControlPlaneError("apply requires explicit --confirm and separate operator key")
         if (
             expected != sha
@@ -1806,6 +1815,8 @@ class SqlControlPlane:
         from .hq_sql_operator import SqlRuntimeOperator
         from .hq_sql_signatures import fingerprint
 
+        _require_operator_key(operator_key)
+
         if not isinstance(authority, ObservationAuthority):
             raise ControlPlaneError("validated candidate authority required")
         operator = self._operator()
@@ -1898,6 +1909,7 @@ class SqlControlPlane:
 
     def bind_beadyard(self, *, expected, operator_key):
         """Bind the existing SQL authority ledger to its current committed HQ ID."""
+        _require_operator_key(operator_key)
         operator = self._operator()
         budget = self._operator_deadline()
         try:
@@ -1957,6 +1969,7 @@ class SqlControlPlane:
             raise ControlPlaneError("SQL authority identity binding unavailable") from None
 
     def renew(self, *, expected, operator_key, duration=None, ceiling=None):
+        _require_operator_key(operator_key)
         # Validate the explicit duration against the ceiling before any I/O.
         _signed_expiry(0, duration, ceiling)
         operator = self._operator()
@@ -1981,6 +1994,7 @@ class SqlControlPlane:
             raise ControlPlaneError("SQL authority renewal unavailable") from None
 
     def accept_observation(self, frame, *, expected, operator_key, holder_identity=""):
+        _require_operator_key(operator_key)
         operator = self._operator()
         budget = self._operator_deadline()
         try:
@@ -2122,7 +2136,7 @@ class SqlControlPlane:
             }
             if action in {"plan", "check"}:
                 return result
-            if action != "apply" or not confirm or not operator_key:
+            if action != "apply" or not confirm or authority_mode.key_required(operator_key):
                 raise ControlPlaneError("apply requires explicit --confirm and operator key")
             if (
                 expected != head

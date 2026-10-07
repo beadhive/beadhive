@@ -317,7 +317,7 @@ def release_upgrade(
     }
     if action == "plan":
         return result
-    if not confirm or not operator_key or plan_sha256 != digest:
+    if not confirm or hq_authority_enforce.key_required(operator_key) or plan_sha256 != digest:
         raise ValueError(
             "apply requires --confirm, approved operator key and exact reviewed plan digest"
         )
