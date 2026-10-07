@@ -365,7 +365,11 @@ def test_provisioning_isolation_server_stamps_and_eligibility(tmp_path):
         _sql(root, "UPDATE hq_liveness_policy SET evidence_ttl_s = 1")
         _sql(root, "CALL DOLT_ADD('hq_liveness_policy')")
         _sql(root, "CALL DOLT_COMMIT('-m','shorter evidence ttl')")
-        time.sleep(1.3)
+        # Wait evidence_ttl_s + 1.1 s, not just past the TTL: Dolt 2.3.5 truncates the
+        # fractional seconds of `DATETIME(6) - INTERVAL n SECOND`, so ELIGIBILITY_SQL's cutoff
+        # can lag by up to 1 s and keep conformance_pass true a little past the TTL (bh-eeyxt;
+        # the product TIMESTAMPDIFF fix is follow-up bead bh-7crof).
+        time.sleep(1 + 1.1)
         renewer = SessionRenewer(lambda: _frame(port, tmp_path, "frame_a"), database=DB)
         renewer.tick()
         expired = _eligibility(a)
