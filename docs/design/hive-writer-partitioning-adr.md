@@ -71,8 +71,9 @@ this ADR:
 - `bd_write_refusal` / `is_store_publish` (`guard.py:888`, `:919`);
 - `fenced_push` has no caller outside `host_fence.py`.
 
-Bead states: `bh-rjjjo`, `bh-87l3y`, `bh-3q5m9`, `bh-wj8hu`, `bh-kmxyp` and `bh-vfrem` are all
-open.
+Bead states: `bh-3q5m9`, `bh-kmxyp` and `bh-vfrem` (release ranges) are open. The
+laptop-free authority and fleet-config fencing work (formerly `bh-87l3y`, `bh-wj8hu` and
+`bh-rjjjo`) was delivered by the `bh-iru2g` patch molecule (0.22.x, closed).
 
 ### Why GO — the five load-bearing reasons
 
@@ -110,8 +111,9 @@ open.
   already relies on the same `--force-with-lease` semantics for `refs/bh/lease/*` and for bd's
   own `refs/dolt/data` pushes. This becomes a canary gate before the first GitHub-hosted cutover
   (condition 11), not a reason to stop.
-- **The factory cannot deploy without the operator's laptop** (`bh-32379` L6, L9). `bh-87l3y`
-  (config edits fence every frame) and `bh-rjjjo` (laptop-free authority) are open. They gate
+- **The factory cannot deploy without the operator's laptop** (`bh-32379` L6, L9). The
+  fleet-config fencing and laptop-free authority work (formerly `bh-87l3y`, `bh-wj8hu` and
+  `bh-rjjjo`) is delivered by `bh-iru2g`. It gated
   *deployment* stages (Φ1 install, Φ3), not the design. The outline makes them explicit
   dependencies. The operator accepted one laptop session for the Φ1 install (Decision 4).
 - **Signed-mode lease continuity has a 16-rotation horizon** (`bh-32379` L9, derived from code
@@ -285,18 +287,23 @@ are adopted into condition 16 (above), M12, M1 and M10. Full record:
 - **Time triggers reassignment; it never gates a write.** `HostLease.expires_at` leaves every
   write gate (`guard_primary`, `held_by`, `renew_if_due`) and survives only as a failover hint.
   An HQ outage blocks handoff, never writes.
-- **`failover_after` per role, configurable from the start, in data (M8c).** Defaults:
+- **`failover_after` per role, configurable from the start, in data (M8c, built by `bh-4biq8`).**
+  Defaults:
   - `executor`: 60 min. It must ride through the 35.4 min false-stale stretch observed live.
   - `transient`: 30 min.
   - `viewer`: never placed.
 
-  Overrides are a per-role, per-hive field on the HQ placement row. They are **never** a
-  `host.yaml` or fleet-config key. That keeps `bh-32379` S2's "data is the switch" rule, avoids
-  the 0.21.3 unknown-key skew, and costs no authority renewal (`bh-87l3y`). A value is
-  validated on load against the `bh-cvk70` E20 invariants and **refused, never clamped**, below
-  its floor:
-  - executors at least about 36 min, above the 35.4 min false-stale stretch (**proposed,
-    operator to confirm**);
+  Overrides are per role and per hive, held in HQ data beside the placement row. They are
+  **never** a `host.yaml` or fleet-config key. That keeps `bh-32379` S2's "data is the switch"
+  rule, avoids the 0.21.3 unknown-key skew, and costs no authority renewal (`bh-iru2g` fixed the fence-every-frame behaviour).
+  As built, they sit in a sibling table, `hq_live_failover_policy`, not in the placement row's
+  `lease_json` or a new column: every older reader of that row is strict (see the
+  [placement runbook](hq-placement-runbook.md#6-failover-policy-failover_after-and-the-executor-floor)).
+  A value is validated on load against the `bh-cvk70` E20 invariants and **refused, never
+  clamped**, below its floor:
+  - executors at least the configurable executor floor, **accepted by the operator at 45 min by
+    default**, which sits above the 35.4 min false-stale stretch. A floor below 35.4 min is
+    accepted only with a warning;
   - at least bd lease TTL plus reclaim grace (15 min);
   - at least 2 × (session TTL + sync interval).
 - **Staleness source:**
@@ -338,6 +345,9 @@ are adopted into condition 16 (above), M12, M1 and M10. Full record:
   policy driven by backup presence. It gates M3. Until it lands, bd's lease reclaim covers
   non-primary death, and manual reclaim is the fallback after a primary's death through the
   first soak.
+- **Advanced scheduling is deferred.** What is built is the observed-window rule, a successor
+  that is the live frame holding the fewest primaries, and the lopsidedness warning. The operator
+  deferred richer scheduling and may move it to external quorum tooling such as ZooKeeper.
 - **`failover_after` is revisited after the Φ3 soak.** The 60 min executor default was sized
   to ride the coupled heartbeat's false-stale stretches. Session rows remove that cause, and
   with four executors forwarding to one primary a shorter window may be wanted. Any change
@@ -455,7 +465,7 @@ Condition 17 is recorded as a deferred open design point and does not bind.
 ## Consequences
 
 - **Lifted:** `bh bd dolt push|sync` and bd auto-push on cut-over hives; the receiver as an
-  availability anchor; the laptop LaunchAgent once `bh-rjjjo` lands.
+  availability anchor; the laptop LaunchAgent once the `bh-iru2g` laptop-free authority work is in use.
 - **New operator duties:** per-hive cutover (C1–C6) and rollback (R1–R5), through a hidden,
   temporary verb that is removed once every hive is cut over (Decision 3); the GitHub canary
   (condition 11); orphan merges after a partitioned writer rejoins; reading `fence_audit` in
@@ -492,7 +502,7 @@ receiver removal` (implements this ADR).
 | # | Bead title | Depends on |
 |---|---|---|
 | F1 | `fix(sync): sync_state treats Merged:false, a non-null Error or a ✗ line as failure` (P-F1) | — |
-| F2 | *link* `bh-87l3y` `fix(fleet): fleet-config edits must not fence every frame` (P-F3) | — |
+| F2 | *link* `bh-87l3y` (delivered by `bh-iru2g`) `fix(fleet): fleet-config edits must not fence every frame` (P-F3) | — |
 | F3 | `test(fence): Dolt/bd trigger-semantics canary re-run on every Dolt or bd pin bump` (P-F4) | — |
 | F4 | `chore(ops): globals watchdog and read-only server config for the HQ server and every primary's hive server; keep the bd/Dolt issue drafts in-tree, not filed upstream` (P-F5) | — |
 | F5 | `refactor(fence): delete the unused fenced_push family; move transport helpers beside store_locator` (P-R1) | — |
@@ -514,14 +524,14 @@ receiver removal` (implements this ADR).
 | M7 | `feat(work): managed push diverts to frame/<id>/orphan when superseded; writer orphan-merge verb` (P-M6) | M4 |
 | M8 | `feat(fleet): SQL placement by director credential with fresh receiver-format revisions; observed-window failover observer with gap reset` (P-M8) | M2, F2 |
 | M8b | `feat(fleet): spread hive primaries across executors in placement; bh doctor warns when placement is lopsided` | M8 |
-| M8c | `feat(fleet): per-role, per-hive failover_after field on HQ placement rows (defaults 60/30), validated on load against the E20 invariants and refused, never clamped, below the floor` | M8 |
+| M8c | *(built as `bh-4biq8`: the `hq_live_failover_policy` table beside the placement row, floor 45 min)* `feat(fleet): per-role, per-hive failover_after field on HQ placement rows (defaults 60/30), validated on load against the E20 invariants and refused, never clamped, below the floor` | M8 |
 | M9 | `feat(fleet): per-incarnation session/evidence rows, separate renewal loop and conformance job, one-statement read_eligibility, data-switched reader, claim-time audit stamps, host-pinned TLS accounts` (P-M9) | M8, F7 |
 | M10 | `test(fence): composed integration suite ending in check_invariants; fixed seeds plus Φ2 mixed-version events, multi-executor forwarding and backup-driven reclaim; sender-stall event for the Φ3 soak` | M2–M7, M9, M12 |
 | M11 | `docs(fleet): BEADS-SYNC, HQ.md, FRAME-FLEET-MEMBERSHIP, CONFIGURATION (deprecate hq.sql.liveness; failover_after lives on placement rows), cutover runbook, proposal status, 0.23.0 release note with trust delta` | M5–M9, M8b, M8c, M12 |
 | M12 | `feat(fleet): forward write path for non-primary executors, option A — bd pointed at the primary's hive server over TLS with per-frame host-pinned accounts, globals watchdog, read-only DOLT_ROOT_PATH config` (P-M10; condition 16) | M4; M13 only for choosing option B |
 | M13 | `spike(fleet): forward through a bh RPC service on the primary so executors hold no Dolt login (option B); measure whether a forced global on the primary's hive server lets a stale write land` (early; may land in 0.23.0) | — |
 | M14 | `spike(fleet): DECISION — pair bead state with work: remote backup location for worktree commits, ordering against bd push, backup-driven reclaim policy on frame loss` (condition 18) — `bh-55vvh`, see [bh-55vvh-state-work-pairing.md](../spikes/bh-55vvh-state-work-pairing.md) | — |
-| — | *link* `bh-kmxyp` / `bh-vfrem` (release ranges) and `bh-wj8hu` / `bh-rjjjo` (laptop-free authority); land in 0.23.0 if possible | — |
+| — | *link* `bh-kmxyp` / `bh-vfrem` (release ranges) and `bh-iru2g` (laptop-free authority, formerly `bh-wj8hu` / `bh-rjjjo`); land in 0.23.0 if possible | — |
 
 ### Sub-epic C — operator rollout (procedures; no release)
 
@@ -530,7 +540,7 @@ receiver removal` (implements this ADR).
 | O1 | `chore(ops): install 0.23.0 on the factory by active-frame rotation (Φ1), one operator laptop session` | M1–M12, M8b, M8c, F9 |
 | O2 | `chore(ops): GitHub-hosted ref CAS canary, then canary hive cutover (Φ2)` | O1 |
 | O3 | `chore(ops): cut the bh hive over (Φ2), seed from the live writer epoch` | O2, O10 |
-| O4 | `chore(ops): SQL Φ3 — provision session/evidence tables, director credential on the HQ host, soak with the receiver running, then stop it (Φ3b, laptop-off acceptance)` | O3, M8, M9, `bh-rjjjo` |
+| O4 | `chore(ops): SQL Φ3 — provision session/evidence tables, director credential on the HQ host, soak with the receiver running, then stop it (Φ3b, laptop-off acceptance)` | O3, M8, M9, `bh-iru2g` |
 | O5 | `chore(ops): retire BH_FRAME_HEARTBEAT=advisory by bh-32379 §3 steps A1–A3 (condition 13; hard prerequisite for O8)` | O4, or F9 with a clean full-gate soak |
 | O6 | `chore(ops): bake the executor frame image on the latest working 0.23.x` | O1 |
 | O7 | `chore(ops): deploy three executor frames to PVE from the baked image` | O6 |
@@ -594,9 +604,10 @@ was never officially supported, rather than as a 0.24.0 minor.
    claims are rewound while backed-up claims may be resumed. M14 designs the pairing and gates
    M3. bd lease reclaim (non-primary death) and manual reclaim (first soak) are the fallbacks.
 3. **Hive primaries spread across executors** (M8b), with a `bh doctor` lopsidedness warning.
-4. **`failover_after` is configurable from the start** (M8c), in data on the placement row,
-   validated and refused below the floor. The about-36-minute executor floor is proposed and
-   awaits operator confirmation. Tune after the Φ3 soak.
+4. **`failover_after` is configurable from the start** (M8c), in HQ data beside the placement row
+   (the `hq_live_failover_policy` table), validated and refused below the floor. The operator
+   accepted a configurable executor floor with a 45 min default, and a warning (not a refusal)
+   for a floor below the measured 35.4 min false-stale stretch. Tune after the Φ3 soak.
 5. **Admitting the three new executors (O8)** also waits on the M13 verdict and the M14
    decision.
 
