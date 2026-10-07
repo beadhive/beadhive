@@ -27,7 +27,7 @@ from datetime import UTC, datetime
 
 import typer
 
-from . import config, engine, fleet, jsonout, registry
+from . import config, engine, fleet, guard, jsonout, registry
 
 _STATUS_WORKERS = 4  # read-only federation_status calls; matches sync_remote's fleet pass
 _COMPARISON_SCHEMA = 1
@@ -338,7 +338,7 @@ def _status_pass(
 
 
 def _live_pass(
-    eng, entries: list[dict], strategy: str | None, *, peer: str | None = None
+    eng, entries: list[dict], strategy: str | None, *, peer: str | None = None, cfg=None
 ) -> list[str]:
     """Live sync, SERIAL per hive (writes never ride the thread pool). Returns the hive ids
     that failed or paused on conflicts — a hive with no peer towns is NOT one of them."""
@@ -346,6 +346,14 @@ def _live_pass(
     sync_peer = peer if peer and peer != "all" else None
     for entry in entries:
         hive_id = _hive_id(entry)
+        if strategy:  # break-glass on a cut-over hive (bh-16347.10): refuse before any bd call
+            refusal = guard.cut_over_break_glass_refusal(
+                "hive sync --strategy", registry.hive_dir(entry), cfg=cfg, entry=entry
+            )
+            if refusal:
+                typer.echo(refusal, err=True)
+                offending.append(hive_id)
+                continue
         outcome = eng.sync_state(registry.hive_dir(entry), peer=sync_peer, strategy=strategy)
         if outcome.ok:
             typer.echo(f"✓ {hive_id}: synced")
@@ -405,4 +413,4 @@ def hive_sync(
     eng = engine.get_engine(cfg)
     if dry_run:
         return _status_pass(eng, entries, peer=peer, as_json=as_json)
-    return _live_pass(eng, entries, strategy, peer=peer)
+    return _live_pass(eng, entries, strategy, peer=peer, cfg=cfg)
