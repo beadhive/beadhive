@@ -23,7 +23,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import hq_authority_guard as guard
-from .hq_hive_policy import project_hive_policies, validate_sql_hive_policies
+from .hq_hive_policy import (
+    config_head_tolerated,
+    project_hive_policies,
+    validate_sql_hive_policies,
+)
 from .hq_sql_deadline import flock_until
 from .hq_sql_runtime_schema import inbox_table, routed_table_valid, routed_to_inbox
 from .hq_sql_signatures import SqlSignatureError, canonical, verify_authority, verify_heartbeat
@@ -463,17 +467,74 @@ class SqlRuntimeAuthority:
         self._check_floor(cursor, backend, generation, sequence, head, deadline=deadline)
         return state, crossref, policies
 
-    def load_config_at(self, cursor, crossref, *, deadline=None):
+    def load_config_at(self, cursor, crossref, *, policies=None, valid_until=None, deadline=None):
         """Read committed config through the same physical cross-database transaction.
 
-        A split config/authority publication is rejected by exact protected
-        backend, generation and HEAD cross-reference.  Callers still perform a
-        fresh authoritative reread at their dispatch/claim point.
+        The authority-bound snapshot; see :meth:`bound_config_at` (without `policies` and
+        `valid_until` only an exactly cross-referenced head is accepted).
         """
-        snapshot = self.load_latest_config_at(cursor, deadline=deadline)
-        if (snapshot.backend_identity, snapshot.generation, snapshot.commit_revision) != crossref:
+        return self.bound_config_at(
+            cursor, crossref, policies=policies, valid_until=valid_until, deadline=deadline
+        )[0]
+
+    def bound_config_at(self, cursor, crossref, *, policies=None, valid_until=None, deadline=None):
+        """``(snapshot, current_head)`` for the authority-bound config, on the pinned cursor.
+
+        A split config/authority publication is rejected by exact protected backend,
+        generation and HEAD cross-reference, except that a later head H1 is tolerated
+        (bh-u67ve) when it descends from the signed head H0 and
+        :func:`beadhive.hq_hive_policy.config_head_tolerated` holds for the signed
+        `policies` (an unrelated ``fleet.yaml`` edit). The returned snapshot is always the
+        H0-bound one, so callers keep comparing the signed projection against it unchanged;
+        `current_head` is the head actually read, which the caller's fresh config fence
+        must pin. Callers still perform a fresh authoritative reread at their
+        dispatch/claim point.
+        """
+        current = self.load_latest_config_at(cursor, deadline=deadline)
+        if (current.backend_identity, current.generation, current.commit_revision) == crossref:
+            return current, current.commit_revision
+        bound = None
+        if policies is not None and valid_until is not None:
+            bound = self._tolerated_bound_config(cursor, crossref, current, policies, valid_until)
+        if bound is None:
             raise SqlRuntimeError("HQ config and authority publications are not bound")
-        return snapshot
+        return bound, current.commit_revision
+
+    def _tolerated_bound_config(self, cursor, crossref, current, policies, valid_until):
+        """The verified H0 snapshot iff the moved head H1 is tolerated, else ``None``."""
+        from .hq_sql_config import SqlFleetConfigRevisionStore
+
+        backend, generation, bound_head = crossref
+        if (
+            (current.backend_identity, current.generation) != (backend, generation)
+            or not isinstance(bound_head, str)
+            or not re.fullmatch(r"[0-9a-v]{32}", bound_head)
+        ):
+            return None
+        config_database = self.settings["reader"]["database"]
+        runtime_database = (
+            self.settings.get("observer")
+            or self.settings.get("runtime")
+            or self.settings.get("authority_writer")
+        )["database"]
+        store = SqlFleetConfigRevisionStore(self.settings, broker=self.broker, clock=self.clock)
+        cursor.execute(f"USE `{config_database}`")
+        try:
+            cursor.execute("SELECT HAS_ANCESTOR(%s,%s)", (current.commit_revision, bound_head))
+            if cursor.fetchone()[0] != 1:
+                return None
+            bound = store.committed_snapshot_at(cursor, bound_head)
+        except Exception:  # noqa: BLE001 - an unprovable H0 is "not bound": fail closed
+            return None
+        finally:
+            cursor.execute(f"USE `{runtime_database}`")
+        if (bound.backend_identity, bound.generation, bound.commit_revision) != crossref:
+            return None
+        if not config_head_tolerated(
+            bound, current, policies, valid_until=valid_until, now=self.clock()
+        ):
+            return None
+        return bound
 
     def load_latest_config_at(self, cursor, *, deadline=None):
         """Operator-only refresh may read the new config head before authority catches up."""
@@ -774,7 +835,13 @@ class SqlRuntimeAuthority:
                     raise SqlRuntimeError("frame composite incarnation unavailable")
                 slot, record = matches[0]
                 if enforce:
-                    snapshot = self.load_config_at(cursor, crossref, deadline=deadline)
+                    snapshot, config_head = self.bound_config_at(
+                        cursor,
+                        crossref,
+                        policies=policies,
+                        valid_until=state["expires_at"],
+                        deadline=deadline,
+                    )
                     projected = project_hive_policies(
                         snapshot, valid_until=state["expires_at"], now=self.clock()
                     )
@@ -784,6 +851,7 @@ class SqlRuntimeAuthority:
                         )
                 else:
                     snapshot = self.load_latest_config_at(cursor, deadline=deadline)
+                    config_head = snapshot.commit_revision
                 session = None
                 if session_liveness:
                     if session_prefix is not None and (
@@ -838,9 +906,7 @@ class SqlRuntimeAuthority:
                 if time.monotonic() >= deadline:
                     raise SqlRuntimeError("frame composite deadline exceeded")
             connection.rollback()
-            self.fresh_config_head_fence(
-                crossref[2] if enforce else snapshot.commit_revision, deadline=deadline
-            )
+            self.fresh_config_head_fence(config_head, deadline=deadline)
             self.fresh_runtime_head_fence(head, deadline=deadline)
             if not signed and session is None:
                 # A session-only incarnation reads (and fences) an absent receiver row.
