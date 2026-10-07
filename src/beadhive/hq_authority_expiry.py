@@ -14,24 +14,28 @@ import os
 import re
 import sys
 
+from .hq_authority_ceiling import (
+    AUTHORITY_MAX_DURATION_DEFAULT_S,
+    UNIT_PATTERN,
+    UNITS,
+    resolve_ceiling,
+)
+
 WARN_ENV = "BH_HQ_AUTHORITY_WARN_WITHIN"
 MIN_REMAINING_ENV = "BH_HQ_AUTHORITY_MIN_REMAINING"
 DEFAULT_WARN_WITHIN = 24 * 3600.0
-RENEW_DURATION = 24 * 3600
-
-_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 _WARNED: set[str] = set()
 
 
 def parse_duration(value, *, name="duration") -> float:
-    """``90``, ``90s``, ``30m``, ``6h`` or ``2d`` to seconds."""
+    """``90``, ``90s``, ``30m``, ``6h``, ``2d`` or ``1w`` to seconds."""
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         seconds = float(value)
     else:
-        match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([smhd]?)\s*", str(value))
+        match = re.fullmatch(rf"\s*{UNIT_PATTERN}\s*", str(value), re.IGNORECASE)
         if match is None:
-            raise ValueError(f"{name} must look like 90s, 30m, 6h or 2d")
-        seconds = float(match.group(1)) * _UNITS[match.group(2) or "s"]
+            raise ValueError(f"{name} must look like 90s, 30m, 6h, 2d or 1w")
+        seconds = float(match.group(1)) * UNITS[(match.group(2) or "s").lower()]
     if seconds < 0:
         raise ValueError(f"{name} must not be negative")
     return seconds
@@ -63,19 +67,43 @@ def min_remaining(env=None) -> float:
     return parse_duration(raw, name=MIN_REMAINING_ENV) if raw else 0.0
 
 
-def renew_command(revision="<revision>", settings_file=None) -> str:
+def _renew_ceiling_s(plane=None) -> int:
+    """Whole seconds of the resolved authority ceiling; the shipped default if unresolvable."""
+    try:
+        ceiling = resolve_ceiling(settings=getattr(plane, "authority_max_duration_s", None))
+        return max(int(ceiling.seconds), 1)
+    except Exception:  # noqa: BLE001 - a hint must never fail its caller
+        return AUTHORITY_MAX_DURATION_DEFAULT_S
+
+
+def renew_command(revision="<revision>", settings_file=None, plane=None) -> str:
+    """The renew command for the resolved ceiling (``--max-duration`` only above the default)."""
     path = settings_file or "<file>"
+    seconds = _renew_ceiling_s(plane)
+    raise_ceiling = (
+        f" --max-duration {seconds}" if seconds > AUTHORITY_MAX_DURATION_DEFAULT_S else ""
+    )
     return (
         f"BH_HQ_OPERATOR_SETTINGS={path} bh hq authority renew --expected-revision {revision} "
-        f"--operator-key <key> --duration {RENEW_DURATION} --confirm"
+        f"--operator-key <key> --duration {seconds}{raise_ceiling} --confirm"
     )
 
 
-def _latest_config_head(plane):
+def _config_bound(plane, crossref, policies, state) -> bool:
+    """Whether frames would accept this authority at the latest committed config head.
+
+    Exact cross-reference or a tolerated descendant head (bh-u67ve, bh-3h6al): the same
+    shared check the frame verifier runs
+    (:meth:`beadhive.hq_sql_config.SqlFleetConfigRevisionStore.authority_binding`), so
+    status, check and doctor agree with the frames.
+    """
     try:
-        return plane.config_store().load_snapshot().commit_revision
+        bound, _head, _snapshot = plane.config_store().authority_binding(
+            crossref, policies, expires_at=state["expires_at"]
+        )
+        return bool(bound)
     except Exception:  # noqa: BLE001 - an unreadable config head means "not provably bound"
-        return None
+        return False
 
 
 def read_state(plane):
@@ -85,12 +113,12 @@ def read_state(plane):
         return sha, state, True
     settings = plane.settings
     if settings.get("runtime") is not None:
-        head, state, crossref, _ = plane._runtime_authority().load_state(allow_expired=True)
+        head, state, crossref, policies = plane._runtime_authority().load_state(allow_expired=True)
     elif settings.get("authority_writer") is not None:
-        head, state, crossref, _ = plane._operator().load()
+        head, state, crossref, policies = plane._operator().load()
     else:
         return "", None, False
-    return head, state, crossref[2] == _latest_config_head(plane)
+    return head, state, _config_bound(plane, crossref, policies, state)
 
 
 def authority_status(plane, *, now=None, lead=None) -> dict:
@@ -125,12 +153,12 @@ def authority_status(plane, *, now=None, lead=None) -> dict:
     }
 
 
-def warning_line(status, settings_file=None) -> str:
+def warning_line(status, settings_file=None, plane=None) -> str:
     if status["expires_in_s"] <= 0:
         lead = f"HQ authority {status['expires_in']}; the fleet is fenced"
     else:
         lead = f"HQ authority expires in {status['expires_in']}"
-    return f"WARN: {lead}. Renew: {renew_command(status['revision'], settings_file)}"
+    return f"WARN: {lead}. Renew: {renew_command(status['revision'], settings_file, plane)}"
 
 
 def check(plane, *, min_remaining=0.0, now=None) -> tuple[bool, dict, str]:
@@ -141,9 +169,9 @@ def check(plane, *, min_remaining=0.0, now=None) -> tuple[bool, dict, str]:
     if not status["config_bound"]:
         return False, status, "FAIL: authority is not bound to the latest config head"
     if status["expires_in_s"] <= 0:
-        return False, status, warning_line(status).replace("WARN", "FAIL", 1)
+        return False, status, warning_line(status, plane=plane).replace("WARN", "FAIL", 1)
     if status["expires_in_s"] < min_remaining:
-        return False, status, warning_line(status).replace("WARN", "FAIL", 1)
+        return False, status, warning_line(status, plane=plane).replace("WARN", "FAIL", 1)
     return True, status, f"OK: HQ authority expires in {status['expires_in']}"
 
 
@@ -180,7 +208,7 @@ def warn_if_expiring(plane=None, *, now=None, stream=None, settings_file=None) -
         status = authority_status(plane, now=now)
         if status["expires_in_s"] is None or not status["expiring_soon"]:
             return None
-        line = warning_line(status, settings_file)
+        line = warning_line(status, settings_file, plane)
         key = f"{status['revision']}"
         if key in _WARNED:
             return None
@@ -222,5 +250,5 @@ def doctor_data(*, now=None) -> dict:
     if status["expires_in_s"] <= 0:
         return {"level": "fail", "detail": f"HQ authority {status['expires_in']}; fleet is fenced"}
     if status["expiring_soon"]:
-        return {"level": "warn", "detail": warning_line(status).removeprefix("WARN: ")}
+        return {"level": "warn", "detail": warning_line(status, plane=plane).removeprefix("WARN: ")}
     return {"level": "ok", "detail": f"HQ authority expires in {status['expires_in']}"}

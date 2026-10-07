@@ -455,7 +455,13 @@ class SqlTrustedReceiver:
                     ):
                         raise ReceiverError("release requires exact incumbent incarnation/epoch")
                 else:
-                    snapshot = self.authority.load_config_at(cursor, crossref, deadline=deadline)
+                    snapshot, config_head = self.authority.bound_config_at(
+                        cursor,
+                        crossref,
+                        policies=policies,
+                        valid_until=state["expires_at"],
+                        deadline=deadline,
+                    )
                     projected = project_hive_policies(
                         snapshot, valid_until=state["expires_at"], now=now
                     )
@@ -659,7 +665,7 @@ class SqlTrustedReceiver:
                                     or now - former_beat[0] < prior_beat.leaseDurationSeconds
                                 ):
                                     raise ReceiverError("live incumbent is not evictable")
-                    self.authority.fresh_config_head_fence(crossref[2], deadline=deadline)
+                    self.authority.fresh_config_head_fence(config_head, deadline=deadline)
                 self.authority.fresh_runtime_head_fence(head, deadline=deadline)
                 if time.monotonic() >= deadline:
                     raise ReceiverError("trusted receiver deadline exceeded")
@@ -755,7 +761,7 @@ class SqlTrustedReceiver:
                 cursor.execute("START TRANSACTION")
                 cursor.execute("SELECT DOLT_HASHOF('HEAD')")
                 head = cursor.fetchone()[0]
-                state, crossref, _policies = self.authority.verified_state_at(
+                state, crossref, policies = self.authority.verified_state_at(
                     cursor, head, deadline=deadline
                 )
                 route = self._routed(cursor, head, principal)
@@ -829,7 +835,13 @@ class SqlTrustedReceiver:
                     or manifest.capabilities.model_dump() != record["desired"]["caps"]
                 ):
                     raise ReceiverError("registration differs from declared desired frame")
-                snapshot = self.authority.load_config_at(cursor, crossref, deadline=deadline)
+                snapshot, config_head = self.authority.bound_config_at(
+                    cursor,
+                    crossref,
+                    policies=policies,
+                    valid_until=state["expires_at"],
+                    deadline=deadline,
+                )
                 if (
                     manifest.beadyard_id != snapshot.beadyard_id
                     or manifest.beadyard_id != authority.get("beadyard_id")
@@ -907,7 +919,7 @@ class SqlTrustedReceiver:
                     ):
                         raise ReceiverError("original signed registration identity unavailable")
                     legacy_upgrade = True
-                self.authority.fresh_config_head_fence(crossref[2], deadline=deadline)
+                self.authority.fresh_config_head_fence(config_head, deadline=deadline)
                 self.authority.fresh_runtime_head_fence(head, deadline=deadline)
                 now = self.clock()
                 if legacy_upgrade:

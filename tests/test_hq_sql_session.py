@@ -230,7 +230,7 @@ def _world(monkeypatch, *, tables=(), table=None, liveness=None, public=None):
     monkeypatch.setattr(
         authority, "verified_state_at", lambda *a, **k: (state, ("b", "g", "c"), policies)
     )
-    monkeypatch.setattr(authority, "load_config_at", lambda *a, **k: "snapshot")
+    monkeypatch.setattr(authority, "bound_config_at", lambda *a, **k: ("snapshot", "c"))
     monkeypatch.setattr(runtime, "project_hive_policies", lambda *a, **k: policies)
     for fence in (
         "fresh_config_head_fence",
@@ -316,7 +316,7 @@ def test_plane_read_eligibility_returns_the_session_observation(monkeypatch):
     plane = SqlControlPlane({}, clock=lambda: NOW)
     monkeypatch.setattr(plane, "_runtime_authority", lambda: authority)
     snapshot = SimpleNamespace(beadyard_id=None)
-    monkeypatch.setattr(authority, "load_config_at", lambda *a, **k: snapshot)
+    monkeypatch.setattr(authority, "bound_config_at", lambda *a, **k: (snapshot, "c"))
     manifest = SimpleNamespace(
         frame_id="frame-1", host_id="host-1", instance_ref="vm-1", beadyard_id=None
     )

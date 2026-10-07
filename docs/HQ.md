@@ -330,6 +330,65 @@ The lead time is the `BH_HQ_AUTHORITY_WARN_WITHIN` environment variable (duratio
 `90m`, `24h`, `2d`; default `24h`). It is deliberately not a fleet or host key: a fleet edit moves
 the HQ config head and a new host key breaks older readers of a shared HOST file.
 
+### Fleet-config edits and the bound head {#config-edit-tolerance}
+
+The SQL authority is signed against one config head (H0) and carries a `hive_policies`
+projection. Since 0.23.1 (`bh-u67ve`) a frame, and the receiver, keep accepting the authority
+after a **later** fleet-config publish (H1) that changes nothing a frame enforces, instead of
+fencing every frame until the operator renews. The test is
+`beadhive.hq_hive_policy.config_head_tolerated`, behind
+`SqlRuntimeAuthority.bound_config_at` (`src/beadhive/hq_sql_runtime.py`). H1 is tolerated only if
+all of these hold; anything else, or any doubt, still fences with "HQ config and authority
+publications are not bound":
+
+- same config backend and generation, and H1 descends from H0 (`HAS_ANCESTOR`). A **non-descendant
+  head** (rewritten history) fences;
+- H0 still re-verifies (document hashes, digest, witness, pins);
+- every document other than `fleet.yaml` is byte-identical: `hosts/*.yaml`, `allowed_signers`,
+  `beadyard.json`. Any change there fences, as does a changed **beadyard identity**;
+- the ordered `managed_repos` identity (provider, org, repo, **prefix**, **kind**, upstream) is
+  equal, and the policy projection of H1 rebased onto H0 equals the signed one, so any
+  `frame_policy` change fences.
+
+So an edit such as a managed repo's `work.validation_bypass` no longer fences, while a
+`frame_policy`, prefix, kind, repo identity, beadyard identity, `hosts/*` or `allowed_signers`
+change still needs an operator renew. **Frames keep enforcing the signed H0 snapshot**, never H1,
+and the frame's own fresh config fence pins the head it actually read. Expiry, the replay floor,
+signatures and `BH_HQ_AUTHORITY_ENFORCE=false` are unchanged. The signed format is unchanged:
+this is verifier-side only.
+
+`bh hq authority status`, `check`, `bh doctor` and the publish notice use the same predicate
+(`bh-3h6al`, `src/beadhive/hq_authority_expiry.py`, `SqlFleetConfigRevisionStore.tolerated_bound_at`):
+`config_bound` is true for a tolerated head, so a tolerated edit no longer reads as unbound.
+
+**Rollout order: receivers first.** A 0.23.0 frame or receiver still fences on any head move.
+Upgrade the receivers, then the frames, before relying on tolerance. Until every verifier is
+upgraded, an edit still fences the not-yet-upgraded ones.
+
+**Trust delta.** The key-less SQL config publisher can now commit `fleet.yaml` edits that frames
+do not enforce without fencing them (it could already commit them; frames fenced). It still
+cannot change a `frame_policy`, managed hive identity, host manifest, `allowed_signers` or
+beadyard identity, nor rewrite history, without an operator renew.
+
+### Long authorities stay long (`bh-oywx8`, `bh-u4cip`)
+
+Operator-signed SQL actions (`grant`, `observe`, lifecycle verbs, `release-upgrade`) used to
+reset `expires_at` to now + 1 h, silently shortening a 7 d or 30 d authority. They now sign
+`max(original expiry, now + 3600)` (`operator_signed_expiry` in
+`src/beadhive/hq_authority_guard.py`): a long authority is never shortened, and a short or lapsed
+one gets the 1 h floor. The Git plane never reset it. A candidate grant's own cap is separate and
+unchanged.
+
+To renew for a long duration, pass `--duration` up to the configured ceiling; weeks are accepted
+(`2w`, units `s m h d w`, `src/beadhive/hq_authority_ceiling.py`). The expiry warnings and
+`check` print the renew command for the **resolved ceiling** (default 604800 s), adding
+`--max-duration` only when the ceiling is above 7 d. See
+[the ceiling](#authority-duration-ceiling).
+
+Renewal still needs the operator key. Laptop-free renewal (a scoped delegate key) is out of scope
+for 0.23.x: every frame pins one operator key, so a 0.23.0 frame would reject a delegate-signed
+record. It is deferred to 0.24.0 (`bh-rjjjo`).
+
 ### Renewing from an operator host (for example the laptop) {#authority-laptop-renew}
 
 A released `bh` builds its control plane from the running host's `host.yaml`. An operator host
@@ -365,7 +424,7 @@ missing, so it cannot make a frame an authority writer. Renewal:
 ```sh
 BH_HQ_OPERATOR_SETTINGS=settings.json bh hq authority status      # note `revision`
 BH_HQ_OPERATOR_SETTINGS=settings.json bh hq authority renew \
-  --expected-revision <revision> --operator-key <key> --duration 86400 --confirm
+  --expected-revision <revision> --operator-key <key> --duration 7d --confirm   # --duration up to the ceiling
 ```
 
 ## UNSUPPORTED: disabling HQ authority enforcement {#unsupported-disabling-hq-authority-enforcement}

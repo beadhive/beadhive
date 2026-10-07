@@ -1663,11 +1663,12 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
                 hive_revision,
                 hive_lease,
             )
-            # Publishing even identical canonical documents changes the
-            # committed config HEAD. The old signed runtime projection cannot
-            # authorize either frame until a separate operator publication
-            # binds the exact new HEAD.
+            # Publishing even identical canonical documents changes the committed config
+            # HEAD. bh-u67ve: a descendant head that changes nothing a frame enforces stays
+            # bound to the old signed projection (frames keep reading the signed H0
+            # snapshot); anything frame-enforced still fences until the operator renews.
             from beadhive.hq_sql_config import SqlFleetConfigRevisionStore
+            from beadhive.hq_sql_runtime import SqlRuntimeError
 
             config_writer_settings = {
                 **settings,
@@ -1675,17 +1676,75 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
                 "publisher": _binding(tmp_path, port, "config_publisher", "beadhive_hq_config"),
             }
             config_writer = SqlFleetConfigRevisionStore(config_writer_settings, broker=Broker())
+
+            from beadhive import hq_authority_expiry
+
+            def assert_frames_bound_to(signed_head):
+                # bh-3h6al: operator status/check agree with the frames.
+                assert hq_authority_expiry.authority_status(operator_plane)["config_bound"]
+                assert hq_authority_expiry.authority_status(second_plane)["config_bound"]
+                second_plane.eligibility_authority_status()
+                assert second_plane.read_eligibility(second_identity)[2].verified
+                for frame_plane, frame_id in ((plane, "frame-1"), (second_plane, "frame-2")):
+                    joined = frame_plane.load_config_authority_snapshot(frame_id)
+                    assert joined.config.commit_revision == signed_head
+
+            def assert_frames_fenced():
+                assert not hq_authority_expiry.authority_status(operator_plane)["config_bound"]
+                ok, _status, message = hq_authority_expiry.check(operator_plane)
+                assert not ok and "not bound to the latest config head" in message
+                for frame_plane in (plane, second_plane):
+                    with pytest.raises(SqlRuntimeError, match="publications are not bound"):
+                        frame_plane._runtime_authority().read_frame_composite()
+                with pytest.raises(ValueError):
+                    second_plane.read_eligibility(second_identity)
+
             republished = config_writer.publish_snapshot(documents, expected_revision=config_head)
             assert republished.commit_revision != config_head
-            with pytest.raises(ValueError):
-                second_plane.eligibility_authority_status()
-            with pytest.raises(ValueError):
-                second_plane.read_eligibility(second_identity)
+            assert_frames_bound_to(config_head)
+            # The 2026-10-04 incident: a per-hive work override no frame enforces.
+            bypass_fleet = FleetConfigDocument(
+                "fleet.yaml",
+                fleet_document.content.replace(
+                    "repo: hive\n  prefix: bh\n",
+                    "repo: hive\n  prefix: bh\n  work: {validation_bypass: true}\n",
+                ),
+            )
+            assert bypass_fleet != fleet_document
+            bypassed = config_writer.publish_snapshot(
+                (bypass_fleet, *documents[1:]), expected_revision=republished.commit_revision
+            )
+            assert_frames_bound_to(config_head)
+            # A frame-enforced policy edit fences both frames with the existing message...
+            policy_fleet = FleetConfigDocument(
+                "fleet.yaml",
+                fleet_document.content.replace("evict_after_s: 900", "evict_after_s: 600", 1),
+            )
+            policy_changed = config_writer.publish_snapshot(
+                (policy_fleet, *documents[1:]), expected_revision=bypassed.commit_revision
+            )
+            assert_frames_fenced()
+            # ...and so does a host manifest edit, even with the signed policy restored.
+            host_changed = config_writer.publish_snapshot(
+                (
+                    fleet_document,
+                    FleetConfigDocument(host_document.path, host_document.content + "\n"),
+                    host2_document,
+                ),
+                expected_revision=policy_changed.commit_revision,
+            )
+            assert_frames_fenced()
+            # Restoring every frame-enforced byte re-tolerates the descendant head.
+            restored = config_writer.publish_snapshot(
+                documents, expected_revision=host_changed.commit_revision
+            )
+            assert_frames_bound_to(config_head)
+            republished = restored
             projection_head = operator_plane.renew(
                 expected=admitted["revision"], operator_key=str(key)
             )
             assert projection_head != admitted["revision"]
-            assert second_plane.read_eligibility(second_identity)[2].verified
+            assert_frames_bound_to(republished.commit_revision)
 
             # Bind the same committed HQ to its existing SQL incarnations.
             # The old signed beat and registration remain recorded, but cannot
@@ -1751,6 +1810,8 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
                 expected_revision=republished.commit_revision,
                 explicit_adoption=True,
             )
+            # A beadyard identity / host manifest publication still fences (bh-u67ve).
+            assert_frames_fenced()
             assert bound_config.beadyard_id == owner
             monkeypatch.setattr(config_facade, "load_host", lambda: {"hq": {"beadyard_id": owner}})
             prior_frames = json.loads(json.dumps(operator.load()[1]["frames"]))
@@ -1928,6 +1989,26 @@ def test_committed_signed_runtime_authority_and_separate_frame_grants(tmp_path, 
             assert adopted_bound.returncode == 0, adopted_bound.stderr
             assert plane.read_hive_lease_record("bi", holder_identity="host-1")[1] == (
                 new_hive_lease
+            )
+            # bh-u67ve: after a frame-irrelevant fleet edit (no operator renew), the
+            # receiver's hive-lease and registration paths still accept.
+            tolerated_config = config_writer.publish_snapshot(
+                (
+                    FleetConfigDocument(
+                        "fleet.yaml",
+                        fleet_document.content.replace(
+                            "repo: hive\n  prefix: bh\n",
+                            "repo: hive\n  prefix: bh\n  work: {validation_bypass: true}\n",
+                        ),
+                    ),
+                    *bound_documents[1:],
+                ),
+                expected_revision=bound_config.commit_revision,
+            )
+            assert tolerated_config.commit_revision != bound_config.commit_revision
+            assert (
+                plane.load_config_authority_snapshot("frame-1").config.commit_revision
+                == bound_config.commit_revision
             )
             ordinary_renew_id, *_ = plane.propose_hive_lease(
                 "bh",

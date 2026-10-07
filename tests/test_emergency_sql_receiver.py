@@ -215,7 +215,7 @@ def world(monkeypatch):
     receiver._open = lambda: (connection, time.monotonic() + 60)
     receiver.authority = SimpleNamespace(
         verified_state_at=lambda *args, **kwargs: (state, ("config", "rev", "a" * 32), policies),
-        load_config_at=lambda *args, **kwargs: snapshot,
+        bound_config_at=lambda *args, **kwargs: (snapshot, "a" * 32),
         fresh_config_head_fence=lambda *args, **kwargs: None,
         fresh_runtime_head_fence=lambda *args, **kwargs: None,
     )

@@ -18,8 +18,9 @@ AUTHORITY_MAX_DURATION_DEFAULT_S = 604800  # 7 days
 ENV_VAR = "BH_HQ_AUTHORITY_MAX_DURATION"
 SETTINGS_KEY = "hq.sql.authority_max_duration_s"
 
-_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
-_HUMAN = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([smhdw]?)\s*$", re.IGNORECASE)
+UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+UNIT_PATTERN = r"(\d+(?:\.\d+)?)\s*([smhdw]?)"
+_HUMAN = re.compile(rf"^\s*{UNIT_PATTERN}\s*$", re.IGNORECASE)
 
 
 class Ceiling(NamedTuple):
@@ -37,7 +38,7 @@ def parse_duration(value) -> float:
         match = _HUMAN.match(str(value))
         if not match:
             raise ValueError(f"invalid duration {value!r}: use seconds or e.g. 7d / 36h")
-        seconds = float(match.group(1)) * _UNITS[(match.group(2) or "s").lower()]
+        seconds = float(match.group(1)) * UNITS[(match.group(2) or "s").lower()]
     if not math.isfinite(seconds) or seconds <= 0:
         raise ValueError(f"invalid duration {value!r}: must be positive and finite")
     return int(seconds) if seconds == int(seconds) else seconds

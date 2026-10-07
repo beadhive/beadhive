@@ -73,6 +73,9 @@ _SCHEMA_UNIQUE = {
     ("hq_config_publications", "publication_sequence"),
 }
 MAX_BYTES = 4 * 1024 * 1024
+#: Verified documents of immutable earlier config commits (see ``committed_snapshot_at``).
+_COMMITTED_CACHE: dict[tuple, tuple] = {}
+_COMMITTED_CACHE_LIMIT = 16
 PATH = re.compile(
     r"beadyard\.json|fleet\.yaml|workspace(?:-[A-Za-z0-9_-]+)?\.toml|allowed_signers|"
     r"hosts/[A-Za-z0-9_-]+\.yaml|"
@@ -461,6 +464,110 @@ class SqlFleetConfigRevisionStore:
             valid_until=now + self.settings["cache_ttl"],
             documents=documents,
         )
+
+    def committed_snapshot_at(self, cursor, head):
+        """Verify an *earlier* immutable config commit without touching the restore floor.
+
+        Same document-hash, digest, witness and
+        semantic checks as :meth:`_snapshot` and the same backend/generation trust pin, but no
+        floor check: a head older than the floor is expected here (it is the head an
+        authority was signed against), not a rollback. Callers must already have proven
+        `head` is an ancestor of a floor-checked current head. The verified documents of a
+        commit hash are immutable, so they are memoized per process.
+        """
+        settings = self.settings
+        if not isinstance(head, str) or not re.fullmatch(r"[0-9a-v]{32}", head):
+            raise SqlConfigError("HQ config revision invalid")
+        if not settings.get("backend_identity") or not settings.get("generation"):
+            raise SqlConfigError("HQ config host trust/generation pin unavailable")
+        key = (settings["backend_identity"], settings["generation"], head)
+        cached = _COMMITTED_CACHE.get(key)
+        if cached is None:
+            backend, generation, sequence, documents, _version = self._committed(cursor, head)
+            if backend != settings["backend_identity"] or generation != settings["generation"]:
+                raise SqlConfigError("HQ config host trust/generation pin unavailable")
+            cached = (backend, generation, sequence, documents)
+            if len(_COMMITTED_CACHE) >= _COMMITTED_CACHE_LIMIT:
+                _COMMITTED_CACHE.pop(next(iter(_COMMITTED_CACHE)))
+            _COMMITTED_CACHE[key] = cached
+        backend, generation, _sequence, documents = cached
+        now = self.clock()
+        return FleetConfigSnapshot(
+            backend_identity="sql:" + backend,
+            commit_revision=head,
+            generation=generation,
+            fetched_at=now,
+            valid_until=now + settings["cache_ttl"],
+            documents=documents,
+        )
+
+    def tolerated_bound_at(self, cursor, crossref, current, policies, *, valid_until, now):
+        """The verified authority-bound snapshot H0 iff `current` (H1) is tolerated, else None.
+
+        `cursor` must be on the config database inside the caller's transaction, and
+        `current` the floor-checked snapshot read there. Tolerated (bh-u67ve) means: same
+        backend and generation, H1 descends from H0 (``HAS_ANCESTOR``), H0 re-verifies via
+        :meth:`committed_snapshot_at`, and
+        :func:`beadhive.hq_hive_policy.config_head_tolerated` holds for the signed `policies`.
+        The one shared ancestry + content check behind the frame verifier, the receiver and
+        the operator status/check/doctor/publish-notice surfaces (bh-3h6al). Any doubt is
+        ``None`` (fail closed).
+        """
+        from .hq_hive_policy import config_head_tolerated
+
+        try:
+            backend, generation, bound_head = crossref
+            if (
+                (current.backend_identity, current.generation) != (backend, generation)
+                or not isinstance(bound_head, str)
+                or not re.fullmatch(r"[0-9a-v]{32}", bound_head)
+            ):
+                return None
+            cursor.execute("SELECT HAS_ANCESTOR(%s,%s)", (current.commit_revision, bound_head))
+            if cursor.fetchone()[0] != 1:
+                return None
+            bound = self.committed_snapshot_at(cursor, bound_head)
+        except Exception:  # noqa: BLE001 - an unprovable H0 is "not bound": fail closed
+            return None
+        if (bound.backend_identity, bound.generation, bound.commit_revision) != tuple(crossref):
+            return None
+        if not config_head_tolerated(bound, current, policies, valid_until=valid_until, now=now):
+            return None
+        return bound
+
+    def authority_binding(self, crossref, policies, *, expires_at, deadline=None):
+        """``(bound, latest_head, bound_snapshot)`` for an operator-side authority read.
+
+        `bound` is whether frames would accept the signed `crossref`/`policies` at the
+        latest committed config head: an exact cross-reference, or a tolerated descendant
+        (:meth:`tolerated_bound_at`). `bound_snapshot` is the authority-bound snapshot when
+        bound, else ``None``. Reporting only: an expired authority is judged as of just
+        before its expiry, so expiry and binding stay separate verdicts.
+        """
+        connection, deadline = self._open("reader", deadline=deadline)
+        try:
+            binding = self.settings["reader"]
+            timeout = min(binding["read_timeout"], binding["write_timeout"])
+            with _bounded_cursor(connection, deadline, timeout) as cursor:
+                self._identity(cursor, "reader")
+                cursor.execute("START TRANSACTION")
+                head = self._head(cursor)
+                current = self._snapshot(cursor, head, deadline=deadline)
+                if (current.backend_identity, current.generation, head) == tuple(crossref):
+                    bound = current
+                else:
+                    bound = self.tolerated_bound_at(
+                        cursor,
+                        crossref,
+                        current,
+                        policies,
+                        valid_until=expires_at,
+                        now=min(self.clock(), expires_at - 1),
+                    )
+            connection.rollback()
+            return bound is not None, head, bound
+        finally:
+            connection.close()
 
     def _check_floor(self, cursor, backend, generation, sequence, head, *, deadline=None):
         settings = self.settings
@@ -985,11 +1092,11 @@ class SqlFleetConfigRevisionStore:
         from . import hq_authority_fence_notice as notice
 
         probe = notice.probe_authority(self)
-        notice.announce_before(probe, expected_revision)
+        notice.announce_before(probe, expected_revision, documents)
         published = self._publish_snapshot_core(
             documents, expected_revision=expected_revision, **kwargs
         )
-        notice.announce_after(probe, published.commit_revision)
+        notice.announce_after(probe, published.commit_revision, documents)
         return published
 
     def _publish_snapshot_core(

@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import re
 import time
+from dataclasses import replace
 
 from ruamel.yaml import YAML
 
@@ -116,3 +117,72 @@ def project_hive_policies(
         }
     validate_sql_hive_policies(projected, config_head=snapshot.commit_revision, now=at)
     return projected
+
+
+#: The one config document whose frame-irrelevant edits may move the head without fencing.
+FLEET_DOCUMENT = "fleet.yaml"
+
+
+def _catalog_identity(snapshot: FleetConfigSnapshot) -> tuple:
+    """Ordered identity of every managed hive (frame policy or not): who each prefix is."""
+    fleet = [document for document in snapshot.documents if document.path == FLEET_DOCUMENT]
+    if len(fleet) != 1:
+        raise HivePolicyError("one canonical fleet catalog required")
+    parsed = YAML(typ="safe").load(fleet[0].content)
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("managed_repos", []), list):
+        raise HivePolicyError("canonical managed hive catalog invalid")
+    identity = []
+    for raw in parsed.get("managed_repos", []):
+        entry = ManagedRepoEntry.model_validate(raw)
+        identity.append(
+            (entry.provider, entry.org, entry.repo, entry.prefix, entry.kind, entry.upstream)
+        )
+    return tuple(identity)
+
+
+def config_head_tolerated(
+    bound: FleetConfigSnapshot,
+    current: FleetConfigSnapshot,
+    policies,
+    *,
+    valid_until: float,
+    now: float | None = None,
+) -> bool:
+    """Whether `current` changes nothing a frame enforces relative to the signed `bound` head.
+
+    The SQL authority signs a ``hive_policies`` projection against one config head
+    (`bound`, H0). A later head (`current`, H1) is tolerated iff it carries the same
+    backend and generation, the same beadyard identity, every document other than
+    ``fleet.yaml`` byte-identical (same paths, order and content: ``hosts/*.yaml``,
+    ``allowed_signers``, ``beadyard.json`` ...), and its fleet catalog projects to exactly
+    the signed `policies` once the projection is rebased onto H0 (so only the per-item
+    ``config_head`` provenance may differ). Every ``managed_repos[].frame_policy``, prefix
+    and kind therefore still fences.
+
+    Pure: the caller proves ancestry (H1 descends from H0) and verifies both snapshots.
+    Any doubt is ``False`` (fail closed). The only predicate the frame verifier, receiver
+    and authority status surfaces should use to treat a moved head as still bound.
+    """
+    if not isinstance(bound, FleetConfigSnapshot) or not isinstance(current, FleetConfigSnapshot):
+        return False
+    if bound.backend_identity != current.backend_identity or bound.generation != current.generation:
+        return False
+
+    def rest(snapshot):
+        return tuple(
+            (document.path, document.content)
+            for document in snapshot.documents
+            if document.path != FLEET_DOCUMENT
+        )
+
+    try:
+        if (
+            rest(bound) != rest(current)
+            or bound.beadyard_id != current.beadyard_id
+            or _catalog_identity(bound) != _catalog_identity(current)
+        ):
+            return False
+        rebased = replace(current, commit_revision=bound.commit_revision)
+        return project_hive_policies(rebased, valid_until=valid_until, now=now) == policies
+    except Exception:  # noqa: BLE001 - any doubt about the moved head fails closed
+        return False
