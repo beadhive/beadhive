@@ -258,3 +258,76 @@ def test_renew_resolves_ceiling_from_operator_settings(monkeypatch):
     )
     assert result.exit_code == 0, result.output
     assert seen["ceiling"].seconds == 7200 and "operator settings" in seen["ceiling"].source
+
+
+def _hint_args(line):
+    import shlex
+
+    tail = line.split("Renew: ", 1)[1]
+    return shlex.split(tail)
+
+
+def test_hint_defaults_to_seven_day_ceiling(monkeypatch):
+    monkeypatch.delenv("BH_HQ_AUTHORITY_MAX_DURATION", raising=False)
+    line = expiry.warning_line(
+        expiry.authority_status(FakeSql(NOW + 3600)), plane=FakeSql(NOW + 3600)
+    )
+    assert "--duration 604800" in line and "--max-duration" not in line
+    assert "--duration 86400" not in line
+
+
+@pytest.mark.parametrize("source", ["settings", "env"])
+def test_hint_honours_30d_ceiling_and_round_trips(monkeypatch, source):
+    plane = FakeSql(NOW + 3600, runtime=False)
+    monkeypatch.delenv("BH_HQ_AUTHORITY_MAX_DURATION", raising=False)
+    if source == "settings":
+        plane.authority_max_duration_s = "30d"
+    else:
+        monkeypatch.setenv("BH_HQ_AUTHORITY_MAX_DURATION", "30d")
+    line = expiry.warning_line(expiry.authority_status(plane), plane=plane)
+    assert "--duration 2592000" in line and "--max-duration 2592000" in line
+    words = _hint_args(line)
+    seen = {}
+    plane.renew = lambda **kw: seen.update(kw) or "newhead"
+    monkeypatch.setenv("BH_HQ_OPERATOR_SETTINGS", "s.json")
+    monkeypatch.setattr(hq_operator_settings, "operator_plane", lambda p: plane)
+    result = CliRunner().invoke(app, ["hq", "authority", "renew", *_renew_flags(words)])
+    assert result.exit_code == 0, result.output
+    assert seen["ceiling"].seconds == 2592000
+
+
+def _renew_flags(words):
+    flags = words[words.index("renew") + 1 :]
+    flags[flags.index("--operator-key") + 1] = "k"
+    flags[flags.index("--expected-revision") + 1] = "r"
+    return flags
+
+
+@pytest.mark.parametrize("raw", ["90", "90s", "30m", "6h", "2d", "1w", "1.5w", "2W"])
+def test_expiry_and_ceiling_parsers_agree_on_every_unit(raw):
+    from beadhive import hq_authority_ceiling
+
+    assert expiry.parse_duration(raw) == hq_authority_ceiling.parse_duration(raw)
+    assert set(expiry.UNITS) == set("smhdw")
+
+
+def test_weeks_accepted_by_env_and_check_flag(monkeypatch):
+    monkeypatch.setenv(expiry.WARN_ENV, "1w")
+    assert expiry.warn_within() == 7 * 86400
+    monkeypatch.setenv(expiry.MIN_REMAINING_ENV, "1w")
+    assert expiry.min_remaining() == 7 * 86400
+    monkeypatch.delenv(expiry.MIN_REMAINING_ENV)
+    plane = FakeSql(NOW + 2 * 86400)
+    monkeypatch.setattr(hq_operator_settings, "operator_plane", lambda p: plane)
+    import beadhive.hq_control_plane as cp
+
+    monkeypatch.setattr(cp, "control_plane", lambda: plane)
+    result = CliRunner().invoke(app, ["hq", "authority", "check", "--min-remaining", "1w"])
+    assert "invalid" not in result.output.lower() and "must look like" not in result.output
+    assert result.exit_code == 1 and "FAIL" in result.output
+
+
+def test_invalid_duration_still_refused():
+    for bad in ("1x", "-1w", "w"):
+        with pytest.raises(ValueError):
+            expiry.parse_duration(bad)
