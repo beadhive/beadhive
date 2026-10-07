@@ -631,7 +631,8 @@ are per-hive values held in the hive's own Dolt data (bd config rows prefixed `b
   - claims of other frames, and claims with no recorded frame, are never touched.
 
   Under `strict` signature policy, unsigned backups are retained for the operator and never
-  auto-resumed. Non-primary loss stays with bd's lease reclaim. A new `bh fleet reclaim --frame` sweep applies
+  auto-resumed. Non-primary loss stays with bd's lease reclaim. A new `bh fleet reclaim --frame`
+  sweep applies
   the same table to lease-less claims. Each outcome is recorded on the bead with an audit
   comment.
 - **Re-lease after failover** is M12's job. O9 measures how bd's heartbeat behaves for a
@@ -639,4 +640,3 @@ are per-hive values held in the hive's own Dolt data (bd config rows prefixed `b
   `refs/bh/backup/*` ref, and confirms no Actions run and no UI branch prompt.
 - **Until M14b and M3 land, through the first soak, and whenever reclaim is not `apply`:**
   manual reclaim by the runbook procedure in that doc (D10).
-
