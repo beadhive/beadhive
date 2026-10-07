@@ -342,10 +342,10 @@ def read(main) -> PairingPolicy:
 
     Any failure to read reads as :data:`DEFAULT` — every switch off, exactly 0.22.x behaviour —
     because a hive whose data cannot be read has not opted into anything."""
-    from . import bd
+    from . import bd_cli
 
     try:
-        rows = bd.json(["config", "list"], main)
+        rows = bd_cli.routes(main).config_list()
     except Exception:
         return DEFAULT
     return parse(rows if isinstance(rows, dict) else None)
@@ -353,10 +353,10 @@ def read(main) -> PairingPolicy:
 
 def write(main, key: str, value: str, *, actor: str = "") -> str:
     """Validate and store ``bh.<key>=value`` in the hive's data; returns the stored text."""
-    from . import bd
+    from . import bd, bd_cli
 
     stored = validate(key, value)
-    res = bd.run(["config", "set", PREFIX + key, stored], main, actor=actor, capture=True)
+    res = bd_cli.routes(main).config_set(PREFIX + key, stored, actor=actor)
     if res.returncode != 0:
         raise PolicyError(f"bd config set {PREFIX}{key} failed: {bd.err_line(res)}")
     return stored
@@ -364,11 +364,11 @@ def write(main, key: str, value: str, *, actor: str = "") -> str:
 
 def unset(main, key: str, *, actor: str = "") -> None:
     """Drop ``bh.<key>`` so it reads as its default again."""
-    from . import bd
+    from . import bd, bd_cli
 
     if key not in KEYS:
         raise PolicyError(f"unknown policy key {key!r}")
-    res = bd.run(["config", "unset", PREFIX + key], main, actor=actor, capture=True)
+    res = bd_cli.routes(main).config_unset(PREFIX + key, actor=actor)
     if res.returncode != 0:
         raise PolicyError(f"bd config unset {PREFIX}{key} failed: {bd.err_line(res)}")
 
