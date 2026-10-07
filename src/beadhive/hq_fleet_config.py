@@ -38,7 +38,7 @@ class FleetConfigError(ValueError):
 class GitFleetConfigRevisionStore:
     """Operator-signed config head plus immutable anti-rollback witnesses."""
 
-    def __init__(self, plane, git, *, operator_key=None, duration=3600, ceiling=None):
+    def __init__(self, plane, git, *, operator_key=None, duration=None, ceiling=None):
         self.plane, self.git = plane, git
         self.operator_key, self.duration, self.ceiling = operator_key, duration, ceiling
 
@@ -163,7 +163,8 @@ class GitFleetConfigRevisionStore:
                 "configuration publication requires operator key/bounded validity"
             )
         try:
-            hq_authority_ceiling.check_duration(self.duration, self.ceiling)
+            # No duration: non-expiring (bh-y929l); an explicit one is ceiling-checked.
+            hq_authority_ceiling.signed_expiry(0, self.duration, self.ceiling)
         except ValueError as exc:
             raise FleetConfigError(str(exc)) from None
         previous_sha, previous, policy = self._read(
@@ -188,7 +189,7 @@ class GitFleetConfigRevisionStore:
             "generation": policy["generation"],
             "revision": previous.get("revision", 0) + 1,
             "issued_at": now,
-            "expires_at": now + self.duration,
+            "expires_at": hq_authority_ceiling.signed_expiry(now, self.duration, self.ceiling),
             "documents": [asdict(document) for document in documents],
         }
         guard.validate_config_state(state)
