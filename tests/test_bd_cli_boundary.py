@@ -77,7 +77,7 @@ RAW_BD_INFRASTRUCTURE_SCOPES = {
         # Passthrough command-name vocabulary, not a spawned argv; keeping it scoped prevents a
         # new literal ``bd`` process command elsewhere in the CLI from inheriting an exemption.
         "_resolve_hive_routing_mode",
-    }
+    },
 }
 
 # No root composition scope may use CliRoutes.forward/json_forward. Opaque terminal presentation
