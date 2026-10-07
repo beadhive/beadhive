@@ -501,6 +501,74 @@ class SqlFleetConfigRevisionStore:
             documents=documents,
         )
 
+    def tolerated_bound_at(self, cursor, crossref, current, policies, *, valid_until, now):
+        """The verified authority-bound snapshot H0 iff `current` (H1) is tolerated, else None.
+
+        `cursor` must be on the config database inside the caller's transaction, and
+        `current` the floor-checked snapshot read there. Tolerated (bh-u67ve) means: same
+        backend and generation, H1 descends from H0 (``HAS_ANCESTOR``), H0 re-verifies via
+        :meth:`committed_snapshot_at`, and
+        :func:`beadhive.hq_hive_policy.config_head_tolerated` holds for the signed `policies`.
+        The one shared ancestry + content check behind the frame verifier, the receiver and
+        the operator status/check/doctor/publish-notice surfaces (bh-3h6al). Any doubt is
+        ``None`` (fail closed).
+        """
+        from .hq_hive_policy import config_head_tolerated
+
+        try:
+            backend, generation, bound_head = crossref
+            if (
+                (current.backend_identity, current.generation) != (backend, generation)
+                or not isinstance(bound_head, str)
+                or not re.fullmatch(r"[0-9a-v]{32}", bound_head)
+            ):
+                return None
+            cursor.execute("SELECT HAS_ANCESTOR(%s,%s)", (current.commit_revision, bound_head))
+            if cursor.fetchone()[0] != 1:
+                return None
+            bound = self.committed_snapshot_at(cursor, bound_head)
+        except Exception:  # noqa: BLE001 - an unprovable H0 is "not bound": fail closed
+            return None
+        if (bound.backend_identity, bound.generation, bound.commit_revision) != tuple(crossref):
+            return None
+        if not config_head_tolerated(bound, current, policies, valid_until=valid_until, now=now):
+            return None
+        return bound
+
+    def authority_binding(self, crossref, policies, *, expires_at, deadline=None):
+        """``(bound, latest_head, bound_snapshot)`` for an operator-side authority read.
+
+        `bound` is whether frames would accept the signed `crossref`/`policies` at the
+        latest committed config head: an exact cross-reference, or a tolerated descendant
+        (:meth:`tolerated_bound_at`). `bound_snapshot` is the authority-bound snapshot when
+        bound, else ``None``. Reporting only: an expired authority is judged as of just
+        before its expiry, so expiry and binding stay separate verdicts.
+        """
+        connection, deadline = self._open("reader", deadline=deadline)
+        try:
+            binding = self.settings["reader"]
+            timeout = min(binding["read_timeout"], binding["write_timeout"])
+            with _bounded_cursor(connection, deadline, timeout) as cursor:
+                self._identity(cursor, "reader")
+                cursor.execute("START TRANSACTION")
+                head = self._head(cursor)
+                current = self._snapshot(cursor, head, deadline=deadline)
+                if (current.backend_identity, current.generation, head) == tuple(crossref):
+                    bound = current
+                else:
+                    bound = self.tolerated_bound_at(
+                        cursor,
+                        crossref,
+                        current,
+                        policies,
+                        valid_until=expires_at,
+                        now=min(self.clock(), expires_at - 1),
+                    )
+            connection.rollback()
+            return bound is not None, head, bound
+        finally:
+            connection.close()
+
     def _check_floor(self, cursor, backend, generation, sequence, head, *, deadline=None):
         settings = self.settings
         if (
@@ -1024,11 +1092,11 @@ class SqlFleetConfigRevisionStore:
         from . import hq_authority_fence_notice as notice
 
         probe = notice.probe_authority(self)
-        notice.announce_before(probe, expected_revision)
+        notice.announce_before(probe, expected_revision, documents)
         published = self._publish_snapshot_core(
             documents, expected_revision=expected_revision, **kwargs
         )
-        notice.announce_after(probe, published.commit_revision)
+        notice.announce_after(probe, published.commit_revision, documents)
         return published
 
     def _publish_snapshot_core(

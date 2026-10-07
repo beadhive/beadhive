@@ -11,6 +11,7 @@ from beadhive import hq_authority_expiry as expiry
 from beadhive import hq_operator_settings
 from beadhive.cli import app
 from beadhive.hq_control_plane import ControlPlaneError, GitControlPlane, SqlControlPlane
+from harness import config_tolerance as tolerance
 
 NOW = 1_000_000.0
 BINDING = {
@@ -61,10 +62,31 @@ class FakeSql(SqlControlPlane):
 
     def config_store(self):
         class Store:
-            def load_snapshot(inner):
-                return type("S", (), {"commit_revision": "cfg" if self._bound else "newer"})()
+            def authority_binding(inner, crossref, policies, *, expires_at):
+                head = "cfg" if self._bound else "newer"
+                return self._bound, head, None
 
         return Store()
+
+
+class BindingSql(FakeSql):
+    """Real store tolerance check (bh-3h6al): the latest config head is `current`."""
+
+    def __init__(self, monkeypatch, expires_at, current, *, ancestor=1, runtime=True):
+        super().__init__(expires_at, runtime=runtime)
+        # The operator signed the projection with the authority's own expiry.
+        self._policies = tolerance.signed_policies(
+            expires_at=expires_at, now=min(NOW, expires_at - 1)
+        )
+        self._store = tolerance.binding_store(monkeypatch, current, now=NOW, ancestor=ancestor)
+        self._state = {"revision": 3, "expires_at": expires_at}
+
+    def load_state(self, allow_expired=False):
+        assert allow_expired
+        return "head1", self._state, tolerance.CROSSREF, self._policies
+
+    def config_store(self):
+        return self._store
 
 
 @pytest.mark.parametrize("factory", [FakeGit, FakeSql])
@@ -331,3 +353,111 @@ def test_invalid_duration_still_refused():
     for bad in ("1x", "-1w", "w"):
         with pytest.raises(ValueError):
             expiry.parse_duration(bad)
+
+
+def _doctor_level(plane):
+    import beadhive.hq_authority_expiry as m
+
+    orig = m._frame_plane
+    m._frame_plane = lambda: plane
+    try:
+        return m.doctor_data()["level"]
+    finally:
+        m._frame_plane = orig
+
+
+@pytest.mark.parametrize("runtime", [True, False], ids=["frame", "operator"])
+@pytest.mark.parametrize(
+    "head,fleet",
+    [
+        (tolerance.H0, tolerance.FLEET),
+        (tolerance.H1, tolerance.FLEET),
+        (tolerance.H1, tolerance.BYPASS_FLEET),
+    ],
+    ids=["exact", "identical-republish", "validation_bypass"],
+)
+def test_tolerated_head_reads_bound_in_status_check_and_doctor(monkeypatch, runtime, head, fleet):
+    """bh-3h6al: operator tooling agrees with the frames on a tolerated config head."""
+    current = tolerance.snapshot(head, fleet, now=NOW)
+    plane = BindingSql(monkeypatch, NOW + 3 * 86400, current, runtime=runtime)
+    assert expiry.authority_status(plane)["config_bound"] is True
+    ok, _status, message = expiry.check(plane)
+    assert ok and message.startswith("OK")
+    assert _doctor_level(plane) == "ok"
+
+
+@pytest.mark.parametrize(
+    "fleet,host,ancestor",
+    [
+        (tolerance.POLICY_FLEET, tolerance.HOST, 1),
+        (tolerance.FLEET, tolerance.HOST + "label: x\n", 1),
+        (tolerance.BYPASS_FLEET, tolerance.HOST, 0),
+    ],
+    ids=["frame_policy", "host-manifest", "non-descendant"],
+)
+def test_enforced_edit_still_reads_unbound_with_existing_messages(
+    monkeypatch, fleet, host, ancestor
+):
+    current = tolerance.snapshot(tolerance.H1, fleet, host, now=NOW)
+    plane = BindingSql(monkeypatch, NOW + 3 * 86400, current, ancestor=ancestor)
+    status = expiry.authority_status(plane)
+    assert status["config_bound"] is False
+    ok, _status, message = expiry.check(plane)
+    assert not ok and message == "FAIL: authority is not bound to the latest config head"
+    assert _doctor_level(plane) == "fail"
+
+
+def test_expired_authority_binding_is_judged_separately_from_expiry(monkeypatch):
+    current = tolerance.snapshot(tolerance.H1, tolerance.BYPASS_FLEET, now=NOW)
+    plane = BindingSql(monkeypatch, NOW - 60, current)
+    status = expiry.authority_status(plane)
+    assert status["config_bound"] is True and status["authority_ready"] is False
+    ok, _status, message = expiry.check(plane)
+    assert not ok and message.startswith("FAIL: HQ authority expired")
+
+
+def test_status_result_shape_is_unchanged(monkeypatch):
+    current = tolerance.snapshot(tolerance.H1, tolerance.BYPASS_FLEET, now=NOW)
+    status = expiry.authority_status(BindingSql(monkeypatch, NOW + 3600, current))
+    assert set(status) == {
+        "revision",
+        "authority_revision",
+        "state",
+        "authority_ready",
+        "expires_at",
+        "expires_in_s",
+        "expires_in",
+        "config_bound",
+        "expiring_soon",
+        "warn_within_s",
+    }
+
+
+def test_unreadable_binding_is_not_bound(monkeypatch):
+    plane = FakeSql(NOW + 3 * 86400)
+
+    class Broken:
+        def authority_binding(self, *args, **kwargs):
+            raise RuntimeError("config reader down")
+
+    monkeypatch.setattr(plane, "config_store", lambda: Broken())
+    assert expiry.authority_status(plane)["config_bound"] is False
+
+
+@pytest.mark.parametrize(
+    "fleet,exit_code,bound",
+    [(tolerance.BYPASS_FLEET, 0, True), (tolerance.POLICY_FLEET, 1, False)],
+    ids=["tolerated", "frame_policy"],
+)
+def test_cli_status_and_check_agree_with_frames(monkeypatch, fleet, exit_code, bound):
+    current = tolerance.snapshot(tolerance.H1, fleet, now=NOW)
+    plane = BindingSql(monkeypatch, NOW + 3 * 86400, current, runtime=False)
+    monkeypatch.setattr(hq_operator_settings, "operator_plane", lambda path: plane)
+    monkeypatch.setenv("BH_HQ_OPERATOR_SETTINGS", "s.json")
+    monkeypatch.delenv(expiry.MIN_REMAINING_ENV, raising=False)
+    runner = CliRunner()
+    status = runner.invoke(app, ["hq", "authority", "status"])
+    assert status.exit_code == 0, status.output
+    assert json.loads(status.stdout)["config_bound"] is bound
+    checked = runner.invoke(app, ["hq", "authority", "check"])
+    assert checked.exit_code == exit_code, checked.output

@@ -23,11 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import hq_authority_guard as guard
-from .hq_hive_policy import (
-    config_head_tolerated,
-    project_hive_policies,
-    validate_sql_hive_policies,
-)
+from .hq_hive_policy import project_hive_policies, validate_sql_hive_policies
 from .hq_sql_deadline import flock_until
 from .hq_sql_runtime_schema import inbox_table, routed_table_valid, routed_to_inbox
 from .hq_sql_signatures import SqlSignatureError, canonical, verify_authority, verify_heartbeat
@@ -504,13 +500,6 @@ class SqlRuntimeAuthority:
         """The verified H0 snapshot iff the moved head H1 is tolerated, else ``None``."""
         from .hq_sql_config import SqlFleetConfigRevisionStore
 
-        backend, generation, bound_head = crossref
-        if (
-            (current.backend_identity, current.generation) != (backend, generation)
-            or not isinstance(bound_head, str)
-            or not re.fullmatch(r"[0-9a-v]{32}", bound_head)
-        ):
-            return None
         config_database = self.settings["reader"]["database"]
         runtime_database = (
             self.settings.get("observer")
@@ -520,21 +509,11 @@ class SqlRuntimeAuthority:
         store = SqlFleetConfigRevisionStore(self.settings, broker=self.broker, clock=self.clock)
         cursor.execute(f"USE `{config_database}`")
         try:
-            cursor.execute("SELECT HAS_ANCESTOR(%s,%s)", (current.commit_revision, bound_head))
-            if cursor.fetchone()[0] != 1:
-                return None
-            bound = store.committed_snapshot_at(cursor, bound_head)
-        except Exception:  # noqa: BLE001 - an unprovable H0 is "not bound": fail closed
-            return None
+            return store.tolerated_bound_at(
+                cursor, crossref, current, policies, valid_until=valid_until, now=self.clock()
+            )
         finally:
             cursor.execute(f"USE `{runtime_database}`")
-        if (bound.backend_identity, bound.generation, bound.commit_revision) != crossref:
-            return None
-        if not config_head_tolerated(
-            bound, current, policies, valid_until=valid_until, now=self.clock()
-        ):
-            return None
-        return bound
 
     def load_latest_config_at(self, cursor, *, deadline=None):
         """Operator-only refresh may read the new config head before authority catches up."""
