@@ -316,7 +316,7 @@ def test_bd_write_refusal_on_a_cut_over_hive_follows_bh_writer(
     _no_hq(monkeypatch)
     data.local = WriterRow(THIS, 9, "r")
     assert guard.bd_write_refusal(["update", "tt-1", "--status", "open"], tmp_path) == ""
-    assert "refused" in guard.bd_write_refusal(["dolt", "push"], tmp_path)  # M6 lifts it
+    assert guard.bd_write_refusal(["dolt", "push"], tmp_path) == ""  # lifted (bh-9c9hh)
     data.local = WriterRow(OTHER, 9, "r")
     assert guard.PRIMARY_REFUSAL_MARKER in guard.bd_write_refusal(["update", "tt-1"], tmp_path)
 
@@ -332,3 +332,64 @@ def test_the_prepush_hook_follows_bh_writer_on_a_cut_over_hive(
     data.local = WriterRow(OTHER, 9, "r")
     ok, detail = prepush.check_fence(tmp_path / "hive", cfg={})
     assert not ok and guard.PRIMARY_REFUSAL_MARKER in detail
+
+
+# ---- bd verb policy on cut-over hives: push|sync lifted, break-glass refused (bh-9c9hh) ------
+
+BREAK_GLASS = [
+    (["dolt", "push", "--force"], "dolt push --force"),
+    (["dolt", "push", "-f"], "dolt push --force"),
+    (["dolt", "remote", "reset-data"], "dolt remote reset-data"),
+    (["backup", "restore", "--force", "x"], "backup restore --force"),
+    (["dolt", "pull", "--strategy", "theirs"], "--strategy"),
+    (["vc", "merge", "--strategy=ours"], "--strategy"),
+    (["conflicts", "resolve", "bh_writer"], "conflicts resolve on bh_* tables"),
+    (["conflicts", "resolve"], "conflicts resolve on bh_* tables"),
+    (["vc", "merge", "main"], "vc merge"),
+]
+
+
+@pytest.mark.parametrize("args", [["dolt", "push"], ["dolt", "sync"]])
+def test_publish_is_lifted_on_a_cut_over_hive_for_the_writer(
+    tmp_path, hive, this_host, data, monkeypatch, args
+):
+    _no_hq(monkeypatch)
+    data.local = WriterRow(THIS, 9, "r")
+    assert guard.bd_write_refusal(args, tmp_path) == ""
+    data.local = WriterRow(OTHER, 9, "r")  # a non-writer frame is still stopped
+    assert guard.PRIMARY_REFUSAL_MARKER in guard.bd_write_refusal(args, tmp_path)
+
+
+@pytest.mark.parametrize(("args", "form"), BREAK_GLASS)
+@pytest.mark.parametrize("writer", [THIS, OTHER])
+def test_break_glass_forms_are_refused_on_a_cut_over_hive(
+    tmp_path, hive, this_host, data, monkeypatch, args, form, writer
+):
+    _no_hq(monkeypatch)
+    data.local = WriterRow(writer, 9, "r")
+    refusal = guard.bd_write_refusal(args, tmp_path)
+    assert form in refusal and "fence_audit" in refusal and "cut-over" in refusal
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["conflicts", "resolve", "issues"],
+        ["dolt", "push"],
+        ["backup", "restore", "x"],
+        ["dolt", "remote", "list"],
+    ],
+)
+def test_non_break_glass_forms_are_not_named_break_glass(args):
+    assert guard.break_glass_form(args) == ""
+
+
+def test_legacy_hive_keeps_0_22_publish_refusal_and_ignores_break_glass_policy(
+    tmp_path, hive, this_host, data, monkeypatch
+):
+    monkeypatch.setattr(guard, "primary_state", lambda **_k: (PREFIX, THIS, _lease(THIS, epoch=7)))
+    data.local = None  # not cut over
+    assert "refused" in guard.bd_write_refusal(["dolt", "push"], tmp_path)
+    assert "refused" in guard.bd_write_refusal(["dolt", "sync"], tmp_path)
+    # break-glass is a cut-over-only policy: a legacy primary's `vc merge` is judged as before
+    assert guard.bd_write_refusal(["vc", "merge", "main"], tmp_path) == ""

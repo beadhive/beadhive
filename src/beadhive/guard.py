@@ -1035,6 +1035,47 @@ def is_store_publish(args) -> bool:
     )
 
 
+_BREAK_GLASS_AUDIT = (
+    "The in-data fence cannot vouch for this form; if it was run raw (outside `bh bd`), "
+    "`bh doctor` detects it after the fact via fence_audit (stale_marks, epoch_regressed, "
+    "placement_ahead) against remote main and HQ."
+)
+
+
+def break_glass_form(args) -> str:
+    """The name of the fence-defeating `bd` form `args` spells, or ``""``.
+
+    These are the break-glass paths of ADR §2 (bd verb policy on cut-over hives): each can
+    rewrite, discard, or auto-merge fenced data so a stale writer's rows land. Refused on a
+    cut-over hive only (see :func:`bd_write_refusal`); legacy hives are unchanged."""
+    args = list(args)
+    if any(a == "--strategy" or a.startswith("--strategy=") for a in args):
+        return "--strategy"
+    pos = _positionals(args)
+    flags = {a.split("=", 1)[0] for a in args if a.startswith("-")}
+    if pos[:2] == ["dolt", "push"] and flags & {"--force", "-f"}:
+        return "dolt push --force"
+    if pos[:3] == ["dolt", "remote", "reset-data"]:
+        return "dolt remote reset-data"
+    if pos[:2] == ["backup", "restore"] and flags & {"--force", "-f"}:
+        return "backup restore --force"
+    if pos[:2] == ["vc", "merge"]:
+        return "vc merge"
+    if pos[:2] == ["conflicts", "resolve"]:
+        tables = pos[2:]
+        if not tables or any(t.startswith("bh_") for t in tables):
+            return "conflicts resolve on bh_* tables"
+    return ""
+
+
+def _break_glass_refusal(prefix: str, form: str) -> str:
+    return (
+        f"✗ {prefix}: `bh bd {form}` is refused on a cut-over hive — it can rewrite or discard "
+        "fenced data (bh_writer / bh_write_mark) and defeat the in-data epoch fence. "
+        f"{_BREAK_GLASS_AUDIT}"
+    )
+
+
 def is_bd_write(args) -> bool:
     """Whether `args` names a bd verb that could MUTATE the hive in a way the host lease has
     to serialize — see :data:`BD_READ_VERBS` for why an unknown verb counts as a write,
@@ -1073,7 +1114,8 @@ def bd_write_refusal(args, cwd, *, cfg=None) -> str:
     passthrough publication is refused for an adopted hive because it bypasses
     ``Engine.push_state``'s remote reservation. That managed reservation is sequenced rather
     than atomic with current bd; doctor exposes the residual window and raw bypass."""
-    if not is_bd_write(args):
+    break_glass = break_glass_form(args)
+    if not is_bd_write(args) and not break_glass:
         return ""
     # `passthrough` deliberately passes an EMPTY cfg in cwd mode (the common case) to skip a
     # config load on a plain forward. An empty cfg has no `managed_repos`, so `primary_state`
@@ -1086,9 +1128,13 @@ def bd_write_refusal(args, cwd, *, cfg=None) -> str:
     except WriterUnreadable as exc:
         return f"✗ {exc}"
     if cut_over is not None:
-        if is_store_publish(args):
-            return _publish_refusal(cut_over[0], args)  # lifted per cut-over hive by M6, not here
+        if break_glass:
+            return _break_glass_refusal(cut_over[0], break_glass)
+        # `dolt push|sync` are LIFTED here (bh-9c9hh, ADR §2): the in-data fence refuses a stale
+        # publish, so the passthrough is safe. They stay writes: only the writer frame passes.
         return writer_refusal(cut_over)
+    if not is_bd_write(args):
+        return ""
     from . import frame_eligibility
 
     try:
