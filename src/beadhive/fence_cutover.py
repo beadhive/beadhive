@@ -855,6 +855,10 @@ def render_status(d: dict) -> list[str]:
             f"  refs/bh/epoch   {d['ref_sha'] or 'absent'}"
             + (f" ({ref.get('host_id')}@{ref.get('epoch')}, seq {ref.get('seq')})" if ref else "")
         )
+    if d.get("orphans") is not None:
+        orphans = d["orphans"]
+        out.append(f"  orphans         {len(orphans)} unmerged")
+        out += [f"    {o['branch']}  {str(o.get('commit') or '')[:12]}" for o in orphans]
     out += [f"  ✗ {f}" for f in d.get("findings") or []]
     return out
 

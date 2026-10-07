@@ -1925,7 +1925,7 @@ def _writer_fence_status(cfg, entry, path: Path) -> dict | None:
     :func:`host_adopt.fence_data_for`, answers no adapter), so a fleet with no cut-over hive
     pays nothing beyond the probe the adopt-incomplete check already makes. Placement is this
     host's cached lease (the guard's local read). Never raises: an unreadable part is a finding."""
-    from . import fence_cutover, fence_data, host_adopt, writer_adopt
+    from . import fence_cutover, fence_data, fence_orphan, host_adopt, writer_adopt
 
     prefix = str(entry.get("prefix", ""))
     key = (prefix, str(path))
@@ -1949,6 +1949,15 @@ def _writer_fence_status(cfg, entry, path: Path) -> dict | None:
         except Exception as exc:  # noqa: BLE001
             note.append(f"cached placement unreadable: {exc}")
         result = fence_cutover.status(node, prefix=prefix, placement=placement).as_dict()
+        if result.get("cut_over"):
+            # Unmerged orphans a superseded frame diverted to (bh-4z3oz): the status just
+            # fetched, so this is a read of the remote-tracking branches only.
+            try:
+                result["orphans"] = [
+                    o.as_dict() for o in fence_orphan.list_orphans(node, fetch=False)
+                ]
+            except Exception as exc:  # noqa: BLE001 — an unreadable part is a finding
+                note.append(f"orphan branches unreadable: {exc}")
         result["findings"] = note + list(result["findings"])
     _fence_status_cache[key] = (now, result)
     return result
@@ -1959,10 +1968,15 @@ def _writer_fence_warnings(status: dict | None) -> list[str]:
     :func:`_adopt_incomplete_warning`, which carries its recovery command."""
     if not status:
         return []
+    hive = status["hive"]
     return [
-        f"hive '{status['hive']}': writer fence — {finding}"
+        f"hive '{hive}': writer fence — {finding}"
         for finding in status.get("findings") or []
         if not str(finding).startswith("placement_ahead")
+    ] + [
+        f"hive '{hive}': unmerged orphan {o['branch']} (frame {o['frame']}, epoch {o['epoch']})"
+        f" — on the writer: bh hive fence orphan-merge {hive} --branch {o['branch']}"
+        for o in status.get("orphans") or []
     ]
 
 
