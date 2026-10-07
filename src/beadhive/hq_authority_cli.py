@@ -54,13 +54,14 @@ def authority_cmd(
     role: str = typer.Option("frame", "--role"),
     holder_id: str = typer.Option("", "--holder-id"),
     duration: Annotated[
-        int,
+        int | None,
         typer.Option(
             "--duration",
             click_type=IntDurationSeconds(),
-            help="seconds or e.g. 7d / 36h",
+            help="renew: opt-in expiry, seconds or e.g. 7d / 36h; omitted, the authority "
+            "does not expire",
         ),
-    ] = 3600,
+    ] = None,
     client_interpreter: Annotated[Path | None, typer.Option("--client-interpreter")] = None,
     confirm: bool = typer.Option(False, "--confirm"),
     operator_settings: Annotated[
@@ -74,8 +75,8 @@ def authority_cmd(
         str | None,
         typer.Option(
             "--max-duration",
-            help="renew: authority duration ceiling, seconds or e.g. 7d; overrides "
-            "operator settings and $BH_HQ_AUTHORITY_MAX_DURATION",
+            help="renew: ceiling for an explicit --duration, seconds or e.g. 7d; overrides "
+            "operator settings and $BH_HQ_AUTHORITY_MAX_DURATION (default unlimited)",
         ),
     ] = None,
     min_remaining: Annotated[
@@ -192,9 +193,10 @@ def authority_cmd(
                         holder_identity=holder_id,
                     )
                 elif action == "renew":
-                    # Precedence: --max-duration, operator-settings
-                    # hq.sql.authority_max_duration_s, $BH_HQ_AUTHORITY_MAX_DURATION, then the
-                    # 7 d default (bh-od8ve). Invalid values are refused, never clamped.
+                    # Without --duration the authority does not expire (bh-y929l). An explicit
+                    # duration is capped by --max-duration, operator-settings
+                    # hq.sql.authority_max_duration_s or $BH_HQ_AUTHORITY_MAX_DURATION, else
+                    # unlimited (bh-od8ve). Invalid values are refused, never clamped.
                     ceiling = hq_authority_ceiling.resolve_ceiling(
                         cli=max_duration, settings=getattr(plane, "authority_max_duration_s", None)
                     )

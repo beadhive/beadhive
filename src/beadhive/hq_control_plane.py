@@ -22,9 +22,10 @@ if TYPE_CHECKING:
     from .modules.config.domain.ports import FleetConfigSnapshot
 
 
-def _check_duration(duration, ceiling):
+def _signed_expiry(issued_at, duration, ceiling):
+    """The sentinel without ``duration``; else ``issued_at + duration`` under the ceiling."""
     try:
-        hq_authority_ceiling.check_duration(duration, ceiling)
+        return hq_authority_ceiling.signed_expiry(issued_at, duration, ceiling)
     except ValueError as exc:
         raise ControlPlaneError(str(exc)) from None
 
@@ -130,7 +131,7 @@ class HqControlPlane(Protocol):
     def read_hive_lease(self, prefix, *, holder_identity=None): ...
     def read_hive_lease_record(self, prefix, *, holder_identity=None): ...
     def publish_hive_lease(self, prefix, lease, *, expected, operation, force=False): ...
-    def config_store(self, *, operator_key=None, duration=3600, ceiling=None): ...
+    def config_store(self, *, operator_key=None, duration=None, ceiling=None): ...
     def load_config_authority_snapshot(
         self, frame: str, *, revision: str | None = None
     ) -> ConfigAuthoritySnapshot: ...
@@ -138,7 +139,7 @@ class HqControlPlane(Protocol):
     def publish_registration_evidence(self, manifest, *, signing_key): ...
     def grant(self, authority, public_key, desired, *, expected, operator_key): ...
     def accept_observation(self, frame, *, expected, operator_key, holder_identity=""): ...
-    def renew(self, *, expected, operator_key, duration=3600, ceiling=None): ...
+    def renew(self, *, expected, operator_key, duration=None, ceiling=None): ...
     def lifecycle(
         self,
         verb,
@@ -373,7 +374,7 @@ class GitControlPlane:
 
         return hosts.load(self.hq_dir, host_id)
 
-    def config_store(self, *, operator_key=None, duration=3600, ceiling=None):
+    def config_store(self, *, operator_key=None, duration=None, ceiling=None):
         from .hq_fleet_config import GitFleetConfigRevisionStore
 
         return GitFleetConfigRevisionStore(
@@ -709,20 +710,30 @@ class GitControlPlane:
         expected,
         operator_key,
         *,
-        duration=3600,
+        duration=None,
+        renew=False,
         updates=(),
         expires_at_cap=None,
         ceiling=None,
     ):
+        """Sign and publish ``state``.
+
+        Expiry: an explicit ``duration`` signs ``issued_at + duration`` (ceiling-checked); a
+        ``renew`` without one signs the no-expiry sentinel; any other operator mutation keeps
+        the signed life (``guard.operator_signed_expiry``), so a non-expiring authority stays
+        non-expiring and a first-ever authority starts non-expiring (bh-y929l).
+        """
         current, previous, policy = self._operator_read()
         if current != expected:
             raise ControlPlaneError("expected authority revision/duration mismatch")
-        _check_duration(duration, ceiling)
         bound = any(
             record["authority"].get("beadyard_id") is not None for _, record in guard.records(state)
         )
         issued_at = self.clock()
-        expires_at = issued_at + duration
+        if duration is not None or renew or "expires_at" not in previous:
+            expires_at = _signed_expiry(issued_at, duration, ceiling)
+        else:
+            expires_at = guard.operator_signed_expiry(previous, issued_at)
         if expires_at_cap is not None:
             expires_at = min(expires_at, expires_at_cap)
         state.update(
@@ -774,11 +785,13 @@ class GitControlPlane:
             raise ControlPlaneError("authority changed before readback")
         return sha
 
-    def renew(self, *, expected, operator_key, duration=3600, ceiling=None):
+    def renew(self, *, expected, operator_key, duration=None, ceiling=None):
         sha, state, _ = self._operator_read()
         if not sha:
             raise ControlPlaneError("cannot renew absent authority")
-        return self._write(state, expected, operator_key, duration=duration, ceiling=ceiling)
+        return self._write(
+            state, expected, operator_key, duration=duration, renew=True, ceiling=ceiling
+        )
 
     def _trust(self, state):
         path = Path(_git(self.hq_dir, "rev-parse", "--git-path", "bh-authority-signers"))
@@ -1058,8 +1071,7 @@ class GitControlPlane:
         if sha != expected or state.get("domain") != guard.DOMAIN:
             raise ControlPlaneError("exact legacy authority revision required for binding")
         now = self.clock()
-        remaining = int(state["expires_at"] - now)
-        if remaining < 1:
+        if int(state["expires_at"] - now) < 1:
             raise ControlPlaneError("expired authority cannot be revived by identity binding")
         live = [
             record
@@ -1082,13 +1094,8 @@ class GitControlPlane:
             ):
                 raise ControlPlaneError("expired or already bound grant cannot be rebound")
             authority["beadyard_id"] = owner
-        return self._write(
-            state,
-            expected,
-            operator_key,
-            duration=remaining,
-            expires_at_cap=state["expires_at"],
-        )
+        # Keep the signed life exactly: a v1->v2 bind never raises expiry.
+        return self._write(state, expected, operator_key, expires_at_cap=state["expires_at"])
 
     def accept_observation(self, frame, *, expected, operator_key, holder_identity=""):
         from . import host_heartbeat_core as hb
@@ -1527,7 +1534,7 @@ class SqlControlPlane:
         except Exception:  # noqa: BLE001 - malformed committed input must not expose values
             raise ControlPlaneError("committed host manifest invalid") from None
 
-    def config_store(self, *, operator_key=None, duration=3600, ceiling=None):
+    def config_store(self, *, operator_key=None, duration=None, ceiling=None):
         from .hq_sql_config import SqlFleetConfigRevisionStore
 
         return SqlFleetConfigRevisionStore(self.settings, broker=self.broker, clock=self.clock)
@@ -1919,7 +1926,12 @@ class SqlControlPlane:
                 domain=guard.DOMAIN_V2,
                 revision=original["revision"] + 1,
                 issued_at=now,
-                expires_at=now + remaining,
+                # A v1->v2 bind never raises expiry; a non-expiring authority stays so.
+                expires_at=(
+                    original["expires_at"]
+                    if hq_authority_ceiling.non_expiring(original["expires_at"])
+                    else now + remaining
+                ),
             )
             guard.validate_state(state)
             guard.validate_legacy_binding_transition(original, state, trusted_now=now)
@@ -1931,8 +1943,9 @@ class SqlControlPlane:
                 raise
             raise ControlPlaneError("SQL authority identity binding unavailable") from None
 
-    def renew(self, *, expected, operator_key, duration=3600, ceiling=None):
-        _check_duration(duration, ceiling)
+    def renew(self, *, expected, operator_key, duration=None, ceiling=None):
+        # Validate the explicit duration against the ceiling before any I/O.
+        _signed_expiry(0, duration, ceiling)
         operator = self._operator()
         budget = self._operator_deadline()
         try:
@@ -1942,7 +1955,7 @@ class SqlControlPlane:
             state = json.loads(json.dumps(current))
             state["revision"] += 1
             state["issued_at"] = self.clock()
-            state["expires_at"] = self.clock() + duration
+            state["expires_at"] = _signed_expiry(state["issued_at"], duration, ceiling)
             return operator.publish(
                 state,
                 expected_revision=expected,
