@@ -102,6 +102,54 @@ def test_strategy_is_forwarded_to_sync_state(world, monkeypatch):
     assert stub.sync_calls[0][1] == "theirs"
 
 
+def _cut_over(monkeypatch, cut: bool) -> None:
+    from beadhive import fence_data_port
+    from beadhive.writer_adopt import WriterRow
+
+    class _Data:
+        def writer(self):
+            return WriterRow("f", 1, "r") if cut else None
+
+    monkeypatch.setattr(fence_data_port, "_fence_data_resolver", lambda _p, _d: _Data())
+
+
+@pytest.mark.parametrize("strategy", ["ours", "theirs"])
+def test_strategy_is_refused_on_a_cut_over_hive_before_any_bd_call(
+    world, monkeypatch, capsys, strategy
+):
+    hive_id = _register()
+    _cut_over(monkeypatch, True)
+    stub = _StubEngine(outcome=SyncOutcome(ok=True))
+    _install(monkeypatch, stub)
+
+    offending = hive_sync.hive_sync(hive_id=None, strategy=strategy)
+
+    assert offending == [hive_id]
+    assert stub.sync_calls == [] and stub.status_calls == []
+    err = capsys.readouterr().err
+    assert "hive sync --strategy" in err and "fence_audit" in err
+
+
+def test_no_strategy_sync_still_runs_on_a_cut_over_hive(world, monkeypatch):
+    _register()
+    _cut_over(monkeypatch, True)
+    stub = _StubEngine(outcome=SyncOutcome(ok=True))
+    _install(monkeypatch, stub)
+
+    assert hive_sync.hive_sync(hive_id=None) == []
+    assert len(stub.sync_calls) == 1
+
+
+def test_strategy_is_allowed_on_a_legacy_hive(world, monkeypatch):
+    _register()
+    _cut_over(monkeypatch, False)
+    stub = _StubEngine(outcome=SyncOutcome(ok=True))
+    _install(monkeypatch, stub)
+
+    assert hive_sync.hive_sync(hive_id=None, strategy="ours") == []
+    assert stub.sync_calls[0][1] == "ours"
+
+
 def test_paused_with_conflicts_exits_1_and_prints_tables(world, monkeypatch):
     hive_id = _register()
     stub = _StubEngine(

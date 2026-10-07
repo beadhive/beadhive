@@ -1076,6 +1076,17 @@ def _break_glass_refusal(prefix: str, form: str) -> str:
     )
 
 
+def cut_over_break_glass_refusal(form: str, hive_dir, *, cfg=None, entry=None) -> str:
+    """The refusal for a non-``bh bd`` entry point (e.g. ``bh hive sync --strategy``) that
+    spells break-glass `form` against `hive_dir`, or ``""`` when the hive is not cut over.
+    Shares :func:`writer_state` and :func:`_break_glass_refusal` with :func:`bd_write_refusal`."""
+    try:
+        cut_over = writer_state(cfg=cfg, hive_dir=hive_dir, entry=entry)
+    except WriterUnreadable as exc:
+        return f"✗ {exc}"
+    return _break_glass_refusal(cut_over[0], form) if cut_over is not None else ""
+
+
 def is_bd_write(args) -> bool:
     """Whether `args` names a bd verb that could MUTATE the hive in a way the host lease has
     to serialize — see :data:`BD_READ_VERBS` for why an unknown verb counts as a write,
