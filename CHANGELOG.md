@@ -13,6 +13,22 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.24.0 (2026-10-08)
+
+### Feat
+
+- **hq**: fleet default authority mode and open admission - inherit frames follow an operator-set fleet mode; trusted fleets auto-admit joining frames
+- **hq**: trusted mode - operator commands publish authority, lifecycle and fleet config without the operator key
+- **hq**: trusted frames skip operator signature, expiry and config-head binding but honour authority content
+- **hq**: trusted-mode verification policy and the unsigned-record marker shape
+- **hq**: bh hq authority rebind re-signs authority against the current config head; renew is a deprecated alias
+- **hq**: signed authority no longer expires by default
+- **hq**: frame-local hq.authority_mode with BH_HQ_AUTHORITY_MODE override; deprecate BH_HQ_AUTHORITY_ENFORCE
+
+### Refactor
+
+- **hq**: expiry warnings and checks go quiet for non-expiring authority; status and doctor report the mode
+
 ## v0.23.1 (2026-10-07)
 
 ### Fix
