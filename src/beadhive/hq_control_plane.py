@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from . import config, gitref, hq_authority_ceiling, hq_git_broker, hq_manifest_guard
+from . import hq_authority_enforce as authority_mode
 from . import hq_authority_guard as guard
 from .hq_authority_enforce import enforced as authority_enforced
 from .run import run
@@ -22,15 +23,22 @@ if TYPE_CHECKING:
     from .modules.config.domain.ports import FleetConfigSnapshot
 
 
-def _check_duration(duration, ceiling):
+def _signed_expiry(issued_at, duration, ceiling):
+    """The sentinel without ``duration``; else ``issued_at + duration`` under the ceiling."""
     try:
-        hq_authority_ceiling.check_duration(duration, ceiling)
+        return hq_authority_ceiling.signed_expiry(issued_at, duration, ceiling)
     except ValueError as exc:
         raise ControlPlaneError(str(exc)) from None
 
 
 class ControlPlaneError(ValueError):
     """Unavailable protection, rejected authority, or unsupported binding."""
+
+
+def _require_operator_key(operator_key):
+    """Key-less operator mutations are trusted-mode only (bh-l4q0s); refuse before any I/O."""
+    if authority_mode.key_required(operator_key):
+        raise ControlPlaneError("mutation requires separate --operator-key")
 
 
 class CommittedManifestAbsent(FileNotFoundError):
@@ -130,7 +138,7 @@ class HqControlPlane(Protocol):
     def read_hive_lease(self, prefix, *, holder_identity=None): ...
     def read_hive_lease_record(self, prefix, *, holder_identity=None): ...
     def publish_hive_lease(self, prefix, lease, *, expected, operation, force=False): ...
-    def config_store(self, *, operator_key=None, duration=3600, ceiling=None): ...
+    def config_store(self, *, operator_key=None, duration=None, ceiling=None): ...
     def load_config_authority_snapshot(
         self, frame: str, *, revision: str | None = None
     ) -> ConfigAuthoritySnapshot: ...
@@ -138,7 +146,7 @@ class HqControlPlane(Protocol):
     def publish_registration_evidence(self, manifest, *, signing_key): ...
     def grant(self, authority, public_key, desired, *, expected, operator_key): ...
     def accept_observation(self, frame, *, expected, operator_key, holder_identity=""): ...
-    def renew(self, *, expected, operator_key, duration=3600, ceiling=None): ...
+    def renew(self, *, expected, operator_key, duration=None, ceiling=None): ...
     def lifecycle(
         self,
         verb,
@@ -157,6 +165,30 @@ class HqControlPlane(Protocol):
         emergency_duration=600,
         execution_digest="",
     ): ...
+
+
+OPEN_ADMISSION_REFUSED = (
+    "open admission requires a trusted fleet: the operator runs `bh hq authority mode-trusted "
+    "--operator-key <key> --confirm` once; until then a frame joins through `bh hq authority "
+    "grant` and `bh host` lifecycle admit"
+)
+
+
+def open_admission_guard(desired: dict) -> dict:
+    """Open admission (bh-taa04.3): in a TRUSTED fleet a registering frame is admitted directly
+    — one authority write recording its holder identity, instance and runtime key as an
+    ACTIVE, declared incarnation — with no operator grant record, no enrollment/observation
+    gate (``observe`` / ``lifecycle admit``) and no operator key. Cordon, drain and retire
+    still act on the record like on any other.
+
+    Trust delta: in a trusted fleet anything that can reach HQ with write access and register
+    can join. Refused (fail closed) unless this process has learned a trusted fleet default.
+    Returns the desired policy with ``declared`` set."""
+    if not authority_mode.fleet_trusted():
+        raise ControlPlaneError(OPEN_ADMISSION_REFUSED)
+    if not isinstance(desired, dict):
+        raise ControlPlaneError("open admission requires the frame's desired policy")
+    return {**desired, "declared": True}
 
 
 def _git(directory, *args, data=None):
@@ -290,6 +322,11 @@ def install_guard(
         ),
         "custody": "operator-only-filesystem-writes",
     }
+    if authority_mode.trusted():
+        # Provisioned by a trusted-mode operator (bh-l4q0s): the receive guard also admits
+        # key-less (unsigned, trailer-marked) authority/config commits. Pinned with the policy
+        # digest by every client anchor; a signed install's policy bytes are unchanged.
+        policy["authority_mode"] = guard.TRUSTED
     policy_path.write_text(gitref.encode(policy))
     hook.write_text(_hook_text(remote, policy))
     hook.chmod(0o755)
@@ -373,7 +410,7 @@ class GitControlPlane:
 
         return hosts.load(self.hq_dir, host_id)
 
-    def config_store(self, *, operator_key=None, duration=3600, ceiling=None):
+    def config_store(self, *, operator_key=None, duration=None, ceiling=None):
         from .hq_fleet_config import GitFleetConfigRevisionStore
 
         return GitFleetConfigRevisionStore(
@@ -666,15 +703,35 @@ class GitControlPlane:
             self._remote(policy),
             sha,
         )
-        _git(
-            self.hq_dir,
-            "-c",
-            f"gpg.ssh.allowedSignersFile={policy['operator_signers']}",
-            "-c",
-            f"gpg.ssh.program={policy['executables']['ssh_keygen']['path']}",
-            "verify-commit",
-            sha,
-        )
+        try:
+            authority_mode.require_fleet_compatible()
+        except authority_mode.AuthorityModeConflict as exc:
+            raise ControlPlaneError(str(exc)) from None
+        # Trusted mode (bh-mk97e) accepts signed and unsigned commits without verifying them;
+        # the witness/rollback floor and generation below still hold.
+        if authority_enforced():
+            try:
+                _git(
+                    self.hq_dir,
+                    "-c",
+                    f"gpg.ssh.allowedSignersFile={policy['operator_signers']}",
+                    "-c",
+                    f"gpg.ssh.program={policy['executables']['ssh_keygen']['path']}",
+                    "verify-commit",
+                    sha,
+                )
+            except ControlPlaneError:
+                header = _git(self.hq_dir, "cat-file", "-p", sha).split("\n\n", 1)[0]
+                if not authority_mode.unsigned_commit(header):
+                    raise
+                # A host that joined after the fleet went trusted learns the operator-signed
+                # fleet default from the config carrier (bh-taa04.3), then re-resolves.
+                if authority_mode.discoverable():
+                    self.config_store().discover_fleet_default(policy)
+                if authority_enforced():
+                    raise ControlPlaneError(
+                        authority_mode.unsigned_refusal("HQ authority")
+                    ) from None
         if (
             int(_git(self.hq_dir, "cat-file", "-s", f"{sha}:authority.json")) > 4 * 1024 * 1024
             or _git(self.hq_dir, "ls-tree", "--name-only", sha) != "authority.json"
@@ -709,20 +766,35 @@ class GitControlPlane:
         expected,
         operator_key,
         *,
-        duration=3600,
+        duration=None,
+        renew=False,
         updates=(),
         expires_at_cap=None,
         ceiling=None,
     ):
+        """Sign and publish ``state``.
+
+        Expiry: an explicit ``duration`` signs ``issued_at + duration`` (ceiling-checked); a
+        ``renew`` without one signs the no-expiry sentinel; any other operator mutation keeps
+        the signed life (``guard.operator_signed_expiry``), so a non-expiring authority stays
+        non-expiring and a first-ever authority starts non-expiring (bh-y929l).
+
+        Key-less in trusted mode (bh-l4q0s): an unsigned commit carrying
+        :data:`~beadhive.hq_authority_enforce.UNSIGNED_TRAILER`; the server guard admits it only
+        when provisioned trusted. Signed mode still refuses a key-less mutation.
+        """
+        _require_operator_key(operator_key)
         current, previous, policy = self._operator_read()
         if current != expected:
             raise ControlPlaneError("expected authority revision/duration mismatch")
-        _check_duration(duration, ceiling)
         bound = any(
             record["authority"].get("beadyard_id") is not None for _, record in guard.records(state)
         )
         issued_at = self.clock()
-        expires_at = issued_at + duration
+        if duration is not None or renew or "expires_at" not in previous:
+            expires_at = _signed_expiry(issued_at, duration, ceiling)
+        else:
+            expires_at = guard.operator_signed_expiry(previous, issued_at)
         if expires_at_cap is not None:
             expires_at = min(expires_at, expires_at_cap)
         state.update(
@@ -735,27 +807,20 @@ class GitControlPlane:
         guard.validate_state(state)
         blob = _git(self.hq_dir, "hash-object", "-w", "--stdin", data=gitref.encode(state))
         tree = _git(self.hq_dir, "mktree", data=f"100644 blob {blob}\tauthority.json\n")
-        args = [
-            "-c",
-            "gpg.format=ssh",
-            "-c",
-            f"user.signingkey={operator_key}",
-            "commit-tree",
-            "-S",
-            tree,
-        ]
-        if expected:
-            args += ["-p", expected]
-        sha = _git(self.hq_dir, *args, data=f"HQ authority revision {state['revision']}\n")
-        _git(
-            self.hq_dir,
-            "-c",
-            f"gpg.ssh.allowedSignersFile={policy['operator_signers']}",
-            "-c",
-            f"gpg.ssh.program={policy['executables']['ssh_keygen']['path']}",
-            "verify-commit",
-            sha,
+        args, message = authority_mode.commit_tree_args(
+            tree, expected, operator_key, f"HQ authority revision {state['revision']}\n"
         )
+        sha = _git(self.hq_dir, *args, data=message)
+        if operator_key:
+            _git(
+                self.hq_dir,
+                "-c",
+                f"gpg.ssh.allowedSignersFile={policy['operator_signers']}",
+                "-c",
+                f"gpg.ssh.program={policy['executables']['ssh_keygen']['path']}",
+                "verify-commit",
+                sha,
+            )
         witness = f"{guard.WITNESS}{state['revision']:020d}"
         push = [
             "-c",
@@ -774,11 +839,13 @@ class GitControlPlane:
             raise ControlPlaneError("authority changed before readback")
         return sha
 
-    def renew(self, *, expected, operator_key, duration=3600, ceiling=None):
+    def renew(self, *, expected, operator_key, duration=None, ceiling=None):
         sha, state, _ = self._operator_read()
         if not sha:
             raise ControlPlaneError("cannot renew absent authority")
-        return self._write(state, expected, operator_key, duration=duration, ceiling=ceiling)
+        return self._write(
+            state, expected, operator_key, duration=duration, renew=True, ceiling=ceiling
+        )
 
     def _trust(self, state):
         path = Path(_git(self.hq_dir, "rev-parse", "--git-path", "bh-authority-signers"))
@@ -799,7 +866,9 @@ class GitControlPlane:
         if record is None or record["state"] == "retired":
             return None
         auth = ObservationAuthority(**record["authority"])
-        expiry = min(state["expires_at"], auth.candidate_expires_at or state["expires_at"])
+        expiry = authority_mode.snapshot_validity(
+            self.clock(), state["expires_at"], auth.candidate_expires_at
+        )
         if self.clock() >= expiry:
             return None
         receipt = record["receipt"]
@@ -977,7 +1046,19 @@ class GitControlPlane:
         )
         return sha
 
-    def grant(self, authority, public_key, desired, *, expected, operator_key):
+    def admit_open(self, authority, public_key, desired, *, expected, operator_key=""):
+        """Open admission (bh-taa04.3): see :func:`open_admission_guard`."""
+        desired = open_admission_guard(desired)
+        return self.grant(
+            authority,
+            public_key,
+            desired,
+            expected=expected,
+            operator_key=operator_key,
+            admitted=True,
+        )
+
+    def grant(self, authority, public_key, desired, *, expected, operator_key, admitted=False):
         from .beadyard_identity_file import read_identity
         from .hq_authority_payload import authority_payload
 
@@ -986,8 +1067,11 @@ class GitControlPlane:
         sha, state, policy = self._operator_read()
         if (
             sha != expected
-            or authority.candidate_expires_at is None
-            or authority.candidate_expires_at <= self.clock()
+            or not admitted
+            and (
+                authority.candidate_expires_at is None
+                or authority.candidate_expires_at <= self.clock()
+            )
         ):
             raise ControlPlaneError(
                 "candidate grant requires exact revision and bounded future expiry"
@@ -1018,10 +1102,12 @@ class GitControlPlane:
             raise ControlPlaneError(
                 "candidate exists or epoch does not advance operator-granted floor"
             )
-        entry["candidate"] = {
+        if admitted and entry["active"] is not None:
+            raise ControlPlaneError("open admission: frame already has an active incarnation")
+        entry["active" if admitted else "candidate"] = {
             "authority": authority_payload(authority),
             "public_key": public_key.strip(),
-            "state": "pending",
+            "state": "active" if admitted else "pending",
             "desired": desired,
             "cordoned": False,
             "drain_deadline": None,
@@ -1058,8 +1144,7 @@ class GitControlPlane:
         if sha != expected or state.get("domain") != guard.DOMAIN:
             raise ControlPlaneError("exact legacy authority revision required for binding")
         now = self.clock()
-        remaining = int(state["expires_at"] - now)
-        if remaining < 1:
+        if int(state["expires_at"] - now) < 1:
             raise ControlPlaneError("expired authority cannot be revived by identity binding")
         live = [
             record
@@ -1082,13 +1167,8 @@ class GitControlPlane:
             ):
                 raise ControlPlaneError("expired or already bound grant cannot be rebound")
             authority["beadyard_id"] = owner
-        return self._write(
-            state,
-            expected,
-            operator_key,
-            duration=remaining,
-            expires_at_cap=state["expires_at"],
-        )
+        # Keep the signed life exactly: a v1->v2 bind never raises expiry.
+        return self._write(state, expected, operator_key, expires_at_cap=state["expires_at"])
 
     def accept_observation(self, frame, *, expected, operator_key, holder_identity=""):
         from . import host_heartbeat_core as hb
@@ -1275,7 +1355,7 @@ class GitControlPlane:
         }
         if action in {"plan", "check"}:
             return result
-        if action != "apply" or not confirm or not operator_key:
+        if action != "apply" or not confirm or authority_mode.key_required(operator_key):
             raise ControlPlaneError("apply requires explicit --confirm and separate operator key")
         if (
             expected != sha
@@ -1527,7 +1607,7 @@ class SqlControlPlane:
         except Exception:  # noqa: BLE001 - malformed committed input must not expose values
             raise ControlPlaneError("committed host manifest invalid") from None
 
-    def config_store(self, *, operator_key=None, duration=3600, ceiling=None):
+    def config_store(self, *, operator_key=None, duration=None, ceiling=None):
         from .hq_sql_config import SqlFleetConfigRevisionStore
 
         return SqlFleetConfigRevisionStore(self.settings, broker=self.broker, clock=self.clock)
@@ -1537,6 +1617,12 @@ class SqlControlPlane:
 
         if self.settings.get("runtime") is None:
             raise ControlPlaneError("AUTHORITY_NOT_READY: SQL runtime binding unavailable")
+        try:
+            # Every frame read starts here: a signed pin in a trusted fleet refuses up front with
+            # the actionable message instead of a generic "unavailable" (bh-taa04.3).
+            authority_mode.require_fleet_compatible()
+        except authority_mode.AuthorityModeConflict as exc:
+            raise ControlPlaneError(str(exc)) from None
         return SqlRuntimeAuthority(self.settings, broker=self.broker, clock=self.clock)
 
     def authority_status(self):
@@ -1605,9 +1691,8 @@ class SqlControlPlane:
 
         authority = ObservationAuthority(**record["authority"])
         checked = self.clock()
-        validity = min(
-            state["expires_at"],
-            authority.candidate_expires_at or state["expires_at"],
+        validity = authority_mode.snapshot_validity(
+            checked, state["expires_at"], authority.candidate_expires_at
         )
         if row is None:
             sequence, digest, first_seen = 0, "", None
@@ -1780,11 +1865,25 @@ class SqlControlPlane:
             raise ControlPlaneError("separate authority writer capability unavailable")
         return time.monotonic() + binding["operation_timeout"]
 
-    def grant(self, authority, public_key, desired, *, expected, operator_key):
+    def admit_open(self, authority, public_key, desired, *, expected, operator_key=""):
+        """Open admission (bh-taa04.3): see :func:`open_admission_guard`."""
+        desired = open_admission_guard(desired)
+        return self.grant(
+            authority,
+            public_key,
+            desired,
+            expected=expected,
+            operator_key=operator_key,
+            admitted=True,
+        )
+
+    def grant(self, authority, public_key, desired, *, expected, operator_key, admitted=False):
         from .host_heartbeat_core import ObservationAuthority
         from .hq_authority_payload import authority_payload
         from .hq_sql_operator import SqlRuntimeOperator
         from .hq_sql_signatures import fingerprint
+
+        _require_operator_key(operator_key)
 
         if not isinstance(authority, ObservationAuthority):
             raise ControlPlaneError("validated candidate authority required")
@@ -1794,8 +1893,11 @@ class SqlControlPlane:
             head, original, _crossref, _policies = operator.load(deadline=budget)
             if (
                 head != expected
-                or authority.candidate_expires_at is None
-                or authority.candidate_expires_at <= self.clock()
+                or not admitted
+                and (
+                    authority.candidate_expires_at is None
+                    or authority.candidate_expires_at <= self.clock()
+                )
                 or fingerprint(public_key) != authority.key_fingerprint
                 or authority.key_fingerprint
                 == fingerprint(self.settings["runtime_operator_public_key"])
@@ -1813,10 +1915,12 @@ class SqlControlPlane:
             )
             if entry["candidate"] is not None or authority.epoch <= entry["epoch_floor"]:
                 raise ControlPlaneError("candidate exists or epoch does not advance")
-            entry["candidate"] = {
+            if admitted and entry["active"] is not None:
+                raise ControlPlaneError("open admission: frame already has an active incarnation")
+            entry["active" if admitted else "candidate"] = {
                 "authority": authority_payload(authority),
                 "public_key": public_key.strip(),
-                "state": "pending",
+                "state": "active" if admitted else "pending",
                 "desired": desired,
                 "cordoned": False,
                 "drain_deadline": None,
@@ -1878,6 +1982,7 @@ class SqlControlPlane:
 
     def bind_beadyard(self, *, expected, operator_key):
         """Bind the existing SQL authority ledger to its current committed HQ ID."""
+        _require_operator_key(operator_key)
         operator = self._operator()
         budget = self._operator_deadline()
         try:
@@ -1919,7 +2024,12 @@ class SqlControlPlane:
                 domain=guard.DOMAIN_V2,
                 revision=original["revision"] + 1,
                 issued_at=now,
-                expires_at=now + remaining,
+                # A v1->v2 bind never raises expiry; a non-expiring authority stays so.
+                expires_at=(
+                    original["expires_at"]
+                    if hq_authority_ceiling.non_expiring(original["expires_at"])
+                    else now + remaining
+                ),
             )
             guard.validate_state(state)
             guard.validate_legacy_binding_transition(original, state, trusted_now=now)
@@ -1931,8 +2041,10 @@ class SqlControlPlane:
                 raise
             raise ControlPlaneError("SQL authority identity binding unavailable") from None
 
-    def renew(self, *, expected, operator_key, duration=3600, ceiling=None):
-        _check_duration(duration, ceiling)
+    def renew(self, *, expected, operator_key, duration=None, ceiling=None):
+        _require_operator_key(operator_key)
+        # Validate the explicit duration against the ceiling before any I/O.
+        _signed_expiry(0, duration, ceiling)
         operator = self._operator()
         budget = self._operator_deadline()
         try:
@@ -1942,7 +2054,7 @@ class SqlControlPlane:
             state = json.loads(json.dumps(current))
             state["revision"] += 1
             state["issued_at"] = self.clock()
-            state["expires_at"] = self.clock() + duration
+            state["expires_at"] = _signed_expiry(state["issued_at"], duration, ceiling)
             return operator.publish(
                 state,
                 expected_revision=expected,
@@ -1955,6 +2067,7 @@ class SqlControlPlane:
             raise ControlPlaneError("SQL authority renewal unavailable") from None
 
     def accept_observation(self, frame, *, expected, operator_key, holder_identity=""):
+        _require_operator_key(operator_key)
         operator = self._operator()
         budget = self._operator_deadline()
         try:
@@ -2096,7 +2209,7 @@ class SqlControlPlane:
             }
             if action in {"plan", "check"}:
                 return result
-            if action != "apply" or not confirm or not operator_key:
+            if action != "apply" or not confirm or authority_mode.key_required(operator_key):
                 raise ControlPlaneError("apply requires explicit --confirm and operator key")
             if (
                 expected != head
@@ -2532,8 +2645,11 @@ class SqlControlPlane:
                 } or guard.same_incumbent_after_rotation(
                     envelope["authority"], route.frame_id, record
                 )
+            # Trusted (bh-mk97e) still honours emergency review, state, cordon and hive scope;
+            # only deprecated BH_HQ_AUTHORITY_ENFORCE=false waives that content.
+            waive = authority_mode.content_waived()
             if (
-                enforce
+                not waive
                 and (holder_identity is not None or incumbent_identity is not None)
                 and emergency_review_required(record)
                 and not emergency
@@ -2556,12 +2672,15 @@ class SqlControlPlane:
                     now=self.clock(),
                     signed=signed,
                 )
-                authority_ok = not enforce or not (
+                authority_ok = waive or not (
                     record["state"] != "active"
                     or record["cordoned"]
                     or policy is None
-                    or self.clock() >= policy["valid_until"]
-                    or policy["config_revision"] != record["authority"]["config_revision"]
+                    or enforce
+                    and (
+                        self.clock() >= policy["valid_until"]
+                        or policy["config_revision"] != record["authority"]["config_revision"]
+                    )
                 )
                 if (
                     holder_identity != route.holder_identity

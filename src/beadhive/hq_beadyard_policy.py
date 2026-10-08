@@ -19,6 +19,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+from . import hq_authority_enforce
 from . import hq_authority_guard as guard
 from .beadyard_identity import DOCUMENT_PATH, parse_document
 from .beadyard_identity_file import read_identity
@@ -138,12 +139,15 @@ def _qualified_config(
     new = json.loads(_git(remote, "show", f"{head}:config.json"))
     guard.validate_config_state(old)
     guard.validate_config_state(new)
+    # Trusted mode (bh-mk97e): no carrier expiry and no signature check; witnesses still hold.
+    verify = hq_authority_enforce.enforced()
     if (
         old["domain"] != guard.CONFIG_DOMAIN
         or new["domain"] != guard.CONFIG_DOMAIN_V2
         or not (old["generation"] == new["generation"] == policy["generation"])
         or new["revision"] != old["revision"] + 1
-        or new["expires_at"] <= time.time()
+        or verify
+        and new["expires_at"] <= time.time()
         or new["documents"][:-1] != old["documents"]
         or new["documents"][-1]["path"] != DOCUMENT_PATH
         or parse_document(new["documents"][-1]["content"]) != owner
@@ -152,15 +156,24 @@ def _qualified_config(
     if not old_head and (old["revision"] != 1 or _git(remote, "show", "-s", "--format=%P", parent)):
         raise PolicyRefreshError("unprojected config had later legacy changes")
     for sha, revision in ((parent, old["revision"]), (head, new["revision"])):
-        _git(
-            remote,
-            "-c",
-            f"gpg.ssh.allowedSignersFile={policy['operator_signers']}",
-            "-c",
-            f"gpg.ssh.program={policy['executables']['ssh_keygen']['path']}",
-            "verify-commit",
-            sha,
-        )
+        if verify:
+            try:
+                _git(
+                    remote,
+                    "-c",
+                    f"gpg.ssh.allowedSignersFile={policy['operator_signers']}",
+                    "-c",
+                    f"gpg.ssh.program={policy['executables']['ssh_keygen']['path']}",
+                    "verify-commit",
+                    sha,
+                )
+            except ValueError:
+                header = _git(remote, "cat-file", "-p", sha).split("\n\n", 1)[0]
+                if hq_authority_enforce.unsigned_commit(header):
+                    raise PolicyRefreshError(
+                        hq_authority_enforce.unsigned_rejection("signed bound config commit")
+                    ) from None
+                raise
         witness = _git(
             remote,
             "for-each-ref",
@@ -227,7 +240,9 @@ def _intended_bytes(remote: Path, policy_bytes: bytes, anchors: tuple[Path, ...]
     old_heads = {item["config_head"] for item in policy["hive_policies"].values()}
     if len(old_heads) != 1:
         raise PolicyRefreshError("hive policy config heads are inconsistent")
-    if any(item["valid_until"] <= time.time() for item in policy["hive_policies"].values()):
+    if hq_authority_enforce.enforced() and any(
+        item["valid_until"] <= time.time() for item in policy["hive_policies"].values()
+    ):
         raise PolicyRefreshError("expired hive policy cannot be revived by refresh")
     for item in new_policy["hive_policies"].values():
         item["config_head"] = head

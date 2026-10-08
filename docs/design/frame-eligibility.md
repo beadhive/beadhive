@@ -75,9 +75,25 @@ For SQL, the typed optional `managed_repos[].frame_policy` in committed `fleet.y
 `config_revision`, `requires` and positive finite `evict_after_s`. Omission denies that hive.
 The operator projects all policies from the exact committed ordered config snapshot, binds
 each to its Dolt config HEAD and a finite signed authority expiry, and signs that projection
-in protected runtime authority. A short reader cache TTL is not the durable policy expiry.
+in protected runtime authority. A short reader cache TTL is not the durable policy expiry. Since
+0.24.0 the signed authority carries a no-expiry sentinel by default (`expires_at` 4102444800), so
+the policy binds to its config head rather than to a lapse; an operator `--duration` opts into a
+finite expiry.
 Publishing config without a matching protected projection denies frame work until an operator
 refreshes it. This is the supported canonical-catalog-to-projection seam, not another fleet
 source. The regular config publisher does not enroll a frame. The fresh empty-schema seed
 path belongs to `bh-4shu3`; broad effective-config consumer routing belongs to `bh-9ej9n`.
 Existing production Beads stores, remotes and executor enrollment remain unchanged.
+
+## Authority modes
+
+The predicates above are evaluated per the frame's authority mode
+([HQ: Authority modes](../HQ.md#authority-modes)). In `signed` (default) a frame verifies the
+operator signature, the config binding and, for an opt-in finite authority, expiry. In `trusted`
+(`hq.authority_mode`, `BH_HQ_AUTHORITY_MODE`, or the fleet default `hq.default_authority_mode`) a
+frame skips signature, expiry and head binding but still honors content: `not_cordoned`,
+`admitted_active`, release pins and caps stay satisfied-or-fail as in signed mode. Only the
+deprecated `BH_HQ_AUTHORITY_ENFORCE=false` also waives that content
+(`bh host eligible` marks the waived predicates). In a trusted fleet a registering frame is
+open-admitted (`bh hq authority join`) as an active incarnation, so `admitted_active` holds
+without a grant or operator key.

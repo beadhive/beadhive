@@ -75,8 +75,9 @@ Bead states: `bh-3q5m9`, `bh-kmxyp` and `bh-vfrem` (release ranges) are open. Th
 molecule delivered `--operator-settings`, `--duration` up to a configurable ceiling and the
 fleet-config fencing fix (`bh-87l3y`, `bh-wj8hu`); the 0.23.x `bh-81nac` molecule keeps a long
 authority valid and bound. **Laptop-free renewal itself (`bh-rjjjo`, a scoped delegate signing key)
-is not delivered** and is out of scope for 0.23.x: every frame pins the one operator key, so a
-0.23.0 frame would reject a delegate-signed record. It is deferred to 0.24.0.
+is not delivered in 0.23.x**: every frame pins the one operator key, so a
+0.23.0 frame would reject a delegate-signed record. It is delivered in 0.24.0 as authority modes (see
+the [0.24.0 amendment](#amendment-0240-operator-authority-has-modes-bh-taa04)).
 
 ### Why GO — the five load-bearing reasons
 
@@ -118,8 +119,9 @@ is not delivered** and is out of scope for 0.23.x: every frame pins the one oper
   `bh-iru2g` molecule delivered `--operator-settings`, `--duration` up to a configurable ceiling and
   the fleet-config fencing fix (`bh-87l3y`, `bh-wj8hu`); the 0.23.x `bh-81nac` molecule keeps a long
   authority valid and bound. **Laptop-free renewal itself (`bh-rjjjo`, a scoped delegate signing
-  key) is not delivered** and is out of scope for 0.23.x: every frame pins the one operator key, so
-  a 0.23.0 frame would reject a delegate-signed record. It is deferred to 0.24.0. It gated
+  key) is not delivered in 0.23.x**: every frame pins the one operator key, so
+  a 0.23.0 frame would reject a delegate-signed record. It is delivered in 0.24.0 as authority
+  modes (see the [0.24.0 amendment](#amendment-0240-operator-authority-has-modes-bh-taa04)). It gated
   *deployment* stages (Φ1 install, Φ3), not the design. The outline makes them explicit
   dependencies. The operator accepted one laptop session for the Φ1 install (Decision 4).
 - **Signed-mode lease continuity has a 16-rotation horizon** (`bh-32379` L9, derived from code
@@ -464,16 +466,42 @@ Condition 17 is recorded as a deferred open design point and does not bind.
 | "Each frame incarnation gets a distinct authenticated SQL principal and inbox table" | **Amended.** The principal stays. The inbox is replaced by per-incarnation `_session` and `_evidence` tables (§5). The registry's `inbox_table` column names them. |
 | "The separately deployed trusted receiver validates … envelopes … before writing … receipts, monotonic floors, public signed observations and global hive lease CAS/results" | **Retired.** Placement CAS → director design A. Liveness → server-stamped session rows. Registration → operator enrollment check. `hq_live_receipts`, `_floors`, `_public_observations` and `_results` are deleted in 0.24.0. `hq_live_hive_leases` is kept as the placement row. |
 | Original "Grants…" section: "grants do not restrict a frame to its own rows" | **Superseded for liveness.** With one table per frame, the table grant is the row isolation (`bh-wtsrc` E1). |
-| Original: "SQL credentials never replace frame signing keys" | **Reversed for liveness in SQL HQ**, under the co-residence premise. The SQL principal is the liveness credential, narrowed by host pinning and required TLS (condition 15). Operator authority stays signed. Evidence signing is optional, for audit. |
+| Original: "SQL credentials never replace frame signing keys" | **Reversed for liveness in SQL HQ**, under the co-residence premise. The SQL principal is the liveness credential, narrowed by host pinning and required TLS (condition 15). Operator authority stays signed by default; 0.24.0 adds an opt-in `trusted` mode (see the amendment below). Evidence signing is optional, for audit. |
 | Original: "Identical eligibility semantics; different availability" | **Becomes "identical predicates, different evidence carriers"** (§6). |
 | Residual availability risk: cross-frame overwrite and flooding | **Closed** for liveness (single-row, UPDATE-only tables, T5). Server-global DoS (T16) is recorded as open in both designs, with the §5 mitigations. |
 | "Start with one authoritative SQL writer" | **Stands and becomes load-bearing.** Placement is only as linearizable as one un-replicated server. Hive databases are never co-hosted on it. |
 
+## Amendment (0.24.0): operator authority has modes (`bh-taa04`)
+
+The statements above that operator authority "stays signed" and that laptop-free renewal
+(`bh-rjjjo`) is "deferred to 0.24.0" are amended. `bh-rjjjo` is **delivered by the `bh-taa04`
+epic**, not as a scoped delegate key but as two authority modes
+([HQ: Authority modes](../HQ.md#authority-modes)):
+
+- **`signed` (still the default)** keeps the operator key as the only way to change authority,
+  but the authority no longer expires by default (a finite far-future sentinel, `expires_at`
+  4102444800; `--duration` is an opt-in and the ceiling defaults to unlimited). There is no
+  renewal chore and no dead-man switch. `rebind` replaces `renew` (deprecated alias).
+- **`trusted` (opt-in)** lets the operator publish authority, lifecycle and fleet config without
+  the key, and frames accept the unsigned marker (`unsigned:trusted` on SQL HQ, a commit with no
+  `gpgsig` and the `Bh-Authority-Signature: unsigned (trusted)` trailer on Git HQ). The mode is
+  frame-local (`hq.authority_mode`, `BH_HQ_AUTHORITY_MODE`) or a fleet default set once with
+  `bh hq authority mode-trusted`. A trusted fleet open-admits registering frames
+  (`bh hq authority join`).
+
+Binding conditions that mention the operator key staying off the frame are unchanged: the key
+never reaches a frame in either mode. The trust delta is explicit. In `signed` there is no
+automatic lapse and cordon stays immediate; in `trusted`, HQ write access is admin, and anything
+that can reach HQ with write access and register can join. `BH_HQ_AUTHORITY_ENFORCE=false` is
+deprecated in favour of `trusted` and keeps its old content waiver until it is removed with
+Plan D (`bh-ihckx`, 0.24.1). Existing Git HQ server hooks need re-provisioning by a trusted
+operator to accept unsigned pushes.
+
 ## Consequences
 
 - **Lifted:** `bh bd dolt push|sync` and bd auto-push on cut-over hives; the receiver as an
-  availability anchor; the laptop LaunchAgent once `bh-rjjjo` (laptop-free authority, deferred to
-  0.24.0) lands.
+  availability anchor; the laptop LaunchAgent once `bh-rjjjo` (laptop-free authority, delivered by
+  `bh-taa04` in 0.24.0 as authority modes) lands.
 - **New operator duties:** per-hive cutover (C1–C6) and rollback (R1–R5), through a hidden,
   temporary verb that is removed once every hive is cut over (Decision 3); the GitHub canary
   (condition 11); orphan merges after a partitioned writer rejoins; reading `fence_audit` in

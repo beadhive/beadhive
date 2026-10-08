@@ -1125,6 +1125,28 @@ class HqConfig(_Section):
 
     authority_anchor: str = ""
     admission_policy: Literal["manual"] = "manual"
+    authority_mode: Literal["signed", "trusted", "inherit"] = Field(
+        "inherit",
+        description=(
+            "Frame-local HQ authority mode (HOST only, never fleet). `signed` verifies "
+            "authority, heartbeat and config signatures; `trusted` is an opt-in waiver; "
+            "`inherit` (default) follows the fleet default, which resolves to `signed` until "
+            "one is set. BH_HQ_AUTHORITY_MODE, when set, overrides this value."
+        ),
+    )
+    default_authority_mode: Literal["signed", "trusted"] = Field(
+        "signed",
+        description=(
+            "FLEET default HQ authority mode for frames whose hq.authority_mode is `inherit` "
+            "(the default). Set it with `bh hq authority mode-signed|mode-trusted`, never by "
+            "hand: raising it to `trusted` takes effect on a signed frame only once the "
+            "operator re-signs authority against the new config head (SQL) or signs the "
+            "config commit (Git); lowering it to `signed` always takes effect. A trusted "
+            "fleet also admits a registering frame without an operator grant (open "
+            "admission). Upgrade every frame to 0.24.0 before setting it: 0.23.x rejects the "
+            "key."
+        ),
+    )
     sql: HqSqlConfig = Field(default_factory=HqSqlConfig)
 
     remote: str = Field(

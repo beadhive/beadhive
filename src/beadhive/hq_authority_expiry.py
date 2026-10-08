@@ -18,6 +18,7 @@ from .hq_authority_ceiling import (
     AUTHORITY_MAX_DURATION_DEFAULT_S,
     UNIT_PATTERN,
     UNITS,
+    non_expiring,
     resolve_ceiling,
 )
 
@@ -76,6 +77,19 @@ def _renew_ceiling_s(plane=None) -> int:
         return AUTHORITY_MAX_DURATION_DEFAULT_S
 
 
+def _mode() -> str:
+    """This process's authority mode; ``signed`` if it cannot be resolved (never raises)."""
+    try:
+        from . import hq_authority_enforce
+
+        return hq_authority_enforce.mode()
+    except Exception:  # noqa: BLE001 - reporting must never fail its caller
+        return "signed"
+
+
+NOT_ENFORCED = "not enforced (trusted)"
+
+
 def renew_command(revision="<revision>", settings_file=None, plane=None) -> str:
     """The renew command for the resolved ceiling (``--max-duration`` only above the default)."""
     path = settings_file or "<file>"
@@ -84,7 +98,7 @@ def renew_command(revision="<revision>", settings_file=None, plane=None) -> str:
         f" --max-duration {seconds}" if seconds > AUTHORITY_MAX_DURATION_DEFAULT_S else ""
     )
     return (
-        f"BH_HQ_OPERATOR_SETTINGS={path} bh hq authority renew --expected-revision {revision} "
+        f"BH_HQ_OPERATOR_SETTINGS={path} bh hq authority rebind --expected-revision {revision} "
         f"--operator-key <key> --duration {seconds}{raise_ceiling} --confirm"
     )
 
@@ -137,8 +151,11 @@ def authority_status(plane, *, now=None, lead=None) -> dict:
             "config_bound": False,
             "expiring_soon": False,
             "warn_within_s": lead,
+            "expires_never": False,
+            "mode": _mode(),
         }
     remaining = state["expires_at"] - now
+    never = non_expiring(state["expires_at"])
     return {
         "revision": revision,
         "authority_revision": state.get("revision"),
@@ -146,10 +163,12 @@ def authority_status(plane, *, now=None, lead=None) -> dict:
         "authority_ready": remaining > 0,
         "expires_at": state["expires_at"],
         "expires_in_s": int(remaining),
-        "expires_in": humanize(remaining),
+        "expires_in": "never" if never else humanize(remaining),
         "config_bound": bool(bound),
-        "expiring_soon": remaining <= lead,
+        "expiring_soon": False if never else remaining <= lead,
         "warn_within_s": lead,
+        "expires_never": never,
+        "mode": _mode(),
     }
 
 
@@ -166,8 +185,14 @@ def check(plane, *, min_remaining=0.0, now=None) -> tuple[bool, dict, str]:
     status = authority_status(plane, now=now)
     if status["expires_at"] is None:
         return False, status, "FAIL: no authority binding available to read expiry"
+    if status.get("mode") == "trusted":
+        # A trusted frame ignores authority expiry and the config-head binding (bh-mk97e), so
+        # the check agrees with it instead of failing an expired opt-in authority (bh-taa04.3).
+        return True, status, f"OK: HQ authority expiry and config binding {NOT_ENFORCED}"
     if not status["config_bound"]:
         return False, status, "FAIL: authority is not bound to the latest config head"
+    if status.get("expires_never"):
+        return True, status, "OK: HQ authority does not expire"
     if status["expires_in_s"] <= 0:
         return False, status, warning_line(status, plane=plane).replace("WARN", "FAIL", 1)
     if status["expires_in_s"] < min_remaining:
@@ -208,6 +233,8 @@ def warn_if_expiring(plane=None, *, now=None, stream=None, settings_file=None) -
         status = authority_status(plane, now=now)
         if status["expires_in_s"] is None or not status["expiring_soon"]:
             return None
+        if status.get("expires_never") or status.get("mode") == "trusted":
+            return None
         line = warning_line(status, settings_file, plane)
         key = f"{status['revision']}"
         if key in _WARNED:
@@ -247,8 +274,21 @@ def doctor_data(*, now=None) -> dict:
         return {"level": "fail", "detail": f"authority unreadable: {exc}"}
     if not status["config_bound"]:
         return {"level": "fail", "detail": "authority is not bound to the latest config head"}
+    mode = status.get("mode", "signed")
+    if status.get("expires_never"):
+        return {"level": "ok", "detail": "HQ authority expires: never", "mode": mode}
+    if mode == "trusted":
+        return {"level": "ok", "detail": f"HQ authority expiry: {NOT_ENFORCED}", "mode": mode}
     if status["expires_in_s"] <= 0:
         return {"level": "fail", "detail": f"HQ authority {status['expires_in']}; fleet is fenced"}
     if status["expiring_soon"]:
-        return {"level": "warn", "detail": warning_line(status, plane=plane).removeprefix("WARN: ")}
-    return {"level": "ok", "detail": f"HQ authority expires in {status['expires_in']}"}
+        return {
+            "level": "warn",
+            "detail": warning_line(status, plane=plane).removeprefix("WARN: "),
+            "mode": mode,
+        }
+    return {
+        "level": "ok",
+        "detail": f"HQ authority expires in {status['expires_in']}",
+        "mode": mode,
+    }

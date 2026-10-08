@@ -140,6 +140,13 @@ def _catalog_identity(snapshot: FleetConfigSnapshot) -> tuple:
     return tuple(identity)
 
 
+def _fleet_default(snapshot: FleetConfigSnapshot) -> str:
+    """The committed ``hq.default_authority_mode`` (frame-relevant, bh-taa04.3)."""
+    from .hq_authority_enforce import committed_fleet_default
+
+    return committed_fleet_default(snapshot.documents)
+
+
 def config_head_tolerated(
     bound: FleetConfigSnapshot,
     current: FleetConfigSnapshot,
@@ -157,7 +164,8 @@ def config_head_tolerated(
     ``allowed_signers``, ``beadyard.json`` ...), and its fleet catalog projects to exactly
     the signed `policies` once the projection is rebased onto H0 (so only the per-item
     ``config_head`` provenance may differ). Every ``managed_repos[].frame_policy``, prefix
-    and kind therefore still fences.
+    and kind therefore still fences, as does ``hq.default_authority_mode`` (bh-taa04.3): a
+    signed frame must not learn a fleet default the operator has not re-signed against.
 
     Pure: the caller proves ancestry (H1 descends from H0) and verifies both snapshots.
     Any doubt is ``False`` (fail closed). The only predicate the frame verifier, receiver
@@ -180,6 +188,7 @@ def config_head_tolerated(
             rest(bound) != rest(current)
             or bound.beadyard_id != current.beadyard_id
             or _catalog_identity(bound) != _catalog_identity(current)
+            or _fleet_default(bound) != _fleet_default(current)
         ):
             return False
         rebased = replace(current, commit_revision=bound.commit_revision)

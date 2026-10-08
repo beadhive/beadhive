@@ -196,7 +196,7 @@ reclaims the dead frame's claims in its bump commit (`bh.reclaim.failover.mode`,
 
 `failover_after` is per role and per hive, and it lives in HQ data (ADR §4, `bh-4biq8`). It is
 never a `host.yaml` or fleet-config key, so changing it never moves the config head and never
-needs an authority renewal.
+needs an authority rebind.
 
 | Setting | Default | Scope |
 |---|---|---|
@@ -252,3 +252,14 @@ the floor above a hive's executor override), writes nothing. A row that is refus
 never clamped. The loop logs it once at `WARNING` and uses the default: the fleet `*` row, or
 else the code default. `bh doctor` shows refusals and warnings under **Host Daemon** on a host
 whose failover loop is enabled.
+
+## 7. Authority mode and placement
+
+Placement does not depend on the authority mode, but the frame the director places onto does.
+In `signed` (default) the frame must hold an active, uncordoned grant bound to the hive's
+operator-signed policy, as in section 3. In a `trusted` fleet
+([HQ: Authority modes](../HQ.md#authority-modes)) a registering frame is open-admitted
+(`bh hq authority join`) and the authority carries the unsigned marker, so a placement target
+needs no operator key. Cordon, drain and retire still apply in both modes. The authority has no
+expiry by default, so a placement never waits on an authority renewal; changing a failover
+policy or tenure never moves the config head (section 6).

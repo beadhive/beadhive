@@ -1,8 +1,9 @@
-"""Configurable authority duration ceiling (bh-od8ve)."""
+"""Configurable authority duration ceiling (bh-od8ve); unlimited by default since bh-y929l."""
 
 from __future__ import annotations
 
 import json
+import math
 import re
 from pathlib import Path
 
@@ -16,10 +17,11 @@ from beadhive.hq_control_plane import ControlPlaneError, SqlControlPlane
 DAY = 86400
 
 
-def test_default_ceiling_is_seven_days_and_named():
+def test_default_ceiling_is_unlimited_and_named():
     got = c.resolve_ceiling(env={})
-    assert got.seconds == 7 * DAY == c.AUTHORITY_MAX_DURATION_DEFAULT_S
-    assert "default" in got.source
+    assert got.seconds == math.inf
+    assert "default" in got.source and "unlimited" in got.source
+    c.check_duration(3650 * DAY, got)
 
 
 @pytest.mark.parametrize(
@@ -51,12 +53,12 @@ def test_invalid_configured_ceiling_refused_with_source():
 
 
 def test_over_ceiling_error_names_ceiling_and_source():
-    with pytest.raises(ValueError, match=r"exceeds ceiling 604800s .*built-in default"):
-        c.check_duration(8 * DAY, c.resolve_ceiling(env={}))
+    with pytest.raises(ValueError, match=rf"exceeds ceiling 604800s .*\${c.ENV_VAR}"):
+        c.check_duration(8 * DAY, c.resolve_ceiling(env={c.ENV_VAR: "7d"}))
 
 
 def test_each_source_admits_a_higher_duration(monkeypatch):
-    monkeypatch.delenv(c.ENV_VAR, raising=False)
+    monkeypatch.setenv(c.ENV_VAR, "7d")
     with pytest.raises(ValueError):
         c.check_duration(30 * DAY)
     c.check_duration(30 * DAY, c.resolve_ceiling(cli="30d"))
@@ -83,14 +85,21 @@ def _sql_plane(published):
     return plane
 
 
-def test_sql_renew_seven_days_default_and_refusals(monkeypatch):
+def test_sql_renew_explicit_duration_and_refusals(monkeypatch):
     monkeypatch.delenv(c.ENV_VAR, raising=False)
     out = []
     plane = _sql_plane(out)
     assert plane.renew(expected="head", operator_key="k", duration=7 * DAY) == "new"
     assert out[-1]["expires_at"] == 1000.0 + 7 * DAY
-    with pytest.raises(ControlPlaneError, match=r"exceeds ceiling 604800s.*default"):
-        plane.renew(expected="head", operator_key="k", duration=30 * DAY)
+    plane.renew(expected="head", operator_key="k", duration=30 * DAY)  # default: unlimited
+    assert out[-1]["expires_at"] == 1000.0 + 30 * DAY
+    with pytest.raises(ControlPlaneError, match=r"exceeds ceiling 604800s.*--max-duration"):
+        plane.renew(
+            expected="head",
+            operator_key="k",
+            duration=30 * DAY,
+            ceiling=c.resolve_ceiling(cli="7d"),
+        )
     ceiling = c.resolve_ceiling(cli="30d")
     plane.renew(expected="head", operator_key="k", duration=30 * DAY, ceiling=ceiling)
     monkeypatch.setenv(c.ENV_VAR, str(30 * DAY))
@@ -99,8 +108,8 @@ def test_sql_renew_seven_days_default_and_refusals(monkeypatch):
         plane.renew(expected="head", operator_key="k", duration=0)
 
 
-def test_git_renew_seven_days_ceiling_and_expiry_fence(backend, monkeypatch):  # noqa: F811
-    monkeypatch.delenv(c.ENV_VAR, raising=False)
+def test_git_renew_explicit_ceiling_and_expiry_fence(backend, monkeypatch):  # noqa: F811
+    monkeypatch.setenv(c.ENV_VAR, "7d")
     b = backend
     plane, key = b["plane"], str(b["operator"])
     head = plane._read()[0]

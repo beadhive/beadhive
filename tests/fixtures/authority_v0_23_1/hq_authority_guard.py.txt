@@ -26,11 +26,6 @@ POLICY = "bh-authority-policy.json"
 DOMAIN = "beadhive/git-authority/v1"
 DOMAIN_V2 = "beadhive/git-authority/v2"
 EXECUTABLES = {"git": "git", "ssh_keygen": "ssh-keygen"}
-#: Policy ``authority_mode`` of a server provisioned from a trusted-mode operator (bh-l4q0s).
-TRUSTED = "trusted"
-#: The unsigned Git carrier trailer; mirrors ``hq_authority_enforce.UNSIGNED_TRAILER`` (this
-#: guard runs standalone on the server, so it cannot import the package).
-UNSIGNED_TRAILER = "Bh-Authority-Signature: unsigned (trusted)"
 
 
 def git(*args):
@@ -450,25 +445,6 @@ def same_incumbent_after_rotation(previous, frame, record):
         and previous == {"frame_id": frame, **item["record"]["authority"]}
         for item in record.get("release_upgrade_history", [])
     )
-
-
-def verify_operator_commit(sha, policy, carrier):
-    """An authority/config commit must verify under the operator anchor. A guard provisioned
-    from a trusted-mode operator (policy ``authority_mode: trusted``, digest-pinned by every
-    client anchor) also admits an UNSIGNED commit — no ``gpgsig`` header — that carries
-    :data:`UNSIGNED_TRAILER` (key-less trusted publication, bh-l4q0s). Content, generation,
-    parent/revision and witness checks are unchanged either way."""
-    header, _, message = git("cat-file", "commit", sha).partition("\n\n")
-    if not any(line.startswith("gpgsig") for line in header.split("\n")):
-        if policy.get("authority_mode") != TRUSTED:
-            raise ValueError(
-                f"unsigned {carrier} commit refused: this HQ guard was provisioned for signed "
-                "authority; publish with --operator-key"
-            )
-        if UNSIGNED_TRAILER not in message.split("\n"):
-            raise ValueError(f"unsigned {carrier} commit lacks the trusted-mode trailer")
-        return
-    git("-c", f"gpg.ssh.allowedSignersFile={policy['operator_signers']}", "verify-commit", sha)
 
 
 def signed_by(sha, record):
@@ -989,7 +965,7 @@ def enforce_config(updates, policy, principal):
     old, new = heads[0]
     if new == ZERO:
         raise ValueError("configuration deletion forbidden")
-    verify_operator_commit(new, policy, "configuration")
+    git("-c", f"gpg.ssh.allowedSignersFile={policy['operator_signers']}", "verify-commit", new)
     state = read_config_state(new)
     if (
         state["generation"] != policy["generation"]
@@ -1044,7 +1020,7 @@ def enforce(updates, policy):
     old, new = heads[0]
     if new == ZERO:
         raise ValueError("authority deletion forbidden")
-    verify_operator_commit(new, policy, "authority")
+    git("-c", f"gpg.ssh.allowedSignersFile={policy['operator_signers']}", "verify-commit", new)
     state = read_state(new)
     if state["domain"] == DOMAIN_V2:
         config_head = git("for-each-ref", "--format=%(objectname)", CONFIG_HEAD)

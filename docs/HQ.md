@@ -305,37 +305,133 @@ longer fast-forward to.
 Nothing is lost either way. Every pruned bead is a derived copy of a bead that still lives in
 its own hive, and `bh sync` puts the cross-hive view back in the hub where it belongs.
 
-## Authority expiry and renewal {#authority-expiry}
+## Authority modes {#authority-modes}
 
-The protected authority carrier carries an `expires_at`. When it passes, every frame is fenced
-until an operator publishes a renewal. The lapse used to be silent until it fenced. These are
-the read-only surfaces that make it visible:
+Since 0.24.0 (`bh-taa04`) HQ authority runs in one of two modes. The mode decides whether
+operator publications are signed and whether the authority expires.
 
-- `bh hq authority status` reports `expires_at`, `expires_in_s`, `expires_in`, `revision`,
-  `config_bound` (the authority's config head equals the latest head) and `expiring_soon` at the
-  top level. It works on a runtime host and with `BH_HQ_OPERATOR_SETTINGS`, on the SQL and Git
-  backends, and still reports once the authority has expired.
-- `bh hq authority check` (floor from `--min-remaining` (0.23.0+) or
-  `BH_HQ_AUTHORITY_MIN_REMAINING`, e.g. `6h`) exits non-zero,
-  with the exact renew command, when the authority is expired, not bound to the
-  latest config head, or has less than that floor left. It exits 0 when healthy. Use it in
-  scripts and as the release-upgrade preflight.
-- `bh work claim|check|submit|merge`, `bh plan file` and the start of every validation gate print
-  one stderr `WARN` line (time remaining and the renew command) when expiry is inside the lead
-  time. Nothing is printed outside it, and a warning never fails a command.
-- `bh doctor` reports an `HQ authority expiry` section: WARN inside the lead time, FAIL when
-  expired or config-unbound.
+| | `signed` (default) | `trusted` (opt-in) |
+|---|---|---|
+| Operator key | Needed for every authority and fleet-config change | Needed once, to raise the fleet |
+| Authority expiry | None by default (a far-future sentinel); `--duration` opts in | None; not enforced even when set |
+| Frames check | Operator signature, config binding, cordon, admission | Content only; no signature, expiry or head binding |
+| Cordon, retire | Immediate | Immediate |
+| Joining a frame | Operator grants and enrolls it | Open: any frame that can register |
+| Anyone with HQ write access | Cannot change authority | Is effectively admin |
 
-The lead time is the `BH_HQ_AUTHORITY_WARN_WITHIN` environment variable (duration such as
-`90m`, `24h`, `2d`; default `24h`). It is deliberately not a fleet or host key: a fleet edit moves
-the HQ config head and a new host key breaks older readers of a shared HOST file.
+**Which mode should I use?**
+
+| If your fleet is... | Use |
+|---|---|
+| One operator, a factory you fully control, no operator key at hand most of the time | `trusted` |
+| Several people or hosts with HQ write access, or HQ reachable by anything you do not control | `signed` |
+| Not sure | `signed` (the default; nothing to do) |
+
+### The two modes and their trust deltas
+
+**`signed` (default).** Operator publications carry an operator signature and frames verify it.
+The authority no longer expires by default: it is signed with a finite far-future sentinel,
+`expires_at` 4102444800 (2100-01-01Z), so there is no dead-man switch and no renewal chore.
+Revocation is unchanged and immediate: cordon, retire and emergency actions are operator-signed
+republications that frames see at once. What you give up is automatic lapse. A stolen or
+forgotten authority does not time out; only an operator action ends it. Pass `--duration` (below)
+to opt back into a finite expiry.
+
+**`trusted` (opt-in).** Authority, fleet config, lifecycle and the heartbeat are accepted without
+signature, expiry or head binding, and the operator publishes them without the key. Content is
+still honored: cordon, admission state, release pins and caps still apply. The trust delta:
+**HQ write access is admin**, and in a trusted fleet anything that can reach HQ with write access
+and register can join (open admission, below). The operator key stays off the frame in both
+modes; trusted simply stops needing it for routine work.
+
+### Which mode a frame uses
+
+A frame's effective mode resolves, first match wins:
+
+1. `BH_HQ_AUTHORITY_MODE` (env): `signed`, `trusted` or `inherit`.
+2. Deprecated `BH_HQ_AUTHORITY_ENFORCE=false` ([below](#unsupported-disabling-hq-authority-enforcement)).
+3. Frame-local `hq.authority_mode` in `host.yaml` (or the `hq` section of the operator settings
+   file): `signed`, `trusted` or `inherit` (default). HOST-only; never a fleet key.
+4. `inherit` follows the **fleet default** `hq.default_authority_mode`, else `signed`.
+
+An invalid value fails closed to `signed` with an error. With nothing configured every frame is
+`signed`. A `trusted` frame is a frame-local waiver (doctor reports one WARN); the fleet default
+is how a whole fleet moves.
+
+### Unsigned records
+
+Key-less trusted publication writes an explicit marker that only a trusted frame accepts; a
+signed frame rejects it, fail closed, with a message naming both fixes.
+
+- SQL HQ: the `operator_signature` column holds the ASCII bytes `unsigned:trusted` instead of a
+  signature.
+- Git HQ: an ordinary commit with no `gpgsig` header whose message ends with the trailer
+  `Bh-Authority-Signature: unsigned (trusted)`.
+
+The payload is byte-identical to a signed publication; only the signature is absent. Trusted
+frames also accept signed records. **Existing Git HQ server hooks need re-provisioning by a
+trusted operator** before they accept unsigned pushes (a local-only Git HQ is unaffected).
+
+### No expiry by default, `--duration` opt-in {#authority-expiry}
+
+`bh hq authority rebind`, `grant`, `observe` and the lifecycle verbs sign the no-expiry sentinel
+unless you pass `--duration <seconds|7d|36h|2w>` (units `s m h d w`), which opts into a finite
+expiry. Grant, observe and lifecycle verbs **preserve** the authority's existing expiry (they
+have no `--duration`).
+
+**Duration ceiling.** The ceiling applies only to `--duration`. The default is **unlimited**; set
+one if you want to cap opt-in expiries. Resolution, first match wins:
+
+1. `--max-duration` on `bh hq authority rebind` (seconds or e.g. `7d`)
+2. `hq.sql.authority_max_duration_s` in the operator settings file (read only through
+   `BH_HQ_OPERATOR_SETTINGS` or `--operator-settings`; never a frame or fleet key)
+3. env `BH_HQ_AUTHORITY_MAX_DURATION`
+4. unlimited
+
+A duration above the ceiling is refused with the ceiling and its source in the message. The
+same ceiling applies to the SQL and Git backends and to Git fleet-config publication. Frames
+enforce each signed `expires_at` and have no maximum of their own, so an opt-in 7 d or 30 d
+authority still fences after it lapses.
+
+**Upgrading from 0.23.x.** An authority signed with an expiry by 0.23.x stays expiring until one
+`rebind` without `--duration` re-signs it. Git HQs are the common case: 0.23.x grants were
+hard-coded to 1 h, so do one `rebind` after upgrading.
+
+Read-only surfaces:
+
+- `bh hq authority status` reports `mode` and its source, plus `expires_at`, `expires_in_s`,
+  `expires_in`, `revision`, `config_bound` and `expiring_soon`. It works on a runtime host and
+  with `BH_HQ_OPERATOR_SETTINGS`, on the SQL and Git backends, and still reports once the
+  authority has expired.
+- `bh hq authority check` (floor from `--min-remaining` or `BH_HQ_AUTHORITY_MIN_REMAINING`)
+  exits non-zero, with the exact rebind command, when an expiring authority is expired, not
+  bound to the latest config head, or has less than the floor left. It exits 0 when healthy. In
+  trusted mode it reports `OK: ... not enforced (trusted)` instead. Use it in scripts and as the
+  release-upgrade preflight.
+- `bh work claim|check|submit|merge`, `bh plan file` and the start of every validation gate
+  print one stderr `WARN` line when an **expiring** authority is inside the lead time
+  (`BH_HQ_AUTHORITY_WARN_WITHIN`, default `24h`; environment-only because a fleet edit moves the
+  config head and a new host key breaks older readers of a shared HOST file). A non-expiring
+  authority prints nothing, and a warning never fails a command.
+- `bh doctor` reports the mode, and an `HQ authority expiry` section: WARN inside the lead time,
+  FAIL when expired or config-unbound.
+
+### Rebind {#authority-rebind}
+
+`bh hq authority rebind [--expected-revision N] --operator-key <key> --confirm` re-signs the
+current authority against the current config head (revision + 1, policies re-projected). Use it
+after a frame-relevant config edit fences frames, to convert a 0.23.x expiring authority into a
+non-expiring one, and as the step that moves a fleet back to signed. `bh hq authority renew` is
+a **deprecated alias** that prints a deprecation line. `rebind` is a value of the existing
+`action` argument of the `hq.authority` operation, so the operation catalog and wire contract
+are unchanged.
 
 ### Fleet-config edits and the bound head {#config-edit-tolerance}
 
 The SQL authority is signed against one config head (H0) and carries a `hive_policies`
 projection. Since 0.23.1 (`bh-u67ve`) a frame, and the receiver, keep accepting the authority
 after a **later** fleet-config publish (H1) that changes nothing a frame enforces, instead of
-fencing every frame until the operator renews. The test is
+fencing every frame until the operator rebinds. The test is
 `beadhive.hq_hive_policy.config_head_tolerated`, behind
 `SqlRuntimeAuthority.bound_config_at` (`src/beadhive/hq_sql_runtime.py`). H1 is tolerated only if
 all of these hold; anything else, or any doubt, still fences with "HQ config and authority
@@ -352,9 +448,9 @@ publications are not bound":
 
 So an edit such as a managed repo's `work.validation_bypass` no longer fences, while a
 `frame_policy`, prefix, kind, repo identity, beadyard identity, `hosts/*` or `allowed_signers`
-change still needs an operator renew. **Frames keep enforcing the signed H0 snapshot**, never H1,
-and the frame's own fresh config fence pins the head it actually read. Expiry, the replay floor,
-signatures and `BH_HQ_AUTHORITY_ENFORCE=false` are unchanged. The signed format is unchanged:
+change still needs an operator rebind. **Frames keep enforcing the signed H0 snapshot**, never H1,
+and the frame's own fresh config fence pins the head it actually read. Expiry (when opted in), the replay
+floor and signatures are unchanged. The signed format is unchanged:
 this is verifier-side only.
 
 `bh hq authority status`, `check`, `bh doctor` and the publish notice use the same predicate
@@ -368,33 +464,14 @@ upgraded, an edit still fences the not-yet-upgraded ones.
 **Trust delta.** The key-less SQL config publisher can now commit `fleet.yaml` edits that frames
 do not enforce without fencing them (it could already commit them; frames fenced). It still
 cannot change a `frame_policy`, managed hive identity, host manifest, `allowed_signers` or
-beadyard identity, nor rewrite history, without an operator renew.
+beadyard identity, nor rewrite history, without an operator rebind.
 
-### Long authorities stay long (`bh-oywx8`, `bh-u4cip`)
-
-Operator-signed SQL actions (`grant`, `observe`, lifecycle verbs, `release-upgrade`) used to
-reset `expires_at` to now + 1 h, silently shortening a 7 d or 30 d authority. They now sign
-`max(original expiry, now + 3600)` (`operator_signed_expiry` in
-`src/beadhive/hq_authority_guard.py`): a long authority is never shortened, and a short or lapsed
-one gets the 1 h floor. The Git plane never reset it. A candidate grant's own cap is separate and
-unchanged.
-
-To renew for a long duration, pass `--duration` up to the configured ceiling; weeks are accepted
-(`2w`, units `s m h d w`, `src/beadhive/hq_authority_ceiling.py`). The expiry warnings and
-`check` print the renew command for the **resolved ceiling** (default 604800 s), adding
-`--max-duration` only when the ceiling is above 7 d. See
-[the ceiling](#authority-duration-ceiling).
-
-Renewal still needs the operator key. Laptop-free renewal (a scoped delegate key) is out of scope
-for 0.23.x: every frame pins one operator key, so a 0.23.0 frame would reject a delegate-signed
-record. It is deferred to 0.24.0 (`bh-rjjjo`).
-
-### Renewing from an operator host (for example the laptop) {#authority-laptop-renew}
+### Rebinding from an operator host (for example the laptop) {#authority-laptop-renew}
 
 A released `bh` builds its control plane from the running host's `host.yaml`. An operator host
 whose `host.yaml` has no `hq.sql.authority_writer` binds it from a file instead, with
-`BH_HQ_OPERATOR_SETTINGS=<file>` (or, from 0.23.0, `--operator-settings <file>`, which wins
-over the env var) on `bh hq authority renew|grant|observe|bind-beadyard|status|check`
+`BH_HQ_OPERATOR_SETTINGS=<file>` (or `--operator-settings <file>`, which wins over the env var)
+on `bh hq authority rebind|grant|observe|bind-beadyard|status|check|mode|mode-trusted|mode-signed|join`
 and `bh host release-upgrade plan|apply|check`. The file is JSON or YAML:
 
 ```json
@@ -419,77 +496,126 @@ and `bh host release-upgrade plan|apply|check`. The file is JSON or YAML:
 
 Credentials stay references (fnox config path, profile and key); the file holds no secret. It is
 refused with an error naming the key when `hq.sql.runtime` is set or `hq.sql.authority_writer` is
-missing, so it cannot make a frame an authority writer. Renewal:
+missing, so it cannot make a frame an authority writer. Rebinding from such a host:
 
 ```sh
 BH_HQ_OPERATOR_SETTINGS=settings.json bh hq authority status      # note `revision`
-BH_HQ_OPERATOR_SETTINGS=settings.json bh hq authority renew \
-  --expected-revision <revision> --operator-key <key> --duration 7d --confirm   # --duration up to the ceiling
+BH_HQ_OPERATOR_SETTINGS=settings.json bh hq authority rebind \
+  --expected-revision <revision> --operator-key <key> --confirm
 ```
 
-## UNSUPPORTED: disabling HQ authority enforcement {#unsupported-disabling-hq-authority-enforcement}
+In trusted mode the same host needs no `--operator-key`. Set `hq.authority_mode: trusted` in the
+operator settings file (or `BH_HQ_AUTHORITY_MODE=trusted`) and key-less operator commands publish
+the unsigned marker.
 
-> **UNSUPPORTED — dev/prototype instances only.** Do not set this on a production executor.
+### Fleet default mode and open admission {#fleet-authority-mode}
 
-`BH_HQ_AUTHORITY_ENFORCE=false` turns off HQ runtime-authority enforcement for every `bh`
-process that has it in its environment. Unset, empty, or `true` keeps today's fail-closed
-behavior. Any other value is an error, never a fallback: `bh` exits with status 2.
+The fleet default is the committed `hq.default_authority_mode` in `fleet.yaml`. Frames whose
+`hq.authority_mode` is `inherit` follow it.
 
-**What stops being enforced on that host:**
+```sh
+bh hq authority mode                                            # show mode, source, fleet default
+bh hq authority mode-trusted --operator-key <key> --confirm     # once; then work key-less
+bh hq authority mode-signed  [--operator-key <key>] --confirm   # back to signed
+```
 
-- authority expiry, both the signed runtime authority and the candidate grant;
-- the config binding, so a config head that the authority does not cross-reference is
-  tolerated;
-- the authority-derived eligibility predicates, which become satisfied-with-warning:
-  `authority_available`, `admitted_active`, `not_cordoned`,
-  `reviewed_admission_or_emergency`, and the desired-state halves of
-  `current_frame_incarnation`, `beadyard_binding`, `release_matches`, `conformance_pass`
-  and `capabilities_match_admission`;
+The value rides in the `action` argument of the existing `hq.authority` operation, so the
+operation catalog and wire contract are unchanged.
+
+**Carrier.** `hq.default_authority_mode` is part of the frame-relevant set that
+`config_head_tolerated` compares, so on SQL HQ a change fences signed frames until the authority
+is re-signed against the new head; `mode-trusted` publishes the key and then runs a signed
+`rebind`. On Git HQ the config carrier commit is itself operator-signed. A frame therefore learns
+`trusted` only from a read whose operator signature or binding it verified: a key-less HQ writer
+cannot downgrade a signed fleet (its edit fences signed frames on SQL HQ and is refused by a
+signed Git guard). Lowering to `signed` is always taken. The signed authority state is untouched
+(0.23.x `validate_state` needs its exact key set).
+
+**Learning.** Each host persists the learned default in
+`$BH_HOME/state/hq-fleet-authority-mode.json`; the resolver costs one `stat` per call. SQL frames
+learn on every verified authority or config read (eligibility, receiver). A host that meets an
+unsigned record before it has learned anything (a frame joining after the fleet went trusted)
+walks back to the newest operator-signed authority (SQL, up to 64 commits) or config commit (Git)
+and learns that one's default. Git frames otherwise learn on their next config-carrier read: run
+`bh hq authority mode` on the frame.
+
+**Open admission.** In a trusted fleet
+`bh hq authority join [--frame <host_id> --public-key <key.pub>] --confirm` admits a frame
+directly: one key-less authority write records its holder identity, instance and runtime key
+from its committed host manifest as an ACTIVE, declared incarnation (audience and conformance
+profile copied from the fleet), with no grant record, no `observe` or `lifecycle admit`
+enrollment and no operator key. Frame registration (`publish_host_manifest`) runs it
+automatically when the frame holds HQ authority-write access (`BH_HQ_OPERATOR_SETTINGS`);
+otherwise it prints the `join` command to run where HQ is writable. Cordon, drain and retire act
+on the record as on any other. A signed fleet refuses `join`.
+
+*Limit.* Open admission is an authority step only. A new SQL frame still needs its DB account,
+inbox and session tables provisioned (`hq_open_admission.request` computes the record that
+authority needs); that is infrastructure the operator or director provisions, not something
+`join` does.
+
+**Pinned signed frames.** A frame pinned `hq.authority_mode: signed` in a trusted fleet refuses
+to work, fail closed, with a message naming both fixes (unpin to `inherit`, or the operator runs
+`mode-signed`); `bh doctor` shows the same line.
+
+### Switching runbook {#authority-switching}
+
+**Goal: take the factory to trusted with one command.** Upgrade first, then raise the fleet once.
+
+1. Upgrade **every frame and every operator host** to 0.24.0. A 0.23.x frame rejects the new
+   fleet key (the fleet schema is strict) and rejects unsigned records, so it would be fenced.
+2. On Git HQ, have a trusted operator re-provision the HQ server hooks so they accept unsigned
+   pushes (a local-only Git HQ needs nothing).
+3. Run, once, with the key: `bh hq authority mode-trusted --operator-key <key> --confirm`.
+4. Frames inherit it. Confirm with `bh hq authority mode` on a frame and `bh doctor`. From here
+   operator commands need no key, and registering frames are open-admitted.
+
+**Trusting a single frame only.** Set `BH_HQ_AUTHORITY_MODE=trusted` in the environment of every
+`bh` process on that host (host daemon, frame bridge, heartbeat), or `hq.authority_mode: trusted`
+in its `host.yaml` (a HOST-only key). Unset or `inherit` returns it to the fleet default.
+
+**Back to signed.** Do this while the operator is still trusted, so the key is accepted:
+
+1. `bh hq authority mode-signed --operator-key <key> --confirm` (or `rebind` with the key). This
+   removes the fleet key and re-signs the authority with the key.
+2. Then switch the operator settings away from trusted (`hq.authority_mode` or
+   `BH_HQ_AUTHORITY_MODE`), so later mutations are keyed again.
+3. Unpin any frame left on `trusted`, and drop `BH_HQ_AUTHORITY_ENFORCE` if it is set.
+
+A frame pinned `signed` in a trusted fleet refuses to work until step 1 or an unpin.
+
+**Mixed versions.** 0.23.x frames reject the fleet key and unsigned records. Never run
+`mode-trusted` before every frame and operator host is on 0.24.0. `mode-signed` removes the key,
+so 0.23.x can read the fleet again once the authority is re-signed with the key.
+
+### Deprecated: `BH_HQ_AUTHORITY_ENFORCE` {#unsupported-disabling-hq-authority-enforcement}
+
+`BH_HQ_AUTHORITY_ENFORCE=false` is **deprecated; use `BH_HQ_AUTHORITY_MODE=trusted`**. It still
+works, resolves to `trusted` with a deprecation warning, and keeps its **old content waiver**:
+unlike the new trusted mode it also ignores cordon, admission state, release pins and caps. It
+is UNSUPPORTED, dev/prototype only, and will be removed (`bh-ihckx`, 0.24.1). Unset, empty, or
+`true` keeps the default; any other value is an error and `bh` exits with status 2.
+
+What the legacy switch waives on that host, beyond trusted's signature, expiry and head binding:
+
+- the authority-derived eligibility predicates (`authority_available`, `admitted_active`,
+  `not_cordoned`, `reviewed_admission_or_emergency`, and the desired-state halves of
+  `current_frame_incarnation`, `beadyard_binding`, `release_matches`, `conformance_pass` and
+  `capabilities_match_admission`), which become satisfied-with-warning;
 - in hive-lease ownership reads: admission state, cordon, and per-hive policy validity.
 
-**What is unchanged:**
+Signatures, the replay floor and the principal-to-incarnation route stay checked where a
+signature is present. While it is set every `bh` command, the host daemon and the frame bridge
+print a stderr banner, `bh doctor` lists a WARN, `bh hq authority status` includes
+`"enforcement": "disabled"`, and `bh host eligible` marks each waived predicate `waived`.
 
-- signatures, the replay floor, and the principal-to-incarnation route;
-- the frame-manifest-to-own-lease identity checks;
-- the heartbeat, which follows `BH_FRAME_HEARTBEAT`;
-- hive-lease holder and lease validation. Renewal through the trusted receiver is the 0.22.x path
-  and is **going**: on a director-placed hive the lease row is placement, written by the director
-  ([below](#hive-placement-by-the-director-dolt-server-hq-023)), and expiry is only a failover
-  hint.
-
-**Trust delta.** With enforcement off, the frame accepts work with no valid operator
-authority. Cordon, release pins, caps and expiry are not enforced there, so the frame is
-**self-asserted**. The scope is one host and one process environment, never the fleet. The
-operator key still never touches the frame.
-
-**How to set it.** It is an environment variable, like `BH_FRAME_HEARTBEAT` and
-`BH_HQ_SQL_LIVENESS`. It needs no fleet-config publish and no `host.yaml` change:
-
-- The host schema rejects unknown keys, and pre-0.22.x readers (the 0.21.3 heartbeat sender)
-  share the HOST file, so a `host.yaml` key would break them.
-- A fleet key would itself need an authority-bound publish.
-
-Set it in the systemd unit environment of **every** `bh` process on that host: the host
-daemon, the frame bridge, and the heartbeat. A `host.yaml` key (`hq.authority.enforce`) may
-replace the variable once no pre-0.22.x reader shares a HOST file. That is a follow-up, not
-part of this switch.
-
-**How it shows up.** While it is disabled:
-
-- every `bh` command, the host daemon and the frame bridge print one stderr banner: "HQ
-  authority enforcement DISABLED on this host — unsupported, dev/prototype only";
-- `bh doctor` lists a WARN;
-- `bh hq authority status` includes `"enforcement": "disabled"` (otherwise `"enabled"`);
-- `bh host eligible` marks each waived predicate `waived`, and its `--json` output carries
-  `"enforcement": "disabled"` and a `"waived"` list.
-
-**Re-enable before admitting new executors.** The operator owns turning enforcement back on
-(unset the variable on every executor) **before the three new executor frames join**. On a
-four-executor fleet, enforcement must be on everywhere before admission. This is the same
-gate as [hive-writer partitioning ADR](design/hive-writer-partitioning-adr.md#binding-conditions)
-binding conditions 13 (no single-executor escape survives admission of another executor) and
-18 (state and work travel together). It precedes outline task O8 (enroll and admit the three
-new executor frames). This switch does not itself gate on O8.
+**Trust delta.** With the legacy switch the frame accepts work with no valid operator authority
+and no cordon, so it is self-asserted. The scope is one host and one process environment, never
+the fleet. Prefer `trusted`, which honors cordon. Re-enable enforcement everywhere before
+admitting new executors; this is the same gate as the
+[hive-writer partitioning ADR](design/hive-writer-partitioning-adr.md#binding-conditions)
+binding conditions 13 (no single-executor escape survives admission of another executor) and 18
+(state and work travel together).
 
 ## See also
 
@@ -657,32 +783,3 @@ Each run prints one `BH_M10` JSON line with the TTL, `failover_after` and the me
 `due_after_stall_s`. The soak passes when every run is green and the due time stays just
 above `failover_after`. `BH_M10_SEEDS=0,1,…` widens the suite's fixed-seed product schedule
 in the same way.
-
-## Authority duration ceiling
-
-`bh hq authority renew --duration <seconds|7d|36h>` signs an authority that stays valid for
-that long. `--duration` defaults to 3600 s (1 h) so every renewal is an explicit lifetime
-choice; renew prints the resulting `expires_at`. Use `--duration 7d` for laptop-off operation.
-
-The signing side refuses a duration above a configurable **ceiling**. The default is 7 days
-(`AUTHORITY_MAX_DURATION_DEFAULT_S` = 604800) and there is **no hard maximum**: the operator
-may set any positive, finite ceiling. The same ceiling applies to the SQL and Git backends and
-to Git fleet-config publication. Resolution order, first match wins:
-
-1. `--max-duration` on `bh hq authority renew` (0.23.0+; seconds or e.g. `7d`)
-2. `hq.sql.authority_max_duration_s` in the operator settings file (read only through
-   `BH_HQ_OPERATOR_SETTINGS` (all versions) or `--operator-settings` (0.23.0+); it is never a
-   frame or fleet key)
-3. env `BH_HQ_AUTHORITY_MAX_DURATION`
-4. the 7 day default
-
-A duration above the ceiling is refused with the ceiling and its source in the message.
-Frame verifiers (`verified_state_at`, `validate_state`) enforce each signed `expires_at` and
-have no maximum, so no frame change is needed; they accept 7 d and 30 d authorities and fence
-after expiry.
-
-Trust delta: revocation latency is unchanged. Cordon, retire and emergency actions are
-operator-signed republications and take effect at once. What grows is the window in which a
-stolen or forgotten authority stays valid with no operator action: up to the configured
-ceiling instead of 24 h, for all executors at once because one authority row covers the fleet.
-The operator owns that choice explicitly.

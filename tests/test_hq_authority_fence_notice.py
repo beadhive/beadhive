@@ -45,7 +45,7 @@ def test_bound_authority_announces_count_and_renew_command(monkeypatch, capsys):
     assert "unbind HQ authority for 3 active frame(s)" in err
     assert "3 active frame(s) are fenced" in err
     assert "OLDHEAD" in err and "NEWHEAD" in err
-    assert "bh hq authority renew --expected-revision AUTHREV" in err
+    assert "bh hq authority rebind --expected-revision AUTHREV" in err
     assert "--operator-key" in err and "--confirm" in err and "OFF-FRAME" in err
 
 
@@ -117,7 +117,7 @@ def test_frame_relevant_publish_still_announces(monkeypatch, capsys, published, 
     err = capsys.readouterr().err
     assert "unbind HQ authority for 3 active frame(s)" in err
     assert "3 active frame(s) are fenced" in err
-    assert "bh hq authority renew --expected-revision AUTHREV" in err
+    assert "bh hq authority rebind --expected-revision AUTHREV" in err
 
 
 def test_binding_read_failure_keeps_exact_head_notices(monkeypatch, capsys):

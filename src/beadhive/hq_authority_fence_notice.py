@@ -115,7 +115,7 @@ def announce_before(probe: AuthorityProbe | None, expected_head: str, documents=
     if probe.degraded:
         _say(
             "notice: HQ authority could not be read; this publish may unbind HQ authority "
-            "and fence frames until the operator renews (bh hq authority renew)."
+            "and fence frames until the operator renews (bh hq authority rebind)."
         )
         return
     if expected_head in (probe.bound_head, probe.accepted_head or None) and not _tolerated(
@@ -144,6 +144,6 @@ def announce_after(probe: AuthorityProbe | None, new_head: str, documents=None) 
         f"  new config head:      {new_head}\n"
         "  The publisher holds no operator key and cannot re-sign. Run this OFF-FRAME, on an "
         "operator host (never inside a frame), using the operator-settings binding there:\n"
-        f"    bh hq authority renew --expected-revision {probe.authority_head} "
-        "--operator-key <operator-key-path> --duration <seconds> --confirm"
+        f"    bh hq authority rebind --expected-revision {probe.authority_head} "
+        "--operator-key <operator-key-path> --confirm"
     )

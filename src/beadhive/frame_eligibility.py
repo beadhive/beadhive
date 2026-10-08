@@ -11,7 +11,7 @@ from pathlib import Path
 
 from . import hosts
 from .host_heartbeat_core import VerifiedObservation
-from .hq_authority_enforce import AuthorityEnforcementError
+from .hq_authority_enforce import AuthorityEnforcementError, content_waived
 from .hq_authority_enforce import enforced as authority_enforced
 
 
@@ -415,8 +415,10 @@ def load_facts(frame, *, hq_dir, cfg=None, at=None, prefix=None):
 
     settings = cfg if cfg is not None else config.load_host()
     enabled = settings.get("host", {}).get("dispatch", {}).get("enabled", True)
-    # Parsed before any read: an invalid value errors rather than silently enforcing.
-    waived = not authority_enforced()
+    # Parsed before any read: an invalid value errors rather than silently enforcing. Trusted
+    # mode (bh-mk97e) verifies less in the read itself but waives no predicate: only the
+    # deprecated BH_HQ_AUTHORITY_ENFORCE=false keeps the 0.23 content waiver.
+    waived = content_waived()
     if at is not None and (type(at) not in (int, float) or not math.isfinite(at)):
         return EligibilityFacts(VerifiedObservation("invalid-clock"), {}, enabled, False)
     try:
@@ -573,7 +575,9 @@ def evictable(host_id, *, hq_dir, at=None, evict_after_s=None):
             status.get("authority_ready") is not True
             or type(expiry) not in (int, float)
             or not math.isfinite(expiry)
+            # Trusted mode (bh-mk97e): an expired authority still names retirement/quarantine.
             or clock >= expiry
+            and authority_enforced()
         ):
             return False
         records = status.get("state", {}).get("frames", {})

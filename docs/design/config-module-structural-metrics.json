@@ -6,8 +6,8 @@
     "cyclomatic_sum": 474,
     "functions": 124,
     "functions_over_10": 6,
-    "nonblank_lines": 3274,
-    "physical_lines": 3872,
+    "nonblank_lines": 3298,
+    "physical_lines": 3896,
     "python_files": 17
   },
   "before": {
@@ -29,8 +29,8 @@
     "cyclomatic_sum": 178,
     "functions": 43,
     "functions_over_10": 4,
-    "nonblank_lines": 932,
-    "physical_lines": 1082,
+    "nonblank_lines": 956,
+    "physical_lines": 1106,
     "python_files": 3
   },
   "metric_definition": {

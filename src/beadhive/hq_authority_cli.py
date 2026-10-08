@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 from pathlib import Path
 from typing import Annotated
@@ -35,10 +36,25 @@ class IntDurationSeconds(_click_types.IntParamType):
             self.fail(str(exc), param, ctx)
 
 
+def _operator_mode_scope(command):
+    """Resolve ``hq.authority_mode`` from the same ``--operator-settings`` file that selects the
+    plane (bh-l4q0s); the signature is preserved for Typer."""
+
+    @functools.wraps(command)
+    def wrapped(*args, **kwargs):
+        with hq_authority_enforce.operator_settings(kwargs.get("operator_settings")):
+            return command(*args, **kwargs)
+
+    return wrapped
+
+
+@_operator_mode_scope
 def authority_cmd(
     action: str = typer.Argument(
         ...,
-        help="install, bind, bind-beadyard, grant, observe, renew, status, check, or prune-inbox",
+        help="install, bind, bind-beadyard, grant, observe, rebind, renew (deprecated alias of "
+        "rebind), status, check, prune-inbox, mode (show the fleet default authority mode), "
+        "mode-signed / mode-trusted (set it), or join (open admission in a trusted fleet)",
     ),
     record: Annotated[Path | None, typer.Option("--record")] = None,
     frame: str = typer.Option("", "--frame"),
@@ -54,13 +70,14 @@ def authority_cmd(
     role: str = typer.Option("frame", "--role"),
     holder_id: str = typer.Option("", "--holder-id"),
     duration: Annotated[
-        int,
+        int | None,
         typer.Option(
             "--duration",
             click_type=IntDurationSeconds(),
-            help="seconds or e.g. 7d / 36h",
+            help="rebind/renew: opt-in expiry, seconds or e.g. 7d / 36h; omitted, the authority "
+            "does not expire",
         ),
-    ] = 3600,
+    ] = None,
     client_interpreter: Annotated[Path | None, typer.Option("--client-interpreter")] = None,
     confirm: bool = typer.Option(False, "--confirm"),
     operator_settings: Annotated[
@@ -74,8 +91,8 @@ def authority_cmd(
         str | None,
         typer.Option(
             "--max-duration",
-            help="renew: authority duration ceiling, seconds or e.g. 7d; overrides "
-            "operator settings and $BH_HQ_AUTHORITY_MAX_DURATION",
+            help="rebind/renew: ceiling for an explicit --duration, seconds or e.g. 7d; overrides "
+            "operator settings and $BH_HQ_AUTHORITY_MAX_DURATION (default unlimited)",
         ),
     ] = None,
     min_remaining: Annotated[
@@ -88,13 +105,39 @@ def authority_cmd(
     ] = None,
 ) -> None:
     try:
+        # The fleet default rides in the action value (`mode-trusted`), so the published
+        # hq.authority operation keeps its parameter list (bh-taa04.3).
+        if action == "mode" or action.startswith("mode-"):
+            from . import hq_authority_fleet_mode
+
+            result = hq_authority_fleet_mode.mode_cmd(
+                action.removeprefix("mode").removeprefix("-"),
+                operator_settings=operator_settings,
+                operator_key=operator_key,
+                confirm=confirm,
+                max_duration=max_duration,
+            )
+            typer.echo(json.dumps(result, sort_keys=True))
+            return
+        if action == "join":
+            from . import hq_authority_fleet_mode
+
+            result = hq_authority_fleet_mode.join_cmd(
+                frame,
+                public_key,
+                operator_settings=operator_settings,
+                operator_key=operator_key,
+                confirm=confirm,
+            )
+            typer.echo(json.dumps(result, sort_keys=True))
+            return
         if (operator_settings or hq_operator_settings.configured()) and action in {
             "install",
             "bind",
         }:
             raise hq_control_plane.ControlPlaneError(
-                f"{hq_operator_settings.ENV} / --operator-settings applies to renew, grant, "
-                "observe, bind-beadyard, status, check and prune-inbox"
+                f"{hq_operator_settings.ENV} / --operator-settings applies to rebind, renew, "
+                "grant, observe, bind-beadyard, status, check and prune-inbox"
             )
         plane = hq_operator_settings.select_plane(operator_settings)
         if action == "status":
@@ -167,10 +210,12 @@ def authority_cmd(
                 )
                 result = {"authority_anchor": str(anchor), "role": role}
             else:
-                if operator_key is None:
+                # Key-less publication is trusted-mode only (bh-l4q0s); a key always signs.
+                if hq_authority_enforce.key_required(operator_key):
                     raise hq_control_plane.ControlPlaneError(
                         "mutation requires separate --operator-key"
                     )
+                key = str(operator_key) if operator_key is not None else ""
                 if action == "grant":
                     if record is None:
                         raise hq_control_plane.ControlPlaneError("grant requires operator --record")
@@ -182,30 +227,42 @@ def authority_cmd(
                         data["public_key"],
                         data["desired"],
                         expected=expected,
-                        operator_key=str(operator_key),
+                        operator_key=key,
                     )
                 elif action == "observe":
                     sha = plane.accept_observation(
                         frame,
                         expected=expected,
-                        operator_key=str(operator_key),
+                        operator_key=key,
                         holder_identity=holder_id,
                     )
-                elif action == "renew":
-                    # Precedence: --max-duration, operator-settings
-                    # hq.sql.authority_max_duration_s, $BH_HQ_AUTHORITY_MAX_DURATION, then the
-                    # 7 d default (bh-od8ve). Invalid values are refused, never clamped.
+                elif action in {"rebind", "renew"}:
+                    # rebind re-signs the current authority against the current config head
+                    # (revision + 1, policies re-projected by the plane). Without --duration it
+                    # signs the no-expiry sentinel, so it also converts an expiring 0.23.x
+                    # authority into a non-expiring one; --duration opts back into expiry under
+                    # the ceiling. `renew` is the deprecated alias (bh-qxabp).
+                    if action == "renew":
+                        typer.echo(
+                            "deprecated: 'bh hq authority renew' is now 'bh hq authority rebind' "
+                            "(add --duration <7d|36h|seconds> to keep a finite expiry)",
+                            err=True,
+                        )
+                    # Without --duration the authority does not expire (bh-y929l). An explicit
+                    # duration is capped by --max-duration, operator-settings
+                    # hq.sql.authority_max_duration_s or $BH_HQ_AUTHORITY_MAX_DURATION, else
+                    # unlimited (bh-od8ve). Invalid values are refused, never clamped.
                     ceiling = hq_authority_ceiling.resolve_ceiling(
                         cli=max_duration, settings=getattr(plane, "authority_max_duration_s", None)
                     )
                     sha = plane.renew(
                         expected=expected,
-                        operator_key=str(operator_key),
+                        operator_key=key,
                         duration=duration,
                         ceiling=ceiling,
                     )
                 elif action == "bind-beadyard":
-                    sha = plane.bind_beadyard(expected=expected, operator_key=str(operator_key))
+                    sha = plane.bind_beadyard(expected=expected, operator_key=key)
                 else:
                     raise hq_control_plane.ControlPlaneError("unknown authority action")
                 result = {"revision": sha}

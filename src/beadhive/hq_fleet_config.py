@@ -38,11 +38,13 @@ class FleetConfigError(ValueError):
 class GitFleetConfigRevisionStore:
     """Operator-signed config head plus immutable anti-rollback witnesses."""
 
-    def __init__(self, plane, git, *, operator_key=None, duration=3600, ceiling=None):
+    def __init__(self, plane, git, *, operator_key=None, duration=None, ceiling=None):
         self.plane, self.git = plane, git
         self.operator_key, self.duration, self.ceiling = operator_key, duration, ceiling
 
     def _read(self, *, allow_expired=False, allow_legacy_bound=False):
+        from . import hq_authority_enforce
+
         plane, git = self.plane, self.git
         policy = plane._policy()
         remote = plane._remote(policy)
@@ -63,15 +65,24 @@ class GitFleetConfigRevisionStore:
                 raise FleetConfigError("configuration head missing with retained witnesses")
             return "", {}, policy
         git(plane.hq_dir, *options, "fetch", "--no-tags", remote, sha)
-        git(
-            plane.hq_dir,
-            "-c",
-            f"gpg.ssh.allowedSignersFile={policy['operator_signers']}",
-            "-c",
-            f"gpg.ssh.program={policy['executables']['ssh_keygen']['path']}",
-            "verify-commit",
-            sha,
-        )
+        try:
+            hq_authority_enforce.require_fleet_compatible()
+        except hq_authority_enforce.AuthorityModeConflict as exc:
+            raise FleetConfigError(str(exc)) from None
+        # Trusted mode (bh-mk97e): signed or unsigned, unverified; witnesses still hold.
+        if hq_authority_enforce.enforced():
+            try:
+                self._verify(policy, sha)
+            except ValueError:
+                header = git(plane.hq_dir, "cat-file", "-p", sha).split("\n\n", 1)[0]
+                if not hq_authority_enforce.unsigned_commit(header):
+                    raise
+                if hq_authority_enforce.discoverable():
+                    self.discover_fleet_default(policy, sha)
+                if hq_authority_enforce.enforced():
+                    raise FleetConfigError(
+                        hq_authority_enforce.unsigned_refusal("HQ fleet configuration")
+                    ) from None
         if (
             git(plane.hq_dir, "ls-tree", "--name-only", sha) != "config.json"
             or int(git(plane.hq_dir, "cat-file", "-s", f"{sha}:config.json")) > 4 * 1024 * 1024
@@ -99,9 +110,75 @@ class GitFleetConfigRevisionStore:
             raise FleetConfigError("configuration rollback or inconsistent witness")
         if state["generation"] != policy["generation"] or plane.clock() < state["issued_at"] - 30:
             raise FleetConfigError("configuration generation/clock mismatch")
-        if not allow_expired and plane.clock() >= state["expires_at"]:
+        if (
+            not allow_expired
+            and plane.clock() >= state["expires_at"]
+            and hq_authority_enforce.enforced()
+        ):
             raise FleetConfigError("configuration validity expired")
         return sha, state, policy
+
+    def _verify(self, policy, sha):
+        self.git(
+            self.plane.hq_dir,
+            "-c",
+            f"gpg.ssh.allowedSignersFile={policy['operator_signers']}",
+            "-c",
+            f"gpg.ssh.program={policy['executables']['ssh_keygen']['path']}",
+            "verify-commit",
+            sha,
+        )
+
+    #: How far back fleet-default discovery walks for the newest operator-signed config commit.
+    DISCOVERY_DEPTH = 64
+
+    def discover_fleet_default(self, policy=None, sha=None) -> None:
+        """Learn the fleet default from the newest OPERATOR-SIGNED config commit (bh-taa04.3).
+
+        A signed/inherit host that meets an unsigned carrier (published key-less once the
+        fleet went trusted) walks the config head's first-parent history, bounded by
+        :attr:`DISCOVERY_DEPTH`, to the newest commit that verifies under the operator signers
+        and learns its ``hq.default_authority_mode`` as operator-authorised. Any doubt learns
+        nothing; never raises.
+        """
+        from . import hq_authority_enforce
+
+        plane, git = self.plane, self.git
+        try:
+            policy = policy or plane._policy()
+            if sha is None:
+                remote = plane._remote(policy)
+                options = ("-c", "protocol.ext.allow=always")
+                rows = git(plane.hq_dir, *options, "ls-remote", remote, guard.CONFIG_HEAD)
+                sha = next((row.split()[0] for row in rows.splitlines()), "")
+                if not sha:
+                    return
+                git(plane.hq_dir, *options, "fetch", "--no-tags", remote, sha)
+            history = git(
+                plane.hq_dir,
+                "rev-list",
+                "--first-parent",
+                f"--max-count={self.DISCOVERY_DEPTH}",
+                sha,
+            ).split()
+            for commit in history:
+                header = git(plane.hq_dir, "cat-file", "-p", commit).split("\n\n", 1)[0]
+                if hq_authority_enforce.unsigned_commit(header):
+                    continue
+                self._verify(policy, commit)
+                import json
+
+                state = json.loads(git(plane.hq_dir, "show", f"{commit}:config.json"))
+                guard.validate_config_state(state)
+                if state["generation"] != policy["generation"]:
+                    return
+                documents = tuple(FleetConfigDocument(**doc) for doc in state["documents"])
+                hq_authority_enforce.observe_fleet_default(
+                    documents, authorised=True, via="git-discovery"
+                )
+                return
+        except Exception:  # noqa: BLE001 - discovery only ever adds an authorised fact
+            return
 
     def _snapshot(self, sha, state, policy):
         documents = tuple(FleetConfigDocument(**doc) for doc in state["documents"])
@@ -112,12 +189,22 @@ class GitFleetConfigRevisionStore:
         identity = hashlib.sha256(
             (policy["server_root"] + "\0" + policy["client"]["policy_digest"]).encode()
         ).hexdigest()
+        from . import hq_authority_enforce
+        from .hq_authority_enforce import snapshot_validity
+
+        # Signed: `_read` verified this commit's operator signature, so its fleet default is
+        # authorised. Trusted: only a lowering (or an already-learned trusted) is taken.
+        hq_authority_enforce.observe_fleet_default(
+            documents, authorised=hq_authority_enforce.enforced(), via="git"
+        )
+        fetched = self.plane.clock()
         return FleetConfigSnapshot(
             backend_identity="git:" + identity,
             commit_revision=sha,
             generation=state["generation"],
-            fetched_at=self.plane.clock(),
-            valid_until=state["expires_at"],
+            fetched_at=fetched,
+            # Signed: the carrier expiry. Trusted (bh-mk97e): never expired.
+            valid_until=snapshot_validity(fetched, state["expires_at"], None),
             documents=documents,
         )
 
@@ -158,12 +245,16 @@ class GitFleetConfigRevisionStore:
             validate_documents(documents)
         except DocumentValidationError as exc:
             raise FleetConfigError(str(exc)) from None
-        if not self.operator_key:
+        from . import hq_authority_enforce
+
+        # Key-less publication is trusted-mode only (bh-l4q0s): an unsigned carrier commit.
+        if hq_authority_enforce.key_required(self.operator_key):
             raise FleetConfigError(
                 "configuration publication requires operator key/bounded validity"
             )
         try:
-            hq_authority_ceiling.check_duration(self.duration, self.ceiling)
+            # No duration: non-expiring (bh-y929l); an explicit one is ceiling-checked.
+            hq_authority_ceiling.signed_expiry(0, self.duration, self.ceiling)
         except ValueError as exc:
             raise FleetConfigError(str(exc)) from None
         previous_sha, previous, policy = self._read(
@@ -188,7 +279,7 @@ class GitFleetConfigRevisionStore:
             "generation": policy["generation"],
             "revision": previous.get("revision", 0) + 1,
             "issued_at": now,
-            "expires_at": now + self.duration,
+            "expires_at": hq_authority_ceiling.signed_expiry(now, self.duration, self.ceiling),
             "documents": [asdict(document) for document in documents],
         }
         guard.validate_config_state(state)
@@ -198,20 +289,12 @@ class GitFleetConfigRevisionStore:
         git, directory = self.git, self.plane.hq_dir
         blob = git(directory, "hash-object", "-w", "--stdin", data=encoded)
         tree = git(directory, "mktree", data=f"100644 blob {blob}\tconfig.json\n")
-        args = [
-            "-c",
-            "gpg.format=ssh",
-            "-c",
-            f"user.signingkey={self.operator_key}",
-            "commit-tree",
-            "-S",
-            tree,
-        ]
-        if expected_revision:
-            args += ["-p", expected_revision]
         message = f"Fleet configuration revision {state['revision']}\n"
         if publication_id is not None:
             message += f"\nHQ export publication ID: {publication_id}\n"
+        args, message = hq_authority_enforce.commit_tree_args(
+            tree, expected_revision, self.operator_key, message
+        )
         sha = git(directory, *args, data=message)
         witness = f"{guard.CONFIG_WITNESS}{state['revision']:020d}"
         git(
