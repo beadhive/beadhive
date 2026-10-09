@@ -14,6 +14,7 @@ import importlib
 import json
 import os
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -155,7 +156,8 @@ def _conflict_tables(val) -> list[str]:
 
 
 def _forwarded(cwd, env):
-    """The forward write path (bh-g7dlo): ``(env, refusal)`` for a bd bh runs in ``cwd``.
+    """The forward write path (bh-g7dlo): ``(env, refusal, forwarded)`` for a bd bh runs in
+    ``cwd``.
 
     A checkout this frame forwards (``bh hive forward point``) gets bd's server environment for
     the current primary (re-pointed first when the cached placement moved); every other
@@ -163,14 +165,61 @@ def _forwarded(cwd, env):
     caller fails closed without running bd. Resolved dynamically like ``host_fence`` below, to
     keep the forward module out of this legacy cycle."""
     if cwd is None:
-        return env, None
+        return env, None, False
     hive_forward = importlib.import_module("beadhive.hive_forward")
     try:
         if hive_forward.ensure_current(cwd) is None:
-            return env, None
-        return hive_forward.bd_env(cwd, base=env), None
+            return env, None, False
+        return hive_forward.bd_env(cwd, base=env), None, True
     except hive_forward.ForwardError as exc:
-        return env, str(exc)
+        return env, str(exc), False
+
+
+#: bd verbs that move, configure or administer the store rather than author beads in it. They
+#: never need the replica's identity, and the identity probe must not stand in their way.
+_IDENT_EXEMPT_VERBS = frozenset(
+    {
+        "backup",
+        "bootstrap",
+        "config",
+        "doctor",
+        "dolt",
+        "federation",
+        "init",
+        "migrate",
+        "repo",
+        "sql",
+        "sync",
+        "vc",
+    }
+)
+
+
+def _replica_ident_refusal(cwd, args) -> str | None:
+    """Give a pulled, cut-over replica its node-local ``bh_local_ident`` before a bd WRITE runs
+    against it (bh-7yuny, bh-0tjiq): ``None`` to go ahead, else an actionable refusal.
+
+    The identity table is ``dolt_ignore``'d, so it never arrives by sync; without it every
+    guarded write on the replica dies inside the guard trigger with ``Error 1146: table not
+    found: bh_local_ident``, which names no cause and no remedy. Provisioned here, by the verb
+    that needs it, so no cutover CLI, HQ clone or runtime frame is required. Reads never pay
+    for it, and a checkout is checked once per process
+    (:func:`beadhive.fence_data.ensure_replica_ident`)."""
+    if cwd is None:
+        return None
+    guard = importlib.import_module("beadhive.guard")
+    if guard.bd_verb(args) in _IDENT_EXEMPT_VERBS:
+        return None
+    writes = (
+        guard.is_bd_write(args)
+        or guard.is_intake_create(args)
+        # `comments` is a read verb to the lease gate, but `comments add` writes a guarded row.
+        or (guard.bd_verb(args) == "comments" and "add" in args)
+    )
+    if not writes:
+        return None
+    fence_data = importlib.import_module("beadhive.fence_data")
+    return fence_data.ensure_replica_ident(Path(cwd))
 
 
 def _forward_noop(cwd, args):
@@ -210,6 +259,7 @@ class Engine(Protocol):
         env=None,
         hive_aware: bool = True,
         no_work_markers: tuple[str, ...] = (),
+        forward: bool | None = None,
     ):
         """Invoke the backend through the one bounded subprocess seam.
 
@@ -217,6 +267,8 @@ class Engine(Protocol):
         child's OS cwd for bd paths that consult git config. ``capture=False`` is the streaming
         variant. ``no_work_markers`` promotes bd's known exit-0 failure reports to a normal
         non-zero result instead of asking each caller to rediscover that edge case.
+        ``forward`` (default: ``hive_aware``) routes a forwarded checkout's bd to the hive's
+        primary (``docs/FORWARD-WRITE-PATH.md``).
         """
         ...
 
@@ -356,19 +408,31 @@ class BdEngine:
         env=None,
         hive_aware=True,
         no_work_markers=(),
+        forward=None,
     ):
-        """Run one bounded bd process while preserving its real invocation variants."""
+        """Run one bounded bd process while preserving its real invocation variants.
+
+        ``forward`` (default: ``hive_aware``) applies the forward write path to the directory
+        bd acts on: ``cwd``, or the process cwd when it is ``None``. The ``bh bd`` passthrough
+        runs bd against the process cwd (``hive_aware=False``) and asks for it explicitly
+        (bh-7yuny); ``bd init`` / ``bootstrap`` build a LOCAL store and never forward."""
         cmd = ["bd"]
         if hive_aware and cwd is not None:
             cmd += ["-C", str(cwd)]
         if actor:
             cmd += ["--actor", actor]
         cmd += list(args)
-        if hive_aware:
-            env, refusal = _forwarded(cwd, env)
+        if hive_aware if forward is None else forward:
+            target = cwd if cwd is not None or forward is None else Path.cwd()
+            env, refusal, forwarded = _forwarded(target, env)
+            if refusal is None and not forwarded:
+                refusal = _replica_ident_refusal(target, args)
             if refusal is not None:
+                message = f"bh: {refusal}\n"
+                if not capture:  # a streamed bd would have printed its own failure here
+                    sys.stderr.write(message)
                 return subprocess.CompletedProcess(
-                    args=cmd, returncode=1, stdout="", stderr=f"bh: {refusal}\n"
+                    args=cmd, returncode=1, stdout="", stderr=message
                 )
         kw = {"check": False, "capture": capture, "timeout": timeout}
         if text_input is not None:
@@ -471,6 +535,7 @@ class BdEngine:
             capture=True,
             hive_aware=False,
             pin_process_cwd=True,
+            forward=True,
         )
 
     def push_state(self, cwd, actor="", message="", *, remote="", force=False):

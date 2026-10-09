@@ -41,6 +41,12 @@ The grants are **table-scoped, never database-wide** (M13 E2–E4):
 | every bd base table (`SHOW FULL TABLES`), and `dolt_ignore` | `SELECT, INSERT, UPDATE, DELETE` |
 | `bh_writer`, `bh_epoch_live`, `bh_local_ident` (and any other `bh_*`) | `SELECT` |
 | `bh_write_mark` | `SELECT, INSERT` (the guard trigger's mark insert runs as the invoker) |
+| bd's recursive CTE names (`ancestors`, `reachable`, `descendants` and the rest of `beadhive.hive_forward.CTE_READ_NAMES`) | `SELECT` |
+
+The CTE names are not tables. Dolt 2.3.5 privilege-checks a recursive CTE's self-reference as a
+table of the current database, so without them a forwarded `bd dep add` (and every other
+dependency-walking verb) fails with `Access denied ... to table 'ancestors'`. Re-run
+`bh hive forward provision` for existing accounts after upgrading: it adds the missing grants.
 
 There is no database-level grant, so a forwarder has no `DOLT_COMMIT`, `DOLT_MERGE` or
 `DOLT_RESET` right. bd's create, claim and close still return 0: bd's post-write commit prints
@@ -124,8 +130,38 @@ forwarding is refused bh does not run bd for the hive at all (fail closed). Stat
 are the primary's job, so bh skips them in a forwarded hive. A raw `bd` that bypasses bh writes
 this frame's own replica, whose write guard refuses: it is not `bh_writer`.
 
-A HOST file that carries `host.forward` is refused by bh older than 0.23.0 (strict schema), so
-set it only on frames already running 0.23.0.
+`host.forward` is host-local (`HOST_PREFIXES`): it belongs in the frame's own `config.yaml`, and
+a fleet `fleet.yaml` beside it no longer makes `config.load` read it as a fleet override
+(`bh-hy2hp`). A HOST file that carries `host.forward` is refused by bh older than 0.23.0 (strict
+schema), so set it only on frames already running 0.23.0.
+
+### Operator and planner hosts
+
+An operator or planner host (no runtime frame, no execution enrollment) authors every hive
+through this path (`bh-7yuny`, absorbing `bh-hy2hp` and `bh-0tjiq`):
+
+- **Every `bh bd` write forwards.** The passthrough runs bd against the process cwd, and it now
+  asks for the forward environment there: `bh bd create`, `update`, `update --claim`,
+  `comments add`, `dep add`, `close` and `import` reach the primary's hive server. Before, a
+  passthrough create or edit wrote this frame's own replica.
+- **The primary's guard decides a forwarded write.** `bh work claim` (and assign, submit, merge,
+  `bh plan file`) and the passthrough's write gate no longer ask this frame's own copy of the hive
+  whether it may write: on a forwarder the replica's `bh_writer` names the primary, so that
+  question always answered no and refused every forwarded claim. A forwarded checkout is decided
+  by its marker: `forwarding` allows (the write is granted, guarded and marked on the primary at
+  its epoch), `refused` fails closed with the recorded reason. No runtime frame, frame eligibility
+  or operator key is consulted on this frame. Claim fencing tokens are minted and checked against
+  the primary's epoch from the marker. `bh bd dolt push|sync` and the break-glass forms are
+  refused in a forwarded checkout: the primary owns and publishes the store.
+- **A pulled replica gets its identity on demand.** `bh_local_ident` is `dolt_ignore`'d, so a
+  replica that pulled a cut-over hive never receives it, and every guarded write on that replica
+  died inside the guard trigger with `Error 1146: table not found: bh_local_ident`. The first bd
+  write bh runs on a cut-over, non-forwarded checkout now provisions it (this host's frame id from
+  `host.yaml`, role `replica`); no cutover verb, HQ clone or runtime frame is needed. The guard
+  then refuses the write by name (`bh-guard: this replica is not the bh_writer for main`): point
+  the checkout at the primary to write. A frame the data names as `bh_writer` is never
+  provisioned on demand (its identity comes from cutover or adopt).
+- **`bh report` shows bd's whole error**, not the first line of its JSON (`bd create failed: {`).
 
 ## Residual trust
 
@@ -150,4 +186,11 @@ Option B (a per-hive bh RPC service, so executors hold no Dolt login) is feasibl
   TLS certificates. Provisioning and conformance against real grants; bd create, claim and close
   through a narrow forwarder login over TLS; a claim race from several forwarder accounts with
   one winner per round; a demoted primary refused; an in-flight forwarded transaction refused
-  by the quiesce before the reset.
+  by the quiesce before the reset. The `test_operator_*` cases (`bh-7yuny`) run the real
+  `bh bd` passthrough and `bh work claim` from a registered checkout whose local store is a fresh
+  cut-over replica: every write lands in the primary's data and the replica is unchanged; a
+  refused forward fails closed; not forwarded, the write provisions `bh_local_ident` and
+  `bh report` shows the guard's refusal instead of Error 1146.
+- `tests/test_guard_writer_gate.py`, `tests/test_fence_data.py`, `tests/test_report.py` and
+  `tests/test_config_fleet_merge.py`: the forwarded gate, the on-demand identity, the report
+  error and the host-local `host.forward` key, with fakes.

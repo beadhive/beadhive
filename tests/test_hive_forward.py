@@ -819,3 +819,106 @@ def test_cli_provision_check_and_quiesce_on_a_serving_frame(tmp_path, monkeypatc
     server.processes = [(5, "fwd-e1", "10.0.0.21"), (6, "root", "localhost")]
     cli.run("quiesce", cfg=cfg, entry=entry, hive_dir=hive)
     assert "killed 1 forwarder session" in capsys.readouterr().out
+
+
+# ---- bh's own bd routes honour the marker (bh-7yuny, absorbing bh-hy2hp) ----------------------
+
+
+def test_grant_plan_reads_bds_recursive_cte_names():
+    """Dolt checks a recursive CTE's self-reference as a table: without SELECT on the name a
+    forwarded ``bd dep add`` dies with ``Access denied ... to table 'ancestors'`` (bh-0tjiq)."""
+    plan = hf.grant_plan(["issues"])
+    for name in ("ancestors", "reachable"):
+        assert name in hf.CTE_READ_NAMES and plan[name] == {"SELECT"}
+    # Never wider than a read, so conformance flags anything more.
+    problems = hf.check_forwarder_grants([_g("SELECT, INSERT", "`fx`.`reachable`")], database=DB)
+    assert problems and "beyond ['SELECT']" in problems[0]
+
+
+def test_passthrough_writes_honour_the_forward_marker_in_cwd_mode(tmp_path, monkeypatch):
+    """bh-hy2hp: ``bh bd create|update|comments add|dep add|update --claim|close`` run bd against
+    the process cwd (``hive_aware=False``), which skipped the marker: the write landed in this
+    frame's own replica instead of the primary."""
+    import subprocess
+
+    from beadhive import bd
+
+    calls = []
+    monkeypatch.setattr(
+        bd,
+        "_run",
+        lambda cmd, **k: calls.append((cmd, k)) or subprocess.CompletedProcess(cmd, 0, "", ""),
+    )
+    monkeypatch.setenv(hf.PASSWORD_ENV, "pw")
+    hive = _hive(tmp_path)
+    hf.point(hive, hf.ForwardTarget("p", 3, EP), prefix=DB, self_frame="me", endpoints={"p": EP})
+    monkeypatch.chdir(hive)
+    monkeypatch.setattr(bd.config, "load", lambda: {})
+    monkeypatch.setattr(bd, "workspace_identity", lambda _cwd: None)
+    monkeypatch.setattr(bd, "triplet_label_args", lambda _cwd: [])
+    cfg = {"managed_repos": []}
+    for args in (
+        ["create", "filed", "-t", "task"],
+        ["update", "fx-1", "--notes", "n"],
+        ["comments", "add", "fx-1", "c"],
+        ["dep", "add", "fx-1", "fx-2"],
+        ["update", "fx-1", "--claim"],
+        ["close", "fx-1"],
+    ):
+        assert bd._run_one(args, None, cfg) == 0, args
+        cmd, kw = calls[-1]
+        assert cmd == ["bd", *args]
+        assert kw["env"]["BEADS_DOLT_SERVER_HOST"] == "10.0.0.10", args
+        assert kw["env"]["BEADS_DOLT_SERVER_USER"] == "fwd-e1"
+
+    # A refused forward fails closed: bd never runs, the reason is printed.
+    hf.refuse(hive, "p is demoted", prefix=DB, self_frame="me", endpoints={"p": EP})
+    n = len(calls)
+    assert bd._run_one(["create", "filed"], None, cfg) == 1
+    assert len(calls) == n
+
+
+def test_bd_engine_provisions_a_replica_identity_before_writes_only(tmp_path, monkeypatch, capsys):
+    """bh-0tjiq: a pulled, cut-over replica lacks the ``dolt_ignore``'d ``bh_local_ident``; the
+    write that needs it provisions it first. Reads never pay for it, and a forwarded checkout
+    never touches the local replica at all."""
+    import subprocess
+
+    from beadhive import bd, engine, fence_data
+
+    calls, ensured = [], []
+    verdict: dict[str, str | None] = {"v": None}
+    monkeypatch.setattr(
+        bd,
+        "_run",
+        lambda cmd, **k: calls.append((cmd, k)) or subprocess.CompletedProcess(cmd, 0, "", ""),
+    )
+    monkeypatch.setattr(
+        fence_data, "ensure_replica_ident", lambda d: ensured.append(d) or verdict["v"]
+    )
+    hive = _hive(tmp_path)
+    eng = engine.BdEngine()
+
+    eng.invoke(["list"], cwd=hive)
+    eng.invoke(["show", "fx-1"], cwd=hive)
+    eng.invoke(["dep", "list", "fx-1"], cwd=hive)
+    eng.invoke(["federation", "sync", "--peer", "hub"], cwd=hive)  # moves the store
+    eng.invoke(["dolt", "pull"], cwd=hive)
+    assert ensured == []
+    eng.invoke(["--json", "create", "t"], cwd=hive)
+    eng.invoke(["comments", "add", "fx-1", "c"], cwd=hive)
+    assert ensured == [hive, hive]
+
+    verdict["v"] = "this host has no frame identity"
+    n = len(calls)
+    refused = eng.invoke(["close", "fx-1"], cwd=hive, capture=True)
+    assert refused.returncode == 1 and "no frame identity" in refused.stderr
+    streamed = eng.invoke(["close", "fx-1"], cwd=hive)  # a streamed bd's refusal is printed
+    assert streamed.returncode == 1 and "no frame identity" in capsys.readouterr().err
+    assert len(calls) == n  # bd never ran
+
+    monkeypatch.setenv(hf.PASSWORD_ENV, "pw")
+    hf.point(hive, hf.ForwardTarget("p", 3, EP), prefix=DB, self_frame="me", endpoints={"p": EP})
+    ensured.clear()
+    assert eng.invoke(["create", "t"], cwd=hive).returncode == 0
+    assert ensured == []

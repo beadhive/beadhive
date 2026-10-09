@@ -451,6 +451,73 @@ def writer_refusal(state) -> str:
     return _writer_refusal_text(prefix, this_frame, writer)
 
 
+# ---- forwarded checkouts (bh-7yuny, bh-hy2hp, bh-0tjiq) -----------------------------------
+# A checkout this frame forwards (`bh hive forward point`, docs/FORWARD-WRITE-PATH.md) runs every
+# bd that bh starts against the CURRENT PRIMARY's hive server: the write is granted, fenced and
+# marked there, under the primary's guard trigger and at the primary's epoch. The local gates
+# below ask a different question, "may THIS frame write its OWN copy?", and on a forwarder the
+# answer is always no (its replica's bh_writer names the primary), so asking it refused every
+# forwarded claim with a verdict about data the write never touches. A forwarded checkout is
+# therefore decided by its marker alone: `forwarding` allows (the primary decides), `refused`
+# fails closed, exactly as the engine refuses to run bd for it. Placement, the preflight and the
+# per-frame account grants are the forwarder's eligibility; no runtime frame and no operator key
+# is consulted on this frame.
+
+
+def forward_marker(hive: str = "", *, cfg=None, hive_dir=None):
+    """The forward marker of `hive`'s checkout (re-pointed first when the cached placement
+    moved, as the engine does before any bd), or ``None`` when the checkout is not forwarded.
+
+    `hive_dir` skips the registry resolution; with neither, the process cwd's checkout is used,
+    which is where the passthrough's cwd-mode bd runs."""
+    import importlib
+    from pathlib import Path
+
+    from . import registry  # lazy: keep guard import-light + cycle-free
+
+    # Resolved by name, as the engine resolves it: the forward module stays out of guard's
+    # (legacy) import cycle with config.
+    hive_forward = importlib.import_module("beadhive.hive_forward")
+
+    directory = hive_dir
+    if directory is None:
+        try:
+            directory = registry.hive_dir_for(cfg if cfg is not None else config.load(), hive)
+        except Exception:  # noqa: BLE001 — an unresolvable hive is not this guard's error
+            directory = None
+        if directory is None:
+            if hive:
+                return None
+            directory = Path.cwd()
+    try:
+        return hive_forward.ensure_current(directory)
+    except hive_forward.ForwardError:
+        return hive_forward.read_marker(directory)
+
+
+def forward_refusal(marker) -> str:
+    """``""`` to allow a write in a forwarded checkout (the primary's guard decides it), else
+    the fail-closed refusal for a checkout whose forwarding is refused."""
+    if marker.state == "forwarding":
+        return ""
+    return (
+        f"✗ {marker.prefix}: this checkout forwards its bead writes to the hive's primary, and "
+        f"forwarding is refused ({marker.reason or 'no reason recorded'}).\n"
+        f"  Re-point it once the primary is reachable and current:\n"
+        f"      {config.BINARY_ALIAS} hive forward point {marker.prefix}\n"
+        f"  or stop forwarding to write this frame's own copy (only the writer frame may):\n"
+        f"      {config.BINARY_ALIAS} hive forward stop {marker.prefix}"
+    )
+
+
+def _forwarded_store_refusal(marker, what: str) -> str:
+    return (
+        f"✗ {marker.prefix}: `{config.BINARY_ALIAS} bd {what}` is refused in a forwarded "
+        f"checkout — the hive's primary ({marker.frame or '?'}) owns and publishes its store; "
+        "forwarded writes ride its next managed push. Run it on the primary."
+    )
+
+
 def _renew_liveness_hint(prefix: str, this_host: str, cfg) -> None:
     """Best-effort liveness renewal of a legacy hive's lease from a write-verb boundary.
 
@@ -504,7 +571,18 @@ def guard_primary(hive: str = "", *, cfg=None, verb: str = "") -> None:
     nothing else — no clock, no HQ, no frame-authority read — so an established writer keeps
     writing while HQ is down, and the lease is not renewed. Every other hive takes the lease
     gate below, where ``expires_at`` is advisory (:meth:`HostLease.held_by`) and is still
-    renewed best-effort as a liveness hint (never a reason to refuse)."""
+    renewed best-effort as a liveness hint (never a reason to refuse).
+
+    **Forwarded checkouts (bh-7yuny).** A checkout this frame forwards writes on the primary,
+    under the primary's guard: its marker decides (:func:`forward_refusal`), never this frame's
+    local copy, lease or frame eligibility."""
+    forwarded = forward_marker(hive, cfg=cfg)
+    if forwarded is not None:
+        refusal = forward_refusal(forwarded)
+        if refusal:
+            typer.echo(refusal, err=True)
+            raise typer.Exit(1)
+        return
     try:
         cut_over = writer_state(hive, cfg=cfg)
     except WriterUnreadable as exc:
@@ -610,7 +688,13 @@ def live_epoch(hive: str = "", *, cfg=None) -> int:
     remote fence before invoking bd, then verifies it afterward (Amendment 1 §2). This cached
     check remains the early, legible refusal at the bead-write boundary; a stale remote fence
     is independently rejected by that managed preflight. Current bd prevents the reservation
-    and data update from being atomic, a limitation doctor exposes."""
+    and data update from being atomic, a limitation doctor exposes.
+
+    A forwarded checkout (bh-7yuny) answers the epoch its marker was preflighted at: the
+    primary's ``bh_writer.epoch``, which is what its claims are granted under."""
+    forwarded = forward_marker(hive, cfg=cfg)
+    if forwarded is not None:
+        return forwarded.epoch
     cut_over = writer_state(hive, cfg=cfg)
     if cut_over is not None:
         return cut_over[2].epoch  # clock-free and HQ-free: the writer epoch in data (bh-12hev)
@@ -670,6 +754,13 @@ def guard_claim_epoch(record, hive: str = "", *, cfg=None, verb: str = "") -> No
     shows up in the log stream and not only in one worker's terminal."""
     if record is None or not record.is_fenced():
         return
+    forwarded = forward_marker(hive, cfg=cfg)
+    if forwarded is not None:
+        # The primary's epoch, as preflighted (bh-7yuny): the generation the claim was granted
+        # under on the primary, not this frame's lagging copy.
+        if record.is_stale(forwarded.epoch):
+            _refuse_stale_claim(record, forwarded.epoch, forwarded.prefix, verb)
+        return
     try:
         cut_over = writer_state(hive, cfg=cfg)
     except WriterUnreadable as exc:
@@ -697,8 +788,11 @@ def guard_claim_epoch(record, hive: str = "", *, cfg=None, verb: str = "") -> No
     if not record.is_stale(live):
         return
     # Staleness implies `live > record.epoch >= 1`, so a live epoch exists and `state` with it.
-    hive_label = state[0]
+    _refuse_stale_claim(record, live, state[0], verb)
 
+
+def _refuse_stale_claim(record, live: int, hive_label: str, verb: str) -> None:
+    """Log and raise the stale-claim refusal (:func:`guard_claim_epoch`)."""
     from . import log  # lazy: keep guard free of the log import at load
 
     log.get_logger(__name__).warning(
@@ -1134,6 +1228,15 @@ def bd_write_refusal(args, cwd, *, cfg=None) -> str:
     # bug this whole bead exists to close, reintroduced one layer down. Load it here instead:
     # only writes pay for it, and reads (the hot path) still skip it entirely.
     cfg = cfg if cfg else config.load()
+    forwarded = forward_marker(cfg=cfg, hive_dir=cwd)
+    if forwarded is not None:
+        # The write runs on the primary under ITS guard (bh-7yuny); only forms that would act
+        # on a store this frame does not own are refused here.
+        if break_glass:
+            return _forwarded_store_refusal(forwarded, break_glass)
+        if is_store_publish(args):
+            return _forwarded_store_refusal(forwarded, f"dolt {_positionals(args)[1]}")
+        return forward_refusal(forwarded)
     try:
         cut_over = writer_state(cfg=cfg, hive_dir=cwd)
     except WriterUnreadable as exc:

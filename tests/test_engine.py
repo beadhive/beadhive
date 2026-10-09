@@ -773,6 +773,7 @@ def test_bd_run_routes_through_get_engine(monkeypatch):
                 "env": None,
                 "hive_aware": True,
                 "no_work_markers": (),
+                "forward": None,
             },
         )
     ]
