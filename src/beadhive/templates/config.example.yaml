@@ -158,6 +158,10 @@ worktrees:
   # (`bh hive init --claude`). No resume of abandoned long-running tasks yet — agents are
   # expected to dispose of worktrees promptly.
   ephemeral: true
+  # allow_tmpfs (default false): the OS temp dir is RAM (tmpfs) on many Linux hosts, so by
+  # default the ephemeral root falls back to the disk root below and a tmpfs/ramfs root is
+  # REFUSED (per-worktree venvs would eat RAM). Set true to opt in. Env: BH_WORKTREES_ALLOW_TMPFS=1.
+  # allow_tmpfs: false
   # path: ~/.beadhive/worktrees   # persistent root (ephemeral=false only). $BH_WORKTREES overrides.
   # manager: native   # the ONE worktree manager (create/attach/remove); native is the only value.
   # Branch suffixes — every managed branch is auto-prefixed `wt/` (so `--branch foo` -> wt/foo,

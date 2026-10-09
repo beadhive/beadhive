@@ -11,7 +11,7 @@ triplet path:
 
 | `ephemeral` | root | grants | lifecycle |
 |---|---|---|---|
-| `true` (default) | `<os-temp>/bh-worktrees` | none needed (temp is sandbox-writable) | session-scoped, disposable |
+| `true` (default) | `<os-temp>/bh-worktrees` (disk-backed temp only — see [RAM-backed roots](#ram-backed-roots-tmpfs--ramfs)) | none needed (temp is sandbox-writable) | session-scoped, disposable |
 | `false` | `worktrees.path` (default `~/.beadhive/worktrees`) | `bh hive init --claude` writes per-hive grants | persistent |
 
 Default-ephemeral keeps adoption zero-config: agents create a worktree, use it, and dispose
@@ -25,6 +25,30 @@ bh config set worktrees.ephemeral false --scope host
 ```
 
 `$BH_WORKTREES` (legacy alias `WS_WORKTREES`) overrides the root in either mode (advanced / testing).
+
+## RAM-backed roots (tmpfs / ramfs)
+
+On many Linux hosts the OS temp dir is a RAM-backed `tmpfs`. Worktrees carry a per-tree
+`.venv` and build caches, so a worktree root there turns every checkout into unreclaimable
+memory pressure (a fan-out of agents can livelock the host). `bh` therefore detects
+tmpfs/ramfs (via `statfs(2)` `f_type`) and:
+
+- **Default (no config):** if `<os-temp>/bh-worktrees` would be on tmpfs/ramfs (and holds no
+  worktrees yet), the ephemeral root falls back to the disk-backed `worktrees.path` (default `~/.beadhive/worktrees`).
+  A disk-backed temp dir (e.g. `TMPDIR=/var/tmp`) is still used as before.
+- **Explicit RAM-backed root** (`$BH_WORKTREES` or `worktrees.path` pointing at tmpfs/ramfs):
+  creating a **new** worktree or a `verify-*` clean-validation checkout is refused with an
+  error naming the opt-in key. Both share the same root and the same rule.
+- **Opt in** with `bh config set worktrees.allow_tmpfs true --scope host` (host-owned key) or
+  `BH_WORKTREES_ALLOW_TMPFS=1`. With the opt-in set, the old `<os-temp>/bh-worktrees` default
+  applies again.
+
+**Migration.** Worktrees already living under a tmpfs temp root are never touched or deleted,
+and re-attaching an existing directory is never refused. While `<os-temp>/bh-worktrees` still
+holds worktrees, the root keeps resolving to it so in-flight beads stay reachable, but creating
+a **new** worktree or `verify-*` checkout there is refused with the opt-in message. Either set
+`worktrees.allow_tmpfs: true` to carry on there until those beads land, or finish/`abandon`
+them and remove the leftover directory; the next worktree then lands on the disk root.
 
 Each is an ordinary linked `git worktree` of the hive's main clone
 (`$GIT_WORKSPACE/<provider>/<org>/<repo>`) — the git admin files stay under the main clone's

@@ -162,7 +162,17 @@ class WorktreesConfig(_Section):
         True,
         description=(
             "True (default): worktrees live in an OS temp dir, session-scoped + disposable, "
-            "no sandbox grant needed. False: persistent worktrees under `path`."
+            "no sandbox grant needed (falls back to the disk root when the temp dir is tmpfs, "
+            "unless allow_tmpfs is set). False: persistent worktrees under `path`."
+        ),
+    )
+    allow_tmpfs: bool = Field(
+        False,
+        description=(
+            "Opt in to a RAM-backed (tmpfs/ramfs) worktree root, including verify-* clean "
+            "checkouts. Off by default: provisioning on tmpfs is refused and the default root "
+            "is disk-backed, because per-tree venvs/caches would consume unreclaimable RAM. "
+            "Env: BH_WORKTREES_ALLOW_TMPFS=1."
         ),
     )
     path: str | None = Field(
