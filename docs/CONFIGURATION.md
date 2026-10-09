@@ -162,6 +162,18 @@ Settings `schema_version: 1`, SQL storage metadata v3, signed Git carrier v2, fr
 domain/API versions and the versioned `docs/schemas/wire` snapshots are separate contracts;
 an added config key does not itself require a wire-schema bump.
 
+### Proposed keys (not shipped) {#hq-proposed-keys}
+
+The [trust profiles and capabilities ADR](design/hq-trust-profiles-and-capabilities-adr.md)
+(2026-10-09, status proposed) names keys that do not exist yet and are listed here only so the
+table above is not read as the whole intended surface: `hq.trust_profile` (fleet: `open`,
+`trusted`, `verified`, `attested`; `verified` equals today's defaults), `host.roles` (a set
+composed from `viewer`, `planner`, `operator`, `transient`, `executor`, `director`; `host.role`
+stays as a one-element alias), `hq.placement_mode` (`director`, `self`), `hive.write_policy`
+(`fenced`, `forward`, `open`), `hq.tenure` and `hq.tenure_refresh`, `hive.adopt_existing`, and
+the `hive.sync.*` batch auto-commit, auto-push and auto-pull settings. Setting any of them on a
+0.24.0 host is a schema error.
+
 ## `config.yaml` schema
 
 ```yaml

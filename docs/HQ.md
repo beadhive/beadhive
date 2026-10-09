@@ -617,6 +617,15 @@ admitting new executors; this is the same gate as the
 binding conditions 13 (no single-executor escape survives admission of another executor) and 18
 (state and work travel together).
 
+### Proposed: trust profiles and capability roles {#trust-profiles-proposed}
+
+A design record filed on 2026-10-09 proposes folding the authority mode into a **trust profile**
+(`open`, `trusted`, `verified`, `attested`) that also sets admission, placement, the off-primary
+write policy and an elected-tenure cache, and replaces the single host role with a **set of
+roles** composed from capabilities (`author`, `claim`, `execute`, `publish`, `place`, `admin`).
+Nothing in it is shipped: the modes above remain the behaviour of 0.24.0. See
+[HQ trust profiles, composable host capabilities, elected tenure and batch bead sync](design/hq-trust-profiles-and-capabilities-adr.md).
+
 ## See also
 
 - [HUB](HUB.md) — the derived per-host cross-hive aggregate, and its contract.
