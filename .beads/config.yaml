@@ -67,7 +67,7 @@
 
 sync.remote: "git+ssh://git@github.com/beadhive/beadhive.git"
 export:
-    auto: true
+    auto: false
     path: issues.jsonl
     git-add: false
 dolt:
