@@ -1,5 +1,7 @@
 # Beadhive (`bh`)
 
+<!-- mcp-name: io.github.beadhive/beadhive -->
+
 ![Ship software, not slop.](docs/assets/brand/banner-readme.png)
 
 <!-- markdownlint-disable-next-line MD013 -->
@@ -110,6 +112,7 @@ claude plugin install bh@beadhive
 
 One line each, and who it's for:
 
+- [`docs/MCP-PUBLISHING.md`](docs/MCP-PUBLISHING.md) — **MCP registry and directory upkeep.**
 - [Context7](https://context7.com/) — **library documentation for agents.**
 
 - [`docs/ADOPTION.md`](docs/ADOPTION.md) — **it works; what's the next rung?** The four rungs,

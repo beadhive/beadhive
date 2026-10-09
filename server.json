@@ -1,0 +1,48 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.beadhive/beadhive",
+  "title": "Beadhive",
+  "description": "Manage cross-repository beads work, hive status, and Beadhive workflows through bh-mcp.",
+  "repository": {
+    "url": "https://github.com/beadhive/beadhive",
+    "source": "github"
+  },
+  "websiteUrl": "https://beadhive.ai",
+  "version": "0.24.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "beadhive",
+      "version": "0.24.0",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "clientConfiguration": {
+        "mcpServers": {
+          "bh": {
+            "command": "bh-mcp",
+            "args": []
+          }
+        }
+      },
+      "uvxClientConfiguration": {
+        "mcpServers": {
+          "bh": {
+            "command": "uvx",
+            "args": [
+              "--from",
+              "beadhive==0.24.0",
+              "bh-mcp"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

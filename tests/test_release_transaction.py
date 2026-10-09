@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -13,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TRANSACTION_SCRIPTS = (
     "next-version.sh",
     "prepare-release-version.sh",
+    "sync-mcp-version.py",
     "release_transaction.py",
 )
 
@@ -86,11 +88,15 @@ annotated_tag = true
 pre_bump_hooks = ["scripts/prepare-release-version.sh $CZ_PRE_NEW_VERSION"]
 """
     )
+    shutil.copy2(ROOT / "server.json", repo / "server.json")
+    subprocess.run([sys.executable, str(scripts / "sync-mcp-version.py")], check=True)
     (repo / "uv.lock").write_text('version = "0.16.1"\n')
     (repo / "CHANGELOG.md").write_text("# Changelog\n")
     uv = binary / "uv"
     uv.write_text(
         "#!/bin/sh\n"
+        'if [ "$1" = run ] && [ "$2" = --no-sync ] && [ "$3" = python ]; '
+        'then shift 3; exec python3 "$@"; fi\n'
         'test "$1" = version && test "$2" = --no-sync || exit 64\n'
         "python3 - \"$3\" <<'PY'\n"
         "from pathlib import Path\n"
@@ -197,7 +203,17 @@ def test_bump_creates_one_exact_signed_commit_and_tag_without_generated_artifact
         "CHANGELOG.md",
         "pyproject.toml",
         "uv.lock",
+        "server.json",
     }
+    metadata = json.loads((release_repo.root / "server.json").read_text())
+    assert metadata["version"] == metadata["packages"][0]["version"] == "0.16.2"
+    client = metadata["_meta"]["io.modelcontextprotocol.registry/publisher-provided"]
+    assert client["clientConfiguration"]["mcpServers"]["bh"] == {"command": "bh-mcp", "args": []}
+    assert client["uvxClientConfiguration"]["mcpServers"]["bh"]["args"] == [
+        "--from",
+        "release-fixture==0.16.2",
+        "bh-mcp",
+    ]
     assert _must_git(release_repo.root, "cat-file", "-t", "v0.16.2") == "tag"
     assert _must_git(release_repo.root, "rev-parse", "v0.16.2^{commit}") == head
     assert release_repo.transaction("verify", "0.16.2", "--tag", "v0.16.2").returncode == 0
@@ -335,3 +351,29 @@ def test_verify_refuses_wrong_version_before_release(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "project version is '0.16.2', expected '0.16.3'" in result.stderr
+
+
+@pytest.mark.parametrize("stale_field", ["server", "package", "uvx"])
+def test_mcp_check_refuses_stale_release_metadata_and_sync_repairs_it(
+    tmp_path: Path, stale_field: str
+) -> None:
+    release_repo = _release_repo(tmp_path)
+    path = release_repo.root / "server.json"
+    metadata = json.loads(path.read_text())
+    if stale_field == "server":
+        metadata["version"] = "0.1.0"
+    elif stale_field == "package":
+        metadata["packages"][0]["version"] = "0.1.0"
+    else:
+        publisher = metadata["_meta"]["io.modelcontextprotocol.registry/publisher-provided"]
+        publisher["uvxClientConfiguration"]["mcpServers"]["bh"]["args"][1] = (
+            "release-fixture==0.1.0"
+        )
+    path.write_text(json.dumps(metadata))
+    command = [sys.executable, str(release_repo.root / "scripts/sync-mcp-version.py")]
+    checked = subprocess.run([*command, "--check"], capture_output=True, text=True)
+    assert checked.returncode != 0
+    assert "server.json is stale" in checked.stderr
+    assert json.loads(path.read_text()) == metadata
+    subprocess.run(command, check=True, capture_output=True)
+    subprocess.run([*command, "--check", "--version", "0.16.1"], check=True, capture_output=True)
