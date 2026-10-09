@@ -40,6 +40,10 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         "host.daemon",
         "host.frame_bridge",
         "host.frame_id",
+        # The forward write path (bh-g7dlo): which primary hive servers THIS frame forwards to,
+        # its own principal there, and whether it serves forwarders. Per frame, never fleet
+        # truth (bh-hy2hp): a host file carrying it must not read as a fleet override.
+        "host.forward",
     }
 )
 
