@@ -16,6 +16,7 @@ import secrets
 import shlex
 import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -34,6 +35,7 @@ from . import (
     validation_admission,
     validation_bypass,
     validation_ledger,
+    validation_memory,
     validation_records,
     worktree_init_adapters,
 )
@@ -835,7 +837,11 @@ def _impl_clean_checkout_unadmitted(
     # compatibility marker.  Start the cleanup guard immediately: even metadata
     # inspection and manifest allocation are fallible, and none may strand that
     # checkout if they raise before the validation body starts.
+    memory_scratch: Path | None = None
+
     def cleanup_verify_checkout() -> None:
+        if memory_scratch is not None:
+            shutil.rmtree(memory_scratch, ignore_errors=True)
         _run_git(["git", "-C", str(main), "worktree", "remove", "--force", str(tmp)], check=False)
         if tmp.exists():  # git refused (locked / half-registered): never strand the checkout
             shutil.rmtree(tmp, ignore_errors=True)
@@ -851,7 +857,12 @@ def _impl_clean_checkout_unadmitted(
         validated_sha = head_out.strip() if head.returncode == 0 and head_out.strip() else sha
         tree = validation_ledger.tree_of(entry, validated_sha)
         command_argv = shlex.split(cmd)
-        validation_argv, priority_policy = validation_admission.priority_command(cfg, command_argv)
+        # Outside the checkout: the measurement must never dirty the tree being validated.
+        memory_scratch = Path(tempfile.mkdtemp(prefix="bh-validation-memory-"))
+        memory_report: Path | None = memory_scratch / "memory.json"
+        validation_argv, priority_policy, memory_policy = validation_admission.guarded_command(
+            cfg, command_argv, report_path=memory_report
+        )
         run_record = validation_records.begin_run(
             main,
             bead=bead,
@@ -866,6 +877,7 @@ def _impl_clean_checkout_unadmitted(
             artifact_root_config=artifact_root_config,
             admission=_permit_record(permit),
             priority=priority_policy,
+            memory=memory_policy,
         )
         # From this point the run manifest is authoritative.  Remove the 0.15.1 worktree-keyed
         # compatibility marker; the run-id active pointer is sufficient for liveness/reaping.
@@ -924,8 +936,16 @@ def _impl_clean_checkout_unadmitted(
                 "mechanism": "unavailable" if priority_policy["enabled"] else "disabled",
                 "effective_nice": priority_policy.get("inherited_nice"),
             }
+            memory_report = None
+            memory_policy = {
+                **memory_policy,
+                "applied": False,
+                "mechanism": "unavailable" if memory_policy["enabled"] else "disabled",
+                "note": "launched unwrapped so a missing executable is diagnosed as such",
+            }
             if run_record is not None:
                 validation_records.attach_priority(main, run_record["run_id"], priority_policy)
+                validation_records.attach_memory(main, run_record["run_id"], memory_policy)
         # BH_TEST_REPORT_DIR (bh-ku9n9.20): a fresh, empty drop zone exported into every
         # validation subprocess, with no opt-in and no bh config. bh never invokes a runner — it
         # names a directory and reads what appears. `rc` below stays the sole verdict; an
@@ -978,6 +998,17 @@ def _impl_clean_checkout_unadmitted(
                     )
                 raise
             rc = res.returncode
+            memory_record = validation_memory.finalize(
+                memory_policy, validation_memory.read_report(memory_report)
+            )
+            over_memory = validation_memory.oom_killed(memory_record)
+            if over_memory:
+                # A kernel OOM kill inside the scope is a red run, never an interruption or a
+                # green that happened to tolerate a killed child (bh-jg7fy).
+                rc = rc if rc > 0 else 137
+                typer.echo(validation_memory.outcome_line(memory_record), err=True)
+            if run_record is not None and memory_record is not None:
+                validation_records.attach_memory(main, run_record["run_id"], memory_record)
             report = test_report.ingest(drop, rc)
             protocol = validation_records.read_protocol(protocol_path)
             if run_record is not None:
@@ -1006,7 +1037,13 @@ def _impl_clean_checkout_unadmitted(
                 exit_code=rc,
                 signal_number=-rc if rc < 0 else None,
                 reason=(
-                    "missing_binary" if missing else "interrupted" if rc < 0 else "command_exit"
+                    "missing_binary"
+                    if missing
+                    else "memory_limit"
+                    if over_memory
+                    else "interrupted"
+                    if rc < 0
+                    else "command_exit"
                 ),
                 protocol=protocol,
             )
@@ -1266,7 +1303,11 @@ def _impl_clean_checkout_scoped(
 def _permit_record(permit) -> dict | None:
     if permit is None:
         return None
-    return {"slot": permit.slot, "queue_seconds": permit.queue_seconds}
+    return {
+        "slot": permit.slot,
+        "queue_seconds": permit.queue_seconds,
+        "memory": getattr(permit, "memory", None),
+    }
 
 
 def _owner_text(run: dict) -> str:

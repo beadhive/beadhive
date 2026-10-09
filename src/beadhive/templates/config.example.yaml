@@ -239,6 +239,15 @@ worktrees:
 #     nice: 10                     # 0..19; negative (priority-raising) values are rejected.
 #     ionice_class: 2              # 2=best-effort or 3=idle; realtime class 1 is rejected.
 #     ionice_priority: 7           # 0..7 for class 2; ignored for idle class 3.
+#   validation_memory:             # host-owned memory bounds + memory-aware admission.
+#     enabled: true                # BH_VALIDATION_MEMORY=false is the emergency override.
+#     memory_high: "50%"           # scope MemoryHigh: bytes, K/M/G/T, % of RAM, or none.
+#     memory_max: "60%"            # scope MemoryMax: OOM-kills inside the scope, reported red.
+#     memory_swap_max: "0"         # scope MemorySwapMax; none leaves swap unbounded.
+#     admission_floor: "10%"       # wait until MemAvailable >= this; 0/none disables.
+#                                  # BH_VALIDATION_MEMORY_FLOOR overrides it per invocation.
+#     admission_timeout_seconds: 1800  # then refuse to start (exit 75); 0 waits forever.
+#     admission_poll_seconds: 5
 #   validate_subset: "./scripts/hermetic.sh uv run pytest -n auto --pyargs {tests}"
 #                                  # OPTIONAL template that re-runs only NAMED failing tests, one
 #                                  # required {tests} placeholder — a value missing it is rejected
