@@ -12,7 +12,8 @@ operator guide. This module is the Typer-free core; ``hive_forward_cli`` renders
   ``'<principal>'@'<frame address>'``, never a shared or root login (:func:`account_problems`),
   created ``REQUIRE SSL`` by default. Its grants are **table-scoped, never database-wide**
   (M13, ``bh-uhx2r`` E2–E4; :func:`grant_plan`): DML on bd's tables and ``dolt_ignore``;
-  ``SELECT`` on the fence tables (``bh_writer``, ``bh_epoch_live``, ``bh_local_ident``);
+  ``SELECT`` on the fence tables (``bh_writer``, ``bh_epoch_live``, ``bh_local_ident``) and on
+  bd's recursive CTE names (:data:`CTE_READ_NAMES`, which Dolt checks as tables);
   ``SELECT, INSERT`` on ``bh_write_mark`` (the guard trigger's inline insert is
   invoker-checked, ``bh-wtsrc`` E3); no database-level grant, so no ``DOLT_COMMIT`` right — bd's
   post-write commit defers to the primary's next commit. The table list is re-derived from
@@ -70,6 +71,7 @@ from typing import Any, Protocol
 from .fence_schema import FENCE_TABLES, LOCAL_IDENT_TABLE, quote
 
 __all__ = [
+    "CTE_READ_NAMES",
     "DEFAULT_OPERATORS",
     "DML",
     "FENCE_READ_TABLES",
@@ -139,6 +141,21 @@ DEFAULT_OPERATORS: tuple[str, ...] = ("root", "watchdog")
 #: forwarder that could write it becomes an undetectable second writer (``bh-uhx2r`` E3).
 FENCE_READ_TABLES: tuple[str, ...] = ("bh_writer", "bh_epoch_live", LOCAL_IDENT_TABLE)
 #: The mark table takes the guard trigger's inline INSERT, which runs as the invoker.
+#: The common-table-expression names bd's recursive queries use (bd 1.3: dependency cycle and
+#: ancestry checks, ready/blocked, descendants). Dolt 2.3.5 privilege-checks a recursive CTE's
+#: self-reference as a table of the current database, so a table-scoped login is refused
+#: (``Access denied ... to table 'ancestors'``, and ``bh bd dep add`` fails) unless it holds
+#: ``SELECT`` on the name (bh-0tjiq, bh-7yuny). The names are not tables; ``SELECT`` on them
+#: grants nothing else. Re-run ``bh hive forward provision`` when bd adds one.
+CTE_READ_NAMES: tuple[str, ...] = (
+    "ancestors",
+    "blocked_directly",
+    "blocked_transitively",
+    "descendants",
+    "directly_blocked",
+    "parent_edges",
+    "reachable",
+)
 MARK_TABLE = "bh_write_mark"
 #: bd seeds ``dolt_ignore`` when it opens a database; without DML on it ``bd create`` fails.
 IGNORE_TABLE = "dolt_ignore"
@@ -312,13 +329,16 @@ def table_shape(table: str) -> frozenset[str]:
         return _MARK
     if table in FENCE_READ_TABLES or table in FENCE_TABLES or table.startswith("bh_"):
         return _READ
+    if table in CTE_READ_NAMES:
+        return _READ
     return DML
 
 
 def grant_plan(tables: Iterable[str]) -> dict[str, frozenset[str]]:
-    """``table -> privileges`` for every base table plus ``dolt_ignore``."""
+    """``table -> privileges`` for every base table plus ``dolt_ignore``, and ``SELECT`` on
+    bd's recursive CTE names (:data:`CTE_READ_NAMES`)."""
     plan: dict[str, frozenset[str]] = {}
-    for table in [*tables, IGNORE_TABLE]:
+    for table in [*tables, IGNORE_TABLE, *CTE_READ_NAMES]:
         if not _TABLE.fullmatch(table):
             raise ForwardError(f"refusing to grant on odd table name {table!r}")
         plan[table] = table_shape(table)

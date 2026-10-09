@@ -393,3 +393,93 @@ def test_legacy_hive_keeps_0_22_publish_refusal_and_ignores_break_glass_policy(
     assert "refused" in guard.bd_write_refusal(["dolt", "sync"], tmp_path)
     # break-glass is a cut-over-only policy: a legacy primary's `vc merge` is judged as before
     assert guard.bd_write_refusal(["vc", "merge", "main"], tmp_path) == ""
+
+
+# ---- forwarded checkouts: the primary's guard decides (bh-7yuny, bh-0tjiq) --------------------
+
+_EP = {"host": "10.0.0.10", "port": 3307, "database": PREFIX, "user": "fwd"}
+
+
+def _forwarded(tmp_path, *, refused: bool = False, epoch: int = 9):
+    """``tmp_path / "hive"`` (the ``hive`` fixture's checkout) forwarded to primary ``p``."""
+    from beadhive import hive_forward
+
+    checkout = tmp_path / "hive"
+    checkout.mkdir(exist_ok=True)
+    _git(["init", "-q"], checkout)
+    if refused:
+        hive_forward.refuse(
+            checkout,
+            "p is demoted",
+            prefix=PREFIX,
+            self_frame=THIS,
+            endpoints={"p": _EP},
+            placement=("p", epoch),
+        )
+    else:
+        hive_forward.point(
+            checkout,
+            hive_forward.ForwardTarget("p", epoch, _EP),
+            prefix=PREFIX,
+            self_frame=THIS,
+            endpoints={"p": _EP},
+        )
+    return checkout
+
+
+def test_a_forwarded_claim_is_not_refused_by_the_forwarders_own_writer_gate(
+    tmp_path, hive, this_host, data, monkeypatch
+):
+    """bh-0tjiq regression: the forwarder's replica names the primary ``p`` as ``bh_writer``, so
+    asking the local gate refused every forwarded claim, though the write runs on ``p`` under
+    ``p``'s guard. The marker decides; no local data, lease or frame eligibility is read."""
+    data.local = WriterRow("p", 9, "r")
+    checkout = _forwarded(tmp_path)
+    _no_hq(monkeypatch)
+    guard.guard_primary("", cfg={}, verb="work claim")
+    assert guard.bd_write_refusal(["update", "tt-1", "--claim"], checkout, cfg={"x": 1}) == ""
+    assert guard.bd_write_refusal(["close", "tt-1"], checkout, cfg={"x": 1}) == ""
+    assert guard.live_epoch("", cfg={}) == 9  # the primary's epoch, as preflighted
+    assert data.reads == 0
+
+
+def test_a_refused_forward_fails_closed_with_its_reason(
+    tmp_path, hive, this_host, data, monkeypatch, capsys
+):
+    data.local = WriterRow(THIS, 9, "r")  # a local copy naming THIS frame does not reopen it
+    checkout = _forwarded(tmp_path, refused=True)
+    with pytest.raises(typer.Exit):
+        guard.guard_primary("", cfg={}, verb="work claim")
+    err = capsys.readouterr().err
+    assert "forwarding is refused" in err and "p is demoted" in err
+    refusal = guard.bd_write_refusal(["close", "tt-1"], checkout, cfg={"x": 1})
+    assert "forwarding is refused" in refusal
+    assert data.reads == 0
+
+
+@pytest.mark.parametrize(
+    ("args", "form"),
+    [
+        (["dolt", "push"], "dolt push"),
+        (["dolt", "push", "--force"], "dolt push --force"),
+        (["vc", "merge", "main"], "vc merge"),
+    ],
+)
+def test_a_forwarded_checkout_refuses_forms_that_act_on_the_primarys_store(
+    tmp_path, hive, this_host, data, args, form
+):
+    checkout = _forwarded(tmp_path)
+    refusal = guard.bd_write_refusal(args, checkout, cfg={"x": 1})
+    assert "refused in a forwarded checkout" in refusal and form in refusal
+
+
+def test_a_forwarded_claim_token_is_checked_against_the_primarys_epoch(
+    tmp_path, hive, this_host, data, monkeypatch
+):
+    data.local = WriterRow("p", 3, "r")  # this frame's replica lags the primary
+    _forwarded(tmp_path, epoch=9)
+    _no_hq(monkeypatch)
+    guard.guard_claim_epoch(_record(9), "", cfg={}, verb="work submit")
+    with pytest.raises(typer.Exit):
+        guard.guard_claim_epoch(_record(8), "", cfg={}, verb="work submit")
+    assert data.reads == 0

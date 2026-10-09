@@ -10,6 +10,14 @@ touches a live HQ or hive server, ``~/.dolt`` or a live global.
   login; bd create, claim and close run through narrow logins over verified TLS; a claim race
   from three forwarder accounts has one winner per round; forwarded marks are stamped at the
   primary's epoch and ``fence_audit`` stays clean; a demoted primary is refused.
+* ``test_operator_*`` (bh-7yuny, absorbing bh-hy2hp and bh-0tjiq) — a registered hive checkout
+  on an operator frame whose LOCAL embedded store is a fresh, cut-over replica (its data names
+  the primary as ``bh_writer``; its ``dolt_ignore``'d ``bh_local_ident`` never arrived).
+  Forwarded, the ``bh bd`` passthrough (create, update, comment, dep, update --claim, close) and
+  ``bh work claim`` land in the primary's data and leave the replica byte-for-byte unchanged, and
+  the claim is granted by the primary, not refused by the forwarder's own writer gate. Not
+  forwarded, the write that needs ``bh_local_ident`` provisions it, so the replica's guard
+  refuses by name instead of with Error 1146, and ``bh report`` shows bd's whole message.
 * ``test_quiesce_*`` — the composed prototype (``tests/harness/composed_fence.py``): a real
   adopt demotes the primary, and the product divert reset kills an in-flight forwarded
   transaction so its ``COMMIT`` is refused instead of acknowledged and dropped (``bh-uhx2r``
@@ -30,9 +38,21 @@ from pathlib import Path
 
 import pymysql
 import pytest
+from typer.testing import CliRunner
 
-from beadhive import fence_audit, fence_data, fence_schema, hive_forward
+from beadhive import (
+    cli,
+    fence_audit,
+    fence_data,
+    fence_schema,
+    hive_forward,
+    host,
+    report,
+    store_locator,
+)
 from beadhive.writer_adopt import PlacementView
+from harness.beads import embedded_env
+from harness.hive import make_hive
 from harness.world import free_port
 
 pytestmark = [
@@ -468,6 +488,171 @@ def test_tls_forwarders_claim_in_one_place_and_a_demoted_primary_fails_closed(tl
     )
     raw = _bd(forwarders["fwd-a"], raw_env, "create", "--title", "after-demotion", "-t", "task")
     assert raw.returncode != 0 and fence_schema.GUARD_REFUSAL in raw.stdout + raw.stderr
+
+
+@pytest.fixture
+def operator_replica(world, tls_hive, tmp_path, monkeypatch):
+    """The operator frame's checkout of the hive: registered, with an embedded LOCAL store that
+    is a fresh replica of the cut-over hive. Its data names ``p`` at epoch 1 (what a pull of the
+    cut-over hive carries) and it has no ``bh_local_ident``, which is ``dolt_ignore``'d and never
+    synced. A ``fwd-op`` forwarder account exists on ``p``'s hive server."""
+    server, pnode, _ws, _penv, _fence = tls_hive
+    monkeypatch.setenv("BH_BD_PASS_ENABLED", "1")  # the `bh bd` passthrough is opt-in
+    _provision(pnode, "fwd-op")
+    hive = make_hive(world, prefix=DB)
+    db = store_locator.embedded_database_dir(hive.main)
+    dolt_home = tmp_path / "op-dolt"
+    _write(dolt_home / ".dolt" / "config_global.json", json.dumps(DOLT_CFG))
+    local_env = {**embedded_env(), "DOLT_ROOT_PATH": str(dolt_home)}
+    local = fence_data.FenceNode(fence_data.DoltCliEngine(db, env=local_env))
+    # A replica is the SAME project as the primary (bd refuses a server whose project id is not
+    # the checkout's): carry p's id into the local data and metadata.json, as a clone would.
+    pid = str(pnode.query("SELECT value FROM metadata WHERE `key` = '_project_id'")[0]["value"])
+    local.engine.execute([f"UPDATE metadata SET value = '{pid}' WHERE `key` = '_project_id'"])
+    meta_path = hive.main / ".beads" / "metadata.json"
+    meta_path.write_text(json.dumps({**json.loads(meta_path.read_text()), "project_id": pid}))
+    local.install("p", 1)
+    fence_data.reset_probe_cache()
+    assert local.writer().frame == "p" and local.ident() is None
+    try:
+        yield hive, server, pnode, local
+    finally:
+        fence_data.reset_probe_cache()
+
+
+def _local_state(local) -> dict:
+    """Everything a local write would move: the commit, the working set, the rows bh writes."""
+    head = local.query("SELECT hashof('HEAD') AS h")[0]["h"]
+    count = lambda table: int(local.query(f"SELECT COUNT(*) AS n FROM {table}")[0]["n"])  # noqa: E731
+    return {
+        "head": head,
+        "working_set": local.query("SELECT table_name FROM dolt_status"),
+        "issues": count("issues"),
+        "comments": count("comments"),
+        "dependencies": count("dependencies"),
+        "marks": count("bh_write_mark"),
+        "ident": local.ident(),
+    }
+
+
+def _bh(*args: str):
+    res = CliRunner().invoke(cli.app, list(args), catch_exceptions=False)
+    return res
+
+
+def _primary_issue(pnode, title: str) -> dict:
+    rows = pnode.query(
+        f"SELECT id, status, assignee, notes FROM issues WHERE title = {fence_schema.quote(title)}"
+    )
+    assert len(rows) == 1, rows
+    return rows[0]
+
+
+def test_operator_forwarded_passthrough_and_claim_land_on_the_primary_only(operator_replica):
+    """bh-hy2hp + bh-0tjiq: with the checkout forwarded, every authoring write reaches the
+    primary's data, and the forwarder's own replica is not written at all."""
+    hive, server, pnode, local = operator_replica
+    me = host.host_id()
+    marker = hive_forward.repoint(
+        hive.main, ("p", 1), prefix=DB, self_frame=me, endpoints={"p": server.endpoint("fwd-op")}
+    )
+    assert marker is not None and marker.state == "forwarding", marker
+    before = _local_state(local)
+    primary_marks = int(pnode.query("SELECT COUNT(*) AS n FROM bh_write_mark")[0]["n"])
+
+    # create — `bh bd create` used to ignore the marker and write the replica (hive_aware=False).
+    for title in ("forwarded one", "forwarded two"):
+        res = _bh("bd", "create", title, "-t", "task")
+        assert res.exit_code == 0, res.output
+    one = _primary_issue(pnode, "forwarded one")["id"]
+    two = _primary_issue(pnode, "forwarded two")["id"]
+
+    res = _bh("bd", "update", one, "--notes", "forwarded update")
+    assert res.exit_code == 0, res.output
+    assert _primary_issue(pnode, "forwarded one")["notes"] == "forwarded update"
+
+    res = _bh("bd", "comments", "add", one, "forwarded comment")
+    assert res.exit_code == 0, res.output
+    comments = pnode.query(f"SELECT text FROM comments WHERE issue_id = {fence_schema.quote(one)}")
+    assert [r["text"] for r in comments] == ["forwarded comment"]
+
+    res = _bh("bd", "dep", "add", one, two)
+    assert res.exit_code == 0, res.output
+    deps = pnode.query(
+        "SELECT depends_on_issue_id AS d FROM dependencies WHERE issue_id = "
+        + fence_schema.quote(one)
+    )
+    assert [r["d"] for r in deps] == [two]
+
+    # claim — the forwarder's local writer gate used to refuse it: its replica names p.
+    res = _bh("work", "claim", one, "--as", "dev/op")
+    assert res.exit_code == 0, res.output
+    claimed = _primary_issue(pnode, "forwarded one")
+    assert (claimed["status"], claimed["assignee"]) == ("in_progress", "dev/op")
+
+    res = _bh("bd", "update", two, "--claim", "--actor", "dev/op2")
+    assert res.exit_code == 0, res.output
+    assert _primary_issue(pnode, "forwarded two")["assignee"] == "dev/op2"
+    res = _bh("bd", "close", two, "--actor", "dev/op2")
+    assert res.exit_code == 0, res.output
+    assert _primary_issue(pnode, "forwarded two")["status"] == "closed"
+
+    # Every write ran under the primary's guard, at its epoch; nothing touched the replica.
+    marks = pnode.query("SELECT epoch, COUNT(*) AS n FROM bh_write_mark GROUP BY epoch")
+    assert [int(r["epoch"]) for r in marks] == [1]
+    assert int(marks[0]["n"]) > primary_marks
+    assert _local_state(local) == before
+    assert before["issues"] == 0 and before["ident"] is None
+
+
+def test_operator_refused_forward_fails_closed_before_the_local_gate(operator_replica):
+    """A refused forward refuses the claim with the forwarding reason; it never falls back to
+    writing this frame's replica."""
+    hive, _server, pnode, local = operator_replica
+    hive_forward.refuse(
+        hive.main, "the placed primary is unreachable", prefix=DB, self_frame="op", endpoints={}
+    )
+    before = _local_state(local)
+    res = _bh("work", "claim", f"{DB}-nope", "--as", "dev/op")
+    assert res.exit_code == 1
+    assert "forwarding is refused" in res.output and "unreachable" in res.output
+    res = _bh("bd", "update", f"{DB}-nope", "--claim")
+    assert res.exit_code == 1
+    assert _local_state(local) == before
+
+
+def test_operator_fresh_replica_provisions_its_identity_and_report_shows_the_error(
+    operator_replica,
+):
+    """bh-0tjiq: not forwarded, a write on the fresh replica used to die with Error 1146 on the
+    missing ``bh_local_ident`` and ``bh report`` printed only ``bd create failed: {``. The write
+    that needs the identity now provisions it (no HQ, no runtime frame), the replica's guard
+    refuses by name, and the report surfaces bd's whole message."""
+    hive, _server, _pnode, local = operator_replica
+    # The defect, reproduced with a raw bd that bypasses bh.
+    raw = subprocess.run(
+        ["bd", "-C", str(hive.main), "create", "raw on a replica", "-t", "task"],
+        capture_output=True,
+        text=True,
+        env=embedded_env(),
+        timeout=120,
+    )
+    assert raw.returncode != 0 and fence_schema.LOCAL_IDENT_TABLE in raw.stdout + raw.stderr
+    head = local.query("SELECT hashof('HEAD') AS h")[0]["h"]
+
+    code, error, new_id = report.file_report(
+        hive.repo, "filed from a replica", "bug", "op/reporter"
+    )
+
+    assert (code != 0, new_id) == (True, "")
+    assert fence_schema.GUARD_REFUSAL in error, error
+    assert "1146" not in error and fence_schema.LOCAL_IDENT_TABLE not in error
+    assert error != "bd create failed: {"
+    # Provisioned as this host's replica identity: never staged, committed or pushed.
+    assert local.ident() == (host.host_id(), "replica")
+    assert local.staged_local_tables() == []
+    assert local.query("SELECT hashof('HEAD') AS h")[0]["h"] == head
+    assert int(local.query("SELECT COUNT(*) AS n FROM issues")[0]["n"]) == 0
 
 
 def test_quiesce_refuses_an_in_flight_forwarded_write_across_the_divert_reset(tmp_path):

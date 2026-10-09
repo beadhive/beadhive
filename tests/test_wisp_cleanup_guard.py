@@ -48,7 +48,7 @@ def test_e6_gc_closed_refuses_and_names_every_open_molecule_hive_wide(monkeypatc
         (
             bd._WISP_MOLECULE_QUERY,
             "/hive",
-            {"capture": True, "hive_aware": False, "pin_process_cwd": True},
+            {"capture": True, "hive_aware": False, "pin_process_cwd": True, "forward": True},
         )
     ]
 
@@ -70,7 +70,7 @@ def test_e7_squash_refuses_on_an_in_flight_molecule(monkeypatch, capsys):
         (
             bd._WISP_MOLECULE_QUERY,
             "/hive",
-            {"capture": True, "hive_aware": False, "pin_process_cwd": True},
+            {"capture": True, "hive_aware": False, "pin_process_cwd": True, "forward": True},
         )
     ]
 
@@ -110,7 +110,9 @@ def test_bh_debug_is_an_explicit_operator_override(monkeypatch):
     args = ["mol", "squash", "rl-wisp-amf"]
 
     assert bd._run_one(args, "/hive", {}) == 23
-    assert calls == [(args, "/hive", {"hive_aware": False, "pin_process_cwd": True})]
+    assert calls == [
+        (args, "/hive", {"hive_aware": False, "pin_process_cwd": True, "forward": True})
+    ]
 
 
 def test_gc_and_squash_are_unchanged_when_no_wisp_molecule_is_open(monkeypatch):
@@ -134,15 +136,15 @@ def test_gc_and_squash_are_unchanged_when_no_wisp_molecule_is_open(monkeypatch):
         (
             bd._WISP_MOLECULE_QUERY,
             "/hive",
-            {"capture": True, "hive_aware": False, "pin_process_cwd": True},
+            {"capture": True, "hive_aware": False, "pin_process_cwd": True, "forward": True},
         ),
-        (gc_args, "/hive", {"hive_aware": False, "pin_process_cwd": True}),
+        (gc_args, "/hive", {"hive_aware": False, "pin_process_cwd": True, "forward": True}),
         (
             bd._WISP_MOLECULE_QUERY,
             "/hive",
-            {"capture": True, "hive_aware": False, "pin_process_cwd": True},
+            {"capture": True, "hive_aware": False, "pin_process_cwd": True, "forward": True},
         ),
-        (squash_args, "/hive", {"hive_aware": False, "pin_process_cwd": True}),
+        (squash_args, "/hive", {"hive_aware": False, "pin_process_cwd": True, "forward": True}),
     ]
 
 
@@ -158,7 +160,9 @@ def test_non_closed_gc_modes_are_outside_the_specific_guard(monkeypatch):
 
     args = ["mol", "wisp", "gc", "--age", "24h", "--force"]
     assert bd._run_one(args, "/hive", {}) == 0
-    assert calls == [(args, "/hive", {"hive_aware": False, "pin_process_cwd": True})]
+    assert calls == [
+        (args, "/hive", {"hive_aware": False, "pin_process_cwd": True, "forward": True})
+    ]
 
 
 def test_failed_or_malformed_safety_query_fails_closed(monkeypatch, capsys):

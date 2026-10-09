@@ -73,6 +73,7 @@ __all__ = [
     "InstallReport",
     "SqlFailed",
     "engine_for",
+    "ensure_replica_ident",
     "node_for",
     "register",
     "reset_probe_cache",
@@ -728,6 +729,7 @@ def reset_probe_cache() -> None:
     """Forget every memoised probe (tests; a long-lived process after an operator cutover)."""
     _probes.clear()
     _seen_cut_over.clear()
+    _ident_checked.clear()
 
 
 def _fingerprint(store: Path) -> tuple | None:
@@ -784,6 +786,84 @@ def resolve_cut_over(prefix: str, hive_dir: Path) -> FenceNode | None:
         _seen_cut_over.add(key)
         return node
     _seen_cut_over.discard(key)
+    return None
+
+
+#: Checkouts whose replica identity this process already settled (provisioned, present, or a
+#: legacy hive with nothing to provision): checked once, so a verb's later writes pay nothing.
+_ident_checked: set[str] = set()
+
+
+def _this_frame() -> str:
+    from . import host  # lazy: host identity is only needed when a replica lacks its row
+
+    try:
+        return host.host_id()
+    except FileNotFoundError:
+        return ""
+
+
+def ensure_replica_ident(hive_dir: Path, *, frame: str | None = None) -> str | None:
+    """Provision a pulled replica's node-local ``bh_local_ident`` on demand (bh-7yuny,
+    bh-0tjiq). ``None`` when the checkout may go ahead; otherwise an actionable refusal.
+
+    The identity table is ``dolt_ignore``'d (``bh_local_%``), so a replica that pulled a
+    cut-over hive never receives it, and every guarded write then fails inside the guard
+    trigger with ``Error 1146: table not found: bh_local_ident``. Cutover's C6 provisioned it
+    only through the hidden ``bh hive fence cutover`` verb, which needs this host's HQ clone and
+    runtime context; an operator-only host has neither. Here it needs only the hive's own data
+    and this host's frame id (``host.yaml``, or ``frame``).
+
+    The row names this host as a ``replica``, which keeps the guard's verdict exact: the trigger
+    now refuses the write BY NAME ("not the bh_writer") instead of by a missing table. It never
+    makes a replica writable. A frame the data already names as ``bh_writer`` is refused rather
+    than provisioned: a writer's identity comes from its cutover or adopt, never on demand.
+
+    Legacy hives (no ``bh_writer`` in the local data) and stores bh cannot open answer ``None``
+    with nothing written. Each checkout is settled once per process (:func:`reset_probe_cache`
+    forgets it)."""
+    key = str(Path(hive_dir).absolute())
+    if key in _ident_checked:
+        return None
+    node = resolve_cut_over("", Path(hive_dir))
+    if node is None:
+        _ident_checked.add(key)
+        return None
+    try:
+        present = node.ident() is not None
+        writer = None if present else node.writer()
+    except FenceError:
+        # The identity table is there but unreadable in this shape (an older or foreign table),
+        # or the store cannot be read at all: not this probe's call to make. bd runs and its own
+        # guard and errors decide; a missing table is the only thing provisioned here.
+        present = True
+    if present:
+        _ident_checked.add(key)
+        return None
+    try:
+        me = _this_frame() if frame is None else frame
+        if not me:
+            return (
+                f"{hive_dir}: this replica has no {LOCAL_IDENT_TABLE} and this host has no frame "
+                f"identity to provision it with — run `bh config init` (it mints host.yaml)"
+            )
+        if writer is not None and writer.frame == me:
+            return (
+                f"{hive_dir}: the hive's data names this frame ({me}) as bh_writer at epoch "
+                f"{writer.epoch}, but its {LOCAL_IDENT_TABLE} is missing. A writer's identity "
+                "comes from its cutover or adopt, never on demand: re-run `bh hive fence "
+                "cutover` or `bh host adopt` on this frame"
+            )
+        node.provision_ident(me)
+    except FenceError as exc:
+        return f"cannot provision this replica's {LOCAL_IDENT_TABLE}: {exc}"
+    _ident_checked.add(key)
+    log.get_logger(__name__).info(
+        "replica_ident_provisioned",
+        store=str(node.engine.store),
+        frame=me,
+        writer=writer.frame if writer is not None else "",
+    )
     return None
 
 

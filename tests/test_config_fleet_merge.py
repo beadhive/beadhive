@@ -292,6 +292,18 @@ def test_host_only_and_unclassified_keys_are_never_rejected(bh_home):
     assert config.load()["beads"]["engine"] == "bd"
 
 
+def test_host_forward_is_host_local_and_never_a_fleet_override(bh_home):
+    """bh-hy2hp: `host.forward` is per frame (which primaries THIS frame forwards to, with its
+    own login). Under the fleet-owned `host` prefix a host file carrying it was refused as a
+    fleet override, so `host.forward.enabled` could not be saved where it belongs."""
+    _write_fleet(bh_home, FLEET_YAML)
+    _write_host(bh_home, HOST_YAML + "host:\n  forward:\n    enabled: true\n")
+
+    assert config_partition.partition_of("host.forward.enabled") == "host"
+    assert config_partition.partition_of("host.forward.endpoints") == "host"
+    assert config.load()["host"]["forward"]["enabled"] is True
+
+
 def test_empty_host_section_is_not_an_override(bh_home):
     """`work: {}` sets no value at all — a namespace row is not a leaf, so it must not trip the
     fleet-key check."""

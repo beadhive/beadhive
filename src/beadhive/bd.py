@@ -63,6 +63,7 @@ def run(
     env=None,
     hive_aware=True,
     no_work_markers=(),
+    forward=None,
 ):
     """Run a `bd` subcommand scoped to the hive via `-C <cwd>` (so the right Beads DB is hit
     regardless of the process cwd / `--hive`). Prepends `--actor <name>` for the audit trail;
@@ -75,7 +76,8 @@ def run(
     `Engine.passthrough`'s docstring. Leave False for ordinary beads-DB commands, which `-C`
     already scopes correctly. ``hive_aware=False`` is the explicit ambient/process-cwd variant;
     ``capture=False`` streams; and ``no_work_markers`` promotes bd's known exit-0 failure reports
-    into an ordinary non-zero completed result."""
+    into an ordinary non-zero completed result. ``forward`` (default: ``hive_aware``) routes a
+    forwarded checkout's bd to the hive's primary; the passthrough sets it (bh-7yuny)."""
     from . import engine  # lazy: engine imports bd, so keep the cycle import-safe
 
     return engine.get_engine().invoke(
@@ -89,6 +91,7 @@ def run(
         env=env,
         hive_aware=hive_aware,
         no_work_markers=tuple(no_work_markers),
+        forward=forward,
     )
 
 
@@ -511,6 +514,7 @@ def create(create_args, cwd) -> tuple[int, str]:
             cwd,
             hive_aware=False,
             pin_process_cwd=True,
+            forward=True,
         )
     )
 
@@ -922,6 +926,7 @@ def wisp_cleanup_refusal(args, cwd) -> str:
         capture=True,
         hive_aware=False,
         pin_process_cwd=True,
+        forward=True,
     )
     if res.returncode != 0:
         return (
@@ -966,7 +971,7 @@ def _run_one(args, cwd, cfg=None):
         return _create(args[1:], cwd)
     if args and args[0] == "import":
         return _import(args[1:], cwd)
-    return run(args, cwd, hive_aware=False, pin_process_cwd=True).returncode
+    return run(args, cwd, hive_aware=False, pin_process_cwd=True, forward=True).returncode
 
 
 def passthrough(mode, target, args):
