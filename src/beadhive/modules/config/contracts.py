@@ -184,6 +184,16 @@ class WorktreesConfig(_Section):
             "if it is still full. 0 disables the cap. Env: BH_WORKTREES_MAX_LIVE."
         ),
     )
+    ram_warn_gib: float = Field(
+        4.0,
+        ge=0,
+        description=(
+            "`bh doctor` warns that a host with no swap (SwapTotal=0) is holding more than this "
+            "many GiB in RAM-backed storage (tmpfs/ramfs: worktrees, validation checkouts, "
+            "TMPDIR, bh state). It also flags a tmpfs worktree root that is not opted in via "
+            "allow_tmpfs and bh state dirs on RAM. 0 turns these doctor warnings off."
+        ),
+    )
     reclaim_on_merge: bool = Field(
         True,
         description=(

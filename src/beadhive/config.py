@@ -181,6 +181,10 @@ def worktrees_max_live(cfg=None) -> int:
     return _config_paths.worktrees_max_live(_facade(), cfg)
 
 
+def worktrees_ram_warn_bytes(cfg=None) -> int:
+    return _config_paths.worktrees_ram_warn_bytes(_facade(), cfg)
+
+
 def worktrees_reclaim_on_merge(cfg=None) -> bool:
     return _config_paths.worktrees_reclaim_on_merge(_facade(), cfg)
 

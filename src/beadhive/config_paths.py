@@ -215,6 +215,26 @@ def worktrees_max_live(api, cfg=None) -> int:
     return DEFAULT_MAX_LIVE_WORKTREES if configured is None else configured
 
 
+#: Default RAM-backed usage (GiB) above which ``bh doctor`` escalates a swapless host. ``0``
+#: switches every RAM-backed-storage doctor warning off (bh-01asp).
+DEFAULT_RAM_WARN_GIB = 4.0
+RAM_WARN_KEY = "worktrees.ram_warn_gib"
+
+
+def worktrees_ram_warn_bytes(api, cfg=None) -> int:
+    """Bytes of RAM-backed (tmpfs/ramfs) storage in use above which doctor warns that the host
+    has no swap; ``0`` disables the RAM-backed doctor warnings. Unreadable / negative values
+    fall back to :data:`DEFAULT_RAM_WARN_GIB`."""
+    raw = api.worktrees_cfg(cfg).get("ram_warn_gib")
+    try:
+        gib = float(raw)
+    except (TypeError, ValueError):
+        gib = -1.0
+    if gib < 0:
+        gib = DEFAULT_RAM_WARN_GIB
+    return int(gib * 1024**3)
+
+
 def worktrees_reclaim_on_merge(api, cfg=None) -> bool:
     """Whether a clean ``work merge`` / ``work finish`` removes the merged bead's worktree
     (the branch stays the durable artifact). On by default; ``--rm`` forces it per call."""

@@ -70,6 +70,14 @@ Three mechanisms keep the live count bounded; the branch is always the durable a
 `bh doctor` prints the live count and size per filesystem against the cap
 (`worktree_disk_usage.filesystems` in `--json`).
 
+`bh doctor` also has a **RAM-backed storage** section (`ram_backed` in `--json`, bh-01asp). It
+reports the filesystem type and current usage of the worktree root (which also holds `verify-*`
+validation checkouts), `TMPDIR`, and bh's state dirs (home, cache, hub, HQ), and the host's swap
+(`SwapTotal` in `/proc/meminfo`). Warnings: a tmpfs/ramfs worktree root that is not opted in
+(`worktrees.allow_tmpfs`), any bh state dir on RAM, and a host with **no swap** holding more than
+`worktrees.ram_warn_gib` (default 4) GiB in RAM-backed storage. `ram_warn_gib: 0` turns these
+warnings off; they never fail the doctor run.
+
 Each is an ordinary linked `git worktree` of the hive's main clone
 (`$GIT_WORKSPACE/<provider>/<org>/<repo>`) — the git admin files stay under the main clone's
 `.git/worktrees/`, so `git worktree list` from either side sees it. Keeping the *working
