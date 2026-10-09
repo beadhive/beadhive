@@ -16,12 +16,8 @@ encodes the conventions, the registry, validation, and routing. Config and runti
 under `~/.beadhive/`; **no issue data lives there** — each hive's issues live in its own Dolt
 DB under `refs/dolt/data` on that repo's own git remote.
 
-`bh` is the **Beadhive** umbrella's workspace CLI — the integration-plane driver for **AGF**
-(Agentic Git Flow), the abstract, tracker-independent process. **Beadflow** is that process
-implemented on beads: this repo's concrete implementation, unchanged behavior under a naming
-layer. See [docs/AGF.md](docs/AGF.md) for the process and
-[docs/design/limn-naming-strategy-adr.md](docs/design/limn-naming-strategy-adr.md) for the
-naming decision record.
+`bh` is the CLI of **Beadhive**, a bead-machine — a software factory that uses beads.
+The process it drives is documented in [docs/AGF.md](docs/AGF.md).
 
 This repo is the CLI's source (Python package `beadhive` on PyPI, command `bh`). For what
 Beadhive is conceptually, rather than how to drive it, see [beadhive.ai](https://beadhive.ai).
@@ -100,7 +96,7 @@ four rungs, what each buys, and what staying on this one costs.
 
 ### Agent harnesses
 
-`bh` furnishes AGF seats for **Claude Code** (`--claude`) and **OpenCode** (`--opencode`) —
+`bh` furnishes seats for **Claude Code** (`--claude`) and **OpenCode** (`--opencode`) —
 pass either to `bh hive onboard <provider>/<org>/<repo>`. `docs/AGF.md` carries the
 [per-harness support matrix](docs/AGF.md#per-harness-support-matrix), including what does and
 doesn't apply for **codex**. On Claude Code, the `bh` claude-plugin vends the seat agent defs
