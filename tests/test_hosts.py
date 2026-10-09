@@ -409,7 +409,7 @@ def test_frame_contract_names_and_closed_enums():
         "quarantined",
         "retired",
     )
-    assert hosts.FRAME_ISOLATIONS == ("kvm", "microvm", "container")
+    assert hosts.FRAME_ISOLATIONS == ("kvm", "microvm", "container", "workstation")
     assert hosts.FRAME_TRUST_ZONES == ("self-hosted", "vendor-hosted")
     assert set(hosts.FrameRelease.model_fields) == {"id", "digest"}
     assert set(hosts.FrameCapabilities.model_fields) == {
@@ -419,6 +419,32 @@ def test_frame_contract_names_and_closed_enums():
         "harnesses",
         "max_sessions",
     }
+
+
+def test_workstation_isolation_and_execution_hives_round_trip(tmp_path):
+    manifest = _manifest(
+        frame_id="frame-ws",
+        execution_hives=["bh", "hq"],
+        capabilities={
+            "isolation": "workstation",
+            "trust_zone": "self-hosted",
+            "arch": "aarch64",
+            "harnesses": ["claude"],
+            "max_sessions": 1,
+        },
+    )
+    hosts.save(tmp_path, manifest)
+    loaded = hosts.load(tmp_path, manifest.host_id)
+    assert loaded == manifest
+    assert loaded.execution_hives == ["bh", "hq"]
+    assert loaded.capabilities.isolation == "workstation"
+
+
+def test_execution_hives_is_optional_and_defaults_to_none(tmp_path):
+    manifest = _manifest()
+    assert manifest.execution_hives is None
+    hosts.save(tmp_path, manifest)
+    assert hosts.load(tmp_path, manifest.host_id).execution_hives is None
 
 
 def test_reading_historical_frame_without_state_is_active(tmp_path):
