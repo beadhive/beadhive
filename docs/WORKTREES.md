@@ -50,6 +50,26 @@ a **new** worktree or `verify-*` checkout there is refused with the opt-in messa
 `worktrees.allow_tmpfs: true` to carry on there until those beads land, or finish/`abandon`
 them and remove the leftover directory; the next worktree then lands on the disk root.
 
+## Reclaiming finished worktrees and the live-count cap
+
+Worktrees used to accumulate (158 once, many for merged beads or abandoned `verify-*` runs).
+Three mechanisms keep the live count bounded; the branch is always the durable artifact:
+
+- **After a merge.** `bh work merge` / `bh work finish` remove the merged bead's worktree
+  (`worktrees.reclaim_on_merge`, default on; `--rm` forces it for one call). A tree with
+  uncommitted or untracked changes is **never** removed — it is kept with a warning.
+- **Abandoned `verify-*` checkouts.** A clean-validation checkout is removed when its run
+  ends (including on an exception or interrupt); one left behind by a killed run is reaped by the
+  next validation run, `bh worktree prune`, or a provision that hits the cap.
+- **A cap.** `worktrees.max_live` (default 64, `0` = off; `BH_WORKTREES_MAX_LIVE`; host-owned)
+  bounds the live worktrees under the root. Provisioning a new one at the cap first reclaims
+  what `bh worktree prune` classifies SAFE (closed + merged + clean, plus orphaned `verify-*`
+  dirs), then refuses with the count and the ways out if the host is still full. Re-attaching
+  an existing directory and `verify-*` checkouts are never refused by the cap.
+
+`bh doctor` prints the live count and size per filesystem against the cap
+(`worktree_disk_usage.filesystems` in `--json`).
+
 Each is an ordinary linked `git worktree` of the hive's main clone
 (`$GIT_WORKSPACE/<provider>/<org>/<repo>`) — the git admin files stay under the main clone's
 `.git/worktrees/`, so `git worktree list` from either side sees it. Keeping the *working

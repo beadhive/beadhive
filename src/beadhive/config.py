@@ -177,6 +177,14 @@ def worktrees_root_refusal(cfg=None) -> str | None:
     return _config_paths.worktrees_root_refusal(_facade(), cfg)
 
 
+def worktrees_max_live(cfg=None) -> int:
+    return _config_paths.worktrees_max_live(_facade(), cfg)
+
+
+def worktrees_reclaim_on_merge(cfg=None) -> bool:
+    return _config_paths.worktrees_reclaim_on_merge(_facade(), cfg)
+
+
 def codex_sandbox_active() -> bool:
     return _config_paths.codex_sandbox_active()
 

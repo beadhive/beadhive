@@ -175,6 +175,23 @@ class WorktreesConfig(_Section):
             "Env: BH_WORKTREES_ALLOW_TMPFS=1."
         ),
     )
+    max_live: int = Field(
+        64,
+        ge=0,
+        description=(
+            "Per-host ceiling on live worktrees (bead trees and verify-* checkouts). Provisioning "
+            "a new one at the cap first reclaims clean, merged trees, then refuses with a message "
+            "if it is still full. 0 disables the cap. Env: BH_WORKTREES_MAX_LIVE."
+        ),
+    )
+    reclaim_on_merge: bool = Field(
+        True,
+        description=(
+            "Remove a bead's worktree after a clean `work merge` / `work finish` (the branch "
+            "stays as the durable artifact). A worktree with uncommitted changes is always kept. "
+            "`work merge --rm` forces it for one call; set false to keep trees."
+        ),
+    )
     path: str | None = Field(
         None, description="Persistent worktree root (ephemeral=false only); $BH_WORKTREES wins."
     )

@@ -1195,6 +1195,42 @@ def test_data_worktree_disk_usage_measures_only_managed_worktrees(monkeypatch, t
     }
 
 
+def test_worktree_disk_usage_groups_count_and_size_per_filesystem(monkeypatch, tmp_path, capsys):
+    """bh-qbu9t: doctor reports live worktree count and size per mounted filesystem."""
+    ram = tmp_path / "ram"
+    disk = tmp_path / "disk"
+    paths = [ram / "a", ram / "b", disk / "c"]
+    monkeypatch.setattr(
+        doctor.worktree, "managed", lambda _cfg: [("one", str(p), "wt/x") for p in paths]
+    )
+    monkeypatch.setattr(doctor.safety, "_measure_disk_usage", lambda path: 10)
+    monkeypatch.setattr(doctor.config, "worktrees_root", lambda _cfg: tmp_path)
+    monkeypatch.setattr(doctor.shutil, "disk_usage", lambda _p: SimpleNamespace(free=1))
+    mounts = [
+        {"mount_point": "/", "device_id": "8:1", "filesystem_type": "ext4", "device": "/dev/a"},
+        {
+            "mount_point": str(ram),
+            "device_id": "0:4",
+            "filesystem_type": "tmpfs",
+            "device": "tmpfs",
+        },
+    ]
+    monkeypatch.setattr(doctor, "_read_mount_table", lambda: mounts)
+
+    data = doctor._data_worktree_disk_usage({"managed_repos": [{"prefix": "one"}]})
+
+    assert data["total_worktree_count"] == 3
+    assert data["max_live"] == 64
+    by_mount = {row["mount_point"]: row for row in data["filesystems"]}
+    assert by_mount[str(ram)]["worktree_count"] == 2 and by_mount[str(ram)]["worktree_bytes"] == 20
+    assert by_mount[str(ram)]["filesystem_type"] == "tmpfs"
+    assert by_mount["/"]["worktree_count"] == 1 and by_mount["/"]["worktree_bytes"] == 10
+
+    doctor._render_worktree_disk_usage(data)
+    out = capsys.readouterr().out
+    assert "3 live (cap 64)" in out and "tmpfs" in out and "2 worktree(s)" in out
+
+
 def test_filesystem_capacity_uses_existing_parent_for_persistent_root(monkeypatch, tmp_path):
     """An absent persistent root is measured on its nearest existing parent filesystem."""
     root = tmp_path / "persistent-worktrees"
@@ -1367,6 +1403,9 @@ def test_doctor_payload_sections_are_structured(hive, fakebd):  # noqa: F811
         "disk_free_bytes",
         "worktree_filesystem",
         "host_root_filesystem",
+        "total_worktree_count",
+        "filesystems",
+        "max_live",
     }
     assert set(payload["fleet_health"]) >= {
         "repos_scanned",

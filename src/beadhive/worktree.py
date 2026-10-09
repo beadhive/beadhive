@@ -616,6 +616,7 @@ def _do_add(
     ``attach`` (bh-055ot.1) — there is no plugin delegation seam any more; ``wt_creating`` /
     ``wt_created`` observers still fire around either."""
     _refuse_memory_backed_root(cfg)
+    enforce_live_cap(cfg)  # bh-qbu9t: reclaim clean merged trees, else refuse at the cap
     hive = str(entry.get("prefix", ""))
     started = time.monotonic()
     composition = plugins.action_composition(cfg, entry)
@@ -1750,6 +1751,21 @@ def _prune_remove_all(cfg, mains: dict, keys: dict, entries_by_prefix: dict, saf
 def prune(hive=""):
     """Compatibility facade for ``worktree_cleanup.impl_prune``."""
     return _worktree_cleanup.impl_prune(hive)
+
+
+def reclaim_merged(hive, ref) -> bool:
+    """Compatibility facade for ``worktree_cleanup.impl_reclaim_merged``."""
+    return _worktree_cleanup.impl_reclaim_merged(hive, ref)
+
+
+def live_worktree_dirs(root):
+    """Compatibility facade for ``worktree_cleanup.impl_live_worktree_dirs``."""
+    return _worktree_cleanup.impl_live_worktree_dirs(root)
+
+
+def enforce_live_cap(cfg) -> None:
+    """Compatibility facade for ``worktree_cleanup.impl_enforce_live_cap``."""
+    return _worktree_cleanup.impl_enforce_live_cap(cfg)
 
 
 # ---- worktree status helpers -----------------------------------------------

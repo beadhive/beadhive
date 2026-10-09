@@ -2940,6 +2940,13 @@
           "title": "Manager",
           "type": "string"
         },
+        "max_live": {
+          "default": 64,
+          "description": "Per-host ceiling on live worktrees (bead trees and verify-* checkouts). Provisioning a new one at the cap first reclaims clean, merged trees, then refuses with a message if it is still full. 0 disables the cap. Env: BH_WORKTREES_MAX_LIVE.",
+          "minimum": 0,
+          "title": "Max Live",
+          "type": "integer"
+        },
         "path": {
           "anyOf": [
             {
@@ -2952,6 +2959,12 @@
           "default": null,
           "description": "Persistent worktree root (ephemeral=false only); $BH_WORKTREES wins.",
           "title": "Path"
+        },
+        "reclaim_on_merge": {
+          "default": true,
+          "description": "Remove a bead's worktree after a clean `work merge` / `work finish` (the branch stays as the durable artifact). A worktree with uncommitted changes is always kept. `work merge --rm` forces it for one call; set false to keep trees.",
+          "title": "Reclaim On Merge",
+          "type": "boolean"
         },
         "rmdir_empty": {
           "default": true,
