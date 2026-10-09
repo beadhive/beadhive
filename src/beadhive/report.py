@@ -73,7 +73,7 @@ def _create_bead(title, report_type, ident, target, actor, description="") -> tu
         title, report_type, triplet, description=description, actor=actor
     )
     if res.returncode:
-        return res.returncode, f"bd create failed: {bd.err_line(res)}", ""
+        return res.returncode, f"bd create failed: {bd.err_detail(res)}", ""
     try:
         new_id = (json.loads(res.stdout or "{}") or {}).get("id") or ""
     except json.JSONDecodeError:
@@ -140,13 +140,13 @@ def file_report(
     for label, what in ((origin, "origin"), (INTAKE_UNTRIAGED, "intake state")):
         state = _set_state(label, new_id, target, actor)
         if state.returncode:
-            msg = f"filed {new_id} but could not set {what}: {bd.err_line(state)}"
+            msg = f"filed {new_id} but could not set {what}: {bd.err_detail(state)}"
             return state.returncode, msg, new_id
 
     if pushed:
         push = engine.get_engine(cfg).push_state(target, actor=actor, message=f"report: {title}")
         if push.returncode:
-            msg = f"filed {new_id} in the cache but push to its hive failed: {bd.err_line(push)}"
+            msg = f"filed {new_id} in the cache but push to its hive failed: {bd.err_detail(push)}"
             return push.returncode, msg, new_id
 
     return 0, "", new_id

@@ -199,6 +199,27 @@ def test_clone_on_demand_target_fetches_creates_and_pushes(tmp_path, monkeypatch
     assert all(cmd[1:3] == ["-C", str(cache_dir)] for cmd in rec.calls)
 
 
+def test_a_failed_create_surfaces_bds_whole_error_not_its_first_line(tmp_path, monkeypatch):
+    """bh-0tjiq: on a SQL failure bd prints a multi-line JSON object; the report used to show
+    only its first line, `bd create failed: {`, which named no cause."""
+    message = (
+        "failed to create issue: Error 1105 (HY000): bh-guard: this replica is not the "
+        "bh_writer for main"
+    )
+
+    class Failing(_Recorder):
+        def __call__(self, cmd, **kwargs):
+            self.calls.append(cmd)
+            return Completed(1, json.dumps({"error": message, "schema_version": 1}, indent=2), "")
+
+    _wire(monkeypatch, Failing(), cloned=True, tmp_path=tmp_path)
+
+    code, error, new_id = report.file_report("wid", "t", "bug", "crew/dev-report", cfg=_cfg())
+
+    assert (code, new_id) == (1, "")
+    assert error == f"bd create failed: {message}"
+
+
 def test_bad_type_is_rejected_before_any_write(tmp_path, monkeypatch):
     """An unsupported --type fails fast with no bd invocation."""
     rec = _Recorder()
