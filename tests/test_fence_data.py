@@ -298,3 +298,92 @@ def test_the_port_stays_a_leaf_at_module_load():
     top = [n for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))]
     assert all(getattr(n, "level", 0) == 0 for n in top)
     assert not any("beadhive" in (getattr(n, "module", "") or "") for n in top)
+
+
+# ---- a pulled replica's identity, provisioned on demand (bh-7yuny, bh-0tjiq) ----------------
+
+
+class IdentNode:
+    """A cut-over replica as :func:`fd.ensure_replica_ident` sees it."""
+
+    def __init__(self, *, ident=None, writer=("p", 4)):
+        self.engine = type("E", (), {"store": "fake"})()
+        self._ident, self._writer = ident, writer
+        self.provisioned: list[tuple[str, str]] = []
+        self.refuse: Exception | None = None
+
+    def ident(self):
+        return self._ident
+
+    def writer(self):
+        return None if self._writer is None else writer_adopt.WriterRow(*self._writer, "r")
+
+    def provision_ident(self, frame, role="replica"):
+        if self.refuse is not None:
+            raise self.refuse
+        self.provisioned.append((frame, role))
+        self._ident = (frame, role)
+
+
+@pytest.fixture
+def ident_node(monkeypatch):
+    fd.reset_probe_cache()
+    node = IdentNode()
+    node.seen = []
+    monkeypatch.setattr(fd, "resolve_cut_over", lambda _p, d: node.seen.append(d) or node)
+    yield node
+    fd.reset_probe_cache()
+
+
+def test_a_fresh_replica_gets_its_identity_from_the_write_that_needs_it(
+    tmp_path, ident_node, monkeypatch
+):
+    """No cutover verb, HQ clone or runtime frame: the hive's own data and host.yaml suffice."""
+    from beadhive import host
+
+    monkeypatch.setattr(host, "host_id", lambda: "op-mac")
+    assert fd.ensure_replica_ident(tmp_path) is None
+    assert ident_node.provisioned == [("op-mac", "replica")]
+    assert fd.ensure_replica_ident(tmp_path) is None  # settled once per process
+    assert ident_node.seen == [tmp_path]
+
+
+def test_a_replica_identity_is_never_minted_for_the_writer_or_without_a_frame(
+    tmp_path, ident_node, monkeypatch
+):
+    from beadhive import host
+
+    monkeypatch.setattr(host, "host_id", lambda: "p")
+    refusal = fd.ensure_replica_ident(tmp_path)
+    assert refusal and "names this frame (p) as bh_writer" in refusal
+
+    def no_identity():
+        raise FileNotFoundError("host.yaml")
+
+    monkeypatch.setattr(host, "host_id", no_identity)
+    assert "no frame identity" in (fd.ensure_replica_ident(tmp_path) or "")
+
+    monkeypatch.setattr(host, "host_id", lambda: "op-mac")
+    ident_node.refuse = fd.IdentNotIgnored("the dolt_ignore row is not committed on HEAD")
+    assert "not committed on HEAD" in (fd.ensure_replica_ident(tmp_path) or "")
+    assert ident_node.provisioned == []
+
+
+def test_a_legacy_hive_or_a_provisioned_replica_needs_nothing(tmp_path, ident_node, monkeypatch):
+    ident_node._ident = ("op-mac", "replica")
+    assert fd.ensure_replica_ident(tmp_path) is None and ident_node.provisioned == []
+    fd.reset_probe_cache()
+    monkeypatch.setattr(fd, "resolve_cut_over", lambda _p, _d: None)
+    assert fd.ensure_replica_ident(tmp_path / "legacy") is None
+
+
+def test_an_unreadable_identity_table_is_not_this_probes_call(tmp_path, ident_node, monkeypatch):
+    """A replica whose identity table exists in another shape (or cannot be read) is left to bd
+    and its guard: the probe never refuses a write on a read failure."""
+
+    def unreadable():
+        raise fd.SqlFailed('column "role" could not be found in any table in scope')
+
+    monkeypatch.setattr(ident_node, "ident", unreadable)
+    assert fd.ensure_replica_ident(tmp_path) is None
+    assert ident_node.provisioned == []
