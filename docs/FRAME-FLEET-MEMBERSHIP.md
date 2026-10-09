@@ -239,6 +239,13 @@ fresh. TTL is exclusive (`age < leaseDurationSeconds`), capped at 900 seconds
 and at least three report intervals. A repeated signed record does not renew
 freshness.
 
+**Proposed (not shipped).** The
+[trust profiles and capabilities ADR](design/hq-trust-profiles-and-capabilities-adr.md)
+(2026-10-09) proposes attaching these predicates to capabilities rather than to one host role,
+so that a host declaring `host.roles: [planner]` can author beads with only the identity,
+admission and cordon predicates consulted, while `execute` and `publish` keep the full set. Until
+that lands, every write verb on a frame consults the predicates as described in this section.
+
 ### Session and evidence rows (0.23.0, `dolt-server` HQ)
 
 On `dolt-server` HQ the signed beat is replaced, per frame incarnation, by two operator-provisioned

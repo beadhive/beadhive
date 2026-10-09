@@ -12,6 +12,13 @@ closed. Option A **narrows and detects**; it does not prevent (see [Residual tru
 
 Both sides are **opt-in per frame**, and every default below is configurable.
 
+**Proposed (not shipped).** The
+[trust profiles and capabilities ADR](design/hq-trust-profiles-and-capabilities-adr.md)
+(2026-10-09) names this path the `forward` write policy, makes it the default for the `trusted`
+and `verified` profiles, and adds an `open` policy for non-allocating edits on replicas plus a
+daemon-run batch auto-push and auto-pull (`hive.sync.*`). The forwarding fixes `bh-hy2hp` and
+`bh-0tjiq` are its prerequisites.
+
 ## The primary's side
 
 Set `host.forward.serve.enabled: true` on the frame whose hive server takes forwarders. The
