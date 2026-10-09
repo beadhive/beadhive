@@ -30,6 +30,7 @@ from . import (
     channels,
     config,
     daemon_supervisor,
+    doctor_ram,
     dolt_health,
     fleet,
     gitauth,
@@ -1882,6 +1883,28 @@ def _data_worktree_disk_usage(cfg) -> dict:
     }
 
 
+def _data_ram_backed(cfg, meminfo_path: Path | None = None) -> dict:
+    """RAM-backed (tmpfs/ramfs) storage under the roots bh puts memory-hungry state in, plus
+    swap (bh-01asp). Detection is :func:`config.statfs_type`; reporting is :mod:`doctor_ram`."""
+    import tempfile
+
+    return doctor_ram.collect(
+        [
+            # verify-* clean checkouts (validation) live under the worktrees root: one row.
+            ("worktrees", Path(config.worktrees_root(cfg))),
+            ("tmpdir", Path(tempfile.gettempdir())),
+            ("bh_home", Path(config.home())),
+            ("bh_cache", Path(config.cache_dir())),
+            ("bh_hub", Path(config.hub_dir())),
+            ("bh_hq", Path(config.hq_dir())),
+        ],
+        statfs_type=config.statfs_type,
+        threshold_bytes=config.worktrees_ram_warn_bytes(cfg),
+        allow_tmpfs=config.worktrees_allow_tmpfs(cfg),
+        meminfo_path=meminfo_path,
+    )
+
+
 def _render_worktree_disk_usage(d: dict) -> None:
     cap = d.get("max_live") or 0
     limit = f" (cap {cap})" if cap else " (no cap)"
@@ -2528,6 +2551,7 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
     warns += _orphaned_dolt_server_warnings()
     warns += _channel_drift_warnings(cfg, hives)
     warns += _orphan_safety_ref_warnings(cfg)
+    warns += doctor_ram.warnings(_data_ram_backed(cfg))
     return warns
 
 
@@ -3143,6 +3167,7 @@ def _collect(cfg, *, full_seats: bool = False) -> dict:
         "worktree_disk_usage": _timed(
             timings, "worktree_disk_usage", _data_worktree_disk_usage, cfg
         ),
+        "ram_backed": _timed(timings, "ram_backed", _data_ram_backed, cfg),
         "fleet_health": _timed(timings, "fleet_health", _data_fleet_health, records, git_repos),
         "worktrees": _timed(timings, "worktrees", _data_worktrees, cfg),
         "molecules": _timed(timings, "molecules", _data_molecules, cfg),
@@ -3213,7 +3238,7 @@ def doctor_payload(*, full_seats: bool = False) -> dict:
     """Structured `ws doctor` diagnostics — the data layer beneath the text render.
 
     Returns a JSON-able dict keyed by section (``config``, ``providers``, ``orgs``, ``hives``,
-    ``inventory``, ``disk_usage``, ``worktree_disk_usage``, ``fleet_health``,
+    ``inventory``, ``disk_usage``, ``worktree_disk_usage``, ``ram_backed``, ``fleet_health``,
     ``worktrees``, ``molecules``,
     ``prefix_mismatches``, ``node_id``, ``beads_role``, ``group_auth``, ``mcp``, ``harness_plugin``,
     ``seats``,
@@ -3310,6 +3335,7 @@ def doctor(as_json: bool = False, verbose: bool = False, seats: bool = False):
     _render_inventory(data["inventory"])
     _render_disk_usage(data["disk_usage"])
     _render_worktree_disk_usage(data["worktree_disk_usage"])
+    doctor_ram.render(data["ram_backed"])
     _render_fleet_health(data["fleet_health"])
     _render_worktrees(data["worktrees"])
     _render_molecules(data["molecules"])

@@ -1284,6 +1284,7 @@ _DOCTOR_SECTIONS = {
     "inventory",
     "disk_usage",
     "worktree_disk_usage",
+    "ram_backed",
     "fleet_health",
     "worktrees",
     "molecules",
@@ -2772,3 +2773,146 @@ def test_doctor_distinguishes_protected_state_from_cleanup_candidate(tmp_path):
     assert len(protected) == 1
     assert "not a deletion candidate" in protected[0]
     assert not any("release logs without live control owners" in warning for warning in warnings)
+
+
+# ---- RAM-backed storage + swap (bh-01asp) -----------------------------------
+
+_TMPFS = 0x01021994
+_EXT4 = 0xEF53
+_GIB = 1024**3
+
+
+def _fake_ram_host(monkeypatch, tmp_path, *, tmpfs_roles, swap_kb, allow_tmpfs=False, warn_gib=4):
+    """Fake statfs / meminfo / fs usage: no real tmpfs or memory pressure involved."""
+    import tempfile
+
+    from beadhive import doctor_ram
+
+    roots = {
+        "worktrees": tmp_path / "wt",
+        "tmpdir": tmp_path / "tmp",
+        "bh_home": tmp_path / "home",
+        "bh_cache": tmp_path / "cache",
+        "bh_hub": tmp_path / "hub",
+        "bh_hq": tmp_path / "hq",
+    }
+    monkeypatch.setattr(doctor.config, "worktrees_root", lambda _c=None: roots["worktrees"])
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(roots["tmpdir"]))
+    monkeypatch.setattr(doctor.config, "home", lambda: roots["bh_home"])
+    monkeypatch.setattr(doctor.config, "cache_dir", lambda: roots["bh_cache"])
+    monkeypatch.setattr(doctor.config, "hub_dir", lambda: roots["bh_hub"])
+    monkeypatch.setattr(doctor.config, "hq_dir", lambda: roots["bh_hq"])
+    ram_paths = {roots[r] for r in tmpfs_roles}
+    monkeypatch.setattr(
+        doctor.config, "statfs_type", lambda p: _TMPFS if Path(p) in ram_paths else _EXT4
+    )
+    monkeypatch.setattr(doctor_ram, "_device_id", lambda p: f"dev:{p}")  # one mount per path
+    monkeypatch.setattr(doctor_ram, "_nearest_existing", lambda p: Path(p))
+    monkeypatch.setattr(
+        doctor_ram.shutil,
+        "disk_usage",
+        lambda _p: SimpleNamespace(total=32 * _GIB, free=22 * _GIB, used=10 * _GIB),
+    )
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text(
+        f"MemTotal:       49152000 kB\nSwapTotal:      {swap_kb} kB\nSwapFree:       {swap_kb} kB\n"
+    )
+    monkeypatch.setattr(doctor.config, "worktrees_allow_tmpfs", lambda _c=None: allow_tmpfs)
+    monkeypatch.setattr(
+        doctor.config, "worktrees_ram_warn_bytes", lambda _c=None: int(warn_gib * _GIB)
+    )
+    return doctor_ram, meminfo
+
+
+def test_ram_backed_flags_tmpfs_worktree_root_and_reports_usage(monkeypatch, tmp_path, capsys):
+    ram, meminfo = _fake_ram_host(
+        monkeypatch, tmp_path, tmpfs_roles=["worktrees", "tmpdir"], swap_kb=0
+    )
+
+    data = doctor._data_ram_backed({}, meminfo)
+
+    by_role = {r["role"]: r for r in data["roots"]}
+    assert (
+        by_role["worktrees"]["memory_backed"] and by_role["worktrees"]["filesystem_type"] == "tmpfs"
+    )
+    assert by_role["worktrees"]["used_bytes"] == 10 * _GIB
+    assert by_role["worktrees"]["total_bytes"] == 32 * _GIB
+    assert not by_role["bh_home"]["memory_backed"]
+    assert data["swap_absent"] is True and data["swap_total_bytes"] == 0
+    assert data["ram_backed_used_bytes"] == 20 * _GIB  # two distinct tmpfs mounts
+
+    warns = ram.warnings(data)
+    assert any("worktree root" in w and "tmpfs" in w and "10.0 GiB of 32.0 GiB" in w for w in warns)
+    assert any("no swap configured" in w for w in warns)
+    # TMPDIR on tmpfs is reported, never flagged on its own
+    assert not any(w.startswith(by_role["tmpdir"]["path"]) for w in warns)
+
+    ram.render(data)
+    out = capsys.readouterr().out
+    assert "# RAM-backed storage" in out and "swap: none" in out and "tmpfs" in out
+
+
+def test_ram_backed_flags_bh_state_dirs_on_ram(monkeypatch, tmp_path):
+    ram, meminfo = _fake_ram_host(monkeypatch, tmp_path, tmpfs_roles=["bh_home"], swap_kb=1_000_000)
+
+    warns = ram.warnings(doctor._data_ram_backed({}, meminfo))
+
+    assert any("bh state dir bh_home" in w for w in warns)
+    assert not any("no swap" in w for w in warns)  # swap present
+
+
+def test_ram_backed_swap_warning_needs_usage_above_threshold(monkeypatch, tmp_path):
+    ram, meminfo = _fake_ram_host(
+        monkeypatch, tmp_path, tmpfs_roles=["tmpdir"], swap_kb=0, warn_gib=16
+    )
+
+    assert (
+        ram.warnings(doctor._data_ram_backed({}, meminfo)) == []
+    )  # 10 GiB used < 16 GiB, no root flagged
+
+    ram2, meminfo2 = _fake_ram_host(
+        monkeypatch, tmp_path, tmpfs_roles=["tmpdir"], swap_kb=0, warn_gib=8
+    )
+    warns = ram2.warnings(doctor._data_ram_backed({}, meminfo2))
+    assert len(warns) == 1 and "no swap configured" in warns[0]
+
+
+def test_ram_backed_opt_in_and_disable_suppress_warnings(monkeypatch, tmp_path):
+    ram, meminfo = _fake_ram_host(
+        monkeypatch, tmp_path, tmpfs_roles=["worktrees"], swap_kb=1, allow_tmpfs=True
+    )
+    # opted in to a tmpfs worktree root and swap exists: reported, not warned
+    assert ram.warnings(doctor._data_ram_backed({}, meminfo)) == []
+
+    ram, meminfo = _fake_ram_host(
+        monkeypatch, tmp_path, tmpfs_roles=["worktrees", "bh_home"], swap_kb=0, warn_gib=0
+    )
+    data = doctor._data_ram_backed({}, meminfo)
+    assert data["roots"][0]["memory_backed"]  # still reported
+    assert ram.warnings(data) == []  # ram_warn_gib: 0 switches the warnings off
+
+
+def test_ram_backed_unknown_swap_without_meminfo_is_not_a_warning(monkeypatch, tmp_path):
+    ram, _ = _fake_ram_host(monkeypatch, tmp_path, tmpfs_roles=["tmpdir"], swap_kb=0, warn_gib=1)
+
+    data = doctor._data_ram_backed({}, tmp_path / "missing-meminfo")
+
+    assert data["swap_total_bytes"] is None and data["swap_absent"] is False
+    assert ram.warnings(data) == []
+
+
+def test_ram_backed_ramfs_usage_is_unknown_not_zero(monkeypatch, tmp_path):
+    ram, meminfo = _fake_ram_host(monkeypatch, tmp_path, tmpfs_roles=["worktrees"], swap_kb=1)
+    monkeypatch.setattr(doctor.config, "statfs_type", lambda p: 0x858458F6)
+    monkeypatch.setattr(ram.shutil, "disk_usage", lambda _p: SimpleNamespace(total=0, free=0))
+
+    row = doctor._data_ram_backed({}, meminfo)["roots"][0]
+
+    assert row["filesystem_type"] == "ramfs" and row["used_bytes"] is None
+
+
+def test_ram_warn_gib_config_default_and_fallback():
+    assert config.worktrees_ram_warn_bytes({}) == 4 * _GIB
+    assert config.worktrees_ram_warn_bytes({"worktrees": {"ram_warn_gib": 0}}) == 0
+    assert config.worktrees_ram_warn_bytes({"worktrees": {"ram_warn_gib": 1.5}}) == int(1.5 * _GIB)
+    assert config.worktrees_ram_warn_bytes({"worktrees": {"ram_warn_gib": "junk"}}) == 4 * _GIB

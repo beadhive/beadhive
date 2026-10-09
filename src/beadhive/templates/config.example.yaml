@@ -166,6 +166,10 @@ worktrees:
   # checkouts). At the cap a new provision first reclaims clean, merged trees, then refuses with
   # a message. Env: BH_WORKTREES_MAX_LIVE.
   # max_live: 64
+  # ram_warn_gib (default 4, 0 = off): `bh doctor` warns when the host has no swap and more than
+  # this many GiB sit in RAM-backed storage (tmpfs/ramfs: worktrees, validation checkouts,
+  # TMPDIR, bh state), and flags a tmpfs worktree root / bh state dir on RAM.
+  # ram_warn_gib: 4
   # reclaim_on_merge (default true): `work merge` / `work finish` remove the merged bead's
   # worktree (branch kept; a tree with uncommitted changes is never removed).
   # reclaim_on_merge: true

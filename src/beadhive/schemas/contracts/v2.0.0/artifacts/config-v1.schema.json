@@ -3016,6 +3016,13 @@
           "description": "Persistent worktree root (ephemeral=false only); $BH_WORKTREES wins.",
           "title": "Path"
         },
+        "ram_warn_gib": {
+          "default": 4.0,
+          "description": "`bh doctor` warns that a host with no swap (SwapTotal=0) is holding more than this many GiB in RAM-backed storage (tmpfs/ramfs: worktrees, validation checkouts, TMPDIR, bh state). It also flags a tmpfs worktree root that is not opted in via allow_tmpfs and bh state dirs on RAM. 0 turns these doctor warnings off.",
+          "minimum": 0,
+          "title": "Ram Warn Gib",
+          "type": "number"
+        },
         "reclaim_on_merge": {
           "default": true,
           "description": "Remove a bead's worktree after a clean `work merge` / `work finish` (the branch stays as the durable artifact). A worktree with uncommitted changes is always kept. `work merge --rm` forces it for one call; set false to keep trees.",
