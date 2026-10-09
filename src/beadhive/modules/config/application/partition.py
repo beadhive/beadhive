@@ -41,6 +41,7 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         "host.frame_bridge",
         "host.frame_id",
         "worktrees.allow_tmpfs",
+        "worktrees.max_live",
     }
 )
 

@@ -1837,12 +1837,31 @@ def _data_worktree_disk_usage(cfg) -> dict:
         }
         for entry in cfg.get("managed_repos", []) or []
     }
+    by_filesystem: dict[str, dict] = {}
+    identity_by_parent: dict[Path, dict] = {}
     for prefix, path, _branch in worktree.managed(cfg):
         entry = entries.setdefault(
             prefix, {"prefix": prefix, "worktree_bytes": 0, "worktree_count": 0}
         )
-        entry["worktree_bytes"] += safety._measure_disk_usage(path)
+        size = safety._measure_disk_usage(path)
+        entry["worktree_bytes"] += size
         entry["worktree_count"] += 1
+        parent = Path(path).parent
+        identity = identity_by_parent.get(parent)
+        if identity is None:
+            identity = identity_by_parent[parent] = _filesystem_identity(parent)
+        slot = by_filesystem.setdefault(
+            str(identity["mount_point"]),
+            {
+                "mount_point": identity["mount_point"],
+                "filesystem_type": identity["filesystem_type"],
+                "device": identity["device"],
+                "worktree_count": 0,
+                "worktree_bytes": 0,
+            },
+        )
+        slot["worktree_count"] += 1
+        slot["worktree_bytes"] += size
 
     worktree_filesystem = _filesystem_capacity(config.worktrees_root(cfg))
     host_root_filesystem = _filesystem_capacity(Path("/"))
@@ -1856,7 +1875,30 @@ def _data_worktree_disk_usage(cfg) -> dict:
         "disk_free_bytes": worktree_filesystem["free_bytes"],
         "worktree_filesystem": worktree_filesystem,
         "host_root_filesystem": host_root_filesystem,
+        # bh-qbu9t: live count + size per mounted filesystem, against the host-wide cap.
+        "total_worktree_count": sum(entry["worktree_count"] for entry in hives),
+        "filesystems": sorted(by_filesystem.values(), key=lambda row: row["mount_point"]),
+        "max_live": config.worktrees_max_live(cfg),
     }
+
+
+def _render_worktree_disk_usage(d: dict) -> None:
+    cap = d.get("max_live") or 0
+    limit = f" (cap {cap})" if cap else " (no cap)"
+    typer.echo(f"\n# Worktrees (by filesystem): {d['total_worktree_count']} live{limit}")
+    for fs in d["filesystems"]:
+        kind = fs["filesystem_type"] or "?"
+        typer.echo(
+            f"  {fs['mount_point']:<24}  {kind:<8}  {fs['worktree_count']:>4} worktree(s)  "
+            f"{safety.format_bytes(fs['worktree_bytes'])}"
+        )
+    if not d["filesystems"]:
+        typer.echo("  (no managed worktrees)")
+    if cap and d["total_worktree_count"] >= cap:
+        typer.echo(
+            f"  ⚠ at the live-worktree cap — run `{config.BINARY_ALIAS} worktree prune` "
+            "or finish/abandon stale beads"
+        )
 
 
 def _render_disk_usage(d: dict) -> None:
@@ -3267,6 +3309,7 @@ def doctor(as_json: bool = False, verbose: bool = False, seats: bool = False):
     _render_hives(data["hives"])
     _render_inventory(data["inventory"])
     _render_disk_usage(data["disk_usage"])
+    _render_worktree_disk_usage(data["worktree_disk_usage"])
     _render_fleet_health(data["fleet_health"])
     _render_worktrees(data["worktrees"])
     _render_molecules(data["molecules"])

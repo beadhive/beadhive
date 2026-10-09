@@ -431,3 +431,79 @@ def impl_prune(hive=""):
         # about — a failure rendered as a normal result.
         _warn_untrustworthy(skipped)
         raise typer.Exit(1)
+
+
+# ---- automatic reclaim + live-count cap (bh-qbu9t) --------------------------------------------
+
+
+def impl_reclaim_merged(hive, ref) -> bool:
+    """Remove a MERGED bead's worktree after a clean ``work merge`` / ``work finish`` (the branch
+    stays the durable artifact). Never loses work: a tree with uncommitted or untracked changes
+    (``git status --porcelain``; ignored caches like ``.venv`` do not count) or an unreadable
+    status is kept with a warning. Returns True iff the worktree was removed or already absent."""
+    cfg = config.load()
+    entry = _resolve_entry(cfg, hive)
+    target = wt_dir(entry, _leaf(ref))
+    if not target.exists():
+        return True
+    res = _run_git(["git", "-C", str(target), "status", "--porcelain"], check=False, capture=True)
+    if res.returncode != 0 or (getattr(res, "stdout", "") or "").strip():
+        typer.echo(
+            f"⚠ kept {target}: uncommitted changes (or unreadable status); the branch is merged "
+            f"— inspect, then `{config.BINARY_ALIAS} worktree rm` it",
+            err=True,
+        )
+        return False
+    try:
+        remove(hive, ref, True)
+    except Exception:  # noqa: BLE001 — the merge already succeeded; reclaim is best-effort
+        typer.echo(f"⚠ merged, but could not remove {target}", err=True)
+        return False
+    return True
+
+
+def impl_live_worktree_dirs(root: Path) -> list[Path]:
+    """Linked-worktree directories under the shadow ``root`` (``<provider>/<org>/<repo>/<leaf>``
+    with a ``.git`` entry) — bead trees and verify-* checkouts alike, registered or not. A
+    cheap filesystem scan: no git or tracker calls, safe on every provision."""
+    if not root.is_dir():
+        return []
+    return [leaf for leaf in sorted(root.glob("*/*/*/*")) if (leaf / ".git").exists()]
+
+
+def impl_enforce_live_cap(cfg) -> None:
+    """Refuse to provision a NEW worktree once ``worktrees.max_live`` trees already exist.
+
+    At the cap it first reclaims what is provably disposable — orphaned verify-* checkouts and
+    SAFE (closed + merged + clean) bead trees, exactly ``prune``'s classifier, so nothing with
+    uncommitted or unmerged work is touched — and re-counts. Only if the host is still full does
+    it refuse, with the count, the cap and the ways out. ``0`` disables the cap."""
+    cap = config.worktrees_max_live(cfg)
+    if cap <= 0:
+        return
+    root = config.worktrees_root(cfg)
+    live = impl_live_worktree_dirs(root)
+    if len(live) < cap:
+        return
+    typer.echo(
+        f"• {len(live)} live worktrees under {root} (worktrees.max_live={cap}) — "
+        "reclaiming clean, merged trees first",
+        err=True,
+    )
+    try:
+        prune()
+    except Exception:  # noqa: BLE001 — a failed reclaim falls through to the refusal
+        pass
+    remaining = len(impl_live_worktree_dirs(root))
+    if remaining < cap:
+        return
+    typer.echo(
+        f"✗ refusing to provision another worktree: {remaining} live under {root} "
+        f"(cap worktrees.max_live={cap}) and none are clean + merged to reclaim.\n"
+        f"  Fix one: finish or `{config.BINARY_ALIAS} work abandon <id> --rm` stale beads "
+        f"(see `{config.BINARY_ALIAS} worktree status`) · raise the cap with "
+        f"`{config.BINARY_ALIAS} config set worktrees.max_live <n> --scope host` "
+        "(0 disables it; or BH_WORKTREES_MAX_LIVE)",
+        err=True,
+    )
+    raise typer.Exit(1)

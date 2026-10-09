@@ -187,6 +187,40 @@ def worktrees_root_refusal(api, cfg=None) -> str | None:
     )
 
 
+#: Default ceiling on live (provisioned, not yet reclaimed) worktrees per host. 158 accumulated
+#: trees once livelocked a host (bh-qbu9t); 64 leaves ample room for a wide fan-out. ``0``
+#: switches the cap off. Override with ``worktrees.max_live`` or ``$BH_WORKTREES_MAX_LIVE``.
+DEFAULT_MAX_LIVE_WORKTREES = 64
+MAX_LIVE_KEY = "worktrees.max_live"
+MAX_LIVE_ENV = "BH_WORKTREES_MAX_LIVE"
+RECLAIM_ON_MERGE_KEY = "worktrees.reclaim_on_merge"
+
+
+def _as_count(value) -> int | None:
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        return None
+    return count if count >= 0 else None
+
+
+def worktrees_max_live(api, cfg=None) -> int:
+    """Cap on live worktrees per host (``0`` = unlimited). ``$BH_WORKTREES_MAX_LIVE`` wins, then
+    ``worktrees.max_live``; an unreadable / negative value falls back to the default rather than
+    silently disabling the guard."""
+    env = _as_count(os.environ.get(MAX_LIVE_ENV, "").strip() or None)
+    if env is not None:
+        return env
+    configured = _as_count(api.worktrees_cfg(cfg).get("max_live"))
+    return DEFAULT_MAX_LIVE_WORKTREES if configured is None else configured
+
+
+def worktrees_reclaim_on_merge(api, cfg=None) -> bool:
+    """Whether a clean ``work merge`` / ``work finish`` removes the merged bead's worktree
+    (the branch stays the durable artifact). On by default; ``--rm`` forces it per call."""
+    return bool(api.worktrees_cfg(cfg).get("reclaim_on_merge", True))
+
+
 def codex_sandbox_active() -> bool:
     return bool(os.environ.get("CODEX_SANDBOX_NETWORK_DISABLED", "").strip())
 

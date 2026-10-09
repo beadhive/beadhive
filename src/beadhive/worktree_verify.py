@@ -837,6 +837,8 @@ def _impl_clean_checkout_unadmitted(
     # checkout if they raise before the validation body starts.
     def cleanup_verify_checkout() -> None:
         _run_git(["git", "-C", str(main), "worktree", "remove", "--force", str(tmp)], check=False)
+        if tmp.exists():  # git refused (locked / half-registered): never strand the checkout
+            shutil.rmtree(tmp, ignore_errors=True)
         _remove_verify_marker(tmp, marker_root=_verify_marker_root(main))
 
     run_record = None

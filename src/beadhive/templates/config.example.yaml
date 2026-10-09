@@ -162,6 +162,13 @@ worktrees:
   # default the ephemeral root falls back to the disk root below and a tmpfs/ramfs root is
   # REFUSED (per-worktree venvs would eat RAM). Set true to opt in. Env: BH_WORKTREES_ALLOW_TMPFS=1.
   # allow_tmpfs: false
+  # max_live (default 64, 0 = off): host-wide ceiling on live worktrees (bead trees + verify-*
+  # checkouts). At the cap a new provision first reclaims clean, merged trees, then refuses with
+  # a message. Env: BH_WORKTREES_MAX_LIVE.
+  # max_live: 64
+  # reclaim_on_merge (default true): `work merge` / `work finish` remove the merged bead's
+  # worktree (branch kept; a tree with uncommitted changes is never removed).
+  # reclaim_on_merge: true
   # path: ~/.beadhive/worktrees   # persistent root (ephemeral=false only). $BH_WORKTREES overrides.
   # manager: native   # the ONE worktree manager (create/attach/remove); native is the only value.
   # Branch suffixes — every managed branch is auto-prefixed `wt/` (so `--branch foo` -> wt/foo,
