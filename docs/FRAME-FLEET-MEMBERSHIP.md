@@ -142,6 +142,11 @@ protected policy projection before frame intake resumes. Omitting
 `frame_policy` denies frame intake for that hive; the ordinary config publisher
 does not enroll or admit a frame.
 
+A frame's declared `capabilities.isolation` is one of `kvm`, `microvm`, `container` or
+`workstation`. A host document may also carry the optional `execution_hives` list of hive
+prefixes the frame may execute; omit it for no restriction. Authoring routes are separate. Both
+are accepted by the host-document schema so documents written by the plan-c build still load.
+
 ## Config and Beads readiness are separate
 
 Use these names for different checks:

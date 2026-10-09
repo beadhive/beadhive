@@ -122,6 +122,7 @@ boundaries.
 | `BH_FORWARD_PASSWORD` (env) | A forwarder's password when no fnox `credential` is configured. |
 | `managed_repos[].frame_policy.config_revision` | Required policy revision label for a frame-managed hive. |
 | `managed_repos[].frame_policy.requires` | Optional requirements: `isolation`, `trust_zone`, `arch`, `harness`, `harnesses`, and positive `max_sessions`. |
+| `execution_hives` (host document) | Optional list of hive prefixes the frame may execute (default: unset, no restriction). Frame `capabilities.isolation` also accepts `workstation` beside `kvm`, `microvm` and `container`. |
 | `managed_repos[].frame_policy.evict_after_s` | Required positive finite interval used by protected takeover policy. |
 
 Each HOST-local `hq.sql.<role>.tls_mode` independently accepts `required` (the default)

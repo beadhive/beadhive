@@ -102,7 +102,7 @@ class IdentityMechanism(_Section):
 
 
 FRAME_STATES = ("pending", "active", "draining", "drained", "parked", "quarantined", "retired")
-FRAME_ISOLATIONS = ("kvm", "microvm", "container")
+FRAME_ISOLATIONS = ("kvm", "microvm", "container", "workstation")
 FRAME_TRUST_ZONES = ("self-hosted", "vendor-hosted")
 
 
@@ -116,7 +116,7 @@ class FrameRelease(_Section):
 class FrameCapabilities(_Section):
     """Routing facts; per-host harness configuration remains a separate policy block."""
 
-    isolation: Literal["kvm", "microvm", "container"]
+    isolation: Literal["kvm", "microvm", "container", "workstation"]
     trust_zone: Literal["self-hosted", "vendor-hosted"]
     arch: str
     harnesses: list[str]
@@ -145,6 +145,10 @@ class HostManifest(_Section):
     ] = "active"
     release: FrameRelease | None = None
     capabilities: FrameCapabilities | None = None
+    execution_hives: list[str] | None = Field(
+        None,
+        description="Optional hive prefixes this frame may execute; authoring routes are separate.",
+    )
     instance_ref: str | None = Field(None, description="Substrate-owned instance identity.")
 
     @model_validator(mode="before")
