@@ -2,9 +2,8 @@
 
 ![Ship software, not slop.](docs/assets/brand/banner-readme.png)
 
-[![PyPI version](https://img.shields.io/pypi/v/beadhive)](https://pypi.org/project/beadhive/)
-[![Python versions](https://img.shields.io/pypi/pyversions/beadhive)](https://pypi.org/project/beadhive/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+<!-- markdownlint-disable-next-line MD013 -->
+[![PyPI version](https://img.shields.io/pypi/v/beadhive)](https://pypi.org/project/beadhive/) [![Python versions](https://img.shields.io/pypi/pyversions/beadhive)](https://pypi.org/project/beadhive/) [![GitHub tag](https://img.shields.io/github/v/tag/beadhive/beadhive?sort=semver)](https://github.com/beadhive/beadhive/tags) [![License: MIT](https://img.shields.io/github/license/beadhive/beadhive)](LICENSE) [![GitHits index status](https://index.githits.dev/badge/repositories/github.com/beadhive/beadhive/index-status.svg)](https://index.githits.dev/repositories/github.com/beadhive/beadhive/) [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/beadhive/beadhive)
 
 `bh` is a single CLI for managing **beads** issue tracking across many repositories. Each
 repo is its own beads database (a **hive**) with a short, stable prefix; `bh` onboards them,
@@ -110,6 +109,8 @@ claude plugin install bh@beadhive
 ## Going further
 
 One line each, and who it's for:
+
+- [Context7](https://context7.com/) — **library documentation for agents.**
 
 - [`docs/ADOPTION.md`](docs/ADOPTION.md) — **it works; what's the next rung?** The four rungs,
   what each buys, and what staying on yours costs.
