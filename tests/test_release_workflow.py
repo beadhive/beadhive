@@ -124,3 +124,15 @@ def test_release_docs_distinguish_git_and_distribution_signatures() -> None:
     assert "pypi:beadhive-0.16.2-py3-none-any.whl" in CONTRIBUTING
     assert "pypi:beadhive-0.16.2.tar.gz" in CONTRIBUTING
     assert "PyPI's Integrity API" in CONTRIBUTING
+
+
+def test_mcp_publication_waits_for_pypi_and_uses_oidc_without_secrets() -> None:
+    job = _workflow()["jobs"]["mcp-registry"]
+    commands = "\n".join(str(step.get("run", "")) for step in job["steps"])
+    assert job["needs"] == "publish"
+    assert job["permissions"] == {"contents": "read", "id-token": "write"}
+    assert "startsWith(github.ref, 'refs/tags/v')" == job["if"]
+    assert "sync-mcp-version.py --check --version" in commands
+    assert "sha256sum --check" in commands
+    assert commands.index("login github-oidc") < commands.index("publish server.json")
+    assert "secrets." not in commands

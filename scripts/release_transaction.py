@@ -18,6 +18,7 @@ RELEASE_FILES = {
     "CHANGELOG.md",
     "pyproject.toml",
     "uv.lock",
+    "server.json",
 }
 
 

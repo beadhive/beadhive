@@ -2,7 +2,7 @@
 # yaml-language-server: $schema=https://agentguides.io/schemas/0.1/install.schema.json
 install:
   id: beadhive
-  summary: Beadhive — the `bh` CLI, the integration-plane driver for Agentic Git Flow (AGF) and cross-repo beads issue tracking.
+  summary: 'Beadhive — the `bh` CLI of the bead-machine: a software factory that uses beads, with cross-repo beads issue tracking.'
   methods:
     # Alternatives — pick ONE. Order is preference, and the FIRST is the recommended
     # one (bh-vmdq.1, 2026-08-06): the managed path is the only route that also installs
