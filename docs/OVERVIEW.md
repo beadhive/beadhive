@@ -89,3 +89,5 @@ changes) rather than the released number it would otherwise be indistinguishable
 from. PyPI forbids local segments, so such a build can never be published.
 
 Python package `beadhive`; command `bh`; config home `~/.beadhive/`. See [CONFIGURATION](CONFIGURATION.md).
+
+The naming decision record is [limn-naming-strategy-adr.md](design/limn-naming-strategy-adr.md).

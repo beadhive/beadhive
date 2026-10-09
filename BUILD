@@ -13,6 +13,7 @@ files(
         "lefthook.yml",
         "pants.toml",
         "pyproject.toml",
+        "server.json",
         "uv.lock",
     ],
     tags=["category:build-system"],

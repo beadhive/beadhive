@@ -1,10 +1,11 @@
 # Beadhive (`bh`)
 
+<!-- mcp-name: io.github.beadhive/beadhive -->
+
 ![Ship software, not slop.](docs/assets/brand/banner-readme.png)
 
-[![PyPI version](https://img.shields.io/pypi/v/beadhive)](https://pypi.org/project/beadhive/)
-[![Python versions](https://img.shields.io/pypi/pyversions/beadhive)](https://pypi.org/project/beadhive/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+<!-- markdownlint-disable-next-line MD013 -->
+[![PyPI version](https://img.shields.io/pypi/v/beadhive)](https://pypi.org/project/beadhive/) [![Python versions](https://img.shields.io/pypi/pyversions/beadhive)](https://pypi.org/project/beadhive/) [![GitHub tag](https://img.shields.io/github/v/tag/beadhive/beadhive?sort=semver)](https://github.com/beadhive/beadhive/tags) [![License: MIT](https://img.shields.io/github/license/beadhive/beadhive)](LICENSE) [![GitHits index status](https://index.githits.dev/badge/repositories/github.com/beadhive/beadhive/index-status.svg)](https://index.githits.dev/repositories/github.com/beadhive/beadhive/) [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/beadhive/beadhive)
 
 `bh` is a single CLI for managing **beads** issue tracking across many repositories. Each
 repo is its own beads database (a **hive**) with a short, stable prefix; `bh` onboards them,
@@ -16,12 +17,8 @@ encodes the conventions, the registry, validation, and routing. Config and runti
 under `~/.beadhive/`; **no issue data lives there** — each hive's issues live in its own Dolt
 DB under `refs/dolt/data` on that repo's own git remote.
 
-`bh` is the **Beadhive** umbrella's workspace CLI — the integration-plane driver for **AGF**
-(Agentic Git Flow), the abstract, tracker-independent process. **Beadflow** is that process
-implemented on beads: this repo's concrete implementation, unchanged behavior under a naming
-layer. See [docs/AGF.md](docs/AGF.md) for the process and
-[docs/design/limn-naming-strategy-adr.md](docs/design/limn-naming-strategy-adr.md) for the
-naming decision record.
+`bh` is the CLI of **Beadhive**, a bead-machine — a software factory that uses beads.
+The process it drives is documented in [docs/AGF.md](docs/AGF.md).
 
 This repo is the CLI's source (Python package `beadhive` on PyPI, command `bh`). For what
 Beadhive is conceptually, rather than how to drive it, see [beadhive.ai](https://beadhive.ai).
@@ -100,7 +97,7 @@ four rungs, what each buys, and what staying on this one costs.
 
 ### Agent harnesses
 
-`bh` furnishes AGF seats for **Claude Code** (`--claude`) and **OpenCode** (`--opencode`) —
+`bh` furnishes seats for **Claude Code** (`--claude`) and **OpenCode** (`--opencode`) —
 pass either to `bh hive onboard <provider>/<org>/<repo>`. `docs/AGF.md` carries the
 [per-harness support matrix](docs/AGF.md#per-harness-support-matrix), including what does and
 doesn't apply for **codex**. On Claude Code, the `bh` claude-plugin vends the seat agent defs
@@ -114,6 +111,9 @@ claude plugin install bh@beadhive
 ## Going further
 
 One line each, and who it's for:
+
+- [`docs/MCP-PUBLISHING.md`](docs/MCP-PUBLISHING.md) — **MCP registry and directory upkeep.**
+- [Context7](https://context7.com/) — **library documentation for agents.**
 
 - [`docs/ADOPTION.md`](docs/ADOPTION.md) — **it works; what's the next rung?** The four rungs,
   what each buys, and what staying on yours costs.

@@ -9,3 +9,6 @@ if [ -n "${UV_EXEC:-}" ]; then
 else
     uv version --no-sync "${version}"
 fi
+
+# Commitizen includes these tracked registry/client versions in the same bump commit.
+uv run --no-sync python scripts/sync-mcp-version.py
