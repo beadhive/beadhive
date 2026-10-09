@@ -40,6 +40,7 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         "host.daemon",
         "host.frame_bridge",
         "host.frame_id",
+        "worktrees.allow_tmpfs",
     }
 )
 

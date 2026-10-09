@@ -157,6 +157,26 @@ def worktrees_root(cfg=None) -> Path:
     return _config_paths.worktrees_root(_facade(), cfg)
 
 
+def statfs_type(path: Path) -> int | None:
+    return _config_paths.statfs_type(path)
+
+
+def is_memory_backed(path: Path) -> bool:
+    return _config_paths.is_memory_backed(_facade(), path)
+
+
+def worktrees_allow_tmpfs(cfg=None) -> bool:
+    return _config_paths.worktrees_allow_tmpfs(_facade(), cfg)
+
+
+def disk_worktrees_root(cfg=None) -> Path:
+    return _config_paths.disk_worktrees_root(_facade(), cfg)
+
+
+def worktrees_root_refusal(cfg=None) -> str | None:
+    return _config_paths.worktrees_root_refusal(_facade(), cfg)
+
+
 def codex_sandbox_active() -> bool:
     return _config_paths.codex_sandbox_active()
 

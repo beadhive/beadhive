@@ -666,6 +666,11 @@ def impl__prepare_verify_worktree(main: Path, entry, branch: str, cmd: str):
     """Reap stale siblings, then create+mark a fresh detached verify-<leaf>-<rand6> worktree for
     `branch`. Returns `(path, 0)` on success, or `(None, exit_code)` — after echoing the failure —
     when the dir or the `git worktree add` can't be created."""
+    # Same RAM-backed-root rule as bead worktrees (bh-xzsdf): verify-* checkouts share the root.
+    refusal = config.worktrees_root_refusal()
+    if refusal:
+        typer.echo(f"✗ {refusal}", err=True)
+        return None, 1
     sweep_verify_dirs(entry)
     marker_root = _verify_marker_root(main)
     leaf_base = registry.sanitize(f"{VERIFY_LEAF_PREFIX}{branch.rsplit('/', 1)[-1]}")

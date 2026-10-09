@@ -540,6 +540,10 @@ def _sandbox_worktree_root_override(monkeypatch):
     """
     monkeypatch.delenv("BH_WORKTREES", raising=False)
     monkeypatch.delenv("WS_WORKTREES", raising=False)
+    # bh-xzsdf: the suite's roots live under pytest's tmp_path, which is tmpfs on many hosts.
+    # The RAM-backed-root refusal is production policy; the dedicated tests in
+    # test_config_worktrees.py unset this to exercise it.
+    monkeypatch.setenv("BH_WORKTREES_ALLOW_TMPFS", "1")
 
 
 @pytest.fixture
