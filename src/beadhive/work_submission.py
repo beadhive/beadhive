@@ -115,7 +115,11 @@ def _impl_check_unadmitted(api, bead, hive, *, permit=None):
         owner_start=api.worktree._pid_start(api.os.getpid()),
         artifact_root_config=artifact_root_config,
         admission=(
-            {"slot": permit.slot, "queue_seconds": permit.queue_seconds}
+            {
+                "slot": permit.slot,
+                "queue_seconds": permit.queue_seconds,
+                "memory": getattr(permit, "memory", None),
+            }
             if permit is not None
             else None
         ),

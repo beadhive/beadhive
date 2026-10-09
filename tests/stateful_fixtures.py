@@ -540,6 +540,10 @@ def _sandbox_worktree_root_override(monkeypatch):
     """
     monkeypatch.delenv("BH_WORKTREES", raising=False)
     monkeypatch.delenv("WS_WORKTREES", raising=False)
+    # bh-xzsdf: the suite's roots live under pytest's tmp_path, which is tmpfs on many hosts.
+    # The RAM-backed-root refusal is production policy; the dedicated tests in
+    # test_config_worktrees.py unset this to exercise it.
+    monkeypatch.setenv("BH_WORKTREES_ALLOW_TMPFS", "1")
 
 
 @pytest.fixture
@@ -556,6 +560,10 @@ def _sandbox_validation_host(tmp_path_factory, monkeypatch):
     root = tmp_path_factory.mktemp("validation-host")
     monkeypatch.setenv("BH_VALIDATION_SLOT_ROOT", str(root))
     monkeypatch.delenv("BH_VALIDATION_SLOTS", raising=False)
+    # The simulated host's admission must not wait on the real host's MemAvailable (bh-jg7fy):
+    # the gate running this suite was already admitted against it.  Floor tests fake meminfo.
+    monkeypatch.setenv("BH_VALIDATION_MEMORY_FLOOR", "0")
+    monkeypatch.delenv("BH_VALIDATION_MEMORY", raising=False)
 
 
 @pytest.fixture

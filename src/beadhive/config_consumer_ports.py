@@ -107,6 +107,9 @@ work_settings = CapabilitySettings(
         "worktrees_ephemeral",
         "worktrees_manager",
         "worktrees_root",
+        "worktrees_max_live",
+        "worktrees_reclaim_on_merge",
+        "worktrees_root_refusal",
     },
     _SOURCE,
 )

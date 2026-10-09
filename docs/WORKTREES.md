@@ -11,7 +11,7 @@ triplet path:
 
 | `ephemeral` | root | grants | lifecycle |
 |---|---|---|---|
-| `true` (default) | `<os-temp>/bh-worktrees` | none needed (temp is sandbox-writable) | session-scoped, disposable |
+| `true` (default) | `<os-temp>/bh-worktrees` (disk-backed temp only — see [RAM-backed roots](#ram-backed-roots-tmpfs--ramfs)) | none needed (temp is sandbox-writable) | session-scoped, disposable |
 | `false` | `worktrees.path` (default `~/.beadhive/worktrees`) | `bh hive init --claude` writes per-hive grants | persistent |
 
 Default-ephemeral keeps adoption zero-config: agents create a worktree, use it, and dispose
@@ -25,6 +25,58 @@ bh config set worktrees.ephemeral false --scope host
 ```
 
 `$BH_WORKTREES` (legacy alias `WS_WORKTREES`) overrides the root in either mode (advanced / testing).
+
+## RAM-backed roots (tmpfs / ramfs)
+
+On many Linux hosts the OS temp dir is a RAM-backed `tmpfs`. Worktrees carry a per-tree
+`.venv` and build caches, so a worktree root there turns every checkout into unreclaimable
+memory pressure (a fan-out of agents can livelock the host). `bh` therefore detects
+tmpfs/ramfs (via `statfs(2)` `f_type`) and:
+
+- **Default (no config):** if `<os-temp>/bh-worktrees` would be on tmpfs/ramfs (and holds no
+  worktrees yet), the ephemeral root falls back to the disk-backed `worktrees.path` (default `~/.beadhive/worktrees`).
+  A disk-backed temp dir (e.g. `TMPDIR=/var/tmp`) is still used as before.
+- **Explicit RAM-backed root** (`$BH_WORKTREES` or `worktrees.path` pointing at tmpfs/ramfs):
+  creating a **new** worktree or a `verify-*` clean-validation checkout is refused with an
+  error naming the opt-in key. Both share the same root and the same rule.
+- **Opt in** with `bh config set worktrees.allow_tmpfs true --scope host` (host-owned key) or
+  `BH_WORKTREES_ALLOW_TMPFS=1`. With the opt-in set, the old `<os-temp>/bh-worktrees` default
+  applies again.
+
+**Migration.** Worktrees already living under a tmpfs temp root are never touched or deleted,
+and re-attaching an existing directory is never refused. While `<os-temp>/bh-worktrees` still
+holds worktrees, the root keeps resolving to it so in-flight beads stay reachable, but creating
+a **new** worktree or `verify-*` checkout there is refused with the opt-in message. Either set
+`worktrees.allow_tmpfs: true` to carry on there until those beads land, or finish/`abandon`
+them and remove the leftover directory; the next worktree then lands on the disk root.
+
+## Reclaiming finished worktrees and the live-count cap
+
+Worktrees used to accumulate (158 once, many for merged beads or abandoned `verify-*` runs).
+Three mechanisms keep the live count bounded; the branch is always the durable artifact:
+
+- **After a merge.** `bh work merge` / `bh work finish` remove the merged bead's worktree
+  (`worktrees.reclaim_on_merge`, default on; `--rm` forces it for one call). A tree with
+  uncommitted or untracked changes is **never** removed — it is kept with a warning.
+- **Abandoned `verify-*` checkouts.** A clean-validation checkout is removed when its run
+  ends (including on an exception or interrupt); one left behind by a killed run is reaped by the
+  next validation run, `bh worktree prune`, or a provision that hits the cap.
+- **A cap.** `worktrees.max_live` (default 64, `0` = off; `BH_WORKTREES_MAX_LIVE`; host-owned)
+  bounds the live worktrees under the root. Provisioning a new one at the cap first reclaims
+  what `bh worktree prune` classifies SAFE (closed + merged + clean, plus orphaned `verify-*`
+  dirs), then refuses with the count and the ways out if the host is still full. Re-attaching
+  an existing directory and `verify-*` checkouts are never refused by the cap.
+
+`bh doctor` prints the live count and size per filesystem against the cap
+(`worktree_disk_usage.filesystems` in `--json`).
+
+`bh doctor` also has a **RAM-backed storage** section (`ram_backed` in `--json`, bh-01asp). It
+reports the filesystem type and current usage of the worktree root (which also holds `verify-*`
+validation checkouts), `TMPDIR`, and bh's state dirs (home, cache, hub, HQ), and the host's swap
+(`SwapTotal` in `/proc/meminfo`). Warnings: a tmpfs/ramfs worktree root that is not opted in
+(`worktrees.allow_tmpfs`), any bh state dir on RAM, and a host with **no swap** holding more than
+`worktrees.ram_warn_gib` (default 4) GiB in RAM-backed storage. `ram_warn_gib: 0` turns these
+warnings off; they never fail the doctor run.
 
 Each is an ordinary linked `git worktree` of the hive's main clone
 (`$GIT_WORKSPACE/<provider>/<org>/<repo>`) — the git admin files stay under the main clone's
