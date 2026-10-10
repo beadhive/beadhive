@@ -191,6 +191,7 @@ def begin_run(
     artifact_root_config: object = None,
     admission: dict | None = None,
     priority: dict | None = None,
+    memory: dict | None = None,
 ) -> dict | None:
     """Allocate an independent running record using mkdir as the atomic claim."""
     root = _validation_root(hive, create=True)
@@ -248,10 +249,13 @@ def begin_run(
             "admission": {
                 "slot": admission.get("slot"),
                 "queue_seconds": admission.get("queue_seconds"),
+                "memory": admission.get("memory"),
             }
             if isinstance(admission, dict)
             else None,
             "priority": dict(priority) if isinstance(priority, dict) else None,
+            # Planned memory bounds; peak/oom evidence is attached when the child exits.
+            "memory": dict(memory) if isinstance(memory, dict) else None,
             "artifacts": artifacts,
         }
         try:
@@ -335,6 +339,20 @@ def attach_priority(hive: str | Path, run_id: str, priority: dict) -> dict | Non
     if current is None or root is None:
         return None
     current["priority"] = dict(priority)
+    try:
+        _write_manifest(root / "runs" / run_id / "manifest.json", current)
+    except OSError:
+        return None
+    return current
+
+
+def attach_memory(hive: str | Path, run_id: str, memory: dict) -> dict | None:
+    """Record the memory bounds actually applied and the run's measured peak (bh-jg7fy)."""
+    current = read_run(hive, run_id)
+    root = _validation_root(hive)
+    if current is None or root is None:
+        return None
+    current["memory"] = dict(memory)
     try:
         _write_manifest(root / "runs" / run_id / "manifest.json", current)
     except OSError:

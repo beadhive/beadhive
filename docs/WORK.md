@@ -299,6 +299,14 @@ work:
     nice: 10                      # 0..19; non-negative values only
     ionice_class: 2               # 2=best-effort, 3=idle; realtime is rejected
     ionice_priority: 7            # 0..7 for best-effort; ignored for idle
+  validation_memory:              # bound validation memory; wait for free memory before starting
+    enabled: true
+    memory_high: "50%"            # scope MemoryHigh (bytes, K/M/G/T, % of RAM, or none)
+    memory_max: "60%"             # scope MemoryMax: the kernel OOM-kills inside the scope
+    memory_swap_max: "0"          # scope MemorySwapMax; none leaves swap unbounded
+    admission_floor: "10%"        # wait until MemAvailable >= this; 0/none disables
+    admission_timeout_seconds: 1800  # then refuse to start (exit 75); 0 waits indefinitely
+    admission_poll_seconds: 5
   validation: relaxed            # merge re-test depth: relaxed | conservative | loose (see below)
   validate:                      # optional per-boundary overrides (fall back to validate_cmd).
                                  # a `<phase>-main` key wins when the op targets the integration branch.
@@ -346,6 +354,31 @@ An active user systemd manager also runs them in a scope with reduced CPU and I/
 `BH_VALIDATION_PRIORITY=false` for a one-invocation override. The run manifest records the resolved
 values and which scheduling controls were applied. Each host mechanism is probed first; missing or
 refused controls are omitted so they cannot prevent the validation command from running.
+
+`work.validation_memory` is host-owned (bh-jg7fy). With no swap, a host whose validation lanes
+exhaust RAM livelocks in reclaim instead of killing the offender, so the clean-checkout validation
+scope also carries `MemoryHigh`, `MemoryMax`, and `MemorySwapMax` (percentages are of physical
+RAM; the defaults sit above the ~15 GiB a full gate peaks at on a 47 GiB host). A run that exceeds
+`MemoryMax` is OOM-killed **inside its scope** — the host and other lanes keep running — and is
+recorded red with reason `memory_limit` (exit 137), even if the command tolerated a killed child.
+Admission (`host_slot`) additionally waits, without starting the run and without taking a second
+slot, until `MemAvailable` reaches `admission_floor`; the wait is printed, recorded on the run
+manifest under `admission.memory`, and after `admission_timeout_seconds` the run is refused with
+the retryable exit 75. Every run manifest records `memory`: the applied bounds and the measured
+`peak_bytes` (the scope's `memory.peak`, or the largest child's max RSS when unscoped) and
+`oom_kills`. Set `enabled: false`, or `BH_VALIDATION_MEMORY=false` for one invocation;
+`BH_VALIDATION_MEMORY_FLOOR=0` skips only the floor. Without a user systemd manager or a delegated
+cgroup v2 memory controller, the bounds are skipped and the manifest's `memory.note` says why; the
+floor still applies wherever `/proc/meminfo` exists.
+
+The same guard is available for ad-hoc test runs. It waits for the floor, bounds the command in
+its own scope, and reports the peak; it takes **no** host validation slot, so never wrap
+`bh work check` or `submit` (which admit themselves) with it:
+
+```sh
+uv run python -m beadhive.validation_memory_cli -- uv run pytest -n 2 tests/test_x.py
+uv run python -m beadhive.validation_memory_cli --memory-max 8G --json -- just test-unit
+```
 
 ### Emergency validation bypass
 

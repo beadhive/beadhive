@@ -75,6 +75,9 @@ def test_validation_host_is_sandboxed_away_from_the_real_host(tmp_path_factory):
     assert "BH_VALIDATION_SLOTS" not in os.environ, (
         "ambient host capacity must not override a test's fixture/configured capacity"
     )
+    assert os.environ.get("BH_VALIDATION_MEMORY_FLOOR") == "0", (
+        "nested admission must not wait on the real host's MemAvailable"
+    )
 
 
 def test_the_sandbox_check_still_rejects_the_real_home(tmp_path_factory):

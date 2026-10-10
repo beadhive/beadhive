@@ -13,6 +13,22 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.24.1 (2026-10-09)
+
+### Feat
+
+- **mcp**: prepare official registry publication after PyPI
+
+### Fix
+
+- **doctor**: warn when bh state or worktrees live on RAM-backed filesystems or swap is absent (bh-01asp)
+- **validation**: bound validation memory in its scope and admit on MemAvailable (bh-jg7fy)
+- **work**: reclaim merged worktrees automatically and cap the live count (bh-qbu9t)
+- **work**: default worktree root to disk, refuse tmpfs unless opted in (bh-xzsdf)
+- **fleet**: accept workstation isolation and execution_hives in the host document (bh-grinf)
+- **mcp**: register registry metadata in the root build target
+- **readme**: repair package and indexer badges
+
 ## v0.24.0 (2026-10-08)
 
 ### Feat

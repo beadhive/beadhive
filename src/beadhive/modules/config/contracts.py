@@ -162,7 +162,44 @@ class WorktreesConfig(_Section):
         True,
         description=(
             "True (default): worktrees live in an OS temp dir, session-scoped + disposable, "
-            "no sandbox grant needed. False: persistent worktrees under `path`."
+            "no sandbox grant needed (falls back to the disk root when the temp dir is tmpfs, "
+            "unless allow_tmpfs is set). False: persistent worktrees under `path`."
+        ),
+    )
+    allow_tmpfs: bool = Field(
+        False,
+        description=(
+            "Opt in to a RAM-backed (tmpfs/ramfs) worktree root, including verify-* clean "
+            "checkouts. Off by default: provisioning on tmpfs is refused and the default root "
+            "is disk-backed, because per-tree venvs/caches would consume unreclaimable RAM. "
+            "Env: BH_WORKTREES_ALLOW_TMPFS=1."
+        ),
+    )
+    max_live: int = Field(
+        64,
+        ge=0,
+        description=(
+            "Per-host ceiling on live worktrees (bead trees and verify-* checkouts). Provisioning "
+            "a new one at the cap first reclaims clean, merged trees, then refuses with a message "
+            "if it is still full. 0 disables the cap. Env: BH_WORKTREES_MAX_LIVE."
+        ),
+    )
+    ram_warn_gib: float = Field(
+        4.0,
+        ge=0,
+        description=(
+            "`bh doctor` warns that a host with no swap (SwapTotal=0) is holding more than this "
+            "many GiB in RAM-backed storage (tmpfs/ramfs: worktrees, validation checkouts, "
+            "TMPDIR, bh state). It also flags a tmpfs worktree root that is not opted in via "
+            "allow_tmpfs and bh state dirs on RAM. 0 turns these doctor warnings off."
+        ),
+    )
+    reclaim_on_merge: bool = Field(
+        True,
+        description=(
+            "Remove a bead's worktree after a clean `work merge` / `work finish` (the branch "
+            "stays as the durable artifact). A worktree with uncommitted changes is always kept. "
+            "`work merge --rm` forces it for one call; set false to keep trees."
         ),
     )
     path: str | None = Field(
@@ -736,6 +773,86 @@ class ValidationPriorityConfig(_Section):
     )
 
 
+_MEMORY_SIZE = re.compile(r"^(?:\d+(?:\.\d+)?%|\d+[KMGT]?|infinity|none)?$", re.IGNORECASE)
+
+
+def _memory_size(value: object, *, name: str, allow_zero: bool) -> str:
+    """Validate one systemd-style memory size: bytes, K/M/G/T, a % of RAM, or none."""
+    text = str(value).strip()
+    if isinstance(value, bool) or not _MEMORY_SIZE.match(text):
+        raise ValueError(
+            f"{name} must be bytes, a K/M/G/T size, a percentage of RAM, or none: {value!r}"
+        )
+    if text.endswith("%") and not 0 < float(text[:-1]) <= 100:
+        raise ValueError(f"{name} percentage must be greater than 0 and at most 100")
+    if not allow_zero and text and text[0].isdigit() and float(text.rstrip("%KMGTkmgt")) == 0:
+        raise ValueError(f"{name} must be greater than zero; use none to disable it")
+    return text
+
+
+class ValidationMemoryConfig(_Section):
+    """Memory bounds and memory-aware admission for validation subprocesses (bh-jg7fy)."""
+
+    enabled: bool = Field(
+        True,
+        description=(
+            "Bound validation memory in the user systemd scope and wait for the admission floor. "
+            "BH_VALIDATION_MEMORY temporarily overrides this setting."
+        ),
+    )
+    memory_high: str = Field(
+        "50%",
+        description=(
+            "Scope MemoryHigh: reclaim/throttle threshold as bytes, a K/M/G/T size, a percentage "
+            "of physical RAM, or none."
+        ),
+    )
+    memory_max: str = Field(
+        "60%",
+        description=(
+            "Scope MemoryMax: the kernel OOM-kills inside the scope above this bound. Bytes, a "
+            "K/M/G/T size, a percentage of physical RAM, or none."
+        ),
+    )
+    memory_swap_max: str = Field(
+        "0",
+        description=(
+            "Scope MemorySwapMax so an over-limit run is killed instead of swapping; none "
+            "leaves swap unbounded."
+        ),
+    )
+    admission_floor: str = Field(
+        "10%",
+        description=(
+            "Wait before starting until MemAvailable is at least this size (bytes, K/M/G/T, or a "
+            "percentage of RAM); 0 or none disables. BH_VALIDATION_MEMORY_FLOOR overrides it."
+        ),
+    )
+    admission_timeout_seconds: float = Field(
+        1800.0,
+        ge=0,
+        description=(
+            "Give up (not started, exit 75) after waiting this long for the floor; 0 waits "
+            "indefinitely."
+        ),
+    )
+    admission_poll_seconds: float = Field(
+        5.0,
+        gt=0,
+        description="Seconds between MemAvailable samples while waiting for the floor.",
+    )
+
+    @field_validator("memory_high", "memory_max", mode="before")
+    @classmethod
+    def _limit(cls, value, info):
+        return _memory_size(value, name=info.field_name, allow_zero=False)
+
+    @field_validator("memory_swap_max", "admission_floor", mode="before")
+    @classmethod
+    def _bound(cls, value, info):
+        return _memory_size(value, name=info.field_name, allow_zero=True)
+
+
 class WorkConfig(_Section):
     """Integration-plane driver (`bh work`) settings — drives a bead assigned -> merged."""
 
@@ -764,6 +881,13 @@ class WorkConfig(_Section):
         description=(
             "Host scheduling policy for validation children: nice/ionice and a weighted user "
             "systemd scope when available."
+        ),
+    )
+    validation_memory: ValidationMemoryConfig = Field(
+        default_factory=ValidationMemoryConfig,
+        description=(
+            "Host memory policy for validation children: MemoryHigh/MemoryMax in the user "
+            "systemd scope and a MemAvailable admission floor."
         ),
     )
     validation_protocol: Literal["none", "beadhive-validation-result/v1"] = Field(

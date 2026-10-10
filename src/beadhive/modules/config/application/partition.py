@@ -16,6 +16,7 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         "work.identity",
         "work.validation_slots",
         "work.validation_priority",
+        "work.validation_memory",
         "work.dispatch.max_beads_per_session",
         "work.dispatch.auto_budget",
         "beads",
@@ -44,6 +45,9 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         # its own principal there, and whether it serves forwarders. Per frame, never fleet
         # truth (bh-hy2hp): a host file carrying it must not read as a fleet override.
         "host.forward",
+        "worktrees.allow_tmpfs",
+        "worktrees.max_live",
+        "worktrees.ram_warn_gib",
     }
 )
 

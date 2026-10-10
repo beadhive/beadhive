@@ -1401,7 +1401,7 @@ def _close_land_origin_reports(bead, main) -> None:
 def merge(
     bead: str = _BEAD_OPT,
     hive: str = _HIVE,
-    rm: bool = typer.Option(False, "--rm", help="remove the worktree after a clean merge"),
+    rm: bool | None = typer.Option(None, "--rm", help="remove the worktree after a clean merge"),
     molecule: bool = typer.Option(
         False, "--molecule", help="land the whole molecule mol/<epic> (arg is the epic id)"
     ),

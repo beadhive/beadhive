@@ -777,6 +777,8 @@ def impl_merge(api, bead, hive, rm, molecule, group, override_validation="", ove
     warn_if_expiring()
     cfg = api.config.load()
     api.guard.guard_primary(hive, cfg=cfg, verb="work merge")
+    if not isinstance(rm, bool):  # --rm unset: follow worktrees.reclaim_on_merge
+        rm = api.config.worktrees_reclaim_on_merge(cfg)
     if override_actor and not override_validation:
         api.typer.echo("✗ --override-as requires --override-validation REASON", err=True)
         raise api.typer.Exit(1)
@@ -1026,10 +1028,7 @@ def impl__reconcile_landed_bead(api, cfg, entry, main, bead, bead_data, branch, 
         closed = api.work_logic.close_merged(bead, main, "merged", data=fresh)
         api._clear_review_label(bead, fresh, main)
     if rm:
-        try:
-            api.worktree.remove(hive, bead, force=True)
-        except Exception:
-            pass
+        api.worktree.reclaim_merged(hive, bead)
     if not closed:
         assignee = str(bead_data.get("assignee") or "").strip()
         api.typer.echo(
@@ -1396,7 +1395,7 @@ def impl__merge_bead(api, cfg, bead, hive, rm, override_reason="", override_acto
     elif how == "union":
         note = " (landed via union conflict resolution)"
     if rm:
-        api.worktree.remove(hive, bead, force=True)
+        api.worktree.reclaim_merged(hive, bead)
     if not closed:
         assignee = str(bead_data.get("assignee") or "").strip()
         api.typer.echo(

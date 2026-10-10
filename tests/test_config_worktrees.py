@@ -8,7 +8,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from beadhive import config, config_schema, toolchain
+from beadhive import config, config_paths, config_schema, toolchain
 
 
 def test_ephemeral_default_true_when_omitted():
@@ -19,9 +19,146 @@ def test_ephemeral_default_true_when_omitted():
 def test_ephemeral_root_is_os_temp_and_ignores_path(monkeypatch):
     monkeypatch.delenv("BH_WORKTREES", raising=False)
     monkeypatch.delenv("WS_WORKTREES", raising=False)
+    monkeypatch.setattr(config_paths, "statfs_type", lambda _p: _EXT4_MAGIC)  # disk-backed temp dir
     cfg = {"worktrees": {"ephemeral": True, "path": "/should/be/ignored"}}
     root = config.worktrees_root(cfg)
     assert root == Path(tempfile.gettempdir()) / "bh-worktrees"
+
+
+# ---- RAM-backed (tmpfs/ramfs) root guard (bh-xzsdf) ---------------------------
+
+
+_EXT4_MAGIC = 0xEF53
+
+
+def _isolate(monkeypatch, tmp_path):
+    for var in ("BH_WORKTREES", "WS_WORKTREES", "BH_WORKTREES_ALLOW_TMPFS"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("BH_HOME", str(tmp_path / "home"))
+
+
+def test_default_root_is_disk_backed_when_os_temp_is_tmpfs(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path / "tmp"))
+    temp = Path(tempfile.gettempdir()) / "bh-worktrees"
+    monkeypatch.setattr(
+        config_paths,
+        "statfs_type",
+        lambda p: config_paths_magic("tmpfs") if Path(p) == temp else _EXT4_MAGIC,
+    )
+    root = config.worktrees_root({})
+    assert root == tmp_path / "home" / "worktrees"
+    assert config.worktrees_root_refusal({}) is None  # the disk fallback itself is allowed
+
+
+def test_in_use_tmpfs_root_keeps_resolving_but_refuses_new_worktrees(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    fake_tmp = tmp_path / "tmp"
+    (fake_tmp / "bh-worktrees" / "github").mkdir(parents=True)  # an in-flight legacy worktree
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(fake_tmp))
+    monkeypatch.setattr(config_paths, "statfs_type", lambda _p: config_paths_magic("tmpfs"))
+    assert config.worktrees_root({}) == fake_tmp / "bh-worktrees"  # still reachable
+    message = config.worktrees_root_refusal({})
+    assert message is not None and "worktrees.allow_tmpfs" in message
+    assert config.worktrees_root_refusal({"worktrees": {"allow_tmpfs": True}}) is None
+
+
+def test_default_root_is_disk_fallback_honours_worktrees_path(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path / "tmp"))
+    monkeypatch.setattr(config_paths, "statfs_type", lambda _p: config_paths_magic("ramfs"))
+    cfg = {"worktrees": {"path": str(tmp_path / "disk")}}
+    assert config.worktrees_root(cfg) == tmp_path / "disk"
+
+
+def test_os_temp_root_kept_when_it_is_disk_backed(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setattr(config_paths, "statfs_type", lambda _p: _EXT4_MAGIC)
+    assert config.worktrees_root({}) == Path(tempfile.gettempdir()) / "bh-worktrees"
+
+
+def test_allow_tmpfs_opt_in_keeps_the_tmpfs_temp_root(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setattr(config_paths, "statfs_type", lambda _p: config_paths_magic("tmpfs"))
+    cfg = {"worktrees": {"allow_tmpfs": True}}
+    assert config.worktrees_allow_tmpfs(cfg) is True
+    assert config.worktrees_root(cfg) == Path(tempfile.gettempdir()) / "bh-worktrees"
+    assert config.worktrees_root_refusal(cfg) is None
+
+
+def test_allow_tmpfs_env_opt_in(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setattr(config_paths, "statfs_type", lambda _p: config_paths_magic("tmpfs"))
+    monkeypatch.setenv("BH_WORKTREES_ALLOW_TMPFS", "1")
+    assert config.worktrees_allow_tmpfs({}) is True
+    assert config.worktrees_root({}) == Path(tempfile.gettempdir()) / "bh-worktrees"
+
+
+def test_explicit_tmpfs_root_is_refused_naming_the_opt_in_key(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setenv("BH_WORKTREES", "/explicit/ram")
+    monkeypatch.setattr(config_paths, "statfs_type", lambda _p: config_paths_magic("tmpfs"))
+    message = config.worktrees_root_refusal({})
+    assert message is not None
+    assert "worktrees.allow_tmpfs" in message and "BH_WORKTREES_ALLOW_TMPFS" in message
+    assert "/explicit/ram" in message
+    # opting in lifts the refusal
+    assert config.worktrees_root_refusal({"worktrees": {"allow_tmpfs": True}}) is None
+
+
+def test_persistent_path_on_ramfs_is_refused(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setattr(config_paths, "statfs_type", lambda _p: config_paths_magic("ramfs"))
+    cfg = {"worktrees": {"ephemeral": False, "path": "/srv/ram"}}
+    assert "worktrees.allow_tmpfs" in (config.worktrees_root_refusal(cfg) or "")
+
+
+def test_unreadable_statfs_is_not_treated_as_memory_backed(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setattr(config_paths, "statfs_type", lambda _p: None)
+    assert config.is_memory_backed(tmp_path) is False
+    assert config.worktrees_root_refusal({}) is None
+
+
+def test_statfs_type_reads_a_real_filesystem_and_walks_up_missing_paths(tmp_path):
+    real = config.statfs_type(tmp_path)
+    assert real is None or isinstance(real, int)
+    assert config.statfs_type(tmp_path / "does" / "not" / "exist") == real
+
+
+def test_do_add_refuses_a_ram_backed_root_before_creating_anything(monkeypatch, tmp_path):
+    import pytest
+    import typer
+
+    from beadhive import worktree
+
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setenv("BH_WORKTREES", str(tmp_path / "ram"))
+    monkeypatch.setattr(config_paths, "statfs_type", lambda _p: config_paths_magic("tmpfs"))
+    with pytest.raises(typer.Exit):
+        worktree._do_add(
+            {}, {"prefix": "x"}, tmp_path, "b", tmp_path / "ram" / "t", new_branch=True
+        )
+    assert not (tmp_path / "ram").exists()
+
+
+def test_verify_checkout_follows_the_same_root_rule(monkeypatch, tmp_path):
+    from beadhive import worktree_verify
+
+    _isolate(monkeypatch, tmp_path)
+    (tmp_path / "home").mkdir()
+    (tmp_path / "home" / "config.yaml").write_text("managed_repos: []\n")
+    monkeypatch.setenv("BH_WORKTREES", str(tmp_path / "ram"))
+    monkeypatch.setattr(config_paths, "statfs_type", lambda _p: config_paths_magic("tmpfs"))
+    path, rc = worktree_verify.impl__prepare_verify_worktree(tmp_path, {"prefix": "x"}, "b", "true")
+    assert (path, rc) == (None, 1)
+    assert not (tmp_path / "ram").exists()
+
+
+def config_paths_magic(kind: str) -> int:
+    from beadhive import config_paths
+
+    return {"tmpfs": config_paths.TMPFS_MAGIC, "ramfs": config_paths.RAMFS_MAGIC}[kind]
 
 
 def test_persistent_uses_path_then_default(monkeypatch):

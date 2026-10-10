@@ -472,6 +472,7 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     # Git-native administration and GitHub repository configuration.
     | _owned("config_policy.py", "hq_has_remote", ".git")
     | _owned("doctor.py", "_scan", ".git")
+    | _owned("worktree_cleanup.py", "impl_live_worktree_dirs", ".git")
     | _owned("doctor.py", "_channel_drift_warnings", ".git")
     | _owned("doctor.py", "_hq_ahead_warnings", ".git")
     | _owned("guard.py", "primary_state", ".git")

@@ -159,7 +159,7 @@ def test_run_admission_and_coalesced_use_stay_in_existing_records(tmp_path, monk
         command_hash="hash",
         admission={"slot": 1, "queue_seconds": 2.5, "ignored": "not persisted"},
     )
-    assert run["admission"] == {"slot": 1, "queue_seconds": 2.5}
+    assert run["admission"] == {"slot": 1, "queue_seconds": 2.5, "memory": None}
     validation_records.finish_run(repo, run["run_id"], exit_code=0)
     use = validation_records.record_use(
         repo,

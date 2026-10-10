@@ -426,6 +426,8 @@ def isolate(root: Path) -> dict:
         "BH_HOME": str(root / "bh-home"),
         "BH_CONFIG": str(root / "bh-home" / "config.yaml"),
         "BH_WORKTREES": str(root / "worktrees"),
+        # bh-xzsdf: the fenced demo's scratch root is tmpfs by construction (see the justfile).
+        "BH_WORKTREES_ALLOW_TMPFS": "1",
         # bd reads its own global config from HOME/XDG_CONFIG_HOME, independently of BH_HOME.
         # Without both redirects an operator's `dolt.shared-server: true` can turn this
         # disposable embedded fixture into a port-3308 shared-server invocation.

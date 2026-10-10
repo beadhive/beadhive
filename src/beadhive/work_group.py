@@ -594,10 +594,7 @@ def _reconcile_landed_group(
         # worktree it would remove may already be gone. A failure to remove an absent tree must
         # not turn a successful reconcile into an error — that would make the idempotent path
         # non-idempotent, which is the bug this bead is about.
-        try:
-            worktree.remove(hive, branch, force=True)
-        except Exception:
-            pass
+        worktree.reclaim_merged(hive, branch)
     if failed:
         typer.echo(
             f"✗ batch {group} is ALREADY MERGED ({branch} → {base}) but these members could not "
@@ -816,7 +813,7 @@ def merge_group(cfg, group_arg, hive, rm):
     for m in members:
         otel.count_bead_transition("merged", {"bh.bead": m, "bh.batch": group})
     if rm:
-        worktree.remove(hive, branch, force=True)
+        worktree.reclaim_merged(hive, branch)
     if base == config.integration_branch(cfg, entry):
         from . import work_backup
 

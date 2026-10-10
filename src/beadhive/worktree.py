@@ -592,6 +592,16 @@ def _remove_worktree(cfg, entry, main: Path, path: Path, branch: str = "", *, fo
     return removed
 
 
+def _refuse_memory_backed_root(cfg) -> None:
+    """Refuse to provision a NEW worktree on a RAM-backed (tmpfs/ramfs) root unless
+    ``worktrees.allow_tmpfs`` opts in (bh-xzsdf). Re-attaching an existing dir never reaches
+    here, so worktrees already living on tmpfs keep working until reclaimed."""
+    message = config.worktrees_root_refusal(cfg)
+    if message:
+        typer.echo(f"✗ {message}", err=True)
+        raise typer.Exit(1)
+
+
 def _do_add(
     cfg, entry, main: Path, br: str, target: Path, *, new_branch: bool, start_point: str = ""
 ):
@@ -605,6 +615,8 @@ def _do_add(
     Mechanics route explicitly to the selected ``worktrees.manager``'s ``create`` or
     ``attach`` (bh-055ot.1) — there is no plugin delegation seam any more; ``wt_creating`` /
     ``wt_created`` observers still fire around either."""
+    _refuse_memory_backed_root(cfg)
+    enforce_live_cap(cfg)  # bh-qbu9t: reclaim clean merged trees, else refuse at the cap
     hive = str(entry.get("prefix", ""))
     started = time.monotonic()
     composition = plugins.action_composition(cfg, entry)
@@ -1739,6 +1751,21 @@ def _prune_remove_all(cfg, mains: dict, keys: dict, entries_by_prefix: dict, saf
 def prune(hive=""):
     """Compatibility facade for ``worktree_cleanup.impl_prune``."""
     return _worktree_cleanup.impl_prune(hive)
+
+
+def reclaim_merged(hive, ref) -> bool:
+    """Compatibility facade for ``worktree_cleanup.impl_reclaim_merged``."""
+    return _worktree_cleanup.impl_reclaim_merged(hive, ref)
+
+
+def live_worktree_dirs(root):
+    """Compatibility facade for ``worktree_cleanup.impl_live_worktree_dirs``."""
+    return _worktree_cleanup.impl_live_worktree_dirs(root)
+
+
+def enforce_live_cap(cfg) -> None:
+    """Compatibility facade for ``worktree_cleanup.impl_enforce_live_cap``."""
+    return _worktree_cleanup.impl_enforce_live_cap(cfg)
 
 
 # ---- worktree status helpers -----------------------------------------------
