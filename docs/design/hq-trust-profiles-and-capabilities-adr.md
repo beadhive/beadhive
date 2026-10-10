@@ -1,6 +1,9 @@
 # HQ trust profiles, composable host capabilities, elected tenure and batch bead sync
 
 **Status:** **proposed** (operator design session, 2026-10-09) · **Date:** 2026-10-09
+**Amended:** 2026-10-10 by the operator replan of `bh-sfp9o` (`bh-sfp9o.3`): the six dimensions
+and the capability ceiling per profile, `open` never forwards and warns, frame-ref merges without
+`--strategy`, and open question 1 narrowed. The record stays proposed until `bh-qj2x0` accepts it.
 **Design bead:** `bh-7jq08` (this record) · **Implementation molecule:** filed from this record by
 `bh plan file`; its epic links back here.
 **Amends:** [hive-writer-partitioning-adr.md](hive-writer-partitioning-adr.md) §3 (asymmetric
@@ -56,6 +59,26 @@ end to end:
    auto-pull, run by the host daemon, with the lifecycle verbs that need durability kept
    synchronous.
 
+The operator decisions of 2026-10-10 add six decisions to the list:
+
+1. **A capability ceiling per profile.** `open` and `trusted` remove nothing from a host's role
+   set; `verified` and `attested` remove `admin` from any host without the operator key and remove
+   self-placement, so `place` is reached only through the director CAS (section 2).
+2. **`open` never forwards.** A non-primary write under `open` lands on the replica's own Dolt
+   data, is published to `refs/dolt/frame/<id>` and is merged into `main` by the writer.
+   `trusted` forwards through per-frame pinned TLS accounts exactly as `verified` does (section 4).
+3. **Child create is refused under `open`** until upstream
+   [gastownhall/beads#4796](https://github.com/gastownhall/beads/issues/4796) gives frame-scoped
+   child ids; top-level create waits on the `bh-xwy5x` decision. This is a correctness limit, not
+   a trust knob (section 4).
+4. **Frame refs merge without `--strategy`.** A conflict stops that ref's merge, is recorded as a
+   typed outcome and is resolved by the operator with a verb (section 4).
+5. **A readiness warning under `open`.** Every non-primary write prints one warning per command
+   and is counted, so a fleet can see how much it relies on behaviour the next profile refuses.
+   The warning is configurable, on by default, and never refuses (section 4).
+6. **`open` tenure is bounded.** A configurable ceiling, default 24 h, replaces "unbounded"
+   (section 3).
+
 Everything below is a proposal: no key, verb or predicate named here exists until the
 implementation molecule lands it, and the shipped behaviour documented in [HQ](../HQ.md),
 [FRAME-FLEET-MEMBERSHIP](../FRAME-FLEET-MEMBERSHIP.md), [FORWARD-WRITE-PATH](../FORWARD-WRITE-PATH.md)
@@ -94,8 +117,8 @@ Rules:
 
 - **Union, then ceiling.** `[planner, executor]` is `executor` plus nothing new;
   `[operator, executor]` is a workstation that authors everywhere, administers HQ and executes
-  the hives placed on it (`bh-ld32r`). The profile ceiling (section 2) can remove `place` or
-  `admin` from every host regardless of roles.
+  the hives placed on it (`bh-ld32r`). The profile's capability ceiling (section 2) can remove
+  `admin` and self-placement from every host regardless of roles.
 - **Tenure follows the highest-tenure role in the set.** The `hq_live_failover_policy` table
   keeps its `executor` / `transient` rows; a set containing `executor` uses the executor row.
 - **Admission approves the set.** The grant's capability list already feeds the
@@ -108,17 +131,81 @@ Rules:
 
 ## 2. Trust profiles
 
-A profile sets five knobs at once. Profiles are named by the trust they require of the
-environment, least to most, not by who uses them.
+A profile sets five knobs at once (authority, admission, placement, off-primary write policy and
+tenure) and, through them, a sixth dimension, revocation latency; it also sets a capability
+ceiling. Profiles are named by the trust they require of the environment, least to most, not by
+who uses them.
 
-| Profile | Authority | Admission | Placement | Writes off-primary | Tenure cache | Revocation latency |
-|---|---|---|---|---|---|---|
-| `open` | unsigned; HQ write access is admin | open: registration suffices | self-place on any hive with no live writer session | `open`: replicas author directly, merged on sync | unbounded while HQ is unreachable | next successful refresh |
-| `trusted` | unsigned, content honoured (today's `trusted`) | open via `bh hq authority join` | self-place when the hive has no live writer session; otherwise director | `forward`: `author` works everywhere through the primary | = the hive's `failover_after` | one refresh interval |
-| `verified` | signed, non-expiring (today's `signed`) | operator-granted | director CAS only | `forward` with per-frame accounts (option A) | bounded by `hq.tenure` | one refresh interval |
-| `attested` | signed with finite `--duration` | granted plus three fresh heartbeats | director CAS, failover loop on | `forward` only; `author` needs a fresh heartbeat | TTL only, no offline grace | immediate on the next command |
+| Profile | Authority | Admission | Placement | Writes off-primary | Tenure cache | Revocation latency | Capability ceiling removes |
+|---|---|---|---|---|---|---|---|
+| `open` | unsigned; any host with HQ write access holds `admin` (single-operator lab posture, printed by `bh doctor`) | on registration (`hq.admission_policy: open`) | self-place on a hive with no live writer session; no director fallback (a live writer is waited out to tenure or failover) | `open`, forwarding disabled: replicas write their own data, published to `refs/dolt/frame/<id>` and merged by the writer; child create refused | bounded by `hq.tenure`, a configurable ceiling, default 24 h | next successful refresh | nothing |
+| `trusted` | unsigned, content honoured (today's `trusted`) | open via `bh hq authority join` | self-place when the hive has no live writer session; otherwise director | `forward` through per-frame pinned TLS accounts, as `verified` | = the hive's `failover_after` | one refresh interval | nothing |
+| `verified` | signed, non-expiring (today's `signed`) | operator-granted | director CAS only | `forward` through per-frame pinned TLS accounts (option A) | bounded by `hq.tenure` | one refresh interval | `admin` from hosts without the operator key; self-placement |
+| `attested` | signed with finite `--duration` | granted plus three fresh heartbeats | director CAS, failover loop on | `forward` only; `author` needs a fresh heartbeat | TTL only, no offline grace | immediate on the next command | `admin` from hosts without the operator key; self-placement |
 
-Rules:
+### The six dimensions
+
+Read the table one column at a time when choosing a profile. Each column is one dimension; the
+first five are knobs a profile sets and an override can tighten, the sixth follows from them.
+
+**Authority** controls whether HQ's authority rows (frame bindings and fleet-config publications)
+carry signatures and expiry, and therefore who can administer the fleet. Under `open` nothing is
+signed and any host with HQ write access holds `admin`: the single-operator lab posture, which
+`bh doctor` prints so it is never adopted by accident. Under `trusted` rows are unsigned but their
+content is honoured, as in 0.24.0's `trusted` mode, and `admin` follows the host's roles. Under
+`verified` rows are signed and do not expire (today's `signed`). Under `attested` they are signed
+with a finite `--duration`, so a binding lapses unless it is renewed.
+
+**Admission** controls how a registered host becomes `admitted_active`, the predicate every
+capability consults. Under `open` registration alone admits (`hq.admission_policy: open`). Under
+`trusted` a host is admitted through `bh hq authority join`, as 0.24.0 auto-admits a trusted
+fleet. Under `verified` an operator grants admission (`hq.admission_policy: manual`). Under
+`attested` the grant takes effect only after three fresh authenticated heartbeats, and a stale
+heartbeat restarts the count.
+
+**Placement** controls who may make a frame a hive's writer: the `hq_live_hive_leases` CAS and
+the in-data fence bump, which are unchanged in every profile. Under `open` a frame self-places
+with `bh host lease adopt` on a hive with no live writer session, and there is no director
+fallback: a hive with a live writer is waited out until that writer's tenure ends or failover
+fires, and the refusal says which and when. Under `trusted` a frame self-places on a hive with no
+live writer session and otherwise needs the director, whose command the refusal prints. Under
+`verified` placement is the director CAS only. Under `attested` it is the director CAS with the
+failover loop on.
+
+**Off-primary write policy** controls what a host that is not a hive's writer may do with bead
+writes (section 4). Under `open` the `open` policy applies with forwarding disabled: the write
+lands on the replica's own Dolt data, is published to `refs/dolt/frame/<id>` and is merged by the
+writer, child create is refused, and every such write prints the readiness warning. Under
+`trusted` and `verified` the `forward` policy sends the write to the primary through a per-frame,
+address-pinned, TLS-required account; the two profiles use the same forward mechanism and differ
+in authority, admission, placement and tenure instead. Under `attested` the policy is `forward`
+only, and `author` also needs a fresh heartbeat.
+
+**Tenure** controls how long a placed frame keeps working from its elected-tenure cache without a
+successful HQ refresh (section 3). Under `open` tenure is bounded by `hq.tenure`, a configurable
+ceiling that defaults to 24 h; it is never unbounded. Under `trusted` it equals the hive's
+`failover_after`. Under `verified` it is bounded by `hq.tenure` and `failover_after`, whichever is
+shorter. Under `attested` it is the heartbeat TTL, with no offline grace. When tenure lapses,
+`publish` and `place` refuse in every profile; `author` and `claim` continue only under `open` and
+`trusted`.
+
+**Revocation latency** is how long a cordon, retirement or quarantine published at HQ takes to
+reach a frame. It is not a separate knob; it follows from how the tenure cache refreshes. Under
+`open` it is the next successful refresh, which can be as late as the tenure ceiling while HQ is
+unreachable. Under `trusted` and `verified` it is one refresh interval (`hq.tenure_refresh`).
+Under `attested` it is immediate: the eligibility boundary keeps today's fresh authoritative
+reread, so the next command sees it.
+
+### Capability ceiling
+
+After a host's roles are unioned (section 1), the profile's ceiling removes capabilities from
+every host regardless of the roles it declares. Under `open` and `trusted` the ceiling removes
+nothing, so the roles alone decide (and under `open` any host with HQ write access also holds
+`admin`, as above). Under `verified` and `attested` the ceiling removes `admin` from any host that
+does not hold the operator key, and removes self-placement: `place` is reached only through the
+director CAS, and `bh host lease adopt` without it refuses and prints the director command.
+
+### Profile rules
 
 - `hq.trust_profile` is a **fleet** key published like `hq.default_authority_mode` today: raising
   trust (towards `open`) needs the operator key once, lowering it always takes effect. The
@@ -142,7 +229,9 @@ read against HQ. The cache moves both to the host daemon:
   floor) and the per-capability eligibility decision for each hive this host is placed on, with
   the authority revision they were derived from.
 - **Tenure.** The cache expires at `min(hq.tenure, failover_after of the hive)`. `hq.tenure`
-  defaults to the hive's `failover_after`; `attested` sets it to the heartbeat TTL.
+  defaults to the hive's `failover_after`; `attested` sets it to the heartbeat TTL. Under `open`
+  the cache expires at `hq.tenure` alone, a configurable ceiling that defaults to 24 h: an `open`
+  frame outlives a short `failover_after` while HQ is unreachable, but never works unbounded.
 - **Refresh.** The host daemon refreshes on `hq.tenure_refresh` (default `failover_after / 4`)
   and on every successful heartbeat; a CLI command never refreshes synchronously. A command that
   finds no cache (fresh host, daemon down) falls back to today's per-process read once and seeds
@@ -165,14 +254,52 @@ error (`bh-kjxe9`) with one timer in the daemon.
 | Policy | Who may write | Allowed operations off the primary | Mechanism |
 |---|---|---|---|
 | `fenced` | the writer frame only | none | today's behaviour: `guard_primary` refuses every write verb on a non-writer |
-| `forward` | any host with `author` or `claim` | create, update, claim, comment, dep, label, close | bh's bd points at the primary's hive `dolt sql-server` with a per-host account ([FORWARD-WRITE-PATH](../FORWARD-WRITE-PATH.md), option A); claims are granted in one place |
-| `open` | any host with `author` | non-allocating edits only: comments, labels, notes, status of beads already held; create with a reserved id range | the replica writes its own Dolt data and `hive.sync.auto_push` merges it; the partitioning ADR's restricted "branch" path, made first-class |
+| `forward` | any host with `author` or `claim` | create, update, claim, comment, dep, label, close | bh's bd points at the primary's hive `dolt sql-server` with a per-frame account pinned to the frame's address and requiring TLS ([FORWARD-WRITE-PATH](../FORWARD-WRITE-PATH.md), option A), under `trusted` and `verified` alike; provisioning already refuses a shared login; claims are granted in one place |
+| `open` | any host with `author` | comments, labels, notes, status, dependencies, claims, close, and top-level create subject to `bh-xwy5x`; child create refused | never forwards: the replica writes its own Dolt data, publishes it to `refs/dolt/frame/<id>` and the writer merges it into `main` without `--strategy`; the partitioning ADR's restricted "branch" path, made first-class |
 
-`forward` is the default for `trusted` and `verified`; it needs `bh-hy2hp` and `bh-0tjiq`
-(forward marker on passthrough create, forwarded claims not gated by the local writer, replica
-`bh_local_ident` provisioning) before it is usable from an operator host. `open` is the only
-policy that lets a replica write with the primary unreachable, and it is limited to edits that
-cannot allocate a conflicting id.
+The profile supplies the default: `open` for `open`, `forward` for `trusted` and `verified`,
+`forward` only for `attested`, and `fenced` for a hive whose forwarder is not configured.
+`forward` needs `bh-hy2hp` and `bh-0tjiq` (the remaining forwarding fixes after `bh-7yuny`)
+before it is usable from an operator host. `open` is the only policy that lets a replica write
+with the primary unreachable.
+
+### `open` never forwards
+
+Under `open` a hive's forward marker and the host's `host.forward` endpoint are ignored, and
+`bh hive forward point` refuses, naming the profile. A non-primary write lands on the replica's
+own Dolt data and is published only to the frame-private ref `refs/dolt/frame/<id>`, never to
+`main`; the hive's writer merges it.
+
+Allowed under `open`: comments, labels, notes, status, dependencies, claims, close, and top-level
+create once the `bh-xwy5x` decision confirms that bd's hash ids merge cleanly across replicas
+(until then top-level create is refused with a pointer to it).
+
+Refused under `open`: child create (`<epic>.N`), until upstream
+[gastownhall/beads#4796](https://github.com/gastownhall/beads/issues/4796) gives frame-scoped child
+ids. Two replicas allocate the same child id, and a merge would silently drop one of the two
+beads ([`bh-sieai` section 9](../spikes/bh-sieai-write-guard-and-nonprimary-writes.md#9-branch-path-merges-collisions-and-contention)).
+This is a correctness limit, not a trust knob: no profile or override lifts it.
+
+### Merging frame refs
+
+The writer merges each `refs/dolt/frame/<id>` into `main` and never passes `--strategy`, because
+`bd vc merge --strategy` resolves a conflict by silently dropping the losing side (`bh-sieai`
+section 9). A clean merge lands and records a typed outcome. A conflict, including two frames
+claiming one bead, stops that ref's merge and is recorded as a typed outcome with the conflicting
+rows (table, bead id, both values; a double claim names both holders). `bh doctor` and
+`bh hq why` report it per hive and frame, and the operator resolves it with a verb that takes
+`main`'s side or the frame's side for each bead. A conflicting ref never blocks other frames'
+refs or any verb.
+
+### Readiness warning
+
+Every non-primary write under `open` prints exactly one console warning per command. The warning
+names the hive and its writer frame and says that under `trusted` and above the write would be
+forwarded to that writer. Each warning is also counted as an event, and `bh doctor` reports the
+count per hive over a window (`hive.readiness_window`, default 7 days). The purpose is to measure
+how much a fleet relies on behaviour the next profile refuses, so the operator can see when it is
+ready to harden. The warning is configurable (`hive.readiness_warning`, default on) and is never
+a refusal.
 
 ## 5. Batch bead sync
 
@@ -197,7 +324,7 @@ Rules:
   includes their commits) regardless of these settings.
 - **Only the writer pushes `main`.** On a cut-over hive the auto-push runs under the same
   `bh_writer` check as a manual push; a replica under the `open` policy pushes its frame-private
-  ref, never `main`.
+  ref `refs/dolt/frame/<id>`, never `main`, and the writer merges it as section 4 describes.
 - **Outcomes are typed.** Every background push or pull records a typed outcome (the
   `bh-nc052.2` contract) and `bh doctor` shows pending commits, last push, last error and the
   next retry per hive.
@@ -212,7 +339,9 @@ Rules:
 | `host.roles` | host manifest | list of `viewer`, `planner`, `operator`, `transient`, `executor`, `director`; `host.role` remains as a one-element alias |
 | `hq.placement_mode` | host override | `director`, `self` |
 | `hive.write_policy` | fleet default, per-hive override | `fenced`, `forward`, `open` |
-| `hq.tenure`, `hq.tenure_refresh` | host override | durations |
+| `hive.readiness_warning` | fleet default, per-hive override | `on` (default), `off`: the readiness warning under `open` (section 4) |
+| `hive.readiness_window` | fleet default | duration over which `bh doctor` counts readiness warnings (default 7 days) |
+| `hq.tenure`, `hq.tenure_refresh` | host override | durations; under `open`, `hq.tenure` is the tenure ceiling (default 24 h) |
 | `hq.admission_policy` | fleet | `manual` (today) or `open`; the profile sets it |
 | `hive.adopt_existing` | host, onboarding | `true`: `bh hive add` and `onboard` read the store's own prefix and project id instead of deriving them (`bh-ajgot`, `bh-6csoa`) |
 | `hive.sync.*` | fleet default, per-hive override | section 5 |
@@ -226,6 +355,8 @@ fleet key changes shape: `hq.default_authority_mode` stays valid as the profile'
   untouched. No profile or cache can make two frames write one hive.
 - Conditions 13–18 of the partitioning ADR stand. The advisory-heartbeat escape is retired by
   `bh-bnpgq` before any additional executor is admitted, in every profile.
+- No merge of a frame ref passes `--strategy`; every conflict is surfaced and resolved by the
+  operator, never silently.
 - The operator key never moves onto a frame; `open` and `trusted` make it unnecessary for
   routine work, as 0.24.0 already does.
 - Host-only keys stay host-only; a profile can only be raised towards `open` by an
@@ -238,7 +369,10 @@ fleet key changes shape: `hq.default_authority_mode` stays valid as the profile'
 | `bh-bd09o` (operator and planner hosts author through fenced writers) | delivers `author` and `host.roles`; the implementation molecule absorbs its remaining scope |
 | `bh-ld32r` (attended workstation topology) | the `[operator, executor]` role set |
 | `bh-lzxo8` (SQL HQ enrollment handoff for xeno-mac and the factory) | `author` without a bound runtime frame, under `trusted` |
-| `bh-hy2hp`, `bh-0tjiq` (forwarding bugs) | prerequisites of the `forward` policy; fixed first |
+| `bh-hy2hp`, `bh-0tjiq` (forwarding bugs) | prerequisites of the `forward` policy; fixed first (`bh-7yuny` landed the forward marker on passthrough create, forwarded claims and replica `bh_local_ident`) |
+| `bh-sieai` (write guard and non-primary write paths spike) | section 9 is the evidence for refusing child create under `open` and for merging frame refs without `--strategy` |
+| `bh-xwy5x` (top-level create under `open`) | the decision that answers open question 1 |
+| gastownhall/beads#4796 (frame-scoped child ids) | upstream prerequisite for child create under `open` |
 | `bh-qrsec`, `bh-kjxe9` (per-process HQ reload, fail-closed reader blip) | absorbed by the tenure cache |
 | `bh-ajgot`, `bh-6csoa` (onboarding invents identity) | `hive.adopt_existing` |
 | `bh-3muxc`, `bh-dcg0o` (one `bh hq sync`, HQ as a federation participant) | the HQ half of the sync loop; filed beside, not inside |
@@ -249,8 +383,10 @@ fleet key changes shape: `hq.default_authority_mode` stays valid as the profile'
 
 ## 9. Open questions
 
-1. Reserved id ranges for `open` writes on replicas: a prefix-scoped allocation band, or refuse
-   `create` under `open` until Beads supports per-replica allocation.
+1. Top-level create under `open` (`bh-xwy5x`): bd allocates top-level ids as hashes, which the
+   `bh-sieai` spike did not test across replicas. GO opens top-level create under `open`; NO-GO
+   keeps it refused. Child ids are not open: child create stays refused under `open` until
+   gastownhall/beads#4796, whatever the verdict.
 2. Whether `director` should be a role on an executor (a frame that places itself and others) or
    stay a credential bound only through the operator settings file; the profile table assumes
    the latter for `verified` and `attested`.
@@ -265,4 +401,6 @@ fleet key changes shape: `hq.default_authority_mode` stays valid as the profile'
    fleets; `trusted` fleets gain self-placement and open `author`.
 3. The tenure cache in the host daemon, with `bh hq why`.
 4. `hive.sync` auto-push and auto-pull, after the cadence spike reports.
-5. `open` writes with reserved ids, last, behind the profile.
+5. `open` writes, last, behind the profile: local writes published to `refs/dolt/frame/<id>`,
+   merged without `--strategy`, with the readiness warning; child create refused, top-level create
+   as `bh-xwy5x` decides.

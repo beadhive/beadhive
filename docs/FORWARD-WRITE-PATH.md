@@ -14,10 +14,12 @@ Both sides are **opt-in per frame**, and every default below is configurable.
 
 **Proposed (not shipped).** The
 [trust profiles and capabilities ADR](design/hq-trust-profiles-and-capabilities-adr.md)
-(2026-10-09) names this path the `forward` write policy, makes it the default for the `trusted`
-and `verified` profiles, and adds an `open` policy for non-allocating edits on replicas plus a
-daemon-run batch auto-push and auto-pull (`hive.sync.*`). The forwarding fixes `bh-hy2hp` and
-`bh-0tjiq` are its prerequisites.
+(2026-10-09, amended 2026-10-10) names this path the `forward` write policy and makes it the
+default for the `trusted` and `verified` profiles, both using the per-frame pinned accounts
+described here. It adds an `open` policy that never forwards: replicas write their own data,
+publish it to `refs/dolt/frame/<id>` for the writer to merge, and may not create child beads. It
+also adds a daemon-run batch auto-push and auto-pull (`hive.sync.*`). The forwarding fixes
+`bh-hy2hp` and `bh-0tjiq` are its prerequisites.
 
 ## The primary's side
 
