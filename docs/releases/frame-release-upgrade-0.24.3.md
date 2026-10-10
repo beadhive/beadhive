@@ -2,9 +2,10 @@
 
 The filesystem probe in `config_paths.statfs_type` passed a 256-byte Linux
 `statfs` buffer to other platforms' libc. Apple's
-[statfs ABI](https://github.com/apple/darwin-xnu/blob/main/bsd/sys/mount.h)
-contains two `MAXPATHLEN` mount-name arrays and places `f_type` after the
-filesystem counters and owner. Calling that ABI with the Linux buffer can
+[statfs header](https://github.com/apple/darwin-xnu/blob/main/bsd/sys/mount.h)
+defines both a legacy LP64 layout with 90-byte mount-name arrays and a modern
+layout with `MAXPATHLEN` arrays. Both exceed 256 bytes and place `f_type` after
+the filesystem counters and owner. Calling either ABI with the Linux buffer can
 overwrite Python heap memory; interpreting the first field as Linux's filesystem
 magic is also invalid. The probe now returns `None` before loading libc on any
 non-Linux platform, as its existing contract documents.
@@ -37,7 +38,8 @@ subprocesses; the Mac/Python 3.13 result remains pending.
 
 ## Post-publication operator Mac checks
 
-Run these after 0.24.3 is published. Keep the existing HQ trust mode. Use the
+Run these after 0.24.3 is published, in Bash (`bash` opens it on macOS). Keep the
+existing HQ trust mode. Use the
 existing operator settings, admitted frame identity, and lease. The canonical
 host manifest must already describe the approved target release digest through
 the normal reviewed config publication. Do not edit restore floors, write SQL,

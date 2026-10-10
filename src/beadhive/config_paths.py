@@ -106,9 +106,9 @@ def statfs_type(path: Path) -> int | None:
     """``statfs(2)`` ``f_type`` of the filesystem holding ``path`` (the nearest existing
     ancestor when ``path`` is not created yet), or ``None`` when it cannot be read (non-Linux,
     no libc, permission). Kept as the single seam tests fake instead of a real tmpfs."""
-    # This buffer and f_type offset describe Linux statfs only. Darwin's ABI
-    # includes two MAXPATHLEN mount names and would overwrite this buffer;
-    # its f_type is at a different offset too. Never call that ABI here.
+    # This buffer and f_type offset describe Linux statfs only. Darwin's
+    # legacy LP64 and modern layouts both exceed this buffer and place f_type
+    # elsewhere. Never call another platform's native ABI here.
     if sys.platform != "linux":
         return None
     probe = Path(path)
