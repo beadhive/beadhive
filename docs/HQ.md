@@ -642,10 +642,15 @@ What ships with the key, and what is still to come:
   explicit `hq.default_authority_mode` overrides the profile's authority column.
 - **Publishing.** `bh hq authority profile` shows the effective profile. `bh hq authority
   profile-<name> --confirm` publishes it. Raising trust (towards `open`) needs the operator key
-  once, exactly like `mode-trusted`. Lowering it always takes effect. On SQL HQ the key is
-  frame-relevant: a key-less edit that loosens it fences signed frames until the operator
-  re-signs authority, and an edit that tightens it is tolerated and learned. `verified` removes
-  the key from `fleet.yaml`.
+  once, exactly like `mode-trusted`. Lowering it always takes effect. `verified` removes the
+  key from `fleet.yaml`.
+- **How frames learn it.** A frame whose authority mode is `trusted` honours the committed
+  `hq.trust_profile` as-is, raises included: trusted authority means unsigned content is
+  honoured, as it already is for every other fleet key. A frame in `signed` mode learns a
+  looser profile only from an operator-authorised read (the operator-signed config commit on
+  Git HQ, the head the signed authority is bound to on SQL HQ), and always learns a stricter
+  one. On SQL HQ the key is frame-relevant: a key-less edit that loosens it fences signed frames
+  until the operator re-signs authority, and an edit that tightens it is tolerated and learned.
 - **Live now.** The authority column; the capability ceiling (under `verified` and `attested` a
   host without the operator binding, `$BH_HQ_OPERATOR_SETTINGS`, loses `admin` and `place`, so
   placement goes through the director CAS only); `admin` for any host with HQ write access under

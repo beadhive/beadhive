@@ -406,10 +406,18 @@ def observe_fleet_default(snapshot, *, authorised: bool, via: str = "") -> str:
 
     *authorised*: the snapshot is the operator-signed/bound one (verified in signed mode). A
     ``trusted`` value is honoured only then (or when already learned); a ``signed`` value is
-    always honoured — lowering is stricter. The fleet trust profile (``hq.trust_profile``,
-    bh-bc2rj) is learned from the same snapshot under the same rule. Returns the learned
-    default; never raises."""
-    hq_trust_profile.observe(snapshot, authorised=authorised, via=via)
+    always honoured — lowering is stricter. Returns the learned default; never raises.
+
+    The fleet trust profile (``hq.trust_profile``, bh-bc2rj) is learned from the same
+    snapshot. A frame whose authority mode is ``trusted`` honours the committed profile as-is,
+    raises included: trusted authority means unsigned content is honoured, exactly as it
+    treats every other fleet key. A ``signed`` frame keeps the rule above: a looser profile
+    only from an *authorised* snapshot, a stricter one always."""
+    try:
+        honoured = authorised or not enforced()
+    except Exception:  # noqa: BLE001 - an unreadable mode honours nothing unsigned
+        honoured = authorised
+    hq_trust_profile.observe(snapshot, authorised=honoured, via=via)
     try:
         value = committed_fleet_default(snapshot)
         current = fleet_default()

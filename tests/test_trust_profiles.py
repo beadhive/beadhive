@@ -540,3 +540,65 @@ def test_doctor_section_renders_the_one_line(capsys):
     assert "# HQ trust profile" in out
     assert "✓ profile open" in out
     assert "single-operator lab posture" in out
+
+
+# ---- trusted-mode frames honour the committed profile as-is; signed frames need a signature --
+
+
+@pytest.mark.parametrize("raised", [TRUSTED, OPEN])
+@pytest.mark.parametrize("how", ["pin", "fleet"])
+def test_trusted_mode_frame_learns_an_unsigned_raise(monkeypatch, raised, how):
+    if how == "pin":
+        monkeypatch.setenv(ae.MODE_ENV, "trusted")
+    else:
+        ae.record_fleet_default("trusted", head="h", via="test")  # 0.24.0 mode-trusted fleet
+    assert not ae.enforced() and hq_trust_profile.current() == VERIFIED
+    unsigned = _snapshot("b" * 32, _fleet(raised))
+    ae.observe_fleet_default(unsigned, authorised=False, via="sql")
+    assert hq_trust_profile.learned() == raised
+    assert ae.trust_profile({}).name == raised
+
+
+@pytest.mark.parametrize("raised", [TRUSTED, OPEN])
+def test_signed_mode_frame_ignores_an_unsigned_raise_and_takes_a_signed_one(raised):
+    assert ae.enforced()
+    unsigned = _snapshot("b" * 32, _fleet(raised))
+    ae.observe_fleet_default(unsigned, authorised=False, via="sql")
+    assert hq_trust_profile.learned() is None and ae.trust_profile({}).name == VERIFIED
+    ae.observe_fleet_default(unsigned, authorised=True, via="sql")
+    assert hq_trust_profile.learned() == raised
+
+
+@pytest.mark.parametrize("raised", [TRUSTED, OPEN])
+def test_sql_trusted_frame_learns_an_unbound_raise(sql, monkeypatch, raised):
+    monkeypatch.setenv(ae.MODE_ENV, "trusted")
+    moved = _snapshot("b" * 32, _fleet(raised))  # a key-less publication, head not bound
+    monkeypatch.setattr(sql.authority, "load_latest_config_at", lambda *a, **k: moved)
+    snapshot, head = sql.authority.bound_config_at(sql.cursor, ("config", "cgen", HEAD_CONFIG))
+    assert snapshot is moved and head == "b" * 32
+    assert hq_trust_profile.learned() == raised
+    assert ae.trust_profile({}).name == raised
+
+
+@pytest.mark.parametrize("raised", [TRUSTED, OPEN])
+def test_sql_signed_frame_fences_the_same_unsigned_raise_and_accepts_the_signed_one(
+    sql, monkeypatch, raised
+):
+    crossref = ("config", "cgen", HEAD_CONFIG)
+    bound = _snapshot(HEAD_CONFIG, _fleet())
+    moved = _snapshot("b" * 32, _fleet(raised))
+    monkeypatch.setattr(sql.authority, "load_latest_config_at", lambda *a, **k: moved)
+
+    def tolerate(cursor, crossref, current, policies, valid_until):
+        if config_head_tolerated(bound, current, policies, valid_until=valid_until, now=NOW):
+            return bound
+        return None
+
+    monkeypatch.setattr(sql.authority, "_tolerated_bound_config", tolerate)
+    with pytest.raises(SqlRuntimeError, match="not bound"):
+        sql.authority.bound_config_at(sql.cursor, crossref, policies={}, valid_until=NOW + 60)
+    assert hq_trust_profile.learned() is None
+    signed = _snapshot(HEAD_CONFIG, _fleet(raised))  # the head the signed authority names
+    monkeypatch.setattr(sql.authority, "load_latest_config_at", lambda *a, **k: signed)
+    sql.authority.bound_config_at(sql.cursor, crossref)
+    assert hq_trust_profile.learned() == raised

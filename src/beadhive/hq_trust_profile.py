@@ -6,11 +6,14 @@
 FLEET key in the committed ``fleet.yaml``, published exactly like ``hq.default_authority_mode``
 (``bh hq authority profile-<name>``, :mod:`beadhive.hq_authority_fleet_mode`). Absent means
 ``verified``, which is 0.24.0's behaviour. A host LEARNS the profile from the config snapshots
-it verifies (:func:`beadhive.hq_authority_enforce.observe_fleet_default` calls
+it reads (:func:`beadhive.hq_authority_enforce.observe_fleet_default` calls
 :func:`observe`):
 
-* raising trust (towards ``open``) is learned only from an operator-authorised snapshot — the
-  operator-signed config commit on Git HQ, the head the signed authority is bound to on SQL HQ;
+* a frame whose authority mode is ``trusted`` honours the committed profile as-is, raises
+  included — trusted authority means unsigned content is honoured, as for every other fleet key;
+* a ``signed`` frame learns a raise (towards ``open``) only from an operator-authorised
+  snapshot — the operator-signed config commit on Git HQ, the head the signed authority is
+  bound to on SQL HQ;
 * lowering it (towards ``attested``) is always learned.
 
 On SQL HQ ``hq.trust_profile`` is in the frame-relevant set of
