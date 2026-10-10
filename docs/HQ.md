@@ -744,6 +744,7 @@ order, and prints the first that refuses with the one command to run next.
 | `capability` | capability `<name>` refused by predicate `<p>` (bh-b3ebg's per-capability decision) | per predicate, e.g. `bh host resume plan <frame>` for `not_cordoned` |
 | `placement` | not placed: names the holder and the cause (held, expired, released, none); under a self-placing trust profile, whether this frame may place itself | `bh host lease adopt <hive>` (self-placement), `bh host adopt <hive>`, or `bh hq placement show <hive>` |
 | `fence` | the in-data writer fence names another frame (cut-over hives only) | `bh host adopt <hive>` |
+| `tenure` | HQ unreachable and the elected-tenure cache's tenure lapsed for this capability (`publish` and `place` always; `author` / `claim` outside `open` and `trusted`) | `bh doctor` |
 
 `--capability` (`-c`) picks `author`, `claim`, `execute` or `publish` (the default). `--json`
 emits the same decision structurally: `allowed`, `layer`, `code`, `summary`, `command`,
@@ -755,7 +756,10 @@ config nor HQ. Later layers (frame-ref merge conflicts, trust-profile overrides)
 
 When memory or tmpfs pressure makes HQ SQL unavailable, HQ-backed commands fail with
 `SqlConfigError: verified HQ config connection unavailable` — including `bh worktree rm` and
-`bh worktree prune`, the very commands that would free the space. The **first-line procedure**
+`bh worktree prune`, the very commands that would free the space. (Since bh-ofszz a SQL-HQ host
+with the elected-tenure cache first serves its cached snapshot within tenure, retries a
+transient reader failure with bounded backoff, and names the reader endpoint and the attempts
+when it does fail; see `hq.tenure_cache` in [CONFIGURATION](CONFIGURATION.md).) The **first-line procedure**
 is the HQ-independent, fail-closed reclaimer:
 
 ```sh
