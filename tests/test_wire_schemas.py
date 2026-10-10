@@ -218,6 +218,98 @@ def test_catalog_allows_only_reviewed_optional_release_provision_inputs(mutation
     assert bool(errors) == (mutation is not None)
 
 
+@pytest.mark.parametrize("operation_name", ["worktree.status", "worktree.prune"])
+@pytest.mark.parametrize(
+    "mutation",
+    [None, "required", "privilege", "type", "items", "extra", "legacy", "other", "operation"],
+)
+def test_catalog_allows_only_reviewed_local_safe_recovery_inputs(operation_name, mutation):
+    from beadhive.operation_catalog import document
+
+    old = json.loads((WIRE.parent / "v2.7.0" / "operation-catalog-v1.json").read_text())
+    candidate = deepcopy(old)
+    changed = _operation(candidate, operation_name)
+    live = _operation(document(), operation_name)
+    changed["parameters"] = deepcopy(live["parameters"])
+    changed["surfaces"]["cli"]["parameters"] = deepcopy(live["surfaces"]["cli"]["parameters"])
+    parameters = {item["name"]: item for item in changed["parameters"]}
+    if mutation == "required":
+        parameters["local_safe"]["required"] = True
+    elif mutation == "privilege":
+        parameters["local_safe"]["privilege"] = "operator"
+    elif mutation == "type":
+        parameters["local_safe"]["schema"] = {"type": "string"}
+    elif mutation == "items":
+        parameters["root"]["schema"]["items"] = {"type": "string"}
+    elif mutation == "extra":
+        parameters["root"]["schema"]["maxItems"] = 1
+    elif mutation == "legacy":
+        parameters["hive"]["schema"] = {"type": "array", "items": {}}
+    elif mutation == "other":
+        _append_string_param(candidate, operation_name, "unreviewed")
+    elif mutation == "operation":
+        _append_string_param(candidate, "host.provision", "targets_from")
+    assert bool(catalog_compatibility_errors(old, candidate)) == (mutation is not None)
+
+
+@pytest.mark.parametrize("mutation", ["order", "cli_order", "privilege", "required"])
+def test_local_safe_exception_preserves_existing_status_arguments(mutation):
+    old = _catalog()
+    candidate = deepcopy(old)
+    changed = _operation(candidate, "worktree.status")
+    if mutation == "order":
+        changed["parameters"][0], changed["parameters"][1] = (
+            changed["parameters"][1],
+            changed["parameters"][0],
+        )
+    elif mutation == "cli_order":
+        changed["surfaces"]["cli"]["parameters"][:2] = ["as_json", "hive"]
+    elif mutation == "privilege":
+        changed["parameters"][0]["privilege"] = "operator"
+    elif mutation == "required":
+        changed["parameters"][0]["required"] = True
+    assert catalog_compatibility_errors(old, candidate)
+
+
+def test_local_safe_json_preserves_ordinary_prune_progress_contract():
+    from beadhive.operation_catalog import document
+
+    baseline = json.loads((WIRE.parent / "v2.7.0" / "operation-catalog-v1.json").read_text())
+    published = _operation(baseline, "worktree.prune")["surfaces"]["cli"]
+    live = _operation(document(), "worktree.prune")["surfaces"]["cli"]
+    assert live["progress"] == published["progress"]
+    assert live["aliases"][0]["progress"] == published["aliases"][0]["progress"]
+
+
+@pytest.mark.parametrize("operation_name", ["worktree.status", "worktree.prune"])
+@pytest.mark.parametrize("mutation", [None, "other", "legacy", "path", "progress"])
+def test_local_safe_exception_preserves_published_short_alias(operation_name, mutation):
+    from beadhive.operation_catalog import document
+
+    old = json.loads((WIRE.parent / "v2.7.0" / "operation-catalog-v1.json").read_text())
+    candidate = document()
+    alias = _operation(candidate, operation_name)["surfaces"]["cli"]["aliases"][0]
+    if mutation == "other":
+        alias["parameters"].append("unreviewed")
+    elif mutation == "legacy":
+        alias["parameters"].remove("hive")
+    elif mutation == "path":
+        alias["path"] = "wt recovery"
+    elif mutation == "progress":
+        alias["progress"]["mode"] = "none"
+    assert bool(catalog_compatibility_errors(old, candidate)) == (mutation is not None)
+
+
+def test_local_safe_exception_rejects_reordering_existing_short_status_arguments():
+    from beadhive.operation_catalog import document
+
+    old = json.loads((WIRE.parent / "v2.7.0" / "operation-catalog-v1.json").read_text())
+    candidate = document()
+    alias = _operation(candidate, "worktree.status")["surfaces"]["cli"]["aliases"][0]
+    alias["parameters"][:2] = ["as_json", "hive"]
+    assert catalog_compatibility_errors(old, candidate)
+
+
 def test_catalog_compatibility_rejects_duplicate_operation_and_projection_identities() -> None:
     old = _catalog()
     duplicate_operation = deepcopy(old)

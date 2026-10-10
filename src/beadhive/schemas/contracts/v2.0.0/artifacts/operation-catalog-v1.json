@@ -18050,6 +18050,65 @@
           "schema": {
             "type": "string"
           }
+        },
+        {
+          "name": "local_safe",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "root",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "items": {},
+            "type": "array"
+          }
+        },
+        {
+          "name": "repo",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "items": {},
+            "type": "array"
+          }
+        },
+        {
+          "name": "base",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "items": {},
+            "type": "array"
+          }
+        },
+        {
+          "name": "targets_from",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "dry_run",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "as_json",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
         }
       ],
       "privilege": "ordinary-mutation",
@@ -18075,7 +18134,14 @@
               "parameter_defaults": {},
               "parameter_map": {},
               "parameters": [
-                "hive"
+                "hive",
+                "local_safe",
+                "root",
+                "repo",
+                "base",
+                "targets_from",
+                "dry_run",
+                "as_json"
               ],
               "path": "wt prune",
               "progress": {
@@ -18100,7 +18166,14 @@
           },
           "parameter_map": {},
           "parameters": [
-            "hive"
+            "hive",
+            "local_safe",
+            "root",
+            "repo",
+            "base",
+            "targets_from",
+            "dry_run",
+            "as_json"
           ],
           "path": "worktree prune",
           "progress": {
@@ -18377,6 +18450,49 @@
           "schema": {
             "type": "boolean"
           }
+        },
+        {
+          "name": "local_safe",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "root",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "items": {},
+            "type": "array"
+          }
+        },
+        {
+          "name": "repo",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "items": {},
+            "type": "array"
+          }
+        },
+        {
+          "name": "base",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "items": {},
+            "type": "array"
+          }
+        },
+        {
+          "name": "targets_from",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
         }
       ],
       "privilege": "unprivileged-read",
@@ -18403,7 +18519,12 @@
               "parameter_map": {},
               "parameters": [
                 "hive",
-                "as_json"
+                "as_json",
+                "local_safe",
+                "root",
+                "repo",
+                "base",
+                "targets_from"
               ],
               "path": "wt status",
               "progress": {
@@ -18429,7 +18550,12 @@
           "parameter_map": {},
           "parameters": [
             "hive",
-            "as_json"
+            "as_json",
+            "local_safe",
+            "root",
+            "repo",
+            "base",
+            "targets_from"
           ],
           "path": "worktree status",
           "progress": {

@@ -278,10 +278,10 @@ worktree local-reclaim|paths:string:o,root:array:o,repo:array:o,targets_from:str
 worktree mark-abandoned|ref:string:r,reason:string:r,retained_for:string:o,superseded_by:string:o,hive:string:o
 worktree mark-landed|ref:string:r,hive:string:o
 worktree path|ref:string:o,bead:string:o,hive:string:o
-worktree prune|hive:string:o
+worktree prune|hive:string:o,local_safe:boolean:o,root:array:o,repo:array:o,base:array:o,targets_from:string:o,dry_run:boolean:o,as_json:boolean:o
 worktree rebind|ref:string:o,bead:string:o,hive:string:o,session:string:o,as_json:boolean:o
 worktree rm|ref:string:o,bead:string:o,hive:string:o,force:boolean:o,as_json:boolean:o
-worktree status|hive:string:o,as_json:boolean:o
+worktree status|hive:string:o,as_json:boolean:o,local_safe:boolean:o,root:array:o,repo:array:o,base:array:o,targets_from:string:o
 """.strip()
 
 _READ_PATHS = {
@@ -787,7 +787,10 @@ def _cli_granularity(path: str, *, alias_reason: str | None = None) -> dict[str,
 
 
 def _cli_progress(path: str, parameters: list[ParameterSpec]) -> dict[str, Any]:
-    if any(parameter.name == "as_json" for parameter in parameters):
+    # Prune's optional JSON result requires the local-safe recovery route;
+    # ordinary prune retains its published human progress contract.
+    recovery_prune = path in {"worktree prune", "wt prune"}
+    if not recovery_prune and any(parameter.name == "as_json" for parameter in parameters):
         return {
             "mode": "structured",
             "notification_uris": [],

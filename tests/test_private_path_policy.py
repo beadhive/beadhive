@@ -474,7 +474,11 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     | _owned("doctor.py", "_scan", ".git")
     | _owned("worktree_cleanup.py", "impl_live_worktree_dirs", ".git")
     | _owned("worktree_local_reclaim.py", "discover_roots", ".git")
+    | _owned("worktree_local_reclaim.py", "_check_local_nodes", ".git")
     | _owned("worktree_local_reclaim.py", "_default_roots", ".beadhive")
+    # Recovery reads existing disposable caches and pre-migration claim markers only.
+    | _owned("worktree_local_reclaim.py", "_check_clean", ".venv")
+    | _owned("worktree_local_reclaim.py", "_check_claim", "bh-claim.json")
     | _owned("doctor.py", "_channel_drift_warnings", ".git")
     | _owned("doctor.py", "_hq_ahead_warnings", ".git")
     | _owned("guard.py", "primary_state", ".git")
