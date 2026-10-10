@@ -52,7 +52,22 @@ def test_dependency_ledger_records_indirect_adapter_patch_points_exactly():
     points = ledger["current"]["config_patch_points"]
 
     assert ledger["schema_version"] == 2
-    assert ledger["current"]["config_patch_point_count"] == 335
+    assert ledger["current"]["config_patch_point_count"] == 338
+    provisioning_patches = {
+        (point["line"], point["target"], point["facade_target"], point["kind"])
+        for point in points
+        if point["path"] == "tests/test_hq_sql_provision_history_int.py"
+    }
+    assert provisioning_patches == {
+        (997, "beadhive.config.load", "beadhive.config.load", "direct-facade"),
+        (998, "beadhive.config.hq_dir", "beadhive.config.hq_dir", "direct-facade"),
+        (
+            999,
+            "beadhive.config.fleet_sql_selected",
+            "beadhive.config.fleet_sql_selected",
+            "direct-facade",
+        ),
+    }
     eligibility_host_patches = {
         point["line"]
         for point in points

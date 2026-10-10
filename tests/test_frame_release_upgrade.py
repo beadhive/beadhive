@@ -445,6 +445,13 @@ def test_active_apply_check_and_replay_through_the_verb(fixture):
     published = []
 
     class Operator:
+        authority = SimpleNamespace(fresh_runtime_head_fence=lambda *args, **kwargs: None)
+
+        def describe_release_route(self, principal, epoch, frame, **kwargs):
+            from beadhive.hq_sql_runtime_schema import inbox_table
+
+            return {"principal": principal, "inbox_table": inbox_table(principal, epoch)}
+
         def load(self, **kwargs):
             return ("next-head" if published else "runtime-head"), fixture.state, (), {}
 
@@ -630,6 +637,13 @@ def test_apply_requires_reviewed_plan_and_replay_cannot_rotate_again(fixture):
     published = []
 
     class Operator:
+        authority = SimpleNamespace(fresh_runtime_head_fence=lambda *args, **kwargs: None)
+
+        def describe_release_route(self, principal, epoch, frame, **kwargs):
+            from beadhive.hq_sql_runtime_schema import inbox_table
+
+            return {"principal": principal, "inbox_table": inbox_table(principal, epoch)}
+
         def load(self, **kwargs):
             return "runtime-head", fixture.state, (), {}
 
@@ -921,3 +935,49 @@ def test_upgrade_keeps_long_authority_and_floors_short_at_one_hour(fixture, expi
     state, _digest = prepare(fixture)
     assert state["expires_at"] == expected
     assert state["revision"] == fixture.state["revision"] + 1
+
+
+@pytest.mark.parametrize(
+    "alteration",
+    [
+        "extra",
+        "missing",
+        "expired",
+        "too_long",
+        "nonfinite",
+        "profile",
+        "config_revision",
+        "config_expired",
+    ],
+)
+def test_config_preparation_refuses_unreviewed_or_expired_inputs(fixture, alteration):
+    request = copy.deepcopy(fixture.request)
+    snapshot = fixture.snapshot
+    if alteration == "extra":
+        request["unreviewed"] = True
+    elif alteration == "missing":
+        request.pop("expires_at")
+    elif alteration == "expired":
+        request["expires_at"] = 1000
+    elif alteration == "too_long":
+        request["expires_at"] = 1000 + 86401
+    elif alteration == "nonfinite":
+        request["expires_at"] = float("nan")
+    elif alteration in {"profile", "config_revision"}:
+        request[alteration] = " "
+    else:
+        from dataclasses import replace
+
+        snapshot = replace(snapshot, valid_until=1000)
+    with pytest.raises(ValueError):
+        upgrade.prepare_config(
+            None,
+            None,
+            "frame",
+            "runtime-head",
+            fixture.state,
+            snapshot,
+            request,
+            now=1000,
+            deadline=100000000000,
+        )

@@ -187,12 +187,41 @@ printf 'check exit: %s\n' "$?"
 Require all successful commands to exit 0, including shutdown after JSON
 output. Verify the new revision and exactly one epoch advance, active admission,
 unchanged frame/host/instance/key/beadyard identity, target release digest, and
-the archive's exact reviewed plan digest. Renew the existing frame session and
-conformance through the public CLI; verify the hive retains its holder and lease
-epoch without re-adoption.
+the archive's exact reviewed plan digest.
 
-After normal release activation has renewed the factory's existing session and
-published its conformance evidence, run these **on the factory frame**. The
+Activate the reviewed principal **on the existing factory frame** using the
+[public credential activation procedure](../design/frame-release-upgrade-runbook.md#activate-the-reviewed-frame-credentials-through-the-public-cli).
+Read the complete HOST `hq.sql` subtree with `bh config get hq.sql --scope host`.
+Store the provisioned password under new approved Fnox keys through the existing
+config/profile/provider and its hidden prompt or stdin workflow; retain the old
+entries until cutover is verified. Review a complete copy of the SQL subtree that
+changes only `runtime.user`, `reader.user`, and each binding's credential key to
+the exact principal returned by provision/apply/check. Preserve every endpoint,
+database, TLS pin, backend identity, generation, initial revision, operator key,
+floor path, and all other SQL settings and HOST identity fields. Apply the
+reviewed JSON with the public `bh config set hq.sql` command as documented in that
+procedure, then read it back through `bh config get`.
+
+Set `FACTORY_PYTHON` to the published 0.24.3 interpreter used by the factory.
+Renew its existing session and publish conformance through these documented
+module CLI entrypoints:
+
+```bash
+"$FACTORY_PYTHON" -m beadhive.heartbeat_sender renew
+"$FACTORY_PYTHON" -m beadhive.heartbeat_sender conformance
+"$FACTORY_PYTHON" -m beadhive.heartbeat_sender status
+```
+
+Require successful exits, renewal naming the reviewed new session table, and
+fresh conformant evidence for the exact target digest. If background units retain
+the old interpreter, use the published interpreter's
+`-m beadhive.heartbeat_sender units --install` and reload the existing
+systemd/launchd manager through its normal supported workflow. If the daemon
+retains old settings, use its existing public `bh host daemon stop` /
+`bh host daemon start` commands and configured supervisor. Keep the existing
+frame identity and hive adoption intact.
+
+After successful activation, run these **on the factory frame**. The
 normal authorized push-only hive synchronization exercises the managed writer
 fence; it creates no test claim or lease. Keep its normal dirty/blocked checks,
 and do not pass `--force`:
