@@ -50,9 +50,11 @@ renewal. No other module calls `guard_primary` or `require_intake`.
 stale, whose release or conformance drifted, or whose capacity or dispatch is off can still
 author and claim while `execute` and `publish` refuse. A decision that short-circuited before
 evaluating every predicate (authority unavailable, a foreign beadyard pin) is never narrowed.
-Where the write may land is unchanged: under today's `fenced` write policy every capability
-still needs the hive's writer (`bh_writer` on a cut-over hive, the hive lease otherwise), and a
-forwarded checkout is still decided by its marker.
+Where the write may land is the hive's write policy (`bh-sxhnq`, [HQ](../HQ.md#write-policies)):
+under `fenced` every capability still needs the hive's writer (`bh_writer` on a cut-over hive,
+the hive lease otherwise); under `forward` a forwarded checkout is decided by its marker; under
+`open` a non-writer may `author` and `claim` on its own replica, while `execute` and `publish`
+still need the writer.
 
 `bh host eligible --json` adds a `capabilities` object with one entry per capability:
 `allowed`, the `predicates` consulted, `reason`, and under `deferred` the predicates another
