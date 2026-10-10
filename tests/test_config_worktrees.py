@@ -8,6 +8,8 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from beadhive import config, config_paths, config_schema, toolchain
 
 
@@ -124,6 +126,19 @@ def test_statfs_type_reads_a_real_filesystem_and_walks_up_missing_paths(tmp_path
     real = config.statfs_type(tmp_path)
     assert real is None or isinstance(real, int)
     assert config.statfs_type(tmp_path / "does" / "not" / "exist") == real
+
+
+@pytest.mark.parametrize("platform", ["darwin", "freebsd14", "win32"])
+def test_statfs_type_never_calls_a_foreign_native_abi(monkeypatch, tmp_path, platform):
+    import ctypes
+
+    def native_load_forbidden(*args, **kwargs):
+        raise AssertionError("Linux statfs probe must not load another platform's libc")
+
+    monkeypatch.setattr(config_paths.sys, "platform", platform)
+    monkeypatch.setattr(ctypes, "CDLL", native_load_forbidden)
+    assert config.statfs_type(tmp_path / "does" / "not" / "exist") is None
+    assert config.is_memory_backed(tmp_path) is False
 
 
 def test_do_add_refuses_a_ram_backed_root_before_creating_anything(monkeypatch, tmp_path):
