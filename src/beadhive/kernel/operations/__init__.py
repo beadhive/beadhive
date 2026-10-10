@@ -278,10 +278,10 @@ worktree local-reclaim|paths:string:o,root:array:o,repo:array:o,targets_from:str
 worktree mark-abandoned|ref:string:r,reason:string:r,retained_for:string:o,superseded_by:string:o,hive:string:o
 worktree mark-landed|ref:string:r,hive:string:o
 worktree path|ref:string:o,bead:string:o,hive:string:o
-worktree prune|hive:string:o
+worktree prune|hive:string:o,local_safe:boolean:o,root:array:o,repo:array:o,base:array:o,targets_from:string:o,dry_run:boolean:o,as_json:boolean:o
 worktree rebind|ref:string:o,bead:string:o,hive:string:o,session:string:o,as_json:boolean:o
 worktree rm|ref:string:o,bead:string:o,hive:string:o,force:boolean:o,as_json:boolean:o
-worktree status|hive:string:o,as_json:boolean:o
+worktree status|hive:string:o,as_json:boolean:o,local_safe:boolean:o,root:array:o,repo:array:o,base:array:o,targets_from:string:o
 """.strip()
 
 _READ_PATHS = {

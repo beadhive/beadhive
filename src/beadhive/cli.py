@@ -3602,18 +3602,60 @@ def wt_rebind(
 )
 def wt_status(
     hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive or all hives)"),
-    as_json: bool = typer.Option(False, "--json", help="emit JSON array of WtStatus records"),
+    as_json: bool = typer.Option(
+        False, "--json", help="emit JSON; local-safe uses a measured report"
+    ),
+    local_safe: bool = typer.Option(False, "--local-safe", help="local proof only; never read HQ"),
+    root: list[str] | None = typer.Option(None, "--root", help="local-safe worktree roots"),  # noqa: B008
+    repo: list[str] | None = typer.Option(None, "--repo", help="local-safe Git repositories"),  # noqa: B008
+    base: list[str] | None = typer.Option(None, "--base", help="local-safe landing base refs"),  # noqa: B008
+    targets_from: str = typer.Option("", "--targets-from", help="local-safe candidate file"),
 ):
+    if local_safe:
+        _wt_local_safe("status", hive, root, repo, base, targets_from, True, as_json)
+        return
+    if root or repo or base or targets_from:
+        raise typer.BadParameter("recovery options require --local-safe")
     from . import worktree
 
     worktree.status_cmd(hive=hive, as_json=as_json)
 
 
-@wt_app.command("prune", help="remove SAFE managed worktrees (or one hive's) + prune admin files.")
-def wt_prune(hive: str = typer.Option("", "--hive", help="limit to one hive")):
+@wt_app.command("prune", help="remove SAFE managed worktrees; --local-safe works without HQ.")
+def wt_prune(
+    hive: str = typer.Option("", "--hive", help="limit to one hive"),
+    local_safe: bool = typer.Option(False, "--local-safe", help="local proof only; never read HQ"),
+    root: list[str] | None = typer.Option(None, "--root", help="local-safe worktree roots"),  # noqa: B008
+    repo: list[str] | None = typer.Option(None, "--repo", help="local-safe Git repositories"),  # noqa: B008
+    base: list[str] | None = typer.Option(None, "--base", help="local-safe landing base refs"),  # noqa: B008
+    targets_from: str = typer.Option("", "--targets-from", help="local-safe candidate file"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="local-safe preview; remove nothing"),
+    as_json: bool = typer.Option(False, "--json", help="local-safe measured JSON report"),
+):
+    if local_safe:
+        _wt_local_safe("prune", hive, root, repo, base, targets_from, dry_run, as_json)
+        return
+    if root or repo or base or targets_from or dry_run or as_json:
+        raise typer.BadParameter("recovery options require --local-safe")
     from . import worktree
 
     worktree.prune(hive=hive)
+
+
+def _wt_local_safe(mode, hive, roots, repos, bases, targets_from, dry_run, as_json):
+    if hive:
+        raise typer.BadParameter("--local-safe uses --root/--repo paths; --hive needs HQ")
+    from . import worktree_local_reclaim
+
+    argv = [
+        *(arg for value in roots or [] for arg in ("--root", value)),
+        *(arg for value in repos or [] for arg in ("--repo", value)),
+        *(arg for value in bases or [] for arg in ("--base", value)),
+        *(["--targets-from", targets_from] if targets_from else []),
+        *(["--dry-run"] if dry_run else []),
+        *(["--json"] if as_json else []),
+    ]
+    raise typer.Exit(worktree_local_reclaim.main(argv, mode=mode))
 
 
 @wt_app.command(

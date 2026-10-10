@@ -14,14 +14,16 @@ the following hold; anything else is kept and reported with a reason code (fail 
 
 * it is a registered linked worktree of its repository (never the main worktree);
 * the Git worktree lock is absent;
-* ``git status`` shows no tracked changes and no non-ignored untracked files;
+* no tracked changes, non-ignored untracked files, or ignored precious content (only regular
+  ignored files and non-followed leaf links under the disposable `.venv` cache are exempt);
 * no merge/rebase/cherry-pick/revert/bisect is in progress and no ``index.lock`` exists;
-* no live bh validation marker names it;
+* no live bh validation marker or local presenter binding names it;
 * no readable local process has its cwd, root or an open file inside it (an incomplete scan
   of this user's processes keeps every target);
 * its HEAD is provably landed: reachable from a local base ref (``main``/``master`` or their
   ``origin/`` twins, or ``--base``) but NOT on that base's first-parent chain — i.e. it holds
-  commits that were merged. A fresh seat whose HEAD still sits on the base line is ambiguous
+  commits that were merged; its HEAD is also reachable from a persisted origin tracking ref.
+  A fresh seat whose HEAD still sits on the base line is ambiguous
   (it may be about to be used) and is kept.
 
 Removal goes through ``git worktree remove`` without ``--force`` so Git re-checks cleanliness
@@ -34,16 +36,18 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TextIO
 
 SCHEMA = "bh.worktree.local-reclaim/v1"
-GIT_TIMEOUT_SECONDS = 60
+GIT_TIMEOUT_SECONDS = 5
 MEMORY_BACKED_FSTYPES = frozenset({"tmpfs", "ramfs"})
 DEFAULT_BASE_REFS = ("main", "master", "origin/main", "origin/master")
 IN_PROGRESS_MARKERS = (
@@ -80,11 +84,9 @@ class ProcessScan:
     """Paths held by local processes: ``(pid, path)`` for cwd/root/open files.
 
     ``complete`` is False when the process table could not be walked or a process owned by this
-    user failed to read for a reason other than a kernel access refusal: the caller must then
-    keep every target. ``opaque`` lists ``(pid, comm)`` of this user's processes the kernel
-    refused to expose — non-dumpable session managers such as ``sshd-session``,
-    ``systemd --user`` and ``(sd-pam)``, which never run inside a worktree. They are reported
-    and, under ``--strict-process-scan``, keep every target as well."""
+    user failed to read: the caller must then keep every target. ``opaque`` lists
+    ``(pid, comm)`` of this user's processes the kernel refused to expose. These also
+    keep every target; a process name is not evidence of inactive ownership."""
 
     holders: tuple[tuple[int, str], ...]
     complete: bool
@@ -162,8 +164,16 @@ def _real_process_scan() -> ProcessScan:
         base = proc / entry
         try:
             owner = base.stat().st_uid
-        except OSError:
+        except (FileNotFoundError, ProcessLookupError):
             continue  # exited mid-scan
+        except OSError:
+            return ProcessScan(
+                tuple(holders),
+                False,
+                f"cannot inspect process ownership for {pid}",
+                unreadable_foreign,
+                tuple(opaque),
+            )
         links: list[str] = []
         try:
             for name in ("cwd", "root"):
@@ -228,14 +238,48 @@ def _real_statvfs(path: str) -> tuple[int, int, int]:
     return total, used, st.f_bavail * st.f_frsize
 
 
+def _real_memory_available() -> int | None:
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def _read_local_json(path: str) -> dict:
+    """Bounded regular-file read: neither a FIFO nor a symlink can block/redirect recovery."""
+    if os.path.realpath(path) != os.path.abspath(path):
+        raise ValueError("lifecycle path contains a symlink")
+    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 512 * 1024:
+            raise ValueError("lifecycle metadata is not a bounded regular file")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            raw = stream.read(512 * 1024 + 1)
+        if len(raw) > 512 * 1024:
+            raise ValueError("lifecycle metadata grew past the read bound")
+        value = json.loads(raw)
+        if not isinstance(value, dict):
+            raise ValueError("lifecycle metadata must be an object")
+        return value
+    finally:
+        os.close(descriptor)
+
+
 def _real_disk_usage(path: str) -> int | None:
-    """Allocated bytes under *path*: ``du``-like, no symlink follow, one device, hardlinks once."""
+    """Exclusive allocated bytes: no symlink follow, no sparse logical-size overcount.
+
+    Hardlinked files count only if every link is inside this tree; deleting an external
+    package-cache link does not free that file's allocation.
+    """
     try:
         top = os.lstat(path)
     except OSError:
         return None
-    seen: set[tuple[int, int]] = set()
-    total = 0
+    allocations: dict[tuple[int, int], list[int]] = {}
     stack = [path]
     while stack:
         current = stack.pop()
@@ -243,17 +287,25 @@ def _real_disk_usage(path: str) -> int | None:
             st = os.lstat(current)
         except OSError:
             continue
-        if st.st_dev != top.st_dev or (st.st_dev, st.st_ino) in seen:
+        if st.st_dev != top.st_dev:
             continue
-        seen.add((st.st_dev, st.st_ino))
-        total += getattr(st, "st_blocks", 0) * 512 or st.st_size
-        if os.path.isdir(current) and not os.path.islink(current):
+        key = (st.st_dev, st.st_ino)
+        if key in allocations:
+            allocations[key][2] += 1
+            continue
+        directory = stat.S_ISDIR(st.st_mode)
+        allocations[key] = [
+            st.st_blocks * 512 if hasattr(st, "st_blocks") else st.st_size,
+            1 if directory else st.st_nlink,
+            1,
+        ]
+        if directory:
             try:
                 with os.scandir(current) as it:
                     stack.extend(child.path for child in it)
             except OSError:
                 continue
-    return total
+    return sum(size for size, links, observed in allocations.values() if observed >= links)
 
 
 @dataclass
@@ -267,6 +319,7 @@ class LocalReclaimPorts:
     disk_usage: Callable[[str], int | None] = _real_disk_usage
     exists: Callable[[str], bool] = os.path.exists
     realpath: Callable[[str], str] = os.path.realpath
+    memory_available: Callable[[], int | None] = _real_memory_available
 
 
 def _default_ports() -> LocalReclaimPorts:
@@ -397,7 +450,10 @@ class LocalReclaimer:
     def discover_roots(self, roots: Iterable[str]) -> list[str]:
         found: list[str] = []
         for root in roots:
-            real = self.ports.realpath(root)
+            real = os.path.abspath(os.path.expanduser(root))
+            if self.ports.realpath(real) != real:
+                found.append(real)
+                continue
             if not os.path.isdir(real):
                 continue
             stack = [(real, 0)]
@@ -425,6 +481,9 @@ class LocalReclaimer:
         stale: list[str] = []
         for repo_path in repos:
             real = self.ports.realpath(repo_path)
+            if real != os.path.abspath(os.path.expanduser(repo_path)):
+                targets.append(os.path.abspath(os.path.expanduser(repo_path)))
+                continue
             common = self._common_dir(real)
             repo = self._repo(common, real) if common else None
             if repo is None:
@@ -440,8 +499,10 @@ class LocalReclaimer:
     # -- classification --
 
     def classify(self, raw_path: str, scan: ProcessScan) -> TargetResult:
-        path = self.ports.realpath(raw_path)
+        path = os.path.abspath(os.path.expanduser(raw_path))
         result = TargetResult(path=path)
+        if self.ports.realpath(path) != path:
+            return result.keep("unsafe_link", "target or parent is a symlink")
         if not self.ports.exists(path):
             return result.keep("missing", "target directory does not exist")
         common = self._common_dir(path)
@@ -460,7 +521,10 @@ class LocalReclaimer:
         if record.locked:
             result.keep("locked", "git worktree is locked")
         self._check_clean(path, result)
+        self._check_local_nodes(path, result)
         self._check_in_progress(path, result)
+        self._check_bindings(path, result)
+        self._check_claim(common, path, result)
         self._check_validation_marker(common, path, result)
         self._check_holders(path, scan, result)
         self._check_landed(repo, record, result)
@@ -469,6 +533,9 @@ class LocalReclaimer:
         return result
 
     def _check_clean(self, path: str, result: TargetResult) -> None:
+        if os.path.islink(os.path.join(path, ".venv")):
+            result.keep("unsafe_link", "disposable cache root is a symlink")
+            return
         res = self._git(
             ["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"],
             path,
@@ -478,6 +545,81 @@ class LocalReclaimer:
         elif res.stdout.strip():
             count = len(res.stdout.strip().splitlines())
             result.keep("dirty", f"{count} tracked/untracked change(s)")
+        ignored = self._git(["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], path)
+        if ignored.returncode != 0:
+            result.keep("ambiguous", "could not inspect ignored content")
+            return
+        for relative in ignored.stdout.split("\0"):
+            if not relative:
+                continue
+            parts = Path(relative).parts
+            if parts and parts[0] == ".venv" and os.path.islink(os.path.join(path, ".venv")):
+                result.keep("unsafe_link", "disposable cache root is a symlink")
+                return
+            if len(parts) < 2 or parts[0] != ".venv" or ".." in parts:
+                result.keep(
+                    "ignored_precious",
+                    f"ignored content is not a disposable .venv cache: {relative}",
+                )
+                return
+            if any(os.path.islink(os.path.join(path, *parts[:i])) for i in range(1, len(parts))):
+                result.keep("unsafe_link", f"ignored cache contains a symlink: {relative}")
+                return
+
+    def _check_bindings(self, path: str, result: TargetResult) -> None:
+        bound = self._git(["config", "--get-regexp", r"^beadhive\.binding(session)?\."], path)
+        if bound.returncode == 0 and bound.stdout.strip():
+            result.keep(
+                "ownership_unknown",
+                "presenter binding exists; local removal cannot prove it inactive",
+            )
+        elif bound.returncode not in (0, 1):
+            result.keep(
+                "ambiguous",
+                f"could not inspect local ownership bindings: {bound.returncode} "
+                f"{bound.stderr.strip()[:200]}",
+            )
+
+    def _check_local_nodes(self, path: str, result: TargetResult) -> None:
+        """Git omits FIFOs/sockets/devices even from ignored discovery; inspect without reads."""
+        mounts = self.ports.mounts()
+        if not mounts:
+            result.keep("ambiguous", "mount inventory unavailable")
+            return
+        if any(point.startswith(path.rstrip(os.sep) + os.sep) for point, _kind in mounts):
+            result.keep("unsafe_link", "nested mount is not disposable worktree content")
+            return
+        deadline = time.monotonic() + GIT_TIMEOUT_SECONDS
+        examined = 0
+
+        def unreadable(error):
+            raise error
+
+        try:
+            device = os.lstat(path).st_dev
+            for directory, dirs, files in os.walk(path, followlinks=False, onerror=unreadable):
+                if directory != path and ".git" in (*dirs, *files):
+                    result.keep("ownership_unknown", "nested Git repository ownership is unproven")
+                    return
+                for name in (*dirs, *files):
+                    examined += 1
+                    if examined > 100_000 or time.monotonic() > deadline:
+                        result.keep("ambiguous", "local node inventory exceeded its resource bound")
+                        return
+                    node = os.path.join(directory, name)
+                    info = os.lstat(node)
+                    if info.st_dev != device:
+                        result.keep("unsafe_link", "local node inventory crosses a mount boundary")
+                        return
+                    if not (
+                        stat.S_ISDIR(info.st_mode)
+                        or stat.S_ISREG(info.st_mode)
+                        or stat.S_ISLNK(info.st_mode)
+                    ):
+                        result.keep("ignored_precious", "special filesystem node: " + node)
+                        return
+        except OSError:
+            result.keep("ambiguous", "local node inventory unreadable")
 
     def _check_in_progress(self, path: str, result: TargetResult) -> None:
         git_dir = self._git_dir(path)
@@ -488,18 +630,117 @@ class LocalReclaimer:
         if present:
             result.keep("in_progress", "in-progress git operation: " + ", ".join(present))
 
+    def _check_claim(self, common: str, path: str, result: TargetResult) -> None:
+        """Local claim evidence is an ownership veto; never expire or rewrite it."""
+        token = self._git(["config", "--get", "beadhive.claimIncarnation"], path)
+        if token.returncode == 0:
+            result.keep(
+                "ownership_unknown", "claim incarnation exists; inactive ownership is unproven"
+            )
+            return
+        if token.returncode != 1:
+            result.keep("ambiguous", "could not inspect local claim incarnation")
+            return
+        admin = self._git_dir(path)
+        if admin is None:
+            result.keep("ambiguous", "could not resolve claim administration directory")
+            return
+        if os.path.lexists(os.path.join(admin, "bh-claim.json")):
+            result.keep("ownership_unknown", "legacy claim record exists")
+            return
+        # A missing token with an extant central record is torn/ambiguous local evidence.
+        # The current format is bh/worktrees/<admin-leaf>-<incarnation>/claim.json.
+        root = os.path.join(common, "bh", "worktrees")
+        leaf = os.path.basename(admin)
+        try:
+            if self.ports.realpath(root) != os.path.abspath(root):
+                raise OSError("claim root is a symlink")
+            with os.scandir(root) as entries:
+                for number, entry in enumerate(entries):
+                    if number >= 1000:
+                        raise OSError("claim inventory exceeds bounded local scan")
+                    if entry.name == leaf or entry.name.startswith(leaf + "-"):
+                        if not entry.is_dir(follow_symlinks=False):
+                            raise OSError("matching claim directory is special or symlinked")
+                        # Probe readability instead of converting an access refusal into absence.
+                        with os.scandir(entry.path) as contents:
+                            for index, _child in enumerate(contents):
+                                if index >= 1000:
+                                    raise OSError("claim directory exceeds bounded local scan")
+                        if os.path.lexists(os.path.join(entry.path, "claim.json")):
+                            result.keep(
+                                "ownership_unknown",
+                                "central claim record exists without an incarnation",
+                            )
+                            return
+        except FileNotFoundError:
+            pass
+        except OSError:
+            result.keep("ambiguous", "could not inspect central claim records")
+
     def _check_validation_marker(self, common: str, path: str, result: TargetResult) -> None:
-        marker = os.path.join(common, VALIDATION_ACTIVE_DIR, f"{os.path.basename(path)}.json")
-        if self.ports.exists(marker):
-            result.keep("validation_active", f"bh validation marker present: {marker}")
+        active = os.path.join(common, VALIDATION_ACTIVE_DIR)
+        for marker in (
+            os.path.join(active, f"{os.path.basename(path)}.json"),
+            os.path.join(path, ".bh-verify.json"),
+        ):
+            if os.path.lexists(marker):
+                result.keep("validation_active", f"bh validation marker present: {marker}")
+                return
+        try:
+            if self.ports.realpath(active) != os.path.abspath(active):
+                raise ValueError("validation root is a symlink")
+            with os.scandir(active) as entries:
+                for number, entry in enumerate(entries):
+                    if number >= 1000:
+                        raise ValueError("validation inventory exceeds bounded local scan")
+                    if not entry.name.startswith("run-") or not entry.name.endswith(".json"):
+                        continue
+                    pointer = _read_local_json(entry.path)
+                    run_id = pointer.get("run_id")
+                    if (
+                        not isinstance(run_id, str)
+                        or not run_id.startswith("run-")
+                        or len(run_id) > 128
+                        or not run_id.replace("-", "").isalnum()
+                        or entry.name != run_id + ".json"
+                    ):
+                        raise ValueError("invalid validation run identity")
+                    manifest = _read_local_json(
+                        os.path.join(common, "bh", "validation", "runs", run_id, "manifest.json")
+                    )
+                    if manifest.get("run_id") != run_id or manifest.get("lifecycle") not in {
+                        "running",
+                        "completed",
+                        "abandoned",
+                    }:
+                        raise ValueError("invalid validation lifecycle")
+                    worktree = manifest.get("worktree")
+                    if worktree is not None and (
+                        not isinstance(worktree, str)
+                        or not os.path.isabs(worktree)
+                        or self.ports.realpath(worktree) != worktree
+                    ):
+                        raise ValueError("invalid validation worktree")
+                    if manifest["lifecycle"] == "running" and worktree is None:
+                        raise ValueError("running validation ownership is unknown")
+                    if manifest["lifecycle"] == "running" and worktree == path:
+                        result.keep("validation_active", f"running validation: {run_id}")
+                        return
+        except FileNotFoundError:
+            # An absent active directory is normal; a dangling pointer is not.
+            if os.path.lexists(active):
+                result.keep("ambiguous", "validation pointer/manifest disappeared during read")
+        except (OSError, ValueError):
+            result.keep("ambiguous", "validation lifecycle metadata is unreadable or unsafe")
 
     def _check_holders(self, path: str, scan: ProcessScan, result: TargetResult) -> None:
         if not scan.complete:
             result.keep("ambiguous", f"process scan incomplete: {scan.detail}")
             return
-        if self.strict_process_scan and scan.opaque:
+        if scan.opaque:
             shown = ", ".join(f"{pid} ({comm})" for pid, comm in scan.opaque[:5])
-            result.keep("ambiguous", f"--strict-process-scan: opaque own process(es) {shown}")
+            result.keep("ambiguous", f"opaque own process(es) {shown}")
             return
         holders = scan.holders_of(path)
         if holders:
@@ -535,7 +776,16 @@ class LocalReclaimer:
                     f"HEAD is on {base}'s first-parent line (fresh or fast-forwarded seat)",
                 )
                 return
-            result.landed_on = base
+            # A local merge may still be unpushed. Persisted remote-tracking history is
+            # required; this recovery command never fetches or opens HQ.
+            published = base if base.startswith("origin/") else f"origin/{base}"
+            publication = self._git(
+                ["merge-base", "--is-ancestor", head, published], repo.main_path
+            )
+            if publication.returncode != 0:
+                result.keep("publication_unknown", f"HEAD publication is not proven by {published}")
+                return
+            result.landed_on = published
             return
         if not resolved_any:
             result.keep("ambiguous", "no base ref resolves: " + ", ".join(self.base_refs))
@@ -545,15 +795,13 @@ class LocalReclaimer:
     # -- effects --
 
     def remove(self, result: TargetResult) -> None:
-        """Re-verify the cheap, racy facts, then ``git worktree remove`` (never ``--force``)."""
-        scan = self.ports.process_scan()
-        recheck = TargetResult(path=result.path)
-        self._check_clean(result.path, recheck)
-        self._check_holders(result.path, scan, recheck)
-        if recheck.reasons:
+        """Refresh every local proof immediately before Git's non-forced removal."""
+        self._repos.clear()
+        recheck = self.classify(result.path, self.ports.process_scan())
+        if recheck.status != WOULD_REMOVE or recheck.head != result.head:
             result.status = KEPT
-            result.reasons.extend(recheck.reasons)
-            result.detail = recheck.detail
+            result.reasons.extend(recheck.reasons or ["changed_head"])
+            result.detail = recheck.detail or "HEAD changed since preflight"
             result.holders = recheck.holders
             return
         result.bytes = self.ports.disk_usage(result.path)
@@ -624,9 +872,10 @@ class LocalReclaimer:
         mode: str,
         measure_also: Sequence[str] = (),
     ) -> dict:
-        unique = list(dict.fromkeys(self.ports.realpath(t) for t in targets))
+        unique = list(dict.fromkeys(os.path.abspath(os.path.expanduser(t)) for t in targets))
         measured = [*unique, *(self.ports.realpath(p) for p in measure_also)]
         before = self.measure(measured)
+        memory_before = self.ports.memory_available()
         scan = self.ports.process_scan()
         results = [self.classify(path, scan) for path in unique]
         for result in results:
@@ -666,11 +915,16 @@ class LocalReclaimer:
                 "detail": scan.detail,
                 "unreadable_foreign_processes": scan.unreadable_foreign,
                 "opaque_own_processes": [{"pid": pid, "comm": comm} for pid, comm in scan.opaque],
-                "strict": self.strict_process_scan,
+                "strict": True,
             },
             "summary": counts,
             "reclaimed_bytes": reclaimed,
             "reclaimable_bytes": reclaimable,
+            "reclaimed_bytes_basis": "conservative exclusive allocated-byte estimate",
+            "memory_available_bytes": {
+                "before": memory_before,
+                "after": memory_before if self.dry_run else self.ports.memory_available(),
+            },
             "filesystems": filesystems,
             "targets": [result.to_dict() for result in results],
             "stale_admin": admin,
@@ -686,7 +940,7 @@ def _parse_porcelain(text: str, realpath: Callable[[str], str]) -> list[_Registe
             branch = current.get("branch", "")
             records.append(
                 _Registered(
-                    path=realpath(current["worktree"]),
+                    path=os.path.abspath(current["worktree"]),
                     head=current.get("HEAD", ""),
                     branch=branch.removeprefix("refs/heads/"),
                     locked="locked" in current,
@@ -722,14 +976,13 @@ EPILOG = (
 
 def _default_roots() -> list[str]:
     env = os.environ.get("BH_WORKTREES") or os.environ.get("WS_WORKTREES")
-    if env:
-        return [os.path.expanduser(env)]
     home = os.environ.get("BH_HOME") or os.path.join(os.path.expanduser("~"), ".beadhive")
     candidates = [
+        *([os.path.expanduser(env)] if env else []),
         os.path.join(tempfile.gettempdir(), "bh-worktrees"),
         os.path.join(home, "worktrees"),
     ]
-    return [c for c in candidates if os.path.isdir(c)]
+    return list(dict.fromkeys(c for c in candidates if os.path.isdir(c)))
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -749,7 +1002,7 @@ def _parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help="scan a worktree root for leaves (repeatable; default when nothing else is "
-        "given: $BH_WORKTREES, else <tmp>/bh-worktrees and ~/.beadhive/worktrees)",
+        "given: $BH_WORKTREES plus <tmp>/bh-worktrees and ~/.beadhive/worktrees)",
     )
     parser.add_argument(
         "--repo",
@@ -778,7 +1031,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--strict-process-scan",
         action="store_true",
-        help="also keep every target when any of your own processes is hidden by the kernel "
+        help="compatibility flag: hidden own processes always keep every target "
         "(non-dumpable session managers such as sshd-session or systemd --user)",
     )
     parser.add_argument("--json", action="store_true", help="emit the structured result as JSON")
@@ -832,11 +1085,17 @@ def render_text(report: dict, out: TextIO) -> None:
             f"{_human(a['available_bytes'])}\n"
         )
     scan = report["process_scan"]
+    memory = report["memory_available_bytes"]
+    if memory["before"] is not None:
+        out.write(
+            f"  MemAvailable: {_human(memory['before'])} -> {_human(memory['after'])} "
+            "(host observation)\n"
+        )
     if not scan["complete"]:
         out.write(f"  ! process scan incomplete ({scan['detail']}): every target kept\n")
     if scan["opaque_own_processes"]:
         shown = ", ".join(f"{p['pid']} ({p['comm']})" for p in scan["opaque_own_processes"][:8])
-        verdict = "every target kept" if scan["strict"] else "not inside any target is assumed"
+        verdict = "every target kept"
         out.write(f"  · kernel-hidden own processes: {shown} — {verdict}\n")
 
 
@@ -847,6 +1106,7 @@ def main(
     out: TextIO | None = None,
     err: TextIO | None = None,
     stdin: TextIO | None = None,
+    mode: str = VERB,
 ) -> int:
     """Parse ``bh worktree local-reclaim …`` and run it; returns the exit status."""
     out = out or sys.stdout
@@ -878,7 +1138,7 @@ def main(
     targets.extend(reclaimer.discover_roots(roots))
     repo_targets, stale = reclaimer.discover_repos(args.repo)
     targets.extend(repo_targets)
-    report = reclaimer.run(targets, stale_repos=stale, mode=VERB, measure_also=roots)
+    report = reclaimer.run(targets, stale_repos=stale, mode=mode, measure_also=roots)
     if args.json:
         out.write(json.dumps(report, indent=2) + "\n")
     else:
