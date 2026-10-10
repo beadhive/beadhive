@@ -169,12 +169,14 @@ an added config key does not itself require a wire-schema bump.
 The [trust profiles and capabilities ADR](design/hq-trust-profiles-and-capabilities-adr.md)
 (2026-10-09, status proposed) names keys that do not exist yet and are listed here only so the
 table above is not read as the whole intended surface: `hq.trust_profile` (fleet: `open`,
-`trusted`, `verified`, `attested`; `verified` equals today's defaults), `host.roles` (a set
-composed from `viewer`, `planner`, `operator`, `transient`, `executor`, `director`; `host.role`
-stays as a one-element alias), `hq.placement_mode` (`director`, `self`), `hive.write_policy`
-(`fenced`, `forward`, `open`), `hq.tenure` and `hq.tenure_refresh`, `hive.adopt_existing`, and
-the `hive.sync.*` batch auto-commit, auto-push and auto-pull settings. Setting any of them on a
-0.24.0 host is a schema error.
+`trusted`, `verified`, `attested`; `verified` equals today's defaults), `hq.placement_mode`
+(`director`, `self`), `hive.write_policy` (`fenced`, `forward`, `open`), `hq.tenure` and
+`hq.tenure_refresh`, `hive.adopt_existing`, and the `hive.sync.*` batch auto-commit, auto-push
+and auto-pull settings. Setting any of them on a 0.24.0 host is a schema error. `host.roles`, a
+set composed from `viewer`, `planner`, `operator`, `transient`, `executor`, `director` with
+`host.role` as a one-element alias, has shipped as a field of the host manifest
+(`hosts/<host_id>.yaml`, `bh host init --role operator,executor`), not of `config.yaml`; see
+[Host roles](FRAME-FLEET-MEMBERSHIP.md#host-roles).
 
 ## `config.yaml` schema
 

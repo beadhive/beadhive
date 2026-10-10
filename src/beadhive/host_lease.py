@@ -45,6 +45,7 @@ Typer-free: every failure is an exception a CLI layer maps to an exit code.
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -105,21 +106,27 @@ class HostLeaseRejected(HostLeaseError):
     caller learns it won."""
 
 
-def ttl_for_role(role: str, base_ttl: float = DEFAULT_TTL) -> float:
+def ttl_for_role(role: str | Iterable[str], base_ttl: float = DEFAULT_TTL) -> float:
     """The lease TTL a host in `role` should take, from the configured `base_ttl`
     (``host.lease.ttl``) scaled by :data:`ROLE_TTL_SCALE`.
 
-    Raises :class:`HostLeaseRejected` for ``viewer`` — that role's definition is *never
-    primary*, so the refusal belongs here (at the point tenure is computed) rather than as a
-    check every call site has to remember. An unknown role falls back to the unscaled
-    baseline: a manifest from a newer bh must not silently get an infinite tenure.
+    `role` is one role or a composable role set (``host.roles``, bh-t1xwp); a set takes its
+    highest-tenure role (:func:`beadhive.host_roles.tenure_role`), so ``[operator, executor]``
+    holds an executor's tenure.
+
+    Raises :class:`HostLeaseRejected` for a role that is never placed — ``viewer`` (*never
+    primary* by definition), and ``planner`` / ``operator`` / ``director`` (they author or
+    administer, they hold no placement tenure) — so the refusal belongs here (at the point
+    tenure is computed) rather than as a check every call site has to remember. An unknown role
+    falls back to the unscaled baseline: a manifest from a newer bh must not silently get an
+    infinite tenure.
 
     Deprecated role spellings resolve first (:func:`beadhive.hosts.canonical_role`), so a host
     still registered as `worker` in HQ is refused as the `viewer` it now is rather than falling
     through the unknown-role branch and being handed a tenure it must never have."""
-    from . import hosts  # lazy: hosts imports nothing from here, but keep the cycle impossible
+    from . import host_roles
 
-    role = hosts.canonical_role(role)
+    role = host_roles.resolve_tenure_role(role)
     if role == "viewer":
         raise HostLeaseRejected(
             "this host's role is `viewer` — a viewer never becomes primary, by definition "
@@ -128,6 +135,13 @@ def ttl_for_role(role: str, base_ttl: float = DEFAULT_TTL) -> float:
             "  To let this host own work, set its role in the HQ manifest first: "
             "`bh host init --role executor --force` (always-on, owns repos) or "
             "`--role transient` (comes and goes for a task)."
+        )
+    if role in host_roles.ROLE_BUNDLES and not host_roles.placed(role):
+        raise HostLeaseRejected(
+            f"this host's role set holds no placement tenure (highest-tenure role `{role}`): "
+            "only `executor` and `transient` are placed (trust-profiles ADR section 1).\n"
+            "  To let this host own work, add a placed role to its set: "
+            f"`bh host init --role {role},executor --force`."
         )
     return base_ttl * ROLE_TTL_SCALE.get(role, 1.0)
 

@@ -418,6 +418,7 @@ def test_frame_contract_names_and_closed_enums():
         "arch",
         "harnesses",
         "max_sessions",
+        "grants",  # projected from the role set (bh-t1xwp); absent from a legacy dump
     }
 
 

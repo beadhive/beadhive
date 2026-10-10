@@ -18,9 +18,11 @@ table says:
 * ``authority_available`` — every capability: nothing can be evaluated without the authority.
 * ``reviewed_admission_or_emergency`` — wherever ``admitted_active`` is consulted: an emergency
   admission still pending review is not an admission.
-* ``executor_role`` — every capability: the frame's role grants capabilities, and a ``viewer``
-  is read-only. Composable role sets (``host.roles``, bh-t1xwp) replace this with set
-  membership.
+* ``executor_role`` — every capability: the frame's role set grants capabilities. Since
+  composable role sets (``host.roles``, bh-t1xwp; :mod:`beadhive.host_roles`) it is set
+  membership: the asked capability is in the frame's effective set (the union of its role
+  bundles, then the trust profile's ceiling), so a ``viewer`` is read-only and a ``planner``
+  holds ``author`` alone.
 
 Predicates in a row that are not frame-eligibility predicates (``writer_reachable``,
 ``bh_writer``, ``placement_rights``, ``hq_write_access``) are decided by another layer — the
@@ -152,7 +154,7 @@ WRITE_CAPABILITIES: tuple[str, ...] = (AUTHOR, CLAIM, EXECUTE, PUBLISH)
 IMPLIED: dict[str, str] = {
     "authority_available": "every capability",
     "reviewed_admission_or_emergency": "with admitted_active",
-    "executor_role": "every capability",
+    "executor_role": "every capability, as membership of the frame's effective set",
 }
 
 

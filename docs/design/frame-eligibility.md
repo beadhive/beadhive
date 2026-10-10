@@ -45,20 +45,40 @@ renewal. No other module calls `guard_primary` or `require_intake`.
 | `execute` | `bh work next`, `bh work loop` and the dispatch lease keeper | all fourteen |
 | `publish` | `bh work submit`, `bh work merge` / `finish`, `bh bd dolt push/sync` | all fourteen |
 
-`authority_available` and `executor_role` (a `viewer` is read-only) are consulted for every
-capability, and `reviewed_admission_or_emergency` wherever `admitted_active` is. So a frame
-whose heartbeat is stale, whose release or conformance drifted, or whose capacity or dispatch
-is off can still author and claim while `execute` and `publish` refuse. A decision that
-short-circuited before evaluating every predicate (authority unavailable, a foreign beadyard
-pin) is never narrowed. Where the write may land is unchanged: under today's `fenced` write
-policy every capability still needs the hive's writer (`bh_writer` on a cut-over hive, the
-hive lease otherwise), and a forwarded checkout is still decided by its marker.
+`authority_available` and `executor_role` are consulted for every capability, and
+`reviewed_admission_or_emergency` wherever `admitted_active` is. So a frame whose heartbeat is
+stale, whose release or conformance drifted, or whose capacity or dispatch is off can still
+author and claim while `execute` and `publish` refuse. A decision that short-circuited before
+evaluating every predicate (authority unavailable, a foreign beadyard pin) is never narrowed.
+Where the write may land is unchanged: under today's `fenced` write policy every capability
+still needs the hive's writer (`bh_writer` on a cut-over hive, the hive lease otherwise), and a
+forwarded checkout is still decided by its marker.
 
 `bh host eligible --json` adds a `capabilities` object with one entry per capability:
 `allowed`, the `predicates` consulted, `reason`, and under `deferred` the predicates another
 layer decides (the in-data writer fence, placement, HQ write access). With `--hive`, the lease
 holder check is included for every write capability. The top-level `eligible` bit still
 evaluates every predicate.
+
+### Host roles
+
+`executor_role` is set membership (`bh-t1xwp`): the asked capability must be in the frame's
+effective capability set, the union of its `host.roles` bundles less the trust profile's
+ceiling (`EligibilityFacts.ceiling`; it removes nothing until `bh-bc2rj`). Full intake asks for
+`execute`. `host.role` alone reads as a one-element set.
+
+| Role | Capabilities | Placement tenure |
+|---|---|---|
+| `viewer` | none (read only) | never placed |
+| `planner` | `author` | never placed |
+| `operator` | `author`, `admin` | never placed |
+| `transient` | `author`, `claim`, `execute`, `publish` | `transient` row (30 min) |
+| `executor` | `author`, `claim`, `execute`, `publish`, `place` | `executor` row (60 min, floor 45) |
+| `director` | `place`, `admin` | never placed |
+
+A set takes the tenure of its highest-tenure role. A set other than one legacy role projects its
+capability list into `capabilities.grants`, which the admission grant records, so
+`capabilities_match_admission` refuses a frame declaring a wider set than it was admitted with.
 
 ## Lease custody
 

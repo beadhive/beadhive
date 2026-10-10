@@ -239,12 +239,52 @@ fresh. TTL is exclusive (`age < leaseDurationSeconds`), capped at 900 seconds
 and at least three report intervals. A repeated signed record does not renew
 freshness.
 
-**Proposed (not shipped).** The
-[trust profiles and capabilities ADR](design/hq-trust-profiles-and-capabilities-adr.md)
-(2026-10-09) proposes attaching these predicates to capabilities rather than to one host role,
-so that a host declaring `host.roles: [planner]` can author beads with only the identity,
-admission and cordon predicates consulted, while `execute` and `publish` keep the full set. Until
-that lands, every write verb on a frame consults the predicates as described in this section.
+### Host roles
+
+A host's manifest (`hosts/<host_id>.yaml`) declares what it may do as a set of **roles**, each a
+bundle of capabilities ([trust profiles ADR section 1](design/hq-trust-profiles-and-capabilities-adr.md#1-capabilities-and-composable-roles),
+`bh-t1xwp`). `host.role` names one role; `host.roles` lists several. A manifest with only
+`host.role` reads as the one-element set, so existing manifests need no migration and serialise
+exactly as before (no `roles` key, no grant list).
+
+| Role | Capabilities | Placement tenure (`failover_after`) |
+|---|---|---|
+| `viewer` | none (read only) | never placed |
+| `planner` | `author` | never placed |
+| `operator` | `author`, `admin` | never placed |
+| `transient` | `author`, `claim`, `execute`, `publish` | 30 min |
+| `executor` | `author`, `claim`, `execute`, `publish`, `place` | 60 min, floor 45 min |
+| `director` | `place`, `admin` | never placed |
+
+Record a set with a comma-separated `--role`, for example the attended workstation that authors
+everywhere, administers HQ and executes the hives placed on it (`bh-ld32r`):
+
+```sh
+bh host init --role operator,executor --force
+```
+
+```yaml
+role: executor          # the set's highest-tenure role, kept for single-role readers
+roles: [operator, executor]
+```
+
+- **Union, then ceiling.** The host's effective capabilities are the union of its bundles;
+  `viewer` adds nothing to a set. The fleet trust profile's capability ceiling then removes
+  capabilities from every host regardless of its roles. Until the profile table lands
+  (`bh-bc2rj`) the ceiling removes nothing.
+- **Tenure follows the highest-tenure role.** A set containing `executor` uses the executor
+  `failover_after` row and lease TTL, else `transient`'s. The `hq_live_failover_policy` rows keep
+  their `executor` / `transient` scope. A set of never-placed roles is never placed, and
+  `bh host lease adopt` refuses on it.
+- **Admission approves the set.** A set that is not one legacy role (`executor`, `transient`,
+  `viewer`) projects its capability list into the frame's `capabilities.grants`, so the
+  admission grant records exactly the capabilities the host may exercise and
+  `capabilities_match_admission` compares them. A frame that re-declares a wider set than it was
+  admitted with fails closed until an operator admits the new set. `grants` is always derived
+  from the roles; a hand-written list that disagrees is refused.
+- **The role predicate is set membership.** Each write verb's `executor_role` predicate asks
+  whether its one capability is in the effective set, so a `planner` authors but cannot claim,
+  and full intake (the top-level `eligible` bit) asks for `execute`.
 
 ### Session and evidence rows (0.23.0, `dolt-server` HQ)
 
@@ -287,7 +327,7 @@ bh host eligible frame-builder-01 --hive github/acme/api
 Eligibility requires available current authority; declared active and
 uncordoned lifecycle; exact frame/host/instance/HQ identity binding; a verified
 fresh non-candidate heartbeat; matching release and capabilities; conformant
-checks; compatible hive requirements; executor (not viewer) role; positive
+checks; compatible hive requirements; a role set that holds `execute`; positive
 session capacity; and enabled dispatch. A false predicate denies intake.
 `bh host eligible` explains predicates; it does not admit the frame. Claims
 recheck eligibility at the write boundary. Each write verb consults only the

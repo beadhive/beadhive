@@ -56,6 +56,9 @@ class EligibilityFacts:
     # BH_HQ_AUTHORITY_ENFORCE=false (UNSUPPORTED, dev-only, bh-6pqul): authority-derived
     # predicates are satisfied-with-warning; identity and heartbeat predicates are not.
     authority_waived: bool = False
+    # The fleet trust profile's capability ceiling (trust-profiles ADR section 2, bh-bc2rj):
+    # capabilities removed from the frame's role-set union. ``None`` removes nothing.
+    ceiling: object = None
 
 
 # Predicates whose failure ``BH_HQ_AUTHORITY_ENFORCE=false`` waives. Each is either wholly
@@ -81,6 +84,10 @@ class EligibilityDecision:
     # The admitted session/evidence stamps on a data-switched frame (bh-owqdg); recorded in the
     # claim record at claim time. Empty on every other carrier. Not part of ``as_dict``.
     admission: tuple[tuple[str, object], ...] = ()
+    # The frame's effective capability set (role-set union, then ceiling; bh-t1xwp). When set,
+    # :meth:`for_capability` decides ``executor_role`` as membership of the asked capability.
+    # ``None`` on a decision built without a frame role set. Not part of ``as_dict``.
+    granted: frozenset[str] | None = None
 
     @property
     def allowed(self):
@@ -108,7 +115,12 @@ class EligibilityDecision:
         a capability does not consult are dropped; any other predicate in the decision (a
         lease-holder check, an adapter's refusal) is kept, and a short-circuit decision that
         did not evaluate all fourteen (authority unavailable, a foreign beadyard pin) is
-        returned whole, so narrowing can never turn a refusal into an allow."""
+        returned whole, so narrowing can never turn a refusal into an allow.
+
+        The one predicate narrowing re-decides is ``executor_role``: with the frame's effective
+        capability set recorded (:attr:`granted`, bh-t1xwp) it becomes "`capability` is in the
+        set", so a ``planner`` that cannot ``execute`` still holds ``author``, and an
+        ``operator`` holds ``author`` but not ``claim``."""
         if capability is None:
             return self
         from . import capabilities
@@ -118,7 +130,12 @@ class EligibilityDecision:
         if not known <= {name for name, _ in self.predicates}:
             return self
         keep = tuple(
-            (name, value)
+            (
+                name,
+                capability in self.granted
+                if name == ROLE_PREDICATE and self.granted is not None
+                else value,
+            )
             for name, value in self.predicates
             if name not in known or name in consulted
         )
@@ -127,7 +144,32 @@ class EligibilityDecision:
             tuple(name for name in self.waived if name not in known or name in consulted),
             self.enforcement_disabled,
             self.admission,
+            self.granted,
         )
+
+
+#: The role predicate: set membership of the asked capability in the frame's effective set.
+ROLE_PREDICATE = "executor_role"
+
+
+def granted_capabilities(frame, facts: EligibilityFacts) -> frozenset[str]:
+    """`frame`'s effective capability set: its role-set union, then the profile's ceiling
+    (trust-profiles ADR section 1, bh-t1xwp)."""
+    from . import host_roles
+
+    ceiling = facts.ceiling if facts.ceiling is not None else host_roles.NO_CEILING
+    roles = getattr(frame, "roles", None) or frame.role
+    return host_roles.effective_capabilities(roles, ceiling)
+
+
+def _role_holds(granted: frozenset[str]) -> bool:
+    """``executor_role`` for full intake, which asks for ``execute``; a narrowed decision
+    re-asks for its own capability (:meth:`EligibilityDecision.for_capability`). A legacy
+    ``viewer`` holds nothing, ``executor`` / ``transient`` hold ``execute``: the pre-bh-t1xwp
+    answer."""
+    from .capabilities import EXECUTE
+
+    return EXECUTE in granted
 
 
 def _waive_authority(frame, facts, caps, predicates):
@@ -242,6 +284,7 @@ def _eligible_session(frame, hive, facts) -> EligibilityDecision:
     if trusted_emergency:
         audit("eligibility-use-attempt", record, prefix=hive.get("prefix"))
     release = frame.release.model_dump() if frame.release is not None else None
+    granted = granted_capabilities(frame, facts)
     decision = EligibilityDecision(
         (
             ("authority_available", facts.available),
@@ -279,7 +322,7 @@ def _eligible_session(frame, hive, facts) -> EligibilityDecision:
             ("conformance_pass", bool(trusted_emergency or beat.conformance_pass)),
             ("capabilities_match_admission", bool(caps) and caps == desired.get("caps")),
             ("hive_requirements", _hive_compatible(hive, caps)),
-            ("executor_role", frame.role != "viewer"),
+            (ROLE_PREDICATE, _role_holds(granted)),
             (
                 "available_capacity",
                 type(caps.get("max_sessions")) is int and caps["max_sessions"] > 0,
@@ -287,12 +330,17 @@ def _eligible_session(frame, hive, facts) -> EligibilityDecision:
             ("dispatch_enabled", facts.dispatch_enabled is True),
         ),
         admission=tuple(sorted(beat.stamps().items())),
+        granted=granted,
     )
     if not facts.authority_waived:
         return decision
     predicates, waived_authority = _waive_authority(frame, facts, caps, decision.predicates)
     return EligibilityDecision(
-        predicates, waived_authority, enforcement_disabled=True, admission=decision.admission
+        predicates,
+        waived_authority,
+        enforcement_disabled=True,
+        admission=decision.admission,
+        granted=granted,
     )
 
 
@@ -309,6 +357,7 @@ def eligible(frame: hosts.HostManifest, hive: dict, facts: EligibilityFacts) -> 
     age = beat.age_seconds
     caps = frame.capabilities.model_dump() if frame.capabilities else {}
     compatible = _hive_compatible(hive, caps)
+    granted = granted_capabilities(frame, facts)
     fresh = (
         beat.verified
         and beat.fresh
@@ -405,18 +454,21 @@ def eligible(frame: hosts.HostManifest, hive: dict, facts: EligibilityFacts) -> 
             ),
             ("capabilities_match_admission", bool(caps) and caps == desired.get("caps")),
             ("hive_requirements", compatible),
-            ("executor_role", frame.role != "viewer"),
+            (ROLE_PREDICATE, _role_holds(granted)),
             (
                 "available_capacity",
                 type(caps.get("max_sessions")) is int and caps["max_sessions"] > 0,
             ),
             ("dispatch_enabled", facts.dispatch_enabled is True),
-        )
+        ),
+        granted=granted,
     )
     if not facts.authority_waived:
         return decision
     predicates, waived_authority = _waive_authority(frame, facts, caps, decision.predicates)
-    return EligibilityDecision(predicates, waived_authority, enforcement_disabled=True)
+    return EligibilityDecision(
+        predicates, waived_authority, enforcement_disabled=True, granted=granted
+    )
 
 
 def _heartbeat_advisory(observation, frame) -> bool:
