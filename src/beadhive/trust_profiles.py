@@ -13,18 +13,19 @@ host has learned, and which overrides it carries, is read by :mod:`beadhive.hq_t
 The beads that enforce a knob read it from :class:`ResolvedProfile`:
 
 * admission — ``ResolvedProfile.admission`` / :attr:`ResolvedProfile.admission_policy`
-  (bh-sfp9o.4 enforces it);
+  (:mod:`beadhive.hq_admission` enforces it, bh-sfp9o.4);
 * placement — ``ResolvedProfile.placement`` / :attr:`ResolvedProfile.self_placement`
   (bh-vl0r3);
 * write policy — ``ResolvedProfile.write_policy`` (bh-sxhnq);
 * tenure — ``ResolvedProfile.tenure`` (:class:`Tenure`, bh-ofszz).
 
 **The override rule.** A host-local override (``hq.placement_mode``, ``hive.write_policy``,
-``hq.tenure``) may only move one knob *towards more trust required* than the profile. An
-override that would loosen a knob takes effect only when the operator key signs it
-(:attr:`Override.signed`); otherwise it is **refused**: the knob keeps the profile's value and
-the refusal names the profile (:attr:`OverrideOutcome.message`). So a key-less HQ writer, or a
-host editing its own ``host.yaml``, cannot loosen a ``verified`` fleet.
+``hq.tenure``) or the fleet's ``hq.admission_policy`` may only move one knob *towards more trust
+required* than the profile. An override that would loosen a knob takes effect only when the
+operator key signs it (:attr:`Override.signed`); otherwise it is **refused**: the knob keeps
+the profile's value and the refusal names the profile (:attr:`OverrideOutcome.message`). So a
+key-less HQ writer, or a host editing its own ``host.yaml``, cannot loosen a ``verified``
+fleet.
 """
 
 from __future__ import annotations
@@ -214,7 +215,12 @@ OVERRIDE_KEYS: dict[str, str] = {
     "hq.tenure": "tenure",
     "hq.default_authority_mode": "authority",
     "hq.authority_mode": "authority",
+    "hq.admission_policy": "admission",
 }
+#: ``hq.admission_policy`` speaks two values: ``open`` (registration alone admits) and
+#: ``manual`` (an operator grant admits; under ``attested`` the grant still needs its fresh
+#: heartbeats, so ``manual`` never loosens ``attested``, see :func:`_requested`).
+ADMISSION_POLICIES: dict[str, str] = {"open": "registration", "manual": "operator-granted"}
 PLACEMENT_MODES: dict[str, str] = {"self": "self-or-director", "director": "director"}
 AUTHORITY_MODES: dict[str, str] = {"trusted": "trusted", "signed": "signed"}
 
@@ -456,7 +462,14 @@ def _requested(profile: Profile, override: Override):
         if profile.tenure.kind == "ceiling":
             return Tenure("ceiling", float(value))
         return replace(profile.tenure, ceiling_s=float(value))
+    if override.knob == "admission" and value == "manual":
+        # ``manual`` asks for an operator grant: a profile that already requires one (and, under
+        # ``attested``, its fresh heartbeats) keeps its own value rather than reading it as a
+        # loosening.
+        granted = ADMISSION_POLICIES["manual"]
+        return max(granted, profile.admission, key=ADMISSION_RANK.__getitem__)
     vocabulary = {
+        "admission": ADMISSION_POLICIES,
         "placement": PLACEMENT_MODES,
         "authority": AUTHORITY_MODES,
         "write_policy": {name: name for name in WRITE_POLICY_RANK},

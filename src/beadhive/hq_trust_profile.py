@@ -33,7 +33,8 @@ override of that column, and a frame's own ``hq.authority_mode`` pin as a pin.
 would loosen the profile (they are unsigned) and names the profile in the refusal.
 
 This module is a leaf below the HQ authority modules: it imports only
-:mod:`beadhive.trust_profiles` (and :mod:`beadhive.config`, late). Callers that know the
+:mod:`beadhive.trust_profiles` (and :mod:`beadhive.config` and the pure
+:mod:`beadhive.hq_admission`, late). Callers that know the
 authority mode pass it in (:func:`beadhive.hq_authority_enforce.trust_profile`).
 """
 
@@ -51,6 +52,9 @@ FLEET_DOCUMENT = "fleet.yaml"
 #: ``hq.default_authority_mode``: the 0.24.0 carrier of the authority column.
 AUTHORITY_KEY = "default_authority_mode"
 PROFILE_KEY = "trust_profile"
+#: ``hq.admission_policy``: the fleet's override of the admission knob (bh-sfp9o.4).
+ADMISSION_KEY = "admission_policy"
+ADMISSION_STATE = "hq-fleet-admission-policy.json"
 AUTHORITY_MODES = ("signed", "trusted")
 #: Profiles whose authority column is unsigned (0.24.0 ``trusted``).
 TRUSTED_PROFILES = tuple(
@@ -103,7 +107,7 @@ def committed_hq_keys(snapshot) -> dict:
         parsed = YAML(typ="safe").load(content)
         hq = parsed.get("hq") if isinstance(parsed, dict) else None
         hq = hq if isinstance(hq, dict) else {}
-        value = {key: hq.get(key) for key in (AUTHORITY_KEY, PROFILE_KEY)}
+        value = {key: hq.get(key) for key in (AUTHORITY_KEY, PROFILE_KEY, ADMISSION_KEY)}
     except Exception:  # noqa: BLE001 - an unreadable carrier never raises trust
         value = {}
     if len(_committed) >= 16:
@@ -213,8 +217,13 @@ def observe(snapshot, *, authorised: bool, via: str = "") -> str:
     """Learn the profile from a config snapshot this process just verified.
 
     A looser profile than the learned one is honoured only when *authorised* (the
-    operator-signed/bound snapshot); an equal or stricter one is always honoured. Returns the
+    operator-signed/bound snapshot); an equal or stricter one is always honoured. The fleet's
+    ``hq.admission_policy`` is learned alongside (:func:`observe_admission`). Returns the
     learned profile name; never raises."""
+    try:
+        observe_admission(snapshot, authorised=authorised, via=via)
+    except Exception:  # noqa: BLE001 - learning is advisory to the verification it rides on
+        pass
     try:
         value = committed(snapshot) or trust_profiles.DEFAULT
         known = current()
@@ -224,6 +233,110 @@ def observe(snapshot, *, authorised: bool, via: str = "") -> str:
         return current()
     except Exception:  # noqa: BLE001 - learning is advisory to the verification it rides on
         return current()
+
+
+# ---- the learned admission policy (bh-sfp9o.4) -----------------------------------------------
+#
+# ``hq.admission_policy`` (``open`` | ``manual``) is a FLEET key in the committed ``fleet.yaml``,
+# read as an override of the profile's admission knob. Learned like the profile: a value that
+# would leave admission looser than the learned one is honoured only from an operator-authorised
+# snapshot, and is then recorded as signed (so it may loosen the profile, as the override rule
+# allows a signed override); an equal or stricter one is always learned, unsigned.
+
+
+def _admission_path() -> str | None:
+    try:
+        return str(_config().home() / "state" / ADMISSION_STATE)
+    except Exception:  # noqa: BLE001 - no home: nothing learned
+        return None
+
+
+def admission_state() -> dict:
+    """The learned ``hq.admission_policy`` record (``{}``: none learned)."""
+    path = _admission_path()
+    if not path:
+        return {}
+    try:
+        with open(path, encoding="utf-8") as handle:
+            record = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(record, dict) or record.get("value") not in (
+        None,
+        *trust_profiles.ADMISSION_POLICIES,
+    ):
+        return {}
+    return record
+
+
+def admission_override() -> trust_profiles.Override | None:
+    """The learned ``hq.admission_policy`` as an override of the admission knob, or ``None``."""
+    record = admission_state()
+    value = record.get("value")
+    if value is None:
+        return None
+    return trust_profiles.Override(
+        "admission", "hq.admission_policy", value, "fleet.yaml", signed=bool(record.get("signed"))
+    )
+
+
+def _admission_rank(profile: str, override: trust_profiles.Override | None) -> int:
+    resolved = trust_profiles.resolve(profile, [override] if override else [])
+    return trust_profiles.ADMISSION_RANK[resolved.admission]
+
+
+def observe_admission(snapshot, *, authorised: bool, via: str = "") -> bool:
+    """Learn ``hq.admission_policy`` from a verified config snapshot; returns whether the learned
+    record changed. A change that loosens admission under the learned profile is honoured only
+    when *authorised*. Never raises on the write."""
+    keys = committed_hq_keys(snapshot)
+    if not keys:
+        return False
+    value = keys.get(ADMISSION_KEY)
+    if value not in trust_profiles.ADMISSION_POLICIES:
+        value = None
+    record = admission_state()
+    known = record.get("value")
+    signed = bool(authorised and value is not None)
+    if value == known and (not signed or record.get("signed")):
+        return False
+    candidate = (
+        trust_profiles.Override("admission", "hq.admission_policy", value, "fleet.yaml", signed)
+        if value is not None
+        else None
+    )
+    profile = current()
+    if not authorised and _admission_rank(profile, candidate) < _admission_rank(
+        profile, admission_override()
+    ):
+        return False
+    path = _admission_path()
+    if not path:
+        return False
+    body = json.dumps(
+        {
+            "value": value,
+            "signed": signed,
+            "config_head": str(getattr(snapshot, "commit_revision", "")),
+            "via": via,
+            "learned_at": time.time(),
+        },
+        sort_keys=True,
+    )
+    temporary = f"{path}.{os.getpid()}.tmp"
+    try:
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(body)
+        os.replace(temporary, path)
+    except OSError:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        return False
+    return True
 
 
 # ---- overrides and the resolved profile ------------------------------------------------------
@@ -291,15 +404,18 @@ def resolved(
     profile: str | None = None,
 ) -> trust_profiles.ResolvedProfile:
     """The profile this host runs (`profile`, else the learned one), with every override
-    applied. Never raises on a bad override: it is refused and reported. `fleet_default` /
-    `pin` are the authority mode facts (:func:`beadhive.hq_authority_enforce.trust_profile`
-    supplies them)."""
+    applied: the authority column's, the learned fleet ``hq.admission_policy``
+    (:func:`admission_override`) and this host's. Never raises on a bad override: it is refused
+    and reported. `fleet_default` / `pin` are the authority mode facts
+    (:func:`beadhive.hq_authority_enforce.trust_profile` supplies them)."""
     name = profile if profile is not None else learned()
     effective = name or trust_profiles.DEFAULT
+    admission = admission_override()
     overrides = [
         *authority_overrides(
             effective, fleet_default=fleet_default, pin=pin, pin_source=pin_source
         ),
+        *((admission,) if admission is not None else ()),
         *host_overrides(cfg),
     ]
     return trust_profiles.resolve(
@@ -349,14 +465,18 @@ LAB_POSTURE = (
 
 
 def doctor_data(profile: trust_profiles.ResolvedProfile) -> dict:
-    """The doctor section: the effective profile and every override on one line, the lab
-    posture under ``open``, and each refused override."""
+    """The doctor section: the effective profile and every override on one line, the effective
+    admission rule (bh-sfp9o.4), the lab posture under ``open``, and each refused override."""
+    from . import hq_admission
+
     notes = [outcome.message for outcome in profile.refusals]
     if profile.lab_posture:
         notes.insert(0, LAB_POSTURE)
+    admission = hq_admission.rule(profile)
     return {
         "level": "warn" if profile.refusals else "ok",
         "line": profile.doctor_line(),
+        "admission": admission.describe(),
         "notes": notes,
         "profile": profile.as_dict(),
     }

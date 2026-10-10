@@ -1584,10 +1584,21 @@
       "description": "Factory HQ remote (``hq``) — where the factory's central HQ store publishes to.",
       "properties": {
         "admission_policy": {
-          "const": "manual",
-          "default": "manual",
-          "title": "Admission Policy",
-          "type": "string"
+          "anyOf": [
+            {
+              "enum": [
+                "manual",
+                "open"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "FLEET override of the trust profile's admission knob: `open` (registration alone admits) or `manual` (an operator grant admits; under `attested` the grant still needs three fresh heartbeats). Unset (default) follows hq.trust_profile: `open` for the open profile, otherwise `manual` (the trusted profile admits through `bh hq authority join`). Like a per-knob override it may only require more trust than the profile unless the operator key signs it; a loosening value is refused and the profile's rule stays.",
+          "title": "Admission Policy"
         },
         "authority_anchor": {
           "default": "",

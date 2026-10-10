@@ -611,10 +611,21 @@ def status(*, as_json: bool = False) -> None:
 def _open_admission(host_id: str) -> None:
     """Trusted fleet only (bh-taa04.3): open-admit this frame before it registers, through the
     HQ authority-write binding this host holds (``$BH_HQ_OPERATOR_SETTINGS`` or its own
-    anchor). Without one, registration proceeds and the frame waits for a grant as before."""
-    from . import hq_authority_enforce
+    anchor). Without one, registration proceeds and the frame waits for a grant as before.
+
+    The fleet trust profile's admission rule decides (bh-sfp9o.4): ``open`` admits on
+    registration and ``trusted`` joins, as 0.24.0's trusted fleet does; under ``verified`` /
+    ``attested`` (or ``hq.admission_policy: manual``) registration waits for an operator grant
+    (:func:`beadhive.hq_admission.join_permitted`)."""
+    from . import hq_admission, hq_authority_enforce
 
     if not hq_authority_enforce.fleet_trusted():
+        return
+    try:
+        profile = hq_authority_enforce.trust_profile()
+    except Exception:  # noqa: BLE001 - an unreadable profile never admits
+        return
+    if not hq_admission.join_permitted(profile):
         return
     from . import host, hq_authority_fleet_mode, hq_open_admission, hq_operator_settings
 

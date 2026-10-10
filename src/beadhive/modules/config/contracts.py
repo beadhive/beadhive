@@ -1248,7 +1248,18 @@ class HqConfig(_Section):
         return value
 
     authority_anchor: str = ""
-    admission_policy: Literal["manual"] = "manual"
+    admission_policy: Literal["manual", "open"] | None = Field(
+        None,
+        description=(
+            "FLEET override of the trust profile's admission knob: `open` (registration alone "
+            "admits) or `manual` (an operator grant admits; under `attested` the grant still "
+            "needs three fresh heartbeats). Unset (default) follows hq.trust_profile: `open` "
+            "for the open profile, otherwise `manual` (the trusted profile admits through "
+            "`bh hq authority join`). Like a per-knob override it may only require more trust "
+            "than the profile unless the operator key signs it; a loosening value is refused "
+            "and the profile's rule stays."
+        ),
+    )
     authority_mode: Literal["signed", "trusted", "inherit"] = Field(
         "inherit",
         description=(

@@ -549,7 +549,10 @@ profile copied from the fleet), with no grant record, no `observe` or `lifecycle
 enrollment and no operator key. Frame registration (`publish_host_manifest`) runs it
 automatically when the frame holds HQ authority-write access (`BH_HQ_OPERATOR_SETTINGS`);
 otherwise it prints the `join` command to run where HQ is writable. Cordon, drain and retire act
-on the record as on any other. A signed fleet refuses `join`.
+on the record as on any other. A signed fleet refuses `join`. Since `bh-sfp9o.4` the trust
+profile's admission rule also decides: `join` admits under `open` and `trusted` (and in a
+trusted fleet that names no profile, as 0.24.0 did), and is refused under `verified`,
+`attested` or `hq.admission_policy: manual` ([Admission](#trust-profile-admission)).
 
 *Limit.* Open admission is an authority step only. A new SQL frame still needs its DB account,
 inbox and session tables provisioned (`hq_open_admission.request` computes the record that
@@ -651,14 +654,53 @@ What ships with the key, and what is still to come:
   Git HQ, the head the signed authority is bound to on SQL HQ), and always learns a stricter
   one. On SQL HQ the key is frame-relevant: a key-less edit that loosens it fences signed frames
   until the operator re-signs authority, and an edit that tightens it is tolerated and learned.
-- **Live now.** The authority column; the capability ceiling (under `verified` and `attested` a
-  host without the operator binding, `$BH_HQ_OPERATOR_SETTINGS`, loses `admin` and `place`, so
-  placement goes through the director CAS only); `admin` for any host with HQ write access under
-  `open`; and the fresh-heartbeat requirement on `author` under `attested`. `bh host eligible`
-  reports the result per capability.
-- **Resolved but not yet enforced.** Admission (`bh-sfp9o.4`), self-placement (`bh-vl0r3`),
-  the write policy (`bh-sxhnq`) and the tenure cache (`bh-ofszz`) read their knob from the
-  resolved profile when they land.
+- **Live now.** The authority column; admission ([below](#trust-profile-admission)); the
+  capability ceiling (under `verified` and `attested` a host without the operator binding,
+  `$BH_HQ_OPERATOR_SETTINGS`, loses `admin` and `place`, so placement goes through the director
+  CAS only); `admin` for any host with HQ write access under `open`; and the fresh-heartbeat
+  requirement on `author` under `attested`. `bh host eligible` reports the result per
+  capability.
+- **Resolved but not yet enforced.** Self-placement (`bh-vl0r3`), the write policy
+  (`bh-sxhnq`) and the tenure cache (`bh-ofszz`) read their knob from the resolved profile when
+  they land.
+
+#### Admission {#trust-profile-admission}
+
+Admission is how a registered host becomes `admitted_active`, the predicate every capability
+consults. Since `bh-sfp9o.4` each profile's rule is enforced:
+
+| Profile | `hq.admission_policy` | How a registered host is admitted |
+|---|---|---|
+| `open` | `open` | Registration admits. Frame registration writes the frame's incarnation ACTIVE (the same key-less authority write as `join`) with no join or grant step. |
+| `trusted` | `manual` | `bh hq authority join`, which a registering frame with HQ authority-write access runs itself: exactly 0.24.0's trusted-fleet auto-admit. |
+| `verified` | `manual` | An operator grant (`bh hq authority grant`, then the `bh host` lifecycle admit). `join` is refused, so an ungranted host stays not admitted. |
+| `attested` | `manual` | The operator grant, and then three fresh authenticated heartbeats before `admitted_active` holds. A beat landing at or past the previous beat's TTL restarts the count; a latest beat that is stale or unauthenticated when read attests nothing. |
+
+- **The fleet key.** `hq.admission_policy` (`manual` | `open`) in `fleet.yaml` overrides the
+  admission knob. Unset, the profile supplies it. Like a per-knob override it may only require
+  **more** trust: `manual` under `open` or `trusted` makes admission operator-granted, `manual`
+  under `attested` keeps the heartbeat count, and `open` under `verified` or `attested` is
+  refused unless the operator key signs it (frames learn a loosening value only from an
+  operator-authorised config read, and learn a tightening one from any verified read). The
+  learned value is kept per host in `$BH_HOME/state/hq-fleet-admission-policy.json`.
+- **0.24.0 fleets.** A fleet that set `hq.default_authority_mode: trusted` and names no profile
+  keeps 0.24.0's join auto-admit (registration still joins automatically, and `bh hq authority
+  join` still admits), even though its profile resolves to the default `verified`. Naming a
+  profile opts the fleet into that profile's rule.
+- **The attestation count** is kept by no reader. It is advanced where each beat lands: the
+  heartbeat publisher computes the new beat's streak from the beat it replaces (it continues
+  only when the sequence advances and the new beat lands within the previous beat's TTL) and
+  records it as an `Attestation-Streak: <n>` trailer in the signed heartbeat commit. Eligibility
+  reads that streak from the latest beat, counted only when that beat verifies, is fresh and is
+  not a candidate's, so every reader computes the same answer however rarely it reads: a frame
+  read once after three good beats is admitted. The trailer sits inside the frame's SSH
+  signature, and readers that predate it ignore it. *Trust delta:* HQ keeps only the latest
+  beat, so the gaps behind the streak are the frame's own signed claim, checked by its
+  publisher against the beat it replaced. *Limit:* the SQL session and inbox carriers keep
+  only the latest renewal and record no streak, so `attested` admission fails closed there
+  until they carry one.
+- **Doctor.** `bh doctor` prints the effective rule under the trust profile line, for example
+  `admission: operator-granted: an operator grant admits (...) (hq.admission_policy: manual)`.
 
 **Per-knob overrides.** A host may override one knob in its own `host.yaml`:
 `hq.placement_mode` (`director` | `self`), `hive.write_policy` (`fenced` | `forward` | `open`)
@@ -671,8 +713,9 @@ layer: the write runs under the profile), naming the knob, the profile and the s
 that applies the looser value, `bh hq authority profile-<name> --operator-key <key> --confirm`.
 
 **Doctor.** `bh doctor` prints the effective profile and every override on one line, for
-example `profile trusted; placement overridden to director (hq.placement_mode, host.yaml)`.
-Under `open` it also prints that this is the single-operator lab posture.
+example `profile trusted; placement overridden to director (hq.placement_mode, host.yaml)`,
+and the effective admission rule below it. Under `open` it also prints that this is the
+single-operator lab posture.
 
 The rest of the design (roles, tenure cache, write policies, batch sync) is in
 [HQ trust profiles, composable host capabilities, elected tenure and batch bead sync](design/hq-trust-profiles-and-capabilities-adr.md).
