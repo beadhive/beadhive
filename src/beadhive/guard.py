@@ -631,25 +631,37 @@ def guard_primary(hive: str = "", *, cfg=None, verb: str = "") -> None:
     _guard_write(capabilities.PUBLISH, hive, cfg=cfg, verb=verb)
 
 
+def why_pointer(hive: str = "") -> str:
+    """The line every :func:`guard_capability` / :func:`guard_primary` refusal ends with: the
+    read-only verb that names the refusing layer and its fix (bh-4pki5)."""
+    return (
+        f"  Which layer refused and the one command that fixes it: "
+        f"{config.BINARY_ALIAS} hq why {hive or '<hive>'}"
+    )
+
+
+def _refuse(message: str, hive: str) -> typer.Exit:
+    """Echo a write refusal ending with :func:`why_pointer`; return the exit to raise."""
+    typer.echo(f"{message}\n{why_pointer(hive)}", err=True)
+    return typer.Exit(1)
+
+
 def _guard_write(capability: str, hive: str = "", *, cfg=None, verb: str = "") -> None:
     """:func:`guard_primary`'s layers, with frame eligibility narrowed to `capability`."""
     forwarded = forward_marker(hive, cfg=cfg)
     if forwarded is not None:
         refusal = forward_refusal(forwarded)
         if refusal:
-            typer.echo(refusal, err=True)
-            raise typer.Exit(1)
+            raise _refuse(refusal, forwarded.prefix or hive)
         return
     try:
         cut_over = writer_state(hive, cfg=cfg)
     except WriterUnreadable as exc:
-        typer.echo(f"✗ {exc}", err=True)
-        raise typer.Exit(1) from exc
+        raise _refuse(f"✗ {exc}", hive) from exc
     if cut_over is not None:
         refusal = writer_refusal(cut_over)
         if refusal:
-            typer.echo(refusal, err=True)
-            raise typer.Exit(1)
+            raise _refuse(refusal, cut_over[0])
         return
 
     from . import frame_eligibility
@@ -657,16 +669,14 @@ def _guard_write(capability: str, hive: str = "", *, cfg=None, verb: str = "") -
     try:
         frame_decision = frame_eligibility.require_intake(hive, cfg=cfg, capability=capability)
     except frame_eligibility.EligibilityError as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(1) from exc
+        raise _refuse(str(exc), hive) from exc
     state = (
         frame_eligibility.authoritative_primary(hive, cfg=cfg)
         if frame_decision is not None
         else primary_state(hive, cfg=cfg)
     )
     if state is None and frame_decision is not None:
-        typer.echo("frame ineligible: current_hive_lease_holder", err=True)
-        raise typer.Exit(1)
+        raise _refuse("frame ineligible: current_hive_lease_holder", hive)
     if state is None:
         return  # multi-host model not in force here (see `primary_state`)
     prefix, this_host, lease = state
@@ -690,8 +700,7 @@ def _guard_write(capability: str, hive: str = "", *, cfg=None, verb: str = "") -
     )
     if not refusal:
         return
-    typer.echo(refusal, err=True)
-    raise typer.Exit(1)
+    raise _refuse(refusal, prefix)
 
 
 # ---- the claim fencing token (bh-ytbb.10) ---------------------------------------------------

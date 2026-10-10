@@ -1246,6 +1246,41 @@ def hq_status(
 
 
 @hq_app.command(
+    "why",
+    help="read-only: walk the layers that decide a write on <hive> from this host (config, "
+    "forward, capability predicates, hive lease, writer fence) and print the first that refuses "
+    "with the one command that fixes it. Exits 1 when a layer refuses.",
+)
+def hq_why_cmd(
+    hive: str = typer.Argument(..., help="the hive (prefix, name or triplet)"),
+    capability: str = typer.Option(
+        "publish",
+        "--capability",
+        "-c",
+        help="the write capability to explain: author, claim, execute or publish",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="emit the decision as JSON"),
+):
+    # Lazy: `bh hq why --help` must not load config or reach HQ (bh-o01m6).
+    from . import capabilities, hq_why
+
+    if capability not in capabilities.WRITE_CAPABILITIES:
+        typer.echo(
+            f"✗ --capability must be one of {', '.join(capabilities.WRITE_CAPABILITIES)} "
+            f"(got {capability!r})",
+            err=True,
+        )
+        raise typer.Exit(2)
+    report = hq_why.walk(hq_why.WhyContext(hive, capability))
+    if as_json:
+        jsonout.emit(report.as_dict())
+    else:
+        typer.echo(hq_why.render(report))
+    if not report.allowed:
+        raise typer.Exit(1)
+
+
+@hq_app.command(
     "migrate",
     help="plan or explicitly switch HQ configuration authority between signed Git and Dolt",
 )

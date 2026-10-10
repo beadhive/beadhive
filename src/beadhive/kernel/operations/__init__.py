@@ -172,6 +172,7 @@ hq prune-aggregate|dry_run:boolean:o,confirm:boolean:o
 hq push|dry_run:boolean:o
 hq restore|list_only:boolean:o,from_dir:string:o,level:string:o,dry_run:boolean:o,confirm:boolean:o
 hq status|as_json:boolean:o
+hq why|hive:string:r,capability:string:o,as_json:boolean:o
 hub|
 label allowed|
 label docs|
