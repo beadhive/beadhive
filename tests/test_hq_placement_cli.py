@@ -1,9 +1,9 @@
-"""``bh hq placement`` (bh-16347.5): the hidden operator/director verb over the bh-a94qw library.
+"""``bh hq placement`` (bh-16347.5): the operator/director verb over the bh-a94qw library.
 
 The director is a stub here (its SQL is covered by ``test_hq_sql_placement.py`` and, against a
 throwaway Dolt server, ``test_director_failover_int.py``); these tests pin the operator shape:
 dry run unless ``--confirm``, refuse and never clamp, seed renders provisioning SQL only, JSON
-out, exit 1 on refusal, hidden from help.
+out, exit 1 on refusal, listed in ``bh hq --help`` and the CLI reference (bh-vl0r3).
 """
 
 from __future__ import annotations
@@ -289,12 +289,18 @@ def run(monkeypatch):
     return invoke
 
 
-def test_cli_is_hidden_and_documented_by_its_runbook(run):
+def test_cli_is_a_documented_hq_verb_pointing_at_its_runbook(run):
+    """Promoted from hidden by bh-vl0r3: the director CAS a verified/attested fleet places
+    through, and the command a trusted fleet's self-placement refusal prints."""
+    from pathlib import Path
+
     from beadhive.cli import app
 
     listing = CliRunner().invoke(app, ["hq", "--help"]).output
-    assert "placement" not in listing and "authority" in listing
+    assert "placement" in listing and "authority" in listing
     assert "hq-placement-runbook" in run("--help").output
+    reference = (Path(__file__).resolve().parents[1] / "docs" / "CLI.md").read_text()
+    assert "bh hq placement" in reference
 
 
 def test_cli_show_and_place_print_json_and_route_the_settings_path(run):

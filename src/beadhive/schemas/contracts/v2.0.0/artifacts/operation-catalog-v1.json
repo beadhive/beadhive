@@ -9529,8 +9529,8 @@
       "surfaces": {
         "cli": {
           "aliases": [],
-          "declared_hidden": true,
-          "effective_hidden": true,
+          "declared_hidden": false,
+          "effective_hidden": false,
           "granularity": {
             "mode": "fine",
             "reason": null

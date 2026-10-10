@@ -255,10 +255,49 @@ def check_capability(ctx: WhyContext) -> Verdict:
 # ---- 30 placement -------------------------------------------------------------------------
 
 
+def _self_placement(ctx: WhyContext):
+    """This host's self-placement decision for the hive (bh-vl0r3), or ``None`` when it is
+    unreadable or the host runs 0.24.0's adopt (no learned profile, no placement override)."""
+
+    def compute():
+        from . import config, self_placement
+
+        try:
+            decision = self_placement.evaluate(
+                ctx.label, host_id=_host_id(ctx), hq_dir=config.hq_dir()
+            )
+        except Exception:  # noqa: BLE001 - a diagnostic never fails on this read
+            return None
+        return decision if decision.mode != self_placement.LEGACY else None
+
+    return ctx.remember("self_placement", compute)
+
+
 def _not_placed(ctx: WhyContext, lease, cause: str, source: str) -> Verdict:
     free = lease is None or lease.is_tombstone or lease.is_expired()
     holder = "" if lease is None or lease.is_tombstone else lease.host_id
-    if free:
+    placing = _self_placement(ctx) if _host_id(ctx) else None
+    if placing is not None and placing.mode == "self" and placing.allowed:
+        command = f"{_bh()} host lease adopt {ctx.label}"
+        summary = (
+            f"not placed: {cause}; the {placing.profile} trust profile lets this frame place "
+            "itself (no live writer session): adopt it here"
+        )
+    elif placing is not None and not placing.allowed:
+        command = placing.director_command or f"{_bh()} host lease adopt {ctx.label}"
+        if placing.action == "live_writer":
+            failover = f", failover fires {placing.failover_at}" if placing.failover_at else ""
+            summary = (
+                f"not placed: {cause}; a live writer session holds it under the "
+                f"{placing.profile} trust profile — tenure ends {placing.tenure_ends_at}{failover}"
+                + ("; or have the director place this frame" if placing.director_command else "")
+            )
+        else:
+            summary = (
+                f"not placed: {cause}; self-placement is refused under the {placing.profile} "
+                "trust profile: the director places this frame"
+            )
+    elif free:
         command = f"{_bh()} host adopt {ctx.label}"
         summary = f"not placed: {cause}; adopt it here"
     elif _decision(ctx) is not None:
@@ -280,6 +319,7 @@ def _not_placed(ctx: WhyContext, lease, cause: str, source: str) -> Verdict:
             "epoch": getattr(lease, "epoch", 0),
             "source": source,
             "this_host": _host_id(ctx),
+            **({"self_placement": placing.as_dict()} if placing is not None else {}),
         },
     )
 

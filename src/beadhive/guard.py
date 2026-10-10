@@ -543,7 +543,7 @@ def _renew_liveness_hint(prefix: str, this_host: str, cfg) -> None:
         )
 
 
-def guard_capability(capability: str, hive: str = "", *, cfg=None, verb: str = "") -> None:
+def guard_capability(capability: str, hive: str = "", *, cfg=None, verb: str = ""):
     """The one gate in front of every bh write verb: may this host exercise `capability` on
     `hive` now? (trust-profiles ADR section 1, bh-b3ebg)
 
@@ -556,10 +556,36 @@ def guard_capability(capability: str, hive: str = "", *, cfg=None, verb: str = "
     ``execute`` and ``publish`` refuse. Where the write may land is the write policy
     (``fenced`` today: the writer frame or lease holder only, for every capability).
 
+    ``place`` (``bh host lease adopt``) is not a bead write: a host asks for it precisely
+    because it does not hold the hive, so it takes :func:`beadhive.self_placement.guard_place`
+    — the trust profile's placement knob — instead, and returns its
+    :class:`beadhive.self_placement.Decision`.
+
     Raises ``typer.Exit(1)`` on refusal, like every other guard here; raises
-    :class:`beadhive.capabilities.UnknownCapability` for a name that is not a write capability
-    (``place`` and ``admin`` are decided by the placement CAS and HQ's own write access)."""
+    :class:`beadhive.capabilities.UnknownCapability` for any other name that is not a write
+    capability (``admin`` is decided by HQ's own write access)."""
+    from . import capabilities
+
+    if capability == capabilities.PLACE:
+        if _PLACE_GUARD is None:
+            raise capabilities.UnknownCapability(
+                "the place check is not registered (import beadhive.self_placement)"
+            )
+        return _PLACE_GUARD(hive, cfg=cfg, verb=verb)
     _guard_write(_write_capability(capability), hive, cfg=cfg, verb=verb)
+    return None
+
+
+#: The ``place`` check (:func:`beadhive.self_placement.guard_place`), registered by that module
+#: when it is imported: placement reads the trust profile, HQ placement and the holder's session,
+#: and the guard must not import those (they import config, which imports the guard).
+_PLACE_GUARD = None
+
+
+def register_place_guard(check) -> None:
+    """Register the ``place`` check :func:`guard_capability` delegates to (bh-vl0r3)."""
+    global _PLACE_GUARD
+    _PLACE_GUARD = check
 
 
 def require_capability(capability: str, hive: str = "", *, cfg=None, hive_dir=None):

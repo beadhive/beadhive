@@ -341,12 +341,25 @@ def test_the_fenced_write_policy_still_needs_the_lease_for_every_capability(
     assert "current_hive_lease_holder" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("name", ["place", "admin", "write", ""])
+@pytest.mark.parametrize("name", ["admin", "write", ""])
 def test_guard_capability_refuses_a_non_write_capability(name):
     with pytest.raises(capabilities.UnknownCapability):
         guard.guard_capability(name, "bh", cfg={})
     with pytest.raises(capabilities.UnknownCapability):
         guard.require_capability(name, "bh", cfg={})
+
+
+def test_place_is_the_self_placement_check_never_a_bead_write(monkeypatch):
+    """``place`` (bh-vl0r3): guard_capability delegates it to the registered self-placement
+    check; require_capability (the in-process bead-write recheck) still refuses it."""
+    seen = []
+    monkeypatch.setattr(
+        guard, "_PLACE_GUARD", lambda hive, **kw: seen.append((hive, kw["verb"])) or "decision"
+    )
+    assert guard.guard_capability("place", "bh", cfg={}, verb="host lease adopt") == "decision"
+    assert seen == [("bh", "host lease adopt")]
+    with pytest.raises(capabilities.UnknownCapability):
+        guard.require_capability("place", "bh", cfg={})
 
 
 @pytest.mark.parametrize(

@@ -1,7 +1,9 @@
-"""``bh hq placement`` — the HIDDEN operator/director placement verb (bh-16347.5).
+"""``bh hq placement`` — the operator/director placement verb (bh-16347.5).
 
-Documented only in ``docs/design/hq-placement-runbook.md``, like ``bh hive fence``: it is
-outside ``bh --help`` and the CLI reference while 0.23.0 is dormant. Every action goes through
+A documented ``bh hq`` verb since bh-vl0r3 (it appears in ``bh hq --help`` and the CLI
+reference; the runbook is ``docs/design/hq-placement-runbook.md``): it is the director CAS a
+``verified`` or ``attested`` fleet places through, and the director command a ``trusted``
+fleet's self-placement refusal prints (:mod:`beadhive.self_placement`). Every action goes through
 :mod:`beadhive.hq_placement_ops` over the bh-a94qw library, bound by the director credential
 (``hq.sql.placement_writer``) in the operator settings file named by ``--operator-settings`` or
 ``$BH_HQ_OPERATOR_SETTINGS``. Mutating actions are dry runs unless ``--confirm``.
@@ -74,7 +76,7 @@ def placement_cmd(
         help="policy (no PREFIX): the fleet executor floor, e.g. 45m (default restores 45 min)",
     ),
 ) -> None:
-    """HIDDEN — see docs/design/hq-placement-runbook.md.
+    """Director placement over a hive's placement row — see docs/design/hq-placement-runbook.md.
 
     show PREFIX: read the hive's placement row.
 
