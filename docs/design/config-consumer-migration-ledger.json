@@ -574,28 +574,28 @@
       {
         "facade_target": "beadhive.config.worktrees_root",
         "kind": "direct-facade",
-        "line": 2315,
+        "line": 2316,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.worktrees_root"
       },
       {
         "facade_target": "beadhive.config.worktrees_root",
         "kind": "direct-facade",
-        "line": 2385,
+        "line": 2386,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.worktrees_root"
       },
       {
         "facade_target": "beadhive.config.enforce_signing",
         "kind": "direct-facade",
-        "line": 2563,
+        "line": 2564,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.enforce_signing"
       },
       {
         "facade_target": "beadhive.config.enforce_signing",
         "kind": "direct-facade",
-        "line": 2576,
+        "line": 2577,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.enforce_signing"
       },
@@ -1232,21 +1232,21 @@
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 149,
+        "line": 150,
         "path": "tests/test_hq_why.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 436,
+        "line": 437,
         "path": "tests/test_hq_why.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.hq_dir",
         "kind": "direct-facade",
-        "line": 437,
+        "line": 438,
         "path": "tests/test_hq_why.py",
         "target": "beadhive.config.hq_dir"
       },
@@ -2392,7 +2392,7 @@
         "target": "beadhive.config.load"
       }
     ],
-    "production_config_importer_count": 91,
+    "production_config_importer_count": 92,
     "production_config_importers": [
       "src/beadhive/activity_publisher.py",
       "src/beadhive/agent_run_summary_reader.py",
@@ -2452,6 +2452,7 @@
       "src/beadhive/hq_seed.py",
       "src/beadhive/hq_why.py",
       "src/beadhive/hq_why_layer_core.py",
+      "src/beadhive/hq_why_layer_profile.py",
       "src/beadhive/hub.py",
       "src/beadhive/kernel/daemon/contracts/__init__.py",
       "src/beadhive/localloop.py",
@@ -2787,6 +2788,11 @@
       },
       {
         "owner": "bh-18hud.5 compatibility migration ledger",
+        "path": "src/beadhive/hq_why_layer_profile.py",
+        "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
+      },
+      {
+        "owner": "bh-18hud.5 compatibility migration ledger",
         "path": "src/beadhive/hub.py",
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       },
@@ -2951,7 +2957,7 @@
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       }
     ],
-    "test_config_importer_count": 167,
+    "test_config_importer_count": 168,
     "test_config_importers": [
       "tests/contracts/test_config_contract_compatibility.py",
       "tests/contracts/test_config_resolution_compatibility.py",
@@ -3109,6 +3115,7 @@
       "tests/test_suite_hermeticity.py",
       "tests/test_sync_remote.py",
       "tests/test_toolchain.py",
+      "tests/test_trust_profiles.py",
       "tests/test_validation_bypass.py",
       "tests/test_work.py",
       "tests/test_work_container_refresh_int.py",

@@ -54,7 +54,9 @@ def authority_cmd(
         ...,
         help="install, bind, bind-beadyard, grant, observe, rebind, renew (deprecated alias of "
         "rebind), status, check, prune-inbox, mode (show the fleet default authority mode), "
-        "mode-signed / mode-trusted (set it), or join (open admission in a trusted fleet)",
+        "mode-signed / mode-trusted (set it), profile (show the fleet trust profile), "
+        "profile-open / profile-trusted / profile-verified / profile-attested (publish it), "
+        "or join (open admission in a trusted fleet)",
     ),
     record: Annotated[Path | None, typer.Option("--record")] = None,
     frame: str = typer.Option("", "--frame"),
@@ -112,6 +114,19 @@ def authority_cmd(
 
             result = hq_authority_fleet_mode.mode_cmd(
                 action.removeprefix("mode").removeprefix("-"),
+                operator_settings=operator_settings,
+                operator_key=operator_key,
+                confirm=confirm,
+                max_duration=max_duration,
+            )
+            typer.echo(json.dumps(result, sort_keys=True))
+            return
+        # The fleet trust profile rides in the action value too (`profile-trusted`, bh-bc2rj).
+        if action == "profile" or action.startswith("profile-"):
+            from . import hq_authority_fleet_mode
+
+            result = hq_authority_fleet_mode.profile_cmd(
+                action.removeprefix("profile").removeprefix("-"),
                 operator_settings=operator_settings,
                 operator_key=operator_key,
                 confirm=confirm,

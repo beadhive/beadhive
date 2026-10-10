@@ -124,6 +124,7 @@ def test_legacy_single_host_hive_is_ok_with_a_next_command(world):
         "capability": "ok",
         "placement": "skipped",
         "fence": "skipped",
+        "profile": "skipped",  # bh-bc2rj's provider: no trust-profile override refused
     }
 
 

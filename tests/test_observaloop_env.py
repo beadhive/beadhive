@@ -181,7 +181,7 @@ def test_apply_env_skips_comments_blanks_and_malformed(tmp_path):
 def test_present_cache_does_not_import_observaloop(tmp_path, monkeypatch):
     wt = _worktree(tmp_path, monkeypatch)
     observaloop_env.write_worktree_env(wt, "mr", "http://localhost:4318")
-    sys.modules.pop("beadhive.observaloop", None)
+    monkeypatch.delitem(sys.modules, "beadhive.observaloop", raising=False)
 
     observaloop_env.load_worktree_env({})
 
@@ -191,7 +191,7 @@ def test_present_cache_does_not_import_observaloop(tmp_path, monkeypatch):
 def test_missing_cache_observaloop_off_does_not_import_observaloop(tmp_path, monkeypatch):
     """Cache absent but observaloop disabled → quick check, no observaloop import, no overlay."""
     _worktree(tmp_path, monkeypatch)  # no write_worktree_env → cache missing
-    sys.modules.pop("beadhive.observaloop", None)
+    monkeypatch.delitem(sys.modules, "beadhive.observaloop", raising=False)
 
     observaloop_env.load_worktree_env({"otel": {"enabled": False}})
 
@@ -269,7 +269,7 @@ def test_scheme_qualified_overlay_takes_the_fast_path(tmp_path, monkeypatch):
     (wt / ".bh" / "observability" / "otel.env").write_text(
         "OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4321\nBH_OBSERVALOOP_PROFILE=mr\n"
     )
-    sys.modules.pop("beadhive.observaloop", None)
+    monkeypatch.delitem(sys.modules, "beadhive.observaloop", raising=False)
 
     observaloop_env.load_worktree_env({"otel": {"enabled": True}, "observaloop": {"enabled": True}})
 

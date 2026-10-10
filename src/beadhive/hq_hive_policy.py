@@ -147,6 +147,18 @@ def _fleet_default(snapshot: FleetConfigSnapshot) -> str:
     return committed_fleet_default(snapshot.documents)
 
 
+def _profile_loosened(bound: FleetConfigSnapshot, current: FleetConfigSnapshot) -> bool:
+    """Whether `current` publishes a looser ``hq.trust_profile`` than the signed `bound` head
+    (bh-bc2rj). A stricter or equal profile is tolerated: lowering always takes effect."""
+    from . import trust_profiles
+    from .hq_trust_profile import committed
+
+    return trust_profiles.looser(
+        committed(current.documents) or trust_profiles.DEFAULT,
+        committed(bound.documents) or trust_profiles.DEFAULT,
+    )
+
+
 def config_head_tolerated(
     bound: FleetConfigSnapshot,
     current: FleetConfigSnapshot,
@@ -165,7 +177,9 @@ def config_head_tolerated(
     the signed `policies` once the projection is rebased onto H0 (so only the per-item
     ``config_head`` provenance may differ). Every ``managed_repos[].frame_policy``, prefix
     and kind therefore still fences, as does ``hq.default_authority_mode`` (bh-taa04.3): a
-    signed frame must not learn a fleet default the operator has not re-signed against.
+    signed frame must not learn a fleet default the operator has not re-signed against. So
+    does an ``hq.trust_profile`` that loosens the bound one (bh-bc2rj); a stricter profile is
+    tolerated (lowering always takes effect).
 
     Pure: the caller proves ancestry (H1 descends from H0) and verifies both snapshots.
     Any doubt is ``False`` (fail closed). The only predicate the frame verifier, receiver
@@ -189,6 +203,7 @@ def config_head_tolerated(
             or bound.beadyard_id != current.beadyard_id
             or _catalog_identity(bound) != _catalog_identity(current)
             or _fleet_default(bound) != _fleet_default(current)
+            or _profile_loosened(bound, current)
         ):
             return False
         rebased = replace(current, commit_revision=bound.commit_revision)

@@ -1271,6 +1271,36 @@ class HqConfig(_Section):
             "key."
         ),
     )
+    trust_profile: Literal["open", "trusted", "verified", "attested"] = Field(
+        "verified",
+        description=(
+            "FLEET trust profile (trust-profiles ADR section 2): sets authority, admission, "
+            "placement, off-primary write policy and tenure together, plus a capability "
+            "ceiling. `verified` (default) is 0.24.0's behaviour. Publish it with `bh hq "
+            "authority profile-<name> --confirm`, never by hand: raising it towards `open` "
+            "needs the operator key once, lowering it always takes effect. Its authority "
+            "column is hq.default_authority_mode unless that is set explicitly."
+        ),
+    )
+    placement_mode: Literal["director", "self"] | None = Field(
+        None,
+        description=(
+            "HOST override of the trust profile's placement knob: `director` (director CAS "
+            "only) or `self` (self-place on a hive with no live writer session). Unsigned, so "
+            "it may only require more trust than the profile; a loosening value is refused "
+            "and the profile's value stays."
+        ),
+    )
+    tenure: float | None = Field(
+        None,
+        gt=0,
+        allow_inf_nan=False,
+        description=(
+            "HOST override of the trust profile's tenure knob, in seconds: under `open` the "
+            "tenure ceiling (default 24 h; it may only shorten it), otherwise an extra bound "
+            "below the hive's failover_after / heartbeat TTL."
+        ),
+    )
     sql: HqSqlConfig = Field(default_factory=HqSqlConfig)
 
     remote: str = Field(
@@ -1507,7 +1537,7 @@ class HostConfig(_Section):
 
 
 class HiveConfig(_Section):
-    """Host-scoped onboarding policy (``hive``).
+    """Host-scoped onboarding policy and write-policy override (``hive``).
 
     ``adopt_existing`` makes ``bh hive add`` and ``bh hive onboard`` read an existing hive's own
     bead-store identity (prefix + project id: the local checkout first, then the remote's
@@ -1525,6 +1555,12 @@ class HiveConfig(_Section):
         ge=1,
         description="Seconds a remote identity probe (git ls-remote + shallow dolt clone) may "
         "take before onboarding falls back to the derived identity.",
+    )
+    write_policy: Literal["fenced", "forward", "open"] | None = Field(
+        None,
+        description="HOST override of the trust profile's off-primary write policy (`fenced`, "
+        "`forward`, `open`). Unsigned, so it may only require more trust than the profile; a "
+        "loosening value is refused and the profile's value stays.",
     )
 
 

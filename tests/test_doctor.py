@@ -1296,6 +1296,7 @@ _DOCTOR_SECTIONS = {
     "host_daemon",
     "group_auth",
     "authority_expiry",
+    "trust_profile",
     "mcp",
     "harness_plugin",
     "seats",

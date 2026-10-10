@@ -6,8 +6,8 @@ one-element set, so existing manifests need no migration (bh-t1xwp). From the de
 * the **effective capability set** is the union of the bundles, then the fleet trust profile's
   **ceiling** removes capabilities from every host regardless of its roles. The ceiling is a
   pluggable input (:data:`Ceiling`); :data:`NO_CEILING` removes nothing, which is the
-  ``open``/``trusted`` profile behaviour and the default until the profile table supplies one
-  (bh-bc2rj).
+  ``open``/``trusted`` profile behaviour. Frame eligibility supplies the fleet profile's
+  ceiling (:meth:`beadhive.trust_profiles.ResolvedProfile.ceiling`, bh-bc2rj).
 * **tenure** follows the highest-tenure role in the set (:func:`tenure_role`): a set containing
   ``executor`` uses the executor ``failover_after`` row, else ``transient``'s; a set of roles
   that are never placed is never placed.
