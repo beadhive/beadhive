@@ -284,10 +284,20 @@ def status(now: float | None = None) -> dict:
     }
 
 
+def _heartbeat_succeeded() -> None:
+    """Tell the host daemon a heartbeat landed: it refreshes the elected-tenure cache on each
+    successful heartbeat as well as on its timer (bh-ofszz). Best-effort."""
+    from .hq_tenure_cache import mark_heartbeat
+
+    mark_heartbeat()
+
+
 def _beat(free_sessions: int) -> str:
     from .heartbeat_report import send_cached_beat
 
-    return send_cached_beat(free_sessions=free_sessions)
+    digest = send_cached_beat(free_sessions=free_sessions)
+    _heartbeat_succeeded()
+    return digest
 
 
 def _renew(*, loop: bool, interval: float) -> int:
@@ -304,6 +314,7 @@ def _renew(*, loop: bool, interval: float) -> int:
     try:
         if not loop:
             route = renewer.tick()
+            _heartbeat_succeeded()
             print(json.dumps({"renewed": route.session}))
             return 0
         stop = threading.Event()
@@ -312,7 +323,9 @@ def _renew(*, loop: bool, interval: float) -> int:
             # Transport exceptions may carry credential references: print the class only.
             print(f"session renewal failed ({type(exc).__name__}); retrying", file=sys.stderr)
 
-        renewer.run(interval_s=interval, stop=stop.wait, on_error=report)
+        renewer.run(
+            interval_s=interval, stop=stop.wait, on_error=report, on_success=_heartbeat_succeeded
+        )
         return 0
     except NotSwitched:
         print(

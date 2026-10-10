@@ -333,8 +333,10 @@ class SessionRenewer:
         interval_s: float,
         stop: Callable[[float], bool],
         on_error: Callable[[BaseException], None] | None = None,
+        on_success: Callable[[], None] | None = None,
     ) -> None:
-        """Tick every ``interval_s`` until ``stop(wait_s)`` returns True (an Event's ``wait``)."""
+        """Tick every ``interval_s`` until ``stop(wait_s)`` returns True (an Event's ``wait``).
+        `on_success` runs after each renewal that landed (the tenure cache's heartbeat hook)."""
         if type(interval_s) not in (int, float) or not math.isfinite(interval_s) or interval_s <= 0:
             raise SessionError("renewal interval must be a positive number of seconds")
         while True:
@@ -346,6 +348,9 @@ class SessionRenewer:
             except Exception as exc:  # noqa: BLE001 - one failed renewal never ends the loop
                 if on_error is not None:
                     on_error(exc)
+            else:
+                if on_success is not None:
+                    on_success()
             if stop(max(0.0, interval_s - (time.monotonic() - started))):
                 return
 

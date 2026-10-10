@@ -87,6 +87,12 @@ class SqlConfigError(ValueError):
     """Committed configuration unavailable, inconsistent, or conflicted."""
 
 
+class SqlConfigUnavailable(SqlConfigError):
+    """The reader could not be reached (connect failure or deadline): transient, so a command
+    may retry or serve the elected-tenure cache (:mod:`beadhive.hq_tenure_cache`, bh-kjxe9).
+    Every other :class:`SqlConfigError` means HQ answered and refused, and fails closed."""
+
+
 class PublicationUnknown(SqlConfigError):
     """DOLT_COMMIT may have succeeded; recover by immutable publication ID."""
 
@@ -306,11 +312,11 @@ class SqlFleetConfigRevisionStore:
         own_deadline = time.monotonic() + binding["operation_timeout"]
         deadline = min(deadline, own_deadline) if deadline is not None else own_deadline
         if time.monotonic() >= deadline:
-            raise SqlConfigError("HQ config operation deadline exceeded")
+            raise SqlConfigUnavailable("HQ config operation deadline exceeded")
         try:
             return connect(binding, self.broker, deadline=deadline), deadline
         except SqlTransportError:
-            raise SqlConfigError("verified HQ config connection unavailable") from None
+            raise SqlConfigUnavailable("verified HQ config connection unavailable") from None
 
     @staticmethod
     def _head(cursor):

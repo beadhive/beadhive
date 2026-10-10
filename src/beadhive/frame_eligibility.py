@@ -647,21 +647,57 @@ def require_eligible(host_id, hive=None, *, capability=None, **kwargs):
     """The decision for `host_id`, raising :class:`EligibilityError` when it refuses.
 
     `capability` (a :mod:`beadhive.capabilities` name) narrows the decision to the predicates
-    that capability consults; ``None`` evaluates every predicate."""
-    decision = decision_for(host_id, hive, **kwargs)
-    if decision is not None and hive and set(hive) == {"prefix"}:
-        from . import config, registry
+    that capability consults; ``None`` evaluates every predicate.
 
-        try:
-            entry = registry.resolve_hive(config.load(), hive["prefix"])
-        except (ValueError, KeyError, FileNotFoundError):
-            raise EligibilityError("frame ineligible: hive_catalog_available") from None
-        decision = decision_for(host_id, entry, **kwargs)
-    if decision is not None:
-        decision = decision.for_capability(capability)
+    With a capability, the elected-tenure cache (:mod:`beadhive.hq_tenure_cache`, bh-ofszz)
+    answers first: the host daemon's current ``author`` / ``claim`` decision for the hive is
+    used without an HQ read (never under ``attested``, whose boundary rereads HQ every time),
+    and a live read that finds HQ unreachable falls back to the cached decision under the
+    profile's tenure and lapse rules."""
+    decision = _tenure_decision(host_id, hive, capability, kwargs, offline=False)
+    if decision is None:
+        decision = decision_for(host_id, hive, **kwargs)
+        if decision is not None and hive and set(hive) == {"prefix"}:
+            from . import config, registry
+
+            try:
+                entry = registry.resolve_hive(config.load(), hive["prefix"])
+            except (ValueError, KeyError, FileNotFoundError):
+                raise EligibilityError("frame ineligible: hive_catalog_available") from None
+            decision = decision_for(host_id, entry, **kwargs)
+        if decision is not None:
+            decision = decision.for_capability(capability)
+        if decision is not None and not decision.allowed:
+            from .hq_tenure_cache import authority_unavailable
+
+            if authority_unavailable(decision):
+                decision = _tenure_decision(host_id, hive, capability, kwargs, offline=True) or (
+                    decision
+                )
     if decision is not None and not decision.allowed:
         raise EligibilityError(f"frame {host_id} ineligible: {decision.reason}")
     return decision
+
+
+def _tenure_decision(host_id, hive, capability, kwargs, *, offline):
+    """The elected-tenure cache's decision for `capability` on `hive`, or ``None`` (read
+    live). Only for this host's own capability-narrowed read: an explicit clock or HQ
+    directory (a test, a recovery read) always reads live."""
+    prefix = hive.get("prefix") if isinstance(hive, dict) else None
+    if capability is None or not prefix or kwargs.get("at") is not None or kwargs.get("hq_dir"):
+        return None
+    from . import config, hq_tenure_cache
+
+    try:
+        host_cfg = config.load_host()
+    except (FileNotFoundError, ValueError, OSError):
+        return None
+    sql = (host_cfg.get("hq") or {}).get("sql") or {}
+    if sql.get("enabled") is not True:
+        return None
+    read = hq_tenure_cache.offline_decision if offline else hq_tenure_cache.cached_decision
+    predicates = read(host_id, str(prefix), capability, host_cfg)
+    return None if predicates is None else EligibilityDecision(predicates)
 
 
 def require_local(hive="", *, cfg=None, hive_dir=None, capability=None):

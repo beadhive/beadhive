@@ -237,8 +237,14 @@ def test_normal_consumers_use_committed_revision_cas_and_never_fall_back(tmp_pat
             (stale_hq / "fleet.yaml").write_text("delimiter: stale-git\n")
             server.terminate()
             server.wait(timeout=10)
-            with pytest.raises((SqlConfigError, SqlTransportError)):
-                config.load()
+            # Without the elected-tenure cache (bh-ofszz) an unreachable HQ is an error...
+            with monkeypatch.context() as uncached:
+                uncached.setenv("BH_HQ_TENURE_CACHE", "off")
+                with pytest.raises((SqlConfigError, SqlTransportError)):
+                    config.load()
+            # ...and with it a command serves the verified HQ revision it cached, never the
+            # stale Git copy beside it.
+            assert config.load()["delimiter"] == "/"
             unavailable = frame_eligibility.decision_for(
                 "fixture-unenrolled", hq_dir=host_home / "hq"
             )

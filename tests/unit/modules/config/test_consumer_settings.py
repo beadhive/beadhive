@@ -51,6 +51,7 @@ def test_host_daemon_settings_are_exposed_by_the_narrow_daemon_port():
         "BINARY_ALIAS",
         "home",
         "load",
+        "load_host",
         "otel_flush_timeout",
     }
 

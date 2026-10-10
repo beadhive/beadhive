@@ -35,6 +35,8 @@ _load_cache: dict[tuple[tuple, tuple], str] = {}
 _SQL_EFFECTIVE_MAX = 4
 _sql_effective: OrderedDict[tuple[str, str], str] = OrderedDict()
 _sql_effective_lock = threading.Lock()
+#: The committed SQL fleet.yaml's validated mapping, keyed by its content digest (one entry).
+_sql_fleet: dict[str, object] = {}
 
 
 @dataclass(frozen=True)
@@ -200,6 +202,17 @@ def _sql_attachment(api, host=None):
     return attach_fleet_config(bootstrap=host.get("hq") or {})
 
 
+def _effective_sql_snapshot(api, host=None):
+    """The committed snapshot an ordinary effective read uses: the elected-tenure cache
+    (:mod:`beadhive.hq_tenure_cache`, bh-ofszz), refreshed by the host daemon, falling back to
+    one live per-process read that seeds it. Mutations, seeds, backend switches and readbacks
+    keep calling :func:`_sql_attachment` directly: nothing that publishes reads the cache."""
+    from .hq_tenure_cache import read_snapshot
+
+    host = host if host is not None else api.load_host()
+    return read_snapshot(host, lambda: _sql_attachment(api, host)[1])
+
+
 def _fleet_document(api, snapshot):
     document = next((item for item in snapshot.documents if item.path == "fleet.yaml"), None)
     if document is None:
@@ -226,8 +239,26 @@ def load_fleet(api):
         _validate_settings(api, fleet, scope="fleet")
         return fleet
     active = _fleet_transaction.get()
-    snapshot = active.snapshot if active is not None else _sql_attachment(api)[1]
-    return _fleet_document(api, snapshot)
+    if active is not None:
+        return _fleet_document(api, active.snapshot)
+    snapshot = _effective_sql_snapshot(api, host)
+    # Like `_load_sql`'s derivation memo: a byte-identical committed fleet.yaml is parsed and
+    # validated once per process (bh-ofszz); each caller gets its own copy to edit.
+    document = next((item for item in snapshot.documents if item.path == "fleet.yaml"), None)
+    key = (
+        hashlib.sha256(document.content.encode("utf-8")).hexdigest()
+        if document is not None and isinstance(document.content, str)
+        else None
+    )
+    with _sql_effective_lock:
+        fleet = _sql_fleet.get(key) if key is not None else None
+    if fleet is None:
+        fleet = _fleet_document(api, snapshot)
+        if key is not None:
+            with _sql_effective_lock:
+                _sql_fleet.clear()
+                _sql_fleet[key] = fleet
+    return deepcopy(fleet)
 
 
 def fleet_snapshot(api):
@@ -259,8 +290,18 @@ def publish_fleet_document(api, path: str, content: str | None):
     if content is None and not found:
         raise FileNotFoundError(path)
     published = store.publish_snapshot(tuple(documents), expected_revision=snapshot.commit_revision)
-    clear_load_cache()
+    _published_new_revision()
     return published
+
+
+def _published_new_revision() -> None:
+    """This host just moved HQ's committed revision: drop the elected-tenure cache record so
+    every process on the host reads it afresh (a publisher elsewhere is learned at the next
+    refresh; the reader's floor also keys the record), then the process-local memos."""
+    from .hq_tenure_cache import invalidate
+
+    invalidate()
+    clear_load_cache()
 
 
 @contextmanager
@@ -306,6 +347,10 @@ def clear_load_cache() -> None:
         _load_cache.clear()
     with _sql_effective_lock:
         _sql_effective.clear()
+        _sql_fleet.clear()
+    from .hq_tenure_cache import reset
+
+    reset()  # the tenure cache's per-process memo (its on-disk record is the daemon's)
 
 
 def leaf_paths(node, prefix: str = ""):
@@ -364,15 +409,16 @@ def _load_sql(api, host) -> str:
 
     ``host`` is the HOST mapping ``_load_uncached`` already parsed and passed through
     ``sql_selected`` (which also pins an active transaction's binding), so it is not re-read
-    twice more here. The committed snapshot is fetched on EVERY call — that read is what
-    requalifies the current revision, the rollback floor and the snapshot's finite validity,
-    and a revision change or outage surfaces immediately. Only the pure derivation from the
-    returned bytes (fleet.yaml parse + settings validation + merge, ~0.5 s) is memoized,
-    keyed by the exact fleet.yaml content and HOST, so a byte-identical revision is not
-    re-parsed by every seam of a long validation run (bh-931we).
+    twice more here. The committed snapshot comes from the elected-tenure cache (bh-ofszz):
+    the host daemon requalifies the revision, the rollback floor and the snapshot's validity on
+    its refresh timer, and a command reads its record (or, with no current record, reads HQ
+    once per process and seeds it). The pure derivation from the returned bytes (fleet.yaml
+    parse + settings validation + merge, ~0.5 s) is memoized, keyed by the exact fleet.yaml
+    content and HOST, so a byte-identical revision is not re-parsed by every seam of a long
+    validation run (bh-931we).
     """
     active = _fleet_transaction.get()
-    snapshot = active.snapshot if active is not None else _sql_attachment(api, host)[1]
+    snapshot = active.snapshot if active is not None else _effective_sql_snapshot(api, host)
     document = next((item for item in snapshot.documents if item.path == "fleet.yaml"), None)
     key = None
     if document is not None and isinstance(document.content, str):
@@ -734,7 +780,7 @@ def save_fleet(api, data) -> None:
     _fleet_document(api, replace(snapshot, documents=documents))
     published = store.publish_snapshot(documents, expected_revision=snapshot.commit_revision)
     _fleet_document(api, published)
-    clear_load_cache()
+    _published_new_revision()
 
 
 def guard_hq_registry_controller(api) -> None:

@@ -54,6 +54,9 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         # Per-knob trust-profile overrides (bh-bc2rj): host-local, may only tighten.
         "hq.placement_mode",
         "hq.tenure",
+        # Elected-tenure cache (bh-ofszz): host-local refresh interval and switch.
+        "hq.tenure_refresh",
+        "hq.tenure_cache",
         "hive.write_policy",
     }
 )

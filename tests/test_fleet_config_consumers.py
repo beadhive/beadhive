@@ -108,15 +108,22 @@ def selected_sql_host(tmp_path, monkeypatch):
     return store, host_path, bootstrap
 
 
-def test_sql_load_requalifies_every_read_and_never_serves_a_stale_revision(
+def test_sql_load_reads_the_tenure_cache_and_learns_a_revision_at_the_next_refresh(
     selected_sql_host, monkeypatch
 ):
-    """bh-931we: only the pure derivation of identical committed bytes is memoized. Every
-    `config.load()` still performs the committed read, so a new revision is visible on the
-    very next call and an expired/unavailable snapshot fails closed with no cached fallback."""
+    """bh-ofszz supersedes bh-931we's "every `config.load()` reads HQ": an ordinary load reads
+    the elected-tenure cache (one HQ read per process when nothing seeded it), so a revision
+    published elsewhere is learned when the record goes stale — one refresh interval, on a fake
+    clock here — not on the very next call. The pure derivation of identical committed bytes
+    stays memoized, callers still own isolated copies, and once the record is stale an HQ
+    refusal fails closed with no cached fallback."""
+    from beadhive import hq_tenure_cache
+
     store, host_path, bootstrap = selected_sql_host
     del bootstrap["hq"]["mode"]  # fleet-only key: the committed fleet document carries it
     host_path.write_text(json.dumps(bootstrap))
+    now = [time.time()]
+    monkeypatch.setattr(hq_tenure_cache, "clock", lambda: now[0])
     attach = config_store._sql_attachment
     reads, derived = [], []
     monkeypatch.setattr(
@@ -138,22 +145,29 @@ def test_sql_load_requalifies_every_read_and_never_serves_a_stale_revision(
     first["mutated"] = True  # callers own isolated copies, memo or not
     second = config.load()
     assert "mutated" not in second
-    assert len(reads) == 2
+    assert len(reads) == 1  # the second load is served by the cache the first one seeded
     assert derived == ["1"]  # identical bytes: parsed + validated once
 
     store.publish_snapshot(
         (FleetConfigDocument("fleet.yaml", "hq:\n  mode: dolt-server\ndelimiter: /\n"),),
         expected_revision="1",
     )
+    config_store.clear_load_cache()  # a new process
+    assert "delimiter" not in config.load()  # still within the refresh interval
+    stale_after = hq_tenure_cache.current_policy(config.load_host()).stale_after
+    now[0] += stale_after + 1
+    config_store.clear_load_cache()
     assert config.load()["delimiter"] == "/"
-    assert len(reads) == 3
-    assert derived == ["1", "2"]
+    assert len(reads) == 2
+    assert derived == ["1", "1", "2"]  # each new process derives its revision once
 
     def expired(api, host=None):
         raise config.ConfigError("committed HQ configuration expired")
 
     monkeypatch.setattr(config_store, "_sql_attachment", expired)
+    now[0] += stale_after + 1
     for _ in range(2):
+        config_store.clear_load_cache()
         with pytest.raises(config.ConfigError, match="expired"):
             config.load()
 
