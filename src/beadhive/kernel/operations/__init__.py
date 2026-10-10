@@ -274,6 +274,7 @@ work submit|bead:string:o,as_:string:o,hive:string:o,group:string:o,override_val
 worktree add|hive:string:o,bead:string:o,branch:string:o,dry_run:boolean:o,as_json:boolean:o
 worktree init|path:string:r
 worktree list|as_json:boolean:o,hive:string:o,state:string:o,limit:integer:o,cursor:string:o
+worktree local-reclaim|paths:string:o,root:array:o,repo:array:o,targets_from:string:o,base:array:o,dry_run:boolean:o,strict_process_scan:boolean:o,as_json:boolean:o
 worktree mark-abandoned|ref:string:r,reason:string:r,retained_for:string:o,superseded_by:string:o,hive:string:o
 worktree mark-landed|ref:string:r,hive:string:o
 worktree path|ref:string:o,bead:string:o,hive:string:o
@@ -440,6 +441,7 @@ _CLI_ALIAS_TARGETS: dict[str, tuple[str, dict[str, Any], str]] = {
             "add",
             "init",
             "list",
+            "local-reclaim",
             "mark-abandoned",
             "mark-landed",
             "path",

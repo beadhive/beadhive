@@ -267,7 +267,7 @@ def test_every_cli_leaf_and_signature_is_declared_exactly_once() -> None:
 
 def test_every_projection_declares_granularity_progress_and_interactivity() -> None:
     cli = _projected_cli()
-    assert len(cli) == 245
+    assert len(cli) == 247
     assert {
         "hq beadyard",
         "hq beadyard-adopt",
@@ -415,6 +415,7 @@ def test_cli_parent_alias_and_passthrough_metadata_is_complete() -> None:
         "wt add": "worktree.add",
         "wt init": "worktree.init",
         "wt list": "worktree.list",
+        "wt local-reclaim": "worktree.local-reclaim",
         "wt mark-abandoned": "worktree.mark-abandoned",
         "wt mark-landed": "worktree.mark-landed",
         "wt path": "worktree.path",
@@ -611,7 +612,7 @@ def test_convention_8_scans_every_live_description_probe_and_test_filename() -> 
     scanned = {**cli_texts, **mcp_texts, **filename_texts}
 
     # Core catalog and package manifests are the two explicit CLI authorities.
-    assert len(cli_texts) == (245 + len(MANIFEST_CLI_COMMANDS)) * 2
+    assert len(cli_texts) == (247 + len(MANIFEST_CLI_COMMANDS)) * 2
     assert {"cli:host eligible:help", "cli:host eligible:docstring"} <= cli_texts.keys()
     assert mcp_counts == {"tools": 10, "resources": 21, "probes": 1}
     assert len(filename_texts) == len(test_files) > 0
