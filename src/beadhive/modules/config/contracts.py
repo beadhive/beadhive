@@ -1503,6 +1503,31 @@ class HostConfig(_Section):
     )
 
 
+# ---- hive (onboarding policy, bh-m2irb) ----------------------------------------
+
+
+class HiveConfig(_Section):
+    """Host-scoped onboarding policy (``hive``).
+
+    ``adopt_existing`` makes ``bh hive add`` and ``bh hive onboard`` read an existing hive's own
+    bead-store identity (prefix + project id: the local checkout first, then the remote's
+    ``refs/dolt/data``) instead of deriving one from the repo name, so a fresh host lands the
+    hive in its own shared-server database rather than bd's generic ``beads`` (bh-ajgot,
+    bh-6csoa). Opt-in; off keeps the derived identity exactly as before."""
+
+    adopt_existing: bool = Field(
+        False,
+        description="Adopt an existing hive's own prefix and project id on `hive add`/`onboard` "
+        "(local store, then the remote's refs/dolt/data) instead of deriving them.",
+    )
+    adopt_probe_timeout: int = Field(
+        120,
+        ge=1,
+        description="Seconds a remote identity probe (git ls-remote + shallow dolt clone) may "
+        "take before onboarding falls back to the derived identity.",
+    )
+
+
 # ---- release (release-order planning, bh-k2j8) --------------------------------
 
 
@@ -2007,6 +2032,11 @@ class ManagedRepoEntry(_Section):
         "`kind` — forks/external were never furnished, everything else was (registry.furnish_of).",
     )
     upstream: str | None = Field(None, description='Upstream "owner/name" for a fork kind.')
+    project_id: str | None = Field(
+        None,
+        description="The hive's bead-store project id, recorded when `hive.adopt_existing` read "
+        "it from the store, so a fresh host can verify it attached the right database.",
+    )
     contribution: Literal["pull"] | None = Field(
         None,
         description="Marks a hive as a Contribution-plane target. Today only `pull` "
@@ -2114,6 +2144,7 @@ class BeadhiveConfig(BaseSettings):
     work: WorkConfig = Field(default_factory=WorkConfig)
     hq: HqConfig = Field(default_factory=HqConfig)
     host: HostConfig = Field(default_factory=HostConfig)
+    hive: HiveConfig = Field(default_factory=HiveConfig)
     release: ReleaseConfig = Field(default_factory=ReleaseConfig)
     claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
     archive: ArchiveConfig = Field(default_factory=ArchiveConfig)
@@ -2406,6 +2437,7 @@ __all__ = (
     "GitWorkspaceConfig",
     "HerdrConfig",
     "HitchConfig",
+    "HiveConfig",
     "HostConfig",
     "HostDaemonConfig",
     "HostDispatchConfig",

@@ -41,7 +41,7 @@ from typing import Any, NamedTuple
 import typer
 
 from . import bd as bd_mod
-from . import jsonout, registry, safety, store_locator
+from . import jsonout, registry, safety, store_identity, store_locator
 from . import plugins as _plugins
 from .storage_migrate import SHARED_SERVER_CONFIG_KEY, SHARED_SERVER_FLAG
 from .storage_migrate import origin_has_dolt_data as _probe_origin_has_dolt_data
@@ -182,6 +182,11 @@ class Ctx:
     hub_sync: bool | None = False
     # ---- derived once by _ensure_derived, read by checks + actions ----
     existing: Any = None
+    # The bead-store project id `hive.adopt_existing` read (or the registry recorded), "" when
+    # unknown — never derived (bh-m2irb).
+    project_id: str = ""
+    # Where the clone URL came from when the operator passed none (bh-m2irb): "" = --clone-url.
+    clone_url_source: str = ""
     upstream: str = ""
     classification: str = ""
     prefix_override: bool = False
@@ -475,6 +480,8 @@ def _resolve_kind_prefix_upstream(
         ctx.prefix = ctx.prefix or str(existing["prefix"])
         ctx.kind = ctx.kind or str(existing["kind"])
         ctx.upstream = str(existing.get("upstream", "") or "")
+        if ctx.prefix == str(existing["prefix"]):
+            ctx.project_id = str(existing.get("project_id", "") or "")
     else:
         # Fresh hive, or --force: classify + derive from scratch.
         if ctx.kind == "external":
@@ -504,11 +511,66 @@ def _resolve_kind_prefix_upstream(
             # --force on a registered hive keeps the registered prefix:
             # re-registering under a re-derived prefix would orphan every existing bead ID.
             ctx.prefix = ctx.prefix or str(existing["prefix"])
+            if ctx.prefix == str(existing["prefix"]):
+                ctx.project_id = str(existing.get("project_id", "") or "")
+        if not ctx.prefix and store_identity.adopt_existing_enabled(cfg):
+            _adopt_store_identity(ctx)
         if not ctx.prefix:
             ctx.prefix, warns = registry.derive_prefix(provider, org, repo, ctx.kind, cfg)
             for w in warns:
                 typer.echo(w, err=True)
             ctx.prefix = _adopt_store_prefix(ctx, ctx.prefix)
+
+
+def _origin_url(base: Path) -> str:
+    """The checkout's own `origin` URL, or "" (no repo / no origin / git unreadable)."""
+    from . import hive  # via hive.run so it honors the same patched run seam
+
+    res = hive.run(
+        ["git", "-C", str(base), "remote", "get-url", "origin"], check=False, capture=True
+    )
+    if getattr(res, "returncode", 1) != 0:
+        return ""
+    return (getattr(res, "stdout", "") or "").strip()
+
+
+def _adopt_store_identity(ctx: Ctx) -> None:
+    """`hive.adopt_existing` (bh-m2irb): take the prefix and project id the hive's OWN store
+    declares — the local checkout's store first, then the remote's `refs/dolt/data` — before
+    anything is derived. Leaves ``ctx.prefix`` empty when there is no store anywhere, which
+    is the one case deriving is for.
+
+    The remote probe is what the working-copy read in :func:`_adopt_store_prefix` cannot do:
+    a zero-footprint hive's clone carries no `.beads/` at all (bead state rides
+    `refs/dolt/data`, and `metadata.json` is never tracked), so on a fresh host the only copy
+    of the identity is the remote's (bh-ajgot)."""
+    url = ctx.clone_url or (_origin_url(ctx.base) if ctx.target_exists else "")
+    if not url:
+        url = _registered_clone_url(ctx)
+    from . import config  # lazy, as elsewhere in this module
+
+    found = store_identity.resolve(
+        ctx.target if ctx.target_exists else None,
+        url,
+        scratch=store_identity.scratch_dir(config.cache_dir()),
+        timeout=store_identity.probe_timeout(ctx.cfg),
+    )
+    if found is None:
+        return
+    ctx.prefix = found.prefix
+    ctx.project_id = found.project_id
+    pid = f", project id {found.project_id}" if found.project_id else ""
+    typer.echo(
+        f"note: adopting prefix '{found.prefix}'{pid} from {found.source} "
+        "(hive.adopt_existing) — not derived from the repo name",
+        err=True,
+    )
+    if registry.prefix_taken(ctx.cfg, found.prefix, ctx.hive):
+        typer.echo(
+            f"warn: adopted prefix '{found.prefix}' is already registered to another hive — "
+            "two hives cannot share one store (use --prefix to override)",
+            err=True,
+        )
 
 
 def _adopt_store_prefix(ctx: Ctx, derived: str) -> str:
@@ -562,6 +624,10 @@ def _note_prefix_drift(
     """Warn (non-fatal) when the registered prefix no longer matches what re-deriving now
     would produce — the registered prefix always wins unless ``--prefix`` overrides it."""
     if existing is not None and not ctx.prefix_override:
+        if existing.get("project_id") and ctx.prefix == str(existing["prefix"]):
+            # Adopted from the store itself (bh-m2irb): the repo-name derivation was never the
+            # source of this prefix, so a difference from it is not drift worth reporting.
+            return
         derived, _ = registry.derive_prefix(provider, org, repo, ctx.kind, cfg)
         if derived != ctx.prefix:
             typer.echo(
@@ -624,8 +690,38 @@ def _chk_valid_triplet(ctx: Ctx) -> tuple[bool, str]:
     return ok, ctx.hive if ok else f"expected a provider/org/repo triplet, got '{ctx.hive}'"
 
 
+def hive_clone_url(cfg: Any, provider: str, org: str, repo: str) -> str:
+    """The clone URL the fleet would use for ``provider/org/repo`` (`hub._hive_url`: the
+    git-workspace lock, else the github/gitlab form), or "". Exposed here so `hive.add` reaches
+    it through its existing `hive -> onboard` edge rather than a new `hive -> hub` cycle."""
+    from . import hub
+
+    return str(hub._hive_url(cfg, {"provider": provider, "org": org, "repo": repo}) or "")
+
+
+def _registered_clone_url(ctx: Ctx) -> str:
+    """The clone URL the fleet registry already implies for a REGISTERED hive — the exact
+    git-workspace lock URL, else the github/gitlab form `hub` hydrates caches from — or ""
+    when the hive is not registered (an unregistered repo's URL is not ours to guess)."""
+    from . import hub  # lazy: hub imports onboard's neighbours
+
+    entry = registry.find_entry(ctx.cfg, ctx.provider, ctx.org, ctx.repo) if ctx.cfg else None
+    if entry is None:
+        return ""
+    return str(hub._hive_url(ctx.cfg, entry) or "")
+
+
 def _chk_clone_url_present(ctx: Ctx) -> tuple[bool, str]:
+    if not ctx.clone_url and store_identity.adopt_existing_enabled(ctx.cfg):
+        # bh-6csoa: materialising a REGISTERED hive on a fresh host needs no --clone-url — the
+        # fleet configuration already names it.
+        url = _registered_clone_url(ctx)
+        if url:
+            ctx.clone_url = url
+            ctx.clone_url_source = "fleet registry"
     ok = bool(ctx.clone_url)
+    if ok and ctx.clone_url_source:
+        return ok, f"{ctx.clone_url} (from the {ctx.clone_url_source})"
     return ok, ctx.clone_url if ok else f"{ctx.target} absent — pass --clone-url to clone it"
 
 
@@ -863,7 +959,12 @@ def _act_bd_init(ctx: Ctx) -> None:
         _configure_auto_export(ctx)
         return
     env = dict(os.environ, BD_NON_INTERACTIVE="1")
-    if ctx.furnish:
+    if store_identity.adopt_existing_enabled(ctx.cfg) and _origin_has_dolt_data(ctx):
+        # hive.adopt_existing (bh-m2irb): origin already carries this hive's store, so attach
+        # to it whatever the footprint — minting a fresh one (the furnished branch below) would
+        # fork the hive's history on a fresh host.
+        _bootstrap_adopted(ctx, env)
+    elif ctx.furnish:
         bd_init = [
             "bd",
             "init",
@@ -925,6 +1026,86 @@ def _act_bd_init(ctx: Ctx) -> None:
     hive._ensure_bd_backup_gitignored(ctx.base)
     _configure_auto_export(ctx)
     _guard_beads_remote(ctx)
+
+
+def _bootstrap_adopted(ctx: Ctx, env: dict) -> None:
+    """Bootstrap a zero-footprint clone from origin's `refs/dolt/data` into the hive's OWN
+    shared-server database (`hive.adopt_existing`, bh-m2irb / bh-6csoa).
+
+    The default branch below lets `bd bootstrap` resolve its target database itself, and with
+    no `.beads/metadata.json` in the clone (zero-footprint: never tracked) it resolves bd's
+    generic `beads` — on a shared server, a database another hive may already own. `bd
+    bootstrap` has no working `--database` override (bh-8g6cj); seeding `metadata.json` with
+    `dolt_mode: "server"` + `dolt_database: <sanitized prefix>` BEFORE it runs is the lever, the
+    same repoint-then-bootstrap sequence `hub._fetch_cache` and `migrate-storage` use. The name
+    is the one the hub cache hydrates this hive into, so a host whose `bh sync` already
+    hydrated it ATTACHES to that database (bd: "Database already exists", backfilling the
+    project id from it) instead of cloning a second copy — no manual `bd init`/`bd bootstrap`.
+
+    No `project_id` is seeded, deliberately: bd's "Bootstrap metadata repair" maps a project id
+    to whichever server database already claims it and rewrites the seeded name (measured,
+    bh-ajgot's notes) — a stale mapping would put the clone back on the wrong database. The
+    identity is VERIFIED afterwards instead, and a mismatch fails the onboard loudly rather
+    than reporting a hive ready that reads some other hive's beads."""
+    from . import hive, hub
+
+    _ensure_derived(ctx)
+    database = store_locator.sanitize_database_name(ctx.prefix)
+    if not database or database in store_identity.GENERIC_DATABASES:
+        typer.echo(
+            f"✗ beads: prefix '{ctx.prefix}' resolves to shared-server database "
+            f"{database or '(nothing)'!r}, which is not a per-hive name — pass --prefix.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    typer.echo(
+        f"• beads: bootstrapping from origin refs/dolt/data into shared-server database "
+        f"'{database}' (hive.adopt_existing)"
+    )
+    beads = ctx.base / ".beads"
+    beads.mkdir(parents=True, exist_ok=True)
+    seed = {"backend": "dolt", "database": "dolt", "dolt_mode": "server", "dolt_database": database}
+    (beads / "metadata.json").write_text(json.dumps(seed, indent=2, sort_keys=True) + "\n")
+    shared = dict(env, BEADS_DOLT_SHARED_SERVER="1")
+    hub._ensure_shared_server_running(ctx.base)
+    _run_bd_mint(["bd", "bootstrap", "--non-interactive"], ctx, env=shared)
+    problem = _adopted_store_problem(ctx, database)
+    if problem:
+        hive.cleanup_failed_bd_init(ctx.base)
+        typer.echo(f"✗ beads: {problem} — refusing to report this hive ready.", err=True)
+        raise typer.Exit(1)
+    store_locator.ensure_server_database_persisted(ctx.base, database)
+    config_yaml = beads / "config.yaml"
+    if not config_yaml.exists():
+        # ATTACH case: `bd bootstrap` against a database already on this server ("Database
+        # already exists. Nothing to do" — e.g. hydrated by the hub cache) writes no
+        # config.yaml, and every later `bd config set` then refuses with "run 'bd init' first".
+        # Seed the one key that keeps the checkout on the shared server without the env var.
+        config_yaml.write_text("dolt:\n    shared-server: true\n")
+    # bd takes its gate lock in the checkout ROOT, outside `.beads/`, so the stealth exclude
+    # does not cover it and a freshly materialised hive would read dirty (bh-6csoa). Local
+    # `.git/info/exclude`, never the tracked `.gitignore`.
+    hive._git_exclude("/.beads.gate.lock", ctx.base)
+
+
+def _adopted_store_problem(ctx: Ctx, database: str) -> str:
+    """Why the bootstrapped checkout is NOT the adopted identity, or "" when it is."""
+    landed = store_locator.dolt_database(ctx.base, "")
+    if landed != database:
+        return f"bootstrap resolved database {landed!r}, not the hive's own {database!r}"
+    server = store_locator.server_store_dir()
+    if not (server / database).is_dir():
+        return f"database {database!r} is not on the shared server at {server}"
+    recorded = store_locator.project_id(ctx.base)
+    if ctx.project_id and recorded and recorded != ctx.project_id:
+        return (
+            f"database {database!r} carries project id {recorded}, not the hive's own "
+            f"{ctx.project_id} — another store already holds that name"
+        )
+    stored = bd_mod.store_prefix(ctx.base)
+    if stored and stored != ctx.prefix:
+        return f"database {database!r} declares prefix '{stored}', not '{ctx.prefix}'"
+    return ""
 
 
 def _ensure_server_mode_persisted(ctx: Ctx) -> None:
@@ -1124,6 +1305,7 @@ def _act_register(ctx: Ctx) -> None:
             # Contribution-plane marker (bh-uxam.1): today always "pull" — upstream is a read
             # rail only (worktree.push_branch refuses it); nothing yet consumes it for a PR.
             contribution="pull" if ctx.kind == "external" else "",
+            project_id=ctx.project_id,
         )
         if ctx.plan is not None:
             ctx.plan.registered = True

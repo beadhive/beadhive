@@ -48,6 +48,9 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         "worktrees.allow_tmpfs",
         "worktrees.max_live",
         "worktrees.ram_warn_gib",
+        # Onboarding policy (bh-m2irb): whether THIS host adopts an existing store's identity.
+        "hive.adopt_existing",
+        "hive.adopt_probe_timeout",
     }
 )
 

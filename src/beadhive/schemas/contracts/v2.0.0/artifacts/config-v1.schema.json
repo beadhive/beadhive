@@ -1303,6 +1303,27 @@
       "title": "HitchConfig",
       "type": "object"
     },
+    "HiveConfig": {
+      "additionalProperties": false,
+      "description": "Host-scoped onboarding policy (``hive``).\n\n``adopt_existing`` makes ``bh hive add`` and ``bh hive onboard`` read an existing hive's own\nbead-store identity (prefix + project id: the local checkout first, then the remote's\n``refs/dolt/data``) instead of deriving one from the repo name, so a fresh host lands the\nhive in its own shared-server database rather than bd's generic ``beads`` (bh-ajgot,\nbh-6csoa). Opt-in; off keeps the derived identity exactly as before.",
+      "properties": {
+        "adopt_existing": {
+          "default": false,
+          "description": "Adopt an existing hive's own prefix and project id on `hive add`/`onboard` (local store, then the remote's refs/dolt/data) instead of deriving them.",
+          "title": "Adopt Existing",
+          "type": "boolean"
+        },
+        "adopt_probe_timeout": {
+          "default": 120,
+          "description": "Seconds a remote identity probe (git ls-remote + shallow dolt clone) may take before onboarding falls back to the derived identity.",
+          "minimum": 1,
+          "title": "Adopt Probe Timeout",
+          "type": "integer"
+        }
+      },
+      "title": "HiveConfig",
+      "type": "object"
+    },
     "HostConfig": {
       "additionalProperties": false,
       "description": "Multi-host model policy (``host``) — how this factory arbitrates who may write a hive.\n\nDistinct from ``hosts/<host_id>.yaml`` (the per-host manifest in HQ,\n:mod:`beadhive.hosts`): that file describes ONE machine; this section is the fleet-wide\npolicy every machine applies.",
@@ -2145,6 +2166,19 @@
           "description": "Short stable bead-id prefix for this hive.",
           "title": "Prefix",
           "type": "string"
+        },
+        "project_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The hive's bead-store project id, recorded when `hive.adopt_existing` read it from the store, so a fresh host can verify it attached the right database.",
+          "title": "Project Id"
         },
         "provider": {
           "default": "",
@@ -3151,6 +3185,9 @@
     },
     "hitch": {
       "$ref": "#/$defs/HitchConfig"
+    },
+    "hive": {
+      "$ref": "#/$defs/HiveConfig"
     },
     "host": {
       "$ref": "#/$defs/HostConfig"
