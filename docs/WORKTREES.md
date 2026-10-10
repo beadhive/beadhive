@@ -740,7 +740,8 @@ bh worktree local-reclaim --targets-from safe-leaves.txt
 
 It never reads HQ, fleet/runtime config, the registry, or the daemon: the installed `bh` routes
 `worktree status --local-safe`, `worktree prune --local-safe`, and
-`worktree local-reclaim` (including recovery `--help`) to a stdlib-only module before the rest of the CLI
+`worktree local-reclaim` (including recovery `--help`) to a stdlib-only module
+before the rest of the CLI
 is even imported. With no `PATH`/`--root`/`--repo`/`--targets-from` it scans `$BH_WORKTREES`,
 else `<os-temp>/bh-worktrees` and `~/.beadhive/worktrees`.
 
@@ -765,13 +766,16 @@ Git and process state; otherwise it is kept and reported with a reason code:
 The process check reads `/proc/<pid>/{cwd,root,fd}`. Processes of other users are not readable
 and are counted, not matched. Your own kernel-hidden processes keep every candidate:
 a process name cannot prove inactive ownership. `--strict-process-scan` remains accepted
-for compatibility and the safety rule always applies. A sandboxed process sees paths through its own mount namespace, so bh
+for compatibility and the safety rule always applies.
+A sandboxed process sees paths through its own mount namespace, so bh
 validation runs are additionally protected by their `validation_active` marker.
 
 A fresh seat whose HEAD still sits on `main` is `no_landed_work`: it may be about to be used,
 so it stays. Squash- or rebase-landed branches are not provable locally and stay too; reclaim
-them with `bh worktree prune` once HQ is back. Removal refreshes registration, locks, HEAD, merge/publication ancestry, Git operation
-markers, validation markers, presenter bindings, claim records, precious files and the process table before `git worktree remove` (never `--force`), and branches are never
+them with `bh worktree prune` once HQ is back.
+Removal refreshes registration, locks, HEAD, merge/publication ancestry, Git operation
+markers, validation markers, presenter bindings, claim records, precious files and the
+process table before `git worktree remove` (never `--force`), and branches are never
 deleted. `--repo` also prunes that repository's stale admin entries (`git worktree prune`).
 
 Exit status: `0` the run completed (kept targets are expected), `1` a removal failed or a path
