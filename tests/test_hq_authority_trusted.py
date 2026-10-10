@@ -272,7 +272,9 @@ def test_trusted_eligibility_read_tolerates_a_frame_relevant_config_change(frame
 def _expired_policy_plane(frame, lease):
     plane = _lease_plane(frame, {}, lease)
     composite = plane._runtime_authority().read_frame_composite()
-    expired = {"bh": {"config_revision": "desired-1", "valid_until": NOW - 1}}
+    # The helper's reader clock comes from another test module. Use that clock so
+    # slower collection/imports cannot turn this expired policy into a future one.
+    expired = {"bh": {"config_revision": "desired-1", "valid_until": plane.clock() - 1}}
     composite = (*composite[:6], expired, *composite[7:])
     plane._runtime_authority = lambda: SimpleNamespace(
         read_frame_composite=lambda prefix=None, **_: composite
