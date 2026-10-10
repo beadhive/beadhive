@@ -433,6 +433,7 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     | _owned("localloop.py", "_default_instructions", ".beads")
     | _owned("mcp.py", "hq_intake_resource", ".beads")
     | _owned("onboard.py", "_act_bd_init", ".beads")
+    | _owned("onboard.py", "_bootstrap_adopted", ".beads")
     | _owned("publish_export.py", "_resolve_hive_root", ".beads")
     | _owned("report.py", "_target", ".beads")
     | _owned("safety.py", "_scan_bd_dolt_state", ".beads")
@@ -444,6 +445,7 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     | _owned("storage_migrate.py", "plan_targets", ".beads")
     | _owned("store_locator.py", "<module>", ".beads")
     | _owned("store_locator.py", "embedded_store_dir", ".beads")
+    | _owned("store_identity.py", "_local_store_present", ".beads")
     | _owned("store_locator.py", "has_direct_server_database", ".dolt")
     # Harnesses/plugins own these exact configuration and agent-install callsites.
     | _owned("config_paths.py", "plugin_root", ".claude-plugin")

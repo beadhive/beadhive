@@ -558,13 +558,16 @@ def derive_prefix(group, org, repo, kind="", cfg=None):
 # ---- register ---------------------------------------------------------------
 
 
-def _entry(group, org, repo, prefix, kind, upstream="", furnish="", contribution=""):
+def _entry(group, org, repo, prefix, kind, upstream="", furnish="", contribution="", project_id=""):
     """A flow-style mapping with double-quoted scalars (matches the existing layout). `group`
     (the repo-group path) is stored under the `provider` key — that stored config key is
     unchanged; only this local parameter name reflects what the value actually is.
 
     `contribution` marks a hive as a Contribution-plane target (bh-uxam.1) — today always
-    "pull" (upstream is a read rail; nothing yet consumes it as a push/PR target)."""
+    "pull" (upstream is a read rail; nothing yet consumes it as a push/PR target).
+
+    `project_id` is the hive's bead-store identity, recorded only when `hive.adopt_existing`
+    read it from the store (bh-m2irb) — never derived, so its absence means "not known"."""
     m = CommentedMap()
     m[DQ("provider")] = DQ(group)
     m[DQ("org")] = DQ(org)
@@ -577,6 +580,8 @@ def _entry(group, org, repo, prefix, kind, upstream="", furnish="", contribution
         m[DQ("furnish")] = DQ(furnish)
     if contribution:
         m[DQ("contribution")] = DQ(contribution)
+    if project_id:
+        m[DQ("project_id")] = DQ(project_id)
     m.fa.set_flow_style()
     return m
 
@@ -636,8 +641,14 @@ def _save_managed_repos(kept) -> None:
         config.save(host_cfg)
 
 
-def register(group, org, repo, prefix, kind, upstream="", furnish="", contribution=""):
-    """`group` is the repo-group path (a hive identity triplet's first segment)."""
+def register(
+    group, org, repo, prefix, kind, upstream="", furnish="", contribution="", project_id=""
+):
+    """`group` is the repo-group path (a hive identity triplet's first segment).
+
+    `project_id` (bh-m2irb) records the store identity `hive.adopt_existing` read. A
+    re-register that passes none keeps the one already recorded for the SAME prefix — a
+    project id is never invented, and a changed prefix names a different store."""
     from . import guard  # lazy: guard imports registry (avoid an import cycle)
     from .identity import resolve_actor
 
@@ -650,8 +661,15 @@ def register(group, org, repo, prefix, kind, upstream="", furnish="", contributi
         else config.SCOPE_HOST
     )
     with config._write_transaction(scope):
-        kept = [e for e in _managed_repos_base() if _key(e) != key]
-        kept.append(_entry(group, org, repo, prefix, kind, upstream, furnish, contribution))
+        base = _managed_repos_base()
+        if not project_id:
+            prior = next((e for e in base if _key(e) == key), None)
+            if prior is not None and str(prior.get("prefix", "")) == str(prefix):
+                project_id = str(prior.get("project_id", "") or "")
+        kept = [e for e in base if _key(e) != key]
+        kept.append(
+            _entry(group, org, repo, prefix, kind, upstream, furnish, contribution, project_id)
+        )
         kept.sort(key=lambda e: (str(e["org"]), str(e["repo"])))
         _save_managed_repos(kept)
     from . import metadata  # lazy: metadata imports registry (avoid an import cycle)

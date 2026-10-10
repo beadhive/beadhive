@@ -1257,14 +1257,65 @@ def _parse_triplet(hive_id: str):
 
 def add(hive_id, prefix="", kind="", upstream=""):
     """Register a hive from a provider/org/repo triplet — registry-only, no cwd required and
-    no `bd init` (the repo may be uncloned). Mirrors `registry.register` scope."""
+    no `bd init` (the repo may be uncloned). Mirrors `registry.register` scope.
+
+    With `hive.adopt_existing` (bh-m2irb) an explicit-prefix-less add first asks the hive's own
+    store — a checkout already on this host, then the remote's `refs/dolt/data` — and
+    registers the prefix and project id it declares; only a hive with no store anywhere gets a
+    derived prefix. `--prefix` always wins."""
     provider, org, repo = _parse_triplet(hive_id)
     cfg = config.load_reconciling()  # bh-17eb: self-heal a stale host config before validating
+    project_id = ""
+    if not prefix:
+        found = _adopt_store_identity(cfg, provider, org, repo)
+        if found is not None:
+            prefix, project_id = found.prefix, found.project_id
     if not prefix:
         prefix, warns = registry.derive_prefix(provider, org, repo, kind, cfg)
         for w in warns:
             typer.echo(w, err=True)
-    registry.register(provider, org, repo, prefix, kind, upstream)
+    registry.register(provider, org, repo, prefix, kind, upstream, project_id=project_id)
+
+
+def _adopt_store_identity(cfg, provider: str, org: str, repo: str):
+    """The identity the hive's own store declares when `hive.adopt_existing` is on, else None.
+
+    Registry-only like `add` itself: a local checkout is read where `GIT_WORKSPACE` puts it,
+    and the remote is the URL the fleet would clone (`onboard.hive_clone_url`: the
+    git-workspace lock, else the github/gitlab form). Read-only either way — nothing is
+    cloned into the workspace."""
+    from . import onboard as _ob
+    from . import store_identity
+
+    if not store_identity.adopt_existing_enabled(cfg):
+        return None
+    target = Path(workspace_root()) / provider / org / repo
+    url = _ob.hive_clone_url(cfg, provider, org, repo)
+    found = store_identity.resolve(
+        target if target.exists() else None,
+        url,
+        scratch=store_identity.scratch_dir(config.cache_dir()),
+        timeout=store_identity.probe_timeout(cfg),
+    )
+    if found is None:
+        typer.echo(
+            f"note: no existing bead store found for {provider}/{org}/{repo} "
+            "(hive.adopt_existing) — deriving its prefix",
+            err=True,
+        )
+        return None
+    pid = f", project id {found.project_id}" if found.project_id else ""
+    typer.echo(
+        f"note: adopting prefix '{found.prefix}'{pid} from {found.source} (hive.adopt_existing)",
+        err=True,
+    )
+    if registry.prefix_taken(cfg, found.prefix, f"{provider}/{org}/{repo}"):
+        typer.echo(
+            f"warn: adopted prefix '{found.prefix}' is already registered to another hive — "
+            "two hives cannot share one store (use --prefix to override)",
+            err=True,
+        )
+    return found
 
 
 def _restore_cmd(entry) -> str:
