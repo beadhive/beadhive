@@ -469,7 +469,7 @@
       {
         "facade_target": "beadhive.config.set_value",
         "kind": "direct-facade",
-        "line": 955,
+        "line": 962,
         "path": "tests/test_daemon_mcp_http.py",
         "target": "beadhive.config.set_value"
       },
