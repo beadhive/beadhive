@@ -91,13 +91,13 @@ def test_parallel_recipe_inventory_checks_every_worker_arg_in_a_command() -> Non
     assert _unbounded_parallel_pytest_lines(candidate) == [candidate]
 
 
-def test_live_integration_recipe_uses_its_measured_fixed_worker_bound() -> None:
+def test_live_integration_recipe_redistributes_unstarted_tests_with_fixed_worker_bound() -> None:
     text = JUSTFILE.read_text()
 
     assert 'integration_workers := "16"' in text
     assert (
-        'python scripts/pytest_with_report.py -n {{integration_workers}} tests -m "integration"'
-        in text
+        "python scripts/pytest_with_report.py -n {{integration_workers}} tests "
+        '--dist worksteal -m "integration"' in text
     )
 
 
