@@ -239,9 +239,9 @@ class GuardedFrameLease:
         return getattr(self.leases, name)
 
     def acquire(self, bead, *, actor):
-        from . import frame_eligibility
+        from . import guard
 
-        frame_eligibility.require_intake(hive_dir=self.main)
+        guard.require_capability("claim", hive_dir=self.main)
         return self.leases.acquire(bead, actor=actor)
 
 
@@ -304,7 +304,7 @@ def assign(bead: str, to: str, as_: str, hive: str, preview: bool, as_json: bool
     if preview:
         work._print_work_preview(cfg, hive, bead, to, op="assign", as_json=as_json)
         return
-    work.guard.guard_primary(hive, cfg=cfg, verb="work assign")
+    work.guard.guard_capability("claim", hive, cfg=cfg, verb="work assign")
     entry, main, _target, _branch = work.worktree.locate(cfg, hive, bead)
     actor = _actor(cfg, entry, as_)
     with _failing_closed(), commands(cfg, hive, main, entry) as lifecycle:
@@ -329,7 +329,7 @@ def claim(
         actor = _actor(cfg, entry, as_)
         work._print_work_preview(cfg, hive, bead, actor, op="claim", as_json=as_json)
         return
-    work.guard.guard_primary(hive, cfg=cfg, verb="work claim")
+    work.guard.guard_capability("claim", hive, cfg=cfg, verb="work claim")
     if collapse:
         if bead or group:
             typer.echo("✗ pass either <id>, --group, or --collapse — not more than one", err=True)

@@ -18,7 +18,7 @@
   "static_test_blast_radius": {
     "historical_documented_files": 129,
     "exact_ast_files_at_baseline": 135,
-    "exact_ast_files_after": 163,
+    "exact_ast_files_after": 164,
     "delta_explanation": "The historical 129 used an older static graph snapshot. Re-running the checked AST definition at the exact implementation base finds 135 after repository growth; the config module candidate and later workspace, precious-worktree, host-daemon, process dispatch, fleet consumer, HQ seed/bootstrap, and fleet membership end-to-end suites account for the current exact AST inventory. This static count does not claim a smaller dynamic closure. The bh-qa7vc Factory enrollment and daemon-origin coverage is included in the current exact AST inventory.",
     "owner": "configuration compatibility suite and bh-18hud.5 migration ledger"
   },
@@ -148,5 +148,9 @@
   "failover_policy_inventory_update": {
     "bead": "bh-4biq8",
     "reason": "The live generated ledger now measures 28 test config_schema importers after tests/test_failover_policy.py imports beadhive.config_schema.BeadhiveConfig to prove no host.yaml or fleet-config key exists for failover_after or the executor floor. Production config importers, production schema importers, test config importers, patch sites, historical extraction counts, the pinned baseline, and earlier full-gate receipts are unchanged."
+  },
+  "capability_guard_inventory_update": {
+    "bead": "bh-b3ebg",
+    "reason": "The live generated ledger now measures 164 test config importers and 335 patch sites after tests/test_capabilities.py patches the beadhive.config load, load_host and hq_dir facade reads so `bh host eligible --json` reports per-capability decisions for a fixture frame without a real HOST or HQ. Production importers, schema importers, historical extraction counts, the pinned baseline, and earlier full-gate receipts are unchanged."
   }
 }

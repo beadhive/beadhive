@@ -891,7 +891,7 @@ def file(
     # the SAME child id, and the next pull hits an unresolvable PK collision that blocks sync
     # indefinitely. Filing from a follower is the known-broken path, not an edge case, so this
     # sits immediately before the first `bd create` and after every read-only exit above.
-    guard.guard_primary(hive, cfg=cfg, verb="plan file")
+    guard.guard_capability("author", hive, cfg=cfg, verb="plan file")
 
     actor = resolve_actor("", "", cwd=cwd)
     try:
@@ -1120,6 +1120,8 @@ def approve(
     """
     cfg = config.load()
     cwd = registry.hive_dir_for(cfg, hive)
+    # Approving a kickoff writes the hive's data (gate resolve, set-state): an `author` verb.
+    guard.guard_capability("author", hive, cfg=cfg, verb="plan approve")
     actor = resolve_actor("", "", cwd=cwd)
     try:
         result = _approve_kickoff(epic, cwd, actor, cfg)

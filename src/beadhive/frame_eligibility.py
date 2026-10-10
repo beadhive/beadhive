@@ -101,6 +101,34 @@ class EligibilityDecision:
             payload["waived"] = list(self.waived)
         return payload
 
+    def for_capability(self, capability: str | None) -> EligibilityDecision:
+        """This decision narrowed to the predicates `capability` consults (bh-b3ebg).
+
+        ``None`` keeps every predicate (full intake). Only the fourteen known frame predicates
+        a capability does not consult are dropped; any other predicate in the decision (a
+        lease-holder check, an adapter's refusal) is kept, and a short-circuit decision that
+        did not evaluate all fourteen (authority unavailable, a foreign beadyard pin) is
+        returned whole, so narrowing can never turn a refusal into an allow."""
+        if capability is None:
+            return self
+        from . import capabilities
+
+        consulted = set(capabilities.frame_predicates(capability))
+        known = set(capabilities.FRAME_PREDICATES)
+        if not known <= {name for name, _ in self.predicates}:
+            return self
+        keep = tuple(
+            (name, value)
+            for name, value in self.predicates
+            if name not in known or name in consulted
+        )
+        return EligibilityDecision(
+            keep,
+            tuple(name for name in self.waived if name not in known or name in consulted),
+            self.enforcement_disabled,
+            self.admission,
+        )
+
 
 def _waive_authority(frame, facts, caps, predicates):
     """Re-evaluate authority-derived predicates without their desired/authority conjuncts.
@@ -509,7 +537,11 @@ def decision_for(host_id, hive=None, *, hq_dir=None, cfg=None, at=None):
     return eligible(frame, hive or {}, facts)
 
 
-def require_eligible(host_id, hive=None, **kwargs):
+def require_eligible(host_id, hive=None, *, capability=None, **kwargs):
+    """The decision for `host_id`, raising :class:`EligibilityError` when it refuses.
+
+    `capability` (a :mod:`beadhive.capabilities` name) narrows the decision to the predicates
+    that capability consults; ``None`` evaluates every predicate."""
     decision = decision_for(host_id, hive, **kwargs)
     if decision is not None and hive and set(hive) == {"prefix"}:
         from . import config, registry
@@ -519,12 +551,14 @@ def require_eligible(host_id, hive=None, **kwargs):
         except (ValueError, KeyError, FileNotFoundError):
             raise EligibilityError("frame ineligible: hive_catalog_available") from None
         decision = decision_for(host_id, entry, **kwargs)
+    if decision is not None:
+        decision = decision.for_capability(capability)
     if decision is not None and not decision.allowed:
         raise EligibilityError(f"frame {host_id} ineligible: {decision.reason}")
     return decision
 
 
-def require_local(hive="", *, cfg=None, hive_dir=None):
+def require_local(hive="", *, cfg=None, hive_dir=None, capability=None):
     from . import config, host, registry
 
     try:
@@ -538,7 +572,7 @@ def require_local(hive="", *, cfg=None, hive_dir=None):
         entry = registry.entry_for_dir(settings, directory)
     except (ValueError, KeyError, FileNotFoundError, RuntimeError):
         pass
-    decision = require_eligible(identity, entry or {}, cfg=settings)
+    decision = require_eligible(identity, entry or {}, cfg=settings, capability=capability)
     if decision is not None and entry is None:
         raise EligibilityError("frame ineligible: hive_catalog_available")
     return decision
@@ -707,18 +741,24 @@ def last_admission(*, consume: bool = True) -> dict:
     return stamps
 
 
-def require_intake(hive="", *, cfg=None, hive_dir=None):
+def require_intake(hive="", *, cfg=None, hive_dir=None, capability=None):
+    """Refuse unless this frame may write `hive` now: its eligibility, then the hive lease.
+
+    `capability` narrows eligibility to the predicates that capability consults
+    (:func:`beadhive.capabilities.frame_predicates`); ``None`` evaluates all of them. Write
+    verbs reach this only through :func:`beadhive.guard.require_capability`. The lease holder
+    check is the fenced write policy and applies to every capability."""
     from .hq_authority_expiry import warn_if_expiring
 
     warn_if_expiring()
     _ADMISSION.clear()
-    decision = require_local(hive, cfg=cfg, hive_dir=hive_dir)
+    decision = require_local(hive, cfg=cfg, hive_dir=hive_dir, capability=capability)
     if decision is not None:
         _prefix, identity, lease = authoritative_primary(hive, cfg=cfg, hive_dir=hive_dir)
         if lease is None or not lease.held_by(identity):
             raise EligibilityError("frame ineligible: current_hive_lease_holder")
         # Ownership reads cannot mask a concurrent admission or receipt revocation.
-        decision = require_local(hive, cfg=cfg, hive_dir=hive_dir)
+        decision = require_local(hive, cfg=cfg, hive_dir=hive_dir, capability=capability)
         if decision is not None and decision.admission:
             _ADMISSION.update(decision.admission)
             _ADMISSION["admitted_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -726,18 +766,21 @@ def require_intake(hive="", *, cfg=None, hive_dir=None):
 
 
 class GuardedClaimSession:
-    """Recheck immediately at each API write, after candidate reads/negotiation."""
+    """Recheck immediately at each API write, after candidate reads/negotiation.
 
-    def __init__(self, session, main):
-        self.session, self.main = session, main
+    `capability` is the one the verb that opened the session asked for: ``bh work next``
+    claims as part of dispatch, so it rechecks ``execute``."""
+
+    def __init__(self, session, main, capability="execute"):
+        self.session, self.main, self.capability = session, main, capability
 
     def __getattr__(self, name):
         return getattr(self.session, name)
 
     def claim_issue(self, *args, **kwargs):
-        require_intake(hive_dir=self.main)
+        require_intake(hive_dir=self.main, capability=self.capability)
         return self.session.claim_issue(*args, **kwargs)
 
     def claim_next(self, *args, **kwargs):
-        require_intake(hive_dir=self.main)
+        require_intake(hive_dir=self.main, capability=self.capability)
         return self.session.claim_next(*args, **kwargs)

@@ -213,7 +213,8 @@ def test_process_lease_renew_denies_expired_config(monkeypatch, tmp_path):
     revisions = iter([{"current": True}, {"current": False}])
     monkeypatch.setattr(config, "load", lambda: next(revisions))
 
-    def require_intake(hive, *, cfg, hive_dir):
+    def require_intake(hive, *, cfg, hive_dir, capability):
+        assert capability == "execute"  # the dispatch loop's keeper rechecks `execute`
         assert (hive, hive_dir) == ("fixture/hive", tmp_path)
         if not cfg["current"]:
             raise frame_eligibility.EligibilityError("central config expired")
@@ -252,7 +253,8 @@ def test_shared_keeper_factory_refreshes_config_for_systemd_too(monkeypatch, tmp
     monkeypatch.setattr(guard, "primary_state", lambda *a, **kw: None)
     monkeypatch.setattr(config, "load", lambda: {"current": False})
 
-    def require_intake(hive, *, cfg, hive_dir):
+    def require_intake(hive, *, cfg, hive_dir, capability):
+        assert capability == "execute"  # the dispatch loop's keeper rechecks `execute`
         assert hive_dir == tmp_path
         if not cfg["current"]:
             raise frame_eligibility.EligibilityError("central config expired")
@@ -326,7 +328,8 @@ def test_sql_selected_keeper_requalifies_for_both_dispatch_backends(
     monkeypatch.setattr(frame_eligibility, "require_local", lambda *a, **kw: None)
     monkeypatch.setattr(guard, "primary_state", lambda *a, **kw: None)
 
-    def require_intake(hive, *, cfg, hive_dir):
+    def require_intake(hive, *, cfg, hive_dir, capability):
+        assert capability == "execute"  # the dispatch loop's keeper rechecks `execute`
         assert hive_dir == tmp_path
         if cfg["work"]["validate_cmd"] != "r1":
             raise frame_eligibility.EligibilityError("central revision revoked")
@@ -360,7 +363,8 @@ def test_sql_selected_claim_rechecks_current_intake(
     monkeypatch.setattr(host, "host_id", lambda: "frame-id")
     monkeypatch.setattr(registry, "entry_for_dir", lambda cfg, main: {"prefix": "fixture"})
 
-    def require_eligible(host_id, hive, *, cfg):
+    def require_eligible(host_id, hive, *, cfg, capability):
+        assert capability == "execute"  # `bh work next` claims as part of dispatch
         if cfg["work"]["validate_cmd"] != "r1":
             raise frame_eligibility.EligibilityError("current_sql_revision")
         return frame_eligibility.EligibilityDecision((("current_sql_revision", True),))

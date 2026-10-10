@@ -776,7 +776,7 @@ def impl_merge(api, bead, hive, rm, molecule, group, override_validation="", ove
 
     warn_if_expiring()
     cfg = api.config.load()
-    api.guard.guard_primary(hive, cfg=cfg, verb="work merge")
+    api.guard.guard_capability("publish", hive, cfg=cfg, verb="work merge")
     if not isinstance(rm, bool):  # --rm unset: follow worktrees.reclaim_on_merge
         rm = api.config.worktrees_reclaim_on_merge(cfg)
     if override_actor and not override_validation:
