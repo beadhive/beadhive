@@ -52,12 +52,21 @@ def test_stalled_pack_is_killed_reaped_and_lock_released(tmp_path):
                 bounded_pack(command, left, os.environ.copy(), timeout=0.2)
         with receive_lock(tmp_path, timeout=0.1):
             pass
-        assert time.monotonic() - started < 2
         with pytest.raises(ProcessLookupError):
             os.kill(int(pidfile.read_text().split()[0]), 0)
         child = Path("/proc") / pidfile.read_text().split()[1] / "stat"
-        # An adopted zombie is terminated; no child can keep the lock/transfer alive.
-        assert not child.exists() or child.read_text().split()[2] == "Z"
+        # SIGKILL delivery to the grandchild needs a scheduler turn under load.
+        # An adopted zombie is terminated; keep the original total cleanup deadline.
+        while True:
+            try:
+                terminated = child.read_text().split()[2] == "Z"
+            except FileNotFoundError:
+                terminated = True
+            if terminated:
+                break
+            assert time.monotonic() - started < 2, "pack child survived its cleanup deadline"
+            time.sleep(0.01)
+        assert time.monotonic() - started < 2
     finally:
         left.close()
         right.close()

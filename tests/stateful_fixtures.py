@@ -759,8 +759,34 @@ def telemetry_test_scope(_telemetry_neutral_env):
 
 
 @pytest.fixture
+def _finish_metadata_reloads(config_test_scope, monkeypatch):
+    """Finish this test's real reload threads before restoring its config sandbox."""
+    from time import monotonic
+
+    from beadhive import metadata
+
+    spawned = []
+    original = metadata._spawn_reload
+
+    def tracked(cfg, keys):
+        thread = original(cfg, keys)
+        spawned.append(thread)
+        return thread
+
+    monkeypatch.setattr(metadata, "_spawn_reload", tracked)
+    yield
+    deadline = monotonic() + 15
+    for thread in spawned:
+        thread.join(timeout=max(0, deadline - monotonic()))
+    assert not any(thread.is_alive() for thread in spawned), (
+        "metadata reload outlived its test sandbox after the 15-second cleanup deadline"
+    )
+
+
+@pytest.fixture
 def runtime_test_scope(
     config_test_scope,
+    _finish_metadata_reloads,
     _reject_local_runtime_thread_leaks,
     _sandbox_worktree_root_override,
     _logging_pipeline_keeps_caplogs_handler,
