@@ -469,7 +469,11 @@ def forward_marker(hive: str = "", *, cfg=None, hive_dir=None):
     moved, as the engine does before any bd), or ``None`` when the checkout is not forwarded.
 
     `hive_dir` skips the registry resolution; with neither, the process cwd's checkout is used,
-    which is where the passthrough's cwd-mode bd runs."""
+    which is where the passthrough's cwd-mode bd runs.
+
+    ``None`` too when the hive's write policy is not ``forward`` (bh-sxhnq): ``open`` never
+    forwards and ``fenced`` writes on the writer frame only, so the marker decides nothing and
+    the writer gate below runs instead (:func:`beadhive.write_policy.ignores_forwarding`)."""
     import importlib
     from pathlib import Path
 
@@ -489,6 +493,10 @@ def forward_marker(hive: str = "", *, cfg=None, hive_dir=None):
             if hive:
                 return None
             directory = Path.cwd()
+    if hive_forward.read_marker(directory) is None:
+        return None
+    if importlib.import_module("beadhive.write_policy").ignores_forwarding(directory, cfg):
+        return None
     try:
         return hive_forward.ensure_current(directory)
     except hive_forward.ForwardError:
@@ -553,8 +561,12 @@ def guard_capability(capability: str, hive: str = "", *, cfg=None, verb: str = "
     hive lease; see :func:`guard_primary`), and only frame eligibility depends on the
     capability: it consults the predicates the capability lists and nothing else, so a host
     whose heartbeat is stale or whose dispatch is disabled can still ``author`` while
-    ``execute`` and ``publish`` refuse. Where the write may land is the write policy
-    (``fenced`` today: the writer frame or lease holder only, for every capability).
+    ``execute`` and ``publish`` refuse. Where the write may land is the hive's write policy
+    (:mod:`beadhive.write_policy`, bh-sxhnq): ``fenced`` — the writer frame or lease holder
+    only; ``forward`` — a forwarded checkout's marker decides on the primary; ``open`` — a
+    non-writer may ``author`` and ``claim`` on its own replica (published to
+    ``refs/dolt/frame/<id>``, one readiness warning per command), while ``publish`` and
+    ``execute`` stay with the writer.
 
     ``place`` (``bh host lease adopt``) is not a bead write: a host asks for it precisely
     because it does not hold the hive, so it takes :func:`beadhive.self_placement.guard_place`
@@ -672,6 +684,63 @@ def _refuse(message: str, hive: str) -> typer.Exit:
     return typer.Exit(1)
 
 
+#: Capabilities the ``open`` write policy grants a host that is not the hive's writer
+#: (trust-profiles ADR section 4: comments, labels, notes, status, dependencies, claims and
+#: close are ``author`` / ``claim`` writes). ``publish`` (moving ``main``) and ``execute`` stay
+#: with the writer.
+OPEN_CAPABILITIES = frozenset({"author", "claim"})
+
+
+def _open_allows(
+    capability: str,
+    hive: str,
+    *,
+    cfg,
+    prefix: str,
+    writer: str,
+    this: str,
+    cut_over: bool,
+    verb: str = "",
+    eligible: bool = False,
+) -> bool:
+    """Whether the ``open`` write policy lets this non-writer host exercise `capability`
+    (bh-sxhnq). The write lands on this replica's own data; the engine enforces the allowed
+    operations, and the readiness warning is printed once per command. Frame eligibility for
+    the capability still applies (`eligible`: already checked by the caller)."""
+    if capability not in OPEN_CAPABILITIES:
+        return False
+    import importlib
+
+    write_policy = importlib.import_module("beadhive.write_policy")
+    try:
+        policy = write_policy.for_hive(hive, cfg=cfg)
+    except Exception:  # noqa: BLE001 - an unresolvable policy is not open: refuse as before
+        return False
+    if policy is None or not policy.open:
+        return False
+    if not eligible:
+        from . import frame_eligibility
+
+        try:
+            frame_eligibility.require_intake(hive, cfg=cfg, capability=capability)
+        except frame_eligibility.EligibilityError as exc:
+            raise _refuse(str(exc), hive or prefix) from exc
+    where = write_policy.OffPrimary(prefix, writer, this, cut_over)
+    entry = _entry_or_none(hive, cfg)
+    write_policy.readiness(write_policy.OpenWrite(policy, where, entry), cfg=cfg, verb=verb)
+    return True
+
+
+def _entry_or_none(hive: str, cfg):
+    from . import registry  # lazy: keep guard import-light + cycle-free
+
+    try:
+        cfg = cfg if cfg is not None else config.load()
+        return registry.entry_for_dir(cfg, registry.hive_dir_for(cfg, hive))
+    except Exception:  # noqa: BLE001 - the per-hive readiness switch falls back to the fleet's
+        return None
+
+
 def _guard_write(capability: str, hive: str = "", *, cfg=None, verb: str = "") -> None:
     """:func:`guard_primary`'s layers, with frame eligibility narrowed to `capability`."""
     forwarded = forward_marker(hive, cfg=cfg)
@@ -685,6 +754,18 @@ def _guard_write(capability: str, hive: str = "", *, cfg=None, verb: str = "") -
     except WriterUnreadable as exc:
         raise _refuse(f"✗ {exc}", hive) from exc
     if cut_over is not None:
+        prefix, this_frame, writer = cut_over
+        if not (this_frame and writer.frame == this_frame) and _open_allows(
+            capability,
+            hive,
+            cfg=cfg,
+            prefix=prefix,
+            writer=writer.frame,
+            this=this_frame,
+            cut_over=True,
+            verb=verb,
+        ):
+            return
         refusal = writer_refusal(cut_over)
         if refusal:
             raise _refuse(refusal, cut_over[0])
@@ -715,6 +796,18 @@ def _guard_write(capability: str, hive: str = "", *, cfg=None, verb: str = "") -
         # renewal can never turn this allow into a refusal. Renews at the un-scaled
         # `host.lease.ttl` baseline (no manifest read on the hot path).
         _renew_liveness_hint(prefix, this_host, cfg)
+        return
+    if _open_allows(
+        capability,
+        hive,
+        cfg=cfg,
+        prefix=prefix,
+        writer=str(lease.host_id or ""),
+        this=this_host,
+        cut_over=False,
+        verb=verb,
+        eligible=True,
+    ):
         return
 
     refusal = _not_primary(
@@ -1353,6 +1446,13 @@ def bd_write_refusal(args, cwd, *, cfg=None) -> str:
     if cut_over is not None:
         if break_glass:
             return _break_glass_refusal(cut_over[0], break_glass)
+        prefix, this_frame, writer = cut_over
+        if (
+            not (this_frame and writer.frame == this_frame)
+            and not is_store_publish(args)
+            and _open_policy_at(cwd, cfg)
+        ):
+            return ""  # open: lands on this replica; the engine enforces the allowed operations
         # `dolt push|sync` are LIFTED here (bh-9c9hh, ADR §2): the in-data fence refuses a stale
         # publish, so the passthrough is safe. They stay writes: only the writer frame passes.
         return writer_refusal(cut_over)
@@ -1380,6 +1480,8 @@ def bd_write_refusal(args, cwd, *, cfg=None) -> str:
         return _publish_refusal(prefix, args)
     if lease.held_by(this_host):
         return ""
+    if _open_policy_at(cwd, cfg):
+        return ""  # open: lands on this replica; the engine enforces the allowed operations
     return _not_primary(
         prefix,
         this_host,
@@ -1388,6 +1490,21 @@ def bd_write_refusal(args, cwd, *, cfg=None) -> str:
         reason="bd write verb forwarded through the passthrough for a hive this host does not "
         "hold the host lease for",
     )
+
+
+def _open_policy_at(cwd, cfg) -> bool:
+    """Whether the hive checked out at `cwd` (``None``: the process cwd) runs the ``open``
+    write policy here. ``False`` when it cannot be resolved: the gate refuses as before."""
+    import importlib
+    from pathlib import Path
+
+    try:
+        policy = importlib.import_module("beadhive.write_policy").for_dir(
+            Path(cwd) if cwd is not None else Path.cwd(), cfg
+        )
+    except Exception:  # noqa: BLE001
+        return False
+    return policy is not None and policy.open
 
 
 def _publish_refusal(prefix: str, args) -> str:

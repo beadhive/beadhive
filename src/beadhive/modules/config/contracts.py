@@ -1567,8 +1567,37 @@ class HostConfig(_Section):
 # ---- hive (onboarding policy, bh-m2irb) ----------------------------------------
 
 
+def _readiness_switch(value):
+    """``hive.readiness_warning``: ``on`` / ``off`` as the ADR spells them, or a YAML bool."""
+    if isinstance(value, str) and value.strip().lower() in ("on", "off"):
+        return value.strip().lower() == "on"
+    return value
+
+
+class HivePolicyOverride(_Section):
+    """A hive's own override of the fleet's off-primary write policy (``managed_repos[].hive``,
+    trust-profiles ADR sections 4 and 6, bh-sxhnq). Fleet-owned, like the entry it sits in."""
+
+    write_policy: Literal["fenced", "forward", "open"] | None = Field(
+        None,
+        description="This hive's off-primary write policy (`fenced`, `forward`, `open`), "
+        "replacing the fleet default `hive.write_policy` for it. It moves the trust profile's "
+        "value only towards more trust unless the fleet runs trusted authority.",
+    )
+    readiness_warning: StrictBool | None = Field(
+        None,
+        description="This hive's `hive.readiness_warning` (`on`/`off`): the console warning a "
+        "non-primary write under the `open` policy prints. Events are counted either way.",
+    )
+
+    @field_validator("readiness_warning", mode="before")
+    @classmethod
+    def _on_off(cls, v):
+        return _readiness_switch(v)
+
+
 class HiveConfig(_Section):
-    """Host-scoped onboarding policy and write-policy override (``hive``).
+    """Onboarding policy (host) and the off-primary write policy (fleet) (``hive``).
 
     ``adopt_existing`` makes ``bh hive add`` and ``bh hive onboard`` read an existing hive's own
     bead-store identity (prefix + project id: the local checkout first, then the remote's
@@ -1589,10 +1618,39 @@ class HiveConfig(_Section):
     )
     write_policy: Literal["fenced", "forward", "open"] | None = Field(
         None,
-        description="HOST override of the trust profile's off-primary write policy (`fenced`, "
-        "`forward`, `open`). Unsigned, so it may only require more trust than the profile; a "
-        "loosening value is refused and the profile's value stays.",
+        description="FLEET default of the off-primary write policy (`fenced`, `forward`, "
+        "`open`; trust-profiles ADR section 4); `managed_repos[].hive.write_policy` overrides it "
+        "per hive. Absent: the trust profile's value (`open` for open, `forward` otherwise; "
+        "`fenced` for a hive whose forwarder is not configured). A host may set it in host.yaml "
+        "too, and that host override may only require more trust.",
     )
+    readiness_warning: StrictBool = Field(
+        True,
+        description="FLEET default (`on`/`off`, per-hive override `managed_repos[].hive."
+        "readiness_warning`): print one console warning per command for a non-primary write "
+        "under the `open` policy. Never a refusal; events are counted either way.",
+    )
+    readiness_window: str = Field(
+        "P7D",
+        description="FLEET: ISO-8601 duration over which `bh doctor` counts readiness warnings "
+        "per hive (default P7D, 7 days).",
+    )
+
+    @field_validator("readiness_warning", mode="before")
+    @classmethod
+    def _on_off(cls, v):
+        return _readiness_switch(v)
+
+    @field_validator("readiness_window")
+    @classmethod
+    def _iso8601_window(cls, v):
+        try:
+            parsed = _TIMEDELTA.validate_python(v)
+        except ValidationError as exc:
+            raise ValueError(f"not an ISO-8601 duration (want P7D / PT12H): {v!r}") from exc
+        if parsed.total_seconds() <= 0:
+            raise ValueError(f"hive.readiness_window must be positive: {v!r}")
+        return v
 
 
 # ---- release (release-order planning, bh-k2j8) --------------------------------
@@ -2143,6 +2201,11 @@ class ManagedRepoEntry(_Section):
     )
     hitch: HitchConfig | None = Field(None, description="Per-hive `hitch` section override.")
     herdr: HerdrConfig | None = Field(None, description="Per-hive `herdr` section override.")
+    hive: HivePolicyOverride | None = Field(
+        None,
+        description="Per-hive override of the off-primary write policy and its readiness "
+        "warning (`write_policy`, `readiness_warning`).",
+    )
 
 
 # ---- top level ------------------------------------------------------------------

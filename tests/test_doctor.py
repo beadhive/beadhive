@@ -1297,6 +1297,7 @@ _DOCTOR_SECTIONS = {
     "group_auth",
     "authority_expiry",
     "trust_profile",
+    "write_policy",
     "mcp",
     "harness_plugin",
     "seats",

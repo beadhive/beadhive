@@ -1199,6 +1199,28 @@ def _render_trust_profile(d: dict) -> None:
         typer.echo(f"    {note}")
 
 
+def _data_write_policy(cfg) -> dict:
+    """The off-primary write policy per hive and its readiness warnings (trust-profiles ADR
+    section 4, bh-sxhnq)."""
+    from . import write_policy
+
+    try:
+        return write_policy.doctor_data(cfg)
+    except Exception as exc:  # noqa: BLE001 - doctor reports, never raises
+        return {"level": "warn", "error": f"write policy unreadable: {exc}", "hives": []}
+
+
+def _render_write_policy(d: dict) -> None:
+    from . import write_policy
+
+    typer.echo("\n# Write policy")
+    if d.get("error"):
+        typer.echo(f"  ⚠ WARN {d['error']}")
+        return
+    for line in write_policy.doctor_lines(d):
+        typer.echo(line)
+
+
 def _section_group_auth(cfg):
     """Render the per-group auth section."""
     _render_group_auth(_data_group_auth(cfg))
@@ -3202,6 +3224,7 @@ def _collect(cfg, *, full_seats: bool = False) -> dict:
         "group_auth": _timed(timings, "group_auth", _data_group_auth, cfg),
         "authority_expiry": _timed(timings, "authority_expiry", _data_authority_expiry),
         "trust_profile": _timed(timings, "trust_profile", _data_trust_profile, cfg),
+        "write_policy": _timed(timings, "write_policy", _data_write_policy, cfg),
         "mcp": _timed(timings, "mcp", _data_mcp, cfg),
         "harness_plugin": _timed(timings, "harness_plugin", _data_harness_plugin, cfg),
         "seats": _timed(timings, "seats", _data_seats, cfg, full=full_seats),
@@ -3266,7 +3289,7 @@ def doctor_payload(*, full_seats: bool = False) -> dict:
     ``prefix_mismatches``, ``node_id``, ``beads_role``, ``group_auth``, ``mcp``, ``harness_plugin``,
     ``seats``,
     ``install``, ``observability``, ``build_verify``, ``writer_fence``, ``forward``,
-    ``warnings``), plus
+    ``trust_profile``, ``write_policy``, ``warnings``), plus
     ``timings`` (section name -> milliseconds
     from a monotonic clock, plus ``total`` — bh-8nnh7, metadata for attributing doctor's cost,
     always present regardless of ``--json``/verbosity), under the ``schema_version`` / ``command``
@@ -3371,6 +3394,7 @@ def doctor(as_json: bool = False, verbose: bool = False, seats: bool = False):
     _render_group_auth(data["group_auth"])
     _render_authority_expiry(data["authority_expiry"])
     _render_trust_profile(data["trust_profile"])
+    _render_write_policy(data["write_policy"])
     _render_mcp(data["mcp"])
     _render_harness_plugin(data["harness_plugin"])
     _render_seats(data["seats"])

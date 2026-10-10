@@ -120,6 +120,7 @@ def test_legacy_single_host_hive_is_ok_with_a_next_command(world):
     assert report.host == THIS_HOST
     assert statuses(report) == {
         "config": "ok",
+        "write_policy": "ok",  # bh-sxhnq's provider: fenced, no forwarder, this host writes
         "forward": "skipped",
         "capability": "ok",
         "placement": "skipped",
@@ -184,7 +185,7 @@ def test_forwarding_checkout_is_decided_by_the_primary(world):
     report = why()
     assert report.allowed
     assert (report.verdict.layer, report.verdict.status) == ("forward", "decided")
-    assert [step.layer for step in report.walked] == ["config", "forward"]
+    assert [step.layer for step in report.walked] == ["config", "write_policy", "forward"]
 
 
 def test_refused_forwarding_points_at_forward_point(world):
@@ -360,7 +361,9 @@ def test_a_layer_that_raises_is_reported_as_refusing(world):
 
 def test_core_layers_are_discovered_in_adr_order():
     names = [layer.name for layer in hq_why.layers()]
-    assert names[:5] == ["config", "forward", "capability", "placement", "fence"]
+    core = [name for name in names if name != "write_policy"]  # bh-sxhnq's provider, order 12
+    assert core[:5] == ["config", "forward", "capability", "placement", "fence"]
+    assert names.index("write_policy") == names.index("config") + 1
 
 
 def test_a_provider_registers_a_layer_between_the_built_ins(world):
@@ -377,6 +380,7 @@ def test_a_provider_registers_a_layer_between_the_built_ins(world):
         report = why()
         assert [step.layer for step in report.walked] == [
             "config",
+            "write_policy",
             "forward",
             "capability",
             "placement",
@@ -413,6 +417,7 @@ def test_cli_json_carries_the_decision_and_every_layer(world):
     assert payload["host"] == THIS_HOST
     assert [row["layer"] for row in payload["layers"]] == [
         "config",
+        "write_policy",
         "forward",
         "capability",
     ]

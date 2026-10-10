@@ -358,8 +358,11 @@ def test_the_fleet_key_is_fleet_owned_and_overrides_are_host_owned():
     from beadhive.modules.config.application import partition
 
     assert partition.partition_of("hq.trust_profile") == partition.FLEET
-    for key in ("hq.placement_mode", "hq.tenure", "hive.write_policy"):
+    for key in ("hq.placement_mode", "hq.tenure"):
         assert partition.partition_of(key) == partition.HOST
+    # bh-sxhnq: the write policy is a fleet default a host may still tighten in host.yaml.
+    assert partition.partition_of("hive.write_policy") == partition.FLEET
+    assert partition.is_host_overridable("hive.write_policy")
     assert contracts.HqConfig().trust_profile == VERIFIED
     with pytest.raises(ValueError):
         contracts.HqConfig(trust_profile="lab")

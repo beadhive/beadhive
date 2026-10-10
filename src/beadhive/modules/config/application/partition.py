@@ -57,7 +57,6 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         # Elected-tenure cache (bh-ofszz): host-local refresh interval and switch.
         "hq.tenure_refresh",
         "hq.tenure_cache",
-        "hive.write_policy",
     }
 )
 
@@ -68,6 +67,11 @@ FLEET_PREFIXES: frozenset[str] = frozenset(
         "hq.admission_policy",
         "hq.default_authority_mode",
         "hq.trust_profile",
+        # The off-primary write policy (bh-sxhnq): a fleet default with per-hive overrides in
+        # `managed_repos[].hive`; a host may still tighten `hive.write_policy` (allowlist below).
+        "hive.write_policy",
+        "hive.readiness_warning",
+        "hive.readiness_window",
         "delimiter",
         "providers",
         "orgs",
@@ -83,7 +87,11 @@ FLEET_PREFIXES: frozenset[str] = frozenset(
     }
 )
 
-FLEET_HOST_OVERRIDE_ALLOWLIST: frozenset[str] = frozenset({"worktrees.ephemeral"})
+FLEET_HOST_OVERRIDE_ALLOWLIST: frozenset[str] = frozenset(
+    # `hive.write_policy` in host.yaml is the bh-bc2rj host override: the trust-profile
+    # resolution refuses it when it would loosen (beadhive.write_policy), so any value may sit.
+    {"worktrees.ephemeral", "hive.write_policy"}
+)
 
 assert HOST_PREFIXES.isdisjoint(FLEET_PREFIXES), (
     "a prefix cannot be both fleet and host — fix HOST_PREFIXES/FLEET_PREFIXES"
