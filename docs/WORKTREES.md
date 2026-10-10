@@ -67,6 +67,9 @@ Three mechanisms keep the live count bounded; the branch is always the durable a
   dirs), then refuses with the count and the ways out if the host is still full. Re-attaching
   an existing directory and `verify-*` checkouts are never refused by the cap.
 
+**Host degraded and HQ unreachable?** Use `bh worktree local-reclaim` — see
+[Partial degradation](#partial-degradation-bh-worktree-local-reclaim-first-line-procedure).
+
 `bh doctor` prints the live count and size per filesystem against the cap
 (`worktree_disk_usage.filesystems` in `--json`).
 
@@ -713,6 +716,62 @@ Cron does not inherit an interactive shell's `PATH`; set `BH_BIN=/absolute/path/
 crontab when `bh` is not in cron's path. Neither scheduler adds a confirmation prompt: the
 existing classifier remains the sole removal guard.
 
+### Partial degradation: `bh worktree local-reclaim` (first-line procedure)
+
+**When the host is degraded and HQ is unreachable, run this first.** Memory or tmpfs pressure
+can take HQ SQL (and the verified runtime config behind it) down; `bh worktree rm` and
+`bh worktree prune` both need that config, so they fail with `SqlConfigError: verified HQ config
+connection unavailable` exactly when the space they would free is what HQ needs to come back
+(bh-o01m6). `local-reclaim` breaks that cycle:
+
+```sh
+# 1. Preview — classify and measure only (same checks, nothing removed).
+bh worktree local-reclaim --dry-run
+# 2. Reclaim. JSON gives per-target results, reclaimed bytes and tmpfs before/after.
+bh worktree local-reclaim --json
+# Narrow it: a root, a repo, explicit paths, or a precomputed list ('-' = stdin).
+bh worktree local-reclaim --root /tmp/bh-worktrees
+bh worktree local-reclaim --repo ~/workspace/github/org/repo
+bh worktree local-reclaim /tmp/bh-worktrees/github/org/repo/bh-abc12
+bh worktree local-reclaim --targets-from safe-leaves.txt
+```
+
+It never reads HQ, fleet/runtime config, the registry, or the daemon: the installed `bh` routes
+`worktree local-reclaim` (and its `--help`) to a stdlib-only module before the rest of the CLI
+is even imported. With no `PATH`/`--root`/`--repo`/`--targets-from` it scans `$BH_WORKTREES`,
+else `<os-temp>/bh-worktrees` and `~/.beadhive/worktrees`.
+
+It is **fail closed**. A candidate is removed only when every fact below is proven from local
+Git and process state; otherwise it is kept and reported with a reason code:
+
+| Check | Kept as |
+|---|---|
+| registered linked worktree of its repo (never the main worktree) | `not_registered`, `main_worktree`, `missing` |
+| `git worktree lock` absent | `locked` |
+| no tracked changes and no non-ignored untracked files (ignored `.venv` etc. never block) | `dirty` |
+| no merge/rebase/cherry-pick/revert/bisect in progress, no `index.lock` | `in_progress` |
+| no live bh validation marker (`<git-common-dir>/bh/validation/active/<leaf>.json`) | `validation_active` |
+| no readable local process has its cwd, root or an open file inside it | `in_use` |
+| HEAD reachable from a base ref (`main`, `master`, `origin/main`, `origin/master`, or `--base`) and **not** on that base's first-parent line — i.e. it carries merged work | `not_landed`, `no_landed_work` |
+| any probe failed, timed out, or the process scan of this user's processes was incomplete | `ambiguous` |
+
+The process check reads `/proc/<pid>/{cwd,root,fd}`. Processes of other users are not readable
+and are counted, not matched. Your own processes that the kernel hides (non-dumpable session
+managers such as `sshd-session`, `systemd --user`, `(sd-pam)`) are listed in the report and
+assumed not to sit inside a worktree; pass `--strict-process-scan` to keep every target while any
+such process exists. A sandboxed process sees paths through its own mount namespace, so bh
+validation runs are additionally protected by their `validation_active` marker.
+
+A fresh seat whose HEAD still sits on `main` is `no_landed_work`: it may be about to be used,
+so it stays. Squash- or rebase-landed branches are not provable locally and stay too; reclaim
+them with `bh worktree prune` once HQ is back. Removal re-checks cleanliness and the process
+table immediately before `git worktree remove` (never `--force`), and branches are never
+deleted. `--repo` also prunes that repository's stale admin entries (`git worktree prune`).
+
+Exit status: `0` the run completed (kept targets are expected), `1` a removal failed or a path
+named on the command line was kept, `2` usage. When `bh worktree rm`/`prune` hit
+`SqlConfigError`, their error output points here.
+
 ## Commands
 
 ```text
@@ -725,6 +784,9 @@ bh worktree rm     [-r HIVE] [--bead ID | REF] [--force] [--json]      # release
 bh worktree rebind [-r HIVE] [--bead ID | REF] [--session NAME] [--json]  # repair binding gaps
 bh worktree status [-r HIVE] [--json]                                  # classification pre-flight
 bh worktree prune  [-r HIVE]                                           # SAFE-set only (no confirm)
+bh worktree local-reclaim [PATH…] [--root DIR] [--repo DIR] [--targets-from FILE] [--base REF]
+                  [--strict-process-scan]
+                  [--dry-run] [--json]                                # HQ-independent, fail closed
 bh worktree mark-landed [-r HIVE] (BEAD | BRANCH)                      # assert out-of-band landing
 bh worktree mark-abandoned [-r HIVE] (BEAD | BRANCH) --reason REASON  # record non-landing
 ```

@@ -17564,6 +17564,158 @@
         "secret_material": false
       },
       "kind": "action",
+      "name": "worktree.local-reclaim",
+      "parameters": [
+        {
+          "name": "paths",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "root",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "items": {},
+            "type": "array"
+          }
+        },
+        {
+          "name": "repo",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "items": {},
+            "type": "array"
+          }
+        },
+        {
+          "name": "targets_from",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "base",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "items": {},
+            "type": "array"
+          }
+        },
+        {
+          "name": "dry_run",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "strict_process_scan",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "as_json",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        }
+      ],
+      "privilege": "ordinary-mutation",
+      "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "surfaces": {
+        "cli": {
+          "aliases": [
+            {
+              "declared_hidden": false,
+              "divergence": "hidden short group alias",
+              "effective_hidden": true,
+              "granularity": {
+                "mode": "divergent",
+                "reason": "hidden short group alias"
+              },
+              "interactivity": {
+                "guard_conditions": [],
+                "guard_parameters": [],
+                "mode": "none",
+                "prompt_seams": [],
+                "reason": null
+              },
+              "parameter_defaults": {},
+              "parameter_map": {},
+              "parameters": [
+                "paths",
+                "root",
+                "repo",
+                "targets_from",
+                "base",
+                "dry_run",
+                "strict_process_scan",
+                "as_json"
+              ],
+              "path": "wt local-reclaim",
+              "progress": {
+                "mode": "structured",
+                "notification_uris": [],
+                "reason": "--json carries machine-readable status/result data instead of a separate progress channel"
+              }
+            }
+          ],
+          "declared_hidden": false,
+          "effective_hidden": false,
+          "granularity": {
+            "mode": "fine",
+            "reason": null
+          },
+          "interactivity": {
+            "guard_conditions": [],
+            "guard_parameters": [],
+            "mode": "none",
+            "prompt_seams": [],
+            "reason": null
+          },
+          "parameter_map": {},
+          "parameters": [
+            "paths",
+            "root",
+            "repo",
+            "targets_from",
+            "base",
+            "dry_run",
+            "strict_process_scan",
+            "as_json"
+          ],
+          "path": "worktree local-reclaim",
+          "progress": {
+            "mode": "structured",
+            "notification_uris": [],
+            "reason": "--json carries machine-readable status/result data instead of a separate progress channel"
+          }
+        }
+      }
+    },
+    {
+      "alias_of": null,
+      "constraints": {
+        "hq_write": false,
+        "interactive": false,
+        "override_parameters": [],
+        "secret_material": false
+      },
+      "kind": "action",
       "name": "worktree.mark-abandoned",
       "parameters": [
         {

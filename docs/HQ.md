@@ -626,6 +626,23 @@ roles** composed from capabilities (`author`, `claim`, `execute`, `publish`, `pl
 Nothing in it is shipped: the modes above remain the behaviour of 0.24.0. See
 [HQ trust profiles, composable host capabilities, elected tenure and batch bead sync](design/hq-trust-profiles-and-capabilities-adr.md).
 
+## Partial degradation: reclaim space before restoring HQ {#hq-partial-degradation}
+
+When memory or tmpfs pressure makes HQ SQL unavailable, HQ-backed commands fail with
+`SqlConfigError: verified HQ config connection unavailable` — including `bh worktree rm` and
+`bh worktree prune`, the very commands that would free the space. The **first-line procedure**
+is the HQ-independent, fail-closed reclaimer:
+
+```sh
+bh worktree local-reclaim --dry-run   # what is provably safe to remove, and how much
+bh worktree local-reclaim --json      # remove it; reports tmpfs usage before/after
+```
+
+It reads only local Git and process state (never HQ or runtime config, not even for `--help`)
+and removes only clean, unlocked, unused, provably landed worktrees; everything else is kept and
+reported. Once HQ is back, finish with the full classifier (`bh worktree prune`). Details:
+[WORKTREES.md](WORKTREES.md#partial-degradation-bh-worktree-local-reclaim-first-line-procedure).
+
 ## See also
 
 - [HUB](HUB.md) — the derived per-host cross-hive aggregate, and its contract.

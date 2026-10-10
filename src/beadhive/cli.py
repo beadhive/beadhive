@@ -233,6 +233,14 @@ def _is_help_or_completion_invocation(ctx: typer.Context) -> bool:
     return any(arg in ("--help", "-h", "--dry-run") for arg in sys.argv[1:])
 
 
+def _is_help_invocation(ctx: typer.Context) -> bool:
+    """True for a pure `--help`/`-h` pass or shell completion (NOT `--dry-run`): nothing on
+    that path may load runtime/HQ configuration (bh-o01m6)."""
+    if ctx.resilient_parsing:
+        return True
+    return any(arg in ("--help", "-h") for arg in sys.argv[1:])
+
+
 # ---- setup gate ---------------------------------------------------------------
 
 # Subcommands exempt from the setup-complete gate.  The gate guards every OTHER
@@ -519,8 +527,13 @@ def _root(
 ):
     """Workspace beads CLI. -a/-r route `bd`/`git` across hives (need git_workspace)."""
     _announce_authority_enforcement(ctx)
-    _migrate_home_best_effort()
-    _migrate_hive_keys_best_effort()
+    # `--help` / completion is informational: it must never read runtime config — which may
+    # sit behind HQ SQL that is down during partial degradation (bh-o01m6) — so the config
+    # migrations and the config-loading telemetry init are skipped for it.
+    help_only = _is_help_invocation(ctx)
+    if not help_only:
+        _migrate_home_best_effort()
+        _migrate_hive_keys_best_effort()
     _warn_stale_schema_version_best_effort(ctx)
     _warn_missing_fleet_config_best_effort(ctx)
     _warn_literal_violations_best_effort(ctx)
@@ -529,7 +542,7 @@ def _root(
     # generic CLI telemetry through the nested host/daemon callbacks so that supported entrypoint
     # does not consume the process-global SDK first.  Every other command still initializes the
     # ordinary short-lived CLI provider before its handler runs.
-    if ctx.invoked_subcommand != "host":
+    if ctx.invoked_subcommand != "host" and not help_only:
         _init_telemetry_best_effort()
         _instrument_command_entry(ctx)
     # Same informational-only exemption as the schema-staleness nudge above (bh-sn9q): a
@@ -3604,6 +3617,57 @@ def wt_prune(hive: str = typer.Option("", "--hive", help="limit to one hive")):
 
 
 @wt_app.command(
+    "local-reclaim",
+    help=(
+        "HQ-independent, fail-closed space reclamation for partial degradation: removes only "
+        "clean, unlocked, unused, provably landed worktrees, judged from local Git/process "
+        "state alone (never reads HQ or runtime config). Reports per-target results, reclaimed "
+        "bytes and tmpfs usage before/after. The installed `bh` runs it before loading this CLI."
+    ),
+)
+def wt_local_reclaim(
+    paths: list[str] | None = typer.Argument(  # noqa: B008 - Typer declaration
+        None, help="worktree directories to remove (bead ids need HQ; use paths)"
+    ),
+    root: list[str] | None = typer.Option(  # noqa: B008 - Typer declaration
+        None, "--root", help="scan a worktree root for leaves (default: the worktree roots)"
+    ),
+    repo: list[str] | None = typer.Option(  # noqa: B008 - Typer declaration
+        None, "--repo", help="consider this repository's wt/* linked worktrees"
+    ),
+    targets_from: str = typer.Option(
+        "", "--targets-from", help="read candidate paths from FILE ('-' = stdin)"
+    ),
+    base: list[str] | None = typer.Option(  # noqa: B008 - Typer declaration
+        None, "--base", help="landing base ref (default: main, master, origin/main|master)"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", "--preview", help="classify and measure only; remove nothing"
+    ),
+    strict_process_scan: bool = typer.Option(
+        False,
+        "--strict-process-scan",
+        help="keep every target when any of your own processes is hidden by the kernel",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="emit the structured result as JSON"),
+):
+    # bh-o01m6: same stdlib-only implementation the import-lazy entrypoint dispatches to.
+    from . import worktree_local_reclaim
+
+    argv = [
+        *(paths or []),
+        *(arg for value in root or [] for arg in ("--root", value)),
+        *(arg for value in repo or [] for arg in ("--repo", value)),
+        *(arg for value in base or [] for arg in ("--base", value)),
+        *(["--targets-from", targets_from] if targets_from else []),
+        *(["--dry-run"] if dry_run else []),
+        *(["--strict-process-scan"] if strict_process_scan else []),
+        *(["--json"] if as_json else []),
+    ]
+    raise typer.Exit(worktree_local_reclaim.main(argv))
+
+
+@wt_app.command(
     "mark-landed",
     help=(
         "operator escape hatch: assert an out-of-band landing — stamp close_reason 'merged' "
@@ -4643,6 +4707,15 @@ def _handle_cli_error(exc: Exception) -> None:
     if isinstance(exc, BaseExceptionGroup):
         for leaf in leaves:
             typer.echo(f"  ↳ {type(leaf).__name__}: {leaf}", err=True)
+    if command in ("worktree", "wt") and any(
+        type(e).__name__ == "SqlConfigError" for e in (exc, *leaves)
+    ):
+        # Partial degradation (bh-o01m6): point at the path that works without HQ.
+        typer.echo(
+            "  ↳ HQ config is unavailable — reclaim worktree space without it: "
+            f"`{config.BINARY_ALIAS} worktree local-reclaim` (docs/WORKTREES.md)",
+            err=True,
+        )
 
 
 def main():

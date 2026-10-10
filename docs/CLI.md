@@ -111,6 +111,7 @@ bh work assign|claim|next|schedule|check|submit|approve|start|finish|merge|resum
                               bead lifecycle driver (WORK.md); next is the atomic
                               pick-claim-provision entry point for external schedulers
 bh worktree add|list|path|init|rm|status|prune   bh-managed worktrees, alias wt (WORKTREES.md)
+bh worktree local-reclaim   HQ-independent, fail-closed space reclaim (partial degradation)
 bh hive init|add|rm|retire|onboard|list|status|migrate|ready|survey|classify|prefix|enable|disable|policy
                               onboard/inspect hives (HIVES.md); archive list|prune
 bh label validate|sync|report|allowed|docs   registry ops (LABELS.md)
