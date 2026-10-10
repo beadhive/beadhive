@@ -41,6 +41,7 @@ from .hq_sql_runtime_schema import FAILOVER_POLICY_TABLE as POLICY_TABLE
 __all__ = [
     "ROLE_FAILOVER_AFTER_S",
     "failover_after_for",
+    "tenure_role",
     "BD_RECLAIM_S",
     "DEFAULT_EXECUTOR_FLOOR_S",
     "DOLT_SERVER_SYNC_INTERVAL_S",
@@ -101,22 +102,34 @@ ROLE_FAILOVER_AFTER_S: dict[str, float | None] = {
 }
 
 
-def failover_after_for(role: str, *, override: float | None = None) -> float | None:
+def tenure_role(role: str | Iterable[str]) -> str:
+    """The role whose ``failover_after`` row applies to `role` (one role or a role set):
+    :func:`beadhive.host_roles.resolve_tenure_role`."""
+    from .host_roles import resolve_tenure_role
+
+    return resolve_tenure_role(role)
+
+
+def failover_after_for(role: str | Iterable[str], *, override: float | None = None) -> float | None:
     """``failover_after`` seconds for `role`; ``None`` means never fail over (never placed).
 
-    `override` is the per-role, per-hive value from HQ data (M8c, ``bh-4biq8``:
-    :mod:`beadhive.failover_policy` owns loading and floor validation — refused, never
-    clamped). An unknown role takes the executor default: the longest, so a newer role never
-    fails over early."""
-    from .host_manifest_contracts import canonical_role
+    `role` is one role or a role set; a set resolves to its highest-tenure role
+    (:func:`tenure_role`). `override` is the per-role, per-hive value from HQ data (M8c,
+    ``bh-4biq8``: :mod:`beadhive.failover_policy` owns loading and floor validation — refused,
+    never clamped). A role that is never placed (``viewer``, ``planner``, ``operator``,
+    ``director``) never fails over. An unknown role takes the executor default: the longest,
+    so a newer role never fails over early."""
+    from . import host_roles
 
     if override is not None:
         if type(override) not in (int, float) or not math.isfinite(override) or override <= 0:
             raise ValueError("failover_after override must be a positive, finite number")
         return float(override)
-    role = canonical_role(role)
+    role = tenure_role(role)
     if role in ROLE_FAILOVER_AFTER_S:
         return ROLE_FAILOVER_AFTER_S[role]
+    if role in host_roles.ROLE_BUNDLES:
+        return None
     return ROLE_FAILOVER_AFTER_S["executor"]
 
 
@@ -191,14 +204,14 @@ class FailoverPolicy:
     warnings: tuple[str, ...] = ()
     provisioned: bool = True
 
-    def failover_after(self, prefix: str, role: str) -> float | None:
+    def failover_after(self, prefix: str, role: str | Iterable[str]) -> float | None:
         """Seconds before `role`'s frame on `prefix` may be failed over; ``None`` = never.
 
-        A viewer is never placed. An unknown role takes the executor value (the longest, so a
-        newer role never fails over early), as :func:`failover_after_for` does."""
-        from .host_manifest_contracts import canonical_role
-
-        role = canonical_role(role)
+        `role` may be a role set: it uses its highest-tenure role's row (bh-t1xwp), so the
+        rows keep their ``executor`` / ``transient`` scope. A never-placed role is never
+        placed. An unknown role takes the executor value (the longest, so a newer role never
+        fails over early), as :func:`failover_after_for` does."""
+        role = tenure_role(role)
         if failover_after_for(role) is None:
             return None
         if role not in ROLES:

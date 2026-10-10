@@ -734,6 +734,7 @@ def render_table(rows: Sequence[dict[str, object]], columns: Sequence[tuple[str,
 def ensure_manifest(
     *,
     role: str,
+    roles: list[str] | None = None,
     label: str = "",
     identity_kind: str = "none",
     identity_value: str = "",
@@ -748,8 +749,9 @@ def ensure_manifest(
     `role`/identity are the caller's explicit choice (no default role — asymmetric TTL renewal
     reads it, so a silent guess would be wrong more often than it's right). Refuses to overwrite
     an existing manifest unless `force`. Callers own `role`/`identity_kind` validation against
-    :data:`hosts.HOST_ROLES` / :data:`hosts.IDENTITY_MECHANISM_KINDS` — this assumes both are
-    already-valid members.
+    :data:`hosts.ROLE_NAMES` / :data:`hosts.IDENTITY_MECHANISM_KINDS` — this assumes both are
+    already-valid members. `roles` (bh-t1xwp) records a composable role set; `role` is then
+    one of its members (the set's highest-tenure role, as `bh host init` passes it).
 
     Returns ``(path, wrote)`` — ``wrote=False`` when an existing manifest was left completely
     untouched (`path` is still the manifest's location either way)."""
@@ -775,6 +777,7 @@ def ensure_manifest(
             os=os_name,
             arch=arch,
             role=role,
+            roles=list(roles) if roles else None,
             identity=hosts.IdentityMechanism(kind=identity_kind, value=identity_value),
             remote_only_hives=(
                 list(remote_only_hives)
@@ -789,7 +792,14 @@ def ensure_manifest(
 @app.command("init", help="mint/write THIS host's own manifest into HQ (hosts/<host_id>.yaml).")
 @otel.trace_verb("host.init")
 def init_cmd(
-    role: str = typer.Option(..., "--role", help=f"host role: one of {list(hosts.HOST_ROLES)}"),
+    role: str = typer.Option(
+        ...,
+        "--role",
+        help=(
+            f"host role, or a comma-separated role set (host.roles): each one of "
+            f"{list(hosts.ROLE_NAMES)}"
+        ),
+    ),
     label: str = typer.Option(
         "", "--label", help="override the manifest label (default: host.yaml's label)"
     ),
@@ -811,10 +821,19 @@ def init_cmd(
     A deprecated role spelling is RESOLVED (with a warning) rather than refused: an operator
     re-running a command from a v0.8.0 runbook should land on the right role, not on a "must be
     one of" list that does not contain the word they were told to type (bh-7ztwe)."""
-    role = hosts.canonical_role(role)
-    if role not in hosts.HOST_ROLES:
-        typer.echo(f"✗ --role must be one of {list(hosts.HOST_ROLES)} (got {role!r})", err=True)
+    from . import host_roles
+
+    names = [hosts.canonical_role(name.strip()) for name in role.split(",") if name.strip()]
+    unknown = [name for name in names if name not in hosts.ROLE_NAMES]
+    if not names or unknown:
+        typer.echo(
+            f"✗ --role must be one of {list(hosts.ROLE_NAMES)}, or a comma-separated set of "
+            f"them (got {role!r})",
+            err=True,
+        )
         raise typer.Exit(1)
+    role_set = list(host_roles.role_set(names))
+    role = host_roles.tenure_role(role_set)
     if identity_kind not in hosts.IDENTITY_MECHANISM_KINDS:
         typer.echo(
             f"✗ --identity-kind must be one of {list(hosts.IDENTITY_MECHANISM_KINDS)} "
@@ -825,6 +844,7 @@ def init_cmd(
 
     target, wrote = ensure_manifest(
         role=role,
+        roles=role_set if len(role_set) > 1 else None,
         label=label,
         identity_kind=identity_kind,
         identity_value=identity_value,
@@ -1068,6 +1088,8 @@ def show_cmd(
     typer.echo(f"host_id:    {manifest.host_id}")
     typer.echo(f"label:      {manifest.label}")
     typer.echo(f"role:       {manifest.role}")
+    if manifest.roles is not None:
+        typer.echo(f"roles:      {', '.join(manifest.roles)}")
     typer.echo(f"frame_id:   {manifest.frame_id or '(none)'}")
     typer.echo(f"state:      {manifest.state}")
     typer.echo(f"release:    {manifest.release.model_dump() if manifest.release else '(none)'}")
@@ -1210,7 +1232,9 @@ def adopt_one(hive: str, *, force: bool = False):
     hq_dir = _require_hq_dir()
     host_id = _require_host_id()
     manifest = _require_manifest(hq_dir, host_id)
-    ttl = host_lease.ttl_for_role(manifest.role, config.host_lease_ttl(cfg))
+    ttl = host_lease.ttl_for_role(
+        getattr(manifest, "roles", None) or manifest.role, config.host_lease_ttl(cfg)
+    )
     return host_adopt.adopt(
         prefix=str(entry["prefix"]),
         hive_remote="origin",
@@ -1257,7 +1281,9 @@ def adopt_cmd(
     manifest = _require_manifest(hq_dir, host_id)
 
     try:
-        ttl = host_lease.ttl_for_role(manifest.role, config.host_lease_ttl(cfg))
+        ttl = host_lease.ttl_for_role(
+            getattr(manifest, "roles", None) or manifest.role, config.host_lease_ttl(cfg)
+        )
     except host_lease.HostLeaseRejected as exc:
         typer.echo(f"✗ {exc}", err=True)
         raise typer.Exit(1) from None

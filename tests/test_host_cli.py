@@ -189,6 +189,32 @@ def test_init_rejects_a_role_outside_the_closed_set(monkeypatch):
     assert "--role must be one of" in result.output
 
 
+def test_init_records_a_comma_separated_role_set(monkeypatch):
+    """bh-t1xwp: `--role operator,executor` records host.roles; host.role is the set's
+    highest-tenure role, and `host show` prints both."""
+    host_id, _label = _mint_host(monkeypatch)
+    _pin_platform(monkeypatch)
+
+    result = runner.invoke(app, ["host", "init", "--role", "operator,executor"])
+
+    assert result.exit_code == 0, result.output
+    manifest = hosts.load(config.hq_dir(), host_id)
+    assert manifest.roles == ["operator", "executor"]
+    assert manifest.role == "executor"
+    shown = runner.invoke(app, ["host", "show", host_id])
+    assert "roles:      operator, executor" in shown.stdout
+
+
+def test_init_rejects_an_unknown_role_inside_a_set(monkeypatch):
+    _mint_host(monkeypatch)
+    _pin_platform(monkeypatch)
+
+    result = runner.invoke(app, ["host", "init", "--role", "operator,super-admin"])
+
+    assert result.exit_code == 1
+    assert "--role must be one of" in result.output
+
+
 def test_init_rejects_an_identity_kind_outside_the_closed_set(monkeypatch):
     _mint_host(monkeypatch)
     _pin_platform(monkeypatch)

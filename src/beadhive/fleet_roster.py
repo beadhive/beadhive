@@ -17,6 +17,7 @@ HostManifest = _files.HostManifest
 IdentityMechanism = _files.IdentityMechanism
 ManifestError = _files.ManifestError
 HOST_ROLES = _files.HOST_ROLES
+ROLE_NAMES = _files.ROLE_NAMES
 IDENTITY_MECHANISM_KINDS = _files.IDENTITY_MECHANISM_KINDS
 canonical_role = _files.canonical_role
 manifest_path = _files.manifest_path

@@ -9,8 +9,20 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-import structlog
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
+
+# Deprecated spellings and their resolution live with the role bundles (bh-t1xwp), so the
+# role model imports nothing back from here; both names stay exported from this module.
+from . import host_roles
+from .host_roles import DEPRECATED_ROLE_ALIASES as DEPRECATED_ROLE_ALIASES
+from .host_roles import canonical_role as canonical_role
 
 # The closed role set (docs/design/multi-host-model-adr.md, Amendment 1 §3) — a later bead
 # (bh-ytbb.6+) reads this to pick renew/TTL defaults.
@@ -25,43 +37,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 #              navigation and local indexing, never modify or submit.
 HOST_ROLES: tuple[str, ...] = ("executor", "transient", "viewer")
 
-# Deprecated spellings, kept resolving so a rename does not strand every already-registered
-# host at clone time — an HQ manifest carries the role STRING, and that is the one failure mode
-# this rename must not have. Warned on use, removed in a later release.
-#
-# The old names were replaced because each was wrong rather than merely long, `worker` most of
-# all: it named the ONE role that can do no work (it cannot claim, submit or merge), and the
-# word was already taken twice over — bd's worker-on-an-issue lease, and "the agent doing the
-# work" throughout work.py's prose. Three independent readers hit it in one day and all drew
-# the same wrong conclusion; v0.8.0 shipped documentation stating the exact opposite.
-DEPRECATED_ROLE_ALIASES: dict[str, str] = {
-    "primary-default": "executor",
-    "adopt-on-demand": "transient",
-    "worker": "viewer",
-}
-
-
-def canonical_role(role: str) -> str:
-    """`role` with a deprecated spelling resolved to its current name, warning on use.
-
-    An unknown role passes through UNTOUCHED — validation belongs to the caller (the manifest
-    model's ``Literal``, or ``host init``'s explicit check), and quietly absorbing a typo here
-    would turn it into a silent default."""
-    current = DEPRECATED_ROLE_ALIASES.get(role)
-    if current is None:
-        return role
-    structlog.get_logger("beadhive.hosts").warning(
-        "deprecated_host_role",
-        deprecated=role,
-        replacement=current,
-        reason=(
-            "host role renamed (bh-7ztwe) — the old names still resolve but will be removed in "
-            "a later release; re-record it with "
-            "`bh host init --role " + current + " --force`"
-        ),
-    )
-    return current
-
+# The closed COMPOSABLE role set (trust-profiles ADR section 1, bh-t1xwp): a role is a bundle of
+# capabilities (:mod:`beadhive.host_roles`). A manifest declares one or more in ``roles``; the
+# single ``role`` string stays valid and reads as a one-element set. ``HOST_ROLES`` above stays
+# the three lease-tenure roles `bh host init` / `bh host provision` mint by default.
+ROLE_NAMES: tuple[str, ...] = ("executor", "transient", "viewer", "planner", "operator", "director")
+RoleName = Literal["executor", "transient", "viewer", "planner", "operator", "director"]
 
 # The identity mechanisms bh has seen in practice (bh-fry5's motivating incident: a host-wide
 # SSH `insteadOf` rewrite silently changed which signing key a subset of repos pushed under).
@@ -121,6 +102,22 @@ class FrameCapabilities(_Section):
     arch: str
     harnesses: list[str]
     max_sessions: int = Field(ge=0)
+    grants: list[Literal["author", "claim", "execute", "publish", "place", "admin"]] | None = Field(
+        None,
+        description=(
+            "The capability list the admission grant approves, projected from the host's "
+            "role set (bh-t1xwp); never declared by hand. Absent for a legacy single role."
+        ),
+    )
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_grants(self, handler):
+        """A legacy single-role frame serialises exactly as before bh-t1xwp, so every existing
+        admission grant (``desired.caps``) keeps comparing equal."""
+        data = handler(self)
+        if self.grants is None and isinstance(data, dict):
+            data.pop("grants", None)
+        return data
 
 
 class HostManifest(_Section):
@@ -169,14 +166,88 @@ class HostManifest(_Section):
     label: str = Field(..., description="Human label (mirrors host.yaml's label at mint time).")
     os: str = Field(..., description="Operating system, e.g. darwin | linux | windows.")
     arch: str = Field(..., description="CPU architecture, e.g. arm64 | x86_64.")
-    role: Literal["executor", "transient", "viewer"] = Field(
+    role: RoleName = Field(
         ...,
         description=(
             "executor (always-on machine that owns repos, long stable tenure) | transient "
             "(comes and goes for a task, releases on exit — CI-runner-shaped) | viewer (never "
-            "primary — a human's laptop: reads, navigates and indexes locally, never submits)."
+            "primary — a human's laptop: reads, navigates and indexes locally, never submits) "
+            "| planner | operator | director (never placed; trust-profiles ADR section 1). "
+            "With `roles`, one member of the set; alone, a one-element set."
         ),
     )
+    roles: list[RoleName] | None = Field(
+        None,
+        description=(
+            "The host's composable role set (bh-t1xwp): its effective capabilities are the "
+            "union of the bundles, capped by the trust profile's ceiling; tenure follows the "
+            "highest-tenure role. Absent: the set is `[role]`."
+        ),
+    )
+
+    @field_validator("roles", mode="before")
+    @classmethod
+    def _resolve_deprecated_roles(cls, v):
+        if isinstance(v, (list, tuple)):
+            return [canonical_role(item) if isinstance(item, str) else item for item in v]
+        return v
+
+    @model_validator(mode="before")
+    @classmethod
+    def _role_from_roles(cls, value):
+        """A manifest that states only ``roles`` takes the set's highest-tenure role as
+        ``role``, so every single-role reader keeps one answer."""
+        if isinstance(value, dict) and "role" not in value and value.get("roles"):
+            try:
+                return {**value, "role": host_roles.tenure_role(value["roles"])}
+            except (host_roles.UnknownRole, TypeError):
+                return value
+        return value
+
+    @model_validator(mode="after")
+    def _project_role_set(self):
+        """Normalise ``roles`` and project the set into ``capabilities.grants``."""
+        if self.roles is not None:
+            normalised = list(host_roles.role_set(self.roles))
+            if self.role not in normalised:
+                raise ValueError(f"role {self.role!r} must be a member of roles {normalised}")
+            self.roles = normalised
+        if self.capabilities is not None:
+            expected = host_roles.admission_grants(self.role_set)
+            declared = self.capabilities.grants
+            if declared is not None and sorted(declared) != expected:
+                raise ValueError(
+                    f"capabilities.grants {declared} is projected from the role set "
+                    f"{list(self.role_set)}, which grants {expected}"
+                )
+            if declared != expected:
+                self.capabilities = self.capabilities.model_copy(update={"grants": expected})
+        return self
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_roles(self, handler):
+        """A single-role manifest serialises exactly as before bh-t1xwp: an older reader
+        (``extra="forbid"``) never meets a ``roles`` key it does not know."""
+        data = handler(self)
+        if self.roles is None and isinstance(data, dict):
+            data.pop("roles", None)
+        return data
+
+    @property
+    def role_set(self) -> tuple[str, ...]:
+        """The declared role set: ``roles``, else ``(role,)``."""
+        return host_roles.role_set(self.roles if self.roles is not None else self.role)
+
+    @property
+    def tenure_role(self) -> str:
+        """The highest-tenure role in the set: whose lease TTL and ``failover_after`` apply."""
+        return host_roles.tenure_role(self.role_set)
+
+    def capability_set(self, ceiling=None) -> frozenset[str]:
+        """The effective capabilities: union of the bundles, then `ceiling` (default: none)."""
+        return host_roles.effective_capabilities(
+            self.role_set, ceiling if ceiling is not None else host_roles.NO_CEILING
+        )
 
     @field_validator("role", mode="before")
     @classmethod

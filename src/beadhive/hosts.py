@@ -54,6 +54,9 @@ from .host_manifest_contracts import (
     IDENTITY_MECHANISM_KINDS as IDENTITY_MECHANISM_KINDS,
 )
 from .host_manifest_contracts import (
+    ROLE_NAMES as ROLE_NAMES,
+)
+from .host_manifest_contracts import (
     FrameCapabilities as FrameCapabilities,
 )
 from .host_manifest_contracts import (
