@@ -666,6 +666,10 @@ and `hq.tenure` (seconds). An override may only require **more** trust than the 
 that would loosen a knob is refused, the knob keeps the profile's value, and the refusal names
 the profile.
 
+`bh hq why <hive>` reports a refused override in its `profile` layer (never as the refusing
+layer: the write runs under the profile), naming the knob, the profile and the signed command
+that applies the looser value, `bh hq authority profile-<name> --operator-key <key> --confirm`.
+
 **Doctor.** `bh doctor` prints the effective profile and every override on one line, for
 example `profile trusted; placement overridden to director (hq.placement_mode, host.yaml)`.
 Under `open` it also prints that this is the single-operator lab posture.

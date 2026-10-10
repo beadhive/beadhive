@@ -602,3 +602,31 @@ def test_sql_signed_frame_fences_the_same_unsigned_raise_and_accepts_the_signed_
     monkeypatch.setattr(sql.authority, "load_latest_config_at", lambda *a, **k: signed)
     sql.authority.bound_config_at(sql.cursor, crossref)
     assert hq_trust_profile.learned() == raised
+
+
+# ---- bh hq why: the profile layer -----------------------------------------------------------
+
+
+def test_hq_why_profile_layer_reports_a_refused_override_and_the_signed_fix():
+    from beadhive import config, hq_why, hq_why_layer_profile
+
+    assert "profile" in [layer.name for layer in hq_why.layers()]
+    ok = hq_why_layer_profile.check_profile(hq_why.WhyContext("tt", "author", cfg={}))
+    assert ok.status == hq_why.SKIPPED and "profile verified" in ok.summary
+    ctx = hq_why.WhyContext("tt", "author", cfg={"hq": {"placement_mode": "self"}})
+    verdict = hq_why_layer_profile.check_profile(ctx)
+    assert verdict.status == hq_why.OK  # the write still runs under the profile
+    assert verdict.code == "profile_override_refused"
+    assert "hq.placement_mode=self" in verdict.summary and "verified" in verdict.summary
+    assert verdict.detail["knob"] == "placement" and verdict.detail["profile"] == VERIFIED
+    assert verdict.command == (
+        f"{config.BINARY_ALIAS} hq authority profile-trusted --operator-key <key> --confirm"
+    )
+    tenure = Override("tenure", "hq.tenure", 3 * 86400, "host.yaml")
+    assert hq_why_layer_profile.admitting_profile(tenure) == ATTESTED  # refused only by open
+    assert (
+        hq_why_layer_profile.admitting_profile(
+            Override("write_policy", "hive.write_policy", "open", "host.yaml")
+        )
+        == OPEN
+    )
