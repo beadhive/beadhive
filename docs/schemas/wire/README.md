@@ -61,6 +61,12 @@ The checker permits only its exact optional `push` tail on `host.provision` and 
 CLI projection in the existing v2.1.0 catalog. Other in-place edits and operation changes
 remain rejected; this does not change the general optional parameter compatibility policy.
 
+The operator approved one visibility exemption on 2026-10-10:
+[`bh hq placement` visibility decision](../../design/hq-placement-visibility-compatibility-decision.md).
+The checker permits only `hq.placement`'s CLI `declared_hidden` and `effective_hidden` moving
+together from `true` to `false`; every other operation change, including un-hiding any other
+verb, remains rejected.
+
 ## Artifacts by release
 
 The artifacts below were introduced in releases that are now deprecated. Release 1.5.0 carries

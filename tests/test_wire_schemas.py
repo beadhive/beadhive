@@ -310,6 +310,36 @@ def test_local_safe_exception_rejects_reordering_existing_short_status_arguments
     assert catalog_compatibility_errors(old, candidate)
 
 
+def _set_hidden(catalog: dict, op_name: str, declared: bool, effective: bool) -> dict:
+    catalog = deepcopy(catalog)
+    cli = _operation(catalog, op_name)["surfaces"]["cli"]
+    cli["declared_hidden"], cli["effective_hidden"] = declared, effective
+    return catalog
+
+
+def test_catalog_compatibility_allows_only_the_approved_hq_placement_unhide() -> None:
+    """bh-vl0r3 (operator decision 2026-10-10): hq.placement hidden -> visible only."""
+    live = _catalog()
+    hidden = _set_hidden(live, "hq.placement", True, True)
+    visible = _set_hidden(live, "hq.placement", False, False)
+    assert catalog_compatibility_errors(hidden, visible) == []
+    # The reverse direction, a single flag, or any other operation is still a break.
+    assert catalog_compatibility_errors(visible, hidden)
+    assert catalog_compatibility_errors(hidden, _set_hidden(live, "hq.placement", False, True))
+    other = next(
+        op["name"]
+        for op in live["operations"]
+        if op["name"] != "hq.placement" and "cli" in op["surfaces"]
+    )
+    assert catalog_compatibility_errors(
+        _set_hidden(live, other, True, True), _set_hidden(live, other, False, False)
+    )
+    # Any other edit to hq.placement alongside the unhide is still rejected.
+    edited = deepcopy(visible)
+    _append_string_param(edited, "hq.placement", "surprise")
+    assert catalog_compatibility_errors(hidden, edited)
+
+
 def test_catalog_compatibility_rejects_duplicate_operation_and_projection_identities() -> None:
     old = _catalog()
     duplicate_operation = deepcopy(old)

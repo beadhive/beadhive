@@ -819,6 +819,36 @@ def _approved_optional_parameter(operation, item):
     return {key: value for key, value in item.items() if key != "name"} == expected
 
 
+# bh-vl0r3 (operator decision 2026-10-10): hq.placement hidden→visible is a documentation
+# change, not a wire break; the operation's parameters and results are unchanged. See
+# docs/design/hq-placement-visibility-compatibility-decision.md. Only these exact operations,
+# and only their CLI declared_hidden/effective_hidden moving True -> False, are exempt.
+_APPROVED_UNHIDDEN_OPERATIONS: frozenset[str] = frozenset({"hq.placement"})
+_HIDDEN_FLAGS = ("declared_hidden", "effective_hidden")
+
+
+def _approved_unhidden(
+    name: str, old: dict[str, Any], new: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """``(old, new)`` with an approved True -> False CLI visibility flip normalised away.
+
+    Applies only to :data:`_APPROVED_UNHIDDEN_OPERATIONS`, and only when BOTH flags were
+    ``True`` and are now ``False``; any other difference (one flag, the reverse direction, any
+    other field) is left in place for the generic comparison to reject."""
+    if name not in _APPROVED_UNHIDDEN_OPERATIONS:
+        return old, new
+    old_cli = old.get("surfaces", {}).get("cli")
+    new_cli = new.get("surfaces", {}).get("cli")
+    if not isinstance(old_cli, dict) or not isinstance(new_cli, dict):
+        return old, new
+    if not all(old_cli.get(flag) is True and new_cli.get(flag) is False for flag in _HIDDEN_FLAGS):
+        return old, new
+    candidate = deepcopy(new)
+    for flag in _HIDDEN_FLAGS:
+        candidate["surfaces"]["cli"][flag] = True
+    return old, candidate
+
+
 def _without_approved_params(name: str, operation: dict[str, Any]) -> dict[str, Any]:
     """Drop the approved appended optional parameters (only when they match exactly)."""
     if (
@@ -902,9 +932,12 @@ def catalog_compatibility_errors(old: dict[str, Any], new: dict[str, Any]) -> li
             {"catalog_version": new_version, "operations": [new_operations[name]]},
         ):
             continue
+        old_operation, new_operation = _approved_unhidden(
+            name, old_operations[name], new_operations[name]
+        )
         _compare_catalog_value(
-            _without_approved_params(name, old_operations[name]),
-            _without_approved_params(name, new_operations[name]),
+            _without_approved_params(name, old_operation),
+            _without_approved_params(name, new_operation),
             f"$.operations[name={name!r}]",
             errors,
         )
