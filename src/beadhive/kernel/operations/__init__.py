@@ -787,7 +787,10 @@ def _cli_granularity(path: str, *, alias_reason: str | None = None) -> dict[str,
 
 
 def _cli_progress(path: str, parameters: list[ParameterSpec]) -> dict[str, Any]:
-    if any(parameter.name == "as_json" for parameter in parameters):
+    # Prune's optional JSON result requires the local-safe recovery route;
+    # ordinary prune retains its published human progress contract.
+    recovery_prune = path in {"worktree prune", "wt prune"}
+    if not recovery_prune and any(parameter.name == "as_json" for parameter in parameters):
         return {
             "mode": "structured",
             "notification_uris": [],
