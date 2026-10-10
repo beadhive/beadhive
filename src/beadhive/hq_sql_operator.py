@@ -352,6 +352,15 @@ class SqlRuntimeOperator:
                 if provisioned_route is not None:
                     principal, frame_id, holder, instance, epoch, signer = provisioned_route
                     table = self._provisioned_table(cursor, principal, epoch)
+                    if release_upgrade is not None and table == session_table(principal, epoch):
+                        from .hq_sql_session_provision import validate_incarnation
+
+                        validate_incarnation(
+                            cursor,
+                            principal,
+                            epoch,
+                            database=self.settings["authority_writer"]["database"],
+                        )
                     cursor.execute(
                         "INSERT INTO hq_principal_registry VALUES (%s,%s,%s,%s,%s,%s,%s)",
                         (principal, frame_id, holder, instance, epoch, table, signer),
@@ -464,6 +473,115 @@ class SqlRuntimeOperator:
         if {session, evidence} <= present:
             return session
         raise SqlOperatorError("preprovisioned frame inbox or session tables missing")
+
+    def describe_release_route(self, principal, epoch, frame, *, deadline=None):
+        """Report the actual new route, or inherit the incumbent's provisioning family."""
+        connection, _deadline = self._open(deadline=deadline)
+        try:
+            with connection.cursor() as cursor:
+                self._identity(cursor)
+                inbox = inbox_table(principal, epoch)
+                session, evidence = (
+                    session_table(principal, epoch),
+                    evidence_table(principal, epoch),
+                )
+                cursor.execute(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema=DATABASE() "
+                    "AND table_name IN (%s,%s,%s)",
+                    (inbox, session, evidence),
+                )
+                present = {row[0] for row in cursor.fetchall()}
+                incomplete = (
+                    bool(present & {session, evidence}) and not {session, evidence} <= present
+                )
+                table = (
+                    inbox
+                    if inbox in present
+                    else session
+                    if present & {session, evidence}
+                    else None
+                )
+                if table is None:
+                    cursor.execute(
+                        "SELECT principal,epoch,inbox_table FROM hq_principal_registry "
+                        "WHERE frame_id=%s ORDER BY epoch DESC LIMIT 1",
+                        (frame,),
+                    )
+                    prior = cursor.fetchone()
+                    table = (
+                        session
+                        if prior and prior[2] == session_table(prior[0], prior[1])
+                        else inbox
+                    )
+                return {
+                    "principal": principal,
+                    "inbox_table": table,
+                    "route": "session" if table == session else "inbox",
+                    "session_table": session if table == session else None,
+                    "evidence_table": evidence if table == session else None,
+                    "provisioned": table in present and not incomplete,
+                    "provisioning_incomplete": incomplete,
+                }
+        finally:
+            connection.close()
+
+    def provision_release_route(
+        self, route, *, expected_revision, frame_address, password, deadline=None
+    ):
+        """Server-local, resumable provisioning; never publishes authority or receipts."""
+        from .hq_sql_session_provision import resume_incarnation
+
+        principal, _frame, _holder, _instance, epoch, _signer = route
+        connection, deadline = self._open(deadline=deadline)
+        try:
+            with connection.cursor() as cursor:
+                self._identity(cursor)
+                cursor.execute("SELECT DOLT_HASHOF('HEAD')")
+                head = cursor.fetchone()[0]
+                if head != expected_revision:
+                    raise SqlOperatorError(
+                        "original authority revision changed before provisioning"
+                    )
+                self.authority.verified_state_at(
+                    cursor, head, deadline=deadline, allow_expired=True
+                )
+                database = self.settings["authority_writer"]["database"]
+                resume_incarnation(
+                    cursor,
+                    principal,
+                    epoch,
+                    frame_address=frame_address,
+                    password=password,
+                    database=database,
+                )
+                account = f"'{principal}'@'{frame_address}'"
+                for table in (
+                    "hq_authority",
+                    "hq_principal_registry",
+                    "hq_live_hive_leases",
+                    "hq_live_public_observations",
+                    "hq_live_results",
+                ):
+                    cursor.execute(f"GRANT SELECT ON `{database}`.`{table}` TO {account}")
+                config_database = self.settings["reader"]["database"]
+                for table in ("hq_config_meta", "hq_config_documents", "hq_config_publications"):
+                    cursor.execute(f"GRANT SELECT ON `{config_database}`.`{table}` TO {account}")
+                cursor.execute("SELECT DOLT_HASHOF('HEAD')")
+                result = cursor.fetchone()[0]
+                self.authority.verified_state_at(
+                    cursor, result, deadline=deadline, allow_expired=True
+                )
+                return result
+        except (SqlOperatorError, ValueError):
+            raise
+        except Exception:
+            raise SqlOperatorError(
+                "session provisioning unavailable; use a server-local operator binding with "
+                "DDL, CREATE USER and GRANT privileges, then replan/resume through the CLI"
+            ) from None
+        finally:
+            connection.close()
 
     def prune_inbox(self, frame: str, *, retention_s: float, dry_run=False, deadline=None):
         """Delete expired signed-mode heartbeat rows from a frame's inboxes (bh-ce886).

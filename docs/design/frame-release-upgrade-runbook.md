@@ -186,6 +186,178 @@ frame re-adopts at a new lease epoch and in-flight claims refuse their bead writ
 with the stale-claim message. The code is not lost: re-ack with `bh work claim`
 and submit again.
 
+## Session-only provisioning on 0.24.3
+
+This runtime repair targets package patch 0.24.3. Its reviewed optional CLI
+provisioning inputs are recorded in the independent additive wire 2.7.0 contract;
+existing rotation inputs retain their order and behavior.
+
+Use `bh host release-upgrade check <frame> --operator-settings <settings>` to
+read both the runtime `revision` and the verified `canonical_config_head` and
+`canonical_release`. Prepare the target manifest through the public CLI before
+planning the rotation. The operator settings must include the existing separate
+`hq.sql.publisher` credential for configuration publication:
+
+```sh
+bh host release-upgrade prepare-config <frame> \
+  --operator-settings <settings> \
+  --expected-revision <runtime-head> --expected-host-id <uuid> \
+  --expected-epoch <current-epoch> --expected-release <current-sha256-digest> \
+  --expected-config-head <canonical-config-head> \
+  --release-id <target-release-id> --release-digest <target-sha256-digest> \
+  --profile <target-profile> --config-revision <target-config-revision> \
+  --candidate-expires-at <review-expiry-within-24h>
+```
+
+This prints the exact incumbent and target releases and a preparation
+`plan_sha256` without writing. Review it, then repeat the same command with
+`--plan-sha256 <preparation-digest> --confirm`. Only the selected canonical host
+manifest's release changes. Its identity, capabilities, state, remaining fields,
+document ordering, and every unrelated document are preserved. Use the returned
+`config_head` in the normal rotation plan; the preparation digest is separate
+from the rotation plan digest.
+
+The config publisher keeps its original config-head CAS. Separate runtime-writer
+and config-publisher credentials do not provide an atomic cross-database CAS:
+the CLI checks runtime HEAD immediately before publication and again before
+reporting success. A concurrent runtime change refuses and reports the prepared
+config HEAD; it never grants authority. If the publication acknowledgment is
+uncertain, use public `check` to read back `canonical_config_head` and
+`canonical_release`, then review preparation again with the current heads.
+An already prepared exact target is an idempotent no-op; never repeat using a
+stale preparation digest or infer that a refused acknowledgment means no change.
+
+For a frame already routed to its session table, `plan`, `apply`, and `check`
+report `route: session`, the actual `session_table` and `evidence_table`, and
+whether provisioning is complete. The compatibility field `inbox_table` names
+the actual session table. A legacy inbox route retains the existing inbox
+provisioning procedure above; the session provision action refuses that route
+family rather than silently changing a reviewed plan.
+
+Use the existing `--operator-settings` file format for server-local provisioning.
+Its `hq.sql.authority_writer` credential must have DDL, account creation, and grant
+privileges on the isolated HQ server. Keep this provisioning credential off the
+frame and separate from the ordinary least-privilege authority writer. The
+runtime database must already have its committed `frame_*` ignore rule and
+liveness policy. Provisioning never initializes or changes those protections.
+
+After reviewing the session plan, repeat its exact arguments with action
+`provision`, adding these flags:
+
+```sh
+bh host release-upgrade provision <frame> \
+  <the exact reviewed plan arguments> \
+  --operator-settings <server-local-provisioning-settings> \
+  --plan-sha256 <reviewed-plan-digest> --confirm \
+  --frame-address <pinned-frame-address> --password-stdin
+```
+
+Supply the new account password on stdin through the normal credential workflow.
+The command provisions only the reviewed principal's session/evidence tables,
+timestamp triggers, pinned TLS account, and required read grants. It cannot
+publish an authority grant, admit a frame, or rewrite heartbeat evidence.
+
+Provisioning commits its trigger pair while the signed authority sequence stays
+unchanged. All operator, frame, and observer restore floors accept that movement
+only after proving a bounded, linear descendant history containing additive
+canonical timestamp-trigger pairs at a next frame epoch. Every existing schema
+fragment and its metadata stays identical. Added pairs must be absent from the
+prior protected principal registry and signed authority records, including
+archived grants; they cannot repair stamps on an already authorized incarnation,
+even when another frame has the same next epoch. This structural proof can accept
+an unused canonical principal's inert timestamp pair. It does not prove that the
+principal was reviewed or authorize it: the public provision and apply actions
+separately bind the exact planned principal and incarnation to the reviewed
+digest, original heads, supported table schema, account, and grants.
+Authority, principal registry,
+policy, ignore-rule, mixed changes, partial pairs, merges, forks, and rollbacks
+refuse. Commit messages supply no proof and no restore floor needs editing.
+
+When `replan_required` is true, record the returned `revision`, repeat `plan`
+with that value as `--expected-revision`, and review the new plan digest before
+`apply`. Keep all other reviewed expectations. If provisioning was interrupted,
+repeat `plan` and `provision` against the currently verified revision. The
+command completes missing supported objects and refuses conflicting schemas,
+triggers, account bindings, or unrelated dirty state. A successful retry keeps
+the existing password, session renewal, and conformance evidence unchanged.
+If `apply` has already committed, use `check` and cut over to that incarnation;
+do not provision another epoch to retry it.
+
+### Activate the reviewed frame credentials through the public CLI
+
+After `apply` and protected `check` confirm the new epoch and principal, perform
+this step **on the existing factory frame**, using its published 0.24.3 interpreter.
+The daemon uses the configured SQL account; it cannot discover or invent the new
+account password. Preserve the old Fnox entries until cutover is verified.
+
+Read the complete local SQL subtree through the public CLI:
+
+```sh
+bh config get hq.sql --scope host > sql-before-0243.json
+```
+
+Review the existing `runtime.credential` and `reader.credential` references.
+For each existing config file/profile, store the provisioned account password
+under a **new** approved key through the existing provider. Do not put the
+password in an argument, the reviewed JSON, or a diagnostic log:
+
+```sh
+fnox --config "$RUNTIME_FNOX_CONFIG" --profile "$RUNTIME_FNOX_PROFILE" \
+  set "$NEW_RUNTIME_FNOX_KEY" --provider "$APPROVED_RUNTIME_PROVIDER"
+fnox --config "$READER_FNOX_CONFIG" --profile "$READER_FNOX_PROFILE" \
+  set "$NEW_READER_FNOX_KEY" --provider "$APPROVED_READER_PROVIDER"
+```
+
+Use Fnox's hidden prompt or the approved stdin secret workflow. If both bindings
+share the same Fnox config/profile, they may reference the same new entry.
+Create a reviewable copy of the complete subtree, changing only each account
+username and its credential key. The `NEW_PRINCIPAL` value must match the public
+provision/apply/check output:
+
+```sh
+"$FACTORY_PYTHON" - "$NEW_PRINCIPAL" "$NEW_RUNTIME_FNOX_KEY" \
+  "$NEW_READER_FNOX_KEY" <<'PY' > sql-reviewed-0243.json
+import json, sys
+with open("sql-before-0243.json") as source:
+    settings = json.load(source)
+for binding, key in zip(("runtime", "reader"), sys.argv[2:], strict=True):
+    settings[binding]["user"] = sys.argv[1]
+    settings[binding]["credential"]["key"] = key
+print(json.dumps(settings, indent=2))
+PY
+```
+
+Review the old and proposed JSON. Keep every endpoint, database, TLS/server pin,
+backend identity, generation, initial revision, runtime initial revision,
+operator public key, and floor path unchanged. Preserve all other SQL settings
+and HOST identity fields. The complete subtree write is atomic and requires a
+committed config readback using the proposed reader credentials:
+
+```sh
+bh config set hq.sql "$(cat sql-reviewed-0243.json)" --json --scope host
+bh config get hq.sql --scope host > sql-after-0243.json
+"$FACTORY_PYTHON" -m beadhive.heartbeat_sender renew
+"$FACTORY_PYTHON" -m beadhive.heartbeat_sender conformance
+"$FACTORY_PYTHON" -m beadhive.heartbeat_sender status
+```
+
+Require successful exits, a renewal naming the new session table, and fresh
+conformant evidence for the exact approved release. These are documented module
+CLI entrypoints ([HQ heartbeat sender](../HQ.md)), not private API calls. If
+background units still reference the old interpreter, regenerate them with the
+published interpreter's `-m beadhive.heartbeat_sender units --install` and reload
+the existing systemd/launchd manager using its normal supported workflow. If the
+frame daemon retains old settings, restart it through the existing public
+`bh host daemon stop` / `bh host daemon start` commands and its configured
+supervisor. Keep the existing frame and hive adoption intact.
+
+Finally use `bh host list --lease-hive bh --json`, `bh host eligible --hive
+<factory-hive> --json`, and the normal guarded factory operation from the release
+runbook. Require agreement on the current holder, unchanged hive lease/writer
+epochs, approved release, fresh session, and conformance. A credential/readback
+failure leaves activation incomplete: review the exact bindings and existing
+provider access; do not alter restore floors or re-adopt the hive.
+
 ## Archive
 
 Each rotation archives the replaced grant (`state` pending or active) with its

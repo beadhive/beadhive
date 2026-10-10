@@ -8200,6 +8200,22 @@
           "schema": {
             "type": "string"
           }
+        },
+        {
+          "name": "frame_address",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "password_stdin",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
         }
       ],
       "privilege": "privileged",
@@ -8237,7 +8253,9 @@
             "plan_sha256",
             "operator_key",
             "confirm",
-            "operator_settings"
+            "operator_settings",
+            "frame_address",
+            "password_stdin"
           ],
           "path": "host release-upgrade",
           "progress": {

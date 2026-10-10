@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import math
 
 from ruamel.yaml import YAML
@@ -103,8 +104,7 @@ def manifest_for(snapshot, frame, record, request, *, state="pending"):
     return manifest
 
 
-def prepare(original, frame, head, snapshot, request, *, now):
-    """Recompute the exact reviewed transition from current protected inputs."""
+def validate_request(request, *, now):
     if (
         not isinstance(request, dict)
         or set(request)
@@ -123,6 +123,22 @@ def prepare(original, frame, head, snapshot, request, *, now):
         or set(request["release"]) != {"id", "digest"}
     ):
         raise ValueError("invalid release-upgrade request fields")
+    if (
+        any(not isinstance(request["release"][key], str) for key in ("id", "digest"))
+        or type(request["expires_at"]) not in (int, float)
+        or not math.isfinite(request["expires_at"])
+        or not now < request["expires_at"] <= now + 86400
+        or not isinstance(request["profile"], str)
+        or not request["profile"].strip()
+        or not isinstance(request["config_revision"], str)
+        or not request["config_revision"].strip()
+    ):
+        raise ValueError("release-upgrade target or request expiry invalid")
+
+
+def prepare(original, frame, head, snapshot, request, *, now):
+    """Recompute the exact reviewed transition from current protected inputs."""
+    validate_request(request, now=now)
     guard.validate_state(original)
     slot, old = selected(original, frame)
     a = old["authority"]
@@ -269,7 +285,16 @@ def validate_publication(previous, state, head, snapshot, upgrade, route, *, now
 
 
 def release_upgrade(
-    plane, frame, action="plan", *, request=None, plan_sha256="", operator_key="", confirm=False
+    plane,
+    frame,
+    action="plan",
+    *,
+    request=None,
+    plan_sha256="",
+    operator_key="",
+    confirm=False,
+    frame_address="",
+    password="",
 ):
     operator = plane._operator()
     budget = plane._operator_deadline()
@@ -281,7 +306,17 @@ def release_upgrade(
         if record is None:
             raise ValueError("no current incarnation to check")
         authority = record["authority"]
-        return {
+        principal = sql_principal(ObservationAuthority(**authority))
+        snapshot = plane.config_store().load_snapshot()
+        documents = [
+            row
+            for row in snapshot.documents
+            if row.path == f"hosts/{authority['holder_identity']}.yaml"
+        ]
+        if len(documents) != 1:
+            raise ValueError("canonical host manifest unavailable for release-upgrade check")
+        manifest = HostManifest.model_validate(YAML(typ="safe").load(documents[0].content))
+        result = {
             "revision": head,
             "frame_id": frame,
             "authority": authority,
@@ -290,16 +325,49 @@ def release_upgrade(
             "profile": record["desired"]["profile"],
             "upgraded": bool(record.get("release_upgrade_history")),
             "history": record.get("release_upgrade_history", []),
+            "canonical_config_head": snapshot.commit_revision,
+            "canonical_release": manifest.release.model_dump() if manifest.release else None,
+            "canonical_identity_matches": (
+                manifest.host_id == authority["holder_identity"]
+                and manifest.frame_id == frame
+                and manifest.instance_ref == authority["instance_ref"]
+                and manifest.beadyard_id == authority.get("beadyard_id") == snapshot.beadyard_id
+            ),
+            **operator.describe_release_route(
+                principal, authority["epoch"], frame, deadline=budget
+            ),
         }
-    if action not in {"plan", "apply"} or not isinstance(request, dict):
-        raise ValueError("release-upgrade requires plan, apply or check and reviewed inputs")
-    snapshot = plane.config_store().load_snapshot()
+        if plane.config_store().load_snapshot().commit_revision != snapshot.commit_revision:
+            raise ValueError("canonical config changed during release-upgrade check; retry check")
+        operator.authority.fresh_runtime_head_fence(head, deadline=budget)
+        return result
+    if action not in {"prepare-config", "plan", "provision", "apply"} or not isinstance(
+        request, dict
+    ):
+        raise ValueError(
+            "release-upgrade requires prepare-config, plan, provision, apply or check "
+            "and reviewed inputs"
+        )
+    config_store = plane.config_store()
+    snapshot = config_store.load_snapshot()
+    if action == "prepare-config":
+        return prepare_config(
+            operator,
+            config_store,
+            frame,
+            head,
+            original,
+            snapshot,
+            request,
+            now=plane.clock(),
+            deadline=budget,
+            confirm=confirm,
+            plan_sha256=plan_sha256,
+        )
     state, digest = prepare(original, frame, head, snapshot, request, now=plane.clock())
     route = route_for(state, frame)
     entry = state["frames"][frame]
     rotated = entry["candidate"] or entry["active"]
-    from .hq_sql_runtime_schema import inbox_table
-
     result = {
         "revision": head,
         "config_head": snapshot.commit_revision,
@@ -307,8 +375,7 @@ def release_upgrade(
         "frame_id": frame,
         "old_epoch": request["epoch"],
         "new_epoch": route[4],
-        "principal": route[0],
-        "inbox_table": inbox_table(route[0], route[4]),
+        **operator.describe_release_route(route[0], route[4], frame, deadline=budget),
         "authority": rotated["authority"],
         "release": request["release"],
         "profile": request["profile"],
@@ -316,6 +383,27 @@ def release_upgrade(
         "rotation": "active" if state["frames"][frame]["active"] is rotated else "pending",
     }
     if action == "plan":
+        return result
+    if action == "provision":
+        if result["route"] != "session":
+            raise ValueError(
+                "reviewed route is a legacy inbox; session provisioning requires "
+                "an incumbent session route, preserving the reviewed route family"
+            )
+        if not confirm or plan_sha256 != digest or not frame_address or not password:
+            raise ValueError(
+                "provision requires --confirm, exact reviewed plan digest, "
+                "frame address and password stdin"
+            )
+        result["revision"] = operator.provision_release_route(
+            route,
+            expected_revision=head,
+            frame_address=frame_address,
+            password=password,
+            deadline=budget,
+        )
+        result.update(operator.describe_release_route(route[0], route[4], frame, deadline=budget))
+        result["replan_required"] = result["revision"] != head
         return result
     if not confirm or hq_authority_enforce.key_required(operator_key) or plan_sha256 != digest:
         raise ValueError(
@@ -329,4 +417,144 @@ def release_upgrade(
         deadline=budget,
         release_upgrade={"frame": frame, "request": request, "plan_sha256": digest},
     )
+    return result
+
+
+def prepare_config(
+    operator,
+    config_store,
+    frame,
+    head,
+    original,
+    snapshot,
+    request,
+    *,
+    now,
+    deadline,
+    confirm=False,
+    plan_sha256="",
+):
+    """Review/publish only the incumbent canonical manifest's exact target release.
+
+    The separately credentialed config publisher retains its ordinary original-head
+    CAS. Runtime fences before publication and acceptance reject a concurrent
+    authority change; preparing config itself cannot authorize an incarnation.
+    """
+    from .modules.config.domain.ports import FleetConfigDocument
+
+    validate_request(request, now=now)
+    guard.validate_state(original)
+    slot, record = selected(original, frame)
+    authority = record["authority"]
+    if (
+        request.get("expected_revision") != head
+        or request.get("config_head") != snapshot.commit_revision
+        or request.get("host_id") != authority["holder_identity"]
+        or type(request.get("epoch")) is not int
+        or request["epoch"] != authority["epoch"]
+        or request.get("old_release") != record["desired"]["release"]["digest"]
+        or not record["desired"]["declared"]
+        or original["domain"] != guard.DOMAIN_V2
+        or now < original["issued_at"]
+        or hq_authority_enforce.enforced()
+        and (now >= original["expires_at"] or snapshot.valid_until <= now)
+        or not isinstance(request.get("release"), dict)
+        or set(request["release"]) != {"id", "digest"}
+        or request["release"].get("digest") == record["desired"]["release"]["digest"]
+    ):
+        raise ValueError("prepare-config original runtime/config/identity/release CAS mismatch")
+    path = f"hosts/{authority['holder_identity']}.yaml"
+    matches = [document for document in snapshot.documents if document.path == path]
+    if len(matches) != 1:
+        raise ValueError("prepare-config requires the one existing canonical host manifest")
+    raw = YAML(typ="safe").load(matches[0].content)
+    if not isinstance(raw, dict):
+        raise ValueError("prepare-config canonical host manifest invalid")
+    manifest = HostManifest.model_validate(raw)
+    expected_state = "active" if slot == "active" else "pending"
+    if (
+        manifest.frame_id != frame
+        or manifest.host_id != authority["holder_identity"]
+        or manifest.instance_ref != authority["instance_ref"]
+        or manifest.beadyard_id != snapshot.beadyard_id
+        or manifest.beadyard_id != authority.get("beadyard_id")
+        or manifest.state != expected_state
+        or manifest.capabilities is None
+        or manifest.capabilities.model_dump() != record["desired"]["caps"]
+        or manifest.release is None
+        or manifest.release.model_dump() not in (record["desired"]["release"], request["release"])
+    ):
+        raise ValueError("prepare-config canonical manifest differs from incumbent identity/state")
+    proposed = {**raw, "release": request["release"]}
+    HostManifest.model_validate(proposed)
+    unchanged = raw["release"] == request["release"]
+    documents = tuple(
+        FleetConfigDocument(document.path, json.dumps(proposed, sort_keys=True))
+        if document.path == path and not unchanged
+        else document
+        for document in snapshot.documents
+    )
+    digest = (
+        "sha256:"
+        + hashlib.sha256(
+            canonical(
+                {
+                    "domain": "beadhive/sql-release-config-preparation/v1",
+                    "frame": frame,
+                    "runtime_head": head,
+                    "config_head": snapshot.commit_revision,
+                    "config_backend": snapshot.backend_identity,
+                    "config_generation": snapshot.generation,
+                    "authority": authority,
+                    "request": request,
+                    "documents": [{"path": row.path, "content": row.content} for row in documents],
+                    "original_manifest": raw,
+                },
+                limit=4 * 1024 * 1024,
+            )
+        ).hexdigest()
+    )
+    result = {
+        "revision": head,
+        "config_head": snapshot.commit_revision,
+        "plan_sha256": digest,
+        "frame_id": frame,
+        "host_id": manifest.host_id,
+        "epoch": authority["epoch"],
+        "old_release": record["desired"]["release"],
+        "canonical_release_before": manifest.release.model_dump(),
+        "release": request["release"],
+        "state": expected_state,
+        "already_prepared": unchanged,
+        "applied": False,
+    }
+    if not confirm:
+        return result
+    if plan_sha256 != digest:
+        raise ValueError("prepare-config --confirm requires the exact reviewed preparation digest")
+    operator.authority.fresh_runtime_head_fence(head, deadline=deadline)
+    if not unchanged:
+        try:
+            published = config_store.publish_snapshot(
+                documents, expected_revision=snapshot.commit_revision
+            )
+        except (ValueError, OSError, RuntimeError) as error:
+            try:
+                observed = config_store.load_snapshot().commit_revision
+                readback = f"observed committed config HEAD {observed}"
+            except (ValueError, OSError, RuntimeError):
+                readback = "committed config HEAD readback unavailable"
+            raise ValueError(
+                f"prepare-config publication not acknowledged ({error}); {readback}; "
+                "run release-upgrade check and review prepare-config again before rotating"
+            ) from None
+        result["config_head"] = published.commit_revision
+    try:
+        operator.authority.fresh_runtime_head_fence(head, deadline=deadline)
+    except ValueError:
+        raise ValueError(
+            f"prepared config HEAD {result['config_head']}; authority changed before acceptance; "
+            "run release-upgrade check and review prepare-config again before rotating"
+        ) from None
+    result["applied"] = True
     return result

@@ -302,14 +302,14 @@ class SqlRuntimeAuthority:
                     raise SqlRuntimeError("HQ runtime floor unavailable") from None
             else:
                 previous_sequence, previous_head = 1, settings["runtime_initial_revision"]
-            if sequence < previous_sequence or (
-                sequence == previous_sequence and head != previous_head
-            ):
+            if sequence < previous_sequence:
                 raise SqlRuntimeError("HQ runtime rollback or amended authority detected")
-            if sequence > previous_sequence:
+            if head != previous_head:
                 cursor.execute("SELECT HAS_ANCESTOR(%s,%s)", (head, previous_head))
                 if cursor.fetchone()[0] != 1:
                     raise SqlRuntimeError("HQ runtime history fork detected")
+                if sequence == previous_sequence:
+                    self._check_provisioning_descendant(cursor, previous_head, head)
             body = json.dumps(
                 {"backend": backend, "generation": generation, "sequence": sequence, "head": head},
                 sort_keys=True,
@@ -329,6 +329,148 @@ class SqlRuntimeAuthority:
                     os.close(directory)
             finally:
                 temporary.unlink(missing_ok=True)
+
+    def _check_provisioning_descendant(self, cursor, previous_head, head):
+        """Accept only immutable, additive session/evidence timestamp-trigger pairs.
+
+        Incarnation rows are ignored by Dolt; their triggers are committed separately
+        before the reviewed authority cutover. Neither the authority, registry, policy,
+        ignore rules nor existing schema may change at the same authority sequence.
+        Additions cannot target an existing registered or authorized incarnation;
+        canonical unused pairs are inert structure, not an authorization proof.
+        Commit messages and working-table contents supply no part of this proof.
+        """
+        from .hq_framelease_contracts import ObservationAuthority
+        from .hq_sql_session import _POLICY_SQL, _policy
+        from .hq_sql_signatures import sql_principal
+
+        refusal = "HQ runtime rollback or amended authority detected"
+        _backend, _generation, _sequence, _crossref, state, _policies = self._signed_authority_at(
+            cursor, previous_head
+        )
+        epochs = {entry["epoch_floor"] + 1 for entry in state["frames"].values()}
+        reserved = set()
+        for _identity, record in guard.records(state):
+            for existing in (
+                record,
+                *(item["record"] for item in record.get("release_upgrade_history", [])),
+            ):
+                authority = ObservationAuthority(**existing["authority"])
+                reserved.add((sql_principal(authority), authority.epoch))
+        cursor.execute(
+            "SELECT pattern,ignored FROM dolt_ignore AS OF %s WHERE pattern='frame_*'",
+            (previous_head,),
+        )
+        if [tuple(row) for row in cursor.fetchall()] != [("frame_*", 1)]:
+            raise SqlRuntimeError(refusal)
+        cursor.execute(_POLICY_SQL + " AS OF %s", (previous_head,))
+        _policy(cursor.fetchall())
+        # Check every first-parent transition, so an unsafe edit followed by its
+        # reversal cannot hide behind a safe endpoint diff. Merges and an excessive
+        # unobserved provisioning history refuse rather than widen the exception.
+        for _ in range(64):
+            cursor.execute(
+                "SELECT parent_hash,parent_index FROM dolt_commit_ancestors "
+                "WHERE CONCAT(commit_hash,'')=%s",
+                (head,),
+            )
+            parents = cursor.fetchall()
+            if len(parents) != 1 or parents[0][1] != 0 or not parents[0][0]:
+                raise SqlRuntimeError(refusal)
+            parent = parents[0][0]
+            SqlRuntimeAuthority._check_provisioning_commit(
+                cursor, parent, head, epochs=epochs, reserved=reserved
+            )
+            if parent == previous_head:
+                return
+            head = parent
+        raise SqlRuntimeError(refusal)
+
+    @staticmethod
+    def _check_provisioning_commit(cursor, previous_head, head, *, epochs, reserved):
+        from .hq_sql_session import evidence_ddl, session_ddl
+
+        refusal = "HQ runtime rollback or amended authority detected"
+        cursor.execute(
+            "SELECT from_table_name,to_table_name,diff_type,data_change,schema_change "
+            "FROM DOLT_DIFF_SUMMARY(%s,%s)",
+            (previous_head, head),
+        )
+        changes = cursor.fetchall()
+        if len(changes) != 1 or tuple(changes[0]) not in (
+            ("dolt_schemas", "dolt_schemas", "modified", 1, 0),
+            ("", "dolt_schemas", "added", 1, 1),
+        ):
+            raise SqlRuntimeError(refusal)
+        snapshots = []
+        for revision in (previous_head, head):
+            cursor.execute("SELECT * FROM dolt_schemas AS OF %s", (revision,))
+            rows = cursor.fetchall()
+            if len(rows) > 4096 or [column[0] for column in cursor.description] != [
+                "type",
+                "name",
+                "fragment",
+                "extra",
+                "sql_mode",
+            ]:
+                raise SqlRuntimeError(refusal)
+            snapshots.append({(row[0], row[1]): tuple(row[2:]) for row in rows})
+        before, after = snapshots
+        if any(after.get(key) != fragment for key, fragment in before.items()):
+            raise SqlRuntimeError(refusal)
+        added = {key: fragment for key, fragment in after.items() if key not in before}
+        if not added or len(added) > 128:
+            raise SqlRuntimeError(refusal)
+        incarnations = set()
+        for (kind, name), (fragment, extra, sql_mode) in added.items():
+            try:
+                metadata = json.loads(extra)
+            except (ValueError, TypeError):
+                raise SqlRuntimeError(refusal) from None
+            if (
+                not isinstance(metadata, dict)
+                or set(metadata) != {"CreatedAt"}
+                or type(metadata["CreatedAt"]) is not int
+                or metadata["CreatedAt"] < 0
+                or not isinstance(sql_mode, str)
+                or len(sql_mode) > 256
+                or not re.fullmatch(r"[A-Z_,]*", sql_mode)
+            ):
+                raise SqlRuntimeError(refusal)
+            match = re.fullmatch(
+                r"frame_([a-z][a-z0-9_]{0,30})_([0-9]{1,10})_(session|evidence)_stamp", name
+            )
+            if kind != "trigger" or match is None:
+                raise SqlRuntimeError(refusal)
+            principal, epoch_text, route = match.groups()
+            epoch = int(epoch_text)
+            if (
+                epoch not in epochs
+                or not re.fullmatch(r"frame_[0-9a-f]{20}", principal)
+                or (principal, epoch) in reserved
+            ):
+                raise SqlRuntimeError(refusal)
+            expected = (session_ddl if route == "session" else evidence_ddl)(principal, epoch)[1]
+            if fragment != expected:
+                raise SqlRuntimeError(refusal)
+            incarnations.add((principal, epoch))
+        for principal, epoch in incarnations:
+            if not all(
+                ("trigger", f"frame_{principal}_{epoch}_{route}_stamp") in added
+                for route in ("session", "evidence")
+            ):
+                raise SqlRuntimeError(refusal)
+        # At most 128 added rows form at most 64 complete pairs. Read only these
+        # targets from the protected parent registry, whose contents cannot change
+        # in a verified transition. Historical registry size is not a trust limit.
+        pairs = sorted(incarnations)
+        conditions = " OR ".join("(principal=%s AND epoch=%s)" for _ in pairs)
+        cursor.execute(
+            "SELECT principal,epoch FROM hq_principal_registry AS OF %s WHERE " + conditions,
+            (previous_head, *(value for pair in pairs for value in pair)),
+        )
+        if cursor.fetchall():
+            raise SqlRuntimeError(refusal)
 
     #: How far back fleet-default discovery walks for the newest operator-signed authority.
     DISCOVERY_DEPTH = 64

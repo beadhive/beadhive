@@ -57,6 +57,7 @@ from __future__ import annotations
 import asyncio
 import json
 import platform
+import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import asdict
@@ -1953,7 +1954,8 @@ app.command("frame-retire")(_lifecycle_command("retire", operation="frame-retire
 @otel.trace_verb("host.release-upgrade")
 def release_upgrade_cmd(
     action: str = typer.Argument(
-        ..., help="plan, apply or check; a pending SQL candidate or a sole active incarnation"
+        ...,
+        help="prepare-config, plan, provision, apply or check; a SQL incarnation release rotation",
     ),
     frame_id: str = typer.Argument(...),
     expected: str = typer.Option("", "--expected-revision"),
@@ -1980,6 +1982,12 @@ def release_upgrade_cmd(
             help="operator settings file; overrides $BH_HQ_OPERATOR_SETTINGS",
         ),
     ] = None,
+    frame_address: str = typer.Option(
+        "", "--frame-address", help="provision: pinned frame SQL account address"
+    ),
+    password_stdin: bool = typer.Option(
+        False, "--password-stdin", help="provision: read new frame account password from stdin"
+    ),
 ):
     """Review a release rotation of a pending or active SQL frame, preserving identity.
 
@@ -2014,6 +2022,10 @@ def release_upgrade_cmd(
                 plan_sha256=plan_sha256,
                 operator_key=str(operator_key) if operator_key else "",
                 confirm=confirm,
+                frame_address=frame_address,
+                password=sys.stdin.readline().rstrip("\r\n")
+                if action == "provision" and password_stdin
+                else "",
             )
             typer.echo(json.dumps(result, sort_keys=True))
     except (ValueError, OSError, RuntimeError) as exc:

@@ -185,6 +185,39 @@ def test_catalog_compatibility_allows_only_the_approved_authority_cli_flags() ->
     assert catalog_compatibility_errors(old, wrong_op)
 
 
+@pytest.mark.parametrize("mutation", [None, "required", "type", "order", "other", "operation"])
+def test_catalog_allows_only_reviewed_optional_release_provision_inputs(mutation):
+    old = _catalog()
+    operation = _operation(old, "host.release-upgrade")
+    names = {"frame_address", "password_stdin"}
+    operation["parameters"] = [
+        item for item in operation["parameters"] if item["name"] not in names
+    ]
+    operation["surfaces"]["cli"]["parameters"] = [
+        name for name in operation["surfaces"]["cli"]["parameters"] if name not in names
+    ]
+    candidate = deepcopy(old)
+    _append_string_param(candidate, "host.release-upgrade", "frame_address")
+    _append_string_param(candidate, "host.release-upgrade", "password_stdin")
+    changed = _operation(candidate, "host.release-upgrade")
+    changed["parameters"][-1]["schema"]["type"] = "boolean"
+    if mutation == "required":
+        changed["parameters"][-1]["required"] = True
+    elif mutation == "type":
+        changed["parameters"][-1]["schema"]["type"] = "string"
+    elif mutation == "order":
+        changed["parameters"][0], changed["parameters"][1] = (
+            changed["parameters"][1],
+            changed["parameters"][0],
+        )
+    elif mutation == "other":
+        _append_string_param(candidate, "host.release-upgrade", "unreviewed")
+    elif mutation == "operation":
+        _append_string_param(candidate, "host.provision", "frame_address")
+    errors = catalog_compatibility_errors(old, candidate)
+    assert bool(errors) == (mutation is not None)
+
+
 def test_catalog_compatibility_rejects_duplicate_operation_and_projection_identities() -> None:
     old = _catalog()
     duplicate_operation = deepcopy(old)

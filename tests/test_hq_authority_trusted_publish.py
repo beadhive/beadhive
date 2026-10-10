@@ -261,6 +261,19 @@ class _Operator:
     def load(self, *, deadline=None):
         return "head", {"frames": {}}, None, {}
 
+    def describe_release_route(self, principal, epoch, frame, *, deadline=None):
+        assert (principal, epoch, frame) == ("p" * 24, 2, "frame-1")
+        assert deadline is not None and time.monotonic() < deadline <= time.monotonic() + 30
+        return {
+            "principal": principal,
+            "inbox_table": f"hq_live_inbox_{principal}_{epoch}",
+            "route": "inbox",
+            "session_table": None,
+            "evidence_table": None,
+            "provisioned": True,
+            "provisioning_incomplete": False,
+        }
+
     def publish(self, state, **kwargs):
         self.published.append(kwargs["operator_key"])
         return "new-head"

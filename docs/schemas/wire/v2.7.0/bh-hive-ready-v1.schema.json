@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:beadhive:wire-schema:bh.hive-ready:1",
+  "title": "bh hive ready --json v1",
+  "type": "object",
+  "required": [
+    "schema_version", "command", "ready", "exit_code", "hive", "checks", "text", "stream"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {"const": 1},
+    "command": {"const": "hive ready"},
+    "ready": {"type": "boolean"},
+    "exit_code": {"type": "integer", "minimum": 0},
+    "hive": {"type": ["string", "null"]},
+    "checks": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/Check"}
+    },
+    "text": {"type": "string"},
+    "stream": {
+      "enum": ["stdout", "stderr"],
+      "x-beadhive-closed-union": true
+    }
+  },
+  "$defs": {
+    "Check": {
+      "type": "object",
+      "required": ["label", "required", "state", "detail", "text"],
+      "additionalProperties": true,
+      "properties": {
+        "label": {"type": "string"},
+        "required": {"type": "boolean"},
+        "state": {
+          "enum": ["ok", "missing", "off", "na", "warn"],
+          "x-beadhive-closed-union": true
+        },
+        "detail": {"type": "string"},
+        "text": {"type": "string"}
+      }
+    }
+  }
+}

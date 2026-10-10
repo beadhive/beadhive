@@ -16,7 +16,7 @@
     "successor_contracts": "beadhive.modules.config.contracts"
   },
   "current": {
-    "config_patch_point_count": 335,
+    "config_patch_point_count": 338,
     "config_patch_points": [
       {
         "facade_target": "beadhive.config.save_fleet",
@@ -1200,6 +1200,27 @@
         "line": 1032,
         "path": "tests/test_hq_sql_config_int.py",
         "target": "beadhive.config.home"
+      },
+      {
+        "facade_target": "beadhive.config.load",
+        "kind": "direct-facade",
+        "line": 997,
+        "path": "tests/test_hq_sql_provision_history_int.py",
+        "target": "beadhive.config.load"
+      },
+      {
+        "facade_target": "beadhive.config.hq_dir",
+        "kind": "direct-facade",
+        "line": 998,
+        "path": "tests/test_hq_sql_provision_history_int.py",
+        "target": "beadhive.config.hq_dir"
+      },
+      {
+        "facade_target": "beadhive.config.fleet_sql_selected",
+        "kind": "direct-facade",
+        "line": 999,
+        "path": "tests/test_hq_sql_provision_history_int.py",
+        "target": "beadhive.config.fleet_sql_selected"
       },
       {
         "facade_target": "beadhive.config.load",
@@ -2911,7 +2932,7 @@
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       }
     ],
-    "test_config_importer_count": 164,
+    "test_config_importer_count": 165,
     "test_config_importers": [
       "tests/contracts/test_config_contract_compatibility.py",
       "tests/contracts/test_config_resolution_compatibility.py",
@@ -3020,6 +3041,7 @@
       "tests/test_hq_remote.py",
       "tests/test_hq_seed_roundtrip_int.py",
       "tests/test_hq_sql_config_int.py",
+      "tests/test_hq_sql_provision_history_int.py",
       "tests/test_hq_sql_runtime_int.py",
       "tests/test_hq_sql_session_int.py",
       "tests/test_hub.py",
