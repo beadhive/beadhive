@@ -51,6 +51,10 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         # Onboarding policy (bh-m2irb): whether THIS host adopts an existing store's identity.
         "hive.adopt_existing",
         "hive.adopt_probe_timeout",
+        # Per-knob trust-profile overrides (bh-bc2rj): host-local, may only tighten.
+        "hq.placement_mode",
+        "hq.tenure",
+        "hive.write_policy",
     }
 )
 
@@ -60,6 +64,7 @@ FLEET_PREFIXES: frozenset[str] = frozenset(
         "hq.mode",
         "hq.admission_policy",
         "hq.default_authority_mode",
+        "hq.trust_profile",
         "delimiter",
         "providers",
         "orgs",

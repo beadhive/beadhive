@@ -594,8 +594,12 @@ class SqlRuntimeAuthority:
             bound = self._tolerated_bound_config(cursor, crossref, current, policies, valid_until)
         if bound is None:
             raise SqlRuntimeError("HQ config and authority publications are not bound")
-        # Tolerated H1 carries the same fleet default as the signed H0 (it is frame-relevant).
+        # Tolerated H1 carries the same fleet default as the signed H0 (it is frame-relevant),
+        # and an equal or STRICTER trust profile, which is learned from H1 (lowering, bh-bc2rj).
         hq_authority_enforce.observe_fleet_default(bound, authorised=True, via="sql")
+        from . import hq_trust_profile
+
+        hq_trust_profile.observe(current, authorised=False, via="sql")
         return bound, current.commit_revision
 
     def _tolerated_bound_config(self, cursor, crossref, current, policies, valid_until):

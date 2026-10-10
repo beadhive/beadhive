@@ -1305,7 +1305,7 @@
     },
     "HiveConfig": {
       "additionalProperties": false,
-      "description": "Host-scoped onboarding policy (``hive``).\n\n``adopt_existing`` makes ``bh hive add`` and ``bh hive onboard`` read an existing hive's own\nbead-store identity (prefix + project id: the local checkout first, then the remote's\n``refs/dolt/data``) instead of deriving one from the repo name, so a fresh host lands the\nhive in its own shared-server database rather than bd's generic ``beads`` (bh-ajgot,\nbh-6csoa). Opt-in; off keeps the derived identity exactly as before.",
+      "description": "Host-scoped onboarding policy and write-policy override (``hive``).\n\n``adopt_existing`` makes ``bh hive add`` and ``bh hive onboard`` read an existing hive's own\nbead-store identity (prefix + project id: the local checkout first, then the remote's\n``refs/dolt/data``) instead of deriving one from the repo name, so a fresh host lands the\nhive in its own shared-server database rather than bd's generic ``beads`` (bh-ajgot,\nbh-6csoa). Opt-in; off keeps the derived identity exactly as before.",
       "properties": {
         "adopt_existing": {
           "default": false,
@@ -1319,6 +1319,24 @@
           "minimum": 1,
           "title": "Adopt Probe Timeout",
           "type": "integer"
+        },
+        "write_policy": {
+          "anyOf": [
+            {
+              "enum": [
+                "fenced",
+                "forward",
+                "open"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "HOST override of the trust profile's off-primary write policy (`fenced`, `forward`, `open`). Unsigned, so it may only require more trust than the profile; a loosening value is refused and the profile's value stays.",
+          "title": "Write Policy"
         }
       },
       "title": "HiveConfig",
@@ -1619,6 +1637,23 @@
           "title": "Mode",
           "type": "string"
         },
+        "placement_mode": {
+          "anyOf": [
+            {
+              "enum": [
+                "director",
+                "self"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "HOST override of the trust profile's placement knob: `director` (director CAS only) or `self` (self-place on a hive with no live writer session). Unsigned, so it may only require more trust than the profile; a loosening value is refused and the profile's value stays.",
+          "title": "Placement Mode"
+        },
         "remote": {
           "default": "",
           "description": "HQ repo remote: `<owner>/beadhive-hq`, an absolute local path, or local `file://` URL. Empty (default) derives `<owner>` from the logged-in `gh` identity at read time (`config.hq_remote`) — host identity, so the answer does not vary by which hive you invoke from; an explicit value here always overrides the derivation. `bh hq init`/`clone` confirm the result interactively unless `--auto` is passed.",
@@ -1627,6 +1662,32 @@
         },
         "sql": {
           "$ref": "#/$defs/HqSqlConfig"
+        },
+        "tenure": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "HOST override of the trust profile's tenure knob, in seconds: under `open` the tenure ceiling (default 24 h; it may only shorten it), otherwise an extra bound below the hive's failover_after / heartbeat TTL.",
+          "title": "Tenure"
+        },
+        "trust_profile": {
+          "default": "verified",
+          "description": "FLEET trust profile (trust-profiles ADR section 2): sets authority, admission, placement, off-primary write policy and tenure together, plus a capability ceiling. `verified` (default) is 0.24.0's behaviour. Publish it with `bh hq authority profile-<name> --confirm`, never by hand: raising it towards `open` needs the operator key once, lowering it always takes effect. Its authority column is hq.default_authority_mode unless that is set explicitly.",
+          "enum": [
+            "open",
+            "trusted",
+            "verified",
+            "attested"
+          ],
+          "title": "Trust Profile",
+          "type": "string"
         }
       },
       "title": "HqConfig",

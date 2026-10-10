@@ -59,6 +59,11 @@ class EligibilityFacts:
     # The fleet trust profile's capability ceiling (trust-profiles ADR section 2, bh-bc2rj):
     # capabilities removed from the frame's role-set union. ``None`` removes nothing.
     ceiling: object = None
+    # Capabilities the profile grants regardless of roles (``open``: ``admin`` with HQ write
+    # access), applied before the ceiling.
+    grants: frozenset[str] = frozenset()
+    # Extra frame predicates per capability (``attested``: ``author`` needs a fresh heartbeat).
+    capability_adds: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
 # Predicates whose failure ``BH_HQ_AUTHORITY_ENFORCE=false`` waives. Each is either wholly
@@ -88,6 +93,9 @@ class EligibilityDecision:
     # :meth:`for_capability` decides ``executor_role`` as membership of the asked capability.
     # ``None`` on a decision built without a frame role set. Not part of ``as_dict``.
     granted: frozenset[str] | None = None
+    # The trust profile's extra predicates per capability (bh-bc2rj), consulted by
+    # :meth:`for_capability`. Not part of ``as_dict``.
+    capability_adds: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
     @property
     def allowed(self):
@@ -125,7 +133,7 @@ class EligibilityDecision:
             return self
         from . import capabilities
 
-        consulted = set(capabilities.frame_predicates(capability))
+        consulted = set(capabilities.frame_predicates(capability, adds=self.capability_adds))
         known = set(capabilities.FRAME_PREDICATES)
         if not known <= {name for name, _ in self.predicates}:
             return self
@@ -145,6 +153,7 @@ class EligibilityDecision:
             self.enforcement_disabled,
             self.admission,
             self.granted,
+            self.capability_adds,
         )
 
 
@@ -159,7 +168,8 @@ def granted_capabilities(frame, facts: EligibilityFacts) -> frozenset[str]:
 
     ceiling = facts.ceiling if facts.ceiling is not None else host_roles.NO_CEILING
     roles = getattr(frame, "roles", None) or frame.role
-    return host_roles.effective_capabilities(roles, ceiling)
+    effective = host_roles.effective_capabilities(roles, host_roles.NO_CEILING) | facts.grants
+    return effective - frozenset(ceiling(effective))
 
 
 def _role_holds(granted: frozenset[str]) -> bool:
@@ -331,6 +341,7 @@ def _eligible_session(frame, hive, facts) -> EligibilityDecision:
         ),
         admission=tuple(sorted(beat.stamps().items())),
         granted=granted,
+        capability_adds=facts.capability_adds,
     )
     if not facts.authority_waived:
         return decision
@@ -341,6 +352,7 @@ def _eligible_session(frame, hive, facts) -> EligibilityDecision:
         enforcement_disabled=True,
         admission=decision.admission,
         granted=granted,
+        capability_adds=facts.capability_adds,
     )
 
 
@@ -462,12 +474,17 @@ def eligible(frame: hosts.HostManifest, hive: dict, facts: EligibilityFacts) -> 
             ("dispatch_enabled", facts.dispatch_enabled is True),
         ),
         granted=granted,
+        capability_adds=facts.capability_adds,
     )
     if not facts.authority_waived:
         return decision
     predicates, waived_authority = _waive_authority(frame, facts, caps, decision.predicates)
     return EligibilityDecision(
-        predicates, waived_authority, enforcement_disabled=True, granted=granted
+        predicates,
+        waived_authority,
+        enforcement_disabled=True,
+        granted=granted,
+        capability_adds=facts.capability_adds,
     )
 
 
@@ -507,8 +524,16 @@ def load_facts(frame, *, hq_dir, cfg=None, at=None, prefix=None):
             _revision, desired, observation = plane.read_eligibility(frame, now=at, prefix=prefix)
         else:
             _revision, desired, observation = plane.read_eligibility(frame, now=at)
+        # Resolved after the read: the read is what learns the fleet's trust profile.
         return EligibilityFacts(
-            observation, desired, enabled, True, at, _heartbeat_advisory(observation, frame), waived
+            observation,
+            desired,
+            enabled,
+            True,
+            at,
+            _heartbeat_advisory(observation, frame),
+            waived,
+            **_profile_facts(settings),
         )
     except AuthorityEnforcementError:
         raise
@@ -519,7 +544,20 @@ def load_facts(frame, *, hq_dir, cfg=None, at=None, prefix=None):
             enabled,
             False,
             authority_waived=waived,
+            **_profile_facts(settings),
         )
+
+
+def _profile_facts(settings) -> dict:
+    """The fleet trust profile's ceiling, grants and per-capability predicates for
+    :class:`EligibilityFacts` (trust-profiles ADR section 2, bh-bc2rj)."""
+    from . import hq_authority_enforce, hq_trust_profile, trust_profiles
+
+    try:
+        profile = hq_authority_enforce.trust_profile(settings)
+    except Exception:  # noqa: BLE001 - any doubt resolves the default profile's policy
+        profile = trust_profiles.resolve(None)
+    return hq_trust_profile.capability_policy(profile, settings)
 
 
 def decision_for(host_id, hive=None, *, hq_dir=None, cfg=None, at=None):

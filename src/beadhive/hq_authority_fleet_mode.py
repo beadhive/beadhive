@@ -1,4 +1,5 @@
-"""``bh hq authority mode | mode-signed | mode-trusted`` and ``bh hq authority join`` (bh-taa04.3).
+"""``bh hq authority mode | mode-signed | mode-trusted``, ``bh hq authority join`` (bh-taa04.3)
+and ``bh hq authority profile | profile-<name>`` (the fleet trust profile, bh-bc2rj).
 
 The fleet default authority mode is the fleet-config key ``hq.default_authority_mode`` in the
 committed ``fleet.yaml`` (see :mod:`beadhive.hq_authority_enforce` for why that carrier and how
@@ -19,7 +20,7 @@ import time
 from io import StringIO
 from pathlib import Path
 
-from . import hq_authority_ceiling, hq_operator_settings
+from . import hq_authority_ceiling, hq_operator_settings, hq_trust_profile, trust_profiles
 from . import hq_authority_enforce as authority_mode
 from .hq_control_plane import ControlPlaneError
 from .modules.config.domain.ports import FleetConfigDocument
@@ -31,7 +32,9 @@ def _sql(plane) -> bool:
 
 def with_fleet_default(documents, value: str) -> tuple:
     """`documents` with ``fleet.yaml``'s ``hq.default_authority_mode`` set to `value`
-    (``signed`` removes the key, so a fleet back on signed is readable by 0.23.x again)."""
+    (``signed`` removes the key, so a fleet back on signed is readable by 0.23.x again, unless
+    ``hq.trust_profile``'s authority column is unsigned: then ``signed`` stays explicit, as an
+    override of that column, bh-bc2rj)."""
     from ruamel.yaml import YAML
     from ruamel.yaml.comments import CommentedMap
 
@@ -49,7 +52,10 @@ def with_fleet_default(documents, value: str) -> tuple:
         hq = data.get("hq")
         if hq is None:
             hq = data["hq"] = CommentedMap()
-        if value == "signed":
+        if value == "signed" and hq.get(authority_mode.PROFILE_KEY) not in (
+            authority_mode.TRUSTED_PROFILES
+        ):
+            # The profile's own column is already signed: drop the explicit override.
             hq.pop(authority_mode.FLEET_KEY, None)
         else:
             hq[authority_mode.FLEET_KEY] = value
@@ -197,4 +203,134 @@ def join_cmd(frame, public_key, *, operator_settings=None, operator_key=None, co
     plane = hq_operator_settings.select_plane(operator_settings)
     return hq_open_admission.join(
         plane, frame, key_text, operator_key=str(operator_key) if operator_key else ""
+    )
+
+
+# ---- the fleet trust profile (bh-bc2rj) ------------------------------------------------------
+#
+# ``bh hq authority profile`` / ``profile-<name>``: ``hq.trust_profile`` rides in the same
+# committed ``fleet.yaml`` as the fleet default and is published by the same mechanism (see
+# :mod:`beadhive.hq_trust_profile` for the carrier and how frames learn it).
+
+
+def with_profile(documents, value: str) -> tuple:
+    """`documents` with ``fleet.yaml``'s ``hq.trust_profile`` set to `value` (``verified``, the
+    default, removes the key so the fleet stays readable by bh releases that predate it)."""
+    from ruamel.yaml import YAML
+    from ruamel.yaml.comments import CommentedMap
+
+    trust_profiles.get(value)
+    result, found = [], False
+    for document in documents:
+        if document.path != authority_mode.FLEET_DOCUMENT:
+            result.append(document)
+            continue
+        found = True
+        yaml = YAML()
+        yaml.preserve_quotes = True
+        data = yaml.load(document.content) or CommentedMap()
+        hq = data.get("hq")
+        if hq is None:
+            hq = data["hq"] = CommentedMap()
+        if value == trust_profiles.DEFAULT:
+            hq.pop(authority_mode.PROFILE_KEY, None)
+        else:
+            hq[authority_mode.PROFILE_KEY] = value
+        buffer = StringIO()
+        yaml.dump(data, buffer)
+        result.append(FleetConfigDocument(document.path, buffer.getvalue()))
+    if not found:
+        raise ControlPlaneError("committed fleet.yaml unavailable")
+    return tuple(result)
+
+
+def show_profile(plane) -> dict:
+    refresh(plane)
+    try:
+        published = (
+            hq_trust_profile.committed(plane.config_store().load_snapshot())
+            or trust_profiles.DEFAULT
+        )
+    except Exception:  # noqa: BLE001 - an unreadable head only omits the committed value
+        published = None
+    return {
+        **authority_mode.trust_profile().as_dict(),
+        "committed_profile": published,
+        "learned": hq_trust_profile.state(),
+    }
+
+
+def set_profile(plane, value: str, *, operator_key: str = "", ceiling=None) -> dict:
+    """Publish ``hq.trust_profile = value`` and make it take effect.
+
+    Raising trust (towards ``open``) needs the operator key once, exactly like ``mode-trusted``:
+    the SQL publication is followed by a signed ``rebind`` so signed frames verify the new head
+    and learn it, and the Git config commit is itself operator-signed. Lowering is always
+    allowed."""
+    try:
+        trust_profiles.get(value)
+    except trust_profiles.UnknownProfile as exc:
+        raise ControlPlaneError(str(exc)) from None
+    key = str(operator_key) if operator_key else ""
+    known = hq_trust_profile.current()
+    if trust_profiles.looser(value, known) and not key:
+        raise ControlPlaneError(
+            f"raising the fleet trust profile from {known} to {value} needs the operator key "
+            "once (--operator-key): signed frames honour it only from an operator-signed "
+            "configuration"
+        )
+    if authority_mode.key_required(key):
+        raise ControlPlaneError("mutation requires separate --operator-key")
+    store = plane.config_store(operator_key=key or None)
+    snapshot = store.load_snapshot()
+    published = (hq_trust_profile.committed(snapshot) or trust_profiles.DEFAULT) != value
+    if published:
+        snapshot = store.publish_snapshot(
+            with_profile(snapshot.documents, value), expected_revision=snapshot.commit_revision
+        )
+    rebound = ""
+    if _sql(plane) and key and published:
+        expected = plane._operator().load(deadline=plane._operator_deadline())[0]
+        rebound = plane.renew(expected=expected, operator_key=key, duration=None, ceiling=ceiling)
+    head = snapshot.commit_revision
+    hq_trust_profile.record(value, head=head, via="operator")
+    authority_mode.record_fleet_default(
+        authority_mode.committed_fleet_default(snapshot), head=head, via="operator"
+    )
+    result = {
+        "profile": value,
+        "config_revision": head,
+        "published": published,
+        "rebound": rebound,
+        "line": authority_mode.trust_profile().doctor_line(),
+    }
+    if _sql(plane) and published and not key:
+        result["note"] = (
+            "a stricter profile is always taken; signed frames verify against the new head "
+            "once the operator re-signs authority: bh hq authority rebind --operator-key <key> "
+            "--confirm"
+        )
+    return result
+
+
+def profile_cmd(
+    value, *, operator_settings=None, operator_key=None, confirm=False, max_duration=None
+):
+    """``bh hq authority profile`` (show) / ``profile-<name> --confirm`` (publish)."""
+    plane = hq_operator_settings.select_plane(operator_settings)
+    if not value:
+        return show_profile(plane)
+    if not confirm:
+        raise ControlPlaneError("operator mutation requires --confirm")
+    try:
+        ceiling = hq_authority_ceiling.resolve_ceiling(
+            cli=max_duration, settings=getattr(plane, "authority_max_duration_s", None)
+        )
+    except ValueError as exc:
+        raise ControlPlaneError(str(exc)) from None
+    return set_profile(
+        plane,
+        value,
+        operator_key=str(operator_key) if operator_key is not None else "",
+        ceiling=ceiling,
     )

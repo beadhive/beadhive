@@ -1177,6 +1177,26 @@ def _render_authority_expiry(d: dict) -> None:
         typer.echo(f"    authority mode: {d['mode']}")
 
 
+def _data_trust_profile(cfg) -> dict:
+    """The fleet trust profile: the effective profile and every override on one line
+    (trust-profiles ADR section 2, bh-bc2rj)."""
+    from . import hq_authority_enforce, hq_trust_profile
+
+    try:
+        profile = hq_authority_enforce.trust_profile(cfg)
+    except Exception as exc:  # noqa: BLE001 - doctor reports, never raises
+        return {"level": "warn", "line": f"trust profile unreadable: {exc}", "notes": []}
+    return hq_trust_profile.doctor_data(profile)
+
+
+def _render_trust_profile(d: dict) -> None:
+    typer.echo("\n# HQ trust profile")
+    glyph = "⚠ WARN" if d["level"] == "warn" else "✓"
+    typer.echo(f"  {glyph} {d['line']}")
+    for note in d.get("notes", ()):
+        typer.echo(f"    {note}")
+
+
 def _section_group_auth(cfg):
     """Render the per-group auth section."""
     _render_group_auth(_data_group_auth(cfg))
@@ -3179,6 +3199,7 @@ def _collect(cfg, *, full_seats: bool = False) -> dict:
         "host_daemon": _timed(timings, "host_daemon", _data_host_daemon, cfg),
         "group_auth": _timed(timings, "group_auth", _data_group_auth, cfg),
         "authority_expiry": _timed(timings, "authority_expiry", _data_authority_expiry),
+        "trust_profile": _timed(timings, "trust_profile", _data_trust_profile, cfg),
         "mcp": _timed(timings, "mcp", _data_mcp, cfg),
         "harness_plugin": _timed(timings, "harness_plugin", _data_harness_plugin, cfg),
         "seats": _timed(timings, "seats", _data_seats, cfg, full=full_seats),
@@ -3347,6 +3368,7 @@ def doctor(as_json: bool = False, verbose: bool = False, seats: bool = False):
     _render_host_daemon(data["host_daemon"])
     _render_group_auth(data["group_auth"])
     _render_authority_expiry(data["authority_expiry"])
+    _render_trust_profile(data["trust_profile"])
     _render_mcp(data["mcp"])
     _render_harness_plugin(data["harness_plugin"])
     _render_seats(data["seats"])

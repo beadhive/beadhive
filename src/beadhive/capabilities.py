@@ -171,10 +171,28 @@ def get(name: str) -> Capability:
         ) from None
 
 
-def frame_predicates(name: str) -> tuple[str, ...]:
+def chain(name: str) -> tuple[str, ...]:
+    """`name` and every capability it builds on (``publish`` -> ``execute``, ``claim``,
+    ``author``)."""
+    names = []
+    while name:
+        names.append(name)
+        name = get(name).includes
+    return tuple(names)
+
+
+def frame_predicates(name: str, *, adds=()) -> tuple[str, ...]:
     """The frame-eligibility predicates `name` consults, in :data:`FRAME_PREDICATES` order:
-    the table's own frame predicates plus the :data:`IMPLIED` ones."""
+    the table's own frame predicates plus the :data:`IMPLIED` ones.
+
+    `adds` (``(capability, predicates)`` pairs) are extra predicates the fleet trust profile
+    attaches to a capability (``attested``: ``author`` needs a fresh heartbeat, bh-bc2rj); they
+    apply to that capability and to every capability that builds on it."""
     consulted = set(get(name).predicates)
+    lineage = set(chain(name))
+    for capability, predicates in adds:
+        if capability in lineage:
+            consulted.update(predicates)
     consulted.add("authority_available")
     consulted.add("executor_role")
     if "admitted_active" in consulted:

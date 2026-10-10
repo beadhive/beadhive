@@ -31,6 +31,8 @@ import time
 from contextlib import contextmanager
 from typing import NamedTuple
 
+from . import hq_trust_profile
+
 ENFORCE_ENV = "BH_HQ_AUTHORITY_ENFORCE"
 ENFORCE_VALUES = ("true", "false")
 DOCS = "docs/HQ.md#unsupported-disabling-hq-authority-enforcement"
@@ -182,7 +184,7 @@ def reset_cache() -> None:
     writers)."""
     global _configured_cache, _path_cache, _fleet_cache, _fleet_path_cache
     _configured_cache = _path_cache = _fleet_cache = _fleet_path_cache = None
-    _committed_defaults.clear()
+    hq_trust_profile.reset_cache()
 
 
 def _configured_mode() -> str | None:
@@ -273,11 +275,14 @@ FLEET_KEY = "default_authority_mode"
 FLEET_MODES = ("signed", "trusted")
 FLEET_STATE = "hq-fleet-authority-mode.json"
 FLEET_DOCUMENT = "fleet.yaml"
+#: The fleet trust profile key (bh-bc2rj, :mod:`beadhive.hq_trust_profile`); its authority
+#: column is the fleet default when ``hq.default_authority_mode`` is not set explicitly.
+PROFILE_KEY = hq_trust_profile.PROFILE_KEY
+#: Profiles whose authority column is unsigned (0.24.0 ``trusted``).
+TRUSTED_PROFILES = hq_trust_profile.TRUSTED_PROFILES
 
 _fleet_cache: tuple[tuple, str] | None = None
 _fleet_path_cache: tuple[tuple, str | None] | None = None
-#: committed fleet.yaml content -> its fleet default (bounded memo).
-_committed_defaults: dict[str, str] = {}
 
 
 class AuthorityModeConflict(ValueError):
@@ -337,35 +342,34 @@ def fleet_trusted() -> bool:
     return fleet_default() == "trusted"
 
 
-def committed_fleet_default(snapshot) -> str:
-    """``hq.default_authority_mode`` committed in a config snapshot (or a document sequence):
-    ``"trusted"`` only when explicitly so; absent, invalid or unreadable is ``"signed"``.
-    Memoized on the ``fleet.yaml`` content (verification reads it on every authority read)."""
-    try:
-        documents = getattr(snapshot, "documents", snapshot)
-        content = next(
-            (document.content for document in documents if document.path == FLEET_DOCUMENT),
-            None,
-        )
-    except Exception:  # noqa: BLE001 - an unreadable default never raises trust
-        return "signed"
-    if not isinstance(content, str):
-        return "signed"
-    if content in _committed_defaults:
-        return _committed_defaults[content]
-    try:
-        from ruamel.yaml import YAML
+def committed_hq_keys(snapshot) -> dict:
+    """The committed ``fleet.yaml`` keys that set the fleet's trust posture (see
+    :func:`beadhive.hq_trust_profile.committed_hq_keys`)."""
+    return hq_trust_profile.committed_hq_keys(snapshot)
 
-        parsed = YAML(typ="safe").load(content)
-        hq = parsed.get("hq") if isinstance(parsed, dict) else None
-        raw = hq.get(FLEET_KEY) if isinstance(hq, dict) else None
-        value = "trusted" if raw == "trusted" else "signed"
-    except Exception:  # noqa: BLE001 - an unreadable default never raises trust
-        value = "signed"
-    if len(_committed_defaults) >= 16:
-        _committed_defaults.pop(next(iter(_committed_defaults)))
-    _committed_defaults[content] = value
-    return value
+
+def committed_fleet_default(snapshot) -> str:
+    """The fleet's authority column committed in a config snapshot (or a document sequence).
+
+    ``hq.default_authority_mode`` when set explicitly (the 0.24.0 carrier, and the profile's
+    first column); otherwise the column of ``hq.trust_profile`` (bh-bc2rj): ``open`` and
+    ``trusted`` run ``trusted``, ``verified`` (the default) and ``attested`` run ``signed``.
+    Absent, invalid or unreadable is ``"signed"``. Memoized on the ``fleet.yaml`` content."""
+    return hq_trust_profile.committed_fleet_default(snapshot)
+
+
+def trust_profile(cfg=None):
+    """The fleet trust profile this host runs, with its overrides
+    (:class:`beadhive.trust_profiles.ResolvedProfile`): the learned ``hq.trust_profile``, the
+    learned fleet default as an override of its authority column, this frame's
+    ``hq.authority_mode`` pin, and the host-local knob overrides in `cfg` (``host.yaml`` when
+    ``None``)."""
+    try:
+        pin = pinned()
+        source = resolve(_configured_mode()).source if pin is not None else ""
+    except Exception:  # noqa: BLE001 - an unreadable pin is reported as none
+        pin, source = None, ""
+    return hq_trust_profile.resolved(cfg, fleet_default=fleet_default(), pin=pin, pin_source=source)
 
 
 def record_fleet_default(value: str, *, head: str = "", via: str = "") -> bool:
@@ -402,7 +406,10 @@ def observe_fleet_default(snapshot, *, authorised: bool, via: str = "") -> str:
 
     *authorised*: the snapshot is the operator-signed/bound one (verified in signed mode). A
     ``trusted`` value is honoured only then (or when already learned); a ``signed`` value is
-    always honoured — lowering is stricter. Returns the learned default; never raises."""
+    always honoured — lowering is stricter. The fleet trust profile (``hq.trust_profile``,
+    bh-bc2rj) is learned from the same snapshot under the same rule. Returns the learned
+    default; never raises."""
+    hq_trust_profile.observe(snapshot, authorised=authorised, via=via)
     try:
         value = committed_fleet_default(snapshot)
         current = fleet_default()
