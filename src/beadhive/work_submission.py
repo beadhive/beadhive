@@ -313,7 +313,7 @@ def impl_submit(api, bead, as_, hive, group, override_validation="", override_ac
 
     warn_if_expiring()
     cfg = api.config.load()
-    api.guard.guard_primary(hive, cfg=cfg, verb="work submit")
+    api.guard.guard_capability("publish", hive, cfg=cfg, verb="work submit")
     if override_actor and not override_validation:
         api.typer.echo("✗ --override-as requires --override-validation REASON", err=True)
         raise api.typer.Exit(1)

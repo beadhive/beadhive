@@ -543,8 +543,58 @@ def _renew_liveness_hint(prefix: str, this_host: str, cfg) -> None:
         )
 
 
+def guard_capability(capability: str, hive: str = "", *, cfg=None, verb: str = "") -> None:
+    """The one gate in front of every bh write verb: may this host exercise `capability` on
+    `hive` now? (trust-profiles ADR section 1, bh-b3ebg)
+
+    `capability` is one of :data:`beadhive.capabilities.WRITE_CAPABILITIES` — ``author``,
+    ``claim``, ``execute`` or ``publish``. Each verb names exactly one. The layers run in the
+    same order for every capability (forward marker, in-data writer fence, frame eligibility,
+    hive lease; see :func:`guard_primary`), and only frame eligibility depends on the
+    capability: it consults the predicates the capability lists and nothing else, so a host
+    whose heartbeat is stale or whose dispatch is disabled can still ``author`` while
+    ``execute`` and ``publish`` refuse. Where the write may land is the write policy
+    (``fenced`` today: the writer frame or lease holder only, for every capability).
+
+    Raises ``typer.Exit(1)`` on refusal, like every other guard here; raises
+    :class:`beadhive.capabilities.UnknownCapability` for a name that is not a write capability
+    (``place`` and ``admin`` are decided by the placement CAS and HQ's own write access)."""
+    _guard_write(_write_capability(capability), hive, cfg=cfg, verb=verb)
+
+
+def require_capability(capability: str, hive: str = "", *, cfg=None, hive_dir=None):
+    """The in-process recheck adjacent to a write (a claim, a lease renewal), for one
+    capability: frame eligibility narrowed to `capability`, then the hive lease.
+
+    Raises :class:`beadhive.frame_eligibility.EligibilityError` on refusal rather than exiting,
+    because its callers (a lease port, a loop's keeper) already map that error; returns the
+    decision, or ``None`` for an unenrolled legacy host. Same policy as
+    :func:`guard_capability`'s frame-eligibility layer."""
+    from . import frame_eligibility
+
+    return frame_eligibility.require_intake(
+        hive, cfg=cfg, hive_dir=hive_dir, capability=_write_capability(capability)
+    )
+
+
+def _write_capability(capability: str) -> str:
+    from . import capabilities
+
+    capabilities.get(capability)
+    if capability not in capabilities.WRITE_CAPABILITIES:
+        raise capabilities.UnknownCapability(
+            f"{capability!r} is not a bead-write capability "
+            f"(known: {', '.join(capabilities.WRITE_CAPABILITIES)})"
+        )
+    return capability
+
+
 def guard_primary(hive: str = "", *, cfg=None, verb: str = "") -> None:
-    """Refuse a WRITE verb when this host is not `hive`'s primary (ADR Decision 2).
+    """The ``publish`` check: refuse a WRITE verb when this host is not `hive`'s primary
+    (ADR Decision 2), evaluating every frame-eligibility predicate.
+
+    Verbs call :func:`guard_capability` with the one capability they need; this is that guard
+    for ``publish`` (trust-profiles ADR section 1) and the description of the layers below.
 
     The seam mirrors :func:`guard_hq_registry_write` / :func:`guard_hub`: one decision, called
     from each write verb, raising ``typer.Exit(1)`` on refusal and returning silently otherwise.
@@ -576,6 +626,13 @@ def guard_primary(hive: str = "", *, cfg=None, verb: str = "") -> None:
     **Forwarded checkouts (bh-7yuny).** A checkout this frame forwards writes on the primary,
     under the primary's guard: its marker decides (:func:`forward_refusal`), never this frame's
     local copy, lease or frame eligibility."""
+    from . import capabilities
+
+    _guard_write(capabilities.PUBLISH, hive, cfg=cfg, verb=verb)
+
+
+def _guard_write(capability: str, hive: str = "", *, cfg=None, verb: str = "") -> None:
+    """:func:`guard_primary`'s layers, with frame eligibility narrowed to `capability`."""
     forwarded = forward_marker(hive, cfg=cfg)
     if forwarded is not None:
         refusal = forward_refusal(forwarded)
@@ -598,7 +655,7 @@ def guard_primary(hive: str = "", *, cfg=None, verb: str = "") -> None:
     from . import frame_eligibility
 
     try:
-        frame_decision = frame_eligibility.require_intake(hive, cfg=cfg)
+        frame_decision = frame_eligibility.require_intake(hive, cfg=cfg, capability=capability)
     except frame_eligibility.EligibilityError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(1) from exc
@@ -699,9 +756,10 @@ def live_epoch(hive: str = "", *, cfg=None) -> int:
     if cut_over is not None:
         return cut_over[2].epoch  # clock-free and HQ-free: the writer epoch in data (bh-12hev)
     if config.fleet_sql_selected():
-        from . import frame_eligibility
+        from . import capabilities, frame_eligibility
 
-        if frame_eligibility.require_intake(hive, cfg=cfg) is None:
+        # Minting a claim's token is part of the claim (bh-b3ebg).
+        if frame_eligibility.require_intake(hive, cfg=cfg, capability=capabilities.CLAIM) is None:
             raise frame_eligibility.EligibilityError("frame ineligible: AUTHORITY_NOT_READY")
         state = frame_eligibility.authoritative_primary(hive, cfg=cfg)
     else:
@@ -1181,6 +1239,22 @@ def cut_over_break_glass_refusal(form: str, hive_dir, *, cfg=None, entry=None) -
     return _break_glass_refusal(cut_over[0], form) if cut_over is not None else ""
 
 
+def bd_capability(args) -> str:
+    """The one capability a passthrough bd write asks for (trust-profiles ADR section 1).
+
+    ``publish`` for moving the store outward (``dolt push|sync``); ``claim`` for a claim
+    (``update --claim``, ``claim``); ``author`` for every other write — create, update,
+    comments, dep, label, close and anything bd adds later."""
+    from . import capabilities
+
+    if is_store_publish(args):
+        return capabilities.PUBLISH
+    verb = bd_verb(args)
+    if verb == "claim" or (verb == "update" and "--claim" in list(args)):
+        return capabilities.CLAIM
+    return capabilities.AUTHOR
+
+
 def is_bd_write(args) -> bool:
     """Whether `args` names a bd verb that could MUTATE the hive in a way the host lease has
     to serialize — see :data:`BD_READ_VERBS` for why an unknown verb counts as a write,
@@ -1252,7 +1326,9 @@ def bd_write_refusal(args, cwd, *, cfg=None) -> str:
     from . import frame_eligibility
 
     try:
-        frame_decision = frame_eligibility.require_intake(cfg=cfg, hive_dir=cwd)
+        frame_decision = frame_eligibility.require_intake(
+            cfg=cfg, hive_dir=cwd, capability=bd_capability(args)
+        )
         state = (
             frame_eligibility.authoritative_primary(cfg=cfg, hive_dir=cwd)
             if frame_decision is not None

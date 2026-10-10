@@ -312,44 +312,47 @@ def test_an_unresolvable_hive_is_not_this_guards_error_to_raise(hq, monkeypatch)
 
 
 def _gated_calls(monkeypatch):
-    """Record every guard_primary call a verb makes, and stop the verb right there."""
+    """Record every guard_capability call a verb makes, and stop the verb right there."""
     calls: list[str] = []
+    capabilities: list[str] = []
 
     class _Stop(Exception):
         pass
 
-    def spy(hive="", *, cfg=None, verb=""):
+    def spy(capability, hive="", *, cfg=None, verb=""):
         calls.append(verb)
+        capabilities.append(capability)
         raise _Stop
 
-    monkeypatch.setattr(guard, "guard_primary", spy)
-    monkeypatch.setattr(work.guard, "guard_primary", spy)
-    monkeypatch.setattr(plan.guard, "guard_primary", spy)
-    return calls, _Stop
+    monkeypatch.setattr(guard, "guard_capability", spy)
+    monkeypatch.setattr(work.guard, "guard_capability", spy)
+    monkeypatch.setattr(plan.guard, "guard_capability", spy)
+    return calls, capabilities, _Stop
 
 
 @pytest.mark.parametrize(
-    ("verb", "call"),
+    ("verb", "capability", "call"),
     [
-        ("work assign", lambda: work.assign(bead="tt-1", to="dev/x", hive="h")),
-        ("work claim", lambda: work.claim(bead="tt-1", hive="h")),
-        ("work submit", lambda: work.submit(bead="tt-1", hive="h")),
-        ("work merge", lambda: work.merge(bead="tt-1", hive="h")),
+        ("work assign", "claim", lambda: work.assign(bead="tt-1", to="dev/x", hive="h")),
+        ("work claim", "claim", lambda: work.claim(bead="tt-1", hive="h")),
+        ("work submit", "publish", lambda: work.submit(bead="tt-1", hive="h")),
+        ("work merge", "publish", lambda: work.merge(bead="tt-1", hive="h")),
     ],
 )
-def test_each_write_verb_calls_guard_primary(verb, call, monkeypatch):
-    calls, stop = _gated_calls(monkeypatch)
+def test_each_write_verb_calls_guard_capability(verb, capability, call, monkeypatch):
+    calls, asked, stop = _gated_calls(monkeypatch)
     monkeypatch.setattr(work.config, "load", lambda: {})
     monkeypatch.setattr(work.otel, "set_bead", lambda *_a, **_k: None)
     with pytest.raises(stop):
         call()
     assert calls == [verb]
+    assert asked == [capability]
 
 
-def test_plan_file_calls_guard_primary(tmp_path, monkeypatch):
+def test_plan_file_calls_guard_capability_author(tmp_path, monkeypatch):
     """The non-obvious, most important one: filing a molecule from a follower is the
     beads#4796 trigger, not an edge case."""
-    calls, stop = _gated_calls(monkeypatch)
+    calls, capabilities, stop = _gated_calls(monkeypatch)
     spec = tmp_path / "m.yaml"
     spec.write_text("x")
     monkeypatch.setattr(plan.config, "load", lambda: {})
@@ -359,11 +362,23 @@ def test_plan_file_calls_guard_primary(tmp_path, monkeypatch):
     with pytest.raises(stop):
         plan.file(spec=str(spec), dry_run=False, save="", hive="h")
     assert calls == ["plan file"]
+    assert capabilities == ["author"]
+
+
+def test_plan_approve_calls_guard_capability_author(tmp_path, monkeypatch):
+    """Approving a kickoff writes the hive's data: gated as `author` (ADR section 1)."""
+    calls, capabilities, stop = _gated_calls(monkeypatch)
+    monkeypatch.setattr(plan.config, "load", lambda: {})
+    monkeypatch.setattr(plan.registry, "hive_dir_for", lambda *_a: tmp_path)
+    with pytest.raises(stop):
+        plan.approve(epic="tt-1", hive="h")
+    assert calls == ["plan approve"]
+    assert capabilities == ["author"]
 
 
 def test_plan_file_dry_run_is_not_gated(tmp_path, monkeypatch, capsys):
     """--dry-run creates nothing, so it stays a read."""
-    calls, _stop = _gated_calls(monkeypatch)
+    calls, _capabilities, _stop = _gated_calls(monkeypatch)
     spec = tmp_path / "m.yaml"
     spec.write_text("x")
     monkeypatch.setattr(plan.config, "load", lambda: {})
@@ -401,7 +416,9 @@ def test_read_verbs_are_never_gated(verb, hq, hive, this_host, monkeypatch):
 
     monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 1)
     _record_lease(hq, _lease(OTHER_HOST))
-    assert "guard_primary" not in inspect.getsource(_READ_IMPLS[verb])
+    source = inspect.getsource(_READ_IMPLS[verb])
+    assert "guard_primary" not in source
+    assert "guard_capability" not in source
 
 
 def test_reads_still_work_under_a_foreign_lease(hq, hive, this_host, monkeypatch):
@@ -494,7 +511,7 @@ def test_the_gate_sits_before_the_merge_not_around_its_close(monkeypatch):
     facade = inspect.getsource(work.merge)
     src = inspect.getsource(work_merge.impl_merge)
     assert "work_merge.impl_merge" in facade
-    gate_at = src.index("api.guard.guard_primary")
+    gate_at = src.index('api.guard.guard_capability("publish"')
     slot_at = src.index("api.work_group.merge_group")
     assert gate_at < slot_at
 

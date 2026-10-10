@@ -334,9 +334,9 @@ def claim_group(cfg, hive, group_arg, as_):
 
     pairing = work_pairing_policy.read(main)
     for m in members:
-        from . import frame_eligibility
+        from . import guard
 
-        frame_eligibility.require_intake(hive, cfg=cfg, hive_dir=main)
+        guard.require_capability("claim", hive, cfg=cfg, hive_dir=main)
         if bd_cli.routes(main).issue_claim(m, actor=actor).returncode != 0:
             raise typer.Exit(1)
         try:  # M14 D4: the claiming frame, best-effort (an unattributed claim is never rewound)

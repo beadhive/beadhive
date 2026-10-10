@@ -497,7 +497,7 @@ def nexthive(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.delenv("GIT_CONFIG_GLOBAL", raising=False)
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    monkeypatch.setattr(guard, "guard_primary", lambda *a, **k: None)
+    monkeypatch.setattr(guard, "guard_capability", lambda *a, **k: None)
     monkeypatch.setattr(work, "_pull_state", lambda *a, **k: None)
     return SimpleNamespace(main=main, wts=tmp_path / "wts", cfg_path=cfg_path)
 

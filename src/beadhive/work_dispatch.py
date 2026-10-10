@@ -132,7 +132,7 @@ def _next_via_cli(api, cfg, hive, main, actor, epic):
 
 def impl_next_(api, as_, hive, as_json, epic):
     cfg = api.config.load()
-    api.guard.guard_primary(hive, cfg=cfg, verb="work next")
+    api.guard.guard_capability("execute", hive, cfg=cfg, verb="work next")
     main = api.registry.hive_dir_for(cfg, hive)
     entry = api.registry.entry_for_dir(cfg, main) or {}
     actor = api.identity.resolve_actor(as_, api.config.work_identity(cfg, entry)["name"] or "")
@@ -227,7 +227,7 @@ def impl_loop(
     api, epic, as_, hive, passes, as_json, dry_run, seat_binary, harness="", baml_required=False
 ):
     cfg = api.config.load()
-    api.guard.guard_primary(hive, cfg=cfg, verb="work loop")
+    api.guard.guard_capability("execute", hive, cfg=cfg, verb="work loop")
     main = api.registry.hive_dir_for(cfg, hive)
     entry = api.registry.entry_for_dir(cfg, main) or {}
     actor = api.identity.resolve_actor(as_, api.config.work_identity(cfg, entry)["name"] or "")

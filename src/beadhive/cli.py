@@ -3315,7 +3315,7 @@ def hive_policy(
     if action == "get":
         typer.echo(_policy_value_text(policy_mod.read(main).get(key)))
         return
-    guard.guard_primary(hive_id, cfg=cfg, verb=f"hive policy {action}")
+    guard.guard_capability("author", hive_id, cfg=cfg, verb=f"hive policy {action}")
     actor = identity.resolve_actor("", "")
     try:
         if action == "set":

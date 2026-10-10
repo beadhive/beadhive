@@ -503,7 +503,7 @@ def test_bd_passthrough_refuses_ineligible_frame_even_without_cached_lease(
     assert reason in guard.bd_write_refusal(
         ["update", "bh-test", "--claim"], tmp_path, cfg={"hq": {}}
     )
-    assert calls == [{"cfg": {"hq": {}}, "hive_dir": tmp_path}]
+    assert calls == [{"cfg": {"hq": {}}, "hive_dir": tmp_path, "capability": "claim"}]
     calls.clear()
     assert guard.bd_write_refusal(["show", "bh-test"], tmp_path, cfg={"hq": {}}) == ""
     assert calls == []

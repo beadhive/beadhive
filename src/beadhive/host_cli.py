@@ -2212,6 +2212,7 @@ def eligible_cmd(
             "reason": "legacy lease policy",
         }
     )
+    held = None
     if hive:
         payload["candidate_eligible"] = payload["eligible"]
         try:
@@ -2230,6 +2231,7 @@ def eligible_cmd(
         payload["eligible"] = payload["eligible"] and held
         if not held:
             payload["reason"] += ", current_hive_lease_holder"
+    payload["capabilities"] = capability_decisions(decision, held)
     # BH_HQ_AUTHORITY_ENFORCE=false (UNSUPPORTED, bh-6pqul) marks each waived predicate.
     waived = set(payload.get("waived", ()))
     if as_json:
@@ -2247,5 +2249,70 @@ def eligible_cmd(
                 (("predicate", "PREDICATE"), ("result", "RESULT")),
             )
         )
+        typer.echo("")
+        typer.echo(
+            render_table(
+                [
+                    {
+                        "capability": name,
+                        "result": "allow" if row["allowed"] else "refuse",
+                        "reason": row["reason"],
+                        "deferred": ", ".join(row.get("deferred", {})),
+                    }
+                    for name, row in payload["capabilities"].items()
+                ],
+                (
+                    ("capability", "CAPABILITY"),
+                    ("result", "RESULT"),
+                    ("reason", "REASON"),
+                    ("deferred", "DECIDED ELSEWHERE"),
+                ),
+            )
+        )
     if not payload["eligible"]:
         raise typer.Exit(1)
+
+
+def capability_decisions(decision, held: bool | None) -> dict:
+    """`bh host eligible`'s per-capability report (trust-profiles ADR section 1, bh-b3ebg).
+
+    For each capability in :data:`beadhive.capabilities.REGISTRY`: whether the frame's
+    predicates for THAT capability hold, the predicates consulted, and — under ``deferred`` —
+    the predicates another layer decides (the in-data writer fence, the placement CAS, HQ write
+    access). `held` is the hive-lease reading when ``--hive`` was given (``None`` otherwise);
+    under the ``fenced`` write policy every bead-write capability also needs it.
+    `decision` ``None`` is an unenrolled host under the legacy lease policy."""
+    from . import capabilities
+
+    report = {}
+    for name in capabilities.REGISTRY:
+        if decision is None:
+            row = {
+                "allowed": True,
+                "predicates": {"legacy_lease_policy": True},
+                "reason": "legacy lease policy",
+            }
+        else:
+            narrowed = decision.for_capability(name).as_dict()
+            row = {
+                "allowed": narrowed.pop("eligible"),
+                "predicates": narrowed.pop("predicates"),
+                **narrowed,
+            }
+        if held is not None and name in capabilities.WRITE_CAPABILITIES:
+            row["predicates"]["current_hive_lease_holder"] = held
+            if not held:
+                row["allowed"] = False
+                row["reason"] = (
+                    "current_hive_lease_holder"
+                    if row["reason"] in ("eligible", "legacy lease policy")
+                    else f"{row['reason']}, current_hive_lease_holder"
+                )
+        deferred = {
+            predicate: capabilities.LAYER_PREDICATES[predicate]
+            for predicate in capabilities.layer_predicates(name)
+        }
+        if deferred:
+            row["deferred"] = deferred
+        report[name] = row
+    return report

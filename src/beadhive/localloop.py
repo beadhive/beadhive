@@ -998,14 +998,14 @@ class EligibilityLeaseKeeper:
         self.fresh_config = fresh_config
 
     def renew(self, *, active):
-        from . import frame_eligibility
+        from . import frame_eligibility, guard
 
         try:
             current = config.load() if self.fresh_config else self.cfg
         except Exception:  # noqa: BLE001 - an unavailable config cannot renew a lease
             return LeaseStatus(False, detail="configuration unavailable")
         try:
-            frame_eligibility.require_intake(self.hive, cfg=current, hive_dir=self.hive_dir)
+            guard.require_capability("execute", self.hive, cfg=current, hive_dir=self.hive_dir)
         except frame_eligibility.EligibilityError as exc:
             return LeaseStatus(False, detail=str(exc))
         except Exception:  # noqa: BLE001 - authority failure cannot renew a lease
