@@ -64,6 +64,21 @@ class EligibilityFacts:
     grants: frozenset[str] = frozenset()
     # Extra frame predicates per capability (``attested``: ``author`` needs a fresh heartbeat).
     capability_adds: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    # The admission rule's attestation (bh-sfp9o.4): fresh authenticated heartbeats a grant
+    # needs before ``admitted_active`` holds (``attested``: three; else none), and the streak
+    # the observed beat carries (:func:`beadhive.hq_admission.attested_beats`).
+    attestation_required: int = 0
+    attested_beats: int = 0
+
+    @property
+    def attested(self) -> bool:
+        return self.attested_beats >= self.attestation_required
+
+
+def _admitted_active(desired: dict, facts: EligibilityFacts) -> bool:
+    """``admitted_active``: the record is declared and ACTIVE and, under ``attested``, its grant
+    has counted its fresh authenticated heartbeats."""
+    return desired.get("state") == "active" and desired.get("declared") is True and facts.attested
 
 
 # Predicates whose failure ``BH_HQ_AUTHORITY_ENFORCE=false`` waives. Each is either wholly
@@ -298,10 +313,7 @@ def _eligible_session(frame, hive, facts) -> EligibilityDecision:
     decision = EligibilityDecision(
         (
             ("authority_available", facts.available),
-            (
-                "admitted_active",
-                desired.get("state") == "active" and desired.get("declared") is True,
-            ),
+            ("admitted_active", _admitted_active(desired, facts)),
             ("not_cordoned", desired.get("cordoned") is False),
             (
                 "reviewed_admission_or_emergency",
@@ -422,10 +434,7 @@ def eligible(frame: hosts.HostManifest, hive: dict, facts: EligibilityFacts) -> 
     decision = EligibilityDecision(
         (
             ("authority_available", facts.available),
-            (
-                "admitted_active",
-                desired.get("state") == "active" and desired.get("declared") is True,
-            ),
+            ("admitted_active", _admitted_active(desired, facts)),
             ("not_cordoned", desired.get("cordoned") is False),
             (
                 "reviewed_admission_or_emergency",
@@ -533,7 +542,7 @@ def load_facts(frame, *, hq_dir, cfg=None, at=None, prefix=None):
             at,
             _heartbeat_advisory(observation, frame),
             waived,
-            **_profile_facts(settings),
+            **_profile_facts(settings, observation=observation),
         )
     except AuthorityEnforcementError:
         raise
@@ -548,16 +557,23 @@ def load_facts(frame, *, hq_dir, cfg=None, at=None, prefix=None):
         )
 
 
-def _profile_facts(settings) -> dict:
+def _profile_facts(settings, *, observation=None) -> dict:
     """The fleet trust profile's ceiling, grants and per-capability predicates for
-    :class:`EligibilityFacts` (trust-profiles ADR section 2, bh-bc2rj)."""
-    from . import hq_authority_enforce, hq_trust_profile, trust_profiles
+    :class:`EligibilityFacts` (trust-profiles ADR section 2, bh-bc2rj), and, under an admission
+    rule that attests (``attested``), the fresh-heartbeat streak this read's observation carries
+    (bh-sfp9o.4; stateless, :func:`beadhive.hq_admission.attested_beats`)."""
+    from . import hq_admission, hq_authority_enforce, hq_trust_profile, trust_profiles
 
     try:
         profile = hq_authority_enforce.trust_profile(settings)
     except Exception:  # noqa: BLE001 - any doubt resolves the default profile's policy
         profile = trust_profiles.resolve(None)
-    return hq_trust_profile.capability_policy(profile, settings)
+    policy = hq_trust_profile.capability_policy(profile, settings)
+    required = hq_admission.rule(profile).attestation_beats
+    if not required:
+        return policy
+    count = hq_admission.attested_beats(observation) if observation is not None else 0
+    return {**policy, "attestation_required": required, "attested_beats": count}
 
 
 def decision_for(host_id, hive=None, *, hq_dir=None, cfg=None, at=None):

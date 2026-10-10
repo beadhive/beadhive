@@ -15,6 +15,12 @@ principal provisioning (account, inbox and session tables) that is not an author
 
 Trust delta: in a trusted fleet anything that can reach HQ with write access and register can
 join. A signed fleet refuses (fail closed) exactly as before.
+
+Trust profile (bh-sfp9o.4): join admits only where the fleet's admission rule does without a
+grant — ``open`` (registration) and ``trusted`` (join), or a trusted fleet default with no
+profile named (0.24.0). Under ``verified`` / ``attested``, or a ``hq.admission_policy: manual``
+override, join is refused and the frame waits for an operator grant
+(:func:`beadhive.hq_admission.join_permitted`).
 """
 
 from __future__ import annotations
@@ -115,11 +121,25 @@ def admitted(plane, host_id: str) -> bool:
     return False
 
 
+def admission_guard(profile=None) -> None:
+    """Refuse join unless the trust profile's admission rule admits without a grant."""
+    from . import hq_admission, hq_authority_enforce
+
+    profile = profile if profile is not None else hq_authority_enforce.trust_profile()
+    if not hq_admission.join_permitted(profile):
+        raise ControlPlaneError(
+            f"open admission refused: {hq_admission.join_refusal(profile)}; the operator "
+            "grants this frame (`bh hq authority grant` and `bh host` lifecycle admit)"
+        )
+
+
 def join(plane, host_id: str, public_key: str, *, operator_key: str = "") -> dict:
     """Open-admit `host_id` (idempotent: an already-admitted holder is reported, not rewritten).
 
-    Refused unless this process has learned a trusted fleet default."""
+    Refused unless this process has learned a trusted fleet default and the fleet trust
+    profile admits by registration or join (:func:`admission_guard`)."""
     open_admission_guard({})
+    admission_guard()
     if admitted(plane, host_id):
         return {"host_id": host_id, "admitted": True, "changed": False}
     authority, key, desired, expected = request(plane, host_id, public_key)

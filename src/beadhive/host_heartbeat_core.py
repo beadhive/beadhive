@@ -13,7 +13,7 @@ import re
 import sqlite3
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from jsonschema import Draft202012Validator, FormatChecker, ValidationError
@@ -97,6 +97,51 @@ class VerifiedObservation:
     sha: str = ""
     candidate: bool = False
     age_basis: str = ""
+    # Consecutive fresh beats ending with this one, as its signed commit records it
+    # (:data:`STREAK_TRAILER`, bh-sfp9o.4). ``0`` when the carrier records none.
+    attestation_streak: int = 0
+
+
+#: The signed heartbeat commit's trailer carrying the beat's attestation streak (bh-sfp9o.4):
+#: how many consecutive beats, ending with this one, followed each other with no stale gap.
+#: The publisher computes it from the beat it replaces (:func:`next_streak`); the commit
+#: message is inside the frame's SSH signature, and readers that predate it ignore it.
+STREAK_TRAILER = "Attestation-Streak"
+_STREAK = re.compile(rf"^{STREAK_TRAILER}: ([0-9]{{1,9}})$", re.MULTILINE)
+#: A streak never needs to count further than this.
+MAX_STREAK = 1_000_000
+
+
+def next_streak(
+    previous: tuple[int, int, float, float] | None, seq: int, observed_at: float
+) -> int:
+    """The streak a new beat (`seq`, `observed_at`) carries after `previous`.
+
+    `previous` is the replaced beat's ``(streak, seq, observed_at, ttl)`` when it verified
+    against the current authority, else ``None``. The new beat continues the streak only when
+    it advances the sequence and lands while the previous beat was still fresh
+    (``0 <= observed_at - previous_observed_at < ttl``); any gap at or past the TTL is a stale
+    heartbeat and restarts the count at one. A previous beat without a recorded streak counts
+    as one (it was itself a verified beat)."""
+    if previous is None:
+        return 1
+    streak, prior_seq, prior_at, ttl = previous
+    if seq <= prior_seq or not 0 <= observed_at - prior_at < ttl:
+        return 1
+    return min(max(streak, 1) + 1, MAX_STREAK)
+
+
+def recorded_streak(message: str) -> int:
+    """The streak a heartbeat commit message records (``0``: none)."""
+    match = _STREAK.search(message or "")
+    return int(match.group(1)) if match else 0
+
+
+def _commit_streak(hq_dir: Path, sha: str) -> int:
+    try:
+        return recorded_streak(_required(["show", "-s", "--format=%B", sha], hq_dir))
+    except HeartbeatError:
+        return 0
 
 
 def ref_name(identity: str) -> str:
@@ -238,6 +283,7 @@ def publish(
         if lease.seq <= snapshot.sequence:
             raise HeartbeatError("heartbeat sequence must advance authoritative accepted floor")
     trust = _trust_path(hq_dir, authority)
+    prior = None
     if expected:
         _required([*transport, "fetch", "--no-tags", remote, expected], hq_dir)
         try:
@@ -264,13 +310,19 @@ def publish(
                     raise HeartbeatError("heartbeat sequence must advance within the current epoch")
                 if _binding(previous) != _binding(lease):
                     raise HeartbeatError("incarnation binding changes require an epoch advance")
+                prior = (
+                    _commit_streak(hq_dir, expected),
+                    previous.seq,
+                    previous.observed_at,
+                    float(previous.leaseDurationSeconds),
+                )
     payload = gitref.encode(lease.model_dump(mode="json", exclude_none=True))
     blob = _required(["hash-object", "-w", "--stdin"], hq_dir, payload)
     tree = _required(["mktree"], hq_dir, f"100644 blob {blob}\theartbeat.json\n")
     commit = _required(
         ["-c", "gpg.format=ssh", "-c", f"user.signingkey={signing_key}", "commit-tree", "-S", tree],
         hq_dir,
-        f"{lease.domain}\n",
+        f"{lease.domain}\n\n{STREAK_TRAILER}: {next_streak(prior, lease.seq, lease.observed_at)}\n",
     )
     if snapshot is not None:
         at = time.time() if now is None else now
@@ -625,7 +677,7 @@ def observe(
         if authority is not None and not _identity_matches(lease, fingerprint, manifest, authority):
             return VerifiedObservation("identity-mismatch", True, lease=lease, sha=sha)
         framelease_envelope(hq_dir, sha, trust)
-        return assess_authenticated_observation(
+        observation = assess_authenticated_observation(
             lease,
             fingerprint,
             sha,
@@ -635,5 +687,8 @@ def observe(
             observer_store=_observation_store(hq_dir, observer_dir),
             authority=authority,
         )
+        if isinstance(observation, VerifiedObservation) and observation.verified:
+            observation = replace(observation, attestation_streak=_commit_streak(hq_dir, sha))
+        return observation
     except (TypeError, ValueError, OverflowError, OSError, RuntimeError, sqlite3.Error) as exc:
         return VerifiedObservation("invalid" if sha else "unreachable", reason=str(exc), sha=sha)

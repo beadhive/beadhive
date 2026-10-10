@@ -1178,8 +1178,8 @@ def _render_authority_expiry(d: dict) -> None:
 
 
 def _data_trust_profile(cfg) -> dict:
-    """The fleet trust profile: the effective profile and every override on one line
-    (trust-profiles ADR section 2, bh-bc2rj)."""
+    """The fleet trust profile: the effective profile and every override on one line, and the
+    effective admission rule (trust-profiles ADR section 2, bh-bc2rj, bh-sfp9o.4)."""
     from . import hq_authority_enforce, hq_trust_profile
 
     try:
@@ -1193,6 +1193,8 @@ def _render_trust_profile(d: dict) -> None:
     typer.echo("\n# HQ trust profile")
     glyph = "⚠ WARN" if d["level"] == "warn" else "✓"
     typer.echo(f"  {glyph} {d['line']}")
+    if d.get("admission"):
+        typer.echo(f"    admission: {d['admission']}")
     for note in d.get("notes", ()):
         typer.echo(f"    {note}")
 
