@@ -28,6 +28,38 @@ legacy_primary=guard.primary_state)`. The explicit legacy reader preserves exist
 non-frame policy without making the eligibility module depend on its caller. An omitted
 legacy reader denies; frame ownership always comes from the authenticated selected port.
 
+## Capabilities
+
+Each write verb asks for one **capability** and is checked against the predicates that
+capability consults, not all fourteen (trust-profiles ADR
+[section 1](hq-trust-profiles-and-capabilities-adr.md#1-capabilities-and-composable-roles),
+`bh-b3ebg`). The registry is `beadhive.capabilities`; the gate is
+`guard.guard_capability(<capability>, hive)` at the verb boundary and
+`guard.require_capability(<capability>, ...)` for the recheck next to a claim or lease
+renewal. No other module calls `guard_primary` or `require_intake`.
+
+| Capability | Verbs | Frame predicates consulted |
+|---|---|---|
+| `author` | `bh bd` create/update/comments/dep/label/close, `bh plan file`, `bh plan approve`, `bh hive policy set/unset` | identity (`current_frame_incarnation`, `beadyard_binding`), `admitted_active`, `not_cordoned` |
+| `claim` | `bh work claim`, `assign`, `start`, `resume` and group claims, `bh bd update --claim` | as `author` |
+| `execute` | `bh work next`, `bh work loop` and the dispatch lease keeper | all fourteen |
+| `publish` | `bh work submit`, `bh work merge` / `finish`, `bh bd dolt push/sync` | all fourteen |
+
+`authority_available` and `executor_role` (a `viewer` is read-only) are consulted for every
+capability, and `reviewed_admission_or_emergency` wherever `admitted_active` is. So a frame
+whose heartbeat is stale, whose release or conformance drifted, or whose capacity or dispatch
+is off can still author and claim while `execute` and `publish` refuse. A decision that
+short-circuited before evaluating every predicate (authority unavailable, a foreign beadyard
+pin) is never narrowed. Where the write may land is unchanged: under today's `fenced` write
+policy every capability still needs the hive's writer (`bh_writer` on a cut-over hive, the
+hive lease otherwise), and a forwarded checkout is still decided by its marker.
+
+`bh host eligible --json` adds a `capabilities` object with one entry per capability:
+`allowed`, the `predicates` consulted, `reason`, and under `deferred` the predicates another
+layer decides (the in-data writer fence, placement, HQ write access). With `--hive`, the lease
+holder check is included for every write capability. The top-level `eligible` bit still
+evaluates every predicate.
+
 ## Lease custody
 
 Non-frame hosts retain their existing five-field unsigned blob leases. Frames publish an

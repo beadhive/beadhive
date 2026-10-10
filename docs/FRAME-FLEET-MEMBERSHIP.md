@@ -290,7 +290,11 @@ fresh non-candidate heartbeat; matching release and capabilities; conformant
 checks; compatible hive requirements; executor (not viewer) role; positive
 session capacity; and enabled dispatch. A false predicate denies intake.
 `bh host eligible` explains predicates; it does not admit the frame. Claims
-recheck eligibility at the write boundary. See the
+recheck eligibility at the write boundary. Each write verb consults only the
+predicates of the one capability it asks for, so authoring and claiming need
+identity, admission and an uncordoned frame but not a fresh heartbeat, a
+matching release, conformance, capacity or enabled dispatch; `bh host eligible`
+reports the decision per capability. See the
 [eligibility contract](design/frame-eligibility.md) for the complete predicate
 and lease rules.
 
