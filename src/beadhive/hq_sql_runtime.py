@@ -854,19 +854,18 @@ class SqlRuntimeAuthority:
 
         ``hive_lease_epoch`` (signed hive-lease mode, with `prefix`) additionally gathers
         :class:`HiveLeaseEvidence` for that prefix at that fence epoch from the frame's own
-        inbox, in the same transaction, and returns it as a tenth element.
+        inbox, in the same transaction, and appends it after the optional session observation.
 
         ``session_liveness`` (bh-owqdg, ADR §5) asks for the data-switched reader and appends one
-        element: when this incarnation's ``_session``/``_evidence`` tables exist, a
-        :class:`beadhive.hq_sql_session.SessionObservation` from the one eligibility statement
+        element (before any hive-lease evidence): when this incarnation's session/evidence
+        tables exist, a :class:`beadhive.hq_sql_session.SessionObservation` from the one
+        eligibility statement
         (run in this same transaction, ``AS OF`` this head), and the inbox/public observation
         is then neither read nor fenced (the observation slot is ``None``); otherwise ``None``
         and the legacy observation as above. The switch is table existence only.
         ``session_prefix`` names the hive whose placement row feeds the statement's
         ``current_hive_lease_holder``; unlike `prefix` it reads no lease row and adds no fence.
         """
-        if session_liveness and hive_lease_epoch is not None:
-            raise SqlRuntimeError("session liveness and hive lease evidence are separate reads")
         if enforce is None:
             enforce = hq_authority_enforce.enforced()
         signed = signed_liveness(self.settings)
@@ -999,7 +998,7 @@ class SqlRuntimeAuthority:
                 self.fresh_hive_lease_fence(prefix, lease_row, deadline=deadline)
             result = (head, state, route, slot, record, snapshot, policies, observation, lease_row)
             if session_liveness:
-                return (*result, session)
+                result = (*result, session)
             return result if evidence is None else (*result, evidence)
         except SqlRuntimeError:
             raise

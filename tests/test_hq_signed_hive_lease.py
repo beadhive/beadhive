@@ -484,13 +484,23 @@ def test_epoch_fence_contract_is_shared_with_host_fence():
 # ---- the control plane: readers, mode switch, publish ------------------------------------
 
 
-def _plane(frame, *, fence, rows=(), settings=None, receiver_row=None, policies=None, **evidence):
+def _plane(
+    frame,
+    *,
+    fence,
+    rows=(),
+    settings=None,
+    receiver_row=None,
+    policies=None,
+    session=None,
+    **evidence,
+):
     observation = newest_signed_heartbeat(
         [(frame.beat(NOW - 5),)], frame.route, frame.record, now=NOW
     )
     calls = SimpleNamespace(composite=[], fence=0)
 
-    def composite(prefix=None, enforce=True, hive_lease_epoch=None, **_):
+    def composite(prefix=None, enforce=True, hive_lease_epoch=None, session_liveness=False, **_):
         calls.composite.append(hive_lease_epoch)
         result = (
             "head",
@@ -503,6 +513,8 @@ def _plane(frame, *, fence, rows=(), settings=None, receiver_row=None, policies=
             observation,
             receiver_row,
         )
+        if session_liveness:
+            result = (*result, session)
         if hive_lease_epoch is None:
             return result
         return (*result, _evidence(*rows, **evidence))
@@ -824,3 +836,44 @@ def test_too_many_proposal_revisions_fail_closed(tmp_path, monkeypatch):
     _a, authority, _world = _composite(tmp_path, monkeypatch, inbox)
     with pytest.raises(SqlRuntimeError, match="too many"):
         authority.read_frame_composite(prefix="ah", hive_lease_epoch=22)
+
+
+def test_switched_dual_write_holder_uses_session_and_verified_proposal(tmp_path):
+    from dataclasses import replace
+
+    from beadhive.hq_sql_session import SessionObservation
+
+    a = _frame(tmp_path)
+    row, request = a.propose(22)
+    session = SessionObservation(
+        status="fresh",
+        fresh=True,
+        age_seconds=1,
+        authenticated_fresh_heartbeat=True,
+        conformance_pass=True,
+        release_matches=True,
+        current_hive_lease_holder=False,
+        session_epoch_matches=True,
+        renewed_at="server-stamp",
+        measured_at="server-stamp",
+        evidence_age_seconds=1,
+        evidence_status="conformant",
+        evidence_release=RELEASE,
+        evidence_profile="fixture",
+        evidence_digest="sha256:" + "1" * 64,
+        session_ttl_s=300,
+        evidence_ttl_s=900,
+        session_table="frame_a_session",
+        evidence_table="frame_a_evidence",
+    )
+    # Proposal-only tenure has no raw receiver row for the SQL ownership join to see.
+    plane, _ = _plane(a, fence=EpochFence(22, "host-a"), rows=[row], session=session)
+    revision, lease = plane.read_hive_lease_record("ah", holder_identity="host-a")
+    assert revision == proposal_revision(request) and lease.held_by("host-a")
+    for bad in (
+        replace(session, authenticated_fresh_heartbeat=False, fresh=False),
+        replace(session, release_matches=False),
+        replace(session, conformance_pass=False),
+    ):
+        plane, _ = _plane(a, fence=EpochFence(22, "host-a"), rows=[row], session=bad)
+        assert plane.read_hive_lease("ah", holder_identity="host-a") is None
