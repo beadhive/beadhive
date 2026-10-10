@@ -308,7 +308,9 @@ its own hive, and `bh sync` puts the cross-hive view back in the hub where it be
 ## Authority modes {#authority-modes}
 
 Since 0.24.0 (`bh-taa04`) HQ authority runs in one of two modes. The mode decides whether
-operator publications are signed and whether the authority expires.
+operator publications are signed and whether the authority expires. The modes are the first
+column of the fleet's [trust profile](#trust-profiles): `open` and `trusted` run `trusted`, and
+`verified` (the default) and `attested` run `signed`.
 
 | | `signed` (default) | `trusted` (opt-in) |
 |---|---|---|
@@ -617,13 +619,53 @@ admitting new executors; this is the same gate as the
 binding conditions 13 (no single-executor escape survives admission of another executor) and 18
 (state and work travel together).
 
-### Proposed: trust profiles and capability roles {#trust-profiles-proposed}
+### Trust profiles {#trust-profiles}
 
-A design record filed on 2026-10-09 proposes folding the authority mode into a **trust profile**
-(`open`, `trusted`, `verified`, `attested`) that also sets admission, placement, the off-primary
-write policy and an elected-tenure cache, and replaces the single host role with a **set of
-roles** composed from capabilities (`author`, `claim`, `execute`, `publish`, `place`, `admin`).
-Nothing in it is shipped: the modes above remain the behaviour of 0.24.0. See
+Since `bh-bc2rj` a fleet also carries a **trust profile**, the fleet key `hq.trust_profile`. The
+profile sets five knobs together (authority, admission, placement, the off-primary write
+policy and tenure) and a capability ceiling. The two **authority modes above are the profile's
+first column**: `open` and `trusted` run the `trusted` mode, and `verified` and `attested` run
+the `signed` mode. Profiles are ordered by the trust they require of the environment, least to
+most.
+
+| Profile | Authority (first column) | Admission | Placement | Writes off-primary | Tenure | Revocation latency | Capability ceiling removes |
+|---|---|---|---|---|---|---|---|
+| `open` | `trusted` mode, and any host with HQ write access holds `admin` | on registration | self-place, no director fallback | `open` | `hq.tenure` ceiling, default 24 h | next successful refresh | nothing |
+| `trusted` | `trusted` mode | `bh hq authority join` | self-place, else the director | `forward` | the hive's `failover_after` | one refresh interval | nothing |
+| `verified` (default) | `signed` mode | operator-granted | director CAS only | `forward` | `min(hq.tenure, failover_after)` | one refresh interval | `admin` without the operator key; self-placement |
+| `attested` | `signed` mode, finite `--duration` | granted plus three fresh heartbeats | director CAS, failover loop on | `forward`; `author` needs a fresh heartbeat | heartbeat TTL, no offline grace | immediate | `admin` without the operator key; self-placement |
+
+What ships with the key, and what is still to come:
+
+- **Default.** With `hq.trust_profile` absent the fleet runs `verified`, which is exactly
+  0.24.0. A fleet that set `hq.default_authority_mode: trusted` keeps that authority mode: an
+  explicit `hq.default_authority_mode` overrides the profile's authority column.
+- **Publishing.** `bh hq authority profile` shows the effective profile. `bh hq authority
+  profile-<name> --confirm` publishes it. Raising trust (towards `open`) needs the operator key
+  once, exactly like `mode-trusted`. Lowering it always takes effect. On SQL HQ the key is
+  frame-relevant: a key-less edit that loosens it fences signed frames until the operator
+  re-signs authority, and an edit that tightens it is tolerated and learned. `verified` removes
+  the key from `fleet.yaml`.
+- **Live now.** The authority column; the capability ceiling (under `verified` and `attested` a
+  host without the operator binding, `$BH_HQ_OPERATOR_SETTINGS`, loses `admin` and `place`, so
+  placement goes through the director CAS only); `admin` for any host with HQ write access under
+  `open`; and the fresh-heartbeat requirement on `author` under `attested`. `bh host eligible`
+  reports the result per capability.
+- **Resolved but not yet enforced.** Admission (`bh-sfp9o.4`), self-placement (`bh-vl0r3`),
+  the write policy (`bh-sxhnq`) and the tenure cache (`bh-ofszz`) read their knob from the
+  resolved profile when they land.
+
+**Per-knob overrides.** A host may override one knob in its own `host.yaml`:
+`hq.placement_mode` (`director` | `self`), `hive.write_policy` (`fenced` | `forward` | `open`)
+and `hq.tenure` (seconds). An override may only require **more** trust than the profile. One
+that would loosen a knob is refused, the knob keeps the profile's value, and the refusal names
+the profile.
+
+**Doctor.** `bh doctor` prints the effective profile and every override on one line, for
+example `profile trusted; placement overridden to director (hq.placement_mode, host.yaml)`.
+Under `open` it also prints that this is the single-operator lab posture.
+
+The rest of the design (roles, tenure cache, write policies, batch sync) is in
 [HQ trust profiles, composable host capabilities, elected tenure and batch bead sync](design/hq-trust-profiles-and-capabilities-adr.md).
 
 ## `bh hq why` — which layer refused a write {#hq-why}
