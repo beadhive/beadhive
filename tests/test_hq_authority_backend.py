@@ -739,13 +739,15 @@ def test_supersede_retires_previous_signer_atomically(backend):
     assert b["public"] not in trust.read_text()
 
 
-def test_operator_renewal_after_expiry_preserves_authoritative_receipts(backend):
+def test_operator_renewal_after_expiry_preserves_authoritative_receipts(backend, monkeypatch):
     b = backend
     b["accept"](1)
     before, state, _ = b["plane"]._read()
     frames = json.loads(json.dumps(state["frames"]))
-    expired_head = b["plane"]._write(state, before, str(b["operator"]), duration=1)
-    time.sleep(1.1)
+    expired_head = b["plane"]._write(state, before, str(b["operator"]), duration=20)
+    # Advance only the reader, within the protected broker's existing 30-second skew bound.
+    # Publication/readback must finish while live; renewal still uses real signed Git writes.
+    monkeypatch.setattr(b["plane"], "clock", lambda: state["expires_at"] + 1)
     with pytest.raises(ControlPlaneError, match="expired"):
         b["plane"].watch_state("frame-one")
     renewed = b["plane"].renew(expected=expired_head, operator_key=str(b["operator"]))
