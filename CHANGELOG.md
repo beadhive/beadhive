@@ -13,6 +13,17 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.24.3 (2026-10-10)
+
+### Fix
+
+- **docs**: wrap local safe pruning guidance
+- **wire**: preserve recovery compatibility for safe pruning
+- **worktree**: reclaim locally proven safe trees without HQ
+- **hq**: restore reviewed session release provisioning
+- **cli**: avoid Linux statfs ABI on Darwin release upgrades
+- **fleet**: qualify rotated hive ownership from current session evidence
+
 ## v0.24.2 (2026-10-10)
 
 ### Feat
