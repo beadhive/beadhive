@@ -2337,8 +2337,10 @@ def test_expired_authority_eligibility_read_only_waived_when_enforcement_disable
     apply(b, "admit")
     publish(b, b["lease"](4, state_seen="active"))
     before, state, _ = b["plane"]._read()
-    expired = b["plane"]._write(state, before, str(b["operator"]), duration=1)
-    time.sleep(1.1)
+    expired = b["plane"]._write(state, before, str(b["operator"]), duration=60)
+    # Publish and verify a live signed authority before advancing only the reader.
+    # A one-second wall-clock lease can expire inside signed Git publication under load.
+    monkeypatch.setattr(b["plane"], "clock", lambda: state["expires_at"] + 1)
     with pytest.raises(ControlPlaneError, match="expired"):
         b["plane"].read_eligibility(b["manifest"])
     monkeypatch.setenv("BH_HQ_AUTHORITY_ENFORCE", "false")
