@@ -626,6 +626,26 @@ roles** composed from capabilities (`author`, `claim`, `execute`, `publish`, `pl
 Nothing in it is shipped: the modes above remain the behaviour of 0.24.0. See
 [HQ trust profiles, composable host capabilities, elected tenure and batch bead sync](design/hq-trust-profiles-and-capabilities-adr.md).
 
+## `bh hq why` — which layer refused a write {#hq-why}
+
+Every refused write (`guard_capability` / `guard_primary`) ends with a pointer to
+`bh hq why <hive>`. It is read-only: it walks the layers that decide a write from this host, in
+order, and prints the first that refuses with the one command to run next.
+
+| Layer | Refuses with | Next command, for example |
+|---|---|---|
+| `config` | config unavailable: the snapshot did not load, or the hive is not registered | `bh doctor`, `bh hive list` |
+| `forward` | forwarding to the primary is refused (forwarded checkouts only) | `bh hive forward point <hive>` |
+| `capability` | capability `<name>` refused by predicate `<p>` (bh-b3ebg's per-capability decision) | per predicate, e.g. `bh host resume plan <frame>` for `not_cordoned` |
+| `placement` | not placed: names the holder and the cause (held, expired, released, none) | `bh host adopt <hive>`, or `bh hq placement show <hive>` |
+| `fence` | the in-data writer fence names another frame (cut-over hives only) | `bh host adopt <hive>` |
+
+`--capability` (`-c`) picks `author`, `claim`, `execute` or `publish` (the default). `--json`
+emits the same decision structurally: `allowed`, `layer`, `code`, `summary`, `command`,
+`detail`, and every layer walked. It exits 1 when a layer refuses, and `--help` reads neither
+config nor HQ. Later layers (frame-ref merge conflicts, trust-profile overrides) ship as
+`hq_why_layer_<name>` provider modules and slot into the walk by order.
+
 ## Partial degradation: reclaim space before restoring HQ {#hq-partial-degradation}
 
 When memory or tmpfs pressure makes HQ SQL unavailable, HQ-backed commands fail with
