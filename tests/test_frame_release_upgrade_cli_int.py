@@ -133,6 +133,24 @@ entry.load()()
     return json.loads(result.stdout)
 
 
+def _authority_state(result):
+    # Preparing the canonical manifest can change its public config metadata before
+    # rotation. The protected authority and accepted archive must stay unchanged.
+    return {
+        key: result[key]
+        for key in (
+            "revision",
+            "frame_id",
+            "authority",
+            "state",
+            "release",
+            "profile",
+            "upgraded",
+            "history",
+        )
+    }
+
+
 @pytest.mark.parametrize("mode", ["signed", "trusted"])
 def test_packaged_cli_plan_apply_check_and_replay_are_safe(tmp_path, packaged_cli, mode):
     clock = Clock()
@@ -255,7 +273,9 @@ def test_packaged_cli_plan_apply_check_and_replay_are_safe(tmp_path, packaged_cl
         ]
         reviewed = _cli(packaged_cli, tmp_path, settings_file, clock, "plan", arguments)
         assert reviewed["old_epoch"] == 1 and reviewed["new_epoch"] == 2
-        assert _cli(packaged_cli, tmp_path, settings_file, clock, "check") == before
+        assert _authority_state(
+            _cli(packaged_cli, tmp_path, settings_file, clock, "check")
+        ) == _authority_state(before)
         apply_arguments = [
             *arguments,
             "--plan-sha256",
@@ -266,7 +286,9 @@ def test_packaged_cli_plan_apply_check_and_replay_are_safe(tmp_path, packaged_cl
         wrong_digest = [*apply_arguments]
         wrong_digest[wrong_digest.index("--plan-sha256") + 1] = "sha256:" + "0" * 64
         _cli(packaged_cli, tmp_path, settings_file, clock, "apply", wrong_digest, expected_exit=1)
-        assert _cli(packaged_cli, tmp_path, settings_file, clock, "check") == before
+        assert _authority_state(
+            _cli(packaged_cli, tmp_path, settings_file, clock, "check")
+        ) == _authority_state(before)
         _frame_role(sql_dir, port, reviewed["principal"], reviewed["new_epoch"])
         applied = _cli(packaged_cli, tmp_path, settings_file, clock, "apply", apply_arguments)
         after = _cli(packaged_cli, tmp_path, settings_file, clock, "check")

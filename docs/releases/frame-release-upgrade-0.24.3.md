@@ -40,10 +40,10 @@ subprocesses; the Mac/Python 3.13 result remains pending.
 
 Run these after 0.24.3 is published, in Bash (`bash` opens it on macOS). Keep the
 existing HQ trust mode. Use the
-existing operator settings, admitted frame identity, and lease. The canonical
-host manifest must already describe the approved target release digest through
-the normal reviewed config publication. Do not edit restore floors, write SQL,
-call private Python rotation APIs, or re-adopt the hive.
+existing operator settings, admitted frame identity, and lease. Prepare the
+canonical host manifest with the public `prepare-config` operation below. Do not
+edit restore floors, write SQL, call private Python rotation APIs, or re-adopt
+the hive.
 
 Install and capture the actual released environment:
 
@@ -58,9 +58,23 @@ operator_python="$tool_root/beadhive/bin/python"
 ```
 
 Set `FRAME_ID`, `OPERATOR_SETTINGS`, and the reviewed target/CAS values below
-from the current public check and prepared config record. Preserve the full
+from the current public check and approved release record. Preserve the full
 output and each exit code in a private directory. The settings path names a
 credential-bearing file; never copy its contents into reports.
+
+Before rotating, also capture the current holder and writer tenure **on the
+factory frame**, using its normal configured public CLI. These reporting verbs
+use host bootstrap settings and do not take `--operator-settings`:
+
+```bash
+mkdir -m 700 factory-0243-evidence
+bh host list --lease-hive bh --json \
+  > factory-0243-evidence/before-hosts.json 2> factory-0243-evidence/before-hosts.stderr
+printf 'host list exit: %s\n' "$?"
+bh hive fence status github/beadhive/beadhive --json \
+  > factory-0243-evidence/before-writer.json 2> factory-0243-evidence/before-writer.stderr
+printf 'writer status exit: %s\n' "$?"
+```
 
 ```bash
 mkdir -m 700 upgrade-0243-evidence
@@ -68,6 +82,7 @@ PYTHONFAULTHANDLER=1 bh host release-upgrade check "$FRAME_ID" \
   --operator-settings "$OPERATOR_SETTINGS" \
   > upgrade-0243-evidence/before.json 2> upgrade-0243-evidence/before.stderr
 printf 'check exit: %s\n' "$?"
+EXPECTED_CONFIG_HEAD="$("$operator_python" -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["canonical_config_head"])' upgrade-0243-evidence/before.json)"
 
 rotation_args=(
   --operator-settings "$OPERATOR_SETTINGS"
@@ -82,11 +97,42 @@ rotation_args=(
   --config-revision "$TARGET_CONFIG_REVISION"
   --candidate-expires-at "$PLAN_EXPIRES_AT"
 )
+PYTHONFAULTHANDLER=1 bh host release-upgrade prepare-config "$FRAME_ID" \
+  "${rotation_args[@]}" \
+  > upgrade-0243-evidence/preparation.json 2> upgrade-0243-evidence/preparation.stderr
+printf 'preparation preview exit: %s\n' "$?"
+```
+
+Review the preparation's current/target release, unchanged frame/host identity,
+authority epoch and state, and exact digest. This operation uses the existing
+config publisher binding in the operator settings and preserves the complete
+canonical snapshot while changing only the existing host manifest's release.
+Confirm the reviewed preparation, then use its returned config HEAD for the
+rotation plan. Bash array element 11 is the value following
+`--expected-config-head`:
+
+```bash
+PREPARATION_SHA256="$("$operator_python" -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["plan_sha256"])' upgrade-0243-evidence/preparation.json)"
+PYTHONFAULTHANDLER=1 bh host release-upgrade prepare-config "$FRAME_ID" \
+  "${rotation_args[@]}" --plan-sha256 "$PREPARATION_SHA256" --confirm \
+  > upgrade-0243-evidence/prepared-config.json 2> upgrade-0243-evidence/prepared-config.stderr
+printf 'preparation apply exit: %s\n' "$?"
+EXPECTED_CONFIG_HEAD="$("$operator_python" -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["config_head"])' upgrade-0243-evidence/prepared-config.json)"
+rotation_args[11]="$EXPECTED_CONFIG_HEAD"
 PYTHONFAULTHANDLER=1 bh host release-upgrade plan "$FRAME_ID" \
   "${rotation_args[@]}" \
   > upgrade-0243-evidence/plan.json 2> upgrade-0243-evidence/plan.stderr
 printf 'plan exit: %s\n' "$?"
 ```
+
+If preparation returns an uncertain outcome, run public `check` before any
+further mutation. Compare its `canonical_release` and `canonical_config_head`
+with the reviewed target and original authority. Review preparation again with
+the observed current config HEAD; an already prepared manifest requires no
+second publication. Stop if authority changed or readback remains unavailable.
+Continue to rotation only after a successful preparation or an explicitly
+reviewed already-prepared result. Every command below also requires the
+preceding command to have succeeded.
 
 Review the plan's digest, old/new epoch, identity, target digest and principal
 route. The public provision operation needs the existing administrative
@@ -144,6 +190,40 @@ unchanged frame/host/instance/key/beadyard identity, target release digest, and
 the archive's exact reviewed plan digest. Renew the existing frame session and
 conformance through the public CLI; verify the hive retains its holder and lease
 epoch without re-adoption.
+
+After normal release activation has renewed the factory's existing session and
+published its conformance evidence, run these **on the factory frame**. The
+normal authorized push-only hive synchronization exercises the managed writer
+fence; it creates no test claim or lease. Keep its normal dirty/blocked checks,
+and do not pass `--force`:
+
+```bash
+bh host daemon status --json \
+  > factory-0243-evidence/daemon.json 2> factory-0243-evidence/daemon.stderr
+printf 'daemon status exit: %s\n' "$?"
+bh host list --lease-hive bh --json \
+  > factory-0243-evidence/after-hosts.json 2> factory-0243-evidence/after-hosts.stderr
+printf 'host list exit: %s\n' "$?"
+bh host eligible --hive github/beadhive/beadhive --json \
+  > factory-0243-evidence/eligible.json 2> factory-0243-evidence/eligible.stderr
+printf 'eligible exit: %s\n' "$?"
+bh hive sync github/beadhive/beadhive --push \
+  > factory-0243-evidence/sync.stdout 2> factory-0243-evidence/sync.stderr
+printf 'guarded sync exit: %s\n' "$?"
+bh host list --lease-hive bh --json \
+  > factory-0243-evidence/after-sync-hosts.json 2> factory-0243-evidence/after-sync-hosts.stderr
+printf 'host list exit: %s\n' "$?"
+bh hive fence status github/beadhive/beadhive --json \
+  > factory-0243-evidence/after-writer.json 2> factory-0243-evidence/after-writer.stderr
+printf 'writer status exit: %s\n' "$?"
+```
+
+Require `eligible: true` and `current_hive_lease_holder: true`, the rotated
+authority epoch and approved digest, a fresh session and conformant evidence,
+and the same hive holder, lease epoch and `bh_writer` epoch as before rotation.
+Keep every successful exit code 0. On an operator host doing an equivalent
+read-only eligibility report, pass `"$FRAME_ID"` after `eligible` so it checks
+the factory instead of defaulting to the operator's own host identity.
 
 If apply crashes, times out, or gives an ambiguous acknowledgment, run **check
 before any further mutation**. A matching new epoch/release/archive means the
