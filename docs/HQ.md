@@ -742,8 +742,45 @@ forwarder configured on this host (no forward marker, no `host.forward` endpoint
   the `bh-xwy5x` decision confirms that hash ids merge cleanly.
 - A managed state push (`bh hive sync remotes --push`, the work verbs' pushes) commits and publishes
   the replica's `main` only to `refs/dolt/frame/<id>`, through a Dolt remote `frame-<id>` on
-  the same Git remote with its own data ref. The hive's `main` is never pushed. Merging those
-  refs into `main` is `bh-sfp9o.5`.
+  the same Git remote with its own data ref. The hive's `main` is never pushed; the writer
+  merges the ref (see "Merging frame refs" below).
+
+**Merging frame refs** (`bh-sfp9o.5`). The writer merges each
+`refs/dolt/frame/<id>` into its local `main` and never passes `--strategy`, because
+`bd vc merge --strategy` resolves a conflict by silently dropping the losing side (a whole bead,
+or one frame's claim). The operator verb is hidden, like the fence and forward verbs:
+
+```sh
+bh hive frames status  <hive>                       # recorded outcome per frame ref (any host)
+bh hive frames merge   <hive> [--frame <id>]        # on the writer: merge every published ref
+bh hive frames resolve <hive> --frame <id> --bead <bead> --take main|frame
+```
+
+- Each merge previews its conflicts first. A clean ref lands as one `--no-ff` merge commit,
+  `bh: merge frame/<id> …`, made in one SQL session that re-stamps the frame's write marks at
+  the live epoch (the subject the fence audit sanctions). A merge that does not land as exactly
+  that commit is rolled back to the pre-merge `main`.
+- A ref with any conflict is held unmerged, and its rows are recorded: the table, the bead, and
+  both sides' values for the columns that differ. Two frames claiming one bead is reported as a
+  **double claim** naming both holders. A held ref never stops the other frames' refs, and no
+  verb waits on it.
+- `resolve` takes `main`'s side (keep main's rows) or the frame's side for one recorded bead;
+  without `--take` it is refused, so nothing is resolved by default. Once every recorded bead of
+  that frame has a side, the merge completes with those sides; until then the sides are kept
+  and re-applied on the next merge.
+- An id collision (`main` and the frame each created a different bead under one id) is held
+  and never resolved by taking a side, because either side drops a bead: `resolve` refuses
+  `main` and `frame` alike and names both beads. Re-create the frame's bead under a new id on
+  that frame, remove the colliding id there and publish again (`bh-xwy5x` decision).
+- bd's clone-local `metadata.clone_id` (every clone writes its own, so every frame ref after
+  the first conflicts on it) is frame-local: the writer keeps its own value and the outcome
+  says so.
+- Outcomes are recorded per hive and frame in `$BH_HOME/state/frame-merge.json`. `bh doctor`
+  lists them in its `# Write policy` section (`write_policy.frame_merges` in `--json`; `warn`
+  while a ref is held), and `bh hq why <hive>` names a held ref per frame in its `write_policy`
+  layer without refusing. The `hive.sync` loop (`bh-midl0`) calls the same merge
+  (`frame_merge.after_pull`) when auto-pull runs on the writer.
+- The merge lands on the writer's local `main`; the writer's managed push publishes it.
 
 **Readiness warning.** Every non-primary write under `open` prints exactly one warning per
 command, naming the hive and its writer frame and saying that under the `trusted` profile and
