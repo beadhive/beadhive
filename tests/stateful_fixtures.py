@@ -846,3 +846,58 @@ def fake_plugin(tmp_path, monkeypatch):
     (root / "agents" / "developer.md").write_text("agent\n")
     monkeypatch.setenv("BH_PLUGIN_DIR", str(root))
     return root
+
+
+@pytest.fixture(scope="session")
+def cluster_pool(tmp_path_factory):
+    """One :class:`harness.cluster_rewind.ClusterPool` per process (so per xdist worker):
+    writer-fencing clusters and composed worlds built once per composition and rewound from a
+    stopped-cluster template between tests (bh-i970d). ``BH_CLUSTER_REWIND=0`` makes every
+    acquisition a fresh build; ``BH_CLUSTER_REWIND_GUARD=1`` fingerprints every restore."""
+    from harness.cluster_rewind import ClusterPool, build
+
+    pool = ClusterPool(tmp_path_factory.mktemp("rewind"), build)
+    yield pool
+    pool.close()
+
+
+def _rewound(request, pool, keyer):
+    """Acquire pooled targets for one test under its Dolt slot; park (or, for a test marked
+    ``cluster_destructive``, discard) every one of them at teardown -- still under the slot, so
+    no pooled sql-server runs outside the test that started it."""
+    from harness.world import MAX_CONCURRENT_DOLT_SERVER_TESTS, dolt_server_slot
+
+    destructive = request.node.get_closest_marker("cluster_destructive") is not None
+    guard = True if request.node.get_closest_marker("cluster_guard") is not None else None
+    used: list = []
+
+    def get(frames, **options):
+        key = keyer(frames, **options)
+        target = pool.acquire(key, guard=guard)
+        used.append(key)
+        return target
+
+    with dolt_server_slot(MAX_CONCURRENT_DOLT_SERVER_TESTS, request.node.nodeid):
+        try:
+            yield get
+        finally:
+            for key in dict.fromkeys(used):
+                pool.release(key, destructive=destructive)
+
+
+@pytest.fixture
+def rewound_cluster(request, cluster_pool):
+    """``rewound_cluster(frames, **Cluster options)`` -> a :class:`harness.writer_fencing.
+    Cluster` in its post-build state, shared by every test of that composition on this worker."""
+    from harness.cluster_rewind import cluster_key
+
+    yield from _rewound(request, cluster_pool, cluster_key)
+
+
+@pytest.fixture
+def rewound_world(request, cluster_pool):
+    """``rewound_world(frames, **composed_world options)`` -> a composed fencing ``World`` (HQ,
+    fence and guard installed) in its post-build state; see :fixture:`rewound_cluster`."""
+    from harness.cluster_rewind import world_key
+
+    yield from _rewound(request, cluster_pool, world_key)
