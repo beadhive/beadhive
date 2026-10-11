@@ -1312,6 +1312,26 @@ class HqConfig(_Section):
             "below the hive's failover_after / heartbeat TTL."
         ),
     )
+    tenure_refresh: float | None = Field(
+        None,
+        gt=0,
+        allow_inf_nan=False,
+        description=(
+            "HOST: seconds between the host daemon's refreshes of the elected-tenure cache "
+            "(verified HQ config snapshot and per-capability decisions). Unset: a quarter of "
+            "the shorter of failover_after and the tenure. Never longer than the tenure; "
+            "revocation latency equals it outside `attested`."
+        ),
+    )
+    tenure_cache: StrictBool = Field(
+        True,
+        description=(
+            "HOST: whether commands read the verified HQ config snapshot and their `author` / "
+            "`claim` decisions from the elected-tenure cache the host daemon refreshes (on by "
+            "default, SQL HQ only). `false` (or BH_HQ_TENURE_CACHE=off) restores one HQ read "
+            "per command."
+        ),
+    )
     sql: HqSqlConfig = Field(default_factory=HqSqlConfig)
 
     remote: str = Field(

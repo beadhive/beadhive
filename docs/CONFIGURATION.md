@@ -86,6 +86,8 @@ boundaries.
 | `hq.trust_profile` | FLEET trust profile: `open`, `trusted`, `verified` (default; the key is absent) or `attested`. Sets authority, admission, placement, off-primary write policy and tenure together, plus a capability ceiling ([HQ trust profiles](HQ.md#trust-profiles)). Its authority column is `hq.default_authority_mode` unless that is set explicitly (`open`/`trusted` run `trusted`, `verified`/`attested` run `signed`). Publish it only with `bh hq authority profile-<name> --confirm`: raising trust needs the operator key once, lowering always takes effect; the learned value is kept per host in `$BH_HOME/state/hq-fleet-trust-profile.json`. |
 | `hq.placement_mode` | HOST override of the profile's placement knob: `director` or `self`. Unsigned, so it may only require more trust than the profile; a loosening value is refused (named in `bh doctor`) and the profile's value stays. Unset by default. |
 | `hq.tenure` | HOST override of the profile's tenure knob, in seconds. Under `open` it is the tenure ceiling (default 24 h) and may only shorten it; under the other profiles it adds a bound below the hive's `failover_after` or heartbeat TTL. Unset by default. |
+| `hq.tenure_refresh` | HOST: seconds between the host daemon's refreshes of the elected-tenure cache (the verified HQ config snapshot and the per-capability `author` / `claim` decisions, `$BH_HOME/state/hq-tenure-cache.json`). Unset: a quarter of the shorter of `failover_after` and the tenure; never longer than the tenure. Outside `attested` it is the revocation latency: a cordon published at HQ is learned at the next refresh. The daemon also refreshes after each successful heartbeat. |
+| `hq.tenure_cache` | HOST: `true` (default; SQL HQ only) makes ordinary commands read the elected-tenure cache instead of HQ, so a command makes no HQ connection while the record is current, keeps working while HQ is unreachable until the tenure lapses (one warning per hour), and after the lapse continues only `author` / `claim` under `open` and `trusted`. A command with no current record (fresh host, daemon down) reads HQ once and seeds it. The placement CAS, state pushes, authority writes and fleet-config publications always read HQ. `false` (or `BH_HQ_TENURE_CACHE=off`) restores one HQ read per command. |
 | `hive.write_policy` | HOST override of the profile's off-primary write policy: `fenced`, `forward` or `open`. May only require more trust than the profile (`open` < `forward` < `fenced`); a loosening value is refused. Unset by default. |
 | `hq.sql.enabled` | Selects SQL only when true and the reader/trust binding validates. |
 | `hq.sql.reader` | Required SQL configuration reader connection. |
@@ -172,10 +174,11 @@ an added config key does not itself require a wire-schema bump.
 
 The [trust profiles and capabilities ADR](design/hq-trust-profiles-and-capabilities-adr.md)
 (2026-10-09, status proposed) names keys that do not exist yet and are listed here only so the
-table above is not read as the whole intended surface: `hq.tenure_refresh` and the `hive.sync.*`
-batch auto-commit, auto-push and auto-pull settings. Setting any of them is a schema error.
+table above is not read as the whole intended surface: the `hive.sync.*` batch auto-commit,
+auto-push and auto-pull settings. Setting any of them is a schema error.
 `hq.trust_profile`, `hq.placement_mode`, `hive.write_policy` and `hq.tenure` have shipped
-(`bh-bc2rj`, table above), as has `hive.adopt_existing` (`bh-m2irb`). `host.roles`, a
+(`bh-bc2rj`, table above), as have `hq.tenure_refresh` and `hq.tenure_cache` (`bh-ofszz`) and
+`hive.adopt_existing` (`bh-m2irb`). `host.roles`, a
 set composed from `viewer`, `planner`, `operator`, `transient`, `executor`, `director` with
 `host.role` as a one-element alias, has shipped as a field of the host manifest
 (`hosts/<host_id>.yaml`, `bh host init --role operator,executor`), not of `config.yaml`; see

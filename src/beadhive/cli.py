@@ -4789,7 +4789,7 @@ def _handle_cli_error(exc: Exception) -> None:
         for leaf in leaves:
             typer.echo(f"  ↳ {type(leaf).__name__}: {leaf}", err=True)
     if command in ("worktree", "wt") and any(
-        type(e).__name__ == "SqlConfigError" for e in (exc, *leaves)
+        type(e).__name__ in ("SqlConfigError", "SqlConfigUnavailable") for e in (exc, *leaves)
     ):
         # Partial degradation (bh-o01m6): point at the path that works without HQ.
         typer.echo(

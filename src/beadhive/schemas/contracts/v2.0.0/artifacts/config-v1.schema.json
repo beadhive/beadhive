@@ -1688,6 +1688,26 @@
           "description": "HOST override of the trust profile's tenure knob, in seconds: under `open` the tenure ceiling (default 24 h; it may only shorten it), otherwise an extra bound below the hive's failover_after / heartbeat TTL.",
           "title": "Tenure"
         },
+        "tenure_cache": {
+          "default": true,
+          "description": "HOST: whether commands read the verified HQ config snapshot and their `author` / `claim` decisions from the elected-tenure cache the host daemon refreshes (on by default, SQL HQ only). `false` (or BH_HQ_TENURE_CACHE=off) restores one HQ read per command.",
+          "title": "Tenure Cache",
+          "type": "boolean"
+        },
+        "tenure_refresh": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "HOST: seconds between the host daemon's refreshes of the elected-tenure cache (verified HQ config snapshot and per-capability decisions). Unset: a quarter of the shorter of failover_after and the tenure. Never longer than the tenure; revocation latency equals it outside `attested`.",
+          "title": "Tenure Refresh"
+        },
         "trust_profile": {
           "default": "verified",
           "description": "FLEET trust profile (trust-profiles ADR section 2): sets authority, admission, placement, off-primary write policy and tenure together, plus a capability ceiling. `verified` (default) is 0.24.0's behaviour. Publish it with `bh hq authority profile-<name> --confirm`, never by hand: raising it towards `open` needs the operator key once, lowering it always takes effect. Its authority column is hq.default_authority_mode unless that is set explicitly.",

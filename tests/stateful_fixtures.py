@@ -584,6 +584,19 @@ def _fresh_bd_version_memo():
 
 
 @pytest.fixture
+def _fresh_tenure_cache_memo():
+    """`hq_tenure_cache` memoizes records and live snapshots per process, keyed by SQL binding
+    (bh-ofszz). Its file lives under the per-test BH_HOME, but the memo outlives the test: a
+    later test that reaches a binding with the same key would be served the earlier test's
+    snapshot. Cleared per test, like the other process-lifetime caches here."""
+    from beadhive import hq_tenure_cache
+
+    hq_tenure_cache.reset()
+    yield
+    hq_tenure_cache.reset()
+
+
+@pytest.fixture
 def _clear_git_fact_caches():
     """Every test starts with the process-lifetime git-fact caches EMPTY (bh-z31lc).
 
@@ -726,7 +739,7 @@ def _logging_pipeline_keeps_caplogs_handler():
 
 
 @pytest.fixture
-def config_test_scope(_sandbox_bh_home):
+def config_test_scope(_sandbox_bh_home, _fresh_tenure_cache_memo):
     """Request isolated Beadhive configuration and setup-check defaults."""
 
 

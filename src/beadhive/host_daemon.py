@@ -1163,6 +1163,7 @@ def build_product_application(
     cfg: dict | None = None,
     settings: HostDaemonConfig | None = None,
     failover_loop: Any = None,
+    tenure_loop: Any = None,
 ) -> Starlette:
     """Assemble the installed daemon's current routes on the shared composition seam.
 
@@ -1298,6 +1299,10 @@ def build_product_application(
         # The director's unattended failover loop (bh-16347.5): only when
         # host.daemon.failover.enabled built one in `serve`; off by default.
         product_components.append(failover_loop.component())
+    if tenure_loop is not None:
+        # The elected-tenure cache refresher (bh-ofszz): only on a SQL-HQ host with the cache
+        # on, built in `serve`. Commands read what it writes and never refresh it themselves.
+        product_components.append(tenure_loop.component())
     network_policy = None
     credential_sessions = None
     mcp_sessions = None
@@ -1432,6 +1437,19 @@ def _failover_loop(settings: HostDaemonConfig, cfg: dict | None = None) -> Any:
         raise DaemonError(str(exc)) from None
 
 
+def _tenure_loop() -> Any:
+    """The elected-tenure cache refresher (trust-profiles ADR section 3, bh-ofszz) when this
+    host reads SQL HQ with ``hq.tenure_cache`` on; ``None`` otherwise. Never refuses startup:
+    without it commands fall back to one HQ read each."""
+    from .hq_tenure_refresh import TenureLoop, build_refresher
+
+    try:
+        refresher = build_refresher()
+    except Exception:  # noqa: BLE001 - the cache is an optimisation, never a startup gate
+        return None
+    return None if refresher is None else TenureLoop(refresher)
+
+
 def serve(
     *,
     state_broker_factory: Callable[..., Any],
@@ -1461,6 +1479,7 @@ def serve(
         settings = HostDaemonConfig.model_validate(effective)
     validate_for_listener_startup(settings)
     failover_loop = _failover_loop(settings, raw_config)
+    tenure_loop = _tenure_loop()
 
     listener_host = settings.bind
     listener_port = settings.port
@@ -1488,6 +1507,7 @@ def serve(
             settings=settings,
             state_broker_factory=state_broker_factory,
             failover_loop=failover_loop,
+            tenure_loop=tenure_loop,
         )
         if failover_loop is not None:
             application.state.director_failover = failover_loop

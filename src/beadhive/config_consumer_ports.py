@@ -43,6 +43,7 @@ daemon_settings = CapabilitySettings(
         "BINARY_ALIAS",
         "home",
         "load",
+        "load_host",
         "otel_flush_timeout",
     },
     _SOURCE,
