@@ -183,3 +183,111 @@ per-file medians were available, and the jbb6r and uhx2r spikes each carried 400
 module-scoped fixtures that the permanent suites no longer pay. The replacement tests moved
 rather than vanished (composed +54 s, bd branch merge +30 s), which is the only added cost. The
 single targeted run used `-n 4` and may show contention differences versus the 16-worker gate.
+
+## Scheduling and rewind savings on integration and stateful lanes (bh-05dza)
+
+Measures the combined effect of longest-first ordering with work stealing (bh-bpc9b), the
+rewindable cluster fixture (bh-i970d) and the fence suites moved onto it (bh-jvgj6) on the two
+16-worker native lanes, against the post-bh-exqka/vcx4i main baseline.
+
+**Status of the evidence.** Measured 2026-10-11 on a shared 32-core host. The baseline runs are
+whole-gate runs and ran while other heavy work was active; the after runs were taken one at a time
+with `BH_DOLT_SLOTS=12 BH_TEST_TIMEOUT_SECONDS=2400`. Integration has five after-runs and two
+baseline runs. Stateful has two after-runs and two baseline runs, fewer than the five asked for,
+so its figures are indicative only. The after tree is the epic container (779cb194), which
+predates main's latest commits; three stateful tests fail on it for that reason (see below).
+
+### Method
+
+- Baseline: post-bh-exqka main gate runs under `.bh/validation/runs` whose `gate.log` shows the
+  lane's `pytest_with_report.py` selection and whose rootdir is a `verify-main-*` checkout.
+  Integration (`-m "integration"`, `-n 16 --dist worksteal`): `run-530250ed...` (750 s) and
+  `run-7bf8e234...` (817 s, main cbac6d09). Stateful (`-m "not integration and not pants_profile"`,
+  `-n 16`): `run-6dd1dd8f...` (691 s, main 25d8d223) and `run-28bbb788...` (752 s).
+- After: `just test-integration-land` (five runs) and `just stateful-native` (two runs) from the
+  bh-05dza worktree.
+- Aggregation is the one in the bh-y4c4z section: `<testsuite time>` is wall, the sum of
+  non-skipped `<testcase time>` is test-seconds, per-file figures are summed case times, and each
+  figure is the median across runs. Parsing follows `scripts/refresh_test_durations.py`.
+- Ideal is test-seconds divided by 16 workers. Tail is wall minus ideal, so it is the time lost to
+  imperfect packing, startup and Dolt-slot waiting.
+
+### Lane totals
+
+| Selection class | Runs | Wall (s) | Test-seconds | Ideal (s) | Tail (s) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Integration, before | 2 | 783 (750-817) | 8,228 | 514 | 269 |
+| Integration, after | 5 | 555 (551-584) | 6,503 | 406 | 149 |
+| Integration delta | | -228 | -1,725 | -108 | -120 |
+| Stateful, before | 2 | 722 (691-752) | 8,728 | 545 | 176 |
+| Stateful, after | 2 | 622 (613-631) | 8,164 | 510 | 112 |
+| Stateful delta | | -100 | -564 | -35 | -64 |
+
+### Integration, per file (median test-seconds)
+
+| File | Before | After | Delta |
+| --- | ---: | ---: | ---: |
+| `tests/test_epoch_fencing_int.py` | 1,433 | 1,249 | -183 |
+| `tests/test_fence_composed_int.py` | 774 | 592 | -181 |
+| `tests/test_fence_orphan_int.py` | 475 | 358 | -118 |
+| `tests/test_agf_modalities.py` | 392 | 307 | -85 |
+| `tests/test_storage_migrate_int.py` | 376 | 386 | +10 |
+| `tests/test_onboard_server_mode_int.py` | 369 | 306 | -64 |
+| `tests/test_hq_sql_provision_history_int.py` | 346 | 41 | -305 |
+| `tests/test_placement_authority_int.py` | 314 | 50 | -264 |
+| `tests/test_fence_cutover_int.py` | 301 | 250 | -51 |
+| `tests/test_hive_forward_int.py` | 271 | 222 | -49 |
+| `tests/test_failover_reclaim_int.py` | 240 | 247 | +7 |
+| `tests/test_frame_release_upgrade_cli_int.py` | 231 | 195 | -37 |
+| `tests/test_localloop_int.py` | 208 | 161 | -48 |
+| `tests/test_cluster_rewind_int.py` (new) | 0 | 199 | +199 |
+
+### Stateful, per file (median test-seconds)
+
+| File | Before | After | Delta |
+| --- | ---: | ---: | ---: |
+| `tests/test_hq_authority_backend.py` | 1,505 | 1,687 | +182 |
+| `tests/test_work.py` | 909 | 871 | -38 |
+| `tests/test_contract_release.py` | 522 | 529 | +7 |
+| `tests/test_wire_schemas.py` | 351 | 312 | -40 |
+| `tests/test_test_closures.py` | 281 | 265 | -16 |
+| `tests/test_wire_release_publish.py` | 278 | 259 | -18 |
+| `tests/test_cli.py` | 217 | 205 | -12 |
+| `tests/test_test_closure_certification_process.py` | 193 | 115 | -78 |
+
+### Reading the numbers
+
+- **Fence-touching integration: wall 12.5-13.6 min to 9.2 min** (about 3.8 min saved), and the
+  tail fell from about 270 s to about 150 s (about 45%). That is most of the roughly 230 s tail
+  the scheduling work targeted. The rewind fixture removed about 1,725 test-seconds, mostly from
+  the provision-history, placement-authority and dolt-health suites, and the composed and orphan
+  suites. The 2-3 min rewind estimate is met (the wall saving is larger, 3.8 min, because
+  scheduling and rewind stack).
+- **The 5-6 min target is not met.** After-wall is 9.2 min. Ideal alone is 406 s (6.8 min), so
+  even perfect packing of the current work misses 6 min. Two limits remain: total work
+  (`tests/test_epoch_fencing_int.py` alone is 1,249 test-seconds and was not moved onto the
+  rewindable cluster) and indivisible long tests (the longest single case is about 213 s,
+  `test_s5_stale_writer_is_refused_on_every_default_bd_path`, which bounds the tail from below).
+- **Stateful** improved by about 100 s wall (about 14%), nearly all from scheduling (tail
+  176 s to 112 s) since stateful runs no fence-heavy real-Dolt suites. It is dominated by
+  `tests/test_hq_authority_backend.py` (1,687 test-seconds, with a single case near 168 s).
+  Only two after-runs, so treat the 100 s as approximate.
+- **Noise.** Wall differs by 67 s between the two baseline integration runs of similar trees, so
+  the baseline is noisier than the after-runs; per-file medians over two runs are rough.
+- **Reliability.** One of five integration after-runs failed:
+  `tests/test_cluster_rewind_int.py::test_a_fencing_footprint_rewinds_to_the_bootstrap_fingerprint`
+  saw a stray `/processes` entry after rewind. The failure is in the new fixture's leak guard, not
+  the savings. Both stateful after-runs fail the same three tests,
+  `test_xdist_worker_cap.py::test_live_integration_recipe_redistributes_unstarted_tests_with_fixed_worker_bound`,
+  `test_test_closure_operational_report.py` and `test_test_closure_certification_process.py`,
+  because the container tree lacks main's later changes (the generated report and the justfile
+  recipe text differ from main). They are expected to clear when the container is refreshed from
+  main.
+
+### Follow-ups
+
+- bh-t8hr4: move `tests/test_epoch_fencing_int.py` onto the rewindable cluster (the biggest
+  remaining file, 1,249 test-seconds).
+- bh-56wtv: shorten or split the longest integration cases, which set the tail floor.
+- bh-u5mag: fix the rewind guard's intermittent stray-process failure.
+- bh-88f8w: cut `tests/test_hq_authority_backend.py` on the stateful lane.

@@ -167,33 +167,33 @@ def test_orphan_merge_refuses_any_conflict_and_never_resolves(rejoined):
 
 
 @pytest.mark.dolt_server
-def test_server_mode_divert_and_one_session_orphan_merge_through_bd(tmp_path):
+def test_server_mode_divert_and_one_session_orphan_merge_through_bd(rewound_cluster):
     """The server-mode engine: ``CALL DOLT_PUSH`` for the orphan, the forwarder quiesce in the
     reset, and the one-session merge as one ``bd sql`` batch."""
-    from harness.writer_fencing import BD_SERVER, Cluster
+    from harness.writer_fencing import BD_SERVER
 
-    with Cluster(tmp_path / "cluster", [("s", BD_SERVER), ("t", BD_SERVER)]) as cluster:
-        s, t = cluster["s"], cluster["t"]
-        node_s = fd.FenceNode(fd.BdServerEngine(s.hive, env=s.env))
-        node_t = fd.FenceNode(fd.BdServerEngine(t.hive, env=t.env))
-        node_s.install("s", 1)
-        node_s.provision_ident("s")
-        assert node_s.push()
-        node_t.sync_to_remote()
-        node_t.provision_ident("t")
-        assert wa.run_step2(node_t, _Placement("t", 2), frame="t", epoch=2).landed
+    cluster = rewound_cluster([("s", BD_SERVER), ("t", BD_SERVER)])
+    s, t = cluster["s"], cluster["t"]
+    node_s = fd.FenceNode(fd.BdServerEngine(s.hive, env=s.env))
+    node_t = fd.FenceNode(fd.BdServerEngine(t.hive, env=t.env))
+    node_s.install("s", 1)
+    node_s.provision_ident("s")
+    assert node_s.push()
+    node_t.sync_to_remote()
+    node_t.provision_ident("t")
+    assert wa.run_step2(node_t, _Placement("t", 2), frame="t", epoch=2).landed
 
-        s.create_issue("partitioned-server-write").check()  # s still names itself: stamped
-        out = fo.divert_if_superseded(node_s, frame="s")
-        assert out.superseded and out.branch == "frame/s/orphan-1-1", out
-        assert node_s.writer().frame == "t"
+    s.create_issue("partitioned-server-write").check()  # s still names itself: stamped
+    out = fo.divert_if_superseded(node_s, frame="s")
+    assert out.superseded and out.branch == "frame/s/orphan-1-1", out
+    assert node_s.writer().frame == "t"
 
-        merged = fo.merge_orphan(node_t, out.branch, frame="t")
-        assert merged.restamped >= 1 and merged.epoch == 2
-        assert "partitioned-server-write" in t.issue_titles()
-        assert node_t.push()
-        audit = fa.fence_audit(node_t, placement=wa.PlacementView("t", 2))
-        assert audit.ok, audit.findings()
+    merged = fo.merge_orphan(node_t, out.branch, frame="t")
+    assert merged.restamped >= 1 and merged.epoch == 2
+    assert "partitioned-server-write" in t.issue_titles()
+    assert node_t.push()
+    audit = fa.fence_audit(node_t, placement=wa.PlacementView("t", 2))
+    assert audit.ok, audit.findings()
 
 
 # ---- a DOLT_MERGE that fails mid-batch leaves local main exactly at its pre-merge head ---------
@@ -265,27 +265,29 @@ def test_a_failed_merge_mid_batch_restores_main_to_prev(rejoined, monkeypatch, u
 
 @pytest.mark.dolt_server
 @pytest.mark.parametrize("unguarded", [False, True], ids=["guarded", "unguarded"])
-def test_server_mode_failed_merge_mid_batch_restores_main_to_prev(tmp_path, monkeypatch, unguarded):
-    from harness.writer_fencing import BD_SERVER, Cluster
+def test_server_mode_failed_merge_mid_batch_restores_main_to_prev(
+    rewound_cluster, monkeypatch, unguarded
+):
+    from harness.writer_fencing import BD_SERVER
 
-    with Cluster(tmp_path / "cluster", [("s", BD_SERVER), ("t", BD_SERVER)]) as cluster:
-        s, t = cluster["s"], cluster["t"]
-        node_s = fd.FenceNode(fd.BdServerEngine(s.hive, env=s.env))
-        node_t = fd.FenceNode(fd.BdServerEngine(t.hive, env=t.env))
-        node_s.install("s", 1)
-        node_s.provision_ident("s")
-        assert node_s.push()
-        node_t.sync_to_remote()
-        node_t.provision_ident("t")
-        assert wa.run_step2(node_t, _Placement("t", 2), frame="t", epoch=2).landed
-        s.create_issue("partitioned-server-write").check()
-        out = fo.divert_if_superseded(node_s, frame="s")
-        assert out.branch == "frame/s/orphan-1-1"
+    cluster = rewound_cluster([("s", BD_SERVER), ("t", BD_SERVER)])
+    s, t = cluster["s"], cluster["t"]
+    node_s = fd.FenceNode(fd.BdServerEngine(s.hive, env=s.env))
+    node_t = fd.FenceNode(fd.BdServerEngine(t.hive, env=t.env))
+    node_s.install("s", 1)
+    node_s.provision_ident("s")
+    assert node_s.push()
+    node_t.sync_to_remote()
+    node_t.provision_ident("t")
+    assert wa.run_step2(node_t, _Placement("t", 2), frame="t", epoch=2).landed
+    s.create_issue("partitioned-server-write").check()
+    out = fo.divert_if_superseded(node_s, frame="s")
+    assert out.branch == "frame/s/orphan-1-1"
 
-        node_t.engine.commit("bh: settle before the test's prev")
-        prev = node_t.query("select hashof('main') h")[0]["h"]
-        _fail_the_merge(monkeypatch, node_t.engine, unguarded=unguarded, live=2)
-        with pytest.raises(fo.OrphanMergeFailed) as failed:
-            fo.merge_orphan(node_t, out.branch, frame="t")
-        _assert_restored(node_t, prev, 2, str(failed.value), discarded=unguarded)
-        assert "partitioned-server-write" not in t.issue_titles()
+    node_t.engine.commit("bh: settle before the test's prev")
+    prev = node_t.query("select hashof('main') h")[0]["h"]
+    _fail_the_merge(monkeypatch, node_t.engine, unguarded=unguarded, live=2)
+    with pytest.raises(fo.OrphanMergeFailed) as failed:
+        fo.merge_orphan(node_t, out.branch, frame="t")
+    _assert_restored(node_t, prev, 2, str(failed.value), discarded=unguarded)
+    assert "partitioned-server-write" not in t.issue_titles()

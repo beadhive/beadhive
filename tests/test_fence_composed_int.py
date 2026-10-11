@@ -38,7 +38,10 @@ frame) with the product ``fence_audit`` history check on:
   session TTL (see ``docs/HQ.md`` "Soak check: sender stall").
 
 Private scratch Dolt/git only: every server, data dir, ``HOME`` and ``DOLT_ROOT_PATH`` is under
-``tmp_path``. ``BH_M10_SEEDS=0,1,…`` widens the seeded run (the soak runs it outside the gate).
+pytest's temp root. The cut-over product worlds are pooled per composition by ``rewound_custom``
+(bh-jvgj6): built and cut over once per worker, then rewound from a stopped-cluster template
+before each later test; what a test leaves under ``tmp_path`` (executors, backup remotes) is its
+own. ``BH_M10_SEEDS=0,1,…`` widens the seeded run (the soak runs it outside the gate).
 """
 
 from __future__ import annotations
@@ -123,6 +126,31 @@ class ProductWorld(cf.World):
         rows = self.cluster.remote.view(("bh_writer",))["tables"]["bh_writer"]
         return rows[0]["frame"]
 
+    # -- pooled by ``rewound_custom`` (bh-jvgj6): the cut-over cluster is the template --------
+    # HQ is the cluster's own stand-in (files under the cluster root), so the cluster's
+    # template rewinds everything; what a test is judged by is reset alongside it.
+    @property
+    def _template(self):
+        return getattr(self.cluster, "_template", None)
+
+    def _judged_afresh(self) -> None:
+        self.acknowledged, self.forwarded, self.backups, self.dead = [], [], {}, []
+        self.backup_remote = None
+        self.moves = cf.MoveLog(self.cluster)
+
+    def stop_processes(self) -> None:
+        self.cluster.stop_processes()
+
+    def snapshot(self):
+        template = self.cluster.snapshot()
+        self._judged_afresh()
+        return template
+
+    def restore(self) -> dict[str, float]:
+        timings = self.cluster.restore()
+        self._judged_afresh()
+        return timings
+
 
 @contextlib.contextmanager
 def product_world(root: Path, frames, *, holder: str):
@@ -155,7 +183,7 @@ def product_world(root: Path, frames, *, holder: str):
                 others_published=False,
             )
             assert replica.replica and replica.provisioned, replica
-        yield ProductWorld(cluster, cluster.hq, cf.MoveLog(cluster))
+        yield ProductWorld(cluster, cluster.hq, cf.MoveLog(cluster), root=root)
 
 
 def _take(world: ProductWorld, name: str, *, reclaim=None) -> wa.Step2Result:
@@ -414,15 +442,15 @@ class _ProductDriver:
 
 
 @pytest.mark.parametrize("seed", SEEDS)
-def test_fixed_seed_product_interleavings_hold_every_invariant(tmp_path, seed):
+def test_fixed_seed_product_interleavings_hold_every_invariant(rewound_custom, seed):
     frames = [("a", BD_EMBEDDED), ("b", BD_EMBEDDED), ("c", DOLT_CLI)]
-    with product_world(tmp_path, frames, holder="a") as world:
-        schedule = _ProductDriver(world, seed).run()
-        kinds = {e["event"] for e in schedule.events}
-        assert set(_ProductDriver.MIXED_VERSION) <= kinds, schedule.events
-        result = _clean(world)
-        print("BH_M10", json.dumps({"seed": seed, "events": schedule.events}, default=str))
-        assert result["product_audit"]["cut_over"]
+    world = rewound_custom(product_world, frames, holder="a")
+    schedule = _ProductDriver(world, seed).run()
+    kinds = {e["event"] for e in schedule.events}
+    assert set(_ProductDriver.MIXED_VERSION) <= kinds, schedule.events
+    result = _clean(world)
+    print("BH_M10", json.dumps({"seed": seed, "events": schedule.events}, default=str))
+    assert result["product_audit"]["cut_over"]
 
 
 # =============================================================================================
@@ -551,128 +579,128 @@ def _assignee(admin: hive_forward.DbapiSql, bead: str) -> tuple[str, str]:
 
 @pytest.mark.dolt_server
 def test_multi_executor_forwarding_survives_primary_failover_with_backup_reclaim(
-    tmp_path, monkeypatch
+    tmp_path, rewound_custom, monkeypatch
 ):
     monkeypatch.setenv(hive_forward.PASSWORD_ENV, PW)
     bare, work, hive_clone = _backup_remote(tmp_path)
     frames = [("p", BD_SERVER), ("q", BD_SERVER)]
-    with product_world(tmp_path, frames, holder="p") as world:
-        world.backup_remote = bare
-        p, q = world["p"], world["q"]
-        for key, value in (("bh.pairing.enabled", "true"), ("bh.reclaim.failover.mode", "apply")):
-            p.bd("config", "set", key, value).check()
-        admin_p = _provision(p, "e1", "e2", "e3")
-        admin_q = _provision(q, "e1", "e2", "e3")
-        e0 = world.hq.placement().epoch
-        executors = [Executor(tmp_path / "exec", n, {"p": p, "q": q}) for n in ("e1", "e2")]
-        for ex in executors:
-            marker = ex.repoint(("p", e0))
-            assert marker is not None and marker.state == "forwarding", marker
+    world = rewound_custom(product_world, frames, holder="p")
+    world.backup_remote = bare
+    p, q = world["p"], world["q"]
+    for key, value in (("bh.pairing.enabled", "true"), ("bh.reclaim.failover.mode", "apply")):
+        p.bd("config", "set", key, value).check()
+    admin_p = _provision(p, "e1", "e2", "e3")
+    admin_q = _provision(q, "e1", "e2", "e3")
+    e0 = world.hq.placement().epoch
+    executors = [Executor(tmp_path / "exec", n, {"p": p, "q": q}) for n in ("e1", "e2")]
+    for ex in executors:
+        marker = ex.repoint(("p", e0))
+        assert marker is not None and marker.state == "forwarding", marker
 
-        # ---- executors race claims through the primary; the winner labels its claim ------
-        live: dict[str, str] = {}  # bead -> the winning actor (an executor's live claim)
-        for i in range(3):
-            bead = executors[i % 2].create(world, f"m10-race-{i}")
-            codes = _race(executors, bead)
-            winners = [a for a, rc in codes.items() if rc == 0]
-            assert len(winners) == 1, codes
-            assert _assignee(admin_p, bead) == ("in_progress", winners[0])
-            owner = next(ex for ex in executors if winners[0].startswith(f"{ex.name}/"))
-            assert owner.bd("label", "add", bead, f"claim-frame:{owner.name}").returncode == 0
-            live[bead] = winners[0]
+    # ---- executors race claims through the primary; the winner labels its claim ------
+    live: dict[str, str] = {}  # bead -> the winning actor (an executor's live claim)
+    for i in range(3):
+        bead = executors[i % 2].create(world, f"m10-race-{i}")
+        codes = _race(executors, bead)
+        winners = [a for a, rc in codes.items() if rc == 0]
+        assert len(winners) == 1, codes
+        assert _assignee(admin_p, bead) == ("in_progress", winners[0])
+        owner = next(ex for ex in executors if winners[0].startswith(f"{ex.name}/"))
+        assert owner.bd("label", "add", bead, f"claim-frame:{owner.name}").returncode == 0
+        live[bead] = winners[0]
 
-        # ---- the primary's own claims: backed up, unbacked, submitted (M14 pairing) ------
-        backed = _claim(p, "m10-backed", "claim-frame:p")
-        unbacked = _claim(p, "m10-unbacked", "claim-frame:p")
-        submitted = _claim(p, "m10-submitted", "claim-frame:p", "review:pending")
-        assert _managed_push(world, "p")[0] == "pushed"
-        world.backups[backed] = (
-            work_backup.backup_ref(backed, "p"),
-            _push_backup(work, backed, "p", with_work=True),
-        )
-        _push_backup(work, unbacked, "p", with_work=False)  # tip already in base: no work
-        _push_backup(work, submitted, "p", with_work=True)
-        # acknowledged to an executor after the last push: it rides p's working set
-        executors[0].create(world, "m10-after-last-push")
-        before = {b: (_remote_issue(world, b), _remote_labels(world, b)) for b in live}
+    # ---- the primary's own claims: backed up, unbacked, submitted (M14 pairing) ------
+    backed = _claim(p, "m10-backed", "claim-frame:p")
+    unbacked = _claim(p, "m10-unbacked", "claim-frame:p")
+    submitted = _claim(p, "m10-submitted", "claim-frame:p", "review:pending")
+    assert _managed_push(world, "p")[0] == "pushed"
+    world.backups[backed] = (
+        work_backup.backup_ref(backed, "p"),
+        _push_backup(work, backed, "p", with_work=True),
+    )
+    _push_backup(work, unbacked, "p", with_work=False)  # tip already in base: no work
+    _push_backup(work, submitted, "p", with_work=True)
+    # acknowledged to an executor after the last push: it rides p's working set
+    executors[0].create(world, "m10-after-last-push")
+    before = {b: (_remote_issue(world, b), _remote_labels(world, b)) for b in live}
 
-        # ---- the primary dies; the director places q; q's adopt reclaims by backup -------
-        p.kill()
-        world.dead.append("p")
-        hook = fr.FailoverReclaim(
-            world.node("q"), fr.GitBackupProbe(hive_clone, default_remote=str(bare))
-        )
-        result = _take(world, "q", reclaim=hook)
-        outcomes = {r.bead: r.outcome for r in result.reclaim.rows}
-        assert outcomes == {
-            backed: fr.Outcome.RESUMABLE,
-            unbacked: fr.Outcome.REWOUND,
-            submitted: fr.Outcome.SUBMITTED,
-            **{b: fr.Outcome.OTHER_FRAME for b in live},
-        }, outcomes
-        assert _remote_issue(world, unbacked) == {
-            "status": "open",
-            "assignee": "",
-            "started_at": None,
-        }
-        assert _remote_labels(world, backed) == ["recovery:resumable"]
-        assert _remote_issue(world, submitted)["status"] == "in_progress"
-        # The surviving executors' live claims are untouched by the reclaim.
-        assert {b: (_remote_issue(world, b), _remote_labels(world, b)) for b in live} == before
-        for bead in (backed, unbacked):
-            [comment] = _remote_comments(world, bead)
-            assert "dead frame p" in comment["text"]
+    # ---- the primary dies; the director places q; q's adopt reclaims by backup -------
+    p.kill()
+    world.dead.append("p")
+    hook = fr.FailoverReclaim(
+        world.node("q"), fr.GitBackupProbe(hive_clone, default_remote=str(bare))
+    )
+    result = _take(world, "q", reclaim=hook)
+    outcomes = {r.bead: r.outcome for r in result.reclaim.rows}
+    assert outcomes == {
+        backed: fr.Outcome.RESUMABLE,
+        unbacked: fr.Outcome.REWOUND,
+        submitted: fr.Outcome.SUBMITTED,
+        **{b: fr.Outcome.OTHER_FRAME for b in live},
+    }, outcomes
+    assert _remote_issue(world, unbacked) == {
+        "status": "open",
+        "assignee": "",
+        "started_at": None,
+    }
+    assert _remote_labels(world, backed) == ["recovery:resumable"]
+    assert _remote_issue(world, submitted)["status"] == "in_progress"
+    # The surviving executors' live claims are untouched by the reclaim.
+    assert {b: (_remote_issue(world, b), _remote_labels(world, b)) for b in live} == before
+    for bead in (backed, unbacked):
+        [comment] = _remote_comments(world, bead)
+        assert "dead frame p" in comment["text"]
 
-        # ---- the executors re-point to q and keep claiming: 0 double wins ----------------
-        e1 = result.epoch
-        for ex in executors:
-            marker = ex.repoint(("q", e1))
-            assert marker.state == "forwarding" and marker.frame == "q", marker
-        for bead, winner in list(live.items())[:1]:  # a held claim is never won by another
-            codes = _race(executors, bead)
-            # bd's claim is idempotent for its holder; every other racer is refused
-            assert {a for a, rc in codes.items() if rc == 0} <= {winner}, (winner, codes)
-            assert _assignee(admin_q, bead) == ("in_progress", winner)
-        for i in range(2):
-            bead = executors[i].create(world, f"m10-after-failover-{i}")
-            codes = _race(executors, bead)
-            winners = [a for a, rc in codes.items() if rc == 0]
-            assert len(winners) == 1, codes
-            assert _assignee(admin_q, bead) == ("in_progress", winners[0])
-        resumed = _race(executors, backed)  # the resumable bead is claimable again, once
-        assert len([a for a, rc in resumed.items() if rc == 0]) == 1, resumed
+    # ---- the executors re-point to q and keep claiming: 0 double wins ----------------
+    e1 = result.epoch
+    for ex in executors:
+        marker = ex.repoint(("q", e1))
+        assert marker.state == "forwarding" and marker.frame == "q", marker
+    for bead, winner in list(live.items())[:1]:  # a held claim is never won by another
+        codes = _race(executors, bead)
+        # bd's claim is idempotent for its holder; every other racer is refused
+        assert {a for a, rc in codes.items() if rc == 0} <= {winner}, (winner, codes)
+        assert _assignee(admin_q, bead) == ("in_progress", winner)
+    for i in range(2):
+        bead = executors[i].create(world, f"m10-after-failover-{i}")
+        codes = _race(executors, bead)
+        winners = [a for a, rc in codes.items() if rc == 0]
+        assert len(winners) == 1, codes
+        assert _assignee(admin_q, bead) == ("in_progress", winners[0])
+    resumed = _race(executors, backed)  # the resumable bead is claimable again, once
+    assert len([a for a, rc in resumed.items() if rc == 0]) == 1, resumed
 
-        # ---- the dead primary returns: its managed rejoin diverts, it fails closed -------
-        p.restart()
-        stale = Executor(tmp_path / "exec", "e3", {"p": p, "q": q})
-        hive_forward.point(
-            stale.ws,
-            hive_forward.ForwardTarget("p", e0, stale.endpoints["p"]),
-            prefix=DB,
-            self_frame="e3",
-            endpoints=stale.endpoints,
-        )  # a stale cache that still names p
-        outcome, divert = _managed_push(world, "p")
-        assert outcome == "diverted" and divert.branch, divert
-        refused = stale.repoint(("p", e0))
-        assert refused.state == "refused" and "demoted primary" in refused.reason, refused
-        hive_forward.point(
-            stale.ws,
-            hive_forward.ForwardTarget("p", e0, stale.endpoints["p"]),
-            prefix=DB,
-            self_frame="e3",
-            endpoints=stale.endpoints,
-        )  # bypass the preflight: p's own guard refuses
-        _refused(stale.bd("create", "--title", "m10-to-demoted", "-t", "task"), fs.GUARD_REFUSAL)
+    # ---- the dead primary returns: its managed rejoin diverts, it fails closed -------
+    p.restart()
+    stale = Executor(tmp_path / "exec", "e3", {"p": p, "q": q})
+    hive_forward.point(
+        stale.ws,
+        hive_forward.ForwardTarget("p", e0, stale.endpoints["p"]),
+        prefix=DB,
+        self_frame="e3",
+        endpoints=stale.endpoints,
+    )  # a stale cache that still names p
+    outcome, divert = _managed_push(world, "p")
+    assert outcome == "diverted" and divert.branch, divert
+    refused = stale.repoint(("p", e0))
+    assert refused.state == "refused" and "demoted primary" in refused.reason, refused
+    hive_forward.point(
+        stale.ws,
+        hive_forward.ForwardTarget("p", e0, stale.endpoints["p"]),
+        prefix=DB,
+        self_frame="e3",
+        endpoints=stale.endpoints,
+    )  # bypass the preflight: p's own guard refuses
+    _refused(stale.bd("create", "--title", "m10-to-demoted", "-t", "task"), fs.GUARD_REFUSAL)
 
-        # ---- q merges p's orphan: the late forwarded write is not lost --------------------
-        merged = fo.merge_orphan(world.node("q"), divert.branch, frame="q")
-        assert not merged.already
-        assert _managed_push(world, "q")[0] == "pushed"
-        assert {"m10-after-last-push", "m10-after-failover-0"} <= _titles(world)
-        admin_p.connection.close()
-        admin_q.connection.close()
-        _clean(world)
+    # ---- q merges p's orphan: the late forwarded write is not lost --------------------
+    merged = fo.merge_orphan(world.node("q"), divert.branch, frame="q")
+    assert not merged.already
+    assert _managed_push(world, "q")[0] == "pushed"
+    assert {"m10-after-last-push", "m10-after-failover-0"} <= _titles(world)
+    admin_p.connection.close()
+    admin_q.connection.close()
+    _clean(world)
 
 
 # =============================================================================================
@@ -681,7 +709,7 @@ def test_multi_executor_forwarding_survives_primary_failover_with_backup_reclaim
 
 
 @pytest.mark.dolt_server
-def test_branch_role_frame_edits_reach_main_only_through_the_primarys_merge(tmp_path):
+def test_branch_role_frame_edits_reach_main_only_through_the_primarys_merge(rewound_custom):
     """Moved from the retired ``bh-jbb6r`` s8 (its forward-claim half lives in
     ``test_hive_forward_int`` and the multi-executor test above). ``q`` is provisioned with the
     product guard's ``branch`` role: its local ``main`` is a staging branch it publishes to a
@@ -689,42 +717,42 @@ def test_branch_role_frame_edits_reach_main_only_through_the_primarys_merge(tmp_
     merges it deliberately (``bh: merge frame/...``), and every invariant holds, the product
     history check included."""
     frames = [("q", BD_EMBEDDED), ("p", BD_SERVER)]  # an embedded frame founds the fixture
-    with product_world(tmp_path, frames, holder="p") as world:
-        p, q = world["p"], world["q"]
-        assert world.writer() == "p"
-        made = p.bd("create", "--title", "branch-target", "-t", "task", "--json")
-        made.check()
-        created = json.loads(made.stdout)
-        bead = created["id"] if isinstance(created, dict) else created[0]["id"]
-        assert _managed_push(world, "p")[0] == "pushed"
+    world = rewound_custom(product_world, frames, holder="p")
+    p, q = world["p"], world["q"]
+    assert world.writer() == "p"
+    made = p.bd("create", "--title", "branch-target", "-t", "task", "--json")
+    made.check()
+    created = json.loads(made.stdout)
+    bead = created["id"] if isinstance(created, dict) else created[0]["id"]
+    assert _managed_push(world, "p")[0] == "pushed"
 
-        world.node("q").provision_ident("q", role="branch")
-        assert world.node("q").ident() == ("q", "branch")
-        url = world.cluster.remote.url
-        q.dolt("remote", "add", "--ref", "refs/dolt/frame/q", "branchout", url).check()
-        # The trailing slash is load-bearing: the Dolt 2.3.5 sql-server reuses its open remote
-        # for an identical URL and ignores the new remote's --ref, so fetching `frame-q` with
-        # the same URL as origin silently re-reads refs/dolt/data (bh-jbb6r E8).
-        p.bd(
-            "sql", f"CALL DOLT_REMOTE('add', '--ref', 'refs/dolt/frame/q', 'frame-q', '{url}/')"
-        ).check()
-        for i in range(2):
-            q.pull().check()
-            main_before = world.cluster.remote.view(("bh_writer",))["main"]
-            q.bd("label", "add", bead, f"branch-{i}").check()  # not the writer: branch role
-            q.bd("comment", bead, f"branch-comment-{i}").check()
-            q.dolt("push", "--force", "branchout", "main").check()
-            assert world.cluster.remote.view(("bh_writer",))["main"] == main_before
-            assert f"branch-{i}" not in _remote_labels(world, bead)
-            p.bd("dolt", "commit", "-m", "bh: commit working set before merge")
-            merged = cf.merge_branch(p, "frame-q", "main", f"q/{i}")
-            assert merged.ok, merged.output
-            assert _managed_push(world, "p")[0] == "pushed"
-        assert {"branch-0", "branch-1"} <= set(_remote_labels(world, bead))
-        assert world.writer() == "p"
-        world.node("q").provision_ident("q")  # back to an ordinary, guarded replica
-        _refused(_try_write(q, "branch-after-demotion"), fs.GUARD_REFUSAL)
-        _clean(world)
+    world.node("q").provision_ident("q", role="branch")
+    assert world.node("q").ident() == ("q", "branch")
+    url = world.cluster.remote.url
+    q.dolt("remote", "add", "--ref", "refs/dolt/frame/q", "branchout", url).check()
+    # The trailing slash is load-bearing: the Dolt 2.3.5 sql-server reuses its open remote
+    # for an identical URL and ignores the new remote's --ref, so fetching `frame-q` with
+    # the same URL as origin silently re-reads refs/dolt/data (bh-jbb6r E8).
+    p.bd(
+        "sql", f"CALL DOLT_REMOTE('add', '--ref', 'refs/dolt/frame/q', 'frame-q', '{url}/')"
+    ).check()
+    for i in range(2):
+        q.pull().check()
+        main_before = world.cluster.remote.view(("bh_writer",))["main"]
+        q.bd("label", "add", bead, f"branch-{i}").check()  # not the writer: branch role
+        q.bd("comment", bead, f"branch-comment-{i}").check()
+        q.dolt("push", "--force", "branchout", "main").check()
+        assert world.cluster.remote.view(("bh_writer",))["main"] == main_before
+        assert f"branch-{i}" not in _remote_labels(world, bead)
+        p.bd("dolt", "commit", "-m", "bh: commit working set before merge")
+        merged = cf.merge_branch(p, "frame-q", "main", f"q/{i}")
+        assert merged.ok, merged.output
+        assert _managed_push(world, "p")[0] == "pushed"
+    assert {"branch-0", "branch-1"} <= set(_remote_labels(world, bead))
+    assert world.writer() == "p"
+    world.node("q").provision_ident("q")  # back to an ordinary, guarded replica
+    _refused(_try_write(q, "branch-after-demotion"), fs.GUARD_REFUSAL)
+    _clean(world)
 
 
 # =============================================================================================
@@ -732,31 +760,31 @@ def test_branch_role_frame_edits_reach_main_only_through_the_primarys_merge(tmp_
 # =============================================================================================
 
 
-def test_invariant_checker_flags_a_stale_write_forced_past_the_fence(tmp_path):
+def test_invariant_checker_flags_a_stale_write_forced_past_the_fence(rewound_custom):
     """Moved from the retired ``bh-jbb6r`` spike, now on the product cut-over hive and product
     adopt: a stale Dolt CLI writer commits a refused pull with ``--force`` (raw Dolt,
     break-glass; bh-vje85 E11) and pushes. Every invariant that should see it does, so a green
     :func:`harness.composed_fence.check_invariants` elsewhere in this suite means something."""
     frames = [("a", BD_EMBEDDED), ("c", DOLT_CLI)]
-    with product_world(tmp_path, frames, holder="a") as world:
-        c = world["c"]
-        _take(world, "c")
-        assert _try_write(c, "neg-stale").ok  # c's unpublished write at its epoch
-        _take(world, "a")  # a takes over; c is now stale
-        _refused(c.dolt("pull", "origin", "main"), "CONSTRAINT VIOLATION", "constraint violation")
-        c.dolt("add", "-A").check()
-        c.dolt("commit", "--force", "-m", "stale merge forced past the fence").check()
-        c.push().check()
-        world.moves.observe("forced", "c")
-        result = cf.check_invariants(world, history_check=True)
-        assert not result["ok"]
-        for key in (
-            "i1_one_writer_per_epoch",
-            "i3_late_epoch_commit",
-            "i4_retired_mark_in_merge",
-            "audit",
-        ):
-            assert result["violations"].get(key), (key, result["violations"])
+    world = rewound_custom(product_world, frames, holder="a")
+    c = world["c"]
+    _take(world, "c")
+    assert _try_write(c, "neg-stale").ok  # c's unpublished write at its epoch
+    _take(world, "a")  # a takes over; c is now stale
+    _refused(c.dolt("pull", "origin", "main"), "CONSTRAINT VIOLATION", "constraint violation")
+    c.dolt("add", "-A").check()
+    c.dolt("commit", "--force", "-m", "stale merge forced past the fence").check()
+    c.push().check()
+    world.moves.observe("forced", "c")
+    result = cf.check_invariants(world, history_check=True)
+    assert not result["ok"]
+    for key in (
+        "i1_one_writer_per_epoch",
+        "i3_late_epoch_commit",
+        "i4_retired_mark_in_merge",
+        "audit",
+    ):
+        assert result["violations"].get(key), (key, result["violations"])
 
 
 # =============================================================================================
@@ -788,109 +816,108 @@ E3_SPOOF = "UPDATE bh_local_ident SET frame = 'q'"
 
 
 @pytest.mark.dolt_server
-def test_m13_grant_shape_quiesce_and_history_check(tmp_path, monkeypatch):
+def test_m13_grant_shape_quiesce_and_history_check(tmp_path, rewound_custom, monkeypatch):
     monkeypatch.setenv(hive_forward.PASSWORD_ENV, PW)
     frames = [("q", BD_EMBEDDED), ("p", BD_SERVER)]  # an embedded frame founds the fixture
-    with product_world(tmp_path, frames, holder="p") as world:
-        p = world["p"]
-        admin = hive_forward.DbapiSql(_root(p))
+    world = rewound_custom(product_world, frames, holder="p")
+    p = world["p"]
+    admin = hive_forward.DbapiSql(_root(p))
 
-        # ---- excess (database-wide) grants are a conformance finding --------------------
-        wide = hive_forward.Account("fwd-wide", "127.0.0.1")
-        admin.execute(
-            [
-                f"CREATE USER {wide.sql} IDENTIFIED BY '{PW}'",
-                f"GRANT SELECT, INSERT, UPDATE, DELETE ON {DB}.* TO {wide.sql}",
-            ]
-        )
-        findings = hive_forward.conformance(admin, database=DB, require_tls=False)
-        assert any("fwd-wide" in f and "database-wide" in f for f in findings), findings
-        spoofer = _login(p, "fwd-wide")
-        assert _try(spoofer, "UPDATE bh_local_ident SET frame = frame") == "ok"  # E3 reachable
-        spoofer.close()
-        narrowed = hive_forward.provision(
-            admin, database=DB, account=wide, password=PW, require_tls=False
-        )
-        assert (
-            narrowed.revoked
-            and hive_forward.conformance(admin, database=DB, require_tls=False) == []
-        )
-        _provision(p, "fwd-n")
+    # ---- excess (database-wide) grants are a conformance finding --------------------
+    wide = hive_forward.Account("fwd-wide", "127.0.0.1")
+    admin.execute(
+        [
+            f"CREATE USER {wide.sql} IDENTIFIED BY '{PW}'",
+            f"GRANT SELECT, INSERT, UPDATE, DELETE ON {DB}.* TO {wide.sql}",
+        ]
+    )
+    findings = hive_forward.conformance(admin, database=DB, require_tls=False)
+    assert any("fwd-wide" in f and "database-wide" in f for f in findings), findings
+    spoofer = _login(p, "fwd-wide")
+    assert _try(spoofer, "UPDATE bh_local_ident SET frame = frame") == "ok"  # E3 reachable
+    spoofer.close()
+    narrowed = hive_forward.provision(
+        admin, database=DB, account=wide, password=PW, require_tls=False
+    )
+    assert (
+        narrowed.revoked and hive_forward.conformance(admin, database=DB, require_tls=False) == []
+    )
+    _provision(p, "fwd-n")
 
-        ex = Executor(tmp_path / "exec", "fwd-n", {"p": p})
-        e0 = world.hq.placement().epoch
-        assert ex.repoint(("p", e0)).state == "forwarding"
-        ex.create(world, "m13-landed")
-        assert _managed_push(world, "p")[0] == "pushed"
-        ex.create(world, "m13-unpublished")  # acknowledged; rides p's working set
+    ex = Executor(tmp_path / "exec", "fwd-n", {"p": p})
+    e0 = world.hq.placement().epoch
+    assert ex.repoint(("p", e0)).state == "forwarding"
+    ex.create(world, "m13-landed")
+    assert _managed_push(world, "p")[0] == "pushed"
+    ex.create(world, "m13-unpublished")  # acknowledged; rides p's working set
 
-        # ---- E5: a forwarded transaction in flight when p is demoted ---------------------
-        txn = _login(p, "fwd-n", autocommit=False)
+    # ---- E5: a forwarded transaction in flight when p is demoted ---------------------
+    txn = _login(p, "fwd-n", autocommit=False)
+    with txn.cursor() as cur:
+        cur.execute("START TRANSACTION")
+        cur.execute(
+            "INSERT INTO issues (id, title, description, design, acceptance_criteria, notes)"
+            f" VALUES ('{DB}-inflight', 'm13-inflight', '', '', '', '')"
+        )
+    _take(world, "q")
+
+    # ---- E2 / E3 with table-scoped grants: Dolt refuses every step -------------------
+    p.bd("sql", "CALL DOLT_FETCH('origin')").check()  # the primary's routine fetch
+    attacker = _login(p, "fwd-n")
+    probes = {s: _try(attacker, s) for s in (*E2_STEPS, E3_SPOOF)}
+    attacker.close()
+    assert all(v.startswith("refused") for v in probes.values()), probes
+
+    # ---- p's managed rejoin: divert, quiesce (kill fwd-n), reset ---------------------
+    outcome, divert = _managed_push(world, "p")
+    assert outcome == "diverted" and divert.branch, divert
+    with pytest.raises(pymysql.MySQLError):
         with txn.cursor() as cur:
-            cur.execute("START TRANSACTION")
-            cur.execute(
-                "INSERT INTO issues (id, title, description, design, acceptance_criteria, notes)"
-                f" VALUES ('{DB}-inflight', 'm13-inflight', '', '', '', '')"
-            )
-        _take(world, "q")
+            cur.execute("COMMIT")
+    with contextlib.suppress(Exception):
+        txn.close()
+    assert not p.query("SELECT id FROM issues WHERE title = 'm13-inflight'")
+    # after the reset the spoof is still refused, and so is a forwarded write
+    attacker = _login(p, "fwd-n")
+    assert _try(attacker, E3_SPOOF).startswith("refused")
+    attacker.close()
+    _refused(ex.bd("create", "--title", "m13-after-demotion", "-t", "task"), fs.GUARD_REFUSAL)
+    assert ex.repoint(("p", e0)).state == "refused"
 
-        # ---- E2 / E3 with table-scoped grants: Dolt refuses every step -------------------
-        p.bd("sql", "CALL DOLT_FETCH('origin')").check()  # the primary's routine fetch
-        attacker = _login(p, "fwd-n")
-        probes = {s: _try(attacker, s) for s in (*E2_STEPS, E3_SPOOF)}
-        attacker.close()
-        assert all(v.startswith("refused") for v in probes.values()), probes
+    merged = fo.merge_orphan(world.node("q"), divert.branch, frame="q")
+    assert not merged.already
+    assert _managed_push(world, "q")[0] == "pushed"
+    assert "m13-inflight" not in _titles(world)
+    admin.connection.close()
+    _clean(world)
 
-        # ---- p's managed rejoin: divert, quiesce (kill fwd-n), reset ---------------------
-        outcome, divert = _managed_push(world, "p")
-        assert outcome == "diverted" and divert.branch, divert
-        with pytest.raises(pymysql.MySQLError):
-            with txn.cursor() as cur:
-                cur.execute("COMMIT")
-        with contextlib.suppress(Exception):
-            txn.close()
-        assert not p.query("SELECT id FROM issues WHERE title = 'm13-inflight'")
-        # after the reset the spoof is still refused, and so is a forwarded write
-        attacker = _login(p, "fwd-n")
-        assert _try(attacker, E3_SPOOF).startswith("refused")
-        attacker.close()
-        _refused(ex.bd("create", "--title", "m13-after-demotion", "-t", "task"), fs.GUARD_REFUSAL)
-        assert ex.repoint(("p", e0)).state == "refused"
-
-        merged = fo.merge_orphan(world.node("q"), divert.branch, frame="q")
-        assert not merged.already
-        assert _managed_push(world, "q")[0] == "pushed"
-        assert "m13-inflight" not in _titles(world)
-        admin.connection.close()
-        _clean(world)
-
-        # ---- an injected late-epoch, re-stamped write: only the history check sees it ----
-        _take(world, "p")
-        p.create_issue("m13-late").check()
-        p.commit("late write at the retired epoch")
-        _take(world, "q")  # p is superseded, holding an unpublished write
-        root = _root(p)
-        for statement in (
-            "CALL DOLT_FETCH('origin')",
-            "SET @@dolt_force_transaction_commit = 1",
-            "CALL DOLT_MERGE('origin/main')",
-            "SET @live = (SELECT epoch FROM bh_epoch_live WHERE id = 1)",
-            "UPDATE bh_write_mark SET epoch = @live WHERE epoch <> @live",
-            "DELETE FROM dolt_constraint_violations_bh_write_mark",
-            "CALL DOLT_COMMIT('-Am', 'routine')",
-        ):
-            assert _try(root, statement) == "ok", statement
-        root.close()
-        assert p.push().ok  # a fast-forward: nothing in the push path can refuse it
-        world.moves.observe("forced", "p")
-        result = cf.check_invariants(world, history_check=True)
-        flagged = sorted(result["violations"])
-        assert not result["ok"] and "history" in flagged, result["violations"]
-        assert "audit" not in flagged  # stale_marks / regression / placement: all clean
-        assert result["product_audit"]["stale_marks"] == 0
-        late = result["product_audit"]["late_writes"]
-        assert any("late write" in str(w) for w in late), late
-        print("BH_M10", json.dumps({"m13_probes": probes, "late_writes": late}, default=str))
+    # ---- an injected late-epoch, re-stamped write: only the history check sees it ----
+    _take(world, "p")
+    p.create_issue("m13-late").check()
+    p.commit("late write at the retired epoch")
+    _take(world, "q")  # p is superseded, holding an unpublished write
+    root = _root(p)
+    for statement in (
+        "CALL DOLT_FETCH('origin')",
+        "SET @@dolt_force_transaction_commit = 1",
+        "CALL DOLT_MERGE('origin/main')",
+        "SET @live = (SELECT epoch FROM bh_epoch_live WHERE id = 1)",
+        "UPDATE bh_write_mark SET epoch = @live WHERE epoch <> @live",
+        "DELETE FROM dolt_constraint_violations_bh_write_mark",
+        "CALL DOLT_COMMIT('-Am', 'routine')",
+    ):
+        assert _try(root, statement) == "ok", statement
+    root.close()
+    assert p.push().ok  # a fast-forward: nothing in the push path can refuse it
+    world.moves.observe("forced", "p")
+    result = cf.check_invariants(world, history_check=True)
+    flagged = sorted(result["violations"])
+    assert not result["ok"] and "history" in flagged, result["violations"]
+    assert "audit" not in flagged  # stale_marks / regression / placement: all clean
+    assert result["product_audit"]["stale_marks"] == 0
+    late = result["product_audit"]["late_writes"]
+    assert any("late write" in str(w) for w in late), late
+    print("BH_M10", json.dumps({"m13_probes": probes, "late_writes": late}, default=str))
 
 
 # =============================================================================================

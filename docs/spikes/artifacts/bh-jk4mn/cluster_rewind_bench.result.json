@@ -1,0 +1,463 @@
+{
+ "rounds": [
+  {
+   "kind": "naive",
+   "dirty": 9.31,
+   "rewind": 2.168,
+   "leftovers": [
+    "/frames/a/beads_files/last-touched: null -> \"adaae016d53eb7428dd61f052de594aad79beaac\"",
+    "/frames/a/git_refs/refs/bh/lease/fx: null -> \"d630f44eb0d6bc80ce02d00537ef49f769a56b83\"",
+    "/frames/a/local_tables/events: -[] +['\"{\\\\\"actor\\\\\": \\\\\"a\\\\\", \\\\\"created_at\\\\\": \\\\\"2026-10-11 08:44:59\\\\\", \\\\\"event_type\\\\\": \\\\\"created\\\\\", \\\\\"id\\\\\": \\\\\"6fcbf45f-0391-563b-a78a-fe0841bd948a\\\\\", \\\\\"issue_id\\\\\": \\\\\"fx-z2f\\\\\", \\\\\"new_value\\\\\": \\\\\"\\\\\", \\\\\"old_value\\\\\": \\\\\"\\\\\"}\"']",
+    "/frames/a/local_tables/local_metadata: -[] +['\"{\\\\\"key\\\\\": \\\\\"issue-create/v1/92b\\\\\", \\\\\"value\\\\\": \\\\\"4986686322217090712\\\\\"}\"']",
+    "/frames/b/beads_files/last-touched: null -> \"0cdee729aa2611dd31ffb91ce35a95a3ede3d29b\"",
+    "/frames/b/globals: -['{\"mc\": 151, \"nrt\": 28800}'] +['{\"mc\": 77, \"nrt\": 77}']",
+    "/frames/b/local_tables/events: -[] +['\"{\\\\\"actor\\\\\": \\\\\"b\\\\\", \\\\\"comment\\\\\": null, \\\\\"created_at\\\\\": \\\\\"2026-10-11T08:45:05Z\\\\\", \\\\\"event_type\\\\\": \\\\\"created\\\\\", \\\\\"id\\\\\": \\\\\"94844144-22be-56ff-9cfe-a910c1777c53\\\\\", \\\\\"issue_id\\\\\": \\\\\"fx-kbk\\\\\", \\\\\"new_value\\\\\": \\\\\"\\\\\", \\\\\"old_value\\\\\": \\\\\"\\\\\"}\"']",
+    "/frames/b/local_tables/local_metadata: -[] +['\"{\\\\\"key\\\\\": \\\\\"issue-create/v1/b0b\\\\\", \\\\\"value\\\\\": \\\\\"-4790447768616731337\\\\\"}\"']",
+    "/frames/b/persisted: -[] +['\"sqlserver.global.max_connections\"']",
+    "/frames/b/users: -[] +['\"u0@%\"']",
+    "/frames/c/branches: -[] +['[\"scratch-0\", \"e2chqv35dk351casjj62tem80n7dvhcf\"]']",
+    "/frames/c/local_tables/bh_local_ident: -['\"{\\\\\"frame\\\\\": \\\\\"c\\\\\", \\\\\"id\\\\\": 1, \\\\\"role\\\\\": \\\\\"replica\\\\\"}\"'] +['\"{\\\\\"frame\\\\\": \\\\\"c\\\\\", \\\\\"id\\\\\": 1, \\\\\"role\\\\\": \\\\\"branch\\\\\"}\"']",
+    "/frames/c/local_tables/scratch_untracked: null -> []",
+    "/frames/c/status: -[] +['[\"scratch_untracked\", \"0\", \"new table\"]']",
+    "/frames/c/tags: -[] +['\"t-0\"']",
+    "/hq/liveness/a: -['\"2026-10-11 08:44:10.351567\"'] +['\"2026-10-11 08:45:08.350883\"']",
+    "/hq/liveness/b: -['\"2026-10-11 08:44:10.420518\"', '\"unknown\"'] +['\"2026-10-11 08:45:08.357736\"', '\"conformant\"']",
+    "/hq/status: -[] +['\"[\\'bh_placement\\', 0, \\'modified\\']\"']",
+    "/remote_refs/refs/bh/backup/fx-0/c: null -> \"71a9d4d48492cf3f1f43d1b9639d4362d5ebe400\"",
+    "/remote_refs/refs/bh/epoch: null -> \"71a9d4d48492cf3f1f43d1b9639d4362d5ebe400\"",
+    "/remote_refs/refs/heads/__dolt_remote_info__: \"1d6eeccb8b152fb07bbb9b4cb5a1ca753673292a\" -> \"e85d7a27f08ce7bb38f311cf8e7d02e23ae00d93\""
+   ],
+   "cleanup_steps": {
+    "faults_and_processes": 0.001,
+    "remote_refs": 0.013,
+    "hq": 0.043,
+    "frame_a": 3.227,
+    "frame_b": 7.742,
+    "frame_c": 2.14
+   },
+   "cleanup_per_command": 13.637,
+   "leftovers_after_cleanup": [
+    "/frames/b/globals: -['{\"mc\": 151, \"nrt\": 28800}'] +['{\"mc\": 151, \"nrt\": 77}']"
+   ]
+  },
+  {
+   "kind": "tag-fast",
+   "kill": false,
+   "dirty": 8.93,
+   "steps": {
+    "faults_and_processes": 0.001,
+    "remote_refs": 0.012,
+    "frame_a": 0.904,
+    "frame_b": 0.593,
+    "frame_c": 0.433,
+    "hq_and_frames_parallel": 0.906
+   },
+   "rewind": 1.364,
+   "leftovers": []
+  },
+  {
+   "kind": "tag-fast",
+   "kill": true,
+   "dirty": 8.92,
+   "steps": {
+    "faults_and_processes": 0.626,
+    "remote_refs": 0.014,
+    "frame_a": 0.879,
+    "frame_b": 0.667,
+    "frame_c": 0.418,
+    "hq_and_frames_parallel": 0.881
+   },
+   "rewind": 2.008,
+   "leftovers": []
+  },
+  {
+   "kind": "tag-fast",
+   "kill": false,
+   "dirty": 9.052,
+   "steps": {
+    "faults_and_processes": 0.001,
+    "remote_refs": 0.015,
+    "frame_a": 0.887,
+    "frame_b": 0.631,
+    "frame_c": 0.425,
+    "hq_and_frames_parallel": 0.889
+   },
+   "rewind": 1.398,
+   "leftovers": []
+  }
+ ],
+ "build_seconds": 22.582,
+ "build_timings": {
+  "remote": 0.06,
+  "found:a": 7.022,
+  "join:b": 9.456,
+  "join:c": 9.456,
+  "observer": 0.178
+ },
+ "checkpoint_seconds": 15.954,
+ "boot_fingerprint": {
+  "remote_refs": {
+   "refs/dolt/data": "da61c26ea41426c99f2504534fa03e884f39a89b",
+   "refs/heads/__dolt_remote_info__": "1d6eeccb8b152fb07bbb9b4cb5a1ca753673292a",
+   "refs/heads/main": "d91df5e3926a2c39a056c6e647954145182011ac"
+  },
+  "hq": {
+   "placement": [
+    [
+     "hive",
+     "a",
+     1
+    ]
+   ],
+   "liveness": {
+    "a": [
+     "2026-10-11 08:44:10.351567",
+     "unknown",
+     "2026-10-11 08:44:10.367471"
+    ],
+    "b": [
+     "2026-10-11 08:44:10.404022",
+     "unknown",
+     "2026-10-11 08:44:10.420518"
+    ],
+    "c": [
+     "2026-10-11 08:44:10.463338",
+     "unknown",
+     "2026-10-11 08:44:10.480872"
+    ]
+   },
+   "users": [
+    "__dolt_local_user__@localhost",
+    "director@%",
+    "event_scheduler@localhost",
+    "frame_a@%",
+    "frame_b@%",
+    "frame_c@%",
+    "reader@%",
+    "root@localhost"
+   ],
+   "status": [],
+   "head": "qv5sppf7ecjnr5lb63rolrjcvn6kvmh8",
+   "cut": []
+  },
+  "frames": {
+   "a": {
+    "alive": true,
+    "partitioned": false,
+    "holds": {
+     "armed": [],
+     "held": []
+    },
+    "main": "e2chqv35dk351casjj62tem80n7dvhcf",
+    "branches": [
+     [
+      "main",
+      "e2chqv35dk351casjj62tem80n7dvhcf"
+     ]
+    ],
+    "tags": [
+     "fx-boot"
+    ],
+    "remote_branches": [
+     [
+      "remotes/origin/main",
+      "e2chqv35dk351casjj62tem80n7dvhcf"
+     ]
+    ],
+    "status": [],
+    "local_tables": {
+     "bd_events_journal": [],
+     "bd_events_seq": [
+      "{\"id\": 0, \"next_seq\": 0}"
+     ],
+     "bh_local_ident": [
+      "{\"frame\": \"a\", \"id\": 1, \"role\": \"replica\"}"
+     ],
+     "events": [],
+     "ignored_schema_migrations": [
+      "{\"applied_at\": \"2026-10-11 08:44:14\", \"content_hash\": \"12e18a8bdd214d6f96625e78998433ccc9c2d0ef4d1a35307f2653e725c800b9\", \"version\": 4}",
+      "{\"applied_at\": \"2026-10-11 08:44:14\", \"content_hash\": \"a73e9a486124f89e90d50f4597fd1d7ad08e5d0d654459ec87b7520b47f1bb5f\", \"version\": 1}",
+      "{\"applied_at\": \"2026-10-11 08:44:14\", \"content_hash\": \"c575c6710169f2e697f3aca60f5f698acc8a64af0edb1e2305b9d377fd845f45\", \"version\": 2}",
+      "{\"applied_at\": \"2026-10-11 08:44:14\", \"content_hash\": \"f82947deeafe589598e2a1802eddf17712bd322692f924bb5653b0fbd5c46a0d\", \"version\": 3}",
+      "{\"applied_at\": \"2026-10-11 08:44:15\", \"content_hash\": \"08780b28ddef6c15f5de558ea08d821b52610f810555739ee1d737779986c607\", \"version\": 5}",
+      "{\"applied_at\": \"2026-10-11 08:44:15\", \"content_hash\": \"0efade0ecb620420ee42127d3f67230da108e31f2ff3c4281855a8dc9e187ecd\", \"version\": 11}",
+      "{\"applied_at\": \"2026-10-11 08:44:15\", \"content_hash\": \"127a4af7012769e5f016b13b198b7a57ff8386a10f8a68ffb9ff204989564d1b\", \"version\": 13}",
+      "{\"applied_at\": \"2026-10-11 08:44:15\", \"content_hash\": \"1f031aaf2037280e62cbf604748a4157bf25e3a60b3392af7d74835c5059bdd8\", \"version\": 17}",
+      "{\"applied_at\": \"2026-10-11 08:44:15\", \"content_hash\": \"29ad3654218700481b9541331c714ecbbe96dc81c04dc83fba6bf8d35bed7fa4\", \"version\": 14}",
+      "{\"applied_at\": \"2026-10-11 08:44:15\", \"content_hash\": \"31a55421b78d8c90db6cfba5bf8e99e87d6123271575282f761aa077e5d36386\", \"version\": 16}",
+      "{\"applied_at\": \"2026-10-11 08:44:15\", \"content_hash\": \"3c2120bf55d15e71a9f96972007c3d914154d17ea37a2b51b44412e3e3df6ef1\", \"version\": 18}",
+      "{\"applied_at\": \"2026-10-11 08:44:15\", \"content_hash\": \"3cfa1e07a3d02eb7f791814d9642a93b9af3bf63728943afa05dcb0e489919c8\", \"version\": 21}",
+      "{\"applied_at\": \"2026-10-11 08:44:15\", \"content_hash\": \"3d0adcb9f5833b4ba70fb48f88e1043250796feb7173abe000ea4de85eb8b3a5\", \"version\": 22}",
+      "{\"applied_at\": \"2026-10-11 08:44:15\", \"content_hash\": \"3d1ee4f9dde3342d110474c8090a30c474edafe2290e4372a3fc4607c1fdc030\", \"version\": 9}",
+      "{\"applied_at\": \"2026-10-11 08:44:15\", \"content_hash\": \"4746f10d7040d0b7a9e127437356de87765d12d2d27ee37c9800191e6b619d14\", \"version\": 6}",
+      "{\"applied_at\": \"2026-10-11 08:44:15\", \"content_hash\": \"51375854ec081d2e0b1434b5ff8b6d87092b891636214ebb9f1dbef22438cc1a\", \"version\": 8}",
+      "{\"applied_at\": \"2026-10-11 08:44:15\", \"content_hash\": \"59d6644667b7e34f9d23261cb694d461ddd4953969e75519d370b0cce8afd0e8\", \"version\": 10}",
+      "{\"applied_at\": \"2026-10-11 08:44:15\", \"content_hash\": \"69a96330e00643dfeddc4bf6ae9bf3b743a3cfddd86f16dc7b8912758b1b570d\", \"version\": 24}",
+      "{\"applied_at\": \"2026-10-11 08:44:15\", \"content_hash\": \"9ff476e6c73a3a477aec95143d5cbf180517a9484f647447392576f13181a015\", \"version\": 20}",
+      "{\"applied_at\": \"2026-10-11 08:44:15\", \"content_hash\": \"c3c8d92846a54183cc99afc09f779f6f5ba8030c16ce46b3ee750314bf134627\", \"version\": 7}",
+      "{\"applied_at\": \"2026-10-11 08:44:15\", \"content_hash\": \"c81ca9edc80c25f6ab4f92d05d6ea412a780b108d1ed83745027440e9723dceb\", \"version\": 25}",
+      "{\"applied_at\": \"2026-10-11 08:44:15\", \"content_hash\": \"d0edd83ca4cfbc46bd17799c6497a70c8c011d130d08a00c71daf792ee1dcd51\", \"version\": 23}",
+      "{\"applied_at\": \"2026-10-11 08:44:15\", \"content_hash\": \"db072d67a403e60d5bcbe924b84e473adb09f2326d36ede82fcdab17bb1e2a87\", \"version\": 19}",
+      "{\"applied_at\": \"2026-10-11 08:44:15\", \"content_hash\": \"dc5c1b9a74e42184451796068ecba1ca11d8ebd0fe7e8c4bd4900d0cfee30446\", \"version\": 26}",
+      "{\"applied_at\": \"2026-10-11 08:44:15\", \"content_hash\": \"e128a1301a2bcb967f684b09318aa5cf7ed9adb5f6dd7d412de3d67d1de2b28d\", \"version\": 12}",
+      "{\"applied_at\": \"2026-10-11 08:44:15\", \"content_hash\": \"e761d5c3ceb9610edbb2e1d153e82d235cc7d7f0b87f28a45bec43835e6a4e19\", \"version\": 15}"
+     ],
+     "leases": [],
+     "local_metadata": [
+      "{\"key\": \"bd_version\", \"value\": \"1.3.0\"}"
+     ],
+     "repo_mtimes": [],
+     "wisp_child_counters": [],
+     "wisp_comments": [],
+     "wisp_dependencies": [],
+     "wisp_events": [],
+     "wisp_labels": [],
+     "wisps": []
+    },
+    "writer": [
+     {
+      "epoch": 1,
+      "frame": "a"
+     }
+    ],
+    "git_refs": {
+     "refs/heads/main": "d630f44eb0d6bc80ce02d00537ef49f769a56b83",
+     "refs/remotes/origin/HEAD": "d91df5e3926a2c39a056c6e647954145182011ac",
+     "refs/remotes/origin/main": "d91df5e3926a2c39a056c6e647954145182011ac"
+    },
+    "beads_files": {
+     ".gitignore": "ceeaa2318e5a45879ffcf77750508a505e9127bc",
+     ".local_version": "2fdf7d04f0372055c9d77ca43d9a3c08798905f3",
+     "README.md": "52c04f2568e426ff4d7854d772300b6f85d41120",
+     "backup/LOCK": "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+     "backup/backup_state.json": "e4516de60a781442233ad5825f11292f673512b6",
+     "backup/hqmcq17hv3gtc7jcrgh9aupbcmr0lf0f.darc": "2df287a0e06e0d49071d86a8d0c75e0ed9230693",
+     "backup/manifest": "9f8d6ee080c91fa31e3a5581c62702bd69931bba",
+     "config.yaml": "e4c7e02642b11498a32c5e8d8d7c009ab53a6fac",
+     "metadata.json": "053eeea368a98a974517fe9bc1fe60cbf33219db"
+    }
+   },
+   "b": {
+    "alive": true,
+    "partitioned": false,
+    "holds": {
+     "armed": [],
+     "held": []
+    },
+    "main": "0f4utgddcadqpjkn2v5soe883qu2b9km",
+    "branches": [
+     [
+      "main",
+      "0f4utgddcadqpjkn2v5soe883qu2b9km"
+     ]
+    ],
+    "tags": [
+     "fx-boot"
+    ],
+    "remote_branches": [
+     [
+      "remotes/origin/main",
+      "e2chqv35dk351casjj62tem80n7dvhcf"
+     ]
+    ],
+    "status": [],
+    "local_tables": {
+     "bd_events_journal": [],
+     "bd_events_seq": [
+      "{\"id\": 0, \"next_seq\": 0}"
+     ],
+     "bh_local_ident": [
+      "{\"frame\": \"b\", \"id\": 1, \"role\": \"replica\"}"
+     ],
+     "events": [],
+     "ignored_schema_migrations": [
+      "{\"applied_at\": \"2026-10-11T08:44:19Z\", \"content_hash\": \"08780b28ddef6c15f5de558ea08d821b52610f810555739ee1d737779986c607\", \"version\": 5}",
+      "{\"applied_at\": \"2026-10-11T08:44:19Z\", \"content_hash\": \"0efade0ecb620420ee42127d3f67230da108e31f2ff3c4281855a8dc9e187ecd\", \"version\": 11}",
+      "{\"applied_at\": \"2026-10-11T08:44:19Z\", \"content_hash\": \"127a4af7012769e5f016b13b198b7a57ff8386a10f8a68ffb9ff204989564d1b\", \"version\": 13}",
+      "{\"applied_at\": \"2026-10-11T08:44:19Z\", \"content_hash\": \"12e18a8bdd214d6f96625e78998433ccc9c2d0ef4d1a35307f2653e725c800b9\", \"version\": 4}",
+      "{\"applied_at\": \"2026-10-11T08:44:19Z\", \"content_hash\": \"29ad3654218700481b9541331c714ecbbe96dc81c04dc83fba6bf8d35bed7fa4\", \"version\": 14}",
+      "{\"applied_at\": \"2026-10-11T08:44:19Z\", \"content_hash\": \"3d1ee4f9dde3342d110474c8090a30c474edafe2290e4372a3fc4607c1fdc030\", \"version\": 9}",
+      "{\"applied_at\": \"2026-10-11T08:44:19Z\", \"content_hash\": \"4746f10d7040d0b7a9e127437356de87765d12d2d27ee37c9800191e6b619d14\", \"version\": 6}",
+      "{\"applied_at\": \"2026-10-11T08:44:19Z\", \"content_hash\": \"51375854ec081d2e0b1434b5ff8b6d87092b891636214ebb9f1dbef22438cc1a\", \"version\": 8}",
+      "{\"applied_at\": \"2026-10-11T08:44:19Z\", \"content_hash\": \"59d6644667b7e34f9d23261cb694d461ddd4953969e75519d370b0cce8afd0e8\", \"version\": 10}",
+      "{\"applied_at\": \"2026-10-11T08:44:19Z\", \"content_hash\": \"a73e9a486124f89e90d50f4597fd1d7ad08e5d0d654459ec87b7520b47f1bb5f\", \"version\": 1}",
+      "{\"applied_at\": \"2026-10-11T08:44:19Z\", \"content_hash\": \"c3c8d92846a54183cc99afc09f779f6f5ba8030c16ce46b3ee750314bf134627\", \"version\": 7}",
+      "{\"applied_at\": \"2026-10-11T08:44:19Z\", \"content_hash\": \"c575c6710169f2e697f3aca60f5f698acc8a64af0edb1e2305b9d377fd845f45\", \"version\": 2}",
+      "{\"applied_at\": \"2026-10-11T08:44:19Z\", \"content_hash\": \"e128a1301a2bcb967f684b09318aa5cf7ed9adb5f6dd7d412de3d67d1de2b28d\", \"version\": 12}",
+      "{\"applied_at\": \"2026-10-11T08:44:19Z\", \"content_hash\": \"f82947deeafe589598e2a1802eddf17712bd322692f924bb5653b0fbd5c46a0d\", \"version\": 3}",
+      "{\"applied_at\": \"2026-10-11T08:44:20Z\", \"content_hash\": \"1f031aaf2037280e62cbf604748a4157bf25e3a60b3392af7d74835c5059bdd8\", \"version\": 17}",
+      "{\"applied_at\": \"2026-10-11T08:44:20Z\", \"content_hash\": \"31a55421b78d8c90db6cfba5bf8e99e87d6123271575282f761aa077e5d36386\", \"version\": 16}",
+      "{\"applied_at\": \"2026-10-11T08:44:20Z\", \"content_hash\": \"3c2120bf55d15e71a9f96972007c3d914154d17ea37a2b51b44412e3e3df6ef1\", \"version\": 18}",
+      "{\"applied_at\": \"2026-10-11T08:44:20Z\", \"content_hash\": \"3cfa1e07a3d02eb7f791814d9642a93b9af3bf63728943afa05dcb0e489919c8\", \"version\": 21}",
+      "{\"applied_at\": \"2026-10-11T08:44:20Z\", \"content_hash\": \"3d0adcb9f5833b4ba70fb48f88e1043250796feb7173abe000ea4de85eb8b3a5\", \"version\": 22}",
+      "{\"applied_at\": \"2026-10-11T08:44:20Z\", \"content_hash\": \"69a96330e00643dfeddc4bf6ae9bf3b743a3cfddd86f16dc7b8912758b1b570d\", \"version\": 24}",
+      "{\"applied_at\": \"2026-10-11T08:44:20Z\", \"content_hash\": \"9ff476e6c73a3a477aec95143d5cbf180517a9484f647447392576f13181a015\", \"version\": 20}",
+      "{\"applied_at\": \"2026-10-11T08:44:20Z\", \"content_hash\": \"c81ca9edc80c25f6ab4f92d05d6ea412a780b108d1ed83745027440e9723dceb\", \"version\": 25}",
+      "{\"applied_at\": \"2026-10-11T08:44:20Z\", \"content_hash\": \"d0edd83ca4cfbc46bd17799c6497a70c8c011d130d08a00c71daf792ee1dcd51\", \"version\": 23}",
+      "{\"applied_at\": \"2026-10-11T08:44:20Z\", \"content_hash\": \"db072d67a403e60d5bcbe924b84e473adb09f2326d36ede82fcdab17bb1e2a87\", \"version\": 19}",
+      "{\"applied_at\": \"2026-10-11T08:44:20Z\", \"content_hash\": \"dc5c1b9a74e42184451796068ecba1ca11d8ebd0fe7e8c4bd4900d0cfee30446\", \"version\": 26}",
+      "{\"applied_at\": \"2026-10-11T08:44:20Z\", \"content_hash\": \"e761d5c3ceb9610edbb2e1d153e82d235cc7d7f0b87f28a45bec43835e6a4e19\", \"version\": 15}"
+     ],
+     "leases": [],
+     "local_metadata": [
+      "{\"key\": \"bd_version\", \"value\": \"1.3.0\"}"
+     ],
+     "repo_mtimes": [],
+     "wisp_child_counters": [],
+     "wisp_comments": [],
+     "wisp_dependencies": [],
+     "wisp_events": [],
+     "wisp_labels": [],
+     "wisps": []
+    },
+    "writer": [
+     {
+      "epoch": 1,
+      "frame": "a"
+     }
+    ],
+    "users": [
+     "__dolt_local_user__@localhost",
+     "event_scheduler@localhost",
+     "root@localhost"
+    ],
+    "globals": [
+     {
+      "mc": 151,
+      "nrt": 28800
+     }
+    ],
+    "persisted": [],
+    "git_refs": {
+     "refs/heads/main": "baa8258f3a1fc59faf0080d4109c2afee4b98187",
+     "refs/remotes/origin/HEAD": "d91df5e3926a2c39a056c6e647954145182011ac",
+     "refs/remotes/origin/__dolt_remote_info__": "c0222b724501f7250ae39cd5b89b692e55a38600",
+     "refs/remotes/origin/main": "d91df5e3926a2c39a056c6e647954145182011ac"
+    },
+    "beads_files": {
+     ".gitignore": "ceeaa2318e5a45879ffcf77750508a505e9127bc",
+     ".local_version": "2fdf7d04f0372055c9d77ca43d9a3c08798905f3",
+     "README.md": "52c04f2568e426ff4d7854d772300b6f85d41120",
+     "config.yaml": "2aca0d2b99721146bea5f047730690403d72f98d",
+     "metadata.json": "92eaa10d96b1ad927f726b55923f1ec6fc3cf5fd"
+    }
+   },
+   "c": {
+    "alive": true,
+    "partitioned": false,
+    "holds": {
+     "armed": [],
+     "held": []
+    },
+    "main": "e2chqv35dk351casjj62tem80n7dvhcf",
+    "branches": [
+     [
+      "main",
+      "e2chqv35dk351casjj62tem80n7dvhcf"
+     ]
+    ],
+    "tags": [
+     "fx-boot"
+    ],
+    "remote_branches": [
+     [
+      "remotes/origin/main",
+      "e2chqv35dk351casjj62tem80n7dvhcf"
+     ]
+    ],
+    "status": [],
+    "local_tables": {
+     "bh_local_ident": [
+      "{\"frame\": \"c\", \"id\": 1, \"role\": \"replica\"}"
+     ]
+    },
+    "writer": [
+     {
+      "epoch": 1,
+      "frame": "a"
+     }
+    ]
+   }
+  }
+ },
+ "branch_probe": {
+  "create_branches": 0.429,
+  "checkout_embedded": 0.107,
+  "embedded_bd_create_ok": true,
+  "embedded_cli_active_branch": "per-test",
+  "embedded_write_on_main_working": false,
+  "embedded_write_on_per_test": true,
+  "embedded_guard_marks_on_per_test": 0,
+  "embedded_checkout_back": "error: There are uncommitted changes already on branch 'main'.This can happen when someone modifies that branch in a SQL session.You have uncommitted changes on",
+  "checkout_server_session": 0.263,
+  "server_active_branch_next_command": "main",
+  "server_default_branch_global": 0.242,
+  "server_active_branch_after_global": "per-test",
+  "server_bd_create_ok": true,
+  "server_write_on_per_test": true,
+  "server_write_on_main": false,
+  "server_guard_marks_on_per_test": 0,
+  "server_push_ok": true,
+  "server_push_moved_remote_main": true,
+  "remote_branches_after_push": [
+   "remotes/origin/main"
+  ],
+  "per_test_hash": "af75hia3nfrin3h8a0hdavecns64lrc3",
+  "remote_main_before_after": [
+   "e2chqv35dk351casjj62tem80n7dvhcf",
+   "0f4utgddcadqpjkn2v5soe883qu2b9km"
+  ],
+  "rewind_after": 1.36,
+  "leftovers_after_rewind": []
+ },
+ "template": {
+  "template_stop": 0.767,
+  "template_capture_copy": 0.062,
+  "tree_size": "9.0M",
+  "reflink_always": {
+   "rc": 1,
+   "stderr": "cp: failed to clone '<scratch>/bench/reflink-always/cluster/remote.git/hooks/applypatch-msg.sa"
+  },
+  "template_start": 1.247,
+  "leftovers_after_capture": [],
+  "rounds": [
+   {
+    "kill": true,
+    "dirty": 9.08,
+    "stop": 0.057,
+    "rm": 0.034,
+    "copy": 0.04,
+    "start": 1.192,
+    "rewind": 1.323,
+    "leftovers": []
+   },
+   {
+    "kill": false,
+    "dirty": 9.061,
+    "stop": 0.782,
+    "rm": 0.019,
+    "copy": 0.037,
+    "start": 1.18,
+    "rewind": 2.02,
+    "leftovers": []
+   },
+   {
+    "kill": true,
+    "dirty": 9.326,
+    "stop": 0.056,
+    "rm": 0.021,
+    "copy": 0.04,
+    "start": 1.183,
+    "rewind": 1.3,
+    "leftovers": []
+   }
+  ],
+  "other_fs_copy_seconds": 0.06,
+  "other_fs": "ext4"
+ },
+ "host_load": [
+  " 08:44:08 up 6 days,  5:04,  4 users,  load average: 5.73, 12.58, 14.73",
+  " 08:48:00 up 6 days,  5:08,  4 users,  load average: 3.69, 8.03, 12.41",
+  ""
+ ]
+}

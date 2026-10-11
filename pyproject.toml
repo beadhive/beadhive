@@ -237,6 +237,10 @@ markers = [
     # ADR condition 9 (bh-p07dv): the Dolt/bd trigger-semantics canary. Every Dolt or bd pin
     # bump re-runs it (`just fence-canary`); see tests/harness/trigger_canary.py.
     "fence_canary: Dolt/bd trigger-semantics canary re-run on every Dolt or bd pin bump",
+    # bh-i970d: the pooled `rewound_cluster` / `rewound_world` fixtures rebuild after a test
+    # marked destructive, and fingerprint the restore before a test marked cluster_guard.
+    "cluster_destructive: the pooled fencing cluster is rebuilt after this test (bh-i970d)",
+    "cluster_guard: run the post-rewind leak guard before this test (bh-i970d)",
     # bh-zbn8a: wall-clock latency/overlap assertions. Deselected from every gate lane by
     # tests/conftest.py unless selected with `-m perf` or BH_PERF_TESTS=1; run on a quiet host.
     "perf: asserts measured wall-clock latency; excluded from the gate, run on a quiet host (bh-zbn8a)",

@@ -1,0 +1,323 @@
+{
+ "remote_refs_after_bootstrap_push": [
+  "refs/dolt/data",
+  "refs/heads/__dolt_remote_info__",
+  "refs/heads/main"
+ ],
+ "before_dirty": {
+  "head": true,
+  "t": [
+   [
+    1,
+    10
+   ]
+  ],
+  "w_epoch": 5,
+  "triggers": [
+   "w_mono"
+  ],
+  "branches": [
+   "main"
+  ],
+  "tags": [
+   "boot"
+  ],
+  "remote_branches": [
+   [
+    "remotes/origin/main",
+    "vv976p2k77q7d712j9eidko9bjdmr3o9"
+   ]
+  ],
+  "tables": [
+   "loc_ident",
+   "t",
+   "w"
+  ],
+  "loc_ident": [
+   [
+    "boot"
+   ]
+  ],
+  "status": [],
+  "users": [
+   "__dolt_local_user__@localhost",
+   "event_scheduler@localhost",
+   "root@localhost"
+  ],
+  "max_connections": 151,
+  "net_read_timeout": 28800
+ },
+ "dirty": {
+  "head": false,
+  "t": [
+   [
+    1,
+    10
+   ],
+   [
+    2,
+    20
+   ],
+   [
+    3,
+    30
+   ]
+  ],
+  "w_epoch": 9,
+  "triggers": [
+   "t_extra",
+   "w_mono"
+  ],
+  "branches": [
+   "main",
+   "scratch"
+  ],
+  "tags": [
+   "boot",
+   "t-extra"
+  ],
+  "remote_branches": [
+   [
+    "remotes/origin/main",
+    "7iv7nat0989fo15gn0510qu9ifgkrci2"
+   ]
+  ],
+  "tables": [
+   "loc_ident",
+   "t",
+   "u",
+   "w"
+  ],
+  "loc_ident": [
+   [
+    "dirty"
+   ]
+  ],
+  "status": [
+   [
+    "u",
+    0,
+    "new table"
+   ],
+   [
+    "t",
+    0,
+    "modified"
+   ]
+  ],
+  "users": [
+   "__dolt_local_user__@localhost",
+   "event_scheduler@localhost",
+   "probe_u@%",
+   "root@localhost"
+  ],
+  "max_connections": 77,
+  "net_read_timeout": 77
+ },
+ "remote_data_moved": true,
+ "sql_reset_to_tag_seconds": 0.0027,
+ "after_sql_reset_seen_by_new_session": {
+  "head": true,
+  "t": [
+   [
+    1,
+    10
+   ]
+  ],
+  "w_epoch": 5,
+  "triggers": [
+   "w_mono"
+  ],
+  "branches": [
+   "main",
+   "scratch"
+  ],
+  "tags": [
+   "boot",
+   "t-extra"
+  ],
+  "remote_branches": [
+   [
+    "remotes/origin/main",
+    "7iv7nat0989fo15gn0510qu9ifgkrci2"
+   ]
+  ],
+  "tables": [
+   "loc_ident",
+   "t",
+   "u",
+   "w"
+  ],
+  "loc_ident": [
+   [
+    "dirty"
+   ]
+  ],
+  "status": [
+   [
+    "u",
+    0,
+    "new table"
+   ]
+  ],
+  "users": [
+   "__dolt_local_user__@localhost",
+   "event_scheduler@localhost",
+   "probe_u@%",
+   "root@localhost"
+  ],
+  "max_connections": 77,
+  "net_read_timeout": 77
+ },
+ "stale_txn_commit": "committed",
+ "after_stale_txn_commit": {
+  "head": true,
+  "t": [
+   [
+    1,
+    10
+   ],
+   [
+    99,
+    990
+   ]
+  ],
+  "w_epoch": 5,
+  "triggers": [
+   "w_mono"
+  ],
+  "branches": [
+   "main",
+   "scratch"
+  ],
+  "tags": [
+   "boot",
+   "t-extra"
+  ],
+  "remote_branches": [
+   [
+    "remotes/origin/main",
+    "7iv7nat0989fo15gn0510qu9ifgkrci2"
+   ]
+  ],
+  "tables": [
+   "loc_ident",
+   "t",
+   "u",
+   "w"
+  ],
+  "loc_ident": [
+   [
+    "dirty"
+   ]
+  ],
+  "status": [
+   [
+    "u",
+    0,
+    "new table"
+   ],
+   [
+    "t",
+    0,
+    "modified"
+   ]
+  ],
+  "users": [
+   "__dolt_local_user__@localhost",
+   "event_scheduler@localhost",
+   "probe_u@%",
+   "root@localhost"
+  ],
+  "max_connections": 77,
+  "net_read_timeout": 77
+ },
+ "checkout_scope": {
+  "same_session": "per-test",
+  "other_session": "main",
+  "new_session_after_default_branch_global": "per-test",
+  "write_on_per_test_lands_on_main": false
+ },
+ "set_global_multi_assign": [
+  151,
+  77
+ ],
+ "reset_persist": "refused: (1105, \"syntax error at position 14 near 'persist'\")",
+ "fetch_after_remote_rewind": {
+  "origin_main_moved_back": false,
+  "unchanged": true
+ },
+ "after_restart": {
+  "head": true,
+  "t": [
+   [
+    1,
+    10
+   ]
+  ],
+  "w_epoch": 5,
+  "triggers": [
+   "w_mono"
+  ],
+  "branches": [
+   "main",
+   "per-test",
+   "scratch"
+  ],
+  "tags": [
+   "boot",
+   "t-extra"
+  ],
+  "remote_branches": [
+   [
+    "remotes/origin/main",
+    "7iv7nat0989fo15gn0510qu9ifgkrci2"
+   ]
+  ],
+  "tables": [
+   "loc_ident",
+   "t",
+   "u",
+   "w"
+  ],
+  "loc_ident": [
+   [
+    "dirty"
+   ]
+  ],
+  "status": [
+   [
+    "u",
+    0,
+    "new table"
+   ]
+  ],
+  "users": [
+   "__dolt_local_user__@localhost",
+   "event_scheduler@localhost",
+   "probe_u@%",
+   "root@localhost"
+  ],
+  "max_connections": 77,
+  "net_read_timeout": 28800
+ },
+ "persisted_config_files": {
+  ".dolt/config.json": "{\"sqlserver.global.max_connections\":\"77\",\"sqlserver.global.server_uuid\":\"bc645904-a936-4f20-88c8-8b2cc293dc8b\"}"
+ },
+ "doltcfg_files": [
+  ".doltcfg/branch_control.db",
+  ".doltcfg/privileges.db"
+ ],
+ "cli_reset_to_tag_seconds": 0.1166,
+ "after_cli_reset_t": [
+  {
+   "id": 1
+  }
+ ],
+ "after_cli_reset_monotonic_trigger_epoch": [
+  {
+   "epoch": 5
+  }
+ ],
+ "dolt_version": "dolt version 2.3.5"
+}
