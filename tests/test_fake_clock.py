@@ -58,3 +58,14 @@ def test_stop_callable_drives_session_renewer_run():
     renewer.run(interval_s=10, stop=clock.stop_after(3))
     assert len(ticks) == 3
     assert clock.monotonic() >= 1000.0 + 10
+
+
+def test_session_renewer_run_measures_ticks_on_the_injected_clock():
+    """bh-qwbrz: with ``clock=`` the wait is exactly ``interval_s`` minus virtual tick time."""
+    clock = FakeClock()
+    ticks: list[float] = []
+    renewer = SessionRenewer(lambda: None)
+    renewer.tick = lambda: ticks.append(clock.monotonic())  # type: ignore[method-assign]
+    renewer.run(interval_s=10, stop=clock.stop_after(3), clock=clock.monotonic)
+    assert ticks == [1000.0, 1010.0, 1020.0]
+    assert clock.sleeps == [10.0, 10.0, 10.0]

@@ -740,9 +740,7 @@ class GitHQ(_Reachability):
 
     mode = "git"
 
-    def __init__(
-        self, root: Path, *, prefix: str = "fx", wall: Callable[[], float] = time.time
-    ):
+    def __init__(self, root: Path, *, prefix: str = "fx", wall: Callable[[], float] = time.time):
         super().__init__()
         self.root = root
         self.prefix = prefix
