@@ -23,6 +23,12 @@ frame) with the product ``fence_audit`` history check on:
   races to one primary, the primary dies, the director places the standby, whose adopt reclaims
   the dead primary's claims by backup (M14 D5a) and leaves the executors' live claims untouched;
   the executors re-point and keep claiming: 0 double wins.
+* ``test_branch_role_frame_*`` — the branch path (``bh-sieai`` R2, moved from the retired
+  ``bh-jbb6r`` s8): a frame with the product guard's ``branch`` role publishes to a
+  frame-private data ref and its edits reach ``main`` only through the primary's deliberate
+  ``bh: merge frame/...`` merge.
+* ``test_invariant_checker_*`` — the negative control (moved from ``bh-jbb6r``): a stale write
+  forced past the fence is flagged by every invariant that should see it.
 * ``test_m13_*`` — option A's grant shape (bh-uhx2r, M13 amendment): excess grants are a
   conformance finding; table-scoped grants refuse E2's stale-write steps and E3's
   ``bh_local_ident`` rewrite in Dolt; an in-flight forwarded write is refused across the
@@ -666,6 +672,90 @@ def test_multi_executor_forwarding_survives_primary_failover_with_backup_reclaim
         admin_p.connection.close()
         admin_q.connection.close()
         _clean(world)
+
+
+# =============================================================================================
+# The branch path (bh-sieai R2): a branch-role frame's edits merge through the primary
+# =============================================================================================
+
+
+@pytest.mark.dolt_server
+def test_branch_role_frame_edits_reach_main_only_through_the_primarys_merge(tmp_path):
+    """Moved from the retired ``bh-jbb6r`` s8 (its forward-claim half lives in
+    ``test_hive_forward_int`` and the multi-executor test above). ``q`` is provisioned with the
+    product guard's ``branch`` role: its local ``main`` is a staging branch it publishes to a
+    frame-private data ref, so even its raw push never moves remote ``main``. The primary ``p``
+    merges it deliberately (``bh: merge frame/...``), and every invariant holds, the product
+    history check included."""
+    frames = [("q", BD_EMBEDDED), ("p", BD_SERVER)]  # an embedded frame founds the fixture
+    with product_world(tmp_path, frames, holder="p") as world:
+        p, q = world["p"], world["q"]
+        assert world.writer() == "p"
+        made = p.bd("create", "--title", "branch-target", "-t", "task", "--json")
+        made.check()
+        created = json.loads(made.stdout)
+        bead = created["id"] if isinstance(created, dict) else created[0]["id"]
+        assert _managed_push(world, "p")[0] == "pushed"
+
+        world.node("q").provision_ident("q", role="branch")
+        assert world.node("q").ident() == ("q", "branch")
+        url = world.cluster.remote.url
+        q.dolt("remote", "add", "--ref", "refs/dolt/frame/q", "branchout", url).check()
+        # The trailing slash is load-bearing: the Dolt 2.3.5 sql-server reuses its open remote
+        # for an identical URL and ignores the new remote's --ref, so fetching `frame-q` with
+        # the same URL as origin silently re-reads refs/dolt/data (bh-jbb6r E8).
+        p.bd(
+            "sql", f"CALL DOLT_REMOTE('add', '--ref', 'refs/dolt/frame/q', 'frame-q', '{url}/')"
+        ).check()
+        for i in range(2):
+            q.pull().check()
+            main_before = world.cluster.remote.view(("bh_writer",))["main"]
+            q.bd("label", "add", bead, f"branch-{i}").check()  # not the writer: branch role
+            q.bd("comment", bead, f"branch-comment-{i}").check()
+            q.dolt("push", "--force", "branchout", "main").check()
+            assert world.cluster.remote.view(("bh_writer",))["main"] == main_before
+            assert f"branch-{i}" not in _remote_labels(world, bead)
+            p.bd("dolt", "commit", "-m", "bh: commit working set before merge")
+            merged = cf.merge_branch(p, "frame-q", "main", f"q/{i}")
+            assert merged.ok, merged.output
+            assert _managed_push(world, "p")[0] == "pushed"
+        assert {"branch-0", "branch-1"} <= set(_remote_labels(world, bead))
+        assert world.writer() == "p"
+        world.node("q").provision_ident("q")  # back to an ordinary, guarded replica
+        _refused(_try_write(q, "branch-after-demotion"), fs.GUARD_REFUSAL)
+        _clean(world)
+
+
+# =============================================================================================
+# The invariant checker is not vacuous (negative control)
+# =============================================================================================
+
+
+def test_invariant_checker_flags_a_stale_write_forced_past_the_fence(tmp_path):
+    """Moved from the retired ``bh-jbb6r`` spike, now on the product cut-over hive and product
+    adopt: a stale Dolt CLI writer commits a refused pull with ``--force`` (raw Dolt,
+    break-glass; bh-vje85 E11) and pushes. Every invariant that should see it does, so a green
+    :func:`harness.composed_fence.check_invariants` elsewhere in this suite means something."""
+    frames = [("a", BD_EMBEDDED), ("c", DOLT_CLI)]
+    with product_world(tmp_path, frames, holder="a") as world:
+        c = world["c"]
+        _take(world, "c")
+        assert _try_write(c, "neg-stale").ok  # c's unpublished write at its epoch
+        _take(world, "a")  # a takes over; c is now stale
+        _refused(c.dolt("pull", "origin", "main"), "CONSTRAINT VIOLATION", "constraint violation")
+        c.dolt("add", "-A").check()
+        c.dolt("commit", "--force", "-m", "stale merge forced past the fence").check()
+        c.push().check()
+        world.moves.observe("forced", "c")
+        result = cf.check_invariants(world, history_check=True)
+        assert not result["ok"]
+        for key in (
+            "i1_one_writer_per_epoch",
+            "i3_late_epoch_commit",
+            "i4_retired_mark_in_merge",
+            "audit",
+        ):
+            assert result["violations"].get(key), (key, result["violations"])
 
 
 # =============================================================================================
