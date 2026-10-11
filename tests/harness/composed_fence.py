@@ -50,6 +50,7 @@ import sys
 import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -65,6 +66,8 @@ from harness.writer_fencing import (
     HQUnreachable,
     Placement,
     Run,
+    Template,
+    port_free,
 )
 
 __all__ = [
@@ -501,10 +504,9 @@ class SqlHQ(_Reachability):
                 )
             )
             self.port = free_port()
-            (self.root / "server.yaml").write_text(
-                f"data_dir: {self.root / 'data'}\n"
-                f"listener:\n  host: 127.0.0.1\n  port: {self.port}\n"
-            )
+            self._write_config()
+        elif not port_free(self.port):
+            self.rebind_port(free_port())  # taken while HQ was down (bh-i970d)
         env = {
             "PATH": os.environ.get("PATH", ""),
             "DOLT_ROOT_PATH": str(self.root / "dolt-root"),
@@ -532,6 +534,16 @@ class SqlHQ(_Reachability):
         if first:
             self._provision()
         return self
+
+    def _write_config(self) -> None:
+        (self.root / "server.yaml").write_text(
+            f"data_dir: {self.root / 'data'}\nlistener:\n  host: 127.0.0.1\n  port: {self.port}\n"
+        )
+
+    def rebind_port(self, port: int) -> None:
+        """Move a STOPPED HQ to ``port`` (bh-i970d: a template restore found its port taken)."""
+        self.port = port
+        self._write_config()
 
     def down(self) -> None:
         self.up = False
@@ -1161,9 +1173,74 @@ class World:
     cluster: Cluster
     hq: SqlHQ | GitHQ
     moves: MoveLog | None = None
+    #: The directory holding both ``cluster`` and ``hq``: what a template copies.
+    root: Path | None = None
 
     def __getitem__(self, name: str) -> Frame:
         return self.cluster[name]
+
+    # -- template rewind (bh-i970d) ---------------------------------------------------------
+    def stop_processes(self) -> None:
+        """Stop HQ and every frame in parallel; the files stay."""
+        with ThreadPoolExecutor(2) as pool:
+            hq = pool.submit(self.hq.down)
+            self.cluster.stop_processes()
+            hq.result()
+
+    def start_processes(self) -> None:
+        """Restart HQ and every frame, then clear the Python-side caches."""
+        with ThreadPoolExecutor(2) as pool:
+            hq = pool.submit(self.hq.resume)
+            self.cluster.start_processes()
+            hq.result()
+        self.cluster.reset_caches()
+        self.hq._cut.clear()
+        self.hq._last = self._boot_placement
+        self.moves = MoveLog(self.cluster)
+
+    def snapshot(self) -> Template:
+        """:meth:`Cluster.snapshot` for the whole world: HQ stops and restarts with the frames,
+        and the template is ``root`` (cluster and HQ together)."""
+        if self.root is None:
+            raise RuntimeError("World.snapshot() needs World.root")
+        if isinstance(self.hq, SqlHQ):
+            # placement is autocommit DML: commit it so HQ's working set is clean at boot
+            self.hq._exec(("root", ""), "CALL DOLT_ADD('-A')")
+            self.hq._exec(("root", ""), "CALL DOLT_COMMIT('--allow-empty', '-m', 'fixture: boot')")
+        self._boot_placement = self.hq.placement()
+        self.stop_processes()
+        self._template = Template(self.root)
+        self._template.capture()
+        cl = self.cluster
+        self._saved = ({n: (dict(f.env), f.port) for n, f in cl.frames.items()}, self.hq_port)
+        self.start_processes()
+        return self._template
+
+    @property
+    def hq_port(self) -> int | None:
+        return getattr(self.hq, "port", None)
+
+    def restore(self) -> dict[str, float]:
+        """Rewind to :meth:`snapshot` (stop, copy back over ``root``, restart). Returns the
+        phase timings in seconds; ``total`` is the whole rewind."""
+        template = getattr(self, "_template", None)
+        if template is None:
+            raise RuntimeError("restore() without snapshot()")
+        timings: dict[str, float] = {}
+        started = time.monotonic()
+        self.stop_processes()
+        timings["stop"] = round(time.monotonic() - started, 3)
+        template.restore(timings)
+        frames, hq_port = self._saved
+        for name, (env, port) in frames.items():
+            self.cluster.frames[name].env, self.cluster.frames[name].port = dict(env), port
+        if hq_port is not None:
+            self.hq.port = hq_port
+        mark = time.monotonic()
+        self.start_processes()
+        timings["start"] = round(time.monotonic() - mark, 3)
+        timings["total"] = round(time.monotonic() - started, 3)
+        return timings
 
 
 @contextlib.contextmanager
@@ -1196,7 +1273,7 @@ def composed_world(
         with cluster:
             first = writer or next((n for n, k in frames if k != DOLT_CLI), frames[0][0])
             install(cluster, first)
-            world = World(cluster, hq)
+            world = World(cluster, hq, root=root)
             world.moves = MoveLog(cluster)
             yield world
     finally:

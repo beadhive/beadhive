@@ -30,12 +30,14 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -53,6 +55,7 @@ __all__ = [
     "KINDS",
     "Cluster",
     "Frame",
+    "Template",
     "HQUnreachable",
     "Hold",
     "Pending",
@@ -60,7 +63,9 @@ __all__ = [
     "Recorder",
     "Remote",
     "Run",
+    "copy_tree",
     "pid_alive",
+    "port_free",
 ]
 
 DOLT_CLI = "dolt-cli"
@@ -697,6 +702,25 @@ class Frame:
             reap_dolt_server(self.server_dir)
         self._proc = self._conn = None
 
+    def rebind_port(self, port: int) -> None:
+        """Move a STOPPED ``bd-server`` frame to ``port`` (bh-i970d): rewrite bd's on-disk
+        listener config and the ``BEADS_DOLT_SERVER_PORT`` bd reads at ``bd dolt start``."""
+        config = self.server_dir / "dolt-server-config.yaml"
+        if config.is_file():
+            config.write_text(
+                re.sub(r"(?m)^(\s+port:\s*)\d+\s*$", rf"\g<1>{port}", config.read_text())
+            )
+        (self.server_dir / "dolt-server.port").unlink(missing_ok=True)
+        self.port = port
+        self.env["BEADS_DOLT_SERVER_PORT"] = str(port)
+
+    def start_server(self) -> Pending:
+        """``bd dolt start`` on the frame's own port, rebinding first when another process took
+        that port while the frame was stopped. See :meth:`Cluster.start_processes`."""
+        if self.port is None or not port_free(self.port):
+            self.rebind_port(_free_port())
+        return self.spawn("bd", "dolt", "start")
+
     def guard(self, tables: Sequence[str] = ()) -> dict:
         """Fixture-side fault state, plus local ``tables`` rows when the frame is idle."""
         state = {
@@ -726,6 +750,61 @@ def pid_alive(pid: int) -> bool:
         stat = Path(f"/proc/{pid}/stat").read_text()
         return stat.rsplit(")", 1)[1].split()[0] != "Z"
     return True
+
+
+def port_free(port: int) -> bool:
+    """Whether a listener could bind ``127.0.0.1:port`` right now."""
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
+def copy_tree(src: Path, dst: Path) -> None:
+    """``cp -a --reflink=auto``: a reflink clone where the filesystem supports one (btrfs, XFS
+    with reflink), else a byte copy -- ~0.04 s for a ~9 MB cluster on tmpfs or ext4 (bh-jk4mn
+    Evidence 15). The macOS ``clonefile`` adapter is not needed at this size."""
+    flags = ["-a", "--reflink=auto"] if sys.platform != "darwin" else ["-a"]
+    res = subprocess.run(["cp", *flags, str(src), str(dst)], capture_output=True, text=True)
+    if res.returncode:
+        raise AssertionError(f"copy {src} -> {dst} failed: {res.stderr}")
+
+
+class Template:
+    """A stopped-cluster template of ``root`` at a sibling path (bh-jk4mn Mechanism C).
+
+    Restoring copies the template back over the SAME absolute path: the remote URL, the frame
+    git shims, bd's server config and SqlHQ's ``server.yaml`` all embed absolute paths
+    (bh-jk4mn Evidence 16). Everything on disk -- remote refs, ignored tables, users and grants,
+    ``SET PERSIST``, bd's plain files, fixture controls -- comes back by construction, with no
+    code per state class. The caller stops every process first and restarts them after.
+    """
+
+    def __init__(self, root: Path, path: Path | None = None):
+        self.root = root
+        self.path = path or root.with_name(root.name + ".template")
+
+    def capture(self) -> None:
+        if self.path.exists():
+            shutil.rmtree(self.path)
+        copy_tree(self.root, self.path)
+
+    def restore(self, timings: dict[str, float] | None = None) -> None:
+        timings = {} if timings is None else timings
+        started = time.monotonic()
+        if self.root.exists():
+            shutil.rmtree(self.root)
+        timings["rm"] = round(time.monotonic() - started, 3)
+        started = time.monotonic()
+        copy_tree(self.path, self.root)
+        timings["copy"] = round(time.monotonic() - started, 3)
+
+    def discard(self) -> None:
+        shutil.rmtree(self.path, ignore_errors=True)
 
 
 def _kill_tree(pid: int) -> None:
@@ -954,6 +1033,83 @@ class Cluster:
                 frame.sql(f"call dolt_reset('--hard', '{target}')").check()
             else:
                 frame.dolt("reset", "--hard", target).check()
+
+    # -- template rewind (bh-i970d, bh-jk4mn Mechanism C) ---------------------------------
+    def stop_processes(self) -> None:
+        """Stop every frame (agent, bd's sql-server) in parallel; the files stay."""
+        for frame in self.frames.values():
+            with contextlib.suppress(Exception):
+                if frame._pending is not None and frame.alive:
+                    frame._pending.result(30)
+            frame.heal()
+        with ThreadPoolExecutor(len(self.frames)) as pool:
+            list(pool.map(lambda f: f.stop(), self.frames.values()))
+
+    def start_processes(self) -> None:
+        """Start every frame's agent and, in parallel, every ``bd-server`` frame's server --
+        on its recorded port, or a fresh one when that port was taken meanwhile."""
+        for frame in self.frames.values():
+            for sub in ("holds", "held", "arrived"):
+                for path in (frame.ctl / sub).iterdir():
+                    path.unlink(missing_ok=True)
+            frame._start_agent()
+        servers = [f for f in self.frames.values() if f.kind == BD_SERVER]
+        starts = [(f, f.start_server()) for f in servers]
+        for frame, pending in starts:
+            if pending.result().ok:
+                continue
+            # lost a bind race after the free-port check: move once more and retry
+            from harness.world import reap_dolt_server
+
+            reap_dolt_server(frame.server_dir)
+            frame.rebind_port(_free_port())
+            frame.bd("dolt", "start").check()
+
+    def reset_caches(self) -> None:
+        """Python-side state the template cannot carry (bh-jk4mn inventory row 25)."""
+        self.remote._cache = None
+        cut = getattr(self.hq, "_cut", None)
+        if cut is not None:
+            cut.clear()
+        for frame in self.frames.values():
+            frame._pending = None
+
+    def snapshot(self, template: Path | None = None) -> Template:
+        """Capture a stopped-cluster template of ``root`` and restart; :meth:`restore` returns
+        here. Take it with every frame idle, after install/provisioning."""
+        self.stop_processes()
+        self._template = Template(self.root, template)
+        self._template.capture()
+        self._saved_env = {n: (dict(f.env), f.port) for n, f in self.frames.items()}
+        self.start_processes()
+        self.reset_caches()
+        return self._template
+
+    def restore(self) -> dict[str, float]:
+        """Rewind to :meth:`snapshot`: stop, copy the template back over ``root``, restart.
+        Returns the phase timings (seconds)."""
+        template = getattr(self, "_template", None)
+        if template is None:
+            raise RuntimeError("restore() without snapshot()")
+        timings: dict[str, float] = {}
+        started = time.monotonic()
+        with self._timed_into(timings, "stop"):
+            self.stop_processes()
+        template.restore(timings)
+        for name, (env, port) in self._saved_env.items():
+            self.frames[name].env, self.frames[name].port = dict(env), port
+        with self._timed_into(timings, "start"):
+            self.start_processes()
+        self.reset_caches()
+        timings["total"] = round(time.monotonic() - started, 3)
+        return timings
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _timed_into(into: dict[str, float], label: str) -> Iterator[None]:
+        started = time.monotonic()
+        yield
+        into[label] = round(time.monotonic() - started, 3)
 
     def close(self) -> None:
         for frame in self.frames.values():
