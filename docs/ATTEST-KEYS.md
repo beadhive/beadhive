@@ -27,6 +27,7 @@ falls back to the complete key set.
 | `architecture-contracts` | `just attest-architecture-contracts` | `attest:architecture-contracts` | Architecture, transport, wire, and proof contracts |
 | `packages` | `just attest-packages` | `attest:packages` | Ruff and sandboxed tests for every other `packages/*` distribution |
 | `bd-cli` | `just attest-bd-cli` | `attest:bd-cli` | Ruff and sandboxed tests for `packages/beadhive-bd-cli` only |
+| `hq-storage` | `just attest-hq-storage` | `attest:hq-storage` | Ruff and sandboxed tests for `packages/beadhive-hq-storage` and `packages/beadhive-hq-storage-dolt` only |
 | `demos` | `just attest-demos` | `attest:demos` | Local-loop and live-ingress operator demos |
 
 `packages` owns the template, Beads client, core, plugins, and worktrees distributions. The
@@ -47,6 +48,14 @@ Its targets carry `attest:bd-cli` rather than `attest:packages`, and `just bd-cl
 `just packages-check` — is its whole-package recipe, called by `just attest-bd-cli`. The native
 `bd-cli` selector also includes `beadhive-core`, `beadhive-beads-client`, `pyproject.toml`, and
 `uv.lock`, because its proof depends on those package APIs and the resolved dependency graph.
+
+The two HQ storage packages (`beadhive-hq-storage`, `beadhive-hq-storage-dolt`, bh-wnhkn) share
+one dedicated `hq-storage` key rather than `packages`: they move together with the port contract
+and would otherwise invalidate every other distribution's proof. Their targets carry
+`attest:hq-storage`, and `just hq-storage-check` is the whole-key recipe called by
+`just attest-hq-storage`. The key's native selector must include both package directories plus
+`pyproject.toml`, `uv.lock`, `justfile` and `scripts/*`, like the other package keys. The wheel
+vendors both import packages and the `hq-storage` dependency group installs them for dev/CI.
 
 Both native package keys select `justfile` and `scripts/*`. Those paths cover the recipe bodies,
 the hermetic fence, watchdog, pytest report wrapper, and package test-path discovery instead of

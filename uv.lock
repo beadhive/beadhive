@@ -16,6 +16,8 @@ members = [
     "beadhive-bd-cli",
     "beadhive-beads-client",
     "beadhive-core",
+    "beadhive-hq-storage",
+    "beadhive-hq-storage-dolt",
     "beadhive-package-template",
     "beadhive-pants",
     "beadhive-plugins",
@@ -154,6 +156,10 @@ dev = [
     { name = "ruff" },
     { name = "time-machine" },
 ]
+hq-storage = [
+    { name = "beadhive-hq-storage" },
+    { name = "beadhive-hq-storage-dolt" },
+]
 pants = [
     { name = "beadhive-pants" },
 ]
@@ -205,6 +211,10 @@ dev = [
     { name = "ruff", specifier = ">=0.6" },
     { name = "time-machine", specifier = ">=3.5.1" },
 ]
+hq-storage = [
+    { name = "beadhive-hq-storage", editable = "packages/beadhive-hq-storage" },
+    { name = "beadhive-hq-storage-dolt", editable = "packages/beadhive-hq-storage-dolt" },
+]
 pants = [{ name = "beadhive-pants", editable = "packages/beadhive-pants" }]
 plugins = [{ name = "beadhive-plugins", editable = "packages/beadhive-plugins" }]
 worktrees = [{ name = "beadhive-worktrees", editable = "packages/beadhive-worktrees" }]
@@ -249,6 +259,22 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "beadhive-beads-client", editable = "packages/beadhive-beads-client" }]
+
+[[package]]
+name = "beadhive-hq-storage"
+version = "0.1.0"
+source = { editable = "packages/beadhive-hq-storage" }
+
+[[package]]
+name = "beadhive-hq-storage-dolt"
+version = "0.1.0"
+source = { editable = "packages/beadhive-hq-storage-dolt" }
+dependencies = [
+    { name = "beadhive-hq-storage" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "beadhive-hq-storage", editable = "packages/beadhive-hq-storage" }]
 
 [[package]]
 name = "beadhive-package-template"

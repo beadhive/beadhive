@@ -359,6 +359,8 @@ def test_real_root_composition_maps_all_consumed_workspace_packages() -> None:
         "packages/beadhive-bd-cli/*",
         "packages/beadhive-beads-client/*",
         "packages/beadhive-core/*",
+        "packages/beadhive-hq-storage-dolt/*",
+        "packages/beadhive-hq-storage/*",
         "packages/beadhive-pants/*",
         "packages/beadhive-plugins/*",
         "packages/beadhive-worktrees/*",

@@ -115,6 +115,8 @@ packages = [
     "src/beadhive",
     "packages/beadhive-core/src/beadhive_core",
     "packages/beadhive-bd-cli/src/beadhive_bd_cli",
+    "packages/beadhive-hq-storage/src/beadhive_hq_storage",
+    "packages/beadhive-hq-storage-dolt/src/beadhive_hq_storage_dolt",
     "packages/beadhive-beads-client/src/beadhive_beads_client",
     "packages/beadhive-beads-client/src/beads_v1_3",
     "packages/beadhive-plugins/src/beadhive_plugins",
@@ -131,6 +133,8 @@ members = ["packages/*"]
 beadhive-pants = { workspace = true }
 beadhive-core = { workspace = true }
 beadhive-bd-cli = { workspace = true }
+beadhive-hq-storage = { workspace = true }
+beadhive-hq-storage-dolt = { workspace = true }
 beadhive-beads-client = { workspace = true }
 beadhive-plugins = { workspace = true }
 beadhive-worktrees = { workspace = true }
@@ -139,7 +143,7 @@ beadhive-worktrees = { workspace = true }
 # and CI checkouts keep resolving `beadhive-pants` from the workspace exactly as before this
 # bead — only the PUBLISHED wheel's hard-dependency graph changed.
 [tool.uv]
-default-groups = ["dev", "pants", "core", "plugins", "worktrees"]
+default-groups = ["dev", "pants", "core", "plugins", "worktrees", "hq-storage"]
 
 [dependency-groups]
 # The workspace member, for dev/CI only (bh-mxjoy): kept OUT of [project.optional-dependencies]'s
@@ -157,6 +161,10 @@ core = ["beadhive-core", "beadhive-beads-client", "beadhive-bd-cli"]
 # packages above) since discovery, the lifecycle dispatcher, and bootstrap depend on it
 # unconditionally, not as an optional extra.
 plugins = ["beadhive-plugins"]
+# The backend-neutral HQ storage port and its Dolt adapter (bh-wnhkn, docs/design/hq-storage-port-adr.md),
+# editable from the workspace for dev/CI. The published wheel vendors both import packages (see the
+# wheel packages above), as it does for beadhive-core.
+hq-storage = ["beadhive-hq-storage", "beadhive-hq-storage-dolt"]
 # The managed-worktree naming/contracts/native-adapter package (bh-xh8ku.3), depending only on
 # beadhive-plugins, editable from the workspace for dev/CI. The published wheel vendors this
 # import package too (see the wheel packages above) since `beadhive.worktree` composition binds

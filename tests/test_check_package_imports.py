@@ -394,6 +394,38 @@ def test_real_repository_packages_classify_and_pass() -> None:
     assert packages["beadhive-beads-client"].is_plugin is False
     assert packages["beadhive-core"].is_plugin is False
     assert packages["_template"].is_plugin is False
+    assert packages["beadhive-hq-storage"].is_plugin is False
+    assert packages["beadhive-hq-storage-dolt"].is_plugin is False
 
     assert MODULE.check(MODULE.ROOT) == ()
     assert MODULE.check_root_tests(MODULE.ROOT) == ()
+
+
+# --- HQ storage packages (bh-wnhkn, docs/design/hq-storage-port-adr.md section 7) ----------
+
+
+def test_hq_storage_packages_reject_beadhive_and_private_port_imports(tmp_path: Path) -> None:
+    _make_package(
+        tmp_path,
+        "beadhive-hq-storage",
+        "beadhive_hq_storage",
+        init="import beadhive\n",
+        modules={"internals": "def helper():\n    return 1\n"},
+    )
+    _make_package(
+        tmp_path,
+        "beadhive-hq-storage-dolt",
+        "beadhive_hq_storage_dolt",
+        init=(
+            "from beadhive.hq_sql_transport import connect\n"
+            "from beadhive_hq_storage.internals import helper\n"
+        ),
+    )
+
+    violations = MODULE.check(tmp_path)
+
+    assert sorted(violation.edge for violation in violations) == [
+        "beadhive",
+        "beadhive.hq_sql_transport",
+        "beadhive_hq_storage.internals",
+    ]

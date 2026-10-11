@@ -23,6 +23,7 @@ KEY_RECIPES = {
     "demos": ("attest-demos", ("demo-local-loop", "demo-live-ingress")),
     "packages": ("attest-packages", ("packages-check", "beads-client-check")),
     "bd-cli": ("attest-bd-cli", ("bd-cli-check",)),
+    "hq-storage": ("attest-hq-storage", ("hq-storage-check",)),
 }
 ROOT = Path(__file__).resolve().parents[1]
 NATIVE_FAST = (
@@ -53,6 +54,7 @@ PANTS_FULL = (
     "packages-check",
     "beads-client-check",
     "bd-cli-check",
+    "hq-storage-check",
 )
 PANTS_FAST = ("lint", "lint-md", "license-check", "architecture-structural-check", "test-changed")
 NATIVE_FULL = (
@@ -70,6 +72,7 @@ NATIVE_FULL = (
     "demo-live-ingress",
     "packages-check",
     "bd-cli-check",
+    "hq-storage-check",
 )
 
 
