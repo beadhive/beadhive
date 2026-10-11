@@ -16,9 +16,10 @@ The hive's writer merges each such ref into its local ``main`` here:
   sanctions it. A merge that did not land as exactly that commit is rolled back to the
   pre-merge ``main``.
 * **Clone-local bookkeeping** is never merged: bd writes a clone's own ``metadata.clone_id`` on
-  every join, so every frame ref after the first conflicts on it. It is frame-local: the merge
-  always keeps the writer's value and the outcome says so; it is bd's per-clone identity, not
-  bead data (``bh-xwy5x`` decision, condition 2).
+  every join, so every frame ref after the first conflicts on it (and ``last_import_time``, the
+  second the clone last imported, whenever two replicas imported in different seconds). They
+  are frame-local: the merge always keeps the writer's values and the outcome says so; they are
+  bd's per-clone bookkeeping, not bead data (``bh-xwy5x`` decision, condition 2).
 * **An id collision is never resolved by taking a side** (``bh-xwy5x`` decision, condition 3):
   when ``main`` and the frame each created a different bead under one id, either side would drop
   a bead. The conflict is recorded as a collision naming both beads, and :func:`resolve` refuses
@@ -91,7 +92,12 @@ SIDES = (MAIN, FRAME)
 STATE_FILE = "frame-merge.json"
 
 #: ``(table, key)`` rows bd writes per clone: never merged from a frame, main's value kept.
-CLONE_LOCAL: tuple[tuple[str, str], ...] = (("metadata", "clone_id"),)
+#: ``last_import_time`` is the second this clone last imported; two replicas that joined in
+#: different seconds disagree on it whatever they wrote (seen as a held ref under load, bh-midl0).
+CLONE_LOCAL: tuple[tuple[str, str], ...] = (
+    ("metadata", "clone_id"),
+    ("metadata", "last_import_time"),
+)
 
 _FRAME_REF_PREFIX = "refs/dolt/frame/"
 _FRAME_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")

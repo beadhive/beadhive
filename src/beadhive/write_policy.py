@@ -759,6 +759,7 @@ def doctor_data(
     events: Path | None = None,
     hive_dir: Callable[[Mapping], Path | None] | None = None,
     frame_state: Path | None = None,
+    sync_state: Path | None = None,
 ) -> dict:
     """The doctor section: the effective write policy per hive, its readiness warnings over
     ``hive.readiness_window``, — under every profile that forwards — any forwarder login
@@ -792,8 +793,9 @@ def doctor_data(
     logins = forwarder_login_problems(cfg) if profile.name != "open" else []
     refused = any(item["refused_overrides"] for item in hives)
     frame_merges = importlib.import_module("beadhive.frame_merge").doctor_data(path=frame_state)
+    sync = sync_doctor_data(cfg, path=sync_state)
     return {
-        "level": "warn" if logins or refused or frame_merges["held"] else "ok",
+        "level": "warn" if logins or refused or frame_merges["held"] or sync["errors"] else "ok",
         "profile": profile.name,
         "window_s": window,
         "window": _window_text(window),
@@ -801,7 +803,40 @@ def doctor_data(
         "readiness_total": sum(item["readiness_warnings"] for item in hives),
         "forwarder_logins": logins,
         "frame_merges": frame_merges,
+        "sync": sync,
     }
+
+
+def sync_doctor_data(cfg, *, path: Path | None = None) -> dict:
+    """``hive.sync`` per hive (trust-profiles ADR section 5, bh-midl0): the effective settings
+    and, from the daemon's typed outcomes, pending commits, the last push, the last error and
+    the next retry. ``errors`` counts hives whose latest push or pull failed."""
+    settings = importlib.import_module("beadhive.hive_sync_settings")
+    state = importlib.import_module("beadhive.hive_sync_state")
+    records = state.load(path=path)
+    hives = []
+    for entry in (cfg.get("managed_repos") if isinstance(cfg, Mapping) else None) or []:
+        if not isinstance(entry, Mapping) or not entry.get("prefix"):
+            continue
+        if str(entry.get("kind") or "") == "hq":
+            continue
+        prefix = str(entry["prefix"])
+        effective = settings.for_entry(entry, cfg)
+        record = records.get(prefix) or state.HiveSyncRecord(prefix)
+        hives.append(
+            {
+                "hive": prefix,
+                "active": effective.active,
+                "settings": effective.as_dict(),
+                "pending": record.pending,
+                "last_push_ok_at": record.last_push_ok_at,
+                "last_push": None if record.push is None else record.push.as_dict(),
+                "last_pull": None if record.pull is None else record.pull.as_dict(),
+                "last_error": record.last_error,
+                "next_retry_at": record.next_retry_at,
+            }
+        )
+    return {"hives": hives, "errors": sum(1 for item in hives if item["last_error"])}
 
 
 def _hive_dir_on_disk(entry: Mapping) -> Path | None:
@@ -836,6 +871,12 @@ def doctor_lines(data: Mapping) -> list[str]:
         f"  ✗ forwarder login not per-frame and pinned — {problem}"
         for problem in data.get("forwarder_logins", ())
     ]
+    sync_lines = importlib.import_module("beadhive.hive_sync_state").doctor_lines(
+        data.get("sync") or {}
+    )
+    if sync_lines:
+        lines.append("  hive.sync (daemon auto-push / auto-pull):")
+        lines += sync_lines
     frame_merges = data.get("frame_merges") or {}
     if frame_merges.get("hives"):
         lines.append("  frame refs merged by this writer (refs/dolt/frame/<id>):")

@@ -253,6 +253,7 @@ work bounce|bead:string:r,message:string:o,as_:string:o,hive:string:o
 work brief|bead:string:r,hive:string:o
 work check|bead:string:r,hive:string:o
 work claim|bead:string:o,as_:string:o,group:string:o,collapse:string:o,hive:string:o,preview:boolean:o,as_json:boolean:o
+work close|bead:string:r,reason:string:o,await_sync:boolean:o,await_timeout:integer:o,as_:string:o,hive:string:o
 work finish|epic:string:r,hive:string:o,override_validation:string:o,override_as:string:o
 work intake|hive:string:o,source:string:o,as_json:boolean:o,no_dupes:boolean:o
 work issue|bead:string:r,hive:string:o

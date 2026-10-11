@@ -1591,6 +1591,28 @@ def abandon(
     return work_lifecycle.abandon(bead, hive, rm)
 
 
+def close(
+    bead: str = _BEAD,
+    reason: str = typer.Option("", "--reason", help="close reason recorded on the bead"),
+    await_sync: bool = typer.Option(
+        False,
+        "--await-sync",
+        help="wait for the hive.sync flush that publishes this close (pushes now when the hive "
+        "has no auto-push)",
+    ),
+    await_timeout: int = typer.Option(
+        600, "--await-timeout", help="seconds --await-sync waits before exiting 1"
+    ),
+    as_: str = _AS,
+    hive: str = _HIVE,
+):
+    """Close a bead. With --await-sync, wait for the hive.sync flush that includes the close
+    (hive.sync, bh-midl0); with `close` in hive.sync.durable_verbs, push synchronously."""
+    from . import work_close
+
+    return work_close.close(bead, reason, await_sync, await_timeout, as_, hive)
+
+
 def backup(
     bead: str = typer.Argument("", metavar="<id>", help="bead id (omit with --reap/--from-hook)"),
     status: bool = typer.Option(
@@ -1753,6 +1775,7 @@ CLI_HANDLERS = {
     "work.merge": merge,
     "work.resume": resume,
     "work.abandon": abandon,
+    "work.close": close,
     "work.backup": backup,
     "work.show": _bind_cli_handler(show, as_json="json_out"),
     "work.review": review,
@@ -1790,6 +1813,7 @@ land = _CLI_CALLBACKS["work.land"]
 merge = _CLI_CALLBACKS["work.merge"]
 resume = _CLI_CALLBACKS["work.resume"]
 abandon = _CLI_CALLBACKS["work.abandon"]
+close = _CLI_CALLBACKS["work.close"]
 backup = _CLI_CALLBACKS["work.backup"]
 show = _CLI_CALLBACKS["work.show"]
 review = _CLI_CALLBACKS["work.review"]

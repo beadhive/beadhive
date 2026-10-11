@@ -128,6 +128,10 @@ def _publish(frame: Frame) -> None:
 #: bd's per-clone row in the versioned ``metadata`` table: every clone rewrites it, so two
 #: replicas' frame refs always disagree on it, whatever they wrote (see the comment-only test).
 CLONE_ID = ("metadata", "clone_id")
+#: bd's per-clone import timestamp (``metadata.last_import_time``): two replicas disagree on it
+#: only when they imported in different seconds, which a loaded host makes likely. It says
+#: nothing about ids, so the probe keeps the writer's value and leaves it out of the evidence.
+IMPORT_TIME = ("metadata", "last_import_time")
 
 
 def _conflict_keys(writer: Frame) -> set[tuple[str, str]]:
@@ -159,12 +163,13 @@ def _merge_frame_ref(cluster: Cluster, writer: Frame, frame: str, *, frame_local
     ).check()
     writer.dolt("fetch", remote).check()
     merged = writer.dolt("merge", "-m", f"merge {remote}", f"{remote}/main")
-    conflicts = _conflict_keys(writer)
-    if not conflicts:
+    raw = _conflict_keys(writer)
+    conflicts = raw - {IMPORT_TIME}
+    if not raw:
         assert merged.ok, merged.output
         return {"ok": True, "conflicts": conflicts}
     if conflicts <= set(frame_local):
-        for table in sorted({table for table, _key in conflicts}):
+        for table in sorted({table for table, _key in raw}):
             writer.dolt("conflicts", "resolve", "--ours", table).check()
         writer.dolt("add", "-A").check()
         writer.dolt("commit", "-m", f"merge {remote} (frame-local rows kept)").check()

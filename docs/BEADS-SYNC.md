@@ -136,6 +136,24 @@ local case falls out for free.
   strategy bd pauses and the outcome reports the conflicted tables). Both parse defensively
   and never coerce a failure or unreachable peer into looking in-sync.
 
+- **Batch bead sync in the host daemon** (`hive.sync`, trust-profiles ADR section 5,
+  bh-midl0; every switch off by default). With `hive.sync.auto_push.enabled` the daemon pushes
+  a hive on a timer (`auto_push.interval`, default `5m`, provisional until the push-cadence
+  spike `bh-infra-b7at` reports) and early after `auto_push.max_pending` commits; a failed push
+  backs off within `auto_push.retry_backoff` and never blocks a verb. Only the writer pushes
+  `main` (the same `bh_writer` check as a manual push); a replica under the `open` write policy
+  publishes only `refs/dolt/frame/<id>`; any other non-writer pushes nothing. With
+  `hive.sync.auto_pull.enabled` a replica pulls on `auto_pull.interval`, and the writer under
+  `open` runs the frame-ref merge (no `--strategy`; `metadata.clone_id` stays the writer's; an
+  id collision is held, never resolved by taking a side; a conflicting ref blocks nothing).
+  `hive.sync.auto_commit: batch` maps onto bd's `dolt.auto-commit` so local writes coalesce
+  until the next flush. `submit` and `finish` still push synchronously (condition 18);
+  `close` may join them through `hive.sync.durable_verbs`, and `bh work close --await-sync`
+  asks the daemon for a flush and waits for the push that started after the close. Every
+  background push and pull records a typed outcome in `$BH_HOME/state/hive-sync.json`;
+  `bh doctor` (write policy section) shows pending commits, the last push, the last error and
+  the next retry per hive.
+
 **Gaps (the net-new this design asks for):**
 
 - **Per-hive developer bootstrap.** A one-shot "give this sandbox/host just hive X's beads" (the

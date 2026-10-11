@@ -183,6 +183,35 @@ def _forwarded(cwd, env):
         return env, str(exc), False
 
 
+#: bd verbs that never write a bead, so bd's ``dolt.auto-commit`` cannot matter to them: they skip
+#: the ``hive.sync.auto_commit`` lookup (bh-midl0).
+_AUTO_COMMIT_EXEMPT = frozenset(
+    {
+        "show",
+        "list",
+        "ready",
+        "sql",
+        "export",
+        "search",
+        "stats",
+        "count",
+        "blocked",
+        "status",
+        "info",
+        "where",
+        "version",
+        "help",
+        "doctor",
+        "config",
+        "dolt",
+        "vc",
+        "federation",
+        "history",
+        "diff",
+    }
+)
+
+
 #: bd verbs that move, configure or administer the store rather than author beads in it. They
 #: never need the replica's identity, and the identity probe must not stand in their way.
 _IDENT_EXEMPT_VERBS = frozenset(
@@ -444,6 +473,10 @@ class BdEngine:
         if actor:
             cmd += ["--actor", actor]
         cmd += list(args)
+        if hive_aware and cwd is not None and args and str(args[0]) not in _AUTO_COMMIT_EXEMPT:
+            # hive.sync.auto_commit (bh-midl0): a hive set to `batch` runs bh's bd writes with
+            # bd's own BD_DOLT_AUTO_COMMIT=batch; any other hive leaves `env` untouched.
+            env = importlib.import_module("beadhive.hive_sync_settings").bd_env(cwd, env)
         if hive_aware if forward is None else forward:
             target = cwd if cwd is not None or forward is None else Path.cwd()
             env, refusal, forwarded = _forwarded(target, env)
