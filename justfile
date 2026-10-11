@@ -671,6 +671,11 @@ test_timeout_seconds := env_var_or_default("BH_TEST_TIMEOUT_SECONDS", "900")
 # The live partition owns shared local Dolt/runtime fixtures and therefore has a stricter,
 # host-independent ceiling than unit work.  This host currently uses half of its 32 cores.
 integration_workers := "16"
+# xdist scheduler for the integration and stateful lanes. `worksteal` hands unstarted tests to idle
+# workers; set BH_TEST_DIST=load to opt out. Longest-first collection order is a separate switch
+# (BH_TEST_DURATION_ORDER=0; durations from tests/harness/test_durations.json, refreshed by
+# scripts/refresh_test_durations.py).
+test_dist := env_var_or_default("BH_TEST_DIST", "worksteal")
 
 # run the suite for a marker selection (default: the fast unit-only set)
 #   just test               → unit only (fast)    just test integration → real-bd harness only
@@ -731,7 +736,7 @@ root-composition-validate:
 # workers. Keep the same complete collection, fixed worker bound, and watchdog deadline.
 stateful-native: root-composition-validate validation-evidence-refresh
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{stateful_workers}} tests --dist worksteal \
+        ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{stateful_workers}} tests --dist {{test_dist}} \
         -m "not integration and not pants_profile" \
         $(uv run python scripts/root_composition_tests.py --ignore-args)
 
@@ -900,7 +905,7 @@ test-system-smoke:
 # complete integration collection, fixed worker bound, fence, and watchdog limit.
 test-integration-land:
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{integration_workers}} tests --dist worksteal -m "integration"
+        ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{integration_workers}} tests --dist {{test_dist}} -m "integration"
 
 # ADR condition 9 (bh-p07dv): re-run the Dolt/bd trigger-semantics canary. REQUIRED on every Dolt
 # or bd pin bump in flake.nix that leaves the configured range (BH_FENCE_CANARY_DOLT_RANGE /

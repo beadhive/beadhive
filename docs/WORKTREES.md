@@ -418,6 +418,20 @@ seconds separately in JSON, and the Markdown table shows their aggregate medians
 interleaves ready non-Dolt work after each `BH_DOLT_SLOTS` sized Dolt wave so xdist can keep useful
 workers moving while the filesystem locks remain the authoritative four-slot default bound.
 
+Collection is also ordered longest-first (LPT) from the checked-in
+`tests/harness/test_durations.json`, so the 300 s tests start first and short tests fill the
+tail; tests absent from the file use the recorded median and follow the known-long ones. Refresh
+the file from validation JUnit with `uv run python scripts/refresh_test_durations.py` (median per
+test across `.bh/validation/runs/*/reports/*.xml`). The integration and stateful lanes use
+`--dist worksteal`. Both are opt-out: `BH_TEST_DURATION_ORDER=0` disables the ordering,
+`BH_TEST_DURATIONS_FILE=<path>` substitutes another file, and `BH_TEST_DIST=load` (or any xdist
+mode) replaces `worksteal` in the justfile recipes. Dolt slot bounding stays the run-wide file
+lock; `xdist_group` is deliberately not used.
+
+To measure the effect, compare segment wall minus the ideal (sum of test seconds divided by
+effective workers) over at least five runs each of a fence-touching and a typical selection, with
+and without `BH_TEST_DURATION_ORDER=0 BH_TEST_DIST=load`.
+
 Use `bh work check`, not raw `just check`, when the result should seed submission. A clean
 `bh work check` writes the run and exact-tree verdict records, so the following `bh work submit`
 can reuse them. `just check` launches the same project command outside the Beadhive lifecycle; it
