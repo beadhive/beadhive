@@ -343,7 +343,9 @@ def backend(_prepared_hqs, monkeypatch, request):
 
     def accept(sequence=1, **changes):
         beat = publish(result, lease(sequence, **changes))
-        expected = plane._read()[0]
+        # The CAS input only: accept_observation re-reads and verifies the signed authority
+        # itself, so the bare ref replaces a second full broker read (fetch + verify) per beat.
+        expected = git(remote, "rev-parse", guard.HEAD)
         plane.accept_observation("frame-one", expected=expected, operator_key=str(operator))
         return beat
 
@@ -576,26 +578,13 @@ def test_ungranted_predecessor_cannot_poison_epoch(backend, field, value):
     assert b["plane"].watch_state("frame-one").sequence == 1
 
 
-@pytest.mark.parametrize(
-    "change,reason",
-    [
-        ({"declared": False}, "declared"),
-        ({"caps": {}}, "capability"),
-        ({"profile": "different"}, "conformant"),
-    ],
-)
-def test_admission_enforces_declared_policy(backend, change, reason):
-    b = backend
-    sha, state, _ = b["plane"]._read()
-    state["frames"]["frame-one"]["candidate"]["desired"].update(change)
-    b["plane"]._write(state, sha, str(b["operator"]))
-    for seq in range(1, 4):
-        b["accept"](seq)
-    with pytest.raises(ControlPlaneError, match=reason):
-        apply(b, "admit")
+def test_admission_requires_three_beats_declared_policy_and_exact_expected_values(backend):
+    """One three-beat candidate serves every admission refusal (bh-88f8w).
 
-
-def test_admission_requires_three_beats_and_exact_expected_values(backend):
+    Admit evaluates the declared policy against the candidate's current desired record at
+    admit time, so each mismatch is written over the same verified beats, refused for its own
+    reason, and reverted; the closing admit proves the beats were admissible all along.
+    """
     b = backend
     b["accept"](1)
     with pytest.raises(ControlPlaneError, match="three"):
@@ -606,6 +595,23 @@ def test_admission_requires_three_beats_and_exact_expected_values(backend):
         apply(b, "admit", expected_host_id="wrong-host")
     with pytest.raises(ControlPlaneError, match="confirm"):
         apply(b, "admit", confirm=False)
+    for change, reason in (
+        ({"declared": False}, "declared"),
+        ({"caps": {}}, "capability"),
+        ({"profile": "different"}, "conformant"),
+    ):
+        sha, state, _ = b["plane"]._read()
+        desired = state["frames"]["frame-one"]["candidate"]["desired"]
+        original = copy.deepcopy(desired)
+        desired.update(change)
+        b["plane"]._write(state, sha, str(b["operator"]))
+        with pytest.raises(ControlPlaneError, match=reason):
+            apply(b, "admit")
+        sha, state, _ = b["plane"]._read()
+        assert state["frames"]["frame-one"]["candidate"]["state"] == "pending", change
+        state["frames"]["frame-one"]["candidate"]["desired"] = original
+        b["plane"]._write(state, sha, str(b["operator"]))
+    assert apply(b, "admit")["state"] == "active"
 
 
 def test_lifecycle_cordon_drain_park_resume_quarantine_retire(backend):
@@ -766,27 +772,6 @@ def test_operator_renewal_after_expiry_preserves_authoritative_receipts(backend,
     assert replay.returncode != 0 and "accepted sequence" in replay.stderr
 
 
-def test_active_key_and_retired_key_cannot_be_reenrolled(backend):
-    b = backend
-    for seq in (1, 2, 3):
-        b["accept"](seq)
-    apply(b, "admit")
-    replacement = replace(
-        b["authority"], holder_identity="host-two", instance_ref="vm-two", epoch=2
-    )
-    for retired in (False, True):
-        if retired:
-            apply(b, "retire")
-        with pytest.raises(ControlPlaneError, match="key"):
-            b["plane"].grant(
-                replacement,
-                b["public"],
-                b["desired"],
-                expected=b["plane"]._read()[0],
-                operator_key=str(b["operator"]),
-            )
-
-
 def test_frame_environment_and_host_proc_aliases_excluded(backend):
     b = backend
     code = """
@@ -875,12 +860,57 @@ def test_future_checkout_anchor_is_provisioned_without_client_mutation(backend):
     assert json.loads(anchor.read_text())["role"] == "frame"
 
 
-def test_expired_candidate_cleanup_preserves_active_authority_and_carrier(backend):
+SIGNER_REUSE = "candidate key mismatch, operator key reuse, or incarnation signer reuse"
+
+
+def retire_incarnation(b, host_id):
+    plan = b["plane"].lifecycle("retire", "frame-one", expected_host_id=host_id)
+    return b["plane"].lifecycle(
+        "retire",
+        "frame-one",
+        "apply",
+        expected=plan["revision"],
+        expected_host_id=host_id,
+        expected_release=plan["release"],
+        confirm=True,
+        operator_key=str(b["operator"]),
+    )
+
+
+def test_admitted_frame_candidates_bindings_cleanup_and_signer_reuse(backend):
+    """One admitted incarnation hosts every candidate-side invariant in sequence (bh-88f8w).
+
+    Each step leaves the active incarnation exactly as admitted (asserted), so the next step
+    starts from the precondition its former standalone test built with its own three beats:
+    active signer reuse refused; an expired candidate retired without disturbing the active
+    authority or its carrier; config fetched for the exact holder binding; retired signer
+    reuse refused once the active incarnation is retired.
+    """
     b = backend
+    plane = b["plane"]
     for sequence in (1, 2, 3):
         b["accept"](sequence)
     apply(b, "admit")
-    active = b["plane"].watch_state("frame-one")
+    active = plane.watch_state("frame-one")
+
+    def assert_active_unchanged():
+        current = plane.watch_state("frame-one")
+        assert current.eligible and current.authority == active.authority
+        assert current.sha == active.sha and current.sequence == active.sequence
+        assert git(b["remote"], "rev-parse", hb.ref_name("frame-one")) == active.sha
+
+    # The active signer cannot be re-enrolled under another holder.
+    reused_signer = replace(
+        b["authority"], holder_identity="host-two", instance_ref="vm-two", epoch=2
+    )
+    head = plane._read()[0]
+    with pytest.raises(ControlPlaneError, match=SIGNER_REUSE):
+        plane.grant(
+            reused_signer, b["public"], b["desired"], expected=head, operator_key=str(b["operator"])
+        )
+    assert plane._read()[0] == head
+
+    # An expired candidate is cleaned up and the active authority and carrier are preserved.
     replacement_key = b["tmp"] / "cleanup-key"
     public = key(replacement_key)
     authority = replace(
@@ -890,11 +920,11 @@ def test_expired_candidate_cleanup_preserves_active_authority_and_carrier(backen
         key_fingerprint=fingerprint(public),
         epoch=2,
     )
-    b["plane"].grant(
+    plane.grant(
         authority,
         public,
         b["desired"],
-        expected=b["plane"]._read()[0],
+        expected=plane._read()[0],
         operator_key=str(b["operator"]),
     )
     lease = b["lease"](
@@ -905,27 +935,64 @@ def test_expired_candidate_cleanup_preserves_active_authority_and_carrier(backen
         key_id=authority.key_fingerprint,
     )
     publish({**b, "runtime": replacement_key}, lease)
-    sha, state, _ = b["plane"]._read()
+    sha, state, _ = plane._read()
     state["frames"]["frame-one"]["candidate"]["authority"]["candidate_expires_at"] = time.time() - 1
-    b["plane"]._write(state, sha, str(b["operator"]))
-    plan = b["plane"].lifecycle("retire", "frame-one", expected_host_id="host-two")
-    b["plane"].lifecycle(
-        "retire",
-        "frame-one",
-        "apply",
-        expected=plan["revision"],
-        expected_host_id="host-two",
-        expected_release=plan["release"],
-        confirm=True,
-        operator_key=str(b["operator"]),
-    )
-    restored = b["plane"].watch_state("frame-one")
-    assert restored.eligible and restored.authority == active.authority
-    assert restored.sha == active.sha and restored.sequence == active.sequence
-    assert git(b["remote"], "rev-parse", hb.ref_name("frame-one")) == active.sha
+    plane._write(state, sha, str(b["operator"]))
+    retire_incarnation(b, "host-two")
+    assert_active_unchanged()
     assert git(
         b["remote"], "rev-parse", "--verify", candidate_ref("frame-one"), check=False
     ).returncode
+
+    # Config fetch selects the exact active or candidate desired binding.
+    next_public = key(b["tmp"] / "next-config-key")
+    next_authority = replace(
+        b["authority"],
+        holder_identity="host-next",
+        instance_ref="vm-next",
+        key_fingerprint=fingerprint(next_public),
+        epoch=3,
+    )
+    next_desired = {
+        **b["desired"],
+        "profile": "new-profile",
+        "release": {"id": "next-release", "digest": "sha256:" + "2" * 64},
+        "caps": {**b["desired"]["caps"], "max_sessions": 8},
+    }
+    plane.grant(
+        next_authority,
+        next_public,
+        next_desired,
+        expected=plane._read()[0],
+        operator_key=str(b["operator"]),
+    )
+    with pytest.raises(ControlPlaneError, match="exact holder identity"):
+        plane.fetch_config("frame-one")
+    for holder, expected, binding in (
+        ("host-one", b["desired"], b["authority"]),
+        ("host-next", next_desired, next_authority),
+    ):
+        actual = plane.fetch_config("frame-one", holder_identity=holder)
+        assert all(actual[k] == v for k, v in expected.items())
+        expected_authority = asdict(
+            replace(binding, candidate_expires_at=None) if holder == "host-one" else binding
+        )
+        expected_authority.pop("beadyard_id")
+        assert actual["authority"] == expected_authority
+    for holder in ("not-granted", "host-two"):
+        with pytest.raises(ControlPlaneError, match="unknown, expired or retired"):
+            plane.fetch_config("frame-one", holder_identity=holder)
+    retire_incarnation(b, "host-next")
+    assert_active_unchanged()
+
+    # Once retired, the formerly active signer still cannot be re-enrolled.
+    assert apply(b, "retire")["state"] == "retired"
+    head = plane._read()[0]
+    with pytest.raises(ControlPlaneError, match=SIGNER_REUSE):
+        plane.grant(
+            reused_signer, b["public"], b["desired"], expected=head, operator_key=str(b["operator"])
+        )
+    assert plane._read()[0] == head
 
 
 def raw_frame_push(b, refspec):
@@ -963,27 +1030,31 @@ def carrier_commit(b, *, signed=True, lease=None):
     )
 
 
-@pytest.mark.parametrize(
-    "attack", ["unsigned", "delete", "unknown-ref", "cross-frame", "wrong-epoch"]
-)
-def test_raw_frame_receive_requires_own_authorized_carrier(backend, attack):
+def test_raw_frame_receive_requires_own_authorized_carrier(backend):
+    """Every raw-carrier attack against one accepted receipt (bh-88f8w).
+
+    A refused push changes nothing, which each attack asserts, so all five see the exact
+    precondition their former parametrised cases each paid a full accepted beat to build.
+    """
     b = backend
     b["accept"](1)
     reference = candidate_ref("frame-one")
     before = git(b["remote"], "rev-parse", reference)
-    lease = b["lease"](2, epoch=999) if attack == "wrong-epoch" else b["lease"](2)
-    sha = carrier_commit(b, signed=attack != "unsigned", lease=lease)
-    if attack == "delete":
-        refspec = ":" + reference
-    else:
+    authority_head = git(b["remote"], "rev-parse", guard.HEAD)
+    for attack in ("unsigned", "delete", "unknown-ref", "cross-frame", "wrong-epoch"):
+        lease = b["lease"](2, epoch=999) if attack == "wrong-epoch" else b["lease"](2)
+        sha = carrier_commit(b, signed=attack != "unsigned", lease=lease)
         destination = {
             "unknown-ref": "refs/heads/escape",
             "cross-frame": candidate_ref("victim"),
         }.get(attack, reference)
-        refspec = sha + ":" + destination
-    result = raw_frame_push(b, refspec)
-    assert result.returncode != 0 and "pre-receive hook declined" in result.stderr
-    assert git(b["remote"], "rev-parse", reference) == before
+        refspec = ":" + reference if attack == "delete" else sha + ":" + destination
+        result = raw_frame_push(b, refspec)
+        assert result.returncode != 0 and "pre-receive hook declined" in result.stderr, attack
+        assert git(b["remote"], "rev-parse", reference) == before, attack
+        assert git(b["remote"], "rev-parse", guard.HEAD) == authority_head, attack
+        if destination != reference:
+            assert not git(b["remote"], "for-each-ref", destination), attack
 
 
 def test_raw_retired_key_cannot_publish_after_operator_retire(backend):
@@ -1190,46 +1261,6 @@ def test_complete_receive_session_serializes_actual_operator_client(backend):
         "--format=%(objectname)",
         registration_ref(asdict(b["authority"])),
     )
-
-
-def test_fetch_config_selects_exact_active_and_candidate_desired_binding(backend):
-    b = backend
-    for seq in (1, 2, 3):
-        b["accept"](seq)
-    apply(b, "admit")
-    public = key(b["tmp"] / "next-config-key")
-    authority = replace(
-        b["authority"],
-        holder_identity="host-next",
-        instance_ref="vm-next",
-        key_fingerprint=fingerprint(public),
-        epoch=2,
-    )
-    desired = {
-        **b["desired"],
-        "profile": "new-profile",
-        "release": {"id": "next-release", "digest": "sha256:" + "2" * 64},
-        "caps": {**b["desired"]["caps"], "max_sessions": 8},
-    }
-    plane = b["plane"]
-    plane.grant(
-        authority, public, desired, expected=plane._read()[0], operator_key=str(b["operator"])
-    )
-    with pytest.raises(ControlPlaneError, match="exact holder identity"):
-        plane.fetch_config("frame-one")
-    for holder, expected, binding in (
-        ("host-one", b["desired"], b["authority"]),
-        ("host-next", desired, authority),
-    ):
-        actual = plane.fetch_config("frame-one", holder_identity=holder)
-        assert all(actual[k] == v for k, v in expected.items())
-        expected_authority = asdict(
-            replace(binding, candidate_expires_at=None) if holder == "host-one" else binding
-        )
-        expected_authority.pop("beadyard_id")
-        assert actual["authority"] == expected_authority
-    with pytest.raises(ControlPlaneError, match="unknown, expired or retired"):
-        plane.fetch_config("frame-one", holder_identity="not-granted")
 
 
 def test_additive_frame_retire_keeps_legacy_retire_four_parameters(backend):
@@ -2321,7 +2352,12 @@ def test_git_composite_snapshot_refuses_without_joining_independent_reads(tmp_pa
         plane.load_config_authority_snapshot("frame-a")
 
 
-def test_eligibility_bracket_after_new_beat_and_admission(backend):
+def test_eligibility_bracket_after_new_beat_admission_and_expiry_waiver(backend, monkeypatch):
+    """Bracketed eligibility reads, then the expired-authority waiver, on one admitted frame.
+
+    The waiver half needs only an admitted frame with a beat 4 (bh-88f8w); it starts where the
+    bracket ends instead of rebuilding three beats and an admission.
+    """
     b = backend
     for seq in (1, 2, 3):
         b["accept"](seq)
@@ -2336,16 +2372,7 @@ def test_eligibility_bracket_after_new_beat_and_admission(backend):
     assert revision == b["plane"]._read()[0]
     assert observation.verified and observation.fresh and observation.lease.seq == 4
 
-
-def test_expired_authority_eligibility_read_only_waived_when_enforcement_disabled(
-    backend, monkeypatch
-):
-    """BH_HQ_AUTHORITY_ENFORCE=false (UNSUPPORTED, bh-6pqul) reads expired Git authority."""
-    b = backend
-    for seq in (1, 2, 3):
-        b["accept"](seq)
-    apply(b, "admit")
-    publish(b, b["lease"](4, state_seen="active"))
+    # BH_HQ_AUTHORITY_ENFORCE=false (UNSUPPORTED, bh-6pqul) reads expired Git authority.
     before, state, _ = b["plane"]._read()
     expired = b["plane"]._write(state, before, str(b["operator"]), duration=60)
     # Publish and verify a live signed authority before advancing only the reader.
