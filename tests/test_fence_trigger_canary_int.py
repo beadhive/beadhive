@@ -9,7 +9,7 @@ Run just this suite with ``just fence-canary``.
 
 Also part of the canary (``fence_canary`` marker, not duplicated here): the bh-sieai engine
 probes (``tests/spikes/test_bh_sieai_write_guard_int.py``) and bh-wtsrc E3's invoker-checked
-trigger DML (``tests/spikes/test_bh_wtsrc_receiver_removal_liveness.py``).
+trigger DML (``tests/test_hq_sql_dolt_semantics_int.py``).
 
 Every Dolt process runs with its own ``HOME`` / ``DOLT_ROOT_PATH`` under ``tmp_path``; the one
 ``sql-server`` this starts is private to the test, on its own port and data dir.
