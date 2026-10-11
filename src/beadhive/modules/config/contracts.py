@@ -1574,6 +1574,243 @@ def _readiness_switch(value):
     return value
 
 
+# ---- hive.sync (batch bead sync, trust-profiles ADR section 5, bh-midl0) ------------------
+
+#: The verbs that always push synchronously (partitioning ADR condition 18): lifecycle state is
+#: never published ahead of the worktree commits it describes. ``hive.sync.durable_verbs`` must
+#: keep them.
+SYNC_REQUIRED_DURABLE_VERBS: tuple[str, ...] = ("submit", "finish")
+#: The verbs that consult ``hive.sync.durable_verbs``.
+SYNC_DURABLE_VERB_CHOICES: tuple[str, ...] = ("submit", "finish", "close")
+#: ``hive.sync.auto_commit`` values, bd's ``dolt.auto-commit`` (``off`` is not offered: a write
+#: that is never committed is never pushed).
+SYNC_AUTO_COMMIT_CHOICES: tuple[str, ...] = ("on", "batch")
+
+_SHORT_DURATION = re.compile(r"(\d+(?:\.\d+)?)(s|m|h|d)")
+_SHORT_UNIT_S = {"s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0}
+
+
+def sync_duration_seconds(value: Any) -> float:
+    """A ``hive.sync`` duration in seconds: ``30s`` / ``5m`` / ``2h`` / ``1d`` as the ADR
+    spells them, an ISO-8601 duration (``PT5M``), or a positive number of seconds. Raises
+    :class:`ValueError` on anything else, including zero and negative values."""
+    if isinstance(value, bool):
+        raise ValueError(f"not a duration: {value!r}")
+    if isinstance(value, int | float):
+        seconds = float(value)
+    else:
+        text = str(value).strip()
+        short = _SHORT_DURATION.fullmatch(text)
+        if short is not None:
+            seconds = float(short.group(1)) * _SHORT_UNIT_S[short.group(2)]
+        else:
+            try:
+                seconds = _TIMEDELTA.validate_python(text).total_seconds()
+            except ValidationError as exc:
+                raise ValueError(
+                    f"not a duration (want 30s / 5m / 2h / 1d or ISO-8601 PT5M): {value!r}"
+                ) from exc
+    if not seconds > 0:
+        raise ValueError(f"a hive.sync duration must be positive: {value!r}")
+    return seconds
+
+
+def sync_backoff_seconds(value: Any) -> tuple[float, float]:
+    """``hive.sync.auto_push.retry_backoff`` (``<first>..<cap>``, e.g. ``30s..10m``) as
+    ``(first, cap)`` seconds. Raises :class:`ValueError` unless ``0 < first <= cap``."""
+    first, sep, cap = str(value).partition("..")
+    if not sep:
+        raise ValueError(f"retry_backoff wants <first>..<cap>, e.g. 30s..10m: {value!r}")
+    low, high = sync_duration_seconds(first), sync_duration_seconds(cap)
+    if low > high:
+        raise ValueError(f"retry_backoff's first delay exceeds its cap: {value!r}")
+    return low, high
+
+
+def _sync_auto_commit(value):
+    """YAML 1.1 reads a bare ``on`` as ``True``: take it as ``on``."""
+    if value is True:
+        return "on"
+    return value.strip().lower() if isinstance(value, str) else value
+
+
+def _sync_duration(value):
+    if value is not None:
+        sync_duration_seconds(value)
+    return value
+
+
+def _sync_backoff(value):
+    if value is not None:
+        sync_backoff_seconds(value)
+    return value
+
+
+def _sync_durable_verbs(value):
+    if value is None:
+        return value
+    verbs = [str(verb) for verb in value]
+    unknown = [verb for verb in verbs if verb not in SYNC_DURABLE_VERB_CHOICES]
+    if unknown:
+        raise ValueError(
+            f"unknown durable verb(s) {unknown}; choose from {list(SYNC_DURABLE_VERB_CHOICES)}"
+        )
+    missing = [verb for verb in SYNC_REQUIRED_DURABLE_VERBS if verb not in verbs]
+    if missing:
+        raise ValueError(
+            f"durable_verbs must keep {list(SYNC_REQUIRED_DURABLE_VERBS)} (condition 18: "
+            f"lifecycle state is never published ahead of its commits); missing {missing}"
+        )
+    return verbs
+
+
+class HiveSyncAutoPush(_Section):
+    """``hive.sync.auto_push``: the host daemon pushes this host's hive data on a timer."""
+
+    enabled: bool = Field(
+        False,
+        description="Push this host's hive data from the host daemon, on the timer and after "
+        "`max_pending` local commits. The writer pushes main; a replica under the `open` write "
+        "policy pushes only refs/dolt/frame/<id>; any other non-writer never pushes.",
+    )
+    interval: str = Field(
+        "5m",
+        description="Timer between pushes while anything is pending (`30s`/`5m`/`2h` or "
+        "ISO-8601). PROVISIONAL default until the push-cadence spike bh-infra-b7at reports.",
+    )
+    max_pending: int = Field(
+        50, ge=1, description="Push early once this many local commits are pending."
+    )
+    retry_backoff: str = Field(
+        "30s..10m",
+        description="Exponential backoff `<first>..<cap>` while the remote is unavailable; a "
+        "failed background push never blocks a verb.",
+    )
+
+    @field_validator("interval")
+    @classmethod
+    def _interval(cls, v):
+        return _sync_duration(v)
+
+    @field_validator("retry_backoff")
+    @classmethod
+    def _backoff(cls, v):
+        return _sync_backoff(v)
+
+
+class HiveSyncAutoPull(_Section):
+    """``hive.sync.auto_pull``: the host daemon pulls on a timer; on the hive's writer under
+    the ``open`` write policy it merges the published frame refs instead."""
+
+    enabled: bool = Field(
+        False,
+        description="Pull on a timer. On the hive's writer under the `open` write policy this "
+        "runs the frame-ref merge (never --strategy; a conflicting ref is recorded and held).",
+    )
+    interval: str = Field(
+        "15m",
+        description="Timer between pulls (`15m` or ISO-8601). PROVISIONAL default until the "
+        "push-cadence spike bh-infra-b7at reports.",
+    )
+
+    @field_validator("interval")
+    @classmethod
+    def _interval(cls, v):
+        return _sync_duration(v)
+
+
+class HiveSyncConfig(_Section):
+    """``hive.sync`` (trust-profiles ADR section 5): batch auto-commit and the host daemon's
+    periodic auto-push and auto-pull. FLEET default; ``managed_repos[].hive.sync`` overrides it
+    per hive. Every switch is off by default, so today's verb-driven sync is unchanged."""
+
+    auto_commit: Literal["on", "batch"] = Field(
+        "on",
+        description="bd's `dolt.auto-commit` for bh's bd calls: `on` commits every write, "
+        "`batch` coalesces local writes until the next flush or durable verb.",
+    )
+    auto_push: HiveSyncAutoPush = Field(
+        default_factory=HiveSyncAutoPush, description="The host daemon's periodic push."
+    )
+    auto_pull: HiveSyncAutoPull = Field(
+        default_factory=HiveSyncAutoPull, description="The host daemon's periodic pull."
+    )
+    durable_verbs: list[str] = Field(
+        default_factory=lambda: list(SYNC_REQUIRED_DURABLE_VERBS),
+        description="Verbs that push synchronously (`submit`, `finish`, `close`). `submit` and "
+        "`finish` are required (condition 18); other verbs may pass `--await-sync`.",
+    )
+
+    @field_validator("auto_commit", mode="before")
+    @classmethod
+    def _auto_commit(cls, v):
+        return _sync_auto_commit(v)
+
+    @field_validator("durable_verbs")
+    @classmethod
+    def _durable(cls, v):
+        return _sync_durable_verbs(v)
+
+
+class HiveSyncAutoPushOverride(_Section):
+    """A hive's own ``auto_push`` keys; an absent key keeps the fleet default."""
+
+    enabled: bool | None = Field(None, description="This hive's `auto_push.enabled`.")
+    interval: str | None = Field(None, description="This hive's `auto_push.interval`.")
+    max_pending: int | None = Field(None, ge=1, description="This hive's `auto_push.max_pending`.")
+    retry_backoff: str | None = Field(None, description="This hive's `auto_push.retry_backoff`.")
+
+    @field_validator("interval")
+    @classmethod
+    def _interval(cls, v):
+        return _sync_duration(v)
+
+    @field_validator("retry_backoff")
+    @classmethod
+    def _backoff(cls, v):
+        return _sync_backoff(v)
+
+
+class HiveSyncAutoPullOverride(_Section):
+    """A hive's own ``auto_pull`` keys; an absent key keeps the fleet default."""
+
+    enabled: bool | None = Field(None, description="This hive's `auto_pull.enabled`.")
+    interval: str | None = Field(None, description="This hive's `auto_pull.interval`.")
+
+    @field_validator("interval")
+    @classmethod
+    def _interval(cls, v):
+        return _sync_duration(v)
+
+
+class HiveSyncOverride(_Section):
+    """``managed_repos[].hive.sync``: a hive's own ``hive.sync`` keys, each replacing the fleet
+    default for that hive only."""
+
+    auto_commit: Literal["on", "batch"] | None = Field(
+        None, description="This hive's `auto_commit` (`on` / `batch`)."
+    )
+    auto_push: HiveSyncAutoPushOverride | None = Field(
+        None, description="This hive's `auto_push` keys."
+    )
+    auto_pull: HiveSyncAutoPullOverride | None = Field(
+        None, description="This hive's `auto_pull` keys."
+    )
+    durable_verbs: list[str] | None = Field(
+        None, description="This hive's `durable_verbs` (must keep `submit` and `finish`)."
+    )
+
+    @field_validator("auto_commit", mode="before")
+    @classmethod
+    def _auto_commit(cls, v):
+        return _sync_auto_commit(v)
+
+    @field_validator("durable_verbs")
+    @classmethod
+    def _durable(cls, v):
+        return _sync_durable_verbs(v)
+
+
 class HivePolicyOverride(_Section):
     """A hive's own override of the fleet's off-primary write policy (``managed_repos[].hive``,
     trust-profiles ADR sections 4 and 6, bh-sxhnq). Fleet-owned, like the entry it sits in."""
@@ -1588,6 +1825,11 @@ class HivePolicyOverride(_Section):
         None,
         description="This hive's `hive.readiness_warning` (`on`/`off`): the console warning a "
         "non-primary write under the `open` policy prints. Events are counted either way.",
+    )
+    sync: HiveSyncOverride | None = Field(
+        None,
+        description="This hive's `hive.sync` keys (batch auto-commit, auto-push, auto-pull, "
+        "durable verbs), each replacing the fleet default for it.",
     )
 
     @field_validator("readiness_warning", mode="before")
@@ -1634,6 +1876,12 @@ class HiveConfig(_Section):
         "P7D",
         description="FLEET: ISO-8601 duration over which `bh doctor` counts readiness warnings "
         "per hive (default P7D, 7 days).",
+    )
+    sync: HiveSyncConfig = Field(
+        default_factory=HiveSyncConfig,
+        description="FLEET default of batch bead sync (trust-profiles ADR section 5): "
+        "`auto_commit`, `auto_push`, `auto_pull`, `durable_verbs`; `managed_repos[].hive.sync` "
+        "overrides it per hive. Every switch is off by default.",
     )
 
     @field_validator("readiness_warning", mode="before")
@@ -2203,8 +2451,8 @@ class ManagedRepoEntry(_Section):
     herdr: HerdrConfig | None = Field(None, description="Per-hive `herdr` section override.")
     hive: HivePolicyOverride | None = Field(
         None,
-        description="Per-hive override of the off-primary write policy and its readiness "
-        "warning (`write_policy`, `readiness_warning`).",
+        description="Per-hive override of the off-primary write policy, its readiness "
+        "warning and batch bead sync (`write_policy`, `readiness_warning`, `sync`).",
     )
 
 

@@ -458,6 +458,15 @@ def impl__reconcile_landed_molecule(api, cfg, entry, main, epic, epic_data, mol_
         f"✓ molecule {epic} was already landed ({mol_branch} → {base}) — reconciled "
         f"bookkeeping (closed {epic}, tore down the seat, deleted the container; no re-merge)"
     )
+    _durable_push(api, cfg, main, f"finish {epic}")
+
+
+def _durable_push(api, cfg, main, message):
+    """`finish` is a durable verb (hive.sync, bh-midl0; partitioning ADR condition 18): it
+    publishes the epic's close synchronously once the molecule has landed, whatever
+    ``hive.sync`` says — never ahead of the commits it describes. Best-effort like submit's
+    push: a failure warns and never unwinds the completed land."""
+    api._push_state(cfg, main, "", message)
 
 
 def impl__merge_molecule(api, cfg, epic, hive, override_reason="", override_actor=""):
@@ -617,6 +626,7 @@ def impl__merge_molecule(api, cfg, epic, hive, override_reason="", override_acto
         raise api.typer.Exit(1)
     _reap_backups_after_land(api, cfg, entry, main, [epic], base)
     api.typer.echo(f"✓ landed molecule {epic} ({mol_branch} --no-ff → {base}); closed {epic}")
+    _durable_push(api, cfg, main, f"finish {epic}")
 
 
 def impl_finish(api, epic, hive, override_validation="", override_actor=""):

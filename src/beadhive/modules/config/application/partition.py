@@ -72,6 +72,9 @@ FLEET_PREFIXES: frozenset[str] = frozenset(
         "hive.write_policy",
         "hive.readiness_warning",
         "hive.readiness_window",
+        # Batch bead sync (bh-midl0): a fleet default with per-hive overrides in
+        # `managed_repos[].hive.sync`.
+        "hive.sync",
         "delimiter",
         "providers",
         "orgs",

@@ -1164,6 +1164,7 @@ def build_product_application(
     settings: HostDaemonConfig | None = None,
     failover_loop: Any = None,
     tenure_loop: Any = None,
+    sync_loop: Any = None,
 ) -> Starlette:
     """Assemble the installed daemon's current routes on the shared composition seam.
 
@@ -1303,6 +1304,10 @@ def build_product_application(
         # The elected-tenure cache refresher (bh-ofszz): only on a SQL-HQ host with the cache
         # on, built in `serve`. Commands read what it writes and never refresh it themselves.
         product_components.append(tenure_loop.component())
+    if sync_loop is not None:
+        # The hive.sync loop (bh-midl0): only when some hive has auto-push or auto-pull on,
+        # built in `serve`. Verbs never wait on it unless they pass --await-sync.
+        product_components.append(sync_loop.component())
     network_policy = None
     credential_sessions = None
     mcp_sessions = None
@@ -1450,6 +1455,19 @@ def _tenure_loop() -> Any:
     return None if refresher is None else TenureLoop(refresher)
 
 
+def _sync_loop() -> Any:
+    """The ``hive.sync`` loop (trust-profiles ADR section 5, bh-midl0) when any registered hive
+    has auto-push or auto-pull on; ``None`` otherwise. Never refuses startup: without it state
+    moves only inside verbs, as before."""
+    from .hive_sync_loop import SyncLoopComponent, build_loop
+
+    try:
+        loop = build_loop()
+    except Exception:  # noqa: BLE001 - background sync is never a startup gate
+        return None
+    return None if loop is None else SyncLoopComponent(loop)
+
+
 def serve(
     *,
     state_broker_factory: Callable[..., Any],
@@ -1480,6 +1498,7 @@ def serve(
     validate_for_listener_startup(settings)
     failover_loop = _failover_loop(settings, raw_config)
     tenure_loop = _tenure_loop()
+    sync_loop = _sync_loop()
 
     listener_host = settings.bind
     listener_port = settings.port
@@ -1508,6 +1527,7 @@ def serve(
             state_broker_factory=state_broker_factory,
             failover_loop=failover_loop,
             tenure_loop=tenure_loop,
+            sync_loop=sync_loop,
         )
         if failover_loop is not None:
             application.state.director_failover = failover_loop
