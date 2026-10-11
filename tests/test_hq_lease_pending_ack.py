@@ -5,15 +5,15 @@ Fakes only: no SQL, no HQ, no real host state. HOME/BH_HOME stay sandboxed throu
 
 from __future__ import annotations
 
-import time
 from types import SimpleNamespace
 
 import pytest
 
-from beadhive import host, host_adopt, host_fence, host_lease
+from beadhive import host, host_adopt, host_fence, host_lease, hq_control_plane
 from beadhive import hq_sql_runtime as rt
 from beadhive.hq_control_plane import ControlPlaneError, HqLeaseUnknown, SqlControlPlane
 from beadhive.hq_sql_transport import SqlTransportError
+from harness.clock import FakeClock, patch_module_time
 
 RID = "00000000-0000-0000-0000-0000000000aa"
 SHA = "b" * 64
@@ -68,10 +68,12 @@ def test_final_poll_deadline_is_pending_with_provenance(monkeypatch):
 
 
 def test_open_failure_after_budget_spent_is_deadline_not_unreachable(monkeypatch):
+    clock = FakeClock()
+    patch_module_time(monkeypatch, clock, rt, hq_control_plane)
     authority = rt.SqlRuntimeAuthority({"runtime": {"operation_timeout": 0.01}}, broker=object())
 
     def slow_connect(*_a, deadline, **_k):
-        time.sleep(0.03)
+        clock.sleep(0.03)
         raise SqlTransportError("connect failed")
 
     monkeypatch.setattr(rt, "connect", slow_connect)

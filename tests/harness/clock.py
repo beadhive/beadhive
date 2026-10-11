@@ -64,3 +64,36 @@ class FakeClock:
             return remaining <= 0
 
         return stop
+
+
+class _ModuleTime:
+    """Stand-in for the ``time`` module global of one module under test: the clock reads and
+    ``sleep`` come from a ``FakeClock``; every other attribute defers to the real ``time``."""
+
+    def __init__(self, clock: FakeClock):
+        self._clock = clock
+
+    def monotonic(self) -> float:
+        return self._clock.monotonic()
+
+    def time(self) -> float:
+        return self._clock.wall()
+
+    def sleep(self, seconds: float) -> None:
+        self._clock.sleep(seconds)
+
+    def __getattr__(self, name: str):
+        import time
+
+        return getattr(time, name)
+
+
+def patch_module_time(monkeypatch, clock: FakeClock, *modules) -> None:
+    """Point each module's ``time`` global at ``clock`` for this test only.
+
+    For code that reads ``time.monotonic()`` with no injectable seam: scoped to the named
+    modules (no process-wide patching), so a deadline budget is exhausted by ``clock.sleep()``
+    rather than by waiting on a loaded host.
+    """
+    for module in modules:
+        monkeypatch.setattr(module, "time", _ModuleTime(clock))
