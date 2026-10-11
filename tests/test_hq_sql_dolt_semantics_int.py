@@ -1,13 +1,27 @@
-"""Executable evidence for the bh-wtsrc spike; not a product contract test.
+"""Dolt 2.3.5 storage-semantics contracts for the SQL HQ (bh-3nfbn; origin: spike bh-wtsrc).
 
-Question: can frame liveness be a per-frame, server-timed session row written under the frame's
-own SQL grant, with conformance as a separately scheduled evidence row and eligibility computed
-at read time, without the trusted receiver?  See
-``docs/spikes/bh-wtsrc-receiver-removal-liveness.md``.
+Permanent, real-Dolt contracts about what the server itself guarantees, independent of any Python
+adapter: grants confine a frame principal, operator triggers stamp server UTC, trigger-body DML is
+invoker-checked, host-pinned accounts refuse a leaked password, globals are not privilege-checked,
+and renewal rows leave no history. The HQ storage-port epic folds this file into its real-Dolt
+contract suite; ``docs/spikes/bh-wtsrc-receiver-removal-liveness.md`` records the evidence and the
+"Retired to permanent suites" table.
 
-Every server here is owned by the test and runs with its own ``DOLT_ROOT_PATH`` and ``HOME``.
-Some probes deliberately run ``SET GLOBAL`` / ``SET PERSIST`` as an unprivileged frame principal;
-the isolated root keeps the persisted value inside ``tmp_path`` and out of the operator's
+Layout, so sibling beads can extend it (add a new section; reuse the helpers, do not copy them):
+
+1. Owned, isolated server and SQL helpers (``_isolated_server``, ``_connect``, ``_sql``).
+2. Operator-provisioned schema (``_provision``): ``hq_grant`` plus per-frame session/evidence
+   tables, triggers and principals.
+3. Contract sections, one ``# ---`` block each:
+   * grants (``frame_grant``), triggers (``operator_trigger``, ``trigger_body``), accounts
+     (``host_pinned``), globals (``set_globals``), history (``session_rows``) -- bh-3nfbn;
+   * epoch-fence engine contracts on one server (forced globals, ALL grant) -- bh-uhx2r;
+   * write-guard engine contracts (merge/pull/cherry-pick/revert never fire the guard's
+     triggers; Dolt CLI, no server) -- bh-sieai.
+
+Every server is owned by the test and runs with its own ``DOLT_ROOT_PATH`` and ``HOME``. Some
+probes deliberately run ``SET GLOBAL`` / ``SET PERSIST`` as an unprivileged frame principal; the
+isolated root keeps the persisted value inside ``tmp_path`` and out of the operator's
 ``~/.dolt/config_global.json``.
 """
 
@@ -15,12 +29,10 @@ from __future__ import annotations
 
 import json
 import os
-import queue
 import shutil
 import socket
 import statistics
 import subprocess
-import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -28,7 +40,7 @@ from pathlib import Path
 import pymysql
 import pytest
 
-from harness.processes import process_context
+from harness import write_guard as wg
 from harness.world import free_port
 
 pytestmark = [pytest.mark.integration, pytest.mark.dolt_server]
@@ -192,83 +204,7 @@ def _provision(port, frames=("a", "b"), *, session_ttl_ms=300_000, evidence_ttl_
     return root
 
 
-ELIGIBILITY = """
-SELECT
-  g.state = 'active' AND s.epoch = g.epoch                                   AS granted,
-  s.renewed_at > UTC_TIMESTAMP(6) - INTERVAL g.session_ttl_ms * 1000 MICROSECOND
-                                                                             AS session_fresh,
-  e.status = 'conformant' AND e.profile = g.profile                          AS evidence_pass,
-  e.measured_at > UTC_TIMESTAMP(6) - INTERVAL g.evidence_ttl_ms * 1000 MICROSECOND
-                                                                             AS evidence_unexpired,
-  e.release_digest = g.release_digest                                        AS release_matches
-FROM hq_grant AS g
-JOIN frame_{frame}_session AS s ON s.id = 1
-JOIN frame_{frame}_evidence AS e ON e.id = 1
-WHERE g.frame_id = %s
-"""
-
-PREDICATES = ("granted", "session_fresh", "evidence_pass", "evidence_unexpired", "release_matches")
-
-
-def _decide(reader, frame) -> dict[str, bool]:
-    """Read-time eligibility from one statement, timed by the server clock alone."""
-    rows = _sql(reader, ELIGIBILITY.format(frame=frame), (frame,))
-    if len(rows) != 1:
-        return {"authority_available": False}
-    return {name: bool(value) for name, value in zip(PREDICATES, rows[0], strict=True)}
-
-
-def _blocked_by(decision: dict[str, bool]) -> set[str]:
-    return {name for name, value in decision.items() if not value}
-
-
-# --- process targets (module scope, spawn-safe) ------------------------------------------------
-
-
-def _renewer(port, frame, interval_s, stop, errors):
-    """The frame's liveness loop: a no-op UPDATE; the trigger stamps server time."""
-    connection = _connect(port, f"frame_{frame}", PASSWORD, DB)
-    try:
-        while not stop.is_set():
-            try:
-                _sql(connection, f"UPDATE frame_{frame}_session SET epoch = epoch WHERE id = 1")
-            except pymysql.MySQLError as exc:
-                errors.put(repr(exc))
-            stop.wait(interval_s)
-    finally:
-        connection.close()
-
-
-def _conformance_probe(port, frame, duration_s, started, finished):
-    """A slow measurement that publishes its evidence only when it completes."""
-    connection = _connect(port, f"frame_{frame}", PASSWORD, DB)
-    try:
-        started.set()
-        time.sleep(duration_s)
-        _sql(
-            connection,
-            f"UPDATE frame_{frame}_evidence SET release_digest=%s, profile='factory', "
-            "status='conformant' WHERE id = 1",
-            ("sha256:" + "1" * 64,),
-        )
-        finished.set()
-    finally:
-        connection.close()
-
-
-def _coupled_heartbeat(port, frame, duration_s, started, finished):
-    """Today's shape: the renewal carries conformance, so it waits for the measurement."""
-    connection = _connect(port, f"frame_{frame}", PASSWORD, DB)
-    try:
-        started.set()
-        time.sleep(duration_s)
-        _sql(connection, f"UPDATE frame_{frame}_session SET epoch = epoch WHERE id = 1")
-        finished.set()
-    finally:
-        connection.close()
-
-
-# --- evidence ----------------------------------------------------------------------------------
+# --- contracts: grants, triggers, accounts, globals, history (bh-3nfbn) ---------------------
 
 
 def test_frame_grant_confines_writes_to_its_own_session_and_evidence(tmp_path):
@@ -537,154 +473,241 @@ def test_session_rows_leave_no_history_and_renewal_latency_is_small(tmp_path):
         assert changed and not any(name.startswith("frame_") for name in changed), changed
 
 
-def test_scenario_10_slow_probe_keeps_session_fresh_and_expired_evidence_alone_blocks(tmp_path):
-    """Scenario 10: a conformance probe slower than the session TTL.
+# --- contracts: write-guard engine semantics (bh-sieai; origin: spike bh-sieai) ---------------
+#
+# A storage contract about Dolt itself: a BEFORE trigger is a *statement* guard.  Version-control
+# operations that move rows between commits (pull-merge, branch merge, cherry-pick, revert) never
+# fire it.  That is what lets an epoch bump arrive on a stale replica, and it is also why the
+# guard stops raw bd but not an actor who can write a non-``main`` branch.  These tests drive the
+# Dolt CLI directly (no server, no bd) with the product-shaped guard from ``harness.write_guard``.
 
-    Scaled-down clock: session TTL 3 s, renewal every 0.3 s, evidence TTL 1.5 s, probe 6 s.
-    Decoupled: the session stays fresh throughout; once evidence expires, eligibility fails on
-    ``evidence_unexpired`` alone, and recovers when the probe publishes.  Coupled counterfactual
-    (renewal waits for the measurement, as a HeartbeatLease with embedded conformance does):
-    the same probe lets the session go stale.
-    """
-    session_ttl_ms, evidence_ttl_ms, renew_s, probe_s = 3000, 1500, 0.3, 6.0
-    context = process_context()
+ISSUE_INSERT = (
+    "insert into issues (id, title, description, design, acceptance_criteria, notes) "
+    "values ('{id}', '{id}', '', '', '', '')"
+)
+
+
+class _DoltCli:
+    """A Dolt CLI repo with its own HOME / DOLT_ROOT_PATH under *root*."""
+
+    def __init__(self, root: Path, name: str):
+        self.dir = root / name
+        self.home = root / f"{name}-home"
+        (self.home / ".dolt").mkdir(parents=True)
+        (self.home / ".dolt" / "config_global.json").write_text(
+            json.dumps(
+                {"user.name": name, "user.email": f"{name}@x.invalid", "metrics.disabled": "true"}
+            )
+        )
+        self.env = {
+            "PATH": os.environ["PATH"],
+            "HOME": str(self.home),
+            "DOLT_ROOT_PATH": str(self.home),
+        }
+
+    def run(self, *args: str, stdin: str | None = None) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["dolt", *args],
+            cwd=self.dir,
+            env=self.env,
+            input=stdin,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+    def ok(self, *args: str, stdin: str | None = None) -> str:
+        res = self.run(*args, stdin=stdin)
+        assert res.returncode == 0, f"dolt {' '.join(args)}: {res.stdout}{res.stderr}"
+        return res.stdout
+
+    def rows(self, query: str) -> list[dict]:
+        out = self.ok("sql", "-r", "json", "-q", query).strip()
+        return json.loads(out).get("rows", []) if out else []
+
+    def count(self, query: str) -> int:
+        return int(next(iter(self.rows(query)[0].values())))
+
+
+def _cli_refusal(res: subprocess.CompletedProcess) -> str:
+    assert res.returncode != 0, f"write was accepted: {res.stdout}"
+    return res.stdout + res.stderr
+
+
+@pytest.mark.fence_canary  # ADR condition 9: re-run on every Dolt/bd pin bump (bh-p07dv)
+def test_merge_cherry_pick_and_revert_do_not_fire_the_guard_on_the_dolt_cli(tmp_path):
+    """A stale replica (identity B, writer A) still takes a true pull-merge, a local branch merge,
+    a cherry-pick and a revert onto ``main``: none of them fires a trigger. The last three are
+    also a guard bypass for anyone who can write a non-``main`` branch."""
+    if shutil.which("dolt") is None:
+        pytest.skip("dolt binary unavailable")
+    remote = tmp_path / "remote"
+    remote.mkdir()
+    a, b = _DoltCli(tmp_path, "a"), _DoltCli(tmp_path, "b")
+    a.dir.mkdir()
+    a.ok("init", "-b", "main")
+    assert a.rows("select dolt_version() v")[0]["v"] == "2.3.5"
+    a.ok(
+        "sql",
+        "-q",
+        "create table issues (id varchar(32) primary key, title text, description text, "
+        "design text, acceptance_criteria text, notes text); "
+        "create table scratch (id int primary key)",
+    )
+    a.ok("sql", stdin=wg.guard_ddl(("issues",)) + "insert into bh_writer values (1, 'A', 1);\n")
+    a.ok("sql", "-q", "call dolt_commit('-Am', 'guard')")
+    a.ok("remote", "add", "origin", f"file://{remote}")
+    a.ok("push", "origin", "main")
+    subprocess.run(
+        ["dolt", "clone", f"file://{remote}", str(b.dir)],
+        env=b.env,
+        check=True,
+        capture_output=True,
+    )
+    for repo, ident in ((a, "A"), (b, "B")):
+        repo.ok(
+            "sql",
+            "-q",
+            "create table bh_local_ident "
+            "(id int primary key, frame varchar(64), role varchar(16)); "
+            f"insert into bh_local_ident values (1, '{ident}', 'replica')",
+        )
+    # Writer A publishes two guarded writes; stale B diverges on an unguarded table.
+    a.ok("sql", "-q", ISSUE_INSERT.format(id="w1"))
+    a.ok("sql", "-q", "call dolt_commit('-Am', 'w1')")
+    a.ok("sql", "-q", ISSUE_INSERT.format(id="w2"))
+    a.ok("sql", "-q", "call dolt_commit('-Am', 'w2')")
+    a.ok("push", "origin", "main")
+    b.ok("sql", "-q", "insert into scratch values (1); call dolt_commit('-Am', 'b local')")
+    assert wg.GUARD_REFUSAL in _cli_refusal(b.run("sql", "-q", ISSUE_INSERT.format(id="b0")))
+
+    b.ok("pull", "origin", "main")
+    assert b.count("select count(*) from dolt_log where message like 'Merge%'") >= 1
+    assert {r["id"] for r in b.rows("select id from issues")} == {"w1", "w2"}
+    marks_after_pull = b.count("select count(*) from bh_write_mark")
+    assert marks_after_pull == 2  # exactly A's two, none minted by the merge
+
+    b.ok("checkout", "-b", "frame/b")
+    b.ok("sql", "-q", ISSUE_INSERT.format(id="fb1") + "; call dolt_commit('-Am', 'fb1')")
+    b.ok("sql", "-q", ISSUE_INSERT.format(id="fb2") + "; call dolt_commit('-Am', 'fb2')")
+    fb1 = b.rows("select commit_hash h from dolt_log where message = 'fb1'")[0]["h"]
+    b.ok("checkout", "main")
+    b.ok("cherry-pick", fb1)
+    b.ok("merge", "frame/b", "-m", "merge frame/b")
+    w2 = b.rows("select commit_hash h from dolt_log where message = 'w2'")[0]["h"]
+    b.ok("revert", w2)
+    assert {r["id"] for r in b.rows("select id from issues")} == {"w1", "fb1", "fb2"}
+    # No op minted a mark; the revert also took back the mark w2's commit carried.
+    assert b.count("select count(*) from bh_write_mark") == marks_after_pull - 1
+    # ... yet a direct write is still refused afterwards.
+    assert wg.GUARD_REFUSAL in _cli_refusal(
+        b.run("sql", "-q", "delete from issues where id = 'fb1'")
+    )
+
+
+# --- contracts: epoch-fence engine semantics on one server (bh-uhx2r, folded from E1/E2) --------
+
+FENCE_DB = "fence_epoch"
+STALE_FORCE_GLOBALS = (
+    "SET GLOBAL dolt_force_transaction_commit = 1",
+    "SET GLOBAL dolt_transaction_commit = 1",
+)
+
+
+def _fence_database(port, name=FENCE_DB):
+    """A minimal epoch fence on one server: ``bh_write_mark.epoch`` is an FK to the singleton
+    ``bh_epoch_live``. Branch ``stale`` holds a mark at epoch 1; ``main`` has since bumped the live
+    epoch to 2 and retired the old marks, so merging ``stale`` into ``main`` breaks the FK."""
+    root = _connect(port)
+    _sql(root, f"CREATE DATABASE {name}")
+    _sql(root, f"USE {name}")
+    _sql(
+        root,
+        "CREATE TABLE bh_epoch_live (id INT PRIMARY KEY, epoch BIGINT NOT NULL, UNIQUE (epoch))",
+    )
+    _sql(
+        root,
+        "CREATE TABLE bh_write_mark (id VARCHAR(64) PRIMARY KEY, epoch BIGINT NOT NULL, "
+        "CONSTRAINT bh_write_mark_epoch FOREIGN KEY (epoch) REFERENCES bh_epoch_live (epoch))",
+    )
+    _sql(root, "INSERT INTO bh_epoch_live VALUES (1, 1)")
+    _sql(root, "INSERT INTO bh_write_mark VALUES ('adopt-1', 1)")
+    _sql(root, "CALL DOLT_COMMIT('-Am', 'epoch 1')")
+    _sql(root, "CALL DOLT_BRANCH('stale')")
+    _sql(root, "CALL DOLT_CHECKOUT('stale')")
+    _sql(root, "INSERT INTO bh_write_mark VALUES ('late-write', 1)")
+    _sql(root, "CALL DOLT_COMMIT('-Am', 'stale write at epoch 1')")
+    _sql(root, "CALL DOLT_CHECKOUT('main')")
+    _sql(root, "INSERT INTO bh_epoch_live VALUES (2, 2) ON DUPLICATE KEY UPDATE epoch = 2")
+    _sql(root, "DELETE FROM bh_write_mark WHERE epoch < 2")
+    _sql(root, "DELETE FROM bh_epoch_live WHERE id = 1")
+    _sql(root, "INSERT INTO bh_write_mark VALUES ('adopt-2', 2)")
+    _sql(root, "CALL DOLT_COMMIT('-Am', 'adopt epoch 2')")
+    return root
+
+
+def _stale_titles(conn):
+    return {row[0] for row in _sql(conn, "SELECT id FROM bh_write_mark")}
+
+
+def test_forced_globals_do_not_let_commit_land_an_fk_violating_merge(tmp_path):
+    """bh-uhx2r E1: a login can set the force globals server-wide, but a new session that merges
+    a stale-epoch write still gets its FK violation, and the honest ``DOLT_COMMIT`` refuses it."""
     with _isolated_server(tmp_path) as (port, _root):
-        root = _provision(port, session_ttl_ms=session_ttl_ms, evidence_ttl_ms=evidence_ttl_ms)
-        reader = _connect(port, "reader", PASSWORD, DB)
-        frame_a = _connect(port, "frame_a", PASSWORD, DB)
-        _sql(
-            frame_a,
-            "UPDATE frame_a_evidence SET release_digest=%s, profile='factory', "
-            "status='conformant' WHERE id = 1",
-            ("sha256:" + "1" * 64,),
-        )
-
-        stop, errors = context.Event(), context.Queue()
-        renewers = [
-            context.Process(target=_renewer, args=(port, frame, renew_s, stop, errors))
-            for frame in ("a", "b")
-        ]
-        for process in renewers:
-            process.start()
-
-        # Concurrent operator config commits must not disturb renewals or reads.
-        operator_stop = threading.Event()
-        commit_errors = []
-
-        def operator_commits():
-            connection = _connect(port, database=DB)
-            n = 0
-            while not operator_stop.is_set():
-                n += 1
-                try:
-                    _sql(
-                        connection,
-                        "UPDATE hq_grant SET profile = 'factory' WHERE frame_id = 'b'",
-                    )
-                    _sql(
-                        connection,
-                        "INSERT INTO hq_grant VALUES (%s,'pending',1,'x','p',1,1)",
-                        (f"op-{n}",),
-                    )
-                    _sql(connection, "CALL DOLT_COMMIT('-am', 'operator change')")
-                except pymysql.MySQLError as exc:
-                    commit_errors.append(repr(exc))
-                operator_stop.wait(0.2)
-            connection.close()
-
-        committer = threading.Thread(target=operator_commits)
-        committer.start()
-        try:
-            # Wait for both spawned renewers to have renewed at least once after this point.
-            mark = _sql(root, "SELECT UTC_TIMESTAMP(6)")[0][0]
-            deadline = time.monotonic() + 60
-            while not all(
-                _sql(root, f"SELECT renewed_at > %s FROM frame_{frame}_session", (mark,))[0][0]
-                for frame in ("a", "b")
+        root = _connect(port)
+        # The allow-conflicts global is session-only on 2.3.5, so it cannot be set server-wide.
+        assert "SESSION variable" in _refused(root, "SET GLOBAL dolt_allow_commit_conflicts = 1")
+        for case, globals_ in enumerate(((), STALE_FORCE_GLOBALS[:1], STALE_FORCE_GLOBALS)):
+            name = f"{FENCE_DB}_{case}"
+            setup = _fence_database(port, name)
+            head = _sql(setup, "SELECT DOLT_HASHOF('main')")[0][0]
+            for statement in globals_:
+                _sql(root, statement)
+            honest = _connect(port, database=name)  # a NEW session inherits the globals
+            seen = _sql(honest, "SELECT @@dolt_force_transaction_commit, @@dolt_transaction_commit")
+            assert seen[0] == (int(len(globals_) >= 1), int(len(globals_) == 2))
+            if len(globals_) != 1:
+                # Autocommit rolls the violating merge back (no force), or the merge itself is
+                # refused under dolt_transaction_commit: either way nothing can be committed.
+                _refused(honest, "CALL DOLT_MERGE('stale')")
+            else:
+                _sql(honest, "CALL DOLT_MERGE('stale')")
+                violations = _sql(honest, "SELECT COUNT(*) FROM dolt_constraint_violations")[0][0]
+                assert violations == 1
+                _refused(honest, "CALL DOLT_COMMIT('-Am', 'merge stale')")
+            # The row can sit in a working set at most: no commit made it into history.
+            assert _sql(setup, "SELECT DOLT_HASHOF('main')")[0][0] == head
+            honest.close()
+            for statement in (
+                "SET GLOBAL dolt_force_transaction_commit = 0",
+                "SET GLOBAL dolt_transaction_commit = 0",
             ):
-                assert time.monotonic() < deadline, "renewers never renewed"
-                time.sleep(0.1)
-            _sql(
-                frame_a,
-                "UPDATE frame_a_evidence SET status='conformant' WHERE id = 1",
-            )
-            assert _blocked_by(_decide(reader, "a")) == set()
-            # Frame b renews but never measured: live, yet blocked by its evidence alone.
-            blocked_b = _blocked_by(_decide(reader, "b"))
-            assert {"evidence_pass", "release_matches"} <= blocked_b
-            assert blocked_b <= {"evidence_pass", "release_matches", "evidence_unexpired"}
+                _sql(root, statement)
 
-            started, finished = context.Event(), context.Event()
-            probe = context.Process(
-                target=_conformance_probe, args=(port, "a", probe_s, started, finished)
-            )
-            probe.start()
-            assert started.wait(30)
-            samples = []
-            while not finished.is_set():
-                samples.append(_decide(reader, "a"))
-                time.sleep(0.1)
-            probe.join(30)
-            assert probe.exitcode == 0
-            after = _decide(reader, "a")
 
-            assert len(samples) > 20
-            assert all(sample["session_fresh"] for sample in samples), samples
-            blocked = [_blocked_by(sample) for sample in samples]
-            assert {"evidence_unexpired"} in blocked  # expired evidence alone blocks
-            assert all(reasons <= {"evidence_unexpired"} for reasons in blocked), blocked
-            assert _blocked_by(after) == set()  # republished evidence restores eligibility
-            print(
-                "SCENARIO_10_DECOUPLED "
-                + json.dumps(
-                    {
-                        "samples": len(samples),
-                        "session_fresh": sum(s["session_fresh"] for s in samples),
-                        "blocked_by_evidence_only": blocked.count({"evidence_unexpired"}),
-                        "eligible": blocked.count(set()),
-                    }
-                )
-            )
-        finally:
-            operator_stop.set()
-            committer.join(30)
-            stop.set()
-            for process in renewers:
-                process.join(30)
-        renewal_errors = []
-        while True:
-            try:
-                renewal_errors.append(errors.get(timeout=0.2))
-            except queue.Empty:
-                break
-        assert renewal_errors == []
-        assert commit_errors == []
-        assert all(process.exitcode == 0 for process in renewers)
+def test_database_wide_all_grant_can_restamp_and_commit_a_stale_write(tmp_path):
+    """bh-uhx2r E2: with no global at all, ``GRANT ALL`` on the database lets a login merge the
+    stale write, re-stamp it at the live epoch, clear the violation and commit with session-level
+    SET only. A DML-only login cannot run the merge (``DOLT_MERGE`` / ``DOLT_COMMIT`` need ALL)."""
+    with _isolated_server(tmp_path) as (port, _root):
+        root = _fence_database(port)
+        _sql(root, f"CREATE USER dml@'%' IDENTIFIED BY '{PASSWORD}'")
+        _sql(root, f"GRANT SELECT, INSERT, UPDATE, DELETE ON {FENCE_DB}.* TO dml@'%'")
+        _sql(root, f"CREATE USER allp@'%' IDENTIFIED BY '{PASSWORD}'")
+        _sql(root, f"GRANT ALL ON {FENCE_DB}.* TO allp@'%'")
 
-        # Coupled counterfactual: no independent renewer, renewal waits on the measurement.
-        _sql(frame_a, "UPDATE frame_a_session SET epoch = epoch WHERE id = 1")
-        _sql(root, "UPDATE hq_grant SET evidence_ttl_ms = 60000 WHERE frame_id = 'a'")
-        started, finished = context.Event(), context.Event()
-        coupled = context.Process(
-            target=_coupled_heartbeat, args=(port, "a", probe_s, started, finished)
-        )
-        coupled.start()
-        assert started.wait(30)
-        stale = []
-        while not finished.is_set():
-            stale.append(_blocked_by(_decide(reader, "a")))
-            time.sleep(0.1)
-        coupled.join(30)
-        assert coupled.exitcode == 0
-        assert {"session_fresh"} in stale  # a healthy frame expired by its own probe
-        print(
-            "SCENARIO_10_COUPLED "
-            + json.dumps(
-                {
-                    "samples": len(stale),
-                    "blocked_by_session_only": stale.count({"session_fresh"}),
-                    "renewer_errors": len(renewal_errors),
-                    "operator_commit_errors": len(commit_errors),
-                }
-            )
-        )
+        dml = _connect(port, "dml", PASSWORD, FENCE_DB)
+        _refused(dml, "CALL DOLT_MERGE('stale')")
+        dml.close()
+
+        attacker = _connect(port, "allp", PASSWORD, FENCE_DB)
+        assert _sql(attacker, "SELECT @@GLOBAL.dolt_force_transaction_commit")[0][0] == 0
+        _sql(attacker, "SET @@SESSION.dolt_force_transaction_commit = 1")
+        _sql(attacker, "CALL DOLT_MERGE('stale')")
+        _sql(attacker, "SET @live = (SELECT epoch FROM bh_epoch_live)")
+        _sql(attacker, "UPDATE bh_write_mark SET epoch = @live WHERE epoch <> @live")
+        _sql(attacker, "DELETE FROM dolt_constraint_violations_bh_write_mark")
+        _sql(attacker, "CALL DOLT_COMMIT('-Am', 'routine')")
+        assert "late-write" in _stale_titles(attacker)
+        assert _sql(attacker, "SELECT COUNT(*) FROM dolt_constraint_violations")[0][0] == 0
+        attacker.close()

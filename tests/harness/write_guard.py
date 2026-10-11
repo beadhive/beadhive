@@ -15,7 +15,8 @@ The guard is committed SQL objects plus one node-local row:
         CALL bh_guard_check();         -- LAST: SIGNALs (and so rolls back) on refusal
       END IF;
 
-Why this shape (each point is pinned by ``tests/spikes/test_bh_sieai_write_guard_int.py``):
+Why this shape (each point is pinned by ``tests/test_fence_trigger_canary_int.py`` and
+``tests/test_hq_sql_dolt_semantics_int.py``):
 
 * **The identity check goes through a procedure.** Dolt resolves every table a trigger body names
   when it plans the triggering statement, even inside an ``IF`` branch that will not run. A

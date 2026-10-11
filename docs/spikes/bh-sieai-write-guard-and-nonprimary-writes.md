@@ -4,10 +4,9 @@
 **Feeds decision on:** `bh-pr889` (hive writer partitioning ADR), with `bh-vje85` (epoch/FK
 fence, run in parallel) and `bh-jbb6r` (end-to-end). Parent molecule `bh-qlgmm`. Proposal:
 [hive-writer-partitioning-proposal.md §2 and §4](../design/hive-writer-partitioning-proposal.md#2-fencing-the-epoch-lives-in-the-data).
-**Executable evidence:**
-[`tests/spikes/test_bh_sieai_write_guard_int.py`](../../tests/spikes/test_bh_sieai_write_guard_int.py)
-(`integration`, 4 of 6 tests also `dolt_server`; about 6.5 min at `-n 2` with the soak
-settings below). The guard prototype is
+**Executable evidence:** the spike file `tests/spikes/test_bh_sieai_write_guard_int.py` was
+retired by `bh-rdcjw` (see [Retired to permanent suites](#retired-to-permanent-suites)); its
+tests ran about 6.5 min at `-n 2` with the soak settings below. The guard prototype is
 [`tests/harness/write_guard.py`](../../tests/harness/write_guard.py). Both build on the bh-eybn7
 fixture ([`tests/harness/writer_fencing.py`](../../tests/harness/writer_fencing.py)).
 
@@ -471,3 +470,19 @@ reasons:
      `Recorder` `guard_probe`.
    - Use an embedded founder.
    - Keep the soak knobs (`BH_SIEAI_CLAIM_ROUNDS`, `BH_SIEAI_PUSH_ROUNDS`) out of the land gate.
+
+## Retired to permanent suites
+
+`bh-rdcjw` deleted `tests/spikes/test_bh_sieai_write_guard_int.py` (6 tests, ~445 s). The findings
+above stand. Each verdict was re-checked by reading the spike test against its counterpart:
+scenario, fault injection and assertion. Evidence JSON (`BH_SIEAI_EVIDENCE`) and the soak knobs
+(`BH_SIEAI_CLAIM_ROUNDS`, `BH_SIEAI_PUSH_ROUNDS`) went with the file.
+
+| Spike test | Evidence | Permanent counterpart |
+|---|---|---|
+| `test_merge_cherry_pick_and_revert_do_not_fire_the_guard_on_the_dolt_cli` | 2 | `tests/test_hq_sql_dolt_semantics_int.py::test_merge_cherry_pick_and_revert_do_not_fire_the_guard_on_the_dolt_cli` (moved, keeps `fence_canary`) |
+| `test_dolt_trigger_semantics_the_guard_depends_on` | 1 | retired: R5 probes (`@`-variable fail-open, skipped statements after `CALL`, procedure DML in transactions, first-row-only body, `information_schema` rows) are `test_fence_trigger_canary_int.py::test_r5_dolt_trigger_bugs_still_behave_as_the_guard_assumes`; the mark matrix and refusal rollback are `test_guard_marks_every_writer_statement_once_and_refusal_rolls_it_back` and, on the product guard, `test_fence_data_int.py::test_product_guard_marks_every_writer_statement_once_and_refuses_a_non_writer` (which also covers `main`-only scoping and unprovisioned refusal via `test_fence_cutover_int.py`). Not carried, no counterpart: the `dolt_checkout`-inside-trigger plan-time table resolution probe, `ALTER TABLE` keeping the triggers, and the detached-revision read-only check. |
+| `test_stale_replica_raw_bd_writes_are_refused_after_pulling_the_epoch_bump` | 3, 4 | retired: a stale writer refused on every default bd path, both engines, after the bump is `test_epoch_fencing_int.py::test_s5_stale_writer_is_refused_on_every_default_bd_path` and `test_s5_server_mode_mark_is_not_in_the_write_commit_and_the_adopt_sentinel_closes_vc_merge`; the product guard refusing after a true merge is `test_fence_composed_int.py` and `test_fence_data_int.py`; the merge-mints-no-mark property is the moved contract above. |
+| `test_import_migrations_doctor_and_fresh_joins_with_the_guard` | 5, 6 | retired: install/idempotency, the 44-trigger count, fresh-join fail-closed and ident provisioning are `test_fence_data_int.py` (`test_install_is_idempotent_in_composed_order_and_leaves_exactly_44`, `test_ident_provisioning_refuses_before_the_ignore_row_is_committed`, `test_embedded_bd_store_is_switched_on_by_its_data_alone`, `test_server_mode_install_goes_through_bd_sql_and_bd_dolt_commit`). Not carried: `bd import`/`bd doctor`/`bd migrate schema` (migration 0059/0060) firing the guard, which was bd-1.3-version specific measurement; re-measure if a bd bump changes migrations. |
+| `test_forward_path_claims_leases_and_failover` | 8 | retired: claim race through the primary's server is `test_hive_forward_int.py` (6-way barrier, one winner); failover with backup reclaim is `test_fence_composed_int.py::test_multi_executor_forwarding_survives_primary_failover_with_backup_reclaim` and `test_failover_reclaim_int.py`; a forwarder at a demoted primary being refused is the composed product-guard tests. Not carried: bd's `reclaim --any-replica` not seeing a dead primary's lease-less claims (the premise of bh's own reclaim, now product behaviour). |
+| `test_branch_path_merges_contention_and_raw_push_hazard` | 9 | `tests/test_bd_branch_merge_int.py::test_branch_frames_collide_on_child_ids_and_strategy_ours_silently_drops_a_side` (moved, trimmed: child-ID collision #4796, double local claim, second-merge conflict, `--strategy ours` dropping a side, label union, raw `bd dolt push` to `main`). The frame-private data ref half is `test_fence_composed_int.py::test_branch_role_frame_edits_reach_main_only_through_the_primarys_merge`. Retired: the manifest-CAS contention timing rounds (timing dependent). |
