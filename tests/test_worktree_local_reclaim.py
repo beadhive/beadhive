@@ -564,8 +564,15 @@ def test_unpublished_local_merge_is_insufficient(hive):
 def test_public_status_preview_prune_agree_without_loading_hq(hive, tmp_path):
     # Process-level public entry, with a tripwire that rejects ANY HQ/config/CLI import.
     # A low address-space limit also makes eager service/CLI initialization observable.
+    #
+    # The real /proc scan runs, but over a process inventory scoped to this test's own tree
+    # (the entry process plus one deliberate holder). A host-wide scan sees every other xdist
+    # worker and gate on the host; any of their processes that is opaque or exiting at scan
+    # time keeps every target in one call and not the next (bh-jucc0), so the three calls
+    # could disagree. Fail-closed handling of foreign processes is covered by the fake-port
+    # tests above; this test proves the public entries agree on the same evidence.
     script = """
-import importlib.abc, json, resource, sys
+import importlib.abc, json, os, resource, sys
 resource.setrlimit(resource.RLIMIT_AS, (256 * 1024**2, 256 * 1024**2))
 class RejectHQ(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
@@ -573,38 +580,79 @@ class RejectHQ(importlib.abc.MetaPathFinder):
                         "beadhive.hq_sql_config", "beadhive.hq_sql_runtime"}:
             raise AssertionError("HQ initialization forbidden under degradation: " + fullname)
 sys.meta_path.insert(0, RejectHQ())
+from beadhive import worktree_local_reclaim as lr
+scope = {str(os.getpid()), *os.environ["SCAN_SCOPE_PIDS"].split()}
+class ScopedProc:
+    # The real scan code, but /proc lists only this test's process tree.
+    def __getattr__(self, name):
+        return getattr(os, name)
+    def listdir(self, path):
+        names = os.listdir(path)
+        return [n for n in names if n in scope] if os.fspath(path) == "/proc" else names
+lr.os = ScopedProc()
 from beadhive.cli_entrypoint import main
 main()
 """
-    reports = []
-    for args in (("status",), ("prune", "--dry-run"), ("prune",)):
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                script,
-                "worktree",
-                *args,
-                "--local-safe",
-                "--root",
-                str(hive.root),
-                "--json",
-            ],
-            cwd=tmp_path,
-            env={**os.environ, "PYTHONPATH": str(ROOT / "src"), "BH_HQ_SQL_HOST": "127.0.0.1:1"},
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=True,
-        )
-        reports.append(json.loads(result.stdout))
+    if not Path("/proc/self/cwd").exists():
+        pytest.skip("no /proc on this platform")
+    active = hive.leaves["active"]
+    holder = subprocess.Popen(
+        [sys.executable, "-c", "import sys; print('ready', flush=True); sys.stdin.read()"],
+        cwd=active,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout.readline() == "ready\n"  # exec finished: cwd is now readable
+        reports = []
+        for args in (("status",), ("prune", "--dry-run"), ("prune",)):
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    script,
+                    "worktree",
+                    *args,
+                    "--local-safe",
+                    "--root",
+                    str(hive.root),
+                    "--json",
+                ],
+                cwd=tmp_path,
+                env={
+                    **os.environ,
+                    "PYTHONPATH": str(ROOT / "src"),
+                    "BH_HQ_SQL_HOST": "127.0.0.1:1",
+                    "SCAN_SCOPE_PIDS": str(holder.pid),
+                },
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=True,
+            )
+            reports.append(json.loads(result.stdout))
+    finally:
+        holder.stdin.close()
+        holder.wait(timeout=15)
+        holder.stdout.close()
     a, b, c = reports
     assert a["dry_run"] and b["dry_run"] and not c["dry_run"]
+    for report in reports:
+        assert report["process_scan"]["complete"], report["process_scan"]
+        assert not report["process_scan"]["opaque_own_processes"]
+    real = os.path.realpath
     preview = {t["path"] for t in a["targets"] if t["status"] == lr.WOULD_REMOVE}
+    names = ("landed-a", "landed-b", "landed-ignored")
+    assert {real(p) for p in preview} == {real(hive.leaves[name]) for name in names}
     assert preview == {t["path"] for t in b["targets"] if t["status"] == lr.WOULD_REMOVE}
-    assert preview  # the real process scan must prove at least one unused tree
     assert preview == {t["path"] for t in c["targets"] if t["status"] == lr.REMOVED}
+    # The real scan saw the live holder: the held tree is kept in every call.
+    for report in reports:
+        held = next(t for t in report["targets"] if real(t["path"]) == real(active))
+        assert "in_use" in held["reasons"] and holder.pid in held["holder_pids"]
     assert c["reclaimed_bytes"] > 0
+    assert active.exists()
     assert hive.leaves["dirty"].exists() and hive.leaves["unlanded"].exists()
 
 
