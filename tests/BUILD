@@ -1,13 +1,19 @@
 python_source(
     name="root-conftest",
     source="conftest.py",
-    dependencies=[":watchdog-diagnostics"],
+    dependencies=[":watchdog-diagnostics", ":perf-marker"],
     tags=["category:test-only", "attest:stateful", "attest:root-composition"],
 )
 
 python_source(
     name="watchdog-diagnostics",
     source="harness/watchdog_diagnostics.py",
+    tags=["category:test-only", "attest:stateful"],
+)
+
+python_source(
+    name="perf-marker",
+    source="harness/perf_marker.py",
     tags=["category:test-only", "attest:stateful"],
 )
 
@@ -163,6 +169,7 @@ files(
         "fixture_config.yaml",
         "fixture_workspace.toml",
         "selective-ci-policy.toml",
+        "wall_clock_allowlist.toml",
         "proof/**/*",
         "schemas/**/*",
     ],

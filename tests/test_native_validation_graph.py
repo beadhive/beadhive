@@ -55,6 +55,7 @@ def test_backend_neutral_structural_gate_owns_shared_contract_checks() -> None:
     for required in (
         "check_import_boundaries.py",
         "check_package_imports.py",
+        "check_test_wall_clock.py",
         "test_closure_certification.py --check-structural",
         "test_closure_shadow_policy.py --check",
         "test_closure_promotion_policy.py --check",

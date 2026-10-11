@@ -86,6 +86,7 @@ def test_index_rebuild_restores_green_and_requires_referenced_completed_run(tmp_
     assert validation_ledger.green_verdict(entry, "tree", "just check") is None
 
 
+@pytest.mark.perf
 def test_large_manifest_queries_are_subsecond_with_constant_metadata_probes(tmp_path, monkeypatch):
     """The measured 689-manifest case is bounded structurally as well as by elapsed time."""
     entry, repo = _entry(tmp_path, monkeypatch)
