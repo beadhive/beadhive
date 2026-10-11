@@ -56,9 +56,9 @@ Recognized directive lines (anywhere in --instructions text), one per line, KEY=
   STUB_NEXT_ACTION=<text>            RoleOutcome.next_action (default: unset)
   STUB_BEAD_MISMATCH=true            echo a DIFFERENT bead_id than --bead was given
   STUB_HANG=true                     don't return immediately; wait for a CANCEL signal
-Environment: STUB_READY_FD=<n> (optional) -- once the hang loop is armed (SIGTERM handler
-installed), write one line to that inherited fd and close it, so a test can block on the pipe
-instead of sleeping.
+Environment (optional): STUB_READY_FIFO=<path> or STUB_READY_FD=<n>. Once the hang loop is armed
+(SIGTERM handler installed) the stub writes one line to that fifo / inherited fd, so a test can
+block on the pipe instead of sleeping.
 """
 
 
@@ -230,14 +230,24 @@ def _run_hang_loop(*, session_id: str, bead_id: str | None, stdin_cancel: bool =
 
 
 def _signal_ready() -> None:
+    fifo = os.environ.get("STUB_READY_FIFO")
+    if fifo:
+        try:
+            # The parent holds the fifo open, so this never blocks; skip rather than hang if not.
+            handle = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+            try:
+                os.write(handle, f"ready {os.getpid()}\n".encode())
+            finally:
+                os.close(handle)
+        except OSError:
+            pass
     fd = os.environ.get("STUB_READY_FD")
-    if not fd:
-        return
-    try:
-        os.write(int(fd), b"ready\n")
-        os.close(int(fd))
-    except (OSError, ValueError):
-        pass
+    if fd:
+        try:
+            os.write(int(fd), b"ready\n")
+            os.close(int(fd))
+        except (OSError, ValueError):
+            pass
 
 
 def _stdin_has_line() -> bool:

@@ -43,6 +43,7 @@ from beadhive import (
 from beadhive import bd as bd_mod
 from beadhive.complexity import ComplexityTier
 from beadhive.model_routing import ModelBlockedVerdict, ModelSelection
+from harness.readiness import ReadyFifo, wait_pid_gone
 
 STUB_SEAT = Path(__file__).parent / "fixtures" / "stub_seat.py"
 
@@ -176,16 +177,16 @@ async def test_real_beadhive_cancel_result_isolated_from_source_publisher_failur
         writer=run_journal.WRITER_LOCAL_LOOP,
         activity_publisher=publisher,
     )
-    child_env = tmp_path / "beadhive-child-env.json"
+    child_env = ReadyFifo(tmp_path / "beadhive-child-env.fifo")
     seat = await localloop.spawn_seat(
         [
             sys.executable,
             "-c",
             (
                 "import json,os,pathlib,time; "
-                f"pathlib.Path({str(child_env)!r}).write_text(json.dumps("
+                f"pathlib.Path({str(child_env.path)!r}).write_text(json.dumps("
                 "sorted(k for k in os.environ if k.startswith('BH_ACTIVITY_PUBLISH_') "
-                "and k.endswith('_TOKEN')))); time.sleep(60)"
+                "and k.endswith('_TOKEN'))) + '\\n'); time.sleep(60)"
             ),
         ],
         bead_id="bh-q0lol.11",
@@ -196,15 +197,7 @@ async def test_real_beadhive_cancel_result_isolated_from_source_publisher_failur
         cwd=tmp_path,
         journal=journal,
     )
-    child_tokens = None
-    for _ in range(100):
-        try:
-            child_tokens = json.loads(child_env.read_text())
-        except (FileNotFoundError, json.JSONDecodeError):
-            pass
-        else:
-            break
-        await asyncio.sleep(0.01)
+    child_tokens = json.loads((await child_env.await_lines())[0])
 
     result = await localloop.cancel(
         seat,
@@ -232,25 +225,16 @@ async def _finish(seat) -> None:
     assert await seat.wait_exit(10), "the seat should have exited"
 
 
-async def _await_seat_ready(seat, *, startup: float = 1.0) -> None:
-    """Give a freshly spawned seat time to install its signal handlers before signalling it.
+def _ready_fifo(tmp_path: Path, monkeypatch) -> ReadyFifo:
+    """Make every stub seat spawned by this test announce, on a fifo, that its hang loop is armed.
 
-    Not a fudge: a process cannot catch SIGTERM before its interpreter has started, and a signal
-    that arrives first kills it outright (exit -15, no envelope). The real seat binary has the
-    same startup window — it is why `work.dispatch.envelope_grace` is generous and why the
-    scheduler holds the pipe rather than assuming a prompt reply.
+    A process cannot catch SIGTERM before its interpreter has started, and a signal that arrives
+    first kills it outright (exit -15, no envelope). Blocking on the stub's own readiness line
+    replaces a startup-window sleep with an explicit handshake.
     """
-    while seat.age() < startup and not seat.finished:
-        await asyncio.sleep(0.05)
-
-
-async def _await_file(path: Path, timeout: float = 10.0) -> str:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if path.is_file() and path.read_text().strip():
-            return path.read_text().strip()
-        await asyncio.sleep(0.02)
-    raise AssertionError(f"{path} never appeared")
+    fifo = ReadyFifo(tmp_path / "stub-ready.fifo")
+    monkeypatch.setenv("STUB_READY_FIFO", str(fifo.path))
+    return fifo
 
 
 #: A parent that forks a grandchild which OUTLIVES it, then exits cleanly on SIGTERM without
@@ -284,9 +268,9 @@ async def test_naive_terminate_leaks_a_grandchild(tmp_path):
     """
     script = tmp_path / "orphan.py"
     script.write_text(_ORPHAN_MAKER)
-    pidfile = tmp_path / "grandchild.pid"
-    seat = await _spawn([sys.executable, str(script), str(pidfile)])
-    grandchild = int(await _await_file(pidfile))
+    pidfile = ReadyFifo(tmp_path / "grandchild.pid")
+    seat = await _spawn([sys.executable, str(script), str(pidfile.path)])
+    grandchild = await pidfile.await_pid()
 
     seat.proc.terminate()  # the naive path the ADR sketch implied
     assert await seat.wait_exit(10), "the direct child must have died — only the grandchild leaks"
@@ -305,9 +289,9 @@ async def test_cancel_reaps_the_whole_process_group(tmp_path):
     """The fix: SIGTERM the child, then `os.killpg` the group — no PPID-1 orphan survives."""
     script = tmp_path / "orphan.py"
     script.write_text(_ORPHAN_MAKER)
-    pidfile = tmp_path / "grandchild.pid"
-    seat = await _spawn([sys.executable, str(script), str(pidfile)])
-    grandchild = int(await _await_file(pidfile))
+    pidfile = ReadyFifo(tmp_path / "grandchild.pid")
+    seat = await _spawn([sys.executable, str(script), str(pidfile.path)])
+    grandchild = await pidfile.await_pid()
     assert seat.pgid == seat.pid, "start_new_session=True must make the child its own group leader"
 
     result = await localloop.cancel(
@@ -344,11 +328,12 @@ def test_send_signal_refuses_sigint():
 
 
 @async_test
-async def test_cancel_never_sends_sigint(tmp_path):
+async def test_cancel_never_sends_sigint(tmp_path, monkeypatch):
     """Every signal the ladder sends is recorded on the seat; SIGINT appears in none of them."""
+    ready = _ready_fifo(tmp_path, monkeypatch)
     inst = _instructions(tmp_path, "hang", "STUB_HANG=true")
     seat = await _spawn(_stub_argv(tmp_path, inst))
-    await _await_seat_ready(seat)
+    await ready.await_lines()
     result = await localloop.cancel(
         seat, rungs=(localloop.RUNG_SIGNAL,), envelope_grace=5.0, terminate_grace=5.0
     )
@@ -361,13 +346,14 @@ async def test_cancel_never_sends_sigint(tmp_path):
 
 
 @async_test
-async def test_signal_rung_yields_a_priced_envelope_not_zero_bytes(tmp_path):
+async def test_signal_rung_yields_a_priced_envelope_not_zero_bytes(tmp_path, monkeypatch):
     """Signal the child while the reader is still alive and the envelope arrives (bh-a7so.7 §4,
     correcting bh-a7so.2's "a killed run emits zero bytes"). A cancelled run must be
     attributable: session id, cost, and a machine-readable terminal_reason."""
+    ready = _ready_fifo(tmp_path, monkeypatch)
     inst = _instructions(tmp_path, "hang", "STUB_HANG=true")
     seat = await _spawn(_stub_argv(tmp_path, inst, session="sess-kill"))
-    await _await_seat_ready(seat)
+    await ready.await_lines()
     result = await localloop.cancel(
         seat, rungs=(localloop.RUNG_SIGNAL,), envelope_grace=5.0, terminate_grace=5.0
     )
@@ -716,9 +702,12 @@ async def test_a_failed_run_writes_its_cause_to_the_bead(tmp_path, fakebd):
 
 
 @async_test
-async def test_the_wall_time_cap_cancels_through_the_ladder_and_prices_the_run(tmp_path, fakebd):
+async def test_the_wall_time_cap_cancels_through_the_ladder_and_prices_the_run(
+    tmp_path, fakebd, monkeypatch
+):
     """A capped-out run is cancelled, not merely abandoned — and it still comes back attributable
     because the cap goes through the same ladder as any other cancel."""
+    ready = _ready_fifo(tmp_path, monkeypatch)
     fake = fakebd(FakeBd(children=[_child("b1", status="in_progress")]))
     loop = _loop(
         tmp_path,
@@ -728,7 +717,7 @@ async def test_the_wall_time_cap_cancels_through_the_ladder_and_prices_the_run(t
     report = localloop.PassReport()
     await loop._spawn_for("b1", action="dispatch", role="developer", report=report)
     seat = loop.in_flight["b1"]
-    await asyncio.sleep(0.05)
+    await ready.await_lines()
 
     capped = localloop.PassReport()
     await loop._enforce_wall_time(capped)
@@ -760,10 +749,11 @@ async def test_a_cancelled_run_releases_its_claim_without_waiting_out_the_ttl(tm
 
 
 @async_test
-async def test_siblings_are_notified_by_the_loop_not_by_the_child(tmp_path, fakebd):
+async def test_siblings_are_notified_by_the_loop_not_by_the_child(tmp_path, fakebd, monkeypatch):
     """The child has no topology (one bead, one worktree, by design) and no outbound channel to
     a sibling. The loop holds the in-flight map, so it writes to their stdin pipes directly
     (bh-a7so.7 §14)."""
+    ready = _ready_fifo(tmp_path, monkeypatch)
     fakebd(FakeBd(children=[_child("b1"), _child("b2")]))
     loop = _loop(
         tmp_path,
@@ -774,7 +764,7 @@ async def test_siblings_are_notified_by_the_loop_not_by_the_child(tmp_path, fake
     await loop._spawn_for("b1", action="dispatch", role="developer", report=report)
     await loop._spawn_for("b2", action="dispatch", role="developer", report=report)
 
-    await _await_seat_ready(loop.in_flight["b2"])
+    await ready.await_lines(2)  # both seats armed
     notified = await loop.notify_siblings("b1", "sibling b1 was cancelled")
     assert notified == ("b2",)
     # the stub treats any non-control line as the cooperative wrap-up, so b2 winds down cleanly.
@@ -1424,12 +1414,8 @@ def test_local_runtime_translates_canonical_model_only_at_launch_and_reports_rou
         assert seat.routing["selected_model"] == canonical_model
         assert "launch_model" not in seat.routing
 
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline:
-            outcome = rt.observe(handle)
-            if outcome.status != "running":
-                break
-            time.sleep(0.05)
+        assert rt._submit(seat.wait_exit(30)), "the routed seat never exited"
+        outcome = rt.observe(handle)
         assert outcome.status == "done"
         assert outcome.routing["complexity"] == "COMPLEX"
         assert outcome.routing["selected_model"] == canonical_model
@@ -1615,9 +1601,7 @@ async def test_resume_reuses_original_launch_identity_without_refresh_or_double_
     await loop._spawn_for("b1", action="dispatch", role="developer", report=first)
     assert len(calls) == 1
 
-    deadline = time.monotonic() + 15
-    while not loop.in_flight["b1"].finished and time.monotonic() < deadline:
-        await asyncio.sleep(0.05)
+    assert await loop.in_flight["b1"].wait_exit(30), "the first run never exited"
     await loop._harvest(localloop.PassReport())
     resumed = localloop.PassReport()
     await loop._spawn_for("b1", action="resume", role="developer", report=resumed)
@@ -2108,9 +2092,8 @@ time.sleep(60)
     assert parent == pgid
 
     try:
-        deadline = time.monotonic() + 2
-        while time.monotonic() < deadline and (_pid_alive(parent) or _pid_alive(same_group)):
-            time.sleep(0.02)
+        wait_pid_gone(parent, 30.0)
+        wait_pid_gone(same_group, 30.0)
         assert not _pid_alive(parent), "the direct bd child was not reaped"
         assert not _pid_alive(same_group), "a same-process-group bd descendant survived SIGKILL"
     finally:

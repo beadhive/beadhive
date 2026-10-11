@@ -8,6 +8,7 @@ child has exited, using ``pidfd_open`` where the kernel offers it.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import errno
 import os
@@ -18,33 +19,83 @@ from pathlib import Path
 
 
 class ReadyFifo:
-    """A named pipe whose first writer's payload is delivered to ``wait``."""
+    """A named pipe on which children publish one line each; the parent blocks for them.
+
+    The parent holds the pipe open read-write and non-blocking from construction, so a child's
+    ``open(path, "w")`` never blocks, never sees ENXIO, and the read side never reports EOF while
+    no child is connected.  ``wait`` / ``await_lines`` then block on readability (no sleep loop)
+    up to a generous ceiling.
+    """
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         os.mkfifo(self.path)
-        self._payload: str | None = None
-        self._done = threading.Event()
-        self._thread = threading.Thread(target=self._read, daemon=True)
-        self._thread.start()
+        self._fd = os.open(self.path, os.O_RDWR | os.O_NONBLOCK)
+        self._buffer = b""
 
-    def _read(self) -> None:
+    def __del__(self) -> None:
+        self.close()
+
+    def close(self) -> None:
+        fd, self._fd = getattr(self, "_fd", -1), -1
+        if fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+    def _drain(self) -> None:
+        while True:
+            try:
+                chunk = os.read(self._fd, 4096)
+            except BlockingIOError:
+                return
+            if not chunk:
+                return
+            self._buffer += chunk
+
+    def _lines(self) -> list[str]:
+        return [line for line in self._buffer.decode().splitlines() if line.strip()]
+
+    def wait_lines(self, count: int = 1, timeout: float = 30.0) -> list[str]:
+        """Block until *count* lines arrived (a writer may deliver several lines at once)."""
+        deadline = time.monotonic() + timeout
+        poller = select.poll()
+        poller.register(self._fd, select.POLLIN)
+        self._drain()
+        while len(self._lines()) < count:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not poller.poll(remaining * 1000):
+                raise AssertionError(
+                    f"expected {count} readiness line(s) on {self.path}, got {self._lines()!r}"
+                )
+            self._drain()
+        return self._lines()
+
+    async def await_lines(self, count: int = 1, timeout: float = 30.0) -> list[str]:
+        """Event-loop-friendly ``wait_lines``: readability wakes the loop, nothing sleeps."""
+        loop = asyncio.get_running_loop()
+        wake = asyncio.Event()
+        self._drain()
+        if len(self._lines()) < count:
+            loop.add_reader(self._fd, wake.set)
         try:
-            with open(self.path, encoding="utf-8") as stream:  # blocks until a writer opens
-                self._payload = stream.read()
+            while len(self._lines()) < count:
+                wake.clear()
+                try:
+                    await asyncio.wait_for(wake.wait(), timeout)
+                except TimeoutError:
+                    raise AssertionError(
+                        f"expected {count} readiness line(s) on {self.path}, got {self._lines()!r}"
+                    ) from None
+                self._drain()
         finally:
-            self._done.set()
+            loop.remove_reader(self._fd)
+        return self._lines()
 
     def wait(self, timeout: float = 30.0) -> str:
-        if not self._done.wait(timeout):
-            self.release()
-            raise AssertionError(f"process did not signal readiness on {self.path}")
-        return (self._payload or "").strip()
+        return self.wait_lines(1, timeout)[0]
 
-    def release(self) -> None:
-        """Unblock a reader that never saw a writer (failure path)."""
-        with contextlib.suppress(OSError):
-            os.close(os.open(self.path, os.O_WRONLY | os.O_NONBLOCK))
+    async def await_pid(self, timeout: float = 30.0) -> int:
+        return int((await self.await_lines(1, timeout))[0])
 
     def wait_pid(self, timeout: float = 30.0) -> int:
         return int(self.wait(timeout))
