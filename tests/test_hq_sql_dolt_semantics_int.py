@@ -15,7 +15,7 @@ Layout, so sibling beads can extend it (add a new section; reuse the helpers, do
 3. Contract sections, one ``# ---`` block each:
    * grants (``frame_grant``), triggers (``operator_trigger``, ``trigger_body``), accounts
      (``host_pinned``), globals (``set_globals``), history (``session_rows``) -- bh-3nfbn;
-   * forward-RPC grant contracts -- bh-uhx2r (to be added);
+   * epoch-fence engine contracts on one server (forced globals, ALL grant) -- bh-uhx2r;
    * write-guard engine contracts (merge/pull/cherry-pick/revert never fire the guard's
      triggers; Dolt CLI, no server) -- bh-sieai.
 
@@ -603,3 +603,111 @@ def test_merge_cherry_pick_and_revert_do_not_fire_the_guard_on_the_dolt_cli(tmp_
     assert wg.GUARD_REFUSAL in _cli_refusal(
         b.run("sql", "-q", "delete from issues where id = 'fb1'")
     )
+
+
+# --- contracts: epoch-fence engine semantics on one server (bh-uhx2r, folded from E1/E2) --------
+
+FENCE_DB = "fence_epoch"
+STALE_FORCE_GLOBALS = (
+    "SET GLOBAL dolt_force_transaction_commit = 1",
+    "SET GLOBAL dolt_transaction_commit = 1",
+)
+
+
+def _fence_database(port, name=FENCE_DB):
+    """A minimal epoch fence on one server: ``bh_write_mark.epoch`` is an FK to the singleton
+    ``bh_epoch_live``. Branch ``stale`` holds a mark at epoch 1; ``main`` has since bumped the live
+    epoch to 2 and retired the old marks, so merging ``stale`` into ``main`` breaks the FK."""
+    root = _connect(port)
+    _sql(root, f"CREATE DATABASE {name}")
+    _sql(root, f"USE {name}")
+    _sql(
+        root,
+        "CREATE TABLE bh_epoch_live (id INT PRIMARY KEY, epoch BIGINT NOT NULL, UNIQUE (epoch))",
+    )
+    _sql(
+        root,
+        "CREATE TABLE bh_write_mark (id VARCHAR(64) PRIMARY KEY, epoch BIGINT NOT NULL, "
+        "CONSTRAINT bh_write_mark_epoch FOREIGN KEY (epoch) REFERENCES bh_epoch_live (epoch))",
+    )
+    _sql(root, "INSERT INTO bh_epoch_live VALUES (1, 1)")
+    _sql(root, "INSERT INTO bh_write_mark VALUES ('adopt-1', 1)")
+    _sql(root, "CALL DOLT_COMMIT('-Am', 'epoch 1')")
+    _sql(root, "CALL DOLT_BRANCH('stale')")
+    _sql(root, "CALL DOLT_CHECKOUT('stale')")
+    _sql(root, "INSERT INTO bh_write_mark VALUES ('late-write', 1)")
+    _sql(root, "CALL DOLT_COMMIT('-Am', 'stale write at epoch 1')")
+    _sql(root, "CALL DOLT_CHECKOUT('main')")
+    _sql(root, "INSERT INTO bh_epoch_live VALUES (2, 2) ON DUPLICATE KEY UPDATE epoch = 2")
+    _sql(root, "DELETE FROM bh_write_mark WHERE epoch < 2")
+    _sql(root, "DELETE FROM bh_epoch_live WHERE id = 1")
+    _sql(root, "INSERT INTO bh_write_mark VALUES ('adopt-2', 2)")
+    _sql(root, "CALL DOLT_COMMIT('-Am', 'adopt epoch 2')")
+    return root
+
+
+def _stale_titles(conn):
+    return {row[0] for row in _sql(conn, "SELECT id FROM bh_write_mark")}
+
+
+def test_forced_globals_do_not_let_commit_land_an_fk_violating_merge(tmp_path):
+    """bh-uhx2r E1: a login can set the force globals server-wide, but a new session that merges
+    a stale-epoch write still gets its FK violation, and the honest ``DOLT_COMMIT`` refuses it."""
+    with _isolated_server(tmp_path) as (port, _root):
+        root = _connect(port)
+        # The allow-conflicts global is session-only on 2.3.5, so it cannot be set server-wide.
+        assert "SESSION variable" in _refused(root, "SET GLOBAL dolt_allow_commit_conflicts = 1")
+        for case, globals_ in enumerate(((), STALE_FORCE_GLOBALS[:1], STALE_FORCE_GLOBALS)):
+            name = f"{FENCE_DB}_{case}"
+            setup = _fence_database(port, name)
+            head = _sql(setup, "SELECT DOLT_HASHOF('main')")[0][0]
+            for statement in globals_:
+                _sql(root, statement)
+            honest = _connect(port, database=name)  # a NEW session inherits the globals
+            seen = _sql(honest, "SELECT @@dolt_force_transaction_commit, @@dolt_transaction_commit")
+            assert seen[0] == (int(len(globals_) >= 1), int(len(globals_) == 2))
+            if len(globals_) != 1:
+                # Autocommit rolls the violating merge back (no force), or the merge itself is
+                # refused under dolt_transaction_commit: either way nothing can be committed.
+                _refused(honest, "CALL DOLT_MERGE('stale')")
+            else:
+                _sql(honest, "CALL DOLT_MERGE('stale')")
+                violations = _sql(honest, "SELECT COUNT(*) FROM dolt_constraint_violations")[0][0]
+                assert violations == 1
+                _refused(honest, "CALL DOLT_COMMIT('-Am', 'merge stale')")
+            # The row can sit in a working set at most: no commit made it into history.
+            assert _sql(setup, "SELECT DOLT_HASHOF('main')")[0][0] == head
+            honest.close()
+            for statement in (
+                "SET GLOBAL dolt_force_transaction_commit = 0",
+                "SET GLOBAL dolt_transaction_commit = 0",
+            ):
+                _sql(root, statement)
+
+
+def test_database_wide_all_grant_can_restamp_and_commit_a_stale_write(tmp_path):
+    """bh-uhx2r E2: with no global at all, ``GRANT ALL`` on the database lets a login merge the
+    stale write, re-stamp it at the live epoch, clear the violation and commit with session-level
+    SET only. A DML-only login cannot run the merge (``DOLT_MERGE`` / ``DOLT_COMMIT`` need ALL)."""
+    with _isolated_server(tmp_path) as (port, _root):
+        root = _fence_database(port)
+        _sql(root, f"CREATE USER dml@'%' IDENTIFIED BY '{PASSWORD}'")
+        _sql(root, f"GRANT SELECT, INSERT, UPDATE, DELETE ON {FENCE_DB}.* TO dml@'%'")
+        _sql(root, f"CREATE USER allp@'%' IDENTIFIED BY '{PASSWORD}'")
+        _sql(root, f"GRANT ALL ON {FENCE_DB}.* TO allp@'%'")
+
+        dml = _connect(port, "dml", PASSWORD, FENCE_DB)
+        _refused(dml, "CALL DOLT_MERGE('stale')")
+        dml.close()
+
+        attacker = _connect(port, "allp", PASSWORD, FENCE_DB)
+        assert _sql(attacker, "SELECT @@GLOBAL.dolt_force_transaction_commit")[0][0] == 0
+        _sql(attacker, "SET @@SESSION.dolt_force_transaction_commit = 1")
+        _sql(attacker, "CALL DOLT_MERGE('stale')")
+        _sql(attacker, "SET @live = (SELECT epoch FROM bh_epoch_live)")
+        _sql(attacker, "UPDATE bh_write_mark SET epoch = @live WHERE epoch <> @live")
+        _sql(attacker, "DELETE FROM dolt_constraint_violations_bh_write_mark")
+        _sql(attacker, "CALL DOLT_COMMIT('-Am', 'routine')")
+        assert "late-write" in _stale_titles(attacker)
+        assert _sql(attacker, "SELECT COUNT(*) FROM dolt_constraint_violations")[0][0] == 0
+        attacker.close()
