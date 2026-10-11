@@ -30,6 +30,7 @@ from beadhive.hq_control_plane import (
     install_guard,
     registration_ref,
 )
+from harness.clock import FakeClock
 
 
 def frame_process(b, code, *args):
@@ -2674,9 +2675,22 @@ print(plane.publish_hive_lease(sys.argv[3],lease,expected=sys.argv[4],operation=
     result = frame_process(second, attempt, "bh", incumbent["bh"])
     assert result.returncode != 0 and "pre-receive hook declined" in result.stderr
     assert git(b["remote"], "rev-parse", "refs/bh/lease/bh") == incumbent["bh"]
-    # Signed real receipt aging, rather than replacing evictable() or server clocks.
-    b["accept"](4, state_seen="active", leaseDurationSeconds=30, intervalSeconds=1)
-    time.sleep(31)
+    # Receipt aging by data: the operator plane records first_seen from its injectable clock, so
+    # observing the beat 31 s in the past makes the signed receipt already older than its lease
+    # (the pre-receive hook reads the real clock and sees an aged receipt). No real wait.
+    aged = FakeClock(datetime.fromtimestamp(time.time() - 31, UTC))
+    real_clock = b["plane"].clock
+    b["plane"].clock = aged.wall
+    try:
+        b["accept"](
+            4,
+            state_seen="active",
+            leaseDurationSeconds=30,
+            intervalSeconds=1,
+            renewTime=aged.now().isoformat(),
+        )
+    finally:
+        b["plane"].clock = real_clock
     for prefix in ("stale", "quarantine", "retire"):
         if prefix == "quarantine":
             apply(b, "quarantine")

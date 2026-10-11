@@ -33,6 +33,7 @@ from beadhive import beads_routing, localloop
 from beadhive.run import run
 from beadhive.state import CAUSE_RUN_BLOCKED, CAUSE_RUN_CANCELLED, DISPATCH_DIM
 from harness.beads import bd, bd_json, init_embedded, skip_if_no_bd
+from harness.readiness import ReadyFifo
 
 pytestmark = [pytest.mark.integration, skip_if_no_bd]
 
@@ -351,11 +352,10 @@ async def test_a_failure_cause_is_a_real_event_bead_and_a_label(tmp_path):
 
     loop = _loop(main, epic, briefs={bead: "STUB_STATUS=blocked"})
     await loop.run_pass()
-    for _ in range(60):
-        report = await loop.run_pass()
-        if report.harvested:
-            break
-        await asyncio.sleep(0.1)
+    for seat in list(loop.in_flight.values()):
+        assert await seat.wait_exit(60), "the seat never exited"
+    report = await loop.run_pass()
+    assert report.harvested, "the exited seat was not harvested by the next pass"
     await loop.shutdown()
 
     assert DISPATCH_BLOCKED_LABEL in (_row(bead, main).get("labels") or [])
@@ -484,7 +484,12 @@ def test_a_real_seat_is_found_through_real_ps_on_a_narrow_terminal(tmp_path, mon
     """
     monkeypatch.setenv("COLUMNS", "80")
     sleeper = tmp_path / "sleeper.py"
-    sleeper.write_text("import time\ntime.sleep(120)\n")
+    ready = ReadyFifo(tmp_path / "sleeper-ready.fifo")
+    sleeper.write_text(
+        "import os, time\n"
+        "open(os.environ['SLEEPER_READY'], 'w').write('ready\\n')\n"
+        "time.sleep(120)\n"
+    )
     # A realistically deep hive path — the scope token has to sit past 80 columns to reproduce.
     scope = tmp_path / "workspace" / "github" / "beadhive" / "beadhive"
     scope.mkdir(parents=True)
@@ -498,15 +503,14 @@ def test_a_real_seat_is_found_through_real_ps_on_a_narrow_terminal(tmp_path, mon
     )
     assert len(" ".join(argv)) > 80, "the fixture must be long enough to be truncated"
 
-    proc = subprocess.Popen(list(argv), start_new_session=True)
+    proc = subprocess.Popen(
+        list(argv),
+        start_new_session=True,
+        env={**os.environ, "SLEEPER_READY": str(ready.path)},
+    )
     try:
-        deadline = time.monotonic() + 15
-        found = ()
-        while time.monotonic() < deadline:
-            found = localloop.find_orphan_seats(["bh-jwwls"], scope=str(scope))
-            if found:
-                break
-            time.sleep(0.1)
+        ready.wait()  # the interpreter has exec'd, so `ps` shows the full argv from here on
+        found = localloop.find_orphan_seats(["bh-jwwls"], scope=str(scope))
         assert found, "a real seat was not found through real ps — the scan is a silent no-op"
         assert proc.pid in [pid for pid, _pgid, _argv in found]
     finally:

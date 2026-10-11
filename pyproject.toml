@@ -179,6 +179,11 @@ dev = [
     # +15% wall (64.6s -> 74.4s under -n auto), and coverage is a periodic question rather than
     # a per-commit gate. Combines across xdist workers on its own.
     "pytest-cov>=5",
+    # Deterministic time (bh-j4v0l). time-machine patches the C-level clocks for code that reads
+    # time directly; tests/harness/clock.py FakeClock is the preferred seam-level clock.
+    "time-machine>=3.5.1",
+    # Hang BACKSTOP only (bh-j4v0l), never a fix for a flaky test; see docs/TEST_PROCESS_POLICY.md.
+    "pytest-timeout>=2.4",
     "ruff>=0.6",
     # Validates the report-channel spec artifact (docs/schemas/*.json) against its example
     # in tests/test_report_channel.py. Explicit (not leaned on as an mcp transitive) so the
@@ -203,6 +208,12 @@ pre_bump_hooks = ["scripts/prepare-release-version.sh $CZ_PRE_NEW_VERSION"]
 
 [tool.pytest.ini_options]
 addopts = "--durations=25 --durations-min=1.0"
+# pytest-timeout BACKSTOP (bh-j4v0l): a per-test ceiling below the 900s BH_TEST_TIMEOUT_SECONDS
+# watchdog default so a single hung test is named before the whole run is killed. The thread method
+# dumps stacks and exits the process, so it also works under xdist and with blocking C calls. It is
+# never a fix: a test that needs it is a bug (see docs/TEST_PROCESS_POLICY.md).
+timeout = 600
+timeout_method = "thread"
 # Core pytest collection is rooted at tests/. Workspace distributions under packages/* use
 # their own source roots and are run by the packages-check native/Pants build validation path.
 testpaths = ["tests"]
@@ -226,6 +237,9 @@ markers = [
     # ADR condition 9 (bh-p07dv): the Dolt/bd trigger-semantics canary. Every Dolt or bd pin
     # bump re-runs it (`just fence-canary`); see tests/harness/trigger_canary.py.
     "fence_canary: Dolt/bd trigger-semantics canary re-run on every Dolt or bd pin bump",
+    # bh-zbn8a: wall-clock latency/overlap assertions. Deselected from every gate lane by
+    # tests/conftest.py unless selected with `-m perf` or BH_PERF_TESTS=1; run on a quiet host.
+    "perf: asserts measured wall-clock latency; excluded from the gate, run on a quiet host (bh-zbn8a)",
 ]
 
 [tool.ruff]

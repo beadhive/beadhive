@@ -223,6 +223,7 @@ def adopt(
     reclaim: bool = False,
     before_push: Callable[[], None] | None = None,
     attempts: int = 4,
+    clock: Callable[[], float] = time.monotonic,
 ) -> AdoptResult:
     """Placement-first, idempotent adopt step 2 (bh-cvk70 R3, bh-vje85 R2) on the composed fence.
 
@@ -231,7 +232,7 @@ def adopt(
     this node's guard is short of the full trigger set (bh-sieai R1: a frame short of them
     refuses to act as writer). Otherwise it commits the bump (+ reclaim) and pushes; a
     non-fast-forward rejection loops back to the data check."""
-    started = time.monotonic()
+    started = clock()
     result = AdoptResult("abandoned: retries exhausted")
     for attempt in range(1, attempts + 1):
         result.attempts = attempt
@@ -268,7 +269,7 @@ def adopt(
             result.outcome = "landed"
             result.reclaimed = reverting
             break
-    result.seconds = round(time.monotonic() - started, 3)
+    result.seconds = round(clock() - started, 3)
     return result
 
 
@@ -739,10 +740,11 @@ class GitHQ(_Reachability):
 
     mode = "git"
 
-    def __init__(self, root: Path, *, prefix: str = "fx"):
+    def __init__(self, root: Path, *, prefix: str = "fx", wall: Callable[[], float] = time.time):
         super().__init__()
         self.root = root
         self.prefix = prefix
+        self.wall = wall  # epoch seconds for the advisory ``expires_at`` hint
         self.repo = root / "hq.git"
         self.work = root / "hq-work"
         self._parked = root / "hq.git.down"
@@ -803,8 +805,8 @@ class GitHQ(_Reachability):
             host_id=writer,
             label=writer,
             epoch=epoch,
-            adopted_at=now_stamp(),
-            expires_at=now_stamp(time.time() + 1800),
+            adopted_at=now_stamp(self.wall()),
+            expires_at=now_stamp(self.wall() + 1800),
         ).to_record()
 
     def place(
@@ -927,12 +929,23 @@ class Director:
 
     Staleness is the HQ server's own clock on the placed frame's session row (bh-wtsrc). Only
     staleness the director OBSERVED while HQ was reachable counts, on its monotonic clock, so an
-    HQ outage never makes every frame look dead the moment HQ returns."""
+    HQ outage never makes every frame look dead the moment HQ returns.
 
-    def __init__(self, hq: SqlHQ, failover_after: float, hive: str = "hive"):
+    ``clock`` is the director's monotonic clock (real by default; a test passes
+    ``FakeClock.monotonic`` and advances it instead of sleeping, bh-qwbrz)."""
+
+    def __init__(
+        self,
+        hq: SqlHQ,
+        failover_after: float,
+        hive: str = "hive",
+        *,
+        clock: Callable[[], float] = time.monotonic,
+    ):
         self.hq = hq
         self.failover_after = failover_after
         self.hive = hive
+        self.clock = clock
         self.observed_since: float | None = None
         self.last_seen: float | None = None
         #: A gap between two successful observations longer than this is an unobserved window
@@ -944,7 +957,7 @@ class Director:
     def due(self) -> bool:
         placed = self.hq.placement(self.hive).writer
         staleness = self.hq.staleness(placed) if placed and self.hq.up else None
-        now = time.monotonic()
+        now = self.clock()
         if staleness is None:
             self.observed_since = self.last_seen = None
             return False
@@ -960,11 +973,19 @@ class Director:
         return placed
 
 
-def _renew_loop(port: int, frame: str, password: str, interval: float, stop: str) -> None:
+def _renew_loop(
+    port: int,
+    frame: str,
+    password: str,
+    interval: float,
+    stop: str,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
     """A frame's liveness loop (module scope: spawn target). A no-op UPDATE; the operator
     trigger stamps server UTC. Dies with the frame (``Renewer.kill``). The stop signal is a
     plain file, not a multiprocessing Event: SIGKILLing a process parked in ``Event.wait``
-    leaves the Event's lock held and the controller's later ``set()`` deadlocks (measured)."""
+    leaves the Event's lock held and the controller's later ``set()`` deadlocks (measured).
+    ``sleep`` paces the cadence (picklable; real by default)."""
     import pymysql
 
     conn = None
@@ -987,20 +1008,28 @@ def _renew_loop(port: int, frame: str, password: str, interval: float, stop: str
                 if conn is not None:
                     conn.close()
             conn = None
-        time.sleep(interval)
+        sleep(interval)
 
 
 class Renewer:
-    """One spawned renewal process per frame (``harness.processes``)."""
+    """One spawned renewal process per frame (``harness.processes``). ``sleep`` paces the
+    child's cadence; it crosses a spawn boundary, so it must be picklable."""
 
-    def __init__(self, hq: SqlHQ, frame: str, interval: float):
+    def __init__(
+        self,
+        hq: SqlHQ,
+        frame: str,
+        interval: float,
+        *,
+        sleep: Callable[[float], None] = time.sleep,
+    ):
         from harness.processes import process_context
 
         ctx = process_context()
         self.stop_file = hq.root / f"renewer-{frame}-{uuid.uuid4().hex[:6]}.stop"
         self.proc = ctx.Process(
             target=_renew_loop,
-            args=(hq.port, frame, _FRAME_PASSWORD, interval, str(self.stop_file)),
+            args=(hq.port, frame, _FRAME_PASSWORD, interval, str(self.stop_file), sleep),
             name=f"renewer-{frame}",
             daemon=True,
         )
@@ -2009,11 +2038,13 @@ class _Driver:
         return steps
 
 
-def run_schedule(world: World, seed: int, *, length: int = 6) -> Schedule:
+def run_schedule(
+    world: World, seed: int, *, length: int = 6, clock: Callable[[], float] = time.monotonic
+) -> Schedule:
     """Run one seeded schedule of ``length`` random events, recover, and check every invariant.
 
     The caller owns the checkpoint/rewind around it (:func:`rewind_world`)."""
-    started = time.monotonic()
+    started = clock()
     world.moves = MoveLog(world.cluster)
     driver = _Driver(world, seed, length)
     try:
@@ -2023,7 +2054,7 @@ def run_schedule(world: World, seed: int, *, length: int = 6) -> Schedule:
         driver.schedule.result = check_invariants(world, acknowledged=driver.schedule.acknowledged)
     except Exception as exc:  # a harness failure is recorded with its seed, never swallowed
         driver.schedule.error = f"{type(exc).__name__}: {exc}"[:2000]
-    driver.schedule.seconds = round(time.monotonic() - started, 2)
+    driver.schedule.seconds = round(clock() - started, 2)
     return driver.schedule
 
 

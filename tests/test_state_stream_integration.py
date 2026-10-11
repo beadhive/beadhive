@@ -18,7 +18,6 @@ import select
 import subprocess
 import sys
 import textwrap
-import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -28,6 +27,7 @@ import pytest
 
 from beadhive import engine, state_stream, state_stream_polling
 from beadhive.state_stream_process import StreamProcessScope
+from harness.readiness import wait_pid_gone
 
 NOW = datetime(2026, 8, 24, tzinfo=UTC)
 AS_OF = NOW.isoformat().replace("+00:00", "Z")
@@ -855,22 +855,8 @@ def _read_frame(process: subprocess.Popen, timeout: float = 15.0) -> dict:
     return json.loads(line)
 
 
-def _process_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[-1].split()[0]
-    except OSError:
-        return False
-    return state != "Z"
-
-
-def _wait_processes_gone(pids: list[int], timeout: float = 10.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if not any(_process_alive(pid) for pid in pids):
-            return True
-        time.sleep(0.05)
-    return False
+def _wait_processes_gone(pids: list[int], timeout: float = 30.0) -> bool:
+    return all(wait_pid_gone(pid, timeout) for pid in pids)
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="feature demo verifies Linux process groups")
