@@ -217,6 +217,7 @@ architecture-check:
     just validation-evidence-refresh
     uv run python scripts/check_import_boundaries.py
     uv run python scripts/check_package_imports.py
+    uv run python scripts/check_test_wall_clock.py
     uv run python scripts/test_closure_certification.py --check
     uv run python scripts/test_closure_shadow_policy.py --check
     uv run python scripts/test_closure_promotion_policy.py --check
@@ -241,6 +242,7 @@ architecture-structural-check:
         "uv run python scripts/check_native_impact_map.py" \
         "uv run python scripts/check_import_boundaries.py" \
         "uv run python scripts/check_package_imports.py" \
+        "uv run python scripts/check_test_wall_clock.py" \
         "uv run python scripts/test_closure_certification.py --check-structural" \
         "uv run python scripts/test_closure_shadow_policy.py --check" \
         "uv run python scripts/test_closure_promotion_policy.py --check" \

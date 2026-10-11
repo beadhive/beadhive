@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from harness.readiness import wait_pid_gone
+
 ROOT = Path(__file__).resolve().parents[1]
 WATCHDOG = ROOT / "scripts" / "test-watchdog.py"
 
@@ -151,9 +153,7 @@ def test_timeout_kills_stubborn_descendant_after_leader_exits() -> None:
     )
     grandchild_pid = int(result.stdout.strip())
     try:
-        deadline = time.monotonic() + 2
-        while _process_exists(grandchild_pid) and time.monotonic() < deadline:
-            time.sleep(0.02)
+        wait_pid_gone(grandchild_pid, 10.0)
         assert result.returncode == 124
         assert not _process_exists(grandchild_pid)
     finally:

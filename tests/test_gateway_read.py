@@ -1531,15 +1531,26 @@ def test_generated_sse_replays_only_catalog_events_and_requires_exact_snapshot_s
         expected_manifest_sha256=manifest_digest,
     )
     revoked = False
+    checks = 0
+    stream_checks = None  # set to the check count that proves the open stream reauthorized twice
+    reauthorized = asyncio.Event()
+
+    def subject_is_revoked(_subject):
+        nonlocal checks
+        checks += 1
+        if stream_checks is not None and checks >= stream_checks and not revoked:
+            reauthorized.set()
+        return revoked
+
     app = _application(
         public_key,
         source,
-        subject_is_revoked=lambda _subject: revoked,
+        subject_is_revoked=subject_is_revoked,
         runtime_calls=frame_bridge.RuntimeCallPolicy(stream_reauthorize_seconds=0.05),
     )
 
     async def exercise():
-        nonlocal revoked
+        nonlocal revoked, stream_checks
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url=GATEWAY_ORIGIN
         ) as client:
@@ -1562,6 +1573,9 @@ def test_generated_sse_replays_only_catalog_events_and_requires_exact_snapshot_s
                 },
                 headers={**headers, "Last-Event-ID": f"{cursor['producerEpoch']}:9"},
             )
+            # Event handshake instead of a guessed settle delay: the stream has demonstrably
+            # reauthorized twice (still open, not revoked) before the revocation lands.
+            stream_checks = checks + 3
             stream_task = asyncio.create_task(
                 client.get(
                     f"{route_prefix}/hives/github%2Fbeadhive%2Fbeadhive-ui/events",
@@ -1572,10 +1586,10 @@ def test_generated_sse_replays_only_catalog_events_and_requires_exact_snapshot_s
                     headers=headers,
                 )
             )
-            await asyncio.sleep(0.12)
+            await reauthorized.wait()
             assert not stream_task.done()
             revoked = True
-            stream = await asyncio.wait_for(stream_task, timeout=0.5)
+            stream = await stream_task
             return stream, wrong_scope, conflicting
 
     stream, wrong_scope, conflicting = asyncio.run(exercise())
@@ -1603,15 +1617,27 @@ def test_zero_event_generated_sse_stays_open_and_continuously_reauthorizes(
     private_key, public_key = _keys()
     source = gateway_read.load_packaged_development_source(authorized_subjects=frozenset({SUBJECT}))
     auth = {"now": 100.0, "revoked": False}
+    checks = 0
+    stream_checks = None
+    reauthorized = asyncio.Event()
+
+    def subject_is_revoked(_subject):
+        nonlocal checks
+        checks += 1
+        if stream_checks is not None and checks >= stream_checks and not auth["revoked"]:
+            reauthorized.set()
+        return auth["revoked"]
+
     app = _application(
         public_key,
         source,
         verifier_now=lambda: auth["now"],
-        subject_is_revoked=lambda _subject: auth["revoked"],
+        subject_is_revoked=subject_is_revoked,
         runtime_calls=frame_bridge.RuntimeCallPolicy(stream_reauthorize_seconds=0.05),
     )
 
     async def exercise():
+        nonlocal stream_checks
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url=GATEWAY_ORIGIN
         ) as client:
@@ -1622,6 +1648,7 @@ def test_zero_event_generated_sse_stays_open_and_continuously_reauthorizes(
                 headers=headers,
             )
             cursor = snapshot.json()["snapshot"]["cursor"]
+            stream_checks = checks + 3
             request = asyncio.create_task(
                 client.get(
                     "/v1/instances/dev/demo/hives/github%2Fbeadhive%2Fbaml-harness/events",
@@ -1632,13 +1659,13 @@ def test_zero_event_generated_sse_stays_open_and_continuously_reauthorizes(
                     headers=headers,
                 )
             )
-            await asyncio.sleep(0.12)
+            await reauthorized.wait()
             assert not request.done(), "a zero-event generated subscription must remain live"
             if authorization_change == "expiry":
                 auth["now"] = 102.0
             else:
                 auth["revoked"] = True
-            return await asyncio.wait_for(request, timeout=0.5)
+            return await request
 
     response = asyncio.run(exercise())
     assert response.status_code == 200

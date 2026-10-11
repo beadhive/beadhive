@@ -38,6 +38,7 @@ from beadhive.agent_run_summary import Freshness
 from beadhive.daemon_config import HostDaemonConfig
 from beadhive.daemon_contract import AuthScope
 from beadhive.public_readers import AgentRunSnapshot, Coverage
+from harness.readiness import ReadyFifo
 
 NOW = datetime(2026, 8, 24, tzinfo=UTC).isoformat().replace("+00:00", "Z")
 HIVE = "github/beadhive/beadhive"
@@ -134,8 +135,15 @@ class BlockingCommandBackend:
 
     name = "controlled-blocking"
 
-    def __init__(self, started_path: Path, *, publication_gate: Path | None = None) -> None:
+    def __init__(
+        self,
+        started_path: Path,
+        *,
+        publication_gate: Path | None = None,
+        started_fifo: bool = False,
+    ) -> None:
         self.started_path = started_path
+        self.started_fifo = started_fifo  # started_path is a ReadyFifo the child writes its pid to
         self.publication_gate = publication_gate
         self.block = False
 
@@ -155,7 +163,10 @@ class BlockingCommandBackend:
                         "    time.sleep(0.001)",
                     )
                 )
-            statements.extend(("os.replace(temporary,target)", "time.sleep(300)"))
+            if self.started_fifo:
+                statements.extend(("target.write_text(str(os.getpid()))", "time.sleep(300)"))
+            else:
+                statements.extend(("os.replace(temporary,target)", "time.sleep(300)"))
             source = "\n".join(statements)
         else:
             record = json.dumps(_raw_issue("open"))
@@ -1274,8 +1285,7 @@ def test_close_drains_blocking_source_worker_before_removing_feed_observers(
             loop=asyncio.get_running_loop(),
         )
         relay._start_pump(HIVE)
-        while not provider.refresh_started.is_set():
-            await asyncio.sleep(0.001)
+        assert await asyncio.to_thread(provider.refresh_started.wait, 10)
         close_task = asyncio.create_task(relay.close())
         await asyncio.sleep(0.02)
         assert not close_task.done()
@@ -1294,8 +1304,8 @@ def test_close_drains_blocking_source_worker_before_removing_feed_observers(
 def test_production_process_owner_terminates_blocked_backend_within_shutdown_budget(
     tmp_path: Path, monkeypatch
 ) -> None:
-    started_path = tmp_path / "blocked-backend.pid"
-    backend = BlockingCommandBackend(started_path)
+    started = ReadyFifo(tmp_path / "blocked-backend.pid")
+    backend = BlockingCommandBackend(started.path, started_fifo=True)
     hive_dir = tmp_path / "hive"
     hive_dir.mkdir()
     monkeypatch.setattr(state_stream_polling.engine, "get_engine", lambda _cfg: backend)
@@ -1352,14 +1362,12 @@ def test_production_process_owner_terminates_blocked_backend_within_shutdown_bud
             loop=asyncio.get_running_loop(),
         )
         relay._start_pump(HIVE)
-        while not started_path.exists():
-            await asyncio.sleep(0.001)
-        started = time.monotonic()
+        pid = await started.await_pid()
+        closing = time.monotonic()
         await asyncio.wait_for(relay.close(), runtime.shutdown_budget)
-        return client, time.monotonic() - started
+        return client, time.monotonic() - closing, pid
 
-    client, elapsed = asyncio.run(exercise())
-    pid = int(started_path.read_text())
+    client, elapsed, pid = asyncio.run(exercise())
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
     assert elapsed < runtime.shutdown_budget

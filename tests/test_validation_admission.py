@@ -5,7 +5,6 @@ import os
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -374,6 +373,26 @@ def _hold(root, entered, release):
         release.wait(5)
 
 
+def _hold_announcing_queue(root, queued, entered, release):
+    """Like ``_hold``, but ``queued`` is set when this process finds the slot busy and polls.
+
+    The poll sleep is the only wait inside ``host_slot`` after a failed non-blocking flock, so
+    this is an exact "the contender is blocked" handshake (no guessed settle delay).
+    """
+    import time as real_time
+
+    class _QueuedTime:
+        def sleep(self, seconds):
+            queued.set()
+            real_time.sleep(seconds)
+
+        def __getattr__(self, name):
+            return getattr(real_time, name)
+
+    validation_admission.time = _QueuedTime()
+    _hold(root, entered, release)
+
+
 def _parallel_check_worker(slot_root, hive_root, cohort, results):
     """Run the selective-validation shape with real host and identity flocks."""
     from pathlib import Path
@@ -544,10 +563,10 @@ def test_host_slot_contends_across_processes_and_releases(tmp_path, monkeypatch)
     child = ctx.Process(target=_hold, args=(tmp_path, entered, release))
     child.start()
     assert entered.wait(3)
-    second = ctx.Event()
-    waiter = ctx.Process(target=_hold, args=(tmp_path, second, release))
+    second, queued = ctx.Event(), ctx.Event()
+    waiter = ctx.Process(target=_hold_announcing_queue, args=(tmp_path, queued, second, release))
     waiter.start()
-    time.sleep(0.15)
+    assert queued.wait(3)
     assert not second.is_set()
     release.set()
     assert second.wait(3)

@@ -53,6 +53,7 @@ def test_the_first_failing_command_in_argument_order_names_the_exit_status() -> 
     assert MODULE.main(["--jobs", "2", first, second]) == 3
 
 
+@pytest.mark.perf
 def test_checks_overlap_but_never_exceed_the_job_bound() -> None:
     sleeper = _py("import time; time.sleep(0.6)")
     started = time.monotonic()

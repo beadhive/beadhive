@@ -53,8 +53,8 @@ import os
 import random
 import shutil
 import threading
-import time
 from dataclasses import dataclass, field
+from datetime import timedelta
 from pathlib import Path
 
 import pymysql
@@ -68,8 +68,9 @@ from beadhive import fence_schema as fs
 from beadhive import hive_forward, work_backup
 from beadhive import writer_adopt as wa
 from beadhive.failover_observer import FailoverObserver, session_table, sql_session_staleness
-from beadhive.hq_sql_session import LivenessPolicy, SessionRenewer
+from beadhive.hq_sql_session import LivenessPolicy, SessionRenewer, session_ddl
 from harness import composed_fence as cf
+from harness.clock import FakeClock
 from harness.writer_fencing import BD_EMBEDDED, BD_SERVER, DOLT_CLI, Cluster, Run
 from test_failover_reclaim_int import (
     _backup_remote,
@@ -924,6 +925,23 @@ def test_m13_grant_shape_quiesce_and_history_check(tmp_path, rewound_custom, mon
 # =============================================================================================
 
 
+def _age_session(root, table: str, trigger: str, age_s: float) -> None:
+    """Data-driven server staleness (bh-qwbrz): stamp the session row ``age_s`` seconds before
+    the HQ server's own ``UTC_TIMESTAMP(6)``. The operator stamp trigger overwrites any value an
+    UPDATE supplies, so it is dropped for this one write and recreated, exactly as provisioned.
+    The age is computed here from one server read, not with SQL interval arithmetic (Dolt drops
+    fractional seconds there, bh-7crof)."""
+    with root.cursor() as cursor:
+        cursor.execute("SELECT UTC_TIMESTAMP(6)")
+        (server_now,) = cursor.fetchone()
+        stamp = server_now - timedelta(microseconds=round(age_s * 1e6))
+        cursor.execute(f"DROP TRIGGER {table}_stamp")
+        try:
+            cursor.execute(f"UPDATE {table} SET renewed_at = %s WHERE id = 1", (stamp,))
+        finally:
+            cursor.execute(trigger)
+
+
 @pytest.mark.dolt_server
 def test_sender_stall_longer_than_the_ttl_is_stale_but_fails_over_only_past_failover_after(
     tmp_path,
@@ -933,95 +951,108 @@ def test_sender_stall_longer_than_the_ttl_is_stale_but_fails_over_only_past_fail
     fails the frame over once the stall outlasts ``failover_after``; a stall that ends before
     then is a fresh session again and never a failover. Time decides WHEN to reassign, never
     who may write (the hive's data does that). ``BH_M10_SESSION_TTL_S`` scales the run for the
-    Φ3 soak (docs/HQ.md "Soak check: sender stall")."""
+    Φ3 soak (docs/HQ.md "Soak check: sender stall").
+
+    Virtual time (bh-qwbrz): one :class:`FakeClock` drives the sender's cadence
+    (``SessionRenewer.run(stop=, clock=)``) and the observer's window
+    (``FailoverObserver(clock=)``); nothing sleeps. The server's staleness is data-driven: each
+    poll stamps the session row as old as the virtual time since the last real renewal
+    (:func:`_age_session`), so eligibility and ``sql_session_staleness`` still run the
+    production SQL against the server clock. During the long stall the director polls every
+    ``ttl / 2`` starting ``ttl / 4`` past a renewal, so ``failover_after`` sits half a poll
+    from every observed age: the only real time left on the asserted path (the few statements
+    between an age write and its read) would have to exceed ``ttl / 4`` to move the decision.
+    Removing that residue needs bh-xxkf7's injectable ``now()``."""
     ttl = int(os.environ.get("BH_M10_SESSION_TTL_S", "2"))
     failover_after = 4.0 * ttl
+    interval = ttl / 4  # the sender's cadence
+    step = ttl / 8  # the director's poll step: binary-exact for integer ttl, no float drift
+    long_step = ttl / 2  # its step through the long stall, off the failover_after boundary
     with _session_server(tmp_path) as port:
         root = _session_provisioned(
             port, frames=(("frame_a", 1),), policy=LivenessPolicy(session_ttl_s=ttl)
         )
         root.select_db(SESSION_DB)
         table = session_table("frame_a", 1)
+        trigger = next(s for s in session_ddl("frame_a", 1) if s.startswith("CREATE TRIGGER"))
         renewer = SessionRenewer(
             lambda: _session_frame(port, tmp_path, "frame_a"), database=SESSION_DB
         )
         reader = _session_frame(port, tmp_path, "frame_a")
-        observer = FailoverObserver(failover_after)
-        stalled, stop, errors = threading.Event(), threading.Event(), []
+        clock = FakeClock()
+        observer = FailoverObserver(failover_after, clock=clock.monotonic)
+        errors: list[BaseException] = []
 
-        def wait(wait_s: float) -> bool:
-            stop.wait(wait_s)
-            while stalled.is_set() and not stop.is_set():  # the sender is stuck
-                time.sleep(0.05)
-            return stop.is_set()
-
-        # When each successful renewal STARTED (bh-eeyxt): its server stamp is no earlier, so
-        # the session's server staleness never exceeds the monotonic time since then.
-        renewal_starts: list[float] = []
+        # The virtual instant each successful renewal was made (the server stamps it "now").
+        renewed: list[float] = []
         tick = renewer.tick
 
-        def timed_tick():
-            started = time.monotonic()
+        def stamped_tick():
             route = tick()
-            renewal_starts.append(started)
+            renewed.append(clock.monotonic())
             return route
 
-        renewer.tick = timed_tick
-
-        sender = threading.Thread(
-            target=renewer.run,
-            kwargs={"interval_s": ttl / 4, "stop": wait, "on_error": errors.append},
-            daemon=True,
-        )
+        renewer.tick = stamped_tick
 
         def poll() -> tuple[bool, object]:
+            _age_session(root, table, trigger, clock.monotonic() - renewed[-1])
             with root.cursor() as cursor:
                 age = sql_session_staleness(cursor, table)
             return _session_eligibility(reader).authenticated_fresh_heartbeat, observer.observe(age)
 
-        def watch(seconds: float) -> list[tuple[bool, object]]:
-            out, end = [], time.monotonic() + seconds
-            while time.monotonic() < end:
+        def stalled(seconds: float) -> list[tuple[bool, object]]:
+            """The sender is stuck: virtual time passes, the director polls, nothing renews."""
+            out = []
+            for _ in range(round(seconds / step)):
+                clock.advance(step)
                 out.append(poll())
-                time.sleep(0.25)
             return out
 
-        renewer.tick()
-        sender.start()
+        def renewing(seconds: float) -> list[tuple[bool, object]]:
+            """The sender runs on cadence; between its ticks the director polls."""
+            out, polls = [], round(seconds / step)
+
+            def stop(wait_s: float) -> bool:
+                nonlocal polls
+                assert wait_s == interval  # virtual ticks take no time
+                for _ in range(round(wait_s / step)):
+                    clock.advance(step)
+                    out.append(poll())
+                    polls -= 1
+                return polls <= 0
+
+            renewer.run(
+                interval_s=interval, stop=stop, on_error=errors.append, clock=clock.monotonic
+            )
+            return out
+
         try:
-            healthy = watch(2 * ttl)
+            healthy = renewing(2 * ttl)
             assert all(fresh for fresh, _ in healthy) and not any(d.due for _, d in healthy)
 
-            stalled.set()  # stall 1: longer than the TTL, shorter than failover_after
-            short = watch(2.5 * ttl)
-            stalled.clear()
+            short = stalled(2.5 * ttl)  # stall 1: longer than the TTL, shorter than failover_after
             assert not short[-1][0], "eligibility must go stale past the session TTL"
             assert not any(d.due for _, d in short), "a stall shorter than failover_after"
-            recovered = watch(1.5 * ttl)
+            recovered = renewing(1.5 * ttl)
             assert recovered[-1][0] and not any(d.due for _, d in recovered)
 
-            stalled.set()  # stall 2: longer than failover_after
-            began, due_after = time.monotonic(), None
-            while time.monotonic() - began < failover_after + 6 * ttl:
+            # renewing() ends one interval (ttl / 4) after the last renewal.
+            assert clock.monotonic() - renewed[-1] == interval
+            began, due_after = clock.monotonic(), None  # stall 2: longer than failover_after
+            while clock.monotonic() - began < failover_after + 6 * ttl:
+                clock.advance(long_step)
                 fresh, decision = poll()
                 if decision.due:
-                    due_at = time.monotonic()
-                    due_after = due_at - began
-                    since_renewal = due_at - renewal_starts[-1]
+                    due_after = clock.monotonic() - began
+                    since_renewal = clock.monotonic() - renewed[-1]
                     break
-                time.sleep(0.25)
-            stalled.clear()
-            # Measured from the last renewal actually made, not from when the stall was
-            # flagged: the sender's last tick may land up to one interval before `began`, and
-            # a loaded host stretches it further (bh-eeyxt; 7.95 s was seen against 8.0 s).
+            # Measured from the last renewal actually made, on the virtual clock (bh-eeyxt).
             assert due_after is not None, "a stall past failover_after must fail over"
-            assert since_renewal > failover_after, (since_renewal, failover_after)
+            assert since_renewal == failover_after + interval, since_renewal
             assert decision.staleness > failover_after and decision.window > failover_after
             assert not fresh
+            assert clock.sleeps == []  # the fake clock was advanced, never slept on
         finally:
-            stop.set()
-            stalled.clear()
-            sender.join(15)
             reader.close()
             root.close()
         assert errors == []

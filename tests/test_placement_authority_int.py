@@ -32,13 +32,16 @@ import socket
 import subprocess
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
 from beadhive import gitref
 from beadhive.host_lease_contracts import HostLease, lease_ref, now_stamp
+from harness.clock import FakeClock
 from harness.processes import process_context
 from harness.world import free_port
 
@@ -854,14 +857,16 @@ class FailoverObserver:
 
     Staleness comes from the HQ server's own clock (``renewed_at`` is server-stamped). The
     director only counts staleness it OBSERVED while HQ was reachable, on its own monotonic
-    clock, so an HQ outage never makes every frame look dead the moment HQ returns."""
+    clock, so an HQ outage never makes every frame look dead the moment HQ returns. ``clock``
+    is that monotonic clock (real by default; tests advance a ``FakeClock``, bh-qwbrz)."""
 
-    def __init__(self, failover_after: float):
+    def __init__(self, failover_after: float, *, clock: Callable[[], float] = time.monotonic):
         self.failover_after = failover_after
+        self.clock = clock
         self.observed_since: float | None = None
 
     def due(self, staleness: float | None) -> bool:
-        now = time.monotonic()
+        now = self.clock()
         if staleness is None:  # HQ unreachable: observe nothing, decide nothing
             self.observed_since = None
             return False
@@ -888,6 +893,22 @@ def _session_staleness(server: HqServer) -> float | None:
         conn.close()
 
 
+def _age_session(server: HqServer, age_s: float) -> None:
+    """Data-driven server staleness (bh-qwbrz): stamp A's session ``age_s`` seconds before the
+    HQ server's own ``UTC_TIMESTAMP(6)``, standing in for real time passing on the server. The
+    age is computed from one server read, never with SQL interval arithmetic (Dolt drops the
+    fractional seconds there, bh-7crof)."""
+    conn = server.connect()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT UTC_TIMESTAMP(6)")
+            (server_now,) = cursor.fetchone()
+            stamp = server_now - timedelta(microseconds=round(age_s * 1e6))
+            cursor.execute("UPDATE bh_session_frame_a SET renewed_at = %s WHERE id = 1", (stamp,))
+    finally:
+        conn.close()
+
+
 def _renew_session(server: HqServer) -> None:
     conn = server.connect(FRAME_A)
     with conn.cursor() as cursor:
@@ -898,47 +919,66 @@ def _renew_session(server: HqServer) -> None:
 
 
 def test_s7_sql_hq_down_past_ttl_primary_keeps_writing_and_failover_waits(tmp_path, hq_server):
+    """Virtual time (bh-qwbrz): the director's clock is a :class:`FakeClock` advanced instead
+    of slept on, and the server staleness that time implies is written into the session row
+    (:func:`_age_session`). The written age is a floor on the read staleness (real time between
+    the write and the read only adds to it), so the observed window, which is pure virtual
+    time, decides exactly when failover fires. Removing the server clock from the staleness
+    read itself needs bh-xxkf7's injectable ``now()``."""
     import pymysql
 
     failover_after = 2.0  # scaled down from minutes; the shape, not the number, is under test
+    step = 0.5  # binary-exact: virtual time never drifts off the grid
+    clock = FakeClock()
     hive = make_hive(tmp_path, frame="A", epoch=1)
     a, b = hive.clone("A"), hive.clone("B")
     _renew_session(hq_server)
+    renewed = clock.monotonic()
     frame, epoch, revision = hq_server.placement()
     assert (frame, epoch) == ("A", 1)
 
-    observer = FailoverObserver(failover_after)
+    observer = FailoverObserver(failover_after, clock=clock.monotonic)
     assert not observer.due(_session_staleness(hq_server))
 
     # HQ goes down for longer than failover_after (standing in for "longer than the TTL").
     hq_server.stop()
-    outage_started = time.monotonic()
-    while time.monotonic() - outage_started < failover_after + 1.0:
+    outage_started = clock.monotonic()
+    writes = 0
+    while clock.monotonic() - outage_started < failover_after + 1.0:
         assert not observer.due(_session_staleness(hq_server))  # nothing observable
         with pytest.raises(pymysql.err.OperationalError):
             sql_place(hq_server, "B", 2, revision)  # handoff refused: no CAS point
-        assert a.guarded_write(f"a-offline-{int(time.monotonic() * 1000)}")
-        time.sleep(0.3)
-    assert len(hive.head().rows("SELECT id FROM issues WHERE id LIKE 'a-offline-%'")) >= 2
+        assert a.guarded_write(f"a-offline-{writes}")
+        writes += 1
+        clock.advance(step)
+    assert len(hive.head().rows("SELECT id FROM issues WHERE id LIKE 'a-offline-%'")) == writes
+    assert writes >= 2
 
     # HQ returns. The raw server-clock staleness now spans the outage ...
     hq_server.start()
+    _age_session(hq_server, clock.monotonic() - renewed)
     staleness = _session_staleness(hq_server)
     assert staleness is not None and staleness > failover_after
     # ... so a naive "stale > failover_after" rule would evict a healthy primary, but the
     # observer has seen none of that time and decides nothing.
     assert not observer.due(staleness)
     _renew_session(hq_server)  # A renews on its normal cadence once HQ is back
+    renewed = clock.monotonic()
     assert not observer.due(_session_staleness(hq_server))
     assert hq_server.placement()[:2] == ("A", 1)
 
     # Now A genuinely goes silent: failover fires only after failover_after OBSERVED time,
     # and only then does the director CAS placement; the write fence does the rest.
-    silent_from = time.monotonic()
-    while not observer.due(_session_staleness(hq_server)):
-        assert time.monotonic() - silent_from < failover_after + 10
-        time.sleep(0.2)
-    assert time.monotonic() - silent_from >= failover_after
+    silent_from = clock.monotonic()
+    while True:
+        _age_session(hq_server, clock.monotonic() - renewed)
+        if observer.due(_session_staleness(hq_server)):
+            break
+        assert clock.monotonic() - silent_from < failover_after + 10
+        clock.advance(step)
+    # The first observation past failover_after, never one before it.
+    assert clock.monotonic() - silent_from == failover_after + step
+    assert clock.sleeps == []  # the fake clock was advanced, never slept on
     _, _, revision = hq_server.placement()
     assert sql_place(hq_server, "B", 2, revision)
     assert not sql_place(hq_server, "C", 2, revision)  # the same expectation cannot win twice

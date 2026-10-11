@@ -8,7 +8,6 @@ import os
 import signal
 import subprocess
 import sys
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -30,6 +29,7 @@ from beadhive import (
 )
 from beadhive import dispatch_hive_run as dhr
 from beadhive.modules.config.domain.ports import FleetConfigDocument
+from harness.readiness import ReadyFifo
 
 
 @pytest.fixture
@@ -438,7 +438,7 @@ def test_sql_config_only_legacy_host_keeps_legacy_lease_policy(
 
 def test_sigterm_checkpoints_child_and_exits_zero(tmp_path):
     """Send real SIGTERM to the picker; its child saves a checkpoint before exit."""
-    ready = tmp_path / "ready"
+    ready = ReadyFifo(tmp_path / "ready")
     checkpoint = tmp_path / "checkpoint"
     code = '''
 import asyncio
@@ -456,7 +456,7 @@ def stop(*args):
     sys.exit(0)
 signal.signal(signal.SIGTERM, stop)
 (root / 'ready').write_text('ready')
-while True: time.sleep(0.05)
+while True: signal.pause()
 """
 class Driver(HiveDispatchRun):
     async def _spawn(self, epic):
@@ -473,11 +473,7 @@ asyncio.run(driver.run())
     env["PYTHONPATH"] = str(Path(dhr.__file__).resolve().parents[1])
     proc = subprocess.Popen([sys.executable, "-c", code, str(tmp_path)], env=env)
     try:
-        deadline = time.monotonic() + 10
-        while not ready.exists() and time.monotonic() < deadline:
-            assert proc.poll() is None
-            time.sleep(0.02)
-        assert ready.exists()
+        ready.wait(30.0)
         proc.send_signal(signal.SIGTERM)
         assert proc.wait(timeout=5) == 0
         assert checkpoint.read_text() == "saved"
