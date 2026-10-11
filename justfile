@@ -895,9 +895,12 @@ test-system-smoke:
 # loopback up but no egress. 41ms per spawn — cheap enough to be the default rather than an
 # opt-in. Off Linux the wrapper says so on stderr and runs unfenced; BH_HERMETIC=0 forces that.
 # the LAND gate's complete integration pass — fenced and parallel
+# Match the native partition's work stealing so idle workers can take unstarted
+# fixture-heavy tests instead of leaving a late queue to one worker. Preserve the
+# complete integration collection, fixed worker bound, fence, and watchdog limit.
 test-integration-land:
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{integration_workers}} tests -m "integration"
+        ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{integration_workers}} tests --dist worksteal -m "integration"
 
 # ADR condition 9 (bh-p07dv): re-run the Dolt/bd trigger-semantics canary. REQUIRED on every Dolt
 # or bd pin bump in flake.nix that leaves the configured range (BH_FENCE_CANARY_DOLT_RANGE /

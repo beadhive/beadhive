@@ -51,6 +51,20 @@ def main() -> None:
 
         raise SystemExit(local_reclaim_main(local_reclaim))
 
+    argv = sys.argv[1:]
+    if (
+        len(argv) >= 3
+        and argv[0] in _WORKTREE_GROUPS
+        and argv[1] in {"status", "prune"}
+        and "--local-safe" in argv[2:]
+    ):
+        from .worktree_local_reclaim import main as local_reclaim_main
+
+        args = [arg for arg in argv[2:] if arg != "--local-safe"]
+        if argv[1] == "status":
+            args.append("--dry-run")
+        raise SystemExit(local_reclaim_main(args, mode=argv[1]))
+
     from . import cli
 
     cli.main()

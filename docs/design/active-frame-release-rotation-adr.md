@@ -108,6 +108,38 @@ measured digest at a new epoch, and the lease and claims carry over the same
 way. If an apply acknowledgment is uncertain, run `check` first. Never
 manufacture another epoch to retry a rotation that may have committed.
 
+## Session-only ownership after rotation (bh-y3vo3)
+
+A switched frame qualifies ownership from the same authenticated SQL transaction
+as eligibility: the current principal route, server-stamped session and evidence,
+and protected hive lease. The current session must match the grant epoch, be
+fresh, carry the reviewed release digest and pass conformance. The lease must
+name that host and the exact current grant or a reviewed active predecessor.
+Its expiry stays advisory on the session carrier. An absent signed inbox is
+expected for a session-only route and cannot disqualify this proof.
+
+Dual-written signed routes may still resolve a verified proposal at the hive's
+remote epoch fence. That proposal proves the owner independently of the raw
+receiver-row ownership predicate; the current session evidence is still required.
+Director placement, conflicting tenures, foreign holders and tombstones retain
+their existing checks.
+
+The consumer audit preserves these boundaries:
+
+| Consumer | Ownership boundary |
+| --- | --- |
+| `host eligible --hive`, execute and new work intake | Qualified holder read, with fresh current session evidence |
+| Dispatch and local loop | Intake decision and authoritative primary, using the same qualified reader |
+| Adopt and renew | Protected lease/fence checks; due renewal first qualifies the current holder |
+| Submit and publish for an existing claim | Incumbent read plus the original hive lease epoch fence; staleness or draining may stop intake while that claim finishes |
+
+The isolated TLS Dolt regression exercises CLI list/eligibility parity, dispatch
+intake, execute ownership and submit/publish epoch guards. Authority/config are
+provided at the fixture's verified-provider seam; real SQL authenticates the
+principal and reads/fences the session, evidence and protected lease. Legacy
+signature and signed-proposal regressions remain separate coverage. Factory
+upgrade dogfood must still verify the published patch through the public CLI.
+
 ## Rejected alternatives
 
 - **Demote to pending and re-admit.** Strands claims: a pending grant cannot

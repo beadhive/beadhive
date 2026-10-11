@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 import tempfile
 from importlib.resources import files
 from pathlib import Path
@@ -105,6 +106,11 @@ def statfs_type(path: Path) -> int | None:
     """``statfs(2)`` ``f_type`` of the filesystem holding ``path`` (the nearest existing
     ancestor when ``path`` is not created yet), or ``None`` when it cannot be read (non-Linux,
     no libc, permission). Kept as the single seam tests fake instead of a real tmpfs."""
+    # This buffer and f_type offset describe Linux statfs only. Darwin's
+    # legacy LP64 and modern layouts both exceed this buffer and place f_type
+    # elsewhere. Never call another platform's native ABI here.
+    if sys.platform != "linux":
+        return None
     probe = Path(path)
     while not probe.exists() and probe != probe.parent:
         probe = probe.parent
@@ -113,7 +119,7 @@ def statfs_type(path: Path) -> int | None:
         import ctypes.util
 
         libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6", use_errno=True)
-        buf = ctypes.create_string_buffer(256)  # struct statfs is < 130 bytes on every ABI
+        buf = ctypes.create_string_buffer(256)  # Linux struct statfs fits in this buffer.
         if libc.statfs(os.fsencode(probe), buf) != 0:
             return None
         return ctypes.c_long.from_buffer(buf).value & 0xFFFFFFFF  # f_type is the first field

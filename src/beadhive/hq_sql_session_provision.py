@@ -13,6 +13,8 @@ placement conformance checks (no import cycle through ``hq_sql_runtime``).
 
 from __future__ import annotations
 
+import re
+
 from .hq_sql_placement import check_grants, check_triggers
 from .hq_sql_runtime_schema import (
     LIVENESS_POLICY_TABLE,
@@ -44,6 +46,8 @@ __all__ = [
     "cohosted_hive_databases",
     "provision_incarnation",
     "provision_liveness_schema",
+    "resume_incarnation",
+    "validate_incarnation",
 ]
 
 
@@ -108,6 +112,157 @@ def provision_incarnation(
     if problems:
         raise SessionError("provisioning check failed: " + "; ".join(problems))
     return problems
+
+
+def resume_incarnation(
+    cursor, principal: str, epoch: int, *, frame_address: str, password: str, database: str
+) -> list[str]:
+    """Converge the reviewed session-only incarnation without rewriting existing evidence.
+
+    A retry may complete a missing table, seed, trigger or account. Existing objects
+    must match the supported schema and exact timestamp triggers; account passwords
+    and evidence already published by a frame are never reset.
+    """
+    statements = account_statements(
+        principal, epoch, frame_address=frame_address, database=database
+    )  # Validate identifiers/address before the first write.
+    if not isinstance(password, str) or not password:
+        raise SessionError("frame account password required")
+    if not _ignore_committed(cursor) or not _existing(cursor, (LIVENESS_POLICY_TABLE,)):
+        raise SessionError("committed frame_* ignore rule and liveness policy required")
+    if _existing(cursor, (inbox_table(principal, epoch),)):
+        raise SessionError("reviewed session-only incarnation already has an inbox")
+    definitions = (session_ddl(principal, epoch), evidence_ddl(principal, epoch))
+    expected_triggers = {f"{ddl[0].split()[2]}_stamp": ddl[1] for ddl in definitions}
+    _pending_schema(cursor, expected_triggers)
+    accounts = _fetch(cursor, "SELECT host,ssl_type FROM mysql.user WHERE user=%s", (principal,))
+    if accounts and (
+        len(accounts) != 1
+        or accounts[0][0] != frame_address
+        or check_account(accounts[0][0], accounts[0][1], secure_transport=False)
+    ):
+        raise SessionError("existing incarnation account differs from pinned TLS account")
+    for ddl in definitions:
+        table = ddl[0].split()[2]
+        if not _existing(cursor, (table,)):
+            cursor.execute(ddl[0])
+        _check_resume_table(cursor, table)
+        rows = _fetch(cursor, f"SELECT id,epoch FROM {table}")
+        if not rows:
+            cursor.execute(ddl[2])
+        elif [tuple(row) for row in rows] != [(1, epoch)]:
+            raise SessionError("existing incarnation row differs from reviewed epoch")
+        trigger = f"{table}_stamp"
+        existing = _fetch(
+            cursor, "SELECT fragment FROM dolt_schemas WHERE type='trigger' AND name=%s", (trigger,)
+        )
+        if existing:
+            if len(existing) != 1 or existing[0][0] != ddl[1]:
+                raise SessionError("existing incarnation trigger differs from supported stamp")
+        else:
+            cursor.execute(ddl[1])
+    if not accounts:
+        cursor.execute(statements[0], (password,))
+    for statement in statements[1:]:
+        cursor.execute(statement)
+    problems = check_provisioning(cursor, principal, epoch, database=database)
+    if problems:
+        raise SessionError("provisioning check failed: " + "; ".join(problems))
+    if _pending_schema(cursor, expected_triggers, complete=True):
+        cursor.execute("CALL DOLT_ADD('dolt_schemas')")
+        cursor.execute(
+            "CALL DOLT_COMMIT('-m',%s,'--author','HQ operator <hq-operator@localhost>')",
+            (f"HQ session/evidence triggers for {principal} incarnation {epoch}",),
+        )
+    return problems
+
+
+def validate_incarnation(cursor, principal: str, epoch: int, *, database: str) -> None:
+    """Refuse drift in a supported session route without repairing any object."""
+    for ddl in (session_ddl(principal, epoch), evidence_ddl(principal, epoch)):
+        table = ddl[0].split()[2]
+        _check_resume_table(cursor, table)
+        rows = _fetch(cursor, f"SELECT id,epoch FROM {table}")
+        if [tuple(row) for row in rows] != [(1, epoch)]:
+            raise SessionError("existing incarnation row differs from reviewed epoch")
+        triggers = _fetch(
+            cursor,
+            "SELECT fragment FROM dolt_schemas WHERE type='trigger' AND name=%s",
+            (f"{table}_stamp",),
+        )
+        if [tuple(row) for row in triggers] != [(ddl[1],)]:
+            raise SessionError("existing incarnation trigger differs from supported stamp")
+    problems = check_provisioning(cursor, principal, epoch, database=database)
+    if problems:
+        raise SessionError("provisioning check failed: " + "; ".join(problems))
+
+
+def _pending_schema(cursor, expected_triggers, *, complete=False):
+    dirty = _fetch(cursor, "SELECT table_name FROM dolt_status")
+    if not dirty:
+        return False
+    if {row[0] for row in dirty} != {"dolt_schemas"}:
+        raise SessionError("unrelated committed working tree changes during provisioning")
+    cursor.execute("SELECT DOLT_HASHOF('HEAD')")
+    head = cursor.fetchone()[0]
+    before = {
+        tuple(row[:2]): tuple(row[2:])
+        for row in _fetch(cursor, "SELECT * FROM dolt_schemas AS OF %s", (head,))
+    }
+    current = {
+        tuple(row[:2]): tuple(row[2:]) for row in _fetch(cursor, "SELECT * FROM dolt_schemas")
+    }
+    added = {key: row for key, row in current.items() if key not in before}
+    expected = {("trigger", name): fragment for name, fragment in expected_triggers.items()}
+    if (
+        any(current.get(key) != row for key, row in before.items())
+        or not added
+        or not set(added) <= set(expected)
+        or any(row[0] != expected[key] for key, row in added.items())
+        or complete
+        and set(added) != set(expected)
+    ):
+        raise SessionError("unverified schema changes during provisioning")
+    return True
+
+
+def _check_resume_table(cursor, table: str) -> None:
+    expected = [
+        ("id", "tinyint", "NO", "PRI"),
+        ("epoch", "bigint unsigned", "NO", ""),
+    ]
+    if table.endswith("_session"):
+        expected.append(("renewed_at", "datetime(6)", "YES", ""))
+    else:
+        expected += [
+            (name, kind, "NO", "")
+            for name, kind in (
+                ("release_id", "varchar(128)"),
+                ("release_digest", "varchar(80)"),
+                ("profile", "varchar(64)"),
+                ("status", "varchar(32)"),
+                ("report_digest", "varchar(80)"),
+            )
+        ]
+        expected.append(("measured_at", "datetime(6)", "YES", ""))
+    rows = _fetch(cursor, f"DESCRIBE {table}")
+    if [tuple(row[:4]) for row in rows] != expected or any(
+        row[4] is not None or row[5] for row in rows
+    ):
+        raise SessionError("existing incarnation table differs from supported schema")
+    checks = _fetch(
+        cursor,
+        "SELECT check_clause FROM information_schema.check_constraints "
+        "WHERE constraint_schema=DATABASE() AND constraint_name IN "
+        "(SELECT constraint_name FROM information_schema.table_constraints "
+        "WHERE table_schema=DATABASE() AND table_name=%s AND constraint_type='CHECK')",
+        (table,),
+    )
+    if len(checks) != 1 or re.sub(r"[`()\s]", "", checks[0][0].lower()) != "id=1":
+        raise SessionError("existing incarnation table lacks singleton constraint")
+    indexes = _fetch(cursor, f"SHOW INDEX FROM {table}")
+    if len(indexes) != 1 or indexes[0][1:5] != (0, "PRIMARY", 1, "id"):
+        raise SessionError("existing incarnation table has unsupported indexes")
 
 
 # =============================================================================================

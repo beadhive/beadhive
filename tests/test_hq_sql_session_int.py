@@ -507,3 +507,203 @@ def test_incarnation_tables_require_the_committed_ignore_rule_first(tmp_path):
                 )  # fmt: skip
             with pytest.raises(SessionError):
                 LivenessPolicy(session_ttl_s=0)
+
+
+def test_session_only_rotation_ownership_cli_and_guard_parity(tmp_path, monkeypatch):
+    """Real authenticated SQL session/lease reads through the shared CLI and guard port.
+
+    The authority/config provider seam supplies a reviewed active rotation; all liveness,
+    routing, placement, server stamps and lease rereads use this owned TLS Dolt fixture.
+    """
+    import copy
+    from types import SimpleNamespace
+
+    from typer.testing import CliRunner
+
+    from beadhive import (
+        config,
+        guard,
+        host,
+        host_cli,
+        host_heartbeat,
+        host_lease,
+        hq_control_plane,
+        hq_sql_runtime,
+        registry,
+    )
+    from beadhive import frame_eligibility as policy
+    from beadhive.claim_authority import ClaimRecord
+    from beadhive.host_lease_contracts import now_stamp
+    from beadhive.hosts import HostManifest
+    from beadhive.hq_control_plane import SqlControlPlane
+    from beadhive.hq_sql_runtime import SqlRuntimeAuthority
+    from beadhive.hq_sql_signatures import canonical
+
+    caps = dict(
+        isolation="kvm",
+        trust_zone="self-hosted",
+        arch="x86_64",
+        harnesses=["codex"],
+        max_sessions=2,
+    )
+    manifest = HostManifest(
+        host_id="host-0",
+        label="fixture",
+        os="linux",
+        arch="x86_64",
+        role="executor",
+        identity={"kind": "none"},
+        state="active",
+        frame_id="frame-0",
+        instance_ref="vm-0",
+        release={"id": "fixture", "digest": RELEASE},
+        capabilities=caps,
+    )
+    authority = dict(
+        frame_id="frame-0",
+        holder_identity="host-0",
+        instance_ref="vm-0",
+        epoch=1,
+        key_fingerprint="SHA256:0",
+        config_revision="desired",
+        audience="fixture",
+        candidate_expires_at=None,
+    )
+    old = dict(authority=authority, state="active", cordoned=False)
+    record = dict(
+        authority={**authority, "epoch": 2},
+        state="active",
+        cordoned=False,
+        public_key="provider-verified",
+        desired=dict(
+            declared=True, release=manifest.release.model_dump(), profile="fixture", caps=caps
+        ),
+        release_upgrade_history=[{"record": copy.deepcopy(old)}],
+    )
+    state = {"frames": {"frame-0": {"active": record, "candidate": None}}, "expires_at": 1e12}
+    policies = {"bh": {"config_revision": "desired", "valid_until": 1e12}}
+    with _server(tmp_path) as port:
+        root = _provisioned(port, frames=(("frame_a", 2),))
+        lease = dict(
+            host_id="host-0",
+            label="fixture",
+            epoch=19,
+            adopted_at=now_stamp(time.time() - 3600),
+            expires_at=now_stamp(time.time() - 1800),
+        )
+        body = canonical({"authority": old["authority"], "lease": lease})
+        _sql(root, "UPDATE hq_live_hive_leases SET lease_json=%s WHERE prefix='bh'", (body,))
+        a = _frame(port, tmp_path, "frame_a")
+        _sql(a, f"UPDATE {session_table('frame_a', 2)} SET epoch=epoch WHERE id=1")
+        a.commit()
+        publish_evidence(
+            _frame(port, tmp_path, "frame_a"),
+            EvidenceReport(2, "fixture", RELEASE, "fixture", "conformant", REPORT),
+            database=DB,
+        )
+        runtime = SqlRuntimeAuthority(
+            {"runtime": {"user": "frame_a", "database": DB}}, broker=object()
+        )
+        monkeypatch.setattr(
+            runtime,
+            "_open",
+            lambda deadline=None: (
+                _frame(port, tmp_path, "frame_a"),
+                deadline or time.monotonic() + 30,
+            ),
+        )
+        monkeypatch.setattr(
+            hq_sql_runtime, "connect", lambda *args, **kw: _frame(port, tmp_path, "frame_a")
+        )
+        monkeypatch.setattr(runtime, "verified_state_at", lambda *args, **kw: (state, (), policies))
+        monkeypatch.setattr(
+            runtime,
+            "bound_config_at",
+            lambda *args, **kw: (SimpleNamespace(beadyard_id=None), "config"),
+        )
+        monkeypatch.setattr(hq_sql_runtime, "project_hive_policies", lambda *args, **kw: policies)
+        for fence in ("fresh_runtime_head_fence", "fresh_config_head_fence"):
+            monkeypatch.setattr(runtime, fence, lambda *args, **kw: None)
+        plane = SqlControlPlane({})
+        monkeypatch.setattr(plane, "_runtime_authority", lambda: runtime)
+        monkeypatch.setattr(hq_control_plane, "control_plane", lambda *args: plane)
+        monkeypatch.setattr(host_lease, "_frame_plane", lambda *args: plane)
+        monkeypatch.setattr(host_heartbeat, "observe", lambda _root, m, **kw: plane.observe(m))
+        monkeypatch.setattr(
+            host_cli, "iter_manifests", lambda _root: [(manifest, tmp_path / "host.yaml")]
+        )
+        monkeypatch.setattr(config, "load", lambda: {})
+        monkeypatch.setattr(config, "hq_dir", lambda: tmp_path)
+        monkeypatch.setattr(config, "fleet_sql_selected", lambda: True)
+        monkeypatch.setattr(host, "host_id", lambda: manifest.host_id)
+        entry = {"prefix": "bh"}
+        monkeypatch.setattr(registry, "resolve_hive", lambda *args: entry)
+        monkeypatch.setattr(registry, "entry_for_dir", lambda *args: entry)
+        monkeypatch.setattr(registry, "hive_dir_for", lambda *args: tmp_path)
+
+        def decision(identity, hive=None, **kw):
+            _head, desired, observation = plane.read_eligibility(manifest, prefix="bh")
+            return policy.eligible(
+                manifest, hive or entry, policy.EligibilityFacts(observation, desired)
+            )
+
+        monkeypatch.setattr(policy, "decision_for", decision)
+        monkeypatch.setattr(policy, "require_local", lambda *args, **kw: decision(manifest.host_id))
+        monkeypatch.setattr(guard, "writer_state", lambda *args, **kw: None)
+        monkeypatch.setattr(guard, "_renew_liveness_hint", lambda *args: None)
+        from beadhive.cli import app
+
+        runner = CliRunner()
+        listing = runner.invoke(app, ["host", "list", "--lease-hive", "bh", "--json"])
+        assert listing.exit_code == 0, listing.output
+        listed = json.loads(listing.output)[0]
+        assert listed["lease"] == "held" and listed["liveness_source"] == "session-row"
+        eligibility = runner.invoke(app, ["host", "eligible", "host-0", "--hive", "bh", "--json"])
+        assert eligibility.exit_code == 0, eligibility.output
+        assert json.loads(eligibility.output)["predicates"]["current_hive_lease_holder"]
+        assert policy.local_intake_decision("bh").allowed
+        policy.require_intake("bh")
+        guard.guard_primary("bh", verb="execute")
+        claim = ClaimRecord(
+            "fixture", "dev/test", str(tmp_path), now_stamp(), host_id="host-0", epoch=19
+        )
+        guard.guard_claim_epoch(claim, "bh", verb="submit")
+        guard.guard_claim_epoch(claim, "bh", verb="publish")
+        assert plane.read_hive_lease("bh", holder_identity="foreign") is None
+
+        # Real SQL epochs/digests and absent stamps cannot borrow the archived proof.
+        for report in (
+            EvidenceReport(1, "fixture", RELEASE, "fixture", "conformant", REPORT),
+            EvidenceReport(2, "fixture", "sha256:" + "9" * 64, "fixture", "conformant", REPORT),
+            EvidenceReport(2, "fixture", RELEASE, "fixture", "non-conformant", REPORT),
+        ):
+            _sql(
+                root,
+                f"UPDATE {evidence_table('frame_a', 2)} "
+                "SET epoch=%s, release_digest=%s, status=%s WHERE id=1",
+                (report.epoch, report.release_digest, report.status),
+            )
+            assert plane.read_hive_lease("bh", holder_identity="host-0") is None
+        _sql(root, f"DROP TRIGGER {evidence_table('frame_a', 2)}_stamp")
+        _sql(
+            root,
+            f"UPDATE {evidence_table('frame_a', 2)} "
+            "SET epoch=2, release_digest=%s, status='conformant', "
+            "measured_at=UTC_TIMESTAMP() - INTERVAL 901 SECOND WHERE id=1",
+            (RELEASE,),
+        )
+        assert plane.read_hive_lease("bh", holder_identity="host-0") is None
+        _sql(root, f"UPDATE {evidence_table('frame_a', 2)} SET measured_at=NULL WHERE id=1")
+        assert plane.read_hive_lease("bh", holder_identity="host-0") is None
+        _sql(root, f"DROP TRIGGER {session_table('frame_a', 2)}_stamp")
+        _sql(
+            root,
+            f"UPDATE {session_table('frame_a', 2)} "
+            "SET renewed_at=UTC_TIMESTAMP() - INTERVAL 301 SECOND WHERE id=1",
+        )
+        assert not plane.read_eligibility(manifest, prefix="bh")[2].fresh
+        assert plane.read_hive_lease("bh", holder_identity="host-0") is None
+        # Finishing retains the original protected tenure even while intake is denied.
+        assert policy.incumbent_primary("bh")[2].epoch == 19
+        a.close()
+        root.close()

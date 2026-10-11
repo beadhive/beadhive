@@ -775,29 +775,78 @@ _OPTIONAL_STRING_PARAM = {
 }
 
 
+# bh-s6bkx (authorized 0.24.3 repair, 2026-10-10): public session provisioning
+# needs only these optional CLI inputs. Existing plan/apply/check callers keep
+# their exact parameter order and behavior. This is an independent wire minor;
+# the runtime correction remains a package PATCH release.
+_APPROVED_OPTIONAL_REPAIR_PARAMS = {
+    "host.release-upgrade": {
+        "frame_address": {"type": "string"},
+        "password_stdin": {"type": "boolean"},
+    },
+    # bh-7iovd: the reviewed HQ-independent recovery route and its bounded path
+    # scope append only these exact optional inputs to the existing public verbs.
+    "worktree.status": {
+        "local_safe": {"type": "boolean"},
+        "root": {"type": "array", "items": {}},
+        "repo": {"type": "array", "items": {}},
+        "base": {"type": "array", "items": {}},
+        "targets_from": {"type": "string"},
+    },
+    "worktree.prune": {
+        "local_safe": {"type": "boolean"},
+        "root": {"type": "array", "items": {}},
+        "repo": {"type": "array", "items": {}},
+        "base": {"type": "array", "items": {}},
+        "targets_from": {"type": "string"},
+        "dry_run": {"type": "boolean"},
+        "as_json": {"type": "boolean"},
+    },
+}
+
+
+def _approved_optional_parameter(operation, item):
+    if not isinstance(item, dict):
+        return False
+    parameter = item.get("name")
+    if parameter in _APPROVED_OPTIONAL_STRING_PARAMS.get(operation, ()):
+        expected = _OPTIONAL_STRING_PARAM
+    else:
+        schema = _APPROVED_OPTIONAL_REPAIR_PARAMS.get(operation, {}).get(parameter)
+        if schema is None:
+            return False
+        expected = {"privilege": "inherited", "required": False, "schema": schema}
+    return {key: value for key, value in item.items() if key != "name"} == expected
+
+
 def _without_approved_params(name: str, operation: dict[str, Any]) -> dict[str, Any]:
     """Drop the approved appended optional parameters (only when they match exactly)."""
-    approved = _APPROVED_OPTIONAL_STRING_PARAMS.get(name)
-    if not approved:
+    if (
+        name not in _APPROVED_OPTIONAL_STRING_PARAMS
+        and name not in _APPROVED_OPTIONAL_REPAIR_PARAMS
+    ):
         return operation
     candidate = deepcopy(operation)
     parameters = candidate.get("parameters")
     cli = candidate.get("surfaces", {}).get("cli", {})
     if not isinstance(parameters, list):
         return operation
-    kept = [
-        item
-        for item in parameters
-        if not (
-            isinstance(item, dict)
-            and item.get("name") in approved
-            and {k: v for k, v in item.items() if k != "name"} == _OPTIONAL_STRING_PARAM
-        )
-    ]
+    kept = [item for item in parameters if not _approved_optional_parameter(name, item)]
     dropped = {item["name"] for item in parameters if item not in kept}
     candidate["parameters"] = kept
     if isinstance(cli.get("parameters"), list):
         cli["parameters"] = [item for item in cli["parameters"] if item not in dropped]
+    recovery_alias = {
+        "worktree.status": "wt status",
+        "worktree.prune": "wt prune",
+    }.get(name)
+    if recovery_alias is not None:
+        for alias in cli.get("aliases", []):
+            if isinstance(alias, dict) and alias.get("path") == recovery_alias:
+                if isinstance(alias.get("parameters"), list):
+                    alias["parameters"] = [
+                        item for item in alias["parameters"] if item not in dropped
+                    ]
     return candidate
 
 

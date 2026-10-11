@@ -2479,6 +2479,19 @@ class SqlControlPlane:
     #: may name the hive so the statement also reports ``current_hive_lease_holder``.
     session_liveness_reader = True
 
+    def _composite_observation(self, row, route, slot, record, session, *, now):
+        """Use the qualified transaction's selected liveness carrier for every reader."""
+        if session is not None:
+            return session
+        return self._public_observation(
+            row,
+            route,
+            slot,
+            granted_public_key=record["public_key"],
+            now=now,
+            signed=self.signed_liveness,
+        )
+
     def read_eligibility(self, manifest, *, now=None, prefix=None):
         """Return one qualified SQL config/authority/observation read boundary.
 
@@ -2521,19 +2534,10 @@ class SqlControlPlane:
                 "cordoned": record["cordoned"],
                 "authority": record["authority"],
             }
-            if session is not None:
-                return head, desired, session
             return (
                 head,
                 desired,
-                self._public_observation(
-                    row,
-                    route,
-                    slot,
-                    granted_public_key=record["public_key"],
-                    now=at,
-                    signed=self.signed_liveness,
-                ),
+                self._composite_observation(row, route, slot, record, session, now=at),
             )
         except ValueError as exc:
             if isinstance(exc, ControlPlaneError):
@@ -2571,8 +2575,12 @@ class SqlControlPlane:
             ) = self._runtime_authority().read_frame_composite(
                 prefix=prefix,
                 enforce=enforce,
+                session_liveness=True,
+                session_prefix=prefix,
                 **({"hive_lease_epoch": fence.epoch} if fence is not None else {}),
             )
+            session = extra[0] if extra else None
+            evidence = extra[1] if len(extra) > 1 else None
             receiver = None
             # bh-a94qw: a director-written placement row (its witness verifies) owns the
             # hive's placement, so the 0.22.8 proposal resolver is dropped for it — frames'
@@ -2604,7 +2612,10 @@ class SqlControlPlane:
                 # Signed liveness: expiry is an advisory failover hint (not part of the
                 # record); tombstones and foreign holders are still refused below and by
                 # every caller.
-                receiver = (revision, HostLease(**raw, advisory_expiry=signed))
+                receiver = (
+                    revision,
+                    HostLease(**raw, advisory_expiry=signed or session is not None),
+                )
             if proposals:
                 from .hq_signed_hive_lease import SignedHiveLeaseConflict, resolve
 
@@ -2615,7 +2626,7 @@ class SqlControlPlane:
                         slot=slot,
                         record=record,
                         fence=fence,
-                        evidence=extra[0] if extra and not director_owned else None,
+                        evidence=evidence if not director_owned else None,
                         receiver=receiver,
                     )
                 except SignedHiveLeaseConflict as exc:
@@ -2664,13 +2675,23 @@ class SqlControlPlane:
                     return revision, None
             if holder_identity is not None:
                 policy = policies.get(prefix)
-                observation = self._public_observation(
-                    observation_row,
-                    route,
-                    slot,
-                    granted_public_key=record["public_key"],
-                    now=self.clock(),
-                    signed=signed,
+                observation = self._composite_observation(
+                    observation_row, route, slot, record, session, now=self.clock()
+                )
+                # Session evidence is authenticated by the exact committed principal route,
+                # with freshness judged by the HQ server. Neither an old inbox beat nor the
+                # hive lease's advisory expiry can substitute for this incarnation's proof.
+                session_ok = session is None or (
+                    session.session_epoch_matches
+                    and not session.candidate
+                    and session.authenticated_fresh_heartbeat
+                    and session.conformance_pass
+                    and session.release_matches
+                    and (
+                        session.current_hive_lease_holder
+                        or proposals
+                        and resolved.source == "proposal"
+                    )
                 )
                 authority_ok = waive or not (
                     record["state"] != "active"
@@ -2686,10 +2707,11 @@ class SqlControlPlane:
                     holder_identity != route.holder_identity
                     or not same_incarnation
                     or lease.host_id != holder_identity
-                    or (not signed and lease.is_expired(self.clock()))
+                    or (not lease.advisory_expiry and lease.is_expired(self.clock()))
                     or slot != "active"
                     or not authority_ok
                     or not observation.verified
+                    or not session_ok
                     or (not observation.fresh and not emergency)
                 ):
                     return revision, None

@@ -452,6 +452,7 @@ def test_mcp_authority_change_closes_only_affected_live_sessions(
 def test_mcp_expiry_terminates_transport_before_max_one_replacement(
     tmp_path: Path,
     expiry: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings, bearer = _settings(
         tmp_path,
@@ -467,6 +468,8 @@ def test_mcp_expiry_terminates_transport_before_max_one_replacement(
         cfg={"managed_repos": []},
         settings=settings,
     )
+    now = [0.0]
+    monkeypatch.setattr(app.state.mcp_sessions, "_monotonic", lambda: now[0])
 
     async def exercise() -> None:
         async with app.router.lifespan_context(app):
@@ -479,16 +482,20 @@ def test_mcp_expiry_terminates_transport_before_max_one_replacement(
                 )
                 old_id = first.headers["mcp-session-id"]
                 if expiry == "absolute":
-                    deadline = asyncio.get_running_loop().time() + 0.14
-                    while asyncio.get_running_loop().time() < deadline:
-                        await asyncio.sleep(0.02)
+                    for touch_at in (0.04, 0.08):
+                        now[0] = touch_at
                         touched = await client.post(
                             "/mcp",
                             headers=_headers(bearer, session_id=old_id),
                             json=_tools_list_request(),
                         )
-                        if touched.status_code == 404:
-                            break
+                        assert touched.status_code == 200
+                    now[0] = settings.mcp.session_absolute_seconds + 0.001
+                    assert now[0] - touch_at < settings.mcp.session_idle_seconds
+                else:
+                    now[0] = settings.mcp.session_idle_seconds + 0.001
+                    assert now[0] < settings.mcp.session_absolute_seconds
+                app.state.mcp_sessions._wake.set()
 
                 await _wait_for(lambda: app.state.mcp_sessions.active_session_count == 0)
                 assert app.state.credential_sessions.active_session_count == 0

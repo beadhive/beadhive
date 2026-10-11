@@ -8200,6 +8200,22 @@
           "schema": {
             "type": "string"
           }
+        },
+        {
+          "name": "frame_address",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "password_stdin",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
         }
       ],
       "privilege": "privileged",
@@ -8237,7 +8253,9 @@
             "plan_sha256",
             "operator_key",
             "confirm",
-            "operator_settings"
+            "operator_settings",
+            "frame_address",
+            "password_stdin"
           ],
           "path": "host release-upgrade",
           "progress": {
@@ -9787,75 +9805,6 @@
             "as_json"
           ],
           "path": "hq status",
-          "progress": {
-            "mode": "structured",
-            "notification_uris": [],
-            "reason": "--json carries machine-readable status/result data instead of a separate progress channel"
-          }
-        }
-      }
-    },
-    {
-      "alias_of": null,
-      "constraints": {
-        "hq_write": true,
-        "interactive": false,
-        "override_parameters": [],
-        "secret_material": false
-      },
-      "kind": "action",
-      "name": "hq.why",
-      "parameters": [
-        {
-          "name": "hive",
-          "privilege": "inherited",
-          "required": true,
-          "schema": {
-            "type": "string"
-          }
-        },
-        {
-          "name": "capability",
-          "privilege": "inherited",
-          "required": false,
-          "schema": {
-            "type": "string"
-          }
-        },
-        {
-          "name": "as_json",
-          "privilege": "inherited",
-          "required": false,
-          "schema": {
-            "type": "boolean"
-          }
-        }
-      ],
-      "privilege": "privileged",
-      "result_schema": "urn:beadhive:wire-schema:json-value:1",
-      "surfaces": {
-        "cli": {
-          "aliases": [],
-          "declared_hidden": false,
-          "effective_hidden": false,
-          "granularity": {
-            "mode": "fine",
-            "reason": null
-          },
-          "interactivity": {
-            "guard_conditions": [],
-            "guard_parameters": [],
-            "mode": "none",
-            "prompt_seams": [],
-            "reason": null
-          },
-          "parameter_map": {},
-          "parameters": [
-            "hive",
-            "capability",
-            "as_json"
-          ],
-          "path": "hq why",
           "progress": {
             "mode": "structured",
             "notification_uris": [],

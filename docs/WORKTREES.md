@@ -67,7 +67,8 @@ Three mechanisms keep the live count bounded; the branch is always the durable a
   dirs), then refuses with the count and the ways out if the host is still full. Re-attaching
   an existing directory and `verify-*` checkouts are never refused by the cap.
 
-**Host degraded and HQ unreachable?** Use `bh worktree local-reclaim` — see
+**Host degraded and HQ unreachable?** Use `bh worktree status --local-safe` then
+`bh worktree prune --local-safe` (the existing `local-reclaim` alias remains supported) — see
 [Partial degradation](#partial-degradation-bh-worktree-local-reclaim-first-line-procedure).
 
 `bh doctor` prints the live count and size per filesystem against the cap
@@ -726,9 +727,10 @@ connection unavailable` exactly when the space they would free is what HQ needs 
 
 ```sh
 # 1. Preview — classify and measure only (same checks, nothing removed).
-bh worktree local-reclaim --dry-run
+bh worktree status --local-safe --json
+bh worktree prune --local-safe --dry-run --json
 # 2. Reclaim. JSON gives per-target results, reclaimed bytes and tmpfs before/after.
-bh worktree local-reclaim --json
+bh worktree prune --local-safe --json
 # Narrow it: a root, a repo, explicit paths, or a precomputed list ('-' = stdin).
 bh worktree local-reclaim --root /tmp/bh-worktrees
 bh worktree local-reclaim --repo ~/workspace/github/org/repo
@@ -737,7 +739,9 @@ bh worktree local-reclaim --targets-from safe-leaves.txt
 ```
 
 It never reads HQ, fleet/runtime config, the registry, or the daemon: the installed `bh` routes
-`worktree local-reclaim` (and its `--help`) to a stdlib-only module before the rest of the CLI
+`worktree status --local-safe`, `worktree prune --local-safe`, and
+`worktree local-reclaim` (including recovery `--help`) to a stdlib-only module
+before the rest of the CLI
 is even imported. With no `PATH`/`--root`/`--repo`/`--targets-from` it scans `$BH_WORKTREES`,
 else `<os-temp>/bh-worktrees` and `~/.beadhive/worktrees`.
 
@@ -747,25 +751,31 @@ Git and process state; otherwise it is kept and reported with a reason code:
 | Check | Kept as |
 |---|---|
 | registered linked worktree of its repo (never the main worktree) | `not_registered`, `main_worktree`, `missing` |
+| target and parent paths contain no symlinks; cache root and traversed parent paths contain no unsafe links | `unsafe_link` |
+| no special filesystem nodes, nested mounts, or nested Git ownership | `ignored_precious`, `unsafe_link`, `ownership_unknown` |
 | `git worktree lock` absent | `locked` |
-| no tracked changes and no non-ignored untracked files (ignored `.venv` etc. never block) | `dirty` |
+| no tracked changes, non-ignored untracked files, or ignored precious files (only ignored `.venv` cache files and leaf links are disposable) | `dirty` |
 | no merge/rebase/cherry-pick/revert/bisect in progress, no `index.lock` | `in_progress` |
-| no live bh validation marker (`<git-common-dir>/bh/validation/active/<leaf>.json`) | `validation_active` |
+| no local presenter binding or claim/incarnation record (inactive ownership cannot be proven locally) | `ownership_unknown` |
+| no live bh validation marker (legacy leaf/checkout marker or current run-id pointer with authoritative running manifest) | `validation_active` |
 | no readable local process has its cwd, root or an open file inside it | `in_use` |
 | HEAD reachable from a base ref (`main`, `master`, `origin/main`, `origin/master`, or `--base`) and **not** on that base's first-parent line — i.e. it carries merged work | `not_landed`, `no_landed_work` |
-| any probe failed, timed out, or the process scan of this user's processes was incomplete | `ambiguous` |
+| HEAD also reachable from persisted `origin/<base>` history; an unpushed local merge is insufficient | `publication_unknown` |
+| any probe failed, timed out, or this user's process scan was incomplete or opaque | `ambiguous` |
 
 The process check reads `/proc/<pid>/{cwd,root,fd}`. Processes of other users are not readable
-and are counted, not matched. Your own processes that the kernel hides (non-dumpable session
-managers such as `sshd-session`, `systemd --user`, `(sd-pam)`) are listed in the report and
-assumed not to sit inside a worktree; pass `--strict-process-scan` to keep every target while any
-such process exists. A sandboxed process sees paths through its own mount namespace, so bh
+and are counted, not matched. Your own kernel-hidden processes keep every candidate:
+a process name cannot prove inactive ownership. `--strict-process-scan` remains accepted
+for compatibility and the safety rule always applies.
+A sandboxed process sees paths through its own mount namespace, so bh
 validation runs are additionally protected by their `validation_active` marker.
 
 A fresh seat whose HEAD still sits on `main` is `no_landed_work`: it may be about to be used,
 so it stays. Squash- or rebase-landed branches are not provable locally and stay too; reclaim
-them with `bh worktree prune` once HQ is back. Removal re-checks cleanliness and the process
-table immediately before `git worktree remove` (never `--force`), and branches are never
+them with `bh worktree prune` once HQ is back.
+Removal refreshes registration, locks, HEAD, merge/publication ancestry, Git operation
+markers, validation markers, presenter bindings, claim records, precious files and the
+process table before `git worktree remove` (never `--force`), and branches are never
 deleted. `--repo` also prunes that repository's stale admin entries (`git worktree prune`).
 
 Exit status: `0` the run completed (kept targets are expected), `1` a removal failed or a path
@@ -1139,3 +1149,22 @@ prerequisite (see above), deliberately out of a project-local grant's scope.
 - **Branch base ref:** branches off the main clone's current `HEAD`.
 - **No gastown coupling.** gastown's `polecats/` live *inside* a hive; this shadow tree is
   separate and non-conflicting (`--branch polecat/...` still works if you want that name).
+
+The local-safe status and prune preview use the same classifier and measured JSON report
+as local-reclaim; normal HQ-backed status/prune retain their existing behavior. Recovery
+flags `--root`, `--repo`, `--base`, and `--targets-from` select exact local paths; `--hive`
+requires HQ and is refused in recovery mode. Default inventory covers the configured
+`BH_WORKTREES` root plus the bounded temporary and persistent Beadhive roots. Local Git
+probes time out after five seconds without any network fetch or service startup. Reports
+include a conservative exclusive allocated-byte estimate (external hardlinks and sparse holes
+are excluded), observed filesystem availability, and Linux MemAvailable before/after;
+concurrent host activity can change observed availability, so those deltas are not causal
+guarantees. File removal does not stop CPU workers.
+
+Disposable `.venv` leaf symlinks are unlinked without following their targets, including
+interpreter and `lib64` links. A symlinked `.venv` root or traversed parent is refused.
+
+Git omits FIFOs, sockets, and devices from its ordinary untracked/ignored listings, so
+recovery also walks local nodes without following links or opening their contents. That
+proof stops after 100,000 nodes or five seconds; unreadable or incomplete inventory keeps
+the candidate. Nested mounts and nested Git repositories also stay protected.

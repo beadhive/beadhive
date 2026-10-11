@@ -155,7 +155,7 @@ host retire|dry_run:boolean:o,backup:boolean:o,confirm:boolean:o,purge:boolean:o
 host emergency-admit|action:string:r,frame_id:string:r,hive:string:o,reason:string:o,duration:integer:o,execution_digest:string:o,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o
 host emergency-revoke|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o
 host frame-retire|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o
-host release-upgrade|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_epoch:integer:o,expected_release:string:o,expected_config_head:string:o,release_id:string:o,release_digest:string:o,profile:string:o,config_revision:string:o,expires_at:number:o,plan_sha256:string:o,operator_key:string:o,confirm:boolean:o,operator_settings:string:o
+host release-upgrade|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_epoch:integer:o,expected_release:string:o,expected_config_head:string:o,release_id:string:o,release_digest:string:o,profile:string:o,config_revision:string:o,expires_at:number:o,plan_sha256:string:o,operator_key:string:o,confirm:boolean:o,operator_settings:string:o,frame_address:string:o,password_stdin:boolean:o
 host rm|host_id:string:r,dry_run:boolean:o,confirm:boolean:o,force:boolean:o
 host show|host_id:string:r,as_json:boolean:o
 hq bd|
@@ -279,10 +279,10 @@ worktree local-reclaim|paths:string:o,root:array:o,repo:array:o,targets_from:str
 worktree mark-abandoned|ref:string:r,reason:string:r,retained_for:string:o,superseded_by:string:o,hive:string:o
 worktree mark-landed|ref:string:r,hive:string:o
 worktree path|ref:string:o,bead:string:o,hive:string:o
-worktree prune|hive:string:o
+worktree prune|hive:string:o,local_safe:boolean:o,root:array:o,repo:array:o,base:array:o,targets_from:string:o,dry_run:boolean:o,as_json:boolean:o
 worktree rebind|ref:string:o,bead:string:o,hive:string:o,session:string:o,as_json:boolean:o
 worktree rm|ref:string:o,bead:string:o,hive:string:o,force:boolean:o,as_json:boolean:o
-worktree status|hive:string:o,as_json:boolean:o
+worktree status|hive:string:o,as_json:boolean:o,local_safe:boolean:o,root:array:o,repo:array:o,base:array:o,targets_from:string:o
 """.strip()
 
 _READ_PATHS = {
@@ -788,7 +788,10 @@ def _cli_granularity(path: str, *, alias_reason: str | None = None) -> dict[str,
 
 
 def _cli_progress(path: str, parameters: list[ParameterSpec]) -> dict[str, Any]:
-    if any(parameter.name == "as_json" for parameter in parameters):
+    # Prune's optional JSON result requires the local-safe recovery route;
+    # ordinary prune retains its published human progress contract.
+    recovery_prune = path in {"worktree prune", "wt prune"}
+    if not recovery_prune and any(parameter.name == "as_json" for parameter in parameters):
         return {
             "mode": "structured",
             "notification_uris": [],

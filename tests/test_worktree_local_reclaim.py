@@ -63,8 +63,13 @@ class Hive:
         _git(self.repo, "init", "-q")
         (self.repo / ".gitignore").write_text(".venv/\n")
         (self.repo / "README").write_text("base\n")
+        self.remote = tmp_path / "remote.git"
+        self.remote.mkdir()
+        _git(self.remote, "init", "--bare", "-q")
+        _git(self.repo, "remote", "add", "origin", str(self.remote))
         _git(self.repo, "add", ".")
         _git(self.repo, "commit", "-qm", "base")
+        _git(self.repo, "push", "-q", "origin", "main")
 
     def leaf(self, name: str, *, landed: bool = True, commit: bool = True) -> Path:
         path = self.root / "github" / "org" / "repo" / name
@@ -76,6 +81,7 @@ class Hive:
             _git(path, "commit", "-qm", f"feat: {name}")
         if landed and commit:
             _git(self.repo, "merge", "-q", "--no-ff", "-m", f"merge {name}", branch)
+            _git(self.repo, "push", "-q", "origin", "main")
         self.leaves[name] = path
         return path
 
@@ -153,6 +159,7 @@ class FakeTmpfs:
             mounts=self.mounts,
             statvfs=self.statvfs,
             disk_usage=self.disk_usage,
+            memory_available=lambda: 48 * GIB - self.used(),
         )
 
 
@@ -192,11 +199,11 @@ def test_local_reclaim_under_hq_outage_and_tmpfs_pressure(hive, hq_down):
     assert hq_down == []  # HQ was never consulted
     rows = _by_leaf(report)
     removed = {name for name, row in rows.items() if row["status"] == lr.REMOVED}
-    assert removed == {"landed-a", "landed-b", "landed-ignored"}
+    assert removed == {"landed-a", "landed-b", "landed-ignored"}, rows["landed-a"]
     for name in removed:
         assert not hive.leaves[name].exists()
         assert rows[name]["reclaimed_bytes"] == GIB
-        assert rows[name]["landed_on"] == "main"
+        assert rows[name]["landed_on"] == "origin/main"
     expected_kept = {
         "dirty": "dirty",
         "dirty-tracked": "dirty",
@@ -218,6 +225,8 @@ def test_local_reclaim_under_hq_outage_and_tmpfs_pressure(hive, hq_down):
 
     assert report["hq_independent"] is True
     assert report["reclaimed_bytes"] == 3 * GIB
+    memory = report["memory_available_bytes"]
+    assert memory["after"] - memory["before"] == 3 * GIB
     assert report["summary"] == {"removed": 3, "would_remove": 0, "kept": 9, "failed": 0}
     (tmpfs,) = [fs_ for fs_ in report["filesystems"] if fs_["fstype"] == "tmpfs"]
     assert tmpfs["memory_backed"] is True
@@ -259,7 +268,7 @@ def test_kernel_hidden_own_processes_are_reported_and_strict_mode_keeps_all(hive
 
     code, report = _run(["--root", str(hive.root), "--dry-run"], ports)
     assert code == 0
-    assert report["summary"]["would_remove"] == 4
+    assert report["summary"]["would_remove"] == 0
     assert report["process_scan"]["opaque_own_processes"] == [{"pid": 7, "comm": "sshd-session"}]
 
     code, report = _run(["--root", str(hive.root), "--strict-process-scan"], ports)
@@ -481,3 +490,354 @@ def test_real_process_scan_sees_own_cwd(tmp_path, monkeypatch):
     scan = lr._real_process_scan()
     if scan.complete:
         assert os.getpid() in scan.holders_of(str(tmp_path.resolve()))
+
+
+def test_ignored_precious_and_symlink_targets_are_kept(hive, tmp_path):
+    fs = FakeTmpfs(hive)
+    precious = hive.leaves["landed-a"]
+    exclude = hive.repo / ".git" / "info" / "exclude"
+    exclude.write_text("secrets.txt\n")
+    (precious / "secrets.txt").write_text("precious")
+    alias = tmp_path / "alias"
+    alias.symlink_to(hive.leaves["landed-b"], target_is_directory=True)
+    code, report = _run([str(precious), str(alias)], fs.ports())
+    assert code == 1
+    assert report["targets"][0]["reasons"] == ["ignored_precious"]
+    assert report["targets"][1]["reasons"] == ["unsafe_link"]
+    assert precious.exists() and hive.leaves["landed-b"].exists()
+
+
+@pytest.mark.parametrize(
+    "race", ["head", "lock", "merge", "validation", "ownership", "claim", "base", "ignored"]
+)
+def test_all_local_proofs_are_revalidated_before_removal(hive, race):
+    target = hive.leaves["landed-a"]
+    fs = FakeTmpfs(hive)
+    ports = fs.ports()
+    gitdir = Path(_git(target, "rev-parse", "--path-format=absolute", "--git-dir"))
+
+    def scan():
+        fs.scans += 1
+        if fs.scans == 2:
+            if race == "head":
+                (target / "new.txt").write_text("unpublished")
+                _git(target, "add", ".")
+                _git(target, "commit", "-qm", "fix: unpublished")
+            elif race == "lock":
+                _git(hive.repo, "worktree", "lock", str(target))
+            elif race == "merge":
+                (gitdir / "MERGE_HEAD").write_text("0" * 40)
+            elif race == "validation":
+                marker = hive.repo / ".git" / "bh" / "validation" / "active"
+                (marker / f"{target.name}.json").write_text("{}")
+            elif race == "ownership":
+                _git(target, "config", "--local", "beadhive.bindingsession.herdr", "active")
+            elif race == "claim":
+                _git(target, "config", "--local", "beadhive.claimIncarnation", "new-claim")
+            elif race == "base":
+                _git(
+                    hive.repo,
+                    "update-ref",
+                    "refs/remotes/origin/main",
+                    _git(hive.repo, "rev-list", "--max-parents=0", "main"),
+                )
+            elif race == "ignored":
+                (hive.repo / ".git" / "info" / "exclude").write_text("secret\n")
+                (target / "secret").write_text("precious")
+        return lr.ProcessScan((), True)
+
+    ports.process_scan = scan
+    code, report = _run([str(target)], ports)
+    assert code == 1
+    assert target.exists()
+    assert report["targets"][0]["status"] == lr.KEPT
+
+
+def test_unpublished_local_merge_is_insufficient(hive):
+    target = hive.leaf("private", landed=False)
+    _git(hive.repo, "merge", "--no-ff", "-m", "private merge", "wt/bead/issue/private")
+    code, report = _run([str(target)], FakeTmpfs(hive).ports())
+    assert code == 1 and target.exists()
+    assert report["targets"][0]["reasons"] == ["publication_unknown"]
+
+
+def test_public_status_preview_prune_agree_without_loading_hq(hive, tmp_path):
+    # Process-level public entry, with a tripwire that rejects ANY HQ/config/CLI import.
+    # A low address-space limit also makes eager service/CLI initialization observable.
+    script = """
+import importlib.abc, json, resource, sys
+resource.setrlimit(resource.RLIMIT_AS, (256 * 1024**2, 256 * 1024**2))
+class RejectHQ(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname in {"beadhive.config", "beadhive.cli",
+                        "beadhive.hq_sql_config", "beadhive.hq_sql_runtime"}:
+            raise AssertionError("HQ initialization forbidden under degradation: " + fullname)
+sys.meta_path.insert(0, RejectHQ())
+from beadhive.cli_entrypoint import main
+main()
+"""
+    reports = []
+    for args in (("status",), ("prune", "--dry-run"), ("prune",)):
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                script,
+                "worktree",
+                *args,
+                "--local-safe",
+                "--root",
+                str(hive.root),
+                "--json",
+            ],
+            cwd=tmp_path,
+            env={**os.environ, "PYTHONPATH": str(ROOT / "src"), "BH_HQ_SQL_HOST": "127.0.0.1:1"},
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=True,
+        )
+        reports.append(json.loads(result.stdout))
+    a, b, c = reports
+    assert a["dry_run"] and b["dry_run"] and not c["dry_run"]
+    preview = {t["path"] for t in a["targets"] if t["status"] == lr.WOULD_REMOVE}
+    assert preview == {t["path"] for t in b["targets"] if t["status"] == lr.WOULD_REMOVE}
+    assert preview  # the real process scan must prove at least one unused tree
+    assert preview == {t["path"] for t in c["targets"] if t["status"] == lr.REMOVED}
+    assert c["reclaimed_bytes"] > 0
+    assert hive.leaves["dirty"].exists() and hive.leaves["unlanded"].exists()
+
+
+def test_cache_leaf_links_are_unlinked_without_touching_external_content(hive, tmp_path):
+    target = hive.leaves["landed-a"]
+    outside = tmp_path / "precious-outside"
+    outside.mkdir()
+    binary = outside / "python"
+    binary.write_text("precious interpreter")
+    identity = (outside.stat().st_ino, binary.stat().st_ino)
+    cache = target / ".venv"
+    (cache / "bin").mkdir(parents=True)
+    (cache / "bin" / "python").symlink_to(binary)
+    (cache / "lib64").symlink_to(outside, target_is_directory=True)
+    code, report = _run([str(target)], FakeTmpfs(hive).ports())
+    assert code == 0 and report["targets"][0]["status"] == lr.REMOVED
+    assert not target.exists()
+    assert binary.read_text() == "precious interpreter"
+    assert (outside.stat().st_ino, binary.stat().st_ino) == identity
+    assert sorted(p.name for p in outside.iterdir()) == ["python"]
+
+
+def test_cache_root_link_is_refused(hive, tmp_path):
+    target = hive.leaves["landed-a"]
+    outside = tmp_path / "precious-outside"
+    outside.mkdir()
+    (outside / "secret").write_text("precious")
+    (target / ".venv").symlink_to(outside, target_is_directory=True)
+    code, report = _run([str(target)], FakeTmpfs(hive).ports())
+    assert code == 1 and report["targets"][0]["reasons"] == ["unsafe_link"]
+    assert target.exists() and (outside / "secret").read_text() == "precious"
+
+
+@pytest.mark.parametrize("marker", ["token", "legacy", "central", "corrupt"])
+def test_local_claim_evidence_vetoes_recovery(hive, marker):
+    target = hive.leaves["landed-a"]
+    admin = Path(_git(target, "rev-parse", "--path-format=absolute", "--git-dir"))
+    if marker == "token":
+        _git(target, "config", "--local", "beadhive.claimIncarnation", "active")
+    elif marker == "legacy":
+        (admin / "bh-claim.json").write_text("{}")
+    else:
+        record = hive.repo / ".git" / "bh" / "worktrees" / (admin.name + "-active")
+        record.mkdir(parents=True)
+        (record / "claim.json").write_text("not-json" if marker == "corrupt" else "{}")
+    code, report = _run([str(target)], FakeTmpfs(hive).ports())
+    assert code == 1 and target.exists()
+    assert "ownership_unknown" in report["targets"][0]["reasons"]
+
+
+def _validation_run(hive, target):
+    root = hive.repo / ".git" / "bh" / "validation"
+    run_id = "run-test123"
+    pointer = root / "active" / f"{run_id}.json"
+    pointer.write_text(json.dumps({"schema": 1, "run_id": run_id}))
+    manifest = root / "runs" / run_id / "manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps({"run_id": run_id, "lifecycle": "running", "worktree": str(target)})
+    )
+    return pointer, manifest
+
+
+@pytest.mark.parametrize(
+    "marker", ["running", "legacy", "fifo", "symlink", "malformed", "missing", "traversal"]
+)
+def test_validation_lifecycle_protects_recovery_without_blocking(hive, marker, tmp_path):
+    target = hive.leaves["landed-a"]
+    if marker == "legacy":
+        (target / ".bh-verify.json").write_text("{}")
+    else:
+        pointer, manifest = _validation_run(hive, target)
+        if marker == "fifo":
+            manifest.unlink()
+            os.mkfifo(manifest)
+        elif marker == "symlink":
+            manifest.unlink()
+            outside = tmp_path / "manifest.json"
+            outside.write_text("{}")
+            manifest.symlink_to(outside)
+        elif marker == "malformed":
+            manifest.write_text("not-json")
+        elif marker == "missing":
+            manifest.unlink()
+        elif marker == "traversal":
+            pointer.write_text(json.dumps({"run_id": "run-../../outside"}))
+    code, report = _run([str(target)], FakeTmpfs(hive).ports())
+    assert code == 1 and target.exists()
+    assert {"validation_active", "ambiguous"} & set(report["targets"][0]["reasons"])
+
+
+def test_running_validation_appearing_before_remove_is_kept(hive):
+    target = hive.leaves["landed-a"]
+    fs = FakeTmpfs(hive)
+    ports = fs.ports()
+
+    def scan():
+        fs.scans += 1
+        if fs.scans == 2:
+            _validation_run(hive, target)
+        return lr.ProcessScan((), True)
+
+    ports.process_scan = scan
+    code, report = _run([str(target)], ports)
+    assert code == 1 and target.exists()
+    assert report["targets"][0]["reasons"] == ["validation_active"]
+
+
+def test_space_measurement_excludes_external_hardlinks_and_sparse_holes(tmp_path):
+    target = tmp_path / "target"
+    target.mkdir()
+    external = tmp_path / "package-cache"
+    external.write_bytes(b"x" * (1024 * 1024))
+    os.link(external, target / "shared-package")
+    sparse = target / "sparse"
+    with sparse.open("wb") as stream:
+        stream.truncate(1024 * 1024 * 1024)
+    expected = target.stat().st_blocks * 512 + sparse.stat().st_blocks * 512
+    assert lr._real_disk_usage(str(target)) == expected
+    # Both links inside one target free exactly one allocation.
+    private = target / "private"
+    private.write_bytes(b"y" * 4096)
+    os.link(private, target / "private-copy")
+    assert lr._real_disk_usage(str(target)) == expected + private.stat().st_blocks * 512
+
+
+def test_running_validation_without_worktree_is_unknown(hive):
+    target = hive.leaves["landed-a"]
+    _pointer, manifest = _validation_run(hive, target)
+    value = json.loads(manifest.read_text())
+    value["worktree"] = None
+    manifest.write_text(json.dumps(value))
+    code, report = _run([str(target)], FakeTmpfs(hive).ports())
+    assert code == 1 and target.exists()
+    assert "ambiguous" in report["targets"][0]["reasons"]
+
+
+@pytest.mark.parametrize("kind", ["symlink", "fifo"])
+def test_matching_claim_administration_must_be_plain_directory(hive, tmp_path, kind):
+    target = hive.leaves["landed-a"]
+    admin = Path(_git(target, "rev-parse", "--path-format=absolute", "--git-dir"))
+    record = hive.repo / ".git" / "bh" / "worktrees" / (admin.name + "-unknown")
+    record.parent.mkdir(parents=True)
+    if kind == "symlink":
+        outside = tmp_path / "outside-empty"
+        outside.mkdir()
+        record.symlink_to(outside, target_is_directory=True)
+    else:
+        os.mkfifo(record)
+    code, report = _run([str(target)], FakeTmpfs(hive).ports())
+    assert code == 1 and target.exists()
+    assert "ambiguous" in report["targets"][0]["reasons"]
+
+
+def test_repo_alias_does_not_resolve_into_a_deletion_scope(hive, tmp_path):
+    alias = tmp_path / "repo-alias"
+    alias.symlink_to(hive.repo, target_is_directory=True)
+    code, report = _run(["--repo", str(alias)], FakeTmpfs(hive).ports())
+    assert code == 0
+    assert len(report["targets"]) == 1
+    assert report["targets"][0]["reasons"] == ["unsafe_link"]
+    assert all(path.exists() for path in hive.leaves.values())
+
+
+def test_unknown_process_owner_does_not_disappear_from_safety_proof(monkeypatch):
+    if not Path("/proc/self/cwd").exists():
+        pytest.skip("no /proc on this platform")
+    denied = Path("/proc") / str(os.getpid())
+    original = Path.stat
+
+    def inaccessible(path, *args, **kwargs):
+        if path == denied:
+            raise PermissionError("process owner unavailable")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", inaccessible)
+    scan = lr._real_process_scan()
+    assert not scan.complete
+    assert "cannot inspect process ownership" in scan.detail
+
+
+@pytest.mark.parametrize("kind", ["fifo", "socket"])
+def test_ignored_cache_special_file_is_kept(hive, kind, monkeypatch):
+    import socket
+
+    target = hive.leaves["landed-a"]
+    cache = target / ".venv"
+    cache.mkdir()
+    special = cache / "special"
+    endpoint = None
+    if kind == "fifo":
+        os.mkfifo(special)
+    else:
+        endpoint = socket.socket(socket.AF_UNIX)
+        monkeypatch.chdir(cache)
+        endpoint.bind("special")
+    try:
+        # Genuine Git ignore discovery is used, and removal must preserve the node.
+        code, report = _run([str(target)], FakeTmpfs(hive).ports())
+        assert code == 1
+        assert target.exists() and special.exists()
+        assert {"ignored_precious", "ambiguous"} & set(report["targets"][0]["reasons"])
+    finally:
+        if endpoint is not None:
+            endpoint.close()
+
+
+def test_git_hidden_special_node_outside_cache_is_kept(hive):
+    target = hive.leaves["landed-a"]
+    special = target / "operator-fifo"
+    os.mkfifo(special)
+    code, report = _run([str(target)], FakeTmpfs(hive).ports())
+    assert code == 1 and special.exists()
+    assert "ignored_precious" in report["targets"][0]["reasons"]
+
+
+def test_nested_mount_is_not_removed(hive):
+    target = hive.leaves["landed-a"]
+    (target / ".venv").mkdir()
+    (target / ".venv" / "precious").write_text("shared mount")
+    fs = FakeTmpfs(hive)
+    ports = fs.ports()
+    ports.mounts = lambda: [*fs.mounts(), (str(target / ".venv"), "tmpfs")]
+    code, report = _run([str(target)], ports)
+    assert code == 1 and (target / ".venv" / "precious").read_text() == "shared mount"
+    assert "unsafe_link" in report["targets"][0]["reasons"]
+
+
+def test_nested_ignored_git_repository_has_unknown_ownership(hive):
+    target = hive.leaves["landed-a"]
+    nested = target / ".venv" / "nested"
+    nested.mkdir(parents=True)
+    _git(nested, "init", "-q")
+    code, report = _run([str(target)], FakeTmpfs(hive).ports())
+    assert code == 1 and nested.exists()
+    assert "ownership_unknown" in report["targets"][0]["reasons"]

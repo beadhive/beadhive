@@ -181,6 +181,8 @@ class _Cursor:
             self.rows = [(name,) for name in params if name in world.tables]
         elif "hq_live_inbox_" in sql:
             self.rows = []
+        elif "FROM hq_live_hive_leases" in sql:
+            self.rows = [world.lease_row] if world.lease_row else []
         elif "FROM hq_live_public_observations" in sql:
             self.rows = [world.public] if world.public else []
         elif sql.startswith("START TRANSACTION"):
@@ -215,11 +217,14 @@ def _world(monkeypatch, *, tables=(), table=None, liveness=None, public=None):
         tables=set(tables),
         session_row=SESSION_ROW,
         public=public,
+        lease_row=None,
         statements=[],
         fences=[],
     )
     state = {"frames": {"frame-1": {"active": _record(), "candidate": None}}, "expires_at": 1e12}
+    world.state = state
     policies = {"bh": {"config_revision": "desired-1", "valid_until": 1e12}}
+    world.policies = policies
     settings = {"runtime": {"user": "frame_a", "database": "rt"}}
     if liveness:
         settings["liveness"] = liveness
@@ -236,6 +241,7 @@ def _world(monkeypatch, *, tables=(), table=None, liveness=None, public=None):
         "fresh_config_head_fence",
         "fresh_runtime_head_fence",
         "fresh_public_observation_fence",
+        "fresh_hive_lease_fence",
     ):
         monkeypatch.setattr(
             authority, fence, lambda *a, _name=fence, **k: world.fences.append(_name)
@@ -540,3 +546,107 @@ def test_host_list_reports_a_switched_frame_by_its_session_row(frame, monkeypatc
     assert row["liveness_source"] == "session-row"
     assert row["last_seen"] == "2026-10-06T10:00:00+00:00"
     assert row["heartbeat_age_basis"] == "hq-server-session-row" and not row["stale"]
+
+
+# bh-y3vo3: ownership must select the same route as eligibility after active rotation.
+def _ownership_world(monkeypatch, *, signed=False):
+    import copy
+
+    from beadhive.host_lease_contracts import EpochFence, now_stamp
+    from beadhive.hq_sql_signatures import canonical
+
+    tables = (session_table("frame_a", 2), evidence_table("frame_a", 2))
+    runtime, world = _world(
+        monkeypatch, tables=tables, table=tables[0], liveness="signed" if signed else None
+    )
+    record = world.state["frames"]["frame-1"]["active"]
+    old = copy.deepcopy(record)
+    record["authority"]["epoch"] = 2
+    record["release_upgrade_history"] = [{"record": old}]
+    world.route = replace(world.route, epoch=2)
+    world.session_row = (2, 2, *SESSION_ROW[2:3], 2, *SESSION_ROW[4:17], 1, SESSION_ROW[18])
+    raw = dict(
+        host_id="host-1",
+        label="fixture",
+        epoch=19,
+        adopted_at=now_stamp(NOW - 3600),
+        expires_at=now_stamp(NOW - 1800),
+    )
+    world.lease_row = (
+        "lease-revision",
+        canonical({"authority": old["authority"], "lease": raw}),
+        "",
+        "",
+    )
+    plane = SqlControlPlane(
+        {"liveness": "signed"} if signed else {},
+        clock=lambda: NOW,
+        fence_reader=lambda prefix: EpochFence(19, "host-1"),
+    )
+    monkeypatch.setattr(plane, "_runtime_authority", lambda: runtime)
+    snapshot = SimpleNamespace(beadyard_id=None)
+    monkeypatch.setattr(runtime, "bound_config_at", lambda *a, **k: (snapshot, "c"))
+    return plane, world, record
+
+
+@pytest.mark.parametrize("signed", [False, True])
+def test_rotated_session_owner_uses_fresh_current_evidence_and_advisory_lease(monkeypatch, signed):
+    plane, world, _ = _ownership_world(monkeypatch, signed=signed)
+    manifest = SimpleNamespace(
+        frame_id="frame-1", host_id="host-1", instance_ref="vm-1", beadyard_id=None
+    )
+    observation = plane.read_eligibility(manifest, prefix="bh")[2]
+    revision, lease = plane.read_hive_lease_record("bh", holder_identity="host-1")
+    assert observation.current_hive_lease_holder and observation.fresh
+    assert revision == "lease-revision" and lease.held_by("host-1")
+    assert lease.epoch == 19 and lease.advisory_expiry
+    assert plane.read_hive_lease_record("bh", incumbent_identity="host-1")[1] == lease
+    assert "fresh_hive_lease_fence" in world.fences
+    assert not any("hq_live_inbox_" in sql for sql, _ in world.statements)
+
+
+@pytest.mark.parametrize("index,value", [(1, 1), (3, 1), (14, 0), (15, 0), (16, 0), (17, 0)])
+def test_session_qualified_owner_refuses_stale_wrong_epoch_and_evidence(monkeypatch, index, value):
+    plane, world, _ = _ownership_world(monkeypatch)
+    row = list(world.session_row)
+    row[index] = value
+    if index == 3:  # The SQL predicates also reject the evidence epoch mismatch.
+        row[15] = row[16] = 0
+    world.session_row = tuple(row)
+    assert plane.read_hive_lease("bh", holder_identity="host-1") is None
+    # Existing claims finish under their protected epoch, even if new intake is stopped.
+    assert plane.read_hive_lease_record("bh", incumbent_identity="host-1")[1].epoch == 19
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["foreign", "released", "lineage", "cordoned", "quarantined", "unpolicied", "revoked"],
+)
+def test_rotated_session_owner_still_requires_exact_protected_lease_and_admission(
+    monkeypatch, mutation
+):
+    import json
+
+    from beadhive.hq_sql_signatures import canonical
+
+    plane, world, record = _ownership_world(monkeypatch)
+    envelope = json.loads(world.lease_row[1])
+    if mutation in {"foreign", "released"}:
+        envelope["lease"]["host_id"] = "other" if mutation == "foreign" else ""
+    elif mutation == "lineage":
+        envelope["authority"]["epoch"] = 999
+    elif mutation == "cordoned":
+        record["cordoned"] = True
+    elif mutation == "quarantined":
+        record["state"] = "quarantined"
+    elif mutation == "unpolicied":
+        world.policies.clear()
+    elif mutation == "revoked":
+        record["authority"]["epoch"] = 3
+    world.lease_row = (world.lease_row[0], canonical(envelope), "", "")
+    if mutation == "revoked":
+        with pytest.raises(ValueError, match="qualified SQL hive lease unavailable"):
+            plane.read_hive_lease("bh", holder_identity="host-1")
+    else:
+        assert plane.read_hive_lease("bh", holder_identity="other") is None
+        assert plane.read_hive_lease("bh", holder_identity="host-1") is None
