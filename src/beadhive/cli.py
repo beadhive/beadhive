@@ -3056,6 +3056,60 @@ def hive_forward_cmd(
     )
 
 
+# ---- hive frames: merge open-policy frame refs into main (bh-sfp9o.5) ----------------------
+# Trust-profiles ADR section 4, "Merging frame refs"; documented in docs/HQ.md (write policies).
+
+
+@hive_app.command("frames", hidden=True)
+def hive_frames_cmd(
+    action: str = typer.Argument(..., metavar="ACTION", help="status | merge | resolve"),
+    hive_id: str = typer.Argument(..., metavar="HIVE_ID", help="the hive to act on"),
+    frame: str = typer.Option(
+        "", "--frame", help="merge: only this frame's ref; resolve: the frame whose ref conflicts"
+    ),
+    bead: str = typer.Option(
+        "", "--bead", help="resolve: the recorded conflicting bead (or <table>:<key> row)"
+    ),
+    take: str = typer.Option(
+        "", "--take", help="resolve: main (keep main's rows) | frame (take the frame's rows)"
+    ),
+    as_json: bool = typer.Option(False, "--json", help="emit the outcomes as JSON"),
+):
+    """OPERATOR verb — the writer merges open-policy frame refs (refs/dolt/frame/<id>).
+
+    status: read-only — the recorded merge outcome per frame ref.
+
+    merge: on the writer, merge every published frame ref (or --frame) into local main without
+    --strategy. A conflicting ref is held unmerged and its rows recorded; the others merge.
+
+    resolve: on the writer, take main's or the frame's side for one recorded conflicting
+    --bead of --frame; the merge completes once every recorded bead has a side. Refused
+    without --take."""
+    from . import hive_frames_cli
+
+    if action not in hive_frames_cli.ACTIONS:
+        typer.echo(
+            f"✗ unknown action {action!r} (expected one of {', '.join(hive_frames_cli.ACTIONS)})",
+            err=True,
+        )
+        raise typer.Exit(2)
+    if (bead or take) and action != "resolve":
+        typer.echo("✗ --bead / --take apply to resolve only", err=True)
+        raise typer.Exit(2)
+    cfg = config.load()
+    entry = registry.resolve_hive(cfg, hive_id)
+    hive_frames_cli.run(
+        action,
+        cfg=cfg,
+        entry=entry,
+        hive_dir=registry.hive_dir(entry),
+        frame=frame,
+        bead=bead,
+        take=take,
+        as_json=as_json,
+    )
+
+
 # ---- hive hook: git-hook entrypoints for an external dispatcher (bh-smcj) -----
 
 hive_hook_app = typer.Typer(

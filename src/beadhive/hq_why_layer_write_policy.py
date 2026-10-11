@@ -12,9 +12,15 @@ decides whether the marker is consulted at all:
 * ``fenced`` set by an override (``hive.write_policy``) — **refused** on a host that is not
   the writer, naming the override and how to lift it. ``fenced`` because no forwarder is
   configured passes on: the writer fence and placement layers refuse as before.
+
+Whatever the verdict, a frame ref of the hive that the writer holds unmerged — a conflict, a
+double claim or a failed merge (bh-sfp9o.5) — is named per frame in the summary and carried
+as ``detail.frame_merges``. It never refuses: a held ref blocks no verb.
 """
 
 from __future__ import annotations
+
+import dataclasses
 
 from .hq_why import DECIDED, OK, REFUSED, SKIPPED, Layer, Verdict, WhyContext
 
@@ -26,6 +32,30 @@ def _bh() -> str:
 
 
 def check_write_policy(ctx: WhyContext) -> Verdict:
+    verdict = _check(ctx)
+    return _with_frame_merges(ctx, verdict)
+
+
+def _with_frame_merges(ctx: WhyContext, verdict: Verdict) -> Verdict:
+    from . import frame_merge
+
+    try:
+        text, held = frame_merge.why_summary(ctx.label)
+    except Exception:  # noqa: BLE001 - an unreadable record never changes the verdict
+        return verdict
+    if not held:
+        return verdict
+    return dataclasses.replace(
+        verdict,
+        summary=(
+            f"{verdict.summary}. Frame refs held unmerged by the writer: {text} "
+            f"(`{_bh()} hive frames status {ctx.label}`)"
+        ),
+        detail={**verdict.detail, "frame_merges": held},
+    )
+
+
+def _check(ctx: WhyContext) -> Verdict:
     from . import guard, write_policy
 
     entry = ctx.memo.get("entry") or {}

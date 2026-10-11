@@ -758,10 +758,12 @@ def doctor_data(
     now: Callable[[], float] = time.time,
     events: Path | None = None,
     hive_dir: Callable[[Mapping], Path | None] | None = None,
+    frame_state: Path | None = None,
 ) -> dict:
     """The doctor section: the effective write policy per hive, its readiness warnings over
-    ``hive.readiness_window``, and — under every profile that forwards — any forwarder login
-    that is not per-frame and pinned."""
+    ``hive.readiness_window``, — under every profile that forwards — any forwarder login
+    that is not per-frame and pinned, and the writer's recorded frame-ref merges per hive and
+    frame (``frame_merges``, bh-sfp9o.5; ``warn`` while a ref is held by a conflict)."""
     host = _host_settings() if host is None else host
     profile = trust_profile(host) if profile is None else profile
     window = readiness_window_s(cfg)
@@ -789,14 +791,16 @@ def doctor_data(
         )
     logins = forwarder_login_problems(cfg) if profile.name != "open" else []
     refused = any(item["refused_overrides"] for item in hives)
+    frame_merges = importlib.import_module("beadhive.frame_merge").doctor_data(path=frame_state)
     return {
-        "level": "warn" if logins or refused else "ok",
+        "level": "warn" if logins or refused or frame_merges["held"] else "ok",
         "profile": profile.name,
         "window_s": window,
         "window": _window_text(window),
         "hives": hives,
         "readiness_total": sum(item["readiness_warnings"] for item in hives),
         "forwarder_logins": logins,
+        "frame_merges": frame_merges,
     }
 
 
@@ -832,4 +836,10 @@ def doctor_lines(data: Mapping) -> list[str]:
         f"  ✗ forwarder login not per-frame and pinned — {problem}"
         for problem in data.get("forwarder_logins", ())
     ]
+    frame_merges = data.get("frame_merges") or {}
+    if frame_merges.get("hives"):
+        lines.append("  frame refs merged by this writer (refs/dolt/frame/<id>):")
+        lines += importlib.import_module("beadhive.frame_merge").doctor_lines(
+            frame_merges, bh=_bh()
+        )
     return lines
