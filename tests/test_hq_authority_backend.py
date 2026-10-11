@@ -30,7 +30,12 @@ from beadhive.hq_control_plane import (
     install_guard,
     registration_ref,
 )
-from harness.clock import FakeClock
+
+# The stale-takeover HQ runs its operator plane on one timeline that lags the real clock by this
+# much, from provisioning onward. The pre-receive hook reads the real clock, so a receipt with a
+# lease shorter than the lag is already aged when it is accepted, while every first_seen, grant
+# and authority issued_at the plane stamps still comes from the same (lagged) timeline.
+STALE_TIMELINE_LAG_S = 31
 
 
 def frame_process(b, code, *args):
@@ -116,6 +121,8 @@ class _PreparedHq:
 
     def __init__(self, root: Path, prefixes: tuple[str, ...], stale: bool):
         self.root = root
+        lag = STALE_TIMELINE_LAG_S if stale else 0
+        self.clock = (lambda: time.time() - lag) if lag else time.time
         self.live = root / "live"
         self.snap = root / "snap"
         self.values = self._build(prefixes, stale)
@@ -266,7 +273,7 @@ class _PreparedHq:
             "config-one",
             time.time() + 3600,
         )
-        plane = GitControlPlane(op_repo, authority_anchor=values["op_anchor"])
+        plane = GitControlPlane(op_repo, authority_anchor=values["op_anchor"], clock=self.clock)
         desired = {"declared": True, "release": release, "caps": caps, "profile": "fleet-profile"}
         git(repo, "remote", "set-url", "origin", plane._remote(plane._policy()))
         plane.grant(
@@ -310,7 +317,7 @@ def backend(_prepared_hqs, monkeypatch, request):
 
     request.addfinalizer(cleanup)
     prepared.patch_host(monkeypatch, values)
-    plane = GitControlPlane(op_repo, authority_anchor=values["op_anchor"])
+    plane = GitControlPlane(op_repo, authority_anchor=values["op_anchor"], clock=prepared.clock)
 
     def lease(sequence=1, **changes):
         data = dict(
@@ -322,7 +329,7 @@ def backend(_prepared_hqs, monkeypatch, request):
             audience="fleet-one",
             config_revision="config-one",
             seq=sequence,
-            renewTime=datetime.now(UTC).isoformat(),
+            renewTime=datetime.fromtimestamp(plane.clock(), UTC).isoformat(),
             release=release,
             state_seen="pending",
             conformance={
@@ -2675,22 +2682,10 @@ print(plane.publish_hive_lease(sys.argv[3],lease,expected=sys.argv[4],operation=
     result = frame_process(second, attempt, "bh", incumbent["bh"])
     assert result.returncode != 0 and "pre-receive hook declined" in result.stderr
     assert git(b["remote"], "rev-parse", "refs/bh/lease/bh") == incumbent["bh"]
-    # Receipt aging by data: the operator plane records first_seen from its injectable clock, so
-    # observing the beat 31 s in the past makes the signed receipt already older than its lease
-    # (the pre-receive hook reads the real clock and sees an aged receipt). No real wait.
-    aged = FakeClock(datetime.fromtimestamp(time.time() - 31, UTC))
-    real_clock = b["plane"].clock
-    b["plane"].clock = aged.wall
-    try:
-        b["accept"](
-            4,
-            state_seen="active",
-            leaseDurationSeconds=30,
-            intervalSeconds=1,
-            renewTime=aged.now().isoformat(),
-        )
-    finally:
-        b["plane"].clock = real_clock
+    # Receipt aging by data: this HQ's plane timeline lags the real clock by
+    # STALE_TIMELINE_LAG_S, so a 30 s lease beat is already older than its lease to the
+    # pre-receive hook (real clock) the moment it is accepted. No real wait, no clock rewind.
+    b["accept"](4, state_seen="active", leaseDurationSeconds=30, intervalSeconds=1)
     for prefix in ("stale", "quarantine", "retire"):
         if prefix == "quarantine":
             apply(b, "quarantine")
