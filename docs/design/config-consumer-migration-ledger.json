@@ -161,21 +161,21 @@
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 387,
+        "line": 400,
         "path": "tests/test_capabilities.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 388,
+        "line": 401,
         "path": "tests/test_capabilities.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.hq_dir",
         "kind": "direct-facade",
-        "line": 389,
+        "line": 402,
         "path": "tests/test_capabilities.py",
         "target": "beadhive.config.hq_dir"
       },
@@ -2434,7 +2434,7 @@
         "target": "beadhive.config.load"
       }
     ],
-    "production_config_importer_count": 92,
+    "production_config_importer_count": 93,
     "production_config_importers": [
       "src/beadhive/activity_publisher.py",
       "src/beadhive/agent_run_summary_reader.py",
@@ -2518,6 +2518,7 @@
       "src/beadhive/role_execution.py",
       "src/beadhive/route.py",
       "src/beadhive/run_journal.py",
+      "src/beadhive/self_placement.py",
       "src/beadhive/setup.py",
       "src/beadhive/setup_guide.py",
       "src/beadhive/source_descriptors.py",
@@ -2950,6 +2951,11 @@
       },
       {
         "owner": "bh-18hud.5 compatibility migration ledger",
+        "path": "src/beadhive/self_placement.py",
+        "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
+      },
+      {
+        "owner": "bh-18hud.5 compatibility migration ledger",
         "path": "src/beadhive/setup.py",
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       },
@@ -2999,7 +3005,7 @@
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       }
     ],
-    "test_config_importer_count": 170,
+    "test_config_importer_count": 171,
     "test_config_importers": [
       "tests/contracts/test_config_contract_compatibility.py",
       "tests/contracts/test_config_resolution_compatibility.py",
@@ -3153,6 +3159,7 @@
       "tests/test_role.py",
       "tests/test_role_execution.py",
       "tests/test_runtime.py",
+      "tests/test_self_placement.py",
       "tests/test_source_descriptors.py",
       "tests/test_structural_facade_contracts.py",
       "tests/test_sugar_verbs.py",

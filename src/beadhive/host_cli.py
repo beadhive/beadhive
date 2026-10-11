@@ -86,6 +86,7 @@ from . import (
     jsonout,
     otel,
     registry,
+    self_placement,
 )
 from . import fleet_roster as hosts
 from .heartbeat_report import register as _register_heartbeat_reports
@@ -1236,8 +1237,12 @@ def adopt_one(hive: str, *, force: bool = False):
     ttl = host_lease.ttl_for_role(
         getattr(manifest, "roles", None) or manifest.role, config.host_lease_ttl(cfg)
     )
+    prefix = str(entry["prefix"])
+    decision = self_placement.evaluate(prefix, host_id=host_id, hq_dir=hq_dir)
+    if not decision.allowed:
+        raise host_lease.HostLeaseRejected(decision.message)
     return host_adopt.adopt(
-        prefix=str(entry["prefix"]),
+        prefix=prefix,
         hive_remote="origin",
         hq_remote="origin",
         hive_cwd=registry.hive_dir(entry),
@@ -1245,12 +1250,43 @@ def adopt_one(hive: str, *, force: bool = False):
         host_id=host_id,
         label=manifest.label,
         ttl=ttl,
-        force=force,
+        **_placement_kwargs(decision, force=force),
     )
 
 
+def _placement_kwargs(decision, *, force: bool) -> dict:
+    """What a :mod:`beadhive.self_placement` decision adds to the adopt: a self-placement is
+    pinned to the placement revision it read (one winner of a concurrent pair), and a
+    ``takeover`` CASes over the stale holder's unexpired record."""
+    if decision.mode != self_placement.SELF:
+        return {"force": force}
+    return {"force": force or decision.takeover, "expected_placement": decision.revision}
+
+
+_SELF_PLACED = {
+    "seed": lambda d: (
+        f"self-placed under the {d.profile} trust profile: seeded the never-placed "
+        "placement, CAS and fence bump in one step"
+    ),
+    "place": lambda d: (
+        f"self-placed under the {d.profile} trust profile: the previous placement "
+        "was released or its tenure ended"
+    ),
+    "resume": lambda d: (
+        f"self-placed under the {d.profile} trust profile: placement already named this host"
+    ),
+    "takeover": lambda d: (
+        f"self-placed under the {d.profile} trust profile: {d.holder}'s session "
+        f"was stale past failover_after (failover would have fired at {d.failover_at})"
+    ),
+    "evict": lambda d: f"self-placed under the {d.profile} trust profile: {d.holder} was evictable",
+}
+
+
 @lease_app.command(
-    "adopt", help="become primary for <hive> — fence the hive's remote, then lease it in HQ."
+    "adopt",
+    help="become primary for <hive> — fence the hive's remote, then lease it in HQ; under the "
+    "open/trusted trust profiles a frame self-places on a hive with no live writer session.",
 )
 @app.command("adopt", hidden=True)
 @otel.trace_verb("host.adopt")
@@ -1272,7 +1308,16 @@ def adopt_cmd(
     real (a dead host would otherwise block the fleet until its lease's natural expiry) and
     using it is exactly how split-brain happens — a forced takeover is logged loudly at the
     primitive level (``host_lease.adopt``'s ``host_lease_forced_takeover`` warning); this
-    command surfaces it, it never swallows it."""
+    command surfaces it, it never swallows it.
+
+    Self-placement (bh-vl0r3): the ``place`` capability is checked first
+    (:func:`beadhive.guard.guard_capability`, :mod:`beadhive.self_placement`). Under the
+    ``open`` and ``trusted`` trust profiles (or ``hq.placement_mode: self``) a frame places
+    itself on a hive with no live writer session in this one command — seeding a never-placed
+    record, CASing placement at the revision it read and running the fence bump — and a live
+    writer is refused naming the holder, when its tenure ends and when failover fires (with the
+    director command under ``trusted``). Under ``verified`` / ``attested`` it refuses and prints
+    the director command."""
     cfg = config.load()
     entry = registry.resolve_hive(cfg, hive)
     prefix = str(entry["prefix"])
@@ -1289,6 +1334,7 @@ def adopt_cmd(
         typer.echo(f"✗ {exc}", err=True)
         raise typer.Exit(1) from None
 
+    decision = guard.guard_capability("place", prefix, cfg=cfg, verb="host lease adopt")
     try:
         outcome = host_adopt.adopt(
             prefix=prefix,
@@ -1299,7 +1345,7 @@ def adopt_cmd(
             host_id=host_id,
             label=manifest.label,
             ttl=ttl,
-            force=force,
+            **_placement_kwargs(decision, force=force),
         )
     except (
         host_lease.HostLeaseRejected,
@@ -1320,6 +1366,8 @@ def adopt_cmd(
         typer.echo(
             f"✓ adopted {prefix} — epoch {outcome.epoch}, expires {outcome.lease.expires_at}"
         )
+    if decision.mode == self_placement.SELF:
+        typer.echo(f"  {_SELF_PLACED[decision.action](decision)}")
     plan = outcome.coexistence.step2.reclaim if outcome.coexistence is not None else None
     for line in plan.describe() if plan is not None else ():
         typer.echo(f"  {line}")

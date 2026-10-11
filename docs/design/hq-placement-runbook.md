@@ -1,9 +1,9 @@
 # Runbook — director placement and unattended failover in SQL HQ
 
-> **Status:** operator procedure for 0.23.0 (`bh-16347.5`). The verb it describes,
-> `bh hq placement`, is **hidden**. It appears in no `--help` output and no CLI reference, and
-> this runbook is its only documentation, like `bh hive fence`
-> ([cutover runbook](hive-writer-cutover-runbook.md)). The failover loop is **off by default**.
+> **Status:** operator procedure since 0.23.0 (`bh-16347.5`). The verb it describes,
+> `bh hq placement`, is a documented `bh hq` verb since `bh-vl0r3`: it is listed in
+> `bh hq --help` and the [CLI reference](../CLI.md). Section 8 covers self-placement under the
+> `open` and `trusted` trust profiles. The failover loop is **off by default**.
 
 Design: [ADR — hive writer partitioning](hive-writer-partitioning-adr.md) §1 (placement, design
 A) and §4 (failover policy). Library: `beadhive.hq_sql_placement` and
@@ -263,3 +263,38 @@ operator-signed policy, as in section 3. In a `trusted` fleet
 needs no operator key. Cordon, drain and retire still apply in both modes. The authority has no
 expiry by default, so a placement never waits on an authority renewal; changing a failover
 policy or tenure never moves the config head (section 6).
+
+## 8. Self-placement under the trust profiles
+
+The fleet trust profile's placement knob ([ADR: trust profiles](hq-trust-profiles-and-capabilities-adr.md),
+section 2) decides whether a frame may place itself, with `bh host lease adopt <hive>`, instead of
+waiting for the director:
+
+| Profile | `bh host lease adopt <hive>` |
+|---|---|
+| `open` | Self-places on a hive with no live writer session. A hive with a live writer is refused, naming the holder, when its tenure ends and when failover would fire. There is no director fallback, so no director command is printed: wait, then adopt. |
+| `trusted` | Self-places on a hive with no live writer session. A live writer is refused as under `open`, and the refusal prints the director command (`bh hq placement place <hive> --frame <F> --expected-revision <R> --confirm`). |
+| `verified`, `attested` | Refuses self-placement on a host without the director credential and prints the director command. Placement goes through this runbook's director CAS. |
+
+A host can tighten its own knob with `hq.placement_mode: director` in `host.yaml`. The value
+`self` gives `self-or-director` (self-placement with the director fallback); it loosens a
+`verified` or `attested` fleet only when the operator key signs it, otherwise it is refused and
+`bh hq why <hive>` reports the refusal. A host that has learned no fleet profile and carries no
+placement override keeps 0.24.0's adopt unchanged.
+
+**One step.** A self-placement reads placement once and adopts in the same command: on a
+never-placed hive it seeds the record, then CASes placement at the revision it read and runs the
+fence bump (the in-data bump on a cut-over hive). It needs neither the director credential nor
+an `--expected-revision`. The CAS still writes a fresh revision. When two frames self-place on
+the same hive from the same read, exactly one wins; the other is refused before it writes
+anything (placement moved), and re-running the adopt decides again.
+
+**Live writer session.** The holder's session is live while its tenure has not ended (the
+placement's `expires_at`) and its session is not stale past its `failover_after`, the point at
+which the director's failover would fire. A holder with no observable session is treated as live
+until its tenure ends. A holder that frame eligibility already finds evictable (quarantined,
+retired, or stale past `host.lease.evict_after_s`) is not live. When the holder's session is
+stale past `failover_after`, the adopt takes the placement over in the same step.
+
+`bh hq why <hive>` names the self-adopt command in its `placement` layer when self-placement is
+allowed, and the director command when it is refused under `trusted`, `verified` or `attested`.

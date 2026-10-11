@@ -86,11 +86,15 @@ hq_app = typer.Typer(
 )
 setup_app = typer.Typer(no_args_is_help=True, help="Post-install dependency check + cached gate.")
 hq_app.command("authority")(otel.trace_verb("hq.authority")(hq_authority_cli.authority_cmd))
-# Hidden operator/director placement verb (bh-16347.5): documented only in
-# docs/design/hq-placement-runbook.md while 0.23.0 is dormant, like `bh hive fence`.
-hq_app.command("placement", hidden=True)(
-    otel.trace_verb("hq.placement")(hq_placement_cli.placement_cmd)
-)
+# Operator/director placement verb (bh-16347.5; documented since bh-vl0r3): the director CAS
+# that verified/attested fleets place through, and the director fallback a trusted fleet's
+# self-placement refusal prints. Runbook: docs/design/hq-placement-runbook.md.
+hq_app.command(
+    "placement",
+    help="director placement: show, seed, place, release, check or policy for a hive's "
+    "placement row (the director CAS; dry run unless --confirm). Runbook: "
+    "docs/design/hq-placement-runbook.md.",
+)(otel.trace_verb("hq.placement")(hq_placement_cli.placement_cmd))
 harness_app = typer.Typer(
     no_args_is_help=True,
     help="Aliases onto `bh dep`, filtered to agent harnesses (bh-hsus.6).",

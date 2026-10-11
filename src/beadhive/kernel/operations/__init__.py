@@ -369,7 +369,6 @@ _HIDDEN_PATHS = {
     "host dispatch run",
     "host packup",
     "host release",
-    "hq placement",
     "statusline",
 }
 

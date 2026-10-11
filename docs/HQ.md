@@ -717,6 +717,17 @@ example `profile trusted; placement overridden to director (hq.placement_mode, h
 and the effective admission rule below it. Under `open` it also prints that this is the
 single-operator lab posture.
 
+### Self-placement {#self-placement}
+
+Under `open` and `trusted` a frame places itself with `bh host lease adopt <hive>` on a hive
+with no live writer session: one command seeds a never-placed record, CASes placement at the
+revision it read and runs the fence bump, with no director credential and no expected revision.
+A live writer is refused, naming the holder, when its tenure ends and when failover would fire;
+under `trusted` the refusal also prints the director command, `bh hq placement place`, and under
+`open` there is no director fallback. Under `verified` and `attested` the adopt refuses
+self-placement and prints the director command. Details:
+[placement runbook, section 8](design/hq-placement-runbook.md#8-self-placement-under-the-trust-profiles).
+
 The rest of the design (roles, tenure cache, write policies, batch sync) is in
 [HQ trust profiles, composable host capabilities, elected tenure and batch bead sync](design/hq-trust-profiles-and-capabilities-adr.md).
 
@@ -731,7 +742,7 @@ order, and prints the first that refuses with the one command to run next.
 | `config` | config unavailable: the snapshot did not load, or the hive is not registered | `bh doctor`, `bh hive list` |
 | `forward` | forwarding to the primary is refused (forwarded checkouts only) | `bh hive forward point <hive>` |
 | `capability` | capability `<name>` refused by predicate `<p>` (bh-b3ebg's per-capability decision) | per predicate, e.g. `bh host resume plan <frame>` for `not_cordoned` |
-| `placement` | not placed: names the holder and the cause (held, expired, released, none) | `bh host adopt <hive>`, or `bh hq placement show <hive>` |
+| `placement` | not placed: names the holder and the cause (held, expired, released, none); under a self-placing trust profile, whether this frame may place itself | `bh host lease adopt <hive>` (self-placement), `bh host adopt <hive>`, or `bh hq placement show <hive>` |
 | `fence` | the in-data writer fence names another frame (cut-over hives only) | `bh host adopt <hive>` |
 
 `--capability` (`-c`) picks `author`, `claim`, `execute` or `publish` (the default). `--json`

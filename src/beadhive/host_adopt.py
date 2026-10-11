@@ -118,14 +118,18 @@ class _LeasePlacement:
     HQ: the protected lease row through the frame plane). Every CAS writes a new record, so the
     CAS token is always rewritten (condition 5)."""
 
-    def __init__(self, *, remote, prefix, cwd, label, ttl, at, force):
+    def __init__(self, *, remote, prefix, cwd, label, ttl, at, force, pinned=None):
         self._remote, self._prefix, self._cwd = remote, prefix, Path(cwd)
         self._label, self._ttl, self._at, self._force = label, ttl, at, force
+        self._pinned = pinned
         self.lease: HostLease | None = None
         self.outcome: host_lease.LeaseOutcome | None = None
 
     def read(self) -> writer_adopt.PlacementView | None:
         sha, lease = host_lease.read_record(self._remote, self._prefix, cwd=self._cwd)
+        pinned, self._pinned = self._pinned, None
+        if pinned is not None and (sha or "") != pinned:
+            raise PlacementLost(_moved(self._prefix, lease))
         self.lease = lease
         if lease is None:
             return None
@@ -173,6 +177,15 @@ class _GitEpochRef:
         return writer_adopt.RefView(frame=frame, epoch=epoch, sha=sha)
 
 
+def _moved(prefix: str, lease: HostLease | None) -> str:
+    now = lease.describe() if lease is not None else "absent"
+    return (
+        f"{prefix}: placement moved since the self-placement decision read it (now {now}); "
+        "nothing was changed — another frame won the placement CAS. Re-run the adopt to decide "
+        "again; it is not retried with the same expectation."
+    )
+
+
 def _next_epoch(fence: EpochFence | None, lease: HostLease | None) -> int:
     """One past the highest generation EITHER object has seen.
 
@@ -217,6 +230,7 @@ def adopt(
     fence_data: FenceData | None = None,
     step2_attempts: int | None = None,
     failover: bool | None = None,
+    expected_placement: str | None = None,
 ) -> AdoptOutcome:
     """Become primary for `prefix`: CAS the hive-side epoch **fence** first, then record the
     **lease** in HQ — or, on a hive whose data is cut over, placement first then data.
@@ -262,7 +276,13 @@ def adopt(
     write right back to a host this adopt has already superseded.
 
     Raises :class:`HiveNotCloned` when `hive_cwd` is not a clone on this host — see the
-    precondition below."""
+    precondition below.
+
+    SELF-PLACEMENT (bh-vl0r3). `expected_placement` pins the adopt to the placement revision a
+    :mod:`beadhive.self_placement` decision read (``""``: never placed). When placement has
+    moved since, the adopt raises :class:`PlacementLost` before anything is written, so of two
+    frames self-placing on one hive from the same read exactly one wins. ``None`` reads
+    placement afresh, as before."""
     from . import frame_eligibility
 
     frame_eligibility.require_eligible(host_id, {"prefix": prefix}, hq_dir=hq_cwd, at=at)
@@ -300,7 +320,12 @@ def adopt(
 
     # ---- phase 0: read both sides (free — reads are never gated) --------------------
     fence_sha, fence = host_fence.read_fence(hive_remote, cwd=hive_cwd)
-    lease = host_lease.read(hq_remote, prefix, cwd=hq_cwd)
+    if expected_placement is None:
+        lease = host_lease.read(hq_remote, prefix, cwd=hq_cwd)
+    else:  # a self-placement: the read must still be the revision its decision was made on
+        lease_sha, lease = host_lease.read_record(hq_remote, prefix, cwd=hq_cwd)
+        if (lease_sha or "") != expected_placement:
+            raise PlacementLost(_moved(prefix, lease))
 
     # Refuse a live foreign lease BEFORE touching either remote, so the common "someone else
     # has it" case costs nothing and leaves no half-state at all.
@@ -354,10 +379,13 @@ def adopt(
                 at=at,
                 attempts=step2_attempts,
                 failover=failover,
+                pinned=expected_placement,
             )
         except writer_adopt.NotCutOver:
             pass  # no bh_writer on the remote head (Φ1): legacy adopt, nothing was written
     # ---- phase 1: ENFORCEMENT (hive remote) -----------------------------------------
+    # The fence CAS expects the value phase 0 read: of two frames adopting from the same read,
+    # the second loses here (FenceRejected) with nothing moved.
     held = host_fence.install_fence(
         hive_remote,
         EpochFence(epoch=epoch, host_id=host_id),
@@ -559,13 +587,21 @@ def _adopt_cut_over(
     at: float | None,
     attempts: int | None,
     failover: bool | None = None,
+    pinned: str | None = None,
 ) -> AdoptOutcome:
     """Placement-first coexistence adopt on a cut-over hive (bh-4c7p4).
 
     The placement record is cached locally the moment its CAS is won, so this host's own
     ``bh doctor`` sees an "adopt incomplete" it left behind even with HQ unreachable."""
     placement = _LeasePlacement(
-        remote=hq_remote, prefix=prefix, cwd=hq_cwd, label=label, ttl=ttl, at=at, force=force
+        remote=hq_remote,
+        prefix=prefix,
+        cwd=hq_cwd,
+        label=label,
+        ttl=ttl,
+        at=at,
+        force=force,
+        pinned=pinned,
     )
     ref = _GitEpochRef(remote=hive_remote, cwd=hive_cwd)
 

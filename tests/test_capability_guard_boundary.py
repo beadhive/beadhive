@@ -7,7 +7,8 @@ capability model:
 * ``guard_primary`` and ``require_intake`` are called only inside the guard layer
   (``guard.py``, and ``frame_eligibility.py`` where intake is defined);
 * every ``guard_capability`` / ``require_capability`` call names one write capability as a
-  literal, so the capability a verb asks for is reviewable at the call site;
+  literal (or ``place`` for ``guard_capability``: ``bh host lease adopt``, bh-vl0r3), so the
+  capability a verb asks for is reviewable at the call site;
 * the call sites and the capability each asks for are pinned below: adding a write verb means
   classifying it here.
 """
@@ -35,6 +36,7 @@ CAPABILITY_GUARDS = {"guard_capability", "require_capability"}
 #: module -> (guard, capability) for every capability-guarded write site.
 EXPECTED = {
     "src/beadhive/cli.py": {("guard_capability", "author")},  # hive policy set/unset
+    "src/beadhive/host_cli.py": {("guard_capability", "place")},  # host lease adopt (bh-vl0r3)
     "src/beadhive/localloop.py": {("require_capability", "execute")},  # dispatch lease keeper
     "src/beadhive/plan.py": {("guard_capability", "author")},  # plan file, plan approve
     "src/beadhive/work.py": {("require_capability", "claim")},  # work start (epic claim)
@@ -101,7 +103,12 @@ def test_every_capability_guard_call_names_one_write_capability_literally():
             assert isinstance(first, ast.Constant) and isinstance(first.value, str), (
                 f"{relative}:{node.lineno}: {name} needs a literal capability"
             )
-            assert first.value in capabilities.WRITE_CAPABILITIES, (
+            # ``place`` is the one non-write capability guard_capability takes: it delegates to
+            # the self-placement check (bh-vl0r3); require_capability stays write-only.
+            allowed = capabilities.WRITE_CAPABILITIES + (
+                (capabilities.PLACE,) if name == "guard_capability" else ()
+            )
+            assert first.value in allowed, (
                 f"{relative}:{node.lineno}: {first.value!r} is not a write capability"
             )
             found.setdefault(relative, set()).add((name, first.value))

@@ -127,7 +127,15 @@ def test_report_classifies_each_nonidentical_comparison_with_policy_evidence() -
         if row["artifact_id"] == "urn:beadhive:wire-catalog:operations:1"
         and row["classification"] == "policy-divergence-retained"
     ]
-    assert {row["historical_release"] for row in catalog_divergences} == {"1.5.0", "1.6.0"}
+    # 2.5.0 through 2.8.0 published hq.placement hidden; bh-vl0r3 made it a documented verb
+    # (operator decision 2026-10-10: a documentation change, not a wire break — the wire gate
+    # exempts exactly that flip). The release-evidence report retains it as a divergence.
+    unhidden = {"2.5.0", "2.6.0", "2.7.0", "2.8.0"}
+    assert {row["historical_release"] for row in catalog_divergences} == {
+        "1.5.0",
+        "1.6.0",
+        *unhidden,
+    }
     assert all(
         row["policy_errors"]
         == [
@@ -135,6 +143,17 @@ def test_report_classifies_each_nonidentical_comparison_with_policy_evidence() -
             "value changed or members were reordered"
         ]
         for row in catalog_divergences
+        if row["historical_release"] not in unhidden
+    )
+    assert all(
+        row["policy_errors"]
+        == [
+            f"urn:beadhive:wire-catalog:operations:1.operations[hq.placement].surfaces.cli."
+            f"{flag}: append-only catalog value changed or members were reordered"
+            for flag in ("declared_hidden", "effective_hidden")
+        ]
+        for row in catalog_divergences
+        if row["historical_release"] in unhidden
     )
 
 
