@@ -6,8 +6,9 @@
 **Proposal:** [hive-writer-partitioning-proposal.md](../design/hive-writer-partitioning-proposal.md)
 ("Validation approach")
 **Executable evidence:**
-[`tests/spikes/test_bh_jbb6r_writer_partitioning_e2e_int.py`](../../tests/spikes/test_bh_jbb6r_writer_partitioning_e2e_int.py)
-(`integration` + `dolt_server`, 13 tests), the composed prototype
+`tests/spikes/test_bh_jbb6r_writer_partitioning_e2e_int.py`
+(`integration` + `dolt_server`, 13 tests; retired by `bh-n0zj5`, see
+[Retired to permanent suites](#retired-to-permanent-suites)), the composed prototype
 [`tests/harness/composed_fence.py`](../../tests/harness/composed_fence.py), and the soak driver
 [`tests/spikes/bh_jbb6r_soak.py`](../../tests/spikes/bh_jbb6r_soak.py) (outside the land gate).
 
@@ -342,3 +343,36 @@ For the ADR (`bh-pr889`) and the implementation molecule:
    `bd dolt push --force`, `bd dolt remote reset-data` and raw `dolt commit --force` remain
    break-glass and are detectable afterwards (E11 shows the checker and `fence_audit` catching
    the last one); dolt-server HQ is only as linearizable as one un-replicated server.
+
+## Retired to permanent suites
+
+`bh-n0zj5` deleted `tests/spikes/test_bh_jbb6r_writer_partitioning_e2e_int.py` (13 tests,
+~1,189 s per fence-touching run). Each verdict was re-checked by reading both tests: scenario,
+fault injection and assertion. The spike's extra measurements (latency, `BH_JBB6R` evidence
+lines) were evidence for this doc and are not carried forward. Two tests were unique and were
+moved, on the product cut-over hive (`product_world`, M5 cutover, M2 adopt, M1 guard), into
+[`tests/test_fence_composed_int.py`](../../tests/test_fence_composed_int.py).
+
+Moved, not retired:
+
+| Spike test | Now in `tests/test_fence_composed_int.py` |
+| --- | --- |
+| `test_invariant_checker_flags_a_stale_write_forced_past_the_fence` (E11) | `test_invariant_checker_flags_a_stale_write_forced_past_the_fence`: same fault (stale Dolt CLI writer, `dolt commit --force` past the FK, push), same I1/I3/I4/`audit` assertions, now with product adopt and the product history check on |
+| `test_s8_…` branch-merge-via-primary half | `test_branch_role_frame_edits_reach_main_only_through_the_primarys_merge`: product `branch` guard role, frame-private `refs/dolt/frame/q`, the trailing-slash remote (E8), the primary's `bh: merge frame/q/<n>` merge; also asserts the branch frame's push never moves `main` and that it is guarded again once re-provisioned as a replica |
+
+Retired as duplicates. Each permanent test asserts the same invariant:
+
+| Spike test | Permanent test(s) asserting the same invariant |
+| --- | --- |
+| `test_s1_planned_handoff_fences_the_idle_old_writer` | `test_epoch_fencing_int.py::test_s1_planned_handoff_fences_the_idle_old_writer` (bd embedded and bd server old writer; bump lands, next push non-ff, local write refused by the guard, nothing late on `main`) |
+| `test_s2_handoff_mid_write_lands_before_the_bump_or_is_rejected` | `test_epoch_fencing_int.py::test_s2_handoff_mid_write_lands_before_the_bump_or_is_rejected` (push parked at the CAS gate, both orders; bump-first rejects it, write-first lands it below the bump with an adopter retry) |
+| `test_s3_partitioned_writer_is_fenced_and_its_work_survives_on_an_orphan` | `test_epoch_fencing_int.py::test_s3_partitioned_writer_is_fenced_and_its_unpublished_work_survives_on_an_orphan` (partition, failover, raw `bd sync` refused on the FK, divert to an orphan, guard refusal, deliberate orphan merge, `fence_audit` clean); product divert and orphan merge: `test_fence_composed_int.py::test_fixed_seed_product_interleavings_hold_every_invariant` |
+| `test_s4_placement_cas_has_one_winner_in_both_hq_modes` | `test_placement_authority_int.py::test_s4_git_placement_cas_racing_adopters_exactly_one_wins`, `::test_s4_sql_placement_cas_racing_adopters_exactly_one_wins`; product SQL placement: `test_hq_sql_placement_int.py::test_racing_directors_exactly_one_wins_and_every_loser_is_lost` |
+| `test_s4_loser_that_reached_step_2_is_rejected_and_abandons` | `test_epoch_fencing_int.py::test_s4_one_placement_cas_wins_and_a_loser_that_reached_step_2_abandons` (both orders: `abandoned: superseded in data`; the lower epoch landing first is retired, its next pull refused on the FK, push non-ff); `test_placement_authority_int.py::test_s4_loser_that_reached_step2_is_rejected_and_abandons`, `::test_s4_lower_epoch_landing_first_is_overtaken_and_retired` |
+| `test_s5_stale_writer_never_lands_on_any_default_bd_path` | `test_epoch_fencing_int.py::test_s5_stale_writer_is_refused_on_every_default_bd_path` (a superset: `bd dolt push`, pull-then-push, `bd sync`, auto-push, plus raw Dolt and a Dolt CLI stale writer) |
+| `test_s6_hive_sync_strategy_ours_never_reverts_bh_writer` | `test_epoch_fencing_int.py::test_s6_hive_sync_bd_sync_and_pull_never_revert_bh_writer` (one-sided stale writer and both-changed stale adopter through `hive_sync --strategy ours`, `bd sync`, `bd dolt pull`; the local monotonic refusal) |
+| `test_s7_hq_down_past_the_ttl_keeps_the_primary_writing_and_refuses_handoff` | `test_placement_authority_int.py::test_s7_git_hq_down_past_ttl_primary_keeps_writing_and_handoff_is_refused`, `::test_s7_sql_hq_down_past_ttl_primary_keeps_writing_and_failover_waits` (writes land through the outage, placement CAS and adopt refused, the observer decides nothing on recovery) |
+| `test_s8_…` forwarded-claims half | `test_hive_forward_int.py::test_tls_forwarders_claim_in_one_place_and_a_demoted_primary_fails_closed` (claim races through narrow forwarder logins, one winner per round); `test_fence_composed_int.py::test_multi_executor_forwarding_survives_primary_failover_with_backup_reclaim` |
+| `test_s9_killed_primary_fails_over_and_its_claims_are_reclaimed_exactly_once` | `test_fence_composed_int.py::test_multi_executor_forwarding_survives_primary_failover_with_backup_reclaim` (primary killed, failover adopt reclaims the dead frame's claims, the returning primary diverts and a forwarder still pointed at it is refused by the guard); `test_failover_reclaim_int.py::test_failover_adopt_reclaims_only_the_dead_frames_claims_on_real_dolt`, `::test_a_director_placed_adopt_reclaims_exactly_once_and_only_on_failover` (a re-run reclaims nothing); failover only after `failover_after`: `test_fence_composed_int.py::test_sender_stall_longer_than_the_ttl_is_stale_but_fails_over_only_past_failover_after` |
+| `test_s10_slow_probe_keeps_the_session_fresh_and_only_expired_evidence_blocks` | `test_hq_sql_session_int.py::test_renewal_is_one_update_per_tick_and_ignores_a_stalled_conformance_job` (product renewer, real Dolt), `::test_provisioning_isolation_server_stamps_and_eligibility` (evidence expiry alone fails eligibility); `test_heartbeat_report.py::test_slow_conformance_longer_than_ttl_keeps_beats_fresh_then_fails_by_bound` (mocked clock, no timing flake); `tests/spikes/test_bh_wtsrc_receiver_removal_liveness.py::test_scenario_10_slow_probe_keeps_session_fresh_and_expired_evidence_alone_blocks` |
+| `test_fixed_seed_randomized_interleavings_hold_every_invariant` | `test_fence_composed_int.py::test_fixed_seed_product_interleavings_hold_every_invariant` (seeded schedules over the product verbs, every one ending in `check_invariants` with the product history check). The spike driver's other event kinds each have a deterministic permanent test above: mid-push handoff (S2), partition (S3), `bd sync` and auto-push (S5), HQ outage (S7), kill (S9). The randomized mix of all of them on the prototype remains in the opt-in benchmark `tests/spikes/bh_jbb6r_soak.py` |

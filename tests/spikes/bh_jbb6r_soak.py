@@ -1,8 +1,10 @@
 """OPTIONAL randomized-interleaving benchmark for the bh-jbb6r spike -- never in the land gate.
 
 Opt-in only: this file is not a ``test_*.py`` module, so no pytest run collects it, and no just
-recipe calls it. The gate evidence is the fixed-seed integration test
-``test_fixed_seed_randomized_interleavings_hold_every_invariant`` (seeds 0-3).
+recipe calls it. The spike's own fixed-seed test was retired (bh-n0zj5); the gate evidence is the
+product suite's ``tests/test_fence_composed_int.py::test_fixed_seed_product_interleavings_*``
+plus the deterministic per-event scenarios listed under "Retired to permanent suites" in
+``docs/spikes/bh-jbb6r-writer-partitioning-e2e.md``.
 
 By operator decision (2026-10-04) the spike's ">= 500 schedules" acceptance item was relaxed to
 this optional benchmark: the 500-schedule sharded run loaded the shared host past what the
