@@ -37,6 +37,7 @@ import json
 import os
 import shutil
 import time
+from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -49,6 +50,7 @@ __all__ = [
     "RewindLeak",
     "build",
     "cluster_key",
+    "custom_key",
     "diff",
     "fingerprint",
     "guard_enabled",
@@ -260,7 +262,11 @@ def hq_print(hq) -> dict:
 def processes_print(root: Path, known: dict[int, str]) -> list[str]:
     """Every process whose working directory or command line is under ``root`` (Linux
     ``/proc``; empty elsewhere), named by role when ``known``. A stray -- a ``Forwarder`` race
-    child, a server a test started by hand -- shows as ``stray:<argv0>``."""
+    child, a server a test started by hand -- shows as ``stray:<argv0>``.
+
+    ``dolt send-metrics`` is skipped: the Dolt CLI forks it detached after a command (cwd the
+    command's, parent init) and it exits on its own a moment later, so whether a print catches
+    one is timing, not state -- it made the guard flag a "leak" at random (bh-jvgj6)."""
     proc = Path("/proc")
     if not proc.is_dir():
         return []
@@ -279,7 +285,10 @@ def processes_print(root: Path, known: dict[int, str]) -> list[str]:
         if state == "Z":
             continue
         if needle in cmdline or cwd == needle or cwd.startswith(needle + os.sep):
-            argv0 = Path(cmdline.split(" ", 1)[0]).name
+            argv = cmdline.split()
+            argv0 = Path(argv[0]).name if argv else ""
+            if argv0 == "dolt" and argv[1:2] == ["send-metrics"]:
+                continue
             found.append(known.get(pid, f"stray:{argv0}"))
     return sorted(found)
 
@@ -325,9 +334,13 @@ def diff(base, now, path: str = "") -> list[str]:
     if base == now:
         return []
     if isinstance(base, list) and isinstance(now, list):
-        b = {json.dumps(x, default=str) for x in base}
-        n = {json.dumps(x, default=str) for x in now}
-        return [f"{path}: -{sorted(b - n)} +{sorted(n - b)}"[:400]]
+        # a multiset diff: two agents where the bootstrap had one is a leak a set diff hides
+        b = Counter(json.dumps(x, default=str) for x in base)
+        n = Counter(json.dumps(x, default=str) for x in now)
+        gone, extra = sorted((b - n).elements()), sorted((n - b).elements())
+        if not gone and not extra:  # same items, another order
+            gone, extra = list(b.elements()), list(n.elements())
+        return [f"{path}: -{gone} +{extra}"[:400]]
     before, after = json.dumps(base, default=str)[:160], json.dumps(now, default=str)[:160]
     return [f"{path}: {before} -> {after}"]
 
@@ -488,9 +501,23 @@ def world_key(frames: Sequence[tuple[str, str]], **options) -> tuple:
     return ("world", tuple(map(tuple, frames)), tuple(sorted(options.items())))
 
 
+def custom_key(factory: Callable, frames: Sequence[tuple[str, str]], **options) -> tuple:
+    """A composition a suite builds itself: ``factory(root, frames, **options)`` is a context
+    manager yielding a target with ``snapshot`` / ``restore`` / ``stop_processes`` (bh-jvgj6:
+    the composed suite's cut-over product world). ``factory`` is part of the key, so it must be
+    one module-level callable, not a fresh closure per test."""
+    return ("custom", factory, tuple(map(tuple, frames)), tuple(sorted(options.items())))
+
+
 @contextlib.contextmanager
 def build(key: tuple, root: Path) -> Iterator[object]:
-    """The default builder for :func:`cluster_key` / :func:`world_key` keys."""
+    """The default builder for :func:`cluster_key` / :func:`world_key` / :func:`custom_key`
+    keys."""
+    if key[0] == "custom":
+        _, factory, frames, options = key
+        with factory(root, list(frames), **dict(options)) as target:
+            yield target
+        return
     kind, frames, options = key
     if kind == "cluster":
         with Cluster(root / "cluster", list(frames), **dict(options)) as cluster:
