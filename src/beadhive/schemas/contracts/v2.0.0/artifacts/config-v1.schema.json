@@ -1332,6 +1332,10 @@
           "title": "Readiness Window",
           "type": "string"
         },
+        "sync": {
+          "$ref": "#/$defs/HiveSyncConfig",
+          "description": "FLEET default of batch bead sync (trust-profiles ADR section 5): `auto_commit`, `auto_push`, `auto_pull`, `durable_verbs`; `managed_repos[].hive.sync` overrides it per hive. Every switch is off by default."
+        },
         "write_policy": {
           "anyOf": [
             {
@@ -1371,6 +1375,18 @@
           "description": "This hive's `hive.readiness_warning` (`on`/`off`): the console warning a non-primary write under the `open` policy prints. Events are counted either way.",
           "title": "Readiness Warning"
         },
+        "sync": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HiveSyncOverride"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "This hive's `hive.sync` keys (batch auto-commit, auto-push, auto-pull, durable verbs), each replacing the fleet default for it."
+        },
         "write_policy": {
           "anyOf": [
             {
@@ -1391,6 +1407,253 @@
         }
       },
       "title": "HivePolicyOverride",
+      "type": "object"
+    },
+    "HiveSyncAutoPull": {
+      "additionalProperties": false,
+      "description": "``hive.sync.auto_pull``: the host daemon pulls on a timer; on the hive's writer under\nthe ``open`` write policy it merges the published frame refs instead.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Pull on a timer. On the hive's writer under the `open` write policy this runs the frame-ref merge (never --strategy; a conflicting ref is recorded and held).",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "interval": {
+          "default": "15m",
+          "description": "Timer between pulls (`15m` or ISO-8601). PROVISIONAL default until the push-cadence spike bh-infra-b7at reports.",
+          "title": "Interval",
+          "type": "string"
+        }
+      },
+      "title": "HiveSyncAutoPull",
+      "type": "object"
+    },
+    "HiveSyncAutoPullOverride": {
+      "additionalProperties": false,
+      "description": "A hive's own ``auto_pull`` keys; an absent key keeps the fleet default.",
+      "properties": {
+        "enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "This hive's `auto_pull.enabled`.",
+          "title": "Enabled"
+        },
+        "interval": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "This hive's `auto_pull.interval`.",
+          "title": "Interval"
+        }
+      },
+      "title": "HiveSyncAutoPullOverride",
+      "type": "object"
+    },
+    "HiveSyncAutoPush": {
+      "additionalProperties": false,
+      "description": "``hive.sync.auto_push``: the host daemon pushes this host's hive data on a timer.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Push this host's hive data from the host daemon, on the timer and after `max_pending` local commits. The writer pushes main; a replica under the `open` write policy pushes only refs/dolt/frame/<id>; any other non-writer never pushes.",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "interval": {
+          "default": "5m",
+          "description": "Timer between pushes while anything is pending (`30s`/`5m`/`2h` or ISO-8601). PROVISIONAL default until the push-cadence spike bh-infra-b7at reports.",
+          "title": "Interval",
+          "type": "string"
+        },
+        "max_pending": {
+          "default": 50,
+          "description": "Push early once this many local commits are pending.",
+          "minimum": 1,
+          "title": "Max Pending",
+          "type": "integer"
+        },
+        "retry_backoff": {
+          "default": "30s..10m",
+          "description": "Exponential backoff `<first>..<cap>` while the remote is unavailable; a failed background push never blocks a verb.",
+          "title": "Retry Backoff",
+          "type": "string"
+        }
+      },
+      "title": "HiveSyncAutoPush",
+      "type": "object"
+    },
+    "HiveSyncAutoPushOverride": {
+      "additionalProperties": false,
+      "description": "A hive's own ``auto_push`` keys; an absent key keeps the fleet default.",
+      "properties": {
+        "enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "This hive's `auto_push.enabled`.",
+          "title": "Enabled"
+        },
+        "interval": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "This hive's `auto_push.interval`.",
+          "title": "Interval"
+        },
+        "max_pending": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "This hive's `auto_push.max_pending`.",
+          "title": "Max Pending"
+        },
+        "retry_backoff": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "This hive's `auto_push.retry_backoff`.",
+          "title": "Retry Backoff"
+        }
+      },
+      "title": "HiveSyncAutoPushOverride",
+      "type": "object"
+    },
+    "HiveSyncConfig": {
+      "additionalProperties": false,
+      "description": "``hive.sync`` (trust-profiles ADR section 5): batch auto-commit and the host daemon's\nperiodic auto-push and auto-pull. FLEET default; ``managed_repos[].hive.sync`` overrides it\nper hive. Every switch is off by default, so today's verb-driven sync is unchanged.",
+      "properties": {
+        "auto_commit": {
+          "default": "on",
+          "description": "bd's `dolt.auto-commit` for bh's bd calls: `on` commits every write, `batch` coalesces local writes until the next flush or durable verb.",
+          "enum": [
+            "on",
+            "batch"
+          ],
+          "title": "Auto Commit",
+          "type": "string"
+        },
+        "auto_pull": {
+          "$ref": "#/$defs/HiveSyncAutoPull",
+          "description": "The host daemon's periodic pull."
+        },
+        "auto_push": {
+          "$ref": "#/$defs/HiveSyncAutoPush",
+          "description": "The host daemon's periodic push."
+        },
+        "durable_verbs": {
+          "description": "Verbs that push synchronously (`submit`, `finish`, `close`). `submit` and `finish` are required (condition 18); other verbs may pass `--await-sync`.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Durable Verbs",
+          "type": "array"
+        }
+      },
+      "title": "HiveSyncConfig",
+      "type": "object"
+    },
+    "HiveSyncOverride": {
+      "additionalProperties": false,
+      "description": "``managed_repos[].hive.sync``: a hive's own ``hive.sync`` keys, each replacing the fleet\ndefault for that hive only.",
+      "properties": {
+        "auto_commit": {
+          "anyOf": [
+            {
+              "enum": [
+                "on",
+                "batch"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "This hive's `auto_commit` (`on` / `batch`).",
+          "title": "Auto Commit"
+        },
+        "auto_pull": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HiveSyncAutoPullOverride"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "This hive's `auto_pull` keys."
+        },
+        "auto_push": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HiveSyncAutoPushOverride"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "This hive's `auto_push` keys."
+        },
+        "durable_verbs": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "This hive's `durable_verbs` (must keep `submit` and `finish`).",
+          "title": "Durable Verbs"
+        }
+      },
+      "title": "HiveSyncOverride",
       "type": "object"
     },
     "HostConfig": {
@@ -2263,7 +2526,7 @@
             }
           ],
           "default": null,
-          "description": "Per-hive override of the off-primary write policy and its readiness warning (`write_policy`, `readiness_warning`)."
+          "description": "Per-hive override of the off-primary write policy, its readiness warning and batch bead sync (`write_policy`, `readiness_warning`, `sync`)."
         },
         "kind": {
           "anyOf": [
