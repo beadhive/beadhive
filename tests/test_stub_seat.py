@@ -8,10 +8,10 @@ integration half of the parsing-layer coverage, complementing test_seatrun.py's 
 from __future__ import annotations
 
 import json
+import os
 import signal
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -25,6 +25,26 @@ def _run(args: list[str], **kw) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, STUB, *args], capture_output=True, text=True, timeout=10, **kw
     )
+
+
+def _spawn_hanging(args: list[str], **kw) -> subprocess.Popen:
+    """Start the stub; block on an inherited pipe until its hang loop is armed."""
+    read_fd, write_fd = os.pipe()
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, STUB, *args],
+            env={**os.environ, "STUB_READY_FD": str(write_fd)},
+            pass_fds=(write_fd,),
+            **kw,
+        )
+    finally:
+        os.close(write_fd)
+    try:
+        # EOF (b"") means the child died before arming; the assertions below then fail loudly.
+        os.read(read_fd, 16)
+    finally:
+        os.close(read_fd)
+    return proc
 
 
 def _write_instructions(tmp_path: Path, text: str) -> str:
@@ -149,10 +169,8 @@ def test_bad_workspace_is_refused_with_a_typed_error_not_a_traceback(tmp_path):
 
 def test_sigterm_yields_a_priced_envelope_never_sigint_exit_zero(tmp_path):
     instr = _write_instructions(tmp_path, "STUB_HANG=true")
-    proc = subprocess.Popen(
+    proc = _spawn_hanging(
         [
-            sys.executable,
-            STUB,
             "--workspace",
             str(tmp_path),
             "--instructions",
@@ -164,7 +182,6 @@ def test_sigterm_yields_a_priced_envelope_never_sigint_exit_zero(tmp_path):
         stderr=subprocess.PIPE,
         text=True,
     )
-    time.sleep(0.2)  # let it enter the hang loop and install the SIGTERM handler
     proc.send_signal(signal.SIGTERM)
     stdout, stderr = proc.communicate(timeout=10)
     assert proc.returncode == 143
@@ -180,10 +197,8 @@ def test_sigterm_yields_a_priced_envelope_never_sigint_exit_zero(tmp_path):
 
 def test_cooperative_cancel_over_stdin_emits_handoff_and_ack(tmp_path):
     instr = _write_instructions(tmp_path, "STUB_HANG=true")
-    proc = subprocess.Popen(
+    proc = _spawn_hanging(
         [
-            sys.executable,
-            STUB,
             "--workspace",
             str(tmp_path),
             "--bead",
@@ -200,7 +215,6 @@ def test_cooperative_cancel_over_stdin_emits_handoff_and_ack(tmp_path):
         stderr=subprocess.PIPE,
         text=True,
     )
-    time.sleep(0.2)
     proc.stdin.write("please wrap up now\n")
     proc.stdin.flush()
     stdout, stderr = proc.communicate(timeout=10)
@@ -213,10 +227,8 @@ def test_cooperative_cancel_over_stdin_emits_handoff_and_ack(tmp_path):
 
 def test_hard_cancel_control_request_emits_envelope_and_exits_nonzero(tmp_path):
     instr = _write_instructions(tmp_path, "STUB_HANG=true")
-    proc = subprocess.Popen(
+    proc = _spawn_hanging(
         [
-            sys.executable,
-            STUB,
             "--workspace",
             str(tmp_path),
             "--instructions",
@@ -231,7 +243,6 @@ def test_hard_cancel_control_request_emits_envelope_and_exits_nonzero(tmp_path):
         stderr=subprocess.PIPE,
         text=True,
     )
-    time.sleep(0.2)
     interrupt = {"type": "control_request", "request": {"subtype": "interrupt"}}
     proc.stdin.write(json.dumps(interrupt) + "\n")
     proc.stdin.flush()
@@ -249,10 +260,8 @@ def test_sigint_is_never_sent_and_the_stub_installs_no_handler_for_it(tmp_path):
     # exactly the ambiguity the contract avoids by forbidding SIGINT outright. This test only
     # asserts the documented behavior: SIGTERM is handled and SIGINT is not special-cased.
     instr = _write_instructions(tmp_path, "STUB_HANG=true")
-    proc = subprocess.Popen(
+    proc = _spawn_hanging(
         [
-            sys.executable,
-            STUB,
             "--workspace",
             str(tmp_path),
             "--instructions",
@@ -264,7 +273,6 @@ def test_sigint_is_never_sent_and_the_stub_installs_no_handler_for_it(tmp_path):
         stderr=subprocess.PIPE,
         text=True,
     )
-    time.sleep(0.2)
     proc.send_signal(signal.SIGTERM)  # the only signal this contract ever sends
     stdout, _ = proc.communicate(timeout=10)
     assert proc.returncode == 143
