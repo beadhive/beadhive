@@ -44,6 +44,9 @@ python_requirement(name="pytest", requirements=["pytest>=8"])
 python_requirement(name="pytest-xdist", requirements=["pytest-xdist>=3"], modules=["xdist"])
 python_requirement(name="pytest-cov", requirements=["pytest-cov>=5"], modules=["pytest_cov"])
 python_requirement(name="ruff", requirements=["ruff>=0.6"])
+# Dev-only (MPL-2.0, operator-approved in bh-rlphq): the HQ storage port's contract state machine
+# (bh-9fg5k). beadhive_hq_storage.contract imports it lazily; it is never a runtime dependency.
+python_requirement(name="hypothesis", requirements=["hypothesis>=6.100"])
 python_requirement(name="jsonschema", requirements=["jsonschema>=4"])
 # Transitive dep of joserfc, already resolved in the lock; declared directly because
 # tests/harness/frame_bridge_live.py imports it at module scope (bh-1j3ei.2).

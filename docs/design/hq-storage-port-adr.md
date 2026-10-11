@@ -672,3 +672,50 @@ where they are. `bh-l2m59` measures the result against the 12.7-minute baseline.
 | Measured saving against the 12.7-minute baseline | `bh-l2m59` |
 | `refs/dolt/frame/<id>` (`DoltFramePrivateRefs`) | none in `bh-xxkf7`; the trust-profiles `open` policy work |
 | A git adapter for the generic HQ port | none in `bh-xxkf7`; filed when Git HQ needs it |
+
+### Settled by `bh-9fg5k`
+
+The port, fakes and contract suite are in `packages/beadhive-hq-storage`. Its README maps
+each operation to the contract scenarios that cover it.
+
+- **Protocol names** are as written in section 2. The implementation refines them in these
+  ways:
+  - `AppendLog.lookup_append(stream, key, operation)` is new. It resolves an `Unknown` append
+    by the append's natural key.
+  - `HiveFence.lookup_bump(frame, epoch, *, operation)` now takes the caller's
+    `OperationId`, so the outcome can carry it. An adapter only has to find the
+    `adopt-<epoch>` sentinel; it never has to persist the id.
+  - `lookup_publication` also accepts `ABSENT` as its expected head.
+  - `head()` returns a `Revision`. Every store starts with a provisioning commit, and a store
+    with no head raises `NotProvisioned`.
+  - `fetch()` only reports; it never moves the local head. `sync_to_remote()` reports the
+    ahead and behind counts it saw before it reset.
+  - Both `push()` methods mint their own operation id. On `Unknown`, `expected` is the remote
+    head before the push.
+  - `PruneReport` holds `stream`, `removed`, `retained` and `operation`.
+  - `PlacementView.token` is a `Revision`.
+- **`ChangeSet` carries table names**, not a typed publication. `tables` is the explicit
+  staging allowlist. Each document is named `<table>/<name>`, and its table must be in that
+  allowlist. Reusing a publication's `OperationId` is an `InvalidRequest`.
+- **The `RecordKind` set stays at three kinds.** Adding a kind needs a port change plus
+  contract cases.
+- **Append replay is strict.** An append is idempotent only when the key, the operation and
+  the body all match. Any other second append of the same key, even with an identical body,
+  is a `Conflict`.
+- **Fence bump.** A `commit_bump` at or below `max(history_max, writer)` raises
+  `IntegrityViolation`. The `ReclaimSet` revert applies only to beads still `in_progress`,
+  the same guard `reclaim_statements` uses.
+- **hypothesis:** `hypothesis>=6.100`, dev group only, locked at 6.169.0 in both `uv.lock`
+  and the Pants resolve.
+- **Profile budgets:**
+
+  | Profile | Examples | Steps | Notes |
+  |---|---|---|---|
+  | `gate` | 25 | 20 | Loaded when `BH_HYPOTHESIS_PROFILE` is unset, so an unconfigured run is deterministic |
+  | `nightly` | 500 | 40 | Shrinking on |
+  | `dev` | hypothesis defaults | hypothesis defaults | Opt-in |
+
+- **`build_state_machine(a, b)` takes two `ContractAdapter` values**, not bare factories.
+- **Fake-against-fake self-check.** The gate runs the machine fake against fake, with
+  `advance_clock` enabled. It also runs a mutant that reuses CAS revisions, and the machine
+  must reject that mutant.
