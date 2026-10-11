@@ -803,7 +803,9 @@ def _this_frame() -> str:
         return ""
 
 
-def ensure_replica_ident(hive_dir: Path, *, frame: str | None = None) -> str | None:
+def ensure_replica_ident(
+    hive_dir: Path, *, frame: str | None = None, role: str = "replica"
+) -> str | None:
     """Provision a pulled replica's node-local ``bh_local_ident`` on demand (bh-7yuny,
     bh-0tjiq). ``None`` when the checkout may go ahead; otherwise an actionable refusal.
 
@@ -819,10 +821,18 @@ def ensure_replica_ident(hive_dir: Path, *, frame: str | None = None) -> str | N
     makes a replica writable. A frame the data already names as ``bh_writer`` is refused rather
     than provisioned: a writer's identity comes from its cutover or adopt, never on demand.
 
+    `role` is ``branch`` for a non-primary replica writing under the ``open`` write policy
+    (bh-sxhnq): the guard then accepts its writes to its OWN ``main``, which bh publishes only to
+    ``refs/dolt/frame/<id>`` (:mod:`beadhive.write_policy_publish`). A present row of this
+    frame with the other role is switched — so a replica whose hive leaves ``open`` is refused
+    by name again on its next write — but a row naming the writer is never touched.
+
     Legacy hives (no ``bh_writer`` in the local data) and stores bh cannot open answer ``None``
-    with nothing written. Each checkout is settled once per process (:func:`reset_probe_cache`
-    forgets it)."""
-    key = str(Path(hive_dir).absolute())
+    with nothing written. Each checkout is settled once per process and role
+    (:func:`reset_probe_cache` forgets it)."""
+    if role not in fence_schema.ROLES:
+        raise ValueError(f"unknown guard role {role!r} (expected one of {fence_schema.ROLES})")
+    key = f"{Path(hive_dir).absolute()}\0{role}"
     if key in _ident_checked:
         return None
     node = resolve_cut_over("", Path(hive_dir))
@@ -830,16 +840,18 @@ def ensure_replica_ident(hive_dir: Path, *, frame: str | None = None) -> str | N
         _ident_checked.add(key)
         return None
     try:
-        present = node.ident() is not None
-        writer = None if present else node.writer()
+        present = node.ident()
+        writer = node.writer() if present is None or present[1] != role else None
     except FenceError:
         # The identity table is there but unreadable in this shape (an older or foreign table),
         # or the store cannot be read at all: not this probe's call to make. bd runs and its own
         # guard and errors decide; a missing table is the only thing provisioned here.
-        present = True
-    if present:
+        present, writer = ("", role), None
+    if present is not None and present[1] == role:
         _ident_checked.add(key)
         return None
+    if present is not None:
+        return _switch_role(node, key, present, role, writer)
     try:
         me = _this_frame() if frame is None else frame
         if not me:
@@ -854,7 +866,7 @@ def ensure_replica_ident(hive_dir: Path, *, frame: str | None = None) -> str | N
                 "comes from its cutover or adopt, never on demand: re-run `bh hive fence "
                 "cutover` or `bh host adopt` on this frame"
             )
-        node.provision_ident(me)
+        node.provision_ident(me, role)
     except FenceError as exc:
         return f"cannot provision this replica's {LOCAL_IDENT_TABLE}: {exc}"
     _ident_checked.add(key)
@@ -862,7 +874,35 @@ def ensure_replica_ident(hive_dir: Path, *, frame: str | None = None) -> str | N
         "replica_ident_provisioned",
         store=str(node.engine.store),
         frame=me,
+        role=role,
         writer=writer.frame if writer is not None else "",
+    )
+    return None
+
+
+def _switch_role(node: FenceNode, key: str, present, role: str, writer) -> str | None:
+    """Switch this frame's present ``bh_local_ident`` row to `role` (``replica`` <-> ``branch``).
+    Never for the writer's own row, and never for a row naming another frame."""
+    me = _this_frame()
+    frame = present[0]
+    if writer is not None and writer.frame == frame:
+        _ident_checked.add(key)
+        return None  # the writer writes main as itself; its role is not this policy's to change
+    if not me or frame != me:
+        if role == "replica":
+            _ident_checked.add(key)
+            return None  # as before: a present row is bd's guard's to judge, never widened here
+        return (
+            f"this replica's {LOCAL_IDENT_TABLE} names {frame!r}, not this frame "
+            f"({me or 'no frame identity'}): refusing to change its guard role"
+        )
+    try:
+        node.provision_ident(me, role)
+    except FenceError as exc:
+        return f"cannot set this replica's {LOCAL_IDENT_TABLE} role to {role}: {exc}"
+    _ident_checked.add(key)
+    log.get_logger(__name__).info(
+        "replica_ident_role_switched", store=str(node.engine.store), frame=me, role=role
     )
     return None
 

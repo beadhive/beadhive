@@ -894,7 +894,7 @@ def test_bd_engine_provisions_a_replica_identity_before_writes_only(tmp_path, mo
         lambda cmd, **k: calls.append((cmd, k)) or subprocess.CompletedProcess(cmd, 0, "", ""),
     )
     monkeypatch.setattr(
-        fence_data, "ensure_replica_ident", lambda d: ensured.append(d) or verdict["v"]
+        fence_data, "ensure_replica_ident", lambda d, **_k: ensured.append(d) or verdict["v"]
     )
     hive = _hive(tmp_path)
     eng = engine.BdEngine()

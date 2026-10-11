@@ -16,7 +16,9 @@ Primary side (run on the frame whose hive server takes forwarders):
 * ``quiesce`` — kill every forwarder session now.
 
 Forwarder side: ``point`` (resolve the placed primary, preflight, record), ``stop``,
-``status``.
+``status``. ``point`` refuses when the hive's write policy forbids forwarding
+(:func:`beadhive.write_policy.forward_point_refusal`, bh-sxhnq): ``open`` never forwards and
+the refusal names the trust profile; an explicit ``fenced`` writes on the writer frame only.
 
 The procedure is :mod:`beadhive.hive_forward`; this module resolves the hive, this host and
 the config, renders, and maps refusals to exit 1.
@@ -205,6 +207,9 @@ def run(
         typer.echo(f"✓ {prefix}: " + ("forwarding stopped" if stopped else "was not forwarded"))
         return
     # point
+    refusal = _policy_refusal(cfg, entry, hive_dir)
+    if refusal:
+        _fail(refusal)
     if not forward["enabled"]:
         _fail("this frame does not forward: set host.forward.enabled: true (opt-in per frame)")
     endpoints = {k: dict(v) for k, v in forward["endpoints"].items()}
@@ -222,6 +227,15 @@ def run(
         typer.echo(render_marker(prefix, marker, primary_when_none=True))
     if marker is not None and marker.state != "forwarding":
         raise typer.Exit(1)
+
+
+def _policy_refusal(cfg, entry: dict, hive_dir: Path) -> str:
+    """The write policy's refusal of ``point`` (bh-sxhnq): ``open`` never forwards, naming the
+    trust profile; an explicit ``fenced`` writes on the writer frame only."""
+    from . import write_policy
+
+    policy = write_policy.for_entry(entry, cfg=cfg, hive_dir=hive_dir)
+    return write_policy.forward_point_refusal(policy)
 
 
 def render_marker(prefix: str, marker, *, primary_when_none: bool = False) -> str:

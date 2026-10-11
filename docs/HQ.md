@@ -660,9 +660,9 @@ What ships with the key, and what is still to come:
   CAS only); `admin` for any host with HQ write access under `open`; and the fresh-heartbeat
   requirement on `author` under `attested`. `bh host eligible` reports the result per
   capability.
-- **Resolved but not yet enforced.** Self-placement (`bh-vl0r3`), the write policy
-  (`bh-sxhnq`) and the tenure cache (`bh-ofszz`) read their knob from the resolved profile when
-  they land.
+- **Live now, too:** the off-primary write policy (`bh-sxhnq`, [below](#write-policies)).
+- **Resolved but not yet enforced.** Self-placement (`bh-vl0r3`) and the tenure cache
+  (`bh-ofszz`) read their knob from the resolved profile when they land.
 
 #### Admission {#trust-profile-admission}
 
@@ -706,7 +706,57 @@ consults. Since `bh-sfp9o.4` each profile's rule is enforced:
 `hq.placement_mode` (`director` | `self`), `hive.write_policy` (`fenced` | `forward` | `open`)
 and `hq.tenure` (seconds). An override may only require **more** trust than the profile. One
 that would loosen a knob is refused, the knob keeps the profile's value, and the refusal names
-the profile.
+the profile. The write policy also has a fleet default and a per-hive override
+([below](#write-policies)).
+
+### Write policies {#write-policies}
+
+What a host that is not a hive's writer may do with bead writes (`bh-sxhnq`; ADR section 4).
+
+| Policy | Off the primary | Mechanism |
+|---|---|---|
+| `fenced` | nothing | only the writer frame (or the lease holder on a legacy hive) writes |
+| `forward` | every write | bh's bd points at the primary's hive server through a per-frame, address-pinned TLS login ([forward write path](FORWARD-WRITE-PATH.md)); the primary's guard decides |
+| `open` | comments, labels, notes, status, dependencies, claims, close | never forwards: the write lands on the replica's own data and is published only to `refs/dolt/frame/<id>`; the writer merges it |
+
+**Resolution.** The trust profile supplies the default: `open` for `open`, `forward` for
+`trusted`, `verified` and `attested`. The fleet layer comes next: a hive's own
+`managed_repos[].hive.write_policy`, else the fleet default `hive.write_policy`. It is honoured
+as-is when the fleet runs `trusted` authority (unsigned content is honoured there) and may
+otherwise only require more trust than the profile. Last, a `hive.write_policy` in the host's
+own `host.yaml` may only require more trust again. A `forward` result for a hive with no
+forwarder configured on this host (no forward marker, no `host.forward` endpoint) is `fenced`.
+
+**`open` never forwards.** A hive's forward marker and `host.forward` are ignored for it, and
+`bh hive forward point` refuses, naming the profile. On a host that is not the writer:
+
+- `author` and `claim` verbs pass the guard (frame eligibility still applies); `publish`
+  (`submit`, `merge`, a direct `dolt push`) and `execute` stay with the writer.
+- bh runs bd against the replica's own data. On a cut-over hive the replica's node-local
+  `bh_local_ident` is switched to `role = 'branch'`, which the in-data guard accepts on its own
+  `main`, and back to `replica` when the hive leaves `open`.
+- Only the operations above run. Child create (`<epic>.N`) is refused until
+  [gastownhall/beads#4796](https://github.com/gastownhall/beads/issues/4796) gives
+  frame-scoped child ids, because two replicas would allocate the same id and the merge would
+  silently drop one bead; no profile or override lifts this. Top-level create is refused until
+  the `bh-xwy5x` decision confirms that hash ids merge cleanly.
+- A managed state push (`bh hive sync remotes --push`, the work verbs' pushes) commits and publishes
+  the replica's `main` only to `refs/dolt/frame/<id>`, through a Dolt remote `frame-<id>` on
+  the same Git remote with its own data ref. The hive's `main` is never pushed. Merging those
+  refs into `main` is `bh-sfp9o.5`.
+
+**Readiness warning.** Every non-primary write under `open` prints exactly one warning per
+command, naming the hive and its writer frame and saying that under the `trusted` profile and
+above the write would be forwarded to that writer. Each is also counted as an event
+(`$BH_HOME/state/write-policy-readiness.jsonl`). `hive.readiness_warning: off` (fleet default or
+per hive) silences the console line; the event is counted either way, and the warning never
+refuses.
+
+**Doctor.** `bh doctor` has a `# Write policy` section: the effective policy per hive and where
+it came from, the readiness warnings per hive over `hive.readiness_window` (default 7 days),
+refused overrides, and, under every profile that forwards, any `host.forward.endpoints` login
+that is not a per-frame login pinned by TLS to the primary's address. `--json` carries it as
+`write_policy`.
 
 `bh hq why <hive>` reports a refused override in its `profile` layer (never as the refusing
 layer: the write runs under the profile), naming the knob, the profile and the signed command
@@ -740,6 +790,7 @@ order, and prints the first that refuses with the one command to run next.
 | Layer | Refuses with | Next command, for example |
 |---|---|---|
 | `config` | config unavailable: the snapshot did not load, or the hive is not registered | `bh doctor`, `bh hive list` |
+| `write_policy` | an explicit `fenced` override on a host that is not the writer; under `open` an `author` or `claim` write from a non-writer is **decided** here (it lands on the replica) | `bh config unset hive.write_policy` |
 | `forward` | forwarding to the primary is refused (forwarded checkouts only) | `bh hive forward point <hive>` |
 | `capability` | capability `<name>` refused by predicate `<p>` (bh-b3ebg's per-capability decision) | per predicate, e.g. `bh host resume plan <frame>` for `not_cordoned` |
 | `placement` | not placed: names the holder and the cause (held, expired, released, none); under a self-placing trust profile, whether this frame may place itself | `bh host lease adopt <hive>` (self-placement), `bh host adopt <hive>`, or `bh hq placement show <hive>` |

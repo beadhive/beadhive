@@ -1305,7 +1305,7 @@
     },
     "HiveConfig": {
       "additionalProperties": false,
-      "description": "Host-scoped onboarding policy and write-policy override (``hive``).\n\n``adopt_existing`` makes ``bh hive add`` and ``bh hive onboard`` read an existing hive's own\nbead-store identity (prefix + project id: the local checkout first, then the remote's\n``refs/dolt/data``) instead of deriving one from the repo name, so a fresh host lands the\nhive in its own shared-server database rather than bd's generic ``beads`` (bh-ajgot,\nbh-6csoa). Opt-in; off keeps the derived identity exactly as before.",
+      "description": "Onboarding policy (host) and the off-primary write policy (fleet) (``hive``).\n\n``adopt_existing`` makes ``bh hive add`` and ``bh hive onboard`` read an existing hive's own\nbead-store identity (prefix + project id: the local checkout first, then the remote's\n``refs/dolt/data``) instead of deriving one from the repo name, so a fresh host lands the\nhive in its own shared-server database rather than bd's generic ``beads`` (bh-ajgot,\nbh-6csoa). Opt-in; off keeps the derived identity exactly as before.",
       "properties": {
         "adopt_existing": {
           "default": false,
@@ -1319,6 +1319,18 @@
           "minimum": 1,
           "title": "Adopt Probe Timeout",
           "type": "integer"
+        },
+        "readiness_warning": {
+          "default": true,
+          "description": "FLEET default (`on`/`off`, per-hive override `managed_repos[].hive.readiness_warning`): print one console warning per command for a non-primary write under the `open` policy. Never a refusal; events are counted either way.",
+          "title": "Readiness Warning",
+          "type": "boolean"
+        },
+        "readiness_window": {
+          "default": "P7D",
+          "description": "FLEET: ISO-8601 duration over which `bh doctor` counts readiness warnings per hive (default P7D, 7 days).",
+          "title": "Readiness Window",
+          "type": "string"
         },
         "write_policy": {
           "anyOf": [
@@ -1335,11 +1347,50 @@
             }
           ],
           "default": null,
-          "description": "HOST override of the trust profile's off-primary write policy (`fenced`, `forward`, `open`). Unsigned, so it may only require more trust than the profile; a loosening value is refused and the profile's value stays.",
+          "description": "FLEET default of the off-primary write policy (`fenced`, `forward`, `open`; trust-profiles ADR section 4); `managed_repos[].hive.write_policy` overrides it per hive. Absent: the trust profile's value (`open` for open, `forward` otherwise; `fenced` for a hive whose forwarder is not configured). A host may set it in host.yaml too, and that host override may only require more trust.",
           "title": "Write Policy"
         }
       },
       "title": "HiveConfig",
+      "type": "object"
+    },
+    "HivePolicyOverride": {
+      "additionalProperties": false,
+      "description": "A hive's own override of the fleet's off-primary write policy (``managed_repos[].hive``,\ntrust-profiles ADR sections 4 and 6, bh-sxhnq). Fleet-owned, like the entry it sits in.",
+      "properties": {
+        "readiness_warning": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "This hive's `hive.readiness_warning` (`on`/`off`): the console warning a non-primary write under the `open` policy prints. Events are counted either way.",
+          "title": "Readiness Warning"
+        },
+        "write_policy": {
+          "anyOf": [
+            {
+              "enum": [
+                "fenced",
+                "forward",
+                "open"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "This hive's off-primary write policy (`fenced`, `forward`, `open`), replacing the fleet default `hive.write_policy` for it. It moves the trust profile's value only towards more trust unless the fleet runs trusted authority.",
+          "title": "Write Policy"
+        }
+      },
+      "title": "HivePolicyOverride",
       "type": "object"
     },
     "HostConfig": {
@@ -2201,6 +2252,18 @@
           ],
           "default": null,
           "description": "Per-hive `hitch` section override."
+        },
+        "hive": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HivePolicyOverride"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Per-hive override of the off-primary write policy and its readiness warning (`write_policy`, `readiness_warning`)."
         },
         "kind": {
           "anyOf": [

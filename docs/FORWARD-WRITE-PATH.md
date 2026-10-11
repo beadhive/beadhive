@@ -12,14 +12,19 @@ closed. Option A **narrows and detects**; it does not prevent (see [Residual tru
 
 Both sides are **opt-in per frame**, and every default below is configurable.
 
-**Proposed (not shipped).** The
+**Write policies (`bh-sxhnq`).** The
 [trust profiles and capabilities ADR](design/hq-trust-profiles-and-capabilities-adr.md)
 (2026-10-09, amended 2026-10-10) names this path the `forward` write policy and makes it the
-default for the `trusted` and `verified` profiles, both using the per-frame pinned accounts
-described here. It adds an `open` policy that never forwards: replicas write their own data,
-publish it to `refs/dolt/frame/<id>` for the writer to merge, and may not create child beads. It
-also adds a daemon-run batch auto-push and auto-pull (`hive.sync.*`). The forwarding fixes
-`bh-hy2hp` and `bh-0tjiq` are its prerequisites.
+default for the `trusted`, `verified` and `attested` profiles, all using the per-frame pinned
+accounts described here; under them `bh doctor` flags a `host.forward.endpoints` login that is
+a shared, root or operator login or that does not require TLS pinned to the primary's address.
+A hive whose policy is not `forward` never forwards: under `open` (the `open` profile's
+default) the forward marker and `host.forward` are ignored, `bh hive forward point` refuses
+naming the profile, and replicas write their own data and publish it only to
+`refs/dolt/frame/<id>`; under an explicit `fenced` override only the writer frame writes. See
+[Write policies](HQ.md#write-policies). A daemon-run batch auto-push and auto-pull
+(`hive.sync.*`) is still proposed. The forwarding fixes `bh-hy2hp` and `bh-0tjiq` are the
+`forward` policy's prerequisites.
 
 ## The primary's side
 

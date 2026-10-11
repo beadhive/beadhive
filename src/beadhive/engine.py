@@ -163,10 +163,18 @@ def _forwarded(cwd, env):
     the current primary (re-pointed first when the cached placement moved); every other
     checkout keeps ``env`` unchanged. A refused forward is returned as ``refusal`` and the
     caller fails closed without running bd. Resolved dynamically like ``host_fence`` below, to
-    keep the forward module out of this legacy cycle."""
+    keep the forward module out of this legacy cycle.
+
+    A hive whose write policy is not ``forward`` never forwards (bh-sxhnq): under ``open`` the
+    marker and ``host.forward`` are ignored and bd writes this replica's own data; under
+    ``fenced`` only the writer frame writes."""
     if cwd is None:
         return env, None, False
     hive_forward = importlib.import_module("beadhive.hive_forward")
+    if hive_forward.read_marker(cwd) is None:
+        return env, None, False
+    if importlib.import_module("beadhive.write_policy").ignores_forwarding(cwd):
+        return env, None, False
     try:
         if hive_forward.ensure_current(cwd) is None:
             return env, None, False
@@ -218,8 +226,22 @@ def _replica_ident_refusal(cwd, args) -> str | None:
     )
     if not writes:
         return None
+    role = "replica"
+    write_policy = importlib.import_module("beadhive.write_policy")
+    try:
+        open_write = write_policy.open_write(Path(cwd))
+    except Exception as exc:  # noqa: BLE001 - an unreadable fence fails closed, named
+        return f"cannot decide the hive's write policy here: {exc}"
+    if open_write is not None:
+        # Under `open` a non-primary write lands on this replica's own data (bh-sxhnq): only
+        # the allowed operations, a `branch` guard role, and one readiness warning per command.
+        refusal = write_policy.open_refusal(args, open_write.where)
+        if refusal:
+            return refusal
+        role = "branch" if open_write.where.cut_over else role
+        write_policy.readiness(open_write, verb=f"bd {guard.bd_verb(args)}")
     fence_data = importlib.import_module("beadhive.fence_data")
-    return fence_data.ensure_replica_ident(Path(cwd))
+    return fence_data.ensure_replica_ident(Path(cwd), role=role)
 
 
 def _forward_noop(cwd, args):
@@ -546,6 +568,9 @@ class BdEngine:
         skipped = _forward_noop(cwd, ["dolt", "push"])
         if skipped is not None:
             return skipped
+        diverted = self._open_policy_push(cwd, actor, message)
+        if diverted is not None:
+            return diverted
         committed = self._state_call(["dolt", "commit", "-m", message], cwd, actor=actor)
         args = ["dolt", "push"]
         if remote:
@@ -655,6 +680,51 @@ class BdEngine:
                 stderr=f"{prior}\n{detail}".lstrip(),
             )
         return pushed
+
+    def _open_policy_push(self, cwd, actor, message):
+        """Under the ``open`` write policy a non-primary replica never pushes ``main``: commit,
+        then publish its local ``main`` only to ``refs/dolt/frame/<id>`` (bh-sxhnq), which the
+        writer merges. ``None`` for every other policy, and on the writer itself."""
+        if cwd is None:
+            return None
+        write_policy = importlib.import_module("beadhive.write_policy")
+        try:
+            open_write = write_policy.open_write(Path(cwd))
+        except Exception as exc:  # noqa: BLE001 - an unreadable fence never pushes main
+            return subprocess.CompletedProcess(
+                args=["bd", "dolt", "push"],
+                returncode=1,
+                stdout="",
+                stderr=f"cannot decide the hive's write policy here: {exc}",
+            )
+        if open_write is None:
+            return None
+        publish = importlib.import_module("beadhive.write_policy_publish")
+        frame = open_write.where.this_frame
+        committed = self._state_call(["dolt", "commit", "-m", message], cwd, actor=actor)
+        failed = importlib.import_module("beadhive.fence_orphan")._failed_commit(committed)
+        if failed:
+            return subprocess.CompletedProcess(
+                args=["bd", "dolt", "commit"],
+                returncode=1,
+                stdout="",
+                stderr=f"commit before publishing the frame ref failed: {failed}",
+            )
+        try:
+            ref = publish.publish(Path(cwd), frame)
+        except publish.PublishError as exc:
+            return subprocess.CompletedProcess(
+                args=["bd", "dolt", "push"], returncode=1, stdout="", stderr=f"{exc}\n"
+            )
+        return subprocess.CompletedProcess(
+            args=["bd", "dolt", "push"],
+            returncode=0,
+            stdout=(
+                f"{open_write.where.prefix}: write policy open — published this replica's main "
+                f"to {ref} (never main); the writer {open_write.where.writer or '?'} merges it\n"
+            ),
+            stderr="",
+        )
 
     def pull_state(self, cwd, *, remote=""):
         skipped = _forward_noop(cwd, ["dolt", "pull"])

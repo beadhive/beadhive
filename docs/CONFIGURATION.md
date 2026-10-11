@@ -88,7 +88,9 @@ boundaries.
 | `hq.tenure` | HOST override of the profile's tenure knob, in seconds. Under `open` it is the tenure ceiling (default 24 h) and may only shorten it; under the other profiles it adds a bound below the hive's `failover_after` or heartbeat TTL. Unset by default. |
 | `hq.tenure_refresh` | HOST: seconds between the host daemon's refreshes of the elected-tenure cache (the verified HQ config snapshot and the per-capability `author` / `claim` decisions, `$BH_HOME/state/hq-tenure-cache.json`). Unset: a quarter of the shorter of `failover_after` and the tenure; never longer than the tenure. Outside `attested` it is the revocation latency: a cordon published at HQ is learned at the next refresh. The daemon also refreshes after each successful heartbeat. |
 | `hq.tenure_cache` | HOST: `true` (default; SQL HQ only) makes ordinary commands read the elected-tenure cache instead of HQ, so a command makes no HQ connection while the record is current, keeps working while HQ is unreachable until the tenure lapses (one warning per hour), and after the lapse continues only `author` / `claim` under `open` and `trusted`. A command with no current record (fresh host, daemon down) reads HQ once and seeds it. The placement CAS, state pushes, authority writes and fleet-config publications always read HQ. `false` (or `BH_HQ_TENURE_CACHE=off`) restores one HQ read per command. |
-| `hive.write_policy` | HOST override of the profile's off-primary write policy: `fenced`, `forward` or `open`. May only require more trust than the profile (`open` < `forward` < `fenced`); a loosening value is refused. Unset by default. |
+| `hive.write_policy` | FLEET default of the off-primary write policy: `fenced`, `forward` or `open` ([Write policies](HQ.md#write-policies)); `managed_repos[].hive.write_policy` overrides it per hive. Unset, the trust profile supplies it (`open` for `open`, `forward` for `trusted`, `verified` and `attested`), and `forward` reads as `fenced` for a hive with no forwarder configured on the host. The fleet layer is honoured as-is when the fleet runs `trusted` authority; under `signed` authority it may only require more trust than the profile (`open` < `forward` < `fenced`). A host may also set it in `host.yaml`; that host override may only require more trust again, and a loosening value is refused. |
+| `hive.readiness_warning` | FLEET default, per-hive override `managed_repos[].hive.readiness_warning`: `on` (default) or `off`. The one console warning per command that a non-primary write under `open` prints. Never a refusal; the event is counted either way. |
+| `hive.readiness_window` | FLEET: ISO-8601 duration over which `bh doctor` counts readiness warnings per hive (default `P7D`). Events are kept in `$BH_HOME/state/write-policy-readiness.jsonl`. |
 | `hq.sql.enabled` | Selects SQL only when true and the reader/trust binding validates. |
 | `hq.sql.reader` | Required SQL configuration reader connection. |
 | `hq.sql.publisher` | Optional separately credentialed fleet-config publisher connection. |
@@ -177,8 +179,9 @@ The [trust profiles and capabilities ADR](design/hq-trust-profiles-and-capabilit
 table above is not read as the whole intended surface: the `hive.sync.*` batch auto-commit,
 auto-push and auto-pull settings. Setting any of them is a schema error.
 `hq.trust_profile`, `hq.placement_mode`, `hive.write_policy` and `hq.tenure` have shipped
-(`bh-bc2rj`, table above), as have `hq.tenure_refresh` and `hq.tenure_cache` (`bh-ofszz`) and
-`hive.adopt_existing` (`bh-m2irb`). `host.roles`, a
+(`bh-bc2rj`, table above), as have `hq.tenure_refresh` and `hq.tenure_cache` (`bh-ofszz`),
+`hive.adopt_existing` (`bh-m2irb`) and the write policy's fleet default, per-hive override and
+readiness keys (`bh-sxhnq`). `host.roles`, a
 set composed from `viewer`, `planner`, `operator`, `transient`, `executor`, `director` with
 `host.role` as a one-element alias, has shipped as a field of the host manifest
 (`hosts/<host_id>.yaml`, `bh host init --role operator,executor`), not of `config.yaml`; see

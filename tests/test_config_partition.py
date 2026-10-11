@@ -136,10 +136,14 @@ def test_is_host_overridable_true_only_for_an_allowlisted_prefix():
     assert _prefix_match_len("work.review_gate", allowlist) < 0
 
 
-def test_only_worktrees_ephemeral_is_host_overridable():
-    """Pins the narrow host escape hatch without opening unrelated fleet policy."""
-    assert FLEET_HOST_OVERRIDE_ALLOWLIST == frozenset({"worktrees.ephemeral"})
+def test_only_the_narrow_escape_hatches_are_host_overridable():
+    """Pins the narrow host escape hatches without opening unrelated fleet policy:
+    ``worktrees.ephemeral`` and the bh-bc2rj host override of the fleet write policy
+    (bh-sxhnq), which the trust-profile resolution refuses when it would loosen."""
+    assert FLEET_HOST_OVERRIDE_ALLOWLIST == frozenset({"worktrees.ephemeral", "hive.write_policy"})
     assert is_host_overridable("worktrees.ephemeral")
+    assert is_host_overridable("hive.write_policy")
+    assert not is_host_overridable("hive.readiness_warning")
     assert not is_host_overridable("work.validate_cmd")
     assert not is_host_overridable("delimiter")
 
