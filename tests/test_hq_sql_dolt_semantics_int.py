@@ -16,7 +16,8 @@ Layout, so sibling beads can extend it (add a new section; reuse the helpers, do
    * grants (``frame_grant``), triggers (``operator_trigger``, ``trigger_body``), accounts
      (``host_pinned``), globals (``set_globals``), history (``session_rows``) -- bh-3nfbn;
    * forward-RPC grant contracts -- bh-uhx2r (to be added);
-   * write-guard engine contracts -- bh-sieai (to be added).
+   * write-guard engine contracts (merge/pull/cherry-pick/revert never fire the guard's
+     triggers; Dolt CLI, no server) -- bh-sieai.
 
 Every server is owned by the test and runs with its own ``DOLT_ROOT_PATH`` and ``HOME``. Some
 probes deliberately run ``SET GLOBAL`` / ``SET PERSIST`` as an unprivileged frame principal; the
@@ -39,6 +40,7 @@ from pathlib import Path
 import pymysql
 import pytest
 
+from harness import write_guard as wg
 from harness.world import free_port
 
 pytestmark = [pytest.mark.integration, pytest.mark.dolt_server]
@@ -469,3 +471,135 @@ def test_session_rows_leave_no_history_and_renewal_latency_is_small(tmp_path):
             )
         }
         assert changed and not any(name.startswith("frame_") for name in changed), changed
+
+
+# --- contracts: write-guard engine semantics (bh-sieai; origin: spike bh-sieai) ---------------
+#
+# A storage contract about Dolt itself: a BEFORE trigger is a *statement* guard.  Version-control
+# operations that move rows between commits (pull-merge, branch merge, cherry-pick, revert) never
+# fire it.  That is what lets an epoch bump arrive on a stale replica, and it is also why the
+# guard stops raw bd but not an actor who can write a non-``main`` branch.  These tests drive the
+# Dolt CLI directly (no server, no bd) with the product-shaped guard from ``harness.write_guard``.
+
+ISSUE_INSERT = (
+    "insert into issues (id, title, description, design, acceptance_criteria, notes) "
+    "values ('{id}', '{id}', '', '', '', '')"
+)
+
+
+class _DoltCli:
+    """A Dolt CLI repo with its own HOME / DOLT_ROOT_PATH under *root*."""
+
+    def __init__(self, root: Path, name: str):
+        self.dir = root / name
+        self.home = root / f"{name}-home"
+        (self.home / ".dolt").mkdir(parents=True)
+        (self.home / ".dolt" / "config_global.json").write_text(
+            json.dumps(
+                {"user.name": name, "user.email": f"{name}@x.invalid", "metrics.disabled": "true"}
+            )
+        )
+        self.env = {
+            "PATH": os.environ["PATH"],
+            "HOME": str(self.home),
+            "DOLT_ROOT_PATH": str(self.home),
+        }
+
+    def run(self, *args: str, stdin: str | None = None) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["dolt", *args],
+            cwd=self.dir,
+            env=self.env,
+            input=stdin,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+    def ok(self, *args: str, stdin: str | None = None) -> str:
+        res = self.run(*args, stdin=stdin)
+        assert res.returncode == 0, f"dolt {' '.join(args)}: {res.stdout}{res.stderr}"
+        return res.stdout
+
+    def rows(self, query: str) -> list[dict]:
+        out = self.ok("sql", "-r", "json", "-q", query).strip()
+        return json.loads(out).get("rows", []) if out else []
+
+    def count(self, query: str) -> int:
+        return int(next(iter(self.rows(query)[0].values())))
+
+
+def _cli_refusal(res: subprocess.CompletedProcess) -> str:
+    assert res.returncode != 0, f"write was accepted: {res.stdout}"
+    return res.stdout + res.stderr
+
+
+@pytest.mark.fence_canary  # ADR condition 9: re-run on every Dolt/bd pin bump (bh-p07dv)
+def test_merge_cherry_pick_and_revert_do_not_fire_the_guard_on_the_dolt_cli(tmp_path):
+    """A stale replica (identity B, writer A) still takes a true pull-merge, a local branch merge,
+    a cherry-pick and a revert onto ``main``: none of them fires a trigger. The last three are
+    also a guard bypass for anyone who can write a non-``main`` branch."""
+    if shutil.which("dolt") is None:
+        pytest.skip("dolt binary unavailable")
+    remote = tmp_path / "remote"
+    remote.mkdir()
+    a, b = _DoltCli(tmp_path, "a"), _DoltCli(tmp_path, "b")
+    a.dir.mkdir()
+    a.ok("init", "-b", "main")
+    assert a.rows("select dolt_version() v")[0]["v"] == "2.3.5"
+    a.ok(
+        "sql",
+        "-q",
+        "create table issues (id varchar(32) primary key, title text, description text, "
+        "design text, acceptance_criteria text, notes text); "
+        "create table scratch (id int primary key)",
+    )
+    a.ok("sql", stdin=wg.guard_ddl(("issues",)) + "insert into bh_writer values (1, 'A', 1);\n")
+    a.ok("sql", "-q", "call dolt_commit('-Am', 'guard')")
+    a.ok("remote", "add", "origin", f"file://{remote}")
+    a.ok("push", "origin", "main")
+    subprocess.run(
+        ["dolt", "clone", f"file://{remote}", str(b.dir)],
+        env=b.env,
+        check=True,
+        capture_output=True,
+    )
+    for repo, ident in ((a, "A"), (b, "B")):
+        repo.ok(
+            "sql",
+            "-q",
+            "create table bh_local_ident "
+            "(id int primary key, frame varchar(64), role varchar(16)); "
+            f"insert into bh_local_ident values (1, '{ident}', 'replica')",
+        )
+    # Writer A publishes two guarded writes; stale B diverges on an unguarded table.
+    a.ok("sql", "-q", ISSUE_INSERT.format(id="w1"))
+    a.ok("sql", "-q", "call dolt_commit('-Am', 'w1')")
+    a.ok("sql", "-q", ISSUE_INSERT.format(id="w2"))
+    a.ok("sql", "-q", "call dolt_commit('-Am', 'w2')")
+    a.ok("push", "origin", "main")
+    b.ok("sql", "-q", "insert into scratch values (1); call dolt_commit('-Am', 'b local')")
+    assert wg.GUARD_REFUSAL in _cli_refusal(b.run("sql", "-q", ISSUE_INSERT.format(id="b0")))
+
+    b.ok("pull", "origin", "main")
+    assert b.count("select count(*) from dolt_log where message like 'Merge%'") >= 1
+    assert {r["id"] for r in b.rows("select id from issues")} == {"w1", "w2"}
+    marks_after_pull = b.count("select count(*) from bh_write_mark")
+    assert marks_after_pull == 2  # exactly A's two, none minted by the merge
+
+    b.ok("checkout", "-b", "frame/b")
+    b.ok("sql", "-q", ISSUE_INSERT.format(id="fb1") + "; call dolt_commit('-Am', 'fb1')")
+    b.ok("sql", "-q", ISSUE_INSERT.format(id="fb2") + "; call dolt_commit('-Am', 'fb2')")
+    fb1 = b.rows("select commit_hash h from dolt_log where message = 'fb1'")[0]["h"]
+    b.ok("checkout", "main")
+    b.ok("cherry-pick", fb1)
+    b.ok("merge", "frame/b", "-m", "merge frame/b")
+    w2 = b.rows("select commit_hash h from dolt_log where message = 'w2'")[0]["h"]
+    b.ok("revert", w2)
+    assert {r["id"] for r in b.rows("select id from issues")} == {"w1", "fb1", "fb2"}
+    # No op minted a mark; the revert also took back the mark w2's commit carried.
+    assert b.count("select count(*) from bh_write_mark") == marks_after_pull - 1
+    # ... yet a direct write is still refused afterwards.
+    assert wg.GUARD_REFUSAL in _cli_refusal(
+        b.run("sql", "-q", "delete from issues where id = 'fb1'")
+    )
