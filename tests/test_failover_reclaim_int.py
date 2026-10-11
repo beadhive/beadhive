@@ -21,7 +21,6 @@ import pytest
 from beadhive import failover_reclaim as fr
 from beadhive import work_backup
 from beadhive import writer_adopt as wa
-from harness import composed_fence as cf
 from harness.writer_fencing import BD_EMBEDDED, DOLT_CLI
 from test_writer_adopt_int import FrameData, _adopt_commits, _ports, _seed_ref
 
@@ -135,96 +134,96 @@ def _remote_comments(world, bead):
     )
 
 
-def test_failover_adopt_reclaims_only_the_dead_frames_claims_on_real_dolt(tmp_path):
+def test_failover_adopt_reclaims_only_the_dead_frames_claims_on_real_dolt(tmp_path, rewound_world):
     bare, work, hive_clone = _backup_remote(tmp_path)
-    with cf.composed_world(tmp_path, FRAMES, hq_mode="git", writer="a") as world:
-        placement, ref = _ports(world, tmp_path)
-        e0 = world.hq.placement().epoch
-        _seed_ref(ref, "a", e0)
-        a = world["a"]
-        for key, value in (("bh.pairing.enabled", "true"), ("bh.reclaim.failover.mode", "apply")):
-            a.bd("config", "set", key, value).check()
-        rewound = _claim(a, "unbacked", "claim-frame:a")
-        resumable = _claim(a, "backed", "claim-frame:a")
-        submitted = _claim(a, "submitted", "claim-frame:a", "review:pending")
-        live = _claim(a, "live elsewhere", "claim-frame:c")  # a surviving executor's claim
-        legacy = _claim(a, "unattributed")
-        a.push().check()
-        work_sha = _push_backup(work, resumable, "a", with_work=True)
-        empty_sha = _push_backup(work, rewound, "a", with_work=False)  # tip already in base
-        _push_backup(work, submitted, "a", with_work=True)
-        before_live = _remote_issue(world, live)
+    world = rewound_world(FRAMES, hq_mode="git", writer="a")
+    placement, ref = _ports(world, tmp_path)
+    e0 = world.hq.placement().epoch
+    _seed_ref(ref, "a", e0)
+    a = world["a"]
+    for key, value in (("bh.pairing.enabled", "true"), ("bh.reclaim.failover.mode", "apply")):
+        a.bd("config", "set", key, value).check()
+    rewound = _claim(a, "unbacked", "claim-frame:a")
+    resumable = _claim(a, "backed", "claim-frame:a")
+    submitted = _claim(a, "submitted", "claim-frame:a", "review:pending")
+    live = _claim(a, "live elsewhere", "claim-frame:c")  # a surviving executor's claim
+    legacy = _claim(a, "unattributed")
+    a.push().check()
+    work_sha = _push_backup(work, resumable, "a", with_work=True)
+    empty_sha = _push_backup(work, rewound, "a", with_work=False)  # tip already in base
+    _push_backup(work, submitted, "a", with_work=True)
+    before_live = _remote_issue(world, live)
 
-        # ---- frame a dies; b fails over (placement names a, not released) ----------------
-        a.kill()
-        data = ReclaimFrameData(world["b"])
-        hook = fr.FailoverReclaim(data, fr.GitBackupProbe(hive_clone, default_remote=str(bare)))
-        out = wa.coexistence_adopt(data, placement, ref, prefix="fx", frame="b", reclaim=hook)
+    # ---- frame a dies; b fails over (placement names a, not released) ----------------
+    a.kill()
+    data = ReclaimFrameData(world["b"])
+    hook = fr.FailoverReclaim(data, fr.GitBackupProbe(hive_clone, default_remote=str(bare)))
+    out = wa.coexistence_adopt(data, placement, ref, prefix="fx", frame="b", reclaim=hook)
 
-        assert out.step2.landed and out.epoch == e0 + 1
-        plan = out.step2.reclaim
-        outcomes = {r.bead: r.outcome for r in plan.rows}
-        assert outcomes == {
-            rewound: fr.Outcome.REWOUND,
-            resumable: fr.Outcome.RESUMABLE,
-            submitted: fr.Outcome.SUBMITTED,
-            live: fr.Outcome.OTHER_FRAME,
-            legacy: fr.Outcome.UNATTRIBUTED,
-        }
-        # ONE adopt commit carries the bump and the reclaim.
-        assert _adopt_commits(world) == [f"{wa.ADOPT_COMMIT_PREFIX}b@{e0 + 1}"]
+    assert out.step2.landed and out.epoch == e0 + 1
+    plan = out.step2.reclaim
+    outcomes = {r.bead: r.outcome for r in plan.rows}
+    assert outcomes == {
+        rewound: fr.Outcome.REWOUND,
+        resumable: fr.Outcome.RESUMABLE,
+        submitted: fr.Outcome.SUBMITTED,
+        live: fr.Outcome.OTHER_FRAME,
+        legacy: fr.Outcome.UNATTRIBUTED,
+    }
+    # ONE adopt commit carries the bump and the reclaim.
+    assert _adopt_commits(world) == [f"{wa.ADOPT_COMMIT_PREFIX}b@{e0 + 1}"]
 
-        # Unbacked: lifecycle fields identical to never-claimed; empty backup ref deleted.
-        assert _remote_issue(world, rewound) == {
-            "status": "open",
-            "assignee": "",
-            "started_at": None,
-        }
-        assert _remote_labels(world, rewound) == []
-        refs = _remote_refs(bare)
-        assert work_backup.backup_ref(rewound, "a") not in refs
-        assert empty_sha  # it pointed at base
-        # Backed up: open, resumable, the work still reachable on the remote.
-        assert _remote_issue(world, resumable)["status"] == "open"
-        assert _remote_labels(world, resumable) == ["recovery:resumable"]
-        assert refs[work_backup.backup_ref(resumable, "a")] == work_sha
-        # Untouched: submitted, the surviving executor's live claim, the unattributed one.
-        assert _remote_issue(world, submitted)["status"] == "in_progress"
-        assert _remote_issue(world, live) == before_live
-        assert _remote_labels(world, live) == ["claim-frame:c"]
-        assert _remote_issue(world, legacy)["status"] == "in_progress"
-        # Audit: who, when, why on each reclaimed bead.
-        for bead in (rewound, resumable):
-            [c] = _remote_comments(world, bead)
-            assert c["author"] == "ops/adopt@b" and "dead frame a" in c["text"]
-            assert plan.at in c["text"]
+    # Unbacked: lifecycle fields identical to never-claimed; empty backup ref deleted.
+    assert _remote_issue(world, rewound) == {
+        "status": "open",
+        "assignee": "",
+        "started_at": None,
+    }
+    assert _remote_labels(world, rewound) == []
+    refs = _remote_refs(bare)
+    assert work_backup.backup_ref(rewound, "a") not in refs
+    assert empty_sha  # it pointed at base
+    # Backed up: open, resumable, the work still reachable on the remote.
+    assert _remote_issue(world, resumable)["status"] == "open"
+    assert _remote_labels(world, resumable) == ["recovery:resumable"]
+    assert refs[work_backup.backup_ref(resumable, "a")] == work_sha
+    # Untouched: submitted, the surviving executor's live claim, the unattributed one.
+    assert _remote_issue(world, submitted)["status"] == "in_progress"
+    assert _remote_issue(world, live) == before_live
+    assert _remote_labels(world, live) == ["claim-frame:c"]
+    assert _remote_issue(world, legacy)["status"] == "in_progress"
+    # Audit: who, when, why on each reclaimed bead.
+    for bead in (rewound, resumable):
+        [c] = _remote_comments(world, bead)
+        assert c["author"] == "ops/adopt@b" and "dead frame a" in c["text"]
+        assert plan.at in c["text"]
 
-        # ---- re-running the adopt reclaims nothing twice ------------------------------
-        again = wa.coexistence_adopt(data, placement, ref, prefix="fx", frame="b", reclaim=hook)
-        assert again.resumed and again.step2.reclaim is None
-        assert _adopt_commits(world) == [f"{wa.ADOPT_COMMIT_PREFIX}b@{e0 + 1}"]
-        assert len(_remote_comments(world, rewound)) == 1
+    # ---- re-running the adopt reclaims nothing twice ------------------------------
+    again = wa.coexistence_adopt(data, placement, ref, prefix="fx", frame="b", reclaim=hook)
+    assert again.resumed and again.step2.reclaim is None
+    assert _adopt_commits(world) == [f"{wa.ADOPT_COMMIT_PREFIX}b@{e0 + 1}"]
+    assert len(_remote_comments(world, rewound)) == 1
 
 
-def test_a_planned_handoff_reclaims_nothing_on_real_dolt(tmp_path):
+def test_a_planned_handoff_reclaims_nothing_on_real_dolt(tmp_path, rewound_world):
     bare, _work, hive_clone = _backup_remote(tmp_path)
-    with cf.composed_world(tmp_path, FRAMES, hq_mode="git", writer="a") as world:
-        placement, ref = _ports(world, tmp_path)
-        a = world["a"]
-        for key, value in (("bh.pairing.enabled", "true"), ("bh.reclaim.failover.mode", "apply")):
-            a.bd("config", "set", key, value).check()
-        bead = _claim(a, "held", "claim-frame:a")
-        a.push().check()
-        data = ReclaimFrameData(world["b"])
-        hook = fr.FailoverReclaim(data, fr.GitBackupProbe(hive_clone, default_remote=str(bare)))
+    world = rewound_world(FRAMES, hq_mode="git", writer="a")
+    placement, ref = _ports(world, tmp_path)
+    a = world["a"]
+    for key, value in (("bh.pairing.enabled", "true"), ("bh.reclaim.failover.mode", "apply")):
+        a.bd("config", "set", key, value).check()
+    bead = _claim(a, "held", "claim-frame:a")
+    a.push().check()
+    data = ReclaimFrameData(world["b"])
+    hook = fr.FailoverReclaim(data, fr.GitBackupProbe(hive_clone, default_remote=str(bare)))
 
-        out = wa.coexistence_adopt(
-            data, placement, ref, prefix="fx", frame="b", reclaim=hook, failover=False
-        )
+    out = wa.coexistence_adopt(
+        data, placement, ref, prefix="fx", frame="b", reclaim=hook, failover=False
+    )
 
-        assert out.step2.landed and "planned handoff" in out.step2.reclaim.skipped
-        assert _remote_issue(world, bead)["status"] == "in_progress"
-        assert _remote_comments(world, bead) == []
+    assert out.step2.landed and "planned handoff" in out.step2.reclaim.skipped
+    assert _remote_issue(world, bead)["status"] == "in_progress"
+    assert _remote_comments(world, bead) == []
 
 
 # ---- director-placed failover: the cause rides the placement CAS (bh-16347.6) ---------------
@@ -252,7 +251,7 @@ class _FramePlane:
 @pytest.mark.dolt_server
 @pytest.mark.parametrize("cause", ["failover", "planned", "no-cause", "older-frame"])
 def test_a_director_placed_adopt_reclaims_exactly_once_and_only_on_failover(
-    tmp_path, monkeypatch, cause
+    tmp_path, rewound_world, monkeypatch, cause
 ):
     """Scratch SQL HQ (product ``hq_live_hive_leases``, real grants) + the composed fence.
 
@@ -277,93 +276,93 @@ def test_a_director_placed_adopt_reclaims_exactly_once_and_only_on_failover(
     server.start()
     try:
         server.provision()
-        with cf.composed_world(tmp_path, FRAMES, hq_mode="git", writer="a") as world:
-            remote = str(world.cluster.remote.path)
-            ref = host_adopt._GitEpochRef(remote=remote, cwd=hive_clone)
-            e0 = world.hq.placement().epoch
-            _seed_ref(ref, "a", e0)
-            a = world["a"]
-            for key, value in (
-                ("bh.pairing.enabled", "true"),
-                ("bh.reclaim.failover.mode", "apply"),
-            ):
-                a.bd("config", "set", key, value).check()
-            bead = _claim(a, "unbacked", "claim-frame:a")
-            a.push().check()
-            a.kill()
+        world = rewound_world(FRAMES, hq_mode="git", writer="a")
+        remote = str(world.cluster.remote.path)
+        ref = host_adopt._GitEpochRef(remote=remote, cwd=hive_clone)
+        e0 = world.hq.placement().epoch
+        _seed_ref(ref, "a", e0)
+        a = world["a"]
+        for key, value in (
+            ("bh.pairing.enabled", "true"),
+            ("bh.reclaim.failover.mode", "apply"),
+        ):
+            a.bd("config", "set", key, value).check()
+        bead = _claim(a, "unbacked", "claim-frame:a")
+        a.push().check()
+        a.kill()
 
-            # ---- the director places b (the operator seeded the hive at a's epoch) ----------
-            root = server.connect(autocommit=True)
-            with root.cursor() as cursor:
-                cursor.execute(*seed_statement("fx", epoch=e0))
-            root.close()
-            conn = server.connect(DIRECTOR, autocommit=False)
-            try:
-                seeded = read_row(conn, "fx").revision
-                now = time.time()
-                place_cas(
-                    conn,
+        # ---- the director places b (the operator seeded the hive at a's epoch) ----------
+        root = server.connect(autocommit=True)
+        with root.cursor() as cursor:
+            cursor.execute(*seed_statement("fx", epoch=e0))
+        root.close()
+        conn = server.connect(DIRECTOR, autocommit=False)
+        try:
+            seeded = read_row(conn, "fx").revision
+            now = time.time()
+            place_cas(
+                conn,
+                prefix="fx",
+                lease=HostLease("b", "b", e0 + 1, now_stamp(now), now_stamp(now + 3600)),
+                authority={"frame_id": "b", "holder_identity": "b"},
+                expected_revision=seeded,
+                cause={
+                    "failover": CAUSE_FAILOVER,
+                    "planned": CAUSE_PLANNED,
+                    "older-frame": CAUSE_FAILOVER,
+                }.get(cause),
+            )
+        finally:
+            conn.close()
+
+        # ---- frame b adopts through the director-placed path ----------------------------
+        plane = _FramePlane(server)
+        monkeypatch.setattr(host_lease, "_frame_plane", lambda cwd: plane)
+        data = ReclaimFrameData(world["b"])
+
+        def adopt():
+            if cause == "older-frame":  # a frame that never reads the cause
+                return wa.coexistence_adopt(
+                    data,
+                    host_adopt._DirectorPlacement(plane, "fx"),
+                    ref,
                     prefix="fx",
-                    lease=HostLease("b", "b", e0 + 1, now_stamp(now), now_stamp(now + 3600)),
-                    authority={"frame_id": "b", "holder_identity": "b"},
-                    expected_revision=seeded,
-                    cause={
-                        "failover": CAUSE_FAILOVER,
-                        "planned": CAUSE_PLANNED,
-                        "older-frame": CAUSE_FAILOVER,
-                    }.get(cause),
+                    frame="b",
+                    reclaim=fr.for_fence_data(data, cwd=hive_clone),
                 )
-            finally:
-                conn.close()
+            placed = host_adopt._director_placement("fx", tmp_path)
+            assert placed is not None and placed.director
+            return host_adopt._adopt_director_placed(
+                placed,
+                prefix="fx",
+                hive_remote=remote,
+                hive_cwd=hive_clone,
+                hq_cwd=tmp_path,
+                host_id="b",
+                fence_data=data,
+                attempts=None,
+                failover=None,
+            ).coexistence
 
-            # ---- frame b adopts through the director-placed path ----------------------------
-            plane = _FramePlane(server)
-            monkeypatch.setattr(host_lease, "_frame_plane", lambda cwd: plane)
-            data = ReclaimFrameData(world["b"])
+        out = adopt()
+        assert out.resumed and out.epoch == e0 + 1 and out.step2.landed
+        plan = out.step2.reclaim
+        assert _adopt_commits(world) == [f"{wa.ADOPT_COMMIT_PREFIX}b@{e0 + 1}"]
+        if cause == "failover":
+            assert plan.applied and plan.dead_frame == "a"
+            assert {r.bead: r.outcome for r in plan.rows} == {bead: fr.Outcome.REWOUND}
+            assert _remote_issue(world, bead)["status"] == "open"
+            assert len(_remote_comments(world, bead)) == 1
+        else:
+            why = "planned handoff" if cause == "planned" else "adopt kind unknown"
+            assert not plan.applied and why in plan.skipped
+            assert _remote_issue(world, bead)["status"] == "in_progress"
+            assert _remote_comments(world, bead) == []
 
-            def adopt():
-                if cause == "older-frame":  # a frame that never reads the cause
-                    return wa.coexistence_adopt(
-                        data,
-                        host_adopt._DirectorPlacement(plane, "fx"),
-                        ref,
-                        prefix="fx",
-                        frame="b",
-                        reclaim=fr.for_fence_data(data, cwd=hive_clone),
-                    )
-                placed = host_adopt._director_placement("fx", tmp_path)
-                assert placed is not None and placed.director
-                return host_adopt._adopt_director_placed(
-                    placed,
-                    prefix="fx",
-                    hive_remote=remote,
-                    hive_cwd=hive_clone,
-                    hq_cwd=tmp_path,
-                    host_id="b",
-                    fence_data=data,
-                    attempts=None,
-                    failover=None,
-                ).coexistence
-
-            out = adopt()
-            assert out.resumed and out.epoch == e0 + 1 and out.step2.landed
-            plan = out.step2.reclaim
-            assert _adopt_commits(world) == [f"{wa.ADOPT_COMMIT_PREFIX}b@{e0 + 1}"]
-            if cause == "failover":
-                assert plan.applied and plan.dead_frame == "a"
-                assert {r.bead: r.outcome for r in plan.rows} == {bead: fr.Outcome.REWOUND}
-                assert _remote_issue(world, bead)["status"] == "open"
-                assert len(_remote_comments(world, bead)) == 1
-            else:
-                why = "planned handoff" if cause == "planned" else "adopt kind unknown"
-                assert not plan.applied and why in plan.skipped
-                assert _remote_issue(world, bead)["status"] == "in_progress"
-                assert _remote_comments(world, bead) == []
-
-            # ---- a re-run reclaims nothing twice ----------------------------------------------
-            again = adopt()
-            assert again.resumed and again.step2.reclaim is None
-            assert _adopt_commits(world) == [f"{wa.ADOPT_COMMIT_PREFIX}b@{e0 + 1}"]
-            assert len(_remote_comments(world, bead)) == (1 if cause == "failover" else 0)
+        # ---- a re-run reclaims nothing twice ----------------------------------------------
+        again = adopt()
+        assert again.resumed and again.step2.reclaim is None
+        assert _adopt_commits(world) == [f"{wa.ADOPT_COMMIT_PREFIX}b@{e0 + 1}"]
+        assert len(_remote_comments(world, bead)) == (1 if cause == "failover" else 0)
     finally:
         server.stop()
