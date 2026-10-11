@@ -313,3 +313,23 @@ def test_host_yaml_needs_no_new_key_and_schema_stays_strict(monkeypatch):
             {**host_doc, "hq": {**host_doc["hq"], "authority": {"enforce": False}}},
             scope="host",
         )
+
+
+def test_trusted_banner_precedes_command_output_in_mixed_streams(monkeypatch):
+    # The banner goes to stderr; a command's JSON goes to stdout. Unflushed, the banner could
+    # land after the JSON in a mixed capture, depending on what else the process had written
+    # to stderr first (seen as an order-dependent `bh hq authority mode` failure, bh-ofszz).
+    import typer
+
+    monkeypatch.setenv(hq_authority_enforce.MODE_ENV, "trusted")
+    hq_authority_enforce.reset_cache()
+    tiny = typer.Typer()
+
+    @tiny.command()
+    def show() -> None:
+        hq_authority_enforce.emit_banner()
+        typer.echo(json.dumps({"mode": "trusted"}))
+
+    lines = CliRunner().invoke(tiny, []).output.strip().splitlines()
+    assert lines[0] == hq_authority_enforce.TRUSTED_BANNER
+    assert json.loads(lines[-1]) == {"mode": "trusted"}

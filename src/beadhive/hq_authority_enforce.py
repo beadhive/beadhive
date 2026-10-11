@@ -565,7 +565,9 @@ def emit_banner(stream=None) -> bool:
     if not _banner_emitted:
         _banner_emitted = True
         text = BANNER if resolved.source == "enforce-env" else TRUSTED_BANNER
-        print(text, file=stream if stream is not None else sys.stderr)
+        # Flushed so the warning always precedes the command's own output, whatever else
+        # this process has (or has not) already written to stderr.
+        print(text, file=stream if stream is not None else sys.stderr, flush=True)
     return True
 
 
