@@ -79,6 +79,19 @@ focused selection with `-n 2` and `-n 6`, then use `-n 0` only as a comparison. 
 not waive a parallel failure. A live multiprocessing `resource_tracker` is expected until its
 worker exits; it is not evidence of a deadlock by itself.
 
+## Time in tests
+
+A test never waits on real time to make time pass, and a timeout is never the fix for a slow or
+hung test. Pick the clock by where the time is read:
+
+| The code under test... | Use | Why |
+|---|---|---|
+| takes a clock through a seam (`StateClock.now()`, a `stop=` / sleep callable such as `SessionRenewer.run`) | `tests/harness/clock.py` `FakeClock` | Explicit, deterministic, no global patching; `sleep()` advances instead of blocking and `monotonic()` never decreases. |
+| reads `time.time()`, `time.monotonic()`, or `datetime.now()` directly and cannot take a seam | `time-machine` (`time_machine.travel`) | Patches the process clocks in-test; prefer adding a seam when you own the code. |
+| expires on the Dolt server clock (`UTC_TIMESTAMP()` in SQL) | Data-driven expiry: write rows whose timestamps are already past or far future | Neither fake clock reaches the server; do not sleep to let a row expire. |
+| waits for another process (server, worker, subprocess) | A readiness handshake (poll a socket, file, or status with a bounded deadline) | Sleeping a guessed interval races under `-n auto`; see the contention note in the hang watchdog. |
+| hangs or is slow | Fix the cause; never `@pytest.mark.timeout` | `pytest-timeout` is installed only as a backstop (`timeout = 600`, `timeout_method = "thread"`, below the 900 s `BH_TEST_TIMEOUT_SECONDS` watchdog) so one hung test is named before the run is killed. |
+
 ## Selective-CI policy
 
 The checked [Selective-CI operational report](SELECTIVE-CI-OPERATIONS.md) is the authoritative
