@@ -108,6 +108,15 @@ def test_workspace_packages_are_all_tested_and_built_by_the_gate() -> None:
     )
     assert "uv build --package beadhive-bd-cli" in bd_cli_gate
 
+    # The two HQ storage packages share the `hq-storage` key/leaf (bh-wnhkn).
+    hq_storage_gate = "\n".join(_recipe_body(justfile, "hq-storage-check"))
+    assert "--all-packages" not in hq_storage_gate
+    for package in ("beadhive-hq-storage", "beadhive-hq-storage-dolt"):
+        assert f"--package {package}" in hq_storage_gate
+        assert f"packages/{package}/tests" in hq_storage_gate
+        assert f"uv build --package {package} " in hq_storage_gate
+        assert f"uv build --package {package}" not in package_gate
+
     root_workspace_gate = "\n".join(_recipe_body(justfile, "root-workspace-check"))
     assert "--all-packages" not in root_workspace_gate
     assert "packages/beadhive-pants/tests" in root_workspace_gate
@@ -123,6 +132,7 @@ def test_workspace_packages_are_all_tested_and_built_by_the_gate() -> None:
             package_gate,
             beads_client_gate,
             bd_cli_gate,
+            hq_storage_gate,
             root_workspace_gate,
         )
     )
@@ -131,11 +141,13 @@ def test_workspace_packages_are_all_tested_and_built_by_the_gate() -> None:
         "beadhive-bd-cli",
         "beadhive-beads-client",
         "beadhive-core",
+        "beadhive-hq-storage",
+        "beadhive-hq-storage-dolt",
         "beadhive-pants",
         "beadhive-plugins",
         "beadhive-worktrees",
     ):
-        assert complete_gate.count(f"uv build --package {package}") == 1, package
+        assert complete_gate.count(f"uv build --package {package} ") == 1, package
 
     discovered = {path.parent.name for path in package_test_roots(ROOT)}
     assert discovered == {

@@ -52,6 +52,10 @@ PACKAGE_TESTS: dict[str, tuple[str, ...]] = {
         "tests/test_work_reads.py",
         "tests/test_work_review_shell.py",
     ),
+    # Scaffold (bh-wnhkn): root does not consume the port yet; bh-9fg5k / bh-xnn5p register the
+    # root tests that compose it.
+    "beadhive-hq-storage": (),
+    "beadhive-hq-storage-dolt": (),
     "beadhive-pants": (
         "tests/test_selective_validation_impact_golden.py",
         "tests/unit/modules/work/test_impact_pants.py",

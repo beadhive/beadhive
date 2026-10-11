@@ -1,0 +1,20 @@
+[project]
+name = "beadhive-hq-storage-dolt"
+version = "0.1.0"
+description = "Dolt adapter for Beadhive's backend-neutral HQ storage port (scaffold)"
+requires-python = ">=3.11"
+# A LIBRARY package (docs/design/package-class-library-vs-plugin-adr.md): no plugin.json, never
+# imports root `beadhive`, and never imports PyMySQL -- root injects the DB-API connection
+# factory (docs/design/hq-storage-port-adr.md section 7). It depends on the port package only.
+dependencies = ["beadhive-hq-storage"]
+classifiers = ["Private :: Do Not Upload"]
+
+[tool.uv.sources]
+beadhive-hq-storage = { workspace = true }
+
+[build-system]
+requires = ["hatchling", "editables>=0.5"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/beadhive_hq_storage_dolt"]
