@@ -95,9 +95,10 @@ def test_live_integration_recipe_redistributes_unstarted_tests_with_fixed_worker
     text = JUSTFILE.read_text()
 
     assert 'integration_workers := "16"' in text
+    assert 'test_dist := env_var_or_default("BH_TEST_DIST", "worksteal")' in text
     assert (
         "python scripts/pytest_with_report.py -n {{integration_workers}} tests "
-        '--dist worksteal -m "integration"' in text
+        '--dist {{test_dist}} -m "integration"' in text
     )
 
 
