@@ -973,28 +973,28 @@
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 2252,
+        "line": 2283,
         "path": "tests/test_hq_authority_backend.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 2253,
+        "line": 2284,
         "path": "tests/test_hq_authority_backend.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 2529,
+        "line": 2556,
         "path": "tests/test_hq_authority_backend.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 2538,
+        "line": 2565,
         "path": "tests/test_hq_authority_backend.py",
         "target": "beadhive.config.load_host"
       },
