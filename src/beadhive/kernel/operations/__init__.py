@@ -93,6 +93,7 @@ hive disable|feature:string:r,hive_id:string:o
 hive enable|feature:string:r,hive_id:string:o
 hive fence|action:string:r,hive_id:string:r,others_published:boolean:o,branch:string:o,as_json:boolean:o
 hive forward|action:string:r,hive_id:string:r,account:string:o,password_stdin:boolean:o,as_json:boolean:o
+hive frames|action:string:r,hive_id:string:r,frame:string:o,bead:string:o,take:string:o,as_json:boolean:o
 hive hook install|hive_id:string:o
 hive hook pre-push|hive_id:string:o
 hive hook push-main|rev:string:r,gate:string:o,hive_id:string:o
@@ -363,6 +364,7 @@ _HIDDEN_PATHS = {
     "hive context",
     "hive fence",
     "hive forward",
+    "hive frames",
     "hive sync-remote",
     "host adopt",
     "host daemon remove",
