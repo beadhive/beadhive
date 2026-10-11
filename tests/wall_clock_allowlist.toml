@@ -98,42 +98,6 @@ kind = "sleep"
 reason = "real-time window against a real process, server or Dolt server clock where neither FakeClock nor time-machine reaches; the window is a race-forcing hold, not a sync"
 
 [[allow]]
-path = "tests/spikes/test_bh_jbb6r_writer_partitioning_e2e_int.py"
-anchor = "test_s7_hq_down_past_the_ttl_keeps_the_primary_writing_and_refuses_handoff"
-kind = "sleep"
-reason = "real-time window against a real process, server or Dolt server clock where neither FakeClock nor time-machine reaches; the window is a race-forcing hold, not a sync"
-
-[[allow]]
-path = "tests/spikes/test_bh_jbb6r_writer_partitioning_e2e_int.py"
-anchor = "test_s9_killed_primary_fails_over_and_its_claims_are_reclaimed_exactly_once"
-kind = "sleep"
-reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
-
-[[allow]]
-path = "tests/spikes/test_bh_jbb6r_writer_partitioning_e2e_int.py"
-anchor = "test_s9_killed_primary_fails_over_and_its_claims_are_reclaimed_exactly_once"
-kind = "elapsed-assert"
-reason = "generous hang ceiling (a bound far above the expected time, there to name a hang rather than measure speed); not a latency budget"
-
-[[allow]]
-path = "tests/spikes/test_bh_jbb6r_writer_partitioning_e2e_int.py"
-anchor = "test_s10_slow_probe_keeps_the_session_fresh_and_only_expired_evidence_blocks"
-kind = "sleep"
-reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
-
-[[allow]]
-path = "tests/spikes/test_bh_jbb6r_writer_partitioning_e2e_int.py"
-anchor = "test_s10_slow_probe_keeps_the_session_fresh_and_only_expired_evidence_blocks.probe"
-kind = "sleep"
-reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
-
-[[allow]]
-path = "tests/spikes/test_bh_sieai_write_guard_int.py"
-anchor = "_Forwarder.race"
-kind = "sleep"
-reason = "real-time window against a real process, server or Dolt server clock where neither FakeClock nor time-machine reaches; the window is a race-forcing hold, not a sync"
-
-[[allow]]
 path = "tests/spikes/test_bh_u562_3_unified_host_transport.py"
 anchor = "_http_server"
 kind = "sleep"
@@ -146,34 +110,16 @@ kind = "sleep"
 reason = "in-process event-loop yield or short poll inside a bounded async exercise; waits for another task to reach a state, with no wall-clock assertion"
 
 [[allow]]
-path = "tests/spikes/test_bh_wtsrc_receiver_removal_liveness.py"
+path = "tests/test_hq_sql_dolt_semantics_int.py"
 anchor = "_isolated_server"
 kind = "sleep"
 reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
 
 [[allow]]
-path = "tests/spikes/test_bh_wtsrc_receiver_removal_liveness.py"
-anchor = "_conformance_probe"
-kind = "sleep"
-reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
-
-[[allow]]
-path = "tests/spikes/test_bh_wtsrc_receiver_removal_liveness.py"
-anchor = "_coupled_heartbeat"
-kind = "sleep"
-reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
-
-[[allow]]
-path = "tests/spikes/test_bh_wtsrc_receiver_removal_liveness.py"
+path = "tests/test_hq_sql_dolt_semantics_int.py"
 anchor = "test_operator_trigger_stamps_server_utc_over_frame_literals_and_time_zone"
 kind = "sleep"
 reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
-
-[[allow]]
-path = "tests/spikes/test_bh_wtsrc_receiver_removal_liveness.py"
-anchor = "test_scenario_10_slow_probe_keeps_session_fresh_and_expired_evidence_alone_blocks"
-kind = "sleep"
-reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
 
 [[allow]]
 path = "tests/test_activity_publisher.py"
