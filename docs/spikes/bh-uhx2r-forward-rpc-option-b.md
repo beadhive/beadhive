@@ -6,10 +6,9 @@ no product code)
 **Feeds decision on:** [hive-writer-partitioning-adr.md](../design/hive-writer-partitioning-adr.md)
 §3 (option A vs option B), condition 16, Follow-up decisions 1 and 5. C/O8 (admitting the three
 new executors) waits on this verdict. M12 (`option A`) does not.
-**Executable evidence:**
-[`tests/spikes/test_bh_uhx2r_forward_rpc_int.py`](../../tests/spikes/test_bh_uhx2r_forward_rpc_int.py)
-(`integration`, `dolt_server`; six tests, about 4.5 min at `-n 2`). It runs on the bh-jbb6r
-composed prototype ([`tests/harness/composed_fence.py`](../../tests/harness/composed_fence.py)).
+**Executable evidence:** the spike module `tests/spikes/test_bh_uhx2r_forward_rpc_int.py` (six
+tests, about 4.5 min at `-n 2`) was retired by `bh-mclbc`: see "Retired to permanent suites" at
+the end. It ran on the bh-jbb6r composed prototype ([`tests/harness/composed_fence.py`](../../tests/harness/composed_fence.py)).
 **Status:** **accepted** by the operator 2026-10-06 (decisions recorded at the end of the
 Recommendation). The verdict is noted on the ADR (§3, "M13 result").
 
@@ -72,10 +71,8 @@ Those results are reused, not re-tested. Availability abuse through globals (`re
 
 **Reproduce:**
 
-```sh
-BH_UHX2R_EVIDENCE=/tmp/uhx2r.jsonl \
-  uv run pytest tests/spikes/test_bh_uhx2r_forward_rpc_int.py -n 2 -p no:cacheprovider
-```
+The original module is retired (see the table at the end); its last version is in git history
+before `bh-mclbc`. Run the permanent counterparts instead.
 
 The run quoted below passed six of six (260 s wall clock at `-n 2`). E2 and E3 were re-run
 after E3's push was attributed in the move log (two of two passed).
@@ -333,3 +330,17 @@ No replan is triggered. C/O8 may proceed on option A once M12 carries Recommenda
   amended to match.
 - B (Recommendation 5) is filed now as dormant, deferred bead `bh-453vk`, so this decision and
   its revisit triggers are not lost. Scheduling it needs a replan.
+
+## Retired to permanent suites
+
+The executable evidence for this spike (`tests/spikes/test_bh_uhx2r_forward_rpc_int.py`) was
+retired by `bh-mclbc`. The findings above stand; their tests now live in permanent suites.
+
+| Spike test | Evidence | Permanent counterpart |
+|---|---|---|
+| `test_e1_forced_globals_land_no_stale_write_on_any_honest_path` | E1 | `tests/test_hq_sql_dolt_semantics_int.py::test_forced_globals_do_not_let_commit_land_an_fk_violating_merge` (moved, single server) |
+| `test_e2_db_wide_all_login_lands_a_stale_write_without_any_global` | E2 | `tests/test_hq_sql_dolt_semantics_int.py::test_database_wide_all_grant_can_restamp_and_commit_a_stale_write` (moved, single server); the root-login stale write and history check also in `tests/test_fence_composed_int.py::test_m13_grant_shape_quiesce_and_history_check` |
+| `test_e3_db_wide_dml_login_spoofs_the_guard_identity_on_a_demoted_primary` | E3 | `tests/test_fence_composed_int.py::test_m13_grant_shape_quiesce_and_history_check` (database-wide grant reaches `bh_local_ident`, conformance flags it, narrowed grant refuses the spoof) |
+| `test_e4_grant_shapes_capability_matrix` | E4 | `tests/test_fence_composed_int.py::test_m13_grant_shape_quiesce_and_history_check` (narrow-grant refusals) and `tests/test_hive_forward_int.py` (provisioning, conformance) |
+| `test_e5_in_flight_forwarded_write_is_acked_then_dropped_by_the_divert_reset` | E5 | `tests/test_hive_forward_int.py::test_quiesce_refuses_an_in_flight_forwarded_write_across_the_divert_reset` and the E5 section of the m13 test |
+| `test_e6_rpc_service_carries_create_claim_close_with_no_executor_login` | E6 | none: HTTP RPC prototype with no product counterpart (option B is dormant, `bh-453vk`); the design shape is recorded in Recommendation 5 |
