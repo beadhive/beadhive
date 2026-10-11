@@ -25,6 +25,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from harness import duration_order
+
 if TYPE_CHECKING:
     from harness.world import World
 
@@ -196,6 +198,9 @@ def pytest_collection_modifyitems(config, items):
             if item.path.name.startswith(REAL_HOME_GUARDED_MODULES):
                 # First of all, so it arms before (and disarms after) every monkeypatch.
                 item.fixturenames.insert(0, "real_home_guard")
+    # Longest-first (opt out: BH_TEST_DURATION_ORDER=0), then the Dolt interleave, which only
+    # slices by marker and so preserves this relative order within each class.
+    items[:] = duration_order.apply(items)
     slots = int(os.environ.get("BH_DOLT_SLOTS", "8"))
     items[:] = _interleave_dolt_items(items, slots)
 
