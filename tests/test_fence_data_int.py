@@ -260,6 +260,26 @@ def test_audit_is_clean_after_an_honest_adopt(adopted):
     assert len(audit.adopt_commits) == 1 and audit.late_writes == ()
 
 
+def test_split_history_matches_sql_inner_join_on_real_dolt(adopted):
+    _, _, _, node_b = adopted
+    node_b.fetch()
+    head = node_b.query("SELECT hashof('origin/main') AS h")[0]["h"]
+    database = node_b.query("SELECT database() AS d")[0]["d"]
+    revision = f"`{database}/{head}`"
+    # The old join is fast on this small fixture and supplies an independent equivalence
+    # oracle. Large production histories use only the split reads in the product path.
+    expected = {
+        row["c"]: (int(row["e"]), fa._parents(row["p"]))
+        for row in node_b.query(
+            f"SELECT h.commit_hash AS c, h.epoch AS e, l.parents AS p "
+            f"FROM {revision}.dolt_history_bh_writer h "
+            f"JOIN dolt_log('--parents', '{head}') l ON l.commit_hash = h.commit_hash "
+            "WHERE h.id = 1"
+        )
+    }
+    assert fa._fenced_history(node_b, head, revision) == expected
+
+
 def test_e2_restamped_late_write_is_seen_only_by_the_history_check(adopted):
     """bh-uhx2r E2: the stale node force-merges the bump, re-stamps its mark and deletes the
     violation rows; its next push fast-forwards. stale_marks / epoch_regressed /

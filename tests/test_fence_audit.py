@@ -133,3 +133,45 @@ def test_history_window_finds_the_adopt_and_excludes_its_ancestry():
     assert unfenced == {H["u"]: H["n"]}
     _, cutover, _ = fa.history_window(fenced, H["n"], 1)
     assert cutover == {H["g"]: 1}  # first parent unfenced: the cutover anchors epoch 1
+
+
+def test_split_history_keeps_only_reachable_fenced_commits_and_ordered_parents():
+    """An unjoined high epoch must not report regression; an unfenced parent remains visible.
+
+    Both SQL sources are immutable at the same head. Their independent row order differs,
+    including a stale side branch before its merge's second parent.
+    """
+
+    class Reader:
+        def query(self, sql):
+            if "JOIN" in sql:
+                raise TimeoutError("large hive history join exceeds the SQL read deadline")
+            if "dolt_history_bh_writer" in sql:
+                assert f"`hive/{H['m']}`" in sql
+                return [
+                    {"c": H["v"], "e": 99},  # absent from the captured head's log
+                    {"c": H["g"], "e": 1},
+                    {"c": H["s"], "e": "1"},
+                    {"c": H["a"], "e": 2},
+                    {"c": H["m"], "e": 2},
+                ]
+            assert "dolt_log('--parents'," in sql and H["m"] in sql
+            return [
+                {"c": H["m"], "p": f"{H['a']}, {H['s']}"},
+                {"c": H["u"], "p": ""},  # no writer row: pre-cutover history
+                {"c": H["g"], "p": H["u"]},
+                {"c": H["a"], "p": H["g"]},
+                {"c": H["s"], "p": H["g"]},
+            ]
+
+    fenced = fa._fenced_history(Reader(), H["m"], f"`hive/{H['m']}`")
+    assert fenced == {
+        H["m"]: (2, (H["a"], H["s"])),
+        H["g"]: (1, (H["u"],)),
+        H["a"]: (2, (H["g"],)),
+        H["s"]: (1, (H["g"],)),
+    }
+    w, anchors, unfenced = fa.history_window(fenced, H["m"], 2)
+    assert anchors == {H["a"]: 2} and not unfenced
+    late = fa.find_late_writes(w, {c: e for c, (e, _) in fenced.items()}, anchors)
+    assert [(row.commit, row.epoch, row.merged_by) for row in late] == [(H["s"], 1, H["m"])]

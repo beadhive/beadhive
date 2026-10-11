@@ -392,6 +392,33 @@ def _messages(reader: AuditReader, head: str, commits: Sequence[str]) -> dict[st
     return out
 
 
+def _fenced_history(
+    reader: AuditReader, head: str, revision: str
+) -> dict[str, tuple[int, tuple[str, ...]]]:
+    """Join immutable writer history to the head's reachable commit log in linear time.
+
+    Dolt's SQL join of these history sources exceeds the server client's read deadline on
+    large hives. Keep both complete reads pinned to the same captured head, and retain only
+    their intersection, exactly as the SQL inner join did. Do not use dolt_diff_bh_writer:
+    it omits commits on merged histories (measured on Dolt 2.3.5).
+    """
+    epochs = {
+        _hash(row["c"], "history commit"): int(row["e"])
+        for row in reader.query(
+            f"SELECT commit_hash AS c, epoch AS e FROM {revision}.dolt_history_bh_writer "
+            "WHERE id = 1"
+        )
+    }
+    fenced = {}
+    for row in reader.query(
+        f"SELECT commit_hash AS c, parents AS p FROM dolt_log('--parents', {quote(head)})"
+    ):
+        commit = _hash(row["c"], "history commit")
+        if commit in epochs:
+            fenced[commit] = (epochs[commit], _parents(row.get("p")))
+    return fenced
+
+
 def fence_audit(
     reader: AuditReader,
     *,
@@ -444,19 +471,8 @@ def fence_audit(
         )
     )
 
-    # ---- one read of every fenced commit reachable from ref: epoch + parents --------------
-    # dolt_history_bh_writer (in ref's own revision database) has one row per commit that
-    # carries bh_writer; joined with ref's log it gives the fenced DAG in ONE query. NOT
-    # dolt_diff_bh_writer: on a merged history it drops commits (measured on Dolt 2.3.5 —
-    # an adopt sitting beside a merge vanished from it).
-    fenced: dict[str, tuple[int, tuple[str, ...]]] = {}
-    for row in reader.query(
-        f"SELECT h.commit_hash AS c, h.epoch AS e, l.parents AS p "
-        f"FROM {rev}.dolt_history_bh_writer h "
-        f"JOIN dolt_log('--parents', {quote(head)}) l ON l.commit_hash = h.commit_hash "
-        "WHERE h.id = 1"
-    ):
-        fenced[_hash(row["c"], "history commit")] = (int(row["e"]), _parents(row.get("p")))
+    # ---- every fenced commit reachable from the captured ref: epoch + ordered parents ----
+    fenced = _fenced_history(reader, head, rev)
 
     # ---- epoch_regressed: the highest epoch bh_writer ever carried in ref's history -------
     top = max(fenced.items(), key=lambda kv: (kv[1][0], kv[0]), default=None)
