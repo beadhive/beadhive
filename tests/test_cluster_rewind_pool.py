@@ -109,3 +109,25 @@ def test_guard_is_opt_in_by_environment(monkeypatch, tmp_path):
     assert not ClusterPool(tmp_path, None).guard
     monkeypatch.setenv("BH_CLUSTER_REWIND_GUARD", "1")
     assert ClusterPool(tmp_path, None).guard
+
+
+def test_a_live_process_under_the_root_is_still_a_stray(tmp_path):
+    """The exiting-process skip (empty argv, bh-u5mag) must not hide a real leak."""
+    import subprocess
+    import sys
+
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.read()"], cwd=tmp_path, stdin=subprocess.PIPE
+    )
+    try:
+        assert cluster_rewind.processes_print(tmp_path, {}) == ["stray:" + child_name(child)]
+        assert cluster_rewind.processes_print(tmp_path, {child.pid: "server:a"}) == ["server:a"]
+    finally:
+        child.communicate()
+
+
+def child_name(child) -> str:
+    import os
+    import sys
+
+    return os.path.basename(sys.executable)
