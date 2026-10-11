@@ -1,0 +1,872 @@
+# Allowlist for scripts/check_test_wall_clock.py (bh-zbn8a, epic bh-vcx4i).
+#
+# Every entry is an accepted wall-clock wait in tests/: `path` + `anchor` (enclosing function
+# qualname, or `<module>`) + `kind` (`sleep` | `elapsed-assert`) + a `reason`. A new sleep or
+# measured-duration assert fails the check unless it is added here WITH a reason; an entry whose
+# finding disappears is reported stale and must be deleted, so the list only shrinks.
+#
+# Prefer FakeClock / time-machine / a readiness handshake (docs/TEST_PROCESS_POLICY.md, "Time in
+# tests"). Latency or overlap budgets belong under `@pytest.mark.perf`, which is exempt here
+# because the gate deselects it.
+#
+# WATCH ITEM (unconfirmed host contention, bh-p4bbw): tests/test_hq_authority_backend.py::
+# test_real_foreign_holder_takeover_requires_authenticated_incumbent_evidence failed once under
+# 3-way concurrent runs. It is not a known wall-clock bug; if it recurs, diagnose contention first.
+
+[[allow]]
+path = "tests/fixtures/stub_seat.py"
+anchor = "_run_hang_loop"
+kind = "sleep"
+reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
+
+[[allow]]
+path = "tests/harness/composed_fence.py"
+anchor = "SqlHQ.start"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/harness/composed_fence.py"
+anchor = "Forwarder.race"
+kind = "sleep"
+reason = "real-time window against a real process, server or Dolt server clock where neither FakeClock nor time-machine reaches; the window is a race-forcing hold, not a sync"
+
+[[allow]]
+path = "tests/harness/frame_bridge_live.py"
+anchor = "_wait_for_http"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/harness/frame_bridge_live.py"
+anchor = "_wait_for_daemon_ready"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/harness/frame_bridge_live.py"
+anchor = "_read_one_sse_event"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/harness/sample_plugin_v1.py"
+anchor = "slow_observer"
+kind = "sleep"
+reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
+
+[[allow]]
+path = "tests/harness/world.py"
+anchor = "_acquire_slot"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/harness/world.py"
+anchor = "_terminate"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/harness/writer_fencing.py"
+anchor = "Hold.wait"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/harness/writer_fencing.py"
+anchor = "Frame.kill"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/harness/writer_fencing_gate.py"
+anchor = "_park"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/spikes/bh_jbb6r_soak.py"
+anchor = "wait_for_load"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/spikes/bh_jbb6r_soak.py"
+anchor = "worker"
+kind = "sleep"
+reason = "real-time window against a real process, server or Dolt server clock where neither FakeClock nor time-machine reaches; the window is a race-forcing hold, not a sync"
+
+[[allow]]
+path = "tests/spikes/test_bh_jbb6r_writer_partitioning_e2e_int.py"
+anchor = "test_s7_hq_down_past_the_ttl_keeps_the_primary_writing_and_refuses_handoff"
+kind = "sleep"
+reason = "real-time window against a real process, server or Dolt server clock where neither FakeClock nor time-machine reaches; the window is a race-forcing hold, not a sync"
+
+[[allow]]
+path = "tests/spikes/test_bh_jbb6r_writer_partitioning_e2e_int.py"
+anchor = "test_s9_killed_primary_fails_over_and_its_claims_are_reclaimed_exactly_once"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/spikes/test_bh_jbb6r_writer_partitioning_e2e_int.py"
+anchor = "test_s9_killed_primary_fails_over_and_its_claims_are_reclaimed_exactly_once"
+kind = "elapsed-assert"
+reason = "generous hang ceiling (a bound far above the expected time, there to name a hang rather than measure speed); not a latency budget"
+
+[[allow]]
+path = "tests/spikes/test_bh_jbb6r_writer_partitioning_e2e_int.py"
+anchor = "test_s10_slow_probe_keeps_the_session_fresh_and_only_expired_evidence_blocks"
+kind = "sleep"
+reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
+
+[[allow]]
+path = "tests/spikes/test_bh_jbb6r_writer_partitioning_e2e_int.py"
+anchor = "test_s10_slow_probe_keeps_the_session_fresh_and_only_expired_evidence_blocks.probe"
+kind = "sleep"
+reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
+
+[[allow]]
+path = "tests/spikes/test_bh_sieai_write_guard_int.py"
+anchor = "_Forwarder.race"
+kind = "sleep"
+reason = "real-time window against a real process, server or Dolt server clock where neither FakeClock nor time-machine reaches; the window is a race-forcing hold, not a sync"
+
+[[allow]]
+path = "tests/spikes/test_bh_u562_3_unified_host_transport.py"
+anchor = "_http_server"
+kind = "sleep"
+reason = "in-process event-loop yield or short poll inside a bounded async exercise; waits for another task to reach a state, with no wall-clock assertion"
+
+[[allow]]
+path = "tests/spikes/test_bh_u562_3_unified_host_transport.py"
+anchor = "test_routes_auth_cors_sse_resume_terminal_cancellation_and_shutdown.run"
+kind = "sleep"
+reason = "in-process event-loop yield or short poll inside a bounded async exercise; waits for another task to reach a state, with no wall-clock assertion"
+
+[[allow]]
+path = "tests/spikes/test_bh_wtsrc_receiver_removal_liveness.py"
+anchor = "_isolated_server"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/spikes/test_bh_wtsrc_receiver_removal_liveness.py"
+anchor = "_conformance_probe"
+kind = "sleep"
+reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
+
+[[allow]]
+path = "tests/spikes/test_bh_wtsrc_receiver_removal_liveness.py"
+anchor = "_coupled_heartbeat"
+kind = "sleep"
+reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
+
+[[allow]]
+path = "tests/spikes/test_bh_wtsrc_receiver_removal_liveness.py"
+anchor = "test_operator_trigger_stamps_server_utc_over_frame_literals_and_time_zone"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/spikes/test_bh_wtsrc_receiver_removal_liveness.py"
+anchor = "test_scenario_10_slow_probe_keeps_session_fresh_and_expired_evidence_alone_blocks"
+kind = "sleep"
+reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
+
+[[allow]]
+path = "tests/test_activity_publisher.py"
+anchor = "test_worker_retries_with_backoff_and_shutdown_drains_within_budget"
+kind = "sleep"
+reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
+
+[[allow]]
+path = "tests/test_activity_publisher.py"
+anchor = "test_cancellation_stops_attempts_and_retains_for_restart"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/test_bounded_child.py"
+anchor = "_wait_gone"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/test_bounded_child.py"
+anchor = "test_a_wedged_child_is_terminated_at_its_bound"
+kind = "elapsed-assert"
+reason = "generous hang ceiling (a bound far above the expected time, there to name a hang rather than measure speed); not a latency budget"
+
+[[allow]]
+path = "tests/test_daemon_activity_api.py"
+anchor = "test_activity_is_installed_only_after_durable_append_finishes.exercise.heartbeat"
+kind = "sleep"
+reason = "in-process event-loop yield or short poll inside a bounded async exercise; waits for another task to reach a state, with no wall-clock assertion"
+
+[[allow]]
+path = "tests/test_daemon_auth.py"
+anchor = "test_live_session_closes_on_rotation_at_its_next_bounded_revalidation.exercise"
+kind = "sleep"
+reason = "in-process event-loop yield or short poll inside a bounded async exercise; waits for another task to reach a state, with no wall-clock assertion"
+
+[[allow]]
+path = "tests/test_daemon_auth.py"
+anchor = "test_hung_and_cancelled_callbacks_are_bounded_isolated_and_recorded.exercise"
+kind = "elapsed-assert"
+reason = "generous hang ceiling (a bound far above the expected time, there to name a hang rather than measure speed); not a latency budget"
+
+[[allow]]
+path = "tests/test_daemon_auth.py"
+anchor = "test_a_hung_callback_cannot_delay_a_later_session_invalidation.exercise"
+kind = "sleep"
+reason = "in-process event-loop yield or short poll inside a bounded async exercise; waits for another task to reach a state, with no wall-clock assertion"
+
+[[allow]]
+path = "tests/test_daemon_auth.py"
+anchor = "test_a_hung_callback_cannot_delay_a_later_session_invalidation.exercise"
+kind = "elapsed-assert"
+reason = "generous hang ceiling (a bound far above the expected time, there to name a hang rather than measure speed); not a latency budget"
+
+[[allow]]
+path = "tests/test_daemon_auth.py"
+anchor = "test_lifespan_exit_cancels_a_still_blocked_callback_and_reaps_every_task.exercise"
+kind = "elapsed-assert"
+reason = "generous hang ceiling (a bound far above the expected time, there to name a hang rather than measure speed); not a latency budget"
+
+[[allow]]
+path = "tests/test_daemon_factory.py"
+anchor = "test_snapshot_never_waits_on_slow_hive_sources"
+kind = "elapsed-assert"
+reason = "generous hang ceiling (a bound far above the expected time, there to name a hang rather than measure speed); not a latency budget"
+
+[[allow]]
+path = "tests/test_daemon_factory.py"
+anchor = "test_factory_hq_probe_is_bounded_redacted_and_reaps_the_child"
+kind = "elapsed-assert"
+reason = "generous hang ceiling (a bound far above the expected time, there to name a hang rather than measure speed); not a latency budget"
+
+[[allow]]
+path = "tests/test_daemon_factory.py"
+anchor = "test_cancelled_factory_request_reaps_slow_hq_probe_before_returning.exercise"
+kind = "sleep"
+reason = "in-process event-loop yield or short poll inside a bounded async exercise; waits for another task to reach a state, with no wall-clock assertion"
+
+[[allow]]
+path = "tests/test_daemon_live_contract.py"
+anchor = "_wait_for_rendezvous"
+kind = "sleep"
+reason = "in-process event-loop yield or short poll inside a bounded async exercise; waits for another task to reach a state, with no wall-clock assertion"
+
+[[allow]]
+path = "tests/test_daemon_live_contract.py"
+anchor = "_wait_for_child_heartbeat"
+kind = "sleep"
+reason = "in-process event-loop yield or short poll inside a bounded async exercise; waits for another task to reach a state, with no wall-clock assertion"
+
+[[allow]]
+path = "tests/test_daemon_live_contract.py"
+anchor = "_publish_live_scenario_heartbeats"
+kind = "sleep"
+reason = "in-process event-loop yield or short poll inside a bounded async exercise; waits for another task to reach a state, with no wall-clock assertion"
+
+[[allow]]
+path = "tests/test_daemon_live_contract.py"
+anchor = "_run_live_contract_scenario_body"
+kind = "sleep"
+reason = "in-process event-loop yield or short poll inside a bounded async exercise; waits for another task to reach a state, with no wall-clock assertion"
+
+[[allow]]
+path = "tests/test_daemon_mcp_http.py"
+anchor = "_wait_for"
+kind = "sleep"
+reason = "in-process event-loop yield or short poll inside a bounded async exercise; waits for another task to reach a state, with no wall-clock assertion"
+
+[[allow]]
+path = "tests/test_daemon_state_broker.py"
+anchor = "test_snapshot_captured_before_removal_cannot_republish_after_removal.remove_while_read_is_pinned"
+kind = "sleep"
+reason = "in-process event-loop yield or short poll inside a bounded async exercise; waits for another task to reach a state, with no wall-clock assertion"
+
+[[allow]]
+path = "tests/test_daemon_state_broker.py"
+anchor = "test_activity_captured_before_removal_cannot_recreate_evicted_cache.remove_while_discovery_is_pinned"
+kind = "sleep"
+reason = "in-process event-loop yield or short poll inside a bounded async exercise; waits for another task to reach a state, with no wall-clock assertion"
+
+[[allow]]
+path = "tests/test_daemon_state_broker.py"
+anchor = "test_stale_cached_owner_cannot_escape_new_owner_removal.remove_new_owner_while_stale_owner_is_pinned"
+kind = "sleep"
+reason = "in-process event-loop yield or short poll inside a bounded async exercise; waits for another task to reach a state, with no wall-clock assertion"
+
+[[allow]]
+path = "tests/test_daemon_state_broker.py"
+anchor = "test_active_pump_detects_registry_removal_and_cleans_only_that_hive.exercise"
+kind = "sleep"
+reason = "in-process event-loop yield or short poll inside a bounded async exercise; waits for another task to reach a state, with no wall-clock assertion"
+
+[[allow]]
+path = "tests/test_daemon_state_broker.py"
+anchor = "test_registry_reconciler_removes_cached_hive_without_clients_or_pumps.exercise"
+kind = "sleep"
+reason = "in-process event-loop yield or short poll inside a bounded async exercise; waits for another task to reach a state, with no wall-clock assertion"
+
+[[allow]]
+path = "tests/test_daemon_state_broker.py"
+anchor = "test_sync_source_read_is_owned_across_close_and_all_post_close_reads_are_rejected.close_while_sync_read_is_owned"
+kind = "sleep"
+reason = "in-process event-loop yield or short poll inside a bounded async exercise; waits for another task to reach a state, with no wall-clock assertion"
+
+[[allow]]
+path = "tests/test_daemon_state_broker.py"
+anchor = "test_blocked_registry_reader_is_cancelled_and_drained_before_broker_close.close_while_registry_worker_is_owned"
+kind = "sleep"
+reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
+
+[[allow]]
+path = "tests/test_director_failover.py"
+anchor = "test_a_failing_tick_is_counted_and_the_loop_keeps_running.run"
+kind = "sleep"
+reason = "in-process event-loop yield or short poll inside a bounded async exercise; waits for another task to reach a state, with no wall-clock assertion"
+
+[[allow]]
+path = "tests/test_dolt_globals_watchdog_int.py"
+anchor = "Scratch.start"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/test_dolt_health.py"
+anchor = "test_a_real_process_on_a_real_deleted_datadir_is_seen_as_a_zombie"
+kind = "sleep"
+reason = "real-time window against a real process, server or Dolt server clock where neither FakeClock nor time-machine reaches; the window is a race-forcing hold, not a sync"
+
+[[allow]]
+path = "tests/test_dolt_health_real_server_int.py"
+anchor = "_wait_until_accepting"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/test_dolt_server_slots.py"
+anchor = "_hold._worker"
+kind = "sleep"
+reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
+
+[[allow]]
+path = "tests/test_dolt_server_slots.py"
+anchor = "test_nested_acquisition_in_one_thread_does_not_take_a_second_slot"
+kind = "elapsed-assert"
+reason = "generous hang ceiling (a bound far above the expected time, there to name a hang rather than measure speed); not a latency budget"
+
+[[allow]]
+path = "tests/test_dolt_server_sweep.py"
+anchor = "_wait_until_visible"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/test_fake_clock.py"
+anchor = "test_sleep_advances_without_blocking"
+kind = "elapsed-assert"
+reason = "proves FakeClock.sleep(3600) returns without really blocking; 5 s is a hang ceiling over a zero-cost call"
+
+[[allow]]
+path = "tests/test_fence_trigger_canary_int.py"
+anchor = "test_r5_commit_ancestors_where_on_a_merge_head_fails_max1row_on_sql_server"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/test_fleet.py"
+anchor = "test_fanout_preserves_input_order_regardless_of_completion_order.slow_first"
+kind = "sleep"
+reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
+
+[[allow]]
+path = "tests/test_fleet.py"
+anchor = "test_once_collapses_concurrent_callers_to_a_single_execution.slow"
+kind = "sleep"
+reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
+
+[[allow]]
+path = "tests/test_fleet.py"
+anchor = "test_once_the_same_test_fails_against_functools_cache.slow"
+kind = "sleep"
+reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
+
+[[allow]]
+path = "tests/test_fleet_config_consumers_int.py"
+anchor = "test_normal_consumers_use_committed_revision_cas_and_never_fall_back"
+kind = "sleep"
+reason = "real-time window against a real process, server or Dolt server clock where neither FakeClock nor time-machine reaches; the window is a race-forcing hold, not a sync"
+
+[[allow]]
+path = "tests/test_frame_bridge.py"
+anchor = "test_hung_snapshot_saturation_times_out_without_starving_discovery.action"
+kind = "sleep"
+reason = "in-process event-loop yield or short poll inside a bounded async exercise; waits for another task to reach a state, with no wall-clock assertion"
+
+[[allow]]
+path = "tests/test_frame_bridge.py"
+anchor = "test_snapshot_availability_saturation_does_not_starve_discovery.action"
+kind = "sleep"
+reason = "in-process event-loop yield or short poll inside a bounded async exercise; waits for another task to reach a state, with no wall-clock assertion"
+
+[[allow]]
+path = "tests/test_frame_bridge_upstream.py"
+anchor = "_private_unix_client"
+kind = "sleep"
+reason = "in-process event-loop yield or short poll inside a bounded async exercise; waits for another task to reach a state, with no wall-clock assertion"
+
+[[allow]]
+path = "tests/test_gateway_read.py"
+anchor = "test_live_dense_host_seed_page_detail_and_single_invalidation_are_hive_bound.exercise"
+kind = "sleep"
+reason = "in-process event-loop yield or short poll inside a bounded async exercise; waits for another task to reach a state, with no wall-clock assertion"
+
+[[allow]]
+path = "tests/test_herdr_views.py"
+anchor = "test_picker_never_waits_on_slow_hive_sources"
+kind = "elapsed-assert"
+reason = "generous hang ceiling (a bound far above the expected time, there to name a hang rather than measure speed); not a latency budget"
+
+[[allow]]
+path = "tests/test_herdr_workspace_binding_real.py"
+anchor = "herdr_server"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/test_herdr_workspace_binding_real.py"
+anchor = "test_real_herdr_unavailable_at_bind_keeps_the_native_worktree"
+kind = "sleep"
+reason = "real-time window against a real process, server or Dolt server clock where neither FakeClock nor time-machine reaches; the window is a race-forcing hold, not a sync"
+
+[[allow]]
+path = "tests/test_hermetic_fence.py"
+anchor = "test_an_interrupted_run_never_exits_zero"
+kind = "sleep"
+reason = "real-time window against a real process, server or Dolt server clock where neither FakeClock nor time-machine reaches; the window is a race-forcing hold, not a sync"
+
+[[allow]]
+path = "tests/test_hermetic_fence.py"
+anchor = "test_an_interrupted_run_never_exits_zero"
+kind = "elapsed-assert"
+reason = "generous hang ceiling (a bound far above the expected time, there to name a hang rather than measure speed); not a latency budget"
+
+[[allow]]
+path = "tests/test_hitch_plugin.py"
+anchor = "test_seat_reports_keeps_sorted_order_when_preflights_finish_out_of_order._fake_run"
+kind = "sleep"
+reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
+
+[[allow]]
+path = "tests/test_hive_forward_int.py"
+anchor = "TlsHiveServer.start"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/test_host_beads.py"
+anchor = "test_supervision_loop_retries_after_intent_directory_io_failure.exercise"
+kind = "sleep"
+reason = "in-process event-loop yield or short poll inside a bounded async exercise; waits for another task to reach a state, with no wall-clock assertion"
+
+[[allow]]
+path = "tests/test_host_beads.py"
+anchor = "test_daemon_component_shuts_supervisors_down_on_drain.exercise"
+kind = "sleep"
+reason = "in-process event-loop yield or short poll inside a bounded async exercise; waits for another task to reach a state, with no wall-clock assertion"
+
+[[allow]]
+path = "tests/test_host_daemon.py"
+anchor = "test_one_shutdown_deadline_cancels_a_slow_owner_and_skips_later_work.slow"
+kind = "sleep"
+reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
+
+[[allow]]
+path = "tests/test_host_daemon.py"
+anchor = "test_one_shutdown_deadline_cancels_a_slow_owner_and_skips_later_work"
+kind = "elapsed-assert"
+reason = "generous hang ceiling (a bound far above the expected time, there to name a hang rather than measure speed); not a latency budget"
+
+[[allow]]
+path = "tests/test_host_daemon.py"
+anchor = "test_cancellation_still_obeys_one_finite_shutdown_budget.slow"
+kind = "sleep"
+reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
+
+[[allow]]
+path = "tests/test_host_daemon.py"
+anchor = "test_cancellation_still_obeys_one_finite_shutdown_budget.exercise"
+kind = "elapsed-assert"
+reason = "generous hang ceiling (a bound far above the expected time, there to name a hang rather than measure speed); not a latency budget"
+
+[[allow]]
+path = "tests/test_hq_authority_backend.py"
+anchor = "_PreparedHq.start_broker"
+kind = "sleep"
+reason = "bounded poll / race hold against a real HQ broker process. WATCH: tests/test_hq_authority_backend.py::test_real_foreign_holder_takeover_requires_authenticated_incumbent_evidence failed once under 3-way concurrency during bh-p4bbw (unconfirmed host contention); do not add retries or longer sleeps, see TEST_PROCESS_POLICY.md"
+
+[[allow]]
+path = "tests/test_hq_authority_backend.py"
+anchor = "test_complete_receive_session_serializes_actual_operator_client"
+kind = "sleep"
+reason = "bounded poll / race hold against a real HQ broker process. WATCH: tests/test_hq_authority_backend.py::test_real_foreign_holder_takeover_requires_authenticated_incumbent_evidence failed once under 3-way concurrency during bh-p4bbw (unconfirmed host contention); do not add retries or longer sleeps, see TEST_PROCESS_POLICY.md"
+
+[[allow]]
+path = "tests/test_hq_authority_backend.py"
+anchor = "test_explicit_git_identity_policy_refresh_recovers_partial_rotation.stop_before_anchors"
+kind = "sleep"
+reason = "bounded poll / race hold against a real HQ broker process. WATCH: tests/test_hq_authority_backend.py::test_real_foreign_holder_takeover_requires_authenticated_incumbent_evidence failed once under 3-way concurrency during bh-p4bbw (unconfirmed host contention); do not add retries or longer sleeps, see TEST_PROCESS_POLICY.md"
+
+[[allow]]
+path = "tests/test_hq_authority_no_expiry.py"
+anchor = "test_sentinel_is_finite_far_future_and_fits_every_store"
+kind = "elapsed-assert"
+reason = "remaining-seconds arithmetic of a fixed far-future sentinel against time.time(); a timestamp bound, not a measured duration"
+
+[[allow]]
+path = "tests/test_hq_authority_no_expiry_int.py"
+anchor = "test_signed_authority_without_duration_never_expires"
+kind = "elapsed-assert"
+reason = "generous hang ceiling (a bound far above the expected time, there to name a hang rather than measure speed); not a latency budget"
+
+[[allow]]
+path = "tests/test_hq_authority_trusted_publish_int.py"
+anchor = "test_keyless_trusted_publication_and_signed_rebind_on_sql"
+kind = "elapsed-assert"
+reason = "generous hang ceiling (a bound far above the expected time, there to name a hang rather than measure speed); not a latency budget"
+
+[[allow]]
+path = "tests/test_hq_git_broker.py"
+anchor = "test_stalled_pack_is_killed_reaped_and_lock_released"
+kind = "elapsed-assert"
+reason = "generous hang ceiling (a bound far above the expected time, there to name a hang rather than measure speed); not a latency budget"
+
+[[allow]]
+path = "tests/test_hq_git_broker.py"
+anchor = "test_stalled_pack_is_killed_reaped_and_lock_released"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/test_hq_laptop_off_acceptance_int.py"
+anchor = "_start_server"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/test_hq_laptop_off_acceptance_int.py"
+anchor = "test_seven_day_authority_survives_48h_laptop_off"
+kind = "elapsed-assert"
+reason = "generous hang ceiling (a bound far above the expected time, there to name a hang rather than measure speed); not a latency budget"
+
+[[allow]]
+path = "tests/test_hq_sql_config_int.py"
+anchor = "_empty_config_server"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/test_hq_sql_config_int.py"
+anchor = "test_committed_sql_config_publication_and_floor"
+kind = "sleep"
+reason = "real-time window against a real process, server or Dolt server clock where neither FakeClock nor time-machine reaches; the window is a race-forcing hold, not a sync"
+
+[[allow]]
+path = "tests/test_hq_sql_config_int.py"
+anchor = "test_committed_sql_config_publication_and_floor"
+kind = "elapsed-assert"
+reason = "generous hang ceiling (a bound far above the expected time, there to name a hang rather than measure speed); not a latency budget"
+
+[[allow]]
+path = "tests/test_hq_sql_runtime_int.py"
+anchor = "test_committed_signed_runtime_authority_and_separate_frame_grants"
+kind = "sleep"
+reason = "real-time window against a real process, server or Dolt server clock where neither FakeClock nor time-machine reaches; the window is a race-forcing hold, not a sync"
+
+[[allow]]
+path = "tests/test_hq_sql_runtime_int.py"
+anchor = "test_committed_signed_runtime_authority_and_separate_frame_grants"
+kind = "elapsed-assert"
+reason = "generous hang ceiling (a bound far above the expected time, there to name a hang rather than measure speed); not a latency budget"
+
+[[allow]]
+path = "tests/test_hq_sql_session_int.py"
+anchor = "_server"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/test_hq_sql_session_int.py"
+anchor = "test_provisioning_isolation_server_stamps_and_eligibility"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/test_hq_sql_transport.py"
+anchor = "test_hostname_resolution_is_bounded_before_any_credential"
+kind = "elapsed-assert"
+reason = "generous hang ceiling (a bound far above the expected time, there to name a hang rather than measure speed); not a latency budget"
+
+[[allow]]
+path = "tests/test_hq_sql_transport.py"
+anchor = "test_pinned_driver_aborts_a_dripping_response_at_total_deadline"
+kind = "elapsed-assert"
+reason = "generous hang ceiling (a bound far above the expected time, there to name a hang rather than measure speed); not a latency budget"
+
+[[allow]]
+path = "tests/test_hub_bulk_int.py"
+anchor = "_wait_until_accepting"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/test_localloop.py"
+anchor = "test_local_runtime_close_is_bounded_and_reaps_when_shutdown_stalls"
+kind = "elapsed-assert"
+reason = "generous hang ceiling (a bound far above the expected time, there to name a hang rather than measure speed); not a latency budget"
+
+[[allow]]
+path = "tests/test_localloop.py"
+anchor = "test_bounded_bd_init_kills_its_group_and_never_blocks_on_an_escaped_pipe_holder"
+kind = "elapsed-assert"
+reason = "generous hang ceiling (a bound far above the expected time, there to name a hang rather than measure speed); not a latency budget"
+
+[[allow]]
+path = "tests/test_localloop.py"
+anchor = "test_a_sigterm_handler_is_installed_and_shuts_the_loop_down.sigterm_soon"
+kind = "sleep"
+reason = "in-process event-loop yield or short poll inside a bounded async exercise; waits for another task to reach a state, with no wall-clock assertion"
+
+[[allow]]
+path = "tests/test_localloop_int.py"
+anchor = "test_cancelling_releases_the_claim_without_waiting_out_the_lease_ttl"
+kind = "elapsed-assert"
+reason = "generous hang ceiling (a bound far above the expected time, there to name a hang rather than measure speed); not a latency budget"
+
+[[allow]]
+path = "tests/test_log.py"
+anchor = "test_stderr_record_is_readable_through_a_pipe_before_the_process_exits"
+kind = "sleep"
+reason = "real-time window against a real process, server or Dolt server clock where neither FakeClock nor time-machine reaches; the window is a race-forcing hold, not a sync"
+
+[[allow]]
+path = "tests/test_metrics_verify.py"
+anchor = "_emit_metrics"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/test_metrics_verify.py"
+anchor = "_poll_prom"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/test_operator_api.py"
+anchor = "test_factory_directory_never_waits_on_slow_hive_sources.action"
+kind = "sleep"
+reason = "in-process event-loop yield or short poll inside a bounded async exercise; waits for another task to reach a state, with no wall-clock assertion"
+
+[[allow]]
+path = "tests/test_operator_feed.py"
+anchor = "test_full_pinned_cache_coordinates_one_exact_run_cursor_domain"
+kind = "sleep"
+reason = "real-time window against a real process, server or Dolt server clock where neither FakeClock nor time-machine reaches; the window is a race-forcing hold, not a sync"
+
+[[allow]]
+path = "tests/test_operator_sse.py"
+anchor = "test_blocking_backend_pid_handoff_is_atomic"
+kind = "sleep"
+reason = "pid-handoff test: 1 ms in-child yields so the parent observes the pid file atomically replaced; the handoff atomicity is the property under test"
+
+[[allow]]
+path = "tests/test_operator_sse.py"
+anchor = "test_close_drains_blocking_source_worker_before_removing_feed_observers.exercise"
+kind = "sleep"
+reason = "pid-handoff test: 1 ms in-child yields so the parent observes the pid file atomically replaced; the handoff atomicity is the property under test"
+
+[[allow]]
+path = "tests/test_otel.py"
+anchor = "test_cli_flush_semantics_share_one_budget_and_report_dead_collector_timeout"
+kind = "elapsed-assert"
+reason = "generous hang ceiling (a bound far above the expected time, there to name a hang rather than measure speed); not a latency budget"
+
+[[allow]]
+path = "tests/test_pants_cache.py"
+anchor = "test_active_process_blocks_cleanup_and_exact_recovery"
+kind = "sleep"
+reason = "real-time window against a real process, server or Dolt server clock where neither FakeClock nor time-machine reaches; the window is a race-forcing hold, not a sync"
+
+[[allow]]
+path = "tests/test_placement_authority_int.py"
+anchor = "HqServer.start"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/test_public_readers.py"
+anchor = "_wait_gone"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/test_public_readers.py"
+anchor = "test_stop_token_interrupts_a_long_journal_poll_wait"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/test_release_flow.py"
+anchor = "test_await_refuses_immediately_on_a_red_bump_tree"
+kind = "elapsed-assert"
+reason = "generous hang ceiling (a bound far above the expected time, there to name a hang rather than measure speed); not a latency budget"
+
+[[allow]]
+path = "tests/test_role_process.py"
+anchor = "test_caller_cancellation_reaps_direct_role_descendants.scenario"
+kind = "sleep"
+reason = "in-process event-loop yield or short poll inside a bounded async exercise; waits for another task to reach a state, with no wall-clock assertion"
+
+[[allow]]
+path = "tests/test_source_descriptors.py"
+anchor = "test_current_installed_cli_resolves_registry_and_reaps_every_descriptor_stream"
+kind = "sleep"
+reason = "real-time window against a real process, server or Dolt server clock where neither FakeClock nor time-machine reaches; the window is a race-forcing hold, not a sync"
+
+[[allow]]
+path = "tests/test_state_stream_polling.py"
+anchor = "test_concurrent_same_scope_refreshes_share_one_export"
+kind = "sleep"
+reason = "real-time window against a real process, server or Dolt server clock where neither FakeClock nor time-machine reaches; the window is a race-forcing hold, not a sync"
+
+[[allow]]
+path = "tests/test_stream_cli.py"
+anchor = "_wait_pid"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/test_stream_cli.py"
+anchor = "_wait_gone"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/test_test_closure_certification_process.py"
+anchor = "test_bounded_probe_terminates_and_reaps_nested_children"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/test_test_watchdog.py"
+anchor = "test_timeout_reports_process_diagnostics_without_signaling_unregistered_python"
+kind = "elapsed-assert"
+reason = "generous hang ceiling (a bound far above the expected time, there to name a hang rather than measure speed); not a latency budget"
+
+[[allow]]
+path = "tests/test_triage_store.py"
+anchor = "test_a_repeat_run_bumps_its_tree_dir_even_with_no_machine_readable_results"
+kind = "elapsed-assert"
+reason = "mtime-vs-now freshness check on a file the test just touched (300 s window); a timestamp bound, not a measured duration"
+
+[[allow]]
+path = "tests/test_validation_admission.py"
+anchor = "_hold_announcing_queue._QueuedTime.sleep"
+kind = "sleep"
+reason = "real-time window against a real process, server or Dolt server clock where neither FakeClock nor time-machine reaches; the window is a race-forcing hold, not a sync"
+
+[[allow]]
+path = "tests/test_validation_concurrency_proof.py"
+anchor = "_wait_for"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/test_work.py"
+anchor = "_wait_validation_state"
+kind = "sleep"
+reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
+
+[[allow]]
+path = "tests/test_work_queue.py"
+anchor = "_reap_owned_scratch_hive"
+kind = "sleep"
+reason = "real-time window against a real process, server or Dolt server clock where neither FakeClock nor time-machine reaches; the window is a race-forcing hold, not a sync"
+
+[[allow]]
+path = "tests/test_work_queue.py"
+anchor = "test_next_releases_and_refuses_a_seat_mismatch_against_a_real_service"
+kind = "sleep"
+reason = "real-time window against a real process, server or Dolt server clock where neither FakeClock nor time-machine reaches; the window is a race-forcing hold, not a sync"
+
+[[allow]]
+path = "tests/unit/integrations/test_herdr_adapter.py"
+anchor = "_DelayedStream.readline"
+kind = "sleep"
+reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
+
+[[allow]]
+path = "tests/unit/integrations/test_herdr_adapter.py"
+anchor = "test_socket_client_honors_configured_deadline_after_quiet_period"
+kind = "elapsed-assert"
+reason = "generous hang ceiling (a bound far above the expected time, there to name a hang rather than measure speed); not a latency budget"
+
+[[allow]]
+path = "tests/unit/kernel/lifecycle/test_dispatcher.py"
+anchor = "test_activation_exit_failure_preserves_lifecycle_timeout.subscriber"
+kind = "sleep"
+reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
+
+[[allow]]
+path = "tests/unit/kernel/lifecycle/test_dispatcher.py"
+anchor = "test_activation_exit_failure_preserves_lifecycle_cancellation.subscriber"
+kind = "sleep"
+reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
+
+[[allow]]
+path = "tests/unit/kernel/lifecycle/test_dispatcher.py"
+anchor = "test_complete_control_flow_failure_preserves_timeout_report.subscriber"
+kind = "sleep"
+reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
+
+[[allow]]
+path = "tests/unit/kernel/lifecycle/test_dispatcher.py"
+anchor = "test_complete_control_flow_failure_preserves_exact_lifecycle_cancellation.subscriber"
+kind = "sleep"
+reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
+
+[[allow]]
+path = "tests/unit/kernel/lifecycle/test_dispatcher.py"
+anchor = "test_timeout_cancels_attempt_and_best_effort_continues.slow"
+kind = "sleep"
+reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
+
+[[allow]]
+path = "tests/unit/kernel/lifecycle/test_dispatcher.py"
+anchor = "test_external_cancellation_is_never_downgraded_to_best_effort.slow"
+kind = "sleep"
+reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
+
+[[allow]]
+path = "tests/unit/kernel/lifecycle/test_dispatcher.py"
+anchor = "test_lifecycle_cancellation_is_observed_without_becoming_best_effort.slow"
+kind = "sleep"
+reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
+
+[[allow]]
+path = "tests/unit/kernel/lifecycle/test_dispatcher.py"
+anchor = "test_lifecycle_timeout_has_bounded_error_and_preserves_delivery_behavior.slow"
+kind = "sleep"
+reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
+
+[[allow]]
+path = "tests/unit/kernel/operations/test_executor.py"
+anchor = "test_async_cancellation_emits_completion_and_propagates_cancellation.slow"
+kind = "sleep"
+reason = "in-task or in-child blocker/keep-alive that the test cancels, kills or times out; it never runs to completion and nothing asserts on its duration"
