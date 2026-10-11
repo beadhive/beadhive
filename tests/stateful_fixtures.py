@@ -871,8 +871,8 @@ def _rewound(request, pool, keyer):
     guard = True if request.node.get_closest_marker("cluster_guard") is not None else None
     used: list = []
 
-    def get(frames, **options):
-        key = keyer(frames, **options)
+    def get(*args, **options):
+        key = keyer(*args, **options)
         target = pool.acquire(key, guard=guard)
         used.append(key)
         return target
@@ -901,3 +901,13 @@ def rewound_world(request, cluster_pool):
     from harness.cluster_rewind import world_key
 
     yield from _rewound(request, cluster_pool, world_key)
+
+
+@pytest.fixture
+def rewound_custom(request, cluster_pool):
+    """``rewound_custom(factory, frames, **options)`` -> the target ``factory(root, frames,
+    **options)`` builds (a context manager; see :func:`harness.cluster_rewind.custom_key`), pooled
+    and rewound like :fixture:`rewound_cluster` (bh-jvgj6)."""
+    from harness.cluster_rewind import custom_key
+
+    yield from _rewound(request, cluster_pool, custom_key)
