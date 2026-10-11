@@ -333,12 +333,16 @@ class SessionRenewer:
         interval_s: float,
         stop: Callable[[float], bool],
         on_error: Callable[[BaseException], None] | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        """Tick every ``interval_s`` until ``stop(wait_s)`` returns True (an Event's ``wait``)."""
+        """Tick every ``interval_s`` until ``stop(wait_s)`` returns True (an Event's ``wait``).
+
+        ``clock`` measures each tick's duration (monotonic seconds); tests pass a fake clock so
+        ``wait_s`` is exactly ``interval_s`` minus virtual time (bh-qwbrz)."""
         if type(interval_s) not in (int, float) or not math.isfinite(interval_s) or interval_s <= 0:
             raise SessionError("renewal interval must be a positive number of seconds")
         while True:
-            started = time.monotonic()
+            started = clock()
             try:
                 self.tick()
             except NotSwitched:
@@ -346,7 +350,7 @@ class SessionRenewer:
             except Exception as exc:  # noqa: BLE001 - one failed renewal never ends the loop
                 if on_error is not None:
                     on_error(exc)
-            if stop(max(0.0, interval_s - (time.monotonic() - started))):
+            if stop(max(0.0, interval_s - (clock() - started))):
                 return
 
 
