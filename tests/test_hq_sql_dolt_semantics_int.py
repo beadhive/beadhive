@@ -1,13 +1,26 @@
-"""Executable evidence for the bh-wtsrc spike; not a product contract test.
+"""Dolt 2.3.5 storage-semantics contracts for the SQL HQ (bh-3nfbn; origin: spike bh-wtsrc).
 
-Question: can frame liveness be a per-frame, server-timed session row written under the frame's
-own SQL grant, with conformance as a separately scheduled evidence row and eligibility computed
-at read time, without the trusted receiver?  See
-``docs/spikes/bh-wtsrc-receiver-removal-liveness.md``.
+Permanent, real-Dolt contracts about what the server itself guarantees, independent of any Python
+adapter: grants confine a frame principal, operator triggers stamp server UTC, trigger-body DML is
+invoker-checked, host-pinned accounts refuse a leaked password, globals are not privilege-checked,
+and renewal rows leave no history. The HQ storage-port epic folds this file into its real-Dolt
+contract suite; ``docs/spikes/bh-wtsrc-receiver-removal-liveness.md`` records the evidence and the
+"Retired to permanent suites" table.
 
-Every server here is owned by the test and runs with its own ``DOLT_ROOT_PATH`` and ``HOME``.
-Some probes deliberately run ``SET GLOBAL`` / ``SET PERSIST`` as an unprivileged frame principal;
-the isolated root keeps the persisted value inside ``tmp_path`` and out of the operator's
+Layout, so sibling beads can extend it (add a new section; reuse the helpers, do not copy them):
+
+1. Owned, isolated server and SQL helpers (``_isolated_server``, ``_connect``, ``_sql``).
+2. Operator-provisioned schema (``_provision``): ``hq_grant`` plus per-frame session/evidence
+   tables, triggers and principals.
+3. Contract sections, one ``# ---`` block each:
+   * grants (``frame_grant``), triggers (``operator_trigger``, ``trigger_body``), accounts
+     (``host_pinned``), globals (``set_globals``), history (``session_rows``) -- bh-3nfbn;
+   * forward-RPC grant contracts -- bh-uhx2r (to be added);
+   * write-guard engine contracts -- bh-sieai (to be added).
+
+Every server is owned by the test and runs with its own ``DOLT_ROOT_PATH`` and ``HOME``. Some
+probes deliberately run ``SET GLOBAL`` / ``SET PERSIST`` as an unprivileged frame principal; the
+isolated root keeps the persisted value inside ``tmp_path`` and out of the operator's
 ``~/.dolt/config_global.json``.
 """
 
@@ -15,12 +28,10 @@ from __future__ import annotations
 
 import json
 import os
-import queue
 import shutil
 import socket
 import statistics
 import subprocess
-import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -28,7 +39,6 @@ from pathlib import Path
 import pymysql
 import pytest
 
-from harness.processes import process_context
 from harness.world import free_port
 
 pytestmark = [pytest.mark.integration, pytest.mark.dolt_server]
@@ -192,83 +202,7 @@ def _provision(port, frames=("a", "b"), *, session_ttl_ms=300_000, evidence_ttl_
     return root
 
 
-ELIGIBILITY = """
-SELECT
-  g.state = 'active' AND s.epoch = g.epoch                                   AS granted,
-  s.renewed_at > UTC_TIMESTAMP(6) - INTERVAL g.session_ttl_ms * 1000 MICROSECOND
-                                                                             AS session_fresh,
-  e.status = 'conformant' AND e.profile = g.profile                          AS evidence_pass,
-  e.measured_at > UTC_TIMESTAMP(6) - INTERVAL g.evidence_ttl_ms * 1000 MICROSECOND
-                                                                             AS evidence_unexpired,
-  e.release_digest = g.release_digest                                        AS release_matches
-FROM hq_grant AS g
-JOIN frame_{frame}_session AS s ON s.id = 1
-JOIN frame_{frame}_evidence AS e ON e.id = 1
-WHERE g.frame_id = %s
-"""
-
-PREDICATES = ("granted", "session_fresh", "evidence_pass", "evidence_unexpired", "release_matches")
-
-
-def _decide(reader, frame) -> dict[str, bool]:
-    """Read-time eligibility from one statement, timed by the server clock alone."""
-    rows = _sql(reader, ELIGIBILITY.format(frame=frame), (frame,))
-    if len(rows) != 1:
-        return {"authority_available": False}
-    return {name: bool(value) for name, value in zip(PREDICATES, rows[0], strict=True)}
-
-
-def _blocked_by(decision: dict[str, bool]) -> set[str]:
-    return {name for name, value in decision.items() if not value}
-
-
-# --- process targets (module scope, spawn-safe) ------------------------------------------------
-
-
-def _renewer(port, frame, interval_s, stop, errors):
-    """The frame's liveness loop: a no-op UPDATE; the trigger stamps server time."""
-    connection = _connect(port, f"frame_{frame}", PASSWORD, DB)
-    try:
-        while not stop.is_set():
-            try:
-                _sql(connection, f"UPDATE frame_{frame}_session SET epoch = epoch WHERE id = 1")
-            except pymysql.MySQLError as exc:
-                errors.put(repr(exc))
-            stop.wait(interval_s)
-    finally:
-        connection.close()
-
-
-def _conformance_probe(port, frame, duration_s, started, finished):
-    """A slow measurement that publishes its evidence only when it completes."""
-    connection = _connect(port, f"frame_{frame}", PASSWORD, DB)
-    try:
-        started.set()
-        time.sleep(duration_s)
-        _sql(
-            connection,
-            f"UPDATE frame_{frame}_evidence SET release_digest=%s, profile='factory', "
-            "status='conformant' WHERE id = 1",
-            ("sha256:" + "1" * 64,),
-        )
-        finished.set()
-    finally:
-        connection.close()
-
-
-def _coupled_heartbeat(port, frame, duration_s, started, finished):
-    """Today's shape: the renewal carries conformance, so it waits for the measurement."""
-    connection = _connect(port, f"frame_{frame}", PASSWORD, DB)
-    try:
-        started.set()
-        time.sleep(duration_s)
-        _sql(connection, f"UPDATE frame_{frame}_session SET epoch = epoch WHERE id = 1")
-        finished.set()
-    finally:
-        connection.close()
-
-
-# --- evidence ----------------------------------------------------------------------------------
+# --- contracts: grants, triggers, accounts, globals, history (bh-3nfbn) ---------------------
 
 
 def test_frame_grant_confines_writes_to_its_own_session_and_evidence(tmp_path):
@@ -535,156 +469,3 @@ def test_session_rows_leave_no_history_and_renewal_latency_is_small(tmp_path):
             )
         }
         assert changed and not any(name.startswith("frame_") for name in changed), changed
-
-
-def test_scenario_10_slow_probe_keeps_session_fresh_and_expired_evidence_alone_blocks(tmp_path):
-    """Scenario 10: a conformance probe slower than the session TTL.
-
-    Scaled-down clock: session TTL 3 s, renewal every 0.3 s, evidence TTL 1.5 s, probe 6 s.
-    Decoupled: the session stays fresh throughout; once evidence expires, eligibility fails on
-    ``evidence_unexpired`` alone, and recovers when the probe publishes.  Coupled counterfactual
-    (renewal waits for the measurement, as a HeartbeatLease with embedded conformance does):
-    the same probe lets the session go stale.
-    """
-    session_ttl_ms, evidence_ttl_ms, renew_s, probe_s = 3000, 1500, 0.3, 6.0
-    context = process_context()
-    with _isolated_server(tmp_path) as (port, _root):
-        root = _provision(port, session_ttl_ms=session_ttl_ms, evidence_ttl_ms=evidence_ttl_ms)
-        reader = _connect(port, "reader", PASSWORD, DB)
-        frame_a = _connect(port, "frame_a", PASSWORD, DB)
-        _sql(
-            frame_a,
-            "UPDATE frame_a_evidence SET release_digest=%s, profile='factory', "
-            "status='conformant' WHERE id = 1",
-            ("sha256:" + "1" * 64,),
-        )
-
-        stop, errors = context.Event(), context.Queue()
-        renewers = [
-            context.Process(target=_renewer, args=(port, frame, renew_s, stop, errors))
-            for frame in ("a", "b")
-        ]
-        for process in renewers:
-            process.start()
-
-        # Concurrent operator config commits must not disturb renewals or reads.
-        operator_stop = threading.Event()
-        commit_errors = []
-
-        def operator_commits():
-            connection = _connect(port, database=DB)
-            n = 0
-            while not operator_stop.is_set():
-                n += 1
-                try:
-                    _sql(
-                        connection,
-                        "UPDATE hq_grant SET profile = 'factory' WHERE frame_id = 'b'",
-                    )
-                    _sql(
-                        connection,
-                        "INSERT INTO hq_grant VALUES (%s,'pending',1,'x','p',1,1)",
-                        (f"op-{n}",),
-                    )
-                    _sql(connection, "CALL DOLT_COMMIT('-am', 'operator change')")
-                except pymysql.MySQLError as exc:
-                    commit_errors.append(repr(exc))
-                operator_stop.wait(0.2)
-            connection.close()
-
-        committer = threading.Thread(target=operator_commits)
-        committer.start()
-        try:
-            # Wait for both spawned renewers to have renewed at least once after this point.
-            mark = _sql(root, "SELECT UTC_TIMESTAMP(6)")[0][0]
-            deadline = time.monotonic() + 60
-            while not all(
-                _sql(root, f"SELECT renewed_at > %s FROM frame_{frame}_session", (mark,))[0][0]
-                for frame in ("a", "b")
-            ):
-                assert time.monotonic() < deadline, "renewers never renewed"
-                time.sleep(0.1)
-            _sql(
-                frame_a,
-                "UPDATE frame_a_evidence SET status='conformant' WHERE id = 1",
-            )
-            assert _blocked_by(_decide(reader, "a")) == set()
-            # Frame b renews but never measured: live, yet blocked by its evidence alone.
-            blocked_b = _blocked_by(_decide(reader, "b"))
-            assert {"evidence_pass", "release_matches"} <= blocked_b
-            assert blocked_b <= {"evidence_pass", "release_matches", "evidence_unexpired"}
-
-            started, finished = context.Event(), context.Event()
-            probe = context.Process(
-                target=_conformance_probe, args=(port, "a", probe_s, started, finished)
-            )
-            probe.start()
-            assert started.wait(30)
-            samples = []
-            while not finished.is_set():
-                samples.append(_decide(reader, "a"))
-                time.sleep(0.1)
-            probe.join(30)
-            assert probe.exitcode == 0
-            after = _decide(reader, "a")
-
-            assert len(samples) > 20
-            assert all(sample["session_fresh"] for sample in samples), samples
-            blocked = [_blocked_by(sample) for sample in samples]
-            assert {"evidence_unexpired"} in blocked  # expired evidence alone blocks
-            assert all(reasons <= {"evidence_unexpired"} for reasons in blocked), blocked
-            assert _blocked_by(after) == set()  # republished evidence restores eligibility
-            print(
-                "SCENARIO_10_DECOUPLED "
-                + json.dumps(
-                    {
-                        "samples": len(samples),
-                        "session_fresh": sum(s["session_fresh"] for s in samples),
-                        "blocked_by_evidence_only": blocked.count({"evidence_unexpired"}),
-                        "eligible": blocked.count(set()),
-                    }
-                )
-            )
-        finally:
-            operator_stop.set()
-            committer.join(30)
-            stop.set()
-            for process in renewers:
-                process.join(30)
-        renewal_errors = []
-        while True:
-            try:
-                renewal_errors.append(errors.get(timeout=0.2))
-            except queue.Empty:
-                break
-        assert renewal_errors == []
-        assert commit_errors == []
-        assert all(process.exitcode == 0 for process in renewers)
-
-        # Coupled counterfactual: no independent renewer, renewal waits on the measurement.
-        _sql(frame_a, "UPDATE frame_a_session SET epoch = epoch WHERE id = 1")
-        _sql(root, "UPDATE hq_grant SET evidence_ttl_ms = 60000 WHERE frame_id = 'a'")
-        started, finished = context.Event(), context.Event()
-        coupled = context.Process(
-            target=_coupled_heartbeat, args=(port, "a", probe_s, started, finished)
-        )
-        coupled.start()
-        assert started.wait(30)
-        stale = []
-        while not finished.is_set():
-            stale.append(_blocked_by(_decide(reader, "a")))
-            time.sleep(0.1)
-        coupled.join(30)
-        assert coupled.exitcode == 0
-        assert {"session_fresh"} in stale  # a healthy frame expired by its own probe
-        print(
-            "SCENARIO_10_COUPLED "
-            + json.dumps(
-                {
-                    "samples": len(stale),
-                    "blocked_by_session_only": stale.count({"session_fresh"}),
-                    "renewer_errors": len(renewal_errors),
-                    "operator_commit_errors": len(commit_errors),
-                }
-            )
-        )
