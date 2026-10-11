@@ -4,6 +4,7 @@
 **Amended:** 2026-10-10 by the operator replan of `bh-sfp9o` (`bh-sfp9o.3`): the six dimensions
 and the capability ceiling per profile, `open` never forwards and warns, frame-ref merges without
 `--strategy`, and open question 1 narrowed. The record stays proposed until `bh-qj2x0` accepts it.
+**Amended:** 2026-10-11 by `bh-xwy5x`: open question 1 answered (GO with conditions; section 9).
 **Design bead:** `bh-7jq08` (this record) · **Implementation molecule:** filed from this record by
 `bh plan file`; its epic links back here.
 **Amends:** [hive-writer-partitioning-adr.md](hive-writer-partitioning-adr.md) §3 (asymmetric
@@ -383,10 +384,16 @@ fleet key changes shape: `hq.default_authority_mode` stays valid as the profile'
 
 ## 9. Open questions
 
-1. Top-level create under `open` (`bh-xwy5x`): bd allocates top-level ids as hashes, which the
-   `bh-sieai` spike did not test across replicas. GO opens top-level create under `open`; NO-GO
-   keeps it refused. Child ids are not open: child create stays refused under `open` until
-   gastownhall/beads#4796, whatever the verdict.
+1. ~~Top-level create under `open`~~ — **answered by `bh-xwy5x`: GO with three conditions**
+   ([decision record](bh-xwy5x-open-top-level-create-decision.md)). Two replicas creating
+   top-level beads under `open` and merged by the writer without `--strategy` showed no id or
+   `issue_counter` collision with bd's hash ids; a forced collision stops the merge on the
+   `issues` row and drops nothing. Counter ids (`issue_id_mode=counter`) always collide. The
+   conditions: top-level create stays refused under `open` for a counter-mode hive; the frame-ref
+   merge treats bd's per-clone `metadata.clone_id` row as frame-local, since every second frame
+   ref conflicts on it whatever was written; and an id collision is never resolved by taking a
+   side. The refusal is lifted through `/bh:replan` on `bh-sfp9o`, not by the decision. Child
+   create stays refused under `open` until gastownhall/beads#4796.
 2. Whether `director` should be a role on an executor (a frame that places itself and others) or
    stay a credential bound only through the operator settings file; the profile table assumes
    the latter for `verified` and `attested`.
