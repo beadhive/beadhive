@@ -7,13 +7,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from beadhive import host
+from beadhive import host, hq_control_plane
 from beadhive.hq_control_plane import ControlPlaneError, HqLeaseUnknown, SqlControlPlane
 from beadhive.hq_sql_operator import SqlOperatorError, SqlRuntimeOperator
+from harness.clock import FakeClock, patch_module_time
 
 
 @pytest.mark.parametrize("late_stage", ["proposal", "result"])
 def test_hive_proposal_composed_deadline_preserves_original_request(monkeypatch, late_stage):
+    clock = FakeClock()
+    patch_module_time(monkeypatch, clock, hq_control_plane)
     plane = object.__new__(SqlControlPlane)
     plane.settings = {"runtime": {"operation_timeout": 0.02}}
     monkeypatch.setattr(host, "signing_key", lambda: "/fixture/key")
@@ -25,13 +28,13 @@ def test_hive_proposal_composed_deadline_preserves_original_request(monkeypatch,
     def propose(*_args, deadline, **_kwargs):
         seen.append(deadline)
         if late_stage == "proposal":
-            time.sleep(0.04)
+            clock.sleep(0.04)
         return request_id, request_sha256, binding, "fleet"
 
     class Runtime:
         def read_public_result(self, *_args, deadline, **_kwargs):
             seen.append(deadline)
-            time.sleep(0.04)
+            clock.sleep(0.04)
             return "accepted", "new-revision"
 
     monkeypatch.setattr(plane, "propose_hive_lease", propose)
@@ -47,21 +50,23 @@ def test_hive_proposal_composed_deadline_preserves_original_request(monkeypatch,
 
 def test_operator_renew_carries_one_budget_through_load_and_publication(monkeypatch):
     plane = object.__new__(SqlControlPlane)
+    clock = FakeClock()
+    patch_module_time(monkeypatch, clock, hq_control_plane)
     plane.settings = {"authority_writer": {"operation_timeout": 0.02}}
-    plane.clock = time.time
+    plane.clock = clock.wall
     seen = []
 
     class Operator:
         def load(self, *, deadline):
             seen.append(deadline)
-            time.sleep(0.04)
+            clock.sleep(0.04)
             return "original", {"revision": 1, "issued_at": 1, "expires_at": 2}, (), {}
 
         def publish(self, _state, *, expected_revision, operator_key, deadline):
             seen.append(deadline)
             assert expected_revision == "original"
             assert operator_key == "/fixture/operator-key"
-            if time.monotonic() >= deadline:
+            if clock.monotonic() >= deadline:
                 raise SqlOperatorError("authority writer deadline exceeded")
             raise AssertionError("renewal used a fresh publication budget")
 
