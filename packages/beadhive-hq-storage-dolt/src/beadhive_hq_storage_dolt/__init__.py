@@ -37,6 +37,13 @@ from ._classify import (
     error_code,
     unknown_reason,
 )
+from ._config import (
+    CONFIG_TABLES,
+    DoltConfigHistory,
+    config_change_set,
+    config_document_kind,
+    config_documents_digest,
+)
 from ._fence import DoltHiveFence, FenceStatementEngine, SqlConnectionFenceEngine
 from ._hq import (
     ConnectionFactory,
@@ -75,6 +82,7 @@ from ._sessions import DoltHqSessions, DoltHqTransaction, SqlDoltHqSessions
 
 __all__ = [
     # the generic port adapters
+    "DoltConfigHistory",
     "DoltHiveFence",
     "DoltHqStorage",
     "DoltPlacementStore",
@@ -115,6 +123,7 @@ __all__ = [
     "APPEND_TABLE",
     "CAUSE_DOMAIN",
     "COMMITTED_TABLES",
+    "CONFIG_TABLES",
     "DOCUMENTS_TABLE",
     "FENCE_TABLES",
     "LIVENESS_TABLE",
@@ -126,6 +135,9 @@ __all__ = [
     "bump_statements",
     "cause_token",
     "committed_schema",
+    "config_change_set",
+    "config_document_kind",
+    "config_documents_digest",
     "live_schema",
     "operation_revision",
     "placement_cause",

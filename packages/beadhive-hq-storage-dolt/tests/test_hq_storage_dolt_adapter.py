@@ -25,11 +25,14 @@ from beadhive_hq_storage import (
     Applied,
     BumpRequest,
     CapabilityUnsupported,
+    ChangeSet,
     Confirmed,
     Conflict,
+    IntegrityViolation,
     InvalidRequest,
     LivenessKind,
     NotConfirmed,
+    NotProvisioned,
     RecordKind,
     Revision,
     StorageUnavailable,
@@ -39,7 +42,9 @@ from beadhive_hq_storage import (
     require_capability,
 )
 from beadhive_hq_storage_dolt import (
+    CONFIG_TABLES,
     DoltAccounts,
+    DoltConfigHistory,
     DoltHistory,
     DoltHiveFence,
     DoltHqSessions,
@@ -49,6 +54,9 @@ from beadhive_hq_storage_dolt import (
     MergeRefused,
     Role,
     cause_token,
+    config_change_set,
+    config_document_kind,
+    config_documents_digest,
     error_code,
     operation_revision,
     placement_seed_statement,
@@ -64,6 +72,8 @@ from beadhive_hq_storage_dolt.contract import (
     DoltFenceHarness,
     DoltHqHarness,
     DoltSqlServer,
+    FaultPlan,
+    _FaultingConnection,
 )
 
 # --- hermetic: classification by phase ------------------------------------------------------
@@ -543,3 +553,235 @@ def test_sessions_share_one_transaction_and_commit_only_an_applied_cas(
         )
     keys = {k for (k,) in server.sql(hq.database, "SELECT live_key FROM hq_live_liveness")}
     assert keys == {"landed"}
+
+
+# --- the HQ config publication (bh-x7xtc) ---------------------------------------------------
+
+_CONFIG_SCHEMA = (
+    "CREATE TABLE hq_config_meta (singleton_id TINYINT NOT NULL PRIMARY KEY, "
+    "schema_version INT NOT NULL, backend_identity VARCHAR(128) NOT NULL, "
+    "generation VARCHAR(128) NOT NULL, publication_sequence BIGINT UNSIGNED NOT NULL, "
+    "publication_id CHAR(36) NOT NULL, documents_sha256 CHAR(64) NOT NULL, "
+    "document_count INT UNSIGNED NOT NULL, initial_attempt_nonce CHAR(36) NOT NULL)",
+    "CREATE TABLE hq_config_documents (path VARCHAR(512) CHARACTER SET utf8mb4 "
+    "COLLATE utf8mb4_bin NOT NULL PRIMARY KEY, ordinal INT UNSIGNED NOT NULL UNIQUE, "
+    "kind VARCHAR(32) NOT NULL, content LONGBLOB NOT NULL, content_sha256 CHAR(64) NOT NULL)",
+    "CREATE TABLE hq_config_publications (publication_id CHAR(36) NOT NULL PRIMARY KEY, "
+    "publication_sequence BIGINT UNSIGNED NOT NULL UNIQUE, generation VARCHAR(128) NOT NULL, "
+    "expected_parent_revision VARCHAR(128) NOT NULL, documents_sha256 CHAR(64) NOT NULL, "
+    "document_count INT UNSIGNED NOT NULL)",
+    "CALL DOLT_ADD('hq_config_meta', 'hq_config_documents', 'hq_config_publications')",
+    "CALL DOLT_COMMIT('-m', 'schema', '--author', 'Fixture <fixture@example.invalid>')",
+)
+_SEED_FLEET = b"hq:\n  mode: dolt-server\n"
+_PUBLISHED = (
+    ("fleet.yaml", b"hq:\n  mode: dolt-server\nmanaged_repos: []\n"),
+    ("hosts/a.yaml", b"name: a\n"),
+    ("workspace.toml", b"[x]\n"),
+)
+
+
+def test_the_config_change_set_is_the_three_table_allowlist_in_order() -> None:
+    changes = config_change_set(2, _PUBLISHED)
+    assert changes.tables == frozenset(CONFIG_TABLES)
+    assert changes.documents[0] == ("hq_config_meta/schema_version", b"2")
+    assert [name for name, _ in changes.documents[1:]] == [
+        "hq_config_documents/fleet.yaml",
+        "hq_config_documents/hosts/a.yaml",
+        "hq_config_documents/workspace.toml",
+    ]
+    assert [config_document_kind(path) for path, _ in _PUBLISHED] == ["fleet", "host", "workspace"]
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        ChangeSet((("hq_config_documents/fleet.yaml", b"x"),), frozenset(CONFIG_TABLES)),
+        ChangeSet((("hq_config_meta/schema_version", b"1"),), frozenset(CONFIG_TABLES)),
+        ChangeSet(
+            (("hq_config_meta/schema_version", b"1"), ("hq_config_documents/fleet.yaml", b"x")),
+            frozenset({"hq_config_documents", "hq_config_meta"}),
+        ),
+        ChangeSet(
+            (("hq_config_meta/schema_version", b"1"), ("hq_config_documents/nope.txt", b"x")),
+            frozenset(CONFIG_TABLES),
+        ),
+        ChangeSet(
+            (
+                ("hq_config_meta/schema_version", b"1"),
+                ("hq_config_documents/fleet.yaml", b"x"),
+                ("hq_config_documents/fleet.yaml", b"y"),
+            ),
+            frozenset(CONFIG_TABLES),
+        ),
+    ],
+)
+def test_a_malformed_config_change_set_is_refused_before_io(changes: ChangeSet) -> None:
+    script = _Script()
+    with pytest.raises(InvalidRequest):
+        DoltConfigHistory(script.connect).publish(
+            changes,
+            expected_head=Revision("h"),
+            operation=new_operation_id(),
+            author="a",
+            message="m",
+        )
+    assert script.statements == []
+
+
+class _ConfigDb:
+    """A fresh HQ config database seeded with one publication, as root's seed leaves it."""
+
+    def __init__(self, server: DoltSqlServer, faults: Any = None) -> None:
+        self.server = server
+        self.database = server.fresh_name("cfg")
+        server.sql(None, f"CREATE DATABASE {self.database}")
+        server.sql(self.database, *_CONFIG_SCHEMA)
+        schema = _head(server, self.database)
+        digest = config_documents_digest((("fleet.yaml", _SEED_FLEET),))
+        seed = "00000000-0000-4000-8000-000000000001"
+        server.sql(
+            self.database,
+            "INSERT INTO hq_config_meta VALUES (1, 3, 'backend', 'gen-1', 1, "
+            f"'{seed}', '{digest}', 1, '00000000-0000-4000-8000-0000000000aa')",
+            "INSERT INTO hq_config_documents VALUES ('fleet.yaml', 0, 'fleet', "
+            f"'{_SEED_FLEET.decode()}', '{hashlib.sha256(_SEED_FLEET).hexdigest()}')",
+            f"INSERT INTO hq_config_publications VALUES ('{seed}', 1, 'gen-1', '{schema}', "
+            f"'{digest}', 1)",
+            "CALL DOLT_ADD('hq_config_meta', 'hq_config_documents', 'hq_config_publications')",
+            "CALL DOLT_COMMIT('-m', 'seed', '--author', 'Fixture <fixture@example.invalid>')",
+        )
+        self.faults = faults
+        self.history = DoltConfigHistory(self._factory)
+
+    def _factory(self, _role: Role) -> Any:
+        connection = self.server.connect(self.database, autocommit=False)
+        if self.faults is not None:
+            return _FaultingConnection(connection, self.faults)
+        return connection
+
+    def head(self) -> str:
+        return _head(self.server, self.database)
+
+    def sql(self, *statements: str, params: Any = ()) -> list:
+        return self.server.sql(self.database, *statements, params=params)
+
+
+def _publish(db: _ConfigDb, expected: str, op: Any = None) -> Any:
+    return db.history.publish(
+        config_change_set(2, _PUBLISHED),
+        expected_head=Revision(expected),
+        operation=op or new_operation_id(),
+        author="HQ operator <hq-operator@localhost>",
+        message="HQ config publication x",
+    )
+
+
+@dolt
+@pytest.mark.integration
+@pytest.mark.dolt_server
+def test_a_config_publication_writes_roots_three_tables_in_one_commit(
+    server: DoltSqlServer,
+) -> None:
+    db = _ConfigDb(server)
+    parent = db.head()
+    assert db.history.head() == parent
+    op = new_operation_id()
+    out = _publish(db, parent, op)
+    assert isinstance(out, Applied) and out.revision == db.head() != parent
+    digest = config_documents_digest(_PUBLISHED)
+    assert db.sql(
+        "SELECT schema_version, backend_identity, generation, publication_sequence, "
+        "publication_id, documents_sha256, document_count, initial_attempt_nonce "
+        "FROM hq_config_meta"
+    ) == [(2, "backend", "gen-1", 2, op, digest, 3, "00000000-0000-4000-8000-0000000000aa")]
+    assert db.sql(
+        "SELECT path, ordinal, kind, content, content_sha256 FROM hq_config_documents "
+        "ORDER BY ordinal"
+    ) == [
+        (path, ordinal, config_document_kind(path), content, hashlib.sha256(content).hexdigest())
+        for ordinal, (path, content) in enumerate(_PUBLISHED)
+    ]
+    assert db.sql(
+        "SELECT publication_sequence, generation, expected_parent_revision, documents_sha256, "
+        "document_count FROM hq_config_publications WHERE publication_id = %s",
+        params=(op,),
+    ) == [(2, "gen-1", parent, digest, 3)]
+    assert db.sql(
+        "SELECT parent_hash FROM dolt_commit_ancestors WHERE commit_hash = %s",
+        params=(out.revision,),
+    ) == [(parent,)]
+    ((message, committer),) = db.sql(
+        "SELECT message, CONCAT(committer, ' <', email, '>') FROM dolt_log LIMIT 1"
+    )
+    assert (message, committer) == (
+        "HQ config publication x",
+        "HQ operator <hq-operator@localhost>",
+    )
+    assert db.sql("SELECT * FROM dolt_status") == []
+    assert db.history.read_at(out.revision) == list(config_change_set(2, _PUBLISHED).documents)
+
+    found = db.history.lookup_publication(op, expected_head=Revision(parent))
+    assert isinstance(found, Confirmed) and found.revision == out.revision
+    assert isinstance(
+        db.history.lookup_publication(op, expected_head=Revision(out.revision)), NotConfirmed
+    )
+    assert isinstance(
+        db.history.lookup_publication(new_operation_id(), expected_head=Revision(parent)),
+        NotConfirmed,
+    )
+    with db.history.consistent_read() as token:
+        assert (token.backend_identity, token.generation, token.revision) == (
+            "backend",
+            "gen-1",
+            out.revision,
+        )
+    with pytest.raises(InvalidRequest):  # the witness is immutable: never reuse its id
+        _publish(db, out.revision, op)
+    # A later publication: the original stays confirmed against its original parent, at the
+    # head where its witness is still visible.
+    later = _publish(db, out.revision)
+    assert isinstance(later, Applied)
+    found = db.history.lookup_publication(op, expected_head=Revision(parent))
+    assert isinstance(found, Confirmed) and found.revision == later.revision
+
+
+@dolt
+@pytest.mark.integration
+@pytest.mark.dolt_server
+def test_a_config_publication_refuses_a_stale_parent_a_dirty_tree_and_an_extra_table(
+    server: DoltSqlServer,
+) -> None:
+    db = _ConfigDb(server)
+    parent = db.head()
+    assert isinstance(_publish(db, "0" * 32), Conflict)
+    db.sql("UPDATE hq_config_documents SET content = 'dirty' WHERE path = 'fleet.yaml'")
+    with pytest.raises(IntegrityViolation, match="working tree is dirty"):
+        _publish(db, parent)
+    db.sql("CALL DOLT_RESET('--hard')")
+    db.sql("CREATE TABLE stray (id INT PRIMARY KEY)")
+    db.sql("CALL DOLT_ADD('stray')", "CALL DOLT_COMMIT('-m', 'stray', '--author', 'F <f@x>')")
+    with pytest.raises(NotProvisioned, match="allowlist"):
+        _publish(db, db.head())
+    assert db.sql("SELECT publication_sequence FROM hq_config_meta") == [(1,)]
+
+
+@dolt
+@pytest.mark.integration
+@pytest.mark.dolt_server
+@pytest.mark.parametrize("applied", [True, False])
+def test_a_lost_config_commit_acknowledgment_is_unknown_and_its_lookup_tells(
+    server: DoltSqlServer, applied: bool
+) -> None:
+    plan = FaultPlan()
+    db = _ConfigDb(server, plan)
+    parent = db.head()
+    op = new_operation_id()
+    plan.active = "publish"
+    plan.arm_unknown("publish", "transport", applied=applied)
+    out = _publish(db, parent, op)
+    plan.active = None
+    assert out == Unknown(operation=op, expected=Revision(parent), reason="transport")
+    found = db.history.lookup_publication(op, expected_head=Revision(parent))
+    assert isinstance(found, Confirmed if applied else NotConfirmed)
+    assert (db.head() != parent) is applied

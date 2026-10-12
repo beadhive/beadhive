@@ -12,6 +12,7 @@ The Dolt adapter for the [`beadhive-hq-storage`](../beadhive-hq-storage/README.m
 |---|---|---|
 | `DoltHqStorage` | `VersionedRecords`, `AppendLog`, `Liveness`, `CommittedHistory`, `CapabilityHost` | a root-injected DB-API `ConnectionFactory` (`Callable[[Role], Connection]`) |
 | `DoltPlacementStore` | `PlacementStore` | `DoltHqStorage`'s `PLACEMENT` records |
+| `DoltConfigHistory` | `CommittedHistory` | root's committed `hq_config_*` tables in the HQ config database |
 | `DoltHiveFence` | `HiveFence`, `CapabilityHost` | a `FenceStatementEngine` (root's `DoltCliEngine` / `BdServerEngine`, or `SqlConnectionFenceEngine`) |
 | `DoltHistory`, `DoltMerge`, `DoltAccounts` | the Dolt-only capabilities | `SqlRunner` over the factory or the engine |
 
@@ -51,6 +52,28 @@ director row, the `cause`. Any other row decodes as plain JSON without `director
 operator's seed `INSERT` (`placement_seed_statement`) and the grant and trigger reads of root's
 conformance check (`placement_conformance_rows`) are here too.
 
+**The HQ config publication** (`bh-x7xtc`, `_config.py`). `DoltConfigHistory` maps
+`CommittedHistory` onto root's committed config layout, column for column as `hq_sql_config`
+always wrote it:
+
+- `ChangeSet.tables` must be exactly `hq_config_meta`, `hq_config_documents` and
+  `hq_config_publications`, which is also the explicit `DOLT_ADD` list;
+- the documents are `hq_config_meta/schema_version` (ASCII decimal), then
+  `hq_config_documents/<path>` raw UTF-8 bytes in publication order (`config_change_set`);
+- `publish` checks the original head, a clean `dolt_status`, the exact base-table allowlist and
+  an unused publication id, moves the meta singleton by a sequence CAS, replaces the documents
+  (ordinal, kind, `content_sha256`), appends the witness row with the original parent, then
+  `DOLT_COMMIT`s. A dirty tree is `IntegrityViolation`, a changed allowlist `NotProvisioned`;
+- `lookup_publication` confirms the witness row `AS OF` the current head against the original
+  parent, with `HAS_ANCESTOR`. The config reader has no grant on `dolt_log`,
+  `dolt_commit_ancestors` or `dolt_history_*`, so `Confirmed.revision` is the head the witness
+  is visible at and `recorded_at` the server clock at lookup. `Applied.revision` is the exact
+  commit.
+
+The document kinds (`config_document_kind`) and digest (`config_documents_digest`) restate
+root's `hq_sql_config._kind` and `ordered_documents_digest`. Initial seeding into the empty
+schema is a separate root contract (`bh-4shu3`) and is not here.
+
 **`principals`** makes every session for a role first check `CURRENT_USER()`, `DATABASE()` and
 `ACTIVE_BRANCH()`, refusing a mismatch with `StorageUnavailable`.
 
@@ -74,7 +97,7 @@ onto the port.
 | File | What | Needs |
 |---|---|---|
 | `test_hq_storage_dolt_contract.py` | the shared contract suite over `[fake, dolt]`, and the differential state machine fake against Dolt | `dolt` and PyMySQL, else the `dolt` cases skip |
-| `test_hq_storage_dolt_adapter.py` | classification over a scripted DB-API stub; the placement wire format, ignored live tables, server stamps and capabilities on real Dolt | Dolt for the second half |
+| `test_hq_storage_dolt_adapter.py` | classification over a scripted DB-API stub; the placement wire format, the config publication's `hq_config_*` rows, ignored live tables, server stamps and capabilities on real Dolt | Dolt for the real-Dolt cases |
 | `test_dolt_semantics_int.py` | Dolt 2.3.5 server contracts (grants, triggers, accounts, globals, history, fence engine), folded from root | `dolt` (some cases also need a `127.0.0.2` alias) |
 
 `beadhive_hq_storage_dolt.contract` holds the `dolt` `ContractAdapter`, its harnesses, real
