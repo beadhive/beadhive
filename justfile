@@ -186,8 +186,9 @@ attest-integration:
 attest-architecture-contracts:
     just architecture-structural-check
 
-# ONE key for every OTHER packages/* distribution (bh-3fcl0.1); Pants' CAS serves unchanged
-# ones. beadhive-bd-cli has its own key below (bh-vq34o).
+# ONE key for every OTHER packages/* distribution (bh-3fcl0.1); each key runs its
+# own whole-tree recipe (no Pants CAS reuse in native mode). beadhive-bd-cli has its own key
+# below (bh-vq34o).
 attest-packages:
     just packages-check
     just beads-client-check

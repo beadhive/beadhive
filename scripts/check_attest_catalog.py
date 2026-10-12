@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 KEY_RECIPES = {
@@ -90,9 +91,32 @@ def _recipe_body(justfile: str, recipe: str) -> list[str]:
     return match.group(1).splitlines() if match else []
 
 
-def check(justfile: str, push_hook: str | None = None) -> list[str]:
+def catalog_key_errors(configured: Iterable[str], source: str = "configured catalog") -> list[str]:
+    """Fail closed when a key set differs from KEY_RECIPES (a missing key never runs)."""
+    names = set(configured)
+    expected = set(KEY_RECIPES)
+    errors: list[str] = []
+    if expected - names:
+        errors.append(f"{source} is missing attest keys {sorted(expected - names)!r}")
+    if names - expected:
+        errors.append(f"{source} has keys with no KEY_RECIPES entry {sorted(names - expected)!r}")
+    return errors
+
+
+def docs_keys(docs: str) -> list[str]:
+    """Key names from the first column of the docs/ATTEST-KEYS.md catalog table."""
+    return re.findall(r"(?m)^\| `([-\w]+)` \| `just attest-", docs)
+
+
+def check(justfile: str, push_hook: str | None = None, docs: str | None = None) -> list[str]:
     expected = [leaf for _, leaves in KEY_RECIPES.values() for leaf in leaves]
     errors: list[str] = []
+    recipes = set(re.findall(r"(?m)^(attest-[-\w]+):", justfile))
+    errors += catalog_key_errors(
+        (name.removeprefix("attest-") for name in recipes), "justfile attest-* recipes"
+    )
+    if docs is not None:
+        errors += catalog_key_errors(docs_keys(docs), "docs/ATTEST-KEYS.md table")
     if sorted(expected) != sorted(NATIVE_FULL):
         errors.append(
             f"attest keys must partition check-all-native: expected {sorted(NATIVE_FULL)!r}, "
@@ -152,7 +176,8 @@ def check(justfile: str, push_hook: str | None = None) -> list[str]:
 def main() -> int:
     justfile = (ROOT / "justfile").read_text(encoding="utf-8")
     push_hook = (ROOT / "scripts" / "main-push-gate.sh").read_text(encoding="utf-8")
-    errors = check(justfile, push_hook)
+    docs = (ROOT / "docs" / "ATTEST-KEYS.md").read_text(encoding="utf-8")
+    errors = check(justfile, push_hook, docs)
     if errors:
         print("attest-catalog: invalid", file=sys.stderr)
         for error in errors:
