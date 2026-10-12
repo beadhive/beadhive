@@ -757,7 +757,8 @@ stateful-native: root-composition-validate validation-evidence-refresh
 # serially on one worker, 793 s wall for 1,217 items. Same collection; only the schedule changes.
 root-composition-native: root-composition-validate
     BH_TEST_WORKSTEAL_PACK={{worksteal_pack}} uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{stateful_workers}} --dist {{test_dist}} \
+        ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{stateful_workers}} \
+        --dist {{test_dist}} \
         $(uv run python scripts/root_composition_tests.py)
 
 # Recursive PEX packaging executes the Pants engine and needs its pinned artifact cache. Keep
