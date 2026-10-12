@@ -845,7 +845,12 @@ class DoltHqStorage:
         )
         if isinstance(out, Applied):
             committed = result[0]
-            parent = self._read(Role.READER, lambda cursor: _first_parent(cursor, committed))
+            try:
+                parent = self._read(Role.READER, lambda cursor: _first_parent(cursor, committed))
+            except StorageError:
+                # DOLT_COMMIT already landed: a failed readback is NOT "nothing sent". Report
+                # Unknown so the caller resolves via lookup_publication and never re-issues.
+                return Unknown(operation=operation, expected=expected_head, reason="transport")
             if parent != expected_head:
                 raise IntegrityViolation(
                     f"publication {operation} committed on {parent}, not on the expected head"
