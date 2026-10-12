@@ -467,86 +467,80 @@ def test_the_loop_reads_the_policy_from_the_survey_and_logs_refusals_once(caplog
 # =============================================================================================
 
 
-def _cas_connection(policy_cursor):
-    from test_hq_sql_placement import FakeCursor, _seeded
+def _cas_store(policy_cursor):
+    """The port's fake seeded with a receiver row, plus the adapter's transitional
+    ``DoltHqSessions`` capability carrying the policy cursor in the CAS's own transaction."""
+    from test_hq_sql_placement import FakeSessions, _seeded
 
-    connection = _seeded()
+    store = _seeded()
+    return store, FakeSessions(store, policy_cursor)
 
-    class Both(FakeCursor):
-        def execute(self, sql, params=None):
-            if re.search(r"information_schema|hq_live_failover_policy|session_ttl_s", sql):
-                self.c.statements.append((sql, params))
-                matched = policy_cursor.execute(sql, params)
-                self.result = policy_cursor.result
-                return matched
-            return super().execute(sql, params)
 
-    connection.cursor = lambda: Both(connection)
-    return connection
+def _stored(store):
+    from beadhive.hq_sql_placement import read_row
+
+    return read_row(store, "ah")
 
 
 def test_place_cas_sets_the_policy_before_its_update_in_one_commit():
-    from beadhive.hq_sql_placement import parse_row, place_cas
-    from test_hq_sql_placement import AUTHORITY, _lease
+    from beadhive.hq_sql_placement import place_cas
+    from test_hq_sql_placement import AUTHORITY, _lease, _revision
 
     policy = Cursor()
-    connection = _cas_connection(policy)
+    store, sessions = _cas_store(policy)
     place_cas(
-        connection,
+        store,
         prefix="ah",
         lease=_lease(epoch=2),
         authority=AUTHORITY,
-        expected_revision=connection.rows["ah"][0],
+        expected_revision=_revision(store),
         failover_after={"executor": 4500},
     )
-    writes = [s.split()[:3] for s, _ in connection.statements if s.startswith(("INSERT", "UPDATE"))]
-    assert writes == [
-        ["INSERT", "INTO", "hq_live_failover_policy"],
-        ["UPDATE", "hq_live_hive_leases", "SET"],
-    ]
-    assert connection.committed == 1 and policy.rows == {("ah", "executor"): 4500}
+    writes = [s.split()[:3] for s in policy.statements if s.startswith(("INSERT", "UPDATE"))]
+    assert writes == [["INSERT", "INTO", "hq_live_failover_policy"]]
+    assert sessions.transactions == 1 and policy.rows == {("ah", "executor"): 4500}
     # The placement row itself is untouched in shape: the strict five-field receiver carrier.
-    assert parse_row("ah", connection.rows["ah"]).lease == _lease(epoch=2)
+    assert _stored(store).lease == _lease(epoch=2)
 
 
 def test_place_cas_carries_cause_and_failover_after_in_one_transaction():
-    from beadhive.hq_sql_placement import CAUSE_FAILOVER, parse_row, place_cas
-    from test_hq_sql_placement import AUTHORITY, _lease
+    from beadhive.hq_sql_placement import CAUSE_FAILOVER, place_cas
+    from test_hq_sql_placement import AUTHORITY, _lease, _revision
 
     policy = Cursor()
-    connection = _cas_connection(policy)
+    store, sessions = _cas_store(policy)
     place_cas(
-        connection,
+        store,
         prefix="ah",
         lease=_lease(epoch=2),
         authority=AUTHORITY,
-        expected_revision=connection.rows["ah"][0],
+        expected_revision=_revision(store),
         cause=CAUSE_FAILOVER,
         failover_after={"transient": 2400},
     )
-    assert connection.committed == 1 and policy.rows == {("ah", "transient"): 2400}
-    stored = parse_row("ah", connection.rows["ah"])
+    assert sessions.transactions == 1 and policy.rows == {("ah", "transient"): 2400}
+    stored = _stored(store)
     assert stored.director and stored.cause == CAUSE_FAILOVER
 
 
 def test_place_cas_refuses_a_bad_policy_before_any_update():
     from beadhive.hq_sql_placement import place_cas
-    from test_hq_sql_placement import AUTHORITY, _lease
+    from test_hq_sql_placement import AUTHORITY, _lease, _revision
 
     policy = Cursor()
-    connection = _cas_connection(policy)
-    before = list(connection.rows["ah"])
+    store, _sessions = _cas_store(policy)
+    before = _revision(store)
     with pytest.raises(PlacementError, match="below the executor floor"):
         place_cas(
-            connection,
+            store,
             prefix="ah",
             lease=_lease(epoch=2),
             authority=AUTHORITY,
-            expected_revision=before[0],
+            expected_revision=before,
             failover_after={"executor": 1000},
         )
-    assert connection.rows["ah"] == before and connection.committed == 0
-    assert not any(s.startswith(("UPDATE", "INSERT")) for s, _ in connection.statements)
+    assert _revision(store) == before
+    assert not any(s.startswith(("UPDATE", "INSERT")) for s in policy.statements)
 
 
 # =============================================================================================

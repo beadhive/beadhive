@@ -241,11 +241,7 @@ class _FramePlane:
         from beadhive.hq_sql_placement import read_row
         from test_hq_sql_placement_int import FRAME
 
-        conn = self.server.connect(FRAME, autocommit=False)
-        try:
-            return read_row(conn, prefix)
-        finally:
-            conn.close()
+        return read_row(self.server.store(FRAME), prefix)
 
 
 @pytest.mark.dolt_server
@@ -296,24 +292,21 @@ def test_a_director_placed_adopt_reclaims_exactly_once_and_only_on_failover(
         with root.cursor() as cursor:
             cursor.execute(*seed_statement("fx", epoch=e0))
         root.close()
-        conn = server.connect(DIRECTOR, autocommit=False)
-        try:
-            seeded = read_row(conn, "fx").revision
-            now = time.time()
-            place_cas(
-                conn,
-                prefix="fx",
-                lease=HostLease("b", "b", e0 + 1, now_stamp(now), now_stamp(now + 3600)),
-                authority={"frame_id": "b", "holder_identity": "b"},
-                expected_revision=seeded,
-                cause={
-                    "failover": CAUSE_FAILOVER,
-                    "planned": CAUSE_PLANNED,
-                    "older-frame": CAUSE_FAILOVER,
-                }.get(cause),
-            )
-        finally:
-            conn.close()
+        director = server.store(DIRECTOR)
+        seeded = read_row(director, "fx").revision
+        now = time.time()
+        place_cas(
+            director,
+            prefix="fx",
+            lease=HostLease("b", "b", e0 + 1, now_stamp(now), now_stamp(now + 3600)),
+            authority={"frame_id": "b", "holder_identity": "b"},
+            expected_revision=seeded,
+            cause={
+                "failover": CAUSE_FAILOVER,
+                "planned": CAUSE_PLANNED,
+                "older-frame": CAUSE_FAILOVER,
+            }.get(cause),
+        )
 
         # ---- frame b adopts through the director-placed path ----------------------------
         plane = _FramePlane(server)

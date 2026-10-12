@@ -9,14 +9,15 @@ module injects root's transport and fence engines into it.
   stays lazily imported here.
 * :func:`dolt_hive_fence` binds a hive's ``DoltCliEngine`` / ``BdServerEngine`` with the
   complete 44-trigger guard set from :mod:`beadhive.fence_schema`.
-
-No consumer is migrated here; the follow-on beads of ``bh-xxkf7`` rebuild them over the port.
+* :func:`placement_storage` is the director's store (bh-sqfvq, the port's first production
+  consumer, :mod:`beadhive.hq_sql_placement`): one ``placement_writer`` binding for its reads and
+  its placement CAS, every session principal-checked.
 """
 
 from __future__ import annotations
 
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from beadhive_hq_storage_dolt import (
@@ -34,6 +35,7 @@ __all__ = [
     "dolt_hq_storage",
     "hq_connection_factory",
     "is_transport_deadline",
+    "placement_storage",
 ]
 
 
@@ -73,6 +75,35 @@ def dolt_hq_storage(
     """The Dolt HQ store over root's bounded transport."""
     return DoltHqStorage(
         hq_connection_factory(bindings, broker=broker), deadline=is_transport_deadline, **options
+    )
+
+
+def placement_storage(
+    binding: Mapping[str, Any],
+    *,
+    broker: Any = None,
+    connect: Callable[[Mapping[str, Any]], Any] | None = None,
+) -> DoltHqStorage:
+    """The director's HQ store over one ``placement_writer`` binding (``HqSqlConnection``).
+
+    Reads (``Role.READER``) and the placement CAS (``Role.PLACEMENT_WRITER``) both open that
+    binding, and every session first checks the connection is its ``user`` on its ``database``'s
+    ``main`` branch, as the director always has. ``connect(binding)`` replaces the transport (a
+    test's own connection); it is called once per adapter session."""
+    if connect is None:
+        factory = hq_connection_factory(
+            {Role.READER.value: binding, Role.PLACEMENT_WRITER.value: binding}, broker=broker
+        )
+    else:
+
+        def factory(_role: Role) -> Any:
+            return connect(binding)
+
+    principal = (str(binding.get("user", "")), str(binding.get("database", "")))
+    return DoltHqStorage(
+        factory,
+        deadline=is_transport_deadline,
+        principals={Role.READER: principal, Role.PLACEMENT_WRITER: principal},
     )
 
 
