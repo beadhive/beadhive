@@ -960,7 +960,7 @@ class DoltHqStorage:
 class DoltPlacementStore:
     """``PlacementStore`` over ``RecordKind.PLACEMENT``. The body is ``{"frame", "epoch",
     "cause"}`` as on the fake; the receiver's ``{"authority", "lease"}`` carrier is also read
-    (``lease.host_id`` / ``lease.epoch``). Encoding the carrier on write is ``bh-sqfvq``'s."""
+    (``lease.host_id`` / ``lease.epoch``); :mod:`._placement` encodes a carrier body on write."""
 
     def __init__(self, storage: DoltHqStorage) -> None:
         self._storage = storage
