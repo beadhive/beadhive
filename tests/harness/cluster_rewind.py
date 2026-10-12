@@ -264,9 +264,11 @@ def processes_print(root: Path, known: dict[int, str]) -> list[str]:
     ``/proc``; empty elsewhere), named by role when ``known``. A stray -- a ``Forwarder`` race
     child, a server a test started by hand -- shows as ``stray:<argv0>``.
 
-    ``dolt send-metrics`` is skipped: the Dolt CLI forks it detached after a command (cwd the
-    command's, parent init) and it exits on its own a moment later, so whether a print catches
-    one is timing, not state -- it made the guard flag a "leak" at random (bh-jvgj6).
+    ``dolt send-metrics`` is NOT skipped (it was, bh-jvgj6): the Dolt CLI forks it detached
+    after a command and it writes under ``$DOLT_ROOT_PATH`` after the stop, which raced the
+    template restore's ``rmtree`` (bh-2zayj). Every cluster Dolt process now runs with
+    :data:`~harness.writer_fencing.DOLT_QUIET_ENV`, so none is forked; one showing up here is a
+    Dolt invocation that escaped that env, and it prints as ``stray:dolt``.
 
     A process with an EMPTY command line is skipped too: the kernel drops a task's address space
     (so ``/proc/<pid>/cmdline`` reads empty) in ``do_exit`` *before* it drops its working
@@ -295,9 +297,7 @@ def processes_print(root: Path, known: dict[int, str]) -> list[str]:
             argv = cmdline.split()
             if not argv:  # exiting: address space already released (see docstring)
                 continue
-            argv0 = Path(argv[0]).name if argv else ""
-            if argv0 == "dolt" and argv[1:2] == ["send-metrics"]:
-                continue
+            argv0 = Path(argv[0]).name
             found.append(known.get(pid, f"stray:{argv0}"))
     return sorted(found)
 

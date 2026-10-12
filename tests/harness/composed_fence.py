@@ -61,6 +61,7 @@ from harness.writer_fencing import (
     BD_SERVER,
     CAS,
     DOLT_CLI,
+    DOLT_QUIET_ENV,
     Cluster,
     Frame,
     HQUnreachable,
@@ -512,6 +513,7 @@ class SqlHQ(_Reachability):
             "PATH": os.environ.get("PATH", ""),
             "DOLT_ROOT_PATH": str(self.root / "dolt-root"),
             "HOME": str(self.root / "home"),
+            **DOLT_QUIET_ENV,
         }
         with (self.root / "server.log").open("a") as log:
             self.proc = subprocess.Popen(
