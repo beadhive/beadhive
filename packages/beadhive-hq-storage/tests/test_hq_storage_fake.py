@@ -38,6 +38,7 @@ from beadhive_hq_storage import (
     StreamKind,
     Unknown,
     VersionedRecords,
+    WriterRow,
     new_operation_id,
     require_capability,
 )
@@ -229,3 +230,63 @@ def test_absent_epoch_ref_conflicts_on_cas() -> None:
     out = ref.compare_and_set("g", 2, expected=seen)
     assert isinstance(out, Unknown) and out.expected == seen.sha
     assert ref.read().frame == "g"  # type: ignore[union-attr]
+
+
+# ---- peers on one remote and admitted local writes (bh-utvyj) -----------------------------
+
+
+def test_peers_share_one_remote_and_keep_their_own_local_main(clock: ManualClock) -> None:
+    a = InMemoryHiveFence(clock, writer=WriterRow("a", 1))
+    b = a.peer(missing_guards={"bh_writer_guard"})
+    assert b.local_head() == a.local_head() == a.remote_head() == b.remote_head()
+    assert b.guard_conformance().missing == ("bh_writer_guard",)
+    assert a.guard_conformance().missing == ()
+
+    a.local_write("w-a1", bead="t-1")
+    assert b.local_head() == a.remote_head() != a.local_head()  # unpublished: a's own
+    assert isinstance(a.push(), Applied)
+    assert b.remote_head() == a.local_head()
+    assert "t-1" not in b.snapshot_at(b.local_head()).beads
+    b.sync_to_remote()
+    assert "t-1" in b.snapshot_at(b.local_head()).beads
+
+    b.set_reachable(False)  # partitioning one node leaves its peers on the remote
+    with pytest.raises(StorageUnavailable):
+        b.push()
+    assert a.remote_writer() == WriterRow("a", 1)
+
+
+def test_an_admitted_write_is_stamped_at_the_local_live_epoch(clock: ManualClock) -> None:
+    fence = InMemoryHiveFence(clock, writer=WriterRow("a", 3))
+    head = fence.local_write("w1", bead="t-1", status="in_progress", labels=("claim-frame:a",))
+    state = fence.snapshot_at(head)
+    assert state.marks == frozenset({("w1", 3)})
+    assert state.beads["t-1"] == ("in_progress", "")
+    assert ("t-1", "claim-frame:a") in state.labels
+    assert fence.parent_of(head) == fence.chain(head)[1]
+    assert fence.sentinel_of(head) is None
+    with pytest.raises(InvalidRequest):
+        fence.local_write("w1")  # mark ids are unique
+    with pytest.raises(NotProvisioned):
+        InMemoryHiveFence(clock, writer=None).local_write("w2")
+
+
+def test_a_peer_push_from_a_stale_base_is_a_conflict_and_a_bump_retires_lower_marks(
+    clock: ManualClock,
+) -> None:
+    a = InMemoryHiveFence(clock, writer=WriterRow("a", 1))
+    c = a.peer()
+    a.local_write("w-a0")
+    assert isinstance(a.push(), Applied)
+    c.sync_to_remote()
+    assert c.snapshot_at(c.local_head()).marks == frozenset({("w-a0", 1)})
+    a.local_write("w-a1")  # unpublished
+    assert isinstance(c.commit_bump(BumpRequest("c", 2, "r", new_operation_id())), Applied)
+    assert isinstance(c.push(), Applied)
+    remote = a.remote_head()
+    assert isinstance(a.push(), Conflict)  # non-fast-forward: a's base is behind
+    assert a.remote_head() == remote
+    assert a.snapshot_at(remote).marks == frozenset({("adopt-2", 2)})
+    assert c.sentinel_of(remote) == "adopt-2"
+    a.sync_to_remote()  # dropping its unpublished write, as a reset to the remote does
+    assert a.writer() == WriterRow("c", 2, "r")
