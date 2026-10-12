@@ -29,7 +29,8 @@ class FakeTarget:
         self.state = "boot"
         return {"stop": 0.0, "rm": 0.0, "copy": 0.0, "start": 0.0, "total": 0.0}
 
-    def stop_processes(self):
+    def stop_processes(self, *, discard=False):
+        assert discard  # parking: the next restore replaces every file
         self.stops += 1
 
 
