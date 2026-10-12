@@ -28,6 +28,7 @@ __all__ = [
     "DEADLINE_CODES",
     "DUPLICATE_KEY",
     "DeadlinePredicate",
+    "NO_SUCH_TABLE",
     "SERIALIZATION_FAILURE",
     "TRANSPORT_CODES",
     "error_code",
@@ -43,6 +44,8 @@ LOCK_WAIT_TIMEOUT: Final = 1205
 CONFLICT_CODES: Final = frozenset({SERIALIZATION_FAILURE, LOCK_WAIT_TIMEOUT})
 DUPLICATE_KEY: Final = 1062
 """``ER_DUP_ENTRY``: a racing insert of the same natural key."""
+NO_SUCH_TABLE: Final = 1146
+"""``ER_NO_SUCH_TABLE``: an operator-provisioned table is absent (``NotProvisioned``)."""
 COMMIT_ERROR: Final = 1180
 """``ER_ERROR_DURING_COMMIT``: the server reported the commit itself failed mid-way."""
 DEADLINE_CODES: Final = frozenset({3024, 1317})
