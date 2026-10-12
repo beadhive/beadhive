@@ -133,8 +133,8 @@ class ProductWorld(cf.World):
         self.backup_remote = None
         self.moves = cf.MoveLog(self.cluster)
 
-    def stop_processes(self) -> None:
-        self.cluster.stop_processes()
+    def stop_processes(self, *, discard: bool = False) -> None:
+        self.cluster.stop_processes(discard=discard)
 
     def snapshot(self):
         template = self.cluster.snapshot()

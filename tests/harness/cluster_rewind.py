@@ -11,7 +11,15 @@ module turns that into a test resource:
 * The reset protocol is the template's: stop every process (agents, bd's sql-server, HQ), copy
   the template back over the SAME absolute path, restart (rebinding a port another process took
   meanwhile), then clear the Python-side caches (:meth:`Cluster.reset_caches`, a fresh
-  ``MoveLog``).
+  ``MoveLog``). Parking and the restore's own stop SIGKILL the frames (``stop_processes(
+  discard=True)``): every file is about to be replaced, so ``bd dolt stop``'s flush and graceful
+  shutdown buy nothing (bh-1ikc0).
+* Per-test cost (bh-1ikc0, Dolt 2.3.5, bd 1.3.0, tmpfs, median of 5): park + restore + first
+  recorder snapshot is ~0.7-0.8 s with a ``bd-server`` frame (2- or 3-frame cluster, 3-frame
+  SqlHQ world) and ~0.4 s without, down from ~6.9 s. The floor is ``bd dolt start`` (~0.5 s: its
+  fixed 200 ms post-spawn sleep plus the readiness probe). The ~5 s that was gone came from
+  ``dolt version`` -- run by ``bd dolt start``'s archive-level probe -- waiting on the
+  latest-release query; frames now set ``versioncheck.disabled``.
 * The leak guard is the spike's fingerprint (:func:`fingerprint`): remote refs; HQ placement,
   liveness rows, users and status; and per frame: branches, tags, remote-tracking refs,
   ``dolt_status``, every local-only (``dolt_ignore``'d or untracked) table's rows, the fence
@@ -69,7 +77,7 @@ def rewind_enabled() -> bool:
 
 def guard_enabled() -> bool:
     """``BH_CLUSTER_REWIND_GUARD=1`` fingerprints every restore outside the fixture's own
-    tests (a debug assertion: it adds a few seconds per test)."""
+    tests (a debug assertion: ~0.3 s per restore, bh-1ikc0)."""
     return os.environ.get("BH_CLUSTER_REWIND_GUARD", "").strip().lower() in {"1", "true", "yes"}
 
 
@@ -476,7 +484,8 @@ class ClusterPool:
             self._drop(key)
             return
         started = time.monotonic()
-        entry.target.stop_processes()
+        # the next acquisition copies the template over every file, so park by SIGKILL
+        entry.target.stop_processes(discard=True)
         entry.parked = round(time.monotonic() - started, 3)
         entry.dirty = True
 

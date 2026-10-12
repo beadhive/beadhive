@@ -36,6 +36,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -66,6 +67,7 @@ __all__ = [
     "Run",
     "copy_tree",
     "pid_alive",
+    "wait_exited",
     "port_free",
 ]
 
@@ -75,6 +77,8 @@ BD_SERVER = "bd-server"
 KINDS = (DOLT_CLI, BD_EMBEDDED, BD_SERVER)
 
 DEFAULT_TIMEOUT = 180.0
+#: Remote views kept by :meth:`Remote.view` (a few rows each; LRU beyond this).
+_VIEW_CACHE_SIZE = 64
 _GATE = Path(__file__).with_name("writer_fencing_gate.py")
 _REMOTE_SUBCOMMANDS = "fetch|push|pull|ls-remote|clone|fetch-pack|send-pack"
 _PASSTHROUGH_ENV = ("LANG", "LC_ALL", "TZ", "TMPDIR")
@@ -282,7 +286,9 @@ class Remote:
         self.git_url = f"file://{self.path}"
         self._observer = root / "observer"
         self._env: dict[str, str] = {}
-        self._cache: tuple[tuple, dict] | None = None
+        #: ``view`` results by ``(refs/dolt/data commit, tables)``. Content-addressed, so it stays
+        #: valid across a template restore (bh-1ikc0): the restored remote is at the boot head.
+        self._cache: OrderedDict[tuple, dict] = OrderedDict()
 
     def head(self) -> str | None:
         """The ``refs/dolt/data`` commit on the remote — changes on every successful data push."""
@@ -319,12 +325,14 @@ class Remote:
     def view(self, tables: Sequence[str] = ("bh_writer",)) -> dict:
         """``{"head", "main", "tables": {name: rows | None}}`` of remote ``main``.
 
-        Cached by remote head, so a snapshot of an unchanged remote costs one ``rev-parse``.
+        Cached by remote head, so a snapshot of an unchanged remote -- or of one a template
+        restore moved back to a head already seen -- costs one ``rev-parse``.
         """
         head = self.head()
         key = (head, tuple(tables))
-        if self._cache is not None and self._cache[0] == key:
-            return self._cache[1]
+        if key in self._cache:
+            self._cache.move_to_end(key)
+            return self._cache[key]
         fetched = self._dolt("fetch", "origin")
         if fetched.returncode:
             raise AssertionError(f"observer fetch failed: {fetched.stdout}{fetched.stderr}")
@@ -351,7 +359,9 @@ class Remote:
                 for name in tables
             },
         }
-        self._cache = (key, view)
+        self._cache[key] = view
+        while len(self._cache) > _VIEW_CACHE_SIZE:
+            self._cache.popitem(last=False)
         return view
 
 
@@ -464,6 +474,9 @@ class Frame:
                     "user.name": self.name,
                     "user.email": f"{self.name}@frames.invalid",
                     "metrics.disabled": "true",
+                    # bd's `dolt start` runs `dolt version` (archive-level probe), which
+                    # otherwise waits ~5 s on the latest-release query (bh-1ikc0)
+                    "versioncheck.disabled": "true",
                 }
             )
         )
@@ -671,8 +684,9 @@ class Frame:
         for pid in victims:
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.kill(pid, signal.SIGKILL)
+        unwatched = wait_exited(victims, 10)
         deadline = time.monotonic() + 10
-        while any(pid_alive(pid) for pid in victims) and time.monotonic() < deadline:
+        while any(pid_alive(pid) for pid in unwatched) and time.monotonic() < deadline:
             time.sleep(0.02)
         if self._conn is not None:
             self._conn.close()
@@ -761,6 +775,41 @@ def pid_alive(pid: int) -> bool:
         stat = Path(f"/proc/{pid}/stat").read_text()
         return stat.rsplit(")", 1)[1].split()[0] != "Z"
     return True
+
+
+def wait_exited(pids: Sequence[int], timeout: float) -> list[int]:
+    """Block until every one of ``pids`` has FULLY exited, or ``timeout`` passes; return the pids
+    it could not watch (no ``pidfd_open``: not Linux), for the caller's :func:`pid_alive` poll.
+
+    Fully, not "zombie": a multithreaded process's leader turns ``Z`` as soon as its main thread
+    exits, while its other threads still hold the shared file table -- a killed Go ``dolt
+    sql-server`` showed ``Z`` with its listening socket still bound (bh-1ikc0). A pidfd polls
+    readable only once the whole thread group is gone, so no sleep is involved."""
+    if not hasattr(os, "pidfd_open"):
+        return list(pids)
+    import select
+
+    poller, fds, unwatched = select.poll(), [], []
+    try:
+        for pid in pids:
+            try:
+                fd = os.pidfd_open(pid)
+            except OSError:  # ESRCH, or EINVAL for a pid already reaped: gone unless it is not
+                if pid_alive(pid):
+                    unwatched.append(pid)
+                continue
+            fds.append(fd)
+            poller.register(fd, select.POLLIN)
+        deadline = time.monotonic() + timeout
+        left = len(fds)
+        while left and (remaining := deadline - time.monotonic()) > 0:
+            for fd, _ in poller.poll(remaining * 1000):
+                poller.unregister(fd)
+                left -= 1
+    finally:
+        for fd in fds:
+            os.close(fd)
+    return unwatched
 
 
 def port_free(port: int) -> bool:
@@ -924,6 +973,7 @@ class Cluster:
                     "user.name": "observer",
                     "user.email": "observer@frames.invalid",
                     "metrics.disabled": "true",
+                    "versioncheck.disabled": "true",
                 }
             )
         )
@@ -1047,8 +1097,18 @@ class Cluster:
                 frame.dolt("reset", "--hard", target).check()
 
     # -- template rewind (bh-i970d, bh-jk4mn Mechanism C) ---------------------------------
-    def stop_processes(self) -> None:
-        """Stop every frame (agent, bd's sql-server) in parallel; the files stay."""
+    def stop_processes(self, *, discard: bool = False) -> None:
+        """Stop every frame (agent, bd's sql-server) in parallel; the files stay.
+
+        ``discard=True`` is the pool's park (bh-1ikc0): the files are about to be replaced by a
+        template copy, so nothing on disk needs flushing. Each frame is SIGKILLed like a host
+        crash (:meth:`Frame.kill`, which waits until every victim is gone) instead of ``bd dolt
+        stop``'s working-set flush plus graceful shutdown (~0.65 s per server frame), and an
+        in-flight command is killed rather than awaited."""
+        if discard:
+            with ThreadPoolExecutor(len(self.frames)) as pool:
+                list(pool.map(lambda f: f.kill(), self.frames.values()))
+            return
         for frame in self.frames.values():
             with contextlib.suppress(Exception):
                 if frame._pending is not None and frame.alive:
@@ -1078,8 +1138,8 @@ class Cluster:
             frame.bd("dolt", "start").check()
 
     def reset_caches(self) -> None:
-        """Python-side state the template cannot carry (bh-jk4mn inventory row 25)."""
-        self.remote._cache = None
+        """Python-side state the template cannot carry (bh-jk4mn inventory row 25). The remote
+        view cache is kept: it is keyed by the remote's content hash (bh-1ikc0)."""
         cut = getattr(self.hq, "_cut", None)
         if cut is not None:
             cut.clear()
@@ -1106,7 +1166,7 @@ class Cluster:
         timings: dict[str, float] = {}
         started = time.monotonic()
         with self._timed_into(timings, "stop"):
-            self.stop_processes()
+            self.stop_processes(discard=True)  # the copy below replaces every file
         template.restore(timings)
         for name, (env, port) in self._saved_env.items():
             self.frames[name].env, self.frames[name].port = dict(env), port
