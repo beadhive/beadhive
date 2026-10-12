@@ -25,6 +25,8 @@ from beadhive import fence_audit as fa
 from beadhive import fence_data as fd
 from beadhive import fence_schema as fs
 from beadhive import writer_adopt as wa
+from beadhive_hq_storage import require_capability
+from beadhive_hq_storage_dolt import DoltHistory
 from harness import trigger_canary as tc
 from harness.writer_fencing import BD_EMBEDDED, BD_SERVER, DOLT_CLI, Cluster
 
@@ -108,7 +110,7 @@ def test_install_is_idempotent_in_composed_order_and_leaves_exactly_44(tmp_path)
     )
     assert first.seeded and first.committed
     assert (first.writer.frame, first.writer.epoch) == ("a", 7)
-    assert node.history_max_epoch() == 7
+    assert require_capability(node, DoltHistory).history_max_epoch() == 7
     marks = repo.rows("select id, epoch, tbl from bh_write_mark")
     assert marks == [{"id": "adopt-7", "epoch": 7, "tbl": "bh_writer"}]
     assert repo.rows("select table_name from dolt_status") == []
@@ -269,7 +271,7 @@ def test_split_history_matches_sql_inner_join_on_real_dolt(adopted):
     # The old join is fast on this small fixture and supplies an independent equivalence
     # oracle. Large production histories use only the split reads in the product path.
     expected = {
-        row["c"]: (int(row["e"]), fa._parents(row["p"]))
+        row["c"]: (int(row["e"]), tuple(p.strip() for p in str(row["p"]).split(",") if p.strip()))
         for row in node_b.query(
             f"SELECT h.commit_hash AS c, h.epoch AS e, l.parents AS p "
             f"FROM {revision}.dolt_history_bh_writer h "
@@ -277,7 +279,8 @@ def test_split_history_matches_sql_inner_join_on_real_dolt(adopted):
             "WHERE h.id = 1"
         )
     }
-    assert fa._fenced_history(node_b, head, revision) == expected
+    # The split reads are the node's DoltHistory (bh-3kl1k).
+    assert fa._fenced_history(require_capability(node_b, DoltHistory), head) == expected
 
 
 def test_e2_restamped_late_write_is_seen_only_by_the_history_check(adopted):

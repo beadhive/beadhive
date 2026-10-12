@@ -55,7 +55,7 @@ class Recording(fence_data.BdServerEngine):
             out = [{"frame": "new", "epoch": self.remote_epoch}]
         elif "FROM bh_writer AS OF 'main'" in statement:
             out = [{"frame": "old", "epoch": self.held}]
-        elif "AS published" in statement:
+        elif "AS is_ancestor" in statement:  # DoltHistory.is_ancestor(main, origin/main)
             out = [{"published": 1 if self.published else 0}]
         elif "hashof('main')" in statement:
             out = [{"h": MAIN}]
@@ -417,3 +417,27 @@ def test_orphan_merge_refusal_and_failed_publish_exit_1(monkeypatch, verb):
     res = _invoke("orphan-merge", "bh", "--branch", "frame/a/orphan-1-1")
     assert res.exit_code == 1 and "committed locally" in res.output
     assert "remote unreachable" in res.output
+
+
+# ---- the Dolt-only capabilities (bh-3kl1k) ----------------------------------------------------
+
+
+def test_divert_list_and_merge_are_refused_without_the_dolt_capabilities():
+    """The orphan paths reach Dolt only through ``DoltHistory`` / ``DoltMerge``; the port's
+    fake fence has neither, so each is refused before any fetch or write."""
+    from beadhive_hq_storage import CapabilityUnsupported, InMemoryHiveFence
+    from beadhive_hq_storage.contract import ManualClock
+
+    class Fake(InMemoryHiveFence):
+        remote, branch = "origin", "main"
+
+        def fetch(self):
+            pytest.fail("refused before any fetch")
+
+    fake = Fake(ManualClock())
+    with pytest.raises(CapabilityUnsupported):
+        fence_orphan.divert_if_superseded(fake, frame="old")
+    with pytest.raises(CapabilityUnsupported):
+        fence_orphan.list_orphans(fake)
+    with pytest.raises(CapabilityUnsupported):
+        fence_orphan.merge_orphan(fake, "frame/old/orphan-1-1", frame="old")

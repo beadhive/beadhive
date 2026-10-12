@@ -47,6 +47,7 @@ from beadhive_hq_storage import (
 )
 from beadhive_hq_storage_dolt import (
     CONFIG_TABLES,
+    AccountRow,
     DoltAccounts,
     DoltConfigHistory,
     DoltHistory,
@@ -57,6 +58,7 @@ from beadhive_hq_storage_dolt import (
     FenceTable,
     HqRuntimeStatements,
     MergeRefused,
+    Revocation,
     Role,
     cause_token,
     config_change_set,
@@ -294,7 +296,10 @@ def test_live_writes_never_commit_and_triggers_stamp_server_time(server: DoltSql
     assert hq.liveness.ages(LivenessKind.SESSION)["frame-a"] >= timedelta(0)
     triggers = require_capability(hq.store, DoltAccounts).triggers()
     assert {"hq_live_liveness_INS", "hq_live_liveness_UPD"} <= set(triggers)
-    assert all("UTC_TIMESTAMP(6)" in body for body in triggers.values())
+    assert all("UTC_TIMESTAMP(6)" in t.statement for t in triggers.values())
+    assert triggers["hq_live_liveness_INS"].table == "hq_live_liveness"
+    # The same read, database-qualified (the placement conformance passes its database).
+    assert set(require_capability(hq.store, DoltAccounts).triggers(hq.database)) == set(triggers)
 
 
 @dolt
@@ -304,17 +309,33 @@ def test_accounts_create_grant_and_report(server: DoltSqlServer) -> None:
     hq = DoltHqHarness(server)
     accounts = require_capability(hq.store, DoltAccounts)
     user = "frame_" + hq.database
-    accounts.create_user(user, "%", "fixture-only")
+    accounts.create_user(user, "%", password="fixture-only")
     try:
-        accounts.grant(["SELECT", "UPDATE"], "hq_live_liveness", user, "%")
+        assert AccountRow(user, "%", "") in accounts.users()
+        granted = accounts.grant(user, "%", {"hq_live_liveness": ["SELECT", "UPDATE"]})
+        assert granted == (
+            f"GRANT SELECT, UPDATE ON `{hq.database}`.`hq_live_liveness` TO '{user}'@'%'",
+        )
         grants = " ".join(accounts.grants(user, "%"))
         assert "hq_live_liveness" in grants and "UPDATE" in grants
+        revoked = accounts.revoke(
+            user, "%", [Revocation(hq.database, "hq_live_liveness", frozenset({"UPDATE"}))]
+        )
+        assert revoked == (
+            f"REVOKE UPDATE ON `{hq.database}`.`hq_live_liveness` FROM '{user}'@'%'",
+        )
+        assert "UPDATE" not in " ".join(accounts.grants(user, "%"))
         with pytest.raises(InvalidRequest):
-            accounts.grant(["DROP"], "hq_live_liveness", user, "%")
+            accounts.grant(user, "%", {"hq_live_liveness": ["DROP"]})
         with pytest.raises(InvalidRequest):
-            accounts.create_user("bad name", "%", "x")
+            accounts.create_user("bad name", "%", password="x")
+        with pytest.raises(InvalidRequest):  # exactly one of a password or its hash
+            accounts.create_user(user, "%")
+        assert accounts.global_variable("max_connections") is not None
+        assert any(s.user for s in accounts.sessions())
     finally:
         accounts.drop_user(user, "%")
+    accounts.drop_user(user, "%", if_exists=True)  # already gone: no error
 
 
 @dolt
@@ -362,6 +383,55 @@ def test_history_and_merge_capabilities_over_a_fence(server: DoltSqlServer) -> N
     assert merge.preview_conflicts("main", "clash") == ("issues",)
     with pytest.raises(MergeRefused):
         merge.merge("clash", "refused")
+
+
+@dolt
+@pytest.mark.integration
+@pytest.mark.dolt_server
+def test_history_reads_the_fence_and_the_graph_and_merge_publishes(server: DoltSqlServer) -> None:
+    """bh-3kl1k: the reads ``fence_audit``, ``fence_orphan`` and ``fence_cutover`` make, and
+    the fast-forward pushes, on a real fence."""
+    hive = DoltFenceHarness(server)
+    fence: DoltHiveFence = hive.fence_adapter
+    history = require_capability(fence, DoltHistory)
+    merge = require_capability(fence, DoltMerge)
+    seeded = history.head()
+    bumped = fence.commit_bump(BumpRequest("frame-a", 1, "rev-1", new_operation_id()))
+    assert isinstance(bumped, Applied)
+    first = bumped.revision
+    assert history.head("main") == first
+    assert history.fence_tables_at(first) == frozenset(FenceTable)
+    assert history.writer_at(first) == WriterRow("frame-a", 1)
+    assert history.writer_at(None) == WriterRow("frame-a", 1)
+    assert history.writer_at(seeded) is not None  # the seed is cut over at epoch 0
+    assert history.live_epoch_at(first) == 1 == history.live_epoch_at(None)
+    assert history.history_max_epoch() == 1
+    assert history.writer_epochs(first)[first] == 1
+    assert "adopt-1" in history.mark_ids_at(first)
+    count, marks = history.stale_marks_at(first, live=1, limit=1)
+    assert count >= len(marks) and all(m.epoch != 1 for m in marks)
+    assert history.parents(first)[first] == (seeded,)
+    found = history.commit(first)
+    assert found is not None and found.parents == (seeded,)
+    assert found.message == "bh: adopt frame-a@1"
+    assert history.messages("main", [first]) == {first: "bh: adopt frame-a@1"}
+    assert [c.commit for c in history.log("main", subject_prefix="bh: adopt", limit=1)] == [first]
+    assert history.log("main", subject_prefix="bh: no such subject") == []
+    assert history.ahead("main", "origin/main") == 1
+    assert merge.dirty_tables() == () and not merge.commit_working_set("nothing to commit")
+    residue = merge.residue(epoch=1)
+    assert not residue.constraint_violations and not residue.conflicts
+
+    assert merge.publish() is True
+    assert history.ahead("main", "origin/main") == 0
+    assert history.remote_branches("origin")["main"] == first
+    assert history.is_ancestor(first, "origin/main") and not history.is_ancestor(first, seeded)
+    merge.publish_branch("frame/frame-a/orphan-1-1")
+    assert history.remote_branches("origin")["frame/frame-a/orphan-1-1"] == first
+    with pytest.raises(InvalidRequest):
+        history.writer_epochs(Revision("HEAD"))  # an exact commit only
+    with pytest.raises(InvalidRequest):
+        history.writer_at("main..x")
 
 
 # --- the receiver placement carrier (bh-sqfvq) ----------------------------------------------

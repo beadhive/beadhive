@@ -24,7 +24,9 @@ The history check is a second line of defence. The table-scoped forwarder grants
 ``bh-g7dlo``) are the only defence against a ``bh_local_ident`` rewrite (``bh-uhx2r`` E3): a
 non-writer writing AT the live epoch is undetectable from data.
 
-Pure read: it fetches (moving only remote-tracking refs) and reads ``AS OF`` the fetched head;
+Every read goes through the node's Dolt-only ``DoltHistory`` capability (bh-3kl1k); a node
+without one is refused (``CapabilityUnsupported``) before any I/O. Pure read: it fetches
+(moving only remote-tracking refs) and reads ``AS OF`` the fetched head;
 it never writes the working set, ``main`` or any table. Authorship-independent: bd commits as
 ``beads``/``root`` (``bh-jbb6r`` E4), so nothing here reads a commit's author or committer.
 Fence reads bind values the audit already read (Python-side variables), never subqueries
@@ -34,11 +36,12 @@ Fence reads bind values the audit already read (Python-side variables), never su
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Protocol, TypeVar
 
-from .fence_schema import quote
+from beadhive_hq_storage import Revision, require_capability
+from beadhive_hq_storage_dolt import DoltHistory, FenceTable
 
 __all__ = [
     "DEFAULT_EVIDENCE_LIMIT",
@@ -60,16 +63,17 @@ DEFAULT_REF = "origin/main"
 MERGE_PREFIX = "bh: merge frame/"
 #: Rows of evidence kept per finding (the counts are always exact).
 DEFAULT_EVIDENCE_LIMIT = 20
-_IN_CHUNK = 200
 _HASH = re.compile(r"[0-9a-v]{32}")
+
+C = TypeVar("C")
 
 
 class AuditReader(Protocol):
-    """A read-only SQL view of one node's copy of the hive (:class:`beadhive.fence_data.FenceNode`
-    implements it)."""
+    """One node's copy of the hive, read only through its Dolt-only ``DoltHistory`` capability
+    (:class:`beadhive.fence_data.FenceNode` implements it; bh-3kl1k)."""
 
-    def query(self, sql: str) -> list[dict]:
-        """Rows of one read-only statement."""
+    def capability(self, kind: type[C]) -> C | None:
+        """The node's Dolt-only capability of ``kind`` (``None`` when it has none)."""
 
     def fetch(self) -> None:
         """Fetch the hive remote (moves only remote-tracking refs)."""
@@ -321,19 +325,6 @@ def _hash(value: object, what: str) -> str:
     return text
 
 
-def _parents(raw: object) -> tuple[str, ...]:
-    return tuple(p.strip() for p in str(raw or "").split(",") if p.strip())
-
-
-def _chunks(items: Sequence[str], size: int = _IN_CHUNK) -> Iterable[Sequence[str]]:
-    for i in range(0, len(items), size):
-        yield items[i : i + size]
-
-
-def _scalar(rows: list[dict]) -> object:
-    return next(iter(rows[0].values())) if rows and rows[0] else None
-
-
 def history_window(
     fenced: Mapping[str, tuple[int, tuple[str, ...]]], head: str, base: int
 ) -> tuple[dict[str, Commit], dict[str, int], dict[str, str]]:
@@ -379,43 +370,22 @@ def history_window(
     return window, anchors, unfenced
 
 
-def _messages(reader: AuditReader, head: str, commits: Sequence[str]) -> dict[str, str]:
-    """Commit subjects for a few commits (evidence and the orphan-merge sanction only)."""
-    out: dict[str, str] = {}
-    for chunk in _chunks(sorted(set(commits))):
-        listed = ", ".join(quote(_hash(c, "commit")) for c in chunk)
-        for row in reader.query(
-            f"SELECT commit_hash, message FROM dolt_log({quote(head)}) "
-            f"WHERE commit_hash IN ({listed})"
-        ):
-            out[str(row["commit_hash"])] = str(row.get("message") or "")
-    return out
-
-
-def _fenced_history(
-    reader: AuditReader, head: str, revision: str
-) -> dict[str, tuple[int, tuple[str, ...]]]:
+def _fenced_history(history: DoltHistory, head: str) -> dict[str, tuple[int, tuple[str, ...]]]:
     """Join immutable writer history to the head's reachable commit log in linear time.
 
     Dolt's SQL join of these history sources exceeds the server client's read deadline on
     large hives. Keep both complete reads pinned to the same captured head, and retain only
-    their intersection, exactly as the SQL inner join did. Do not use dolt_diff_bh_writer:
-    it omits commits on merged histories (measured on Dolt 2.3.5).
-    """
+    their intersection, exactly as the SQL inner join did (``DoltHistory.writer_epochs`` never
+    reads ``dolt_diff_bh_writer``, which omits commits on merged histories)."""
     epochs = {
-        _hash(row["c"], "history commit"): int(row["e"])
-        for row in reader.query(
-            f"SELECT commit_hash AS c, epoch AS e FROM {revision}.dolt_history_bh_writer "
-            "WHERE id = 1"
-        )
+        _hash(commit, "history commit"): int(epoch)
+        for commit, epoch in history.writer_epochs(Revision(head)).items()
     }
     fenced = {}
-    for row in reader.query(
-        f"SELECT commit_hash AS c, parents AS p FROM dolt_log('--parents', {quote(head)})"
-    ):
-        commit = _hash(row["c"], "history commit")
+    for commit, parents in history.parents(head).items():
+        commit = _hash(commit, "history commit")
         if commit in epochs:
-            fenced[commit] = (epochs[commit], _parents(row.get("p")))
+            fenced[commit] = (epochs[commit], tuple(str(p) for p in parents))
     return fenced
 
 
@@ -435,44 +405,30 @@ def fence_audit(
     ``placement_ahead`` false. ``since_epoch`` widens the history walk to start at that epoch's
     adopt instead of the live epoch's. Returns ``cut_over=False`` (no findings) when ``ref``
     carries no ``bh_writer``."""
+    history = require_capability(reader, DoltHistory)  # refused before any I/O
     if fetch:
         reader.fetch()
-    head = _hash(_scalar(reader.query(f"SELECT hashof({quote(ref)}) AS h")), ref)
-    database = str(_scalar(reader.query("SELECT database() AS d")) or "")
-    if not database or "`" in database:
-        raise ValueError(f"fence_audit: unusable database name {database!r}")
-    rev = f"`{database}/{head}`"
-    at = f"AS OF {quote(head)}"
+    head = _hash(history.head(ref), ref)
 
-    tables = {str(_scalar([row])) for row in reader.query(f"SHOW TABLES {at}")}
+    tables = history.fence_tables_at(head)
     p_frame = None if placement is None else str(placement.frame)
     p_epoch = None if placement is None else int(placement.epoch)
-    if not {"bh_writer", "bh_epoch_live", "bh_write_mark"} <= tables:
+    if set(FenceTable) - tables:
         return FenceAudit(
             ref=ref, head=head, cut_over=False, placement_frame=p_frame, placement_epoch=p_epoch
         )
 
-    writer = reader.query(f"SELECT frame, epoch FROM bh_writer {at} WHERE id = 1")
-    writer_frame = str(writer[0]["frame"]) if writer else ""
-    writer_epoch = int(writer[0]["epoch"]) if writer else 0
-    live_rows = reader.query(f"SELECT epoch FROM bh_epoch_live {at} WHERE id = 1")
-    live = int(live_rows[0]["epoch"]) if live_rows else 0
+    writer = history.writer_at(head)
+    writer_frame = writer.frame if writer else ""
+    writer_epoch = writer.epoch if writer else 0
+    live = history.live_epoch_at(head)
 
     # ---- stale_marks: a bound value, never a subquery against bh_epoch_live --------------
-    stale_count = int(
-        _scalar(reader.query(f"SELECT COUNT(*) AS n FROM bh_write_mark {at} WHERE epoch <> {live}"))
-        or 0
-    )
-    stale = tuple(
-        StaleMark(str(r["id"]), int(r["epoch"]), str(r.get("tbl") or ""))
-        for r in reader.query(
-            f"SELECT id, epoch, tbl FROM bh_write_mark {at} WHERE epoch <> {live} "
-            f"ORDER BY epoch, id LIMIT {int(evidence_limit)}"
-        )
-    )
+    stale_count, marks = history.stale_marks_at(head, live=live, limit=int(evidence_limit))
+    stale = tuple(StaleMark(m.id, m.epoch, m.tbl) for m in marks)
 
     # ---- every fenced commit reachable from the captured ref: epoch + ordered parents ----
-    fenced = _fenced_history(reader, head, rev)
+    fenced = _fenced_history(history, head)
 
     # ---- epoch_regressed: the highest epoch bh_writer ever carried in ref's history -------
     top = max(fenced.items(), key=lambda kv: (kv[1][0], kv[0]), default=None)
@@ -482,14 +438,14 @@ def fence_audit(
     # ---- late writes: the I3 walk since the live (or since_epoch's) adopt ----------------
     base = live if since_epoch is None else int(since_epoch)
     window, anchors, unfenced = history_window(fenced, head, base)
-    messages = _messages(reader, head, [c for c in window if len(window[c].parents) > 1])
+    messages = history.messages(head, [c for c in window if len(window[c].parents) > 1])
     window = {c: Commit(c, info.parents, messages.get(c, "")) for c, info in window.items()}
     epochs: dict[str, int | None] = {c: e for c, (e, _) in fenced.items()}
     found = find_late_writes(window, epochs, anchors)
     for parent, merge in sorted(unfenced.items()):
         adopt = min(anchors, default="")
         found.append(LateWrite(parent, None, adopt, base, merged_by=merge))
-    detail = _messages(reader, head, [w.commit for w in found[: int(evidence_limit)]])
+    detail = history.messages(head, [w.commit for w in found[: int(evidence_limit)]])
     late = tuple(
         LateWrite(
             w.commit, w.epoch, w.adopt_commit, w.adopt_epoch, detail.get(w.commit, ""), w.merged_by

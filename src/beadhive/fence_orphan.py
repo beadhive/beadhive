@@ -17,6 +17,9 @@ data is cut over: on a legacy hive :func:`managed_preflight` answers "proceed" w
   which kills every forwarder session first (``quiesce_before_reset``, M13 E5), so an in-flight
   forwarded write is refused rather than acknowledged and then dropped by the reset. Nothing is
   lost: the reset never runs before the orphan is on the remote.
+Every Dolt read and branch move goes through the node's Dolt-only ``DoltHistory`` and
+``DoltMerge`` capabilities (bh-3kl1k); a node without them is refused before any I/O.
+
 * **Orphan merge** (:func:`merge_orphan`): the writer merges one named orphan deliberately, in
   ONE SQL session: ``dolt_force_transaction_commit`` lets the retired-epoch marks past the
   foreign key for exactly that session, the marks are re-stamped to the live epoch, the
@@ -38,9 +41,11 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from beadhive_hq_storage import StorageUnavailable, require_capability
+from beadhive_hq_storage_dolt import DoltHistory, DoltMerge
+
 from . import fence_audit, log
 from .fence_data import FenceError, FenceNode, SqlFailed
-from .fence_schema import quote
 from .writer_adopt import DataUnreachable, WriterRow
 
 __all__ = [
@@ -70,7 +75,6 @@ ORPHAN_PATTERN = re.compile(
     r"frame/(?P<frame>[A-Za-z0-9._-]+)/orphan-(?P<epoch>[0-9]+)-(?P<n>[0-9a-z]+)"
 )
 _FRAME = re.compile(r"[A-Za-z0-9._-]+")
-_HASH = re.compile(r"[0-9a-v]{32}")
 
 
 class OrphanError(FenceError):
@@ -126,65 +130,35 @@ class Orphan:
         }
 
 
-def _scalar(rows: list[dict]) -> object:
-    return next(iter(rows[0].values())) if rows and rows[0] else None
-
-
-def _truthy(value: object) -> bool:
-    return str(value).strip().lower() in {"1", "true"}
-
-
 def _remote_ref(node: FenceNode, branch: str) -> str:
     return f"{node.remote}/{branch}"
 
 
-def _hashof(node: FenceNode, rev: str) -> str:
-    text = str(_scalar(node.query(f"SELECT hashof({quote(rev)}) AS h")) or "")
-    if not _HASH.fullmatch(text):
-        raise SqlFailed(f"hashof({rev}) is not a commit hash: {text!r}")
-    return text
+def _history(node: FenceNode) -> DoltHistory:
+    return require_capability(node, DoltHistory)
+
+
+def _merge(node: FenceNode) -> DoltMerge:
+    return require_capability(node, DoltMerge)
 
 
 def committed_writer(node: FenceNode, rev: str = "main") -> WriterRow | None:
     """``bh_writer`` as of a COMMIT (``rev``). A refused server-mode pull leaves the new writer
     merged into the working set only (``bh-vje85`` E6), so the held epoch is read from history.
     ``None`` when that commit carries no ``bh_writer``."""
-    try:
-        rows = node.query(f"SELECT frame, epoch FROM bh_writer AS OF {quote(rev)} WHERE id = 1")
-    except SqlFailed as exc:
-        if "not found" in str(exc).lower():
-            return None
-        raise
-    if not rows:
-        return None
-    return WriterRow(str(rows[0]["frame"]), int(rows[0]["epoch"]))
+    return _history(node).writer_at(rev)
 
 
 def _published(node: FenceNode) -> bool:
     """Whether committed ``main`` is already contained in the remote head."""
-    remote = quote(_remote_ref(node, node.branch))
-    rows = node.query(
-        f"SELECT dolt_merge_base({quote(node.branch)}, {remote}) = hashof({quote(node.branch)}) "
-        "AS published"
-    )
-    return _truthy(_scalar(rows)) if rows else True
-
-
-def _contains(node: FenceNode, commit: str, rev: str) -> bool:
-    c = quote(commit)
-    rows = node.query(f"SELECT dolt_merge_base({c}, {quote(rev)}) = {c} AS m")
-    return _truthy(_scalar(rows))
+    return _history(node).is_ancestor(node.branch, _remote_ref(node, node.branch))
 
 
 def _remote_branches(node: FenceNode) -> dict[str, str]:
     """``{branch: hash}`` of the remote-tracking branches (after the caller's fetch)."""
-    prefix = f"remotes/{node.remote}/"
-    out = {}
-    for row in node.query("SELECT name, hash FROM dolt_remote_branches"):
-        name = str(row.get("name") or "")
-        if name.startswith(prefix):
-            out[name[len(prefix) :]] = str(row.get("hash") or "")
-    return out
+    return {
+        name: str(commit) for name, commit in _history(node).remote_branches(node.remote).items()
+    }
 
 
 def list_orphans(
@@ -192,6 +166,7 @@ def list_orphans(
 ) -> list[Orphan]:
     """Published orphan branches NOT yet merged into the remote head (``include_merged``: all of
     them). Pure read: a fetch moves only remote-tracking refs."""
+    history = _history(node)  # refused before any I/O
     if fetch:
         node.fetch()
     head = _remote_ref(node, node.branch)
@@ -200,7 +175,7 @@ def list_orphans(
         parsed = parse_orphan(name)
         if parsed is None:
             continue
-        if not include_merged and _contains(node, commit, head):
+        if not include_merged and history.is_ancestor(commit, head):
             continue
         frame, epoch, n = parsed
         out.append(Orphan(name, frame, epoch, n, commit))
@@ -258,22 +233,23 @@ def divert_if_superseded(node: FenceNode, *, frame: str) -> DivertOutcome:
     Never pushes ``main`` and never merges. The reset runs only after the orphan is verified
     on the remote (:class:`DivertFailed` otherwise, with nothing reset), and goes through
     :meth:`FenceNode.sync_to_remote`, whose server-mode engine quiesces forwarders first."""
+    history, merge = _history(node), _merge(node)  # refused before any I/O
     node.fetch()
     held = committed_writer(node, node.branch)
     remote = committed_writer(node, _remote_ref(node, node.branch))
     if remote is None or held is None or remote.epoch <= held.epoch:
         return DivertOutcome(superseded=False, held=held, remote=remote)
     logger = log.get_logger(__name__)
-    node.engine.commit("bh: commit working set before orphan diversion")
+    merge.commit_working_set("bh: commit working set before orphan diversion")
     branch = commit = None
     if not _published(node):
         branch = orphan_branch(frame, held.epoch, _next_n(node, frame, held.epoch))
-        commit = _hashof(node, node.branch)
+        commit = str(history.head(node.branch))
         try:
-            node.engine.push_branch(branch)
+            merge.publish_branch(branch)
             node.fetch()
             landed = _remote_branches(node).get(branch, "")
-        except (DataUnreachable, SqlFailed) as exc:
+        except StorageUnavailable as exc:
             raise DivertFailed(
                 f"superseded (remote writer {remote.frame}@{remote.epoch}), but the orphan "
                 f"{branch} could not be published: {exc}. Local main was NOT reset; nothing "
@@ -391,55 +367,40 @@ def merge_message(branch: str, epoch: int) -> str:
     return f"bh: merge {branch}, re-stamp its marks at epoch {int(epoch)}"
 
 
-def _mark_ids(node: FenceNode, rev: str) -> set[str]:
-    return {str(r["id"]) for r in node.query(f"SELECT id FROM bh_write_mark AS OF {quote(rev)}")}
-
-
-def _conflicts_preview(node: FenceNode, rev: str) -> list[str]:
-    rows = node.query(
-        "SELECT `table` AS t, num_data_conflicts AS d, num_schema_conflicts AS s FROM "
-        f"DOLT_PREVIEW_MERGE_CONFLICTS_SUMMARY({quote(node.branch)}, {quote(rev)})"
-    )
-    return sorted(str(r["t"]) for r in rows if int(r.get("d") or 0) or int(r.get("s") or 0))
-
-
 def _postflight(node: FenceNode, prev: str, orphan: str, message: str, epoch: int) -> list[str]:
     problems = []
-    head = _hashof(node, node.branch)
-    h = quote(head)
-    rows = node.query(
-        f"SELECT parents AS p, message AS m FROM dolt_log('--parents', {h}) WHERE commit_hash = {h}"
-    )
-    row = rows[0] if rows else {}
-    parents = tuple(sorted(p.strip() for p in str(row.get("p") or "").split(",") if p.strip()))
-    subject = str(row.get("m") or "")
+    head = _history(node).head(node.branch)
+    found = _history(node).commit(head)
+    parents = tuple(sorted(found.parents)) if found else ()
+    subject = found.message if found else ""
     if parents != tuple(sorted((prev, orphan))):
         problems.append(f"HEAD {head[:12]} is not the merge of {prev[:12]} and {orphan[:12]}")
     if subject != message:
         problems.append(f"HEAD subject is {subject[:80]!r}, not {message!r}")
-    if node.query("SELECT `table` FROM dolt_constraint_violations"):
+    residue = _merge(node).residue(epoch=int(epoch))
+    if residue.constraint_violations:
         problems.append("constraint violations remain in the working set")
-    if node.query("SELECT `table` FROM dolt_conflicts"):
+    if residue.conflicts:
         problems.append("conflicts remain in the working set")
-    stale = node.query(f"SELECT COUNT(*) AS n FROM bh_write_mark WHERE epoch <> {int(epoch)}")
-    if int(_scalar(stale) or 0):
-        problems.append(f"{_scalar(stale)} marks are not at the live epoch {epoch}")
+    if residue.off_epoch_marks:
+        problems.append(f"{residue.off_epoch_marks} marks are not at the live epoch {epoch}")
     return problems
 
 
 def _restore(node: FenceNode, prev: str) -> list[str]:
     """After a failed merge: abort an open merge and hard-reset local ``main`` back to ``prev``
-    (the pre-merge head) through the engine's sanctioned reset, so nothing the failed batch
-    committed (a non-merge re-stamp commit) can ride the next managed push. Returns what it
-    did; a ``main`` it could not restore is reported, loudly, as such."""
+    (the pre-merge head) through the sanctioned reset (``DoltMerge.reset_hard``), so nothing
+    the failed batch committed (a non-merge re-stamp commit) can ride the next managed push.
+    Returns what it did; a ``main`` it could not restore is reported, loudly, as such."""
+    history = _history(node)
     try:
-        head = _hashof(node, node.branch)
-    except SqlFailed:
+        head = str(history.head(node.branch))
+    except StorageUnavailable:
         head = ""
     try:
-        node.engine.reset_hard(prev)
-        after = _hashof(node, node.branch)
-    except (SqlFailed, DataUnreachable) as exc:
+        _merge(node).reset_hard(prev)
+        after = str(history.head(node.branch))
+    except StorageUnavailable as exc:
         return [f"MAIN NOT RESTORED to {prev} ({exc}) — do not push; reset it by hand"]
     if after != prev:
         return [f"MAIN NOT RESTORED: it is {after}, not {prev} — do not push; reset it by hand"]
@@ -466,6 +427,7 @@ def merge_orphan(node: FenceNode, branch: str, *, frame: str) -> MergeResult:
             f"{branch!r} is not an orphan branch (frame/<id>/orphan-<epoch>-<n>); only orphans "
             "merge through this verb — never a plain vc merge"
         )
+    history, merge = _history(node), _merge(node)  # refused before any I/O
     node.require_writer_ready()
     local = node.writer()
     if local is None or not frame or local.frame != frame:
@@ -481,19 +443,19 @@ def merge_orphan(node: FenceNode, branch: str, *, frame: str) -> MergeResult:
             f"this frame is superseded (remote writer {remote.frame}@{remote.epoch} > "
             f"{local.epoch}); it must divert, not merge"
         )
-    node.engine.commit("bh: commit working set before orphan merge")
+    merge.commit_working_set("bh: commit working set before orphan merge")
     rev = _remote_ref(node, branch)
     orphan = _remote_branches(node).get(branch, "")
     if not orphan:
         raise OrphanMergeRefused(f"no orphan {branch} on {node.remote} (after a fetch)")
-    live = int(_scalar(node.query("SELECT epoch FROM bh_epoch_live WHERE id = 1")) or 0)
+    live = history.live_epoch_at(None)
     if live != local.epoch:
         raise OrphanMergeRefused(
             f"live epoch {live} does not match bh_writer epoch {local.epoch}; re-run the adopt"
         )
-    if _contains(node, orphan, node.branch):
+    if history.is_ancestor(orphan, node.branch):
         return MergeResult(branch, orphan, live, already=True)
-    conflicts = _conflicts_preview(node, rev)
+    conflicts = merge.preview_conflicts(node.branch, rev)
     if conflicts:
         fenced = [t for t in conflicts if t.startswith("bh_")]
         never = f" (and one on {', '.join(fenced)} is never resolved at all)" if fenced else ""
@@ -501,28 +463,17 @@ def merge_orphan(node: FenceNode, branch: str, *, frame: str) -> MergeResult:
             f"merging {branch} would conflict on {', '.join(conflicts)}; this verb never "
             f"resolves a conflict{never}. Nothing was written."
         )
-    prev = _hashof(node, node.branch)
-    before = _mark_ids(node, prev)
+    prev = str(history.head(node.branch))
+    before = history.mark_ids_at(prev)
     message = merge_message(branch, live)
-    # bd's batch does not stop at a failing statement, so every statement after the merge is
-    # guarded in SQL on the merge actually being open: a failed DOLT_MERGE re-stamps nothing,
-    # deletes nothing and commits nothing (a NULL message aborts DOLT_COMMIT).
-    statements = [
-        "SET @@dolt_force_transaction_commit = 1",
-        f"CALL DOLT_MERGE('--no-ff', '--no-commit', {quote(rev)})",
-        "SET @bh_merging = (SELECT COUNT(*) FROM dolt_merge_status WHERE is_merging)",
-        f"UPDATE bh_write_mark SET epoch = {live} WHERE epoch <> {live} AND @bh_merging > 0",
-        "DELETE FROM dolt_constraint_violations_bh_write_mark WHERE @bh_merging > 0",
-        f"CALL DOLT_COMMIT('-Am', IF(@bh_merging > 0, {quote(message)}, NULL))",
-    ]
     error = ""
-    try:
-        node.engine.execute_session(statements)
+    try:  # one session; the adapter guards every step on the merge being open
+        merge.merge_restamping(rev, epoch=live, message=message)
     except SqlFailed as exc:
         error = str(exc)
     try:
         problems = _postflight(node, prev, orphan, message, live)
-    except (SqlFailed, DataUnreachable) as exc:
+    except StorageUnavailable as exc:
         problems = [f"postflight unreadable: {exc}"]
     if problems:
         problems += _restore(node, prev)
@@ -530,8 +481,8 @@ def merge_orphan(node: FenceNode, branch: str, *, frame: str) -> MergeResult:
             f"orphan merge of {branch} did not land cleanly: {'; '.join(problems)}"
             + (f" (session: {error})" if error else "")
         )
-    head = _hashof(node, node.branch)
-    restamped = len(_mark_ids(node, head) - before)
+    head = str(history.head(node.branch))
+    restamped = len(history.mark_ids_at(head) - before)
     log.get_logger(__name__).info(
         "fence_orphan_merged", branch=branch, commit=head, epoch=live, restamped=restamped
     )

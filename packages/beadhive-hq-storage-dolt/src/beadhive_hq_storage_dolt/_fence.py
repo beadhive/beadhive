@@ -135,6 +135,7 @@ class DoltHiveFence:
         self._branch = check_key(branch, "branch")
         self._deadline = deadline
         self._capabilities: dict[type, object] = {}
+        self._builtin: Any = None
 
     @property
     def engine(self) -> FenceStatementEngine:
@@ -144,12 +145,17 @@ class DoltHiveFence:
         self._capabilities[kind] = implementation
 
     def capability(self, kind: type[C]) -> C | None:
-        """``DoltHistory`` and ``DoltMerge`` over this fence's engine, plus any registered
-        capability; ``None`` otherwise (``DoltAccounts`` is an HQ capability)."""
+        """``DoltHistory`` and ``DoltMerge`` over this fence's engine and its remote and branch,
+        plus any registered capability; ``None`` otherwise (``DoltAccounts`` belongs to a
+        server login, never to a fence)."""
         if kind not in self._capabilities:
-            from ._capabilities import default_fence_capability
+            if self._builtin is None:
+                from ._capabilities import fence_capabilities
 
-            found = default_fence_capability(kind, self._engine)
+                self._builtin = fence_capabilities(
+                    self._engine, remote=self._remote, branch=self._branch
+                )
+            found = self._builtin.capability(kind)
             if found is None:
                 return None
             self._capabilities[kind] = found

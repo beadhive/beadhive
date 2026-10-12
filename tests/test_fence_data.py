@@ -169,9 +169,14 @@ def test_node_implements_the_adopt_and_reclaim_ports():
     assert isinstance(node, failover_reclaim.ReclaimData)
     assert isinstance(node, HiveFence)  # the resolver answers the port (hq-storage-port-adr §6)
     assert isinstance(node.fence, DoltHiveFence) and node.fence.engine is node.engine
-    # legacy node operations the cutover and orphan paths still use (bh-3kl1k moves them)
+    # the legacy node operations moved onto the Dolt-only capabilities (bh-3kl1k)
     for method in ("history_max_epoch", "push_main"):
-        assert callable(getattr(node, method))
+        assert not hasattr(node, method)
+    from beadhive_hq_storage_dolt import DoltAccounts, DoltHistory, DoltMerge
+
+    assert isinstance(node.capability(DoltHistory), DoltHistory)
+    assert isinstance(node.capability(DoltMerge), DoltMerge)
+    assert node.capability(DoltAccounts) is None  # a server login's, never a fence's
     assert not hasattr(node, "trigger_count")
     assert node.writer() is None
 

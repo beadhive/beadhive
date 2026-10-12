@@ -20,6 +20,11 @@ module injects root's transport and fence engines into it.
   connection root opened itself (bh-xnn5p): the runtime authority, the trusted receiver, the
   operator and the session rows keep their own transport and transactions, and the adapter
   owns every statement.
+* :func:`hive_server_capabilities` and :func:`operator_capabilities` are the Dolt-only
+  ``CapabilityHost`` s (bh-3kl1k) over a hive server login (:mod:`beadhive.hive_forward`'s
+  ``Sql``: ``BdServerEngine`` or ``DbapiSql``) and over an operator's open cursor (the HQ
+  placement ``conformance``). A hive fence's own ``DoltHistory`` / ``DoltMerge`` come from
+  :func:`dolt_hive_fence`'s adapter.
 """
 
 from __future__ import annotations
@@ -33,9 +38,12 @@ from beadhive_hq_storage_dolt import (
     DoltConfigHistory,
     DoltHiveFence,
     DoltHqStorage,
+    DoltSqlCapabilities,
     FenceStatementEngine,
     HqRuntimeStatements,
     Role,
+    SqlRunner,
+    cursor_runner,
 )
 
 from . import fence_schema
@@ -44,8 +52,10 @@ __all__ = [
     "config_history",
     "dolt_hive_fence",
     "dolt_hq_storage",
+    "hive_server_capabilities",
     "hq_connection_factory",
     "is_transport_deadline",
+    "operator_capabilities",
     "placement_storage",
     "runtime_statements",
 ]
@@ -153,3 +163,21 @@ def runtime_statements(cursor: Any) -> HqRuntimeStatements:
 def dolt_hive_fence(engine: FenceStatementEngine, **options: Any) -> DoltHiveFence:
     """A hive's ``HiveFence`` over its fence engine, expecting the complete guard install."""
     return DoltHiveFence(engine, guards=tuple(fence_schema.trigger_names()), **options)
+
+
+def hive_server_capabilities(sql: Any) -> DoltSqlCapabilities:
+    """The Dolt-only capabilities over one hive server login (anything with ``query(sql)`` and
+    ``execute(statements)``: ``BdServerEngine`` or ``hive_forward.DbapiSql``). The login's own
+    calls run unchanged, so its errors reach the caller exactly as before; nothing is called
+    until a capability operation runs."""
+    runner = SqlRunner(
+        query=lambda statement: sql.query(statement),
+        execute=lambda statements: sql.execute(statements),
+    )
+    return DoltSqlCapabilities(runner)
+
+
+def operator_capabilities(cursor: Any) -> DoltSqlCapabilities:
+    """``DoltAccounts`` over an operator's open DB-API cursor (its transaction and connection
+    stay the caller's)."""
+    return DoltSqlCapabilities(cursor_runner(cursor), history=False, merge=False)

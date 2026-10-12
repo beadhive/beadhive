@@ -33,17 +33,9 @@ def test_c1_refuses_every_disagreement_with_a_legacy_adopt_pointer(fence, placed
     assert "bh host lease adopt bh" in str(info.value)
 
 
-class _History:
-    def __init__(self, top: int):
-        self.top = top
-
-    def history_max_epoch(self) -> int:
-        return self.top
-
-
 def test_r2_floor_is_the_max_of_every_carrier_and_history():
     floor = fc._floor(
-        _History(7),
+        7,  # DoltHistory.history_max_epoch(), read by rollback (bh-3kl1k)
         WriterRow("a", 7),
         EpochFence(7, "a", 3),
         PlacementView("a", 7),
@@ -66,7 +58,7 @@ def test_r2_floor_is_the_max_of_every_carrier_and_history():
 )
 def test_r2_refuses_a_below_floor_state(history, writer, fence, placed):
     with pytest.raises(fc.CutoverRefused, match="below-floor.*bh host lease adopt bh"):
-        fc._floor(_History(history), writer, fence, placed, prefix="bh", host_id="a")
+        fc._floor(history, writer, fence, placed, prefix="bh", host_id="a")
 
 
 def test_the_record_trailer_round_trips():
@@ -190,3 +182,19 @@ def test_doctor_is_silent_for_a_legacy_hive(monkeypatch, tmp_path, capsys):
     assert doctor._writer_fence_warnings(None) == []
     doctor._render_writer_fence([])
     assert capsys.readouterr().out == ""
+
+
+def test_the_cutover_reads_are_refused_without_the_dolt_capabilities():
+    """bh-3kl1k: ``unpublished_local`` (C1, R1) reaches Dolt only through ``DoltHistory`` and
+    ``DoltMerge``; the port's fake fence has neither."""
+    from beadhive_hq_storage import CapabilityUnsupported, InMemoryHiveFence
+    from beadhive_hq_storage.contract import ManualClock
+
+    class Fake(InMemoryHiveFence):
+        remote, branch = "origin", "main"
+
+        def fetch(self):
+            pytest.fail("refused before any fetch")
+
+    with pytest.raises(CapabilityUnsupported, match="DoltHistory"):
+        fc.unpublished_local(Fake(ManualClock()))

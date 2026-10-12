@@ -74,8 +74,8 @@ from beadhive.failover_observer import (
     session_table,
 )
 from beadhive.hq_sql_session import LivenessPolicy, SessionRenewer, session_ddl
-from beadhive_hq_storage import Confirmed, NotConfirmed, new_operation_id
-from beadhive_hq_storage_dolt import DoltHqStorage
+from beadhive_hq_storage import Confirmed, NotConfirmed, new_operation_id, require_capability
+from beadhive_hq_storage_dolt import DoltHqStorage, DoltMerge
 from harness import composed_fence as cf
 from harness.clock import FakeClock
 from harness.writer_fencing import BD_EMBEDDED, BD_SERVER, DOLT_CLI, Cluster, Run
@@ -221,7 +221,7 @@ def _managed_push(world: ProductWorld, name: str) -> tuple[str, fo.DivertOutcome
     if out.superseded:
         world.moves.observe("divert", name)
         return "diverted", out
-    ok = node.push_main()
+    ok = require_capability(node, DoltMerge).publish()
     world.moves.observe("managed_push", name)
     return ("pushed" if ok else "rejected"), out
 

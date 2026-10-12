@@ -1117,6 +1117,17 @@ def check_triggers(
     return problems
 
 
+_QUOTED_ACCOUNT = re.compile(r"^'(?P<user>(?:[^']|'')+)'@'(?P<host>(?:[^']|'')+)'$")
+
+
+def _split_account(account: str) -> tuple[str, str]:
+    """``'user'@'host'`` (as root renders an account) as ``(user, host)``."""
+    match = _QUOTED_ACCOUNT.match(account.strip())
+    if match is None:
+        raise ValueError(f"not a quoted account ('user'@'host'): {account!r}")
+    return match.group("user").replace("''", "'"), match.group("host").replace("''", "'")
+
+
 def conformance(
     cursor,
     *,
@@ -1127,14 +1138,25 @@ def conformance(
     """Run both checks against a server with an operator account that can read grants.
 
     `director` is ``'user'@'host'``; `frames` maps each frame account to the tables it may
-    write. Returns every violation (empty means conformant). The reads are the Dolt adapter's
-    (:func:`beadhive_hq_storage_dolt.placement_conformance_rows`) on the operator's `cursor`."""
-    from beadhive_hq_storage_dolt import placement_conformance_rows
+    write. Returns every violation (empty means conformant). The reads go through the Dolt-only
+    ``DoltAccounts`` capability over the operator's `cursor` (bh-3kl1k): ``SHOW GRANTS`` per
+    account, and the triggers from ``dolt_schemas``, never ``information_schema.triggers``
+    (which fails on Dolt 2.3.5 for a committed trigger on a ``dolt_ignore``'d table)."""
+    from beadhive_hq_storage import require_capability
+    from beadhive_hq_storage_dolt import DoltAccounts
 
+    from .hq_storage_composition import operator_capabilities
+
+    accounts = require_capability(operator_capabilities(cursor), DoltAccounts)
     tables = {account: tuple(writable) for account, writable in frames.items()}
-    grants, triggers = placement_conformance_rows(
-        cursor, accounts=[director, *tables], database=database
-    )
+    grants = [
+        (account, list(accounts.grants(*_split_account(account))))
+        for account in [director, *tables]
+    ]
+    triggers = [
+        (trigger.name, trigger.table, trigger.statement)
+        for trigger in accounts.triggers(database).values()
+    ]
     (_director, lines), *frame_grants = grants
     problems = [f"{director}: {p}" for p in check_grants(lines, role="director", database=database)]
     writable: set[str] = set()

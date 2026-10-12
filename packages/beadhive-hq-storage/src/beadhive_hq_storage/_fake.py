@@ -846,11 +846,22 @@ class InMemoryHiveFence:
         self._local = genesis.revision
         self._remote = genesis.revision
         self._reachable = True
+        self._capabilities: dict[type, object] = {}
 
     # -- test controls ------------------------------------------------------------------------
 
     def set_reachable(self, reachable: bool) -> None:
         self._reachable = reachable
+
+    def register_capability(self, kind: type[C], implementation: C) -> None:
+        self._capabilities[kind] = implementation
+
+    # -- CapabilityHost -----------------------------------------------------------------------
+
+    def capability(self, kind: type[C]) -> C | None:
+        """``None`` unless registered: the fake has no Dolt-only capability, so a consumer that
+        needs one is refused with ``CapabilityUnsupported`` (``require_capability``)."""
+        return self._capabilities.get(kind)  # type: ignore[return-value]
 
     def snapshot_at(self, revision: Revision) -> FenceSnapshot:
         commit = self._commits.get(revision)

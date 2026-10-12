@@ -36,7 +36,9 @@ from beadhive.hq_storage_composition import (
     config_history,
     dolt_hive_fence,
     dolt_hq_storage,
+    hive_server_capabilities,
     hq_connection_factory,
+    operator_capabilities,
     placement_storage,
     runtime_statements,
 )
@@ -69,6 +71,7 @@ from beadhive_hq_storage_dolt import (
     DoltConfigHistory,
     DoltHistory,
     DoltHqStorage,
+    DoltMerge,
     DoltRuntimeReads,
     HqRuntimeStatements,
     bump_statements,
@@ -99,8 +102,25 @@ def test_composition_binds_adapters_that_satisfy_the_port_protocols(tmp_path: Pa
 
     fence = dolt_hive_fence(DoltCliEngine(tmp_path))
     assert isinstance(fence, HiveFence) and isinstance(fence, CapabilityHost)
-    assert fence.capability(DoltHistory) is not None
-    assert fence.capability(DoltAccounts) is None  # an HQ capability, never a hive fence's
+    assert isinstance(fence.capability(DoltHistory), DoltHistory)
+    assert isinstance(fence.capability(DoltMerge), DoltMerge)
+    assert fence.capability(DoltAccounts) is None  # a server login's, never a hive fence's
+
+    # bh-3kl1k: a hive server login (hive_forward's Sql) and an operator cursor (the placement
+    # conformance) are Dolt-only hosts too; composing one runs nothing.
+    class Login:
+        def query(self, sql: str) -> list[dict]:
+            raise AssertionError("composition must not touch the server")
+
+        def execute(self, statements: object) -> None:
+            raise AssertionError("composition must not touch the server")
+
+    login = hive_server_capabilities(Login())
+    assert isinstance(login, CapabilityHost)
+    assert isinstance(login.capability(DoltAccounts), DoltAccounts)
+    operator = operator_capabilities(object())
+    assert isinstance(operator.capability(DoltAccounts), DoltAccounts)
+    assert operator.capability(DoltHistory) is None and operator.capability(DoltMerge) is None
 
 
 def test_the_director_store_is_the_dolt_adapter_over_the_runtime_tables() -> None:

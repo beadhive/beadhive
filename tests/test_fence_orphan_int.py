@@ -19,8 +19,16 @@ from beadhive import fence_audit as fa
 from beadhive import fence_data as fd
 from beadhive import fence_orphan as fo
 from beadhive import writer_adopt as wa
+from beadhive_hq_storage import require_capability
+from beadhive_hq_storage_dolt import DoltMerge
 from harness import trigger_canary as tc
 from test_fence_data_int import _clone, _node, _Placement, _repo, _stale_write
+
+
+def _publish(node: fd.FenceNode) -> bool:
+    """Push ``main`` fast-forward only, through the node's Dolt-only ``DoltMerge``."""
+    return require_capability(node, DoltMerge).publish()
+
 
 pytestmark = [
     pytest.mark.integration,
@@ -81,7 +89,7 @@ def test_partitioned_writer_rejoins_diverts_and_its_orphan_merges_restamped(rejo
     assert b.rows("select `table` from dolt_constraint_violations") == []
     subject = b.rows("select message from dolt_log limit 1")[0]["message"]
     assert subject.startswith(fa.MERGE_PREFIX) and "epoch 2" in subject
-    assert node_b.push_main()
+    assert _publish(node_b)
 
     audit = fa.fence_audit(node_b, placement=wa.PlacementView("b", 2))
     assert audit.ok, audit.findings()
@@ -178,7 +186,7 @@ def test_server_mode_divert_and_one_session_orphan_merge_through_bd(rewound_clus
     node_t = fd.FenceNode(fd.BdServerEngine(t.hive, env=t.env))
     node_s.install("s", 1)
     node_s.provision_ident("s")
-    assert node_s.push_main()
+    assert _publish(node_s)
     node_t.sync_to_remote()
     node_t.provision_ident("t")
     assert wa.run_step2(node_t, _Placement("t", 2), frame="t", epoch=2).landed
@@ -191,7 +199,7 @@ def test_server_mode_divert_and_one_session_orphan_merge_through_bd(rewound_clus
     merged = fo.merge_orphan(node_t, out.branch, frame="t")
     assert merged.restamped >= 1 and merged.epoch == 2
     assert "partitioned-server-write" in t.issue_titles()
-    assert node_t.push_main()
+    assert _publish(node_t)
     audit = fa.fence_audit(node_t, placement=wa.PlacementView("t", 2))
     assert audit.ok, audit.findings()
 
@@ -276,7 +284,7 @@ def test_server_mode_failed_merge_mid_batch_restores_main_to_prev(
     node_t = fd.FenceNode(fd.BdServerEngine(t.hive, env=t.env))
     node_s.install("s", 1)
     node_s.provision_ident("s")
-    assert node_s.push_main()
+    assert _publish(node_s)
     node_t.sync_to_remote()
     node_t.provision_ident("t")
     assert wa.run_step2(node_t, _Placement("t", 2), frame="t", epoch=2).landed
