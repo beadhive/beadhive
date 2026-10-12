@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from beadhive_hq_storage.contract import (
+    GATE_PROFILE,
     ContractAdapter,
     Scenario,
     adapter_fixture,
@@ -29,7 +30,11 @@ from beadhive_hq_storage_dolt.contract import DoltSqlServer, dolt_adapter
 
 pytestmark = [pytest.mark.integration, pytest.mark.dolt_server]
 
-load_hypothesis_profile()
+PROFILE = load_hypothesis_profile()
+DOLT_MAX_EXAMPLES = 100
+"""The real-Dolt machine's per-run cap outside the gate (settled by bh-br1cd): every step is a
+real SQL round trip, so the nightly profile's 500 examples would run for most of an hour. The cap
+bounds the budget only; the comparison is never weakened."""
 
 _servers: list[DoltSqlServer] = []
 
@@ -81,12 +86,18 @@ def _lazy_dolt() -> ContractAdapter:
 
 
 def test_state_machine_fake_against_dolt() -> None:
-    """The gate profile's derandomized budget, with shrinking excluded (ADR section 8)."""
+    """The gate profile's derandomized budget with shrinking excluded; other profiles shrink,
+    capped at :data:`DOLT_MAX_EXAMPLES` (ADR section 8)."""
     from hypothesis import settings
     from hypothesis.stateful import run_state_machine_as_test
 
     _server()  # skip before hypothesis starts when Dolt is unavailable
     machine = build_state_machine(fake_adapter(), _lazy_dolt())
-    run_state_machine_as_test(
-        machine, settings=settings(settings.default, phases=no_shrink_phases())
-    )
+    if PROFILE == GATE_PROFILE:
+        budget = settings(settings.default, phases=no_shrink_phases())
+    else:
+        budget = settings(
+            settings.default,
+            max_examples=min(settings.default.max_examples, DOLT_MAX_EXAMPLES),
+        )
+    run_state_machine_as_test(machine, settings=budget)
