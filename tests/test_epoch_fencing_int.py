@@ -489,15 +489,31 @@ def _stale_path(cluster, recorder, stale: str, path: str, adopter: str = "c") ->
     return {"runs": runs, "state": state, "remote": remote}
 
 
-def test_s5_stale_writer_is_refused_on_every_default_bd_path(rewound_custom):
+#: Scenario 5's (stale writer, path) pairs: every default bd path on the embedded and the
+#: server-mode frame, plus raw Dolt on a Dolt CLI frame. One case per pair (bh-56wtv): each
+#: ``_stale_path`` starts from ``_make_stale``, which re-syncs the stale frame to the remote, so a
+#: pair never depended on the one before it, and the pooled cluster rewinds between cases.
+S5_PATHS = ("bd-dolt-push", "bd-pull-then-push", "bd-sync", "auto-push", "raw-dolt")
+S5_CASES = [(stale, path) for stale in ("a", "b") for path in S5_PATHS] + [("c", "raw-dolt")]
+
+
+@pytest.mark.parametrize(("stale", "path"), S5_CASES, ids=[f"{s}-{p}" for s, p in S5_CASES])
+def test_s5_stale_writer_is_refused_on_every_default_bd_path(rewound_custom, stale, path):
     cluster = rewound_custom(fenced_cluster, FRAMES)
     recorder = _recorder(cluster, "a", "b")
-    for stale in ("a", "b"):
-        embedded = cluster[stale].kind == BD_EMBEDDED
+    if stale == "c":
+        # A Dolt CLI frame as the stale writer (bh-cvk70 measured this on file://).
+        out = _stale_path(cluster, recorder, "c", "raw-dolt", adopter="a")
+        assert CLI_VIOLATION in out["runs"]["pull"].output and not out["runs"]["push"].ok
+        return
 
+    embedded = cluster[stale].kind == BD_EMBEDDED
+
+    if path == "bd-dolt-push":
         out = _stale_path(cluster, recorder, stale, "bd-dolt-push")
         assert NON_FF in out["runs"]["push"].output
 
+    elif path == "bd-pull-then-push":
         out = _stale_path(cluster, recorder, stale, "bd-pull-then-push")
         assert not out["runs"]["pull"].ok and NON_FF in out["runs"]["push"].output
         if embedded:  # settle gate: abort and restore, the stale frame still names itself
@@ -519,14 +535,17 @@ def test_s5_stale_writer_is_refused_on_every_default_bd_path(rewound_custom):
                 _evidence(recorder, f"s5:b:half-merged:{label}", "b", run)
             assert not s.push().ok
 
+    elif path == "bd-sync":
         out = _stale_path(cluster, recorder, stale, "bd-sync")
         assert not out["runs"]["sync"].ok
         assert (SETTLE_REFUSAL if embedded else CLI_VIOLATION) in out["runs"]["sync"].output
 
+    elif path == "auto-push":
         out = _stale_path(cluster, recorder, stale, "auto-push")
         run = out["runs"]["create+auto-push"]
         assert run.ok and "auto-push failed" in run.output and NON_FF in run.output
 
+    else:
         out = _stale_path(cluster, recorder, stale, "raw-dolt")
         if embedded:  # the Dolt CLI opened on bd's embedded store
             assert CLI_VIOLATION in out["runs"]["pull"].output
@@ -537,13 +556,27 @@ def test_s5_stale_writer_is_refused_on_every_default_bd_path(rewound_custom):
             assert not out["runs"]["pull-again"].ok
         assert not out["runs"]["push"].ok
 
-    # A Dolt CLI frame as the stale writer (bh-cvk70 measured this on file://).
-    out = _stale_path(cluster, recorder, "c", "raw-dolt", adopter="a")
-    assert CLI_VIOLATION in out["runs"]["pull"].output and not out["runs"]["push"].ok
+
+#: The server-mode mark case's independent parts (bh-56wtv): the proposal's bump on each frame
+#: (the embedded refusal, the server-mode hole), the adopt-sentinel guard, and the committed-mark
+#: control per frame and ``bd vc merge`` strategy. Every part opens with ``adopt`` or
+#: ``_make_stale`` (both re-sync the frame to the remote), so none relied on an earlier one.
+S5VC_STRATEGIES = (None, "ours", "theirs")
+S5VC_PARTS = [("vc-merge", "a", None), ("vc-merge", "b", None), ("sentinel", "b", None)] + [
+    ("committed-mark", name, strategy) for name in ("a", "b") for strategy in S5VC_STRATEGIES
+]
 
 
+@pytest.mark.parametrize(
+    ("part", "name", "strategy"),
+    S5VC_PARTS,
+    ids=[
+        f"{part}-{name}" + (f"-{strategy}" if part == "committed-mark" else "")
+        for part, name, strategy in S5VC_PARTS
+    ],
+)
 def test_s5_server_mode_mark_is_not_in_the_write_commit_and_the_adopt_sentinel_closes_vc_merge(
-    rewound_custom,
+    rewound_custom, part, name, strategy
 ):
     """bd's server-mode write commit stages only ``issues`` and ``events`` (GH#2455), so the guard
     trigger's ``bh_write_mark`` row stays unstaged and the commit that carries the stale write
@@ -554,22 +587,22 @@ def test_s5_server_mode_mark_is_not_in_the_write_commit_and_the_adopt_sentinel_c
     the server-mode merge refuse too."""
     cluster = rewound_custom(fenced_cluster, FRAMES)
     recorder = _recorder(cluster, "a", "b")
-    staged: dict[str, list[str]] = {}
-    for name in ("a", "b"):
+
+    if part == "vc-merge":
         s = cluster[name]
         held = cluster.hq.place(name).epoch
         assert adopt(cluster, s, held) == "landed"
         s.create_issue(f"s5vc-{name}-legit").check()
-        staged[name] = sorted(
+        staged = sorted(
             r["table_name"]
             for r in s.query("SELECT table_name FROM dolt_diff WHERE commit_hash = hashof('main')")
         )
         s.push().check()
-    assert "bh_write_mark" in staged["a"]
-    assert staged["b"] == ["issues"]  # the server-mode write commit has no mark
+        if name == "a":
+            assert "bh_write_mark" in staged
+        else:
+            assert staged == ["issues"]  # the server-mode write commit has no mark
 
-    for name in ("a", "b"):
-        s = cluster[name]
         _make_stale(cluster, name, "c", sentinel=False)  # the proposal's original bump
         s.create_issue(f"s5vc-{name}-stale").check()
         _fetch(s)
@@ -589,51 +622,51 @@ def test_s5_server_mode_mark_is_not_in_the_write_commit_and_the_adopt_sentinel_c
             assert audit["stale_marks"] >= 1, audit  # ...but bh can see it afterwards
         sync_to_remote(s)
 
-    # The bh-side guard: a bump that always inserts an `adopt-<epoch>` sentinel mark changes
-    # bh_write_mark, so Dolt refuses to merge it over the stale frame's uncommitted mark.
-    assert adopt(cluster, cluster["c"], cluster.hq.place("c").epoch) == "landed"
-    b = cluster["b"]
-    _make_stale(cluster, "b", "c")
-    b.create_issue("s5vc-b-stale-sentinel").check()
-    _fetch(b)
-    with recorder.step("s5vc:b:vc-merge-sentinel", "b") as step:
-        merged = _evidence(
-            recorder, "s5vc:b:vc-merge-sentinel", "b", b.bd("vc", "merge", "origin/main")
-        )
-        pushed = b.push()
-    assert not merged.ok and "local changes would be stomped by merge" in merged.output
-    assert "bh_write_mark" in merged.output and not pushed.ok
-    assert step["after"]["remote"]["main"] == step["before"]["remote"]["main"]
-    assert "s5vc-b-stale-sentinel" not in remote_fence(cluster)["titles"]
-    sync_to_remote(b)
+    elif part == "sentinel":
+        # The bh-side guard: a bump that always inserts an `adopt-<epoch>` sentinel mark changes
+        # bh_write_mark, so Dolt refuses to merge it over the stale frame's uncommitted mark.
+        assert adopt(cluster, cluster["c"], cluster.hq.place("c").epoch) == "landed"
+        b = cluster["b"]
+        _make_stale(cluster, "b", "c")
+        b.create_issue("s5vc-b-stale-sentinel").check()
+        _fetch(b)
+        with recorder.step("s5vc:b:vc-merge-sentinel", "b") as step:
+            merged = _evidence(
+                recorder, "s5vc:b:vc-merge-sentinel", "b", b.bd("vc", "merge", "origin/main")
+            )
+            pushed = b.push()
+        assert not merged.ok and "local changes would be stomped by merge" in merged.output
+        assert "bh_write_mark" in merged.output and not pushed.ok
+        assert step["after"]["remote"]["main"] == step["before"]["remote"]["main"]
+        assert "s5vc-b-stale-sentinel" not in remote_fence(cluster)["titles"]
+        sync_to_remote(b)
 
-    # Control: once the mark IS in the stale commit, every vc merge variant is refused in
-    # both modes and `bd conflicts resolve --conclude` will not settle the violation.
-    for name in ("a", "b"):
+    else:
+        # Control: once the mark IS in the stale commit, every vc merge variant is refused in
+        # both modes and `bd conflicts resolve --conclude` will not settle the violation.
         s = cluster[name]
-        for strategy in (None, "ours", "theirs"):
-            _make_stale(cluster, name, "c")
-            s.create_issue(f"s5vc-{name}-committed-{strategy}").check()
-            if s.kind == BD_SERVER:
-                s.bd("dolt", "commit", "-m", "bh: commit the unstaged mark").check()
-            _fetch(s)
-            args = ["vc", "merge", "origin/main"] + (["--strategy", strategy] if strategy else [])
-            with recorder.step(f"s5vc:{name}:committed-mark:{strategy}", name) as step:
-                merged = _evidence(recorder, f"s5vc:{name}:{strategy}", name, s.bd(*args))
-                concluded = _evidence(
-                    recorder,
-                    f"s5vc:{name}:{strategy}:conclude",
-                    name,
-                    s.bd("conflicts", "resolve", "--conclude"),
-                )
-                pushed = s.push()
-            assert not merged.ok and "constraint violations" in merged.output, merged.output
-            assert not pushed.ok
-            assert step["after"]["remote"]["main"] == step["before"]["remote"]["main"]
-            assert f"s5vc-{name}-committed-{strategy}" not in remote_fence(cluster)["titles"]
-            if local_state(s)["merging"]:
-                assert not concluded.ok and "constraint violations" in concluded.output
-            sync_to_remote(s)
+        _make_stale(cluster, name, "c")
+        s.create_issue(f"s5vc-{name}-committed-{strategy}").check()
+        if s.kind == BD_SERVER:
+            s.bd("dolt", "commit", "-m", "bh: commit the unstaged mark").check()
+        _fetch(s)
+        args = ["vc", "merge", "origin/main"] + (["--strategy", strategy] if strategy else [])
+        with recorder.step(f"s5vc:{name}:committed-mark:{strategy}", name) as step:
+            merged = _evidence(recorder, f"s5vc:{name}:{strategy}", name, s.bd(*args))
+            concluded = _evidence(
+                recorder,
+                f"s5vc:{name}:{strategy}:conclude",
+                name,
+                s.bd("conflicts", "resolve", "--conclude"),
+            )
+            pushed = s.push()
+        assert not merged.ok and "constraint violations" in merged.output, merged.output
+        assert not pushed.ok
+        assert step["after"]["remote"]["main"] == step["before"]["remote"]["main"]
+        assert f"s5vc-{name}-committed-{strategy}" not in remote_fence(cluster)["titles"]
+        if local_state(s)["merging"]:
+            assert not concluded.ok and "constraint violations" in concluded.output
+        sync_to_remote(s)
 
 
 # =============================================================================================
@@ -641,14 +674,27 @@ def test_s5_server_mode_mark_is_not_in_the_write_commit_and_the_adopt_sentinel_c
 # =============================================================================================
 
 
-def test_s6_hive_sync_bd_sync_and_pull_never_revert_bh_writer(rewound_custom):
+#: Scenario 6's (frame, sync path) parts (bh-56wtv). Each part opens with ``_make_stale`` or
+#: ``_stale_adopter`` (both re-sync the frame to the remote first), so none relied on an earlier
+#: part; the local-regression check stays with the pull part whose ``stale_epoch`` it replays.
+S6_STEPS = (
+    "hive-sync-ours-one-sided",
+    "bd-dolt-pull-both-changed",
+    "bd-sync-both-changed",
+    "hive-sync-ours-both-changed",
+)
+S6_CASES = [(name, step) for name in ("a", "b") for step in S6_STEPS]
+
+
+@pytest.mark.parametrize(("name", "path"), S6_CASES, ids=[f"{n}-{p}" for n, p in S6_CASES])
+def test_s6_hive_sync_bd_sync_and_pull_never_revert_bh_writer(rewound_custom, name, path):
     cluster = rewound_custom(fenced_cluster, FRAMES)
     recorder = _recorder(cluster, "a", "b")
-    for name in ("a", "b"):
-        cluster[name].bd("federation", "add-peer", "hub", cluster.remote.url).check()
+    for peer in ("a", "b"):
+        cluster[peer].bd("federation", "add-peer", "hub", cluster.remote.url).check()
 
-    for name in ("a", "b"):
-        s = cluster[name]
+    s = cluster[name]
+    if path == "hive-sync-ours-one-sided":
         # One-sided: a stale WRITER never edits bh_writer, so the merge has no conflict to
         # resolve in its favour; the bump arrives together with the FK violation.
         _make_stale(cluster, name, "c")
@@ -664,6 +710,7 @@ def test_s6_hive_sync_bd_sync_and_pull_never_revert_bh_writer(rewound_custom):
         assert "Error from peer hub" in synced.stdout, synced.output
         sync_to_remote(s)
 
+    elif path == "bd-dolt-pull-both-changed":
         # Both-changed: a stale ADOPTER (scenario 4 loser) holding its own bump commit.
         stale_epoch, current = _stale_adopter(cluster, name)
         with recorder.step(f"s6:{name}:bd-dolt-pull-both-changed", name) as step:
@@ -691,6 +738,7 @@ def test_s6_hive_sync_bd_sync_and_pull_never_revert_bh_writer(rewound_custom):
         _evidence(recorder, "s6:local-regression", name, regress)
         assert not regress.ok and MONOTONIC_REFUSAL in regress.output, regress.output
 
+    elif path == "bd-sync-both-changed":
         stale_epoch, current = _stale_adopter(cluster, name)
         with recorder.step(f"s6:{name}:bd-sync-both-changed", name) as step:
             synced = _evidence(recorder, "s6:bd-sync-both-changed", name, s.bd("sync"))
@@ -698,6 +746,7 @@ def test_s6_hive_sync_bd_sync_and_pull_never_revert_bh_writer(rewound_custom):
         assert step["after"]["remote"]["main"] == step["before"]["remote"]["main"]
         sync_to_remote(s)
 
+    else:
         stale_epoch, current = _stale_adopter(cluster, name)
         with recorder.step(f"s6:{name}:hive-sync-ours-both-changed", name) as step:
             synced = _evidence(recorder, "s6:hive-sync-both", name, _hive_sync(s, "ours"))
@@ -715,7 +764,24 @@ def test_s6_hive_sync_bd_sync_and_pull_never_revert_bh_writer(rewound_custom):
 # =============================================================================================
 
 
-def test_force_paths_defeat_the_fence_and_are_detectable_afterwards(rewound_custom):
+#: The force paths, one case each (bh-56wtv). Every path opens with ``_stale_adopter`` or
+#: ``_make_stale`` (both re-sync the frame to the remote first), so none relied on an earlier one.
+FORCE_CASES = [
+    ("pull-strategy-ours", False),
+    ("pull-strategy-ours", True),
+    ("vc-merge-ours-conclude", False),
+    ("vc-merge-ours-conclude", True),
+    ("bd-dolt-push-force", None),
+    ("raw-dolt-commit-force", None),
+]
+
+
+@pytest.mark.parametrize(
+    ("path", "sentinel"),
+    FORCE_CASES,
+    ids=[p if s is None else f"{p}-sentinel={s}" for p, s in FORCE_CASES],
+)
+def test_force_paths_defeat_the_fence_and_are_detectable_afterwards(rewound_custom, path, sentinel):
     cluster = rewound_custom(fenced_cluster, FRAMES)
     recorder = _recorder(cluster, "a", "b")
     a, b, c = cluster["a"], cluster["b"], cluster["c"]
@@ -733,7 +799,7 @@ def test_force_paths_defeat_the_fence_and_are_detectable_afterwards(rewound_cust
     #    revert lands (the history shows the epoch went backwards). With the adopt sentinel
     #    the losing side's `adopt-<e>` mark points at an epoch that is no longer live, so
     #    every resolution leaves a foreign-key violation and bd refuses it.
-    for sentinel in (False, True):
+    if path == "pull-strategy-ours":
         stale_epoch, current = _stale_adopter(cluster, "a", sentinel=sentinel)
         with recorder.step(f"force:pull-strategy-ours:sentinel={sentinel}", "a") as step:
             run = _evidence(
@@ -757,6 +823,7 @@ def test_force_paths_defeat_the_fence_and_are_detectable_afterwards(rewound_cust
             assert remote_fence(cluster)["writer"] == ("c", current)
             sync_to_remote(a)
 
+    elif path == "vc-merge-ours-conclude":
         stale_epoch, current = _stale_adopter(cluster, "b", sentinel=sentinel)
         _fetch(b)
         with recorder.step(f"force:vc-merge-ours-conclude:sentinel={sentinel}", "b") as step:
@@ -787,29 +854,31 @@ def test_force_paths_defeat_the_fence_and_are_detectable_afterwards(rewound_cust
             assert remote_fence(cluster)["writer"] == ("c", current)
             sync_to_remote(b)
 
-    # 3. `bd dolt push --force`: overwrites remote main, bump and all.
-    _make_stale(cluster, "a", "c")
-    a.create_issue("force-push-stale").check()
-    with recorder.step("force:bd-dolt-push-force", "a"):
-        run = _evidence(recorder, "force:push-force", "a", a.bd("dolt", "push", "--force"))
-    assert run.ok, run.output
-    remote = remote_fence(cluster)
-    assert remote["writer"][0] == "a" and "force-push-stale" in remote["titles"]
-    assert fence_audit(cluster)["placement_ahead"]
-    assert not recover()["placement_ahead"]
+    elif path == "bd-dolt-push-force":
+        # 3. `bd dolt push --force`: overwrites remote main, bump and all.
+        _make_stale(cluster, "a", "c")
+        a.create_issue("force-push-stale").check()
+        with recorder.step("force:bd-dolt-push-force", "a"):
+            run = _evidence(recorder, "force:push-force", "a", a.bd("dolt", "push", "--force"))
+        assert run.ok, run.output
+        remote = remote_fence(cluster)
+        assert remote["writer"][0] == "a" and "force-push-stale" in remote["titles"]
+        assert fence_audit(cluster)["placement_ahead"]
+        assert not recover()["placement_ahead"]
 
-    # 4. raw `dolt commit --force` on a half-merged stale store, then a plain push.
-    _make_stale(cluster, "a", "c")
-    a.create_issue("raw-force-commit-stale").check()
-    with recorder.step("force:raw-dolt-commit-force", "a"):
-        pulled = a.dolt("pull", "origin", "main")
-        forced = _evidence(
-            recorder, "force:raw-commit-force", "a", a.dolt("commit", "--force", "-am", "x")
-        )
-        pushed = _evidence(recorder, "force:raw-push", "a", a.dolt("push", "origin", "main"))
-    assert CLI_VIOLATION in pulled.output and forced.ok and pushed.ok
-    assert "raw-force-commit-stale" in remote_fence(cluster)["titles"]
-    assert fence_audit(cluster)["stale_marks"] >= 1
+    else:
+        # 4. raw `dolt commit --force` on a half-merged stale store, then a plain push.
+        _make_stale(cluster, "a", "c")
+        a.create_issue("raw-force-commit-stale").check()
+        with recorder.step("force:raw-dolt-commit-force", "a"):
+            pulled = a.dolt("pull", "origin", "main")
+            forced = _evidence(
+                recorder, "force:raw-commit-force", "a", a.dolt("commit", "--force", "-am", "x")
+            )
+            pushed = _evidence(recorder, "force:raw-push", "a", a.dolt("push", "origin", "main"))
+        assert CLI_VIOLATION in pulled.output and forced.ok and pushed.ok
+        assert "raw-force-commit-stale" in remote_fence(cluster)["titles"]
+        assert fence_audit(cluster)["stale_marks"] >= 1
 
 
 def test_force_remote_reset_data_lets_a_stale_store_republish(rewound_custom):
