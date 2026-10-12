@@ -362,6 +362,14 @@ def parity(root: Path, *, python_executable: str | None = None) -> dict:
         source / "packages" / "beadhive-worktrees" / "src" / "beadhive_worktrees",
         site / "beadhive_worktrees",
     )
+    # The HQ storage port and its Dolt adapter (bh-xxkf7) back hq_sql_* and the fence through
+    # beadhive.hq_storage_composition; the published wheel ships both import packages from their
+    # source roots, so the isolated site vendors them the same way.
+    for package, module in (
+        ("beadhive-hq-storage", "beadhive_hq_storage"),
+        ("beadhive-hq-storage-dolt", "beadhive_hq_storage_dolt"),
+    ):
+        shutil.copytree(source / "packages" / package / "src" / module, site / module)
     bootstrap = f"import site,sys;sys.path.insert(0,{str(site)!r});site.addsitedir({str(site)!r});"
     bh = bin_dir / "bh"
     bh_program = bootstrap + "sys.argv[0]='bh';from beadhive.cli import app;app()"
