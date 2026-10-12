@@ -1,7 +1,7 @@
 """``host_adopt.adopt`` on a cut-over hive: placement first, ref in lockstep, data step 2
 (bh-4c7p4). HQ placement (``refs/bh/lease/<prefix>``) and ``refs/bh/epoch`` are REAL git refs on
 scratch bare remotes under ``tmp_path``; only the hive's Dolt data is a fake
-:class:`~beadhive.writer_adopt.FenceData` (the real-Dolt run is ``test_writer_adopt_int.py``).
+:class:`~beadhive_hq_storage.HiveFence` (the real-Dolt run is ``test_writer_adopt_int.py``).
 """
 
 from __future__ import annotations
@@ -11,6 +11,19 @@ import subprocess
 import pytest
 
 from beadhive import doctor, host_adopt, host_fence, host_lease, writer_adopt
+from beadhive.hq_control_plane import HqLeaseUnknown
+from beadhive_hq_storage import (
+    ABSENT,
+    Applied,
+    EpochFloor,
+    GuardReport,
+    InvalidRequest,
+    NotConfirmed,
+    PlacementStore,
+    SyncReport,
+    Unknown,
+    new_operation_id,
+)
 
 PREFIX = "bh"
 HOST_A = "aaaaaaaa-1111-4111-8111-111111111111"
@@ -62,26 +75,33 @@ class Data:
     def sync_to_remote(self):
         self.calls.append("sync")
         self.local, self.pending = self.remote, None
+        return SyncReport("head", 0, 0, False)
 
     def writer(self):
         return self.local
 
-    def history_max_epoch(self):
-        return self.history
+    def epoch_floor(self):
+        return EpochFloor(
+            history_max=self.history, writer=None if self.local is None else self.local.epoch
+        )
 
-    def trigger_count(self):
-        return self.triggers
+    def guard_conformance(self):
+        missing = tuple(f"bh_missing_{i}" for i in range(max(44 - self.triggers, 0)))
+        return GuardReport(expected=44, present=44 - len(missing), missing=missing)
 
-    def commit_bump(self, statements, message):
-        frame, epoch = message.removeprefix(writer_adopt.ADOPT_COMMIT_PREFIX).rsplit("@", 1)
-        self.local = writer_adopt.WriterRow(frame, int(epoch), "fresh")
+    def commit_bump(self, bump):
+        self.local = writer_adopt.WriterRow(bump.frame, bump.epoch, "fresh")
         if self.log is not None:
             self.log.append("data")
+        return "local"
 
     def push(self):
         self.remote = self.local
         self.history = max(self.history, self.local.epoch)
-        return True
+        return Applied("head", "op")
+
+    def lookup_bump(self, frame, epoch, *, operation):  # pragma: no cover - push never unknown
+        return NotConfirmed(operation)
 
 
 @pytest.fixture
@@ -258,6 +278,79 @@ def test_the_lease_cas_honours_an_explicit_expectation(world):
     assert _lease(world) == before
 
 
+# ---- the lease placement as the port's PlacementStore (bh-xxkf7.4) -------------------------
+
+
+def _lease_placement(world, at=T0 + TTL + 1):
+    return host_adopt._LeasePlacement(
+        remote=world["hq_remote"],
+        prefix=PREFIX,
+        cwd=world["hq_cwd"],
+        label="laptop",
+        ttl=TTL,
+        at=at,
+        force=False,
+    )
+
+
+def test_the_lease_placement_reports_port_outcomes(world):
+    _cut_over(world)
+    placement = _lease_placement(world)
+    assert isinstance(placement, PlacementStore)
+    view = placement.read(PREFIX)
+    assert (view.frame, view.epoch) == (HOST_A, 1)
+    op = new_operation_id()
+    out = placement.compare_and_set(
+        PREFIX, HOST_B, 2, expected=view, cause=writer_adopt.PLACEMENT_CAUSE_FAILOVER, operation=op
+    )
+    now = placement.read(PREFIX)
+    assert out == Applied(now.token, op) and (now.frame, now.epoch) == (HOST_B, 2)
+    # A stale expectation is host_lease's own rejection, raised with its text, nothing written.
+    with pytest.raises(writer_adopt.PlacementLost, match="placement moved since it was read"):
+        placement.compare_and_set(
+            PREFIX, HOST_A, 3, expected=view, cause="planned", operation=new_operation_id()
+        )
+    assert placement.read(PREFIX) == now
+    # The lease plane carries no witness of the port's operation id.
+    assert placement.lookup(PREFIX, op) == NotConfirmed(op)
+    with pytest.raises(InvalidRequest):
+        placement.read("other")
+
+
+@pytest.mark.parametrize(
+    "reason,port_reason",
+    [("deadline", "deadline"), ("transport", "transport"), ("unknown", "commit")],
+)
+def test_an_unknown_lease_ack_is_unknown_and_adopt_surfaces_it_never_reissued(
+    world, monkeypatch, reason, port_reason
+):
+    data = _cut_over(world)
+    placement = _lease_placement(world)
+    view = placement.read(PREFIX)
+    lost = HqLeaseUnknown("req-1", "sha-1", view.token, reason)
+    calls = []
+
+    def unknown(*a, **kw):
+        calls.append(kw["expected"])
+        raise lost
+
+    monkeypatch.setattr(host_adopt.host_lease, "adopt", unknown)
+    op = new_operation_id()
+    out = placement.compare_and_set(PREFIX, HOST_B, 2, expected=view, cause="x", operation=op)
+    assert out == Unknown(op, view.token, port_reason) and placement.unknown is lost
+    absent = placement.compare_and_set(PREFIX, HOST_B, 2, expected=ABSENT, cause="x", operation=op)
+    assert absent == Unknown(op, ABSENT, port_reason)
+
+    calls.clear()
+    with pytest.raises(HqLeaseUnknown) as excinfo:
+        _adopt(world, host_id=HOST_B, at=T0 + TTL + 1, fence_data=data)
+    assert excinfo.value is lost  # the plane's own request id and digest, as before
+    assert calls == [view.token]  # one CAS against the original expectation, never re-issued
+    assert (_fence(world).host_id, _fence(world).epoch) == (HOST_A, 1)  # ref never moved
+    assert data.remote == writer_adopt.WriterRow(HOST_A, 1, "seed")  # no bump
+    assert host_lease.read_cached(PREFIX, cwd=world["hq_cwd"]).epoch == 1  # nothing cached
+
+
 # ---- bh doctor ----------------------------------------------------------------------------
 
 
@@ -302,7 +395,7 @@ class ReclaimingData(Data):
     def __init__(self, writer, claims, policy):
         super().__init__(writer)
         self._claims, self._policy = claims, policy
-        self.bumps: list[list[str]] = []
+        self.bumps: list = []
 
     def config_rows(self):
         return dict(self._policy)
@@ -310,9 +403,9 @@ class ReclaimingData(Data):
     def claims(self):
         return list(self._claims)
 
-    def commit_bump(self, statements, message):
-        self.bumps.append(list(statements))
-        super().commit_bump(statements, message)
+    def commit_bump(self, bump):
+        self.bumps.append(bump)
+        return super().commit_bump(bump)
 
 
 def _reclaiming(world) -> ReclaimingData:
@@ -341,9 +434,10 @@ def test_an_expired_primary_is_failed_over_and_its_claims_reclaimed_in_the_bump(
         ("bh-live", fr.Outcome.OTHER_FRAME),
     ]
     [bump] = data.bumps
-    assert bump[0].startswith("UPDATE bh_writer")
-    assert any("WHERE id = 'bh-dead'" in s for s in bump)
-    assert not any("bh-live" in s for s in bump)
+    assert (bump.frame, bump.epoch) == (HOST_B, 2)
+    assert bump.reclaim is not None and bump.reclaim.dead_frame == HOST_A
+    assert bump.reclaim.bead_ids == {"bh-dead"}  # never the other frame's bh-live
+    assert [note.bead_id for note in bump.reclaim.notes] == ["bh-dead"]
 
 
 def test_a_released_primary_is_a_planned_handoff_and_reclaims_nothing(world):
@@ -352,4 +446,4 @@ def test_a_released_primary_is_a_planned_handoff_and_reclaims_nothing(world):
     outcome = _adopt(world, host_id=HOST_B, at=T0 + 1, fence_data=data)
     plan = outcome.coexistence.step2.reclaim
     assert plan is not None and not plan.applied and "planned handoff" in plan.skipped
-    assert not any("issues" in s for s in data.bumps[0])
+    assert data.bumps[0].reclaim is None

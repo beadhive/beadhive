@@ -168,11 +168,16 @@ def test_release_is_a_dry_run_unless_confirmed_and_refuses_a_released_hive():
 
 
 class GrantCursor:
-    """``mysql.user``, the principal registry, SHOW GRANTS and triggers, in memory."""
+    """``mysql.user``, the principal registry, SHOW GRANTS and triggers, in memory.
+
+    SHOW GRANTS and the triggers are read through the Dolt adapter's ``DoltAccounts`` over this
+    cursor (bh-3kl1k), which maps rows by ``description``; the triggers come from the
+    database's ``dolt_schemas`` as ``(name, fragment)``, never ``information_schema.triggers``."""
 
     def __init__(self, grants, registry, triggers=()):
         self.grants, self.registry, self.triggers = grants, registry, list(triggers)
         self.result = []
+        self.description = None
 
     def __enter__(self):
         return self
@@ -181,6 +186,7 @@ class GrantCursor:
         return False
 
     def execute(self, sql, params=None):
+        self.description = None
         if sql.startswith("SELECT user,host FROM mysql.user"):
             (user,) = params
             self.result = [
@@ -189,8 +195,10 @@ class GrantCursor:
         elif sql.startswith("SELECT principal,epoch,inbox_table"):
             self.result = list(self.registry)
         elif sql.startswith("SHOW GRANTS FOR "):
+            self.description = (("Grants",),)
             self.result = [(line,) for line in self.grants[sql.removeprefix("SHOW GRANTS FOR ")]]
-        elif "information_schema.triggers" in sql:
+        elif f"`{DB}`.dolt_schemas" in sql and "type = 'trigger'" in sql:
+            self.description = (("n",), ("f",))
             self.result = list(self.triggers)
         else:
             raise AssertionError(sql)
@@ -411,13 +419,13 @@ def test_observer_session_table_is_the_provisioned_name():
 
 
 class PolicyDirector(StubDirector):
-    """A stub director over the real policy validation (a fake policy cursor)."""
+    """A stub director over the real policy validation (the HQ storage port's fake)."""
 
     def __init__(self, record=None, rows=(), *, provisioned=True):
         super().__init__(record)
-        from test_failover_policy import Cursor
+        from test_failover_policy import PolicyStore
 
-        self.cursor = Cursor(rows, tables=True if provisioned else ())
+        self.store = PolicyStore(rows, provisioned=provisioned)
         self.settings = {"placement_writer": {"user": "director", "database": "hq"}}
 
     def failover_policy(self, scope=None, changes=None):
@@ -425,20 +433,20 @@ class PolicyDirector(StubDirector):
 
         self.calls.append(("failover_policy", scope, changes))
         if changes:
-            return fp.plan_changes(self.cursor, scope or fp.FLEET_SCOPE, changes)
-        return fp.read_policy(self.cursor)
+            return fp.plan_changes(self.store, scope or fp.FLEET_SCOPE, changes)
+        return fp.read_policy(self.store)
 
     def set_failover_policy(self, scope, changes):
         from beadhive import failover_policy as fp
 
         self.calls.append(("set_failover_policy", scope, changes))
-        return fp.apply_changes(self.cursor, scope, changes)
+        return fp.apply_changes(self.store, scope, changes)
 
     def place(self, prefix, **kwargs):
         from beadhive import failover_policy as fp
 
         if kwargs.get("failover_after"):
-            fp.apply_changes(self.cursor, prefix, kwargs["failover_after"])
+            fp.apply_changes(self.store, prefix, kwargs["failover_after"])
         return super().place(prefix, **kwargs)
 
 
@@ -451,7 +459,7 @@ def test_place_sets_failover_after_in_its_cas_and_previews_it_on_a_dry_run(run):
     assert result.exit_code == 0, result.output
     out = json.loads(result.output)
     assert out["dry_run"] and out["would_set_failover_after"]["effective"]["executor"] == 4500
-    assert director.cursor.rows == {}  # a dry run writes nothing
+    assert director.store.rows == {}  # a dry run writes nothing
     result = run(
         "place", "ah", "--frame", "frame-b", "--expected-revision", REV,
         "--failover-after", "executor=75m", "--confirm",
@@ -471,7 +479,7 @@ def test_place_refuses_a_failover_after_below_the_floor_and_writes_nothing(run):
         )  # fmt: skip
         assert result.exit_code == 1
         assert "below the executor floor 2700 s (45 min)" in result.output
-    assert director.cursor.rows == {}
+    assert director.store.rows == {}
 
 
 def test_policy_shows_sets_and_refuses_the_fleet_floor(run):
@@ -482,15 +490,15 @@ def test_policy_shows_sets_and_refuses_the_fleet_floor(run):
     preview = json.loads(run("policy", "--executor-floor", "30m").output)
     assert preview["dry_run"] and preview["policy"]["executor_floor_s"] == 1800
     assert "35.4 min" in preview["policy"]["warnings"][0]
-    assert director.cursor.rows == {}
+    assert director.store.rows == {}
     result = run("policy", "--executor-floor", "40m", "--confirm")
     assert result.exit_code == 0, result.output
-    assert director.cursor.rows == {("*", "executor_floor"): 2400}
+    assert director.store.rows == {("*", "executor_floor"): 2400}
     refused = run("policy", "--executor-floor", "10m", "--confirm")
     assert refused.exit_code == 1 and "hard bound 900 s (15 min)" in refused.output
     hive = json.loads(run("policy", "ah", "--failover-after", "transient=20m", "--confirm").output)
     assert hive["policy"]["effective"]["transient"] == 1200
-    assert director.cursor.rows[("ah", "transient")] == 1200
+    assert director.store.rows[("ah", "transient")] == 1200
 
 
 def test_policy_on_an_unprovisioned_hq_renders_the_ddl_and_grant(run):

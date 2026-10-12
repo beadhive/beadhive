@@ -110,18 +110,6 @@ kind = "sleep"
 reason = "in-process event-loop yield or short poll inside a bounded async exercise; waits for another task to reach a state, with no wall-clock assertion"
 
 [[allow]]
-path = "tests/test_hq_sql_dolt_semantics_int.py"
-anchor = "_isolated_server"
-kind = "sleep"
-reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
-
-[[allow]]
-path = "tests/test_hq_sql_dolt_semantics_int.py"
-anchor = "test_operator_trigger_stamps_server_utc_over_frame_literals_and_time_zone"
-kind = "sleep"
-reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
-
-[[allow]]
 path = "tests/test_activity_publisher.py"
 anchor = "test_worker_retries_with_backoff_and_shutdown_drains_within_budget"
 kind = "sleep"

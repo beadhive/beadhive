@@ -21,9 +21,15 @@ What a node does:
 * :meth:`FenceNode.provision_ident` — this node's ``bh_local_ident``. Refuses until the
   ``dolt_ignore`` row ``bh_local_%`` is COMMITTED on ``HEAD``, and refuses if the table then
   shows up in ``dolt_status``: the identity is never staged, committed or pushed.
-* :class:`~beadhive.writer_adopt.FenceData` (M2's port) and
+* :class:`~beadhive_hq_storage.HiveFence` (the HQ storage port, bh-jhgum) and
   :class:`~beadhive.failover_reclaim.ReclaimData` (M3's port) for the coexistence adopt, and
   :class:`~beadhive.fence_audit.AuditReader` for :func:`~beadhive.fence_audit.fence_audit`.
+  A node is the root composition of the port's Dolt adapter over its own engine
+  (:attr:`FenceNode.fence`, :func:`beadhive.hq_storage_composition.dolt_hive_fence`): the bump,
+  push, sentinel lookup, sync and guard conformance are the adapter's, and no SQL crosses the
+  port. The legacy node operations the cutover and orphan paths still use (:meth:`FenceNode.
+  push_main`, :meth:`FenceNode.history_max_epoch`) stay here until ``bh-3kl1k`` moves them
+  onto the Dolt-only capabilities.
 
 **The data switch** — :func:`resolve_cut_over` registers itself as
 :mod:`beadhive.fence_data_port`'s default resolver when this module is imported (:func:`register`;
@@ -46,7 +52,20 @@ import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol, TypeVar
+
+from beadhive_hq_storage import (
+    BumpOutcome,
+    BumpRequest,
+    EpochFloor,
+    LookupOutcome,
+    OperationId,
+    Outcome,
+    StorageUnavailable,
+    SyncReport,
+    require_capability,
+)
+from beadhive_hq_storage import GuardReport as PortGuardReport
 
 from . import fence_data_port, fence_schema, log, store_locator, writer_adopt
 from .fence_schema import (
@@ -58,6 +77,9 @@ from .fence_schema import (
 )
 from .run import run
 from .writer_adopt import DataUnreachable, WriterRow
+
+if TYPE_CHECKING:
+    from beadhive_hq_storage_dolt import DoltHiveFence
 
 __all__ = [
     "DEFAULT_TIMEOUT",
@@ -78,6 +100,8 @@ __all__ = [
     "reset_probe_cache",
     "resolve_cut_over",
 ]
+
+C = TypeVar("C")
 
 DEFAULT_TIMEOUT = 120.0
 _REMOTE = "origin"
@@ -101,8 +125,10 @@ class FenceError(RuntimeError):
     """The in-data fence could not be installed, read or provisioned."""
 
 
-class SqlFailed(FenceError):
-    """A statement failed on the node's engine."""
+class SqlFailed(FenceError, StorageUnavailable):
+    """A statement failed on the node's engine. Also the port's
+    :class:`~beadhive_hq_storage.StorageUnavailable`, so a node's own reads honour the
+    :class:`~beadhive_hq_storage.HiveFence` contract."""
 
 
 class GuardIncomplete(FenceError):
@@ -468,11 +494,26 @@ class FenceNode:
     def __init__(self, engine: FenceEngine, *, remote: str = _REMOTE, branch: str = _BRANCH):
         self.engine = engine
         self.remote, self.branch = remote, branch
+        self._fence: DoltHiveFence | None = None
+
+    @property
+    def fence(self) -> DoltHiveFence:
+        """The port's Dolt ``HiveFence`` over this node's engine (built on first use)."""
+        if self._fence is None:
+            from .hq_storage_composition import dolt_hive_fence
+
+            self._fence = dolt_hive_fence(self.engine, remote=self.remote, branch=self.branch)
+        return self._fence
 
     def __repr__(self) -> str:
         return f"FenceNode({type(self.engine).__name__} {self.engine.store})"
 
-    # ---- AuditReader ---------------------------------------------------------------------
+    # ---- beadhive_hq_storage.CapabilityHost + fence_audit.AuditReader --------------------
+
+    def capability(self, kind: type[C]) -> C | None:
+        """The Dolt-only capabilities (``DoltHistory``, ``DoltMerge``) of :attr:`fence`, over
+        this node's engine, remote and branch (bh-3kl1k)."""
+        return self.fence.capability(kind)
 
     def query(self, sql: str) -> list[dict]:
         return self.engine.query(sql)
@@ -632,13 +673,16 @@ class FenceNode:
                 "committed and pushed — check dolt_ignore before any commit"
             )
 
-    # ---- writer_adopt.FenceData ----------------------------------------------------------
+    # ---- beadhive_hq_storage.HiveFence ------------------------------------------------------
 
-    def sync_to_remote(self) -> None:
+    def sync_to_remote(self) -> SyncReport:
+        """Make local ``main`` exactly the remote head (the adapter's fetch, count, hard reset).
+        Raises :class:`~beadhive.writer_adopt.DataUnreachable` — also the port's
+        ``StorageUnavailable`` — naming the engine's failure."""
         try:
-            self.engine.reset_to_remote()
-        except SqlFailed as exc:
-            raise DataUnreachable(str(exc)) from exc
+            return self.fence.sync_to_remote()
+        except StorageUnavailable as exc:
+            raise DataUnreachable(writer_adopt.unavailable_detail(exc)) from exc
 
     def writer(self) -> WriterRow | None:
         return self._writer()
@@ -647,30 +691,53 @@ class FenceNode:
         self.engine.fetch()
         return self._writer(f" AS OF {quote(f'{self.remote}/{self.branch}')}")
 
-    def history_max_epoch(self) -> int:
-        """The highest ``bh_writer.epoch`` local ``main``'s history ever carried (0 if none).
-        Read from ``dolt_history_bh_writer`` (one row per commit), never ``dolt_diff``, which
-        drops commits on a merged history."""
+    def epoch_floor(self) -> EpochFloor:
+        """``history_max`` is ``DoltHistory.history_max_epoch`` on local ``main`` (one row per
+        commit of ``dolt_history_bh_writer``, never ``dolt_diff``)."""
+        from beadhive_hq_storage_dolt import DoltHistory
+
+        writer = self._writer()
+        history = require_capability(self, DoltHistory)
+        return EpochFloor(
+            history_max=history.history_max_epoch(),
+            writer=None if writer is None else writer.epoch,
+        )
+
+    def guard_conformance(self) -> PortGuardReport:
+        return self.fence.guard_conformance()
+
+    def commit_bump(self, bump: BumpRequest) -> BumpOutcome:
+        return self.fence.commit_bump(bump)
+
+    def push(self) -> Outcome:
+        return self.fence.push()
+
+    def lookup_bump(self, frame: str, epoch: int, *, operation: OperationId) -> LookupOutcome:
+        return self.fence.lookup_bump(frame, epoch, operation=operation)
+
+    # ---- fence schema steps of the per-hive cutover and rollback (bh-oarxp) ---------------
+
+    def drop_ident(self) -> bool:
+        """Drop this node's ``bh_local_ident`` (rollback R5); ``True`` when it had one."""
+        had = self.ident() is not None
+        self.engine.execute(fence_schema.drop_ident_statements())
+        return had
+
+    def guard_check(self) -> str | None:
+        """``None`` when this node's guard accepts it as the writer (``CALL bh_guard_check()``,
+        which reads and writes nothing else), else the refusal."""
         try:
-            rows = self.query(
-                "SELECT COALESCE(MAX(epoch), 0) AS m FROM dolt_history_bh_writer WHERE id = 1"
-            )
+            self.engine.execute([f"CALL {fence_schema.GUARD_PROCEDURE}()"])
         except SqlFailed as exc:
-            if _missing_table(exc, "bh_writer"):
-                return 0
-            raise
-        return int(next(iter(rows[0].values())) or 0) if rows else 0
+            return str(exc)
+        return None
 
-    def trigger_count(self) -> int:
-        return self.guard_report().count
-
-    def commit_bump(self, statements: Sequence[str], message: str) -> None:
-        self.engine.execute(list(statements))
-        if not self.engine.commit(message):
-            raise FenceError(f"adopt bump {message!r} changed nothing on {self.engine.store}")
-
-    def push(self) -> bool:
-        return self.engine.push()
+    def uninstall(self, message: str) -> bool:
+        """Drop every trigger, the procedure and the fence tables (keeping the ``dolt_ignore``
+        row) and commit that as ``message`` -- rollback R3, one commit. ``False`` when there was
+        nothing to drop. Not pushed."""
+        self.engine.execute(fence_schema.rollback_statements())
+        return self.engine.commit(message)
 
     # ---- failover_reclaim.ReclaimData ----------------------------------------------------
 

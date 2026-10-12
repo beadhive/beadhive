@@ -34,8 +34,10 @@ frame) with the product ``fence_audit`` history check on:
   ``bh_local_ident`` rewrite in Dolt; an in-flight forwarded write is refused across the
   demoted primary's divert reset (E5), never acknowledged and dropped; an injected re-stamped
   late write is reported by ``fence_audit``'s history check.
-* ``test_sender_stall_*`` — the Φ3 soak check for O4: a session sender stalls longer than the
-  session TTL (see ``docs/HQ.md`` "Soak check: sender stall").
+
+The Φ3 soak check for O4 (a session sender stalls longer than the session TTL, ``docs/HQ.md``
+"Soak check: sender stall") is timing protocol, so it runs on the HQ storage port's fake with
+an injected clock in ``tests/test_sender_stall_protocol.py`` (bh-utvyj).
 
 Private scratch Dolt/git only: every server, data dir, ``HOME`` and ``DOLT_ROOT_PATH`` is under
 pytest's temp root. The cut-over product worlds are pooled per composition by ``rewound_custom``
@@ -54,7 +56,6 @@ import random
 import shutil
 import threading
 from dataclasses import dataclass, field
-from datetime import timedelta
 from pathlib import Path
 
 import pymysql
@@ -67,10 +68,9 @@ from beadhive import fence_orphan as fo
 from beadhive import fence_schema as fs
 from beadhive import hive_forward, work_backup
 from beadhive import writer_adopt as wa
-from beadhive.failover_observer import FailoverObserver, session_table, sql_session_staleness
-from beadhive.hq_sql_session import LivenessPolicy, SessionRenewer, session_ddl
+from beadhive_hq_storage import Confirmed, NotConfirmed, new_operation_id, require_capability
+from beadhive_hq_storage_dolt import DoltMerge
 from harness import composed_fence as cf
-from harness.clock import FakeClock
 from harness.writer_fencing import BD_EMBEDDED, BD_SERVER, DOLT_CLI, Cluster, Run
 from test_failover_reclaim_int import (
     _backup_remote,
@@ -82,11 +82,6 @@ from test_failover_reclaim_int import (
 )
 from test_fence_cutover_int import _HQ, _legacy_state, _node, _ref_port, _set_ref
 from test_hive_forward_int import _bd, _client_env, _git_init, _write
-from test_hq_sql_session_int import DB as SESSION_DB
-from test_hq_sql_session_int import _eligibility as _session_eligibility
-from test_hq_sql_session_int import _frame as _session_frame
-from test_hq_sql_session_int import _provisioned as _session_provisioned
-from test_hq_sql_session_int import _server as _session_server
 
 pytestmark = [
     pytest.mark.integration,
@@ -190,10 +185,22 @@ def _take(world: ProductWorld, name: str, *, reclaim=None) -> wa.Step2Result:
     """The director places ``name``; ``name`` runs the product adopt step 2 to completion."""
     placed = world.hq.place(name)
     result = wa.run_step2(
-        world.node(name), _HQ(world.cluster), frame=name, epoch=placed.epoch, reclaim=reclaim
+        world.node(name),
+        _HQ(world.cluster),
+        prefix=world.cluster.prefix,
+        frame=name,
+        epoch=placed.epoch,
+        reclaim=reclaim,
     )
     world.moves.observe("adopt", name)
     assert result.landed, result
+    # bh-jhgum: the bump's witness is found on the remote head through the port, on the
+    # embedded (Dolt CLI) and server (bd) engines alike; another frame's name never confirms it.
+    node = world.node(name)
+    assert isinstance(node.lookup_bump(name, placed.epoch, operation=new_operation_id()), Confirmed)
+    assert isinstance(
+        node.lookup_bump("not-" + name, placed.epoch, operation=new_operation_id()), NotConfirmed
+    )
     return result
 
 
@@ -206,7 +213,7 @@ def _managed_push(world: ProductWorld, name: str) -> tuple[str, fo.DivertOutcome
     if out.superseded:
         world.moves.observe("divert", name)
         return "diverted", out
-    ok = node.push()
+    ok = require_capability(node, DoltMerge).publish()
     world.moves.observe("managed_push", name)
     return ("pushed" if ok else "rejected"), out
 
@@ -396,7 +403,13 @@ class _ProductDriver:
         assert any(f.startswith("placement_ahead") for f in status.findings()), status.findings()
         ahead = cf.check_invariants(self.world)
         assert not ahead["ok"] and "audit" in ahead["violations"], ahead["violations"]
-        rolled = wa.run_step2(node, _HQ(self.world.cluster), frame=name, epoch=placed.epoch)
+        rolled = wa.run_step2(
+            node,
+            _HQ(self.world.cluster),
+            prefix=self.world.cluster.prefix,
+            frame=name,
+            epoch=placed.epoch,
+        )
         self.world.moves.observe("roll_forward", name)
         assert rolled.landed, rolled
         self.record("legacy_adopt", frame=name, epoch=placed.epoch, refused_write=True)
@@ -918,154 +931,3 @@ def test_m13_grant_shape_quiesce_and_history_check(tmp_path, rewound_custom, mon
     late = result["product_audit"]["late_writes"]
     assert any("late write" in str(w) for w in late), late
     print("BH_M10", json.dumps({"m13_probes": probes, "late_writes": late}, default=str))
-
-
-# =============================================================================================
-# Φ3 soak check (O4): the session sender stalls longer than the session TTL
-# =============================================================================================
-
-
-def _age_session(root, table: str, trigger: str, age_s: float) -> None:
-    """Data-driven server staleness (bh-qwbrz): stamp the session row ``age_s`` seconds before
-    the HQ server's own ``UTC_TIMESTAMP(6)``. The operator stamp trigger overwrites any value an
-    UPDATE supplies, so it is dropped for this one write and recreated, exactly as provisioned.
-    The age is computed here from one server read, not with SQL interval arithmetic (Dolt drops
-    fractional seconds there, bh-7crof)."""
-    with root.cursor() as cursor:
-        cursor.execute("SELECT UTC_TIMESTAMP(6)")
-        (server_now,) = cursor.fetchone()
-        stamp = server_now - timedelta(microseconds=round(age_s * 1e6))
-        cursor.execute(f"DROP TRIGGER {table}_stamp")
-        try:
-            cursor.execute(f"UPDATE {table} SET renewed_at = %s WHERE id = 1", (stamp,))
-        finally:
-            cursor.execute(trigger)
-
-
-@pytest.mark.dolt_server
-def test_sender_stall_longer_than_the_ttl_is_stale_but_fails_over_only_past_failover_after(
-    tmp_path,
-):
-    """M9's renewal sender stalls (a host under load, a hung timer) longer than
-    ``session_ttl_s``: eligibility goes stale at once, but the director's observer (M8) only
-    fails the frame over once the stall outlasts ``failover_after``; a stall that ends before
-    then is a fresh session again and never a failover. Time decides WHEN to reassign, never
-    who may write (the hive's data does that). ``BH_M10_SESSION_TTL_S`` scales the run for the
-    Φ3 soak (docs/HQ.md "Soak check: sender stall").
-
-    Virtual time (bh-qwbrz): one :class:`FakeClock` drives the sender's cadence
-    (``SessionRenewer.run(stop=, clock=)``) and the observer's window
-    (``FailoverObserver(clock=)``); nothing sleeps. The server's staleness is data-driven: each
-    poll stamps the session row as old as the virtual time since the last real renewal
-    (:func:`_age_session`), so eligibility and ``sql_session_staleness`` still run the
-    production SQL against the server clock. During the long stall the director polls every
-    ``ttl / 2`` starting ``ttl / 4`` past a renewal, so ``failover_after`` sits half a poll
-    from every observed age: the only real time left on the asserted path (the few statements
-    between an age write and its read) would have to exceed ``ttl / 4`` to move the decision.
-    Removing that residue needs bh-xxkf7's injectable ``now()``."""
-    ttl = int(os.environ.get("BH_M10_SESSION_TTL_S", "2"))
-    failover_after = 4.0 * ttl
-    interval = ttl / 4  # the sender's cadence
-    step = ttl / 8  # the director's poll step: binary-exact for integer ttl, no float drift
-    long_step = ttl / 2  # its step through the long stall, off the failover_after boundary
-    with _session_server(tmp_path) as port:
-        root = _session_provisioned(
-            port, frames=(("frame_a", 1),), policy=LivenessPolicy(session_ttl_s=ttl)
-        )
-        root.select_db(SESSION_DB)
-        table = session_table("frame_a", 1)
-        trigger = next(s for s in session_ddl("frame_a", 1) if s.startswith("CREATE TRIGGER"))
-        renewer = SessionRenewer(
-            lambda: _session_frame(port, tmp_path, "frame_a"), database=SESSION_DB
-        )
-        reader = _session_frame(port, tmp_path, "frame_a")
-        clock = FakeClock()
-        observer = FailoverObserver(failover_after, clock=clock.monotonic)
-        errors: list[BaseException] = []
-
-        # The virtual instant each successful renewal was made (the server stamps it "now").
-        renewed: list[float] = []
-        tick = renewer.tick
-
-        def stamped_tick():
-            route = tick()
-            renewed.append(clock.monotonic())
-            return route
-
-        renewer.tick = stamped_tick
-
-        def poll() -> tuple[bool, object]:
-            _age_session(root, table, trigger, clock.monotonic() - renewed[-1])
-            with root.cursor() as cursor:
-                age = sql_session_staleness(cursor, table)
-            return _session_eligibility(reader).authenticated_fresh_heartbeat, observer.observe(age)
-
-        def stalled(seconds: float) -> list[tuple[bool, object]]:
-            """The sender is stuck: virtual time passes, the director polls, nothing renews."""
-            out = []
-            for _ in range(round(seconds / step)):
-                clock.advance(step)
-                out.append(poll())
-            return out
-
-        def renewing(seconds: float) -> list[tuple[bool, object]]:
-            """The sender runs on cadence; between its ticks the director polls."""
-            out, polls = [], round(seconds / step)
-
-            def stop(wait_s: float) -> bool:
-                nonlocal polls
-                assert wait_s == interval  # virtual ticks take no time
-                for _ in range(round(wait_s / step)):
-                    clock.advance(step)
-                    out.append(poll())
-                    polls -= 1
-                return polls <= 0
-
-            renewer.run(
-                interval_s=interval, stop=stop, on_error=errors.append, clock=clock.monotonic
-            )
-            return out
-
-        try:
-            healthy = renewing(2 * ttl)
-            assert all(fresh for fresh, _ in healthy) and not any(d.due for _, d in healthy)
-
-            short = stalled(2.5 * ttl)  # stall 1: longer than the TTL, shorter than failover_after
-            assert not short[-1][0], "eligibility must go stale past the session TTL"
-            assert not any(d.due for _, d in short), "a stall shorter than failover_after"
-            recovered = renewing(1.5 * ttl)
-            assert recovered[-1][0] and not any(d.due for _, d in recovered)
-
-            # renewing() ends one interval (ttl / 4) after the last renewal.
-            assert clock.monotonic() - renewed[-1] == interval
-            began, due_after = clock.monotonic(), None  # stall 2: longer than failover_after
-            while clock.monotonic() - began < failover_after + 6 * ttl:
-                clock.advance(long_step)
-                fresh, decision = poll()
-                if decision.due:
-                    due_after = clock.monotonic() - began
-                    since_renewal = clock.monotonic() - renewed[-1]
-                    break
-            # Measured from the last renewal actually made, on the virtual clock (bh-eeyxt).
-            assert due_after is not None, "a stall past failover_after must fail over"
-            assert since_renewal == failover_after + interval, since_renewal
-            assert decision.staleness > failover_after and decision.window > failover_after
-            assert not fresh
-            assert clock.sleeps == []  # the fake clock was advanced, never slept on
-        finally:
-            reader.close()
-            root.close()
-        assert errors == []
-        print(
-            "BH_M10",
-            json.dumps(
-                {
-                    "sender_stall": {
-                        "session_ttl_s": ttl,
-                        "failover_after_s": failover_after,
-                        "due_after_stall_s": round(due_after, 2),
-                        "renewals": renewer.renewals,
-                    }
-                }
-            ),
-        )

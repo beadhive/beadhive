@@ -8,7 +8,15 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-EXCLUDED_PACKAGES = frozenset({"beadhive-bd-cli", "beadhive-beads-client", "beadhive-pants"})
+EXCLUDED_PACKAGES = frozenset(
+    {
+        "beadhive-bd-cli",
+        "beadhive-beads-client",
+        "beadhive-hq-storage",
+        "beadhive-hq-storage-dolt",
+        "beadhive-pants",
+    }
+)
 SAFE_SHELL_PATH = re.compile(r"[A-Za-z0-9_./-]+")
 
 

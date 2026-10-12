@@ -1,7 +1,11 @@
 """Director placement in dolt-server HQ (bh-a94qw): the CAS, its row, grants and triggers,
 the receiver against director rows (Φ3 rollback), and frames reading director placement.
 
-SQL is an in-memory fake here; ``test_hq_sql_placement_int.py`` drives a real Dolt server.
+Storage is the HQ storage port's in-memory fake (bh-sqfvq): the CAS, its ``Conflict`` /
+``Unknown`` handling and the director run over ``InMemoryHqStorage``. The row's Dolt wire format
+(the receiver carrier, ``request_id`` / ``request_sha256``, the exact SQL) is the adapter's and is
+proven on real Dolt by ``packages/beadhive-hq-storage-dolt/tests`` and
+``test_hq_sql_placement_int.py``.
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from beadhive.host_lease_contracts import HostLease, now_stamp
 from beadhive.hq_control_plane import ControlPlaneError
 from beadhive.hq_signed_hive_lease import proposal_revision
 from beadhive.hq_sql_placement import (
+    CAS_LOST,
     CAUSE_FAILOVER,
     CAUSE_PLANNED,
     DEFAULT_TENURE_S,
@@ -39,11 +44,25 @@ from beadhive.hq_sql_placement import (
     parse_grant,
     parse_row,
     place_cas,
+    placement_body,
     placement_cause,
     placement_witness,
+    read_row,
+    record_from,
     seed_statement,
 )
 from beadhive.hq_sql_signatures import canonical
+from beadhive_hq_storage import (
+    ABSENT,
+    Applied,
+    InMemoryHqStorage,
+    InvalidRequest,
+    NotConfirmed,
+    RecordKind,
+    StorageUnavailable,
+    new_operation_id,
+)
+from harness.clock import FakeClock
 from test_emergency_sql_receiver import Cursor as ReceiverCursor
 from test_emergency_sql_receiver import world  # noqa: F401 — fixture resolved by name
 from test_hq_signed_hive_lease import (
@@ -54,6 +73,7 @@ from test_hq_signed_hive_lease import (
 )
 
 HEX64 = re.compile(r"[0-9a-f]{64}")
+UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 AUTHORITY = {
     "frame_id": "frame-a",
     "holder_identity": "host-a",
@@ -78,98 +98,56 @@ def _receiver_row(prefix, lease, authority=AUTHORITY):
 
 
 # =============================================================================================
-# An in-memory hq_live_hive_leases behind a DB-API connection
+# The HQ storage port's in-memory fake
 # =============================================================================================
 
 
-class SerializationFailure(Exception):
-    def __init__(self):
-        super().__init__(1213, "serialization failure: this transaction conflicts")
-
-
-class FakeConnection:
-    def __init__(self, rows=None, *, update_matches=None, fail=None):
-        self.rows = {k: list(v) for k, v in (rows or {}).items()}
-        self.update_matches = update_matches  # force a rowcount
-        self.fail = fail  # None | "update-1213" | "commit-1213" | "commit-lost" | "select"
-        self.pending = None
-        self.statements = []
-        self.committed = self.rolled_back = 0
-        self.closed = False
-
-    def cursor(self):
-        return FakeCursor(self)
-
-    def commit(self):
-        if self.fail == "commit-1213":
-            raise SerializationFailure()
-        if self.fail == "commit-lost":
-            raise ConnectionResetError("server went away")
-        if self.pending is not None:
-            prefix, row = self.pending
-            self.rows[prefix] = row
-        self.pending = None
-        self.committed += 1
-
-    def rollback(self):
-        self.pending = None
-        self.rolled_back += 1
-
-    def close(self):
-        self.closed = True
-
-
-class FakeCursor:
-    def __init__(self, connection):
-        self.c, self.result = connection, []
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
-
-    def execute(self, sql, params=None):
-        c = self.c
-        c.statements.append((sql, params))
-        if sql.startswith("START TRANSACTION"):
-            self.result = []
-            return 0
-        if sql.startswith("SELECT CURRENT_USER"):
-            self.result = [("director@%", "beadhive_hq_runtime", "main")]
-            return 1
-        if sql.startswith("SELECT DOLT_HASHOF"):
-            self.result = [("head",)]
-            return 1
-        if sql.startswith("SELECT revision,lease_json"):
-            if c.fail == "select":
-                raise RuntimeError("password=hunter2 leaked in driver text")
-            row = c.rows.get(params[0])
-            self.result = [tuple(row)] if row else []
-            return len(self.result)
-        if sql.startswith(f"UPDATE {PLACEMENT_TABLE}"):
-            if c.fail == "update-1213":
-                raise SerializationFailure()
-            revision, body, request_id, witness, prefix, expected = params
-            row = c.rows.get(prefix)
-            matched = 1 if row and row[0] == expected else 0
-            if c.update_matches is not None:
-                matched = c.update_matches
-            if matched:
-                c.pending = (prefix, [revision, body, request_id, witness])
-            return matched
-        raise AssertionError(f"unexpected SQL: {sql}")
-
-    def fetchone(self):
-        return self.result[0] if self.result else None
-
-    def fetchall(self):
-        return list(self.result)
+def _receiver_body(lease, authority=AUTHORITY):
+    """A receiver-written row as the port reads it: the carrier, not director-written."""
+    return {"authority": dict(authority), "lease": lease.to_record(), "director": False}
 
 
 def _seeded(prefix="ah", lease=None):
-    lease = lease or _lease(epoch=1)
-    return FakeConnection({prefix: _receiver_row(prefix, lease)})
+    store = InMemoryHqStorage(FakeClock())
+    store.provision(RecordKind.PLACEMENT, prefix, _receiver_body(lease or _lease(epoch=1)))
+    return store
+
+
+def _revision(store, prefix="ah"):
+    return store.read(RecordKind.PLACEMENT, prefix).revision
+
+
+class Counting:
+    """The fake, counting compare-and-sets; ``race`` lands a competing director's CAS between
+    our read and our CAS, ``supersede`` a later write between our ``Unknown`` and its lookup."""
+
+    def __init__(self, store, *, race=None, supersede=None):
+        self.store, self.race, self.supersede = store, race, supersede
+        self.cas = []
+
+    def __getattr__(self, name):
+        return getattr(self.store, name)
+
+    def _write(self, prefix, lease, expected):
+        out = self.store.compare_and_set(
+            RecordKind.PLACEMENT,
+            prefix,
+            placement_body(AUTHORITY, lease),
+            expected=expected,
+            operation=new_operation_id(),
+        )
+        assert isinstance(out, Applied)
+
+    def compare_and_set(self, kind, key, body, *, expected, operation):
+        self.cas.append((key, expected, operation))
+        if self.race is not None:
+            self._write(key, self.race, expected)
+        return self.store.compare_and_set(kind, key, body, expected=expected, operation=operation)
+
+    def lookup(self, kind, key, operation):
+        if self.supersede is not None:
+            self._write(key, self.supersede, _revision(self.store, key))
+        return self.store.lookup(kind, key, operation)
 
 
 # =============================================================================================
@@ -228,107 +206,154 @@ def test_seed_statement_is_an_operator_insert_of_a_director_tombstone():
 
 
 def test_cas_rewrites_revision_and_writes_the_five_field_record():
-    connection = _seeded()
-    expected = connection.rows["ah"][0]
+    store = _seeded()
+    expected = _revision(store)
     placed = place_cas(
-        connection,
+        store,
         prefix="ah",
         lease=_lease(epoch=2),
         authority=AUTHORITY,
         expected_revision=expected,
     )
-    stored = parse_row("ah", connection.rows["ah"])
+    stored = read_row(store, "ah")
     assert placed.revision == stored.revision != expected
     assert HEX64.fullmatch(stored.revision)
     assert stored.director and stored.lease == _lease(epoch=2)
-    assert json.loads(connection.rows["ah"][1])["lease"] == _lease(epoch=2).to_record()
-    (update,) = [s for s, _ in connection.statements if s.startswith("UPDATE")]
-    assert "WHERE prefix=%s AND revision=%s" in update and "SET revision=%s" in update
-    assert connection.committed == 1
+    assert store.read(RecordKind.PLACEMENT, "ah").body["lease"] == _lease(epoch=2).to_record()
+    # The witness the Dolt adapter writes is the one root derives for the returned record.
+    assert placed.request_sha256 == placement_witness(
+        "ah", placed.revision, lease_body(AUTHORITY, _lease(epoch=2))
+    )
 
 
 def test_every_write_gets_a_fresh_revision_even_for_the_same_record():
-    connection = _seeded()
-    seen = {connection.rows["ah"][0]}
+    store = _seeded()
+    seen = {_revision(store)}
     for epoch in (2, 3, 4):
         place_cas(
-            connection,
+            store,
             prefix="ah",
             lease=_lease(epoch=epoch),
             authority=AUTHORITY,
-            expected_revision=connection.rows["ah"][0],
+            expected_revision=_revision(store),
         )
-        seen.add(connection.rows["ah"][0])
+        seen.add(_revision(store))
     assert len(seen) == 4
 
 
-def test_rowcount_zero_is_lost_and_nothing_commits():
-    connection = _seeded()
-    expected = connection.rows["ah"][0]
-    connection.update_matches = 0
+def test_a_lost_cas_is_lost_and_never_retried():
+    """A port ``Conflict`` — ``rowcount 0`` or a ``1213`` serialization failure, which the port
+    does not tell apart (``test_hq_storage_dolt_adapter.py`` proves the 1213 mapping on Dolt)."""
+    store = Counting(_seeded(), race=_lease("host-z", epoch=9))
+    expected = _revision(store)
     with pytest.raises(PlacementLost, match="rowcount 0") as lost:
         place_cas(
-            connection,
+            store,
             prefix="ah",
             lease=_lease(),
             authority=AUTHORITY,
             expected_revision=expected,
         )
-    assert lost.value.reason == "rowcount 0"
-    assert connection.committed == 0 and connection.rows["ah"][0] == expected
-
-
-@pytest.mark.parametrize("where", ["update-1213", "commit-1213"])
-def test_serialization_failure_1213_is_lost_never_retried(where):
-    connection = _seeded()
-    expected = connection.rows["ah"][0]
-    connection.fail = where
-    with pytest.raises(PlacementLost, match="1213"):
-        place_cas(
-            connection,
-            prefix="ah",
-            lease=_lease(),
-            authority=AUTHORITY,
-            expected_revision=expected,
-        )
-    updates = [s for s, _ in connection.statements if s.startswith("UPDATE")]
-    assert len(updates) == 1  # one attempt, never re-issued with the same expectation
-    assert connection.rows["ah"][0] == expected
+    assert lost.value.reason == CAS_LOST and "1213" in str(lost.value)
+    assert len(store.cas) == 1  # one attempt, never re-issued with the same expectation
+    assert read_row(store, "ah").lease.host_id == "host-z"  # the competitor's row stands
 
 
 def test_stale_expectation_is_lost_before_any_update():
-    connection = _seeded()
+    store = Counting(_seeded())
     with pytest.raises(PlacementLost, match="moved"):
         place_cas(
-            connection,
+            store,
             prefix="ah",
             lease=_lease(),
             authority=AUTHORITY,
             expected_revision="0" * 64,
         )
-    assert not [s for s, _ in connection.statements if s.startswith("UPDATE")]
+    assert store.cas == []
 
 
 def test_lost_commit_acknowledgment_is_unknown_not_lost():
-    connection = _seeded()
-    connection.fail = "commit-lost"
+    store = Counting(_seeded())
+    expected = _revision(store)
+    store.faults.arm_unknown("transport", applied=False, on="compare_and_set")
     with pytest.raises(PlacementUnknown, match="read the row back") as unknown:
         place_cas(
-            connection,
+            store,
             prefix="ah",
             lease=_lease(),
             authority=AUTHORITY,
-            expected_revision=connection.rows["ah"][0],
+            expected_revision=expected,
         )
-    assert HEX64.fullmatch(unknown.value.revision)
+    assert UUID.fullmatch(unknown.value.operation) and unknown.value.reason == "transport"
+    assert unknown.value.expected == expected and _revision(store) == expected
+    assert len(store.cas) == 1  # NotConfirmed never authorises a retry
+
+
+def test_an_unknown_that_landed_is_confirmed_by_its_operation():
+    store = Counting(_seeded())
+    store.faults.arm_unknown("commit", applied=True, on="compare_and_set")
+    placed = place_cas(
+        store,
+        prefix="ah",
+        lease=_lease(epoch=2),
+        authority=AUTHORITY,
+        expected_revision=_revision(store),
+        cause=CAUSE_FAILOVER,
+    )
+    stored = read_row(store, "ah")
+    assert placed.revision == stored.revision and stored.cause == CAUSE_FAILOVER
+    assert len(store.cas) == 1
+
+
+def test_an_unknown_superseded_before_its_lookup_is_never_retried():
+    """ADR rule 2: an applied-then-superseded write reads ``NotConfirmed``, which is not proof it
+    did not apply and never authorises a retry."""
+    store = Counting(_seeded(), supersede=_lease("host-z", epoch=9))
+    store.faults.arm_unknown("deadline", applied=True, on="compare_and_set")
+    with pytest.raises(PlacementUnknown, match="never re-issue"):
+        place_cas(
+            store,
+            prefix="ah",
+            lease=_lease(epoch=2),
+            authority=AUTHORITY,
+            expected_revision=_revision(store),
+        )
+    assert len(store.cas) == 1 and read_row(store, "ah").lease.host_id == "host-z"
 
 
 def test_driver_errors_never_leak_and_unseeded_rows_name_the_operator():
-    connection = _seeded()
-    connection.fail = "select"
+    store = _seeded()
+    store.faults.arm_unavailable(on="compare_and_set")
+    with pytest.raises(PlacementError, match="unavailable; nothing written"):
+        place_cas(
+            store,
+            prefix="ah",
+            lease=_lease(),
+            authority=AUTHORITY,
+            expected_revision=_revision(store),
+        )
+
+    class Leaky:
+        def read(self, kind, key):
+            raise StorageUnavailable("HQ read unavailable")
+
     with pytest.raises(PlacementError) as failed:
         place_cas(
-            connection,
+            Leaky(),
+            prefix="ah",
+            lease=_lease(),
+            authority=AUTHORITY,
+            expected_revision="a" * 64,
+        )
+    assert "unavailable; nothing written" in str(failed.value)
+
+    class Raw:
+        def read(self, kind, key):
+            raise RuntimeError("password=hunter2 leaked in driver text")
+
+    with pytest.raises(PlacementError) as failed:
+        place_cas(
+            Raw(),
             prefix="ah",
             lease=_lease(),
             authority=AUTHORITY,
@@ -337,7 +362,7 @@ def test_driver_errors_never_leak_and_unseeded_rows_name_the_operator():
     assert "hunter2" not in str(failed.value)
     with pytest.raises(PlacementUnseeded, match="operator seeds"):
         place_cas(
-            FakeConnection(),
+            InMemoryHqStorage(FakeClock()),
             prefix="ah",
             lease=_lease(),
             authority=AUTHORITY,
@@ -346,11 +371,11 @@ def test_driver_errors_never_leak_and_unseeded_rows_name_the_operator():
 
 
 def test_placement_raises_the_epoch_and_release_keeps_it():
-    connection = _seeded(lease=_lease(epoch=5))
-    expected = connection.rows["ah"][0]
+    store = _seeded(lease=_lease(epoch=5))
+    expected = _revision(store)
     with pytest.raises(PlacementError, match="raise the epoch"):
         place_cas(
-            connection,
+            store,
             prefix="ah",
             lease=_lease(epoch=5),
             authority=AUTHORITY,
@@ -359,7 +384,7 @@ def test_placement_raises_the_epoch_and_release_keeps_it():
     tombstone = HostLease("", "", 4, now_stamp(NOW), now_stamp(NOW))
     with pytest.raises(PlacementError, match="keeps the placed epoch"):
         place_cas(
-            connection,
+            store,
             prefix="ah",
             lease=tombstone,
             authority=AUTHORITY,
@@ -367,7 +392,7 @@ def test_placement_raises_the_epoch_and_release_keeps_it():
         )
     with pytest.raises(PlacementError, match="64-hex"):
         place_cas(
-            connection,
+            store,
             prefix="ah",
             lease=_lease(epoch=6),
             authority=AUTHORITY,
@@ -375,43 +400,78 @@ def test_placement_raises_the_epoch_and_release_keeps_it():
         )
 
 
+def test_the_port_record_parses_like_the_raw_row():
+    """``record_from`` is ``parse_row`` over the port body: the carrier plus ``director`` (the
+    witness, decoded by the adapter) and a cause that only a director row carries."""
+    lease = _lease()
+    record = SimpleNamespace(key="ah", revision="r" * 64, body=_receiver_body(lease))
+    parsed = record_from("ah", record)
+    assert parsed.lease == lease and parsed.authority == AUTHORITY and not parsed.director
+    caused = SimpleNamespace(**{**vars(record), "body": {**record.body, "cause": "failover"}})
+    assert record_from("ah", caused).cause is None  # never trusted off a receiver row
+    for body in (
+        {"authority": AUTHORITY, "lease": lease.to_record()},  # the adapter's non-canonical read
+        {**record.body, "director": "yes"},
+        {**record.body, "extra": 1},
+    ):
+        with pytest.raises(PlacementError, match="carrier"):
+            record_from("ah", SimpleNamespace(key="ah", revision="r" * 64, body=body))
+    with pytest.raises(PlacementError, match="lease record"):
+        record_from(
+            "ah",
+            SimpleNamespace(key="ah", revision="r", body={**record.body, "lease": {"epoch": 0}}),
+        )
+
+
+def test_failover_after_rides_one_atomic_write_never_a_lone_cas():
+    """bh-xnn5p: the policy and the placement are ONE ``AtomicRecords`` write, on the fake as on
+    Dolt (``test_failover_policy.py`` covers its lost, unknown and refused branches)."""
+    store = Counting(_seeded())
+    placed = place_cas(
+        store,
+        prefix="ah",
+        lease=_lease(epoch=2),
+        authority=AUTHORITY,
+        expected_revision=_revision(store),
+        failover_after={"executor": 4500},
+    )
+    assert store.cas == []  # no single-record CAS: the atomic write carried both
+    assert placed.lease == _lease(epoch=2) and read_row(store, "ah").lease == _lease(epoch=2)
+    assert store.read(RecordKind.FAILOVER_POLICY, "ah").body == {"executor": 4500}
+
+
 # =============================================================================================
 # The director: identity from the signed authority, explicit epochs, release
 # =============================================================================================
 
 
-def _director(connection, *, state=None, policies=None):
+def _director(store, *, state=None, policies=None):
     record = {"authority": AUTHORITY, "state": "active", "cordoned": False}
     state = state if state is not None else {"frames": {"frame-a": {"active": record}}}
     policies = policies if policies is not None else {"ah": {"config_revision": "desired-1"}}
     director = SqlPlacementDirector(
         {"placement_writer": {"user": "director", "database": "beadhive_hq_runtime"}},
         clock=lambda: NOW,
-        connect=lambda binding: connection,
+        storage=store,
     )
-    director._verified = lambda cursor: (state, policies)
+    director._verified = lambda session: (state, policies)
     return director
 
 
 def test_director_places_a_verified_grant_at_an_explicit_epoch():
-    connection = _seeded(lease=_lease("host-z", epoch=21))
-    expected = connection.rows["ah"][0]
-    placed = _director(connection).place(
-        "ah", frame_id="frame-a", expected_revision=expected, epoch=23
-    )
+    store = _seeded(lease=_lease("host-z", epoch=21))
+    expected = _revision(store)
+    placed = _director(store).place("ah", frame_id="frame-a", expected_revision=expected, epoch=23)
     assert placed.lease.epoch == 23 and placed.lease.host_id == "host-a"
-    stored = parse_row("ah", connection.rows["ah"])
+    stored = read_row(store, "ah")
     assert stored.authority == {"frame_id": "frame-a", **AUTHORITY}
     assert stored.director and stored.lease.label == "frame-a"
     assert stored.lease.expires_at == now_stamp(NOW + DEFAULT_TENURE_S)
-    assert connection.closed
 
 
 def test_director_defaults_to_the_next_epoch_and_refuses_unplaceable_frames():
-    connection = _seeded(lease=_lease("host-z", epoch=7))
-    placed = _director(connection).place(
-        "ah", frame_id="frame-a", expected_revision=connection.rows["ah"][0]
-    )
+    store = _seeded(lease=_lease("host-z", epoch=7))
+    placed = _director(store).place("ah", frame_id="frame-a", expected_revision=_revision(store))
     assert placed.lease.epoch == 8
     cordoned = {
         "frames": {
@@ -426,6 +486,29 @@ def test_director_defaults_to_the_next_epoch_and_refuses_unplaceable_frames():
         _director(_seeded(), policies={}).place(
             "ah", frame_id="frame-a", expected_revision="a" * 64
         )
+
+
+def test_director_survey_reads_every_row_and_the_policy_through_the_port():
+    """bh-xnn5p: placements, the failover policy and (through `observe`) session liveness are
+    port reads of the same store; the authority comes from the verified runtime read."""
+    store = _seeded(lease=_lease("host-z", epoch=7))
+    store.provision(RecordKind.PLACEMENT, "bh", {"authority": {}, "lease": {"epoch": 0}})
+    seen = []
+    survey = _director(store).survey(lambda live, registry, state: seen.append((live, registry)))
+    assert set(survey.placements) == {"ah"} and survey.placements["ah"].lease.epoch == 7
+    assert survey.invalid == {"bh": "placement row carrier invalid"}  # reported, never placed
+    assert seen == [(store, ())]  # the store's Liveness; no registry without a runtime read
+    assert survey.failover.provisioned and survey.failover.hives == {}  # code defaults
+    store.compare_and_set(
+        RecordKind.FAILOVER_POLICY,
+        "ah",
+        {"executor": 4500},
+        expected=ABSENT,
+        operation=new_operation_id(),
+    )
+    observed = _director(store).survey(lambda live, registry, state: 1)
+    assert observed.observed == 1
+    assert observed.failover.failover_after("ah", "executor") == 4500.0
 
 
 # ---- the placement cause (bh-16347.6) ------------------------------------------------------
@@ -449,35 +532,35 @@ def test_cause_token_fits_the_receiver_request_id_column_and_is_bound_to_the_row
 
 
 def test_director_place_defaults_to_planned_and_the_cause_rides_in_the_same_cas():
-    connection = _seeded(lease=_lease("host-z", epoch=7))
-    director = _director(connection)
-    planned = director.place("ah", frame_id="frame-a", expected_revision=connection.rows["ah"][0])
-    stored = parse_row("ah", connection.rows["ah"])
+    store = Counting(_seeded(lease=_lease("host-z", epoch=7)))
+    director = _director(store)
+    planned = director.place("ah", frame_id="frame-a", expected_revision=_revision(store))
+    stored = read_row(store, "ah")
     assert planned.cause == stored.cause == CAUSE_PLANNED and stored.failover is False
     failed_over = director.place(
         "ah", frame_id="frame-a", expected_revision=stored.revision, cause=CAUSE_FAILOVER
     )
-    stored = parse_row("ah", connection.rows["ah"])
+    stored = read_row(store, "ah")
     assert failed_over.cause == stored.cause == CAUSE_FAILOVER and stored.failover is True
     assert stored.request_id == failed_over.request_id
-    # The carrier is still exactly the receiver's: {authority, lease} and the five-field lease.
-    envelope = json.loads(connection.rows["ah"][1])
-    assert set(envelope) == {"authority", "lease"}
-    assert set(envelope["lease"]) == {"host_id", "label", "epoch", "adopted_at", "expires_at"}
-    assert envelope["authority"] == {"frame_id": "frame-a", **AUTHORITY}
-    (update,) = [s for s, _ in connection.statements if s.startswith("UPDATE")][-1:]
-    assert update.count("request_id=%s") == 1  # one UPDATE, the same CAS
+    # The body is the receiver's carrier plus the cause and the director flag; the Dolt adapter
+    # stores exactly {authority, lease} in lease_json (test_hq_storage_dolt_adapter.py).
+    body = store.read(RecordKind.PLACEMENT, "ah").body
+    assert set(body) == {"authority", "lease", "director", "cause"}
+    assert set(body["lease"]) == {"host_id", "label", "epoch", "adopted_at", "expires_at"}
+    assert body["authority"] == {"frame_id": "frame-a", **AUTHORITY}
+    assert len(store.cas) == 2  # one CAS per placement: the cause rides in it
     with pytest.raises(PlacementError, match="cause"):
         director.place("ah", frame_id="frame-a", expected_revision=stored.revision, cause="x")
 
 
 def test_releases_seeds_and_receiver_rows_carry_no_cause():
-    connection = _seeded(lease=_lease("host-a", epoch=9))
-    released = _director(connection).release("ah", expected_revision=connection.rows["ah"][0])
-    assert released.cause is None and parse_row("ah", connection.rows["ah"]).cause is None
+    store = _seeded(lease=_lease("host-a", epoch=9))
+    released = _director(store).release("ah", expected_revision=_revision(store))
+    assert released.cause is None and read_row(store, "ah").cause is None
     with pytest.raises(PlacementError, match="release carries no placement cause"):
         place_cas(
-            connection,
+            store,
             prefix="ah",
             lease=released.lease,
             authority=AUTHORITY,
@@ -495,18 +578,46 @@ def test_releases_seeds_and_receiver_rows_carry_no_cause():
 
 
 def test_director_release_is_a_tombstone_at_the_same_epoch():
-    connection = _seeded(lease=_lease("host-a", epoch=9))
-    released = _director(connection).release(
-        "ah", expected_revision=connection.rows["ah"][0], at=NOW + 5
-    )
+    store = _seeded(lease=_lease("host-a", epoch=9))
+    released = _director(store).release("ah", expected_revision=_revision(store), at=NOW + 5)
     assert released.lease.is_tombstone and released.lease.epoch == 9
-    assert parse_row("ah", connection.rows["ah"]).authority == AUTHORITY
+    assert read_row(store, "ah").authority == AUTHORITY
 
 
 def test_director_settings_never_ride_a_frame_binding():
     director = SqlPlacementDirector({"placement_writer": {"user": "d"}, "runtime": {"user": "f"}})
     with pytest.raises(PlacementError, match="capability unavailable"):
         director.read("ah")
+    store = _seeded()
+    with pytest.raises(PlacementError, match="capability unavailable"):
+        SqlPlacementDirector(
+            {"placement_writer": {"user": "d"}, "runtime": {"user": "f"}}, storage=store
+        ).read("ah")
+
+
+def test_director_storage_failures_never_leak_driver_text():
+    class Down:
+        def read(self, kind, key):
+            raise StorageUnavailable("HQ reader principal or endpoint mismatch")
+
+        def read_many(self, kind, keys=None):
+            raise StorageUnavailable("HQ reader principal or endpoint mismatch")
+
+        def capability(self, kind):
+            return None
+
+    director = _director(Down())
+    with pytest.raises(PlacementError, match="principal or endpoint mismatch"):
+        director.read("ah")
+    with pytest.raises(PlacementError, match="verified placement for ah unavailable"):
+        director.place("ah", frame_id="frame-a", expected_revision="a" * 64)
+    with pytest.raises(PlacementError, match="^failover policy read unavailable$"):
+        director.failover_policy()
+    with pytest.raises(PlacementError, match="^failover policy write unavailable; nothing"):
+        director.set_failover_policy("ah", {"executor": 4500})
+    # Without the Dolt-only runtime read, a verified read is refused (the fake has none).
+    with pytest.raises(PlacementError, match="needs dolt-server"):
+        SqlPlacementDirector({"placement_writer": {"user": "d"}}, storage=_seeded())._authority()
 
 
 def test_operator_settings_carry_the_placement_writer(tmp_path):
@@ -607,12 +718,21 @@ def test_conformance_reads_grants_and_triggers_from_the_server():
     }
 
     class Cursor:
+        # The reads are the Dolt adapter's DoltAccounts over this cursor (bh-3kl1k); triggers
+        # come from the database's dolt_schemas, never information_schema.triggers.
         def execute(self, sql, params=None):
+            assert params is None
             if sql.startswith("SHOW GRANTS FOR "):
+                self.description = (("Grants",),)
                 self.rows = [(line,) for line in grants[sql.removeprefix("SHOW GRANTS FOR ")]]
             else:
-                assert params == (DB,)
-                self.rows = [("t", "hq_live_results", "SET NEW.status='x'")]
+                assert f"`{DB}`.dolt_schemas" in sql and "type = 'trigger'" in sql
+                self.description = (("n",), ("f",))
+                fragment = (
+                    "CREATE TRIGGER t BEFORE INSERT ON hq_live_results FOR EACH ROW "
+                    "SET NEW.status='x'"
+                )
+                self.rows = [("t", fragment)]
 
         def fetchall(self):
             return self.rows
@@ -658,17 +778,20 @@ def test_receiver_renews_over_a_director_written_row(world, monkeypatch):  # noq
 
 def test_director_takes_over_a_receiver_written_row(world):  # noqa: F811
     lease = HostLease(**world.prior["lease"])
-    body = lease_body(world.prior["authority"], lease)
-    receiver_revision = proposal_revision(world.request)
-    connection = FakeConnection({"bh": [receiver_revision, body, "req", "sha"]})
+    store = InMemoryHqStorage(FakeClock())
+    store.provision(RecordKind.PLACEMENT, "bh", _receiver_body(lease, world.prior["authority"]))
+    receiver_revision = _revision(store, "bh")
     placed = place_cas(
-        connection,
+        store,
         prefix="bh",
         lease=HostLease("host", "host", lease.epoch + 1, now_stamp(NOW), now_stamp(NOW + 60)),
         authority=world.prior["authority"],
         expected_revision=receiver_revision,
     )
-    assert placed.director and connection.rows["bh"][0] != receiver_revision
+    assert placed.director and _revision(store, "bh") != receiver_revision
+    # The receiver's own revision format (its request digest) is taken over on real Dolt in
+    # test_hq_sql_placement_int.py::test_receiver_cas_round_trips_with_director_rows.
+    assert HEX64.fullmatch(proposal_revision(world.request))
 
 
 # =============================================================================================
@@ -807,14 +930,21 @@ def test_cut_over_adopt_resumes_at_the_director_placed_epoch(tmp_path, monkeypat
     a = _frame(tmp_path)
     plane, _ = _plane(a, fence=EpochFence(22, "host-z"), receiver_row=_director_row_for(a, 23))
     placement = host_adopt._DirectorPlacement(plane, "ah")
-    view = placement.read()
+    view = placement.read("ah")
     assert (view.frame, view.epoch) == ("host-a", 23)
+    operation = new_operation_id()
     with pytest.raises(writer_adopt.PlacementLost, match="ask the director"):
-        placement.cas("host-a", 24, expected=view)
+        placement.compare_and_set(
+            "ah", "host-a", 24, expected=view, cause=CAUSE_FAILOVER, operation=operation
+        )
+    # It never reports an outcome, so there is nothing a lookup could confirm.
+    assert placement.lookup("ah", operation) == NotConfirmed(operation)
+    with pytest.raises(InvalidRequest):
+        placement.read("other")
     seen = {}
 
     def coexistence(data, placement, ref, **kwargs):
-        seen["view"] = placement.read()
+        seen["view"] = placement.read("ah")
         return SimpleNamespace(epoch=23, ref=SimpleNamespace(sha="ref-23"))
 
     adopt, _ = _adopt_world(
@@ -857,7 +987,7 @@ def test_cut_over_adopt_takes_its_kind_from_the_placement_cause(
 
     def coexistence(data, placement, ref, **kwargs):
         seen["failover"] = kwargs["failover"]
-        seen["view"] = placement.read()
+        seen["view"] = placement.read("ah")
         return SimpleNamespace(epoch=23, ref=SimpleNamespace(sha="ref-23"))
 
     _adopt_world(tmp_path, monkeypatch, a, row=row, fence=EpochFence(22, "host-z"))
@@ -888,9 +1018,9 @@ def test_director_placement_pins_the_row_the_kind_came_from(tmp_path):
     plane, _ = _plane(a, fence=EpochFence(22, "host-z"), receiver_row=row)
     moved = host_adopt._DirectorPlacement(plane, "ah", pinned="0" * 64)
     with pytest.raises(writer_adopt.PlacementLost, match="moved while the adopt was reading"):
-        moved.read()
+        moved.read("ah")
     pinned = host_adopt._DirectorPlacement(plane, "ah", pinned=row[0])
-    assert pinned.read().epoch == 23 and pinned.read().token == row[0]  # only the first read
+    assert pinned.read("ah").epoch == 23 and pinned.read("ah").token == row[0]  # first read only
 
 
 def test_git_hq_keeps_the_gitref_cas_placement_path(tmp_path, monkeypatch):

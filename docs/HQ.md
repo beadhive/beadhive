@@ -793,19 +793,22 @@ after the stall also outlasts `failover_after`, by both server staleness and its
 window. A stall that ends before then leaves a fresh session and no placement change. Time
 decides when to reassign a hive, never who may write: the hive's `bh_writer` decides that.
 
-The M10 suite carries the check as
+The check is
 `test_sender_stall_longer_than_the_ttl_is_stale_but_fails_over_only_past_failover_after` in
-`tests/test_fence_composed_int.py`. It runs on a private scratch Dolt server: two stalls,
-one shorter and one longer than `failover_after` (four TTLs). The gate runs it with a 2 s TTL.
-For the soak, scale it to the production timer and repeat it while the full gate loads the
-host:
+`tests/test_sender_stall_protocol.py`: two stalls, one shorter and one longer than
+`failover_after` (four TTLs). Since bh-utvyj it runs on the HQ storage port's in-memory fake,
+whose injected clock is at once the sender's cadence, the store clock that stamps renewals and
+measures ages, and the director's window, so it needs no server and no waiting. The SQL those
+steps map onto (the one-`UPDATE` renewal and the eligibility statement) is proven on a real
+server by `tests/test_hq_sql_session_int.py`. The gate runs it with a 2 s TTL. For the soak,
+scale it to the production timer:
 
 ```sh
 BH_M10_SESSION_TTL_S=60 uv run pytest -p no:cacheprovider -s \
-  tests/test_fence_composed_int.py -k sender_stall
+  tests/test_sender_stall_protocol.py
 ```
 
 Each run prints one `BH_M10` JSON line with the TTL, `failover_after` and the measured
 `due_after_stall_s`. The soak passes when every run is green and the due time stays just
-above `failover_after`. `BH_M10_SEEDS=0,1,…` widens the suite's fixed-seed product schedule
-in the same way.
+above `failover_after`. `BH_M10_SEEDS=0,1,…` widens the fixed-seed product schedule of the
+M10 suite (`tests/test_fence_composed_int.py`) in the same way.

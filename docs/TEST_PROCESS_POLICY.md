@@ -331,6 +331,202 @@ because a full gate was running, which is larger than the effect measured:
 
 The leak guard passed on all three guarded runs, so no test needs `cluster_destructive`.
 
+## Protocol tests on the HQ storage port's fakes (bh-utvyj)
+
+bh-utvyj moved the protocol scenarios that need no Dolt-only behaviour onto the HQ storage
+port's in-memory fakes. Those scenarios are epoch-fencing s1, s2 and s4, the failover reclaim's
+adopt-kind matrix, the sender-stall soak check and the cutover's legacy-carrier refusals. The
+tests now drive the product modules. The scenario table, and what stays on real Dolt and why,
+are in `docs/design/hq-storage-port-adr.md` ("Settled by `bh-utvyj`"). The new tests run in the
+stateful lane, not the integration lane, and passed 50 of 50 runs at `-n 8` under load.
+
+**Runs.** Each run used `NO_COLOR=1 BH_DOLT_SLOTS=12 ./scripts/hermetic.sh uv run --no-sync python
+-m pytest -q -p no:cacheprovider -n 4 --durations=0` with JUnit on the four touched integration
+files: `tests/test_epoch_fencing_int.py`, `tests/test_failover_reclaim_int.py`,
+`tests/test_fence_composed_int.py` and `tests/test_fence_cutover_int.py`. Test-seconds are the
+summed JUnit case times. "Before" is the container base (755d8dd7) and "after" is this branch.
+The two runs went back to back on the shared host, with other developers' work running (load
+15-28):
+
+| File | Cases before / after | Test-seconds before | Test-seconds after |
+| --- | ---: | ---: | ---: |
+| `test_epoch_fencing_int.py` | 41 / 38 | 1,265.5 | 1,111.3 |
+| `test_failover_reclaim_int.py` | 6 / 1 | 161.5 | 40.4 |
+| `test_fence_composed_int.py` | 8 / 7 | 525.5 | 524.0 |
+| `test_fence_cutover_int.py` | 5 / 5 | 238.0 | 238.6 |
+| **Total** | 60 / 51 | **2,190.5** | **1,914.2** |
+| Wall (s) | | 562 | 485 |
+
+**Reading the numbers.**
+
+- The removed cases cost 343-354 test-seconds over two before-runs. The touched files fell by
+  276 test-seconds (-13%) and 78 s of wall at `-n 4`.
+- The kept cases absorbed the difference, about 77 test-seconds. A cluster build is charged
+  to the first case that acquires its composition on a worker. With fewer cases per
+  composition, more of the kept cases pay a build.
+- The cutover file barely moves. Its C1 case keeps the unpublished-work refusal on the same
+  cluster: 6.2 s before and 4.5 s after.
+- The replacement tests cost about 6 test-seconds in total, mostly the reclaim cases' real git
+  backup remote.
+- An earlier pair of runs had this branch's own `-n 8` fake loop running alongside the "after"
+  run, and is not used. Without that run's slowdown, its removed cases summed to 343
+  test-seconds.
+- This is well short of the ~2,375 test-seconds the survey estimated. Most of that estimate
+  needs Dolt-only capabilities or the guard triggers: the fixed-seed product interleavings,
+  `fence_orphan`, the rest of `fence_cutover`, `hive_forward`, and onboarding's busy-port
+  refusals. The ADR section above lists why each one stays on real Dolt. bh-l2m59 measures
+  the lane-level effect.
+
+## Storage-port migration saving and isolation outcomes (bh-l2m59)
+
+Measures the lane-level effect of the HQ storage port epic (bh-xxkf7) and records which protocol
+families the in-memory fake now covers.
+
+**Headline.** The migration moved test-seconds off real Dolt but did **not** shorten either
+16-worker lane beyond run-to-run noise. The integration lane lost about 80 test-seconds (1%)
+and about 5 s of wall. The stateful lane lost about 80 test-seconds and about 7 s of wall. The
+3 to 3.5 minute saving on fence-touching integration runs is **not confirmed**. The measured
+saving is smaller than the noise, and the lane is bound by something the migration did not move
+(see "Reading the numbers"). `just hq-storage-check` improved as claimed.
+
+**Status of the evidence.** Measured 2026-10-12 on the shared 32-core host with other
+developers' lane runs taking turns (load average 6 to 18 at start). Two runs per cell. Baseline
+is main at the merge-base, 97e0ca68, in a scratch checkout. After is the epic container
+(99c97705, which equals the baseline plus every storage-port child). Settings:
+`BH_DOLT_SLOTS=12 BH_TEST_TIMEOUT_SECONDS=2400 BH_TEST_SCHEDULE_TELEMETRY=1`, `-n 16 --dist
+worksteal`, JUnit through `BH_TEST_REPORT_DIR`. Aggregation is the one in the bh-y4c4z section.
+Two further container integration runs without JUnit finished in 472 s and 442 s wall, so they
+agree. Operator-supplied reference from the latest green main gates (b284705a): stateful 597 s,
+integration 492 s wall, which sit inside the baseline range below.
+
+### Lane totals
+
+| Selection class | Runs | Wall (s) | Test-seconds | Cases | Failed |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Integration, main 97e0ca68 | 2 | 460 (451-468) | 6,422 (6,405-6,438) | 275 | 0, 1 |
+| Integration, container | 2 | 455 (450-459) | 6,340 (6,262-6,417) | 258 | 1, 0 |
+| Integration delta | | -5 | -82 | -17 | |
+| Stateful, main 97e0ca68 | 2 | 588 (584-593) | 7,795 (7,771-7,819) | 10,744 | 3, 3 |
+| Stateful, container | 2 | 581 (564-599) | 7,712 (7,707-7,716) | 11,634 | 66, 66 |
+| Stateful delta | | -7 | -83 | +890 | |
+
+A third container stateful run (1,097 s wall, 74 failed) overlapped another developer's heavy
+work and is excluded.
+
+- **Integration failures are flakes.** The baseline's one failure and the container's one
+  failure were each a single case that passed in the other run; the container's was
+  `tests/test_writer_fencing_fixture_int.py::test_fixture_starts_partitions_kills_and_orders_barriers_on_one_cluster`.
+- **Stateful failures differ by tree.** Main fails 3 cases in both runs. The container fails 66
+  in both, 44 of them in `tests/test_test_closure_certification.py`. The closure and registry
+  tests (`test_root_composition_tests.py`, `test_test_closure_*`, `test_test_impact_selector.py`)
+  see the new packages' tests without a `PACKAGE_TESTS` entry. Escalated as hq-ahjz.
+  `just root-composition-validate` fails on the container for the same reason, so
+  `just stateful-native` cannot start there until the registry is fixed; the stateful runs
+  above invoked the recipe's pytest command directly. The 890 extra stateful cases are the
+  storage-port children's tests, including the fake-backed protocol tests.
+
+### Reading the numbers
+
+- **The saving is real in test-seconds and invisible in wall.** The four files bh-utvyj
+  touched fell 276 test-seconds in the targeted run (see the bh-utvyj section). In the full
+  lane the net is only -82, because the kept cases pay builds the removed cases used to
+  share (composed +66, orphan +36, cutover +27) and other suites moved a little either way.
+- **The lane is not work-bound.** Integration wall is 450 to 470 s while ideal
+  (test-seconds / 16) is about 400 s, and the schedule telemetry reports 300 to 380 s of
+  Dolt-slot wait and a tail dominated by a few long files. Removing 80 test-seconds of 6,400
+  moves ideal by 5 s, which is what the wall shows.
+- **The main baseline already contains the earlier wins.** The 9.2 to 13 minute integration
+  figures in the bh-y4c4z and bh-05dza sections predate the rewind pool and the quick-win beads.
+  Main's integration wall is now about 7.7 minutes, so the "3 to 3.5 minutes on fence-touching
+  runs" had little left to take.
+- **Largest remaining integration files (container, test-seconds).**
+  `tests/test_epoch_fencing_int.py` 1,327, `tests/test_fence_composed_int.py` 643,
+  `tests/test_fence_orphan_int.py` 384, `tests/test_fence_cutover_int.py` 251. These are the
+  files whose cases need real Dolt (below), so further lane time needs either a faster Dolt
+  path or a fake extension.
+- **Per-file movement (mean of two runs, test-seconds, main to container).** Failover reclaim
+  152 to 45 (-107), epoch fencing 1,406 to 1,327 (-79), HQ SQL config 68 to 11 (-57),
+  placement authority 123 to 89 (-33), composed 577 to 643 (+66), orphan 348 to 384 (+36).
+- **`just hq-storage-check`** (bh-xxkf7.3): the fake-against-Dolt state machine fell from about
+  130 s at four workers to about 4 s (the derandomized smoke). The whole pytest run now takes
+  6.8 s (270 passed, 2 skipped) and the recipe 17 s including ruff and the package sync.
+
+### Isolation outcomes
+
+Fake-backed in the unit and stateful lane (the port's in-memory fake, driving product modules):
+
+| Protocol family | Fake-backed coverage | Source |
+| --- | --- | --- |
+| Placement CAS and director placement | `hq_sql_placement` over `PlacementStore` | bh-sqfvq, bh-xxkf7.4 |
+| Config publication and ambiguous-commit recovery | `hq_sql_config` publish and recovery | bh-x7xtc |
+| Runtime, session staleness, receiver and operator reads | `hq_sql_runtime`, `hq_sql_session` over an injected clock | bh-xnn5p |
+| Typed fence bump and adopt | `fence_data`, `writer_adopt` | bh-jhgum, bh-xxkf7.4 |
+| Epoch fencing s1 (planned handoff), s2 (handoff mid-push), s4 (placement race) | `tests/test_epoch_fencing_protocol.py` | bh-utvyj |
+| Failover reclaim: planned handoff, director-placed cause matrix | `tests/test_failover_reclaim_protocol.py` | bh-utvyj |
+| Sender stall (Φ3, O4) | `tests/test_sender_stall_protocol.py` | bh-utvyj |
+| Cutover C1 legacy-carrier refusals | `tests/test_fence_cutover.py` | bh-utvyj |
+| Port contract itself, fake against fake | `just hq-storage-check` state machine, 25 x 20 | bh-xxkf7.3 |
+
+Staying on real Dolt, with the reason (all in `docs/design/hq-storage-port-adr.md`, "Settled by
+`bh-utvyj`"):
+
+| Family | Reason |
+| --- | --- |
+| Epoch fencing s3, s5, s6, the force paths, marks growth, the `file://` push CAS | Guard-trigger refusals, bd's settle gate and sync refusals, bd server-mode staging |
+| `fence_orphan` divert and orphan merge | Needs `DoltHistory` and `DoltMerge`; reimplementing Dolt's merge semantics is rejected |
+| `fence_composed` fixed-seed interleavings | Trigger refusals, cutover status, unprovisioned-replica DDL |
+| `fence_cutover` C3 to C6 and R1 to R5 | `FenceNode` fence DDL and identity (`install`, `provision_ident`, `uninstall`, `guard_report`) |
+| `hive_forward` claim races and refused forwards | Real MySQL logins and grants on a TLS server (`DoltAccounts`) |
+| Onboarding busy-port refusals | What a real `bd` leaves behind; no storage port in the path |
+| Dolt-only capabilities (`DoltHistory`, `DoltMerge`, `DoltAccounts`) in general | By design the fake does not implement them |
+
+### Remaining raw SQL outside `beadhive-hq-storage-dolt`
+
+The target of zero in the `hq_sql_*` and `fence_*` consumers is **not met**. A grep of
+`.execute(` under `src/beadhive` (2026-10-12) finds, for the storage consumers:
+
+| Module | `.execute(` sites | What it is |
+| --- | ---: | --- |
+| `hq_sql_config.py` | 34 | Initial seeding, inspection, publication preflight (ADR: "Not done here") |
+| `hq_sql_session_provision.py` | 8 | Frame session provisioning on the operator's own cursor and transaction |
+| `fence_data.py` | 6 | `BdServerEngine`, including its own `DOLT_RESET` (keeps the forwarder quiesce first) |
+| `hive_forward.py` | 2 | Account and grant statements |
+| `hq_placement_ops.py` | 2 | Account and principal-registry listing |
+| `hq_sql_runtime.py`, `hq_storage_composition.py` | 1 each | A cursor wrapper and the adapter passthrough |
+
+`hq_sql_runtime_schema.py` (operator DDL) and `fence_schema.py` still hold DDL strings.
+`fence_audit` and `fence_orphan` hold none. The adapter package holds about 110 sites. The
+string-level `FakeConnection` and `FakeCursor` classes (the ADR's second complaint) remain in
+eight test files: `test_hq_config_head_tolerance.py`, `test_hq_authority_fleet_mode.py`,
+`test_hq_sql_signed_liveness.py`, `test_hq_signed_hive_lease.py`,
+`test_hq_authority_trusted.py`, `test_hq_sql_inbox_retention.py`, `test_hq_sql_session.py` and
+`tests/harness/config_tolerance.py`. Follow-up: bh-oueud.
+
+### What's left: capabilities a future fake extension would need
+
+A decision for the operator, not work to start. None of it is justified by lane time alone,
+given the measurement above.
+
+1. **Guard-trigger refusals** (`GUARD_REFUSAL`, `bh_local_ident`): the fake admits writes
+   through a test control instead of refusing them. This unlocks epoch fencing s3, s5, s6 and
+   the fixed-seed composed interleavings, the largest remaining files (about 2,000 test-seconds).
+2. **A merge and branch model** (`DoltHistory`, `DoltMerge`): branch refs, `publish_branch`,
+   `preview_conflicts`, `merge_restamping`, `reset_hard`. Unlocks `fence_orphan` (384). The ADR
+   rejects reimplementing Dolt's merge semantics, so this is a decision to reverse, not an
+   addition.
+3. **Fence DDL and identity** (`install`, `provision_ident`, `uninstall`, `guard_report`) on
+   `FenceNode`. Unlocks `fence_cutover` C3 to C6 and R1 to R5 (251).
+4. **Accounts and grants** (`DoltAccounts`): MySQL logins on a TLS server. Unlocks
+   `hive_forward` claim races. Faking a login mostly tests the fake.
+5. **A bd engine model**: settle gate, sync refusals, server-mode staging. Out of scope for an
+   HQ storage fake; these are bd behaviours.
+6. **Retire the string-level cursor fakes** in the eight test files above once the remaining
+   raw SQL moves behind the port (bh-oueud).
+
+Cheaper levers for the integration wall, found by this measurement: the lane is Dolt-slot and
+tail bound, so splitting the longest cases (bh-56wtv) or pooling cluster builds across more of
+the kept cases is likely to pay more than moving a further 80 test-seconds to the fake.
+
 ## Dolt slot throttle and worksteal packing on the integration lane (bh-xqtp8)
 
 **Question.** bh-56wtv's longest-first simulation predicted an integration-lane wall of total

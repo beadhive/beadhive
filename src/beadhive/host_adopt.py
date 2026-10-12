@@ -5,7 +5,7 @@ placement first, then by an idempotent data step 2, keeping ``refs/bh/epoch`` in
 it exists — :mod:`beadhive.writer_adopt`, ADR ``hive-writer-partitioning-adr.md`` §2. Every other
 hive (Φ1, the default) takes the legacy two-phase path below UNCHANGED. Which one applies is
 decided by the hive's data alone ("data is the switch", condition 12), read through the
-:class:`~beadhive.writer_adopt.FenceData` port. The default adapter (M1, ``bh-uz46l``,
+:class:`~beadhive_hq_storage.HiveFence` port. The default adapter (M1, ``bh-uz46l``,
 :func:`beadhive.fence_data.resolve_cut_over`, via :mod:`beadhive.fence_data_port`) answers only
 for a hive whose data carries ``bh_writer``, so the coexistence path is dormant until a hive's
 data switches it on.
@@ -29,6 +29,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from beadhive_hq_storage import (
+    Absent,
+    Applied,
+    InvalidRequest,
+    LookupOutcome,
+    NotConfirmed,
+    OperationId,
+    Outcome,
+    Unknown,
+)
+
 from . import (
     failover_reclaim,
     fence_data_port,
@@ -45,7 +56,7 @@ from .writer_adopt import (  # re-exported: callers catch these from here
     AdoptIncomplete,
     AdoptLost,
     EpochRefLost,
-    FenceData,
+    HiveFence,
     PlacementLost,
 )
 
@@ -97,7 +108,7 @@ class AdoptOutcome:
 
 # ---- the data switch (M1 seam) ---------------------------------------------------------------
 
-#: ``(prefix, hive_dir) -> FenceData | None``. The registry lives in
+#: ``(prefix, hive_dir) -> HiveFence | None``. The registry lives in
 #: :mod:`beadhive.fence_data_port` (bh-12hev) so the write guard can read it without importing
 #: adopt; these two names are the stable surface M1 registers through.
 FenceDataResolver = fence_data_port.FenceDataResolver
@@ -108,30 +119,62 @@ def set_fence_data_resolver(resolver: FenceDataResolver | None) -> None:
     fence_data_port.set_fence_data_resolver(resolver)
 
 
-def fence_data_for(prefix: str, hive_dir: Path) -> FenceData | None:
-    """The hive's :class:`~beadhive.writer_adopt.FenceData`, or ``None`` (legacy / dormant)."""
+def fence_data_for(prefix: str, hive_dir: Path) -> HiveFence | None:
+    """The hive's :class:`~beadhive_hq_storage.HiveFence`, or ``None`` (legacy / dormant)."""
     return fence_data_port.fence_data_for(prefix, hive_dir)
 
 
+#: ``HqLeaseUnknown.reason`` -> the port's ``Unknown.reason``.
+_LEASE_UNKNOWN_REASONS = {"deadline": "deadline", "transport": "transport"}
+
+
+def _bound(store_prefix: str, prefix: str) -> None:
+    """A root placement adapter serves exactly the hive it was built for."""
+    if prefix != store_prefix:
+        raise InvalidRequest(f"placement store for {store_prefix!r} asked about {prefix!r}")
+
+
 class _LeasePlacement:
-    """The HQ host lease as the placement authority (git HQ: ``refs/bh/lease/<prefix>``; SQL
-    HQ: the protected lease row through the frame plane). Every CAS writes a new record, so the
-    CAS token is always rewritten (condition 5)."""
+    """The HQ host lease as the coexistence adopt's
+    :class:`~beadhive_hq_storage.PlacementStore` (git HQ: ``refs/bh/lease/<prefix>``; SQL HQ:
+    the protected lease row through the frame plane). Every CAS writes a new record, so the CAS
+    token is always rewritten (condition 5).
+
+    Outcomes (bh-xxkf7.4): a recorded lease is ``Applied`` at its new sha. Every
+    :class:`~beadhive.host_lease.HostLeaseRejected` — a lost race and the authority's refusal
+    alike, both before anything is written — raises :class:`PlacementLost` with host_lease's
+    own text, exactly as before. An ``HqLeaseUnknown`` (the signed proposal may have been
+    accepted) is ``Unknown``; it is kept in :attr:`unknown`, because the lease plane has no
+    witness of the port's operation id, so :meth:`lookup` is always ``NotConfirmed`` and
+    :func:`_adopt_cut_over` re-raises the original. Never re-issued."""
 
     def __init__(self, *, remote, prefix, cwd, label, ttl, at, force):
         self._remote, self._prefix, self._cwd = remote, prefix, Path(cwd)
         self._label, self._ttl, self._at, self._force = label, ttl, at, force
         self.lease: HostLease | None = None
         self.outcome: host_lease.LeaseOutcome | None = None
+        self.unknown: Exception | None = None
 
-    def read(self) -> writer_adopt.PlacementView | None:
+    def read(self, prefix: str) -> writer_adopt.PlacementView | None:
+        _bound(self._prefix, prefix)
         sha, lease = host_lease.read_record(self._remote, self._prefix, cwd=self._cwd)
         self.lease = lease
         if lease is None:
             return None
         return writer_adopt.PlacementView(frame=lease.host_id, epoch=lease.epoch, token=sha)
 
-    def cas(self, frame, epoch, *, expected):
+    def compare_and_set(
+        self,
+        prefix: str,
+        frame: str,
+        epoch: int,
+        *,
+        expected: writer_adopt.PlacementView | Absent,
+        cause: str,
+        operation: OperationId,
+    ) -> Outcome:
+        _bound(self._prefix, prefix)
+        absent = isinstance(expected, Absent)
         try:
             outcome = host_lease.adopt(
                 self._remote,
@@ -143,12 +186,31 @@ class _LeasePlacement:
                 at=self._at,
                 force=self._force,
                 epoch=epoch,
-                expected=expected.token if expected is not None else gitref.ABSENT,
+                expected=gitref.ABSENT if absent else expected.token,
             )
         except HostLeaseRejected as exc:
             raise PlacementLost(str(exc)) from exc
+        except Exception as exc:
+            if not _lease_unknown(exc):
+                raise
+            self.unknown = exc
+            return Unknown(
+                operation,
+                expected if absent else expected.token,
+                _LEASE_UNKNOWN_REASONS.get(getattr(exc, "reason", ""), "commit"),
+            )
         self.outcome, self.lease = outcome, outcome.lease
-        return writer_adopt.PlacementView(frame=frame, epoch=epoch, token=outcome.sha)
+        return Applied(outcome.sha, operation)
+
+    def lookup(self, prefix: str, operation: OperationId) -> LookupOutcome:
+        _bound(self._prefix, prefix)
+        return NotConfirmed(operation)
+
+
+def _lease_unknown(exc: BaseException) -> bool:
+    """``HqLeaseUnknown`` (bh-ktw0o), by shape: the signed proposal WAS submitted and only its
+    acknowledgment is unknown. The same test the legacy phase 2 makes."""
+    return bool(getattr(exc, "request_id", None)) and hasattr(exc, "expected_revision")
 
 
 class _GitEpochRef:
@@ -214,7 +276,7 @@ def adopt(
     ttl: float = host_lease.DEFAULT_TTL,
     force: bool = False,
     at: float | None = None,
-    fence_data: FenceData | None = None,
+    fence_data: HiveFence | None = None,
     step2_attempts: int | None = None,
     failover: bool | None = None,
 ) -> AdoptOutcome:
@@ -390,7 +452,7 @@ def adopt(
             ),
             error=str(exc),
         )
-        if getattr(exc, "request_id", None) and hasattr(exc, "expected_revision"):
+        if _lease_unknown(exc):
             # HqLeaseUnknown (bh-ktw0o): the signed proposal WAS submitted; only its
             # acknowledgment is unknown. Name the request so the operator reads it back
             # instead of re-adopting, which would advance the fence epoch again.
@@ -437,10 +499,13 @@ def _director_placement(prefix: str, hq_cwd: Path):
 
 
 class _DirectorPlacement:
-    """SQL director placement as the coexistence adopt's :class:`PlacementAuthority`.
+    """SQL director placement as the coexistence adopt's
+    :class:`~beadhive_hq_storage.PlacementStore`.
 
-    Reads the live row through the frame's SELECT grant. The frame cannot CAS it: a ``cas``
-    means the adopt could not resume at the placed epoch, which is the director's call.
+    Reads the live row through the frame's SELECT grant. The frame cannot CAS it: a
+    ``compare_and_set`` means the adopt could not resume at the placed epoch, which is the
+    director's call, so it refuses with :class:`PlacementLost` before anything is written. It
+    never returns an outcome, so :meth:`lookup` has nothing to confirm (``NotConfirmed``).
 
     ``pinned`` is the revision the adopt took its kind (the placement cause) from: the adopt's
     first read must still be that row, so the kind always belongs to the placement it resumes
@@ -449,7 +514,8 @@ class _DirectorPlacement:
     def __init__(self, plane, prefix: str, *, pinned: str | None = None):
         self._plane, self._prefix, self._pinned = plane, prefix, pinned
 
-    def read(self) -> writer_adopt.PlacementView | None:
+    def read(self, prefix: str) -> writer_adopt.PlacementView | None:
+        _bound(self._prefix, prefix)
         placed = self._plane.read_placement(self._prefix)
         pinned, self._pinned = self._pinned, None
         if pinned is not None and (placed is None or placed.revision != pinned):
@@ -464,13 +530,28 @@ class _DirectorPlacement:
             frame=lease.host_id, epoch=lease.epoch, token=placed.revision
         )
 
-    def cas(self, frame, epoch, *, expected):
+    def compare_and_set(
+        self,
+        prefix: str,
+        frame: str,
+        epoch: int,
+        *,
+        expected: writer_adopt.PlacementView | Absent,
+        cause: str,
+        operation: OperationId,
+    ) -> Outcome:
+        _bound(self._prefix, prefix)
+        seen = None if isinstance(expected, Absent) else expected
         raise PlacementLost(
             f"PLACEMENT: hive {self._prefix} is director-placed "
-            f"({expected.frame if expected else 'unplaced'}@{expected.epoch if expected else 0}) "
+            f"({seen.frame if seen else 'unplaced'}@{seen.epoch if seen else 0}) "
             f"and its data cannot converge at that epoch; a frame cannot re-place itself in "
             f"dolt-server HQ — ask the director to place {frame} at epoch {epoch} or higher"
         )
+
+    def lookup(self, prefix: str, operation: OperationId) -> LookupOutcome:
+        _bound(self._prefix, prefix)
+        return NotConfirmed(operation)
 
 
 def _adopt_director_placed(
@@ -481,7 +562,7 @@ def _adopt_director_placed(
     hive_cwd: Path,
     hq_cwd: Path,
     host_id: str,
-    fence_data: FenceData | None,
+    fence_data: HiveFence | None,
     attempts: int | None,
     failover: bool | None,
 ) -> AdoptOutcome:
@@ -545,7 +626,7 @@ def _adopt_director_placed(
 
 
 def _adopt_cut_over(
-    data: FenceData,
+    data: HiveFence,
     *,
     prefix: str,
     hive_remote: str,
@@ -573,17 +654,24 @@ def _adopt_cut_over(
         if placement.outcome is not None:
             host_lease.cache(prefix, placement.outcome, cwd=hq_cwd)
 
-    result = writer_adopt.coexistence_adopt(
-        data,
-        placement,
-        ref,
-        prefix=prefix,
-        frame=host_id,
-        attempts=attempts,
-        on_placed=cache_placed,
-        reclaim=failover_reclaim.for_fence_data(data, cwd=Path(hive_cwd)),
-        failover=failover,
-    )
+    try:
+        result = writer_adopt.coexistence_adopt(
+            data,
+            placement,
+            ref,
+            prefix=prefix,
+            frame=host_id,
+            attempts=attempts,
+            on_placed=cache_placed,
+            reclaim=failover_reclaim.for_fence_data(data, cwd=Path(hive_cwd)),
+            failover=failover,
+        )
+    except writer_adopt.PlacementUnknown:
+        if placement.unknown is None:
+            raise
+        # The lease plane cannot confirm the port's operation id: surface the plane's own
+        # HqLeaseUnknown (request id, digest, original revision), as before bh-xxkf7.4.
+        raise placement.unknown from None
     if placement.outcome is None:  # resumed: placement already named us; mirror what we read
         host_lease.cache(
             prefix,

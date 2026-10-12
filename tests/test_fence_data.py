@@ -105,7 +105,9 @@ def test_guard_report_counts_only_the_expected_triggers():
 def test_a_node_short_of_44_refuses_to_act_as_writer():
     engine = FakeEngine(triggers=fs.trigger_names()[:-1], procedure=True, writer=("a", 1))
     node = fd.FenceNode(engine)
-    assert node.trigger_count() == 43
+    report = node.guard_conformance()  # the port's view, through the composed Dolt adapter
+    missing = tuple(fs.trigger_names()[-1:])
+    assert (report.expected, report.present, report.missing) == (44, 43, missing)
     with pytest.raises(fd.GuardIncomplete, match="43 of 44"):
         node.require_writer_ready()
 
@@ -155,19 +157,41 @@ def test_ident_that_shows_in_dolt_status_is_refused():
         fd.FenceNode(engine).provision_ident("a")
 
 
-# ---- FenceData port ----------------------------------------------------------------------
+# ---- the HiveFence port ------------------------------------------------------------------
 
 
 def test_node_implements_the_adopt_and_reclaim_ports():
     from beadhive import failover_reclaim
+    from beadhive_hq_storage import HiveFence
+    from beadhive_hq_storage_dolt import DoltHiveFence
 
     node = fd.FenceNode(FakeEngine())
     assert isinstance(node, failover_reclaim.ReclaimData)
-    for method in ("sync_to_remote", "writer", "remote_writer", "history_max_epoch"):
-        assert callable(getattr(node, method))
-    for method in ("trigger_count", "commit_bump", "push"):
-        assert callable(getattr(node, method))
+    assert isinstance(node, HiveFence)  # the resolver answers the port (hq-storage-port-adr §6)
+    assert isinstance(node.fence, DoltHiveFence) and node.fence.engine is node.engine
+    # the legacy node operations moved onto the Dolt-only capabilities (bh-3kl1k)
+    for method in ("history_max_epoch", "push_main"):
+        assert not hasattr(node, method)
+    from beadhive_hq_storage_dolt import DoltAccounts, DoltHistory, DoltMerge
+
+    assert isinstance(node.capability(DoltHistory), DoltHistory)
+    assert isinstance(node.capability(DoltMerge), DoltMerge)
+    assert node.capability(DoltAccounts) is None  # a server login's, never a fence's
+    assert not hasattr(node, "trigger_count")
     assert node.writer() is None
+
+
+def test_node_sync_failure_is_data_unreachable_and_the_ports_unavailable():
+    from beadhive_hq_storage import StorageUnavailable
+
+    class Unreachable(FakeEngine):
+        def fetch(self):
+            raise fd.SqlFailed("dolt fetch: could not read from remote repository")
+
+    node = fd.FenceNode(Unreachable(writer=("a", 1)))
+    with pytest.raises(writer_adopt.DataUnreachable, match="could not read from remote") as exc:
+        node.sync_to_remote()
+    assert isinstance(exc.value, StorageUnavailable)
 
 
 def test_push_maps_a_rejection_to_false_and_anything_else_to_unreachable(monkeypatch, tmp_path):

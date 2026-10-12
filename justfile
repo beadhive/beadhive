@@ -150,11 +150,11 @@ gateway-contract-check:
 # FULL GATE: ruff + markdown + licences + the COMPLETE suite + the local-loop demo — what the LAND runs
 check-all: check-all-native
 
-check-all-pants: require-bd lint lint-md license-check architecture-structural-check architecture-pants-check pants-attest pants-artifact-check stateful-pants stateful-native root-composition-native root-workspace-check test-integration-land demo-local-loop demo-live-ingress packages-check beads-client-check bd-cli-check
+check-all-pants: require-bd lint lint-md license-check architecture-structural-check architecture-pants-check pants-attest pants-artifact-check stateful-pants stateful-native root-composition-native root-workspace-check test-integration-land demo-local-loop demo-live-ingress packages-check beads-client-check bd-cli-check hq-storage-check
 
 # Full native validation runs every core and workspace test directly with pytest. Pants remains
 # available through check-all-pants; this mode deliberately has no Pants engine prerequisite.
-check-all-native: require-bd lint lint-md license-check architecture-structural-check stateful-native root-composition-native root-workspace-check beads-client-check test-integration-land demo-local-loop demo-live-ingress packages-check bd-cli-check
+check-all-native: require-bd lint lint-md license-check architecture-structural-check stateful-native root-composition-native root-workspace-check beads-client-check test-integration-land demo-local-loop demo-live-ingress packages-check bd-cli-check hq-storage-check
 
 # Attest-key commands deliberately partition check-all-native, the push gate. Pants steps belong
 # only to the optional check-all-pants profile, never to a key (native is the primary framework;
@@ -196,6 +196,11 @@ attest-packages:
 # beadhive-core's ports and changes far more often than the rest of packages/*.
 attest-bd-cli:
     just bd-cli-check
+
+# The HQ storage port and its Dolt adapter share one key (bh-wnhkn, hq-storage-port-adr section 7):
+# both change together with the port contract, and neither is composed by root yet.
+attest-hq-storage:
+    just hq-storage-check
 
 # The demos execute declared application and fixture inputs, and config owners carry the same
 # selector. They therefore run for graph-implicated code/config changes without taxing docs-only
@@ -821,8 +826,8 @@ pkg name *args:
 # keeps its existing dedicated leaf in the same key; Pants/root artifacts belong to
 # root-composition, and bd-cli remains fully isolated in its own leaf.
 packages-check:
-    uv run ruff check packages --exclude packages/beadhive-bd-cli --exclude packages/beadhive-pants
-    uv run ruff format --check packages --exclude packages/beadhive-bd-cli --exclude packages/beadhive-pants
+    uv run ruff check packages --exclude packages/beadhive-bd-cli --exclude packages/beadhive-hq-storage --exclude packages/beadhive-hq-storage-dolt --exclude packages/beadhive-pants
+    uv run ruff format --check packages --exclude packages/beadhive-bd-cli --exclude packages/beadhive-hq-storage --exclude packages/beadhive-hq-storage-dolt --exclude packages/beadhive-pants
     ./scripts/hermetic.sh uv sync --locked --offline --inexact --no-default-groups \
         --package beadhive-package-template --package beadhive-core \
         --package beadhive-plugins --package beadhive-worktrees
@@ -844,6 +849,20 @@ bd-cli-check:
     uv run --no-sync python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
         ./scripts/hermetic.sh uv run --no-sync python scripts/pytest_with_report.py -n auto packages/beadhive-bd-cli/tests
     ./scripts/hermetic.sh uv build --package beadhive-bd-cli --no-build-isolation
+
+# lint + sandboxed tests for ONLY the two HQ storage packages (the `hq-storage` attest key,
+# bh-wnhkn). Excluded from packages-check like bd-cli, so port churn never invalidates the others.
+hq-storage-check:
+    uv run ruff check packages/beadhive-hq-storage packages/beadhive-hq-storage-dolt
+    uv run ruff format --check packages/beadhive-hq-storage packages/beadhive-hq-storage-dolt
+    ./scripts/hermetic.sh uv sync --locked --offline --inexact --no-default-groups \
+        --package beadhive-hq-storage --package beadhive-hq-storage-dolt
+    uv run --no-sync python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
+        ./scripts/hermetic.sh uv run --no-sync python scripts/pytest_with_report.py -n auto \
+        packages/beadhive-hq-storage/tests packages/beadhive-hq-storage-dolt/tests \
+        -m "not dolt_machine_full"
+    ./scripts/hermetic.sh uv build --package beadhive-hq-storage --no-build-isolation
+    ./scripts/hermetic.sh uv build --package beadhive-hq-storage-dolt --no-build-isolation
 
 # Root/package seam ownership. Pants imports the root distribution, and the root wheel vendors
 # five library packages including bd-cli. Keeping those artifact operations on root-composition
@@ -925,7 +944,15 @@ test-integration-land:
 # The same tests also run on every land, inside `test-integration-land`.
 # run the Dolt/bd trigger-semantics canary (required on every Dolt or bd pin bump)
 fence-canary:
-    ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n auto tests -m "fence_canary"
+    ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n auto tests \
+        packages/beadhive-hq-storage-dolt/tests -m "fence_canary"
+
+# NIGHTLY/CANARY: the full fake-against-Dolt hypothesis budget the gate skips (hq-storage-check runs
+# fake-vs-fake plus a 5-example Dolt smoke). Default profile `gate` = 25 x 20, derandomized, no
+# shrinking; pass profile=nightly for the shrinking run capped at 100 examples (bh-xxkf7.3).
+hq-storage-dolt-machine profile="gate":
+    BH_HYPOTHESIS_PROFILE={{quote(profile)}} ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n 0 \
+        packages/beadhive-hq-storage-dolt/tests -m "dolt_machine_full"
 
 # PERIODIC ONLY: compare explicit xdist worker counts for both pytest land partitions. This does
 # not feed `PYTEST_XDIST_AUTO_NUM_WORKERS` back into contract tests or any validation recipe.

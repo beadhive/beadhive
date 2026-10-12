@@ -1,6 +1,6 @@
 """The in-data fence adapter registry — the M1 data switch (bh-4c7p4, bh-12hev, bh-uz46l).
 
-``(prefix, hive_dir) -> FenceData | None``. ``None`` means "no in-data fence adapter for this
+``(prefix, hive_dir) -> HiveFence | None``. ``None`` means "no in-data fence adapter for this
 hive": adopt takes the legacy fence-first path and the write guard keeps the lease gate.
 
 The built-in default is "no adapter" for every hive, so a process that never loads the product
@@ -12,9 +12,11 @@ resolver answers an adapter ONLY for a hive whose local data already carries ``b
 the coexistence path stays dormant until a hive's data switches it on.
 
 A leaf module with no ``beadhive`` imports at all (the adapter is typed ``Any`` here; its
-protocol is :class:`beadhive.writer_adopt.FenceData`), so :mod:`beadhive.writer_adopt` (adopt),
-:mod:`beadhive.guard` (the hot-path write gate) and :mod:`beadhive.fence_data` (the adapter)
-can all depend on it without any of them importing another.
+protocol is the HQ storage port's :class:`beadhive_hq_storage.HiveFence`, and the product
+adapter :class:`beadhive.fence_data.FenceNode` is the root composition of the port's Dolt
+adapter), so :mod:`beadhive.writer_adopt` (adopt), :mod:`beadhive.guard` (the hot-path write
+gate) and :mod:`beadhive.fence_data` (the adapter) can all depend on it without any of them
+importing another.
 """
 
 from __future__ import annotations
@@ -65,5 +67,5 @@ def set_fence_data_resolver(resolver: FenceDataResolver | None) -> None:
 
 
 def fence_data_for(prefix: str, hive_dir: Path) -> Any:
-    """The hive's :class:`~beadhive.writer_adopt.FenceData`, or ``None`` (legacy / not cut over)."""
+    """The hive's :class:`~beadhive_hq_storage.HiveFence`, or ``None`` (legacy / not cut over)."""
     return _fence_data_resolver(prefix, Path(hive_dir))

@@ -10,10 +10,11 @@ reclaims them inside its own bump commit:
   are in scope; another frame's claim (row 5) and an unattributed claim (row 6) are never
   touched;
 * the plan is computed per step-2 round from the synced head plus ONE fetch of the dead frame's
-  backup refs, and its statements ride in the bump commit. A non-fast-forward retry recomputes
-  from the new head and a new fetch; a re-run after the bump landed stops at step 2's data check
-  before anything is computed. That is the "exactly once, idempotent, keyed to the bump" rule
-  (``bh-jbb6r`` E5);
+  backup refs, and its typed :class:`~beadhive_hq_storage.ReclaimSet` rides in the bump commit
+  (the HQ storage port's one bead-data write, bh-jhgum; never SQL). A non-fast-forward retry
+  recomputes from the new head and a new fetch; a re-run after the bump landed stops at step 2's
+  data check before anything is computed. That is the "exactly once, idempotent, keyed to the
+  bump" rule (``bh-jbb6r`` E5);
 * the per-row outcome follows M14 D5a (see :func:`decide`).
 
 Everything is gated by the hive's own policy (``bh.reclaim.failover.mode``, D8): ``off``
@@ -26,8 +27,9 @@ and against the composed Dolt prototype alike:
 
 * :class:`ReclaimData` — the hive's data on the adopter's synced ``main`` (the bh.* policy rows
   and the ``in_progress`` claims). The product adapter is M1's (``bh-uz46l``); a
-  :class:`~beadhive.writer_adopt.FenceData` that also implements this port switches reclaim on
-  for the coexistence adopt (:func:`for_fence_data`), so until M1 lands it is dormant.
+  :class:`~beadhive_hq_storage.HiveFence` that also implements this port (the root
+  :class:`~beadhive.fence_data.FenceNode`) switches reclaim on for the coexistence adopt
+  (:func:`for_fence_data`).
 * :class:`BackupProbe` — the D3 recoverability check over ``refs/bh/backup/<bead>/<frame>``
   (:class:`GitBackupProbe` is the product one, built on :mod:`beadhive.work_backup`).
 """
@@ -41,6 +43,8 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol, runtime_checkable
+
+from beadhive_hq_storage import ReclaimNote, ReclaimSet
 
 from . import log, work_backup, work_pairing_policy
 
@@ -61,8 +65,11 @@ __all__ = [
     "audit_author",
     "decide",
     "for_fence_data",
-    "reclaim_statements",
+    "reclaim_set",
 ]
+
+#: How the audit note's time reads in its text (and how bd's comment column stores it).
+_STAMP = "%Y-%m-%d %H:%M:%S"
 
 MODE_OFF = "off"
 MODE_REPORT = "report"
@@ -262,10 +269,6 @@ def decide(
 # =============================================================================================
 
 
-def _sql_text(value: str) -> str:
-    return "'" + str(value).replace("\\", "\\\\").replace("'", "''") + "'"
-
-
 def audit_author(frame: str) -> str:
     return f"{AUTHOR_PREFIX}{frame}"
 
@@ -287,52 +290,47 @@ def _audit_text(row: Row, *, dead_frame: str, frame: str, epoch: int, at: str) -
     )
 
 
-def reclaim_statements(
+def reclaim_set(
     rows: Sequence[Row],
     *,
     dead_frame: str,
     frame: str,
     epoch: int,
-    at: str,
+    at: _dt.datetime,
     new_id: Callable[[], str] | None = None,
-) -> list[str]:
-    """The bump commit's reclaim writes for the ``rewound`` / ``resumable`` rows.
+) -> ReclaimSet | None:
+    """The bump commit's reclaim for the ``rewound`` / ``resumable`` rows, as the port's typed
+    :class:`~beadhive_hq_storage.ReclaimSet` (``None`` when no row writes).
 
     Both rows leave the lifecycle fields exactly as ``bd unclaim --force`` does (``status =
     'open'``, ``assignee = ''``, ``started_at = NULL``) and clear ``claim-frame``. A resumable
     row also sets ``recovery:resumable`` (replacing any older ``recovery`` value). Each row gets
-    one audit comment authored ``ops/adopt@<frame>`` (who, when, why, and the ``<ref>@<sha>`` of
-    a resumable row's work). bd's ``events`` table is node-local (not in the versioned data a
-    new primary pushes), so the audit lives only in the comment and the bump commit's history,
-    as D5a says. Every UPDATE is guarded on
-    ``status = 'in_progress'`` so a plan can never reopen a bead that moved on."""
+    one audit note authored ``ops/adopt@<frame>`` (who, when, why, and the ``<ref>@<sha>`` of
+    a resumable row's work), stamped ``at``. bd's ``events`` table is node-local (not in the
+    versioned data a new primary pushes), so the audit lives only in the comment and the bump
+    commit's history, as D5a says. The store guards every write on ``status = 'in_progress'``
+    so a plan can never reopen a bead that moved on."""
     new_id = new_id or (lambda: str(uuid.uuid4()))
-    author = _sql_text(audit_author(frame))
-    when = _sql_text(at)
-    out: list[str] = []
-    for row in rows:
-        if not row.outcome.writes:
-            continue
-        bead = _sql_text(row.bead)
-        out += [
-            "UPDATE issues SET status = 'open', assignee = '', started_at = NULL "
-            f"WHERE id = {bead} AND status = 'in_progress'",
-            f"DELETE FROM labels WHERE issue_id = {bead} AND label LIKE "
-            f"{_sql_text(work_backup.CLAIM_FRAME_DIMENSION + ':%')}",
-        ]
-        if row.outcome is Outcome.RESUMABLE:
-            label = f"{work_backup.RECOVERY_DIMENSION}:{work_backup.RESUMABLE}"
-            out += [
-                f"DELETE FROM labels WHERE issue_id = {bead} AND label LIKE "
-                f"{_sql_text(work_backup.RECOVERY_DIMENSION + ':%')}",
-                f"INSERT INTO labels (issue_id, label) VALUES ({bead}, {_sql_text(label)})",
-            ]
-        text = _audit_text(row, dead_frame=dead_frame, frame=frame, epoch=epoch, at=at)
-        out.append(
-            "INSERT INTO comments (id, issue_id, author, text, created_at) VALUES "
-            f"({_sql_text(new_id())}, {bead}, {author}, {_sql_text(text)}, {when})"
-        )
-    return out
+    at = at.astimezone(_dt.UTC).replace(microsecond=0)
+    stamp = at.strftime(_STAMP)
+    writing = [row for row in rows if row.outcome.writes]
+    if not writing:
+        return None
+    return ReclaimSet(
+        dead_frame=dead_frame,
+        bead_ids=frozenset(row.bead for row in writing),
+        resumable=frozenset(row.bead for row in writing if row.outcome is Outcome.RESUMABLE),
+        notes=tuple(
+            ReclaimNote(
+                bead_id=row.bead,
+                comment_id=new_id(),
+                author=audit_author(frame),
+                text=_audit_text(row, dead_frame=dead_frame, frame=frame, epoch=epoch, at=stamp),
+                created_at=at,
+            )
+            for row in writing
+        ),
+    )
 
 
 # =============================================================================================
@@ -342,7 +340,8 @@ def reclaim_statements(
 
 @dataclass(frozen=True)
 class ReclaimPlan:
-    """What one round decided. ``statements`` is empty unless ``mode == apply``."""
+    """What one round decided. ``reclaim`` is ``None`` unless ``mode == apply`` and a row
+    writes."""
 
     mode: str
     dead_frame: str
@@ -350,14 +349,14 @@ class ReclaimPlan:
     epoch: int
     at: str = ""
     rows: tuple[Row, ...] = ()
-    statements: tuple[str, ...] = ()
+    reclaim: ReclaimSet | None = None
     #: Why nothing was computed (mode off, planned handoff, self re-adopt, a read error).
     skipped: str = ""
     error: str = ""
 
     @property
     def applied(self) -> bool:
-        return bool(self.statements)
+        return self.reclaim is not None
 
     def by_outcome(self, outcome: Outcome) -> list[Row]:
         return [r for r in self.rows if r.outcome is outcome]
@@ -434,7 +433,8 @@ class FailoverReclaim:
         except Exception as exc:  # noqa: BLE001 — an unreadable policy is the off state
             return ReclaimPlan(MODE_OFF, dead_frame, frame, epoch, error=f"policy: {exc}")
         mode = policy.reclaim_mode("failover")
-        at = self.clock().astimezone(_dt.UTC).strftime("%Y-%m-%d %H:%M:%S")
+        now = self.clock().astimezone(_dt.UTC)
+        at = now.strftime(_STAMP)
         plan = ReclaimPlan(mode, dead_frame, frame, epoch, at)
         if mode == MODE_OFF:
             return _replace(plan, skipped="bh.reclaim.failover.mode is off")
@@ -455,14 +455,12 @@ class FailoverReclaim:
         except Exception as exc:  # noqa: BLE001 — unknown never rewinds (D3)
             return _replace(plan, error=str(exc))
         rows = tuple(decide(claims, dead_frame, backups))
-        statements: tuple[str, ...] = ()
+        reclaim = None
         if mode == MODE_APPLY:
-            statements = tuple(
-                reclaim_statements(
-                    rows, dead_frame=dead_frame, frame=frame, epoch=epoch, at=at, new_id=self.new_id
-                )
+            reclaim = reclaim_set(
+                rows, dead_frame=dead_frame, frame=frame, epoch=epoch, at=now, new_id=self.new_id
             )
-        return _replace(plan, rows=rows, statements=statements)
+        return _replace(plan, rows=rows, reclaim=reclaim)
 
     def after_landed(self, plan: ReclaimPlan) -> None:
         """Row 3's "delete an empty backup ref", once this run's bump has landed. Best-effort:

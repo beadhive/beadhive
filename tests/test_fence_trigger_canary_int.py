@@ -9,7 +9,7 @@ Run just this suite with ``just fence-canary``.
 
 Also part of the canary (``fence_canary`` marker, not duplicated here): the bh-sieai
 merge/cherry-pick/revert trigger contract and bh-wtsrc E3's invoker-checked trigger DML (both in
-``tests/test_hq_sql_dolt_semantics_int.py``).
+``packages/beadhive-hq-storage-dolt/tests/test_dolt_semantics_int.py``).
 
 Every Dolt process runs with its own ``HOME`` / ``DOLT_ROOT_PATH`` under ``tmp_path``; the one
 ``sql-server`` this starts is private to the test, on its own port and data dir.

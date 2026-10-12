@@ -32,7 +32,14 @@ wildcard or TLS-optional account and any hive database co-hosted on the HQ serve
 
 git HQ is untouched: it keeps the signed ``HeartbeatLease`` and gets no session row.
 
-Pure apart from SQL through a DB-API cursor/connection the caller provides. Typer-free.
+Storage (bh-xnn5p): every statement -- the DDL, the renewal and evidence ``UPDATE``\ s and the
+eligibility read -- is the HQ storage port's Dolt adapter's
+(:mod:`beadhive_hq_storage_dolt`, through :func:`beadhive.hq_storage_composition.
+runtime_statements` on the caller's own cursor). This module validates identifiers and values
+and owns the freshness THRESHOLDS: the eligibility read returns each row's age by the HQ
+server's clock and the committed TTLs, and :func:`within_ttl` decides. The director's failover
+reads the same session rows through the port's ``Liveness.ages``
+(:func:`beadhive.failover_observer.session_staleness`). Holds no SQL. Typer-free.
 """
 
 from __future__ import annotations
@@ -43,6 +50,12 @@ import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+
+from beadhive_hq_storage_dolt import ELIGIBILITY_SQL, IGNORE_PATTERN, RENEW_SQL, STAMP_COLUMN
+from beadhive_hq_storage_dolt import account_statements as _account_statements
+from beadhive_hq_storage_dolt import evidence_ddl as _evidence_ddl
+from beadhive_hq_storage_dolt import liveness_schema_statements as _liveness_schema_statements
+from beadhive_hq_storage_dolt import session_ddl as _session_ddl
 
 from .hq_sql_runtime_schema import (
     LIVENESS_POLICY_SCHEMA,
@@ -77,11 +90,12 @@ __all__ = [
     "read_eligibility",
     "resolve_route",
     "session_ddl",
+    "within_ttl",
 ]
 
-#: Ignore rule for every incarnation table; committed before any such table exists (bh-v0k3i
-#: ordering), so session/evidence rows never enter a versioned authority commit (``bh-wtsrc`` E6).
-IGNORE_PATTERN = "frame_*"
+#: Ignore rule for every incarnation table (the adapter's ``IGNORE_PATTERN``, ``frame_*``);
+#: committed before any such table exists (bh-v0k3i ordering), so session/evidence rows never
+#: enter a versioned authority commit (``bh-wtsrc`` E6).
 #: Code defaults for the operator's committed policy row. Every value is configurable at
 #: provisioning (:func:`liveness_schema_statements`) and lives in data, never ``host.yaml``.
 #: A session is fresh for five renewal intervals of the sender's 60 s timer; evidence for one
@@ -100,13 +114,9 @@ _DIGEST = re.compile(r"(sha256:[0-9a-f]{64})?")
 _ADDRESS = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.:-]{0,253}[A-Za-z0-9])?")
 _DATABASE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,63}")
 
-#: One renewal: the operator trigger stamps ``renewed_at``; the frame supplies nothing.
-RENEW_SQL = "UPDATE {session} SET epoch = epoch WHERE id = 1"
-_EVIDENCE_SQL = (
-    "UPDATE {evidence} SET epoch = %s, release_id = %s, release_digest = %s, profile = %s, "
-    "status = %s, report_digest = %s WHERE id = 1"
-)
-_STAMP_COLUMN = {"session": "renewed_at", "evidence": "measured_at"}
+#: One renewal (the adapter's ``RENEW_SQL``): the operator trigger stamps ``renewed_at``; the
+#: frame supplies nothing. ``_STAMP_COLUMN`` names each table's server-stamped column.
+_STAMP_COLUMN = STAMP_COLUMN
 
 
 class SessionError(ValueError):
@@ -139,23 +149,10 @@ class LivenessPolicy:
 
 def liveness_schema_statements(policy: LivenessPolicy | None = None) -> tuple[str, ...]:
     """Once per runtime database, before any incarnation table: the ``frame_*`` ignore rule and
-    the committed policy row, in one operator commit."""
+    the committed policy row, in one operator commit (the adapter renders it)."""
     policy = policy or LivenessPolicy()
-    return (
-        f"INSERT INTO dolt_ignore VALUES ('{IGNORE_PATTERN}', TRUE)",
-        *LIVENESS_POLICY_SCHEMA,
-        f"INSERT INTO {LIVENESS_POLICY_TABLE} VALUES "
-        f"(1, {policy.session_ttl_s}, {policy.evidence_ttl_s})",
-        f"CALL DOLT_ADD('dolt_ignore','{LIVENESS_POLICY_TABLE}')",
-        "CALL DOLT_COMMIT('-m','HQ session liveness policy and frame_* ignore rule',"
-        "'--author','HQ operator <hq-operator@localhost>')",
-    )
-
-
-def _stamp_trigger(table: str, column: str) -> str:
-    return (
-        f"CREATE TRIGGER {table}_stamp BEFORE UPDATE ON {table} "
-        f"FOR EACH ROW SET NEW.{column} = UTC_TIMESTAMP(6)"
+    return _liveness_schema_statements(
+        LIVENESS_POLICY_SCHEMA, policy.session_ttl_s, policy.evidence_ttl_s
     )
 
 
@@ -165,27 +162,12 @@ def session_ddl(principal: str, epoch: int) -> tuple[str, ...]:
     The row is seeded ``renewed_at = NULL`` (never renewed): there is deliberately no INSERT
     trigger, so provisioning alone never makes a frame look live. Only an UPDATE — the frame's
     renewal — stamps server time."""
-    table = session_table(principal, epoch)
-    return (
-        f"CREATE TABLE {table} (id TINYINT PRIMARY KEY CHECK (id = 1), "
-        "epoch BIGINT UNSIGNED NOT NULL, renewed_at DATETIME(6) NULL)",
-        _stamp_trigger(table, "renewed_at"),
-        f"INSERT INTO {table} (id, epoch, renewed_at) VALUES (1, {epoch}, NULL)",
-    )
+    return _session_ddl(session_table(principal, epoch), epoch)
 
 
 def evidence_ddl(principal: str, epoch: int) -> tuple[str, ...]:
     """The evidence table, its stamping trigger and its one seeded (unmeasured) row."""
-    table = evidence_table(principal, epoch)
-    return (
-        f"CREATE TABLE {table} (id TINYINT PRIMARY KEY CHECK (id = 1), "
-        "epoch BIGINT UNSIGNED NOT NULL, release_id VARCHAR(128) NOT NULL, "
-        "release_digest VARCHAR(80) NOT NULL, profile VARCHAR(64) NOT NULL, "
-        "status VARCHAR(32) NOT NULL, report_digest VARCHAR(80) NOT NULL, "
-        "measured_at DATETIME(6) NULL)",
-        _stamp_trigger(table, "measured_at"),
-        f"INSERT INTO {table} VALUES (1, {epoch}, '', '', '', '{_UNMEASURED}', '', NULL)",
-    )
+    return _evidence_ddl(evidence_table(principal, epoch), epoch)
 
 
 def pinned_address(address: str) -> bool:
@@ -214,33 +196,23 @@ def account_statements(
     if not isinstance(database, str) or not _DATABASE.fullmatch(database):
         raise SessionError("invalid runtime database identifier")
     account = _account(principal, frame_address)
-    statements = [
-        f"CREATE USER {account} IDENTIFIED BY %s REQUIRE SSL",
-        f"GRANT SELECT, UPDATE ON `{database}`.`{session_table(principal, epoch)}` TO {account}",
-        f"GRANT SELECT, UPDATE ON `{database}`.`{evidence_table(principal, epoch)}` TO {account}",
-        f"GRANT SELECT ON `{database}`.`{LIVENESS_POLICY_TABLE}` TO {account}",
-    ]
-    if inbox:
-        statements.append(
-            f"GRANT SELECT, INSERT ON `{database}`.`{inbox_table(principal, epoch)}` TO {account}"
-        )
-    return tuple(statements)
+    return _account_statements(
+        account,
+        database,
+        session=session_table(principal, epoch),
+        evidence=evidence_table(principal, epoch),
+        inbox=inbox_table(principal, epoch) if inbox else None,
+    )
 
 
-def _fetch(cursor, sql, params=None):
-    cursor.execute(sql, params)
-    return cursor.fetchall()
+def _statements(cursor):
+    from .hq_storage_composition import runtime_statements
+
+    return runtime_statements(cursor)
 
 
 def _existing(cursor, names: Iterable[str]) -> set[str]:
-    names = tuple(names)
-    rows = _fetch(
-        cursor,
-        "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE() "
-        f"AND table_name IN ({','.join(['%s'] * len(names))})",
-        names,
-    )
-    return {row[0] for row in rows}
+    return _statements(cursor).incarnation_tables(tuple(names))
 
 
 # =============================================================================================
@@ -272,18 +244,16 @@ def resolve_route(cursor, *, database: str | None = None) -> SessionRoute:
     """The authenticated principal's own session route, from its registry row.
 
     Raises :class:`NotSwitched` when the incarnation has no session tables."""
-    cursor.execute("SELECT CURRENT_USER(), DATABASE(), ACTIVE_BRANCH()")
-    user, current, branch = cursor.fetchone()
+    sql = _statements(cursor)
+    user, current, branch = sql.session_identity()
     if branch != "main" or (database is not None and current != database):
         raise SessionError("session route endpoint mismatch")
     principal = str(user).split("@", 1)[0]
-    rows = _fetch(
-        cursor, "SELECT epoch FROM hq_principal_registry WHERE principal = %s", (principal,)
-    )
+    rows = sql.registry_epochs(principal)
     if len(rows) != 1:
         raise SessionError("authenticated frame principal is not provisioned")
     try:
-        route = incarnation_switch(cursor, principal, int(rows[0][0]))
+        route = incarnation_switch(sql, principal, int(rows[0][0]))
     except RuntimeSchemaError:
         raise SessionError(
             "authenticated frame principal is not a provisioned identifier"
@@ -309,10 +279,10 @@ class SessionRenewer:
         connection = self._connect()
         try:
             with connection.cursor() as cursor:
+                sql = _statements(cursor)
                 if self.route is None:
-                    self.route = resolve_route(cursor, database=self._database)
-                cursor.execute(RENEW_SQL.format(session=self.route.session))
-                if cursor.rowcount != 1:
+                    self.route = resolve_route(sql, database=self._database)
+                if sql.renew_session(self.route.session) != 1:
                     raise SessionError("session row missing: renewal matched no row")
             connection.commit()
             self.renewals += 1
@@ -383,11 +353,12 @@ def publish_evidence(connection, report: EvidenceReport, *, database: str | None
     """The conformance job's one ``UPDATE`` of its own evidence row (server-stamped)."""
     try:
         with connection.cursor() as cursor:
-            route = resolve_route(cursor, database=database)
+            sql = _statements(cursor)
+            route = resolve_route(sql, database=database)
             if report.epoch != route.epoch:
                 raise SessionError("evidence epoch differs from the authenticated incarnation")
-            cursor.execute(
-                _EVIDENCE_SQL.format(evidence=route.evidence),
+            written = sql.publish_evidence(
+                route.evidence,
                 (
                     report.epoch,
                     report.release_id,
@@ -397,7 +368,7 @@ def publish_evidence(connection, report: EvidenceReport, *, database: str | None
                     report.report_digest,
                 ),
             )
-            if cursor.rowcount != 1:
+            if written != 1:
                 raise SessionError("evidence row missing: publication matched no row")
         connection.commit()
         return route
@@ -413,40 +384,17 @@ def publish_evidence(connection, report: EvidenceReport, *, database: str | None
 # The reader: one statement
 # =============================================================================================
 
-_POLICY_SQL = f"SELECT session_ttl_s, evidence_ttl_s FROM {LIVENESS_POLICY_TABLE}"
+#: Eligibility is ONE statement, the adapter's ``ELIGIBILITY_SQL``: grant route (committed,
+#: ``AS OF`` the authority head) ⋈ session ⋈ evidence ⋈ policy (committed) ⟕ placement, each age
+#: by the HQ server's own clock. The freshness thresholds are :func:`within_ttl`'s (bh-xnn5p):
+#: ``age_us < ttl * 1000000`` in whole microseconds, exactly the comparison the statement made
+#: before, so a row is fresh up to, and never past, its TTL (bh-7crof).
 
-#: Eligibility in ONE statement: grant route (committed, ``AS OF`` the authority head) ⋈ session
-#: ⋈ evidence ⋈ policy (committed) ⟕ placement. Ages are by the HQ server's own clock.
-#: Freshness is ``TIMESTAMPDIFF(MICROSECOND, …) < ttl * 1000000``, never
-#: ``UTC_TIMESTAMP(6) - INTERVAL n SECOND``: Dolt 2.3.5 drops the fractional seconds of that
-#: subtraction, which kept rows fresh up to 1 s past their TTL (bh-7crof; upstream draft dolt-5).
-ELIGIBILITY_SQL = (
-    "SELECT r.epoch, s.epoch, s.renewed_at, e.epoch, e.release_id, e.release_digest, "
-    "e.profile, e.status, e.report_digest, e.measured_at, "
-    "TIMESTAMPDIFF(MICROSECOND, s.renewed_at, UTC_TIMESTAMP(6)) AS session_age_us, "
-    "TIMESTAMPDIFF(MICROSECOND, e.measured_at, UTC_TIMESTAMP(6)) AS evidence_age_us, "
-    "p.session_ttl_s, p.evidence_ttl_s, "
-    "COALESCE(s.epoch = r.epoch "
-    "AND TIMESTAMPDIFF(MICROSECOND, s.renewed_at, UTC_TIMESTAMP(6)) "
-    "< p.session_ttl_s * 1000000, FALSE) "
-    "AS authenticated_fresh_heartbeat, "
-    "COALESCE(e.epoch = r.epoch AND e.status = 'conformant' AND e.profile = %s "
-    "AND TIMESTAMPDIFF(MICROSECOND, e.measured_at, UTC_TIMESTAMP(6)) "
-    "< p.evidence_ttl_s * 1000000, FALSE) "
-    "AS conformance_pass, "
-    "COALESCE(e.epoch = r.epoch AND e.release_digest = %s, FALSE) AS release_matches, "
-    "COALESCE(l.prefix IS NOT NULL AND JSON_UNQUOTE(JSON_EXTRACT("
-    "CONVERT(l.lease_json USING utf8mb4), '$.lease.host_id')) = r.holder_identity, FALSE) "
-    "AS current_hive_lease_holder, "
-    "SHA2(CONCAT_WS('|', e.epoch, e.release_id, e.release_digest, e.profile, e.status, "
-    "e.report_digest, COALESCE(CAST(e.measured_at AS CHAR), '')), 256) AS evidence_digest "
-    "FROM hq_principal_registry AS OF %s AS r "
-    "JOIN {session} AS s ON s.id = 1 "
-    "JOIN {evidence} AS e ON e.id = 1 "
-    f"JOIN {LIVENESS_POLICY_TABLE} AS OF %s AS p ON p.singleton_id = 1 "
-    "LEFT JOIN hq_live_hive_leases AS l ON l.prefix = %s "
-    "WHERE r.principal = %s AND r.epoch = %s"
-)
+
+def within_ttl(age_us, ttl_s: int) -> bool:
+    """Whether a row aged ``age_us`` microseconds (by the store clock; ``None`` when it was
+    never stamped) is still inside a ``ttl_s``-second TTL."""
+    return age_us is not None and int(age_us) < int(ttl_s) * 1_000_000
 
 
 def _policy(rows) -> LivenessPolicy:
@@ -534,15 +482,22 @@ def read_eligibility(
     prefix: str | None = None,
     candidate: bool = False,
 ) -> SessionObservation:
-    """Run :data:`ELIGIBILITY_SQL` once, inside the caller's authority transaction."""
-    route = incarnation_switch(cursor, principal, epoch)
+    """Run :data:`ELIGIBILITY_SQL` once, inside the caller's authority transaction, and judge
+    its ages against the committed TTLs (:func:`within_ttl`)."""
+    sql = _statements(cursor)
+    route = incarnation_switch(sql, principal, epoch)
     if route is None:
         raise NotSwitched("incarnation has no session tables (legacy liveness)")
-    cursor.execute(
-        ELIGIBILITY_SQL.format(session=route.session, evidence=route.evidence),
-        (desired_profile, desired_release_digest, head, head, prefix, principal, epoch),
+    rows = sql.eligibility(
+        session=route.session,
+        evidence=route.evidence,
+        head=head,
+        principal=principal,
+        epoch=epoch,
+        desired_profile=desired_profile,
+        desired_release_digest=desired_release_digest,
+        prefix=prefix,
     )
-    rows = cursor.fetchall()
     if len(rows) != 1:
         raise SessionError("session eligibility row missing (registry, policy or row absent)")
     (
@@ -560,14 +515,15 @@ def read_eligibility(
         evidence_age_us,
         session_ttl,
         evidence_ttl,
-        fresh,
-        conformance,
+        epoch_current,
+        evidence_conformant,
         release,
         holder,
         digest,
     ) = rows[0]
     policy = _policy([(session_ttl, evidence_ttl)])
-    fresh = bool(fresh)
+    fresh = bool(epoch_current) and within_ttl(session_age_us, policy.session_ttl_s)
+    conformance = bool(evidence_conformant) and within_ttl(evidence_age_us, policy.evidence_ttl_s)
     predicates = {
         "authenticated_fresh_heartbeat": fresh,
         "conformance_pass": bool(conformance),

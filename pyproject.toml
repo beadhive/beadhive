@@ -115,6 +115,8 @@ packages = [
     "src/beadhive",
     "packages/beadhive-core/src/beadhive_core",
     "packages/beadhive-bd-cli/src/beadhive_bd_cli",
+    "packages/beadhive-hq-storage/src/beadhive_hq_storage",
+    "packages/beadhive-hq-storage-dolt/src/beadhive_hq_storage_dolt",
     "packages/beadhive-beads-client/src/beadhive_beads_client",
     "packages/beadhive-beads-client/src/beads_v1_3",
     "packages/beadhive-plugins/src/beadhive_plugins",
@@ -131,6 +133,8 @@ members = ["packages/*"]
 beadhive-pants = { workspace = true }
 beadhive-core = { workspace = true }
 beadhive-bd-cli = { workspace = true }
+beadhive-hq-storage = { workspace = true }
+beadhive-hq-storage-dolt = { workspace = true }
 beadhive-beads-client = { workspace = true }
 beadhive-plugins = { workspace = true }
 beadhive-worktrees = { workspace = true }
@@ -139,7 +143,7 @@ beadhive-worktrees = { workspace = true }
 # and CI checkouts keep resolving `beadhive-pants` from the workspace exactly as before this
 # bead — only the PUBLISHED wheel's hard-dependency graph changed.
 [tool.uv]
-default-groups = ["dev", "pants", "core", "plugins", "worktrees"]
+default-groups = ["dev", "pants", "core", "plugins", "worktrees", "hq-storage"]
 
 [dependency-groups]
 # The workspace member, for dev/CI only (bh-mxjoy): kept OUT of [project.optional-dependencies]'s
@@ -157,6 +161,10 @@ core = ["beadhive-core", "beadhive-beads-client", "beadhive-bd-cli"]
 # packages above) since discovery, the lifecycle dispatcher, and bootstrap depend on it
 # unconditionally, not as an optional extra.
 plugins = ["beadhive-plugins"]
+# The backend-neutral HQ storage port and its Dolt adapter (bh-wnhkn, docs/design/hq-storage-port-adr.md),
+# editable from the workspace for dev/CI. The published wheel vendors both import packages (see the
+# wheel packages above), as it does for beadhive-core.
+hq-storage = ["beadhive-hq-storage", "beadhive-hq-storage-dolt"]
 # The managed-worktree naming/contracts/native-adapter package (bh-xh8ku.3), depending only on
 # beadhive-plugins, editable from the workspace for dev/CI. The published wheel vendors this
 # import package too (see the wheel packages above) since `beadhive.worktree` composition binds
@@ -182,6 +190,11 @@ dev = [
     # Deterministic time (bh-j4v0l). time-machine patches the C-level clocks for code that reads
     # time directly; tests/harness/clock.py FakeClock is the preferred seam-level clock.
     "time-machine>=3.5.1",
+    # Property-based and stateful testing (bh-9fg5k, hq-storage-port-adr section 8): the HQ
+    # storage port's differential RuleBasedStateMachine. MPL-2.0, operator-approved as DEV-ONLY
+    # (bh-rlphq); never a runtime dependency of root or any package, and the contract module
+    # imports it lazily inside functions.
+    "hypothesis>=6.100",
     # Hang BACKSTOP only (bh-j4v0l), never a fix for a flaky test; see docs/TEST_PROCESS_POLICY.md.
     "pytest-timeout>=2.4",
     "ruff>=0.6",
@@ -236,6 +249,7 @@ markers = [
     "always_run: asserts on git METADATA, so no tree-keyed verdict can vouch for it (bh-ku9n9.3)",
     # ADR condition 9 (bh-p07dv): the Dolt/bd trigger-semantics canary. Every Dolt or bd pin
     # bump re-runs it (`just fence-canary`); see tests/harness/trigger_canary.py.
+    "dolt_machine_full: the full fake-against-Dolt hypothesis budget (~130 s), out of the gate: run by `just hq-storage-dolt-machine` (bh-xxkf7.3)",
     "fence_canary: Dolt/bd trigger-semantics canary re-run on every Dolt or bd pin bump",
     # bh-i970d: the pooled `rewound_cluster` / `rewound_world` fixtures rebuild after a test
     # marked destructive, and fingerprint the restore before a test marked cluster_guard.

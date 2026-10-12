@@ -338,8 +338,8 @@ retired by `bh-mclbc`. The findings above stand; their tests now live in permane
 
 | Spike test | Evidence | Permanent counterpart |
 |---|---|---|
-| `test_e1_forced_globals_land_no_stale_write_on_any_honest_path` | E1 | `tests/test_hq_sql_dolt_semantics_int.py::test_forced_globals_do_not_let_commit_land_an_fk_violating_merge` (moved, single server) |
-| `test_e2_db_wide_all_login_lands_a_stale_write_without_any_global` | E2 | `tests/test_hq_sql_dolt_semantics_int.py::test_database_wide_all_grant_can_restamp_and_commit_a_stale_write` (moved, single server); the root-login stale write and history check also in `tests/test_fence_composed_int.py::test_m13_grant_shape_quiesce_and_history_check` |
+| `test_e1_forced_globals_land_no_stale_write_on_any_honest_path` | E1 | `packages/beadhive-hq-storage-dolt/tests/test_dolt_semantics_int.py::test_forced_globals_do_not_let_commit_land_an_fk_violating_merge` (moved, single server) |
+| `test_e2_db_wide_all_login_lands_a_stale_write_without_any_global` | E2 | `packages/beadhive-hq-storage-dolt/tests/test_dolt_semantics_int.py::test_database_wide_all_grant_can_restamp_and_commit_a_stale_write` (moved, single server); the root-login stale write and history check also in `tests/test_fence_composed_int.py::test_m13_grant_shape_quiesce_and_history_check` |
 | `test_e3_db_wide_dml_login_spoofs_the_guard_identity_on_a_demoted_primary` | E3 | `tests/test_fence_composed_int.py::test_m13_grant_shape_quiesce_and_history_check` (database-wide grant reaches `bh_local_ident`, conformance flags it, narrowed grant refuses the spoof) |
 | `test_e4_grant_shapes_capability_matrix` | E4 | `tests/test_fence_composed_int.py::test_m13_grant_shape_quiesce_and_history_check` (narrow-grant refusals) and `tests/test_hive_forward_int.py` (provisioning, conformance) |
 | `test_e5_in_flight_forwarded_write_is_acked_then_dropped_by_the_divert_reset` | E5 | `tests/test_hive_forward_int.py::test_quiesce_refuses_an_in_flight_forwarded_write_across_the_divert_reset` and the E5 section of the m13 test |

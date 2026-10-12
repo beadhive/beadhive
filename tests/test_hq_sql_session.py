@@ -47,6 +47,7 @@ from beadhive.hq_sql_session import (
     liveness_schema_statements,
     pinned_address,
     session_ddl,
+    within_ttl,
 )
 from beadhive.hq_sql_session_provision import check_account
 
@@ -173,7 +174,7 @@ class _Cursor:
             self.rows = [("frame_a@10.0.0.5", "rt", "main", "2.3.5")]
         elif sql.startswith("SELECT DOLT_HASHOF"):
             self.rows = [("head",)]
-        elif "AS authenticated_fresh_heartbeat" in sql:
+        elif "AS session_epoch_current" in sql:  # the one eligibility statement
             self.rows = [world.session_row]
         elif "FROM hq_principal_registry" in sql:
             self.rows = [tuple(vars(world.route).values())]
@@ -278,12 +279,37 @@ def test_switched_incarnation_reads_one_statement_and_skips_the_inbox(monkeypatc
     assert "fresh_public_observation_fence" not in world.fences
 
 
+@pytest.mark.parametrize(
+    ("column", "age_us", "predicate", "fresh"),
+    [
+        (10, 299_999_999, "authenticated_fresh_heartbeat", True),
+        (10, 300_000_000, "authenticated_fresh_heartbeat", False),  # at the TTL: stale
+        (10, None, "authenticated_fresh_heartbeat", False),  # never renewed
+        (11, 899_999_999, "conformance_pass", True),
+        (11, 900_000_000, "conformance_pass", False),
+    ],
+)
+def test_freshness_thresholds_are_roots_and_exact_to_the_microsecond(
+    monkeypatch, column, age_us, predicate, fresh
+):
+    """The statement returns each age by the HQ server's clock and the committed TTLs (300 s,
+    900 s); root's ``within_ttl`` decides, exactly as the statement's own comparison did
+    (bh-xnn5p: thresholds are domain code)."""
+    authority, world = _world(monkeypatch, tables=BOTH, liveness="signed")
+    row = list(SESSION_ROW)
+    row[column] = age_us
+    world.session_row = tuple(row)
+    session = authority.read_frame_composite(session_liveness=True)[9]
+    assert session.predicates[predicate] is fresh
+    assert within_ttl(age_us, 300 if column == 10 else 900) is fresh
+
+
 def test_legacy_incarnation_reads_exactly_as_before(monkeypatch):
     authority, world = _world(monkeypatch, tables=(), public=PUBLIC)
     result = authority.read_frame_composite(session_liveness=True)
     assert len(result) == 10 and result[9] is None and result[7] == PUBLIC
     assert "fresh_public_observation_fence" in world.fences
-    assert not any("AS authenticated_fresh_heartbeat" in sql for sql, _ in world.statements)
+    assert not any("AS session_epoch_current" in sql for sql, _ in world.statements)
 
 
 def test_phase3_dual_write_keeps_the_inbox_reader_for_0_22_callers(monkeypatch):
