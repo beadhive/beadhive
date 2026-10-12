@@ -291,3 +291,42 @@ predates main's latest commits; three stateful tests fail on it for that reason 
 - bh-56wtv: shorten or split the longest integration cases, which set the tail floor.
 - bh-u5mag: fix the rewind guard's intermittent stray-process failure.
 - bh-88f8w: cut `tests/test_hq_authority_backend.py` on the stateful lane.
+
+## Epoch-fencing suite on the rewindable cluster (bh-t8hr4)
+
+**Correction to the bh-05dza reading.** `tests/test_epoch_fencing_int.py` was already on the pool:
+bh-jvgj6 (2072633f) moved every cluster test to `rewound_cluster`, so the 1,249 test-seconds above
+are post-migration. What stayed per test was the fence install: each test acquired a bare cluster
+and ran `install_fence(cluster, "c")` itself. bh-t8hr4 pools that too. The module-level
+`fenced_cluster` factory builds the cluster and installs the fence, and tests take it through
+`rewound_custom`, so the fenced state is the template.
+
+**Measured cost (probe on the shared host, two runs).** 3-frame composition: build 24-27 s, fence
+install 4.0-4.5 s, restore 6.4 s. 2-frame composition: build 8-9 s, install 2.4-2.6 s, restore
+0.2 s. The change saves one install per reused acquisition, about 4 s (3-frame) or 2.5 s
+(2-frame).
+
+**Why the file barely moves.** A rewind only pays off when one worker runs two tests of the same
+composition. At `-n 4` the 10 cluster tests gave 5 reuses (about 18 test-seconds saved by this
+change, on top of the build the pool already saved). On the 16-worker gate most tests land on
+their own worker, so neither the pool nor this change saves much there. Builds are about 220 of
+the file's roughly 1,050-1,250 test-seconds. The rest is the test bodies: real bd and Dolt
+pushes, pulls and syncs. The levers that remain are splitting the longest cases (bh-56wtv) and
+moving the pure protocol scenarios onto the in-memory fake (bh-utvyj).
+
+**Runs** (`NO_COLOR=1 BH_DOLT_SLOTS=12 ./scripts/hermetic.sh uv run --no-sync python -m pytest -q
+-p no:cacheprovider -n 4 --durations=0 tests/test_epoch_fencing_int.py`, 11 passed every time;
+test-seconds are the summed setup/call/teardown durations). Load average ranged from 9 to 35
+because a full gate was running, which is larger than the effect measured:
+
+| Run | Wall (s) | Test-seconds |
+| --- | ---: | ---: |
+| Before (main 600596fc), unguarded, run 1 | 357 | 1,053 |
+| Before (main 600596fc), unguarded, run 2 | 371 | 1,078 |
+| After, `BH_CLUSTER_REWIND_GUARD=1`, run 1 | 409 | 1,211 |
+| After, `BH_CLUSTER_REWIND_GUARD=1`, run 2 | 392 | 1,195 |
+| After, `BH_CLUSTER_REWIND_GUARD=1`, run 3 | 351 | 1,033 |
+| After, unguarded, run 1 | 399 | 1,173 |
+| After, unguarded, run 2 | 416 | 1,245 |
+
+The leak guard passed on all three guarded runs, so no test needs `cluster_destructive`.
