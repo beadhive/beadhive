@@ -1,9 +1,10 @@
 """Placement-first coexistence adopt with an idempotent step 2 (bh-4c7p4, ADR §2, P-M2).
 
-Fast, in-memory: the three ports (:class:`FenceData`, :class:`PlacementAuthority`,
-:class:`EpochRef`) are faithful fakes of the remote head, HQ placement and ``refs/bh/epoch``,
-so the ORDER, the idempotence after a crash at every point, and the loss semantics are proven
-here. ``tests/test_writer_adopt_int.py`` runs the same core against real Dolt.
+Fast, in-memory: the three ports (:class:`~beadhive_hq_storage.HiveFence`,
+:class:`PlacementAuthority`, :class:`EpochRef`) are faithful fakes of the remote head, HQ
+placement and ``refs/bh/epoch``, so the ORDER, the idempotence after a crash at every point,
+and the loss semantics are proven here. ``tests/test_writer_adopt_int.py`` runs the same core
+against real Dolt.
 """
 
 from __future__ import annotations
@@ -14,6 +15,20 @@ from dataclasses import dataclass, field
 import pytest
 
 from beadhive import writer_adopt as wa
+from beadhive_hq_storage import (
+    Applied,
+    BumpRequest,
+    Confirmed,
+    Conflict,
+    EpochFloor,
+    GuardReport,
+    IntegrityViolation,
+    NotConfirmed,
+    Revision,
+    SyncReport,
+    Unknown,
+    Versioned,
+)
 
 PREFIX = "fx"
 ME = "frame-c"
@@ -41,15 +56,10 @@ class Head:
         return Head(self.writer, self.live, dict(self.marks), self.history_max, list(self.bumps))
 
 
-_UPDATE_WRITER = re.compile(
-    r"UPDATE bh_writer SET frame = '(?P<frame>[^']*)', epoch = (?P<epoch>\d+), "
-    r"revision = '(?P<rev>[0-9a-f]{64})' WHERE id = 1"
-)
-
-
 class FakeData:
-    """The hive remote + one node's local main. ``push`` is a fast-forward-only CAS on the
-    remote head, so a competing push in between is a genuine non-fast-forward."""
+    """The hive remote + one node's local main, as a :class:`~beadhive_hq_storage.HiveFence`.
+    ``push`` is a fast-forward-only CAS on the remote head, so a competing push in between is a
+    genuine non-fast-forward (``Conflict``)."""
 
     def __init__(self, remote: Head, *, triggers: int = wa.FENCE_TRIGGER_COUNT):
         self.remote = remote
@@ -61,12 +71,16 @@ class FakeData:
         self.unreachable = False
         self.after_push: list = []
 
+    def _head(self) -> Revision:
+        return Revision(f"v{self.version}")
+
     def sync_to_remote(self):
         self.calls.append("sync")
         if self.unreachable:
             raise wa.DataUnreachable("partitioned")
         self.local = self.remote.copy()
         self.base_version = self.version
+        return SyncReport(self._head(), 0, 0, False)
 
     def writer(self):
         return self.local.writer
@@ -75,42 +89,52 @@ class FakeData:
         self.calls.append("remote_writer")
         return self.remote.writer
 
-    def history_max_epoch(self):
-        return self.local.history_max
+    def epoch_floor(self):
+        w = self.local.writer
+        return EpochFloor(history_max=self.local.history_max, writer=None if w is None else w.epoch)
 
-    def trigger_count(self):
-        return self.triggers
+    def guard_conformance(self):
+        expected = wa.FENCE_TRIGGER_COUNT
+        missing = tuple(f"bh_missing_{i}" for i in range(max(expected - self.triggers, 0)))
+        return GuardReport(expected=expected, present=expected - len(missing), missing=missing)
 
-    def commit_bump(self, statements, message):
+    def commit_bump(self, bump: BumpRequest):
         self.calls.append("commit")
-        m = _UPDATE_WRITER.fullmatch(statements[0])
-        assert m, statements[0]
-        frame, epoch, rev = m["frame"], int(m["epoch"]), m["rev"]
-        assert statements[1] == f"DELETE FROM bh_write_mark WHERE epoch < {epoch}"
-        assert statements[2] == f"UPDATE bh_epoch_live SET epoch = {epoch} WHERE id = 1"
-        assert f"'adopt-{epoch}', {epoch}" in statements[3]
-        assert message == f"bh: adopt {frame}@{epoch}"
+        assert isinstance(bump, BumpRequest)
+        frame, epoch, rev = bump.frame, bump.epoch, bump.revision
+        assert re.fullmatch(r"[0-9a-f]{64}", rev)
         head = self.local
-        assert head.writer is None or epoch > head.writer.epoch  # monotonic trigger
+        floor = max(head.history_max, head.writer.epoch if head.writer else 0)
+        if epoch <= floor:
+            raise IntegrityViolation(f"epoch {epoch} does not exceed the floor {floor}")
         head.writer = wa.WriterRow(frame, epoch, rev)
         head.marks = {k: v for k, v in head.marks.items() if v >= epoch}
         head.live = epoch
         head.marks[f"adopt-{epoch}"] = epoch
         head.history_max = max(head.history_max, epoch)
         head.bumps.append((frame, epoch, rev))
+        return Revision(f"local-{epoch}")
 
     def push(self):
         self.calls.append("push")
         if self.unreachable:
             raise wa.DataUnreachable("partitioned")
         if self.version != self.base_version:
-            return False
+            w = self.remote.writer
+            body = {} if w is None else {"frame": w.frame, "epoch": w.epoch}
+            return Conflict(Versioned("bh_writer", self._head(), body))
         self.remote = self.local.copy()
         self.version += 1
         self.base_version = self.version
         for hook in self.after_push:
             hook()
-        return True
+        return Applied(self._head(), "op")
+
+    def lookup_bump(self, frame, epoch, *, operation):
+        w = self.remote.writer
+        if f"adopt-{epoch}" in self.remote.marks and w is not None and w.frame == frame:
+            return Confirmed(operation, self._head(), None)
+        return NotConfirmed(operation)
 
     def foreign_push(self, head: Head):
         """Another frame publishes; this node's next push is non-fast-forward."""
@@ -159,14 +183,14 @@ class OrderedData(FakeData):
         super().__init__(remote, **kw)
         self.log = log
 
-    def commit_bump(self, statements, message):
+    def commit_bump(self, bump):
         self.log.append("data:commit")
-        super().commit_bump(statements, message)
+        return super().commit_bump(bump)
 
     def push(self):
-        ok = super().push()
-        self.log.append(f"data:push:{ok}")
-        return ok
+        out = super().push()
+        self.log.append(f"data:push:{isinstance(out, Applied)}")
+        return out
 
 
 def _world(*, writer_epoch=221, placement_epoch=221, ref_epoch=221, history_max=None, ref=True):
@@ -234,12 +258,54 @@ def test_fresh_revision_never_repeats_for_the_same_record():
     assert len(revisions) == 50
 
 
-def test_bump_statements_quote_the_frame():
-    stmts = wa.bump_statements("o'brien", 3, "ab")
-    assert "frame = 'o''brien'" in stmts[0]
-    assert stmts[3] == (
-        "INSERT INTO bh_write_mark (id, epoch, tbl) VALUES ('adopt-3', 3, 'bh_writer')"
-    )
+def test_the_bump_is_typed_never_sql():
+    """bh-jhgum: step 2 hands the fence a typed BumpRequest (frame, epoch, fresh revision, its
+    own operation id); the adapter owns the statements."""
+    data, placement, ref, _ = _world()
+    seen: list[BumpRequest] = []
+    commit = data.commit_bump
+
+    def spy(bump):
+        seen.append(bump)
+        return commit(bump)
+
+    data.commit_bump = spy
+    _adopt(data, placement, ref)
+    (bump,) = seen
+    assert (bump.frame, bump.epoch, bump.reclaim) == (ME, 222, None)
+    assert bump.revision == data.remote.writer.revision
+
+
+def test_a_bump_at_or_below_the_floor_fails_closed():
+    """IntegrityViolation from the store is never retried and never reported as incomplete."""
+    data, placement, _ref, _ = _world()
+    data.local.history_max = data.remote.history_max = 400  # the floor moved under the plan
+    placement.view = wa.PlacementView(ME, 222, "tok")
+    with pytest.raises(IntegrityViolation):
+        wa.run_step2(data, placement, frame=ME, epoch=222)
+    assert data.calls.count("commit") == 1 and "push" not in data.calls
+
+
+@pytest.mark.parametrize("applied", [True, False], ids=["applied", "not-applied"])
+def test_an_unknown_push_is_resolved_by_lookup_bump_never_reissued(applied):
+    data, placement, _ref, _ = _world()
+    placement.view = wa.PlacementView(ME, 222, "tok")
+    push = data.push
+
+    def unknown_push():
+        if applied:
+            push()
+        data.calls.append("unknown")
+        return Unknown("op", Revision("v0"), "transport")
+
+    data.push = unknown_push
+    result = wa.run_step2(data, placement, frame=ME, epoch=222)
+    assert data.calls.count("commit") == 1  # one bump, never re-issued
+    if applied:
+        assert result.outcome is wa.Step2Outcome.LANDED and result.revision is not None
+    else:
+        assert result.outcome is wa.Step2Outcome.UNREACHABLE
+        assert "push outcome unknown (transport)" in result.detail
 
 
 def test_without_the_ref_no_ref_cas_is_attempted():

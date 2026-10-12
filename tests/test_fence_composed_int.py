@@ -206,7 +206,7 @@ def _managed_push(world: ProductWorld, name: str) -> tuple[str, fo.DivertOutcome
     if out.superseded:
         world.moves.observe("divert", name)
         return "diverted", out
-    ok = node.push()
+    ok = node.push_main()
     world.moves.observe("managed_push", name)
     return ("pushed" if ok else "rejected"), out
 

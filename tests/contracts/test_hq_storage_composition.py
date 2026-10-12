@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from beadhive import fence_schema, hq_sql_config, hq_sql_placement, writer_adopt
+from beadhive import fence_schema, hq_sql_config, hq_sql_placement, work_backup, writer_adopt
 from beadhive.fence_data import DoltCliEngine
 from beadhive.host_lease_contracts import HostLease, now_stamp
 from beadhive.hq_storage_composition import (
@@ -29,6 +29,10 @@ from beadhive.hq_storage_composition import (
 from beadhive.modules.config.domain.ports import FleetConfigDocument, ordered_documents_digest
 from beadhive_hq_storage import (
     ABSENT,
+    ADOPT_SENTINEL_PREFIX,
+    CLAIM_FRAME_LABEL_PREFIX,
+    RECOVERY_LABEL_PREFIX,
+    RESUMABLE_LABEL,
     AppendLog,
     Applied,
     CapabilityHost,
@@ -112,10 +116,20 @@ def test_adapter_wire_encodings_match_roots() -> None:
     sql, params = hq_sql_placement.seed_statement("bh", epoch=4, at=1_700_000_000)
     assert (sql, params) == placement_seed_statement("bh", *params[1:4])
     assert hq_sql_placement.parse_row("bh", params[1:]).director
-    assert bump_statements("frame-a", 3, revision) == writer_adopt.bump_statements(
-        "frame-a", 3, revision
-    )
+    # The bump statements are the adapter's alone now (bh-jhgum); the frozen SQL is pinned here
+    # so a change to the committed fence write is a visible, reviewed change.
+    assert bump_statements("frame-a", 3, revision) == [
+        f"UPDATE bh_writer SET frame = 'frame-a', epoch = 3, revision = '{revision}' WHERE id = 1",
+        "DELETE FROM bh_write_mark WHERE epoch < 3",
+        "UPDATE bh_epoch_live SET epoch = 3 WHERE id = 1",
+        "INSERT INTO bh_write_mark (id, epoch, tbl) VALUES ('adopt-3', 3, 'bh_writer')",
+    ]
+    assert writer_adopt.ADOPT_SENTINEL_PREFIX == ADOPT_SENTINEL_PREFIX
     assert len(fence_schema.trigger_names()) == fence_schema.TRIGGER_COUNT
+    # The reclaim's bead labels are root's work_backup dimensions.
+    assert CLAIM_FRAME_LABEL_PREFIX == f"{work_backup.CLAIM_FRAME_DIMENSION}:"
+    assert RECOVERY_LABEL_PREFIX == f"{work_backup.RECOVERY_DIMENSION}:"
+    assert RESUMABLE_LABEL == f"{work_backup.RECOVERY_DIMENSION}:{work_backup.RESUMABLE}"
 
 
 def test_the_config_publisher_history_is_the_adapters_config_mapping() -> None:

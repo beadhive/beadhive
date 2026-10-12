@@ -1,7 +1,7 @@
 """``host_adopt.adopt`` on a cut-over hive: placement first, ref in lockstep, data step 2
 (bh-4c7p4). HQ placement (``refs/bh/lease/<prefix>``) and ``refs/bh/epoch`` are REAL git refs on
 scratch bare remotes under ``tmp_path``; only the hive's Dolt data is a fake
-:class:`~beadhive.writer_adopt.FenceData` (the real-Dolt run is ``test_writer_adopt_int.py``).
+:class:`~beadhive_hq_storage.HiveFence` (the real-Dolt run is ``test_writer_adopt_int.py``).
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import subprocess
 import pytest
 
 from beadhive import doctor, host_adopt, host_fence, host_lease, writer_adopt
+from beadhive_hq_storage import Applied, EpochFloor, GuardReport, NotConfirmed, SyncReport
 
 PREFIX = "bh"
 HOST_A = "aaaaaaaa-1111-4111-8111-111111111111"
@@ -62,26 +63,33 @@ class Data:
     def sync_to_remote(self):
         self.calls.append("sync")
         self.local, self.pending = self.remote, None
+        return SyncReport("head", 0, 0, False)
 
     def writer(self):
         return self.local
 
-    def history_max_epoch(self):
-        return self.history
+    def epoch_floor(self):
+        return EpochFloor(
+            history_max=self.history, writer=None if self.local is None else self.local.epoch
+        )
 
-    def trigger_count(self):
-        return self.triggers
+    def guard_conformance(self):
+        missing = tuple(f"bh_missing_{i}" for i in range(max(44 - self.triggers, 0)))
+        return GuardReport(expected=44, present=44 - len(missing), missing=missing)
 
-    def commit_bump(self, statements, message):
-        frame, epoch = message.removeprefix(writer_adopt.ADOPT_COMMIT_PREFIX).rsplit("@", 1)
-        self.local = writer_adopt.WriterRow(frame, int(epoch), "fresh")
+    def commit_bump(self, bump):
+        self.local = writer_adopt.WriterRow(bump.frame, bump.epoch, "fresh")
         if self.log is not None:
             self.log.append("data")
+        return "local"
 
     def push(self):
         self.remote = self.local
         self.history = max(self.history, self.local.epoch)
-        return True
+        return Applied("head", "op")
+
+    def lookup_bump(self, frame, epoch, *, operation):  # pragma: no cover - push never unknown
+        return NotConfirmed(operation)
 
 
 @pytest.fixture
@@ -302,7 +310,7 @@ class ReclaimingData(Data):
     def __init__(self, writer, claims, policy):
         super().__init__(writer)
         self._claims, self._policy = claims, policy
-        self.bumps: list[list[str]] = []
+        self.bumps: list = []
 
     def config_rows(self):
         return dict(self._policy)
@@ -310,9 +318,9 @@ class ReclaimingData(Data):
     def claims(self):
         return list(self._claims)
 
-    def commit_bump(self, statements, message):
-        self.bumps.append(list(statements))
-        super().commit_bump(statements, message)
+    def commit_bump(self, bump):
+        self.bumps.append(bump)
+        return super().commit_bump(bump)
 
 
 def _reclaiming(world) -> ReclaimingData:
@@ -341,9 +349,10 @@ def test_an_expired_primary_is_failed_over_and_its_claims_reclaimed_in_the_bump(
         ("bh-live", fr.Outcome.OTHER_FRAME),
     ]
     [bump] = data.bumps
-    assert bump[0].startswith("UPDATE bh_writer")
-    assert any("WHERE id = 'bh-dead'" in s for s in bump)
-    assert not any("bh-live" in s for s in bump)
+    assert (bump.frame, bump.epoch) == (HOST_B, 2)
+    assert bump.reclaim is not None and bump.reclaim.dead_frame == HOST_A
+    assert bump.reclaim.bead_ids == {"bh-dead"}  # never the other frame's bh-live
+    assert [note.bead_id for note in bump.reclaim.notes] == ["bh-dead"]
 
 
 def test_a_released_primary_is_a_planned_handoff_and_reclaims_nothing(world):
@@ -352,4 +361,4 @@ def test_a_released_primary_is_a_planned_handoff_and_reclaims_nothing(world):
     outcome = _adopt(world, host_id=HOST_B, at=T0 + 1, fence_data=data)
     plan = outcome.coexistence.step2.reclaim
     assert plan is not None and not plan.applied and "planned handoff" in plan.skipped
-    assert not any("issues" in s for s in data.bumps[0])
+    assert data.bumps[0].reclaim is None

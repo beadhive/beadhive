@@ -36,7 +36,7 @@ FRAMES = [("a", BD_EMBEDDED), ("b", DOLT_CLI)]
 
 
 class ReclaimFrameData(FrameData):
-    """FenceData + ReclaimData over one composed-fence frame (the M1 adapter's stand-in)."""
+    """The port's Dolt HiveFence + a ReclaimData reader over one composed-fence frame."""
 
     def config_rows(self):
         rows = self.frame.query(
