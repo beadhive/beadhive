@@ -810,3 +810,132 @@ there.
   3. Filter `root-composition-native` to `-m "not integration"` and drop nothing else. A
      package-only hq-storage change would then no longer run the Dolt root dependents, which
      is the selective coverage bh-xxkf7.7 added.
+
+## Collection pre-filter on marker-selected lanes (bh-l1jje)
+
+**Question.** Every xdist worker imports and collects the whole suite before its first test.
+That takes 21-44 s per worker per lane (bh-xqtp8), and JUnit does not show it. Can a safe
+pre-filter skip the test files that a lane's `-m` expression fully deselects?
+
+**Answer.** Yes on the integration lane: per-worker collection drops from **18.6-19.5 s to
+7.1-7.2 s**, about 12 s off the start of every worker. The stateful lane keeps 530 of 581 files,
+so the gain there is within noise (17.8-25.0 s before, 18.3-18.6 s after). The selected node ids
+are identical with and without the pre-filter on both lanes.
+
+### Design
+
+`tests/harness/collection_prefilter.py` is a pytest plugin that is off unless
+`BH_TEST_PREFILTER=1`. `test-integration-land` and `stateful-native` turn it on, and
+`BH_TEST_PREFILTER=0` turns it off for one run.
+
+- **Index.** The checked-in `tests/harness/collection_index.json` lists, for each test file, the
+  distinct marker-name sets of its items. These are read after every
+  `pytest_collection_modifyitems` hook has run. `just collection-index-refresh` rewrites it from
+  one full, serial, fenced collection.
+- **Skip set.** The xdist controller evaluates the `-m` expression with pytest's own expression
+  parser against each file's marker sets. It hands the files with no matching item to every
+  worker (`pytest_configure_node`). Workers skip them in `pytest_ignore_collect`. Everything else
+  about collection stays the same: the `tests` argument, the directory walk, conftests, hooks and
+  `--ignore`. An early prototype that passed explicit file paths instead was *slower*: 10 s on
+  the integration lane and 42 s on the stateful lane, against 15 s for a full serial collection.
+  With explicit paths, pytest re-walks the parent directory and re-checks every `--ignore` for
+  each argument.
+- **Safety.** A file is skipped only if all of these hold:
+  - The global digest matches. It covers every tests-local pytest plugin module and conftest,
+    with their tests-local import closures, plus the collection ini values, the pytest and
+    Python versions, and the installed `pytest11` plugins.
+  - The file's own digest matches. It covers the file and its tests-local import closure, so a
+    marker imported from a harness module is covered.
+  - The file had at least one item when it was indexed.
+  - No recorded marker set matches the expression.
+
+  When something does not match, the plugin falls back:
+  - A global mismatch, or an unreadable or wrong-version index, falls back to full collection
+    for the whole run. The pytest header says `FALLBACK to full collection: <reason>`.
+  - A changed or new test file is simply collected.
+  - An expression with marker keyword arguments falls back, because the index records names
+    only.
+  - `-k`, `--deselect` and the perf filter only remove more items, so they cannot make a skipped
+    file necessary.
+- **Proof.** `tests/test_collection_prefilter.py` runs real pytest subprocesses over a small
+  project. Each module logs its import. The tests show:
+  - files are skipped, and xdist workers receive the same skip set;
+  - a changed conftest or ini, a corrupt, missing or old-version index, and a keyword-argument
+    expression each fall back to full collection;
+  - a changed file, or a file whose imported helper changed its marker, is collected and its
+    new test is selected;
+  - a file with no items at index time is always collected.
+- **Staleness costs time, never a test.** Since 2026-10-01, 19 of 85 merges to main (about one
+  in five) touched a module in the global closure. That closure is `conftest.py`, `stateful_fixtures.py`
+  and the harness modules they import, such as `world`, `composed_fence` and `writer_fencing`.
+  After such a merge, lanes collect everything until someone runs `just
+  collection-index-refresh`. There is deliberately no freshness test: two fresh branches can
+  merge into a stale combination, and such a test would then turn main red. The index is not
+  cached on the host either. A writable cache inside the fence could be poisoned into skipping
+  a selected test, while the checked-in index is reviewed.
+- **Interpreter pin.** The global digest includes the Python minor version, because a test file
+  could pick its markers by version (`sys.version_info`) without its content changing. The index
+  therefore matches only the interpreter it was recorded under. That is the gate's: the main
+  clone's `just check-all` runs Python 3.12 (`./scripts/hermetic.sh uv run --no-sync python -V`),
+  so the index is recorded under 3.12. A bead worktree on 3.11 falls back to full collection,
+  which is safe; run `uv sync --python 3.12` in the worktree first to get the pre-filter there.
+  When the gate's interpreter changes minor version, every lane falls back until someone runs
+  `just collection-index-refresh` under the new interpreter and commits the index. bh-tmrmr
+  tracks aligning the worktree and gate interpreters.
+- **Order.** The selected *set* is identical. Without worksteal packing, the relative order
+  can differ, because `stateful_fixtures`' Dolt interleave slices the whole collection. With
+  packing, the default on both lanes, the order is rebuilt from the selection either way.
+
+### Runs
+
+Every run: `NO_COLOR=1 BH_DOLT_SLOTS=12 BH_TEST_TIMEOUT_SECONDS=2400 BH_TEST_SCHEDULE_TELEMETRY=1
+BH_TEST_REPORT_DIR=<dir> BH_TEST_PREFILTER=<0|1> just <recipe>`, one lane at a time, on the
+shared 32-core host, at 5c2312db. Collection is each worker's `worker_collected` time from the
+telemetry (median, then max). Node ids are the JUnit `classname::name` sets.
+
+| Run | Lane | Pre-filter | Load at start | Wall (s) | Busy / 16 (s) | Collection, median / max (s) | First test, median (s) | Load median / max | Result |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| int-off1 | integration | off | 3.4 | 467 | 413 | 19.5 / 20.5 | 20.5 | 26 / 32 | 275 passed, 4 skipped |
+| int-off2 | integration | off | 3.5 | 460 | 409 | 18.6 / 20.0 | 20.0 | 25 / 29 | 275 passed, 4 skipped |
+| int-on1 | integration | on (525 of 582 files skipped) | 16.6 | **440** | 407 | **7.1 / 8.4** | 8.4 | 25 / 28 | 275 passed, 4 skipped |
+| int-on2 | integration | on | 14.3 | **459** | 416 | **7.2 / 8.1** | 8.1 | 30 / 38 | 275 passed, 4 skipped |
+| st-off1 | stateful | off | 5.1 | 647 | 611 | 25.0 / 26.5 | 26.6 | 51 / 59 | 1 failed (bh-u5b0e), 10,759 passed, 15 skipped |
+| st-off2 | stateful | off | 12.0 | 523 | 489 | 17.8 / 20.6 | 20.7 | 19 / 21 | 10,760 passed, 15 skipped |
+| st-on1 | stateful | on (51 of 582 files skipped) | 2.9 | 522 | 491 | 18.6 / 19.6 | 19.6 | 19 / 21 | 10,760 passed, 15 skipped |
+| st-on2 | stateful | on | 10.8 | 520 | 490 | 18.3 / 19.2 | 19.2 | 19 / 20 | 10,760 passed, 15 skipped |
+
+The JUnit node-id sets are identical across all four runs of each lane: 279 on the integration
+lane and 10,775 on the stateful lane. Serial `--collect-only` lists agree too: 279 and 10,760
+selected, with and without the pre-filter.
+
+### Re-run after rebasing onto main d1b9918a
+
+bh-xxkf7, bh-fdrnq and bh-ju8vk moved and added test files, so the index was refreshed with
+`just collection-index-refresh` under Python 3.12 (the gate's interpreter, see the interpreter pin
+above). The header shows no fallback on either lane. Serial `--collect-only` selections, with the
+lane's exact arguments, are identical with the pre-filter off and on: 262 integration ids, and
+10,483 stateful ids (with the root-composition `--ignore` arguments). One timed run per lane,
+pre-filter on, same settings as above:
+
+| Run | Lane | Files skipped | Load at start | Wall (s) | Busy / 16 (s) | Collection, median / max (s) | Load median / max | Result |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| r-int-on | integration | 529 of 586 | 3.5 | 434 | 386 | 6.7 / 7.2 | 24 / 29 | 258 passed, 4 skipped |
+| r-st-on | stateful | 50 of 586 | 10.5 | 508 | 482 | 20.1 / 21.0 | 19 / 20 | 1 failed, 10,467 passed, 15 skipped |
+
+The one stateful failure is not caused by the pre-filter.
+`tests/test_xdist_worker_cap.py::test_stateful_recipe_uses_its_measured_fixed_worker_bound`
+asserts a `root-composition-native` recipe line that bh-ju8vk changed on main. The justfile text
+it checks is identical on main d1b9918a.
+
+### Reading the numbers
+
+- **Integration.** Collection falls by ~12 s per worker (-62%), and every worker starts its first
+  test ~12 s earlier. Wall fell by 20 s in `int-on1` and was flat in `int-on2`. `int-on2` ran
+  under heavier outside load (median 30, max 38) and its busy time rose by 3-7 s, which used up
+  the gain. Serially, `--collect-only -m integration` drops from 15-18 s to 4-6 s.
+- **Stateful.** No measurable change. The lane imports 530 of 581 files either way. `st-off1`
+  is an outlier: something outside the lanes held the load at 51-59, and its one failure is the
+  known bh-u5b0e load-timeout test with the pre-filter *off*. The plugin stays on for the lane
+  because it costs nothing measurable and keeps both lanes on one code path.
+- **What remains.** About 7 s of integration collection is now the 57 kept modules and their
+  imports. The rest of the lane is slot-bound (bh-xqtp8).
