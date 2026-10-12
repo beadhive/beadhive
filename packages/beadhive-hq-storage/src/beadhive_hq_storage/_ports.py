@@ -29,6 +29,7 @@ from ._types import (
     PlacementView,
     PruneReport,
     RecordKind,
+    RecordWrite,
     RefView,
     Revision,
     StreamKind,
@@ -39,6 +40,7 @@ from ._types import (
 
 __all__ = [
     "AppendLog",
+    "AtomicRecords",
     "CapabilityHost",
     "CommittedHistory",
     "EpochRefStore",
@@ -83,6 +85,23 @@ class VersionedRecords(Protocol):
     ) -> Outcome: ...
 
     def lookup(self, kind: RecordKind, key: str, operation: OperationId) -> LookupOutcome: ...
+
+
+@runtime_checkable
+class AtomicRecords(Protocol):
+    """Several compare-and-sets as ONE all-or-nothing write (settled by bh-xnn5p).
+
+    Every expectation must hold, or nothing is written and the outcome is ``Conflict`` with the
+    current value of the FIRST write whose expectation failed. ``Applied.revision`` is the fresh
+    revision of ``writes[0]``; every member gets its own fresh revision and records
+    ``operation`` as its witness, so ``VersionedRecords.lookup`` of ANY member resolves an
+    ``Unknown``. Each member obeys the single-record rules (UPDATE-only kinds refuse
+    ``ABSENT``); an empty list or a repeated ``(kind, key)`` is ``InvalidRequest``. Optional:
+    a store that cannot write several records atomically does not implement it."""
+
+    def compare_and_set_all(
+        self, writes: Sequence[RecordWrite], *, operation: OperationId
+    ) -> Outcome: ...
 
 
 @runtime_checkable

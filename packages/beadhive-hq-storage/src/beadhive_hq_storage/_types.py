@@ -42,6 +42,7 @@ __all__ = [
     "ReclaimNote",
     "ReclaimSet",
     "RecordKind",
+    "RecordWrite",
     "RefView",
     "Revision",
     "StreamKind",
@@ -120,6 +121,17 @@ class LivenessKind(StrEnum):
 
     SESSION = "session"  # frame_<principal>_<epoch>_session
     EVIDENCE = "evidence"  # measured evidence rows
+
+
+@dataclass(frozen=True)
+class RecordWrite:
+    """One member of an atomic multi-record compare-and-set (``AtomicRecords``): the record
+    ``kind``/``key`` moves to ``body`` iff it is still at ``expected``."""
+
+    kind: RecordKind
+    key: str
+    body: Body
+    expected: Revision | Absent
 
 
 @dataclass(frozen=True)

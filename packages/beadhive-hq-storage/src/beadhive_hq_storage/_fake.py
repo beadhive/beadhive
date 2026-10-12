@@ -52,6 +52,7 @@ from ._types import (
     PruneReport,
     ReclaimSet,
     RecordKind,
+    RecordWrite,
     RefView,
     Revision,
     StreamKind,
@@ -298,8 +299,9 @@ class _PlacementView:
 
 
 class InMemoryHqStorage:
-    """The in-memory HQ store: ``VersionedRecords``, ``AppendLog``, ``Liveness``,
-    ``CommittedHistory`` and ``CapabilityHost`` over one injected :class:`StorageClock`.
+    """The in-memory HQ store: ``VersionedRecords``, ``AtomicRecords``, ``AppendLog``,
+    ``Liveness``, ``CommittedHistory`` and ``CapabilityHost`` over one injected
+    :class:`StorageClock`.
 
     The committed history starts with one provisioning commit shared with a simulated remote.
     ``consistent_read=False`` models an adapter (Git) that refuses the combined atomic read."""
@@ -431,6 +433,42 @@ class InMemoryHqStorage:
                 self._records[slot] = prior
 
         return _settle(fault, outcome, operation=operation, expected=expected, rollback=rollback)
+
+    def compare_and_set_all(
+        self, writes: Sequence[RecordWrite], *, operation: OperationId
+    ) -> Outcome:
+        operation = _check_operation(operation)
+        prepared = _check_writes(writes, cap=self._cap)
+        fault = self.faults.take("compare_and_set_all")
+        priors = {slot: self._records.get(slot) for slot, _body, _expected in prepared}
+        outcome: Outcome | None = None
+        for slot, _body, expected in prepared:
+            prior = priors[slot]
+            current = None if prior is None else prior.versioned.revision
+            if (current is not None) if isinstance(expected, Absent) else current != expected:
+                outcome = Conflict(None if prior is None else prior.versioned)
+                break
+        if outcome is None:
+            stamp = _now(self._clock)
+            first: Revision | None = None
+            for (kind, key), body, _expected in prepared:
+                revision = self._mint.revision()
+                first = first or revision
+                self._records[(kind, key)] = _Record(
+                    Versioned(key, revision, body), operation, stamp
+                )
+            outcome = Applied(first, operation)  # type: ignore[arg-type]
+
+        def rollback() -> None:
+            for slot, prior in priors.items():
+                if prior is None:
+                    self._records.pop(slot, None)
+                else:
+                    self._records[slot] = prior
+
+        return _settle(
+            fault, outcome, operation=operation, expected=prepared[0][2], rollback=rollback
+        )
 
     def lookup(self, kind: RecordKind, key: str, operation: OperationId) -> LookupOutcome:
         operation = _check_operation(operation)
@@ -647,6 +685,32 @@ class InMemoryHqStorage:
             self._remote = prior
 
         return _settle(fault, outcome, operation=operation, expected=prior, rollback=rollback)
+
+
+def _check_writes(
+    writes: Sequence[RecordWrite], *, cap: int
+) -> list[tuple[tuple[RecordKind, str], dict[str, Any], Revision | Absent]]:
+    """``AtomicRecords`` validation, refused before any write: a non-empty list of distinct
+    ``(kind, key)`` members, each a valid single-record compare-and-set."""
+    if isinstance(writes, RecordWrite) or not isinstance(writes, Sequence) or not writes:
+        raise InvalidRequest("an atomic compare-and-set needs a non-empty list of writes")
+    out: list[tuple[tuple[RecordKind, str], dict[str, Any], Revision | Absent]] = []
+    seen: set[tuple[RecordKind, str]] = set()
+    for write in writes:
+        if not isinstance(write, RecordWrite):
+            raise InvalidRequest("every member of an atomic compare-and-set is a RecordWrite")
+        slot = (RecordKind(write.kind), _check_key(write.key))
+        if slot in seen:
+            raise InvalidRequest(f"{slot[0].value}/{slot[1]} appears twice in one write")
+        seen.add(slot)
+        body = _canonical(write.body, cap=cap)
+        expected = write.expected
+        if not isinstance(expected, Absent) and not isinstance(expected, str):
+            raise InvalidRequest("expected must be a Revision or ABSENT")
+        if isinstance(expected, Absent) and slot[0] in UPDATE_ONLY_KINDS:
+            raise NotProvisioned(f"{slot[0].value} is UPDATE-only: operator provisioning seeds it")
+        out.append((slot, body, expected))
+    return out
 
 
 def _check_changes(changes: ChangeSet) -> dict[str, bytes]:
