@@ -229,7 +229,9 @@ Every backend follows the same rules:
    without a selector does too.
 6. A command that reads Git metadata or other state outside the graph never carries.
 
-Only a current green verdict can be a carry source. Carries do not chain, do not refresh the
+Only a current green verdict can be a carry source. Carries do not chain (see
+[high-water source discovery](design/attest-keys-single-gate-model-adr.md#35-high-water-source-discovery-for-carries-the-chaining-fix),
+which adds candidates without changing the rule), do not refresh the
 source verdict's age, and never transfer red or unknown results.
 
 ## Operation and rollback
