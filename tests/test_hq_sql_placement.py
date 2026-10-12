@@ -144,6 +144,11 @@ class Counting:
             self._write(key, self.race, expected)
         return self.store.compare_and_set(kind, key, body, expected=expected, operation=operation)
 
+    def compare_and_set_all(self, writes, *, operation):
+        # Explicit, not via ``__getattr__``: the runtime-checkable ``AtomicRecords`` protocol is
+        # checked with ``inspect.getattr_static`` (Python 3.12+), which never sees ``__getattr__``.
+        return self.store.compare_and_set_all(writes, operation=operation)
+
     def lookup(self, kind, key, operation):
         if self.supersede is not None:
             self._write(key, self.supersede, _revision(self.store, key))
