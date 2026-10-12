@@ -82,6 +82,22 @@ def _attest(*, composition: str = ROOT_COMPOSITION) -> AttestConfig:
                     },
                 },
                 {
+                    "name": "hq-storage",
+                    "cmd": "just attest-hq-storage",
+                    "selectors": {
+                        "paths": "\n".join(
+                            (
+                                "packages/beadhive-hq-storage/*",
+                                "packages/beadhive-hq-storage-dolt/*",
+                                "pyproject.toml",
+                                "uv.lock",
+                                "justfile",
+                                "scripts/*",
+                            )
+                        )
+                    },
+                },
+                {
                     "name": "bd-cli",
                     "cmd": "just attest-bd-cli",
                     "selectors": {
@@ -169,6 +185,7 @@ def test_new_package_path_is_uncovered_until_cataloged(tmp_path: Path) -> None:
     assert receipt.invalidated_keys == (
         "bd-cli",
         "demos",
+        "hq-storage",
         "integration",
         "packages",
         "root-composition",
@@ -460,3 +477,12 @@ def test_missing_package_test_mapping_falls_back_to_full_selection(tmp_path: Pat
         "root-composition impact is unresolved: root workspace dependencies lack "
         "PACKAGE_TESTS mappings: beadhive-unregistered-root-dependency"
     ]
+
+
+def test_catalog_key_set_must_match_attest_recipes() -> None:
+    from scripts.check_attest_catalog import KEY_RECIPES, catalog_key_errors
+
+    assert catalog_key_errors(KEY_RECIPES) == []
+    without = [name for name in KEY_RECIPES if name != "hq-storage"]
+    assert any("hq-storage" in error for error in catalog_key_errors(without))
+    assert any("extra" in error for error in catalog_key_errors([*KEY_RECIPES, "extra"]))
