@@ -1,6 +1,7 @@
 """Pure pieces of the per-hive cutover (bh-oarxp): C1/C2 agreement, the R2 floor, the record
-trailer, and the R3 statement shape. The engine-backed C1–C6 / R1–R5 runs are in
-``tests/test_fence_cutover_int.py``."""
+trailer, and the R3 statement shape; plus C1's legacy-carrier refusals through the product
+cutover over the HQ storage port's fakes (bh-utvyj). The engine-backed C1–C6 / R1–R5 runs are
+in ``tests/test_fence_cutover_int.py``."""
 
 from __future__ import annotations
 
@@ -198,3 +199,80 @@ def test_the_cutover_reads_are_refused_without_the_dolt_capabilities():
 
     with pytest.raises(CapabilityUnsupported, match="DoltHistory"):
         fc.unpublished_local(Fake(ManualClock()))
+
+
+# ---- C1's legacy-ref and placement refusals through the product cutover (bh-utvyj) ----------
+
+
+class _MemRef:
+    """``refs/bh/epoch`` as :class:`~beadhive.fence_cutover.LegacyRef`, in memory. A refusal
+    must never stage or reserve it."""
+
+    def __init__(self, fence: EpochFence | None = None):
+        self.fence, self.writes = fence, []
+
+    def read(self):
+        return ("sha-" + str(self.fence.to_record()) if self.fence else ""), self.fence
+
+    def stage(self, fence):  # pragma: no cover - a refusal never gets here
+        self.writes.append(("stage", fence))
+        return "staged"
+
+    def reserve(self, fence, *, expected):  # pragma: no cover - a refusal never gets here
+        self.writes.append(("reserve", fence))
+        return "reserved"
+
+
+class _Placement:
+    """HQ placement as a :class:`~beadhive.fence_cutover.PlacementReader` over the port fake."""
+
+    def __init__(self, store, prefix):
+        self.store, self.prefix = store, prefix
+
+    def read(self):
+        return self.store.placements().read(self.prefix)
+
+
+def test_c1_legacy_ref_and_placement_refusals_leave_the_hive_untouched():
+    """The C1 refusals that read only the legacy carriers, on the PRODUCT cutover over the HQ
+    storage port's fakes: an unattested run, a hive never adopted, an incomplete legacy adopt
+    (``placement_ahead``) and a non-holder are refused before anything is staged, reserved,
+    synced or committed. (The unpublished-work refusal needs the Dolt-only capabilities and
+    stays in ``tests/test_fence_cutover_int.py``.)"""
+    from beadhive_hq_storage import InMemoryHiveFence, InMemoryHqStorage, RecordKind
+    from harness.clock import FakeClock
+
+    clock = FakeClock()
+    node = InMemoryHiveFence(clock, writer=None)  # a legacy hive: no bh_writer on the remote
+    head = node.remote_head()
+    live = 221
+
+    def cutover(ref, placement, *, attest=True):
+        return fc.cutover(node, placement, ref, prefix="fx", host_id="a", others_published=attest)
+
+    def placed(frame, epoch):
+        store = InMemoryHqStorage(clock)
+        store.provision(RecordKind.PLACEMENT, "fx", {"frame": frame, "epoch": epoch})
+        return _Placement(store, "fx")
+
+    refs = []
+    ref = _MemRef(EpochFence(live, "a"))
+    refs.append(ref)
+    with pytest.raises(fc.CutoverRefused, match="--others-published"):
+        cutover(ref, placed("a", live), attest=False)
+    ref = _MemRef(None)
+    refs.append(ref)
+    with pytest.raises(fc.CutoverRefused, match="never been adopted.*bh host lease adopt"):
+        cutover(ref, _Placement(InMemoryHqStorage(clock), "fx"))
+    ref = _MemRef(EpochFence(live, "a"))
+    refs.append(ref)
+    with pytest.raises(fc.CutoverRefused, match="placement_ahead.*bh host lease adopt"):
+        cutover(ref, placed("a", live + 1))  # an incomplete legacy adopt
+    ref = _MemRef(EpochFence(live, "b"))
+    refs.append(ref)
+    with pytest.raises(fc.CutoverRefused, match="only the current holder"):
+        cutover(ref, placed("b", live))
+
+    assert node.remote_head() == head and node.local_head() == head
+    assert node.remote_writer() is None
+    assert all(r.writes == [] for r in refs)

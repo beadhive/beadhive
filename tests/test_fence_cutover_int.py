@@ -17,7 +17,9 @@ sql`` + ``bd dolt commit``); the replica is a Dolt CLI frame.
   below-floor state; a step-2 roll-forward converges it.
 * T6 — rollback is one forward commit that keeps the ignore row and moves no epoch back; the
   replica's R5 drops its identity; the legacy model writes again.
-* C1 refusals leave the hive untouched; a C5 push that loses a race redoes C3.
+* C1's unpublished-work refusal leaves the hive untouched (its legacy-carrier refusals run on
+  the HQ storage port's fakes in ``tests/test_fence_cutover.py``); a C5 push that loses a race
+  redoes C3.
 """
 
 from __future__ import annotations
@@ -147,25 +149,15 @@ def _remote_tables(cluster: Cluster, *tables: str) -> dict:
 
 
 def test_c1_refusals_leave_the_hive_untouched(rewound_cluster):
+    """The unpublished-work refusal, which reads the node through ``DoltHistory`` and
+    ``DoltMerge``. The C1 refusals that read only the legacy carriers (unattested, never
+    adopted, ``placement_ahead``, not the holder) run on the product cutover over the HQ
+    storage port's fakes: ``tests/test_fence_cutover.py`` (bh-utvyj)."""
     cluster = rewound_cluster([("a", BD_EMBEDDED)])
     a = cluster["a"]
     a.create_issue("pre-cutover").check()
     a.push().check()
     head = cluster.remote.head()
-
-    with pytest.raises(fc.CutoverRefused, match="--others-published"):
-        _cutover(cluster, a, attest=False)
-    with pytest.raises(fc.CutoverRefused, match="never been adopted.*bh host lease adopt"):
-        _cutover(cluster, a)
-
-    _legacy_state(cluster)
-    cluster.hq.restore(Placement("a", LIVE_EPOCH + 1))  # an incomplete legacy adopt
-    with pytest.raises(fc.CutoverRefused, match="placement_ahead.*bh host lease adopt"):
-        _cutover(cluster, a)
-
-    _legacy_state(cluster, holder="b")
-    with pytest.raises(fc.CutoverRefused, match="only the current holder"):
-        _cutover(cluster, a)
 
     _legacy_state(cluster)
     a.create_issue("unpublished").check()  # a local commit the remote does not have
