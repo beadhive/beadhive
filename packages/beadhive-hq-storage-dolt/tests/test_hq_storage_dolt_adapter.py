@@ -837,3 +837,20 @@ def test_a_failed_post_commit_parent_readback_is_unknown_then_confirmed(
     assert hq.store.head() != head  # the commit really landed
     found = hq.store.lookup_publication(operation, expected_head=head)
     assert isinstance(found, Confirmed)
+
+
+@dolt
+@pytest.mark.integration
+@pytest.mark.dolt_server
+def test_a_config_publication_issues_no_post_commit_read_that_could_misclassify(
+    server: DoltSqlServer,
+) -> None:
+    db = _ConfigDb(server)
+    parent = db.head()
+    db.history = DoltConfigHistory(
+        lambda role: _FailingOn(db._factory(role), "dolt_commit_ancestors")
+    )
+    op = new_operation_id()
+    out = _publish(db, parent, op)
+    assert isinstance(out, Applied)  # never StorageUnavailable once DOLT_COMMIT has landed
+    assert isinstance(db.history.lookup_publication(op, expected_head=Revision(parent)), Confirmed)
