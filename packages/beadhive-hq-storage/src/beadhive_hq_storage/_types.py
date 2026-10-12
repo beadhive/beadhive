@@ -270,11 +270,16 @@ class WriterRow:
 
 @dataclass(frozen=True)
 class PlacementView:
-    """Placement as read from HQ, with the CAS token the next write must present."""
+    """Placement as read from HQ, with the CAS token the next write must present.
+
+    ``token`` defaults to empty for a view that carries no CAS token: one built from a cached
+    lease or for an audit (``doctor``, ``fence_audit``). No store mints an empty revision, so a
+    store that compares tokens by equality reports a compare-and-set against such a view as a
+    ``Conflict``. Root ``writer_adopt`` re-exports this record (bh-xxkf7.4)."""
 
     frame: str
     epoch: int
-    token: Revision
+    token: Revision = Revision("")
 
 
 @dataclass(frozen=True)

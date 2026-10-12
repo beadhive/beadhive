@@ -70,7 +70,8 @@ Each port operation maps to the scenarios that exercise it. The table must match
 | `VersionedRecords.lookup` | `atomic_cas_applies_every_write_or_none`, `atomic_cas_unknown_resolves_by_any_member`, `cas_unknown_applied_resolves_confirmed`, `cas_unknown_not_applied_keeps_original_expectation`, `lookup_reads_not_confirmed_once_superseded` |
 | `VersionedRecords.read` | `cas_from_absent_creates_and_reads_back` |
 | `VersionedRecords.read_many` | `read_many_filters_by_kind_and_keys` |
-| `PlacementStore.compare_and_set` | `placement_view_moves_frame_and_epoch_under_cas` |
+| `PlacementStore.compare_and_set` | `placement_view_moves_frame_and_epoch_under_cas`, `placement_cas_from_absent_is_update_only`, `placement_cas_unknown_resolves_through_lookup` |
+| `PlacementStore.lookup` | `placement_cas_unknown_resolves_through_lookup` |
 | `PlacementStore.read` | `placement_view_moves_frame_and_epoch_under_cas` |
 | `AppendLog.append` | `malformed_requests_are_refused_before_io`, `append_is_idempotent_for_the_same_operation`, `append_replay_of_a_key_conflicts`, `append_unknown_resolves_by_natural_key` |
 | `AppendLog.lookup_append` | `append_unknown_resolves_by_natural_key` |
@@ -103,7 +104,7 @@ Each port operation maps to the scenarios that exercise it. The table must match
 | `EpochRefStore.compare_and_set` | `epoch_ref_cas_issues_a_fresh_sha` |
 | `EpochRefStore.read` | `epoch_ref_cas_issues_a_fresh_sha` |
 | `provisioning` | `update_only_kind_refuses_cas_from_absent` |
-| `Unknown` | `atomic_cas_unknown_resolves_by_any_member`, `cas_unknown_applied_resolves_confirmed`, `cas_unknown_not_applied_keeps_original_expectation`, `append_unknown_resolves_by_natural_key`, `publish_unknown_resolves_by_publication_witness`, `push_unknown_keeps_the_prior_remote_as_expectation`, `push_unknown_resolves_through_lookup_bump`, `bump_unknown_resolves_through_lookup_bump` |
+| `Unknown` | `atomic_cas_unknown_resolves_by_any_member`, `cas_unknown_applied_resolves_confirmed`, `cas_unknown_not_applied_keeps_original_expectation`, `placement_cas_unknown_resolves_through_lookup`, `append_unknown_resolves_by_natural_key`, `publish_unknown_resolves_by_publication_witness`, `push_unknown_keeps_the_prior_remote_as_expectation`, `push_unknown_resolves_through_lookup_bump`, `bump_unknown_resolves_through_lookup_bump` |
 | `StorageUnavailable` | `cas_unavailable_means_nothing_applied`, `unreachable_remote_is_unavailable`, `bump_failure_leaves_nothing_applied` |
 | `NotProvisioned` | `bump_refused_when_not_cut_over` |
 | `InvalidRequest` | `atomic_cas_refuses_malformed_writes_before_io`, `malformed_requests_are_refused_before_io`, `publish_refuses_malformed_change_sets`, `bump_refuses_a_malformed_reclaim` |

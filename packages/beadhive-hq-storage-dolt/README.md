@@ -11,7 +11,7 @@ The Dolt adapter for the [`beadhive-hq-storage`](../beadhive-hq-storage/README.m
 | Name | Satisfies | Over |
 |---|---|---|
 | `DoltHqStorage` | `VersionedRecords`, `AtomicRecords`, `AppendLog`, `Liveness`, `CommittedHistory`, `CapabilityHost` | a root-injected DB-API `ConnectionFactory` (`Callable[[Role], Connection]`); with `runtime_tables=True`, root's failover-policy and per-incarnation tables |
-| `DoltPlacementStore` | `PlacementStore` | `DoltHqStorage`'s `PLACEMENT` records |
+| `DoltPlacementStore` | `PlacementStore` | `DoltHqStorage`'s `PLACEMENT` records; `lookup` is `lookup(PLACEMENT, prefix, operation)` |
 | `DoltConfigHistory` | `CommittedHistory` | root's committed `hq_config_*` tables in the HQ config database |
 | `DoltHiveFence` | `HiveFence`, `CapabilityHost` | a `FenceStatementEngine` (root's `DoltCliEngine` / `BdServerEngine`, or `SqlConnectionFenceEngine`) |
 | `DoltHistory`, `DoltMerge`, `DoltAccounts` | the Dolt-only capabilities (`bh-3kl1k`) | a `SqlRunner` over the factory, the engine, a server login or an operator cursor |

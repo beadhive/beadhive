@@ -288,14 +288,19 @@ class _PlacementView:
         frame: str,
         epoch: int,
         *,
-        expected: PlacementView,
+        expected: PlacementView | Absent,
         cause: str,
         operation: OperationId,
     ) -> Outcome:
         body = {"frame": frame, "epoch": int(epoch), "cause": cause}
+        token = expected if isinstance(expected, Absent) else expected.token
         return self._storage.compare_and_set(
-            RecordKind.PLACEMENT, prefix, body, expected=expected.token, operation=operation
+            RecordKind.PLACEMENT, prefix, body, expected=token, operation=operation
         )
+
+    def lookup(self, prefix: str, operation: OperationId) -> LookupOutcome:
+        """Resolve an ``Unknown`` placement CAS by its own ``OperationId`` (its witness)."""
+        return self._storage.lookup(RecordKind.PLACEMENT, prefix, operation)
 
 
 class InMemoryHqStorage:
