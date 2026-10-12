@@ -56,12 +56,13 @@ from beadhive_hq_storage import (
     UnknownReason,
     WriterRow,
 )
-from beadhive_hq_storage.contract import BEADS_SEED, ContractAdapter
+from beadhive_hq_storage.contract import BEADS_SEED, LABELS_SEED, ContractAdapter
 
 from ._capabilities import SqlDoltAccounts, connection_runner
 from ._fence import DoltHiveFence, SqlConnectionFenceEngine
 from ._hq import DoltHqStorage, Role
-from ._values import quote
+from ._schema import COMMENT_STAMP_FORMAT
+from ._values import aware, quote
 
 __all__ = [
     "DEFAULT_SLOTS",
@@ -518,13 +519,16 @@ def _fence_seed(cut_over: bool) -> list[str]:
         f"({quote(bead)}, {quote(status)}, {quote(assignee)}, NULL)"
         for bead, (status, assignee) in BEADS_SEED.items()
     )
+    labels = ", ".join(f"({quote(bead)}, {quote(label)})" for bead, label in sorted(LABELS_SEED))
     statements = [
         "CREATE TABLE issues (id VARCHAR(64) PRIMARY KEY, status VARCHAR(32) NOT NULL, "
         "assignee VARCHAR(255) NOT NULL DEFAULT '', started_at DATETIME NULL)",
         "CREATE TABLE labels (issue_id VARCHAR(64) NOT NULL, label VARCHAR(255) NOT NULL, "
         "PRIMARY KEY (issue_id, label))",
+        "CREATE TABLE comments (id VARCHAR(64) PRIMARY KEY, issue_id VARCHAR(64) NOT NULL, "
+        "author VARCHAR(255) NOT NULL, text TEXT NOT NULL, created_at DATETIME NOT NULL)",
         f"INSERT INTO issues VALUES {beads}",
-        "INSERT INTO labels VALUES ('bd-1', 'claim-frame:frame-dead')",
+        f"INSERT INTO labels VALUES {labels}",
     ]
     if cut_over:
         statements += [
@@ -585,11 +589,21 @@ class DoltFenceHarness:
         beads = self.server.sql(
             self.database, f"SELECT id, status, assignee FROM issues AS OF {at}"
         )
+        labels = self.server.sql(self.database, f"SELECT issue_id, label FROM labels AS OF {at}")
+        comments = self.server.sql(
+            self.database,
+            f"SELECT id, issue_id, author, text, created_at FROM comments AS OF {at}",
+        )
         return FenceSnapshot(
             writer=writer,
             live_epoch=int(live[0][0]) if live else 0,
             marks=frozenset((str(m), int(e)) for m, e in marks),
             beads={str(b): (str(s), str(a)) for b, s, a in beads},
+            labels=frozenset((str(b), str(label)) for b, label in labels),
+            comments=frozenset(
+                (str(c), str(b), str(a), str(t), aware(when).strftime(COMMENT_STAMP_FORMAT))
+                for c, b, a, t, when in comments
+            ),
         )
 
     def parent_of(self, revision: Revision) -> Revision | None:

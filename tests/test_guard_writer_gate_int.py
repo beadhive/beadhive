@@ -39,7 +39,7 @@ FRAMES = [("a", BD_EMBEDDED), ("b", DOLT_CLI)]
 
 
 class LocalWriter:
-    """The ``writer()`` leg of :class:`~beadhive.writer_adopt.FenceData` over one frame's LOCAL
+    """The ``writer()`` leg of :class:`~beadhive_hq_storage.HiveFence` over one frame's LOCAL
     ``main`` — never the remote, exactly what the guard is allowed to read."""
 
     def __init__(self, frame: Frame):

@@ -11,14 +11,23 @@ checks trigger DML against the invoker, bh-wtsrc E3) live in ``dolt_schemas`` an
 staged: a committed trigger whose table is ignored breaks ``information_schema.triggers`` on
 Dolt 2.3.5 (it resolves the table at ``HEAD``, where an ignored table does not exist).
 
-**Fence** statements are root's ``writer_adopt.bump_statements`` and the guarded part of
-``failover_reclaim.reclaim_statements``, rendered for an engine that takes no parameters.
+**Fence** statements are the bump root's ``writer_adopt`` step 2 commits and the guarded
+``ReclaimSet`` revert that rides in it (once root ``failover_reclaim.reclaim_statements``),
+rendered for an engine that takes no parameters.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from datetime import UTC
 from typing import Final
+
+from beadhive_hq_storage import (
+    CLAIM_FRAME_LABEL_PREFIX,
+    RECOVERY_LABEL_PREFIX,
+    RESUMABLE_LABEL,
+    ReclaimSet,
+)
 
 from ._values import quote
 
@@ -26,6 +35,7 @@ __all__ = [
     "ADOPT_COMMIT_PREFIX",
     "APPEND_TABLE",
     "CLAIM_FRAME_DIMENSION",
+    "COMMENT_STAMP_FORMAT",
     "COMMITTED_TABLES",
     "DOCUMENTS_TABLE",
     "FENCE_TABLES",
@@ -58,8 +68,10 @@ HQ_IGNORE_PATTERN: Final = "hq_live_*"
 FENCE_TABLES: Final = ("bh_writer", "bh_epoch_live", "bh_write_mark")
 ADOPT_COMMIT_PREFIX: Final = "bh: adopt "
 """Root ``writer_adopt.ADOPT_COMMIT_PREFIX``: a bump commit's subject is ``<prefix><frame>@<n>``."""
-CLAIM_FRAME_DIMENSION: Final = "claim-frame"
+CLAIM_FRAME_DIMENSION: Final = CLAIM_FRAME_LABEL_PREFIX.rstrip(":")
 """Root ``work_backup.CLAIM_FRAME_DIMENSION``: the label a reclaim clears with the claim."""
+COMMENT_STAMP_FORMAT: Final = "%Y-%m-%d %H:%M:%S"
+"""How a reclaim note's ``created_at`` is stored (whole seconds, UTC; bd's comment column)."""
 
 _BIN = "CHARACTER SET utf8mb4 COLLATE utf8mb4_bin"
 
@@ -134,20 +146,45 @@ def bump_statements(frame: str, epoch: int, revision: str) -> list[str]:
     ]
 
 
-def reclaim_statements(bead_ids: Iterable[str]) -> list[str]:
-    """The lifecycle half of root ``failover_reclaim.reclaim_statements`` for a ``ReclaimSet``:
-    exactly what ``bd unclaim --force`` leaves (``status = 'open'``, ``assignee = ''``,
-    ``started_at = NULL``) plus the cleared ``claim-frame`` label, every write guarded on
-    ``status = 'in_progress'`` so a plan never reopens a bead that moved on. The resumable
-    label and the audit comment stay root's (``bh-jhgum`` decides whether ``ReclaimSet`` grows
-    to carry them)."""
-    ids: Sequence[str] = sorted(set(bead_ids))
+def reclaim_statements(reclaim: ReclaimSet) -> list[str]:
+    """A ``ReclaimSet`` as root's ``failover_reclaim`` wrote it before the port (settled by
+    bh-jhgum): exactly what ``bd unclaim --force`` leaves (``status = 'open'``, ``assignee =
+    ''``, ``started_at = NULL``) plus the cleared ``claim-frame`` label; for a resumable bead,
+    every ``recovery:*`` label replaced by ``recovery:resumable``; and one audit comment per
+    note. Every write is guarded on ``status = 'in_progress'`` -- the label and comment writes
+    run before the lifecycle UPDATE so their guard still sees the claim -- so a plan never
+    touches a bead that moved on."""
+    ids: Sequence[str] = sorted(reclaim.bead_ids)
     if not ids:
         return []
-    listed = ", ".join(quote(bead) for bead in ids)
-    return [
-        f"DELETE FROM labels WHERE issue_id IN (SELECT id FROM issues WHERE id IN ({listed}) "
-        f"AND status = 'in_progress') AND label LIKE {quote(CLAIM_FRAME_DIMENSION + ':%')}",
-        "UPDATE issues SET status = 'open', assignee = '', started_at = NULL "
-        f"WHERE id IN ({listed}) AND status = 'in_progress'",
+
+    def claimed(beads: Iterable[str]) -> str:
+        listed = ", ".join(quote(bead) for bead in sorted(beads))
+        return f"SELECT id FROM issues WHERE id IN ({listed}) AND status = 'in_progress'"
+
+    out = [
+        f"DELETE FROM labels WHERE issue_id IN ({claimed(ids)}) "
+        f"AND label LIKE {quote(CLAIM_FRAME_LABEL_PREFIX + '%')}",
     ]
+    if reclaim.resumable:
+        out += [
+            f"DELETE FROM labels WHERE issue_id IN ({claimed(reclaim.resumable)}) "
+            f"AND label LIKE {quote(RECOVERY_LABEL_PREFIX + '%')}",
+            f"INSERT INTO labels (issue_id, label) SELECT id, {quote(RESUMABLE_LABEL)} "
+            f"FROM issues WHERE id IN ({', '.join(quote(b) for b in sorted(reclaim.resumable))}) "
+            "AND status = 'in_progress'",
+        ]
+    for note in reclaim.notes:
+        stamp = note.created_at.astimezone(UTC).strftime(COMMENT_STAMP_FORMAT)
+        out.append(
+            "INSERT INTO comments (id, issue_id, author, text, created_at) "
+            f"SELECT {quote(note.comment_id)}, id, {quote(note.author)}, {quote(note.text)}, "
+            f"{quote(stamp)} FROM issues WHERE id = {quote(note.bead_id)} "
+            "AND status = 'in_progress'"
+        )
+    listed = ", ".join(quote(bead) for bead in ids)
+    out.append(
+        "UPDATE issues SET status = 'open', assignee = '', started_at = NULL "
+        f"WHERE id IN ({listed}) AND status = 'in_progress'"
+    )
+    return out

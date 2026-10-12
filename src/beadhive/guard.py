@@ -385,7 +385,7 @@ def writer_state(hive: str = "", *, cfg=None, hive_dir=None, entry=None):
     ``None`` (legacy model, use :func:`primary_state`) covers: an unresolvable or unregistered
     hive, no registered in-data fence adapter for it, and an adapter whose local ``bh_writer``
     does not exist (the hive's data has not been cut over). Purely local — the adapter's
-    :meth:`~beadhive.writer_adopt.FenceData.writer` reads local ``main``, never the remote.
+    :meth:`~beadhive_hq_storage.HiveFence.writer` reads local ``main``, never the remote.
     `hive_dir` / `entry` mirror :func:`primary_state`'s escape hatches.
 
     Raises :class:`WriterUnreadable` when an adapter exists but its read fails."""

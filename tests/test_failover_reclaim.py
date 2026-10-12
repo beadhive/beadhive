@@ -2,10 +2,12 @@
 
 Fast and in-memory: the hive is an SQLite image standing in for the remote head plus one node's
 local ``main`` (``sync`` copies the remote image, ``push`` is a fast-forward-only CAS), so the
-reclaim statements really execute against bd-shaped ``issues`` / ``labels`` / ``events`` /
-``comments`` tables, and the bump-commit coupling, idempotence and non-fast-forward recompute are
-judged on the "remote". ``tests/test_failover_reclaim_int.py`` runs the same hook against real
-Dolt on the composed fence prototype and a real git backup remote.
+typed bump and its :class:`~beadhive_hq_storage.ReclaimSet` really execute -- rendered by the
+Dolt adapter's public statement builders -- against bd-shaped ``issues`` / ``labels`` /
+``events`` / ``comments`` tables, and the bump-commit coupling, idempotence and
+non-fast-forward recompute are judged on the "remote". ``tests/test_failover_reclaim_int.py``
+runs the same hook against real Dolt on the composed fence prototype and a real git backup
+remote.
 """
 
 from __future__ import annotations
@@ -18,6 +20,20 @@ import pytest
 from beadhive import failover_reclaim as fr
 from beadhive import work_backup
 from beadhive import writer_adopt as wa
+from beadhive_hq_storage import (
+    Applied,
+    BumpRequest,
+    Confirmed,
+    Conflict,
+    EpochFloor,
+    GuardReport,
+    IntegrityViolation,
+    NotConfirmed,
+    Revision,
+    SyncReport,
+    Versioned,
+)
+from beadhive_hq_storage_dolt import bump_statements, reclaim_statements
 
 DEAD = "frame-a"
 ME = "frame-c"
@@ -41,7 +57,7 @@ create table config (key text primary key, value text);
 
 
 class FakeHive:
-    """:class:`~beadhive.writer_adopt.FenceData` + :class:`~beadhive.failover_reclaim.ReclaimData`
+    """:class:`~beadhive_hq_storage.HiveFence` + :class:`~beadhive.failover_reclaim.ReclaimData`
     over an SQLite image. ``remote`` is the published head; ``local`` is this node's main."""
 
     def __init__(self, writer: str = DEAD, epoch: int = 7):
@@ -101,10 +117,11 @@ class FakeHive:
     def view(self) -> sqlite3.Connection:
         return self._open(self.remote)
 
-    # ---- FenceData ---------------------------------------------------------------------------
+    # ---- HiveFence ---------------------------------------------------------------------------
     def sync_to_remote(self):
         self.local = self._open(self.remote)
         self.base_version = self.version
+        return SyncReport(Revision(f"v{self.version}"), 0, 0, False)
 
     def _writer(self, con):
         row = con.execute("select frame, epoch, revision from bh_writer where id = 1").fetchone()
@@ -116,28 +133,42 @@ class FakeHive:
     def remote_writer(self):
         return self._writer(self._open(self.remote))
 
-    def history_max_epoch(self):
-        return self.writer().epoch
+    def epoch_floor(self):
+        return EpochFloor(history_max=self.writer().epoch, writer=self.writer().epoch)
 
-    def trigger_count(self):
-        return wa.FENCE_TRIGGER_COUNT
+    def guard_conformance(self):
+        n = wa.FENCE_TRIGGER_COUNT
+        return GuardReport(expected=n, present=n, missing=())
 
-    def commit_bump(self, statements, message):
+    def commit_bump(self, bump: BumpRequest):
+        if bump.epoch <= self.writer().epoch:
+            raise IntegrityViolation("floor")
+        statements = bump_statements(bump.frame, bump.epoch, bump.revision)
+        if bump.reclaim is not None:
+            statements += reclaim_statements(bump.reclaim)
         for s in statements:
             self.local.execute(s)
         self.local.commit()
-        self.commits.append((message, list(statements)))
+        self.commits.append((f"{wa.ADOPT_COMMIT_PREFIX}{bump.frame}@{bump.epoch}", statements))
         for hook in self.after_commit:
             hook()
+        return Revision(f"local-{bump.epoch}")
 
     def push(self):
         self.pushes += 1
+        head = Revision(f"v{self.version}")
         if self.version != self.base_version:
-            return False
+            return Conflict(Versioned("bh_writer", head, {}))
         self.remote = self.local.serialize()
         self.version += 1
         self.base_version = self.version
-        return True
+        return Applied(Revision(f"v{self.version}"), "op")
+
+    def lookup_bump(self, frame, epoch, *, operation):
+        w = self.remote_writer()
+        if w is not None and (w.frame, w.epoch) == (frame, epoch):
+            return Confirmed(operation, Revision(f"v{self.version}"), AT)
+        return NotConfirmed(operation)
 
     # ---- ReclaimData ---------------------------------------------------------------------------
     def config_rows(self):
@@ -289,8 +320,9 @@ def test_a_failed_fetch_never_rewinds():
     ]
     got = {r.bead: r.outcome for r in fr.decide(claims, DEAD, None)}
     assert got == {"r4": fr.Outcome.PENDING, "s1": fr.Outcome.SUBMITTED}
-    assert not fr.reclaim_statements(
-        fr.decide(claims, DEAD, None), dead_frame=DEAD, frame=ME, epoch=8, at="t"
+    assert (
+        fr.reclaim_set(fr.decide(claims, DEAD, None), dead_frame=DEAD, frame=ME, epoch=8, at=AT)
+        is None
     )
 
 
@@ -507,9 +539,9 @@ def test_for_fence_data_is_dormant_without_a_claims_reader(tmp_path):
 
 def test_statements_quote_hostile_values():
     row = fr.Row("bh-1", fr.Outcome.REWOUND, assignee="o'brien")
-    out = fr.reclaim_statements(
-        [row], dead_frame="x'y", frame="z", epoch=2, at="2026-10-06 00:00:00"
-    )
+    reclaim = fr.reclaim_set([row], dead_frame="x'y", frame="z", epoch=2, at=AT)
+    assert reclaim is not None and reclaim.bead_ids == {"bh-1"} and not reclaim.resumable
+    out = reclaim_statements(reclaim)
     hive = FakeHive()
     hive.claim("bh-1", "o'brien", _cf("x"))
     hive.sync_to_remote()

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable, Sequence
+from datetime import datetime
 from typing import Any, Protocol, TypeVar
 
 from beadhive_hq_storage import (
@@ -34,6 +35,7 @@ from beadhive_hq_storage import (
     NotProvisioned,
     OperationId,
     Outcome,
+    ReclaimSet,
     Revision,
     StorageError,
     StorageUnavailable,
@@ -76,6 +78,30 @@ class FenceStatementEngine(Protocol):
     def reset_to_remote(self) -> None: ...
 
     def push(self) -> bool: ...
+
+
+def _check_reclaim(reclaim: ReclaimSet) -> None:
+    """The fake's ``ReclaimSet`` rules, restated (refused before any I/O)."""
+    if not isinstance(reclaim, ReclaimSet):
+        raise InvalidRequest("reclaim must be a ReclaimSet")
+    check_key(reclaim.dead_frame, "dead frame")
+    for bead in reclaim.bead_ids:
+        check_key(bead, "bead id")
+    if not reclaim.resumable <= reclaim.bead_ids:
+        raise InvalidRequest("every resumable bead must be in the reclaim set")
+    seen: set[str] = set()
+    for note in reclaim.notes:
+        if note.bead_id not in reclaim.bead_ids:
+            raise InvalidRequest("every reclaim note must name a bead in the reclaim set")
+        check_key(note.comment_id, "comment id")
+        check_key(note.author, "comment author")
+        if not isinstance(note.text, str) or not note.text:
+            raise InvalidRequest("a reclaim note needs its text")
+        if not isinstance(note.created_at, datetime) or note.created_at.tzinfo is None:
+            raise InvalidRequest("a reclaim note's created_at must be an aware datetime")
+        if note.comment_id in seen:
+            raise InvalidRequest("reclaim note comment ids must be unique")
+        seen.add(note.comment_id)
 
 
 def _scalar(rows: list[dict]) -> Any:
@@ -253,10 +279,8 @@ class DoltHiveFence:
             raise InvalidRequest("revision must be a string of at most 64 chars")
         statements = schema.bump_statements(bump.frame, bump.epoch, bump.revision)
         if bump.reclaim is not None:
-            check_key(bump.reclaim.dead_frame, "dead frame")
-            for bead in bump.reclaim.bead_ids:
-                check_key(bead, "bead id")
-            statements += schema.reclaim_statements(bump.reclaim.bead_ids)
+            _check_reclaim(bump.reclaim)
+            statements += schema.reclaim_statements(bump.reclaim)
         writer = self.writer()
         if writer is None:
             raise NotProvisioned("the hive is not cut over: no bh_writer row")
@@ -277,7 +301,7 @@ class DoltHiveFence:
         return self._head()
 
     def _discard(self, reclaimed: bool) -> None:
-        tables = [*schema.FENCE_TABLES, *(("issues", "labels") if reclaimed else ())]
+        tables = [*schema.FENCE_TABLES, *(("issues", "labels", "comments") if reclaimed else ())]
         try:
             self._engine.execute(
                 ["CALL DOLT_CHECKOUT(" + ", ".join(quote(t) for t in tables) + ")"]

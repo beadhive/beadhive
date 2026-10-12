@@ -789,8 +789,8 @@ finds.
   discards its partial working set with `DOLT_CHECKOUT` of the tables it touched, then raises
   `StorageUnavailable`.
 - **`ReclaimSet` coverage.** A `ReclaimSet` reverts the lifecycle fields and clears
-  `claim-frame`. The `recovery:resumable` label and the audit comment are still root's, and
-  `bh-jhgum` decides whether `ReclaimSet` grows to carry them.
+  `claim-frame`. The `recovery:resumable` label and the audit comment were left to `bh-jhgum`,
+  which grew `ReclaimSet` to carry them (see below).
 - **`EpochRefStore` is not Dolt's.** `refs/bh/epoch` is a git ref in root, so the Dolt fence
   harness pairs the real fence with `InMemoryEpochRef`.
 - **The Dolt-only interfaces are first-cut shapes.** `DoltHistory`, `DoltMerge` and
@@ -975,3 +975,79 @@ bindings. The unit tests run on `InMemoryHqStorage`.
     Dolt in `packages/beadhive-hq-storage-dolt/tests/test_hq_storage_dolt_adapter.py`.
   - `tests/test_hq_sql_config_int.py` and the other config publication tests are unchanged
     and pass.
+
+### Settled by `bh-jhgum`
+
+`FenceData.commit_bump(statements, message)` is gone. `writer_adopt` step 2 builds a typed
+`BumpRequest` and drives the fence only through `HiveFence`; no SQL text crosses the port.
+
+- **`ReclaimSet` grows.** It now carries everything the failover reclaim wrote before the port:
+  - `bead_ids`: the beads whose lifecycle fields revert and whose `claim-frame` label clears;
+  - `resumable`: the subset whose `recovery:*` labels are replaced by `recovery:resumable`;
+  - `notes`: one `ReclaimNote` per bead (`bead_id`, `comment_id`, `author`, `text`,
+    `created_at`), written as that bead's audit comment.
+
+  Moving the label and the comment out to root would split the reclaim across two commits, or
+  push SQL back through the port. Either breaks condition 7 or the scope rule. Root keeps the
+  domain: it decides the D5a rows, mints the comment ids, stamps the time and writes the audit
+  text. The store only writes it. The label names are port constants
+  (`CLAIM_FRAME_LABEL_PREFIX`, `RECOVERY_LABEL_PREFIX`, `RESUMABLE_LABEL`), and
+  `tests/contracts/test_hq_storage_composition.py` pins them to root's `work_backup`
+  dimensions.
+- **Every reclaim write is guarded on `in_progress`.** This includes the label and comment
+  writes, which root wrote unguarded before. The Dolt adapter runs them before the lifecycle
+  `UPDATE` so the guard still sees the claim. For a plan computed on the head it commits on,
+  the result is unchanged; a bead that moved on now gets no stray comment either. The fake
+  models the same rule, and `bump_reclaim_marks_resumable_and_leaves_the_audit_note` covers it
+  on both adapters. A malformed set (a resumable bead or a note outside `bead_ids`, a duplicate
+  comment id, a naive `created_at`) is `InvalidRequest` (`bump_refuses_a_malformed_reclaim`).
+- **`ReclaimSet` is sufficient for every reclaim the M3 policy plans.** Only the `rewound` and
+  `resumable` rows write, and both map onto the fields above. Every other D5a row is untouched
+  by design. `failover_reclaim.reclaim_statements` is replaced by `reclaim_set`, and
+  `ReclaimPlan.statements` by `ReclaimPlan.reclaim`.
+- **Guard and floor.** Step 2 reads `guard_conformance()` instead of a trigger count. Its
+  `required_triggers` argument is gone, because the expected set is the adapter's (root binds
+  `fence_schema.trigger_names()`). A bump at or below the floor raises `IntegrityViolation`
+  from the store. Step 2 does not catch it: it fails closed and is never retried.
+- **Push outcomes.** `Applied` lands the bump, and `Conflict` (a non-fast-forward) loops back to
+  the data check, as before. `Unknown` is resolved with `lookup_bump` under the bump's own
+  `OperationId`. `Confirmed` counts as landed. Anything else is `unreachable`, which surfaces
+  as "adopt incomplete": the re-run resumes at the placed epoch and never re-issues the bump.
+  `StorageUnavailable` from any fence read or push is also `unreachable`.
+- **`lookup_bump` on both engines.** `test_fence_composed_int._take` asserts `Confirmed` (and
+  `NotConfirmed` for another frame) after every product adopt. That runs over root's
+  `DoltCliEngine` (embedded) and `BdServerEngine` (server). `test_writer_adopt_int` asserts the
+  same on the Dolt CLI frame.
+- **`FenceNode` is the root composition.** `FenceNode.fence` is the Dolt `HiveFence` over the
+  node's own engine (`hq_storage_composition.dolt_hive_fence`). `FenceNode` satisfies
+  `HiveFence` by delegating `sync_to_remote`, `guard_conformance`, `commit_bump`, `push` and
+  `lookup_bump` to it, so `fence_data_port`'s resolver still answers a `HiveFence` or `None`.
+  `writer`, `remote_writer` and `epoch_floor` stay one cheap local read each, because the
+  guard reads `writer()` on every write. `SqlFailed` and `writer_adopt.DataUnreachable` are
+  also `StorageUnavailable`, so a node's failures honour the port contract, and existing
+  `except` clauses keep working.
+- **Legacy node operations stay until `bh-3kl1k`.** The cutover and orphan paths still use
+  `FenceNode.push_main()` (the old boolean push) and `history_max_epoch()`. `sync_to_remote()`
+  now runs the adapter's sync and still raises `DataUnreachable` with the engine's message.
+- **Moved records.** `WriterRow` and `RefView` are the port's, re-exported by `writer_adopt`.
+  `PlacementView` stays root's: its CAS token has a default that `doctor` relies on, and it is
+  `PlacementStore`'s. It moves when `PlacementAuthority` is absorbed into `PlacementStore`.
+- **`PlacementAuthority` is not absorbed here either.** Its `read()` / `cas()` shape differs
+  from `PlacementStore.read(prefix)` / `compare_and_set(..., cause, operation)`, and absorbing
+  it means reworking `host_adopt`'s `_LeasePlacement` and `_DirectorPlacement`. That is
+  placement work, so it is left to a follow-on bead.
+
+**Fake-ready protocol tests for `bh-utvyj`.** These suites drive root through the typed port but
+still use hand-written port doubles. They can move onto `InMemoryHiveFence` without changing
+what they assert:
+
+- `tests/test_writer_adopt.py`: the order, crash, idempotence and loss cases, the typed bump,
+  the floor and the unknown push;
+- `tests/test_host_adopt_coexistence.py`: the `Data` and `ReclaimingData` doubles;
+- `tests/test_guard_writer_gate.py`: it only needs `writer()`.
+
+`tests/test_failover_reclaim.py` executes the Dolt adapter's statements on SQLite. It becomes
+fake-ready once `InMemoryHiveFence` models `ReclaimData` reads (claims and policy rows) as
+well. The integration suites (`test_writer_adopt_int`, `test_failover_reclaim_int`,
+`test_fence_composed_int`, `test_fence_orphan_int`, `test_fence_cutover_int`,
+`test_epoch_fencing_int`) stay on real Dolt.

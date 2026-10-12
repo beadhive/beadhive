@@ -120,7 +120,7 @@ def test_install_is_idempotent_in_composed_order_and_leaves_exactly_44(tmp_path)
         7,
         first.writer.revision,
     )
-    assert again.guard.total == 44 and node.trigger_count() == 44
+    assert again.guard.total == 44 and node.guard_report().count == 44
     assert repo.rows("select count(*) n from bh_write_mark") == [{"n": 1}]
     assert repo.rows("select table_name from dolt_status") == []
 
@@ -130,7 +130,7 @@ def test_a_node_short_of_44_refuses_to_act_as_writer(tmp_path):
     node = _node(repo)
     node.install("a", 1)
     repo.ok("sql", "-q", "drop trigger bh_guard_labels_del")
-    assert node.trigger_count() == 43
+    assert node.guard_report().count == 43
     with pytest.raises(fd.GuardIncomplete, match="43 of 44.*bh_guard_labels_del"):
         node.require_writer_ready()
     node.install("a", 1)  # the re-install repairs it
@@ -393,7 +393,7 @@ def test_embedded_bd_store_is_switched_on_by_its_data_alone(tmp_path, monkeypatc
 
         c.pull().check()
         node_c = fd.FenceNode(fd.DoltCliEngine(c.dolt_dir, env=c.env))
-        assert node_c.trigger_count() == 44
+        assert node_c.guard_report().count == 44
         node_c.provision_ident("c")
         refused = c.sql(
             "insert into issues (id, title, description, design, acceptance_criteria, notes) "

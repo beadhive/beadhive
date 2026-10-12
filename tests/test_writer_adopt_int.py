@@ -1,10 +1,11 @@
 """The product coexistence adopt (:mod:`beadhive.writer_adopt`, bh-4c7p4) against REAL Dolt.
 
 The hive is the composed in-data fence + write guard prototype (:mod:`harness.composed_fence`,
-``bh-jbb6r``) on Dolt CLI frames sharing one ``git+file://`` remote — the product fence module
-(M1, ``bh-uz46l``) is not built yet, so this is the faithful stand-in for its schema. Placement is
-the PRODUCT git-HQ adapter over ``refs/bh/lease/<prefix>`` and ``refs/bh/epoch`` is the PRODUCT
-fence adapter; only the hive's SQL access is the test adapter below. Judged on remote ``main``.
+``bh-jbb6r``) on Dolt CLI frames sharing one ``git+file://`` remote, the faithful stand-in for the
+product fence schema. Placement is the PRODUCT git-HQ adapter over ``refs/bh/lease/<prefix>``,
+``refs/bh/epoch`` is the PRODUCT fence adapter, and the hive's data is reached through the HQ
+storage port's PRODUCT Dolt ``HiveFence`` (bh-jhgum); only the statement engine that runs SQL
+on a frame is the test adapter below. Judged on remote ``main``.
 """
 
 from __future__ import annotations
@@ -18,9 +19,12 @@ import pytest
 
 from beadhive import host_adopt
 from beadhive import writer_adopt as wa
+from beadhive_hq_storage import Confirmed, NotConfirmed, new_operation_id
+from beadhive_hq_storage_dolt import DoltHiveFence
 from harness import composed_fence as cf
 from harness import epoch_fence as ef
-from harness.writer_fencing import BD_EMBEDDED, DOLT_CLI, Frame, Placement
+from harness import write_guard as wg
+from harness.writer_fencing import BD_EMBEDDED, BD_SERVER, DOLT_CLI, Frame, Placement
 
 pytestmark = [
     pytest.mark.integration,
@@ -36,49 +40,56 @@ class Crash(BaseException):
     """An injected process death."""
 
 
-class FrameData:
-    """:class:`~beadhive.writer_adopt.FenceData` over one composed-fence frame."""
+class FrameEngine:
+    """A :class:`~beadhive_hq_storage_dolt.FenceStatementEngine` over one composed-fence frame:
+    the statements run through the frame's own engine, exactly as the harness's adopt does."""
 
     def __init__(self, frame: Frame):
         self.frame = frame
 
-    def _writer(self, suffix: str = "") -> wa.WriterRow | None:
-        res = self.frame.sql(f"SELECT frame, epoch, revision FROM bh_writer{suffix} WHERE id = 1")
+    def query(self, sql: str) -> list[dict]:
+        res = self.frame.sql(sql)
         if not res.ok:
-            if "not found" in res.output:
-                return None
-            raise AssertionError(res.output)
-        rows = json.loads(res.stdout or "{}").get("rows", []) if res.stdout.strip() else []
-        if not rows:
-            return None
-        return wa.WriterRow(rows[0]["frame"], int(rows[0]["epoch"]), rows[0]["revision"])
+            raise RuntimeError(res.output)
+        text = res.stdout.strip()
+        data = json.loads(text) if text else {}
+        return data.get("rows", []) if isinstance(data, dict) else data
 
-    def sync_to_remote(self) -> None:
-        try:
-            ef.sync_to_remote(self.frame)
-        except AssertionError as exc:
-            raise wa.DataUnreachable(str(exc)) from exc
+    def execute(self, statements) -> None:
+        ef.run_script(self.frame, list(statements)).check()
 
-    def writer(self):
-        return self._writer()
+    def commit(self, message: str) -> bool:
+        res = self.frame.commit(message)
+        if not res.ok and "nothing to commit" in res.output:
+            return False
+        res.check()
+        return True
 
-    def remote_writer(self):
-        self.frame.dolt("fetch", "origin").check()
-        return self._writer(" AS OF 'origin/main'")
+    def fetch(self) -> None:
+        if self.frame.kind == BD_SERVER:
+            self.frame.bd("sql", "CALL DOLT_FETCH('origin')").check()
+        else:
+            self.frame.dolt("fetch", "origin").check()
 
-    def history_max_epoch(self) -> int:
-        rows = self.frame.query("SELECT COALESCE(MAX(epoch), 0) AS m FROM dolt_history_bh_writer")
-        return int(rows[0]["m"])
-
-    def trigger_count(self) -> int:
-        return cf.trigger_count(self.frame)
-
-    def commit_bump(self, statements, message) -> None:
-        ef.run_script(self.frame, statements).check()
-        self.frame.commit(message).check()
+    def reset_to_remote(self) -> None:
+        ef.sync_to_remote(self.frame)
 
     def push(self) -> bool:
         return self.frame.push().ok
+
+
+#: The composed fence's guard set: the 42 guard triggers plus the two monotonic triggers.
+COMPOSED_GUARDS = (*wg.trigger_names(), "bh_writer_monotonic", "bh_epoch_live_monotonic")
+
+
+class FrameData(DoltHiveFence):
+    """The port's Dolt :class:`~beadhive_hq_storage.HiveFence` over one composed-fence frame:
+    the PRODUCT adapter (every bump, push and sentinel lookup statement is the adapter's) on the
+    composed prototype's schema, through :class:`FrameEngine`."""
+
+    def __init__(self, frame: Frame):
+        super().__init__(FrameEngine(frame), guards=COMPOSED_GUARDS)
+        self.frame = frame
 
 
 def _ports(world: cf.World, tmp_path):
@@ -133,9 +144,13 @@ def test_coexistence_adopt_lands_the_sentinel_bump_with_placement_and_ref_in_loc
         _seed_ref(ref, "a", e0)
         before = _remote(world)["writer"]
 
-        out = wa.coexistence_adopt(FrameData(world["b"]), placement, ref, prefix="fx", frame="b")
+        data = FrameData(world["b"])
+        out = wa.coexistence_adopt(data, placement, ref, prefix="fx", frame="b")
 
         assert out.epoch == e0 + 1 and not out.resumed
+        op = new_operation_id()
+        assert isinstance(data.lookup_bump("b", e0 + 1, operation=op), Confirmed)
+        assert isinstance(data.lookup_bump("a", e0 + 1, operation=op), NotConfirmed)
         remote = _remote(world)
         assert (remote["writer"]["frame"], remote["writer"]["epoch"]) == ("b", e0 + 1)
         assert remote["writer"]["revision"] != before["revision"]
@@ -200,7 +215,7 @@ def test_a_dropped_and_recreated_bh_writer_cannot_regress_the_epoch(tmp_path):
         assert _remote(world)["writer"]["epoch"] == 1
         data = FrameData(world["b"])
         data.sync_to_remote()
-        assert data.history_max_epoch() >= high_epoch
+        assert data.epoch_floor().history_max >= high_epoch
 
         out = wa.coexistence_adopt(data, placement, ref, prefix="fx", frame="b")
         assert out.epoch == high_epoch + 1

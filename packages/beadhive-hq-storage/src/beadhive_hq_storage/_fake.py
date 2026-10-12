@@ -28,6 +28,9 @@ from ._errors import (
 from ._ports import StorageClock
 from ._types import (
     ABSENT,
+    CLAIM_FRAME_LABEL_PREFIX,
+    RECOVERY_LABEL_PREFIX,
+    RESUMABLE_LABEL,
     UPDATE_ONLY_KINDS,
     Absent,
     Applied,
@@ -46,6 +49,7 @@ from ._types import (
     Outcome,
     PlacementView,
     PruneReport,
+    ReclaimSet,
     RecordKind,
     RefView,
     Revision,
@@ -675,6 +679,61 @@ class FenceSnapshot:
     live_epoch: int
     marks: frozenset[tuple[str, int]]
     beads: Mapping[str, tuple[str, str]] = field(default_factory=dict)  # id -> (status, assignee)
+    labels: frozenset[tuple[str, str]] = frozenset()  # (bead id, label)
+    #: ``(comment id, bead id, author, text, created_at as 'YYYY-MM-DD HH:MM:SS' UTC)``
+    comments: frozenset[tuple[str, str, str, str, str]] = frozenset()
+
+
+COMMENT_STAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
+"""How a reclaim note's ``created_at`` is stored (whole seconds, UTC)."""
+
+
+def check_reclaim(reclaim: ReclaimSet) -> None:
+    """Refuse a malformed :class:`ReclaimSet` before any write (the Dolt adapter restates it)."""
+    if not isinstance(reclaim, ReclaimSet):
+        raise InvalidRequest("reclaim must be a ReclaimSet")
+    _check_key(reclaim.dead_frame, "dead frame")
+    for bead in reclaim.bead_ids:
+        _check_key(bead, "bead id")
+    if not reclaim.resumable <= reclaim.bead_ids:
+        raise InvalidRequest("every resumable bead must be in the reclaim set")
+    seen: set[str] = set()
+    for note in reclaim.notes:
+        if note.bead_id not in reclaim.bead_ids:
+            raise InvalidRequest("every reclaim note must name a bead in the reclaim set")
+        _check_key(note.comment_id, "comment id")
+        _check_key(note.author, "comment author")
+        if not isinstance(note.text, str) or not note.text:
+            raise InvalidRequest("a reclaim note needs its text")
+        if not isinstance(note.created_at, datetime) or note.created_at.tzinfo is None:
+            raise InvalidRequest("a reclaim note's created_at must be an aware datetime")
+        if note.comment_id in seen:
+            raise InvalidRequest("reclaim note comment ids must be unique")
+        seen.add(note.comment_id)
+
+
+def _apply_reclaim(state: FenceSnapshot, reclaim: ReclaimSet) -> tuple[dict, set, set]:
+    beads = dict(state.beads)
+    labels = set(state.labels)
+    comments = set(state.comments)
+    live = {
+        bead
+        for bead in reclaim.bead_ids
+        if beads.get(bead) is not None and beads[bead][0] == "in_progress"
+    }
+    for bead in sorted(live):
+        beads[bead] = ("open", "")
+        drop = (CLAIM_FRAME_LABEL_PREFIX,)
+        if bead in reclaim.resumable:
+            drop += (RECOVERY_LABEL_PREFIX,)
+        labels = {(b, label) for b, label in labels if b != bead or not label.startswith(drop)}
+        if bead in reclaim.resumable:
+            labels.add((bead, RESUMABLE_LABEL))
+    for note in reclaim.notes:
+        if note.bead_id in live:
+            stamp = note.created_at.astimezone(UTC).strftime(COMMENT_STAMP_FORMAT)
+            comments.add((note.comment_id, note.bead_id, note.author, note.text, stamp))
+    return beads, labels, comments
 
 
 @dataclass(frozen=True)
@@ -691,7 +750,8 @@ class InMemoryHiveFence:
     """The in-memory ``HiveFence`` with a local ``main`` and a simulated remote.
 
     ``writer=None`` models a hive that is not cut over (bumps raise ``NotProvisioned``).
-    ``beads`` seeds bead rows as ``id -> (status, assignee)`` for the reclaim."""
+    ``beads`` seeds bead rows as ``id -> (status, assignee)`` and ``labels`` their
+    ``(bead, label)`` rows, for the reclaim."""
 
     def __init__(
         self,
@@ -699,6 +759,7 @@ class InMemoryHiveFence:
         *,
         writer: WriterRow | None = WriterRow(frame="", epoch=0),  # noqa: B008 - frozen value
         beads: Mapping[str, tuple[str, str]] | None = None,
+        labels: Collection[tuple[str, str]] = (),
         guards: Sequence[str] = _DEFAULT_GUARDS,
         missing_guards: Collection[str] = (),
         namespace: str = "in-memory-fence",
@@ -713,6 +774,7 @@ class InMemoryHiveFence:
             live_epoch=0 if writer is None else writer.epoch,
             marks=frozenset(),
             beads=dict(beads or {}),
+            labels=frozenset(labels),
         )
         genesis = _FenceCommit(self._mint.revision(), None, state, None, _now(clock))
         self._commits: dict[Revision, _FenceCommit] = {genesis.revision: genesis}
@@ -835,6 +897,8 @@ class InMemoryHiveFence:
         operation = _check_operation(bump.operation)
         if not isinstance(bump.epoch, int) or bump.epoch < 1:
             raise InvalidRequest("epoch must be a positive integer")
+        if bump.reclaim is not None:
+            check_reclaim(bump.reclaim)
         parent = self._commits[parent_rev]
         state = parent.state
         if state.writer is None:
@@ -851,14 +915,9 @@ class InMemoryHiveFence:
         if bump.epoch <= floor:
             raise IntegrityViolation(f"epoch {bump.epoch} does not exceed the floor {floor}")
         sentinel = adopt_sentinel(bump.epoch)
-        beads = dict(state.beads)
+        beads, labels, comments = dict(state.beads), set(state.labels), set(state.comments)
         if bump.reclaim is not None:
-            _check_key(bump.reclaim.dead_frame, "dead frame")
-            for bead in bump.reclaim.bead_ids:
-                _check_key(bead, "bead id")
-                status = beads.get(bead)
-                if status is not None and status[0] == "in_progress":
-                    beads[bead] = ("open", "")
+            beads, labels, comments = _apply_reclaim(state, bump.reclaim)
         marks = frozenset(
             {(mark, epoch) for mark, epoch in state.marks if epoch >= bump.epoch}
             | {(sentinel, bump.epoch)}
@@ -868,6 +927,8 @@ class InMemoryHiveFence:
             live_epoch=bump.epoch,
             marks=marks,
             beads=beads,
+            labels=frozenset(labels),
+            comments=frozenset(comments),
         )
         return _FenceCommit(
             self._mint.revision(), parent_rev, new_state, operation, _now(self._clock), sentinel

@@ -643,7 +643,7 @@ def _cutover_round(
     if before_push is not None:
         before_push()
     try:
-        pushed = node.push()
+        pushed = node.push_main()
     except DataUnreachable as exc:
         raise _failed_push(node, prefix, exc) from exc
     if not pushed:  # non-fast-forward: the holder wrote meanwhile
@@ -918,7 +918,7 @@ def rollback(
                     "published. Re-run the rollback."
                 ) from exc
             try:
-                pushed = node.push()
+                pushed = node.push_main()
             except DataUnreachable as exc:
                 raise CutoverFailed(
                     f"{prefix}: R4 push failed after refs/bh/epoch was reserved ({exc}); re-run "

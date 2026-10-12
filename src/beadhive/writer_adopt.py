@@ -29,9 +29,11 @@ resolving a ``bh_writer`` conflict.
 Everything here is Typer-free and talks to the outside only through three ports, so the order
 and the idempotence can be proven with fakes and against the composed Dolt prototype alike:
 
-* :class:`FenceData` — the hive's own data (the product adapter is M1's, ``bh-uz46l``; until it
-  lands no adapter is wired and every hive takes the legacy path — dormant until a hive's data
-  switches it on);
+* :class:`~beadhive_hq_storage.HiveFence` — the hive's own data, through the HQ storage port
+  (``docs/design/hq-storage-port-adr.md``, bh-jhgum). The bump is a typed
+  :class:`~beadhive_hq_storage.BumpRequest`, never SQL; the product adapter is
+  :class:`beadhive.fence_data.FenceNode`, the root composition of the Dolt adapter, and the
+  in-memory :class:`~beadhive_hq_storage.InMemoryHiveFence` carries the protocol tests;
 * :class:`PlacementAuthority` — the HQ placement record;
 * :class:`EpochRef` — the legacy ``refs/bh/epoch`` fence.
 """
@@ -41,10 +43,25 @@ from __future__ import annotations
 import hashlib
 import os
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol
+
+from beadhive_hq_storage import (
+    ADOPT_SENTINEL_PREFIX,
+    Applied,
+    BumpRequest,
+    Confirmed,
+    Conflict,
+    HiveFence,
+    RefView,
+    StorageError,
+    StorageUnavailable,
+    Unknown,
+    WriterRow,
+    new_operation_id,
+)
 
 from . import log
 
@@ -66,7 +83,7 @@ __all__ = [
     "DataUnreachable",
     "EpochRef",
     "EpochRefLost",
-    "FenceData",
+    "HiveFence",
     "NotCutOver",
     "PlacementAuthority",
     "PlacementLost",
@@ -76,7 +93,6 @@ __all__ = [
     "Step2Result",
     "WriterRow",
     "adopt_report",
-    "bump_statements",
     "coexistence_adopt",
     "failover_kind",
     "fresh_revision",
@@ -84,14 +100,16 @@ __all__ = [
     "recovery_command",
     "run_step2",
     "step2_attempts",
+    "unavailable_detail",
 ]
 
 #: Commit subject of every adopt bump; ``fence_audit`` / the invariant checker key on it.
 ADOPT_COMMIT_PREFIX = "bh: adopt "
-#: Every bump inserts a ``bh_write_mark`` row with this id prefix (condition 1).
-ADOPT_SENTINEL_PREFIX = "adopt-"
+#: ``ADOPT_SENTINEL_PREFIX`` (re-exported from the port): every bump inserts a ``bh_write_mark``
+#: row with this id prefix (condition 1).
 #: The guard's 42 triggers plus the two monotonic fence triggers (condition 9, ``bh-jbb6r`` E6).
-#: A node short of them refuses to act as writer. M1 owns the install; this is the bar.
+#: A node short of them refuses to act as writer (the fence's
+#: :meth:`~beadhive_hq_storage.HiveFence.guard_conformance`). M1 owns the install.
 FENCE_TRIGGER_COUNT = 44
 #: How many push rounds step 2 makes before it reports "adopt incomplete". Configurable per
 #: call and by :data:`STEP2_ATTEMPTS_ENV`; a lost round is cheap and loops back to the data
@@ -114,8 +132,11 @@ class NotCutOver(AdoptError):
     takes the legacy fence-first adopt instead. Raised before anything is written."""
 
 
-class DataUnreachable(AdoptError):
-    """The hive's remote could not be fetched or read. Adopt needs the remote head."""
+class DataUnreachable(AdoptError, StorageUnavailable):
+    """The hive's remote could not be fetched or read. Adopt needs the remote head.
+
+    Also the port's :class:`~beadhive_hq_storage.StorageUnavailable`, so a root fence node that
+    raises it still honours the :class:`~beadhive_hq_storage.HiveFence` contract."""
 
 
 class PlacementLost(AdoptError):
@@ -150,13 +171,9 @@ class EpochRefLost(AdoptIncomplete):
 # =============================================================================================
 
 
-@dataclass(frozen=True)
-class WriterRow:
-    """The ``bh_writer`` singleton (``id = 1``)."""
-
-    frame: str
-    epoch: int
-    revision: str = ""
+# ``WriterRow`` and ``RefView`` are the port's records (hq-storage-port-adr section 6, "Move"),
+# re-exported here. ``PlacementView`` stays root's until bh-sqfvq absorbs ``PlacementAuthority``
+# into the port's ``PlacementStore`` (its CAS token keeps a default here).
 
 
 @dataclass(frozen=True)
@@ -166,42 +183,6 @@ class PlacementView:
     frame: str
     epoch: int
     token: str = ""
-
-
-@dataclass(frozen=True)
-class RefView:
-    """``refs/bh/epoch`` as read from the hive remote, with its sha (the CAS expectation)."""
-
-    frame: str
-    epoch: int
-    sha: str
-
-
-class FenceData(Protocol):
-    """The hive's versioned data, as one node sees it (the M1 seam)."""
-
-    def sync_to_remote(self) -> None:
-        """Make local ``main`` exactly the remote head (fetch, then hard reset). Raises
-        :class:`DataUnreachable` when the remote cannot be reached."""
-
-    def writer(self) -> WriterRow | None:
-        """Local ``bh_writer`` (``None`` when the table does not exist: not cut over)."""
-
-    def remote_writer(self) -> WriterRow | None:
-        """``bh_writer`` on the remote head WITHOUT moving local ``main`` (doctor's read)."""
-
-    def history_max_epoch(self) -> int:
-        """``max(dolt_history_bh_writer.epoch)`` on local ``main`` (0 when none)."""
-
-    def trigger_count(self) -> int:
-        """How many ``bh_*`` triggers this node carries."""
-
-    def commit_bump(self, statements: Sequence[str], message: str) -> None:
-        """Run ``statements`` and commit them as ONE commit on local ``main``."""
-
-    def push(self) -> bool:
-        """Push ``main``. ``False`` on a non-fast-forward rejection; raises
-        :class:`DataUnreachable` on any other failure."""
 
 
 class PlacementAuthority(Protocol):
@@ -228,7 +209,8 @@ class EpochRef(Protocol):
 
 class BumpReclaim(Protocol):
     """The failover reclaim hook (M3, :mod:`beadhive.failover_reclaim`): one plan per step-2
-    round, computed from the head that round just synced, whose statements ride in the bump."""
+    round, computed from the head that round just synced, whose typed
+    :class:`~beadhive_hq_storage.ReclaimSet` (``plan.reclaim``) rides in the bump."""
 
     def plan(self, *, dead_frame: str, frame: str, epoch: int) -> ReclaimPlan: ...
 
@@ -268,26 +250,6 @@ def fresh_revision(frame: str, epoch: int) -> str:
     competing adopt (``bh-cvk70`` E6, condition 2)."""
     material = f"{frame}\x00{epoch}\x00{uuid.uuid4().hex}".encode()
     return hashlib.sha256(material).hexdigest()
-
-
-def _sql_text(value: str) -> str:
-    return "'" + str(value).replace("\\", "\\\\").replace("'", "''") + "'"
-
-
-def bump_statements(frame: str, epoch: int, revision: str) -> list[str]:
-    """Step 2's single commit (conditions 1–2): name the writer with a fresh revision, retire
-    every older epoch's marks, move the singleton live epoch (the FK forbids moving it while
-    marks point at it), and insert the ``adopt-<epoch>`` sentinel so EVERY bump changes
-    ``bh_write_mark``."""
-    epoch = int(epoch)
-    return [
-        f"UPDATE bh_writer SET frame = {_sql_text(frame)}, epoch = {epoch}, "
-        f"revision = {_sql_text(revision)} WHERE id = 1",
-        f"DELETE FROM bh_write_mark WHERE epoch < {epoch}",
-        f"UPDATE bh_epoch_live SET epoch = {epoch} WHERE id = 1",
-        f"INSERT INTO bh_write_mark (id, epoch, tbl) VALUES "
-        f"({_sql_text(ADOPT_SENTINEL_PREFIX + str(epoch))}, {epoch}, 'bh_writer')",
-    ]
 
 
 def step2_attempts(attempts: int | None = None) -> int:
@@ -338,13 +300,12 @@ class Step2Result:
 
 
 def run_step2(
-    data: FenceData,
+    data: HiveFence,
     placement: PlacementAuthority,
     *,
     frame: str,
     epoch: int,
     attempts: int | None = None,
-    required_triggers: int = FENCE_TRIGGER_COUNT,
     before_push: Callable[[], None] | None = None,
     reclaim: BumpReclaim | None = None,
 ) -> Step2Result:
@@ -352,21 +313,31 @@ def run_step2(
 
     Each round starts from the remote head and stops when the data already holds ``>= epoch``
     (``landed`` iff it names ``(frame, epoch)`` — the crash-after-push case, no second bump),
-    when placement no longer names ``(frame, epoch)``, or when this node's guard is short of
-    ``required_triggers``. Otherwise it commits the bump and pushes; a non-fast-forward loops
-    back to the data check. ``before_push`` is a test seam (one-shot).
+    when placement no longer names ``(frame, epoch)``, or when this node's guard install is
+    incomplete (:meth:`~beadhive_hq_storage.HiveFence.guard_conformance`). Otherwise it commits
+    the typed bump and pushes; a non-fast-forward (``Conflict``) loops back to the data check.
+    An ``Unknown`` push is resolved by :meth:`~beadhive_hq_storage.HiveFence.lookup_bump`
+    with the bump's own operation id: ``Confirmed`` landed, anything else is unreachable (the
+    re-run resumes; it never re-issues the bump). ``before_push`` is a test seam (one-shot).
+
+    The bump's epoch floor is the store's: a bump at or below ``max(history, bh_writer)``
+    raises :class:`~beadhive_hq_storage.IntegrityViolation`, which fails closed and is never
+    retried (it propagates).
 
     ``reclaim`` (failover adopts only, M3): each round asks it for a plan against the head the
-    round synced — the dead frame is the ``bh_writer`` the bump replaces — and appends the plan's
-    statements to the SAME bump commit. A non-fast-forward recomputes; a landed re-run stops at
-    the data check above before asking, so the reclaim is applied exactly once."""
+    round synced — the dead frame is the ``bh_writer`` the bump replaces — and carries the
+    plan's :class:`~beadhive_hq_storage.ReclaimSet` in the SAME bump commit. A non-fast-forward
+    recomputes; a landed re-run stops at the data check above before asking, so the reclaim is
+    applied exactly once."""
     rounds = step2_attempts(attempts)
     for attempt in range(1, rounds + 1):
         try:
             data.sync_to_remote()
             current = data.writer()
-        except DataUnreachable as exc:
-            return Step2Result(Step2Outcome.UNREACHABLE, epoch, attempt, detail=str(exc))
+        except StorageUnavailable as exc:
+            return Step2Result(
+                Step2Outcome.UNREACHABLE, epoch, attempt, detail=unavailable_detail(exc)
+            )
         if current is None:
             return Step2Result(
                 Step2Outcome.SUPERSEDED,
@@ -392,33 +363,62 @@ def run_step2(
             return Step2Result(
                 Step2Outcome.PLACEMENT_MOVED, epoch, attempt, detail=f"placement names {seen}"
             )
-        have = data.trigger_count()
-        if have < required_triggers:
+        guard = data.guard_conformance()
+        if guard.missing or guard.present < guard.expected:
             return Step2Result(
                 Step2Outcome.GUARD_INCOMPLETE,
                 epoch,
                 attempt,
-                detail=f"{have} of {required_triggers} bh_* triggers installed on this node",
+                detail=f"{guard.present} of {guard.expected} bh_* triggers installed on this node",
             )
         revision = fresh_revision(frame, epoch)
         plan = None
-        statements = bump_statements(frame, epoch, revision)
         if reclaim is not None:
             plan = reclaim.plan(dead_frame=current.frame, frame=frame, epoch=epoch)
-            statements += list(plan.statements)
-        data.commit_bump(statements, f"{ADOPT_COMMIT_PREFIX}{frame}@{epoch}")
+        bump = BumpRequest(
+            frame=frame,
+            epoch=epoch,
+            revision=revision,
+            operation=new_operation_id(),
+            reclaim=None if plan is None else plan.reclaim,
+        )
+        data.commit_bump(bump)  # IntegrityViolation (floor) propagates: fail closed
         if before_push is not None:
             hook, before_push = before_push, None
             hook()
         try:
             pushed = data.push()
-        except DataUnreachable as exc:
-            return Step2Result(Step2Outcome.UNREACHABLE, epoch, attempt, detail=str(exc))
-        if pushed:
-            if reclaim is not None and plan is not None:
-                reclaim.after_landed(plan)
-            return Step2Result(Step2Outcome.LANDED, epoch, attempt, revision=revision, reclaim=plan)
+            if isinstance(pushed, Unknown):
+                found = data.lookup_bump(frame, epoch, operation=bump.operation)
+                if not isinstance(found, Confirmed):
+                    return Step2Result(
+                        Step2Outcome.UNREACHABLE,
+                        epoch,
+                        attempt,
+                        detail=f"push outcome unknown ({pushed.reason}); the bump is not "
+                        "confirmed on the remote head",
+                    )
+        except StorageError as exc:
+            return Step2Result(
+                Step2Outcome.UNREACHABLE, epoch, attempt, detail=unavailable_detail(exc)
+            )
+        if isinstance(pushed, Conflict):
+            continue  # non-fast-forward: back to the data check from the new remote head
+        assert isinstance(pushed, Applied | Unknown)  # Unknown here was Confirmed above
+        if reclaim is not None and plan is not None:
+            reclaim.after_landed(plan)
+        return Step2Result(Step2Outcome.LANDED, epoch, attempt, revision=revision, reclaim=plan)
     return Step2Result(Step2Outcome.RETRIES_EXHAUSTED, epoch, rounds)
+
+
+def unavailable_detail(exc: BaseException) -> str:
+    """An unreachable-data detail: the exception, plus the cause the port adapter hid (it never
+    puts driver text in its own message, but keeps the original as ``__context__``)."""
+    text = str(exc)
+    cause = exc.__cause__ or exc.__context__
+    if cause is not None and str(cause) and str(cause) not in text:
+        text = f"{text}: {cause}" if text else str(cause)
+    return text
 
 
 # =============================================================================================
@@ -519,14 +519,13 @@ def failover_kind(frame: str, displaced: PlacementView | None) -> bool | None:
 
 
 def coexistence_adopt(
-    data: FenceData,
+    data: HiveFence,
     placement: PlacementAuthority,
     ref: EpochRef,
     *,
     prefix: str,
     frame: str,
     attempts: int | None = None,
-    required_triggers: int = FENCE_TRIGGER_COUNT,
     on_placed: Callable[[PlacementView], None] | None = None,
     before_push: Callable[[], None] | None = None,
     reclaim: BumpReclaim | None = None,
@@ -556,7 +555,7 @@ def coexistence_adopt(
     writer = data.writer()
     if writer is None:  # rolled back between the two reads
         raise NotCutOver(f"{prefix}: no bh_writer on the remote head — legacy adopt applies")
-    history_max = data.history_max_epoch()
+    history_max = data.epoch_floor().history_max
     placed = placement.read()
     held = ref.read()
 
@@ -610,7 +609,6 @@ def coexistence_adopt(
         frame=frame,
         epoch=epoch,
         attempts=attempts,
-        required_triggers=required_triggers,
         before_push=before_push,
         reclaim=reclaim,
     )
