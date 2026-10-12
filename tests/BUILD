@@ -6,6 +6,7 @@ python_source(
         ":perf-marker",
         ":schedule-telemetry",
         ":worksteal-pack",
+        ":collection-prefilter",
     ],
     tags=["category:test-only", "attest:stateful", "attest:root-composition"],
 )
@@ -31,6 +32,12 @@ python_source(
 python_source(
     name="worksteal-pack",
     source="harness/worksteal_pack.py",
+    tags=["category:test-only", "attest:stateful"],
+)
+
+python_source(
+    name="collection-prefilter",
+    source="harness/collection_prefilter.py",
     tags=["category:test-only", "attest:stateful"],
 )
 
