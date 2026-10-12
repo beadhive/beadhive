@@ -1211,11 +1211,12 @@ class World:
         return self.cluster[name]
 
     # -- template rewind (bh-i970d) ---------------------------------------------------------
-    def stop_processes(self) -> None:
-        """Stop HQ and every frame in parallel; the files stay."""
+    def stop_processes(self, *, discard: bool = False) -> None:
+        """Stop HQ and every frame in parallel; the files stay. ``discard``: see
+        :meth:`Cluster.stop_processes`."""
         with ThreadPoolExecutor(2) as pool:
             hq = pool.submit(self.hq.down)
-            self.cluster.stop_processes()
+            self.cluster.stop_processes(discard=discard)
             hq.result()
 
     def start_processes(self) -> None:
@@ -1259,7 +1260,7 @@ class World:
             raise RuntimeError("restore() without snapshot()")
         timings: dict[str, float] = {}
         started = time.monotonic()
-        self.stop_processes()
+        self.stop_processes(discard=True)  # the copy below replaces every file
         timings["stop"] = round(time.monotonic() - started, 3)
         template.restore(timings)
         frames, hq_port = self._saved
