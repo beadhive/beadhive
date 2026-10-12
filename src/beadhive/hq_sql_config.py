@@ -1,4 +1,20 @@
-"""Committed, ordered fleet configuration in the dedicated Dolt config database."""
+"""Committed, ordered fleet configuration in the dedicated Dolt config database.
+
+Publication and its ambiguous-commit recovery go through the HQ storage port (bh-x7xtc,
+``docs/design/hq-storage-port-adr.md``): :func:`publish_documents` is one
+``CommittedHistory.publish`` of a :func:`publication_changes` change set, and
+:func:`confirmed_publication` is ``lookup_publication`` by the immutable publication UUID. The
+Dolt adapter (``beadhive_hq_storage_dolt.DoltConfigHistory``, composed by
+:func:`beadhive.hq_storage_composition.config_history`) owns those statements. Root keeps the
+domain: document validation, beadyard identity, storage version, the host floor, and the
+committed reads that verify a head (they still run root SQL on a reader cursor, because
+``hq_sql_runtime``'s combined read hands its own cursor to :meth:`committed_snapshot_at`).
+
+Strict recovery (ADR section 2, rule 4): ``Unknown`` is ``PublicationUnknown`` carrying the
+ORIGINAL publication UUID and parent. ``NotConfirmed`` never authorises reissuing it, minting a
+new UUID, or retrying against a refreshed parent. Initial seeding into the empty schema
+(:meth:`SqlFleetConfigRevisionStore.initialize_snapshot`) is the separate bh-4shu3 contract.
+"""
 
 from __future__ import annotations
 
@@ -14,6 +30,21 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ruamel.yaml import YAML
+
+from beadhive_hq_storage import (
+    Applied,
+    ChangeSet,
+    CommittedHistory,
+    Confirmed,
+    Conflict,
+    IntegrityViolation,
+    InvalidRequest,
+    NotProvisioned,
+    OperationId,
+    Revision,
+    StorageError,
+    Unknown,
+)
 
 from .beadyard_identity import (
     DOCUMENT_PATH,
@@ -88,11 +119,16 @@ class SqlConfigError(ValueError):
 
 
 class PublicationUnknown(SqlConfigError):
-    """DOLT_COMMIT may have succeeded; recover by immutable publication ID."""
+    """DOLT_COMMIT may have succeeded; recover by immutable publication ID.
 
-    def __init__(self, publication_id: str, expected_revision: str):
+    The port's ``Unknown`` for a config publication. ``reason`` is its ``Unknown.reason``
+    (``deadline`` / ``transport`` / ``commit``) when the port reported one, else ``None`` (the
+    commit acknowledged but its readback failed)."""
+
+    def __init__(self, publication_id: str, expected_revision: str, reason: str | None = None):
         self.publication_id = publication_id
         self.expected_revision = expected_revision
+        self.reason = reason
         super().__init__(
             "configuration publication acknowledgment unknown; recover exact "
             f"publication {publication_id} against original parent {expected_revision}"
@@ -255,6 +291,96 @@ def _validate(documents):
         raise SqlConfigError(str(exc)) from None
 
 
+PUBLICATION_AUTHOR = "HQ operator <hq-operator@localhost>"
+_SCHEMA_VERSION_DOCUMENT = "hq_config_meta/schema_version"
+_DOCUMENT_PREFIX = "hq_config_documents/"
+
+
+def publication_changes(documents, *, schema_version) -> ChangeSet:
+    """The port change set of one config publication.
+
+    ``ChangeSet.tables`` is exactly :data:`TABLES`, the explicit staging allowlist. The
+    documents are the storage ``schema_version`` then every document's raw UTF-8 bytes in
+    publication order, named ``<table>/<name>`` (``beadhive_hq_storage_dolt.config_change_set``
+    encodes the same; ``tests/contracts/test_hq_storage_composition.py`` pins them equal)."""
+    return ChangeSet(
+        documents=(
+            (_SCHEMA_VERSION_DOCUMENT, str(int(schema_version)).encode("ascii")),
+            *(
+                (_DOCUMENT_PREFIX + document.path, document.content.encode("utf-8"))
+                for document in documents
+            ),
+        ),
+        tables=frozenset(TABLES),
+    )
+
+
+def publish_documents(
+    history: CommittedHistory,
+    documents,
+    *,
+    schema_version,
+    expected_revision,
+    publication_id,
+) -> str:
+    """Publish once through the port and return the exact committed revision.
+
+    ``Conflict`` is the publication CAS conflict. ``Unknown`` raises :class:`PublicationUnknown`
+    with the ORIGINAL UUID and parent and is never reissued here (ADR section 2, rule 4). A
+    refusal before anything was sent is a :class:`SqlConfigError`."""
+    try:
+        outcome = history.publish(
+            publication_changes(documents, schema_version=schema_version),
+            expected_head=Revision(expected_revision),
+            operation=OperationId(publication_id),
+            author=PUBLICATION_AUTHOR,
+            message=f"HQ config publication {publication_id}",
+        )
+    except (NotProvisioned, IntegrityViolation) as exc:
+        raise SqlConfigError(str(exc)) from None
+    except (InvalidRequest, StorageError):
+        raise SqlConfigError("configuration publication failed") from None
+    if isinstance(outcome, Applied):
+        return str(outcome.revision)
+    if isinstance(outcome, Conflict):
+        raise SqlConfigError("configuration publication CAS conflict")
+    if isinstance(outcome, Unknown):
+        raise PublicationUnknown(publication_id, expected_revision, outcome.reason)
+    raise PublicationUnknown(publication_id, expected_revision)
+
+
+def confirmed_publication(history: CommittedHistory, publication_id, *, expected_revision):
+    """``lookup_publication`` of the exact original publication: the revision it is visible
+    at when ``Confirmed``, else ``None``. ``None`` is only "no confirmed outcome now"; it never
+    authorises a reissue, a new UUID, or a refreshed-parent retry."""
+    try:
+        outcome = history.lookup_publication(
+            OperationId(publication_id), expected_head=Revision(expected_revision)
+        )
+    except StorageError:
+        raise SqlConfigError("committed publication recovery unavailable") from None
+    return str(outcome.revision) if isinstance(outcome, Confirmed) else None
+
+
+def _recovery(publication_id, expected_revision, confirmed, head, rows, descends):
+    """The recovery verdict from the port's lookup and the reader's witness rows.
+
+    No witness row is ``None``. A witness against another parent is refused. A confirmed
+    witness that the head descends from is the :class:`PublicationRecovery`. A witness row the
+    port did not confirm (it landed between the two reads) is ``None``: still never a reissue.
+    """
+    if not rows:
+        return None
+    if len(rows) != 1 or rows[0][1] != expected_revision:
+        raise SqlConfigError("committed publication identity or parent mismatch")
+    if not descends:
+        raise SqlConfigError("committed publication parent is not an ancestor")
+    if confirmed is None:
+        return None
+    sequence, _, digest = rows[0]
+    return PublicationRecovery(publication_id, expected_revision, head, sequence, digest)
+
+
 class _BoundedCursor:
     def __init__(self, cursor, connection, deadline, timeout):
         self.cursor, self.connection = cursor, connection
@@ -294,10 +420,20 @@ def _bounded_cursor(connection, deadline, timeout):
 class SqlFleetConfigRevisionStore:
     """One-connection AS OF read and original-parent Dolt publication CAS."""
 
-    def __init__(self, settings, *, broker=None, clock=time.time):
+    def __init__(self, settings, *, broker=None, clock=time.time, history=None):
         self.settings = settings
         self.broker = broker or FnoxBroker()
         self.clock = clock
+        self._history = history
+
+    @property
+    def history(self) -> CommittedHistory:
+        """The port's ``CommittedHistory`` for publication and its recovery (bh-x7xtc)."""
+        if self._history is None:
+            from .hq_storage_composition import config_history
+
+            self._history = config_history(self.settings, broker=self.broker)
+        return self._history
 
     def _open(self, role, *, deadline=None):
         binding = self.settings.get(role)
@@ -739,6 +875,10 @@ class SqlFleetConfigRevisionStore:
         None means no *confirmed* outcome on this branch; callers must not retry
         with a refreshed parent or UUID. A later valid publication may have
         advanced HEAD, so the returned witness is deliberately not a snapshot.
+
+        The port's ``lookup_publication`` decides (by the immutable UUID against the ORIGINAL
+        parent); the reader's floor-checked read then supplies the witness's sequence and
+        digest and refuses a UUID witnessed against another parent.
         """
         try:
             if str(uuid.UUID(publication_id)) != publication_id:
@@ -747,6 +887,14 @@ class SqlFleetConfigRevisionStore:
             raise SqlConfigError("immutable publication ID invalid") from None
         if not isinstance(expected_revision, str) or not expected_revision:
             raise SqlConfigError("original publication parent required")
+        confirmed = confirmed_publication(
+            self.history, publication_id, expected_revision=expected_revision
+        )
+        head, rows, descends = self._publication_witness(publication_id, expected_revision)
+        return _recovery(publication_id, expected_revision, confirmed, head, rows, descends)
+
+    def _publication_witness(self, publication_id, expected_revision):
+        """``(head, witness rows, head descends from the parent)`` at the floor-checked head."""
         connection, deadline = self._open("reader")
         try:
             binding = self.settings["reader"]
@@ -762,18 +910,13 @@ class SqlFleetConfigRevisionStore:
                     "WHERE publication_id=%s",
                     (head, publication_id),
                 )
-                rows = cursor.fetchall()
-                if not rows:
-                    connection.rollback()
-                    return None
-                if len(rows) != 1 or rows[0][1] != expected_revision:
-                    raise SqlConfigError("committed publication identity or parent mismatch")
-                cursor.execute("SELECT HAS_ANCESTOR(%s,%s)", (head, expected_revision))
-                if cursor.fetchone()[0] != 1:
-                    raise SqlConfigError("committed publication parent is not an ancestor")
-                sequence, _, digest = rows[0]
+                rows = tuple(tuple(row) for row in cursor.fetchall())
+                descends = False
+                if len(rows) == 1 and rows[0][1] == expected_revision:
+                    cursor.execute("SELECT HAS_ANCESTOR(%s,%s)", (head, expected_revision))
+                    descends = cursor.fetchone()[0] == 1
             connection.rollback()
-            return PublicationRecovery(publication_id, expected_revision, head, sequence, digest)
+            return head, rows, descends
         except SqlConfigError:
             raise
         except Exception:
@@ -1120,9 +1263,40 @@ class SqlFleetConfigRevisionStore:
                 raise SqlConfigError("immutable publication ID invalid") from None
             if parsed_publication.version != 4 or str(parsed_publication) != publication_id:
                 raise SqlConfigError("immutable publication ID invalid")
-        digest = _digest(documents)
+        target_version = self._publication_preflight(
+            documents,
+            expected_revision=expected_revision,
+            allow_invalid_previous=allow_invalid_previous,
+            explicit_adoption=explicit_adoption,
+        )
+        committed_hash = publish_documents(
+            self.history,
+            documents,
+            schema_version=target_version,
+            expected_revision=expected_revision,
+            publication_id=publication_id,
+        )
+        # DOLT_COMMIT commits the SQL transaction; rollback cannot undo it. A failed or
+        # differing readback leaves the outcome uncertain: recover by the original UUID.
+        try:
+            snapshot = self.load_snapshot(revision=committed_hash)
+        except Exception:
+            raise PublicationUnknown(publication_id, expected_revision) from None
+        if snapshot.documents != documents:
+            raise PublicationUnknown(publication_id, expected_revision)
+        return snapshot
+
+    def _publication_preflight(
+        self, documents, *, expected_revision, allow_invalid_previous, explicit_adoption
+    ):
+        """The publisher's read-only checks of the original parent; the storage version.
+
+        Identity, the exact expected head, a clean working tree, the table allowlist, the
+        committed (or, for repair, raw) previous carrier, beadyard identity, the version
+        monotonicity and the host floor, all before the port publish is attempted. The port
+        publish re-checks the head, the working tree and the allowlist in its own transaction.
+        """
         connection, deadline = self._open("publisher")
-        crossed_commit = False
         try:
             binding = self.settings["publisher"]
             timeout = min(binding["read_timeout"], binding["write_timeout"])
@@ -1159,77 +1333,22 @@ class SqlFleetConfigRevisionStore:
                     raise SqlConfigError("HQ config storage version cannot regress")
                 _validate_carrier(documents, version=target_version)
                 self._check_floor(cursor, backend, generation, sequence, head, deadline=deadline)
-                cursor.execute(
-                    "UPDATE hq_config_meta SET schema_version=%s,"
-                    "publication_sequence=%s,publication_id=%s,"
-                    "documents_sha256=%s,document_count=%s "
-                    "WHERE singleton_id=1 AND publication_sequence=%s",
-                    (
-                        target_version,
-                        sequence + 1,
-                        publication_id,
-                        digest,
-                        len(documents),
-                        sequence,
-                    ),
-                )
-                if cursor.rowcount != 1:
-                    raise SqlConfigError("configuration publication CAS conflict")
-                cursor.execute("DELETE FROM hq_config_documents")
-                for ordinal, document in enumerate(documents):
-                    kind = _kind(document.path)
-                    body = document.content.encode("utf-8")
-                    cursor.execute(
-                        "INSERT INTO hq_config_documents "
-                        "(path,ordinal,kind,content,content_sha256) VALUES (%s,%s,%s,%s,%s)",
-                        (document.path, ordinal, kind, body, hashlib.sha256(body).hexdigest()),
-                    )
-                cursor.execute(
-                    "INSERT INTO hq_config_publications VALUES (%s,%s,%s,%s,%s,%s)",
-                    (
-                        publication_id,
-                        sequence + 1,
-                        generation,
-                        expected_revision,
-                        digest,
-                        len(documents),
-                    ),
-                )
-                cursor.execute(
-                    "CALL DOLT_ADD('hq_config_meta','hq_config_documents','hq_config_publications')"
-                )
-                crossed_commit = True
-                cursor.execute(
-                    "CALL DOLT_COMMIT('-m',%s,'--author',%s)",
-                    (
-                        f"HQ config publication {publication_id}",
-                        "HQ operator <hq-operator@localhost>",
-                    ),
-                )
-                committed = cursor.fetchone()
-                if not committed or not isinstance(committed[0], str):
-                    raise PublicationUnknown(publication_id, expected_revision)
-                committed_hash = committed[0]
-            # DOLT_COMMIT commits the SQL transaction; rollback cannot undo it.
-            snapshot = self.load_snapshot(revision=committed_hash, deadline=deadline)
-            if snapshot.documents != documents:
-                raise PublicationUnknown(publication_id, expected_revision)
-            return snapshot
-        except SqlConfigError as exc:
-            if not crossed_commit:
-                connection.rollback()
-                raise
-            if isinstance(exc, PublicationUnknown):
-                raise
-            raise PublicationUnknown(publication_id, expected_revision) from None
+            connection.rollback()
+            return target_version
+        except SqlConfigError:
+            _quiet_rollback(connection)
+            raise
         except Exception as exc:
-            if not crossed_commit:
-                connection.rollback()
-                if getattr(exc, "args", (None,))[0] in (1213, 1205):
-                    raise SqlConfigError("configuration publication CAS conflict") from None
-                raise SqlConfigError("configuration publication failed") from None
+            _quiet_rollback(connection)
             if getattr(exc, "args", (None,))[0] in (1213, 1205):
                 raise SqlConfigError("configuration publication CAS conflict") from None
-            raise PublicationUnknown(publication_id, expected_revision) from None
+            raise SqlConfigError("configuration publication failed") from None
         finally:
             connection.close()
+
+
+def _quiet_rollback(connection):
+    try:
+        connection.rollback()
+    except Exception:  # noqa: BLE001, S110 - the read transaction is abandoned either way
+        pass

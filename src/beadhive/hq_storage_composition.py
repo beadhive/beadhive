@@ -12,6 +12,9 @@ module injects root's transport and fence engines into it.
 * :func:`placement_storage` is the director's store (bh-sqfvq, the port's first production
   consumer, :mod:`beadhive.hq_sql_placement`): one ``placement_writer`` binding for its reads and
   its placement CAS, every session principal-checked.
+* :func:`config_history` is the HQ config publisher's ``CommittedHistory`` (bh-x7xtc,
+  :mod:`beadhive.hq_sql_config`): the adapter's ``DoltConfigHistory`` over the committed
+  ``hq_config_*`` tables, its ``reader`` and ``publisher`` bindings principal-checked.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ from typing import Any
 
 from beadhive_hq_storage_dolt import (
     ConnectionFactory,
+    DoltConfigHistory,
     DoltHiveFence,
     DoltHqStorage,
     FenceStatementEngine,
@@ -31,6 +35,7 @@ from beadhive_hq_storage_dolt import (
 from . import fence_schema
 
 __all__ = [
+    "config_history",
     "dolt_hive_fence",
     "dolt_hq_storage",
     "hq_connection_factory",
@@ -104,6 +109,29 @@ def placement_storage(
         factory,
         deadline=is_transport_deadline,
         principals={Role.READER: principal, Role.PLACEMENT_WRITER: principal},
+    )
+
+
+def config_history(settings: Mapping[str, Any], *, broker: Any = None) -> DoltConfigHistory:
+    """The HQ config ``CommittedHistory`` over root's ``hq.sql.config`` settings.
+
+    ``Role.READER`` opens the ``reader`` binding (head, lookup) and ``Role.PUBLISHER`` the
+    ``publisher`` binding (publish, fetch, push); each session first checks the connection is
+    that binding's ``user`` on its ``database``'s ``main`` branch, as root's ``_identity`` does.
+    A role without a binding is ``StorageUnavailable`` before anything is sent."""
+    bindings = {
+        role.value: settings[role.value]
+        for role in (Role.READER, Role.PUBLISHER)
+        if settings.get(role.value)
+    }
+    principals = {
+        Role(name): (str(binding.get("user", "")), str(binding.get("database", "")))
+        for name, binding in bindings.items()
+    }
+    return DoltConfigHistory(
+        hq_connection_factory(bindings, broker=broker),
+        deadline=is_transport_deadline,
+        principals=principals,
     )
 
 
