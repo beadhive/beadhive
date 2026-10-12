@@ -14,7 +14,8 @@ The Dolt adapter for the [`beadhive-hq-storage`](../beadhive-hq-storage/README.m
 | `DoltPlacementStore` | `PlacementStore` | `DoltHqStorage`'s `PLACEMENT` records |
 | `DoltConfigHistory` | `CommittedHistory` | root's committed `hq_config_*` tables in the HQ config database |
 | `DoltHiveFence` | `HiveFence`, `CapabilityHost` | a `FenceStatementEngine` (root's `DoltCliEngine` / `BdServerEngine`, or `SqlConnectionFenceEngine`) |
-| `DoltHistory`, `DoltMerge`, `DoltAccounts` | the Dolt-only capabilities | `SqlRunner` over the factory or the engine |
+| `DoltHistory`, `DoltMerge`, `DoltAccounts` | the Dolt-only capabilities (`bh-3kl1k`) | a `SqlRunner` over the factory, the engine, a server login or an operator cursor |
+| `DoltSqlCapabilities` | `CapabilityHost` | one `SqlRunner`, offering any of the three |
 | `DoltRuntimeReads` | the Dolt-only signed-authority read | one principal-checked, read-only `READER` transaction yielding `HqRuntimeStatements` |
 | `HqRuntimeStatements` | the HQ runtime database's Dolt-only statements | a caller-owned DB-API cursor (root's runtime authority, receiver, operator, session rows and the committed config reads they share) |
 
@@ -54,8 +55,8 @@ or the engine's push), even when its outcome is already a `Conflict`. So a lost 
 
 A read of a canonical carrier row returns `director` (whether the witness verifies) and, on a
 director row, the `cause`. Any other row decodes as plain JSON without `director`. The
-operator's seed `INSERT` (`placement_seed_statement`) and the grant and trigger reads of root's
-conformance check (`placement_conformance_rows`) are here too.
+operator's seed `INSERT` (`placement_seed_statement`) is here too; root's conformance check reads
+grants and triggers through `DoltAccounts`.
 
 **The HQ config publication** (`bh-x7xtc`, `_config.py`). `DoltConfigHistory` maps
 `CommittedHistory` onto root's committed config layout, column for column as `hq_sql_config`
@@ -93,6 +94,28 @@ the transitional `DoltHqSessions`: one read-only transaction with no raw cursor 
 The incarnation DDL, the eligibility statement (which returns ages and committed TTLs; the
 thresholds are root's) and the failover-policy grant are rendered here too.
 
+**The Dolt-only capabilities** (`_capabilities.py`, final shapes settled by `bh-3kl1k`). Each
+runs over a `SqlRunner` (`query`, `execute`, and `session` for a one-session batch):
+
+- `DoltHistory`: `head`, `log` (optionally by subject prefix), `commit`, `parents`, `messages`,
+  `ahead`, `merge_base`, `is_ancestor`, `remote_branches`, and the fence tables at a revision:
+  `fence_tables_at`, `writer_at`, `live_epoch_at`, `stale_marks_at`, `mark_ids_at`,
+  `writer_epochs`, `history_max_epoch`, `table_history`. Every data table it reads is a
+  `FenceTable`.
+- `DoltMerge`: `preview_conflicts`, `merge`, `merge_restamping` (the writer's one-session orphan
+  merge), `residue`, `dirty_tables`, `commit_working_set`, `abort`, `reset_hard`, `publish`
+  (fast-forward-only push of the branch) and `publish_branch` (the orphan divert). Over a fence
+  engine, the engine's own `commit`, `push`, `push_branch` and `reset_hard` win.
+- `DoltAccounts`: `users`, `create_user` (from a password or its `mysql_native_password` hash),
+  `set_password`, `drop_user`, `grants`, `grant` and `revoke` (both return the statements they
+  ran), `base_tables`, `sessions`, `kill`, `global_variable`, `server_identity`, `triggers`
+  (from `dolt_schemas`, never `information_schema.triggers`) and `provision_hq_schema`.
+
+A capability refuses a bad argument with `InvalidRequest` before any I/O and otherwise lets the
+runner's exception through unchanged. `DoltHiveFence` offers `DoltHistory` and `DoltMerge`;
+`DoltHqStorage` offers all three; `DoltAccounts` over a hive server is composed from that
+server's login in root.
+
 **Error classification** is by DB-API `args[0]` code; the adapter never imports a driver.
 
 - **Before the commit point:** `1213` or `1205` is a `Conflict`. Anything else is
@@ -107,16 +130,17 @@ thresholds are root's) and the failover-policy grant are rendered here too.
 | File | What | Needs |
 |---|---|---|
 | `test_hq_storage_dolt_contract.py` | the shared contract suite over `[fake, dolt]`, and the differential state machine fake against Dolt | `dolt` and PyMySQL, else the `dolt` cases skip |
-| `test_hq_storage_dolt_adapter.py` | classification over a scripted DB-API stub; the placement wire format, the config publication's `hq_config_*` rows, ignored live tables, server stamps and capabilities on real Dolt; the runtime-table mappings (failover policy rows, incarnation liveness, the atomic placement-plus-policy write) and the pinned runtime read | Dolt for the real-Dolt cases |
+| `test_hq_storage_dolt_adapter.py` | classification over a scripted DB-API stub; the placement wire format, the config publication's `hq_config_*` rows, ignored live tables, server stamps and the three Dolt-only capabilities (`bh-3kl1k`) on real Dolt; the runtime-table mappings (failover policy rows, incarnation liveness, the atomic placement-plus-policy write) and the pinned runtime read | Dolt for the real-Dolt cases |
 | `test_dolt_semantics_int.py` | Dolt 2.3.5 server contracts (grants, triggers, accounts, globals, history, fence engine), folded from root | `dolt` (some cases also need a `127.0.0.2` alias) |
 
 `beadhive_hq_storage_dolt.contract` holds the `dolt` `ContractAdapter`, its harnesses, real
 fault injection at the adapter's commit points, and `DoltSqlServer`: one private
 `dolt sql-server` that takes a `BH_DOLT_SLOTS` slot from root's lock files and waits for the
-server's ready line instead of sleeping. The gate runs only a smoke of the machine against Dolt (2 examples x 8 steps,
-derandomized, shrinking excluded). The full budget (`dolt_machine_full`, `gate` profile
-25 x 20 without shrinking; any other profile shrinks, capped at 100 examples) is deselected
-from `just hq-storage-check` and runs under `just hq-storage-dolt-machine [profile=gate]`.
+server's ready line instead of sleeping. The gate runs only a smoke of the machine against
+Dolt (2 examples x 8 steps, derandomized, shrinking excluded). The full budget
+(`dolt_machine_full`, `gate` profile 25 x 20 without shrinking; any other profile shrinks,
+capped at 100 examples) is deselected from `just hq-storage-check` and runs under
+`just hq-storage-dolt-machine [profile=gate]`.
 
 ## Import rules
 
