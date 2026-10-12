@@ -19,6 +19,11 @@ from beadhive.adapters.impact_paths import (
 from beadhive.bootstrap.impact import attest_keys
 from beadhive.modules.config.contracts import AttestConfig
 
+try:
+    from check_attest_catalog import catalog_key_errors
+except ImportError:  # imported as scripts.check_native_impact_map
+    from scripts.check_attest_catalog import catalog_key_errors
+
 ROOT = Path(__file__).resolve().parents[1]
 ROOT_CODE_KEYS = ("stateful", "integration", "demos")
 ROOT_COMPOSITION_KEY = "root-composition"
@@ -90,6 +95,9 @@ def main() -> int:
         return 1
     attest = config_work_settings.attest_config(cfg, entry)
     errors = check(ROOT, attest)
+    # The live catalog must carry exactly the justfile attest-* keys (KEY_RECIPES); a key absent
+    # here is never selected or recorded by selective validation (bh-x9hco).
+    errors += catalog_key_errors(key.name for key in attest_keys(attest))
     if errors:
         print("native-impact-map: invalid", file=sys.stderr)
         for error in errors:

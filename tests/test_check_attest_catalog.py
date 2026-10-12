@@ -103,3 +103,13 @@ def test_root_prose_and_exact_doc_reader_input_have_narrow_owners() -> None:
     assert 'tags=["category:docs", "attest:docs"]' in root_build
     assert '"dependencies": ["//docs:docs-root", "//:root-guide-doc"]' in tests_build
     assert "//:root-config" not in tests_build
+
+
+def test_justfile_recipes_and_docs_table_must_match_key_recipes() -> None:
+    source = (ROOT / "justfile").read_text()
+    docs = (ROOT / "docs" / "ATTEST-KEYS.md").read_text()
+    assert MODULE.check(source, None, docs) == []
+    no_recipe = source.replace("attest-hq-storage:", "attest-hq-storage-gone:", 1)
+    assert any("justfile attest-*" in error for error in MODULE.check(no_recipe))
+    no_row = docs.replace("| `hq-storage` | `just attest-hq-storage`", "| `x` | `just attest-x`")
+    assert any("docs/ATTEST-KEYS.md" in error for error in MODULE.check(source, None, no_row))
