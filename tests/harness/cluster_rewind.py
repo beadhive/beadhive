@@ -266,7 +266,14 @@ def processes_print(root: Path, known: dict[int, str]) -> list[str]:
 
     ``dolt send-metrics`` is skipped: the Dolt CLI forks it detached after a command (cwd the
     command's, parent init) and it exits on its own a moment later, so whether a print catches
-    one is timing, not state -- it made the guard flag a "leak" at random (bh-jvgj6)."""
+    one is timing, not state -- it made the guard flag a "leak" at random (bh-jvgj6).
+
+    A process with an EMPTY command line is skipped too: the kernel drops a task's address space
+    (so ``/proc/<pid>/cmdline`` reads empty) in ``do_exit`` *before* it drops its working
+    directory and before the task turns zombie, so a process that was just killed or stopped
+    (the ``kill`` and ``stop_processes`` of a rewind) is briefly visible under the root with
+    state ``R``/``D``, cwd intact and no argv -- it printed as ``stray:`` (bh-u5mag). It is
+    already dying, so it is timing, not state; a live leak always has an argv."""
     proc = Path("/proc")
     if not proc.is_dir():
         return []
@@ -286,6 +293,8 @@ def processes_print(root: Path, known: dict[int, str]) -> list[str]:
             continue
         if needle in cmdline or cwd == needle or cwd.startswith(needle + os.sep):
             argv = cmdline.split()
+            if not argv:  # exiting: address space already released (see docstring)
+                continue
             argv0 = Path(argv[0]).name if argv else ""
             if argv0 == "dolt" and argv[1:2] == ["send-metrics"]:
                 continue
