@@ -1,7 +1,7 @@
 python_source(
     name="root-conftest",
     source="conftest.py",
-    dependencies=[":watchdog-diagnostics", ":perf-marker"],
+    dependencies=[":watchdog-diagnostics", ":perf-marker", ":schedule-telemetry"],
     tags=["category:test-only", "attest:stateful", "attest:root-composition"],
 )
 
@@ -14,6 +14,12 @@ python_source(
 python_source(
     name="perf-marker",
     source="harness/perf_marker.py",
+    tags=["category:test-only", "attest:stateful"],
+)
+
+python_source(
+    name="schedule-telemetry",
+    source="harness/schedule_telemetry.py",
     tags=["category:test-only", "attest:stateful"],
 )
 
