@@ -17,14 +17,13 @@ always ``Unknown`` with the ORIGINAL expectation, exactly like the port's fake. 
 
 from __future__ import annotations
 
-import hashlib
-import json
 import uuid
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
-from typing import Any, Final, Protocol, TypeVar
+from typing import Any, Protocol, TypeVar
 
 from beadhive_hq_storage import (
     ABSENT,
@@ -65,6 +64,14 @@ from ._classify import (
     is_deadline,
     unknown_reason,
 )
+from ._placement import (
+    PLACEMENT_DOMAIN,
+    PlacementRow,
+    decode_placement,
+    encode_placement,
+    placement_witness,
+    placement_witnessed,
+)
 from ._values import (
     DEFAULT_MAX_BODY_BYTES,
     aware,
@@ -87,9 +94,6 @@ __all__ = [
 ]
 
 C = TypeVar("C")
-
-PLACEMENT_DOMAIN: Final = "beadhive/sql-placement/v1"
-"""Root ``hq_sql_placement.PLACEMENT_DOMAIN``: the ``request_sha256`` of a director row."""
 
 
 class Role(StrEnum):
@@ -131,23 +135,14 @@ _CommitPoint = Callable[[DbApiConnection, DbApiCursor], Any]
 """Root-injected: a fresh connection for ``role``. Raising means nothing was sent."""
 
 
-def placement_witness(prefix: str, revision: str, body: bytes) -> str:
-    """Root ``hq_sql_placement.placement_witness``: the ``request_sha256`` that marks a
-    director-written placement row (a receiver row carries a signed-request digest instead)."""
-    record = {
-        "domain": PLACEMENT_DOMAIN,
-        "prefix": prefix,
-        "revision": revision,
-        "lease_sha256": hashlib.sha256(body).hexdigest(),
-    }
-    return hashlib.sha256(
-        json.dumps(record, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-
-
 class DoltHqStorage:
     """The Dolt HQ store. ``remote`` / ``branch`` name the publication remote; ``deadline``
-    recognises the transport's operation-deadline error (``Unknown(reason="deadline")``)."""
+    recognises the transport's operation-deadline error (``Unknown(reason="deadline")``).
+
+    ``principals`` maps a :class:`Role` to the ``(user, database)`` its connection must be: every
+    session for that role first checks ``CURRENT_USER()``, ``DATABASE()`` and ``ACTIVE_BRANCH()``
+    (``branch``) and refuses a mismatch with ``StorageUnavailable`` before anything else is sent
+    (root's placement-writer endpoint check, bh-sqfvq)."""
 
     def __init__(
         self,
@@ -158,6 +153,7 @@ class DoltHqStorage:
         backend_identity: str | None = None,
         deadline: DeadlinePredicate | None = None,
         max_body_bytes: int = DEFAULT_MAX_BODY_BYTES,
+        principals: Mapping[Role, tuple[str, str]] | None = None,
     ) -> None:
         self._connect = connect
         self._remote = check_key(remote, "remote")
@@ -165,9 +161,24 @@ class DoltHqStorage:
         self._identity = backend_identity
         self._deadline = deadline
         self._cap = max_body_bytes
+        self._principals = {Role(role): tuple(p) for role, p in (principals or {}).items()}
         self._capabilities: dict[type, object] = {}
 
     # -- connections -------------------------------------------------------------------------
+
+    def _check_principal(self, role: Role, cursor: DbApiCursor) -> None:
+        expected = self._principals.get(role)
+        if expected is None:
+            return
+        user, database = expected
+        try:
+            cursor.execute("SELECT CURRENT_USER(), DATABASE(), ACTIVE_BRANCH()")
+            found = cursor.fetchone()
+        except Exception:  # noqa: BLE001 - a failed identity read sent no mutation
+            raise StorageUnavailable(f"HQ {role.value} identity unavailable") from None
+        current, current_db, branch = (_text(v) for v in (found or ("", "", "")))
+        if not current.startswith(user + "@") or current_db != database or branch != self._branch:
+            raise StorageUnavailable(f"HQ {role.value} principal or endpoint mismatch")
 
     @contextmanager
     def _session(self, role: Role) -> Iterator[tuple[DbApiConnection, DbApiCursor]]:
@@ -178,6 +189,7 @@ class DoltHqStorage:
         try:
             cursor = connection.cursor()
             try:
+                self._check_principal(role, cursor)
                 yield connection, cursor
             finally:
                 try:
@@ -256,6 +268,9 @@ class DoltHqStorage:
         raw = canonical(body, cap=self._cap)
         revision = fresh_revision({"kind": kind.value, "key": key, "seed": True})
         witness = str(uuid.uuid4())
+        if kind is RecordKind.PLACEMENT:
+            row = encode_placement(key, body, operation=OperationId(witness), cap=self._cap)
+            revision = row.revision
 
         def write(cursor: DbApiCursor) -> None:
             if kind is RecordKind.PLACEMENT:
@@ -263,7 +278,7 @@ class DoltHqStorage:
                     f"INSERT INTO {schema.PLACEMENT_TABLE} "
                     "(prefix, revision, lease_json, request_id, request_sha256) "
                     "VALUES (%s, %s, %s, %s, %s)",
-                    (key, revision, raw, witness, placement_witness(key, revision, raw)),
+                    (key, row.revision, row.lease_json, row.request_id, row.request_sha256),
                 )
             else:
                 cursor.execute(
@@ -293,12 +308,18 @@ class DoltHqStorage:
         self._capabilities[kind] = implementation
 
     def capability(self, kind: type[C]) -> C | None:
-        """The Dolt-only capabilities (``DoltHistory``, ``DoltMerge``, ``DoltAccounts``) over
-        this store's connection factory, plus any registered one; ``None`` otherwise."""
+        """The Dolt-only capabilities (``DoltHistory``, ``DoltMerge``, ``DoltAccounts``, and the
+        transitional ``DoltHqSessions``) over this store, plus any registered one; ``None``
+        otherwise."""
         if kind not in self._capabilities:
             from ._capabilities import default_hq_capability
+            from ._sessions import DoltHqSessions, SqlDoltHqSessions
 
-            found = default_hq_capability(kind, self._connect)
+            found = (
+                SqlDoltHqSessions(self)
+                if kind is DoltHqSessions
+                else default_hq_capability(kind, self._connect)
+            )
             if found is None:
                 return None
             self._capabilities[kind] = found
@@ -310,8 +331,8 @@ class DoltHqStorage:
     def _select_record(kind: RecordKind) -> str:
         if kind is RecordKind.PLACEMENT:
             return (
-                f"SELECT prefix, revision, lease_json, request_id, UTC_TIMESTAMP(6) "
-                f"FROM {schema.PLACEMENT_TABLE}"
+                "SELECT prefix, revision, lease_json, request_id, UTC_TIMESTAMP(6), "
+                f"request_sha256 FROM {schema.PLACEMENT_TABLE}"
             )
         return (
             "SELECT record_key, revision, body, operation_id, recorded_at "
@@ -324,28 +345,91 @@ class DoltHqStorage:
         row = cursor.fetchone()
         return None if row is None else tuple(row)
 
+    def _all(self, cursor: DbApiCursor, kind: RecordKind) -> list[tuple]:
+        cursor.execute(self._select_record(kind))
+        return [tuple(r) for r in cursor.fetchall()]
+
     @staticmethod
-    def _versioned(row: Sequence[Any]) -> Versioned[Body]:
-        return Versioned(_text(row[0]), Revision(_text(row[1])), decode_body(row[2]))
+    def _versioned(row: Sequence[Any], kind: RecordKind | None = None) -> Versioned[Body]:
+        key, revision = _text(row[0]), _text(row[1])
+        if kind is RecordKind.PLACEMENT:
+            body = decode_placement(key, revision, _bytes(row[2]), _text(row[3]), _text(row[5]))
+            return Versioned(key, Revision(revision), body)
+        return Versioned(key, Revision(revision), decode_body(row[2]))
 
     def read(self, kind: RecordKind, key: str) -> Versioned[Body] | None:
         kind = RecordKind(kind)
         check_key(key)
         row = self._read(Role.READER, lambda cursor: self._one(cursor, kind, key))
-        return None if row is None else self._versioned(row)
+        return None if row is None else self._versioned(row, kind)
+
+    def _filter(
+        self, kind: RecordKind, rows: Sequence[tuple], keys: Collection[str] | None
+    ) -> list[Versioned[Body]]:
+        wanted = None if keys is None else {check_key(k) for k in keys}
+        found = [self._versioned(r, kind) for r in rows]
+        return sorted((v for v in found if wanted is None or v.key in wanted), key=lambda v: v.key)
 
     def read_many(
         self, kind: RecordKind, keys: Collection[str] | None = None
     ) -> Sequence[Versioned[Body]]:
         kind = RecordKind(kind)
-        wanted = None if keys is None else {check_key(k) for k in keys}
+        if keys is not None:
+            for key in keys:
+                check_key(key)
+        return self._filter(kind, self._read(Role.READER, lambda c: self._all(c, kind)), keys)
 
-        def rows(cursor: DbApiCursor) -> list[tuple]:
-            cursor.execute(self._select_record(kind))
-            return [tuple(r) for r in cursor.fetchall()]
+    def _prepare(
+        self,
+        kind: RecordKind,
+        key: str,
+        body: Body,
+        expected: Revision | Absent,
+        operation: OperationId,
+    ) -> _Write:
+        """Validate and encode one compare-and-set, refused before any I/O."""
+        kind = RecordKind(kind)
+        check_key(key)
+        operation = check_operation(operation)
+        raw = canonical(body, cap=self._cap)
+        if isinstance(expected, Absent) and kind in UPDATE_ONLY_KINDS:
+            raise NotProvisioned(f"{kind.value} is UPDATE-only: operator provisioning seeds it")
+        if not isinstance(expected, Absent) and not isinstance(expected, str):
+            raise InvalidRequest("expected must be a Revision or ABSENT")
+        if kind is RecordKind.PLACEMENT:
+            row = encode_placement(key, body, operation=operation, cap=self._cap)
+            return _Write(kind, key, expected, operation, row.revision, row.lease_json, row)
+        revision = fresh_revision({"kind": kind.value, "key": key, "body": decode_body(raw)})
+        return _Write(kind, key, expected, operation, revision, raw, None)
 
-        found = [self._versioned(r) for r in self._read(Role.READER, rows)]
-        return sorted((v for v in found if wanted is None or v.key in wanted), key=lambda v: v.key)
+    def _apply(self, cursor: DbApiCursor, write: _Write) -> Outcome:
+        """Issue one prepared compare-and-set on an open transaction (no commit)."""
+        kind, key, expected, operation = write.kind, write.key, write.expected, write.operation
+        if write.placement is not None:
+            row = write.placement
+            cursor.execute(
+                f"UPDATE {schema.PLACEMENT_TABLE} SET revision = %s, lease_json = %s, "
+                "request_id = %s, request_sha256 = %s WHERE prefix = %s AND revision = %s",
+                (row.revision, row.lease_json, row.request_id, row.request_sha256, key, expected),
+            )
+        elif isinstance(expected, Absent):
+            cursor.execute(
+                f"INSERT INTO {schema.RECORDS_TABLE} "
+                "(kind, record_key, revision, body, operation_id, recorded_at) "
+                "SELECT %s, %s, %s, %s, %s, UTC_TIMESTAMP(6) FROM DUAL WHERE NOT EXISTS "
+                f"(SELECT 1 FROM {schema.RECORDS_TABLE} WHERE kind = %s AND record_key = %s)",
+                (kind.value, key, write.revision, write.raw, operation, kind.value, key),
+            )
+        else:
+            cursor.execute(
+                f"UPDATE {schema.RECORDS_TABLE} SET revision = %s, body = %s, "
+                "operation_id = %s WHERE kind = %s AND record_key = %s AND revision = %s",
+                (write.revision, write.raw, operation, kind.value, key, expected),
+            )
+        if cursor.rowcount == 1:
+            return Applied(write.revision, operation)
+        current = self._one(cursor, kind, key)
+        return Conflict(None if current is None else self._versioned(current, kind))
 
     def compare_and_set(
         self,
@@ -356,67 +440,41 @@ class DoltHqStorage:
         expected: Revision | Absent,
         operation: OperationId,
     ) -> Outcome:
-        kind = RecordKind(kind)
-        check_key(key)
-        operation = check_operation(operation)
-        raw = canonical(body, cap=self._cap)
-        if isinstance(expected, Absent) and kind in UPDATE_ONLY_KINDS:
-            raise NotProvisioned(f"{kind.value} is UPDATE-only: operator provisioning seeds it")
-        if not isinstance(expected, Absent) and not isinstance(expected, str):
-            raise InvalidRequest("expected must be a Revision or ABSENT")
-        revision = fresh_revision({"kind": kind.value, "key": key, "body": decode_body(raw)})
+        write = self._prepare(kind, key, body, expected, operation)
 
         def body_fn(cursor: DbApiCursor) -> tuple[Outcome, Callable[..., Any]]:
-            if kind is RecordKind.PLACEMENT:
-                cursor.execute(
-                    f"UPDATE {schema.PLACEMENT_TABLE} SET revision = %s, lease_json = %s, "
-                    "request_id = %s, request_sha256 = %s WHERE prefix = %s AND revision = %s",
-                    (
-                        revision,
-                        raw,
-                        operation,
-                        placement_witness(key, revision, raw),
-                        key,
-                        expected,
-                    ),
-                )
-            elif isinstance(expected, Absent):
-                cursor.execute(
-                    f"INSERT INTO {schema.RECORDS_TABLE} "
-                    "(kind, record_key, revision, body, operation_id, recorded_at) "
-                    "SELECT %s, %s, %s, %s, %s, UTC_TIMESTAMP(6) FROM DUAL WHERE NOT EXISTS "
-                    f"(SELECT 1 FROM {schema.RECORDS_TABLE} WHERE kind = %s AND record_key = %s)",
-                    (kind.value, key, revision, raw, operation, kind.value, key),
-                )
-            else:
-                cursor.execute(
-                    f"UPDATE {schema.RECORDS_TABLE} SET revision = %s, body = %s, "
-                    "operation_id = %s WHERE kind = %s AND record_key = %s AND revision = %s",
-                    (revision, raw, operation, kind.value, key, expected),
-                )
-            if cursor.rowcount == 1:
-                outcome: Outcome = Applied(revision, operation)
-            else:
-                row = self._one(cursor, kind, key)
-                outcome = Conflict(None if row is None else self._versioned(row))
-            return outcome, _commit_transaction
+            return self._apply(cursor, write), _commit_transaction
 
         return self._mutate(
-            Role.PLACEMENT_WRITER if kind is RecordKind.PLACEMENT else Role.OPERATOR,
+            Role.PLACEMENT_WRITER if write.kind is RecordKind.PLACEMENT else Role.OPERATOR,
             body_fn,
             expected=expected,
-            operation=operation,
-            on_conflict=lambda: Conflict(self.read(kind, key)),
+            operation=write.operation,
+            on_conflict=lambda: Conflict(self.read(write.kind, write.key)),
         )
+
+    def _witnessed(self, kind: RecordKind, row: Sequence[Any] | None, operation: str) -> bool:
+        if row is None:
+            return False
+        if kind is RecordKind.PLACEMENT:
+            return placement_witnessed(
+                _text(row[0]),
+                _text(row[1]),
+                _bytes(row[2]),
+                _text(row[3]),
+                _text(row[5]),
+                operation,
+            )
+        return _text(row[3]) == operation
 
     def lookup(self, kind: RecordKind, key: str, operation: OperationId) -> LookupOutcome:
         operation = check_operation(operation)
         kind = RecordKind(kind)
         check_key(key)
         row = self._read(Role.READER, lambda cursor: self._one(cursor, kind, key))
-        if row is not None and _text(row[3]) == operation:
+        if row is not None and self._witnessed(kind, row, operation):
             # PLACEMENT has no stamp column (receiver-compatible row): its recorded_at is the
-            # server clock at lookup, an upper bound on the write (bh-sqfvq may add one).
+            # server clock at lookup, an upper bound on the write.
             return Confirmed(operation, Revision(_text(row[1])), aware(row[4]))
         return NotConfirmed(operation)
 
@@ -938,6 +996,19 @@ class DoltPlacementStore:
 
 
 # --- helpers ----------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _Write:
+    """One validated, encoded compare-and-set, ready to issue."""
+
+    kind: RecordKind
+    key: str
+    expected: Revision | Absent
+    operation: OperationId
+    revision: Revision
+    raw: bytes
+    placement: PlacementRow | None
 
 
 class _ConflictMarker(Exception):

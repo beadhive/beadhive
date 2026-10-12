@@ -39,13 +39,22 @@ from ._classify import (
 )
 from ._fence import DoltHiveFence, FenceStatementEngine, SqlConnectionFenceEngine
 from ._hq import (
-    PLACEMENT_DOMAIN,
     ConnectionFactory,
     DbApiConnection,
     DbApiCursor,
     DoltHqStorage,
     DoltPlacementStore,
     Role,
+)
+from ._placement import (
+    CAUSE_DOMAIN,
+    PLACEMENT_CAUSES,
+    PLACEMENT_DOMAIN,
+    cause_token,
+    operation_revision,
+    placement_cause,
+    placement_conformance_rows,
+    placement_seed_statement,
     placement_witness,
 )
 from ._schema import (
@@ -62,6 +71,7 @@ from ._schema import (
     live_schema,
     reclaim_statements,
 )
+from ._sessions import DoltHqSessions, DoltHqTransaction, SqlDoltHqSessions
 
 __all__ = [
     # the generic port adapters
@@ -80,12 +90,15 @@ __all__ = [
     "CommitInfo",
     "DoltAccounts",
     "DoltHistory",
+    "DoltHqSessions",
+    "DoltHqTransaction",
     "DoltMerge",
     "FenceTable",
     "HistoryRow",
     "MergeRefused",
     "SqlDoltAccounts",
     "SqlDoltHistory",
+    "SqlDoltHqSessions",
     "SqlDoltMerge",
     "SqlRunner",
     "connection_runner",
@@ -100,17 +113,24 @@ __all__ = [
     "unknown_reason",
     # schema and wire format
     "APPEND_TABLE",
+    "CAUSE_DOMAIN",
     "COMMITTED_TABLES",
     "DOCUMENTS_TABLE",
     "FENCE_TABLES",
     "LIVENESS_TABLE",
+    "PLACEMENT_CAUSES",
     "PLACEMENT_DOMAIN",
     "PLACEMENT_TABLE",
     "PUBLICATIONS_TABLE",
     "RECORDS_TABLE",
     "bump_statements",
+    "cause_token",
     "committed_schema",
     "live_schema",
+    "operation_revision",
+    "placement_cause",
+    "placement_conformance_rows",
+    "placement_seed_statement",
     "placement_witness",
     "reclaim_statements",
 ]
