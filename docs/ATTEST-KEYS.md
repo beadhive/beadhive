@@ -17,6 +17,20 @@ in the optional `just check-all-pants` profile (whether Pants stays is bh-ahm6x)
 graphs. The live native profile uses the path backend and keeps the catalog active; uncertainty
 falls back to the complete key set.
 
+### Runtime catalog drift check
+
+The catalog lives only in HQ (`work.attest.keys`); there is no repo catalog file. `just
+check-attest-catalog` catches drift at lint time. For runtime, a hive may opt in with
+`work.attest.drift_check`, an opaque command bh runs at the evaluated revision's checkout with the
+live catalog (`[{name, cmd, enabled}]`) as JSON on stdin. Exit 0 means no drift. Any other exit, a
+timeout (`work.attest.drift_check_timeout_seconds`, default 60) or an unset command under
+`work.gate.model: keys` is drift, and `selective_validation.catalog_ok` returns False. A clean
+result is cached by (tree, catalog digest, drift-check command hash), so an HQ catalog edit forces
+a re-check. Unset
+(the default) changes nothing. This repository's command is
+`uv run python scripts/check_attest_catalog.py --live-catalog -`, which compares the live keys
+and `just attest-<name>` commands against the justfile recipes, `KEY_RECIPES` and the table below.
+
 | Key | Opaque command | Pants selector | Covers |
 |---|---|---|---|
 | `docs` | `just attest-docs` | `attest:docs` | Markdown lint |

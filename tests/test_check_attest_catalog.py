@@ -113,3 +113,68 @@ def test_justfile_recipes_and_docs_table_must_match_key_recipes() -> None:
     assert any("justfile attest-*" in error for error in MODULE.check(no_recipe))
     no_row = docs.replace("| `hq-storage` | `just attest-hq-storage`", "| `x` | `just attest-x`")
     assert any("docs/ATTEST-KEYS.md" in error for error in MODULE.check(source, None, no_row))
+
+
+def _live(*, drop: str | None = None, extra: str | None = None, cmds: dict | None = None):
+    names = [key for key in MODULE.KEY_RECIPES if key != drop] + ([extra] if extra else [])
+    return [
+        {"name": name, "cmd": (cmds or {}).get(name, f"just attest-{name}"), "enabled": True}
+        for name in names
+    ]
+
+
+def test_live_catalog_exact_match_is_clean() -> None:
+    source = (ROOT / "justfile").read_text()
+    docs = (ROOT / "docs" / "ATTEST-KEYS.md").read_text()
+    assert MODULE.live_catalog_errors(_live(), source, docs) == []
+
+
+def test_live_catalog_missing_hq_storage_key_is_named() -> None:
+    source = (ROOT / "justfile").read_text()
+    errors = MODULE.live_catalog_errors(_live(drop="hq-storage"), source)
+    assert any("hq-storage" in error and "missing" in error for error in errors)
+    assert any("absent from the live HQ catalog" in error for error in errors)
+
+
+def test_live_catalog_key_without_recipe_is_named() -> None:
+    source = (ROOT / "justfile").read_text()
+    errors = MODULE.live_catalog_errors(_live(extra="ghost"), source)
+    assert any("ghost" in error and "no justfile recipe" in error for error in errors)
+
+
+def test_live_catalog_changed_cmd_is_named() -> None:
+    source = (ROOT / "justfile").read_text()
+    errors = MODULE.live_catalog_errors(_live(cmds={"unit": "just unit"}), source)
+    assert any("'unit'" in error and "just attest-unit" in error for error in errors)
+
+
+def test_live_catalog_checks_recipes_and_docs_table_too() -> None:
+    source = (ROOT / "justfile").read_text()
+    docs = (ROOT / "docs" / "ATTEST-KEYS.md").read_text()
+    no_row = docs.replace("| `hq-storage` | `just attest-hq-storage`", "| `x` | `just attest-x`")
+    assert any(
+        "docs/ATTEST-KEYS.md" in e for e in MODULE.live_catalog_errors(_live(), source, no_row)
+    )
+    no_recipe = source.replace("attest-hq-storage:", "attest-hq-storage-gone:", 1)
+    assert any("justfile" in e for e in MODULE.live_catalog_errors(_live(), no_recipe))
+
+
+def test_live_catalog_rejects_malformed_and_duplicate_input() -> None:
+    source = (ROOT / "justfile").read_text()
+    assert MODULE.live_catalog_errors({"unit": 1}, source)
+    duplicated = _live() + [{"name": "unit", "cmd": "just attest-unit", "enabled": True}]
+    assert any("duplicate" in e for e in MODULE.live_catalog_errors(duplicated, source))
+
+
+def test_live_catalog_mode_reads_stdin_and_exits_nonzero_on_drift(monkeypatch, capsys) -> None:
+    import io
+    import json
+
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(_live())))
+    assert MODULE.main(["--live-catalog", "-"]) == 0
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(_live(drop="hq-storage"))))
+    assert MODULE.main(["--live-catalog", "-"]) == 1
+    assert "hq-storage" in capsys.readouterr().err
+    monkeypatch.setattr("sys.stdin", io.StringIO("not json"))
+    assert MODULE.main(["--live-catalog", "-"]) == 1
+    assert MODULE.main(["--live-catalog"]) == 2

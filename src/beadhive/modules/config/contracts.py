@@ -730,6 +730,28 @@ class AttestConfig(_Section):
         description="Advisory semantic key selection; never produces carryable proof.",
     )
 
+    drift_check: str | None = Field(
+        None,
+        description=(
+            "Opt-in runtime catalog drift check (attest-keys ADR, 3.6): an OPAQUE command bh runs "
+            "at the evaluated revision's checkout with the live catalog (name, cmd, enabled) as "
+            "JSON on stdin. Exit 0 means no drift; anything else is drift. Unset (the default) "
+            "runs nothing."
+        ),
+    )
+    drift_check_timeout_seconds: float = Field(
+        60.0,
+        gt=0,
+        description="Seconds the drift-check command may run before it counts as drift.",
+    )
+
+    @field_validator("drift_check")
+    @classmethod
+    def _drift_check_not_blank(cls, v):
+        if v is not None and not v.strip():
+            raise ValueError("attest drift_check must not be blank")
+        return v
+
     @field_validator("keys")
     @classmethod
     def _unique_names(cls, v):
