@@ -4,8 +4,9 @@ A thin check, not a third run of the contract suite: root's composition yields o
 satisfy the port protocols, it wires root's PyMySQL transport (``hq_sql_transport.connect``)
 into the adapter's connection factory, and the adapter's wire encodings match root's own (the
 placement witness a receiver and director use to recognise a director row, the placement cause
-a frame reads, the operator's seed statement, and the fence bump). The director's store
-(bh-sqfvq, the port's first production consumer) is composed here too.
+a frame reads, the operator's seed statement, the fence bump, and the HQ config publication's
+change set, kinds and digest). The director's store (bh-sqfvq) and the config publisher's
+history (bh-x7xtc) are composed here too.
 """
 
 from __future__ import annotations
@@ -15,15 +16,17 @@ from pathlib import Path
 
 import pytest
 
-from beadhive import fence_schema, hq_sql_placement, writer_adopt
+from beadhive import fence_schema, hq_sql_config, hq_sql_placement, writer_adopt
 from beadhive.fence_data import DoltCliEngine
 from beadhive.host_lease_contracts import HostLease, now_stamp
 from beadhive.hq_storage_composition import (
+    config_history,
     dolt_hive_fence,
     dolt_hq_storage,
     hq_connection_factory,
     placement_storage,
 )
+from beadhive.modules.config.domain.ports import FleetConfigDocument, ordered_documents_digest
 from beadhive_hq_storage import (
     ABSENT,
     AppendLog,
@@ -40,14 +43,19 @@ from beadhive_hq_storage import (
 )
 from beadhive_hq_storage_dolt import (
     CAUSE_DOMAIN,
+    CONFIG_TABLES,
     PLACEMENT_CAUSES,
     PLACEMENT_DOMAIN,
     DoltAccounts,
+    DoltConfigHistory,
     DoltHistory,
     DoltHqSessions,
     DoltHqStorage,
     bump_statements,
     cause_token,
+    config_change_set,
+    config_document_kind,
+    config_documents_digest,
     connection_runner,
     placement_cause,
     placement_seed_statement,
@@ -108,6 +116,38 @@ def test_adapter_wire_encodings_match_roots() -> None:
         "frame-a", 3, revision
     )
     assert len(fence_schema.trigger_names()) == fence_schema.TRIGGER_COUNT
+
+
+def test_the_config_publisher_history_is_the_adapters_config_mapping() -> None:
+    binding = {"user": "bh_hq_config_publisher", "database": "beadhive_hq_config"}
+    settings = {"reader": {**binding, "user": "bh_hq_config_reader"}, "publisher": binding}
+    history = config_history(settings)
+    assert isinstance(history, DoltConfigHistory) and isinstance(history, CommittedHistory)
+    store = hq_sql_config.SqlFleetConfigRevisionStore(settings, broker=object())
+    assert isinstance(store.history, DoltConfigHistory)
+    with pytest.raises(StorageUnavailable):  # no transport credential: nothing was sent
+        history.head()
+    with pytest.raises(StorageUnavailable):  # an absent role binding is refused the same way
+        config_history({}).head()
+
+
+def test_adapter_config_publication_encoding_matches_roots() -> None:
+    assert CONFIG_TABLES == hq_sql_config.TABLES
+    documents = (
+        FleetConfigDocument("fleet.yaml", "hq:\n  mode: dolt-server\n"),
+        FleetConfigDocument("beadyard.json", "{}\n"),
+        FleetConfigDocument("workspace-extra.toml", "[x]\n"),
+        FleetConfigDocument("allowed_signers", "k\n"),
+        FleetConfigDocument("hosts/a.yaml", "é: 1\n"),
+        FleetConfigDocument("hives/github/o/r.yaml", "x: 1\n"),
+    )
+    raw = tuple((doc.path, doc.content.encode("utf-8")) for doc in documents)
+    assert hq_sql_config.publication_changes(documents, schema_version=3) == config_change_set(
+        3, raw
+    )
+    assert config_documents_digest(raw) == ordered_documents_digest(documents)
+    for document in documents:
+        assert config_document_kind(document.path) == hq_sql_config._kind(document.path)
 
 
 class _Broker:

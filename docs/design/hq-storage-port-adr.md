@@ -887,3 +887,91 @@ binding. The unit tests run on `InMemoryHqStorage`.
   `tests/test_failover_policy.py` drives `failover_after` through a fake `DoltHqSessions`. The
   integration tests compose the adapter as the director does, and their assertions are
   unchanged except that a racing loser's reason is now `CAS_LOST` or the pre-CAS `moved`.
+
+### Settled by `bh-x7xtc`
+
+`beadhive.hq_sql_config` publishes and recovers HQ configuration through the port. A
+publication is one `CommittedHistory.publish` of a `ChangeSet` (`publish_documents`), and
+`recover_publication` is decided by `lookup_publication` on the immutable publication UUID
+(`confirmed_publication`). Neither the publication's writes nor its `DOLT_ADD` / `DOLT_COMMIT`
+are in root any more. The history is the Dolt adapter's `DoltConfigHistory`, which
+`beadhive.hq_storage_composition.config_history` composes from the `reader` and `publisher`
+bindings. The unit tests run on `InMemoryHqStorage`.
+
+- **Strict recovery, unchanged.** An `Unknown` from `publish` raises `PublicationUnknown`
+  with the original publication UUID and parent, and now also the port's `reason`. Root never
+  reissues it. `NotConfirmed` returns `None` from `recover_publication`, as absence always
+  did. It never authorises a reissue, a new UUID or a refreshed-parent retry (section 2,
+  rule 4). An `Applied` publication whose readback fails or differs is still
+  `PublicationUnknown`.
+- **Deviation: the config publication does not use `hq_storage_documents`.** The `hq_config_*`
+  tables are a committed wire format. The runtime authority, frames, operator surfaces and
+  0.22.x readers read them, and `bh-4shu3`'s seed writes them. So the adapter maps the port
+  onto them, column for column, in a second `CommittedHistory` (`_config.py`):
+  - `ChangeSet.tables` must be exactly `hq_config_meta`, `hq_config_documents` and
+    `hq_config_publications`, and that set is the explicit `DOLT_ADD` list (never `-A`);
+  - the documents are `hq_config_meta/schema_version` (the storage version, a domain choice
+    made by root from beadyard identity), then `hq_config_documents/<path>` in publication
+    order;
+  - the adapter derives each document's ordinal, kind and `content_sha256`, the ordered
+    digest, the next sequence and the witness row. The kinds and the digest restate root's
+    `_kind` and `ordered_documents_digest`, and
+    `tests/contracts/test_hq_storage_composition.py` pins root's change set, kinds and digest
+    equal to the adapter's.
+- **Deviation: what `Confirmed` carries for a config publication.** The config reader has no
+  grant on `dolt_log`, `dolt_commit_ancestors` or `dolt_history_*`; only the publisher holds
+  them, and only for the initial-seed recovery. So the adapter confirms the witness row
+  `AS OF` the current head against the original parent, with `HAS_ANCESTOR`, which is exactly
+  the check `recover_publication` always made. `Confirmed.revision` is that head, where the
+  witness is visible, not the publication's own commit. `recorded_at` is the server clock at
+  lookup, an upper bound on the write, as for placement. `Applied.revision` from `publish` is
+  still the exact committed hash.
+- **The parent check after commit.** The generic `publish` reads the new commit's first
+  parent from `dolt_commit_ancestors`. The config publication cannot, for the same grant
+  reason. Root's readback (`load_snapshot(revision=<commit>)`) and its floor's ancestry and
+  witness checks verify the commit instead, as they always did.
+- **The publisher preflight stays in root, in its own read transaction.** Identity and Dolt
+  version, the exact expected head, a clean `dolt_status`, the table allowlist, the previous
+  carrier (raw for repair), beadyard identity, version monotonicity and the host floor are
+  domain checks, so they run in root before the port publish. Before, they shared the write's
+  transaction. The port publish re-checks the head, the working tree and the allowlist inside
+  its own transaction, and its sequence CAS still guards the meta singleton. A race lost
+  between the two is therefore a `Conflict`.
+- **Error mapping.** `Conflict` is `configuration publication CAS conflict` (`1213` and
+  `1205` included, as before). A head that had already moved at preflight is still
+  `expected configuration revision changed`. `NotProvisioned` and `IntegrityViolation` keep
+  their message (`HQ config schema table allowlist changed`, `HQ config working tree is
+  dirty`). `StorageUnavailable` and `InvalidRequest` (including a reused publication UUID,
+  which `1062` reported before) are `configuration publication failed`.
+- **Recovery's witness read.** After the lookup, root's reader still reads the floor-checked
+  head and the witness row, for its sequence and digest. A witness row against another parent
+  is still `committed publication identity or parent mismatch`. A head that does not descend
+  from the parent is still `committed publication parent is not an ancestor`. A witness row
+  the port did not confirm (it landed between the two reads) reads as `None`, never as a
+  recovery and never as permission to reissue.
+- **Connections and deadlines.** A publication now opens the preflight's publisher
+  connection, the port publish's publisher connection (plus a reader connection to report a
+  `Conflict`'s head), then the readback. Before, it opened one publisher connection and the
+  readback. Each port connection runs under its binding's own `operation_timeout`. The
+  readback now gets its own reader budget instead of the publisher's remainder, so a slow
+  publish no longer turns a committed publication into `PublicationUnknown` by deadline
+  alone. `recover_publication` opens one more reader connection, for the lookup.
+- **Not done here.**
+  - Initial seeding (`initialize_snapshot`, `recover_initial_snapshot`) stays root SQL. It is
+    the separate `bh-4shu3` contract (section 2, rule 4), and its recovery needs the
+    publisher's `dolt_history_*` grant.
+  - The committed reads stay root SQL on a reader cursor: `load_snapshot`,
+    `committed_snapshot_at`, `tolerated_bound_at`, `authority_binding`, the floor and the
+    `inspect_*` views. `hq_sql_runtime`'s combined config-and-authority read hands its own
+    cursor to `committed_snapshot_at`, so they move with the runtime authority and
+    `consistent_read` (`bh-xnn5p`).
+- **Tests.**
+  - `tests/test_hq_sql_config_port.py` drives publication and recovery over
+    `InMemoryHqStorage`, replacing only root's preflight and readback seams. It covers
+    `Applied`, `Conflict`, `Unknown` (each reason, applied and not), `Confirmed`,
+    `NotConfirmed` and the no-reissue rule.
+  - The `hq_config_*` row encoding, the explicit `DOLT_ADD` list, the dirty-tree and
+    allowlist refusals, and a lost `DOLT_COMMIT` acknowledgment resolved by lookup run on real
+    Dolt in `packages/beadhive-hq-storage-dolt/tests/test_hq_storage_dolt_adapter.py`.
+  - `tests/test_hq_sql_config_int.py` and the other config publication tests are unchanged
+    and pass.
