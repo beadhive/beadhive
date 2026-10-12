@@ -79,7 +79,13 @@ def _slot_event(kind: str, test_id: str, **fields) -> None:
     if not path:
         return
     payload = json.dumps(
-        {"event": kind, "test": test_id[-1000:], "monotonic": time.monotonic(), **fields}
+        {
+            "event": kind,
+            "test": test_id[-1000:],
+            "worker": os.environ.get("PYTEST_XDIST_WORKER", "main"),
+            "monotonic": time.monotonic(),
+            **fields,
+        }
     )
     handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
