@@ -19,6 +19,7 @@ import pytest
 
 from beadhive import host_adopt
 from beadhive import writer_adopt as wa
+from beadhive_hq_storage import Confirmed, NotConfirmed, new_operation_id
 from beadhive_hq_storage_dolt import DoltHiveFence
 from harness import composed_fence as cf
 from harness import epoch_fence as ef
@@ -143,9 +144,13 @@ def test_coexistence_adopt_lands_the_sentinel_bump_with_placement_and_ref_in_loc
         _seed_ref(ref, "a", e0)
         before = _remote(world)["writer"]
 
-        out = wa.coexistence_adopt(FrameData(world["b"]), placement, ref, prefix="fx", frame="b")
+        data = FrameData(world["b"])
+        out = wa.coexistence_adopt(data, placement, ref, prefix="fx", frame="b")
 
         assert out.epoch == e0 + 1 and not out.resumed
+        op = new_operation_id()
+        assert isinstance(data.lookup_bump("b", e0 + 1, operation=op), Confirmed)
+        assert isinstance(data.lookup_bump("a", e0 + 1, operation=op), NotConfirmed)
         remote = _remote(world)
         assert (remote["writer"]["frame"], remote["writer"]["epoch"]) == ("b", e0 + 1)
         assert remote["writer"]["revision"] != before["revision"]

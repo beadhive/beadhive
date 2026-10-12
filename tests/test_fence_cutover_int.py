@@ -259,7 +259,7 @@ def test_cutover_status_rerun_and_rollback(rewound_cluster, kind):
     assert back.ref_sha == ref_sha2
     assert ref2 == {"epoch": LIVE_EPOCH, "host_id": "a", "seq": 2}  # never moved back
     assert node.ident() is None
-    assert node.trigger_count() == 0
+    assert node.guard_report().count == 0
 
     # R5 on the replica, then the legacy model again (a plain fast-forward pull)
     r5 = _rollback(cluster, c, node_c)

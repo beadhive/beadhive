@@ -8,7 +8,7 @@ nothing else — no wall clock, no HQ, no frame-authority read, and no lease ren
 other hive keeps the lease gate, with ``expires_at`` advisory; it is still renewed best-effort
 as a liveness hint (``test_host_lease_renewal.py``), never as a reason to refuse.
 
-The hive's data here is a fake :class:`~beadhive.writer_adopt.FenceData` (only ``writer()`` is
+The hive's data here is a fake :class:`~beadhive_hq_storage.HiveFence` (only ``writer()`` is
 read); the real-Dolt run against the composed prototype is ``test_guard_writer_gate_int.py``.
 The lease store is a scratch HQ clone under ``tmp_path``.
 """

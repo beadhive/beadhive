@@ -35,7 +35,7 @@ or the engine's push), even when its outcome is already a `Conflict`. So a lost 
 | `renew` | `UPDATE` or `INSERT` of `hq_live_liveness`; a trigger stamps `UTC_TIMESTAMP(6)` | the server stamp | not applicable | none: a lost acknowledgment raises `StorageError` |
 | `publish` | head check, sequence CAS, documents, publication row, `DOLT_ADD` of an explicit list, then `DOLT_COMMIT` | the exact commit hash, parent verified | a moved or `ABSENT` head, a lost sequence CAS, or `1213` | the `publication_id` row and its parent; `lookup_publication` joins `dolt_history_*` to `dolt_commit_ancestors` |
 | `CommittedHistory.push` | `DOLT_FETCH`, then `DOLT_PUSH` | the local head | not a fast-forward (`dolt_merge_base`) | the expectation is the remote head before the push |
-| `commit_bump` | the engine runs root's bump statements plus the `ReclaimSet` revert, then commits once | the new local head | not applicable: at or below the floor raises `IntegrityViolation` | none: a failed bump discards its partial working set and raises `StorageUnavailable` |
+| `commit_bump` | the engine runs the bump statements plus the `ReclaimSet` writes (lifecycle revert, `claim-frame` cleared, `recovery:resumable`, audit comments; each guarded on `in_progress`), then commits once | the new local head | not applicable: at or below the floor raises `IntegrityViolation` | none: a failed bump discards its partial working set and raises `StorageUnavailable` |
 | `HiveFence.push` | engine fetch, then engine push | the local head | the push returns `False`, or not a fast-forward | the `adopt-<epoch>` sentinel on the remote head; `lookup_bump` |
 
 **The placement carrier** (`bh-sqfvq`, `_placement.py`). A `PLACEMENT` body of `authority` and

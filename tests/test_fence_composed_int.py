@@ -69,6 +69,7 @@ from beadhive import hive_forward, work_backup
 from beadhive import writer_adopt as wa
 from beadhive.failover_observer import FailoverObserver, session_table, sql_session_staleness
 from beadhive.hq_sql_session import LivenessPolicy, SessionRenewer, session_ddl
+from beadhive_hq_storage import Confirmed, NotConfirmed, new_operation_id
 from harness import composed_fence as cf
 from harness.clock import FakeClock
 from harness.writer_fencing import BD_EMBEDDED, BD_SERVER, DOLT_CLI, Cluster, Run
@@ -194,6 +195,13 @@ def _take(world: ProductWorld, name: str, *, reclaim=None) -> wa.Step2Result:
     )
     world.moves.observe("adopt", name)
     assert result.landed, result
+    # bh-jhgum: the bump's witness is found on the remote head through the port, on the
+    # embedded (Dolt CLI) and server (bd) engines alike; another frame's name never confirms it.
+    node = world.node(name)
+    assert isinstance(node.lookup_bump(name, placed.epoch, operation=new_operation_id()), Confirmed)
+    assert isinstance(
+        node.lookup_bump("not-" + name, placed.epoch, operation=new_operation_id()), NotConfirmed
+    )
     return result
 
 
