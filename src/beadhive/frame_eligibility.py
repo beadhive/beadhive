@@ -509,16 +509,33 @@ def decision_for(host_id, hive=None, *, hq_dir=None, cfg=None, at=None):
     return eligible(frame, hive or {}, facts)
 
 
-def require_eligible(host_id, hive=None, **kwargs):
-    decision = decision_for(host_id, hive, **kwargs)
-    if decision is not None and hive and set(hive) == {"prefix"}:
-        from . import config, registry
+def _catalog_entry(prefix):
+    from . import config, registry
 
+    try:
+        return registry.resolve_hive(config.load(), prefix)
+    except (ValueError, KeyError, FileNotFoundError):
+        raise EligibilityError("frame ineligible: hive_catalog_available") from None
+
+
+def require_eligible(host_id, hive=None, **kwargs):
+    # A bare ``{"prefix": ...}`` is decided against its catalog entry, with ONE decision and so
+    # one authority read (bh-a6cm3). This used to take a full decision against the bare prefix
+    # first, only to learn whether the host is a legacy one (None), and then discard it for a
+    # second decision against the entry with the same frame, prefix, clock and authority.
+    # Resolving the catalog first is equivalent: decision_for returns None for a legacy host
+    # whatever the hive. Only when the catalog cannot be resolved does the original order run,
+    # so a legacy host still never consults it and a bound frame raises exactly as before.
+    if hive and set(hive) == {"prefix"}:
         try:
-            entry = registry.resolve_hive(config.load(), hive["prefix"])
-        except (ValueError, KeyError, FileNotFoundError):
-            raise EligibilityError("frame ineligible: hive_catalog_available") from None
-        decision = decision_for(host_id, entry, **kwargs)
+            entry = _catalog_entry(hive["prefix"])
+        except Exception:  # noqa: BLE001 - re-raised below, in the original order
+            decision = decision_for(host_id, hive, **kwargs)
+            if decision is None:
+                return None
+            entry = _catalog_entry(hive["prefix"])
+        hive = entry
+    decision = decision_for(host_id, hive, **kwargs)
     if decision is not None and not decision.allowed:
         raise EligibilityError(f"frame {host_id} ineligible: {decision.reason}")
     return decision
