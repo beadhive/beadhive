@@ -167,6 +167,34 @@ def test_pack_bins_slot_work_onto_as_many_chunks_as_there_are_slots():
     assert all(any(holds[i.nodeid] for i in c) for c in unsplit)
 
 
+def test_pack_spreads_slot_free_work_over_every_chunk():
+    """bh-ey9wj: the stateful lane holds almost no slots. Slot-free work confined to the
+    ``workers - slots`` slot-free chunks would hand those chunks every long test."""
+    seconds = [100, 90, 80, 70, 60, 50, 40, 30]
+    durations = {f"tests.t::n{i}": float(s) for i, s in enumerate(seconds)}
+    items = [item(f"tests/t.py::n{i}") for i in range(len(seconds))]
+
+    def loads(packed):
+        return [
+            sum(durations[duration_order.junit_key(i.nodeid)] for i in c)
+            for c in _chunks(packed, 4)
+        ]
+
+    no_holders = duration_order.pack(items, durations, 0.0, 4, 2, lambda _: False)
+    unsplit = duration_order.pack(items, durations, 0.0, 4, 0, lambda _: False)
+    assert loads(no_holders) == loads(unsplit) == [130.0] * 4
+
+    # One short holder still goes onto a slot chunk, and the longest slot-free test is not
+    # confined to the slot-free chunks 2 and 3.
+    with_holder = [*items, item("tests/t.py::h")]
+    packed = duration_order.pack(
+        with_holder, durations | {"tests.t::h": 1.0}, 0.0, 4, 2, lambda i: i.nodeid.endswith("::h")
+    )
+    chunks = [[i.nodeid for i in c] for c in _chunks(packed, 4)]
+    assert "tests/t.py::h" in chunks[0] + chunks[1]
+    assert "tests/t.py::n0" in chunks[0] + chunks[1]
+
+
 def test_pack_is_deterministic_and_off_by_default():
     items = [item(f"tests/t.py::n{i}") for i in range(7)]
     durations = {f"tests.t::n{i}": float(i % 3) for i in range(7)}

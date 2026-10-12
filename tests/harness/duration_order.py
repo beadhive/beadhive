@@ -20,9 +20,12 @@ longest-processing-time bin, so every worker's initial queue carries about the s
 chunk tests run longest first, so a steal (which takes a queue's tail) moves only short ones.
 
 The packing is also Dolt-slot aware. With ``slots`` < ``workers`` (``BH_DOLT_SLOTS=12`` on 16), at
-most ``slots`` workers can run a slot-holding test at once, so slot work is binned onto ``slots``
-chunks and slot-free work onto the rest; otherwise the slot-free workers would also queue for a
-slot and the slot-holding chunks would finish unevenly.
+most ``slots`` workers can run a slot-holding test at once, so slot work is binned first, onto
+``slots`` chunks only; otherwise the slot-free workers would also queue for a slot and the
+slot-holding chunks would finish unevenly. Slot-free work is then binned onto whichever chunk is
+least loaded, which fills the slot-free chunks first. It must not be confined to the
+``workers - slots`` slot-free chunks: the stateful lane holds almost no slots (bh-ey9wj), and
+confining it would hand those four chunks the ~2,700 longest of its ~10,700 tests.
 """
 
 from __future__ import annotations
@@ -118,27 +121,33 @@ def pack(
 ) -> list:
     """Lay *items* out as ``workers`` worksteal chunks of balanced predicted work.
 
-    Longest first, each test goes to the least-loaded chunk that still has room; a slot-holding
-    test prefers one of the first ``slots`` chunks and a slot-free test one of the others (falling
-    back to any chunk with room). ``slots <= 0`` (unbounded) or ``slots >= workers`` disables the
-    split. Stable and deterministic, so every xdist worker computes the same collection order.
+    Longest first, each test goes to the least-loaded chunk that still has room. With the split,
+    slot-holding tests are placed first and only onto the first ``slots`` chunks (falling back to
+    any chunk with room); slot-free tests follow onto any chunk, least loaded first. ``slots <= 0``
+    (unbounded) or ``slots >= workers`` disables the split, and so does a selection with no
+    slot-holding test. Stable and deterministic, so every xdist worker computes the same
+    collection order.
     """
     if workers <= 1 or not items:
         return list(items)
-    split = 0 < slots < workers
     sizes = chunk_sizes(len(items), workers)
     weight = {id(item): durations.get(junit_key(item.nodeid), fallback) for item in items}
+    ordered = sorted(items, key=lambda i: -weight[id(i)])
+    everywhere = range(workers)
+    phases: list[tuple[list, range]] = [(ordered, everywhere)]
+    if 0 < slots < workers:
+        holding = [item for item in ordered if holds(item)]
+        if holding:
+            free = [item for item in ordered if not holds(item)]
+            phases = [(holding, range(slots)), (free, everywhere)]
     bins: list[list] = [[] for _ in range(workers)]
     loads = [0.0] * workers
-    for item in sorted(items, key=lambda i: -weight[id(i)]):
-        room = [b for b in range(workers) if len(bins[b]) < sizes[b]]
-        if split:
-            wanted = holds(item)
-            preferred = [b for b in room if (b < slots) == wanted]
-            room = preferred or room
-        target = min(room, key=lambda b: (loads[b], b))
-        bins[target].append(item)
-        loads[target] += weight[id(item)]
+    for group, preferred in phases:
+        for item in group:
+            room = [b for b in everywhere if len(bins[b]) < sizes[b]]
+            target = min([b for b in room if b in preferred] or room, key=lambda b: (loads[b], b))
+            bins[target].append(item)
+            loads[target] += weight[id(item)]
     return [item for chunk in bins for item in sorted(chunk, key=lambda i: -weight[id(i)])]
 
 
