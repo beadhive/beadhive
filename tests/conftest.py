@@ -14,6 +14,7 @@ _plugins = [
     "harness.watchdog_diagnostics",
     "harness.perf_marker",
     "harness.schedule_telemetry",
+    "harness.worksteal_pack",
 ]
 if find_spec("stateful_fixtures") is not None:  # pants: no-infer-dep
     _plugins.append("stateful_fixtures")
