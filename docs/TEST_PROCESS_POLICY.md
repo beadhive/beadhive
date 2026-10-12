@@ -605,8 +605,8 @@ It runs `trylast` so that it orders the post-`-m` selection. xdist resets `confi
 `"no"` on workers, so the controller exports its `--dist` as `BH_TEST_XDIST_DIST`. The first
 "packed" run (`pack1` below) was silently a plain longest-first run because of this. It is opt-in
 everywhere, and `test-integration-land` turns it on (`BH_TEST_WORKSTEAL_PACK=0 just
-test-integration-land` turns it off). The stateful lane is unchanged, and measuring it there is a
-follow-up.
+test-integration-land` turns it off). The stateful lane was measured and packed later; see the
+bh-ey9wj section below.
 
 ### Runs
 
@@ -650,3 +650,93 @@ All runs: 275 passed, 4 skipped, no failures.
   bh-u5b0e is a stateful-lane test and is untouched by this change.
 - **Next lever.** Collection, at 21-44 s per run. Each worker imports the whole suite to select
   ~2% of it. A safe pre-filter for marker-selected lanes would recover most of that.
+
+## Worksteal packing on the stateful lane (bh-ey9wj)
+
+**Question.** Does bh-xqtp8's packing also pay on the stateful lane (`just stateful-native`:
+`-n 16 --dist worksteal -m "not integration and not pants_profile"`, about 10,760 tests)?
+
+**Answer.** Yes, once packing stops confining slot-free work. Measured wall: **596-622 s before,
+526-531 s after** (-12 to -15%). The idle tail falls from ~90 s to ~12 s per worker. No new
+failures. `stateful-native` now packs by default, like `test-integration-land`.
+
+### The stateful lane holds almost no Dolt slots
+
+Baseline telemetry shows a different shape from the integration lane:
+
+- Slot holds total 2 s per run, and at most 4 of 12 slots are ever held. They come from
+  `tests/test_dolt_server_slots.py`, which exercises the slot primitive itself. No stateful test
+  carries the `dolt_server` marker or requests a `rewound_*` fixture.
+- The tail is the plain worksteal defect. Longest-first order handed one worker (gw1) the five
+  longest tests: 143, 132, 128, 103 and 71 s. That worker ran until 620 s, while 14 of
+  the other 15 finished between 493 and 568 s.
+
+**The bh-xqtp8 packing could not be enabled as it was.** Its slot split applied whenever
+`BH_DOLT_SLOTS` < workers, even if nothing in the selection held a slot. Every slot-free test
+preferred the `workers - slots` slot-free chunks, so those 4 chunks took the ~2,700 longest of
+the 10,760 tests. Measured on the stateful selection with the refreshed durations, that gives
+predicted chunk loads of **1,749 s on four workers and 32 s on twelve**.
+
+`duration_order.pack` now bins in two phases:
+
+1. Slot-holding tests go first, onto the first `slots` chunks only.
+2. Slot-free tests then go to whichever chunk is least loaded, which fills the slot-free chunks
+   first.
+
+With no slot-holding test in the selection there is no split. On the stateful lane, every chunk
+is predicted at 461 s. On the integration selection, the new order is identical to the bh-xqtp8
+order with the checked-in durations: all 279 positions match, and the loads are still 366 s on
+the 12 slot chunks and 296 s on the 4 others.
+
+### Durations refresh
+
+The stateful predictions were stale. For example, bh-1ikc0 cut the pooled fence-cluster rewind
+from ~6.9 s to ~0.8 s per test. `tests/harness/test_durations.json` was regenerated with
+`scripts/refresh_test_durations.py` in two parts:
+
+- **Stateful keys** (1,638 at least 0.5 s): from the two baseline lanes below, at 97e0ca68.
+- **Every other key** (375): from the 234 non-stateful validation reports in
+  `.bh/validation/runs` since 2026-10-10. A test that also ran in the stateful lane takes its
+  stateful value.
+
+### Runs
+
+Every run used the gate's settings: `NO_COLOR=1 BH_DOLT_SLOTS=12 BH_TEST_TIMEOUT_SECONDS=2400
+BH_TEST_SCHEDULE_TELEMETRY=1 BH_TEST_REPORT_DIR=<dir> just stateful-native`. Runs were one lane at
+a time on the shared 32-core / 47 GB host, taking turns with another developer's lanes. The runs
+differ as follows:
+
+- `base1` and `base2` ran on main 97e0ca68 with `BH_TEST_WORKSTEAL_PACK=0`.
+- `pack2` ran with the two-phase packing and refreshed durations, with `BH_TEST_WORKSTEAL_PACK=1`.
+- `pack3` ran the final recipe with packing on by default (no override).
+
+Wall is the pytest session from the telemetry. The recipe's prerequisites add ~30 s on top.
+
+| Run | Order | Load at start | Wall (s) | Busy / 16 (s) | Collection (s) | Tail per worker, mean (s) | Worker busy, min-max (s) | Last test ends, min-max (s) | Slot wait total (s) | Peak slots held | Load median / max | Min MemAvailable (GB) | Result |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| base1 | main, longest-first | 4.1 | 622 | 489 | 43 | 90 | 449-576 | 493-620 | 0 | 4 | 18 / 21 | 9.8 | 10,744 passed, 15 skipped |
+| base2 | main, longest-first | 14.9 | 596 | 486 | 19 | 91 | 447-575 | 466-594 | 0 | 4 | 19 / 20 | 9.6 | 10,745 passed, 15 skipped |
+| pack2 | packed, refreshed durations | 5.5 | **531** | 499 | 19 | 12 | 498-508 | 518-527 | 4 | 5 | 20 / 23 | 12.8 | 10,745 passed, 15 skipped |
+| pack3 | packed, via `just` default | 6.4 | **526** | 495 | 19 | 12 | 494-504 | 514-523 | 4 | 4 | 19 / 21 | 12.4 | 10,745 passed, 15 skipped |
+
+A further packed run (`pack1`) is excluded. It started in the same minute as another developer's
+stateful lane, so 32 workers shared the host. Load peaked at 305 and MemAvailable fell to 1.5 GB.
+It took 1,102 s, with 12 failures and 3 errors, all timeouts and subprocess deadlines under that
+load. Among them was
+`test_hq_authority_backend.py::test_real_frame_signed_hive_lease_adopt_renew_and_cordoned_release`,
+the bh-u5b0e load-timeout family. Even so, its tail was 16 s per worker.
+
+### Reading the numbers
+
+- **Before and after.** Wall goes from 596-622 s to 526-531 s. The gap to busy / 16 falls from
+  110-133 s to 31-32 s. Worker busy time now spans 10 s, where it spanned 127-128 s before.
+- **What remains.** Collection takes ~19 s, and base1's 43 s was a cold first run. The tail is
+  ~12 s. Busy time rose about 2% (busy / 16 from 486-489 s to 495-499 s), the same effect as on
+  the integration lane: more tests run concurrently from the start.
+- **Load.** Packed runs show the same load (median 19-20, max 21-23) as the baselines, and more
+  memory headroom. The slot cap is not involved: peak 4-5 of 12.
+- **Flakes.** The four clean runs had no failure. bh-u5b0e recurred only in the overloaded
+  `pack1`, and it stays open.
+- **Next lever.** The longest single test (143 s) is now well under the 495 s per-worker share.
+  The floor is busy / 16 plus collection, so the remaining wins are shorter tests and faster
+  collection, not scheduling.
