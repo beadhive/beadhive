@@ -25,7 +25,9 @@ a hard bound is refused. A refused row is reported with a named reason and the o
 back to the default (the fleet row, else the code default). A floor in ``[hard bound, 35.4 min)``
 is accepted with a warning naming the measured false-stale stretch.
 
-Pure apart from the cursor helpers; Typer-free.
+Storage is the HQ storage port (``docs/design/hq-storage-port-adr.md``, bh-xnn5p): each scope is
+one ``RecordKind.FAILOVER_POLICY`` record, which the Dolt adapter maps onto :data:`POLICY_TABLE`
+column for column. Pure apart from those port calls; Typer-free.
 """
 
 from __future__ import annotations
@@ -54,12 +56,16 @@ __all__ = [
     "Bounds",
     "FailoverPolicy",
     "FailoverPolicyError",
+    "FailoverPolicyLost",
+    "FailoverPolicyUnknown",
     "Refusal",
     "apply_changes",
+    "bounds_from",
     "effective",
     "load_policy",
     "parse_changes",
     "plan_changes",
+    "policy_write",
     "provision_statements",
     "read_policy",
 ]
@@ -81,10 +87,6 @@ FALSE_STALE_STRETCH_S = 2124
 DEFAULT_EXECUTOR_FLOOR_S = 2700
 
 _PREFIX = re.compile(r"[a-z][a-z0-9-]*")
-_TABLES_SQL = (
-    "SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() "
-    "AND table_name IN (%s,%s)"
-)
 
 
 class FailoverPolicyError(ValueError):
@@ -380,55 +382,75 @@ def parse_changes(
 
 
 # =============================================================================================
-# HQ reads and writes (a DB-API cursor on an open transaction)
+# HQ reads and writes, through the HQ storage port (bh-xnn5p)
 # =============================================================================================
+#
+# Each scope is one ``RecordKind.FAILOVER_POLICY`` record: key = the scope (a hive prefix or
+# ``*``), body = ``{setting: seconds}``. The Dolt adapter maps it onto POLICY_TABLE column for
+# column; the in-memory fake keeps it as a record. The hard bounds' session TTL is the
+# operator's committed liveness policy, which the caller reads (``bounds_from``).
 
 
-def _tables(cursor) -> set[str]:
-    from .hq_sql_runtime_schema import LIVENESS_POLICY_TABLE
-
-    cursor.execute(_TABLES_SQL, (POLICY_TABLE, LIVENESS_POLICY_TABLE))
-    return {_text(row[0]) or "" for row in cursor.fetchall()}
+class FailoverPolicyLost(FailoverPolicyError):
+    """The scope's policy moved between the read and the write (a lost compare-and-set, or a
+    serialization failure). Nothing was written; re-read and decide again."""
 
 
-def _bounds(cursor, tables: set[str]) -> tuple[Bounds, list[str]]:
-    from .hq_sql_runtime_schema import LIVENESS_POLICY_TABLE
+class FailoverPolicyUnknown(FailoverPolicyError):
+    """The policy write's acknowledgment was lost and its lookup did not confirm it. Never
+    reissued: read the policy back before deciding again."""
+
+
+def bounds_from(rows) -> tuple[Bounds, list[str]]:
+    """The hard bounds from the committed liveness policy rows (``None``: the table is absent,
+    so the default session TTL applies), and a note when those rows are refused."""
     from .hq_sql_session import DEFAULT_SESSION_TTL_S, SessionError, _policy
 
-    if LIVENESS_POLICY_TABLE not in tables:
+    if rows is None:
         return Bounds(DEFAULT_SESSION_TTL_S), []
-    cursor.execute(f"SELECT session_ttl_s,evidence_ttl_s FROM {LIVENESS_POLICY_TABLE}")
     try:
-        return Bounds(_policy(cursor.fetchall()).session_ttl_s), []
+        return Bounds(_policy(rows).session_ttl_s), []
     except SessionError as exc:
         return Bounds(DEFAULT_SESSION_TTL_S), [
             f"{exc}; hard bounds use the default session TTL {DEFAULT_SESSION_TTL_S} s"
         ]
 
 
-def _rows(cursor, tables: set[str]) -> list[tuple]:
-    if POLICY_TABLE not in tables:
-        return []
-    cursor.execute(f"SELECT scope,setting,seconds FROM {POLICY_TABLE}")
-    return [tuple(row) for row in cursor.fetchall()]
+def _default_bounds() -> Bounds:
+    return bounds_from(None)[0]
 
 
-def read_policy(cursor) -> FailoverPolicy:
-    """The policy on `cursor`'s open transaction. Absent tables are code defaults
-    (``provisioned`` is false when :data:`POLICY_TABLE` is not there yet)."""
-    tables = _tables(cursor)
-    bounds, notes = _bounds(cursor, tables)
-    policy = load_policy(_rows(cursor, tables), bounds, provisioned=POLICY_TABLE in tables)
+def _scopes(records) -> tuple[dict, bool]:
+    """``({scope: Versioned}, provisioned)``: every scope's record, or none when the store says
+    the policy table is not provisioned."""
+    from beadhive_hq_storage import NotProvisioned, RecordKind
+
+    try:
+        found = records.read_many(RecordKind.FAILOVER_POLICY)
+    except NotProvisioned:
+        return {}, False
+    return {record.key: record for record in found}, True
+
+
+def _rows(scopes) -> list[tuple]:
+    return [
+        (scope, setting, seconds)
+        for scope, record in sorted(scopes.items())
+        for setting, seconds in sorted(dict(record.body).items())
+    ]
+
+
+def read_policy(records, bounds: Bounds | None = None, *, notes=()) -> FailoverPolicy:
+    """The policy as `records` (the HQ storage port's ``VersionedRecords``) holds it now. An
+    unprovisioned policy table is the code defaults (``provisioned`` false)."""
+    scopes, provisioned = _scopes(records)
+    policy = load_policy(_rows(scopes), bounds or _default_bounds(), provisioned=provisioned)
     if notes:
         policy = replace(policy, warnings=(*notes, *policy.warnings))
     return policy
 
 
-def plan_changes(cursor, scope: str, changes: Mapping[str, int | None]) -> FailoverPolicy:
-    """Validate `changes` for `scope` against the policy on `cursor`'s open transaction, writing
-    nothing. Refuses any change that would itself be refused on load or would newly refuse
-    another row (e.g. a floor raised above a hive's executor override). Returns the policy as it
-    would load."""
+def _check_changes(scope: str, changes: Mapping[str, int | None]) -> None:
     if scope != FLEET_SCOPE and not (isinstance(scope, str) and _PREFIX.fullmatch(scope)):
         raise FailoverPolicyError("failover policy scope must be a hive prefix or '*'")
     if FLOOR_SETTING in changes and scope != FLEET_SCOPE:
@@ -438,14 +460,26 @@ def plan_changes(cursor, scope: str, changes: Mapping[str, int | None]) -> Failo
             raise FailoverPolicyError(f"unknown failover setting {setting!r}")
         if seconds is not None and _whole_seconds(seconds) is None:
             raise FailoverPolicyError(f"{setting} must be a positive whole number of seconds")
-    tables = _tables(cursor)
-    if POLICY_TABLE not in tables:
+
+
+def policy_write(records, scope: str, changes: Mapping[str, int | None], bounds=None):
+    """Validate `changes` for `scope` against the policy `records` holds, writing nothing.
+
+    Returns ``(after, write)``: the policy as it would load, and the ``RecordWrite`` that makes
+    it so (``None`` when nothing changes). Refuses any change that would itself be refused on
+    load or would newly refuse another row (e.g. a floor raised above a hive's executor
+    override)."""
+    from beadhive_hq_storage import ABSENT, RecordKind, RecordWrite
+
+    _check_changes(scope, changes)
+    scopes, provisioned = _scopes(records)
+    if not provisioned:
         raise FailoverPolicyError(
             f"{POLICY_TABLE} is not provisioned; the operator creates it first "
             "(`bh hq placement policy` prints the DDL)"
         )
-    bounds, _notes = _bounds(cursor, tables)
-    current = _rows(cursor, tables)
+    bounds = bounds or _default_bounds()
+    current = _rows(scopes)
     before = load_policy(current, bounds)
     kept = [row for row in current if not (_text(row[0]) == scope and _text(row[1]) in changes)]
     after = load_policy(kept + [(scope, s, v) for s, v in changes.items() if v is not None], bounds)
@@ -456,25 +490,53 @@ def plan_changes(cursor, scope: str, changes: Mapping[str, int | None]) -> Failo
             "failover policy change refused (never clamped): "
             + "; ".join(r.describe() for r in fresh)
         )
-    return after
-
-
-def apply_changes(cursor, scope: str, changes: Mapping[str, int | None]) -> FailoverPolicy:
-    """:func:`plan_changes`, then write them on `cursor`'s open transaction (the caller
-    commits). Refused changes write nothing."""
-    after = plan_changes(cursor, scope, changes)
-    for setting, seconds in sorted(changes.items()):
+    record = scopes.get(scope)
+    body = {} if record is None else dict(record.body)
+    for setting, seconds in changes.items():
         if seconds is None:
-            cursor.execute(
-                f"DELETE FROM {POLICY_TABLE} WHERE scope=%s AND setting=%s", (scope, setting)
-            )
+            body.pop(setting, None)
         else:
-            cursor.execute(
-                f"INSERT INTO {POLICY_TABLE} (scope,setting,seconds) VALUES (%s,%s,%s) "
-                "ON DUPLICATE KEY UPDATE seconds=VALUES(seconds)",
-                (scope, setting, seconds),
-            )
-    return after
+            body[setting] = seconds
+    if record is not None and body == dict(record.body) or record is None and not body:
+        return after, None
+    expected = ABSENT if record is None else record.revision
+    return after, RecordWrite(RecordKind.FAILOVER_POLICY, scope, body, expected)
+
+
+def plan_changes(records, scope: str, changes: Mapping[str, int | None], bounds=None):
+    """:func:`policy_write`'s validated preview: the policy as it would load, nothing written."""
+    return policy_write(records, scope, changes, bounds)[0]
+
+
+def apply_changes(records, scope: str, changes: Mapping[str, int | None], bounds=None):
+    """:func:`policy_write`, then its compare-and-set. Returns the policy as it now loads.
+
+    A ``Conflict`` raises :class:`FailoverPolicyLost`; an ``Unknown`` is looked up by the
+    write's operation: ``Confirmed`` is the write, anything else raises
+    :class:`FailoverPolicyUnknown` (never reissued, never re-minted)."""
+    from beadhive_hq_storage import Applied, Confirmed, Conflict, StorageError, new_operation_id
+
+    after, write = policy_write(records, scope, changes, bounds)
+    if write is None:
+        return after
+    operation = new_operation_id()
+    outcome = records.compare_and_set(
+        write.kind, write.key, write.body, expected=write.expected, operation=operation
+    )
+    if isinstance(outcome, Applied):
+        return after
+    if isinstance(outcome, Conflict):
+        raise FailoverPolicyLost(f"failover policy for {scope} moved; nothing written")
+    try:
+        found = records.lookup(write.kind, write.key, operation)
+    except StorageError:
+        found = None
+    if isinstance(found, Confirmed):
+        return after
+    raise FailoverPolicyUnknown(
+        "failover policy commit acknowledgment unknown; read it back "
+        "(`bh hq placement policy`) before deciding again"
+    )
 
 
 def effective(policy: FailoverPolicy, prefix: str | None = None) -> dict[str, float | None]:
@@ -486,11 +548,13 @@ def effective(policy: FailoverPolicy, prefix: str | None = None) -> dict[str, fl
 def provision_statements(settings: Mapping | None = None) -> tuple[str, ...]:
     """The operator DDL for :data:`POLICY_TABLE` plus the director's grant on it (when the
     settings name the director account). Rendered, never executed."""
+    from beadhive_hq_storage_dolt import failover_policy_grant
+
     statements = list(FAILOVER_POLICY_SCHEMA)
     binding = (settings or {}).get("placement_writer") or {}
     user, database = binding.get("user"), binding.get("database")
     if isinstance(user, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]{0,31}", user):
         safe = isinstance(database, str) and re.fullmatch(r"[A-Za-z0-9_]{1,64}", database)
         target = f"{database}.{POLICY_TABLE}" if safe else POLICY_TABLE
-        statements.append(f"GRANT SELECT, INSERT, UPDATE, DELETE ON {target} TO '{user}'@'<host>'")
+        statements.append(failover_policy_grant(target, user))
     return tuple(statements)

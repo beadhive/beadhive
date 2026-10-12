@@ -6,7 +6,8 @@ director fails a frame over only when::
     min(server staleness, observed window) > failover_after
 
 * **server staleness** — in ``dolt-server`` HQ, the age of the frame's session row by the HQ
-  server's own ``UTC_TIMESTAMP(6)`` (:func:`sql_session_staleness`; the rows are M9's). In
+  storage port's clock (:func:`session_staleness` over ``Liveness.ages``: the server's own
+  ``UTC_TIMESTAMP(6)`` on Dolt, the injected clock on the in-memory fake; the rows are M9's). In
   ``git`` HQ, the observer's first-seen staleness of verified signed beats
   (:func:`git_beat_staleness`, from ``host_heartbeat_core.observe``).
 * **observed window** — how long THIS director has continuously watched, on its own monotonic
@@ -26,13 +27,13 @@ per-hive overrides and the executor floor are HQ data (M8c, ``bh-4biq8``,
 :func:`failover_after_for`'s ``override``. :class:`FailoverDirector` observes each placement
 (hive, frame) on its own window, so two hives on one frame can carry different values.
 
-Pure apart from the SQL helper; every clock and port is injected. Typer-free.
+Pure: staleness comes through the HQ storage port and every clock and port is injected; the
+thresholds (``failover_after``) stay here. Typer-free.
 """
 
 from __future__ import annotations
 
 import math
-import re
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -43,7 +44,6 @@ from .failover_policy import ROLE_FAILOVER_AFTER_S, failover_after_for
 __all__ = [
     "HQ_MODES",
     "ROLE_FAILOVER_AFTER_S",
-    "SESSION_STALENESS_SQL",
     "Decision",
     "FailoverDirector",
     "FailoverMonitor",
@@ -52,18 +52,13 @@ __all__ = [
     "UnattendedFailoverUnsupported",
     "failover_after_for",
     "git_beat_staleness",
+    "session_key",
+    "session_staleness",
     "session_table",
-    "sql_session_staleness",
     "unattended_failover_supported",
 ]
 
 HQ_MODES = ("git", "dolt-server")
-
-#: Session-row age by the HQ server's clock (M9 owns the table; one row, ``id = 1``).
-SESSION_STALENESS_SQL = (
-    "SELECT TIMESTAMPDIFF(MICROSECOND, renewed_at, UTC_TIMESTAMP(6)) FROM {table} WHERE id = 1"
-)
-_TABLE = re.compile(r"[a-z][a-z0-9_]{0,63}")
 
 
 class UnattendedFailoverUnsupported(ValueError):
@@ -186,16 +181,22 @@ def session_table(principal: str, epoch: int) -> str:
     return provisioned_session_table(principal, epoch)
 
 
-def sql_session_staleness(cursor, table: str) -> float | None:
-    """Session-row age in seconds by the HQ server's ``UTC_TIMESTAMP(6)``; ``None`` when the
-    row is absent (never renewed: nothing observable, not "infinitely stale")."""
-    if not isinstance(table, str) or not _TABLE.fullmatch(table):
-        raise ValueError("invalid session table identifier")
-    cursor.execute(SESSION_STALENESS_SQL.format(table=table))
-    row = cursor.fetchone()
-    if row is None or row[0] is None:
-        return None
-    return int(row[0]) / 1e6
+def session_key(principal: str, epoch: int) -> str:
+    """The HQ storage port's ``LivenessKind.SESSION`` key of one incarnation's session row
+    (``"<principal>/<epoch>"``); raises ``ValueError`` for an unsafe identifier."""
+    session_table(principal, epoch)
+    return f"{principal}/{epoch}"
+
+
+def session_staleness(liveness, keys) -> dict[str, float | None]:
+    """Each session row's age in seconds by the HQ storage port's clock (``Liveness.ages``: the
+    HQ server's ``UTC_TIMESTAMP(6)`` on Dolt, all measured in one read). ``None`` for a key whose
+    row is absent or was never renewed: nothing observable, not "infinitely stale"."""
+    from beadhive_hq_storage import LivenessKind
+
+    keys = list(keys)
+    ages = liveness.ages(LivenessKind.SESSION, keys) if keys else {}
+    return {key: ages[key].total_seconds() if key in ages else None for key in keys}
 
 
 def git_beat_staleness(observation) -> float | None:

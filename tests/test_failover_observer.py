@@ -19,7 +19,8 @@ from beadhive.failover_observer import (
     UnattendedFailoverUnsupported,
     failover_after_for,
     git_beat_staleness,
-    sql_session_staleness,
+    session_key,
+    session_staleness,
     unattended_failover_supported,
 )
 from beadhive.hq_sql_placement import PlacementLost
@@ -168,22 +169,22 @@ def test_monitor_tracks_each_frame_and_resets_all_on_unreachable():
 
 
 def test_staleness_sources():
-    class Cursor:
-        def __init__(self, row):
-            self.row, self.sql = row, None
+    """Session staleness comes through the HQ storage port (bh-xnn5p): the store's clock stamps
+    a renewal and ages it, so the fake's injected clock crosses a threshold with no waiting
+    (the Dolt adapter measures the same thing by the HQ server's ``UTC_TIMESTAMP(6)``)."""
+    from beadhive_hq_storage import InMemoryHqStorage, LivenessKind
+    from harness.clock import FakeClock
 
-        def execute(self, sql, params=None):
-            self.sql = sql
-
-        def fetchone(self):
-            return self.row
-
-    cursor = Cursor((90_500_000,))
-    assert sql_session_staleness(cursor, "frame_a_1_session") == 90.5
-    assert "UTC_TIMESTAMP(6)" in cursor.sql and "frame_a_1_session" in cursor.sql
-    assert sql_session_staleness(Cursor(None), "frame_a_1_session") is None
+    clock = FakeClock()
+    store = InMemoryHqStorage(clock)
+    a = session_key("frame_a", 1)
+    assert a == "frame_a/1"
+    store.renew(LivenessKind.SESSION, a)
+    clock.advance(90.5)
+    assert session_staleness(store, [a, "frame_b/1"]) == {a: 90.5, "frame_b/1": None}
+    assert session_staleness(store, []) == {}
     with pytest.raises(ValueError):
-        sql_session_staleness(cursor, "x; DROP TABLE hq_authority")
+        session_key("x; DROP TABLE hq_authority", 1)
     beat = SimpleNamespace(verified=True, age_seconds=42.0)
     assert git_beat_staleness(beat) == 42.0
     assert git_beat_staleness(SimpleNamespace(verified=False, age_seconds=1e9)) is None

@@ -2,13 +2,16 @@
 
 Ports over the placement library, the successor rule, the loop's resilience, and the daemon
 wiring: off by default, opt-in with a configurable interval, refusing git HQ and a missing
-director credential before any socket is bound. SQL is faked here;
+director credential before any socket is bound. Storage is the HQ storage port's in-memory fake
+(bh-xnn5p): session staleness is ``Liveness.ages`` on its injected clock, so a test crosses
+``failover_after`` by advancing that clock, never by waiting.
 ``test_director_failover_int.py`` runs a whole failover against a throwaway Dolt server.
 """
 
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -26,6 +29,8 @@ from beadhive.director_failover import (
 from beadhive.failover_observer import FailoverResult, session_table
 from beadhive.hq_sql_placement import PlacementError, Survey
 from beadhive.kernel.daemon.contracts.config import DaemonFailoverConfig, HostDaemonConfig
+from beadhive_hq_storage import InMemoryHqStorage, LivenessKind
+from harness.clock import FakeClock
 
 
 def _authority(frame, epoch=1):
@@ -47,32 +52,15 @@ def _state(*frames, cordoned=()):
     }
 
 
-class SessionCursor:
-    def __init__(self, registry, ages):
-        self.registry, self.ages, self.result = registry, ages, []
-        self.statements = []
+class RecordingLiveness:
+    """The port's fake, recording every key it was asked the age of."""
 
-    def execute(self, sql, params=None):
-        self.statements.append((sql, params))
-        if "information_schema.tables" in sql:
-            self.result = [
-                (session_table(p, e),) for p, _f, _h, e in self.registry if p in self.ages
-            ]
-        elif sql.startswith("SELECT principal,frame_id,holder_identity,epoch"):
-            assert params == ("head",)
-            self.result = list(self.registry)
-        elif sql.startswith("SELECT TIMESTAMPDIFF"):
-            principal = next(p for p, *_ in self.registry if session_table(p, 1) in sql)
-            age = self.ages[principal]
-            self.result = [] if age is None else [(int(age * 1e6),)]
-        else:
-            raise AssertionError(sql)
+    def __init__(self, store):
+        self.store, self.asked = store, []
 
-    def fetchone(self):
-        return self.result[0] if self.result else None
-
-    def fetchall(self):
-        return list(self.result)
+    def ages(self, kind, keys=None):
+        self.asked.append((kind, sorted(keys or ())))
+        return self.store.ages(kind, keys)
 
 
 REGISTRY = [
@@ -91,12 +79,22 @@ def test_session_table_is_the_adr_name_and_refuses_unsafe_identifiers():
 
 
 def test_observe_sessions_reads_only_active_incarnations_with_a_session_table():
-    cursor = SessionCursor(REGISTRY, {"fa": 7200.0, "fb": 3.5, "old": 1.0})
-    observed = observe_sessions(cursor, "head", _state("frame-a", "frame-b", "frame-c"))
-    # frame-c has no session table (M9 not provisioned for it): unobserved, never failed over.
+    clock = FakeClock()
+    store = InMemoryHqStorage(clock)
+    store.renew(LivenessKind.SESSION, "fa/1")
+    clock.advance(7200.0 - 3.5)
+    store.renew(LivenessKind.SESSION, "fb/1")
+    clock.advance(2.5)
+    store.renew(LivenessKind.SESSION, "old/0")
+    clock.advance(1.0)
+    liveness = RecordingLiveness(store)
+    observed = observe_sessions(liveness, REGISTRY, _state("frame-a", "frame-b", "frame-c"))
+    # frame-c has no session row (M9 not provisioned for it): unobserved, never failed over.
     assert observed == {"frame-a": 7200.0, "frame-b": 3.5, "frame-c": None}
-    assert not any("frame_old" in sql for sql, _ in cursor.statements)
-    assert observe_sessions(SessionCursor(REGISTRY, {}), "head", {"frames": {}}) == {}
+    # One read of the active incarnations only; the retired one is never asked about.
+    assert liveness.asked == [(LivenessKind.SESSION, ["fa/1", "fb/1", "fc/1"])]
+    assert observe_sessions(liveness, REGISTRY, {"frames": {}}) == {}
+    assert len(liveness.asked) == 1
 
 
 class StubDirector:
@@ -178,6 +176,63 @@ def test_the_loop_fails_a_dead_frame_over_through_the_director():
     # The failover cause rides in the same CAS (bh-16347.6): the adopting frame reclaims.
     assert director.causes == ["failover"]
     assert clock.t > 3600  # never before the executor's failover_after
+
+
+def test_a_stale_session_fails_its_hive_over_on_the_stores_clock_with_no_waiting():
+    """The whole loop over the HQ storage port's fake (bh-xnn5p acceptance): the director reads
+    session staleness through ``Liveness.ages`` and the failover policy through the store, and
+    the test crosses ``failover_after`` (executor, 60 min) by advancing the injected clock. The
+    real director composes the Dolt adapter, which stamps and ages by ``UTC_TIMESTAMP(6)``."""
+    from beadhive.host_lease_contracts import HostLease, now_stamp
+    from beadhive.hq_sql_placement import AuthorityView, SqlPlacementDirector, read_row
+    from beadhive_hq_storage import RecordKind
+
+    clock = FakeClock()
+    store = InMemoryHqStorage(clock)
+    started = clock.now()
+    held = HostLease(
+        "host-frame-a", "frame-a", 1, now_stamp(clock.wall()), now_stamp(clock.wall() + 86400)
+    )
+    store.provision(
+        RecordKind.PLACEMENT,
+        "ah",
+        {
+            "authority": {"frame_id": "frame-a", **_authority("frame-a")},
+            "lease": held.to_record(),
+            "director": False,
+        },
+    )
+    director = SqlPlacementDirector(
+        {"placement_writer": {"user": "director", "database": "rt"}},
+        clock=clock.wall,
+        storage=store,
+    )
+    state = _state("frame-a", "frame-b")
+    policies = {"ah": {"config_revision": "desired-1"}}
+    director._authority = lambda registry=False: AuthorityView(
+        state, policies, tuple(REGISTRY) if registry else ()
+    )
+    loop = build_loop(
+        DaemonFailoverConfig(enabled=True, interval_seconds=60),
+        hq_mode="dolt-server",
+        director=director,
+        clock=clock.monotonic,
+    )
+    store.renew(LivenessKind.SESSION, "fa/1")  # frame-a's last renewal, then it dies
+    results = []
+    while not results:
+        clock.advance(60)
+        store.renew(LivenessKind.SESSION, "fb/1")  # frame-b keeps renewing
+        results = loop.tick()
+        assert clock.now() - started < timedelta(hours=2), "never failed over"
+    assert [(r.prefix, r.from_frame, r.to_frame, r.outcome) for r in results] == [
+        ("ah", "frame-a", "frame-b", "placed")
+    ]
+    elapsed = (clock.now() - started).total_seconds()
+    assert 3600 < elapsed <= 3600 + 2 * 60  # just past failover_after, never before it
+    placed = read_row(store, "ah")
+    assert placed.frame_id == "frame-b" and placed.lease.epoch == 2
+    assert placed.cause == "failover" and placed.director
 
 
 def test_build_loop_is_off_by_default_and_refuses_git_hq_and_missing_settings(monkeypatch):

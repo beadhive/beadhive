@@ -9,6 +9,13 @@ supplies liveness *evidence* (never authority).  Each row is a heartbeat envelop
 the frame signed with its granted key; only rows that verify against the committed
 grant and bind to its exact incarnation are considered, and the newest signed
 ``renewTime`` wins.  See :func:`newest_signed_heartbeat`.
+
+Storage (bh-xnn5p): every statement is the HQ storage port's Dolt adapter's
+(:class:`beadhive_hq_storage_dolt.HqRuntimeStatements`, composed by
+:func:`beadhive.hq_storage_composition.runtime_statements`). The ``AS OF`` history, ancestry
+and schema-diff reads that verify the signed authority are Dolt-only (hq-storage-port-adr
+section 4), so this module keeps its own connection, transaction and deadline and holds no SQL;
+every method that takes a ``cursor`` also takes that statement surface.
 """
 
 from __future__ import annotations
@@ -29,6 +36,7 @@ from .hq_sql_deadline import flock_until
 from .hq_sql_runtime_schema import inbox_table, routed_table_valid, routed_to_inbox
 from .hq_sql_signatures import SqlSignatureError, canonical, verify_authority, verify_heartbeat
 from .hq_sql_transport import FnoxBroker, SqlTransportError, connect
+from .hq_storage_composition import runtime_statements
 
 #: A signed ``renewTime`` up to this far ahead of the reader's clock still counts (its age
 #: clamps to zero); anything further ahead is skipped. Same window the receiver applies.
@@ -246,6 +254,27 @@ def _ascii(value):
     raise SqlRuntimeError("runtime authority encoding invalid")
 
 
+class _DeadlineCursor:
+    """A cursor whose every statement is refused before and after it once ``deadline`` (a
+    ``time.monotonic()`` instant) has passed."""
+
+    def __init__(self, cursor, deadline):
+        self._cursor, self._deadline = cursor, deadline
+
+    def _check(self):
+        if time.monotonic() >= self._deadline:
+            raise SqlRuntimeError("HQ runtime operation deadline exceeded")
+
+    def execute(self, sql, params=None):
+        self._check()
+        result = self._cursor.execute(sql, params)
+        self._check()
+        return result
+
+    def __getattr__(self, name):
+        return getattr(self._cursor, name)
+
+
 class SqlRuntimeAuthority:
     """One authenticated committed authority read with a durable HOST restore floor."""
 
@@ -305,8 +334,7 @@ class SqlRuntimeAuthority:
             if sequence < previous_sequence:
                 raise SqlRuntimeError("HQ runtime rollback or amended authority detected")
             if head != previous_head:
-                cursor.execute("SELECT HAS_ANCESTOR(%s,%s)", (head, previous_head))
-                if cursor.fetchone()[0] != 1:
+                if runtime_statements(cursor).has_ancestor(head, previous_head) != 1:
                     raise SqlRuntimeError("HQ runtime history fork detected")
                 if sequence == previous_sequence:
                     self._check_provisioning_descendant(cursor, previous_head, head)
@@ -341,12 +369,13 @@ class SqlRuntimeAuthority:
         Commit messages and working-table contents supply no part of this proof.
         """
         from .hq_framelease_contracts import ObservationAuthority
-        from .hq_sql_session import _POLICY_SQL, _policy
+        from .hq_sql_session import _policy
         from .hq_sql_signatures import sql_principal
 
+        sql = runtime_statements(cursor)
         refusal = "HQ runtime rollback or amended authority detected"
         _backend, _generation, _sequence, _crossref, state, _policies = self._signed_authority_at(
-            cursor, previous_head
+            sql, previous_head
         )
         epochs = {entry["epoch_floor"] + 1 for entry in state["frames"].values()}
         reserved = set()
@@ -357,29 +386,19 @@ class SqlRuntimeAuthority:
             ):
                 authority = ObservationAuthority(**existing["authority"])
                 reserved.add((sql_principal(authority), authority.epoch))
-        cursor.execute(
-            "SELECT pattern,ignored FROM dolt_ignore AS OF %s WHERE pattern='frame_*'",
-            (previous_head,),
-        )
-        if [tuple(row) for row in cursor.fetchall()] != [("frame_*", 1)]:
+        if [tuple(row) for row in sql.ignore_rows_at(previous_head)] != [("frame_*", 1)]:
             raise SqlRuntimeError(refusal)
-        cursor.execute(_POLICY_SQL + " AS OF %s", (previous_head,))
-        _policy(cursor.fetchall())
+        _policy(sql.liveness_policy(at=previous_head))
         # Check every first-parent transition, so an unsafe edit followed by its
         # reversal cannot hide behind a safe endpoint diff. Merges and an excessive
         # unobserved provisioning history refuse rather than widen the exception.
         for _ in range(64):
-            cursor.execute(
-                "SELECT parent_hash,parent_index FROM dolt_commit_ancestors "
-                "WHERE CONCAT(commit_hash,'')=%s",
-                (head,),
-            )
-            parents = cursor.fetchall()
+            parents = sql.first_parents(head)
             if len(parents) != 1 or parents[0][1] != 0 or not parents[0][0]:
                 raise SqlRuntimeError(refusal)
             parent = parents[0][0]
             SqlRuntimeAuthority._check_provisioning_commit(
-                cursor, parent, head, epochs=epochs, reserved=reserved
+                sql, parent, head, epochs=epochs, reserved=reserved
             )
             if parent == previous_head:
                 return
@@ -390,13 +409,9 @@ class SqlRuntimeAuthority:
     def _check_provisioning_commit(cursor, previous_head, head, *, epochs, reserved):
         from .hq_sql_session import evidence_ddl, session_ddl
 
+        sql = runtime_statements(cursor)
         refusal = "HQ runtime rollback or amended authority detected"
-        cursor.execute(
-            "SELECT from_table_name,to_table_name,diff_type,data_change,schema_change "
-            "FROM DOLT_DIFF_SUMMARY(%s,%s)",
-            (previous_head, head),
-        )
-        changes = cursor.fetchall()
+        changes = sql.diff_summary(previous_head, head)
         if len(changes) != 1 or tuple(changes[0]) not in (
             ("dolt_schemas", "dolt_schemas", "modified", 1, 0),
             ("", "dolt_schemas", "added", 1, 1),
@@ -404,9 +419,8 @@ class SqlRuntimeAuthority:
             raise SqlRuntimeError(refusal)
         snapshots = []
         for revision in (previous_head, head):
-            cursor.execute("SELECT * FROM dolt_schemas AS OF %s", (revision,))
-            rows = cursor.fetchall()
-            if len(rows) > 4096 or [column[0] for column in cursor.description] != [
+            rows, columns = sql.schemas_at(revision)
+            if len(rows) > 4096 or columns != [
                 "type",
                 "name",
                 "fragment",
@@ -463,13 +477,7 @@ class SqlRuntimeAuthority:
         # At most 128 added rows form at most 64 complete pairs. Read only these
         # targets from the protected parent registry, whose contents cannot change
         # in a verified transition. Historical registry size is not a trust limit.
-        pairs = sorted(incarnations)
-        conditions = " OR ".join("(principal=%s AND epoch=%s)" for _ in pairs)
-        cursor.execute(
-            "SELECT principal,epoch FROM hq_principal_registry AS OF %s WHERE " + conditions,
-            (previous_head, *(value for pair in pairs for value in pair)),
-        )
-        if cursor.fetchall():
+        if sql.registered_at(previous_head, sorted(incarnations)):
             raise SqlRuntimeError(refusal)
 
     #: How far back fleet-default discovery walks for the newest operator-signed authority.
@@ -486,23 +494,23 @@ class SqlRuntimeAuthority:
         learns nothing (the caller then refuses as before).
         """
         try:
+            sql = runtime_statements(cursor)
             for depth in range(1, self.DISCOVERY_DEPTH + 1):
                 revision = f"{head}~{depth}"
-                cursor.execute("SELECT operator_signature FROM hq_authority AS OF %s", (revision,))
-                row = cursor.fetchone()
+                row = sql.authority_signature_at(revision)
                 if row is None:
                     return
                 if hq_authority_enforce.unsigned_signature(row[0]):
                     continue
                 backend, generation, _sequence, crossref, _state, _policies = (
-                    self._signed_authority_at(cursor, revision, verify=True)
+                    self._signed_authority_at(sql, revision, verify=True)
                 )
                 if (
                     backend != self.settings["runtime_backend_identity"]
                     or generation != self.settings["runtime_generation"]
                 ):
                     return
-                snapshot = self._committed_config_at(cursor, crossref)
+                snapshot = self._committed_config_at(sql, crossref)
                 hq_authority_enforce.observe_fleet_default(
                     snapshot, authorised=True, via="sql-discovery"
                 )
@@ -521,11 +529,12 @@ class SqlRuntimeAuthority:
             or self.settings.get("authority_writer")
         )["database"]
         store = SqlFleetConfigRevisionStore(self.settings, broker=self.broker, clock=self.clock)
-        cursor.execute(f"USE `{config_database}`")
+        sql = runtime_statements(cursor)
+        sql.use(config_database)
         try:
-            snapshot = store.committed_snapshot_at(cursor, crossref[2])
+            snapshot = store.committed_snapshot_at(sql, crossref[2])
         finally:
-            cursor.execute(f"USE `{runtime_database}`")
+            sql.use(runtime_database)
         if (snapshot.backend_identity, snapshot.generation) != tuple(crossref[:2]):
             raise SqlRuntimeError("HQ config and authority publications are not bound")
         return snapshot
@@ -541,14 +550,8 @@ class SqlRuntimeAuthority:
         (:data:`beadhive.hq_authority_enforce.UNSIGNED_SIGNATURE`); signed mode rejects that
         marker fail-closed with an actionable message.
         """
-        cursor.execute(
-            "SELECT singleton_id,schema_version,backend_identity,generation,revision,"
-            "config_backend,config_generation,config_head,state_json,state_sha256,"
-            "hive_policies_json,hive_policies_sha256,"
-            "operator_signature FROM hq_authority AS OF %s",
-            (head,),
-        )
-        rows = cursor.fetchall()
+        sql = runtime_statements(cursor)
+        rows = sql.authority_at(head)
         if len(rows) != 1:
             raise SqlRuntimeError("protected HQ runtime authority missing or duplicated")
         (
@@ -606,7 +609,7 @@ class SqlRuntimeAuthority:
             if hq_authority_enforce.unsigned_signature(signature) and (
                 hq_authority_enforce.discoverable()
             ):
-                self._discover_fleet_default(cursor, head)
+                self._discover_fleet_default(sql, head)
             verify = hq_authority_enforce.enforced()
         if verify:
             if hq_authority_enforce.unsigned_signature(signature):
@@ -639,12 +642,11 @@ class SqlRuntimeAuthority:
         if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-v]{32}", revision):
             return None
         try:
-            if revision != head:
-                cursor.execute("SELECT HAS_ANCESTOR(%s,%s)", (head, revision))
-                if cursor.fetchone()[0] != 1:
-                    return None
+            sql = runtime_statements(cursor)
+            if revision != head and sql.has_ancestor(head, revision) != 1:
+                return None
             backend, generation, _sequence, _crossref, _state, policies = self._signed_authority_at(
-                cursor, revision
+                sql, revision
             )
         except (SqlSignatureError, SqlRuntimeError, ValueError, TypeError, KeyError):
             return None
@@ -666,8 +668,9 @@ class SqlRuntimeAuthority:
             hq_authority_enforce.require_fleet_compatible()
         except hq_authority_enforce.AuthorityModeConflict as exc:
             raise SqlRuntimeError(str(exc)) from None
+        sql = runtime_statements(cursor)
         backend, generation, sequence, crossref, state, policies = self._signed_authority_at(
-            cursor, head
+            sql, head
         )
         # Resolved after the read: discovery may just have learned a trusted fleet default.
         trusted = hq_authority_enforce.trusted()
@@ -690,7 +693,7 @@ class SqlRuntimeAuthority:
             and not allow_expired
         ):
             raise SqlRuntimeError("protected HQ runtime authority expired or inconsistent")
-        self._check_floor(cursor, backend, generation, sequence, head, deadline=deadline)
+        self._check_floor(sql, backend, generation, sequence, head, deadline=deadline)
         return state, crossref, policies
 
     def load_config_at(self, cursor, crossref, *, policies=None, valid_until=None, deadline=None):
@@ -751,13 +754,14 @@ class SqlRuntimeAuthority:
             or self.settings.get("authority_writer")
         )["database"]
         store = SqlFleetConfigRevisionStore(self.settings, broker=self.broker, clock=self.clock)
-        cursor.execute(f"USE `{config_database}`")
+        sql = runtime_statements(cursor)
+        sql.use(config_database)
         try:
             return store.tolerated_bound_at(
-                cursor, crossref, current, policies, valid_until=valid_until, now=self.clock()
+                sql, crossref, current, policies, valid_until=valid_until, now=self.clock()
             )
         finally:
-            cursor.execute(f"USE `{runtime_database}`")
+            sql.use(runtime_database)
 
     def load_latest_config_at(self, cursor, *, deadline=None):
         """Operator-only refresh may read the new config head before authority catches up."""
@@ -794,13 +798,13 @@ class SqlRuntimeAuthority:
         ):
             raise SqlRuntimeError("HQ config/runtime database separation invalid")
         store = SqlFleetConfigRevisionStore(self.settings, broker=self.broker, clock=self.clock)
-        cursor.execute(f"USE `{config_database}`")
+        sql = runtime_statements(cursor)
+        sql.use(config_database)
         try:
-            cursor.execute("SELECT DOLT_HASHOF('HEAD')")
-            config_head = cursor.fetchone()[0]
-            snapshot = store._snapshot(cursor, config_head, deadline=deadline)
+            config_head = sql.head()
+            snapshot = store._snapshot(sql, config_head, deadline=deadline)
         finally:
-            cursor.execute(f"USE `{runtime_database}`")
+            sql.use(runtime_database)
         return snapshot
 
     def fresh_config_head_fence(self, expected_head: str, *, deadline: float) -> None:
@@ -837,10 +841,8 @@ class SqlRuntimeAuthority:
             connection = connect(observer, self.broker, deadline=deadline)
             try:
                 with connection.cursor() as cursor:
-                    cursor.execute(
-                        "SELECT CURRENT_USER(),DATABASE(),ACTIVE_BRANCH(),DOLT_VERSION()"
-                    )
-                    user, database, branch, version = cursor.fetchone()
+                    sql = runtime_statements(cursor)
+                    user, database, branch, version = sql.identity()
                     if (
                         not user.startswith(observer["user"] + "@")
                         or database != observer["database"]
@@ -848,9 +850,8 @@ class SqlRuntimeAuthority:
                         or version != "2.3.5"
                     ):
                         raise SqlRuntimeError("fresh config fence observer mismatch")
-                    cursor.execute(f"USE `{config['database']}`")
-                    cursor.execute("SELECT DOLT_HASHOF('HEAD')")
-                    if cursor.fetchone()[0] != expected_head or time.monotonic() >= deadline:
+                    sql.use(config["database"])
+                    if sql.head() != expected_head or time.monotonic() >= deadline:
                         raise SqlRuntimeError("fresh config head differs from protected projection")
             finally:
                 connection.close()
@@ -874,10 +875,8 @@ class SqlRuntimeAuthority:
             connection = connect(observer, self.broker, deadline=deadline)
             try:
                 with connection.cursor() as cursor:
-                    cursor.execute(
-                        "SELECT CURRENT_USER(),DATABASE(),ACTIVE_BRANCH(),DOLT_VERSION()"
-                    )
-                    user, database, branch, version = cursor.fetchone()
+                    sql = runtime_statements(cursor)
+                    user, database, branch, version = sql.identity()
                     if (
                         not user.startswith(observer["user"] + "@")
                         or database != observer["database"]
@@ -885,8 +884,7 @@ class SqlRuntimeAuthority:
                         or version != "2.3.5"
                     ):
                         raise SqlRuntimeError("fresh runtime observer endpoint mismatch")
-                    cursor.execute("SELECT DOLT_HASHOF('HEAD')")
-                    if cursor.fetchone()[0] != expected_head or time.monotonic() >= deadline:
+                    if sql.head() != expected_head or time.monotonic() >= deadline:
                         raise SqlRuntimeError("fresh authority head changed before acceptance")
             finally:
                 connection.close()
@@ -906,10 +904,8 @@ class SqlRuntimeAuthority:
             connection = connect(binding, self.broker, deadline=deadline)
             try:
                 with connection.cursor() as cursor:
-                    cursor.execute(
-                        "SELECT CURRENT_USER(),DATABASE(),ACTIVE_BRANCH(),DOLT_VERSION()"
-                    )
-                    user, database, branch, version = cursor.fetchone()
+                    sql = runtime_statements(cursor)
+                    user, database, branch, version = sql.identity()
                     if (
                         not user.startswith(route.principal + "@")
                         or database != binding["database"]
@@ -917,14 +913,9 @@ class SqlRuntimeAuthority:
                         or version != "2.3.5"
                     ):
                         raise SqlRuntimeError("fresh public observation principal mismatch")
-                    cursor.execute(
-                        "SELECT sequence,digest,accepted_until,lease_json,envelope_json,"
-                        "signer_fingerprint "
-                        "FROM hq_live_public_observations WHERE frame_id=%s "
-                        "AND holder_identity=%s AND epoch=%s",
-                        (route.frame_id, route.holder_identity, route.epoch),
+                    current = sql.public_observation(
+                        route.frame_id, route.holder_identity, route.epoch
                     )
-                    current = cursor.fetchone()
                     if current != expected or time.monotonic() >= deadline:
                         raise SqlRuntimeError("accepted observer receipt changed during read")
             finally:
@@ -942,10 +933,8 @@ class SqlRuntimeAuthority:
             connection = connect(binding, self.broker, deadline=deadline)
             try:
                 with connection.cursor() as cursor:
-                    cursor.execute(
-                        "SELECT CURRENT_USER(),DATABASE(),ACTIVE_BRANCH(),DOLT_VERSION()"
-                    )
-                    user, database, branch, version = cursor.fetchone()
+                    sql = runtime_statements(cursor)
+                    user, database, branch, version = sql.identity()
                     if (
                         not user.startswith(binding["user"] + "@")
                         or database != binding["database"]
@@ -953,12 +942,7 @@ class SqlRuntimeAuthority:
                         or version != "2.3.5"
                     ):
                         raise SqlRuntimeError("fresh hive lease principal mismatch")
-                    cursor.execute(
-                        "SELECT revision,lease_json,request_id,request_sha256 "
-                        "FROM hq_live_hive_leases WHERE prefix=%s",
-                        (prefix,),
-                    )
-                    if cursor.fetchone() != expected or time.monotonic() >= deadline:
+                    if sql.hive_lease(prefix) != expected or time.monotonic() >= deadline:
                         raise SqlRuntimeError("protected hive lease changed during read")
             finally:
                 connection.close()
@@ -1015,8 +999,8 @@ class SqlRuntimeAuthority:
         try:
             binding = self.settings["runtime"]
             with connection.cursor() as cursor:
-                cursor.execute("SELECT CURRENT_USER(),DATABASE(),ACTIVE_BRANCH(),DOLT_VERSION()")
-                user, database, branch, version = cursor.fetchone()
+                sql = runtime_statements(cursor)
+                user, database, branch, version = sql.identity()
                 if (
                     not user.startswith(binding["user"] + "@")
                     or database != binding["database"]
@@ -1025,19 +1009,12 @@ class SqlRuntimeAuthority:
                 ):
                     raise SqlRuntimeError("frame composite endpoint identity mismatch")
                 principal = user.split("@", 1)[0]
-                cursor.execute("START TRANSACTION")
-                cursor.execute("SELECT DOLT_HASHOF('HEAD')")
-                head = cursor.fetchone()[0]
+                sql.begin()
+                head = sql.head()
                 state, crossref, policies = self.verified_state_at(
-                    cursor, head, deadline=deadline, allow_expired=not enforce
+                    sql, head, deadline=deadline, allow_expired=not enforce
                 )
-                cursor.execute(
-                    "SELECT principal,frame_id,holder_identity,instance_ref,epoch,"
-                    "inbox_table,signer_fingerprint FROM hq_principal_registry AS OF %s "
-                    "WHERE principal=%s",
-                    (head, principal),
-                )
-                rows = cursor.fetchall()
+                rows = sql.route_at(head, principal)
                 if len(rows) != 1:
                     raise SqlRuntimeError("frame composite principal not provisioned")
                 route = PrincipalBinding(*rows[0])
@@ -1061,7 +1038,7 @@ class SqlRuntimeAuthority:
                 slot, record = matches[0]
                 if enforce:
                     snapshot, config_head = self.bound_config_at(
-                        cursor,
+                        sql,
                         crossref,
                         policies=policies,
                         valid_until=state["expires_at"],
@@ -1075,7 +1052,7 @@ class SqlRuntimeAuthority:
                             "frame composite policy differs from canonical catalog"
                         )
                 else:
-                    snapshot = self.load_latest_config_at(cursor, deadline=deadline)
+                    snapshot = self.load_latest_config_at(sql, deadline=deadline)
                     config_head = snapshot.commit_revision
                 session = None
                 if session_liveness:
@@ -1085,7 +1062,7 @@ class SqlRuntimeAuthority:
                     ):
                         raise SqlRuntimeError("invalid hive lease prefix")
                     session = self._session_observation(
-                        cursor, head, route, slot, record, prefix=session_prefix
+                        sql, head, route, slot, record, prefix=session_prefix
                     )
                 has_inbox = routed_to_inbox(route.inbox_table, principal, route.epoch)
                 if session is not None or signed and not has_inbox:
@@ -1096,38 +1073,23 @@ class SqlRuntimeAuthority:
                 elif signed:
                     # Signed liveness: this frame's own inbox (route-derived identifier,
                     # never sender-named), verified at read time. No receiver projection.
-                    cursor.execute(
-                        f"SELECT payload FROM {route.inbox_table} WHERE kind='heartbeat'"
-                    )
                     observation = newest_signed_heartbeat(
-                        cursor.fetchall(), route, record, now=self.clock()
+                        sql.inbox_heartbeats(route.inbox_table), route, record, now=self.clock()
                     )
                 else:
-                    cursor.execute(
-                        "SELECT sequence,digest,accepted_until,lease_json,envelope_json,"
-                        "signer_fingerprint "
-                        "FROM hq_live_public_observations WHERE frame_id=%s "
-                        "AND holder_identity=%s AND epoch=%s",
-                        (route.frame_id, route.holder_identity, route.epoch),
+                    observation = sql.public_observation(
+                        route.frame_id, route.holder_identity, route.epoch
                     )
-                    observation = cursor.fetchone()
                 if observation is not None and observation[5] != route.signer_fingerprint:
                     raise SqlRuntimeError("public observation signer differs from grant")
                 lease_row = None
                 if prefix is not None:
                     if not isinstance(prefix, str) or not re.fullmatch(r"[a-z][a-z0-9-]*", prefix):
                         raise SqlRuntimeError("invalid hive lease prefix")
-                    cursor.execute(
-                        "SELECT revision,lease_json,request_id,request_sha256 "
-                        "FROM hq_live_hive_leases WHERE prefix=%s",
-                        (prefix,),
-                    )
-                    lease_row = cursor.fetchone()
+                    lease_row = sql.hive_lease(prefix)
                 evidence = None
                 if prefix is not None and hive_lease_epoch is not None:
-                    evidence = self._hive_lease_evidence(
-                        cursor, head, route, prefix, hive_lease_epoch
-                    )
+                    evidence = self._hive_lease_evidence(sql, head, route, prefix, hive_lease_epoch)
                 if time.monotonic() >= deadline:
                     raise SqlRuntimeError("frame composite deadline exceeded")
             connection.rollback()
@@ -1156,6 +1118,7 @@ class SqlRuntimeAuthority:
         from .hq_sql_session import SessionError, incarnation_switch, read_eligibility
 
         try:
+            cursor = runtime_statements(cursor)
             if incarnation_switch(cursor, route.principal, route.epoch) is None:
                 return None
             desired = record.get("desired", {})
@@ -1183,12 +1146,9 @@ class SqlRuntimeAuthority:
             raise SqlRuntimeError("invalid hive lease fence epoch")
         if not routed_to_inbox(route.inbox_table, route.principal, route.epoch):
             return HiveLeaseEvidence((), {}, None)
-        cursor.execute(
-            f"SELECT request_id,payload,payload_sha256 FROM {route.inbox_table} "
-            "WHERE kind='hive_lease'"
-        )
+        sql = runtime_statements(cursor)
         rows, revisions = [], set()
-        for request_id, payload, payload_sha in cursor.fetchall():
+        for request_id, payload, payload_sha in sql.inbox_proposals(route.inbox_table):
             body = _payload_bytes(payload)
             if body is None or len(body) > _MAX_HEARTBEAT_BYTES:
                 continue
@@ -1205,19 +1165,13 @@ class SqlRuntimeAuthority:
         if len(revisions) > MAX_PROPOSAL_REVISIONS:
             raise SqlRuntimeError("too many signed hive lease proposals at one fence epoch")
         policies_at = {
-            revision: self.signed_policies_at(cursor, head, revision)
-            for revision in sorted(revisions)
+            revision: self.signed_policies_at(sql, head, revision) for revision in sorted(revisions)
         }
         # The receiver's protected acceptance witness for this incarnation's registration,
         # through the frame's own grants (its inbox and the public results table): a result
         # binds the exact payload digest, so a rewritten inbox row cannot borrow it.
-        cursor.execute(
-            f"SELECT r.signer_fingerprint FROM {route.inbox_table} AS i "
-            "JOIN hq_live_results AS r ON r.request_id=i.request_id "
-            "AND r.request_sha256=i.payload_sha256 "
-            "WHERE i.kind='registration' AND r.status='accepted' AND r.principal=%s "
-            "AND r.frame_id=%s AND r.holder_identity=%s AND r.instance_ref=%s AND r.epoch=%s "
-            "AND r.signer_fingerprint=%s LIMIT 1",
+        registration = sql.registration_witness(
+            route.inbox_table,
             (
                 route.principal,
                 route.frame_id,
@@ -1227,7 +1181,6 @@ class SqlRuntimeAuthority:
                 route.signer_fingerprint,
             ),
         )
-        registration = cursor.fetchone()
         return HiveLeaseEvidence(
             tuple(rows), policies_at, registration[0] if registration else None
         )
@@ -1238,16 +1191,8 @@ class SqlRuntimeAuthority:
         try:
             binding = self.settings["runtime"]
             with connection.cursor() as cursor:
-
-                def execute(sql, params=None):
-                    if time.monotonic() >= deadline:
-                        raise SqlRuntimeError("HQ runtime operation deadline exceeded")
-                    cursor.execute(sql, params)
-                    if time.monotonic() >= deadline:
-                        raise SqlRuntimeError("HQ runtime operation deadline exceeded")
-
-                execute("SELECT CURRENT_USER(),DATABASE(),ACTIVE_BRANCH(),DOLT_VERSION()")
-                principal, database, branch, version = cursor.fetchone()
+                timed = runtime_statements(_DeadlineCursor(cursor, deadline))
+                principal, database, branch, version = timed.identity()
                 if (
                     not principal.startswith(binding["user"] + "@")
                     or database != binding["database"]
@@ -1257,9 +1202,8 @@ class SqlRuntimeAuthority:
                     raise SqlRuntimeError(
                         "HQ runtime principal, database, branch or version mismatch"
                     )
-                execute("START TRANSACTION")
-                execute("SELECT DOLT_HASHOF('HEAD')")
-                head = cursor.fetchone()[0]
+                timed.begin()
+                head = timed.head()
                 state, crossref, policies = self.verified_state_at(
                     cursor, head, deadline=deadline, allow_expired=allow_expired
                 )
@@ -1282,8 +1226,8 @@ class SqlRuntimeAuthority:
             with connection.cursor() as cursor:
                 if time.monotonic() >= deadline:
                     raise SqlRuntimeError("HQ runtime operation deadline exceeded")
-                cursor.execute("SELECT CURRENT_USER(),DATABASE(),ACTIVE_BRANCH(),DOLT_VERSION()")
-                principal, database, branch, version = cursor.fetchone()
+                sql = runtime_statements(cursor)
+                principal, database, branch, version = sql.identity()
                 if (
                     not principal.startswith(binding["user"] + "@")
                     or database != binding["database"]
@@ -1292,18 +1236,11 @@ class SqlRuntimeAuthority:
                 ):
                     raise SqlRuntimeError("HQ frame principal or runtime endpoint mismatch")
                 principal_name = principal.split("@", 1)[0]
-                cursor.execute("START TRANSACTION")
-                cursor.execute("SELECT DOLT_HASHOF('HEAD')")
-                head = cursor.fetchone()[0]
+                sql.begin()
+                head = sql.head()
                 if head != expected_head:
                     raise SqlRuntimeError("HQ authority changed during frame binding")
-                cursor.execute(
-                    "SELECT principal,frame_id,holder_identity,instance_ref,epoch,"
-                    "inbox_table,signer_fingerprint FROM hq_principal_registry AS OF %s "
-                    "WHERE principal=%s",
-                    (head, principal_name),
-                )
-                rows = cursor.fetchall()
+                rows = sql.route_at(head, principal_name)
                 if len(rows) != 1:
                     raise SqlRuntimeError("authenticated frame principal is not provisioned")
                 selected = PrincipalBinding(*rows[0])
@@ -1351,8 +1288,8 @@ class SqlRuntimeAuthority:
         crossed_commit = False
         try:
             with connection.cursor() as cursor:
-                cursor.execute("SELECT CURRENT_USER(),DATABASE(),ACTIVE_BRANCH(),DOLT_VERSION()")
-                principal, database, branch, version = cursor.fetchone()
+                sql = runtime_statements(cursor)
+                principal, database, branch, version = sql.identity()
                 expected = self.settings["runtime"]
                 if (
                     principal.split("@", 1)[0] != binding.principal
@@ -1362,17 +1299,13 @@ class SqlRuntimeAuthority:
                     or version != "2.3.5"
                 ):
                     raise SqlRuntimeError("frame inbox principal or endpoint mismatch")
-                cursor.execute("START TRANSACTION")
-                cursor.execute("SELECT DOLT_HASHOF('HEAD')")
-                if cursor.fetchone()[0] != expected_head:
+                sql.begin()
+                if sql.head() != expected_head:
                     raise SqlRuntimeError("HQ authority changed before evidence publication")
                 if time.monotonic() >= deadline:
                     raise SqlRuntimeError("HQ runtime operation deadline exceeded")
-                cursor.execute(
-                    f"INSERT INTO {binding.inbox_table} "
-                    "(request_id,kind,payload,payload_sha256,created_at) "
-                    "VALUES (%s,%s,%s,%s,%s)",
-                    (request_id, kind, body, digest, self.clock()),
+                sql.insert_inbox(
+                    binding.inbox_table, (request_id, kind, body, digest, self.clock())
                 )
                 crossed_commit = True
                 connection.commit()
@@ -1408,8 +1341,8 @@ class SqlRuntimeAuthority:
         connection, deadline = self._open(deadline=deadline)
         try:
             with connection.cursor() as cursor:
-                cursor.execute("SELECT CURRENT_USER(),DATABASE(),ACTIVE_BRANCH(),DOLT_VERSION()")
-                user, database, branch, version = cursor.fetchone()
+                sql = runtime_statements(cursor)
+                user, database, branch, version = sql.identity()
                 binding = self.settings["runtime"]
                 if (
                     user.split("@", 1)[0] != principal.principal
@@ -1419,13 +1352,7 @@ class SqlRuntimeAuthority:
                     or version != "2.3.5"
                 ):
                     raise SqlRuntimeError("public result principal or endpoint mismatch")
-                cursor.execute(
-                    "SELECT request_sha256,principal,frame_id,holder_identity,instance_ref,"
-                    "epoch,audience,signer_fingerprint,expected_revision,result_revision,status "
-                    "FROM hq_live_results WHERE request_id=%s",
-                    (request_id,),
-                )
-                row = cursor.fetchone()
+                row = sql.result(request_id)
                 if row is None:
                     if time.monotonic() >= deadline:
                         raise SqlRuntimeDeadline("public result deadline exceeded")
