@@ -49,6 +49,7 @@ __all__ = [
     "CAS",
     "Checkpoint",
     "DOLT_CLI",
+    "DOLT_QUIET_ENV",
     "FETCH",
     "HQ",
     "INFO",
@@ -77,6 +78,15 @@ DEFAULT_TIMEOUT = 180.0
 _GATE = Path(__file__).with_name("writer_fencing_gate.py")
 _REMOTE_SUBCOMMANDS = "fetch|push|pull|ls-remote|clone|fetch-pack|send-pack"
 _PASSTHROUGH_ENV = ("LANG", "LC_ALL", "TZ", "TMPDIR")
+
+#: Env for every Dolt process a test cluster runs (bh-2zayj). After most commands the Dolt CLI
+#: forks ``dolt send-metrics`` DETACHED (its own session, reparented to init, so neither a frame
+#: agent's ``killpg`` nor its exit reaps it). That child outlives "stop every process" and
+#: ``MkdirAll``s ``$DOLT_ROOT_PATH/.dolt/eventsData`` -- writing ``config_global.json`` and
+#: ``eventsData/dolt.lock`` -- so a template restore's ``rmtree`` of the cluster root raced it:
+#: ENOTEMPTY on ``frames/<id>`` once it recreated ``frames/<id>/home``. ``metrics.disabled`` in
+#: the global config does NOT stop the fork (Dolt 2.3.5); ``DOLT_DISABLE_EVENT_FLUSH`` does.
+DOLT_QUIET_ENV = {"DOLT_DISABLE_EVENT_FLUSH": "1"}
 
 
 # --------------------------------------------------------------------------------------------
@@ -492,6 +502,7 @@ class Frame:
             "GIT_TERMINAL_PROMPT": "0",
             "BD_NON_INTERACTIVE": "1",
             "BEADS_ACTOR": self.name,
+            **DOLT_QUIET_ENV,
             **{k: os.environ[k] for k in _PASSTHROUGH_ENV if k in os.environ},
         }
         if self.kind == BD_SERVER:
@@ -921,6 +932,7 @@ class Cluster:
             "HOME": str(home),
             "DOLT_ROOT_PATH": str(home),
             "GIT_CONFIG_NOSYSTEM": "1",
+            **DOLT_QUIET_ENV,
         }
 
     def _seed_remote(self) -> None:
