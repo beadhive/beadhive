@@ -3,6 +3,13 @@
 All account/table DDL and grants are explicit server-local provisioning.  This
 writer only checks a preprovisioned principal/inbox and publishes signed
 authority with an original committed HEAD CAS.  It never runs in a frame.
+
+Storage (bh-xnn5p): every statement, ``DOLT_ADD`` and ``DOLT_COMMIT`` is the HQ storage port's
+Dolt adapter's (:class:`beadhive_hq_storage_dolt.HqRuntimeStatements` through
+:func:`beadhive.hq_storage_composition.runtime_statements`). The authority publication is an
+``AS OF``-verified CAS of the committed ``hq_authority`` row plus the registry and floor seed in
+ONE Dolt commit, so it keeps its own connection on that Dolt-only surface; this module holds no
+SQL.
 """
 
 from __future__ import annotations
@@ -29,6 +36,7 @@ from .hq_sql_signatures import (
     verify_heartbeat,
 )
 from .hq_sql_transport import FnoxBroker, SqlTransportError, connect
+from .hq_storage_composition import runtime_statements
 
 #: Heartbeat rows deleted per statement (and per commit) by ``prune_inbox``.
 PRUNE_BATCH = 500
@@ -73,8 +81,7 @@ class SqlRuntimeOperator:
 
     def _identity(self, cursor):
         binding = self.settings["authority_writer"]
-        cursor.execute("SELECT CURRENT_USER(),DATABASE(),ACTIVE_BRANCH(),DOLT_VERSION()")
-        user, database, branch, version = cursor.fetchone()
+        user, database, branch, version = runtime_statements(cursor).identity()
         if (
             not user.startswith(binding["user"] + "@")
             or database != binding["database"]
@@ -87,12 +94,12 @@ class SqlRuntimeOperator:
         connection, deadline = self._open(deadline=deadline)
         try:
             with connection.cursor() as cursor:
-                self._identity(cursor)
-                cursor.execute("START TRANSACTION")
-                cursor.execute("SELECT DOLT_HASHOF('HEAD')")
-                head = cursor.fetchone()[0]
+                sql = runtime_statements(cursor)
+                self._identity(sql)
+                sql.begin()
+                head = sql.head()
                 state, crossref, policies = self.authority.verified_state_at(
-                    cursor, head, deadline=deadline, allow_expired=True
+                    sql, head, deadline=deadline, allow_expired=True
                 )
             connection.rollback()
             return head, state, crossref, policies
@@ -110,14 +117,14 @@ class SqlRuntimeOperator:
         connection, deadline = self._open(deadline=deadline)
         try:
             with connection.cursor() as cursor:
-                self._identity(cursor)
-                cursor.execute("START TRANSACTION")
-                cursor.execute("SELECT DOLT_HASHOF('HEAD')")
-                head = cursor.fetchone()[0]
+                sql = runtime_statements(cursor)
+                self._identity(sql)
+                sql.begin()
+                head = sql.head()
                 if head != expected_revision:
                     raise SqlOperatorError("protected authority changed before observation")
                 state, _crossref, _policies = self.authority.verified_state_at(
-                    cursor, head, deadline=deadline, allow_expired=True
+                    sql, head, deadline=deadline, allow_expired=True
                 )
                 entry = state.get("frames", {}).get(frame)
                 matching = [
@@ -130,13 +137,9 @@ class SqlRuntimeOperator:
                     raise SqlOperatorError("granted observation incarnation unavailable")
                 record = matching[0]
                 authority = record["authority"]
-                cursor.execute(
-                    "SELECT request_id,request_sha256,manifest_json,accepted_at,"
-                    "signer_fingerprint FROM hq_live_registrations "
-                    "WHERE frame_id=%s AND holder_identity=%s AND instance_ref=%s AND epoch=%s",
-                    (frame, holder_identity, authority["instance_ref"], authority["epoch"]),
+                registration_row = sql.registration_record(
+                    frame, holder_identity, authority["instance_ref"], authority["epoch"]
                 )
-                registration_row = cursor.fetchone()
                 registration = None
                 if registration_row is not None:
                     if registration_row[4] != authority["key_fingerprint"]:
@@ -153,21 +156,9 @@ class SqlRuntimeOperator:
                         or registration.capabilities.model_dump() != record["desired"]["caps"]
                     ):
                         raise SqlOperatorError("registration differs from desired grant")
-                cursor.execute(
-                    "SELECT sequence,digest,first_seen FROM hq_live_floors "
-                    "WHERE frame_id=%s AND holder_identity=%s AND epoch=%s",
-                    (frame, holder_identity, authority["epoch"]),
-                )
-                floor = cursor.fetchone()
+                floor = sql.floor(frame, holder_identity, authority["epoch"])
                 receipts = []
                 if floor is not None and floor[0] > 0:
-                    cursor.execute(
-                        "SELECT sequence,digest,first_seen,lease_json,envelope_json,"
-                        "signer_fingerprint "
-                        "FROM hq_live_receipts WHERE frame_id=%s AND holder_identity=%s "
-                        "AND epoch=%s ORDER BY sequence DESC LIMIT 3",
-                        (frame, holder_identity, authority["epoch"]),
-                    )
                     for (
                         sequence,
                         digest,
@@ -175,7 +166,7 @@ class SqlRuntimeOperator:
                         body,
                         envelope_body,
                         signer,
-                    ) in cursor.fetchall():
+                    ) in sql.latest_receipts(frame, holder_identity, authority["epoch"]):
                         if isinstance(envelope_body, bytes):
                             envelope_body = envelope_body.decode()
                         lease, verified_digest = verify_heartbeat(
@@ -217,14 +208,7 @@ class SqlRuntimeOperator:
                         receipts.append((sequence, digest, first_seen, lease))
                     if not receipts or (receipts[0][0], receipts[0][1], receipts[0][2]) != floor:
                         raise SqlOperatorError("protected accepted receipt floor mismatch")
-                cursor.execute(
-                    "SELECT sequence,digest,accepted_until,lease_json,envelope_json,"
-                    "signer_fingerprint "
-                    "FROM hq_live_public_observations WHERE frame_id=%s "
-                    "AND holder_identity=%s AND epoch=%s",
-                    (frame, holder_identity, authority["epoch"]),
-                )
-                public = cursor.fetchone()
+                public = sql.public_observation(frame, holder_identity, authority["epoch"])
                 if (
                     bool(public) != bool(receipts)
                     or public
@@ -284,17 +268,16 @@ class SqlRuntimeOperator:
         crossed_commit = False
         try:
             with connection.cursor() as cursor:
-                self._identity(cursor)
-                cursor.execute("START TRANSACTION")
-                cursor.execute("SELECT DOLT_HASHOF('HEAD')")
-                head = cursor.fetchone()[0]
+                sql = runtime_statements(cursor)
+                self._identity(sql)
+                sql.begin()
+                head = sql.head()
                 if head != expected_revision:
                     raise SqlOperatorError("original authority revision changed")
-                cursor.execute("SELECT * FROM dolt_status")
-                if cursor.fetchall():
+                if sql.dirty():
                     raise SqlOperatorError("runtime committed working tree is dirty")
                 current, _crossref, _policies = self.authority.verified_state_at(
-                    cursor, head, deadline=deadline, allow_expired=True
+                    sql, head, deadline=deadline, allow_expired=True
                 )
                 if (
                     not isinstance(state, dict)
@@ -319,7 +302,7 @@ class SqlRuntimeOperator:
                     guard.validate_legacy_binding_transition(
                         current, state, trusted_now=self.clock()
                     )
-                snapshot = self.authority.load_latest_config_at(cursor, deadline=deadline)
+                snapshot = self.authority.load_latest_config_at(sql, deadline=deadline)
                 from .frame_release_upgrade import preserve_history, validate_publication
 
                 if release_upgrade is None:
@@ -351,24 +334,18 @@ class SqlRuntimeOperator:
                 )
                 if provisioned_route is not None:
                     principal, frame_id, holder, instance, epoch, signer = provisioned_route
-                    table = self._provisioned_table(cursor, principal, epoch)
+                    table = self._provisioned_table(sql, principal, epoch)
                     if release_upgrade is not None and table == session_table(principal, epoch):
                         from .hq_sql_session_provision import validate_incarnation
 
                         validate_incarnation(
-                            cursor,
+                            sql,
                             principal,
                             epoch,
                             database=self.settings["authority_writer"]["database"],
                         )
-                    cursor.execute(
-                        "INSERT INTO hq_principal_registry VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                        (principal, frame_id, holder, instance, epoch, table, signer),
-                    )
-                    cursor.execute(
-                        "INSERT INTO hq_live_floors VALUES (%s,%s,%s,0,'',NULL)",
-                        (frame_id, holder, epoch),
-                    )
+                    sql.insert_route((principal, frame_id, holder, instance, epoch, table, signer))
+                    sql.insert_floor_seed(frame_id, holder, epoch)
                 body = canonical(state, limit=4 * 1024 * 1024)
                 policy_body = canonical(policies, limit=4 * 1024 * 1024)
                 signed = {
@@ -394,11 +371,7 @@ class SqlRuntimeOperator:
                     signature = hq_authority_enforce.UNSIGNED_SIGNATURE
                 else:
                     raise SqlOperatorError("mutation requires separate --operator-key")
-                cursor.execute(
-                    "UPDATE hq_authority SET revision=%s,config_backend=%s,"
-                    "config_generation=%s,config_head=%s,state_json=%s,state_sha256=%s,"
-                    "hive_policies_json=%s,hive_policies_sha256=%s,operator_signature=%s "
-                    "WHERE singleton_id=1 AND revision=%s AND config_head=%s",
+                written = sql.update_authority(
                     (
                         state["revision"],
                         *crossref,
@@ -409,25 +382,21 @@ class SqlRuntimeOperator:
                         signature,
                         current["revision"],
                         _crossref[2],
-                    ),
+                    )
                 )
-                if cursor.rowcount != 1:
+                if written != 1:
                     raise SqlOperatorError("protected authority row CAS conflict")
                 if time.monotonic() >= deadline:
                     raise SqlOperatorError("authority writer deadline exceeded")
                 self.authority.fresh_config_head_fence(crossref[2], deadline=deadline)
                 self.authority.fresh_runtime_head_fence(head, deadline=deadline)
-                cursor.execute("CALL DOLT_ADD('hq_authority','hq_principal_registry')")
+                sql.stage_authority()
                 crossed_commit = True
-                cursor.execute(
-                    "CALL DOLT_COMMIT('-m',%s,'--author',%s)",
-                    (
-                        f"HQ {'signed' if operator_key else 'unsigned (trusted)'} authority "
-                        f"{state['revision']}",
-                        "HQ operator <hq-operator@localhost>",
-                    ),
+                committed = sql.commit_authority(
+                    f"HQ {'signed' if operator_key else 'unsigned (trusted)'} authority "
+                    f"{state['revision']}",
+                    "HQ operator <hq-operator@localhost>",
                 )
-                committed = cursor.fetchone()
                 if not committed or not isinstance(committed[0], str):
                     raise AuthorityPublicationUnknown(expected_revision)
                 new_head = committed[0]
@@ -462,12 +431,7 @@ class SqlRuntimeOperator:
         evidence tables exist (session-only). Anything else is refused."""
         inbox = inbox_table(principal, epoch)
         session, evidence = session_table(principal, epoch), evidence_table(principal, epoch)
-        cursor.execute(
-            "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema=DATABASE() AND table_name IN (%s,%s,%s)",
-            (inbox, session, evidence),
-        )
-        present = {row[0] for row in cursor.fetchall()}
+        present = runtime_statements(cursor).tables_present((inbox, session, evidence))
         if inbox in present:
             return inbox
         if {session, evidence} <= present:
@@ -479,19 +443,14 @@ class SqlRuntimeOperator:
         connection, _deadline = self._open(deadline=deadline)
         try:
             with connection.cursor() as cursor:
-                self._identity(cursor)
+                sql = runtime_statements(cursor)
+                self._identity(sql)
                 inbox = inbox_table(principal, epoch)
                 session, evidence = (
                     session_table(principal, epoch),
                     evidence_table(principal, epoch),
                 )
-                cursor.execute(
-                    "SELECT table_name FROM information_schema.tables "
-                    "WHERE table_schema=DATABASE() "
-                    "AND table_name IN (%s,%s,%s)",
-                    (inbox, session, evidence),
-                )
-                present = {row[0] for row in cursor.fetchall()}
+                present = sql.tables_present((inbox, session, evidence))
                 incomplete = (
                     bool(present & {session, evidence}) and not {session, evidence} <= present
                 )
@@ -503,12 +462,7 @@ class SqlRuntimeOperator:
                     else None
                 )
                 if table is None:
-                    cursor.execute(
-                        "SELECT principal,epoch,inbox_table FROM hq_principal_registry "
-                        "WHERE frame_id=%s ORDER BY epoch DESC LIMIT 1",
-                        (frame,),
-                    )
-                    prior = cursor.fetchone()
+                    prior = sql.latest_route_for_frame(frame)
                     table = (
                         session
                         if prior and prior[2] == session_table(prior[0], prior[1])
@@ -536,19 +490,17 @@ class SqlRuntimeOperator:
         connection, deadline = self._open(deadline=deadline)
         try:
             with connection.cursor() as cursor:
-                self._identity(cursor)
-                cursor.execute("SELECT DOLT_HASHOF('HEAD')")
-                head = cursor.fetchone()[0]
+                sql = runtime_statements(cursor)
+                self._identity(sql)
+                head = sql.head()
                 if head != expected_revision:
                     raise SqlOperatorError(
                         "original authority revision changed before provisioning"
                     )
-                self.authority.verified_state_at(
-                    cursor, head, deadline=deadline, allow_expired=True
-                )
+                self.authority.verified_state_at(sql, head, deadline=deadline, allow_expired=True)
                 database = self.settings["authority_writer"]["database"]
                 resume_incarnation(
-                    cursor,
+                    sql,
                     principal,
                     epoch,
                     frame_address=frame_address,
@@ -563,15 +515,12 @@ class SqlRuntimeOperator:
                     "hq_live_public_observations",
                     "hq_live_results",
                 ):
-                    cursor.execute(f"GRANT SELECT ON `{database}`.`{table}` TO {account}")
+                    sql.grant_select(database, table, account)
                 config_database = self.settings["reader"]["database"]
                 for table in ("hq_config_meta", "hq_config_documents", "hq_config_publications"):
-                    cursor.execute(f"GRANT SELECT ON `{config_database}`.`{table}` TO {account}")
-                cursor.execute("SELECT DOLT_HASHOF('HEAD')")
-                result = cursor.fetchone()[0]
-                self.authority.verified_state_at(
-                    cursor, result, deadline=deadline, allow_expired=True
-                )
+                    sql.grant_select(config_database, table, account)
+                result = sql.head()
+                self.authority.verified_state_at(sql, result, deadline=deadline, allow_expired=True)
                 return result
         except (SqlOperatorError, ValueError):
             raise
@@ -599,20 +548,14 @@ class SqlRuntimeOperator:
         connection, deadline = self._open(deadline=deadline)
         try:
             with connection.cursor() as cursor:
-                self._identity(cursor)
-                cursor.execute("START TRANSACTION")
-                cursor.execute("SELECT DOLT_HASHOF('HEAD')")
-                head = cursor.fetchone()[0]
+                sql = runtime_statements(cursor)
+                self._identity(sql)
+                sql.begin()
+                head = sql.head()
                 state, _crossref, _policies = self.authority.verified_state_at(
-                    cursor, head, deadline=deadline, allow_expired=True
+                    sql, head, deadline=deadline, allow_expired=True
                 )
-                cursor.execute(
-                    "SELECT principal,frame_id,holder_identity,instance_ref,epoch,"
-                    "inbox_table,signer_fingerprint FROM hq_principal_registry AS OF %s "
-                    "WHERE frame_id=%s",
-                    (head, frame),
-                )
-                routes = [PrincipalBinding(*row) for row in cursor.fetchall()]
+                routes = [PrincipalBinding(*row) for row in sql.routes_for_frame_at(head, frame)]
                 if not routes:
                     raise SqlOperatorError("frame has no provisioned inbox")
                 records = [record for identity, record in guard.records(state) if identity == frame]
@@ -642,11 +585,8 @@ class SqlRuntimeOperator:
                     if len(matching) != 1:
                         inboxes.append({**summary, "skipped": "incarnation not in authority"})
                         continue
-                    cursor.execute(
-                        f"SELECT request_id,payload FROM {route.inbox_table} WHERE kind='heartbeat'"
-                    )
                     plan = plan_prune(
-                        cursor.fetchall(),
+                        sql.inbox_heartbeat_ids(route.inbox_table),
                         route,
                         matching[0]["public_key"],
                         now=now,
@@ -661,11 +601,7 @@ class SqlRuntimeOperator:
                                 complete = False
                                 break
                             batch = plan.delete[start : start + PRUNE_BATCH]
-                            cursor.execute(
-                                f"DELETE FROM {route.inbox_table} WHERE kind='heartbeat' "
-                                f"AND request_id IN ({','.join(['%s'] * len(batch))})",
-                                tuple(batch),
-                            )
+                            sql.delete_inbox_heartbeats(route.inbox_table, tuple(batch))
                             connection.commit()
                             deleted += len(batch)
                     if dry_run:

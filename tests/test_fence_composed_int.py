@@ -67,9 +67,15 @@ from beadhive import fence_orphan as fo
 from beadhive import fence_schema as fs
 from beadhive import hive_forward, work_backup
 from beadhive import writer_adopt as wa
-from beadhive.failover_observer import FailoverObserver, session_table, sql_session_staleness
+from beadhive.failover_observer import (
+    FailoverObserver,
+    session_key,
+    session_staleness,
+    session_table,
+)
 from beadhive.hq_sql_session import LivenessPolicy, SessionRenewer, session_ddl
 from beadhive_hq_storage import Confirmed, NotConfirmed, new_operation_id
+from beadhive_hq_storage_dolt import DoltHqStorage
 from harness import composed_fence as cf
 from harness.clock import FakeClock
 from harness.writer_fencing import BD_EMBEDDED, BD_SERVER, DOLT_CLI, Cluster, Run
@@ -87,6 +93,7 @@ from test_hq_sql_session_int import DB as SESSION_DB
 from test_hq_sql_session_int import _eligibility as _session_eligibility
 from test_hq_sql_session_int import _frame as _session_frame
 from test_hq_sql_session_int import _provisioned as _session_provisioned
+from test_hq_sql_session_int import _root as _session_root
 from test_hq_sql_session_int import _server as _session_server
 
 pytestmark = [
@@ -965,10 +972,10 @@ def test_sender_stall_longer_than_the_ttl_is_stale_but_fails_over_only_past_fail
     (``SessionRenewer.run(stop=, clock=)``) and the observer's window
     (``FailoverObserver(clock=)``); nothing sleeps. The server's staleness is data-driven: each
     poll stamps the session row as old as the virtual time since the last real renewal
-    (:func:`_age_session`), so eligibility and ``sql_session_staleness`` still run the
-    production SQL against the server clock. During the long stall the director polls every
-    ``ttl / 2`` starting ``ttl / 4`` past a renewal, so ``failover_after`` sits half a poll
-    from every observed age: the only real time left on the asserted path (the few statements
+    (:func:`_age_session`), so eligibility and the director's ``Liveness.ages`` (bh-xnn5p)
+    still run the production SQL against the server clock. During the long stall the director
+    polls every ``ttl / 2`` starting ``ttl / 4`` past a renewal, so ``failover_after`` sits half
+    a poll from every observed age: the only real time left on the asserted path (the few statements
     between an age write and its read) would have to exceed ``ttl / 4`` to move the decision.
     Removing that residue needs bh-xxkf7's injectable ``now()``."""
     ttl = int(os.environ.get("BH_M10_SESSION_TTL_S", "2"))
@@ -987,6 +994,8 @@ def test_sender_stall_longer_than_the_ttl_is_stale_but_fails_over_only_past_fail
             lambda: _session_frame(port, tmp_path, "frame_a"), database=SESSION_DB
         )
         reader = _session_frame(port, tmp_path, "frame_a")
+        # The director's port read of the session row: the Dolt adapter over root's tables.
+        liveness = DoltHqStorage(lambda _role: _session_root(port, SESSION_DB), runtime_tables=True)
         clock = FakeClock()
         observer = FailoverObserver(failover_after, clock=clock.monotonic)
         errors: list[BaseException] = []
@@ -1004,8 +1013,8 @@ def test_sender_stall_longer_than_the_ttl_is_stale_but_fails_over_only_past_fail
 
         def poll() -> tuple[bool, object]:
             _age_session(root, table, trigger, clock.monotonic() - renewed[-1])
-            with root.cursor() as cursor:
-                age = sql_session_staleness(cursor, table)
+            key = session_key("frame_a", 1)
+            age = session_staleness(liveness, [key])[key]
             return _session_eligibility(reader).authenticated_fresh_heartbeat, observer.observe(age)
 
         def stalled(seconds: float) -> list[tuple[bool, object]]:

@@ -27,6 +27,7 @@ from ._fake import (
 )
 from ._ports import (
     AppendLog,
+    AtomicRecords,
     CapabilityHost,
     CommittedHistory,
     EpochRefStore,
@@ -66,6 +67,7 @@ from ._types import (
     ReclaimNote,
     ReclaimSet,
     RecordKind,
+    RecordWrite,
     RefView,
     Revision,
     StreamKind,
@@ -108,6 +110,7 @@ __all__ = [
     "ReclaimNote",
     "ReclaimSet",
     "RecordKind",
+    "RecordWrite",
     "RefView",
     "Revision",
     "StreamKind",
@@ -127,6 +130,7 @@ __all__ = [
     "StorageUnavailable",
     # protocols and the capability accessor
     "AppendLog",
+    "AtomicRecords",
     "CapabilityHost",
     "CommittedHistory",
     "EpochRefStore",

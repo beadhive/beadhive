@@ -1,6 +1,8 @@
 """Adapter-specific Dolt behaviour the fake cannot prove (hq-storage-port-adr, Consequences):
 the receiver-compatible placement wire format, ignored live tables, server-stamped liveness,
-error classification by phase, and the Dolt-only capabilities.
+error classification by phase, the Dolt-only capabilities, and root's runtime tables
+(``runtime_tables=True``, bh-xnn5p): the failover policy rows, the per-incarnation session and
+evidence rows, and the atomic placement-plus-policy write.
 
 Classification cases run hermetically over a scripted DB-API stub; the rest need a real
 ``dolt sql-server`` and self-skip without one.
@@ -34,6 +36,7 @@ from beadhive_hq_storage import (
     NotConfirmed,
     NotProvisioned,
     RecordKind,
+    RecordWrite,
     Revision,
     StorageUnavailable,
     StreamKind,
@@ -48,10 +51,11 @@ from beadhive_hq_storage_dolt import (
     DoltConfigHistory,
     DoltHistory,
     DoltHiveFence,
-    DoltHqSessions,
     DoltHqStorage,
     DoltMerge,
+    DoltRuntimeReads,
     FenceTable,
+    HqRuntimeStatements,
     MergeRefused,
     Role,
     cause_token,
@@ -59,9 +63,14 @@ from beadhive_hq_storage_dolt import (
     config_document_kind,
     config_documents_digest,
     error_code,
+    evidence_ddl,
+    incarnation_key,
+    incarnation_table,
     operation_revision,
     placement_seed_statement,
     placement_witness,
+    policy_revision,
+    session_ddl,
     unknown_reason,
 )
 from beadhive_hq_storage_dolt._fence import SqlConnectionFenceEngine
@@ -430,9 +439,29 @@ def test_the_seed_statement_inserts_a_witnessed_tombstone_row() -> None:
     assert params == ("ah", "r" * 64, raw, "id", placement_witness("ah", "r" * 64, raw))
 
 
-def test_the_transitional_sessions_capability_is_offered() -> None:
-    sessions = DoltHqStorage(_Script().connect).capability(DoltHqSessions)
-    assert isinstance(sessions, DoltHqSessions)
+def test_the_runtime_reads_capability_is_offered_and_wraps_a_cursor_once() -> None:
+    reads = DoltHqStorage(_Script().connect).capability(DoltRuntimeReads)
+    assert isinstance(reads, DoltRuntimeReads)
+    surface = HqRuntimeStatements.of(object())
+    assert HqRuntimeStatements.of(surface) is surface
+
+
+def test_a_policy_body_is_whole_seconds_and_a_session_key_names_one_incarnation() -> None:
+    store = DoltHqStorage(_Script().connect, runtime_tables=True)
+    for body in ({"executor": True}, {"executor": 1.5}, {"": 1}, {"x" * 33: 1}):
+        with pytest.raises(InvalidRequest):
+            store.compare_and_set(
+                RecordKind.FAILOVER_POLICY, "ah", body, expected=ABSENT, operation=_op()
+            )
+    for key in ("frame_a", "frame_a/x", "Frame/1", "a/1/2"):
+        with pytest.raises(InvalidRequest):
+            store.renew(LivenessKind.SESSION, key)
+    assert incarnation_key("frame_a", 3) == "frame_a/3"
+    assert incarnation_table("frame_a", 3, "session") == "frame_frame_a_3_session"
+
+
+def _op() -> Any:
+    return new_operation_id()
 
 
 @dolt
@@ -504,62 +533,173 @@ def test_a_principal_mismatch_is_refused_before_anything_is_sent(server: DoltSql
 @dolt
 @pytest.mark.integration
 @pytest.mark.dolt_server
-def test_sessions_share_one_transaction_and_commit_only_an_applied_cas(
+def test_the_runtime_read_is_one_read_only_transaction(server: DoltSqlServer) -> None:
+    hq = DoltHqHarness(server)
+    hq.provision(RecordKind.PLACEMENT, "ah", {"authority": {}, "lease": _LEASE})
+    reads = require_capability(hq.store, DoltRuntimeReads)
+    with reads.pinned() as statements:
+        assert statements.head() == _head(server, hq.database)
+        assert statements.hive_lease("ah") is not None
+        assert statements.tables_present(("hq_live_hive_leases", "nope")) == {"hq_live_hive_leases"}
+        assert not hasattr(statements, "cursor")  # typed statements only, no raw cursor
+
+
+# --- root's runtime tables (runtime_tables=True, bh-xnn5p) -----------------------------------
+
+_POLICY_DDL = (
+    "CREATE TABLE hq_live_failover_policy ("
+    "scope VARCHAR(512) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, "
+    "setting VARCHAR(32) NOT NULL, seconds BIGINT NOT NULL, "
+    "PRIMARY KEY (scope, setting))"
+)
+
+
+def _runtime(hq: DoltHqHarness) -> DoltHqStorage:
+    """The director's mapping over the harness database (faults armed through the harness)."""
+    return DoltHqStorage(hq._factory, runtime_tables=True)
+
+
+def _policy_rows(server: DoltSqlServer, hq: DoltHqHarness) -> list[tuple]:
+    return sorted(
+        tuple(row)
+        for row in server.sql(
+            hq.database, "SELECT scope, setting, seconds FROM hq_live_failover_policy"
+        )
+    )
+
+
+@dolt
+@pytest.mark.integration
+@pytest.mark.dolt_server
+def test_the_failover_policy_maps_column_for_column_onto_roots_table(
     server: DoltSqlServer,
 ) -> None:
     hq = DoltHqHarness(server)
-    seeded = hq.provision(RecordKind.PLACEMENT, "ah", {"authority": {}, "lease": _LEASE})
-    sessions = require_capability(hq.store, DoltHqSessions)
-    with sessions.snapshot() as tx:
-        assert tx.head() == _head(server, hq.database)
-        assert [v.key for v in tx.read_many(RecordKind.PLACEMENT)] == ["ah"]
-        tx.cursor.execute("SELECT COUNT(*) FROM hq_live_hive_leases")
-        assert tx.cursor.fetchone()[0] == 1
-        with pytest.raises(InvalidRequest):
-            tx.compare_and_set(
-                RecordKind.PLACEMENT,
-                "ah",
-                _carrier(),
-                expected=seeded,
-                operation=new_operation_id(),
-            )
-    co_write = (
-        "INSERT INTO hq_live_liveness (kind, live_key, body, renewed_at) "
-        "VALUES ('session', %s, NULL, UTC_TIMESTAMP(6))"
+    store = _runtime(hq)
+    with pytest.raises(NotProvisioned):
+        store.read_many(RecordKind.FAILOVER_POLICY)
+    server.sql(hq.database, _POLICY_DDL)
+    assert store.read(RecordKind.FAILOVER_POLICY, "ah") is None
+    head = _head(server, hq.database)
+    op = _op()
+    out = store.compare_and_set(
+        RecordKind.FAILOVER_POLICY,
+        "ah",
+        {"executor": 4500, "transient": 2400},
+        expected=ABSENT,
+        operation=op,
     )
+    assert out == Applied(policy_revision("ah", {"executor": 4500, "transient": 2400}), op)
+    assert _policy_rows(server, hq) == [("ah", "executor", 4500), ("ah", "transient", 2400)]
+    assert _head(server, hq.database) == head  # an ignored live table: never a commit
+    read = store.read(RecordKind.FAILOVER_POLICY, "ah")
+    assert read is not None and read.revision == out.revision
+    # A row written directly (a pre-port director, or the operator) reads the same way.
+    server.sql(hq.database, "INSERT INTO hq_live_failover_policy VALUES ('*', 'executor', 5400)")
+    assert [v.key for v in store.read_many(RecordKind.FAILOVER_POLICY)] == ["*", "ah"]
+    stale = store.compare_and_set(
+        RecordKind.FAILOVER_POLICY, "*", {"executor": 6000}, expected=ABSENT, operation=_op()
+    )
+    assert isinstance(stale, Conflict) and stale.current is not None
+    assert stale.current.body == {"executor": 5400}
+    cleared = store.compare_and_set(
+        RecordKind.FAILOVER_POLICY,
+        "ah",
+        {"executor": 4500},
+        expected=read.revision,
+        operation=_op(),
+    )
+    assert isinstance(cleared, Applied)
+    assert _policy_rows(server, hq) == [("*", "executor", 5400), ("ah", "executor", 4500)]
+    # No witness column: a lookup can never confirm, and NotConfirmed authorises nothing.
+    assert store.lookup(RecordKind.FAILOVER_POLICY, "ah", op) == NotConfirmed(op)
 
-    def cas(key: str, expected: Revision) -> Any:
-        op = new_operation_id()
 
-        def body(tx: Any) -> Any:
-            tx.cursor.execute(co_write, (key,))
-            return tx.compare_and_set(
-                RecordKind.PLACEMENT,
-                "ah",
-                _carrier(cause="planned"),
-                expected=expected,
-                operation=op,
-            )
-
-        return sessions.transact(body, operation=op, expected=expected)
-
-    lost = cas("lost", Revision("0" * 64))
-    assert isinstance(lost, Conflict)  # rolled back, never committed: no co-write either
-    landed = cas("landed", seeded)
-    assert isinstance(landed, Applied)
-    keys = {k for (k,) in server.sql(hq.database, "SELECT live_key FROM hq_live_liveness")}
-    assert keys == {"landed"}
-
-    def refuse(tx: Any) -> Any:
-        tx.cursor.execute(co_write, ("refused",))
-        raise ValueError("the caller's own refusal")
-
-    with pytest.raises(ValueError, match="own refusal"):
-        sessions.transact(
-            refuse, operation=new_operation_id(), expected=seeded, passthrough=(ValueError,)
+@dolt
+@pytest.mark.integration
+@pytest.mark.dolt_server
+@pytest.mark.parametrize("applied", [True, False])
+def test_the_placement_and_its_policy_are_one_atomic_write(
+    server: DoltSqlServer, applied: bool
+) -> None:
+    hq = DoltHqHarness(server)
+    server.sql(hq.database, _POLICY_DDL)
+    store = _runtime(hq)
+    seeded = hq.provision(RecordKind.PLACEMENT, "ah", {"authority": {}, "lease": _LEASE})
+    policy = RecordWrite(RecordKind.FAILOVER_POLICY, "ah", {"executor": 4500}, ABSENT)
+    lost = store.compare_and_set_all(
+        [RecordWrite(RecordKind.PLACEMENT, "ah", _carrier(), Revision("0" * 64)), policy],
+        operation=_op(),
+    )
+    assert isinstance(lost, Conflict) and lost.current is not None
+    assert lost.current.revision == seeded
+    assert _policy_rows(server, hq) == []  # the policy never lands without the placement
+    op = _op()
+    hq.faults.arm_unknown("compare_and_set_all", "commit", applied=applied)
+    hq.faults.active = "compare_and_set_all"
+    try:
+        out = store.compare_and_set_all(
+            [RecordWrite(RecordKind.PLACEMENT, "ah", _carrier(), seeded), policy], operation=op
         )
-    keys = {k for (k,) in server.sql(hq.database, "SELECT live_key FROM hq_live_liveness")}
-    assert keys == {"landed"}
+    finally:
+        hq.faults.active = None
+    assert out == Unknown(operation=op, expected=seeded, reason="commit")
+    found = store.lookup(RecordKind.PLACEMENT, "ah", op)  # the placement carries the witness
+    assert isinstance(found, Confirmed) is applied
+    assert _policy_rows(server, hq) == ([("ah", "executor", 4500)] if applied else [])
+
+
+@dolt
+@pytest.mark.integration
+@pytest.mark.dolt_server
+def test_incarnation_liveness_is_the_provisioned_rows_stamped_by_the_server(
+    server: DoltSqlServer,
+) -> None:
+    hq = DoltHqHarness(server)
+    store = _runtime(hq)
+    key = incarnation_key("frame_a", 1)
+    with pytest.raises(NotProvisioned):  # never an INSERT: the operator provisions the row
+        store.renew(LivenessKind.SESSION, key)
+    assert (
+        store.ages(LivenessKind.SESSION) == {}
+        and store.stamped_at(LivenessKind.SESSION, key) is None
+    )
+    for table, ddl in (
+        (incarnation_table("frame_a", 1, "session"), session_ddl),
+        (incarnation_table("frame_a", 1, "evidence"), evidence_ddl),
+    ):
+        server.sql(hq.database, *ddl(table, 1))
+    # Provisioned but never renewed: not observable (no age), not "infinitely stale".
+    assert store.ages(LivenessKind.SESSION, [key, "frame_b/1"]) == {}
+    before = store.now()
+    stamp = store.renew(LivenessKind.SESSION, key)
+    after = store.now()
+    assert before <= stamp <= after  # ordering only: no elapsed-time assertion
+    assert store.stamped_at(LivenessKind.SESSION, key) == stamp
+    ages = store.ages(LivenessKind.SESSION)
+    assert set(ages) == {key} and ages[key] >= timedelta(0)
+    assert set(store.ages(LivenessKind.SESSION, [key, "frame_b/1"])) == {key}
+    # A frame cannot freshen its own row: the trigger overwrites whatever it sends.
+    session = incarnation_table("frame_a", 1, "session")
+    server.sql(hq.database, f"UPDATE {session} SET renewed_at = '2099-01-01' WHERE id = 1")
+    restamped = store.stamped_at(LivenessKind.SESSION, key)
+    assert restamped is not None and restamped <= store.now()
+    evidence = {
+        "epoch": 1,
+        "release_id": "r",
+        "release_digest": "sha256:" + "1" * 64,
+        "profile": "p",
+        "status": "conformant",
+        "report_digest": "",
+    }
+    with pytest.raises(InvalidRequest):
+        store.renew(LivenessKind.EVIDENCE, key, {"status": "conformant"})
+    measured = store.renew(LivenessKind.EVIDENCE, key, evidence)
+    assert store.stamped_at(LivenessKind.EVIDENCE, key) == measured
+    ((status,),) = server.sql(
+        hq.database, f"SELECT status FROM {incarnation_table('frame_a', 1, 'evidence')}"
+    )
+    assert status == "conformant"
 
 
 # --- the HQ config publication (bh-x7xtc) ---------------------------------------------------

@@ -3,9 +3,11 @@
 ADR §4 with the operator's follow-up decision: executor 60 min, transient 30 min, viewer never
 placed; overrides per role and per hive in HQ data, never host.yaml or fleet config; a
 configurable executor floor (45 min) beside them; every value validated on load against the
-``bh-cvk70`` E20 hard bounds and REFUSED, never clamped. SQL is faked here;
-``test_hq_sql_placement_int.py`` runs the table, grants and the in-CAS write against a scratch
-Dolt server.
+``bh-cvk70`` E20 hard bounds and REFUSED, never clamped. Storage is the HQ storage port's
+in-memory fake (bh-xnn5p): one ``FAILOVER_POLICY`` record per scope. The Dolt adapter's mapping
+onto ``hq_live_failover_policy`` is proven on real Dolt by ``packages/beadhive-hq-storage-dolt``,
+and ``test_hq_sql_placement_int.py`` runs the table, grants and the in-CAS write against a
+scratch Dolt server.
 """
 
 from __future__ import annotations
@@ -21,6 +23,14 @@ from beadhive.director_failover import SqlFailoverPorts, build_loop
 from beadhive.failover_observer import FailoverDirector, FailoverMonitor
 from beadhive.hq_sql_placement import PlacementError, Survey, check_grants
 from beadhive.kernel.daemon.contracts.config import DaemonFailoverConfig
+from beadhive_hq_storage import (
+    ABSENT,
+    InMemoryHqStorage,
+    NotProvisioned,
+    RecordKind,
+    new_operation_id,
+)
+from harness.clock import FakeClock
 
 DOLT = fp.Bounds(session_ttl_s=300)  # the dolt-server shape: 5 min session TTL, sync 0
 
@@ -215,49 +225,60 @@ def test_the_policy_is_uncommitted_hq_data_beside_placement():
     assert fp.POLICY_TABLE in PROTECTED_TABLES  # frames hold no write right on it
 
 
-class Cursor:
-    """A fake DB-API cursor over the two tables the policy reads, recording every statement."""
+class PolicyStore:
+    """The HQ storage port's fake holding the policy as one ``FAILOVER_POLICY`` record per
+    scope; ``rows`` is the ``{(scope, setting): seconds}`` view the old table held, and
+    ``writes`` counts compare-and-sets. ``provisioned=False`` is a store whose policy table is
+    absent (``NotProvisioned``, as the Dolt adapter reports it)."""
 
-    def __init__(self, rows=(), *, tables=True, ttl=300):
-        self.rows = {(s, k): v for s, k, v in rows}
-        self.tables = (
-            {fp.POLICY_TABLE, "hq_liveness_policy"} if tables is True else set(tables or ())
-        )
-        self.ttl, self.statements, self.result = ttl, [], []
+    def __init__(self, rows=(), *, provisioned=True):
+        self.store = InMemoryHqStorage(FakeClock())
+        self.provisioned, self.writes = provisioned, 0
+        bodies = {}
+        for scope, setting, seconds in rows:
+            bodies.setdefault(scope, {})[setting] = seconds
+        for scope, body in bodies.items():
+            self.store.compare_and_set(
+                RecordKind.FAILOVER_POLICY,
+                scope,
+                body,
+                expected=ABSENT,
+                operation=new_operation_id(),
+            )
 
-    def execute(self, sql, params=None):
-        self.statements.append(sql)
-        if "information_schema.tables" in sql:
-            self.result = [(t,) for t in sorted(self.tables) if t in params]
-        elif sql.startswith("SELECT session_ttl_s"):
-            self.result = [(self.ttl, 900)]
-        elif sql.startswith("SELECT scope,setting,seconds"):
-            self.result = [(s, k, v) for (s, k), v in sorted(self.rows.items())]
-        elif sql.startswith("INSERT INTO hq_live_failover_policy"):
-            self.rows[(params[0], params[1])] = params[2]
-        elif sql.startswith("DELETE FROM hq_live_failover_policy"):
-            self.rows.pop(params, None)
-        else:
-            raise AssertionError(sql)
-        return 1
+    def read_many(self, kind, keys=None):
+        if not self.provisioned:
+            raise NotProvisioned("hq_live_failover_policy is not provisioned")
+        return self.store.read_many(kind, keys)
 
-    def fetchall(self):
-        return list(self.result)
+    def compare_and_set(self, kind, key, body, *, expected, operation):
+        self.writes += 1
+        return self.store.compare_and_set(kind, key, body, expected=expected, operation=operation)
 
-    def fetchone(self):
-        return self.result[0] if self.result else None
+    def __getattr__(self, name):
+        return getattr(self.store, name)
+
+    @property
+    def rows(self):
+        return {
+            (record.key, setting): seconds
+            for record in self.store.read_many(RecordKind.FAILOVER_POLICY)
+            for setting, seconds in record.body.items()
+        }
 
 
-def test_changing_the_policy_never_commits_or_touches_authority_or_config():
-    cursor = Cursor()
-    after = fp.apply_changes(cursor, "ah", {"executor": 4500, "transient": 2400})
+def test_changing_the_policy_writes_only_its_scopes_records():
+    store = PolicyStore()
+    head = store.head()
+    after = fp.apply_changes(store, "ah", {"executor": 4500, "transient": 2400}, DOLT)
     assert after.failover_after("ah", "executor") == 4500.0
-    assert cursor.rows == {("ah", "executor"): 4500, ("ah", "transient"): 2400}
-    fp.apply_changes(cursor, fp.FLEET_SCOPE, {"executor_floor": 3000})
-    fp.apply_changes(cursor, "ah", {"transient": None})
-    assert cursor.rows == {("ah", "executor"): 4500, ("*", "executor_floor"): 3000}
-    for sql in cursor.statements:
-        assert not re.search(r"DOLT_COMMIT|DOLT_ADD|hq_authority|config", sql, re.IGNORECASE), sql
+    assert store.rows == {("ah", "executor"): 4500, ("ah", "transient"): 2400}
+    fp.apply_changes(store, fp.FLEET_SCOPE, {"executor_floor": 3000}, DOLT)
+    fp.apply_changes(store, "ah", {"transient": None}, DOLT)
+    assert store.rows == {("ah", "executor"): 4500, ("*", "executor_floor"): 3000}
+    # Never a commit, never authority or config: only the scopes' FAILOVER_POLICY records.
+    assert store.head() == head and store.read_many(RecordKind.AUTHORITY) == []
+    assert store.writes == 3
 
 
 # =============================================================================================
@@ -266,35 +287,70 @@ def test_changing_the_policy_never_commits_or_touches_authority_or_config():
 
 
 def test_a_refused_change_writes_nothing():
-    cursor = Cursor([("ah", "executor", 4500)])
+    store = PolicyStore([("ah", "executor", 4500)])
     with pytest.raises(fp.FailoverPolicyError, match="below the executor floor"):
-        fp.apply_changes(cursor, "bh", {"executor": 2000})
+        fp.apply_changes(store, "bh", {"executor": 2000}, DOLT)
     with pytest.raises(fp.FailoverPolicyError, match="hard bound"):
-        fp.apply_changes(cursor, fp.FLEET_SCOPE, {"executor_floor": 600})
+        fp.apply_changes(store, fp.FLEET_SCOPE, {"executor_floor": 600}, DOLT)
     # Raising the floor above an existing override would newly refuse it: refused.
     with pytest.raises(fp.FailoverPolicyError, match="hive ah executor=4500"):
-        fp.apply_changes(cursor, fp.FLEET_SCOPE, {"executor_floor": 4600, "executor": 5000})
+        fp.apply_changes(store, fp.FLEET_SCOPE, {"executor_floor": 4600, "executor": 5000}, DOLT)
     with pytest.raises(fp.FailoverPolicyError, match="fleet-wide"):
-        fp.apply_changes(cursor, "ah", {"executor_floor": 3000})
-    assert cursor.rows == {("ah", "executor"): 4500}
-    assert not any(s.startswith(("INSERT", "DELETE")) for s in cursor.statements)
+        fp.apply_changes(store, "ah", {"executor_floor": 3000}, DOLT)
+    assert store.rows == {("ah", "executor"): 4500}
+    assert store.writes == 0
 
 
 def test_plan_changes_previews_without_writing_and_unprovisioned_is_refused():
-    cursor = Cursor()
-    preview = fp.plan_changes(cursor, "ah", {"executor": 4000})
-    assert preview.failover_after("ah", "executor") == 4000.0 and cursor.rows == {}
+    store = PolicyStore()
+    preview = fp.plan_changes(store, "ah", {"executor": 4000}, DOLT)
+    assert preview.failover_after("ah", "executor") == 4000.0 and store.rows == {}
+    assert store.writes == 0
     with pytest.raises(fp.FailoverPolicyError, match="not provisioned"):
-        fp.apply_changes(Cursor(tables=()), "ah", {"executor": 4000})
+        fp.apply_changes(PolicyStore(provisioned=False), "ah", {"executor": 4000}, DOLT)
+
+
+def test_a_lost_or_unconfirmed_policy_write_is_reported_and_never_retried():
+    """Strict Unknown handling: a ``Conflict`` is lost; an ``Unknown`` is looked up by the
+    write's own operation, and ``NotConfirmed`` never authorises a second write."""
+    store = PolicyStore([("ah", "executor", 4500)])
+    store.faults.arm_unknown("transport", applied=True, on="compare_and_set")
+    after = fp.apply_changes(store, "ah", {"executor": 4800}, DOLT)  # Confirmed: applied
+    assert after.failover_after("ah", "executor") == 4800.0 and store.writes == 1
+    store.faults.arm_unknown("commit", applied=False, on="compare_and_set")
+    with pytest.raises(fp.FailoverPolicyUnknown, match="read it back"):
+        fp.apply_changes(store, "ah", {"executor": 5000}, DOLT)
+    assert store.writes == 2 and store.rows == {("ah", "executor"): 4800}  # never reissued
+
+    class Racing(PolicyStore):
+        def compare_and_set(self, kind, key, body, *, expected, operation):
+            record = self.store.read(kind, key)
+            self.store.compare_and_set(
+                kind, key, {"executor": 6000}, expected=record.revision, operation=operation
+            )
+            return super().compare_and_set(
+                kind, key, body, expected=expected, operation=new_operation_id()
+            )
+
+    racing = Racing([("ah", "executor", 4500)])
+    with pytest.raises(fp.FailoverPolicyLost):
+        fp.apply_changes(racing, "ah", {"executor": 5000}, DOLT)
+    assert racing.rows == {("ah", "executor"): 6000}
 
 
 def test_read_policy_uses_the_live_session_ttl_and_tolerates_absent_tables():
-    policy = fp.read_policy(Cursor([("ah", "transient", 1000)], ttl=600))
+    bounds, notes = fp.bounds_from([(600, 900)])
+    assert notes == []
+    policy = fp.read_policy(PolicyStore([("ah", "transient", 1000)]), bounds)
     assert policy.bounds.session_bound_s == 1200
     assert "hard bound 1200 s" in _reasons(policy)[0]
-    bare = fp.read_policy(Cursor(tables=()))
+    bare = fp.read_policy(PolicyStore(provisioned=False), fp.bounds_from(None)[0])
     assert not bare.provisioned and bare.failover_after("ah", "executor") == 3600.0
     assert bare.bounds.session_ttl_s == 300  # the default session TTL
+    refused, notes = fp.bounds_from([(0, 900)])
+    assert refused.session_ttl_s == 300 and "default session TTL 300 s" in notes[0]
+    noted = fp.read_policy(PolicyStore(), refused, notes=notes)
+    assert noted.warnings[0] == notes[0]
 
 
 def test_parse_changes_takes_durations_and_refuses_the_rest():
@@ -463,17 +519,34 @@ def test_the_loop_reads_the_policy_from_the_survey_and_logs_refusals_once(caplog
 
 
 # =============================================================================================
-# The placement CAS carries the policy in its own transaction
+# The placement CAS carries the policy in ONE atomic write
 # =============================================================================================
 
 
-def _cas_store(policy_cursor):
-    """The port's fake seeded with a receiver row, plus the adapter's transitional
-    ``DoltHqSessions`` capability carrying the policy cursor in the CAS's own transaction."""
-    from test_hq_sql_placement import FakeSessions, _seeded
+class Atomic:
+    """The fake (seeded with a receiver row), recording every atomic write and refusing a
+    single-record CAS: ``failover_after`` must ride the placement's own write."""
 
-    store = _seeded()
-    return store, FakeSessions(store, policy_cursor)
+    def __init__(self, store, *, race=None):
+        self.store, self.race, self.atomic = store, race, []
+
+    def __getattr__(self, name):
+        return getattr(self.store, name)
+
+    def compare_and_set(self, *args, **kwargs):
+        raise AssertionError("failover_after must never write the placement on its own")
+
+    def compare_and_set_all(self, writes, *, operation):
+        self.atomic.append([(w.kind, w.key) for w in writes])
+        if self.race is not None:
+            self.race(self.store)
+        return self.store.compare_and_set_all(writes, operation=operation)
+
+
+def _atomic_store(**kwargs):
+    from test_hq_sql_placement import _seeded
+
+    return Atomic(_seeded(), **kwargs)
 
 
 def _stored(store):
@@ -482,12 +555,17 @@ def _stored(store):
     return read_row(store, "ah")
 
 
-def test_place_cas_sets_the_policy_before_its_update_in_one_commit():
+def _policy(store):
+    record = store.read(RecordKind.FAILOVER_POLICY, "ah")
+    return None if record is None else dict(record.body)
+
+
+def test_place_cas_writes_the_policy_and_the_placement_as_one_atomic_write():
     from beadhive.hq_sql_placement import place_cas
     from test_hq_sql_placement import AUTHORITY, _lease, _revision
 
-    policy = Cursor()
-    store, sessions = _cas_store(policy)
+    store = _atomic_store()
+    operation = str(new_operation_id())
     place_cas(
         store,
         prefix="ah",
@@ -495,20 +573,21 @@ def test_place_cas_sets_the_policy_before_its_update_in_one_commit():
         authority=AUTHORITY,
         expected_revision=_revision(store),
         failover_after={"executor": 4500},
+        operation=operation,
     )
-    writes = [s.split()[:3] for s in policy.statements if s.startswith(("INSERT", "UPDATE"))]
-    assert writes == [["INSERT", "INTO", "hq_live_failover_policy"]]
-    assert sessions.transactions == 1 and policy.rows == {("ah", "executor"): 4500}
+    assert store.atomic == [[(RecordKind.PLACEMENT, "ah"), (RecordKind.FAILOVER_POLICY, "ah")]]
+    assert _policy(store) == {"executor": 4500}
     # The placement row itself is untouched in shape: the strict five-field receiver carrier.
     assert _stored(store).lease == _lease(epoch=2)
+    for kind in (RecordKind.PLACEMENT, RecordKind.FAILOVER_POLICY):
+        assert store.lookup(kind, "ah", operation).__class__.__name__ == "Confirmed"
 
 
-def test_place_cas_carries_cause_and_failover_after_in_one_transaction():
+def test_place_cas_carries_cause_and_failover_after_in_one_write():
     from beadhive.hq_sql_placement import CAUSE_FAILOVER, place_cas
     from test_hq_sql_placement import AUTHORITY, _lease, _revision
 
-    policy = Cursor()
-    store, sessions = _cas_store(policy)
+    store = _atomic_store()
     place_cas(
         store,
         prefix="ah",
@@ -518,17 +597,16 @@ def test_place_cas_carries_cause_and_failover_after_in_one_transaction():
         cause=CAUSE_FAILOVER,
         failover_after={"transient": 2400},
     )
-    assert sessions.transactions == 1 and policy.rows == {("ah", "transient"): 2400}
+    assert len(store.atomic) == 1 and _policy(store) == {"transient": 2400}
     stored = _stored(store)
     assert stored.director and stored.cause == CAUSE_FAILOVER
 
 
-def test_place_cas_refuses_a_bad_policy_before_any_update():
+def test_place_cas_refuses_a_bad_policy_before_any_write():
     from beadhive.hq_sql_placement import place_cas
     from test_hq_sql_placement import AUTHORITY, _lease, _revision
 
-    policy = Cursor()
-    store, _sessions = _cas_store(policy)
+    store = _atomic_store()
     before = _revision(store)
     with pytest.raises(PlacementError, match="below the executor floor"):
         place_cas(
@@ -539,8 +617,78 @@ def test_place_cas_refuses_a_bad_policy_before_any_update():
             expected_revision=before,
             failover_after={"executor": 1000},
         )
-    assert _revision(store) == before
-    assert not any(s.startswith(("UPDATE", "INSERT")) for s in policy.statements)
+    assert _revision(store) == before and store.atomic == [] and _policy(store) is None
+
+
+def test_a_lost_placement_writes_no_policy_and_an_unknown_one_is_never_reissued():
+    from beadhive.hq_sql_placement import PlacementLost, PlacementUnknown, place_cas
+    from test_hq_sql_placement import AUTHORITY, _lease, _revision
+
+    def competing(store):
+        record = store.read(RecordKind.PLACEMENT, "ah")
+        store.compare_and_set(
+            RecordKind.PLACEMENT,
+            "ah",
+            dict(record.body),
+            expected=record.revision,
+            operation=new_operation_id(),
+        )
+
+    store = _atomic_store(race=competing)
+    with pytest.raises(PlacementLost):
+        place_cas(
+            store,
+            prefix="ah",
+            lease=_lease(epoch=2),
+            authority=AUTHORITY,
+            expected_revision=_revision(store),
+            failover_after={"executor": 4500},
+        )
+    assert _policy(store) is None  # the policy never lands without the placement
+    for applied in (True, False):
+        store = _atomic_store()
+        store.store.faults.arm_unknown("deadline", applied=applied, on="compare_and_set_all")
+        call = dict(
+            prefix="ah",
+            lease=_lease(epoch=2),
+            authority=AUTHORITY,
+            expected_revision=_revision(store),
+            failover_after={"executor": 4500},
+        )
+        if applied:
+            assert place_cas(store, **call).lease == _lease(epoch=2)  # Confirmed by its witness
+            assert _policy(store) == {"executor": 4500}
+        else:
+            with pytest.raises(PlacementUnknown):
+                place_cas(store, **call)
+            assert _policy(store) is None
+        assert len(store.atomic) == 1  # NotConfirmed never authorises a second write
+
+
+def test_failover_after_is_refused_on_a_store_that_cannot_write_atomically():
+    from beadhive.hq_sql_placement import place_cas
+    from test_hq_sql_placement import AUTHORITY, _lease, _revision, _seeded
+
+    class Single:
+        def __init__(self, store):
+            self.store = store
+
+        def read(self, kind, key):
+            return self.store.read(kind, key)
+
+        def compare_and_set(self, *args, **kwargs):
+            raise AssertionError("nothing may be written")
+
+    store = _seeded()
+    with pytest.raises(PlacementError, match="writes both atomically"):
+        place_cas(
+            Single(store),
+            prefix="ah",
+            lease=_lease(epoch=2),
+            authority=AUTHORITY,
+            expected_revision=_revision(store),
+            failover_after={"executor": 4500},
+        )
 
 
 # =============================================================================================

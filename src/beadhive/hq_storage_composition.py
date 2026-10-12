@@ -10,11 +10,16 @@ module injects root's transport and fence engines into it.
 * :func:`dolt_hive_fence` binds a hive's ``DoltCliEngine`` / ``BdServerEngine`` with the
   complete 44-trigger guard set from :mod:`beadhive.fence_schema`.
 * :func:`placement_storage` is the director's store (bh-sqfvq, the port's first production
-  consumer, :mod:`beadhive.hq_sql_placement`): one ``placement_writer`` binding for its reads and
-  its placement CAS, every session principal-checked.
+  consumer, :mod:`beadhive.hq_sql_placement`): one ``placement_writer`` binding for its reads,
+  its placement and failover-policy writes and the session ages it fails over on, every session
+  principal-checked, over root's runtime tables (``runtime_tables=True``, bh-xnn5p).
 * :func:`config_history` is the HQ config publisher's ``CommittedHistory`` (bh-x7xtc,
   :mod:`beadhive.hq_sql_config`): the adapter's ``DoltConfigHistory`` over the committed
   ``hq_config_*`` tables, its ``reader`` and ``publisher`` bindings principal-checked.
+* :func:`runtime_statements` is the HQ runtime database's Dolt-only statement surface over a
+  connection root opened itself (bh-xnn5p): the runtime authority, the trusted receiver, the
+  operator and the session rows keep their own transport and transactions, and the adapter
+  owns every statement.
 """
 
 from __future__ import annotations
@@ -29,6 +34,7 @@ from beadhive_hq_storage_dolt import (
     DoltHiveFence,
     DoltHqStorage,
     FenceStatementEngine,
+    HqRuntimeStatements,
     Role,
 )
 
@@ -41,6 +47,7 @@ __all__ = [
     "hq_connection_factory",
     "is_transport_deadline",
     "placement_storage",
+    "runtime_statements",
 ]
 
 
@@ -91,10 +98,12 @@ def placement_storage(
 ) -> DoltHqStorage:
     """The director's HQ store over one ``placement_writer`` binding (``HqSqlConnection``).
 
-    Reads (``Role.READER``) and the placement CAS (``Role.PLACEMENT_WRITER``) both open that
-    binding, and every session first checks the connection is its ``user`` on its ``database``'s
-    ``main`` branch, as the director always has. ``connect(binding)`` replaces the transport (a
-    test's own connection); it is called once per adapter session."""
+    Reads (``Role.READER``) and the placement and failover-policy writes
+    (``Role.PLACEMENT_WRITER``) both open that binding, and every session first checks the
+    connection is its ``user`` on its ``database``'s ``main`` branch, as the director always has.
+    The store maps ``FAILOVER_POLICY`` onto ``hq_live_failover_policy`` and session liveness onto
+    the per-incarnation tables (``runtime_tables``). ``connect(binding)`` replaces the transport
+    (a test's own connection); it is called once per adapter session."""
     if connect is None:
         factory = hq_connection_factory(
             {Role.READER.value: binding, Role.PLACEMENT_WRITER.value: binding}, broker=broker
@@ -109,6 +118,7 @@ def placement_storage(
         factory,
         deadline=is_transport_deadline,
         principals={Role.READER: principal, Role.PLACEMENT_WRITER: principal},
+        runtime_tables=True,
     )
 
 
@@ -133,6 +143,11 @@ def config_history(settings: Mapping[str, Any], *, broker: Any = None) -> DoltCo
         deadline=is_transport_deadline,
         principals=principals,
     )
+
+
+def runtime_statements(cursor: Any) -> HqRuntimeStatements:
+    """The runtime database's statements over ``cursor`` (a surface passes through as is)."""
+    return HqRuntimeStatements.of(cursor)
 
 
 def dolt_hive_fence(engine: FenceStatementEngine, **options: Any) -> DoltHiveFence:

@@ -13,7 +13,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -54,13 +53,13 @@ from beadhive.hq_sql_placement import (
 )
 from beadhive.hq_sql_signatures import canonical
 from beadhive_hq_storage import (
+    ABSENT,
     Applied,
     InMemoryHqStorage,
     RecordKind,
     StorageUnavailable,
     new_operation_id,
 )
-from beadhive_hq_storage_dolt import DoltHqSessions
 from harness.clock import FakeClock
 from test_emergency_sql_receiver import Cursor as ReceiverCursor
 from test_emergency_sql_receiver import world  # noqa: F401 — fixture resolved by name
@@ -147,42 +146,6 @@ class Counting:
         if self.supersede is not None:
             self._write(key, self.supersede, _revision(self.store, key))
         return self.store.lookup(kind, key, operation)
-
-
-class FakeTransaction:
-    """``DoltHqTransaction`` over the fake: port reads and CAS plus a DB-API cursor stand-in for
-    the SQL not yet on the port (the failover policy)."""
-
-    def __init__(self, store, cursor):
-        self.store, self.cursor = store, cursor
-
-    def head(self):
-        return "head"
-
-    def read(self, kind, key):
-        return self.store.read(kind, key)
-
-    def read_many(self, kind, keys=None):
-        return self.store.read_many(kind, keys)
-
-    def compare_and_set(self, kind, key, body, *, expected, operation):
-        return self.store.compare_and_set(kind, key, body, expected=expected, operation=operation)
-
-
-class FakeSessions:
-    """The adapter's transitional ``DoltHqSessions`` capability, registered on the fake."""
-
-    def __init__(self, store, cursor):
-        self.store, self.cursor, self.transactions = store, cursor, 0
-        store.register_capability(DoltHqSessions, self)
-
-    @contextmanager
-    def snapshot(self):
-        yield FakeTransaction(self.store, self.cursor)
-
-    def transact(self, body, *, operation, expected, passthrough=(), role=None):
-        self.transactions += 1
-        return body(FakeTransaction(self.store, self.cursor))
 
 
 # =============================================================================================
@@ -458,18 +421,21 @@ def test_the_port_record_parses_like_the_raw_row():
         )
 
 
-def test_failover_after_needs_the_transaction_the_fake_does_not_have():
+def test_failover_after_rides_one_atomic_write_never_a_lone_cas():
+    """bh-xnn5p: the policy and the placement are ONE ``AtomicRecords`` write, on the fake as on
+    Dolt (``test_failover_policy.py`` covers its lost, unknown and refused branches)."""
     store = Counting(_seeded())
-    with pytest.raises(PlacementError, match="own transaction"):
-        place_cas(
-            store,
-            prefix="ah",
-            lease=_lease(epoch=2),
-            authority=AUTHORITY,
-            expected_revision=_revision(store),
-            failover_after={"executor": 4500},
-        )
-    assert store.cas == []
+    placed = place_cas(
+        store,
+        prefix="ah",
+        lease=_lease(epoch=2),
+        authority=AUTHORITY,
+        expected_revision=_revision(store),
+        failover_after={"executor": 4500},
+    )
+    assert store.cas == []  # no single-record CAS: the atomic write carried both
+    assert placed.lease == _lease(epoch=2) and read_row(store, "ah").lease == _lease(epoch=2)
+    assert store.read(RecordKind.FAILOVER_POLICY, "ah").body == {"executor": 4500}
 
 
 # =============================================================================================
@@ -520,21 +486,26 @@ def test_director_defaults_to_the_next_epoch_and_refuses_unplaceable_frames():
         )
 
 
-def test_director_survey_reads_every_row_in_one_session():
+def test_director_survey_reads_every_row_and_the_policy_through_the_port():
+    """bh-xnn5p: placements, the failover policy and (through `observe`) session liveness are
+    port reads of the same store; the authority comes from the verified runtime read."""
     store = _seeded(lease=_lease("host-z", epoch=7))
     store.provision(RecordKind.PLACEMENT, "bh", {"authority": {}, "lease": {"epoch": 0}})
     seen = []
-    survey = _director(store).survey(lambda cursor, head, state: seen.append((cursor, head)) or 1)
+    survey = _director(store).survey(lambda live, registry, state: seen.append((live, registry)))
     assert set(survey.placements) == {"ah"} and survey.placements["ah"].lease.epoch == 7
     assert survey.invalid == {"bh": "placement row carrier invalid"}  # reported, never placed
-    assert survey.observed == 1 and survey.failover is None  # no policy table on the fake
-    assert seen == [(None, None)]
-    from test_failover_policy import Cursor as PolicyCursor
-
-    policy = PolicyCursor([("ah", "executor", 4500)])
-    FakeSessions(store, policy)  # Dolt: the same transaction carries the policy and sessions
-    observed = _director(store).survey(lambda cursor, head, state: (cursor, head))
-    assert observed.observed == (policy, "head")
+    assert seen == [(store, ())]  # the store's Liveness; no registry without a runtime read
+    assert survey.failover.provisioned and survey.failover.hives == {}  # code defaults
+    store.compare_and_set(
+        RecordKind.FAILOVER_POLICY,
+        "ah",
+        {"executor": 4500},
+        expected=ABSENT,
+        operation=new_operation_id(),
+    )
+    observed = _director(store).survey(lambda live, registry, state: 1)
+    assert observed.observed == 1
     assert observed.failover.failover_after("ah", "executor") == 4500.0
 
 
@@ -627,6 +598,9 @@ def test_director_storage_failures_never_leak_driver_text():
         def read(self, kind, key):
             raise StorageUnavailable("HQ reader principal or endpoint mismatch")
 
+        def read_many(self, kind, keys=None):
+            raise StorageUnavailable("HQ reader principal or endpoint mismatch")
+
         def capability(self, kind):
             return None
 
@@ -635,10 +609,13 @@ def test_director_storage_failures_never_leak_driver_text():
         director.read("ah")
     with pytest.raises(PlacementError, match="verified placement for ah unavailable"):
         director.place("ah", frame_id="frame-a", expected_revision="a" * 64)
-    with pytest.raises(PlacementError, match="needs dolt-server"):
+    with pytest.raises(PlacementError, match="^failover policy read unavailable$"):
         director.failover_policy()
-    with pytest.raises(PlacementError, match="write unavailable"):
+    with pytest.raises(PlacementError, match="^failover policy write unavailable; nothing"):
         director.set_failover_policy("ah", {"executor": 4500})
+    # Without the Dolt-only runtime read, a verified read is refused (the fake has none).
+    with pytest.raises(PlacementError, match="needs dolt-server"):
+        SqlPlacementDirector({"placement_writer": {"user": "d"}}, storage=_seeded())._authority()
 
 
 def test_operator_settings_carry_the_placement_writer(tmp_path):

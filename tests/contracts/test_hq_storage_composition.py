@@ -6,7 +6,9 @@ into the adapter's connection factory, and the adapter's wire encodings match ro
 placement witness a receiver and director use to recognise a director row, the placement cause
 a frame reads, the operator's seed statement, the fence bump, and the HQ config publication's
 change set, kinds and digest). The director's store (bh-sqfvq) and the config publisher's
-history (bh-x7xtc) are composed here too.
+history (bh-x7xtc) are composed here too, and so are the runtime database's Dolt-only statement
+surface and the director's runtime-table mappings (bh-xnn5p): the failover policy rows, the
+per-incarnation session and evidence tables and their DDL, pinned equal to root's names.
 """
 
 from __future__ import annotations
@@ -16,7 +18,18 @@ from pathlib import Path
 
 import pytest
 
-from beadhive import fence_schema, hq_sql_config, hq_sql_placement, work_backup, writer_adopt
+from beadhive import (
+    failover_observer,
+    failover_policy,
+    fence_schema,
+    hq_sql_config,
+    hq_sql_placement,
+    hq_sql_runtime_schema,
+    hq_sql_session,
+    hq_sql_session_provision,
+    work_backup,
+    writer_adopt,
+)
 from beadhive.fence_data import DoltCliEngine
 from beadhive.host_lease_contracts import HostLease, now_stamp
 from beadhive.hq_storage_composition import (
@@ -25,6 +38,7 @@ from beadhive.hq_storage_composition import (
     dolt_hq_storage,
     hq_connection_factory,
     placement_storage,
+    runtime_statements,
 )
 from beadhive.modules.config.domain.ports import FleetConfigDocument, ordered_documents_digest
 from beadhive_hq_storage import (
@@ -35,6 +49,7 @@ from beadhive_hq_storage import (
     RESUMABLE_LABEL,
     AppendLog,
     Applied,
+    AtomicRecords,
     CapabilityHost,
     CommittedHistory,
     HiveFence,
@@ -53,18 +68,25 @@ from beadhive_hq_storage_dolt import (
     DoltAccounts,
     DoltConfigHistory,
     DoltHistory,
-    DoltHqSessions,
     DoltHqStorage,
+    DoltRuntimeReads,
+    HqRuntimeStatements,
     bump_statements,
     cause_token,
     config_change_set,
     config_document_kind,
     config_documents_digest,
     connection_runner,
+    incarnation_key,
+    incarnation_table,
     placement_cause,
     placement_seed_statement,
     placement_witness,
+    stamp_trigger,
 )
+from beadhive_hq_storage_dolt import FAILOVER_POLICY_TABLE as ADAPTER_POLICY_TABLE
+from beadhive_hq_storage_dolt import IGNORE_PATTERN as ADAPTER_IGNORE_PATTERN
+from beadhive_hq_storage_dolt import LIVENESS_POLICY_TABLE as ADAPTER_LIVENESS_POLICY_TABLE
 
 
 def test_composition_binds_adapters_that_satisfy_the_port_protocols(tmp_path: Path) -> None:
@@ -81,11 +103,16 @@ def test_composition_binds_adapters_that_satisfy_the_port_protocols(tmp_path: Pa
     assert fence.capability(DoltAccounts) is None  # an HQ capability, never a hive fence's
 
 
-def test_the_director_store_is_the_dolt_adapter_with_the_transitional_sessions() -> None:
+def test_the_director_store_is_the_dolt_adapter_over_the_runtime_tables() -> None:
     binding = {"user": "director", "database": "beadhive_hq_runtime"}
     store = placement_storage(binding)
     assert isinstance(store, DoltHqStorage) and isinstance(store, VersionedRecords)
-    assert isinstance(store.capability(DoltHqSessions), DoltHqSessions)
+    assert isinstance(store, AtomicRecords) and isinstance(store, Liveness)
+    # The signed-authority read is the Dolt-only runtime read; DoltHqSessions is gone.
+    assert isinstance(store.capability(DoltRuntimeReads), DoltRuntimeReads)
+    import beadhive_hq_storage_dolt
+
+    assert not hasattr(beadhive_hq_storage_dolt, "DoltHqSessions")
     director = hq_sql_placement.SqlPlacementDirector({"placement_writer": binding})
     assert isinstance(director._storage(), DoltHqStorage)
     with pytest.raises(StorageUnavailable):  # no transport credential: nothing was sent
@@ -130,6 +157,44 @@ def test_adapter_wire_encodings_match_roots() -> None:
     assert CLAIM_FRAME_LABEL_PREFIX == f"{work_backup.CLAIM_FRAME_DIMENSION}:"
     assert RECOVERY_LABEL_PREFIX == f"{work_backup.RECOVERY_DIMENSION}:"
     assert RESUMABLE_LABEL == f"{work_backup.RECOVERY_DIMENSION}:{work_backup.RESUMABLE}"
+
+
+def test_the_runtime_statements_and_tables_are_roots() -> None:
+    """bh-xnn5p: the runtime database's statements are the adapter's; its table names, keys
+    and DDL equal root's, so 0.22.x/0.23.x readers and the operator's provisioning agree."""
+    cursor = object()
+    surface = runtime_statements(cursor)
+    assert isinstance(surface, HqRuntimeStatements) and runtime_statements(surface) is surface
+    assert ADAPTER_POLICY_TABLE == failover_policy.POLICY_TABLE
+    assert ADAPTER_POLICY_TABLE == hq_sql_runtime_schema.FAILOVER_POLICY_TABLE
+    assert ADAPTER_LIVENESS_POLICY_TABLE == hq_sql_runtime_schema.LIVENESS_POLICY_TABLE
+    assert ADAPTER_IGNORE_PATTERN == hq_sql_session.IGNORE_PATTERN == "frame_*"
+    for principal, epoch in (("frame_a", 0), ("frame_0123456789abcdef0123", 9999999999)):
+        assert incarnation_table(principal, epoch, "session") == (
+            hq_sql_runtime_schema.session_table(principal, epoch)
+        )
+        assert incarnation_table(principal, epoch, "evidence") == (
+            hq_sql_runtime_schema.evidence_table(principal, epoch)
+        )
+        assert incarnation_key(principal, epoch) == failover_observer.session_key(principal, epoch)
+    # The one trigger body condition 6 allows is the stamping trigger the DDL creates.
+    create, trigger, _seed = hq_sql_session.session_ddl("frame_a", 1)
+    assert trigger == stamp_trigger("frame_frame_a_1_session", "renewed_at")
+    assert hq_sql_session_provision._stamp_body("session") in trigger
+    assert hq_sql_session_provision._stamp_body("evidence") == (
+        "SET NEW.measured_at = UTC_TIMESTAMP(6)"
+    )
+    # The policy write root issued before the port, pinned so a change is a reviewed one.
+    from beadhive_hq_storage_dolt import policy_statements
+
+    assert policy_statements("ah", {"executor": 3600, "transient": 1800}, {"executor": 4500}) == [
+        (
+            "INSERT INTO hq_live_failover_policy (scope,setting,seconds) VALUES (%s,%s,%s) "
+            "ON DUPLICATE KEY UPDATE seconds=VALUES(seconds)",
+            ("ah", "executor", 4500),
+        ),
+        ("DELETE FROM hq_live_failover_policy WHERE scope=%s AND setting=%s", ("ah", "transient")),
+    ]
 
 
 def test_the_config_publisher_history_is_the_adapters_config_mapping() -> None:

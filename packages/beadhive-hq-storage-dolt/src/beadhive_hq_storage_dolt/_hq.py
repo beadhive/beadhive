@@ -46,6 +46,7 @@ from beadhive_hq_storage import (
     PlacementView,
     PruneReport,
     RecordKind,
+    RecordWrite,
     Revision,
     StorageError,
     StorageUnavailable,
@@ -58,12 +59,23 @@ from beadhive_hq_storage import (
 from . import _schema as schema
 from ._classify import (
     DUPLICATE_KEY,
+    NO_SUCH_TABLE,
     DeadlinePredicate,
     error_code,
     is_conflict,
     is_deadline,
     unknown_reason,
 )
+from ._failover import (
+    SELECT_ROWS as POLICY_ROWS,
+)
+from ._failover import (
+    check_policy_body,
+    policy_bodies,
+    policy_revision,
+    policy_statements,
+)
+from ._incarnation import STAMP_COLUMN, liveness_key, liveness_table
 from ._placement import (
     PLACEMENT_DOMAIN,
     PlacementRow,
@@ -142,7 +154,13 @@ class DoltHqStorage:
     ``principals`` maps a :class:`Role` to the ``(user, database)`` its connection must be: every
     session for that role first checks ``CURRENT_USER()``, ``DATABASE()`` and ``ACTIVE_BRANCH()``
     (``branch``) and refuses a mismatch with ``StorageUnavailable`` before anything else is sent
-    (root's placement-writer endpoint check, bh-sqfvq)."""
+    (root's placement-writer endpoint check, bh-sqfvq).
+
+    ``runtime_tables`` maps two kinds onto root's HQ runtime database instead of the
+    adapter-owned live tables (bh-xnn5p): ``FAILOVER_POLICY`` onto ``hq_live_failover_policy``
+    (:mod:`._failover`) and ``SESSION`` / ``EVIDENCE`` liveness onto the per-incarnation
+    ``frame_<principal>_<epoch>_*`` tables (:mod:`._incarnation`). Root's director store sets
+    it; the contract suite runs the adapter-owned default."""
 
     def __init__(
         self,
@@ -154,6 +172,7 @@ class DoltHqStorage:
         deadline: DeadlinePredicate | None = None,
         max_body_bytes: int = DEFAULT_MAX_BODY_BYTES,
         principals: Mapping[Role, tuple[str, str]] | None = None,
+        runtime_tables: bool = False,
     ) -> None:
         self._connect = connect
         self._remote = check_key(remote, "remote")
@@ -163,6 +182,19 @@ class DoltHqStorage:
         self._cap = max_body_bytes
         self._principals = {Role(role): tuple(p) for role, p in (principals or {}).items()}
         self._capabilities: dict[type, object] = {}
+        self._runtime = bool(runtime_tables)
+
+    def _policy_mapped(self, kind: RecordKind) -> bool:
+        return self._runtime and kind is RecordKind.FAILOVER_POLICY
+
+    def _liveness_mapped(self, kind: LivenessKind) -> bool:
+        return self._runtime and kind in (LivenessKind.SESSION, LivenessKind.EVIDENCE)
+
+    def _write_role(self, kind: RecordKind) -> Role:
+        """The director's credential writes placement and (mapped) failover policy."""
+        if kind is RecordKind.PLACEMENT or self._policy_mapped(kind):
+            return Role.PLACEMENT_WRITER
+        return Role.OPERATOR
 
     # -- connections -------------------------------------------------------------------------
 
@@ -272,8 +304,13 @@ class DoltHqStorage:
             row = encode_placement(key, body, operation=OperationId(witness), cap=self._cap)
             revision = row.revision
 
+        policy = check_policy_body(body) if self._policy_mapped(kind) else None
+
         def write(cursor: DbApiCursor) -> None:
-            if kind is RecordKind.PLACEMENT:
+            if policy is not None:
+                for sql, params in policy_statements(key, {}, policy):
+                    cursor.execute(sql, params)
+            elif kind is RecordKind.PLACEMENT:
                 cursor.execute(
                     f"INSERT INTO {schema.PLACEMENT_TABLE} "
                     "(prefix, revision, lease_json, request_id, request_sha256) "
@@ -296,7 +333,7 @@ class DoltHqStorage:
             except Exception:  # noqa: BLE001
                 _rollback(connection)
                 raise StorageUnavailable(f"provisioning {kind.value}/{key} failed") from None
-        return revision
+        return revision if policy is None else policy_revision(key, policy)
 
     def placements(self) -> DoltPlacementStore:
         """The ``PlacementStore`` view over this store's ``PLACEMENT`` records."""
@@ -308,16 +345,15 @@ class DoltHqStorage:
         self._capabilities[kind] = implementation
 
     def capability(self, kind: type[C]) -> C | None:
-        """The Dolt-only capabilities (``DoltHistory``, ``DoltMerge``, ``DoltAccounts``, and the
-        transitional ``DoltHqSessions``) over this store, plus any registered one; ``None``
-        otherwise."""
+        """The Dolt-only capabilities (``DoltHistory``, ``DoltMerge``, ``DoltAccounts`` and
+        ``DoltRuntimeReads``) over this store, plus any registered one; ``None`` otherwise."""
         if kind not in self._capabilities:
             from ._capabilities import default_hq_capability
-            from ._sessions import DoltHqSessions, SqlDoltHqSessions
+            from ._runtime import DoltRuntimeReads, SqlDoltRuntimeReads
 
             found = (
-                SqlDoltHqSessions(self)
-                if kind is DoltHqSessions
+                SqlDoltRuntimeReads(self)
+                if kind is DoltRuntimeReads
                 else default_hq_capability(kind, self._connect)
             )
             if found is None:
@@ -360,6 +396,8 @@ class DoltHqStorage:
     def read(self, kind: RecordKind, key: str) -> Versioned[Body] | None:
         kind = RecordKind(kind)
         check_key(key)
+        if self._policy_mapped(kind):
+            return self._read(Role.READER, lambda cursor: self._policy_one(cursor, key))
         row = self._read(Role.READER, lambda cursor: self._one(cursor, kind, key))
         return None if row is None else self._versioned(row, kind)
 
@@ -377,7 +415,47 @@ class DoltHqStorage:
         if keys is not None:
             for key in keys:
                 check_key(key)
+        if self._policy_mapped(kind):
+            wanted = None if keys is None else set(keys)
+            found = self._read(Role.READER, self._policy_all)
+            return [v for v in found if wanted is None or v.key in wanted]
         return self._filter(kind, self._read(Role.READER, lambda c: self._all(c, kind)), keys)
+
+    # -- FAILOVER_POLICY on hq_live_failover_policy (runtime_tables) --------------------------
+
+    @staticmethod
+    def _policy_rows(cursor: DbApiCursor, sql: str, params: Sequence[Any] = ()) -> list[tuple]:
+        try:
+            cursor.execute(sql, tuple(params) or None)
+        except Exception as exc:  # noqa: BLE001 - an absent table is the operator's to provision
+            if error_code(exc) == NO_SUCH_TABLE:
+                raise NotProvisioned("hq_live_failover_policy is not provisioned") from None
+            raise
+        return [tuple(r) for r in cursor.fetchall()]
+
+    def _policy_one(self, cursor: DbApiCursor, key: str) -> Versioned[Body] | None:
+        rows = self._policy_rows(cursor, POLICY_ROWS + " WHERE scope=%s", (key,))
+        body = policy_bodies(rows).get(key)
+        return None if body is None else Versioned(key, policy_revision(key, body), body)
+
+    def _policy_all(self, cursor: DbApiCursor) -> list[Versioned[Body]]:
+        bodies = policy_bodies(self._policy_rows(cursor, POLICY_ROWS))
+        return [Versioned(k, policy_revision(k, b), b) for k, b in sorted(bodies.items())]
+
+    def _policy_apply(self, cursor: DbApiCursor, write: _Write) -> Outcome:
+        current = self._policy_one(cursor, write.key)
+        expected = write.expected
+        holds = (
+            current is None
+            if isinstance(expected, Absent)
+            else (current is not None and current.revision == expected)
+        )
+        if not holds:
+            return Conflict(current)
+        before = {} if current is None else dict(current.body)
+        for sql, params in policy_statements(write.key, before, write.policy or {}):
+            cursor.execute(sql, params)
+        return Applied(write.revision, write.operation)
 
     def _prepare(
         self,
@@ -399,12 +477,18 @@ class DoltHqStorage:
         if kind is RecordKind.PLACEMENT:
             row = encode_placement(key, body, operation=operation, cap=self._cap)
             return _Write(kind, key, expected, operation, row.revision, row.lease_json, row)
+        if self._policy_mapped(kind):
+            policy = check_policy_body(decode_body(raw))
+            revision = policy_revision(key, policy)
+            return _Write(kind, key, expected, operation, revision, raw, None, policy)
         revision = fresh_revision({"kind": kind.value, "key": key, "body": decode_body(raw)})
         return _Write(kind, key, expected, operation, revision, raw, None)
 
     def _apply(self, cursor: DbApiCursor, write: _Write) -> Outcome:
         """Issue one prepared compare-and-set on an open transaction (no commit)."""
         kind, key, expected, operation = write.kind, write.key, write.expected, write.operation
+        if write.policy is not None:
+            return self._policy_apply(cursor, write)
         if write.placement is not None:
             row = write.placement
             cursor.execute(
@@ -446,11 +530,61 @@ class DoltHqStorage:
             return self._apply(cursor, write), _commit_transaction
 
         return self._mutate(
-            Role.PLACEMENT_WRITER if write.kind is RecordKind.PLACEMENT else Role.OPERATOR,
+            self._write_role(write.kind),
             body_fn,
             expected=expected,
             operation=write.operation,
             on_conflict=lambda: Conflict(self.read(write.kind, write.key)),
+        )
+
+    # -- AtomicRecords -----------------------------------------------------------------------
+
+    def compare_and_set_all(
+        self, writes: Sequence[RecordWrite], *, operation: OperationId
+    ) -> Outcome:
+        """Every member in ONE transaction and one ``COMMIT``. A member whose expectation fails
+        rolls the whole transaction back (nothing is written) and reports that member's current
+        value; a lost acknowledgment is ``Unknown`` with ``writes[0]``'s expectation."""
+        operation = check_operation(operation)
+        if isinstance(writes, RecordWrite) or not isinstance(writes, Sequence) or not writes:
+            raise InvalidRequest("an atomic compare-and-set needs a non-empty list of writes")
+        prepared: list[_Write] = []
+        seen: set[tuple[RecordKind, str]] = set()
+        for write in writes:
+            if not isinstance(write, RecordWrite):
+                raise InvalidRequest("every member of an atomic compare-and-set is a RecordWrite")
+            member = self._prepare(write.kind, write.key, write.body, write.expected, operation)
+            if (member.kind, member.key) in seen:
+                raise InvalidRequest(f"{member.kind.value}/{member.key} appears twice in one write")
+            seen.add((member.kind, member.key))
+            prepared.append(member)
+        lost: list[_Write] = []
+
+        def body_fn(cursor: DbApiCursor) -> tuple[Outcome, Callable[..., Any]]:
+            first: Outcome | None = None
+            for member in prepared:
+                out = self._apply(cursor, member)
+                if not isinstance(out, Applied):
+                    lost.append(member)
+                    raise _conflict_marker()
+                first = first or out
+            return first, _commit_transaction  # type: ignore[return-value]
+
+        def on_conflict() -> Outcome:
+            member = lost[0] if lost else prepared[0]
+            return Conflict(self.read(member.kind, member.key))
+
+        role = (
+            Role.PLACEMENT_WRITER
+            if any(self._write_role(m.kind) is Role.PLACEMENT_WRITER for m in prepared)
+            else Role.OPERATOR
+        )
+        return self._mutate(
+            role,
+            body_fn,
+            expected=prepared[0].expected,
+            operation=operation,
+            on_conflict=on_conflict,
         )
 
     def _witnessed(self, kind: RecordKind, row: Sequence[Any] | None, operation: str) -> bool:
@@ -471,6 +605,8 @@ class DoltHqStorage:
         operation = check_operation(operation)
         kind = RecordKind(kind)
         check_key(key)
+        if self._policy_mapped(kind):
+            return NotConfirmed(operation)  # hq_live_failover_policy keeps no witness column
         row = self._read(Role.READER, lambda cursor: self._one(cursor, kind, key))
         if row is not None and self._witnessed(kind, row, operation):
             # PLACEMENT has no stamp column (receiver-compatible row): its recorded_at is the
@@ -627,6 +763,8 @@ class DoltHqStorage:
     def renew(self, kind: LivenessKind, key: str, body: Body | None = None) -> datetime:
         kind = LivenessKind(kind)
         check_key(key)
+        if self._liveness_mapped(kind):
+            return self._renew_incarnation(kind, key, body)
         raw = None if body is None else canonical(body, cap=self._cap)
         stamp: list[datetime] = []
 
@@ -675,6 +813,8 @@ class DoltHqStorage:
         wanted = None if keys is None else {check_key(k) for k in keys}
         if wanted is not None and not wanted:
             return {}
+        if self._liveness_mapped(kind):
+            return self._incarnation_ages(kind, wanted)
 
         def rows(cursor: DbApiCursor) -> list[tuple]:
             cursor.execute(
@@ -693,6 +833,8 @@ class DoltHqStorage:
     def stamped_at(self, kind: LivenessKind, key: str) -> datetime | None:
         kind = LivenessKind(kind)
         check_key(key)
+        if self._liveness_mapped(kind):
+            return self._incarnation_stamp(kind, key)
 
         def row(cursor: DbApiCursor) -> tuple | None:
             cursor.execute(
@@ -704,6 +846,118 @@ class DoltHqStorage:
 
         found = self._read(Role.READER, row)
         return None if found is None else aware(found[0])
+
+    # -- SESSION / EVIDENCE on the per-incarnation tables (runtime_tables) --------------------
+
+    @staticmethod
+    def _incarnation_exists(cursor: DbApiCursor, tables: Collection[str]) -> set[str]:
+        names = tuple(tables)
+        cursor.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() "
+            f"AND table_name IN ({','.join(['%s'] * len(names))})",
+            names,
+        )
+        return {_text(row[0]) for row in cursor.fetchall()}
+
+    def _incarnation_ages(
+        self, kind: LivenessKind, wanted: set[str] | None
+    ) -> Mapping[str, timedelta]:
+        """One read: list (or check) the incarnation tables, then ONE ``UNION ALL`` statement,
+        so every age is measured against the same ``UTC_TIMESTAMP(6)``. A table that does not
+        exist, or whose row was never stamped, is absent from the result (not observed)."""
+        route = "session" if kind is LivenessKind.SESSION else "evidence"
+        column = STAMP_COLUMN[route]
+        requested = None if wanted is None else {key: liveness_table(kind, key) for key in wanted}
+
+        def rows(cursor: DbApiCursor) -> list[tuple]:
+            if requested is None:
+                cursor.execute(
+                    "SELECT table_name FROM information_schema.tables "
+                    f"WHERE table_schema=DATABASE() AND table_name LIKE 'frame%{route}'"
+                )
+                found = {_text(r[0]) for r in cursor.fetchall()}
+                tables = {
+                    key: table for table in found if (key := liveness_key(kind, table)) is not None
+                }
+            else:
+                present = self._incarnation_exists(cursor, requested.values())
+                tables = {key: table for key, table in requested.items() if table in present}
+            if not tables:
+                return []
+            union = " UNION ALL ".join(
+                f"SELECT %s, TIMESTAMPDIFF(MICROSECOND, {column}, UTC_TIMESTAMP(6)) "
+                f"FROM {table} WHERE id = 1"
+                for _key, table in sorted(tables.items())
+            )
+            cursor.execute(union, tuple(key for key, _table in sorted(tables.items())))
+            return [tuple(r) for r in cursor.fetchall()]
+
+        found = {
+            _text(key): timedelta(microseconds=max(0, int(age)))
+            for key, age in self._read(Role.READER, rows)
+            if age is not None
+        }
+        return {k: found[k] for k in sorted(found)}
+
+    def _incarnation_stamp(self, kind: LivenessKind, key: str) -> datetime | None:
+        route = "session" if kind is LivenessKind.SESSION else "evidence"
+        table = liveness_table(kind, key)
+
+        def row(cursor: DbApiCursor) -> tuple | None:
+            if table not in self._incarnation_exists(cursor, (table,)):
+                return None
+            cursor.execute(f"SELECT {STAMP_COLUMN[route]} FROM {table} WHERE id = 1")
+            found = cursor.fetchone()
+            return None if found is None else tuple(found)
+
+        found = self._read(Role.READER, row)
+        return None if found is None or found[0] is None else aware(found[0])
+
+    def _renew_incarnation(self, kind: LivenessKind, key: str, body: Body | None) -> datetime:
+        """The provisioned row's ``UPDATE`` (root's renewal or evidence statement); the trigger
+        stamps server time. A missing table or row is ``NotProvisioned`` -- never an INSERT."""
+        from ._incarnation import EVIDENCE_COLUMNS, EVIDENCE_SQL, RENEW_SQL
+
+        table = liveness_table(kind, key)
+        if kind is LivenessKind.SESSION:
+            if body is not None:
+                raise InvalidRequest("a session renewal carries no body")
+            sql, params = RENEW_SQL.format(session=table), None
+            column = STAMP_COLUMN["session"]
+        else:
+            if body is None or set(body) != set(EVIDENCE_COLUMNS):
+                raise InvalidRequest(f"an evidence renewal carries exactly {EVIDENCE_COLUMNS}")
+            canonical(body, cap=self._cap)
+            sql = EVIDENCE_SQL.format(evidence=table)
+            params = tuple(body[name] for name in EVIDENCE_COLUMNS)
+            column = STAMP_COLUMN["evidence"]
+        stamp: list[datetime] = []
+
+        def body_fn(cursor: DbApiCursor) -> tuple[Outcome, Callable[..., Any]]:
+            try:
+                cursor.execute(sql, params)
+            except Exception as exc:  # noqa: BLE001 - classified: absent table, else unavailable
+                if error_code(exc) == NO_SUCH_TABLE:
+                    raise NotProvisioned(f"{table} is not provisioned") from None
+                raise
+            if cursor.rowcount != 1:
+                raise NotProvisioned(f"{table} has no provisioned row to renew")
+            cursor.execute(f"SELECT {column} FROM {table} WHERE id = 1")
+            stamp.append(aware(cursor.fetchone()[0]))  # type: ignore[index]
+            return Applied(Revision(""), OperationId("")), _commit_transaction
+
+        out = self._mutate(
+            Role.FRAME,
+            body_fn,
+            expected=ABSENT,
+            operation=OperationId(""),
+            on_conflict=lambda: Conflict(None),
+        )
+        if isinstance(out, Unknown):
+            raise StorageError(f"renewal of {kind.value}/{key}: commit outcome unknown")
+        if isinstance(out, Conflict):
+            raise StorageUnavailable(f"renewal of {kind.value}/{key} lost a race; not applied")
+        return stamp[0]
 
     # -- CommittedHistory --------------------------------------------------------------------
 
@@ -1014,6 +1268,7 @@ class _Write:
     revision: Revision
     raw: bytes
     placement: PlacementRow | None
+    policy: dict[str, int] | None = None
 
 
 class _ConflictMarker(Exception):

@@ -241,7 +241,8 @@ def _provision_failover_policy(server):
 
 def test_failover_after_rides_the_placement_cas_and_the_row_stays_receiver_shaped(server):
     """bh-4biq8: ``place_cas(failover_after=...)`` writes the hive's override in the CAS's own
-    transaction; a refused value writes neither; the placement row keeps the strict five-field
+    transaction (one ``AtomicRecords`` write since bh-xnn5p); a refused value writes neither;
+    the placement row keeps the strict five-field
     receiver carrier (Φ3 rollback); frames read the policy and cannot write it; the director's
     extra grant is conformant."""
     import pymysql
@@ -271,13 +272,14 @@ def test_failover_after_rides_the_placement_cas_and_the_row_stays_receiver_shape
     )
     row = read_row(server.store(FRAME), "ah")  # the strict reader the receiver shares
     assert row.revision == placed.revision and row.lease.epoch == 22
+    # The frame reads the policy through the same port mapping (bh-xnn5p); it cannot write it.
+    policy = read_policy(server.store(FRAME))
+    assert policy.failover_after("ah", "executor") == 4500.0
+    assert policy.failover_after("ah", "transient") == 2400.0
     frame = server.connect(FRAME, autocommit=False)
     try:
         with frame.cursor() as cursor:
             cursor.execute("START TRANSACTION")
-            policy = read_policy(cursor)
-            assert policy.failover_after("ah", "executor") == 4500.0
-            assert policy.failover_after("ah", "transient") == 2400.0
             with pytest.raises(pymysql.err.OperationalError):
                 cursor.execute("UPDATE hq_live_failover_policy SET seconds=60 WHERE scope='ah'")
     finally:

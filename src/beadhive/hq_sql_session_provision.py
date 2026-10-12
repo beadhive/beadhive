@@ -8,7 +8,9 @@ refuses a non-pinned or TLS-optional account and any hive database co-hosted on 
 (ADR §5, conditions 6 and 15). The DDL itself lives in :mod:`beadhive.hq_sql_session`.
 
 Separate from :mod:`beadhive.hq_sql_session` so the frame-side reader never imports the
-placement conformance checks (no import cycle through ``hq_sql_runtime``).
+placement conformance checks (no import cycle through ``hq_sql_runtime``). Every statement is the
+HQ storage port's Dolt adapter's (``HqRuntimeStatements`` on the operator's own cursor,
+bh-xnn5p; its final ``DoltAccounts`` shape is bh-3kl1k's); this module holds no SQL.
 """
 
 from __future__ import annotations
@@ -23,7 +25,6 @@ from .hq_sql_runtime_schema import (
     session_table,
 )
 from .hq_sql_session import (
-    _POLICY_SQL,
     _STAMP_COLUMN,
     _SYSTEM_SCHEMAS,
     HIVE_DATABASE_MARKERS,
@@ -31,8 +32,8 @@ from .hq_sql_session import (
     LivenessPolicy,
     SessionError,
     _existing,
-    _fetch,
     _policy,
+    _statements,
     account_statements,
     evidence_ddl,
     liveness_schema_statements,
@@ -52,13 +53,11 @@ __all__ = [
 
 
 def _ignore_committed(cursor) -> bool:
-    rows = _fetch(
-        cursor, "SELECT pattern, ignored FROM dolt_ignore WHERE pattern = %s", (IGNORE_PATTERN,)
-    )
+    sql = _statements(cursor)
+    rows = sql.ignore_rules(IGNORE_PATTERN)
     if not rows or not all(bool(row[1]) for row in rows):
         return False
-    dirty = _fetch(cursor, "SELECT table_name FROM dolt_status WHERE table_name = 'dolt_ignore'")
-    return not dirty
+    return not sql.ignore_dirty()
 
 
 def provision_liveness_schema(cursor, policy: LivenessPolicy | None = None) -> bool:
@@ -66,8 +65,9 @@ def provision_liveness_schema(cursor, policy: LivenessPolicy | None = None) -> b
     whether anything was written."""
     if _ignore_committed(cursor) and _existing(cursor, (LIVENESS_POLICY_TABLE,)):
         return False
+    sql = _statements(cursor)
     for statement in liveness_schema_statements(policy):
-        cursor.execute(statement)
+        sql.execute(statement)
     return True
 
 
@@ -97,17 +97,14 @@ def provision_incarnation(
         raise SessionError("incarnation session/evidence tables already exist (fresh-only)")
     if not isinstance(password, str) or not password:
         raise SessionError("frame account password required")
+    sql = _statements(cursor)
     for statement in (*session_ddl(principal, epoch), *evidence_ddl(principal, epoch)):
-        cursor.execute(statement)
+        sql.execute(statement)
     for statement in account_statements(
         principal, epoch, frame_address=frame_address, database=database, inbox=inbox
     ):
-        cursor.execute(statement, (password,) if "%s" in statement else None)
-    cursor.execute("CALL DOLT_ADD('dolt_schemas')")
-    cursor.execute(
-        "CALL DOLT_COMMIT('-m',%s,'--author','HQ operator <hq-operator@localhost>')",
-        (f"HQ session/evidence triggers for {principal} incarnation {epoch}",),
-    )
+        sql.execute(statement, (password,) if "%s" in statement else None)
+    sql.commit_schemas(f"HQ session/evidence triggers for {principal} incarnation {epoch}")
     problems = check_provisioning(cursor, principal, epoch, database=database, inbox=inbox)
     if problems:
         raise SessionError("provisioning check failed: " + "; ".join(problems))
@@ -134,8 +131,9 @@ def resume_incarnation(
         raise SessionError("reviewed session-only incarnation already has an inbox")
     definitions = (session_ddl(principal, epoch), evidence_ddl(principal, epoch))
     expected_triggers = {f"{ddl[0].split()[2]}_stamp": ddl[1] for ddl in definitions}
-    _pending_schema(cursor, expected_triggers)
-    accounts = _fetch(cursor, "SELECT host,ssl_type FROM mysql.user WHERE user=%s", (principal,))
+    sql = _statements(cursor)
+    _pending_schema(sql, expected_triggers)
+    accounts = sql.accounts(principal)
     if accounts and (
         len(accounts) != 1
         or accounts[0][0] != frame_address
@@ -144,74 +142,59 @@ def resume_incarnation(
         raise SessionError("existing incarnation account differs from pinned TLS account")
     for ddl in definitions:
         table = ddl[0].split()[2]
-        if not _existing(cursor, (table,)):
-            cursor.execute(ddl[0])
-        _check_resume_table(cursor, table)
-        rows = _fetch(cursor, f"SELECT id,epoch FROM {table}")
+        if not _existing(sql, (table,)):
+            sql.execute(ddl[0])
+        _check_resume_table(sql, table)
+        rows = sql.table_rows(table, "id,epoch")
         if not rows:
-            cursor.execute(ddl[2])
+            sql.execute(ddl[2])
         elif [tuple(row) for row in rows] != [(1, epoch)]:
             raise SessionError("existing incarnation row differs from reviewed epoch")
-        trigger = f"{table}_stamp"
-        existing = _fetch(
-            cursor, "SELECT fragment FROM dolt_schemas WHERE type='trigger' AND name=%s", (trigger,)
-        )
+        existing = sql.trigger_fragment(f"{table}_stamp")
         if existing:
             if len(existing) != 1 or existing[0][0] != ddl[1]:
                 raise SessionError("existing incarnation trigger differs from supported stamp")
         else:
-            cursor.execute(ddl[1])
+            sql.execute(ddl[1])
     if not accounts:
-        cursor.execute(statements[0], (password,))
+        sql.execute(statements[0], (password,))
     for statement in statements[1:]:
-        cursor.execute(statement)
-    problems = check_provisioning(cursor, principal, epoch, database=database)
+        sql.execute(statement)
+    problems = check_provisioning(sql, principal, epoch, database=database)
     if problems:
         raise SessionError("provisioning check failed: " + "; ".join(problems))
-    if _pending_schema(cursor, expected_triggers, complete=True):
-        cursor.execute("CALL DOLT_ADD('dolt_schemas')")
-        cursor.execute(
-            "CALL DOLT_COMMIT('-m',%s,'--author','HQ operator <hq-operator@localhost>')",
-            (f"HQ session/evidence triggers for {principal} incarnation {epoch}",),
-        )
+    if _pending_schema(sql, expected_triggers, complete=True):
+        sql.commit_schemas(f"HQ session/evidence triggers for {principal} incarnation {epoch}")
     return problems
 
 
 def validate_incarnation(cursor, principal: str, epoch: int, *, database: str) -> None:
     """Refuse drift in a supported session route without repairing any object."""
+    sql = _statements(cursor)
     for ddl in (session_ddl(principal, epoch), evidence_ddl(principal, epoch)):
         table = ddl[0].split()[2]
-        _check_resume_table(cursor, table)
-        rows = _fetch(cursor, f"SELECT id,epoch FROM {table}")
+        _check_resume_table(sql, table)
+        rows = sql.table_rows(table, "id,epoch")
         if [tuple(row) for row in rows] != [(1, epoch)]:
             raise SessionError("existing incarnation row differs from reviewed epoch")
-        triggers = _fetch(
-            cursor,
-            "SELECT fragment FROM dolt_schemas WHERE type='trigger' AND name=%s",
-            (f"{table}_stamp",),
-        )
+        triggers = sql.trigger_fragment(f"{table}_stamp")
         if [tuple(row) for row in triggers] != [(ddl[1],)]:
             raise SessionError("existing incarnation trigger differs from supported stamp")
-    problems = check_provisioning(cursor, principal, epoch, database=database)
+    problems = check_provisioning(sql, principal, epoch, database=database)
     if problems:
         raise SessionError("provisioning check failed: " + "; ".join(problems))
 
 
 def _pending_schema(cursor, expected_triggers, *, complete=False):
-    dirty = _fetch(cursor, "SELECT table_name FROM dolt_status")
+    sql = _statements(cursor)
+    dirty = sql.status_tables()
     if not dirty:
         return False
     if {row[0] for row in dirty} != {"dolt_schemas"}:
         raise SessionError("unrelated committed working tree changes during provisioning")
-    cursor.execute("SELECT DOLT_HASHOF('HEAD')")
-    head = cursor.fetchone()[0]
-    before = {
-        tuple(row[:2]): tuple(row[2:])
-        for row in _fetch(cursor, "SELECT * FROM dolt_schemas AS OF %s", (head,))
-    }
-    current = {
-        tuple(row[:2]): tuple(row[2:]) for row in _fetch(cursor, "SELECT * FROM dolt_schemas")
-    }
+    head = sql.head()
+    before = {tuple(row[:2]): tuple(row[2:]) for row in sql.schemas(at=head)}
+    current = {tuple(row[:2]): tuple(row[2:]) for row in sql.schemas()}
     added = {key: row for key, row in current.items() if key not in before}
     expected = {("trigger", name): fragment for name, fragment in expected_triggers.items()}
     if (
@@ -245,22 +228,16 @@ def _check_resume_table(cursor, table: str) -> None:
             )
         ]
         expected.append(("measured_at", "datetime(6)", "YES", ""))
-    rows = _fetch(cursor, f"DESCRIBE {table}")
+    sql = _statements(cursor)
+    rows = sql.describe(table)
     if [tuple(row[:4]) for row in rows] != expected or any(
         row[4] is not None or row[5] for row in rows
     ):
         raise SessionError("existing incarnation table differs from supported schema")
-    checks = _fetch(
-        cursor,
-        "SELECT check_clause FROM information_schema.check_constraints "
-        "WHERE constraint_schema=DATABASE() AND constraint_name IN "
-        "(SELECT constraint_name FROM information_schema.table_constraints "
-        "WHERE table_schema=DATABASE() AND table_name=%s AND constraint_type='CHECK')",
-        (table,),
-    )
+    checks = sql.check_clauses(table)
     if len(checks) != 1 or re.sub(r"[`()\s]", "", checks[0][0].lower()) != "id=1":
         raise SessionError("existing incarnation table lacks singleton constraint")
-    indexes = _fetch(cursor, f"SHOW INDEX FROM {table}")
+    indexes = sql.indexes(table)
     if len(indexes) != 1 or indexes[0][1:5] != (0, "PRIMARY", 1, "id"):
         raise SessionError("existing incarnation table has unsupported indexes")
 
@@ -292,32 +269,28 @@ def check_provisioning(
     (:func:`beadhive.hq_sql_placement.check_grants`); and any hive database on this server."""
 
     session, evidence = session_table(principal, epoch), evidence_table(principal, epoch)
+    sql = _statements(cursor)
     problems: list[str] = []
-    if not _ignore_committed(cursor):
+    if not _ignore_committed(sql):
         problems.append(f"ignore rule {IGNORE_PATTERN!r} is not committed")
-    present = _existing(cursor, (session, evidence, LIVENESS_POLICY_TABLE))
+    present = _existing(sql, (session, evidence, LIVENESS_POLICY_TABLE))
     if LIVENESS_POLICY_TABLE not in present:
         problems.append(f"{LIVENESS_POLICY_TABLE} missing")
     else:
         try:
-            _policy(_fetch(cursor, _POLICY_SQL))
+            _policy(sql.liveness_policy())
         except SessionError as exc:
             problems.append(str(exc))
     for table in (session, evidence):
         if table not in present:
             problems.append(f"{table} missing")
             continue
-        rows = _fetch(cursor, f"SELECT id FROM {table}")
+        rows = sql.table_rows(table, "id")
         if [tuple(row) for row in rows] != [(1,)]:
             problems.append(f"{table} must hold exactly its one id = 1 row")
-    triggers = _fetch(
-        cursor,
-        "SELECT trigger_name, event_object_table, action_statement, action_timing, "
-        "event_manipulation FROM information_schema.triggers WHERE trigger_schema = %s",
-        (database,),
-    )
+    triggers = sql.triggers(database)
     for table, kind in ((session, "session"), (evidence, "evidence")):
-        stamp = f"SET NEW.{_STAMP_COLUMN[kind]} = UTC_TIMESTAMP(6)"
+        stamp = _stamp_body(kind)
         mine = [row for row in triggers if row[1] == table]
         if table in present and not any(
             str(row[3]).upper() == "BEFORE"
@@ -332,9 +305,9 @@ def check_provisioning(
     problems += check_triggers(
         [tuple(row[:3]) for row in triggers], frame_writable=(session, evidence)
     )
-    secure = _fetch(cursor, "SELECT @@require_secure_transport")
+    secure = sql.require_secure_transport()
     secure_transport = bool(secure and secure[0][0] in (1, "1", "ON", "on"))
-    accounts = _fetch(cursor, "SELECT host, ssl_type FROM mysql.user WHERE user = %s", (principal,))
+    accounts = sql.accounts(principal, spaced=True)
     if not accounts:
         problems.append(f"no account for principal {principal!r}")
     writable = (session, evidence, *((inbox_table(principal, epoch),) if inbox else ()))
@@ -343,24 +316,27 @@ def check_provisioning(
             f"{principal}: {p}"
             for p in check_account(host, ssl_type, secure_transport=secure_transport)
         ]
-        lines = [row[0] for row in _fetch(cursor, f"SHOW GRANTS FOR '{principal}'@'{host}'")]
+        lines = [row[0] for row in sql.grants_for(principal, host)]
         problems += [
             f"{principal}@{host}: {p}"
             for p in check_grants(lines, role="frame", database=database, writable=writable)
         ]
     problems += [
         f"hive database {name!r} is co-hosted on the HQ server"
-        for name in cohosted_hive_databases(cursor)
+        for name in cohosted_hive_databases(sql)
     ]
     return problems
 
 
 def cohosted_hive_databases(cursor) -> list[str]:
     """Databases on this server that carry a hive marker table (bd's ``issues`` or the fence)."""
-    rows = _fetch(
-        cursor,
-        "SELECT DISTINCT table_schema FROM information_schema.tables WHERE table_name IN "
-        f"({','.join(['%s'] * len(HIVE_DATABASE_MARKERS))})",
-        HIVE_DATABASE_MARKERS,
-    )
+    rows = _statements(cursor).schemas_with_tables(HIVE_DATABASE_MARKERS)
     return sorted({row[0] for row in rows} - _SYSTEM_SCHEMAS)
+
+
+def _stamp_body(kind: str) -> str:
+    """The one trigger body condition 6 allows on an incarnation table: the stamp statement the
+    adapter's stamping trigger runs (``stamp_trigger``), whitespace-normalized."""
+    from beadhive_hq_storage_dolt import stamp_trigger
+
+    return stamp_trigger("t", _STAMP_COLUMN[kind]).split(" FOR EACH ROW ", 1)[1]

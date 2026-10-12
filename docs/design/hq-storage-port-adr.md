@@ -1087,3 +1087,101 @@ had committed, and a caller that retried would hit `IntegrityViolation` on the e
   commit. Scenario `bump_unknown_resolves_through_lookup_bump` runs on both adapters, and
   `test_a_failed_post_commit_head_read_in_commit_bump_is_unknown_then_confirmed` loses the
   real post-commit `DOLT_HASHOF('HEAD')` read on a `dolt sql-server`.
+
+### Settled by `bh-xnn5p`
+
+`hq_sql_runtime`, `hq_sql_receiver`, `hq_sql_operator`, `hq_sql_session`,
+`hq_sql_session_provision`, `failover_observer`, `failover_policy` and `director_failover` hold no
+SQL string and no Dolt procedure call. The transitional `DoltHqSessions` capability is gone. The
+director's survey and its `failover_after` write no longer need it.
+
+- **The failover policy is `RecordKind.FAILOVER_POLICY`.** Each scope (a hive prefix or `*`) is
+  one record, and its body is `{setting: seconds}`. `failover_policy.read_policy`,
+  `policy_write`, `plan_changes` and `apply_changes` take the port's `VersionedRecords`.
+  Thresholds and validation stay in root. The bounds' session TTL comes from the committed
+  liveness policy (`bounds_from`). The unit tests run on `InMemoryHqStorage`.
+- **Deviation: the policy mapping has a content revision and no witness.** `DoltHqStorage(...,
+  runtime_tables=True)` maps the kind onto `hq_live_failover_policy`, column for column, with the
+  same `DELETE` and upsert statements root issued before. That table has no revision or witness
+  column. The director's grant (`check_grants`) allows writes to that table and placement only,
+  so the revision cannot live in a side table. The revision is therefore the digest of the
+  scope's rows, and the CAS compares it inside its transaction. It follows that:
+  - identical content repeats a revision, so the "fresh revision" rule does not hold for this
+    mapping;
+  - `lookup` is always `NotConfirmed`.
+
+  Both are safe. A competing write with the same content changes nothing, and `NotConfirmed`
+  never authorises a retry (`FailoverPolicyUnknown`, "read it back"). Before the port the write
+  had no expectation at all, so a concurrent change to the same scope is now a `Conflict`
+  (`PlacementLost` with `CAS_LOST`) where it used to merge. The contract suite runs the
+  adapter-owned default, and the mapping is proven on real Dolt in
+  `test_hq_storage_dolt_adapter.py`. An unprovisioned table is `NotProvisioned`
+  (`NO_SUCH_TABLE`, `1146`), which reads as "code defaults, not provisioned", as before.
+- **Port addition: `AtomicRecords.compare_and_set_all`.** `failover_after` must never land
+  without its placement CAS, and two generic CASes cannot guarantee that. The port gains an
+  optional protocol with `RecordWrite` members:
+  - every expectation holds, or nothing is written and the outcome is a `Conflict` naming the
+    first failing member's current value;
+  - `Applied.revision` is `writes[0]`'s, and every member carries the `OperationId`.
+
+  Both adapters implement it. On Dolt it is one transaction, and a failed member rolls the
+  transaction back instead of reaching the commit point. Three contract cases cover it:
+  `atomic_cas_applies_every_write_or_none`, `atomic_cas_unknown_resolves_by_any_member` and
+  `atomic_cas_refuses_malformed_writes_before_io`. `place_cas` resolves an `Unknown` through the
+  placement's own witness. `Confirmed` means both records landed, and anything else is
+  `PlacementUnknown`, never reissued. A store without the protocol refuses `failover_after`.
+- **Session staleness is `Liveness.ages(LivenessKind.SESSION, keys)`.** A key is
+  `"<principal>/<epoch>"` (`failover_observer.session_key`). With `runtime_tables`, the Dolt
+  adapter maps `SESSION` and `EVIDENCE` onto the provisioned `frame_<principal>_<epoch>_session`
+  and `_evidence` rows. Ages come from ONE `UNION ALL` statement of
+  `TIMESTAMPDIFF(MICROSECOND, <stamp>, UTC_TIMESTAMP(6))`. Before, there was one statement per
+  table, each with its own server instant. A renewal is the row's `UPDATE`. A missing table or
+  row is `NotProvisioned`, never an `INSERT`, because frames hold `SELECT, UPDATE` only. A row
+  that was never renewed has no age, so it is unobserved, as before.
+  `failover_observer.session_staleness` replaces `sql_session_staleness`, and
+  `director_failover.observe_sessions(liveness, registry, state)` replaces the cursor version.
+  `test_director_failover.py` crosses `failover_after` by advancing the fake's clock, with no
+  waiting.
+- **Deviation: the survey is no longer one transaction.** Only the signed-authority read, the
+  principal registry at its head and the liveness-policy bounds share one read-only runtime
+  transaction (`DoltRuntimeReads.pinned()`). The placement rows, the failover policy and the
+  session ages are separate port reads. Every decision taken from a survey is still guarded:
+  `place` re-verifies the authority and CASes on the revision it read, and a moved row is
+  `PlacementLost`. `place` likewise reads the placement row outside its authority transaction.
+- **Eligibility thresholds are root's.** The one eligibility statement (`ELIGIBILITY_SQL`) still
+  reads the grant and policy `AS OF` the head. It now returns `session_epoch_current` and
+  `evidence_conformant` instead of the two freshness predicates. Root decides freshness with
+  `hq_sql_session.within_ttl(age_us, ttl_s)`, the same whole-microsecond `<` comparison the
+  statement made, so no result changes. The equality predicates (profile, release digest, lease
+  holder) stay in SQL, under the columns' collation.
+- **Deviation: the runtime authority, receiver, operator and session rows use a Dolt-only
+  statement surface, not the generic port.** These modules verify signed, committed history:
+  - `AS OF` authority and registry reads, `HAS_ANCESTOR`, `dolt_commit_ancestors`,
+    `DOLT_DIFF_SUMMARY` and `dolt_schemas` (section 4: Dolt-only);
+  - acceptances that write the receipt, floor, public observation and result, or the lease CAS
+    and its result, in one commit;
+  - an authority publication that `DOLT_COMMIT`s the row, the registry and the floor seed
+    together.
+
+  Mapping these onto `VersionedRecords` and `AppendLog` would split their atomicity. Instead,
+  `beadhive_hq_storage_dolt.HqRuntimeStatements` names every statement exactly as root issued
+  it, over root's own cursor, through `hq_storage_composition.runtime_statements`. Root keeps its
+  connection, transaction boundaries, deadlines and verification, and its SQL-level test doubles
+  keep matching unchanged. `DoltRuntimeReads` yields the same surface for the director's pinned
+  read. The receiver's driver error codes come from the adapter's `error_code`, `CONFLICT_CODES`
+  and `DUPLICATE_KEY`. Making these suites fake-ready is `bh-utvyj`'s, and the provisioning
+  statements' final `DoltAccounts` shape is `bh-3kl1k`'s.
+- **The committed config reads the runtime shares moved too.** `hq_sql_config._committed`,
+  `_check_floor`, `committed_snapshot_at` and `tolerated_bound_at` read through the same surface
+  (`config_meta_at`, `config_documents_at`, `config_witness_at`, `config_parent_at`,
+  `has_ancestor`). They accept a cursor or the surface, so both root's own reader and the
+  runtime's cross-database transaction use them.
+- **Encoding equality.** `tests/contracts/test_hq_storage_composition.py` pins the adapter's
+  table names, incarnation table names and keys, ignore pattern and stamping trigger equal to
+  root's. It also pins the failover-policy statements to the text root issued before the port.
+- **Not done here.** `hq_sql_runtime_schema` (operator DDL), the rest of `hq_sql_config`'s SQL
+  (initial seeding, inspection, the publication preflight) and the frame's
+  `SessionRenewer`/evidence connection stay root-owned. The renewer and the evidence publication
+  run the adapter's statements on the frame's own connection, because the route resolution by
+  `CURRENT_USER()` must share that session. `Liveness.renew` over the incarnation mapping is the
+  same `UPDATE`.

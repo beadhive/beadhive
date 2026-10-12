@@ -30,6 +30,7 @@ from . import (
     ABSENT,
     AppendLog,
     Applied,
+    AtomicRecords,
     BumpRequest,
     CapabilityHost,
     CapabilityUnsupported,
@@ -54,6 +55,7 @@ from . import (
     ReclaimNote,
     ReclaimSet,
     RecordKind,
+    RecordWrite,
     Revision,
     StorageUnavailable,
     StreamKind,
@@ -540,6 +542,97 @@ def _case_malformed_requests_are_refused_before_io(h: HqHarness) -> None:
         lambda: h.log.append(StreamKind.INBOX, "k", [1], operation=_op()),  # type: ignore[arg-type]
     )
     assert h.records.read(RecordKind.AUTHORITY, "k") is None
+
+
+# --- AtomicRecords --------------------------------------------------------------------------
+
+
+def _atomic(h: HqHarness) -> AtomicRecords:
+    if not isinstance(h.records, AtomicRecords):
+        raise ScenarioSkipped("this adapter's records are not AtomicRecords")
+    return h.records
+
+
+@_scenario("hq", "AtomicRecords.compare_and_set_all", "VersionedRecords.lookup")
+def _case_atomic_cas_applies_every_write_or_none(h: HqHarness) -> None:
+    atomic = _atomic(h)
+    seeded = h.provision(RecordKind.PLACEMENT, "bh", {"frame": "f1", "epoch": 1, "cause": "seed"})
+    op = _op()
+    out = atomic.compare_and_set_all(
+        [
+            RecordWrite(
+                RecordKind.PLACEMENT, "bh", {"frame": "f2", "epoch": 2, "cause": "adopt"}, seeded
+            ),
+            RecordWrite(RecordKind.AUTHORITY, "bh", {"after_s": 30}, ABSENT),
+        ],
+        operation=op,
+    )
+    assert isinstance(out, Applied) and out.operation == op
+    placed = h.records.read(RecordKind.PLACEMENT, "bh")
+    policy = h.records.read(RecordKind.AUTHORITY, "bh")
+    assert placed is not None and placed.revision == out.revision and placed.revision != seeded
+    assert policy is not None and policy.body == {"after_s": 30}
+    for kind in (RecordKind.PLACEMENT, RecordKind.AUTHORITY):
+        assert isinstance(h.records.lookup(kind, "bh", op), Confirmed)
+    # One stale member: nothing is written, and the conflict names that member's current value.
+    lost = atomic.compare_and_set_all(
+        [
+            RecordWrite(
+                RecordKind.PLACEMENT,
+                "bh",
+                {"frame": "f3", "epoch": 3, "cause": "adopt"},
+                placed.revision,
+            ),
+            RecordWrite(RecordKind.AUTHORITY, "bh", {"after_s": 60}, ABSENT),
+        ],
+        operation=_op(),
+    )
+    assert lost == Conflict(policy)
+    assert h.records.read(RecordKind.PLACEMENT, "bh") == placed
+    assert h.records.read(RecordKind.AUTHORITY, "bh") == policy
+
+
+@_scenario("hq", "AtomicRecords.compare_and_set_all", "VersionedRecords.lookup", "Unknown")
+def _case_atomic_cas_unknown_resolves_by_any_member(h: HqHarness) -> None:
+    atomic = _atomic(h)
+    for reason in _REASONS:
+        for applied in (True, False):
+            a, b = f"a-{reason}-{applied}", f"b-{reason}-{applied}"
+            op = _op()
+            h.inject_unknown("compare_and_set_all", reason, applied=applied)
+            out = atomic.compare_and_set_all(
+                [
+                    RecordWrite(RecordKind.AUTHORITY, a, {"v": 1}, ABSENT),
+                    RecordWrite(RecordKind.AUTHORITY, b, {"v": 2}, ABSENT),
+                ],
+                operation=op,
+            )
+            assert out == Unknown(operation=op, expected=ABSENT, reason=reason)
+            for key in (a, b):
+                found = h.records.lookup(RecordKind.AUTHORITY, key, op)
+                assert isinstance(found, Confirmed) if applied else found == NotConfirmed(op)
+                assert (h.records.read(RecordKind.AUTHORITY, key) is not None) is applied
+
+
+@_scenario("hq", "AtomicRecords.compare_and_set_all", "InvalidRequest")
+def _case_atomic_cas_refuses_malformed_writes_before_io(h: HqHarness) -> None:
+    atomic = _atomic(h)
+    member = RecordWrite(RecordKind.AUTHORITY, "k", {"v": 1}, ABSENT)
+    _raises(InvalidRequest, lambda: atomic.compare_and_set_all([], operation=_op()))
+    _raises(InvalidRequest, lambda: atomic.compare_and_set_all([member, member], operation=_op()))
+    _raises(
+        InvalidRequest,
+        lambda: atomic.compare_and_set_all([member], operation=OperationId("not-a-uuid")),
+    )
+    _raises(
+        NotProvisioned,
+        lambda: atomic.compare_and_set_all(
+            [member, RecordWrite(RecordKind.PLACEMENT, "bh", {"frame": "f"}, ABSENT)],
+            operation=_op(),
+        ),
+    )
+    assert h.records.read(RecordKind.AUTHORITY, "k") is None
+    assert h.records.read(RecordKind.PLACEMENT, "bh") is None
 
 
 # --- PlacementStore -------------------------------------------------------------------------

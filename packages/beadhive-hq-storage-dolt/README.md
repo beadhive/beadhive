@@ -10,11 +10,13 @@ The Dolt adapter for the [`beadhive-hq-storage`](../beadhive-hq-storage/README.m
 
 | Name | Satisfies | Over |
 |---|---|---|
-| `DoltHqStorage` | `VersionedRecords`, `AppendLog`, `Liveness`, `CommittedHistory`, `CapabilityHost` | a root-injected DB-API `ConnectionFactory` (`Callable[[Role], Connection]`) |
+| `DoltHqStorage` | `VersionedRecords`, `AtomicRecords`, `AppendLog`, `Liveness`, `CommittedHistory`, `CapabilityHost` | a root-injected DB-API `ConnectionFactory` (`Callable[[Role], Connection]`); with `runtime_tables=True`, root's failover-policy and per-incarnation tables |
 | `DoltPlacementStore` | `PlacementStore` | `DoltHqStorage`'s `PLACEMENT` records |
 | `DoltConfigHistory` | `CommittedHistory` | root's committed `hq_config_*` tables in the HQ config database |
 | `DoltHiveFence` | `HiveFence`, `CapabilityHost` | a `FenceStatementEngine` (root's `DoltCliEngine` / `BdServerEngine`, or `SqlConnectionFenceEngine`) |
 | `DoltHistory`, `DoltMerge`, `DoltAccounts` | the Dolt-only capabilities | `SqlRunner` over the factory or the engine |
+| `DoltRuntimeReads` | the Dolt-only signed-authority read | one principal-checked, read-only `READER` transaction yielding `HqRuntimeStatements` |
+| `HqRuntimeStatements` | the HQ runtime database's Dolt-only statements | a caller-owned DB-API cursor (root's runtime authority, receiver, operator, session rows and the committed config reads they share) |
 
 Every SQL string, Dolt procedure call and error-code classification for the port lives here.
 Root keeps the transport (`hq_sql_transport.connect`, PyMySQL) and composes the adapter in
@@ -30,6 +32,9 @@ or the engine's push), even when its outcome is already a `Conflict`. So a lost 
 |---|---|---|---|---|
 | `compare_and_set` on `PLACEMENT` | `UPDATE hq_live_hive_leases ... WHERE prefix AND revision` | a fresh `sha256(record ‖ uuid4)` revision; a caused carrier write's revision is bound to its `OperationId` | `rowcount 0`, or `1213` at `COMMIT` | the `OperationId` in `request_id`, or for a caused carrier write the revision bound to it under a verifying witness; `lookup` |
 | `compare_and_set` on the other kinds | `INSERT ... WHERE NOT EXISTS` from `ABSENT`, else a guarded `UPDATE` of `hq_live_records` | a fresh revision | `rowcount 0`, or `1213` | the `operation_id` column; `lookup` |
+| `compare_and_set` on `FAILOVER_POLICY` (`runtime_tables`) | read the scope's `hq_live_failover_policy` rows, compare their content digest, then a `DELETE` / upsert per changed setting | the content digest of the new rows | a different digest (or rows where `ABSENT` was expected), or `1213` | none: the table has no witness column, so `lookup` is always `NotConfirmed` |
+| `compare_and_set_all` | every member's write in ONE transaction, then `COMMIT`; a failed member rolls the whole transaction back | `writes[0]`'s fresh revision; every member carries the `OperationId` | the first failing member's current value (nothing written), or `1213` | `lookup` of any member (the placement's `request_id` witness for the director's write) |
+| `renew` / `ages` / `stamped_at` on `SESSION` / `EVIDENCE` (`runtime_tables`) | the provisioned `frame_<principal>_<epoch>_session` / `_evidence` row's `UPDATE` (root's renewal or evidence statement); ages in ONE `UNION ALL` statement of `TIMESTAMPDIFF(MICROSECOND, <stamp>, UTC_TIMESTAMP(6))` | the server stamp | not applicable: a missing table or row is `NotProvisioned`, never an `INSERT` | none: a lost acknowledgment raises `StorageError` |
 | `append` | `INSERT` into `hq_live_append` | a new row, or the same key, operation and body again | any other replay of the key, a duplicate key, or `1213` | the natural key plus `operation_id`; `lookup_append` |
 | `prune` | `DELETE ... TIMESTAMPDIFF(MICROSECOND, recorded_at, UTC_TIMESTAMP(6)) > window` | `PruneReport` | not applicable | none: a lost acknowledgment raises `StorageError` |
 | `renew` | `UPDATE` or `INSERT` of `hq_live_liveness`; a trigger stamps `UTC_TIMESTAMP(6)` | the server stamp | not applicable | none: a lost acknowledgment raises `StorageError` |
@@ -77,11 +82,16 @@ schema is a separate root contract (`bh-4shu3`) and is not here.
 **`principals`** makes every session for a role first check `CURRENT_USER()`, `DATABASE()` and
 `ACTIVE_BRANCH()`, refusing a mismatch with `StorageUnavailable`.
 
-**`DoltHqSessions`** (transitional, Dolt-only) hands one transaction to both the port and the
-SQL not yet on it: `snapshot()` for the director's ONE-transaction survey, and `transact()` for
-the placement CAS plus its failover-policy rows, committed only when the CAS is `Applied`. It
-goes when `bh-xnn5p` moves the signed-authority read, the failover policy and session staleness
-onto the port.
+**Root's runtime database** (`bh-xnn5p`, `_runtime.py`, `_incarnation.py`, `_failover.py`).
+`HqRuntimeStatements` names every statement root's runtime authority, trusted receiver, operator
+and session rows run, exactly as root ran them, over root's own cursor: `AS OF` authority and
+registry reads, `HAS_ANCESTOR`, `dolt_commit_ancestors`, `DOLT_DIFF_SUMMARY`, `dolt_schemas`, the
+receipt/floor/observation/result acceptance writes and the authority `DOLT_COMMIT`. These are
+Dolt-only (commit-graph and history reads, multi-table acceptance in one commit), so root keeps
+its connection, transaction and deadline and holds no SQL. `DoltRuntimeReads.pinned()` replaced
+the transitional `DoltHqSessions`: one read-only transaction with no raw cursor and no write.
+The incarnation DDL, the eligibility statement (which returns ages and committed TTLs; the
+thresholds are root's) and the failover-policy grant are rendered here too.
 
 **Error classification** is by DB-API `args[0]` code; the adapter never imports a driver.
 
@@ -97,7 +107,7 @@ onto the port.
 | File | What | Needs |
 |---|---|---|
 | `test_hq_storage_dolt_contract.py` | the shared contract suite over `[fake, dolt]`, and the differential state machine fake against Dolt | `dolt` and PyMySQL, else the `dolt` cases skip |
-| `test_hq_storage_dolt_adapter.py` | classification over a scripted DB-API stub; the placement wire format, the config publication's `hq_config_*` rows, ignored live tables, server stamps and capabilities on real Dolt | Dolt for the real-Dolt cases |
+| `test_hq_storage_dolt_adapter.py` | classification over a scripted DB-API stub; the placement wire format, the config publication's `hq_config_*` rows, ignored live tables, server stamps and capabilities on real Dolt; the runtime-table mappings (failover policy rows, incarnation liveness, the atomic placement-plus-policy write) and the pinned runtime read | Dolt for the real-Dolt cases |
 | `test_dolt_semantics_int.py` | Dolt 2.3.5 server contracts (grants, triggers, accounts, globals, history, fence engine), folded from root | `dolt` (some cases also need a `127.0.0.2` alias) |
 
 `beadhive_hq_storage_dolt.contract` holds the `dolt` `ContractAdapter`, its harnesses, real

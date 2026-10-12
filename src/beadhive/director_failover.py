@@ -6,12 +6,13 @@ HQ and runs ticks from a long-lived process:
 
 * **Where it runs.** The host daemon (``bh host daemon serve``), as one lifespan component, when
   ``host.daemon.failover.enabled`` is true. **Off by default**: nothing else turns it on.
-* **What it reads.** One verified read transaction per tick
+* **What it reads.** One verified survey per tick
   (:meth:`~beadhive.hq_sql_placement.SqlPlacementDirector.survey`) on the director credential
-  (``hq.sql.placement_writer`` in the operator settings file): the operator-signed authority,
-  every placement row and each active frame's session staleness by the HQ server's clock. A
-  frame without a session table (M9, ``bh-owqdg``, not provisioned for it) is unobserved, so it
-  never fails over — fail safe.
+  (``hq.sql.placement_writer`` in the operator settings file): the operator-signed authority and
+  its principal registry, every placement row, the failover policy and each active frame's
+  session staleness by the HQ storage port's clock (``Liveness.ages``: the HQ server's on Dolt).
+  A frame without a session table (M9, ``bh-owqdg``, not provisioned for it) is unobserved, so
+  it never fails over — fail safe.
 * **What it writes.** Only the placement CAS, through
   :meth:`~beadhive.hq_sql_placement.SqlPlacementDirector.place` at the row's epoch + 1. A lost CAS
   is recorded and re-decided next tick, never retried with the same expectation.
@@ -47,8 +48,8 @@ from .failover_observer import (
     FailoverMonitor,
     FailoverResult,
     failover_after_for,
-    session_table,
-    sql_session_staleness,
+    session_key,
+    session_staleness,
 )
 from .hq_sql_placement import CAUSE_FAILOVER, PlacementError, SqlPlacementDirector, Survey
 from .placement_spread import pick_successor, primary_holdings
@@ -65,10 +66,6 @@ __all__ = [
 _log = logging.getLogger(__name__)
 #: Frames carry no role in the signed authority; the executor default is the longest window.
 DEFAULT_ROLE = "executor"
-_SESSION_TABLES_SQL = (
-    "SELECT table_name FROM information_schema.tables "
-    "WHERE table_schema=DATABASE() AND table_name LIKE 'frame%session'"
-)
 
 
 class FailoverRefused(ValueError):
@@ -84,8 +81,10 @@ def host_hq_mode(cfg: Mapping) -> str:
     return "git"
 
 
-def _active_incarnations(cursor, head: str, state: Mapping) -> dict[str, tuple[str, int]]:
-    """``{frame_id: (principal, epoch)}`` for each frame's ACTIVE incarnation in the registry."""
+def active_incarnations(registry, state: Mapping) -> dict[str, tuple[str, int]]:
+    """``{frame_id: (principal, epoch)}`` for each frame's ACTIVE incarnation: the registry
+    rows (``(principal, frame_id, holder_identity, epoch)``, read at the verified authority
+    head) that match the active grant's holder and epoch."""
     active = {
         frame: entry["active"]["authority"]
         for frame, entry in (state.get("frames") or {}).items()
@@ -93,12 +92,8 @@ def _active_incarnations(cursor, head: str, state: Mapping) -> dict[str, tuple[s
     }
     if not active:
         return {}
-    cursor.execute(
-        "SELECT principal,frame_id,holder_identity,epoch FROM hq_principal_registry AS OF %s",
-        (head,),
-    )
     found = {}
-    for principal, frame, holder, epoch in cursor.fetchall():
+    for principal, frame, holder, epoch in registry:
         authority = active.get(frame)
         if (
             authority is not None
@@ -110,20 +105,24 @@ def _active_incarnations(cursor, head: str, state: Mapping) -> dict[str, tuple[s
 
 
 def observe_sessions(
-    cursor, head: str, state: Mapping, *, table_for: Callable[[str, int], str] = session_table
+    liveness,
+    registry,
+    state: Mapping,
+    *,
+    key_for: Callable[[str, int], str] = session_key,
 ) -> dict[str, float | None]:
-    """Each active frame's session staleness (seconds by the HQ server's clock). ``None`` for
-    a frame whose session table does not exist or holds no row: not observed."""
-    cursor.execute(_SESSION_TABLES_SQL)
-    existing = {str(row[0]) for row in cursor.fetchall()}
+    """Each active frame's session staleness (seconds by the HQ storage port's clock, one
+    ``Liveness.ages`` read). ``None`` for a frame whose session table does not exist or holds
+    no stamped row: not observed."""
     staleness: dict[str, float | None] = {}
-    for frame, (principal, epoch) in _active_incarnations(cursor, head, state).items():
+    keys: dict[str, str] = {}
+    for frame, (principal, epoch) in active_incarnations(registry, state).items():
         try:
-            table = table_for(principal, epoch)
+            keys[frame] = key_for(principal, epoch)
         except ValueError:
             staleness[frame] = None
-            continue
-        staleness[frame] = sql_session_staleness(cursor, table) if table in existing else None
+    ages = session_staleness(liveness, keys.values())
+    staleness.update({frame: ages[key] for frame, key in keys.items()})
     return staleness
 
 
@@ -137,7 +136,7 @@ class SqlFailoverPorts:
     failover_after: Callable[[Any], float | None] | None = None
     #: The frame's role. The signed authority carries none: executor (the longest window).
     role_for: Callable[[str], str] = field(default=lambda _frame: DEFAULT_ROLE)
-    table_for: Callable[[str, int], str] = session_table
+    key_for: Callable[[str, int], str] = session_key
     survey: Survey | None = None
     refusals: tuple[str, ...] = ()
     #: Primaries this loop placed since the last survey: ``frame -> delta`` (survey is stale).
@@ -159,8 +158,8 @@ class SqlFailoverPorts:
         self.survey = None  # a failed survey leaves nothing to place from
         self.moved = {}
         self.survey = self.director.survey(
-            lambda cursor, head, state: observe_sessions(
-                cursor, head, state, table_for=self.table_for
+            lambda liveness, registry, state: observe_sessions(
+                liveness, registry, state, key_for=self.key_for
             )
         )
         self._report(getattr(self.survey, "failover", None))

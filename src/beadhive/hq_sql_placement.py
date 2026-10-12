@@ -51,11 +51,13 @@ The director never INSERTs: a never-placed hive gets its row from operator provi
 (:func:`seed_statement`), so the director credential stays ``UPDATE``-only on that table (the
 port refuses a ``PLACEMENT`` CAS from ``ABSENT``).
 
-Until ``bh-xnn5p`` moves the signed-authority read, the failover policy and session staleness
-onto the port, the director shares one transaction with them through the adapter's transitional
-``DoltHqSessions`` capability, so a survey stays ONE read and ``failover_after`` stays in the
-placement CAS's own transaction. On storage without it (the in-memory fake), those cursor
-consumers are absent: a survey carries no failover policy and ``failover_after`` is refused.
+The failover policy and the session staleness the director fails over on are on the port too
+(bh-xnn5p): ``RecordKind.FAILOVER_POLICY`` records and ``Liveness.ages``, so a survey reads
+them through the same store, and a placement that sets ``failover_after`` writes the policy
+and the placement CAS as ONE ``AtomicRecords.compare_and_set_all`` -- the policy never lands
+without the placement. The operator-signed authority is verified on its own read-only runtime
+transaction, the adapter's Dolt-only ``DoltRuntimeReads`` capability (commit-graph and ``AS OF``
+reads); on storage without it (the in-memory fake) a verified read is refused.
 
 Pure where it can be; storage only through the port. Typer-free.
 """
@@ -67,12 +69,10 @@ import json
 import re
 import time
 import uuid
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 from beadhive_hq_storage import (
-    ABSENT,
     Applied,
     Confirmed,
     Conflict,
@@ -516,12 +516,12 @@ def _check_prefix(prefix: str) -> None:
 # =============================================================================================
 
 
-def _sessions(records):
-    """The adapter's transitional ``DoltHqSessions`` capability, or ``None`` (the fake)."""
-    from beadhive_hq_storage_dolt import DoltHqSessions
+def _runtime_reads(records):
+    """The adapter's Dolt-only ``DoltRuntimeReads`` capability, or ``None`` (the fake)."""
+    from beadhive_hq_storage_dolt import DoltRuntimeReads
 
     capability = getattr(records, "capability", None)
-    return None if capability is None else capability(DoltHqSessions)
+    return None if capability is None else capability(DoltRuntimeReads)
 
 
 def _placed(prefix, revision, authority, lease, cause, operation) -> PlacementRecord:
@@ -547,16 +547,17 @@ def place_cas(
     cause: str | None = None,
     failover_after: Mapping[str, int | None] | None = None,
     operation: str | None = None,
+    bounds=None,
 ) -> PlacementRecord:
     """Move `prefix`'s placement row to `lease` iff it is still at `expected_revision`.
 
     `records` is the HQ storage port (``VersionedRecords``). `cause` (``failover`` /
     ``planned``) rides in the same CAS (the adapter's ``request_id`` :func:`cause_token`);
     ``None`` (a release) carries none, which reads as unknown. `failover_after` (``{role:
-    seconds | None}``) also sets the hive's failover policy in the same transaction
-    (:func:`beadhive.failover_policy.apply_changes`; refused, never clamped) — through the
-    adapter's transitional ``DoltHqSessions`` capability, so it is refused on storage without
-    one. `operation` is the write's ``OperationId`` (minted when ``None``).
+    seconds | None}``) also sets the hive's failover policy in the same write
+    (:func:`beadhive.failover_policy.policy_write`, validated against `bounds`; refused, never
+    clamped): one ``AtomicRecords.compare_and_set_all``, so it is refused on storage that cannot
+    write both atomically. `operation` is the write's ``OperationId`` (minted when ``None``).
 
     Read the row, check it is the expected one and that the epoch rule holds (a placement
     raises the epoch; a release keeps it as a tombstone), then the single guarded CAS with a
@@ -596,7 +597,7 @@ def place_cas(
     try:
         if failover_after:
             outcome = _cas_with_policy(
-                records, prefix, body, expected, operation, check, failover_after
+                records, prefix, body, expected, operation, check, failover_after, bounds
             )
         else:
             check(records.read(RecordKind.PLACEMENT, prefix))
@@ -621,30 +622,27 @@ def place_cas(
     return _placed(prefix, found.revision, authority, lease, cause, operation)
 
 
-def _cas_with_policy(records, prefix, body, expected, operation, check, failover_after):
-    """The CAS and the failover-policy rows in ONE transaction (transitional; ``bh-xnn5p``)."""
-    from .failover_policy import FailoverPolicyError, apply_changes
+def _cas_with_policy(records, prefix, body, expected, operation, check, failover_after, bounds):
+    """The placement CAS and the hive's failover-policy write as ONE atomic write: the policy
+    record never lands without the placement (and a lost placement CAS writes neither)."""
+    from beadhive_hq_storage import AtomicRecords, RecordWrite
 
-    sessions = _sessions(records)
-    if sessions is None:
+    from .failover_policy import FailoverPolicyError, policy_write
+
+    if not isinstance(records, AtomicRecords):
         raise PlacementError(
-            "failover_after rides the placement CAS's own transaction, which needs dolt-server "
-            "HQ storage; nothing written"
+            "failover_after rides the placement CAS's own write, which needs a store that "
+            "writes both atomically; nothing written"
         )
-
-    def body_fn(tx):
-        check(tx.read(RecordKind.PLACEMENT, prefix))
-        try:
-            apply_changes(tx.cursor, prefix, failover_after)
-        except FailoverPolicyError as exc:
-            raise PlacementError(str(exc)) from None
-        return tx.compare_and_set(
-            RecordKind.PLACEMENT, prefix, body, expected=expected, operation=operation
-        )
-
-    return sessions.transact(
-        body_fn, operation=operation, expected=expected, passthrough=(PlacementError,)
-    )
+    check(records.read(RecordKind.PLACEMENT, prefix))
+    try:
+        _after, policy = policy_write(records, prefix, failover_after, bounds)
+    except FailoverPolicyError as exc:
+        raise PlacementError(str(exc)) from None
+    writes = [RecordWrite(RecordKind.PLACEMENT, prefix, body, expected)]
+    if policy is not None:
+        writes.append(policy)
+    return records.compare_and_set_all(writes, operation=operation)
 
 
 # =============================================================================================
@@ -665,23 +663,26 @@ class Survey:
     failover: object = None
 
 
-class _PortSession:
-    """A survey/verify session over storage without ``DoltHqSessions`` (the fake): port reads,
-    and no cursor for the consumers not yet on the port."""
+@dataclass(frozen=True)
+class AuthorityView:
+    """One verified read of the operator-signed authority (:meth:`SqlPlacementDirector.
+    _authority`): the state and hive policies, the principal registry at that head when asked
+    for, and the failover policy's hard bounds from the committed liveness policy."""
 
-    cursor = None
+    state: Mapping
+    policies: Mapping
+    registry: tuple = ()
+    bounds: object = None
+    notes: tuple = ()
 
-    def __init__(self, records):
-        self._records = records
 
-    def head(self):
-        return None
+def _liveness_bounds(session):
+    """The failover policy's hard bounds from the committed liveness policy on `session`."""
+    from .failover_policy import bounds_from
+    from .hq_sql_runtime_schema import LIVENESS_POLICY_TABLE
 
-    def read(self, kind, key):
-        return self._records.read(kind, key)
-
-    def read_many(self, kind, keys=None):
-        return self._records.read_many(kind, keys)
+    present = session.tables_present((LIVENESS_POLICY_TABLE,))
+    return bounds_from(session.liveness_policy() if present else None)
 
 
 class SqlPlacementDirector:
@@ -722,26 +723,43 @@ class SqlPlacementDirector:
             self._store = placement_storage(binding, broker=self.broker, connect=self._connect)
         return self._store
 
-    @contextmanager
-    def _session(self) -> Iterator:
-        """One read-only session: the adapter's single transaction, or port reads on the fake."""
-        records = self._storage()
-        sessions = _sessions(records)
-        if sessions is None:
-            yield _PortSession(records)
-            return
-        with sessions.snapshot() as session:
-            yield session
-
     def _verified(self, session):
-        """The operator-signed state and hive policies at the session's head."""
+        """The operator-signed state and hive policies at `session`'s head (`session` is the
+        adapter's pinned runtime read; ``None`` on storage without one)."""
         from .hq_sql_runtime import SqlRuntimeAuthority
 
-        if session.cursor is None:
+        if session is None:
             raise PlacementError("verified placement needs dolt-server HQ storage")
         authority = SqlRuntimeAuthority(self.settings, broker=self.broker, clock=self.clock)
-        state, _crossref, policies = authority.verified_state_at(session.cursor, session.head())
+        state, _crossref, policies = authority.verified_state_at(session, session.head())
         return state, policies
+
+    def _authority(self, *, registry: bool = False) -> AuthorityView:
+        """The verified authority in ONE read-only runtime transaction, with the registry at
+        that head (``registry``) and the liveness-policy bounds read in the same transaction."""
+        from .failover_policy import bounds_from
+
+        reads = _runtime_reads(self._storage())
+        if reads is None:
+            state, policies = self._verified(None)
+            return AuthorityView(state, policies, bounds=bounds_from(None)[0])
+        with reads.pinned() as session:
+            state, policies = self._verified(session)
+            rows = ()
+            if registry:
+                rows = tuple(tuple(row) for row in session.incarnations_at(session.head()))
+            bounds, notes = _liveness_bounds(session)
+        return AuthorityView(state, policies, rows, bounds, tuple(notes))
+
+    def _bounds(self):
+        """``(bounds, notes)`` for the failover policy verbs (no authority verification)."""
+        from .failover_policy import bounds_from
+
+        reads = _runtime_reads(self._storage())
+        if reads is None:
+            return bounds_from(None)
+        with reads.pinned() as session:
+            return _liveness_bounds(session)
 
     def read(self, prefix: str) -> PlacementRecord | None:
         records = self._storage()
@@ -751,22 +769,23 @@ class SqlPlacementDirector:
             raise PlacementError(f"placement read for {prefix} unavailable ({exc})") from None
 
     def survey(self, observe=None) -> Survey:
-        """Every placement row plus the operator-signed state, in ONE verified read-only
-        transaction. `observe(cursor, head, state)` runs inside the same transaction (the
-        failover loop reads session staleness there); its result is :attr:`Survey.observed`.
-        The failover policy is read in the same transaction (:attr:`Survey.failover`)."""
+        """Every placement row, the operator-signed state and the failover policy. The authority
+        (and, for `observe`, its principal registry) is one verified read-only transaction; the
+        placement rows and the policy are port reads (:attr:`Survey.failover`).
+        `observe(liveness, registry, state)` gets the store's ``Liveness`` (the failover loop
+        reads session staleness there) and the registry rows ``(principal, frame_id,
+        holder_identity, epoch)`` at the verified head; its result is :attr:`Survey.observed`."""
         from .failover_policy import read_policy
 
-        self._storage()
+        records = self._storage()
         try:
-            with self._session() as session:
-                state, policies = self._verified(session)
-                placements, invalid = read_rows(session.read_many(RecordKind.PLACEMENT))
-                failover = None if session.cursor is None else read_policy(session.cursor)
-                observed = None
-                if observe is not None:
-                    observed = observe(session.cursor, session.head(), state)
-            return Survey(state, policies, placements, invalid, observed, failover)
+            view = self._authority(registry=observe is not None)
+            placements, invalid = read_rows(records.read_many(RecordKind.PLACEMENT))
+            failover = read_policy(records, view.bounds, notes=view.notes)
+            observed = None
+            if observe is not None:
+                observed = observe(records, view.registry, view.state)
+            return Survey(view.state, view.policies, placements, invalid, observed, failover)
         except PlacementError:
             raise
         except Exception:  # noqa: BLE001 - authority/transport failures never leak details
@@ -821,10 +840,9 @@ class SqlPlacementDirector:
             raise PlacementError(f"placement cause must be one of {', '.join(PLACEMENT_CAUSES)}")
         records = self._storage()
         try:
-            with self._session() as session:
-                state, policies = self._verified(session)
-                identity = self.placeable(state, policies, prefix, frame_id)
-                row = session.read(RecordKind.PLACEMENT, prefix)
+            view = self._authority()
+            identity = self.placeable(view.state, view.policies, prefix, frame_id)
+            row = records.read(RecordKind.PLACEMENT, prefix)
             if row is None:
                 raise PlacementUnseeded(
                     f"hive {prefix} has no placement row; the operator seeds it first"
@@ -847,17 +865,12 @@ class SqlPlacementDirector:
                 expected_revision=expected_revision,
                 cause=cause,
                 failover_after=failover_after,
+                bounds=view.bounds,
             )
         except PlacementError:
             raise
         except Exception:  # noqa: BLE001 - authority/transport failures never leak details
             raise PlacementError(f"verified placement for {prefix} unavailable") from None
-
-    @staticmethod
-    def _cursor(session):
-        if session.cursor is None:
-            raise PlacementError("the failover policy needs dolt-server HQ storage")
-        return session.cursor
 
     def failover_policy(self, scope: str | None = None, changes: Mapping | None = None):
         """The validated failover policy (read-only; :mod:`beadhive.failover_policy`). With
@@ -865,13 +878,12 @@ class SqlPlacementDirector:
         exactly as :meth:`set_failover_policy` would refuse — writing nothing."""
         from .failover_policy import FLEET_SCOPE, FailoverPolicyError, plan_changes, read_policy
 
-        self._storage()
+        records = self._storage()
         try:
-            with self._session() as session:
-                cursor = self._cursor(session)
-                if changes:
-                    return plan_changes(cursor, scope or FLEET_SCOPE, changes)
-                return read_policy(cursor)
+            bounds, notes = self._bounds()
+            if changes:
+                return plan_changes(records, scope or FLEET_SCOPE, changes, bounds)
+            return read_policy(records, bounds, notes=notes)
         except FailoverPolicyError as exc:
             raise PlacementError(str(exc)) from None
         except PlacementError:
@@ -880,42 +892,31 @@ class SqlPlacementDirector:
             raise PlacementError("failover policy read unavailable") from None
 
     def set_failover_policy(self, scope: str, changes: Mapping[str, int | None]):
-        """Set (``seconds``) or clear (``None``) `scope`'s settings in one transaction;
-        refused, never clamped, when a value would be refused on load. Returns the policy as
-        it now loads. Never retried: a lost or unknown commit is reported; re-read and decide."""
-        from .failover_policy import FailoverPolicyError, apply_changes
+        """Set (``seconds``) or clear (``None``) `scope`'s settings in one compare-and-set of its
+        ``FAILOVER_POLICY`` record; refused, never clamped, when a value would be refused on
+        load. Returns the policy as it now loads. Never retried: a lost write is
+        :class:`PlacementLost`, an unconfirmed unknown one is reported; re-read and decide."""
+        from .failover_policy import (
+            FailoverPolicyError,
+            FailoverPolicyLost,
+            FailoverPolicyUnknown,
+            apply_changes,
+        )
 
-        sessions = _sessions(self._storage())
-        if sessions is None:
-            raise PlacementError("failover policy write unavailable; nothing written")
-        operation = OperationId(str(uuid.uuid4()))
-        written = []
-
-        def body(tx):
-            written.append(apply_changes(tx.cursor, scope, changes))
-            return Applied(Revision(""), operation)
-
+        records = self._storage()
         try:
-            outcome = sessions.transact(
-                body,
-                operation=operation,
-                expected=ABSENT,
-                passthrough=(FailoverPolicyError, PlacementError),
-            )
+            bounds, _notes = self._bounds()
+            return apply_changes(records, scope, changes, bounds)
+        except FailoverPolicyLost:
+            raise PlacementLost(scope, "", CAS_LOST) from None
+        except FailoverPolicyUnknown as exc:
+            raise PlacementError(str(exc)) from None
         except FailoverPolicyError as exc:
             raise PlacementError(str(exc)) from None
         except PlacementError:
             raise
-        except StorageError:
+        except Exception:  # noqa: BLE001 - a StorageError or anything raw: nothing was written
             raise PlacementError("failover policy write unavailable; nothing written") from None
-        if isinstance(outcome, Conflict):
-            raise PlacementLost(scope, "", "1213 serialization failure")
-        if not isinstance(outcome, Applied):
-            raise PlacementError(
-                "failover policy commit acknowledgment unknown; read it back "
-                "(`bh hq placement policy`) before deciding again"
-            )
-        return written[0]
 
     def release(
         self, prefix: str, *, expected_revision: str, at: float | None = None

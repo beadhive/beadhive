@@ -60,6 +60,7 @@ from .hq_document_validation import (
 )
 from .hq_sql_deadline import flock_until
 from .hq_sql_transport import FnoxBroker, SqlTransportError, connect
+from .hq_storage_composition import runtime_statements
 from .modules.config.domain.ports import (
     FleetConfigDocument,
     FleetConfigSnapshot,
@@ -450,8 +451,7 @@ class SqlFleetConfigRevisionStore:
 
     @staticmethod
     def _head(cursor):
-        cursor.execute("SELECT DOLT_HASHOF('HEAD')")
-        head = cursor.fetchone()[0]
+        head = runtime_statements(cursor).head()
         if not isinstance(head, str) or not head:
             raise SqlConfigError("committed HQ config head unavailable")
         return head
@@ -509,14 +509,10 @@ class SqlFleetConfigRevisionStore:
     @staticmethod
     def _committed(cursor, head, *, validate_semantics=True):
         # Dolt accepts parameterized revision expressions with AS OF. All three
-        # reads use the *captured* immutable hash, never a moving HEAD alias.
-        cursor.execute(
-            "SELECT singleton_id,schema_version,backend_identity,generation,"
-            "publication_sequence,publication_id,documents_sha256,document_count "
-            "FROM hq_config_meta AS OF %s",
-            (head,),
-        )
-        rows = cursor.fetchall()
+        # reads use the *captured* immutable hash, never a moving HEAD alias. The statements
+        # are the HQ storage port's Dolt adapter's (bh-xnn5p), on the caller's transaction.
+        sql = runtime_statements(cursor)
+        rows = sql.config_meta_at(head)
         if len(rows) != 1:
             raise SqlConfigError("HQ config metadata missing or duplicated")
         (singleton, version, backend, generation, sequence, publication_id, digest, count) = rows[0]
@@ -529,23 +525,14 @@ class SqlFleetConfigRevisionStore:
         ):
             raise SqlConfigError("HQ config schema or authority metadata invalid")
         if version == 3:
-            cursor.execute(
-                "SELECT initial_attempt_nonce FROM hq_config_meta AS OF %s WHERE singleton_id=1",
-                (head,),
-            )
-            nonce_row = cursor.fetchone()
+            nonce_row = sql.config_nonce_at(head)
             if nonce_row is None:
                 raise SqlConfigError("HQ config initial arbitration witness missing")
             try:
                 _publication_uuid(nonce_row[0])
             except SqlConfigError:
                 raise SqlConfigError("HQ config initial arbitration witness invalid") from None
-        cursor.execute(
-            "SELECT path,ordinal,kind,content,content_sha256 "
-            "FROM hq_config_documents AS OF %s ORDER BY ordinal",
-            (head,),
-        )
-        raw = cursor.fetchall()
+        raw = sql.config_documents_at(head)
         documents = []
         for ordinal, (path, position, kind, content, content_sha) in enumerate(raw):
             if position != ordinal or kind != _kind(path):
@@ -576,12 +563,7 @@ class SqlFleetConfigRevisionStore:
                 raise SqlConfigError(str(exc)) from None
         if len(documents) != count or _digest(documents) != digest:
             raise SqlConfigError("HQ config publication digest mismatch")
-        cursor.execute(
-            "SELECT publication_sequence,generation,documents_sha256,document_count "
-            "FROM hq_config_publications AS OF %s WHERE publication_id=%s",
-            (head, publication_id),
-        )
-        witness = cursor.fetchone()
+        witness = sql.config_witness_at(head, publication_id)
         if witness != (sequence, generation, digest, count):
             raise SqlConfigError("HQ config publication witness mismatch")
         return backend, generation, sequence, documents, version
@@ -659,10 +641,10 @@ class SqlFleetConfigRevisionStore:
                 or not re.fullmatch(r"[0-9a-v]{32}", bound_head)
             ):
                 return None
-            cursor.execute("SELECT HAS_ANCESTOR(%s,%s)", (current.commit_revision, bound_head))
-            if cursor.fetchone()[0] != 1:
+            sql = runtime_statements(cursor)
+            if sql.has_ancestor(current.commit_revision, bound_head) != 1:
                 return None
-            bound = self.committed_snapshot_at(cursor, bound_head)
+            bound = self.committed_snapshot_at(sql, bound_head)
         except Exception:  # noqa: BLE001 - an unprovable H0 is "not bound": fail closed
             return None
         if (bound.backend_identity, bound.generation, bound.commit_revision) != tuple(crossref):
@@ -746,17 +728,12 @@ class SqlFleetConfigRevisionStore:
             if sequence < prior_sequence or (sequence == prior_sequence and head != prior_head):
                 raise SqlConfigError("HQ configuration rollback or amended head detected")
             if sequence > prior_sequence:
-                cursor.execute("SELECT HAS_ANCESTOR(%s,%s)", (head, prior_head))
-                if cursor.fetchone()[0] != 1:
+                sql = runtime_statements(cursor)
+                if sql.has_ancestor(head, prior_head) != 1:
                     raise SqlConfigError("HQ configuration history fork detected")
                 # The first new witness after the floor must name the exact prior
                 # immutable commit. A gap without its witness is a fork/recovery event.
-                cursor.execute(
-                    "SELECT expected_parent_revision FROM hq_config_publications AS OF %s "
-                    "WHERE publication_sequence=%s",
-                    (head, prior_sequence + 1),
-                )
-                row = cursor.fetchone()
+                row = sql.config_parent_at(head, prior_sequence + 1)
                 if row is None or row[0] != prior_head:
                     raise SqlConfigError("HQ configuration publication ancestry changed")
             body = json.dumps(

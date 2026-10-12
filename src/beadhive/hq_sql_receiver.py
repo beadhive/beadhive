@@ -4,6 +4,13 @@ The observer owns receipt and floor mutations.  Frames only INSERT into their
 operator-routed inbox, and no frame process receives this observer credential.
 Acceptance here is evidence only; dispatch must freshly qualify config and
 authority against the protected receipt at its own read point.
+
+Storage (bh-xnn5p): every statement is the HQ storage port's Dolt adapter's
+(:class:`beadhive_hq_storage_dolt.HqRuntimeStatements` through
+:func:`beadhive.hq_storage_composition.runtime_statements`), and so is the driver error-code
+classification. An acceptance writes the receipt, the floor, the public observation and the
+result -- or the lease CAS and its result -- in ONE transaction that commits together, so it keeps
+its own connection and transaction on that Dolt-only surface; this module holds no SQL.
 """
 
 from __future__ import annotations
@@ -11,6 +18,8 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+
+from beadhive_hq_storage_dolt import CONFLICT_CODES, DUPLICATE_KEY, error_code
 
 from . import hq_authority_enforce
 from . import hq_authority_guard as guard
@@ -27,6 +36,17 @@ from .hq_sql_signatures import (
     verify_registration,
 )
 from .hq_sql_transport import FnoxBroker, SqlTransportError, connect
+from .hq_storage_composition import runtime_statements
+
+
+def _code(exc: BaseException) -> int | None:
+    """The driver error number (the adapter's classification, ``args[0]``)."""
+    return error_code(exc)
+
+
+def _conflict_code(exc: BaseException) -> bool:
+    """A serialization failure or lock-wait timeout (``1213`` / ``1205``)."""
+    return _code(exc) in CONFLICT_CODES
 
 
 class ReceiverError(ValueError):
@@ -96,13 +116,7 @@ class SqlTrustedReceiver:
 
     @staticmethod
     def _routed(cursor, head, principal):
-        cursor.execute(
-            "SELECT principal,frame_id,holder_identity,instance_ref,epoch,"
-            "inbox_table,signer_fingerprint FROM hq_principal_registry AS OF %s "
-            "WHERE principal=%s",
-            (head, principal),
-        )
-        rows = cursor.fetchall()
+        rows = runtime_statements(cursor).route_at(head, principal)
         if len(rows) != 1:
             raise ReceiverError("unprovisioned frame principal")
         route = PrincipalBinding(*rows[0])
@@ -112,11 +126,7 @@ class SqlTrustedReceiver:
 
     @staticmethod
     def _inbox(cursor, route, request_id, kind):
-        cursor.execute(
-            f"SELECT kind,payload,payload_sha256 FROM {route.inbox_table} WHERE request_id=%s",
-            (request_id,),
-        )
-        row = cursor.fetchone()
+        row = runtime_statements(cursor).inbox_request(route.inbox_table, request_id)
         if row is None or row[0] != kind:
             raise ReceiverError("signed frame request unavailable")
         body = row[1]
@@ -153,12 +163,7 @@ class SqlTrustedReceiver:
 
     @staticmethod
     def _read_prior(cursor, prefix):
-        cursor.execute(
-            "SELECT revision,lease_json,request_id,request_sha256 "
-            "FROM hq_live_hive_leases WHERE prefix=%s",
-            (prefix,),
-        )
-        row = cursor.fetchone()
+        row = runtime_statements(cursor).hive_lease(prefix)
         if row is None:
             return "", None, None, None, None
         body = row[1]
@@ -185,12 +190,7 @@ class SqlTrustedReceiver:
         envelope, digest = SqlTrustedReceiver._inbox(cursor, route, request_id, kind)
         verify = verify_hive_request if kind == "hive_lease" else verify_registration
         request, signed_sha = verify(envelope, granted_public_key=public_key)
-        cursor.execute(
-            "SELECT request_sha256,principal,frame_id,holder_identity,instance_ref,"
-            "epoch,signer_fingerprint,result_revision,status FROM hq_live_results "
-            "WHERE request_id=%s",
-            (request_id,),
-        )
+        found = runtime_statements(cursor).accepted_result(request_id)
         expected = (
             request_sha,
             route.principal,
@@ -206,7 +206,7 @@ class SqlTrustedReceiver:
             digest != request_sha
             or signed_sha != request_sha
             or request.get("request_id") != request_id
-            or cursor.fetchone() != expected
+            or found != expected
         ):
             raise ReceiverError("original signed incumbent evidence unavailable")
         return request
@@ -215,13 +215,9 @@ class SqlTrustedReceiver:
     def _bound_registration(cursor, route, record, owner):
         from .host_manifest_contracts import HostManifest
 
-        cursor.execute(
-            "SELECT request_id,request_sha256,manifest_json,signer_fingerprint "
-            "FROM hq_live_registrations WHERE frame_id=%s AND holder_identity=%s "
-            "AND instance_ref=%s AND epoch=%s",
-            (route.frame_id, route.holder_identity, route.instance_ref, route.epoch),
+        row = runtime_statements(cursor).registration(
+            route.frame_id, route.holder_identity, route.instance_ref, route.epoch
         )
-        row = cursor.fetchone()
         if row is None or row[3] != route.signer_fingerprint:
             raise ReceiverError("bound hive adoption requires current signed registration")
         stored_body = row[2].tobytes() if isinstance(row[2], memoryview) else row[2]
@@ -272,13 +268,12 @@ class SqlTrustedReceiver:
         route = ctx["route"]
         try:
             with connection.cursor() as cursor:
-                cursor.execute("START TRANSACTION")
-                cursor.execute("SELECT 1 FROM hq_live_results WHERE request_id=%s", (request_id,))
-                if cursor.fetchone() is not None:
+                sql = runtime_statements(cursor)
+                sql.begin()
+                if sql.result_exists(request_id):
                     connection.rollback()
                     return
-                cursor.execute(
-                    "INSERT INTO hq_live_results VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                sql.insert_result(
                     (
                         request_id,
                         request_sha,
@@ -317,8 +312,8 @@ class SqlTrustedReceiver:
         reject_ctx: dict = {}
         try:
             with connection.cursor() as cursor:
-                cursor.execute("SELECT CURRENT_USER(),DATABASE(),ACTIVE_BRANCH(),DOLT_VERSION()")
-                user, database, branch, version = cursor.fetchone()
+                sql = runtime_statements(cursor)
+                user, database, branch, version = sql.identity()
                 observer = self.settings["observer"]
                 if (
                     not user.startswith(observer["user"] + "@")
@@ -327,13 +322,12 @@ class SqlTrustedReceiver:
                     or version != "2.3.5"
                 ):
                     raise ReceiverError("trusted observer principal or endpoint mismatch")
-                cursor.execute("START TRANSACTION")
-                cursor.execute("SELECT DOLT_HASHOF('HEAD')")
-                head = cursor.fetchone()[0]
+                sql.begin()
+                head = sql.head()
                 state, crossref, policies = self.authority.verified_state_at(
-                    cursor, head, deadline=deadline
+                    sql, head, deadline=deadline
                 )
-                route = self._routed(cursor, head, principal)
+                route = self._routed(sql, head, principal)
                 entry = state.get("frames", {}).get(route.frame_id)
                 record = entry.get("active") if entry else None
                 if record is None:
@@ -346,7 +340,7 @@ class SqlTrustedReceiver:
                     or authority["key_fingerprint"] != route.signer_fingerprint
                 ):
                     raise ReceiverError("routed principal differs from active grant")
-                envelope, request_sha = self._inbox(cursor, route, request_id, "hive_lease")
+                envelope, request_sha = self._inbox(sql, route, request_id, "hive_lease")
                 request, signed_sha = verify_hive_request(
                     envelope, granted_public_key=record["public_key"]
                 )
@@ -402,15 +396,9 @@ class SqlTrustedReceiver:
                 lease = self._lease_record(request["lease"])
                 prefix = request["prefix"]
                 old_revision, old_authority, old_lease, old_request_id, old_request_sha = (
-                    self._read_prior(cursor, prefix)
+                    self._read_prior(sql, prefix)
                 )
-                cursor.execute(
-                    "SELECT request_sha256,principal,frame_id,holder_identity,instance_ref,"
-                    "epoch,audience,signer_fingerprint,expected_revision,result_revision,status "
-                    "FROM hq_live_results WHERE request_id=%s",
-                    (request_id,),
-                )
-                prior_result = cursor.fetchone()
+                prior_result = sql.result(request_id)
                 if prior_result is not None:
                     if (
                         prior_result[:9]
@@ -457,7 +445,7 @@ class SqlTrustedReceiver:
                         raise ReceiverError("release requires exact incumbent incarnation/epoch")
                 else:
                     snapshot, config_head = self.authority.bound_config_at(
-                        cursor,
+                        sql,
                         crossref,
                         policies=policies,
                         valid_until=state["expires_at"],
@@ -496,21 +484,12 @@ class SqlTrustedReceiver:
                         or _parse_stamp(lease.expires_at) > now + 86400
                     ):
                         raise ReceiverError("frame not authorized for hive lease")
-                    cursor.execute(
-                        "SELECT sequence,digest,first_seen FROM hq_live_floors "
-                        "WHERE frame_id=%s AND holder_identity=%s AND epoch=%s",
-                        (route.frame_id, route.holder_identity, route.epoch),
-                    )
-                    floor = cursor.fetchone()
+                    floor = sql.floor(route.frame_id, route.holder_identity, route.epoch)
                     if floor is None or floor[0] < 1 or floor[2] is None:
                         raise ReceiverError("current accepted heartbeat floor unavailable")
-                    cursor.execute(
-                        "SELECT lease_json,envelope_json,first_seen FROM hq_live_receipts "
-                        "WHERE frame_id=%s AND holder_identity=%s AND epoch=%s "
-                        "AND sequence=%s AND digest=%s",
-                        (route.frame_id, route.holder_identity, route.epoch, floor[0], floor[1]),
+                    receipt = sql.receipt(
+                        route.frame_id, route.holder_identity, route.epoch, floor[0], floor[1]
                     )
-                    receipt = cursor.fetchone()
                     if receipt is None or receipt[2] != floor[2]:
                         raise ReceiverError("current protected heartbeat receipt unavailable")
                     envelope_body = receipt[1]
@@ -541,7 +520,7 @@ class SqlTrustedReceiver:
                         )
                     ):
                         old_request = self._accepted_prior_request(
-                            cursor,
+                            sql,
                             route,
                             old_request_id,
                             old_request_sha,
@@ -583,7 +562,7 @@ class SqlTrustedReceiver:
                     ):
                         raise ReceiverError("hive lease requires fresh conformant receipt")
                     if operation == "adopt" and authority.get("beadyard_id") is not None:
-                        self._bound_registration(cursor, route, record, authority["beadyard_id"])
+                        self._bound_registration(sql, route, record, authority["beadyard_id"])
                     caps = record["desired"]["caps"]
                     if type(caps.get("max_sessions")) is not int or caps["max_sessions"] <= 0:
                         raise ReceiverError("no frame intake capacity")
@@ -619,32 +598,20 @@ class SqlTrustedReceiver:
                                 raise ReceiverError("live emergency incumbent is not evictable")
                             if incumbent["state"] not in {"retired", "quarantined"}:
                                 former_authority = incumbent["authority"]
-                                cursor.execute(
-                                    "SELECT sequence,digest,first_seen FROM hq_live_floors "
-                                    "WHERE frame_id=%s AND holder_identity=%s AND epoch=%s",
-                                    (
-                                        old_authority["frame_id"],
-                                        former_authority["holder_identity"],
-                                        former_authority["epoch"],
-                                    ),
+                                former_floor = sql.floor(
+                                    old_authority["frame_id"],
+                                    former_authority["holder_identity"],
+                                    former_authority["epoch"],
                                 )
-                                former_floor = cursor.fetchone()
                                 if former_floor is None or former_floor[0] < 1:
                                     raise ReceiverError("live incumbent has no accepted receipt")
-                                cursor.execute(
-                                    "SELECT first_seen,lease_json,envelope_json "
-                                    "FROM hq_live_receipts "
-                                    "WHERE frame_id=%s AND holder_identity=%s AND epoch=%s "
-                                    "AND sequence=%s AND digest=%s",
-                                    (
-                                        old_authority["frame_id"],
-                                        former_authority["holder_identity"],
-                                        former_authority["epoch"],
-                                        former_floor[0],
-                                        former_floor[1],
-                                    ),
+                                former_beat = sql.receipt_seen(
+                                    old_authority["frame_id"],
+                                    former_authority["holder_identity"],
+                                    former_authority["epoch"],
+                                    former_floor[0],
+                                    former_floor[1],
                                 )
-                                former_beat = cursor.fetchone()
                                 if former_beat is None or former_beat[0] != former_floor[2]:
                                     raise ReceiverError("live incumbent receipt floor mismatch")
                                 prior_envelope = former_beat[2]
@@ -679,21 +646,14 @@ class SqlTrustedReceiver:
                 revision = hashlib.sha256(canonical(request)).hexdigest()
                 lease_body = canonical({"authority": identity, "lease": lease.to_record()})
                 if old_revision:
-                    cursor.execute(
-                        "UPDATE hq_live_hive_leases SET revision=%s,lease_json=%s,"
-                        "request_id=%s,request_sha256=%s "
-                        "WHERE prefix=%s AND revision=%s",
-                        (revision, lease_body, request_id, request_sha, prefix, old_revision),
+                    written = sql.update_hive_lease(
+                        (revision, lease_body, request_id, request_sha, prefix, old_revision)
                     )
-                    if cursor.rowcount != 1:
+                    if written != 1:
                         raise ReceiverError("protected hive lease CAS conflict")
                 else:
-                    cursor.execute(
-                        "INSERT INTO hq_live_hive_leases VALUES (%s,%s,%s,%s,%s)",
-                        (prefix, revision, lease_body, request_id, request_sha),
-                    )
-                cursor.execute(
-                    "INSERT INTO hq_live_results VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    sql.insert_hive_lease((prefix, revision, lease_body, request_id, request_sha))
+                sql.insert_result(
                     (
                         request_id,
                         request_sha,
@@ -733,8 +693,8 @@ class SqlTrustedReceiver:
         except Exception as exc:
             if not crossed_commit:
                 connection.rollback()
-                if getattr(exc, "args", (None,))[0] in (1213, 1205, 1062):
-                    if getattr(exc, "args", (None,))[0] == 1062:
+                if _conflict_code(exc) or _code(exc) == DUPLICATE_KEY:
+                    if _code(exc) == DUPLICATE_KEY:
                         self._record_rejection(
                             connection, request_id, request_sha, reject_ctx, "cas_conflict"
                         )
@@ -755,8 +715,8 @@ class SqlTrustedReceiver:
         request_sha = ""
         try:
             with connection.cursor() as cursor:
-                cursor.execute("SELECT CURRENT_USER(),DATABASE(),ACTIVE_BRANCH(),DOLT_VERSION()")
-                user, database, branch, version = cursor.fetchone()
+                sql = runtime_statements(cursor)
+                user, database, branch, version = sql.identity()
                 observer = self.settings["observer"]
                 if (
                     not user.startswith(observer["user"] + "@")
@@ -765,13 +725,12 @@ class SqlTrustedReceiver:
                     or version != "2.3.5"
                 ):
                     raise ReceiverError("trusted registration observer mismatch")
-                cursor.execute("START TRANSACTION")
-                cursor.execute("SELECT DOLT_HASHOF('HEAD')")
-                head = cursor.fetchone()[0]
+                sql.begin()
+                head = sql.head()
                 state, crossref, policies = self.authority.verified_state_at(
-                    cursor, head, deadline=deadline
+                    sql, head, deadline=deadline
                 )
-                route = self._routed(cursor, head, principal)
+                route = self._routed(sql, head, principal)
                 entry = state.get("frames", {}).get(route.frame_id)
                 record = (entry or {}).get("candidate") or (entry or {}).get("active")
                 if record is None or record["state"] == "retired":
@@ -784,7 +743,7 @@ class SqlTrustedReceiver:
                     or authority["key_fingerprint"] != route.signer_fingerprint
                 ):
                     raise ReceiverError("registration principal differs from grant")
-                envelope, request_sha = self._inbox(cursor, route, request_id, "registration")
+                envelope, request_sha = self._inbox(sql, route, request_id, "registration")
                 request, signed_sha = verify_registration(
                     envelope, granted_public_key=record["public_key"]
                 )
@@ -843,7 +802,7 @@ class SqlTrustedReceiver:
                 ):
                     raise ReceiverError("registration differs from declared desired frame")
                 snapshot, config_head = self.authority.bound_config_at(
-                    cursor,
+                    sql,
                     crossref,
                     policies=policies,
                     valid_until=state["expires_at"],
@@ -867,13 +826,9 @@ class SqlTrustedReceiver:
                 canonical_manifest = HostManifest.model_validate(raw)
                 if canonical_manifest != manifest:
                     raise ReceiverError("registration differs from committed host manifest")
-                cursor.execute(
-                    "SELECT request_id,request_sha256,manifest_json,signer_fingerprint "
-                    "FROM hq_live_registrations "
-                    "WHERE frame_id=%s AND holder_identity=%s AND instance_ref=%s AND epoch=%s",
-                    (route.frame_id, route.holder_identity, route.instance_ref, route.epoch),
+                prior = sql.registration(
+                    route.frame_id, route.holder_identity, route.instance_ref, route.epoch
                 )
-                prior = cursor.fetchone()
                 manifest_body = canonical(manifest.model_dump(mode="json", exclude_none=True))
                 legacy_upgrade = False
                 if prior is not None:
@@ -904,7 +859,7 @@ class SqlTrustedReceiver:
                             "registration incarnation already has different evidence"
                         )
                     original = self._accepted_prior_request(
-                        cursor,
+                        sql,
                         route,
                         prior[0],
                         prior[1],
@@ -930,12 +885,7 @@ class SqlTrustedReceiver:
                 self.authority.fresh_runtime_head_fence(head, deadline=deadline)
                 now = self.clock()
                 if legacy_upgrade:
-                    cursor.execute(
-                        "UPDATE hq_live_registrations SET request_id=%s,request_sha256=%s,"
-                        "manifest_json=%s,accepted_at=%s WHERE frame_id=%s "
-                        "AND holder_identity=%s AND instance_ref=%s AND epoch=%s "
-                        "AND request_id=%s AND request_sha256=%s AND manifest_json=%s "
-                        "AND signer_fingerprint=%s",
+                    written = sql.update_registration(
                         (
                             request_id,
                             request_sha,
@@ -949,13 +899,12 @@ class SqlTrustedReceiver:
                             prior[1],
                             prior_body,
                             route.signer_fingerprint,
-                        ),
+                        )
                     )
-                    if cursor.rowcount != 1:
+                    if written != 1:
                         raise ReceiverError("original registration row CAS conflict")
                 else:
-                    cursor.execute(
-                        "INSERT INTO hq_live_registrations VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    sql.insert_registration(
                         (
                             route.frame_id,
                             route.holder_identity,
@@ -968,8 +917,7 @@ class SqlTrustedReceiver:
                             route.signer_fingerprint,
                         ),
                     )
-                cursor.execute(
-                    "INSERT INTO hq_live_results VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                sql.insert_result(
                     (
                         request_id,
                         request_sha,
@@ -1035,8 +983,8 @@ class SqlTrustedReceiver:
         connection, deadline = self._open()
         try:
             with connection.cursor() as cursor:
-                cursor.execute("SELECT CURRENT_USER(),DATABASE(),ACTIVE_BRANCH(),DOLT_VERSION()")
-                user, database, branch, version = cursor.fetchone()
+                sql = runtime_statements(cursor)
+                user, database, branch, version = sql.identity()
                 binding = self.settings["observer"]
                 if (
                     not user.startswith(binding["user"] + "@")
@@ -1045,13 +993,7 @@ class SqlTrustedReceiver:
                     or version != "2.3.5"
                 ):
                     raise ReceiverError("trusted observer recovery endpoint mismatch")
-                cursor.execute(
-                    "SELECT request_sha256,principal,frame_id,holder_identity,instance_ref,"
-                    "epoch,audience,signer_fingerprint,expected_revision,result_revision,status "
-                    "FROM hq_live_results WHERE request_id=%s",
-                    (request_id,),
-                )
-                result = cursor.fetchone()
+                result = sql.result(request_id)
                 if (
                     result is None
                     or result[:9]
@@ -1088,9 +1030,9 @@ class SqlTrustedReceiver:
         request_sha = ""
         try:
             with connection.cursor() as cursor:
+                sql = runtime_statements(cursor)
                 binding = self.settings["observer"]
-                cursor.execute("SELECT CURRENT_USER(),DATABASE(),ACTIVE_BRANCH(),DOLT_VERSION()")
-                user, database, branch, version = cursor.fetchone()
+                user, database, branch, version = sql.identity()
                 if (
                     not user.startswith(binding["user"] + "@")
                     or database != binding["database"]
@@ -1098,17 +1040,10 @@ class SqlTrustedReceiver:
                     or version != "2.3.5"
                 ):
                     raise ReceiverError("trusted observer principal or endpoint mismatch")
-                cursor.execute("START TRANSACTION")
-                cursor.execute("SELECT DOLT_HASHOF('HEAD')")
-                head = cursor.fetchone()[0]
-                state, _, _ = self.authority.verified_state_at(cursor, head, deadline=deadline)
-                cursor.execute(
-                    "SELECT principal,frame_id,holder_identity,instance_ref,epoch,"
-                    "inbox_table,signer_fingerprint FROM hq_principal_registry AS OF %s "
-                    "WHERE principal=%s",
-                    (head, principal),
-                )
-                rows = cursor.fetchall()
+                sql.begin()
+                head = sql.head()
+                state, _, _ = self.authority.verified_state_at(sql, head, deadline=deadline)
+                rows = sql.route_at(head, principal)
                 if len(rows) != 1:
                     raise ReceiverError("unprovisioned frame principal")
                 routed = PrincipalBinding(*rows[0])
@@ -1129,12 +1064,7 @@ class SqlTrustedReceiver:
                 record = matching[0]
                 if record["state"] == "retired":
                     raise ReceiverError("retired incarnation cannot publish evidence")
-                cursor.execute(
-                    f"SELECT kind,payload,payload_sha256 FROM {routed.inbox_table} "
-                    "WHERE request_id=%s",
-                    (request_id,),
-                )
-                inbox = cursor.fetchone()
+                inbox = sql.inbox_request(routed.inbox_table, request_id)
                 if inbox is None or inbox[0] != "heartbeat":
                     raise ReceiverError("heartbeat request unavailable")
                 body = inbox[1]
@@ -1163,13 +1093,7 @@ class SqlTrustedReceiver:
                 age = now - lease.observed_at
                 if age < -30 or age >= lease.leaseDurationSeconds:
                     raise ReceiverError("heartbeat first observation expired or future-skewed")
-                cursor.execute(
-                    "SELECT request_sha256,principal,frame_id,holder_identity,instance_ref,"
-                    "epoch,audience,signer_fingerprint,expected_revision,result_revision,status "
-                    "FROM hq_live_results WHERE request_id=%s",
-                    (request_id,),
-                )
-                result = cursor.fetchone()
+                result = sql.result(request_id)
                 if result is not None:
                     if result != (
                         request_sha,
@@ -1187,12 +1111,7 @@ class SqlTrustedReceiver:
                         raise ReceiverError("request ID was reused or accepted meaning changed")
                     connection.rollback()
                     return digest
-                cursor.execute(
-                    "SELECT sequence,digest,first_seen FROM hq_live_floors "
-                    "WHERE frame_id=%s AND holder_identity=%s AND epoch=%s",
-                    (routed.frame_id, routed.holder_identity, routed.epoch),
-                )
-                floor = cursor.fetchone()
+                floor = sql.floor(routed.frame_id, routed.holder_identity, routed.epoch)
                 if floor is None:
                     raise ReceiverError("protected observer floor was not provisioned")
                 previous_seq, previous_digest, _ = floor
@@ -1200,11 +1119,7 @@ class SqlTrustedReceiver:
                     raise ReceiverError("heartbeat replays protected accepted floor")
                 if time.monotonic() >= deadline:
                     raise ReceiverError("trusted receiver deadline exceeded")
-                cursor.execute(
-                    "INSERT INTO hq_live_receipts "
-                    "(frame_id,holder_identity,epoch,sequence,digest,first_seen,"
-                    "lease_json,envelope_json,signer_fingerprint) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                sql.insert_receipt(
                     (
                         routed.frame_id,
                         routed.holder_identity,
@@ -1217,10 +1132,7 @@ class SqlTrustedReceiver:
                         routed.signer_fingerprint,
                     ),
                 )
-                cursor.execute(
-                    "UPDATE hq_live_floors SET sequence=%s,digest=%s,first_seen=%s "
-                    "WHERE frame_id=%s AND holder_identity=%s AND epoch=%s AND sequence=%s "
-                    "AND digest=%s",
+                floor_written = sql.update_floor(
                     (
                         lease.seq,
                         digest,
@@ -1232,12 +1144,10 @@ class SqlTrustedReceiver:
                         previous_digest,
                     ),
                 )
-                if cursor.rowcount != 1:
+                if floor_written != 1:
                     raise ReceiverError("protected observer floor CAS conflict")
                 if previous_seq == 0:
-                    cursor.execute(
-                        "INSERT INTO hq_live_public_observations VALUES "
-                        "(%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    sql.insert_public_observation(
                         (
                             routed.frame_id,
                             routed.holder_identity,
@@ -1251,11 +1161,7 @@ class SqlTrustedReceiver:
                         ),
                     )
                 else:
-                    cursor.execute(
-                        "UPDATE hq_live_public_observations SET sequence=%s,digest=%s,"
-                        "accepted_until=%s,lease_json=%s,envelope_json=%s,signer_fingerprint=%s "
-                        "WHERE frame_id=%s AND holder_identity=%s AND epoch=%s "
-                        "AND sequence=%s AND digest=%s",
+                    written = sql.update_public_observation(
                         (
                             lease.seq,
                             digest,
@@ -1270,10 +1176,9 @@ class SqlTrustedReceiver:
                             previous_digest,
                         ),
                     )
-                    if cursor.rowcount != 1:
+                    if written != 1:
                         raise ReceiverError("public observation CAS differs from protected floor")
-                cursor.execute(
-                    "INSERT INTO hq_live_results VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                sql.insert_result(
                     (
                         request_id,
                         request_sha,
@@ -1306,10 +1211,10 @@ class SqlTrustedReceiver:
         except Exception as exc:
             if not crossed_commit:
                 connection.rollback()
-                if getattr(exc, "args", (None,))[0] in (1213, 1205):
+                if _conflict_code(exc):
                     raise ReceiverError("protected observer floor CAS conflict") from None
                 raise ReceiverError("trusted observer acceptance unavailable") from None
-            if getattr(exc, "args", (None,))[0] in (1213, 1205):
+            if _conflict_code(exc):
                 raise ReceiverError("protected observer floor CAS conflict") from None
             raise ReceiverUnknown(request_id, request_sha) from None
         finally:
