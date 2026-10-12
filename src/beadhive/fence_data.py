@@ -55,12 +55,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from beadhive_hq_storage import (
+    BumpOutcome,
     BumpRequest,
     EpochFloor,
     LookupOutcome,
     OperationId,
     Outcome,
-    Revision,
     StorageUnavailable,
     SyncReport,
 )
@@ -706,7 +706,7 @@ class FenceNode:
     def guard_conformance(self) -> PortGuardReport:
         return self.fence.guard_conformance()
 
-    def commit_bump(self, bump: BumpRequest) -> Revision:
+    def commit_bump(self, bump: BumpRequest) -> BumpOutcome:
         return self.fence.commit_bump(bump)
 
     def push(self) -> Outcome:

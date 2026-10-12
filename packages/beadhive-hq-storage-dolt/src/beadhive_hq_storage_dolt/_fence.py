@@ -23,6 +23,7 @@ from beadhive_hq_storage import (
     ABSENT,
     Absent,
     Applied,
+    BumpOutcome,
     BumpRequest,
     Confirmed,
     Conflict,
@@ -65,7 +66,8 @@ class FenceStatementEngine(Protocol):
     ``query`` returns rows as dicts; ``execute`` runs a statement batch; ``commit`` commits the
     working set (``False``: nothing to commit); ``push`` returns ``False`` on a non-fast-forward
     and raises when the remote could not be reached. Any raise from ``query`` / ``execute`` /
-    ``fetch`` / ``reset_to_remote`` means the operation did not happen."""
+    ``fetch`` / ``reset_to_remote`` means the operation did not happen; a raise from ``commit``
+    or ``push`` may follow a landed commit, so the fence reports those as ``Unknown``."""
 
     def query(self, sql: str) -> list[dict]: ...
 
@@ -268,7 +270,12 @@ class DoltHiveFence:
             expected=len(self._guards), present=len(self._guards) - len(missing), missing=missing
         )
 
-    def commit_bump(self, bump: BumpRequest) -> Revision:
+    def commit_bump(self, bump: BumpRequest) -> BumpOutcome:
+        """The bump as ONE local commit. Refusals (``InvalidRequest``, ``NotProvisioned``,
+        ``IntegrityViolation``) and a failed statement batch (``StorageUnavailable``) commit
+        nothing. Once the engine's commit is called the bump may exist, so a raise from it, or
+        from the head read after it, is ``Unknown`` with the pre-bump head as ``expected``
+        (bh-xxkf7.6): the caller pushes and resolves it with ``lookup_bump``, never re-issues."""
         if not isinstance(bump, BumpRequest):
             raise InvalidRequest("commit_bump takes a BumpRequest")
         check_key(bump.frame, "frame")
@@ -287,18 +294,31 @@ class DoltHiveFence:
         floor = max(self._history_max(), writer.epoch)
         if bump.epoch <= floor:
             raise IntegrityViolation(f"epoch {bump.epoch} does not exceed the floor {floor}")
+        prior = self._head()  # Unknown's ``expected``: read before anything is sent
         message = f"{schema.ADOPT_COMMIT_PREFIX}{bump.frame}@{bump.epoch}"
         try:
             self._engine.execute(statements)
-            committed = self._engine.commit(message)
-        except Exception:  # noqa: BLE001 - a local commit: discard any partial working set
+        except Exception:  # noqa: BLE001 - the working set only: nothing committed
             self._discard(bump.reclaim is not None)
             raise StorageUnavailable(
                 f"bump to epoch {bump.epoch} failed; nothing committed"
             ) from None
+        try:
+            committed = self._engine.commit(message)
+        except Exception as exc:  # noqa: BLE001 - the commit point: its fate is unknown
+            self._discard(bump.reclaim is not None)  # a no-op when the commit landed
+            reason = unknown_reason(exc, deadline=self._deadline)
+            return Unknown(bump.operation, prior, reason)
         if not committed:
             raise IntegrityViolation(f"bump to epoch {bump.epoch} changed nothing")
-        return self._head()
+        try:
+            head = _scalar(self._engine.query("SELECT DOLT_HASHOF('HEAD') AS h"))
+        except Exception as exc:  # noqa: BLE001 - after the commit point (bh-xxkf7.6)
+            reason = "deadline" if is_deadline(exc, self._deadline) else "transport"
+            return Unknown(bump.operation, prior, reason)
+        if head in (None, "") or Revision(str(head)) == prior:
+            return Unknown(bump.operation, prior, "transport")
+        return Applied(Revision(str(head)), bump.operation)
 
     def _discard(self, reclaimed: bool) -> None:
         tables = [*schema.FENCE_TABLES, *(("issues", "labels", "comments") if reclaimed else ())]

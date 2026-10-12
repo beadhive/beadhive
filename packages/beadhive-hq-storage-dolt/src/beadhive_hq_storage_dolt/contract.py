@@ -379,8 +379,9 @@ class _FaultingConnection:
 
 
 class _FaultingEngine:
-    """Wrap a fence engine: ``push`` is the commit point; an armed ``unavailable`` fails the
-    first statement batch or push."""
+    """Wrap a fence engine: ``commit`` and ``push`` are the commit points; an armed
+    ``unavailable`` fails the first statement batch or push, an armed ``unknown`` the commit or
+    push (after or instead of the real one, as the fault says)."""
 
     def __init__(self, engine: SqlConnectionFenceEngine, plan: FaultPlan) -> None:
         self._engine = engine
@@ -390,6 +391,12 @@ class _FaultingEngine:
         if self._plan.take("unavailable") is not None:
             raise InjectedFault(2003, "injected: engine unavailable")
         self._engine.execute(statements)
+
+    def commit(self, message: str) -> bool:
+        fault = self._plan.take("unknown")
+        if fault is not None:
+            _fire(fault, lambda: self._engine.commit(message), lambda: None)
+        return self._engine.commit(message)
 
     def push(self) -> bool:
         if self._plan.take("unavailable") is not None:
@@ -623,11 +630,13 @@ class DoltFenceHarness:
             engine = SqlConnectionFenceEngine(lambda: self.server.connect(peer_db))
             self._peer = DoltHiveFence(engine, guards=FENCE_GUARDS)
         self._peer.sync_to_remote()
-        head = self._peer.commit_bump(bump)
+        committed = self._peer.commit_bump(bump)
+        if committed.__class__.__name__ != "Applied":
+            raise RuntimeError(f"competing bump commit failed: {committed!r}")
         pushed = self._peer.push()
         if pushed.__class__.__name__ != "Applied":
             raise RuntimeError(f"competing bump push failed: {pushed!r}")
-        return head
+        return committed.revision  # type: ignore[union-attr]
 
     def inject_unknown(self, method: str, reason: UnknownReason, *, applied: bool) -> None:
         self.faults.arm_unknown(method, reason, applied=applied)

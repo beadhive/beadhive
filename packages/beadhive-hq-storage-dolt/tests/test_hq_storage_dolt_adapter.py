@@ -38,6 +38,7 @@ from beadhive_hq_storage import (
     StorageUnavailable,
     StreamKind,
     Unknown,
+    WriterRow,
     new_operation_id,
     require_capability,
 )
@@ -63,12 +64,14 @@ from beadhive_hq_storage_dolt import (
     placement_witness,
     unknown_reason,
 )
+from beadhive_hq_storage_dolt._fence import SqlConnectionFenceEngine
 from beadhive_hq_storage_dolt._placement import (
     decode_placement,
     encode_placement,
     placement_witnessed,
 )
 from beadhive_hq_storage_dolt.contract import (
+    FENCE_GUARDS,
     DoltFenceHarness,
     DoltHqHarness,
     DoltSqlServer,
@@ -311,8 +314,12 @@ def test_accounts_create_grant_and_report(server: DoltSqlServer) -> None:
 def test_history_and_merge_capabilities_over_a_fence(server: DoltSqlServer) -> None:
     hive = DoltFenceHarness(server)
     fence: DoltHiveFence = hive.fence_adapter
-    first = fence.commit_bump(BumpRequest("frame-a", 1, "rev-a-1", new_operation_id()))
-    second = fence.commit_bump(BumpRequest("frame-b", 2, "rev-b-2", new_operation_id()))
+    bumped = [
+        fence.commit_bump(BumpRequest(frame, epoch, f"rev-{epoch}", new_operation_id()))
+        for frame, epoch in (("frame-a", 1), ("frame-b", 2))
+    ]
+    assert all(isinstance(out, Applied) for out in bumped)
+    first, second = (out.revision for out in bumped)  # type: ignore[union-attr]
     history = require_capability(fence, DoltHistory)
     assert history.head() == second
     log = history.log(second, limit=2)
@@ -854,3 +861,43 @@ def test_a_config_publication_issues_no_post_commit_read_that_could_misclassify(
     out = _publish(db, parent, op)
     assert isinstance(out, Applied)  # never StorageUnavailable once DOLT_COMMIT has landed
     assert isinstance(db.history.lookup_publication(op, expected_head=Revision(parent)), Confirmed)
+
+
+@dolt
+@pytest.mark.integration
+@pytest.mark.dolt_server
+def test_a_failed_post_commit_head_read_in_commit_bump_is_unknown_then_confirmed(
+    server: DoltSqlServer,
+) -> None:
+    """bh-xxkf7.6: the bump commits, then the head read after it loses the connection. That
+    is ``Unknown`` (never ``StorageUnavailable``, which would mean nothing was committed);
+    re-issuing the bump would hit the epoch floor; a push plus ``lookup_bump`` under the same
+    operation resolves it."""
+    hive = DoltFenceHarness(server)
+
+    def raw() -> Any:
+        return server.connect(hive.database)
+
+    class _ReadbackLost(SqlConnectionFenceEngine):
+        def commit(self, message: str) -> bool:
+            committed = super().commit(message)
+            self._connect = lambda: _FailingOn(raw(), "DOLT_HASHOF('HEAD')")
+            return committed
+
+    fence = DoltHiveFence(_ReadbackLost(raw), guards=FENCE_GUARDS)
+    before = Revision(_head(server, hive.database))
+    bump = BumpRequest("frame-a", 1, "rev-a-1", new_operation_id())
+    out = fence.commit_bump(bump)
+    assert isinstance(out, Unknown)
+    assert (out.operation, out.expected, out.reason) == (bump.operation, before, "transport")
+    assert _head(server, hive.database) != before  # the bump really committed
+    healthy = DoltHiveFence(SqlConnectionFenceEngine(raw), guards=FENCE_GUARDS)
+    assert healthy.writer() == WriterRow("frame-a", 1, "rev-a-1")
+    with pytest.raises(IntegrityViolation):  # why the bump must never be re-issued
+        healthy.commit_bump(bump)
+    assert healthy.lookup_bump("frame-a", 1, operation=bump.operation) == NotConfirmed(
+        bump.operation
+    )
+    assert isinstance(healthy.push(), Applied)
+    found = healthy.lookup_bump("frame-a", 1, operation=bump.operation)
+    assert isinstance(found, Confirmed) and found.revision == _head(server, hive.database)
