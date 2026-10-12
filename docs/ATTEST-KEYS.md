@@ -31,6 +31,17 @@ a re-check. Unset
 `uv run python scripts/check_attest_catalog.py --live-catalog -`, which compares the live keys
 and `just attest-<name>` commands against the justfile recipes, `KEY_RECIPES` and the table below.
 
+### Accepting per-key proof at the push hook
+
+`work.gate.push.accept_attested_green` (default `false`; per hive or global) lets the
+`push-main` pre-push hook accept the exact pushed tree when
+`selective_validation.attested_green(..., "push-main")` holds: every active key is current or
+carried at that tree, none is red, the catalog has not drifted and `work.always_run` passes. The
+hook then exits 0 and prints each key's state. An absent or red key, drift, or any error falls
+through to the existing path unchanged: the aggregate `work.validate.push-main` lookup, then the
+full gate in `scripts/main-push-gate.sh`. With the flag off, nothing here runs and the hook behaves
+as before. The hook file holds no logic; the decision lives in `prepush.check_push_main`.
+
 | Key | Opaque command | Pants selector | Covers |
 |---|---|---|---|
 | `docs` | `just attest-docs` | `attest:docs` | Markdown lint |
