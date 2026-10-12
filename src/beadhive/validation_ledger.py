@@ -882,6 +882,10 @@ def green_verdict(entry, rev: str, cmd: str, ttl: int | None = None, cfg=None) -
     return hit
 
 
+# Public consumer seam: the aggregate predicate must run the same always-run set a hit does.
+always_run_ok = _always_run_ok
+
+
 def carry_key_verdict(
     entry,
     key: AttestKey,
