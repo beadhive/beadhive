@@ -59,10 +59,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+from beadhive_hq_storage import StorageUnavailable, require_capability
+from beadhive_hq_storage_dolt import DoltHistory, DoltMerge
+
 from . import fence_audit as audit_mod
 from . import fence_schema
-from .fence_data import FenceError, FenceNode, GuardReport, SqlFailed
-from .fence_schema import LOCAL_IDENT_TABLE, TRIGGER_COUNT, quote
+from .fence_data import FenceError, FenceNode, GuardReport
+from .fence_schema import LOCAL_IDENT_TABLE, TRIGGER_COUNT
 from .host_lease_contracts import EpochFence
 from .writer_adopt import DataUnreachable, PlacementView, WriterRow
 
@@ -379,23 +382,17 @@ def unpublished_local(node: FenceNode) -> list[str]:
 
     Fetches first. Lists dirty working-set tables (bd's clone-local ``metadata`` excepted) and
     local ``main`` commits the remote head does not have."""
+    history, merge = _history(node), _merge(node)  # refused before any I/O
     node.fetch()
     out: list[str] = []
-    dirty = sorted(
-        {
-            str(r.get("table_name", ""))
-            for r in node.query("SELECT table_name FROM dolt_status")
-            if str(r.get("table_name", "")) not in _CLONE_LOCAL_TABLES
-            and not str(r.get("table_name", "")).startswith("bh_local_")
-        }
-    )
+    dirty = [
+        table
+        for table in merge.dirty_tables()
+        if table not in _CLONE_LOCAL_TABLES and not table.startswith("bh_local_")
+    ]
     if dirty:
         out.append(f"uncommitted changes in {', '.join(dirty)}")
-    remote = quote(f"{node.remote}/{node.branch}")
-    rows = node.query(
-        f"SELECT COUNT(*) AS n FROM dolt_log({quote(node.branch)}, '--not', {remote})"
-    )
-    ahead = int(next(iter(rows[0].values())) or 0) if rows else 0
+    ahead = history.ahead(node.branch, f"{node.remote}/{node.branch}")
     if ahead:
         out.append(f"{ahead} local commit(s) on {node.branch} not on {node.remote}/{node.branch}")
     return out
@@ -411,42 +408,30 @@ def _require_published(node: FenceNode, prefix: str, step: str) -> None:
         )
 
 
+def _history(node: FenceNode) -> DoltHistory:
+    return require_capability(node, DoltHistory)
+
+
+def _merge(node: FenceNode) -> DoltMerge:
+    return require_capability(node, DoltMerge)
+
+
 def _head(node: FenceNode) -> str:
-    rows = node.query("SELECT hashof('HEAD') AS h")
-    return str(next(iter(rows[0].values()))) if rows else ""
-
-
-def _drop_ident(node: FenceNode) -> bool:
-    had = node.ident() is not None
-    node.engine.execute(fence_schema.drop_ident_statements())
-    return had
-
-
-def _guard_passes(node: FenceNode) -> str | None:
-    """``None`` when this node's guard accepts it as the writer (``CALL bh_guard_check()``,
-    which reads and writes nothing else), else the refusal."""
-    try:
-        node.engine.execute([f"CALL {fence_schema.GUARD_PROCEDURE}()"])
-    except SqlFailed as exc:
-        return str(exc)
-    return None
+    return str(_history(node).head("HEAD"))
 
 
 def _undo_unpublished(node: FenceNode) -> None:
     """Rollback "Φ2, before C5's push": reset to the remote head and drop the identity."""
     node.sync_to_remote()
-    _drop_ident(node)
+    node.drop_ident()
 
 
 def _latest_cutover(node: FenceNode, ref: str) -> tuple[str, dict[str, str]] | None:
     """The newest ``bh: cut over …`` commit reachable from ``ref`` and its trailer."""
-    rows = node.query(
-        f"SELECT commit_hash, message FROM dolt_log({quote(ref)}) "
-        f"WHERE message LIKE {quote(CUTOVER_COMMIT_PREFIX + '%')} LIMIT 1"
-    )
-    if not rows:
+    found = _history(node).log(ref, subject_prefix=CUTOVER_COMMIT_PREFIX, limit=1)
+    if not found:
         return None
-    return str(rows[0]["commit_hash"]), parse_trailer(str(rows[0].get("message") or ""))
+    return str(found[0].commit), parse_trailer(found[0].message)
 
 
 def _record_from_history(node: FenceNode, prefix: str, ref: str) -> CutoverRecord | None:
@@ -490,7 +475,7 @@ def _verify(
         problems.append(f"the remote bh_writer names {audit.writer_frame}, not {host_id}")
     if guard.count != TRIGGER_COUNT or not guard.complete:
         problems.append(f"guard: {guard.describe()}")
-    refusal = _guard_passes(node)
+    refusal = node.guard_check()
     if refusal is not None:
         problems.append(f"the holder's guard refuses it: {refusal[:200]}")
     if problems:
@@ -528,7 +513,7 @@ def cutover(
             return _provision_replica(node, placement, remote, prefix=prefix, host_id=host_id)
         if remote is not None:
             return _already_cut_over(node, placement, remote, prefix=prefix, host_id=host_id)
-    except (FenceError, DataUnreachable) as exc:
+    except (FenceError, StorageUnavailable) as exc:
         raise CutoverRefused(f"{prefix}: {exc}; nothing was published") from exc
     if not others_published:
         raise CutoverRefused(
@@ -548,7 +533,7 @@ def cutover(
     assert fence is not None
     try:
         _require_published(node, prefix, "C1")
-    except (FenceError, DataUnreachable) as exc:
+    except (FenceError, StorageUnavailable) as exc:
         raise CutoverRefused(f"{prefix}: C1 refused — {exc}") from exc
 
     for attempt in range(1, attempts + 1):
@@ -563,7 +548,7 @@ def cutover(
                 ref_sha=ref_sha,
                 before_push=before_push,
             )
-        except (FenceError, DataUnreachable) as exc:
+        except (FenceError, StorageUnavailable) as exc:
             _undo_quietly(node)
             raise CutoverRefused(f"{prefix}: {exc}; nothing was published") from exc
         before_push = None
@@ -643,7 +628,7 @@ def _cutover_round(
     if before_push is not None:
         before_push()
     try:
-        pushed = node.push_main()
+        pushed = _merge(node).publish()
     except DataUnreachable as exc:
         raise _failed_push(node, prefix, exc) from exc
     if not pushed:  # non-fast-forward: the holder wrote meanwhile
@@ -680,7 +665,7 @@ def _failed_push(node: FenceNode, prefix: str, exc: Exception) -> CutoverError:
     over, nothing landed — undo locally and refuse; otherwise it is uncertain — fail."""
     try:
         landed = node.remote_writer() is not None
-    except (FenceError, DataUnreachable):
+    except (FenceError, StorageUnavailable):
         return CutoverFailed(
             f"{prefix}: C5 push failed ({exc}) and the remote head cannot be read back; the "
             "cutover may or may not have landed. Read `bh hive fence status` before anything "
@@ -884,7 +869,7 @@ def rollback(
     try:
         remote = node.remote_writer()
         if remote is None:  # R5 on a replica (or a re-run on the holder)
-            return RollbackOutcome(prefix, already=True, dropped_ident=_drop_ident(node))
+            return RollbackOutcome(prefix, already=True, dropped_ident=node.drop_ident())
         if remote.frame != host_id:  # R1
             raise CutoverRefused(
                 f"{prefix}: R1 refused — take the rollback on the current bh_writer holder "
@@ -895,18 +880,18 @@ def rollback(
             node.sync_to_remote()
             writer = node.writer()
             if writer is None:
-                return RollbackOutcome(prefix, already=True, dropped_ident=_drop_ident(node))
+                return RollbackOutcome(prefix, already=True, dropped_ident=node.drop_ident())
             ref_sha, fence = ref.read()
             placed = placement.read()
-            floor = _floor(node, writer, fence, placed, prefix=prefix, host_id=host_id)  # R2
+            history_max = _history(node).history_max_epoch()
+            floor = _floor(history_max, writer, fence, placed, prefix=prefix, host_id=host_id)
             assert fence is not None
             reserved = EpochFence(epoch=fence.epoch, host_id=fence.host_id, seq=fence.seq + 1)
             reserved_sha = ref.stage(reserved)
             message = f"{ROLLBACK_COMMIT_PREFIX} (floor {floor})\n\n" + _trailer(
                 hive=prefix, epoch=floor, holder=host_id, ref_sha=reserved_sha
             )
-            node.engine.execute(fence_schema.rollback_statements())  # R3: one commit
-            if not node.engine.commit(message):
+            if not node.uninstall(message):  # R3: one commit
                 raise CutoverFailed(f"{prefix}: R3 dropped nothing — the fence is not installed")
             commit = _head(node)
             try:  # R4: reserve, push (fast-forward only), verify
@@ -918,7 +903,7 @@ def rollback(
                     "published. Re-run the rollback."
                 ) from exc
             try:
-                pushed = node.push_main()
+                pushed = _merge(node).publish()
             except DataUnreachable as exc:
                 raise CutoverFailed(
                     f"{prefix}: R4 push failed after refs/bh/epoch was reserved ({exc}); re-run "
@@ -934,7 +919,7 @@ def rollback(
             f"{prefix}: R4 lost {attempts} push rounds to concurrent writes; nothing was "
             "published. Quiesce the hive's writers and re-run."
         )
-    except (FenceError, DataUnreachable) as exc:
+    except (FenceError, StorageUnavailable) as exc:
         try:
             if node.remote_writer() is not None:
                 node.sync_to_remote()  # drop an unpublished R3 commit
@@ -971,7 +956,7 @@ def _rollback_published(
     if still_cut_over:
         raise CutoverFailed(f"{prefix}: R4 pushed but the remote head still has bh_writer")
     try:
-        dropped = _drop_ident(node)  # R5 on the holder
+        dropped = node.drop_ident()  # R5 on the holder
     except Exception as exc:  # noqa: BLE001
         raise CutoverFailed(
             f"{prefix}: the rollback is published, but R5 could not drop this node's "
@@ -983,7 +968,7 @@ def _rollback_published(
 
 
 def _floor(
-    node: FenceNode,
+    history_max: int,
     writer: WriterRow,
     fence: EpochFence | None,
     placed: PlacementView | None,
@@ -992,13 +977,14 @@ def _floor(
     host_id: str,
 ) -> int:
     """R2: the epoch floor, read BEFORE the drop; refuse unless both legacy carriers name this
-    host AT the floor (so the next legacy adopt, ``max(ref, placement) + 1``, is above it)."""
+    host AT the floor (so the next legacy adopt, ``max(ref, placement) + 1``, is above it).
+    ``history_max`` is ``DoltHistory.history_max_epoch`` on local ``main``."""
     if writer.frame != host_id:
         raise CutoverRefused(
             f"{prefix}: R1 refused — bh_writer names {writer.frame}@{writer.epoch}, not {host_id}"
         )
     floor = max(
-        node.history_max_epoch(),
+        int(history_max),
         writer.epoch,
         fence.epoch if fence is not None else 0,
         placed.epoch if placed is not None else 0,

@@ -147,6 +147,23 @@ def test_registered_capability_is_returned(store: InMemoryHqStorage) -> None:
     assert require_capability(store, DoltHistoryLike) is impl
 
 
+def test_the_fake_fence_is_a_capability_host_with_no_dolt_capability(clock: ManualClock) -> None:
+    """A Dolt-only consumer (``fence_audit``, ``fence_orphan``, ``fence_cutover``) given the
+    fake is refused before any I/O (bh-3kl1k)."""
+
+    class DoltMergeLike:
+        pass
+
+    fence = InMemoryHiveFence(clock)
+    assert isinstance(fence, CapabilityHost)
+    assert fence.capability(DoltMergeLike) is None
+    with pytest.raises(CapabilityUnsupported, match="DoltMergeLike"):
+        require_capability(fence, DoltMergeLike)
+    impl = DoltMergeLike()
+    fence.register_capability(DoltMergeLike, impl)
+    assert require_capability(fence, DoltMergeLike) is impl
+
+
 def test_read_at_an_unknown_revision_is_not_provisioned(store: InMemoryHqStorage) -> None:
     with pytest.raises(NotProvisioned):
         store.read_at(Revision("0" * 64))

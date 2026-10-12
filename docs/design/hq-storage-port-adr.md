@@ -1202,3 +1202,113 @@ The fake-against-Dolt state machine no longer runs at full budget in the gate. T
   about 4 s for the smoke; the whole `hq-storage-check` pytest run is now about 9 s.
 - The gate smoke is derandomized and unshrunk, as section 8 requires of any gate run against
   real Dolt.
+
+### Settled by `bh-3kl1k`
+
+`fence_audit`, `fence_orphan`, `fence_cutover` and `hive_forward` hold no SQL string and no Dolt
+procedure call. Each reaches Dolt only through `require_capability(host, DoltHistory |
+DoltMerge | DoltAccounts)`, and a host without the capability is refused with
+`CapabilityUnsupported` before any I/O. The port's fakes have none, which the root unit tests of
+each module assert. The final shapes are in
+`packages/beadhive-hq-storage-dolt/src/beadhive_hq_storage_dolt/_capabilities.py`, and its
+README lists every operation.
+
+- **`DoltHistory`** is read-only:
+  - the commit graph: `head`, `log` (optionally by subject prefix), `commit`, `parents`,
+    `messages`, `ahead`, `merge_base`, `is_ancestor` and `remote_branches`;
+  - the fence tables at a revision, where `None` is the working set: `fence_tables_at`,
+    `writer_at`, `live_epoch_at`, `stale_marks_at`, `mark_ids_at`, `writer_epochs`,
+    `history_max_epoch` and `table_history`. Every data table it reads is a `FenceTable`.
+- **`DoltMerge`** moves branches: `preview_conflicts`, `merge`, `merge_restamping` (the
+  writer's one-session orphan merge with its guarded re-stamp), `residue`, `dirty_tables`,
+  `commit_working_set`, `abort`, `reset_hard`, `publish` and `publish_branch`. Over a fence
+  engine, the engine's own `commit`, `push`, `push_branch` and `reset_hard` run, so the
+  embedded CLI calls, bd's server commit and the server-mode quiesce before a reset are
+  unchanged.
+- **`DoltAccounts`** covers a server's accounts: `users`, `create_user`, `set_password`,
+  `drop_user`, `grants`, `grant`, `revoke`, `base_tables`, `sessions`, `kill`,
+  `global_variable`, `server_identity`, `triggers` and `provision_hq_schema`.
+  - `create_user` takes either a password or its `mysql_native_password` hash, so a
+    forwarder's plaintext still never reaches a statement. With `replace`, the drop and the
+    create are one batch.
+  - `grant` and `revoke` each run one batch and return the statements they ran.
+    `ProvisionReport` reports exactly those statements, as before.
+- **The legacy node operations moved.** `FenceNode.push_main()` became `DoltMerge.publish()`,
+  and `FenceNode.history_max_epoch()` became `DoltHistory.history_max_epoch()`.
+  `FenceNode.epoch_floor` reads the latter. `FenceNode` is a `CapabilityHost` that delegates to
+  its `DoltHiveFence`.
+- **The `dolt_schemas` trigger read (`bh-br1cd`, `bh-sqfvq`).** `DoltAccounts.triggers(database)`
+  returns a `TriggerInfo` per trigger. The table and the action statement are parsed from the
+  `CREATE TRIGGER` fragment; an unparseable fragment keeps its whole text as the statement.
+  The HQ placement `conformance` now reads both grants and triggers through `DoltAccounts`
+  over the operator's cursor, from `` `<database>`.dolt_schemas ``. It no longer fails on Dolt
+  2.3.5 for a committed trigger whose table is `dolt_ignore`'d. `placement_conformance_rows` is
+  gone.
+
+- **Aligned with `bh-xnn5p`'s typed statements.** As with `HqRuntimeStatements`, each
+  capability method names one statement (or one fixed batch), issues the SQL root issued
+  before, and root holds no SQL string. Where root's SQL-level test doubles matched a statement,
+  the text is unchanged: the forwarder's `FakeServer`, the orphan divert's recorded `bd` engine
+  and the split-history reader. Unlike that surface, the capabilities return typed values
+  (`WriterRow`, `MarkRow`, `AccountRow`, `TriggerInfo` and so on), not raw rows. No consumer
+  here verifies a raw row, and a capability is reached through `require_capability` on a host,
+  not over a caller's cursor.
+
+#### Deviations and adapter-specific behaviour
+
+- **Capability errors pass through.** A capability refuses a bad argument with
+  `InvalidRequest` before any I/O. Otherwise it re-raises the runner's exception unchanged
+  instead of classifying it. Root's engines already raise the port's `StorageUnavailable`
+  (`SqlFailed`, `DataUnreachable`), and these consumers branch on those exact types and
+  messages: for example "not found" means no `bh_writer`, and the divert refusal names the
+  engine's failure. Classifying the errors would change messages operators read.
+- **`DoltMerge` carries more than merges.** It also holds the working-set commit and both
+  fast-forward-only pushes. They are the branch moves the orphan and cutover paths need, and
+  the generic `HiveFence.push()` has a different contract: it mints an operation and reports
+  `Unknown`. The cutover's lost race (`False`) and its unreachable remote (`DataUnreachable`)
+  keep their meaning.
+- **`DoltAccounts.server_identity()`** reads `bh_local_ident` and `bh_writer`. It is a fence
+  read, but `hive_forward.preflight` runs it on the forwarder's own login, whose table-scoped
+  grants allow exactly those two reads. So it belongs with that login's capability, not with
+  `DoltHistory` on a node.
+- **Where `DoltAccounts` comes from.** A hive fence never offers `DoltAccounts`. Root composes
+  it from a server login (`hq_storage_composition.hive_server_capabilities`, over
+  `BdServerEngine` or `DbapiSql`) and from an operator's open cursor
+  (`operator_capabilities`). `DoltHqStorage` offers it over its operator binding. The package
+  adds `DoltSqlCapabilities`, a `CapabilityHost` over one `SqlRunner`, and `cursor_runner`,
+  which never commits or closes the caller's cursor. `hive_forward`'s functions take either a
+  `Sql` login or a `CapabilityHost`.
+- **The fence schema steps stay on `FenceNode`.** The cutover still installs, provisions and
+  drops the fence through `FenceNode`, which now also has `drop_ident`, `guard_check` and
+  `uninstall` (rollback R3). That DDL is root's `fence_schema`, run over the node's own
+  engine, the same composition as `install`. It is not a commit-graph, merge or account
+  operation, so it is not a Dolt-only capability.
+- **Smaller shape changes from the first cut.**
+  - `CommitInfo` drops `date`, which had no consumer.
+  - `head()` raises `StorageUnavailable` for a ref that does not resolve to a hash, as
+    `fence_orphan` did, where the first cut raised `InvalidRequest`.
+  - `is_ancestor` is one read. On an empty answer it returns `False`, where `fence_orphan`'s
+    `_published` returned `True`. Real Dolt always answers, and `False` only pushes an orphan
+    branch that was not needed.
+  - The first cut's `grant(privileges, table, user, host)` is now
+    `grant(user, host, tables, *, database=None)`.
+- **The fake fence is a `CapabilityHost`.** `InMemoryHiveFence` gained `capability()` and
+  `register_capability()`, and has no Dolt-only capability by default, so the refusal is
+  tested on the fake.
+- **Test changes, all from the reads moving into the adapter:**
+  - the orphan unit test's scripted engine answers `is_ancestor`'s alias;
+  - `fence_audit`'s split-history test drives `SqlDoltHistory` over its scripted reader;
+  - `fence_cutover._floor` takes the history maximum as an `int`;
+  - the placement conformance stub cursor answers the `dolt_schemas` read;
+  - the integration tests call `DoltMerge.publish()` and `DoltHistory.history_max_epoch()`
+    where they called the removed node methods.
+
+  No assertion about behaviour changed.
+- **Not done here.**
+  - The frame session provisioning statements stay on `HqRuntimeStatements` (`bh-xnn5p`'s
+    handoff). They run on the operator's own cursor and transaction, bind the frame password
+    as a parameter, and end in that surface's `commit_schemas`. Moving them onto `DoltAccounts`
+    would split that transaction for no gain, so `DoltAccounts` does not duplicate them.
+  - `hq_placement_ops` still lists accounts and the principal registry on its cursor.
+  - `BdServerEngine.reset_hard` (root's `fence_data`) keeps its own `DOLT_RESET` call, because
+    `DoltMerge.reset_hard` delegates to it to keep the forwarder quiesce first.

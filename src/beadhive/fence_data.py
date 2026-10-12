@@ -52,7 +52,7 @@ import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from beadhive_hq_storage import (
     BumpOutcome,
@@ -63,6 +63,7 @@ from beadhive_hq_storage import (
     Outcome,
     StorageUnavailable,
     SyncReport,
+    require_capability,
 )
 from beadhive_hq_storage import GuardReport as PortGuardReport
 
@@ -99,6 +100,8 @@ __all__ = [
     "reset_probe_cache",
     "resolve_cut_over",
 ]
+
+C = TypeVar("C")
 
 DEFAULT_TIMEOUT = 120.0
 _REMOTE = "origin"
@@ -505,7 +508,12 @@ class FenceNode:
     def __repr__(self) -> str:
         return f"FenceNode({type(self.engine).__name__} {self.engine.store})"
 
-    # ---- AuditReader ---------------------------------------------------------------------
+    # ---- beadhive_hq_storage.CapabilityHost + fence_audit.AuditReader --------------------
+
+    def capability(self, kind: type[C]) -> C | None:
+        """The Dolt-only capabilities (``DoltHistory``, ``DoltMerge``) of :attr:`fence`, over
+        this node's engine, remote and branch (bh-3kl1k)."""
+        return self.fence.capability(kind)
 
     def query(self, sql: str) -> list[dict]:
         return self.engine.query(sql)
@@ -683,24 +691,16 @@ class FenceNode:
         self.engine.fetch()
         return self._writer(f" AS OF {quote(f'{self.remote}/{self.branch}')}")
 
-    def history_max_epoch(self) -> int:
-        """The highest ``bh_writer.epoch`` local ``main``'s history ever carried (0 if none).
-        Read from ``dolt_history_bh_writer`` (one row per commit), never ``dolt_diff``, which
-        drops commits on a merged history."""
-        try:
-            rows = self.query(
-                "SELECT COALESCE(MAX(epoch), 0) AS m FROM dolt_history_bh_writer WHERE id = 1"
-            )
-        except SqlFailed as exc:
-            if _missing_table(exc, "bh_writer"):
-                return 0
-            raise
-        return int(next(iter(rows[0].values())) or 0) if rows else 0
-
     def epoch_floor(self) -> EpochFloor:
+        """``history_max`` is ``DoltHistory.history_max_epoch`` on local ``main`` (one row per
+        commit of ``dolt_history_bh_writer``, never ``dolt_diff``)."""
+        from beadhive_hq_storage_dolt import DoltHistory
+
         writer = self._writer()
+        history = require_capability(self, DoltHistory)
         return EpochFloor(
-            history_max=self.history_max_epoch(), writer=None if writer is None else writer.epoch
+            history_max=history.history_max_epoch(),
+            writer=None if writer is None else writer.epoch,
         )
 
     def guard_conformance(self) -> PortGuardReport:
@@ -715,12 +715,29 @@ class FenceNode:
     def lookup_bump(self, frame: str, epoch: int, *, operation: OperationId) -> LookupOutcome:
         return self.fence.lookup_bump(frame, epoch, operation=operation)
 
-    # ---- legacy node operations (cutover, orphan; bh-3kl1k moves them) --------------------
+    # ---- fence schema steps of the per-hive cutover and rollback (bh-oarxp) ---------------
 
-    def push_main(self) -> bool:
-        """Push ``main``. ``False`` on a non-fast-forward rejection; raises
-        :class:`SqlFailed` on any other failure."""
-        return self.engine.push()
+    def drop_ident(self) -> bool:
+        """Drop this node's ``bh_local_ident`` (rollback R5); ``True`` when it had one."""
+        had = self.ident() is not None
+        self.engine.execute(fence_schema.drop_ident_statements())
+        return had
+
+    def guard_check(self) -> str | None:
+        """``None`` when this node's guard accepts it as the writer (``CALL bh_guard_check()``,
+        which reads and writes nothing else), else the refusal."""
+        try:
+            self.engine.execute([f"CALL {fence_schema.GUARD_PROCEDURE}()"])
+        except SqlFailed as exc:
+            return str(exc)
+        return None
+
+    def uninstall(self, message: str) -> bool:
+        """Drop every trigger, the procedure and the fence tables (keeping the ``dolt_ignore``
+        row) and commit that as ``message`` -- rollback R3, one commit. ``False`` when there was
+        nothing to drop. Not pushed."""
+        self.engine.execute(fence_schema.rollback_statements())
+        return self.engine.commit(message)
 
     # ---- failover_reclaim.ReclaimData ----------------------------------------------------
 

@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -57,7 +57,6 @@ __all__ = [
     "encode_placement",
     "operation_revision",
     "placement_cause",
-    "placement_conformance_rows",
     "placement_seed_statement",
     "placement_witness",
     "placement_witnessed",
@@ -223,23 +222,3 @@ def placement_seed_statement(
         "request_sha256) VALUES (%s,%s,%s,%s,%s)",
         (prefix, revision, lease_json, request_id, placement_witness(prefix, revision, lease_json)),
     )
-
-
-def placement_conformance_rows(
-    cursor: Any, *, accounts: Sequence[str], database: str
-) -> tuple[list[tuple[str, list[str]]], list[tuple[Any, ...]]]:
-    """The raw inputs of root's grant and trigger conformance check, on an operator cursor:
-    ``([(account, SHOW GRANTS lines)], [(trigger, table, action_statement)])``, in order.
-
-    Transitional: ``DoltAccounts`` will own these reads once ``bh-3kl1k`` settles its shape.
-    ``accounts`` are ``'user'@'host'`` strings root already validated."""
-    grants: list[tuple[str, list[str]]] = []
-    for account in accounts:
-        cursor.execute(f"SHOW GRANTS FOR {account}")
-        grants.append((account, [row[0] for row in cursor.fetchall()]))
-    cursor.execute(
-        "SELECT trigger_name,event_object_table,action_statement FROM information_schema.triggers "
-        "WHERE trigger_schema=%s",
-        (database,),
-    )
-    return grants, [tuple(row) for row in cursor.fetchall()]

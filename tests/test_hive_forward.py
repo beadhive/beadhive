@@ -819,3 +819,28 @@ def test_cli_provision_check_and_quiesce_on_a_serving_frame(tmp_path, monkeypatc
     server.processes = [(5, "fwd-e1", "10.0.0.21"), (6, "root", "localhost")]
     cli.run("quiesce", cfg=cfg, entry=entry, hive_dir=hive)
     assert "killed 1 forwarder session" in capsys.readouterr().out
+
+
+# ---- the Dolt-only capability (bh-3kl1k) -------------------------------------------------------
+
+
+def test_a_host_without_dolt_accounts_is_refused_and_a_login_gets_one():
+    """Every primary-side action reaches the server through ``DoltAccounts``. A
+    ``CapabilityHost`` without it (the port's fake HQ store) is refused before any I/O; a plain
+    login (``Sql``) is composed into the Dolt adapter's capability."""
+    from beadhive_hq_storage import CapabilityUnsupported, InMemoryHqStorage
+    from beadhive_hq_storage.contract import ManualClock
+
+    fake = InMemoryHqStorage(ManualClock())
+    for call in (
+        lambda: hf.provision(fake, database=DB, account=FWD, password="pw"),
+        lambda: hf.conformance(fake, database=DB),
+        lambda: hf.revoke(fake, account=FWD),
+        lambda: hf.quiesce(fake),
+        lambda: hf.check_globals(fake),
+    ):
+        with pytest.raises(CapabilityUnsupported, match="DoltAccounts"):
+            call()
+    assert hf.quiesce_before_reset(fake, settings={"operators": []}) == []  # never raises
+    with pytest.raises(hf.ForwardRefused, match="DoltAccounts"):
+        hf.preflight(fake, hf.ForwardTarget("p", 3, EP))

@@ -716,12 +716,21 @@ def test_conformance_reads_grants_and_triggers_from_the_server():
     }
 
     class Cursor:
+        # The reads are the Dolt adapter's DoltAccounts over this cursor (bh-3kl1k); triggers
+        # come from the database's dolt_schemas, never information_schema.triggers.
         def execute(self, sql, params=None):
+            assert params is None
             if sql.startswith("SHOW GRANTS FOR "):
+                self.description = (("Grants",),)
                 self.rows = [(line,) for line in grants[sql.removeprefix("SHOW GRANTS FOR ")]]
             else:
-                assert params == (DB,)
-                self.rows = [("t", "hq_live_results", "SET NEW.status='x'")]
+                assert f"`{DB}`.dolt_schemas" in sql and "type = 'trigger'" in sql
+                self.description = (("n",), ("f",))
+                fragment = (
+                    "CREATE TRIGGER t BEFORE INSERT ON hq_live_results FOR EACH ROW "
+                    "SET NEW.status='x'"
+                )
+                self.rows = [("t", fragment)]
 
         def fetchall(self):
             return self.rows

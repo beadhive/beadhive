@@ -6,7 +6,10 @@ Dolt remote, including the bh-uhx2r E2 re-stamp) is in ``tests/test_fence_data_i
 
 from __future__ import annotations
 
+import pytest
+
 from beadhive import fence_audit as fa
+from beadhive_hq_storage_dolt import SqlDoltHistory, SqlRunner
 
 H = {name: (name * 32)[:32] for name in "abcdefghijklmnopqrstuv"}
 
@@ -144,6 +147,8 @@ def test_split_history_keeps_only_reachable_fenced_commits_and_ordered_parents()
 
     class Reader:
         def query(self, sql):
+            if sql == "SELECT database() AS d":
+                return [{"d": "hive"}]
             if "JOIN" in sql:
                 raise TimeoutError("large hive history join exceeds the SQL read deadline")
             if "dolt_history_bh_writer" in sql:
@@ -164,7 +169,9 @@ def test_split_history_keeps_only_reachable_fenced_commits_and_ordered_parents()
                 {"c": H["s"], "p": H["g"]},
             ]
 
-    fenced = fa._fenced_history(Reader(), H["m"], f"`hive/{H['m']}`")
+    # The reads are the Dolt adapter's DoltHistory (bh-3kl1k), over this scripted runner.
+    history = SqlDoltHistory(SqlRunner(query=Reader().query, execute=lambda _s: None))
+    fenced = fa._fenced_history(history, H["m"])
     assert fenced == {
         H["m"]: (2, (H["a"], H["s"])),
         H["g"]: (1, (H["u"],)),
@@ -175,3 +182,19 @@ def test_split_history_keeps_only_reachable_fenced_commits_and_ordered_parents()
     assert anchors == {H["a"]: 2} and not unfenced
     late = fa.find_late_writes(w, {c: e for c, (e, _) in fenced.items()}, anchors)
     assert [(row.commit, row.epoch, row.merged_by) for row in late] == [(H["s"], 1, H["m"])]
+
+
+def test_a_node_without_the_dolt_history_capability_is_refused_before_any_io():
+    """bh-3kl1k: the audit reads only through ``DoltHistory``; the port's fake has none."""
+    from beadhive_hq_storage import CapabilityUnsupported, InMemoryHiveFence
+    from beadhive_hq_storage.contract import ManualClock
+
+    fetched = []
+
+    class Fake(InMemoryHiveFence):
+        def fetch(self):
+            fetched.append(True)
+
+    with pytest.raises(CapabilityUnsupported, match="DoltHistory"):
+        fa.fence_audit(Fake(ManualClock()))
+    assert fetched == []

@@ -67,6 +67,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from beadhive_hq_storage import CapabilityHost, IntegrityViolation, require_capability
+from beadhive_hq_storage_dolt import DoltAccounts, Revocation
+
 from .fence_schema import FENCE_TABLES, LOCAL_IDENT_TABLE, quote
 
 __all__ = [
@@ -198,7 +201,11 @@ class GrantShapeViolation(ForwardError):
 
 class Sql(Protocol):
     """One server, one login. :class:`beadhive.fence_data.BdServerEngine` (``bd sql``) and
-    :class:`DbapiSql` both implement it."""
+    :class:`DbapiSql` both implement it. Every function here reaches the server only through
+    the Dolt-only ``DoltAccounts`` capability over this login
+    (:func:`beadhive.hq_storage_composition.hive_server_capabilities`, bh-3kl1k); a
+    ``CapabilityHost`` may be passed instead, and one without ``DoltAccounts`` is refused with
+    ``CapabilityUnsupported`` before any I/O."""
 
     def query(self, sql: str) -> list[dict]: ...
 
@@ -230,16 +237,13 @@ class DbapiSql:
             self.connection.commit()
 
 
-def _first(row: Mapping) -> Any:
-    return next(iter(row.values())) if row else None
+def _accounts_of(sql: Sql | CapabilityHost) -> DoltAccounts:
+    """The ``DoltAccounts`` capability over one server login (or a host's)."""
+    if isinstance(sql, CapabilityHost):
+        return require_capability(sql, DoltAccounts)
+    from .hq_storage_composition import hive_server_capabilities
 
-
-def _ci(row: Mapping, name: str) -> Any:
-    """A column by case-insensitive name (``bd sql --json`` and PyMySQL disagree on case)."""
-    for key, value in row.items():
-        if str(key).lower() == name:
-            return value
-    return None
+    return require_capability(hive_server_capabilities(sql), DoltAccounts)
 
 
 # =============================================================================================
@@ -367,16 +371,12 @@ def check_forwarder_grants(lines: Iterable[str], *, database: str) -> list[str]:
     return problems
 
 
-def _grants(sql: Sql, account: Account) -> list[str]:
-    return [str(_first(r)) for r in sql.query(f"SHOW GRANTS FOR {account.sql}")]
+def _grants(accounts: DoltAccounts, account: Account) -> list[str]:
+    return list(accounts.grants(account.user, account.host))
 
 
-def _accounts(sql: Sql) -> list[tuple[Account, str]]:
-    rows = sql.query("SELECT user, host, ssl_type FROM mysql.user")
-    return [
-        (Account(str(_ci(r, "user")), str(_ci(r, "host"))), str(_ci(r, "ssl_type") or ""))
-        for r in rows
-    ]
+def _accounts(accounts: DoltAccounts) -> list[tuple[Account, str]]:
+    return [(Account(row.user, row.host), row.ssl_type) for row in accounts.users()]
 
 
 def conformance(
@@ -392,9 +392,10 @@ def conformance(
     Every account that is not an operator or Dolt system login is a forwarder; ``only`` narrows
     the check to the given accounts (provisioning's own verify). Needs a login that can read
     ``mysql.user`` and ``SHOW GRANTS`` for others (the primary's bd login)."""
+    server = _accounts_of(sql)
     ops = _operators(operators)
     wanted = None if only is None else set(only)
-    accounts = [(a, ssl) for a, ssl in _accounts(sql) if a.user not in ops]
+    accounts = [(a, ssl) for a, ssl in _accounts(server) if a.user not in ops]
     hosts: dict[str, set[str]] = {}
     for account, _ssl in accounts:
         hosts.setdefault(account.user, set()).add(account.host)
@@ -410,7 +411,7 @@ def conformance(
             )
         if require_tls and not ssl_type:
             found.append("does not REQUIRE SSL")
-        found += check_forwarder_grants(_grants(sql, account), database=database)
+        found += check_forwarder_grants(_grants(server, account), database=database)
         problems += [f"{account}: {p}" for p in found]
     return problems
 
@@ -433,21 +434,15 @@ class ProvisionReport:
         }
 
 
-def _base_tables(sql: Sql) -> list[str]:
-    """Base table names. The name column is ``Tables_in_<db>``; ``bd sql --json`` does not keep
-    column order, so it is found by name, never by position."""
-    rows = sql.query("SHOW FULL TABLES WHERE Table_type = 'BASE TABLE'")
-    names = []
-    for row in rows:
-        name = next((v for k, v in row.items() if str(k).lower().startswith("tables_in_")), None)
-        if name is None:
-            raise ForwardError(f"unrecognised SHOW FULL TABLES row: {dict(row)!r}"[:200])
-        names.append(str(name))
-    return sorted(names)
+def _base_tables(accounts: DoltAccounts) -> list[str]:
+    try:
+        return list(accounts.base_tables())
+    except IntegrityViolation as exc:
+        raise ForwardError(str(exc)) from exc
 
 
-def _held(sql: Sql, account: Account) -> list:
-    return [g for g in (_parse_grant(line) for line in _grants(sql, account)) if g is not None]
+def _held(accounts: DoltAccounts, account: Account) -> list:
+    return [g for g in (_parse_grant(line) for line in _grants(accounts, account)) if g is not None]
 
 
 def provision(
@@ -473,16 +468,16 @@ def provision(
     problems = account_problems(account, operators)
     if problems:
         raise ForwardRefused(f"{account}: " + "; ".join(problems))
-    existing = {a: ssl for a, ssl in _accounts(sql) if a.user == account.user}
+    server = _accounts_of(sql)
+    existing = {a: ssl for a, ssl in _accounts(server) if a.user == account.user}
     others = sorted(a.host for a in existing if a.host != account.host)
     if others:
         raise ForwardRefused(
             f"{account}: principal {account.user!r} already exists for {', '.join(others)} — a "
             "forwarder login is per frame, never shared; pick another principal"
         )
-    statements: list[str] = []
-    tls = " REQUIRE SSL" if require_tls else ""
     created = account not in existing
+    replace = False
     if not created and require_tls and not existing[account]:
         # Dolt 2.3.5 has no ALTER USER … REQUIRE: an account made without it is recreated.
         if not password:
@@ -491,37 +486,28 @@ def provision(
                 "re-provision with a password to recreate it TLS-only"
             )
         quiesce(sql, operators=operators, only=[account])
-        statements.append(f"DROP USER {account.sql}")
-        created = True
+        created = replace = True
     if created:
         if not password:
             raise ForwardError(f"{account}: a new forwarder account needs a password")
-        statements.append(
-            f"CREATE USER {account.sql} IDENTIFIED WITH mysql_native_password AS "
-            f"{quote(native_password_hash(password))}{tls}"
+        server.create_user(  # the password crosses only as its native hash
+            account.user,
+            account.host,
+            native_hash=native_password_hash(password),
+            require_ssl=require_tls,
+            replace=replace,
         )
     elif password:
-        statements.append(
-            f"ALTER USER {account.sql} IDENTIFIED WITH mysql_native_password AS "
-            f"{quote(native_password_hash(password))}"
-        )
-    if statements:
-        sql.execute(statements)
+        server.set_password(account.user, account.host, native_hash=native_password_hash(password))
 
-    tables = _base_tables(sql)
+    tables = _base_tables(server)
     plan = grant_plan(tables)
-    revoked, granted = [], []
+    revocations: list[Revocation] = []
     held: dict[str, set[str]] = {}
-    for grant in _held(sql, account):
+    for grant in _held(server, account):
         privileges = set(grant.privileges) - {"USAGE"}
         if not privileges and not grant.grant_option:
             continue
-        if grant.database == "*":
-            target = "*.*"
-        elif grant.table == "*":
-            target = f"`{grant.database}`.*"
-        else:
-            target = f"`{grant.database}`.`{grant.table}`"
         in_plan = grant.database == database and grant.table != "*" and grant.table in plan
         if privileges & {"ALL", "ALL PRIVILEGES"}:
             keep, drop = set(), {"ALL PRIVILEGES"}
@@ -531,20 +517,17 @@ def provision(
             keep, drop = set(), privileges
         if in_plan:
             held[grant.table] = held.get(grant.table, set()) | keep
-        if grant.grant_option:
-            revoked.append(f"REVOKE GRANT OPTION ON {target} FROM {account.sql}")
-        if drop:
-            revoked.append(f"REVOKE {', '.join(sorted(drop))} ON {target} FROM {account.sql}")
-    if revoked:
-        sql.execute(revoked)
-    for table, privileges in plan.items():
-        missing = set(privileges) - held.get(table, set())
-        if missing:
-            granted.append(
-                f"GRANT {', '.join(sorted(missing))} ON `{database}`.`{table}` TO {account.sql}"
+        if grant.grant_option or drop:
+            revocations.append(
+                Revocation(grant.database, grant.table, frozenset(drop), grant.grant_option)
             )
-    if granted:
-        sql.execute(granted)
+    revoked = server.revoke(account.user, account.host, revocations)
+    missing = {
+        table: privileges - held.get(table, set())
+        for table, privileges in plan.items()
+        if privileges - held.get(table, set())
+    }
+    granted = server.grant(account.user, account.host, missing, database=database)
     leftover = conformance(
         sql, database=database, operators=operators, require_tls=require_tls, only=[account]
     )
@@ -565,10 +548,11 @@ def revoke(sql: Sql, *, account: Account, operators: Iterable[str] = DEFAULT_OPE
     """Drop one forwarder account (its sessions first). ``False`` when it did not exist."""
     if account.user in _operators(operators):
         raise ForwardRefused(f"{account}: refusing to drop an operator or system login")
-    if account not in {a for a, _ in _accounts(sql)}:
+    server = _accounts_of(sql)
+    if account not in {a for a, _ in _accounts(server)}:
         return False
     quiesce(sql, operators=operators, only=[account])
-    sql.execute([f"DROP USER {account.sql}"])
+    server.drop_user(account.user, account.host)
     return True
 
 
@@ -597,11 +581,10 @@ def forwarder_sessions(
     ops = _operators(operators)
     users = None if only is None else {a.user for a in only}
     out = []
-    for row in sql.query("SELECT id, user, host FROM information_schema.processlist"):
-        user = str(_ci(row, "user") or "")
-        if not user or user in ops or (users is not None and user not in users):
+    for row in _accounts_of(sql).sessions():
+        if not row.user or row.user in ops or (users is not None and row.user not in users):
             continue
-        out.append(Session(int(_ci(row, "id")), user, str(_ci(row, "host") or "")))
+        out.append(Session(row.id, row.user, row.host))
     return out
 
 
@@ -613,10 +596,11 @@ def quiesce(
 ) -> list[Session]:
     """``KILL`` every forwarder session; an in-flight transaction is rolled back and its
     ``COMMIT`` fails with a lost connection. A session that is already gone is not an error."""
+    server = _accounts_of(sql)
     killed = []
     for session in forwarder_sessions(sql, operators=operators, only=only):
         with contextlib.suppress(Exception):
-            sql.execute([f"KILL {int(session.id)}"])
+            server.kill(int(session.id))
         killed.append(session)
     return killed
 
@@ -711,14 +695,14 @@ def watched_globals(
 
 def check_globals(sql: Sql, watched: Mapping[str, str] | None = None) -> list[GlobalResult]:
     """Read each watched ``@@GLOBAL`` and compare. Read-only: it never sets a value."""
+    server = _accounts_of(sql)
     results = []
     for name, expected in (watched if watched is not None else WATCHED_GLOBALS).items():
         if not name.replace("_", "").isalnum():
             results.append(GlobalResult(name, expected, None, "unverifiable", "odd name"))
             continue
         try:
-            rows = sql.query(f"SELECT @@GLOBAL.{name} AS v")
-            actual = str(_first(rows[0])) if rows else None
+            actual = server.global_variable(name)
         except Exception as exc:  # noqa: BLE001 — an unreadable global is a finding, not a crash
             results.append(GlobalResult(name, expected, None, "unverifiable", str(exc)[:200]))
             continue
@@ -833,16 +817,15 @@ def preflight(sql: Sql, target: ForwardTarget) -> tuple[str, int]:
     at the placed epoch. Reads only (the forwarder's grants allow exactly these reads).
     Returns ``(frame, epoch)``."""
     try:
-        ident = sql.query(f"SELECT frame FROM {LOCAL_IDENT_TABLE} WHERE id = 1")
-        writer = sql.query("SELECT frame, epoch FROM bh_writer WHERE id = 1")
+        identity = _accounts_of(sql).server_identity()
     except Exception as exc:  # noqa: BLE001 — unreadable means not verifiably the writer
         raise ForwardRefused(
             f"cannot verify {target.frame}'s hive server is the writer: {str(exc)[:200]}"
         ) from exc
-    if not writer:
+    if identity.writer is None:
         raise ForwardRefused(f"{target.frame}'s hive data carries no bh_writer: not cut over")
-    w_frame, w_epoch = str(_ci(writer[0], "frame")), int(_ci(writer[0], "epoch"))
-    i_frame = str(_ci(ident[0], "frame")) if ident else ""
+    w_frame, w_epoch = identity.writer.frame, identity.writer.epoch
+    i_frame = identity.ident or ""
     if i_frame != target.frame:
         raise ForwardRefused(
             f"the server at {target.endpoint.get('host')}:{target.endpoint.get('port')} "
