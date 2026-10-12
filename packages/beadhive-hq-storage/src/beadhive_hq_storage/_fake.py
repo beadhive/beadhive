@@ -35,6 +35,7 @@ from ._types import (
     Absent,
     Applied,
     Body,
+    BumpOutcome,
     BumpRequest,
     ChangeSet,
     Confirmed,
@@ -845,12 +846,19 @@ class InMemoryHiveFence:
             missing=self._missing,
         )
 
-    def commit_bump(self, bump: BumpRequest) -> Revision:
-        self.faults.take("commit_bump", unknown_ok=False)
-        commit = self._bump_commit(self._local, bump)
-        self._commits[commit.revision] = commit
-        self._local = commit.revision
-        return commit.revision
+    def commit_bump(self, bump: BumpRequest) -> BumpOutcome:
+        """``Applied`` with the new local head; ``Unknown`` (an armed fault, the bump committed
+        or not as it says) when the commit's fate is unknown; ``StorageUnavailable`` only when
+        nothing was committed. Validation and the floor run before any fault fires."""
+        prior = self._local
+        commit = self._bump_commit(prior, bump)
+        fault = self.faults.take("commit_bump")
+        if fault is None or fault.applied:
+            self._commits[commit.revision] = commit
+            self._local = commit.revision
+        if fault is not None:
+            return Unknown(operation=bump.operation, expected=prior, reason=fault.reason)
+        return Applied(commit.revision, bump.operation)
 
     def push(self) -> Outcome:
         if not self._reachable:

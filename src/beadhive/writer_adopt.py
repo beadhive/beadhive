@@ -316,9 +316,10 @@ def run_step2(
     when placement no longer names ``(frame, epoch)``, or when this node's guard install is
     incomplete (:meth:`~beadhive_hq_storage.HiveFence.guard_conformance`). Otherwise it commits
     the typed bump and pushes; a non-fast-forward (``Conflict``) loops back to the data check.
-    An ``Unknown`` push is resolved by :meth:`~beadhive_hq_storage.HiveFence.lookup_bump`
-    with the bump's own operation id: ``Confirmed`` landed, anything else is unreachable (the
-    re-run resumes; it never re-issues the bump). ``before_push`` is a test seam (one-shot).
+    An ``Unknown`` push, or an ``Unknown`` bump commit (whose push then publishes the bump if
+    it exists), is resolved by :meth:`~beadhive_hq_storage.HiveFence.lookup_bump` with the
+    bump's own operation id: ``Confirmed`` landed, anything else is unreachable (the re-run
+    resumes; it never re-issues the bump). ``before_push`` is a test seam (one-shot).
 
     The bump's epoch floor is the store's: a bump at or below ``max(history, bh_writer)``
     raises :class:`~beadhive_hq_storage.IntegrityViolation`, which fails closed and is never
@@ -382,21 +383,27 @@ def run_step2(
             operation=new_operation_id(),
             reclaim=None if plan is None else plan.reclaim,
         )
-        data.commit_bump(bump)  # IntegrityViolation (floor) propagates: fail closed
+        # IntegrityViolation (floor) propagates: fail closed. An Unknown commit is never
+        # re-issued (bh-xxkf7.6): the push publishes it if it exists, and lookup_bump decides.
+        committed = data.commit_bump(bump)
         if before_push is not None:
             hook, before_push = before_push, None
             hook()
         try:
             pushed = data.push()
-            if isinstance(pushed, Unknown):
+            unsure = [
+                f"{what} outcome unknown ({out.reason})"
+                for what, out in (("bump commit", committed), ("push", pushed))
+                if isinstance(out, Unknown)
+            ]
+            if unsure and not isinstance(pushed, Conflict):
                 found = data.lookup_bump(frame, epoch, operation=bump.operation)
                 if not isinstance(found, Confirmed):
                     return Step2Result(
                         Step2Outcome.UNREACHABLE,
                         epoch,
                         attempt,
-                        detail=f"push outcome unknown ({pushed.reason}); the bump is not "
-                        "confirmed on the remote head",
+                        detail=f"{'; '.join(unsure)}; the bump is not confirmed on the remote head",
                     )
         except StorageError as exc:
             return Step2Result(
@@ -404,7 +411,7 @@ def run_step2(
             )
         if isinstance(pushed, Conflict):
             continue  # non-fast-forward: back to the data check from the new remote head
-        assert isinstance(pushed, Applied | Unknown)  # Unknown here was Confirmed above
+        assert isinstance(pushed, Applied | Unknown)  # an Unknown was Confirmed above
         if reclaim is not None and plan is not None:
             reclaim.after_landed(plan)
         return Step2Result(Step2Outcome.LANDED, epoch, attempt, revision=revision, reclaim=plan)

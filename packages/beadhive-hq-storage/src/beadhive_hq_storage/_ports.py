@@ -16,6 +16,7 @@ from ._errors import CapabilityUnsupported
 from ._types import (
     Absent,
     Body,
+    BumpOutcome,
     BumpRequest,
     ChangeSet,
     ConsistencyToken,
@@ -169,7 +170,11 @@ class HiveFence(Protocol):
     """One hive's fence tables. ``commit_bump`` writes the writer row, the ``adopt-<epoch>``
     sentinel and the optional reclaim as ONE local commit; ``push`` publishes it; and
     ``lookup_bump`` finds the sentinel on the remote head. The port exposes the epoch reads;
-    the domain chooses the epoch."""
+    the domain chooses the epoch.
+
+    ``commit_bump`` raises ``StorageUnavailable`` only when nothing was committed. Once the
+    commit may exist it answers ``Unknown`` (bh-xxkf7.6): the caller never re-issues that bump;
+    it pushes and resolves the outcome with ``lookup_bump`` under the bump's own operation."""
 
     def sync_to_remote(self) -> SyncReport: ...
 
@@ -181,7 +186,7 @@ class HiveFence(Protocol):
 
     def guard_conformance(self) -> GuardReport: ...
 
-    def commit_bump(self, bump: BumpRequest) -> Revision: ...
+    def commit_bump(self, bump: BumpRequest) -> BumpOutcome: ...
 
     def push(self) -> Outcome: ...
 

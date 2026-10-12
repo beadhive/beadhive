@@ -372,7 +372,7 @@ class HiveFence(Protocol):
     def remote_writer(self) -> WriterRow | None: ...
     def epoch_floor(self) -> EpochFloor: ...
     def guard_conformance(self) -> GuardReport: ...
-    def commit_bump(self, bump: BumpRequest) -> Revision: ...  # ONE local commit
+    def commit_bump(self, bump: BumpRequest) -> BumpOutcome: ...  # ONE local commit
     def push(self) -> Outcome: ...                         # non-fast-forward -> Conflict
     def lookup_bump(self, frame: str, epoch: int) -> LookupOutcome: ...
 
@@ -1051,3 +1051,39 @@ fake-ready once `InMemoryHiveFence` models `ReclaimData` reads (claims and polic
 well. The integration suites (`test_writer_adopt_int`, `test_failover_reclaim_int`,
 `test_fence_composed_int`, `test_fence_orphan_int`, `test_fence_cutover_int`,
 `test_epoch_fencing_int`) stay on real Dolt.
+
+### Settled by `bh-xxkf7.6`
+
+`HiveFence.commit_bump` returns `BumpOutcome = Applied | Unknown`, not a bare `Revision`.
+Before, the Dolt adapter read `DOLT_HASHOF('HEAD')` after the engine's commit and turned a
+failure of that read into `StorageUnavailable`. That error means nothing was sent, yet the bump
+had committed, and a caller that retried would hit `IntegrityViolation` on the epoch floor.
+
+- **Why an outcome type, not an infallible head read.** The other option was to take the hash
+  from the commit itself. `SqlConnectionFenceEngine` could, because `CALL DOLT_COMMIT` returns
+  the hash as a row, but root's engines cannot do it reliably. `DoltCliEngine.commit` shells to
+  `dolt add` and `dolt commit`, and `BdServerEngine.commit` to `bd dolt commit`, whose output
+  is human text with no stable hash field. Both return only a `bool`. A raise from either
+  commit can also follow a landed commit, for example a timeout after Dolt wrote it. A hash
+  from the commit would not cover that case; an outcome type covers both.
+- **The shape.** `Applied(revision, bump.operation)` is the new local head. `Unknown(bump.operation,
+  expected, reason)` means the bump's commit may or may not exist. `expected` is the local head
+  read *before* anything was sent. `reason` is `unknown_reason` of the commit's error, or
+  `"transport"` / `"deadline"` for the head read after it. There is no `Conflict`, because a
+  bump is local. Refusals (`InvalidRequest`, `NotProvisioned`, `IntegrityViolation` at the
+  floor, or a commit that changed nothing) still raise. A failed statement batch still raises
+  `StorageUnavailable`, because nothing was committed and the partial working set is
+  discarded.
+- **Resolution: never re-issued.** An `Unknown` bump is resolved by pushing, then calling
+  `lookup_bump(frame, epoch, operation=bump.operation)`. If the commit exists, the push
+  publishes it. If it does not, the push publishes nothing new and the lookup reads
+  `NotConfirmed`. `writer_adopt.run_step2` does exactly this. After an `Unknown` commit, an
+  `Applied` or `Unknown` push goes to `lookup_bump`: `Confirmed` is landed, anything else is
+  `unreachable`. A `Conflict` push loops back to the data check as before, and that round's
+  sync resets the local branch. No other caller of `commit_bump` exists (`FenceNode` only
+  delegates).
+- **Both adapters model it.** The fake's `FaultPlan` now arms `Unknown` on `commit_bump`, with
+  the commit applied or not. The Dolt contract harness fires the same fault at the engine
+  commit. Scenario `bump_unknown_resolves_through_lookup_bump` runs on both adapters, and
+  `test_a_failed_post_commit_head_read_in_commit_bump_is_unknown_then_confirmed` loses the
+  real post-commit `DOLT_HASHOF('HEAD')` read on a `dolt sql-server`.

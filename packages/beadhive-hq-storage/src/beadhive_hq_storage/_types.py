@@ -23,6 +23,7 @@ __all__ = [
     "Absent",
     "Applied",
     "Body",
+    "BumpOutcome",
     "BumpRequest",
     "ChangeSet",
     "Confirmed",
@@ -188,6 +189,13 @@ class NotConfirmed:
 
 
 LookupOutcome = Union[Confirmed, NotConfirmed]  # noqa: UP007
+
+BumpOutcome = Union[Applied, Unknown]  # noqa: UP007
+"""``HiveFence.commit_bump``'s result (bh-xxkf7.6). ``Applied``: the bump is the local head
+(``revision``). ``Unknown``: the local commit may or may not exist (the commit raised, or the
+head read after it failed); ``expected`` is the local head before the bump. There is no
+``Conflict``: a bump is local, and the floor refusal is ``IntegrityViolation``. An ``Unknown``
+bump is never re-issued: push, then resolve with ``lookup_bump`` under the SAME operation."""
 
 
 # --- append log ---------------------------------------------------------------------------------

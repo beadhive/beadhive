@@ -113,7 +113,7 @@ class FakeData:
         head.marks[f"adopt-{epoch}"] = epoch
         head.history_max = max(head.history_max, epoch)
         head.bumps.append((frame, epoch, rev))
-        return Revision(f"local-{epoch}")
+        return Applied(Revision(f"local-{epoch}"), bump.operation)
 
     def push(self):
         self.calls.append("push")
@@ -306,6 +306,45 @@ def test_an_unknown_push_is_resolved_by_lookup_bump_never_reissued(applied):
     else:
         assert result.outcome is wa.Step2Outcome.UNREACHABLE
         assert "push outcome unknown (transport)" in result.detail
+
+
+@pytest.mark.parametrize("applied", [True, False], ids=["applied", "not-applied"])
+def test_an_unknown_bump_commit_is_pushed_and_resolved_by_lookup_bump_never_reissued(applied):
+    """bh-xxkf7.6: the commit point (or the head read after it) failed, so the bump may exist
+    locally. Step 2 pushes (publishing it if it exists) and asks lookup_bump under the bump's
+    own operation; it never commits the bump a second time."""
+    data, placement, _ref, _ = _world()
+    placement.view = wa.PlacementView(ME, 222, "tok")
+    commit = data.commit_bump
+    seen: list[BumpRequest] = []
+
+    def unknown_commit(bump):
+        seen.append(bump)
+        if applied:
+            commit(bump)
+        else:
+            data.calls.append("commit")
+        return Unknown(bump.operation, Revision("v0"), "transport")
+
+    lookups: list = []
+    lookup = data.lookup_bump
+
+    def spy_lookup(frame, epoch, *, operation):
+        lookups.append(operation)
+        return lookup(frame, epoch, operation=operation)
+
+    data.commit_bump = unknown_commit
+    data.lookup_bump = spy_lookup
+    result = wa.run_step2(data, placement, frame=ME, epoch=222)
+    assert data.calls.count("commit") == 1  # one bump, never re-issued
+    assert lookups == [seen[0].operation]  # resolved under the bump's own operation
+    if applied:
+        assert result.outcome is wa.Step2Outcome.LANDED and result.revision is not None
+        assert data.remote.writer == wa.WriterRow(ME, 222, seen[0].revision)
+    else:
+        assert result.outcome is wa.Step2Outcome.UNREACHABLE
+        assert "bump commit outcome unknown (transport)" in result.detail
+        assert data.remote.writer.frame == OLD
 
 
 def test_without_the_ref_no_ref_cas_is_attempted():

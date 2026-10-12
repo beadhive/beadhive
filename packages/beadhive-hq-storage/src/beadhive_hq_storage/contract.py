@@ -859,11 +859,19 @@ def _bump(frame: str, epoch: int, *, reclaim: ReclaimSet | None = None) -> BumpR
     )
 
 
+def _landed(f: FenceHarness, bump: BumpRequest) -> Revision:
+    """Commit ``bump`` and return the new local head; anything but ``Applied`` fails."""
+    out = f.fence.commit_bump(bump)
+    assert isinstance(out, Applied), out
+    assert out.operation == bump.operation
+    return out.revision
+
+
 @_scenario("fence", "HiveFence.commit_bump", "HiveFence.writer", "ReclaimSet")
 def _case_bump_is_one_commit_with_sentinel_and_reclaim(f: FenceHarness) -> None:
-    before = f.fence.commit_bump(_bump("frame-a", 1))
+    before = _landed(f, _bump("frame-a", 1))
     reclaim = ReclaimSet(dead_frame="frame-dead", bead_ids=frozenset({"bd-1", "bd-2"}))
-    head = f.fence.commit_bump(_bump("frame-live", 2, reclaim=reclaim))
+    head = _landed(f, _bump("frame-live", 2, reclaim=reclaim))
     assert f.parent_of(head) == before  # exactly one commit
     snap = f.snapshot_at(head)
     assert snap.writer == WriterRow("frame-live", 2, "rev-frame-live-2")
@@ -889,14 +897,14 @@ def _note(bead: str, n: int) -> ReclaimNote:
 
 @_scenario("fence", "HiveFence.commit_bump", "ReclaimSet", "ReclaimNote")
 def _case_bump_reclaim_marks_resumable_and_leaves_the_audit_note(f: FenceHarness) -> None:
-    before = f.fence.commit_bump(_bump("frame-a", 1))
+    before = _landed(f, _bump("frame-a", 1))
     reclaim = ReclaimSet(
         dead_frame="frame-dead",
         bead_ids=frozenset({"bd-1", "bd-2"}),
         resumable=frozenset({"bd-1", "bd-2"}),
         notes=(_note("bd-1", 1), _note("bd-2", 2)),
     )
-    head = f.fence.commit_bump(_bump("frame-live", 2, reclaim=reclaim))
+    head = _landed(f, _bump("frame-live", 2, reclaim=reclaim))
     assert f.parent_of(head) == before  # still exactly one commit
     snap = f.snapshot_at(head)
     assert snap.beads["bd-1"] == ("open", "")
@@ -917,7 +925,7 @@ def _case_bump_reclaim_marks_resumable_and_leaves_the_audit_note(f: FenceHarness
 
 @_scenario("fence", "HiveFence.commit_bump", "ReclaimSet", "InvalidRequest")
 def _case_bump_refuses_a_malformed_reclaim(f: FenceHarness) -> None:
-    f.fence.commit_bump(_bump("frame-a", 1))
+    _landed(f, _bump("frame-a", 1))
     beads = frozenset({"bd-1"})
     bad = (
         ReclaimSet("frame-dead", beads, resumable=frozenset({"bd-3"})),
@@ -940,7 +948,7 @@ def _case_bump_refuses_a_malformed_reclaim(f: FenceHarness) -> None:
 @_scenario("fence", "HiveFence.commit_bump", "HiveFence.epoch_floor", "IntegrityViolation")
 def _case_bump_never_regresses_below_the_floor(f: FenceHarness) -> None:
     assert f.fence.epoch_floor().writer == 0
-    f.fence.commit_bump(_bump("frame-a", 3))
+    _landed(f, _bump("frame-a", 3))
     floor = f.fence.epoch_floor()
     assert (floor.history_max, floor.writer) == (3, 3)
     for epoch in (1, 3):
@@ -964,7 +972,7 @@ def _case_bump_refused_when_not_cut_over(adapter: ContractAdapter) -> None:
 
 @_scenario("fence", "HiveFence.commit_bump", "StorageUnavailable")
 def _case_bump_failure_leaves_nothing_applied(f: FenceHarness) -> None:
-    f.fence.commit_bump(_bump("frame-a", 1))
+    _landed(f, _bump("frame-a", 1))
     writer = f.fence.writer()
     f.inject_unavailable("commit_bump")
     _raises(StorageUnavailable, lambda: f.fence.commit_bump(_bump("frame-b", 2)))
@@ -975,7 +983,7 @@ def _case_bump_failure_leaves_nothing_applied(f: FenceHarness) -> None:
 @_scenario("fence", "HiveFence.push", "HiveFence.lookup_bump", "HiveFence.remote_writer")
 def _case_push_then_lookup_bump_finds_the_sentinel(f: FenceHarness) -> None:
     bump = _bump("frame-a", 1)
-    f.fence.commit_bump(bump)
+    _landed(f, bump)
     assert f.fence.lookup_bump("frame-a", 1, operation=bump.operation) == NotConfirmed(
         bump.operation
     )
@@ -986,7 +994,7 @@ def _case_push_then_lookup_bump_finds_the_sentinel(f: FenceHarness) -> None:
     assert f.fence.remote_writer() == WriterRow("frame-a", 1, "rev-frame-a-1")
     other = _op()
     assert f.fence.lookup_bump("frame-b", 1, operation=other) == NotConfirmed(other)
-    f.fence.commit_bump(_bump("frame-b", 2))
+    _landed(f, _bump("frame-b", 2))
     assert isinstance(f.fence.push(), Applied)
     # A later bump retired the sentinel: superseded reads NotConfirmed.
     assert f.fence.lookup_bump("frame-a", 1, operation=bump.operation) == NotConfirmed(
@@ -997,7 +1005,7 @@ def _case_push_then_lookup_bump_finds_the_sentinel(f: FenceHarness) -> None:
 @_scenario("fence", "HiveFence.push", "HiveFence.sync_to_remote", "HiveFence.remote_writer")
 def _case_non_fast_forward_push_conflicts_and_sync_reports_divergence(f: FenceHarness) -> None:
     f.remote_bump(_bump("frame-other", 1))
-    local = f.fence.commit_bump(_bump("frame-a", 1))
+    local = _landed(f, _bump("frame-a", 1))
     out = f.fence.push()
     assert isinstance(out, Conflict)
     assert f.fence.remote_writer() == WriterRow("frame-other", 1, "rev-frame-other-1")
@@ -1014,16 +1022,52 @@ def _case_non_fast_forward_push_conflicts_and_sync_reports_divergence(f: FenceHa
 @_scenario("fence", "HiveFence.push", "HiveFence.lookup_bump", "Unknown")
 def _case_push_unknown_resolves_through_lookup_bump(f: FenceHarness) -> None:
     landed = _bump("frame-a", 1)
-    f.fence.commit_bump(landed)
+    _landed(f, landed)
     f.inject_unknown("push", "commit", applied=True)
     assert isinstance(f.fence.push(), Unknown)
     assert isinstance(f.fence.lookup_bump("frame-a", 1, operation=landed.operation), Confirmed)
     lost = _bump("frame-a", 2)
-    f.fence.commit_bump(lost)
+    _landed(f, lost)
     f.inject_unknown("push", "deadline", applied=False)
     out = f.fence.push()
     assert isinstance(out, Unknown) and out.reason == "deadline"
     assert f.fence.lookup_bump("frame-a", 2, operation=lost.operation) == NotConfirmed(
+        lost.operation
+    )
+
+
+@_scenario(
+    "fence",
+    "HiveFence.commit_bump",
+    "HiveFence.push",
+    "HiveFence.lookup_bump",
+    "Unknown",
+    "IntegrityViolation",
+)
+def _case_bump_unknown_resolves_through_lookup_bump(f: FenceHarness) -> None:
+    """bh-xxkf7.6: once the bump's commit may exist, commit_bump answers ``Unknown`` (never
+    ``StorageUnavailable``). The caller pushes and resolves it with ``lookup_bump`` under the
+    SAME operation; it never re-issues the bump."""
+    before = _landed(f, _bump("frame-a", 1))
+    assert isinstance(f.fence.push(), Applied)
+    landed = _bump("frame-b", 2)
+    f.inject_unknown("commit_bump", "transport", applied=True)
+    out = f.fence.commit_bump(landed)
+    assert isinstance(out, Unknown)
+    assert (out.operation, out.expected, out.reason) == (landed.operation, before, "transport")
+    assert f.fence.writer() == WriterRow("frame-b", 2, "rev-frame-b-2")  # it did commit
+    _raises(IntegrityViolation, lambda: f.fence.commit_bump(landed))  # a re-issue is refused
+    assert isinstance(f.fence.push(), Applied)
+    assert isinstance(f.fence.lookup_bump("frame-b", 2, operation=landed.operation), Confirmed)
+    head = f.fence.sync_to_remote().head
+    lost = _bump("frame-c", 3)
+    f.inject_unknown("commit_bump", "commit", applied=False)
+    out = f.fence.commit_bump(lost)
+    assert isinstance(out, Unknown)
+    assert (out.operation, out.expected, out.reason) == (lost.operation, head, "commit")
+    assert f.fence.writer() == WriterRow("frame-b", 2, "rev-frame-b-2")  # nothing committed
+    assert isinstance(f.fence.push(), Applied)  # nothing new to publish
+    assert f.fence.lookup_bump("frame-c", 3, operation=lost.operation) == NotConfirmed(
         lost.operation
     )
 
@@ -1167,7 +1211,7 @@ class _Side:
             return ("not-confirmed",)
         if isinstance(value, SyncReport):  # the head is a revision: compare its tag (bh-br1cd)
             return ("sync", self.tag(value.head), value.ahead, value.behind, value.diverged)
-        if isinstance(value, str):  # a revision (commit_bump)
+        if isinstance(value, str):  # a bare revision
             return ("revision", self.tag(value))
         return value
 

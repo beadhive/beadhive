@@ -85,11 +85,11 @@ Each port operation maps to the scenarios that exercise it. The table must match
 | `CommittedHistory.read_at` | `publish_returns_the_exact_committed_head` |
 | `CapabilityHost.capability` | `missing_capability_is_none_and_required_raises` |
 | `require_capability` | `missing_capability_is_none_and_required_raises` |
-| `HiveFence.commit_bump` | `bump_is_one_commit_with_sentinel_and_reclaim`, `bump_reclaim_marks_resumable_and_leaves_the_audit_note`, `bump_refuses_a_malformed_reclaim`, `bump_never_regresses_below_the_floor`, `bump_refused_when_not_cut_over`, `bump_failure_leaves_nothing_applied` |
+| `HiveFence.commit_bump` | `bump_is_one_commit_with_sentinel_and_reclaim`, `bump_reclaim_marks_resumable_and_leaves_the_audit_note`, `bump_refuses_a_malformed_reclaim`, `bump_never_regresses_below_the_floor`, `bump_refused_when_not_cut_over`, `bump_failure_leaves_nothing_applied`, `bump_unknown_resolves_through_lookup_bump` |
 | `HiveFence.epoch_floor` | `bump_never_regresses_below_the_floor`, `bump_refused_when_not_cut_over` |
 | `HiveFence.guard_conformance` | `guard_conformance_reports_counts` |
-| `HiveFence.lookup_bump` | `push_then_lookup_bump_finds_the_sentinel`, `push_unknown_resolves_through_lookup_bump` |
-| `HiveFence.push` | `push_then_lookup_bump_finds_the_sentinel`, `non_fast_forward_push_conflicts_and_sync_reports_divergence`, `push_unknown_resolves_through_lookup_bump` |
+| `HiveFence.lookup_bump` | `push_then_lookup_bump_finds_the_sentinel`, `push_unknown_resolves_through_lookup_bump`, `bump_unknown_resolves_through_lookup_bump` |
+| `HiveFence.push` | `push_then_lookup_bump_finds_the_sentinel`, `non_fast_forward_push_conflicts_and_sync_reports_divergence`, `push_unknown_resolves_through_lookup_bump`, `bump_unknown_resolves_through_lookup_bump` |
 | `HiveFence.remote_writer` | `push_then_lookup_bump_finds_the_sentinel`, `non_fast_forward_push_conflicts_and_sync_reports_divergence` |
 | `HiveFence.sync_to_remote` | `non_fast_forward_push_conflicts_and_sync_reports_divergence` |
 | `HiveFence.writer` | `bump_is_one_commit_with_sentinel_and_reclaim`, `bump_refused_when_not_cut_over` |
@@ -98,11 +98,11 @@ Each port operation maps to the scenarios that exercise it. The table must match
 | `EpochRefStore.compare_and_set` | `epoch_ref_cas_issues_a_fresh_sha` |
 | `EpochRefStore.read` | `epoch_ref_cas_issues_a_fresh_sha` |
 | `provisioning` | `update_only_kind_refuses_cas_from_absent` |
-| `Unknown` | `cas_unknown_applied_resolves_confirmed`, `cas_unknown_not_applied_keeps_original_expectation`, `append_unknown_resolves_by_natural_key`, `publish_unknown_resolves_by_publication_witness`, `push_unknown_keeps_the_prior_remote_as_expectation`, `push_unknown_resolves_through_lookup_bump` |
+| `Unknown` | `cas_unknown_applied_resolves_confirmed`, `cas_unknown_not_applied_keeps_original_expectation`, `append_unknown_resolves_by_natural_key`, `publish_unknown_resolves_by_publication_witness`, `push_unknown_keeps_the_prior_remote_as_expectation`, `push_unknown_resolves_through_lookup_bump`, `bump_unknown_resolves_through_lookup_bump` |
 | `StorageUnavailable` | `cas_unavailable_means_nothing_applied`, `unreachable_remote_is_unavailable`, `bump_failure_leaves_nothing_applied` |
 | `NotProvisioned` | `bump_refused_when_not_cut_over` |
 | `InvalidRequest` | `malformed_requests_are_refused_before_io`, `publish_refuses_malformed_change_sets`, `bump_refuses_a_malformed_reclaim` |
-| `IntegrityViolation` | `bump_never_regresses_below_the_floor` |
+| `IntegrityViolation` | `bump_never_regresses_below_the_floor`, `bump_unknown_resolves_through_lookup_bump` |
 | `CapabilityUnsupported` | `consistent_read_is_one_token_or_refused`, `missing_capability_is_none_and_required_raises` |
 
 ## Import rules
