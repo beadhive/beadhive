@@ -1312,3 +1312,104 @@ README lists every operation.
   - `hq_placement_ops` still lists accounts and the principal registry on its cursor.
   - `BdServerEngine.reset_hard` (root's `fence_data`) keeps its own `DOLT_RESET` call, because
     `DoltMerge.reset_hard` delegates to it to keep the forwarder quiesce first.
+
+### Settled by `bh-xxkf7.4`
+
+`writer_adopt` no longer declares `PlacementAuthority`. The coexistence adopt drives the port's
+`PlacementStore` for its placement read, its placement CAS and step 2's placement re-check.
+`host_adopt`'s `_LeasePlacement` and `_DirectorPlacement` are `PlacementStore`s.
+
+- **Port change: `PlacementStore` grows to the adopt's needs.**
+  - `compare_and_set` takes `expected: PlacementView | Absent`. `ABSENT` means "never placed",
+    which `PlacementAuthority.cas(expected=None)` expressed before. The fake and the Dolt adapter
+    pass it through as the `ABSENT` expectation, so `PLACEMENT`'s UPDATE-only rule refuses it
+    with `NotProvisioned`. Git HQ's lease ref accepts it, as before.
+  - `lookup(prefix, operation) -> LookupOutcome` is new. The fake and the Dolt adapter answer
+    `VersionedRecords.lookup(PLACEMENT, prefix, operation)`, so the Dolt witness is the one
+    `bh-sqfvq` settled (the `request_id`, or a caused write's `operation_revision`).
+  - The contract adds `placement_cas_from_absent_is_update_only` and
+    `placement_cas_unknown_resolves_through_lookup`. The second covers `Unknown` with the write
+    applied (`Confirmed`, and the read token equals the confirmed revision) and not applied
+    (`NotConfirmed`, and the original expectation).
+- **Decision: `PlacementView` lives in the port.** It is the port's record, and `writer_adopt`
+  re-exports it, as it does `WriterRow` and `RefView`. `token` now defaults to an empty
+  `Revision`. `doctor` relies on that default when it builds a view from the cached lease, as
+  do the audit views that `fence_audit` reads. The alternative was to keep a second,
+  root `PlacementView`. A frozen dataclass compares by class, though, so the views
+  `PlacementStore.read` returns would never equal the ones root builds. `AdoptReport`,
+  `CoexistenceOutcome` and every test that compares a view would then need a conversion at the
+  edge. No store mints an empty revision. A store compares tokens by equality, so a CAS against
+  a tokenless view conflicts. The git lease adapter is the one exception, and its behaviour
+  there is unchanged: it reads an empty token as `gitref.ABSENT`. Its own `read` never returns
+  a tokenless view.
+- **The domain owns the outcome handling** (`writer_adopt.place`). The CAS carries one fresh
+  `OperationId`:
+  - `Applied` is placed at the new revision.
+  - `Conflict` raises `PlacementLost` (the section 6 rule, "raised by the domain on
+    `Conflict`").
+  - `Unknown` is looked up under the same operation. `Confirmed` is placed at the confirmed
+    revision. That revision may already be superseded; step 2 re-checks placement before the
+    bump, as it always did. `NotConfirmed`, or a lookup that raises `StorageError`, raises the
+    new `writer_adopt.PlacementUnknown`, which carries the operation and the reason.
+  - The CAS is never re-issued and the operation is never re-minted. Re-running the adopt is a
+    new decision from a fresh read (rule 3). It resumes if placement names this frame, and
+    otherwise places higher.
+- **The cause.** The adopt passes the director's vocabulary: `failover` when the adopt kind is a
+  failover, else `planned`. `writer_adopt.PLACEMENT_CAUSE_*` restate
+  `hq_sql_placement.CAUSE_*`, and a unit test pins them equal. Neither root adapter stores a
+  cause, because the lease ref and the frame plane have no cause field. Only the fake and the
+  Dolt adapter record it.
+- **`run_step2` takes `prefix`,** because `PlacementStore.read` is keyed by it. Every caller
+  passes the hive's prefix.
+
+#### Root adapters and their deviations
+
+- **`_LeasePlacement` (git HQ ref, or SQL HQ through the frame plane).**
+  - A recorded lease is `Applied` at the lease's new sha.
+  - An `HqLeaseUnknown` is `Unknown`. Its `deadline` and `transport` reasons map one to one,
+    and `unknown` maps to `"commit"`. `expected` is the original token, or `ABSENT`.
+  - **Deviation: it never returns `Conflict`.** `host_lease` reports a lost race and a refusal
+    alike as `HostLeaseRejected`. Both happen before anything is written: a moved sha, a git
+    ref that lost the race, a live holder that cannot be evicted, or an eligibility refusal.
+    The adapter raises `PlacementLost` with `host_lease`'s own text, exactly as `cas` did.
+    Splitting the race out into a `Conflict` would replace that text with the domain's
+    generic message, which operators read. The domain result is the same either way:
+    `PlacementLost`, nothing written, never retried.
+  - **Deviation: `lookup` is always `NotConfirmed`.** The lease ref holds no operation id, and
+    the frame plane mints its own request id, so neither can witness the port's
+    `OperationId`. This is safe, because `NotConfirmed` never authorises a retry (rule 2). The
+    adapter keeps the `HqLeaseUnknown` it saw, and `_adopt_cut_over` re-raises that original
+    exception in place of `PlacementUnknown`. A caller therefore still sees the plane's request
+    id, digest and original revision, as before this bead.
+- **`_DirectorPlacement` (dolt-server HQ, read through the frame's SELECT grant).**
+  - **Deviation: `compare_and_set` refuses, before any I/O.** It raises `PlacementLost` with the
+    unchanged "ask the director to place ..." text, because a frame cannot re-place itself.
+    `lookup` therefore has nothing to confirm and is `NotConfirmed`.
+  - The pinned first read still raises `PlacementLost` when the row moved.
+- **Both are bound to one hive.** A `read`, `compare_and_set` or `lookup` for another prefix is
+  `InvalidRequest`.
+
+#### Behaviour
+
+- **No behaviour change on the product paths.** Git HQ, the SQL frame plane and the director
+  placement raise the same exception types, with the same text, at the same points. The order
+  is unchanged (placement, then ref, then data). The fencing invariants are unchanged: one
+  placement CAS per decision, never re-issued; a lost CAS writes nothing; step 2 re-checks
+  placement before the bump; and an unconfirmed `Unknown` leaves nothing past placement.
+- **New behaviour only on a store that can confirm an `Unknown`** (the fake, the Dolt
+  adapter). No product adopt runs over such a store yet. When one does, a lost acknowledgment
+  that `lookup` confirms lets the adopt continue. A store that cannot confirm it raises
+  `PlacementUnknown`, and the CAS is never re-issued. `PlacementAuthority` had no `Unknown`
+  outcome at all.
+- **Tests.** No assertion was dropped or weakened.
+  - The placement fakes in `tests/test_writer_adopt.py` and `tests/test_failover_reclaim.py`
+    implement `PlacementStore`. A stale expectation now returns `Conflict` instead of raising
+    `PlacementLost`, and the domain raises it, so the same assertions hold.
+  - The integration stand-ins (`test_fence_data_int._Placement` and
+    `test_fence_cutover_int._HQ`, which `test_fence_composed_int` and `test_fence_orphan_int`
+    reuse) take the prefix.
+  - Every `run_step2` call passes `prefix`. The director-placement tests call
+    `read(prefix)` / `compare_and_set(...)` in place of `read()` / `cas(...)`.
+  - New unit cases cover `Applied`, `Conflict`, `Unknown` confirmed and unconfirmed, a failed
+    lookup, `ABSENT`, the cause and both root adapters' outcomes. That includes the
+    `HqLeaseUnknown` round trip through `host_adopt.adopt`.

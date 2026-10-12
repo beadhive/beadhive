@@ -1,30 +1,37 @@
 """Placement-first coexistence adopt with an idempotent step 2 (bh-4c7p4, ADR §2, P-M2).
 
 Fast, in-memory: the three ports (:class:`~beadhive_hq_storage.HiveFence`,
-:class:`PlacementAuthority`, :class:`EpochRef`) are faithful fakes of the remote head, HQ
-placement and ``refs/bh/epoch``, so the ORDER, the idempotence after a crash at every point,
-and the loss semantics are proven here. ``tests/test_writer_adopt_int.py`` runs the same core
-against real Dolt.
+:class:`~beadhive_hq_storage.PlacementStore`, :class:`EpochRef`) are faithful fakes of the
+remote head, HQ placement and ``refs/bh/epoch``, so the ORDER, the idempotence after a crash
+at every point, and the loss semantics are proven here. ``tests/test_writer_adopt_int.py`` runs
+the same core against real Dolt.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 import pytest
 
 from beadhive import writer_adopt as wa
 from beadhive_hq_storage import (
+    ABSENT,
+    Absent,
     Applied,
     BumpRequest,
     Confirmed,
     Conflict,
     EpochFloor,
     GuardReport,
+    InMemoryHqStorage,
     IntegrityViolation,
     NotConfirmed,
+    PlacementStore,
+    RecordKind,
     Revision,
+    StorageUnavailable,
     SyncReport,
     Unknown,
     Versioned,
@@ -143,21 +150,34 @@ class FakeData:
 
 
 class FakePlacement:
+    """HQ placement as a :class:`~beadhive_hq_storage.PlacementStore`: a stale expectation is a
+    ``Conflict``, a won CAS rewrites the token."""
+
     def __init__(self, frame: str | None, epoch: int, log: list[str]):
         self.view = None if frame is None else wa.PlacementView(frame, epoch, f"tok{epoch}")
         self.log = log
         self.cas_calls = 0
+        self.causes: list[str] = []
 
-    def read(self):
+    def read(self, prefix):
+        assert prefix == PREFIX
         return self.view
 
-    def cas(self, frame, epoch, *, expected):
+    def compare_and_set(self, prefix, frame, epoch, *, expected, cause, operation):
+        assert prefix == PREFIX
         self.cas_calls += 1
+        self.causes.append(cause)
         self.log.append(f"placement:{epoch}")
-        if expected != self.view:
-            raise wa.PlacementLost("moved")
+        if (None if isinstance(expected, Absent) else expected) != self.view:
+            v = self.view
+            body = {} if v is None else {"frame": v.frame, "epoch": v.epoch}
+            return Conflict(None if v is None else Versioned(prefix, Revision(v.token), body))
         self.view = wa.PlacementView(frame, epoch, f"tok{epoch}-{self.cas_calls}")
-        return self.view
+        return Applied(Revision(self.view.token), operation)
+
+    def lookup(self, prefix, operation):
+        assert prefix == PREFIX
+        return NotConfirmed(operation)
 
 
 class FakeRef:
@@ -282,7 +302,7 @@ def test_a_bump_at_or_below_the_floor_fails_closed():
     data.local.history_max = data.remote.history_max = 400  # the floor moved under the plan
     placement.view = wa.PlacementView(ME, 222, "tok")
     with pytest.raises(IntegrityViolation):
-        wa.run_step2(data, placement, frame=ME, epoch=222)
+        wa.run_step2(data, placement, prefix=PREFIX, frame=ME, epoch=222)
     assert data.calls.count("commit") == 1 and "push" not in data.calls
 
 
@@ -299,7 +319,7 @@ def test_an_unknown_push_is_resolved_by_lookup_bump_never_reissued(applied):
         return Unknown("op", Revision("v0"), "transport")
 
     data.push = unknown_push
-    result = wa.run_step2(data, placement, frame=ME, epoch=222)
+    result = wa.run_step2(data, placement, prefix=PREFIX, frame=ME, epoch=222)
     assert data.calls.count("commit") == 1  # one bump, never re-issued
     if applied:
         assert result.outcome is wa.Step2Outcome.LANDED and result.revision is not None
@@ -335,7 +355,7 @@ def test_an_unknown_bump_commit_is_pushed_and_resolved_by_lookup_bump_never_reis
 
     data.commit_bump = unknown_commit
     data.lookup_bump = spy_lookup
-    result = wa.run_step2(data, placement, frame=ME, epoch=222)
+    result = wa.run_step2(data, placement, prefix=PREFIX, frame=ME, epoch=222)
     assert data.calls.count("commit") == 1  # one bump, never re-issued
     assert lookups == [seen[0].operation]  # resolved under the bump's own operation
     if applied:
@@ -432,8 +452,8 @@ def test_rerun_of_a_complete_adopt_is_a_no_op():
 def test_step2_is_idempotent_on_its_own():
     data, placement, ref, _ = _world()
     placement.view = wa.PlacementView(ME, 222, "t")
-    first = wa.run_step2(data, placement, frame=ME, epoch=222)
-    second = wa.run_step2(data, placement, frame=ME, epoch=222)
+    first = wa.run_step2(data, placement, prefix=PREFIX, frame=ME, epoch=222)
+    second = wa.run_step2(data, placement, prefix=PREFIX, frame=ME, epoch=222)
     assert first.landed and first.revision
     assert second.landed and second.revision is None  # converged, no second commit
     assert len(data.remote.bumps) == 1
@@ -445,10 +465,137 @@ def test_step2_is_idempotent_on_its_own():
 def test_a_lost_placement_cas_writes_nothing():
     data, placement, ref, log = _world()
     real_read = placement.read
-    placement.read = lambda: wa.PlacementView(OLD, 221, "stale-token") if real_read() else None
+    placement.read = lambda prefix: (
+        wa.PlacementView(OLD, 221, "stale-token") if real_read(prefix) else None
+    )
     with pytest.raises(wa.PlacementLost):
         _adopt(data, placement, ref)
     assert ref.cas_calls == 0 and "data:commit" not in log
+
+
+def test_the_fakes_are_placement_stores():
+    _data, placement, _ref, _ = _world()
+    assert isinstance(placement, PlacementStore)
+
+
+@pytest.mark.parametrize("failover", [None, True, False], ids=["read", "failover", "planned"])
+def test_the_placement_cas_records_the_adopt_kind_as_its_cause(failover):
+    """bh-xxkf7.4: the port CAS carries a cause, the director's vocabulary. The displaced
+    placement names another frame, so the read kind is a failover."""
+    from beadhive import hq_sql_placement as sp
+
+    assert (wa.PLACEMENT_CAUSE_FAILOVER, wa.PLACEMENT_CAUSE_PLANNED) == (
+        sp.CAUSE_FAILOVER,
+        sp.CAUSE_PLANNED,
+    )
+    data, placement, ref, _ = _world()
+    _adopt(data, placement, ref, failover=failover)
+    want = wa.PLACEMENT_CAUSE_PLANNED if failover is False else wa.PLACEMENT_CAUSE_FAILOVER
+    assert placement.causes == [want]
+
+
+class _Clock:
+    def now(self):
+        return datetime(2026, 10, 12, tzinfo=UTC)
+
+
+class _Spy:
+    """A :class:`~beadhive_hq_storage.PlacementStore` that counts what the adopt asks of it."""
+
+    def __init__(self, inner):
+        self.inner, self.cas, self.lookups = inner, [], []
+        self.lookup_fails = False
+
+    def read(self, prefix):
+        return self.inner.read(prefix)
+
+    def compare_and_set(self, prefix, frame, epoch, *, expected, cause, operation):
+        self.cas.append((expected, operation))
+        return self.inner.compare_and_set(
+            prefix, frame, epoch, expected=expected, cause=cause, operation=operation
+        )
+
+    def lookup(self, prefix, operation):
+        self.lookups.append(operation)
+        if self.lookup_fails:
+            raise StorageUnavailable("lookup partitioned")
+        return self.inner.lookup(prefix, operation)
+
+
+def _port_placement():
+    store = InMemoryHqStorage(_Clock())
+    store.provision(RecordKind.PLACEMENT, PREFIX, {"frame": OLD, "epoch": 221, "cause": "seed"})
+    return store, _Spy(store.placements())
+
+
+def test_the_adopt_drives_the_port_placement_store():
+    data, _fake, ref, _ = _world()
+    store, placement = _port_placement()
+    out = _adopt(data, placement, ref)
+    now = store.read(RecordKind.PLACEMENT, PREFIX)
+    assert out.epoch == 222 and out.placement == wa.PlacementView(ME, 222, now.revision)
+    assert now.body == {"frame": ME, "epoch": 222, "cause": wa.PLACEMENT_CAUSE_FAILOVER}
+    assert data.remote.writer.epoch == 222 and len(placement.cas) == 1
+
+
+def test_a_port_conflict_is_a_lost_placement_that_writes_nothing():
+    data, _fake, ref, log = _world()
+    store, placement = _port_placement()
+    real_read = placement.read
+    placement.read = lambda prefix: wa.PlacementView(OLD, 221, Revision("stale"))
+    with pytest.raises(wa.PlacementLost, match="placement moved since it was read"):
+        _adopt(data, placement, ref)
+    placement.read = real_read
+    assert len(placement.cas) == 1 and placement.lookups == []
+    assert ref.cas_calls == 0 and "data:commit" not in log
+    assert store.placements().read(PREFIX).epoch == 221
+
+
+def test_an_unknown_placement_cas_confirmed_by_lookup_is_placed_never_reissued():
+    data, _fake, ref, _ = _world()
+    store, placement = _port_placement()
+    store.faults.arm_unknown("commit", applied=True, on="compare_and_set")
+    out = _adopt(data, placement, ref)
+    ((expected, operation),) = placement.cas  # one CAS, never re-issued
+    assert placement.lookups == [operation]  # resolved under the CAS's own operation
+    assert expected.epoch == 221
+    now = store.read(RecordKind.PLACEMENT, PREFIX)
+    assert out.epoch == 222 and out.placement.token == now.revision
+    assert data.remote.writer.epoch == 222 and ref.view.epoch == 222
+
+
+@pytest.mark.parametrize("lookup_fails", [False, True], ids=["not-confirmed", "lookup-failed"])
+def test_an_unconfirmed_placement_cas_is_unknown_and_never_reissued(lookup_fails):
+    data, _fake, ref, log = _world()
+    store, placement = _port_placement()
+    placement.lookup_fails = lookup_fails
+    store.faults.arm_unknown("transport", applied=False, on="compare_and_set")
+    with pytest.raises(wa.PlacementUnknown) as excinfo:
+        _adopt(data, placement, ref)
+    ((_expected, operation),) = placement.cas  # one CAS, never re-issued, never re-minted
+    assert placement.lookups == [operation]
+    assert excinfo.value.operation == operation and excinfo.value.reason == "transport"
+    assert wa.recovery_command(PREFIX) in str(excinfo.value)
+    assert ref.cas_calls == 0 and "data:commit" not in log  # nothing past placement
+    assert store.placements().read(PREFIX).epoch == 221
+    # The re-run is a NEW decision from a fresh read: it places 222 under a new operation.
+    out = _adopt(data, placement, ref)
+    assert out.epoch == 222 and len(placement.cas) == 2 and placement.cas[1][1] != operation
+
+
+def test_a_never_placed_hive_expects_absent():
+    data, placement, ref, _ = _world()
+    placement.view = None
+    seen = []
+    real = placement.compare_and_set
+
+    def spy(prefix, frame, epoch, **kw):
+        seen.append(kw["expected"])
+        return real(prefix, frame, epoch, **kw)
+
+    placement.compare_and_set = spy
+    _adopt(data, placement, ref)
+    assert seen == [ABSENT]
 
 
 def test_a_lost_ref_cas_is_a_lost_adopt_never_retried():
@@ -526,7 +673,7 @@ def test_placement_re_placed_higher_elsewhere_is_never_resumed():
         _adopt(data, placement, ref)
     placement.view = wa.PlacementView("frame-b", 223, "director")
     data.triggers = wa.FENCE_TRIGGER_COUNT
-    result = wa.run_step2(data, placement, frame=ME, epoch=222)
+    result = wa.run_step2(data, placement, prefix=PREFIX, frame=ME, epoch=222)
     assert result.outcome is wa.Step2Outcome.PLACEMENT_MOVED
 
 

@@ -657,6 +657,46 @@ def _case_placement_view_moves_frame_and_epoch_under_cas(h: HqHarness) -> None:
     assert lost.current.revision == now.token
 
 
+@_scenario("hq", "PlacementStore.compare_and_set")
+def _case_placement_cas_from_absent_is_update_only(h: HqHarness) -> None:
+    # Operator provisioning seeds a never-placed hive; the placement CAS never inserts.
+    _raises(
+        NotProvisioned,
+        lambda: h.placements.compare_and_set(
+            "bh", "f1", 1, expected=ABSENT, cause="planned", operation=_op()
+        ),
+    )
+    assert h.placements.read("bh") is None
+
+
+@_scenario("hq", "PlacementStore.compare_and_set", "PlacementStore.lookup", "Unknown")
+def _case_placement_cas_unknown_resolves_through_lookup(h: HqHarness) -> None:
+    h.provision(RecordKind.PLACEMENT, "bh", {"frame": "f1", "epoch": 1, "cause": "seed"})
+    seen = h.placements.read("bh")
+    assert seen is not None
+    lost = _op()
+    h.inject_unknown("compare_and_set", "transport", applied=False)
+    out = h.placements.compare_and_set(
+        "bh", "f2", 2, expected=seen, cause="failover", operation=lost
+    )
+    # The ORIGINAL expectation, never a refreshed one.
+    assert out == Unknown(operation=lost, expected=seen.token, reason="transport")
+    assert h.placements.lookup("bh", lost) == NotConfirmed(lost)
+    assert h.placements.read("bh") == seen
+    landed = _op()
+    h.inject_unknown("compare_and_set", "commit", applied=True)
+    out = h.placements.compare_and_set(
+        "bh", "f2", 2, expected=seen, cause="failover", operation=landed
+    )
+    assert out == Unknown(operation=landed, expected=seen.token, reason="commit")
+    found = h.placements.lookup("bh", landed)
+    assert isinstance(found, Confirmed) and found.operation == landed
+    now = h.placements.read("bh")
+    assert now is not None and (now.frame, now.epoch, now.token) == ("f2", 2, found.revision)
+    # The earlier, not-applied operation still reads NotConfirmed.
+    assert h.placements.lookup("bh", lost) == NotConfirmed(lost)
+
+
 # --- AppendLog ------------------------------------------------------------------------------
 
 

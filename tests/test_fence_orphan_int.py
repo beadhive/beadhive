@@ -51,7 +51,7 @@ def rejoined(tmp_path):
     b = _clone(tmp_path, "b", url)
     node_b = _node(b)
     node_b.provision_ident("b")
-    assert wa.run_step2(node_b, _Placement("b", 2), frame="b", epoch=2).landed
+    assert wa.run_step2(node_b, _Placement("b", 2), prefix="fx", frame="b", epoch=2).landed
     stale = [_stale_write(a, f"partitioned-{i}") for i in (1, 2)]
     return a, node_a, b, node_b, stale
 
@@ -133,7 +133,7 @@ def test_superseded_with_nothing_unpublished_only_resets(tmp_path):
     b = _clone(tmp_path, "b", url)
     node_b = _node(b)
     node_b.provision_ident("b")
-    assert wa.run_step2(node_b, _Placement("b", 2), frame="b", epoch=2).landed
+    assert wa.run_step2(node_b, _Placement("b", 2), prefix="fx", frame="b", epoch=2).landed
     out = fo.divert_if_superseded(node_a, frame="a")
     assert out.superseded and out.reset and out.branch is None
     assert fo.list_orphans(node_a) == []
@@ -189,7 +189,7 @@ def test_server_mode_divert_and_one_session_orphan_merge_through_bd(rewound_clus
     assert _publish(node_s)
     node_t.sync_to_remote()
     node_t.provision_ident("t")
-    assert wa.run_step2(node_t, _Placement("t", 2), frame="t", epoch=2).landed
+    assert wa.run_step2(node_t, _Placement("t", 2), prefix="fx", frame="t", epoch=2).landed
 
     s.create_issue("partitioned-server-write").check()  # s still names itself: stamped
     out = fo.divert_if_superseded(node_s, frame="s")
@@ -287,7 +287,7 @@ def test_server_mode_failed_merge_mid_batch_restores_main_to_prev(
     assert _publish(node_s)
     node_t.sync_to_remote()
     node_t.provision_ident("t")
-    assert wa.run_step2(node_t, _Placement("t", 2), frame="t", epoch=2).landed
+    assert wa.run_step2(node_t, _Placement("t", 2), prefix="fx", frame="t", epoch=2).landed
     s.create_issue("partitioned-server-write").check()
     out = fo.divert_if_superseded(node_s, frame="s")
     assert out.branch == "frame/s/orphan-1-1"

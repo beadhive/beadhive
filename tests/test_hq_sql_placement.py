@@ -56,6 +56,8 @@ from beadhive_hq_storage import (
     ABSENT,
     Applied,
     InMemoryHqStorage,
+    InvalidRequest,
+    NotConfirmed,
     RecordKind,
     StorageUnavailable,
     new_operation_id,
@@ -928,14 +930,21 @@ def test_cut_over_adopt_resumes_at_the_director_placed_epoch(tmp_path, monkeypat
     a = _frame(tmp_path)
     plane, _ = _plane(a, fence=EpochFence(22, "host-z"), receiver_row=_director_row_for(a, 23))
     placement = host_adopt._DirectorPlacement(plane, "ah")
-    view = placement.read()
+    view = placement.read("ah")
     assert (view.frame, view.epoch) == ("host-a", 23)
+    operation = new_operation_id()
     with pytest.raises(writer_adopt.PlacementLost, match="ask the director"):
-        placement.cas("host-a", 24, expected=view)
+        placement.compare_and_set(
+            "ah", "host-a", 24, expected=view, cause=CAUSE_FAILOVER, operation=operation
+        )
+    # It never reports an outcome, so there is nothing a lookup could confirm.
+    assert placement.lookup("ah", operation) == NotConfirmed(operation)
+    with pytest.raises(InvalidRequest):
+        placement.read("other")
     seen = {}
 
     def coexistence(data, placement, ref, **kwargs):
-        seen["view"] = placement.read()
+        seen["view"] = placement.read("ah")
         return SimpleNamespace(epoch=23, ref=SimpleNamespace(sha="ref-23"))
 
     adopt, _ = _adopt_world(
@@ -978,7 +987,7 @@ def test_cut_over_adopt_takes_its_kind_from_the_placement_cause(
 
     def coexistence(data, placement, ref, **kwargs):
         seen["failover"] = kwargs["failover"]
-        seen["view"] = placement.read()
+        seen["view"] = placement.read("ah")
         return SimpleNamespace(epoch=23, ref=SimpleNamespace(sha="ref-23"))
 
     _adopt_world(tmp_path, monkeypatch, a, row=row, fence=EpochFence(22, "host-z"))
@@ -1009,9 +1018,9 @@ def test_director_placement_pins_the_row_the_kind_came_from(tmp_path):
     plane, _ = _plane(a, fence=EpochFence(22, "host-z"), receiver_row=row)
     moved = host_adopt._DirectorPlacement(plane, "ah", pinned="0" * 64)
     with pytest.raises(writer_adopt.PlacementLost, match="moved while the adopt was reading"):
-        moved.read()
+        moved.read("ah")
     pinned = host_adopt._DirectorPlacement(plane, "ah", pinned=row[0])
-    assert pinned.read().epoch == 23 and pinned.read().token == row[0]  # only the first read
+    assert pinned.read("ah").epoch == 23 and pinned.read("ah").token == row[0]  # first read only
 
 
 def test_git_hq_keeps_the_gitref_cas_placement_path(tmp_path, monkeypatch):

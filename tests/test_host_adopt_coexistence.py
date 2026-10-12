@@ -11,7 +11,19 @@ import subprocess
 import pytest
 
 from beadhive import doctor, host_adopt, host_fence, host_lease, writer_adopt
-from beadhive_hq_storage import Applied, EpochFloor, GuardReport, NotConfirmed, SyncReport
+from beadhive.hq_control_plane import HqLeaseUnknown
+from beadhive_hq_storage import (
+    ABSENT,
+    Applied,
+    EpochFloor,
+    GuardReport,
+    InvalidRequest,
+    NotConfirmed,
+    PlacementStore,
+    SyncReport,
+    Unknown,
+    new_operation_id,
+)
 
 PREFIX = "bh"
 HOST_A = "aaaaaaaa-1111-4111-8111-111111111111"
@@ -264,6 +276,79 @@ def test_the_lease_cas_honours_an_explicit_expectation(world):
             expected="0" * 40,
         )
     assert _lease(world) == before
+
+
+# ---- the lease placement as the port's PlacementStore (bh-xxkf7.4) -------------------------
+
+
+def _lease_placement(world, at=T0 + TTL + 1):
+    return host_adopt._LeasePlacement(
+        remote=world["hq_remote"],
+        prefix=PREFIX,
+        cwd=world["hq_cwd"],
+        label="laptop",
+        ttl=TTL,
+        at=at,
+        force=False,
+    )
+
+
+def test_the_lease_placement_reports_port_outcomes(world):
+    _cut_over(world)
+    placement = _lease_placement(world)
+    assert isinstance(placement, PlacementStore)
+    view = placement.read(PREFIX)
+    assert (view.frame, view.epoch) == (HOST_A, 1)
+    op = new_operation_id()
+    out = placement.compare_and_set(
+        PREFIX, HOST_B, 2, expected=view, cause=writer_adopt.PLACEMENT_CAUSE_FAILOVER, operation=op
+    )
+    now = placement.read(PREFIX)
+    assert out == Applied(now.token, op) and (now.frame, now.epoch) == (HOST_B, 2)
+    # A stale expectation is host_lease's own rejection, raised with its text, nothing written.
+    with pytest.raises(writer_adopt.PlacementLost, match="placement moved since it was read"):
+        placement.compare_and_set(
+            PREFIX, HOST_A, 3, expected=view, cause="planned", operation=new_operation_id()
+        )
+    assert placement.read(PREFIX) == now
+    # The lease plane carries no witness of the port's operation id.
+    assert placement.lookup(PREFIX, op) == NotConfirmed(op)
+    with pytest.raises(InvalidRequest):
+        placement.read("other")
+
+
+@pytest.mark.parametrize(
+    "reason,port_reason",
+    [("deadline", "deadline"), ("transport", "transport"), ("unknown", "commit")],
+)
+def test_an_unknown_lease_ack_is_unknown_and_adopt_surfaces_it_never_reissued(
+    world, monkeypatch, reason, port_reason
+):
+    data = _cut_over(world)
+    placement = _lease_placement(world)
+    view = placement.read(PREFIX)
+    lost = HqLeaseUnknown("req-1", "sha-1", view.token, reason)
+    calls = []
+
+    def unknown(*a, **kw):
+        calls.append(kw["expected"])
+        raise lost
+
+    monkeypatch.setattr(host_adopt.host_lease, "adopt", unknown)
+    op = new_operation_id()
+    out = placement.compare_and_set(PREFIX, HOST_B, 2, expected=view, cause="x", operation=op)
+    assert out == Unknown(op, view.token, port_reason) and placement.unknown is lost
+    absent = placement.compare_and_set(PREFIX, HOST_B, 2, expected=ABSENT, cause="x", operation=op)
+    assert absent == Unknown(op, ABSENT, port_reason)
+
+    calls.clear()
+    with pytest.raises(HqLeaseUnknown) as excinfo:
+        _adopt(world, host_id=HOST_B, at=T0 + TTL + 1, fence_data=data)
+    assert excinfo.value is lost  # the plane's own request id and digest, as before
+    assert calls == [view.token]  # one CAS against the original expectation, never re-issued
+    assert (_fence(world).host_id, _fence(world).epoch) == (HOST_A, 1)  # ref never moved
+    assert data.remote == writer_adopt.WriterRow(HOST_A, 1, "seed")  # no bump
+    assert host_lease.read_cached(PREFIX, cwd=world["hq_cwd"]).epoch == 1  # nothing cached
 
 
 # ---- bh doctor ----------------------------------------------------------------------------

@@ -21,6 +21,7 @@ from beadhive import failover_reclaim as fr
 from beadhive import work_backup
 from beadhive import writer_adopt as wa
 from beadhive_hq_storage import (
+    Absent,
     Applied,
     BumpRequest,
     Confirmed,
@@ -209,17 +210,22 @@ class FakeProbe:
 
 
 class FakePlacement:
+    """HQ placement as a :class:`~beadhive_hq_storage.PlacementStore`."""
+
     def __init__(self, frame: str | None, epoch: int):
         self.view = None if frame is None else wa.PlacementView(frame, epoch, f"tok{epoch}")
 
-    def read(self):
+    def read(self, prefix):
         return self.view
 
-    def cas(self, frame, epoch, *, expected):
-        if expected != self.view:
-            raise wa.PlacementLost("moved")
+    def compare_and_set(self, prefix, frame, epoch, *, expected, cause, operation):
+        if (None if isinstance(expected, Absent) else expected) != self.view:
+            return Conflict(None)
         self.view = wa.PlacementView(frame, epoch, f"tok{epoch}+")
-        return self.view
+        return Applied(Revision(self.view.token), operation)
+
+    def lookup(self, prefix, operation):
+        return NotConfirmed(operation)
 
 
 class NoRef:

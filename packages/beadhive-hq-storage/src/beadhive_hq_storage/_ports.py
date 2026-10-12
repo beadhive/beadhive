@@ -223,7 +223,15 @@ class EpochRefStore(Protocol):
 
 @runtime_checkable
 class PlacementStore(Protocol):
-    """A typed view over ``RecordKind.PLACEMENT`` (absorbs root's ``PlacementAuthority``)."""
+    """A typed view over ``RecordKind.PLACEMENT``: the single HQ CAS point for placement
+    (hive-writer-partitioning ADR section 1). It absorbed root ``writer_adopt``'s
+    ``PlacementAuthority`` (bh-xxkf7.4).
+
+    ``compare_and_set`` moves placement to ``(frame, epoch)`` iff it is still ``expected``
+    (``ABSENT``: never placed; an UPDATE-only store refuses that with ``NotProvisioned``) and
+    returns ``Applied`` with the fresh token, ``Conflict`` on a lost race, or ``Unknown``. An
+    ``Unknown`` is resolved by ``lookup`` under the SAME ``OperationId``; ``NotConfirmed`` never
+    authorises re-issuing it (section 2, rule 3)."""
 
     def read(self, prefix: str) -> PlacementView | None: ...
 
@@ -233,10 +241,12 @@ class PlacementStore(Protocol):
         frame: str,
         epoch: int,
         *,
-        expected: PlacementView,
+        expected: PlacementView | Absent,
         cause: str,
         operation: OperationId,
     ) -> Outcome: ...
+
+    def lookup(self, prefix: str, operation: OperationId) -> LookupOutcome: ...
 
 
 @runtime_checkable
