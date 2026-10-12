@@ -222,6 +222,31 @@ def ledger_ttl(cfg, entry) -> int:
     return duration_seconds(str(work_value(cfg, entry, "ledger_ttl", DEFAULT_LEDGER_TTL)))
 
 
+DEFAULT_CARRY_MAX_ROOTS = 3
+
+
+def carry_high_water(cfg, entry) -> bool:
+    """Whether carries discover roots beyond the receipt base (attest-keys ADR, section 3.5).
+
+    `work.gate.carry.high_water`, per-hive over global. Unset follows `work.gate.model`: on only
+    under `keys`, so a hive on the default `legacy` model keeps single-hop sourcing. Anything
+    but a real bool degrades to single-hop: discovery only ever adds carry candidates, so the
+    doubtful direction is to add none."""
+    value = layered(cfg, entry, "work.gate.carry", "high_water", None)
+    if value is None:
+        return layered(cfg, entry, "work.gate", "model", "legacy") == "keys"
+    return value is True
+
+
+def carry_max_roots(cfg, entry) -> int:
+    """`work.gate.carry.max_roots` (default 3): newest same-command green roots tried per key.
+    A malformed or negative value degrades to 0, which tries fewer roots, never more."""
+    value = layered(cfg, entry, "work.gate.carry", "max_roots", DEFAULT_CARRY_MAX_ROOTS)
+    if type(value) is not int or value < 0:
+        return 0
+    return value
+
+
 def enforce_signing(cfg, entry) -> bool:
     """Whether the merge path refuses a branch carrying any commit git cannot verify as TRUSTED
     (default False). See `config_schema.WorkConfig.enforce_signing` for what it gates, why it is
@@ -581,6 +606,9 @@ __all__ = [
     "_DURATION",
     "duration_seconds",
     "ledger_ttl",
+    "DEFAULT_CARRY_MAX_ROOTS",
+    "carry_high_water",
+    "carry_max_roots",
     "enforce_signing",
     "beads_route",
     "batch_max_size",

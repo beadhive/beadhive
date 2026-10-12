@@ -275,6 +275,12 @@ worktrees:
 #         disabled_reason: "temporary capacity incident bh-example"  # required when disabled
 #         disabled_until: "2026-09-22T00:00:00Z"  # optional; expiry re-enables fail-closed
 #         selectors: {pants: "attest:stateful"}
+#   gate:
+#     carry:                       # high-water carry discovery (attest-keys ADR, section 3.5)
+#       high_water: true           # unset follows work.gate.model (on only under `keys`);
+#                                  # false = single-hop: carry only from a run on the base tree.
+#                                  # A root keeps its own run time and TTL; nothing is refreshed.
+#       max_roots: 3               # newest same-command green roots tried per key (0 = none)
 #   demo_cmd: "just demo"          # how `bh work review --demo` exercises the feature (default none)
 #   review_gate: "human"           # bd gate opened at submit: human | timer | gh:run | gh:pr
 #   routing:

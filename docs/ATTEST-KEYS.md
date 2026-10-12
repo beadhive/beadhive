@@ -232,6 +232,26 @@ Every backend follows the same rules:
 Only a current green verdict can be a carry source. Carries do not chain, do not refresh the
 source verdict's age, and never transfer red or unknown results.
 
+### High-water carry roots
+
+When a base tree only holds a *carry* of a key, the next transition can still carry the key, from
+the run that earned it (attest-keys ADR, section 3.5). With `work.gate.carry.high_water` on (unset
+follows `work.gate.model`, so it is on only under `keys`), the evaluator tries these roots in order
+for each unaffected key with no run on the base:
+
+1. the `source_tree` / `source_run_id` of a valid carried record on the base;
+2. the newest `work.gate.carry.max_roots` (default 3) distinct trees holding a green run of the
+   same command.
+
+A root must still read as a current, fresh, qualifying green run of the same command, and its
+recorded commit must resolve locally to that exact tree; otherwise it is skipped. Each distinct
+root is resolved once, **root to head directly**, and the key carries only when that receipt has
+no fallback, no unowned path, no global input and lists the key unaffected. The carried record
+keeps the root's `source_tree`, `source_run_id` and `at`, so TTL still runs from the root run.
+A base whose own verdict is current (green, red or unknown) is never routed around. The evaluator
+prints the root tree and the receipt digest for every such carry. `high_water: false` restores
+single-hop sourcing.
+
 ## Operation and rollback
 
 Enable Pants impact resolution for one hive:

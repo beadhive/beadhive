@@ -740,6 +740,42 @@ class AttestConfig(_Section):
         return v
 
 
+class GateCarryConfig(_Section):
+    """High-water carry source discovery (attest-keys ADR, section 3.5).
+
+    A carry's source is always a current green run of the key (its *root*). With high-water
+    discovery the evaluator may also try the root that a valid carried record on the receipt
+    base points at, and the newest same-command green roots within TTL, each re-proven by one
+    receipt spanning root to head. The root's age and TTL are kept; nothing is refreshed."""
+
+    high_water: bool | None = Field(
+        None,
+        description=(
+            "Discover carry roots beyond the receipt base. Unset follows work.gate.model: on "
+            "under `keys`, off otherwise (single-hop sourcing, today's behaviour). false "
+            "restores single-hop sourcing explicitly."
+        ),
+    )
+    max_roots: int = Field(
+        3,
+        ge=0,
+        description=(
+            "Newest same-command green runs within TTL tried as carry roots per key, after the "
+            "base's own root. 0 disables that ledger scan."
+        ),
+    )
+
+
+class GateConfig(_Section):
+    """Lifecycle gate model settings (attest-keys ADR, Amendment 2). Only carry discovery is
+    configurable here so far."""
+
+    carry: GateCarryConfig = Field(
+        default_factory=GateCarryConfig,
+        description="High-water carry source discovery.",
+    )
+
+
 class ValidationPriorityConfig(_Section):
     """Best-effort host scheduling controls for validation subprocesses."""
 
@@ -1074,6 +1110,10 @@ class WorkConfig(_Section):
             "Attest key catalog + impact resolver (Attested Green ADR, Amendment 1). Absent is "
             "today's whole-tree gate: no keys, native-full."
         ),
+    )
+    gate: GateConfig = Field(
+        default_factory=GateConfig,
+        description="Lifecycle gate model (attest-keys ADR): high-water carry discovery.",
     )
     dispatch: DispatchConfig = Field(default_factory=DispatchConfig)
     beads: BeadsConfig = Field(default_factory=BeadsConfig)
