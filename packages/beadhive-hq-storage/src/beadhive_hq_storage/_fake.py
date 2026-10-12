@@ -816,12 +816,28 @@ class _FenceCommit:
     sentinel: str | None = None
 
 
+class _SharedRemote:
+    """The commit graph and the remote head every :meth:`InMemoryHiveFence.peer` of one hive
+    shares: one ``git+ssh`` data remote, many clones. Revisions come from one mint, so no two
+    peers can mint the same one."""
+
+    def __init__(self, mint: _Mint) -> None:
+        self.mint = mint
+        self.commits: dict[Revision, _FenceCommit] = {}
+        self.head: Revision | None = None
+
+
 class InMemoryHiveFence:
     """The in-memory ``HiveFence`` with a local ``main`` and a simulated remote.
 
     ``writer=None`` models a hive that is not cut over (bumps raise ``NotProvisioned``).
     ``beads`` seeds bead rows as ``id -> (status, assignee)`` and ``labels`` their
-    ``(bead, label)`` rows, for the reclaim."""
+    ``(bead, label)`` rows, for the reclaim.
+
+    :meth:`peer` adds another node of the same hive (a clone of the same remote, with its own
+    local ``main``, guard install and reachability), so a protocol test can run one product
+    adopt per node against one remote. :meth:`local_write` is a data write the node's guard
+    admitted; the guard's refusals are the triggers' and are tested on real Dolt."""
 
     def __init__(
         self,
@@ -834,11 +850,7 @@ class InMemoryHiveFence:
         missing_guards: Collection[str] = (),
         namespace: str = "in-memory-fence",
     ) -> None:
-        self._clock = clock
-        self._mint = _Mint(namespace)
-        self.faults = FaultPlan()
-        self._guards = tuple(guards)
-        self._missing = tuple(g for g in self._guards if g in set(missing_guards))
+        shared = _SharedRemote(_Mint(namespace))
         state = FenceSnapshot(
             writer=writer,
             live_epoch=0 if writer is None else writer.epoch,
@@ -846,14 +858,104 @@ class InMemoryHiveFence:
             beads=dict(beads or {}),
             labels=frozenset(labels),
         )
-        genesis = _FenceCommit(self._mint.revision(), None, state, None, _now(clock))
-        self._commits: dict[Revision, _FenceCommit] = {genesis.revision: genesis}
-        self._local = genesis.revision
-        self._remote = genesis.revision
+        genesis = _FenceCommit(shared.mint.revision(), None, state, None, _now(clock))
+        shared.commits[genesis.revision] = genesis
+        shared.head = genesis.revision
+        self._attach(clock, shared, guards=guards, missing_guards=missing_guards)
+
+    def _attach(
+        self,
+        clock: StorageClock,
+        shared: _SharedRemote,
+        *,
+        guards: Sequence[str],
+        missing_guards: Collection[str],
+    ) -> None:
+        self._clock = clock
+        self._shared = shared
+        self._mint = shared.mint
+        self._commits = shared.commits
+        self.faults = FaultPlan()
+        self._guards = tuple(guards)
+        self._missing = tuple(g for g in self._guards if g in set(missing_guards))
+        assert shared.head is not None
+        self._local = shared.head
         self._reachable = True
         self._capabilities: dict[type, object] = {}
 
+    @property
+    def _remote(self) -> Revision:
+        assert self._shared.head is not None
+        return self._shared.head
+
+    @_remote.setter
+    def _remote(self, revision: Revision) -> None:
+        self._shared.head = revision
+
     # -- test controls ------------------------------------------------------------------------
+
+    def peer(
+        self, *, guards: Sequence[str] = _DEFAULT_GUARDS, missing_guards: Collection[str] = ()
+    ) -> InMemoryHiveFence:
+        """Another node of the same hive: a fresh clone of the shared remote, its local
+        ``main`` at the remote head. Every peer pushes to and syncs from the one remote."""
+        node = object.__new__(InMemoryHiveFence)
+        node._attach(self._clock, self._shared, guards=guards, missing_guards=missing_guards)
+        return node
+
+    def local_write(
+        self,
+        mark: str,
+        *,
+        bead: str | None = None,
+        status: str = "open",
+        assignee: str = "",
+        labels: Collection[str] = (),
+    ) -> Revision:
+        """One local data commit that this node's guard ADMITTED: a ``bh_write_mark`` row
+        ``mark`` stamped at the local live epoch, plus (when given) the bead row it wrote and
+        that bead's labels. Not pushed.
+
+        It is the commit an admitted write leaves, nothing more: the caller only uses it where
+        the guard admits the write (the local ``bh_writer`` names the writing frame). Refusing
+        a non-writer is the guard triggers' job, and those are tested on real Dolt."""
+        _check_key(mark, "mark id")
+        parent = self._commits[self._local]
+        state = parent.state
+        if state.writer is None:
+            raise NotProvisioned("the hive is not cut over: no bh_writer row")
+        if any(existing == mark for existing, _ in state.marks):
+            raise InvalidRequest(f"mark {mark!r} already exists")
+        beads, found = dict(state.beads), set(state.labels)
+        if bead is not None:
+            _check_key(bead, "bead id")
+            beads[bead] = (status, assignee)
+            found |= {(bead, _check_key(label, "label")) for label in labels}
+        commit = _FenceCommit(
+            self._mint.revision(),
+            parent.revision,
+            FenceSnapshot(
+                writer=state.writer,
+                live_epoch=state.live_epoch,
+                marks=state.marks | {(mark, state.live_epoch)},
+                beads=beads,
+                labels=frozenset(found),
+                comments=state.comments,
+            ),
+            None,
+            _now(self._clock),
+        )
+        self._commits[commit.revision] = commit
+        self._local = commit.revision
+        return commit.revision
+
+    def chain(self, revision: Revision) -> list[Revision]:
+        """``revision`` and its ancestors, newest first (test-side history read)."""
+        return _chain(self._commits, revision)
+
+    def sentinel_of(self, revision: Revision) -> str | None:
+        """The ``adopt-<epoch>`` sentinel a bump commit inserted, ``None`` for any other commit."""
+        return self._commits[revision].sentinel
 
     def set_reachable(self, reachable: bool) -> None:
         self._reachable = reachable

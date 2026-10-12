@@ -17,6 +17,14 @@ Proposal scenarios (``docs/design/hive-writer-partitioning-proposal.md``, "Valid
 6. ``hive_sync`` (``bd federation sync --strategy``), ``bd sync`` and ``bd dolt pull`` never
    revert ``bh_writer``;
 
+Scenarios 1, 2 and 4 are pure protocol: they run on the PRODUCT adopt over the HQ storage port's
+in-memory fence in ``tests/test_epoch_fencing_protocol.py`` (bh-utvyj). Their bd/Dolt-specific
+assertions are kept here, where other scenarios assert the same thing on real frames: the guard
+triggers refusing a synced stale frame's write (scenario 3), a stale bd push rejected as
+non-fast-forward and bd's settle gate refusing a stale pull (scenario 5), and the push CAS under
+concurrency (the ``file://`` test). Scenario 3 is this file's end-to-end smoke for the trigger
+and the orphan path.
+
 plus the bd force paths (break-glass, with after-the-fact detection), mark growth and pruning, and
 ``file://`` push CAS. Judged on remote ``main`` and table contents, never on ``refs/dolt/data``
 (a refused push still moves that ref: bh-eybn7 Evidence 6). Every step goes through
@@ -32,7 +40,6 @@ import os
 import shutil
 import subprocess
 import sys
-import threading
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 
@@ -58,7 +65,6 @@ from harness.epoch_fence import (
 from harness.writer_fencing import (
     BD_EMBEDDED,
     BD_SERVER,
-    CAS,
     DOLT_CLI,
     Cluster,
     Frame,
@@ -197,107 +203,6 @@ def _hive_sync(frame: Frame, strategy: str | None) -> Run:
 
 
 # =============================================================================================
-# Scenario 1 — planned handoff while the old writer is idle
-# =============================================================================================
-
-
-def test_s1_planned_handoff_fences_the_idle_old_writer(rewound_custom):
-    """B's bump lands; A's next push is non-fast-forward; once A has the bump, A's local
-    ``main`` writes fail in SQL. Old writer: bd embedded, then bd server; adopter: Dolt CLI."""
-    cluster = rewound_custom(fenced_cluster, FRAMES)
-    recorder = _recorder(cluster, "a", "b")
-    for name in ("a", "b"):
-        old = cluster[name]
-        held = cluster.hq.place(name).epoch
-        assert adopt(cluster, old, held) == "landed"
-        with recorder.step(f"s1:{name}:legit-write", name):
-            old.create_issue(f"s1-{name}-legit").check()
-            old.push().check()
-        new = cluster.hq.place("c", expected_epoch=held).epoch
-        with recorder.step(f"s1:{name}:handoff", "c") as handoff:
-            assert adopt(cluster, cluster["c"], new) == "landed"
-        after = remote_fence(cluster)
-        assert after["writer"] == ("c", new) and after["live"] == [new]
-        # the bump retired every mark of the old epoch; only its own sentinel is left
-        assert after["marks"] == [new]
-        assert f"s1-{name}-legit" in after["titles"]
-        assert handoff["after"]["remote"]["main"] != handoff["before"]["remote"]["main"]
-
-        with recorder.step(f"s1:{name}:next-push", name) as late:
-            old.create_issue(f"s1-{name}-late").check()  # A has not seen the bump yet
-            pushed = _evidence(recorder, "s1:next-push", name, old.push())
-        assert not pushed.ok and NON_FF in pushed.output, pushed.output
-        assert late["after"]["remote"]["main"] == late["before"]["remote"]["main"]
-
-        with recorder.step(f"s1:{name}:learns-bump", name):
-            sync_to_remote(old)  # what the managed path does on seeing a newer epoch
-            refused = _evidence(
-                recorder, "s1:local-write", name, old.create_issue(f"s1-{name}-after")
-            )
-        assert not refused.ok and GUARD_REFUSAL in refused.output, refused.output
-        assert local_writer(old) == ("c", new)
-        titles = remote_fence(cluster)["titles"]
-        assert not {f"s1-{name}-late", f"s1-{name}-after"} & titles
-
-
-# =============================================================================================
-# Scenario 2 — handoff while the old writer is mid-push
-# =============================================================================================
-
-
-def test_s2_handoff_mid_write_lands_before_the_bump_or_is_rejected(rewound_custom):
-    """The old writer is parked at its push CAS while the adopter runs. Bump first: the parked
-    push is rejected. Write first: it lands, the adopter's push is rejected, adopt retries from
-    the new head, so the write sits BELOW the bump. Never after it."""
-    cluster = rewound_custom(fenced_cluster, FRAMES)
-    recorder = _recorder(cluster)
-    c = cluster["c"]
-    for name in ("a", "b"):
-        old = cluster[name]
-
-        # --- order 1: the bump lands while the old writer's push is parked ---------------
-        held = cluster.hq.place(name).epoch
-        assert adopt(cluster, old, held) == "landed"
-        old.create_issue(f"s2-{name}-parked").check()
-        hold = old.hold(CAS)
-        push = old.push_async()
-        hold.wait()
-        new = cluster.hq.place("c", expected_epoch=held).epoch
-        with recorder.step(f"s2:{name}:bump-while-parked", "c"):
-            assert adopt(cluster, c, new) == "landed"
-        with recorder.step(f"s2:{name}:release-parked", name) as released:
-            hold.release()
-            result = _evidence(recorder, "s2:parked-push", name, push.result())
-        assert not result.ok and NON_FF in result.output, result.output
-        assert released["after"]["remote"]["main"] == released["before"]["remote"]["main"]
-        assert f"s2-{name}-parked" not in remote_fence(cluster)["titles"]
-
-        # --- order 2: the parked write is released first, inside the adopter's push -------
-        held = cluster.hq.place(name).epoch
-        assert adopt(cluster, old, held) == "landed"
-        old.create_issue(f"s2-{name}-first").check()
-        hold = old.hold(CAS)
-        push = old.push_async()
-        hold.wait()
-        new = cluster.hq.place("c", expected_epoch=held).epoch
-        landed: list[Run] = []
-
-        def release_old_first(hold=hold, push=push, landed=landed):
-            hold.release()
-            landed.append(push.result())
-
-        with recorder.step(f"s2:{name}:write-first", "c"):
-            assert adopt(cluster, c, new, before_push=release_old_first) == "landed"
-        assert landed and landed[0].ok, landed
-        remote = remote_fence(cluster)
-        assert f"s2-{name}-first" in remote["titles"]
-        assert remote["writer"] == ("c", new) and remote["marks"] == [new]
-        # The adopter's first push lost the race and was retried from the new head.
-        cas_pushes = [e for e in c.gate_log() if e["point"] == CAS]
-        assert len(cas_pushes) >= 2
-
-
-# =============================================================================================
 # Scenario 3 — partitioned old writer, failover, rejoin, orphan branch
 # =============================================================================================
 
@@ -359,81 +264,6 @@ def test_s3_partitioned_writer_is_fenced_and_its_unpublished_work_survives_on_an
         assert remote["writer"] == ("c", new) and set(remote["marks"]) <= {new}
         audit = fence_audit(cluster)
         assert audit["stale_marks"] == 0 and not audit["epoch_regressed"], audit
-
-
-# =============================================================================================
-# Scenario 4 — two adopters race for the same epoch
-# =============================================================================================
-
-
-def test_s4_one_placement_cas_wins_and_a_loser_that_reached_step_2_abandons(rewound_custom):
-    cluster = rewound_custom(fenced_cluster, FRAMES)
-    recorder = _recorder(cluster, "a", "b")
-    a, b = cluster["a"], cluster["b"]
-    base = cluster.hq.placement().epoch
-
-    # HQ CAS: both read epoch `base` and race; exactly one wins.
-    barrier, results = threading.Barrier(2), {}
-
-    def racer(name):
-        barrier.wait()
-        try:
-            results[name] = cluster.hq.place(name, expected_epoch=base).epoch
-        except ValueError as exc:
-            results[name] = str(exc)
-
-    threads = [threading.Thread(target=racer, args=(n,)) for n in ("a", "b")]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    winners = [n for n, r in results.items() if isinstance(r, int)]
-    assert len(winners) == 1, results
-    assert "stale placement" in str(results[{"a": "b", "b": "a"}[winners[0]]])
-
-    # Loser-in-data: `a` won epoch e at HQ and reached step 2 (HQ check passed), then the
-    # director failed over to `b` at e+1, which landed first. a's push is non-fast-forward;
-    # its retry sees b@e+1 >= e in the data and abandons.
-    epoch = cluster.hq.place("a").epoch
-
-    def fail_over_to_b():
-        later = cluster.hq.place("b", expected_epoch=epoch).epoch
-        assert adopt(cluster, b, later) == "landed"
-
-    with recorder.step("s4:stale-adopter-overtaken", "a"):
-        outcome = adopt(cluster, a, epoch, before_push=fail_over_to_b)
-    assert outcome == "abandoned: superseded in data"
-    remote = remote_fence(cluster)
-    assert remote["writer"] == ("b", epoch + 1) and remote["live"] == [epoch + 1]
-    refused = a.create_issue("s4-a-after-abandon")
-    assert not refused.ok and GUARD_REFUSAL in refused.output
-
-    # Reverse order: the stale adopter's bump lands first, writes once, then the current
-    # adopter's push is rejected, retries on top and retires the stale epoch.
-    stale_epoch = cluster.hq.place("a").epoch
-    current_epoch = cluster.hq.place("b", expected_epoch=stale_epoch).epoch
-
-    def a_lands_first():
-        sync_to_remote(a)
-        run_script(a, bump_statements("a", stale_epoch)).check()
-        a.commit(f"bh: adopt a@{stale_epoch}").check()
-        a.push().check()
-        a.create_issue("s4-a-at-stale-epoch").check()
-        a.push().check()
-
-    with recorder.step("s4:stale-adopter-lands-first", "b"):
-        assert adopt(cluster, b, current_epoch, before_push=a_lands_first) == "landed"
-    remote = remote_fence(cluster)
-    assert remote["writer"] == ("b", current_epoch) and remote["live"] == [current_epoch]
-    assert "s4-a-at-stale-epoch" in remote["titles"]
-    assert remote["marks"] == [current_epoch]  # a's marks retired; b's sentinel only
-    with recorder.step("s4:stale-adopter-fenced", "a"):
-        a.create_issue("s4-a-stale").check()  # a's local data still names a
-        pulled = _evidence(recorder, "s4:stale-pull", "a", a.pull())
-        pushed = a.push()
-    assert not pulled.ok and SETTLE_REFUSAL in pulled.output, pulled.output
-    assert not pushed.ok and NON_FF in pushed.output
-    assert "s4-a-stale" not in remote_fence(cluster)["titles"]
 
 
 # =============================================================================================

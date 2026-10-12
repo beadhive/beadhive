@@ -1413,3 +1413,55 @@ README lists every operation.
   - New unit cases cover `Applied`, `Conflict`, `Unknown` confirmed and unconfirmed, a failed
     lookup, `ABSENT`, the cause and both root adapters' outcomes. That includes the
     `HqLeaseUnknown` round trip through `host_adopt.adopt`.
+
+### Settled by `bh-utvyj`
+
+These protocol tests now run on the port's fakes and drive the product modules, not the
+prototype harnesses. Each asserts the same invariant as the real-Dolt test it replaces. Each
+test removed from Dolt either moved whole, or left only bd- or Dolt-specific assertions that
+another kept real-Dolt test already makes.
+
+| Scenario | Fake-backed test | Real Dolt |
+|---|---|---|
+| Epoch fencing s1, planned handoff | `tests/test_epoch_fencing_protocol.py::test_s1_…` | Removed. The trigger refusal stays in s3, the stale bd push in s5 `bd-dolt-push` |
+| Epoch fencing s2, handoff mid-push, both orders | `::test_s2_…` | Removed. The push CAS under concurrency stays in the `file://` test |
+| Epoch fencing s4, placement race and a loser in step 2 | `::test_s4_…` | Removed. The trigger refusal stays in s3, the settle-gate pull in s5 `bd-pull-then-push` |
+| Epoch fencing s3, partition, failover and orphan | none | Kept: the family's smoke |
+| Failover reclaim, planned handoff | `tests/test_failover_reclaim_protocol.py::test_a_planned_handoff_reclaims_nothing` | Removed |
+| Failover reclaim, director-placed cause matrix | `::test_a_director_placed_adopt_reclaims_exactly_once_and_only_on_failover` (4 cases) | Removed. The cause's Dolt wire format stays in `test_hq_sql_placement_int.py` |
+| Failover reclaim, end to end | none | Kept: the family's smoke |
+| Sender stall (Φ3, O4) | `tests/test_sender_stall_protocol.py` | Removed. The renewal and eligibility SQL stay in `test_hq_sql_session_int.py` |
+| Cutover C1, legacy-carrier refusals | `tests/test_fence_cutover.py::test_c1_legacy_ref_and_placement_refusals_leave_the_hive_untouched` | Reduced to the unpublished-work refusal |
+
+- **Fake changes, test controls only.** The port protocols are unchanged.
+  - `InMemoryHiveFence.peer()` adds another node of the same hive. A peer is a clone of the one
+    simulated remote with its own local `main`, guard install and reachability, so one product
+    adopt can run per node. All peers share one revision mint.
+  - `local_write(mark, bead=...)` is the commit that an admitted write leaves: a
+    `bh_write_mark` row at the local live epoch, plus the bead row. It does not model the guard
+    triggers' refusal. Tests call it only where the product write gate
+    (`guard.writer_refusal`) admits the write.
+  - `chain()` and `sentinel_of()` are history reads for the tests.
+- **`ReclaimData` reads stay test-side.** `failover_reclaim.Claim` is a root type, and the port
+  package never imports root. So `ReclaimingFence` in the test reads the claims and policy
+  rows from the fake's snapshot. Those are the rows `FenceNode.config_rows()` and `claims()`
+  serve on Dolt.
+- **What stays on real Dolt, and why.** Each of these needs something the ADR keeps Dolt-only
+  or does not give the fake. Per this bead's rule, nothing new was invented for them:
+  - the guard triggers' refusals (`GUARD_REFUSAL`, `bh_local_ident`), bd's settle gate and
+    sync refusals, and bd's server-mode staging (epoch fencing s3, s5, s6, the force paths,
+    marks growth, and the `file://` push CAS);
+  - `fence_orphan`'s divert and orphan merge, which need `DoltHistory` and `DoltMerge`:
+    branch refs, `publish_branch`, `preview_conflicts`, `merge_restamping` and `reset_hard`.
+    Section 8 rejects reimplementing Dolt's merge semantics. So `test_fence_orphan_int.py` and
+    the fixed-seed product interleavings in `test_fence_composed_int.py` stay. The
+    interleavings also need the trigger refusals, cutover status and the unprovisioned-replica
+    DDL;
+  - `fence_cutover`'s C3 to C6 and R1 to R5, which need `FenceNode`'s fence DDL and identity
+    (`install`, `provision_ident`, `uninstall`, `guard_report`) and `DoltHistory`;
+  - `hive_forward`'s claim races and refused forwards, which need real MySQL logins and grants
+    (`DoltAccounts`) on a TLS server;
+  - onboarding's busy-port refusals. These test what a real `bd` leaves behind when its shared
+    server cannot bind, and that a real retry produces a store. There is no HQ storage port in
+    that path. The bh side (a legible exit and the cleanup) is already unit-tested in
+    `tests/test_onboard_server_mode.py`.

@@ -331,6 +331,52 @@ because a full gate was running, which is larger than the effect measured:
 
 The leak guard passed on all three guarded runs, so no test needs `cluster_destructive`.
 
+## Protocol tests on the HQ storage port's fakes (bh-utvyj)
+
+bh-utvyj moved the protocol scenarios that need no Dolt-only behaviour onto the HQ storage
+port's in-memory fakes. Those scenarios are epoch-fencing s1, s2 and s4, the failover reclaim's
+adopt-kind matrix, the sender-stall soak check and the cutover's legacy-carrier refusals. The
+tests now drive the product modules. The scenario table, and what stays on real Dolt and why,
+are in `docs/design/hq-storage-port-adr.md` ("Settled by `bh-utvyj`"). The new tests run in the
+stateful lane, not the integration lane, and passed 50 of 50 runs at `-n 8` under load.
+
+**Runs.** Each run used `NO_COLOR=1 BH_DOLT_SLOTS=12 ./scripts/hermetic.sh uv run --no-sync python
+-m pytest -q -p no:cacheprovider -n 4 --durations=0` with JUnit on the four touched integration
+files: `tests/test_epoch_fencing_int.py`, `tests/test_failover_reclaim_int.py`,
+`tests/test_fence_composed_int.py` and `tests/test_fence_cutover_int.py`. Test-seconds are the
+summed JUnit case times. "Before" is the container base (755d8dd7) and "after" is this branch.
+The two runs went back to back on the shared host, with other developers' work running (load
+15-28):
+
+| File | Cases before / after | Test-seconds before | Test-seconds after |
+| --- | ---: | ---: | ---: |
+| `test_epoch_fencing_int.py` | 41 / 38 | 1,265.5 | 1,111.3 |
+| `test_failover_reclaim_int.py` | 6 / 1 | 161.5 | 40.4 |
+| `test_fence_composed_int.py` | 8 / 7 | 525.5 | 524.0 |
+| `test_fence_cutover_int.py` | 5 / 5 | 238.0 | 238.6 |
+| **Total** | 60 / 51 | **2,190.5** | **1,914.2** |
+| Wall (s) | | 562 | 485 |
+
+**Reading the numbers.**
+
+- The removed cases cost 343-354 test-seconds over two before-runs. The touched files fell by
+  276 test-seconds (-13%) and 78 s of wall at `-n 4`.
+- The kept cases absorbed the difference, about 77 test-seconds. A cluster build is charged
+  to the first case that acquires its composition on a worker. With fewer cases per
+  composition, more of the kept cases pay a build.
+- The cutover file barely moves. Its C1 case keeps the unpublished-work refusal on the same
+  cluster: 6.2 s before and 4.5 s after.
+- The replacement tests cost about 6 test-seconds in total, mostly the reclaim cases' real git
+  backup remote.
+- An earlier pair of runs had this branch's own `-n 8` fake loop running alongside the "after"
+  run, and is not used. Without that run's slowdown, its removed cases summed to 343
+  test-seconds.
+- This is well short of the ~2,375 test-seconds the survey estimated. Most of that estimate
+  needs Dolt-only capabilities or the guard triggers: the fixed-seed product interleavings,
+  `fence_orphan`, the rest of `fence_cutover`, `hive_forward`, and onboarding's busy-port
+  refusals. The ADR section above lists why each one stays on real Dolt. bh-l2m59 measures
+  the lane-level effect.
+
 ## Dolt slot throttle and worksteal packing on the integration lane (bh-xqtp8)
 
 **Question.** bh-56wtv's longest-first simulation predicted an integration-lane wall of total
