@@ -190,6 +190,11 @@ dev = [
     # Deterministic time (bh-j4v0l). time-machine patches the C-level clocks for code that reads
     # time directly; tests/harness/clock.py FakeClock is the preferred seam-level clock.
     "time-machine>=3.5.1",
+    # Property-based and stateful testing (bh-9fg5k, hq-storage-port-adr section 8): the HQ
+    # storage port's differential RuleBasedStateMachine. MPL-2.0, operator-approved as DEV-ONLY
+    # (bh-rlphq); never a runtime dependency of root or any package, and the contract module
+    # imports it lazily inside functions.
+    "hypothesis>=6.100",
     # Hang BACKSTOP only (bh-j4v0l), never a fix for a flaky test; see docs/TEST_PROCESS_POLICY.md.
     "pytest-timeout>=2.4",
     "ruff>=0.6",

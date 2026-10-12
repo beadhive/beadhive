@@ -1,11 +1,136 @@
-"""Backend-neutral HQ storage port (scaffold, bh-wnhkn).
+"""Backend-neutral HQ storage port (``docs/design/hq-storage-port-adr.md``).
 
 A **library package** (``docs/design/package-class-library-vs-plugin-adr.md``): stdlib only, and
-it never imports ``beadhive``. The port protocols, value and outcome types, the in-memory fake
-and the contract scenarios land in ``bh-9fg5k``; the Dolt adapter lives in
-``beadhive-hq-storage-dolt`` (``bh-br1cd``). See ``docs/design/hq-storage-port-adr.md``.
+it never imports ``beadhive``. It holds the port protocols, the value and outcome types, the
+error types and the in-memory fakes with an injected clock. The reusable contract scenarios and
+the differential state machine live in :mod:`beadhive_hq_storage.contract`. The Dolt adapter is
+``beadhive-hq-storage-dolt`` (``bh-br1cd``).
 """
 
 from __future__ import annotations
 
-__all__: list[str] = []
+from ._errors import (
+    CapabilityUnsupported,
+    IntegrityViolation,
+    InvalidRequest,
+    NotProvisioned,
+    StorageError,
+    StorageUnavailable,
+)
+from ._fake import (
+    DEFAULT_MAX_BODY_BYTES,
+    FaultPlan,
+    FenceSnapshot,
+    InMemoryEpochRef,
+    InMemoryHiveFence,
+    InMemoryHqStorage,
+)
+from ._ports import (
+    AppendLog,
+    CapabilityHost,
+    CommittedHistory,
+    EpochRefStore,
+    HiveFence,
+    Liveness,
+    PlacementStore,
+    StorageClock,
+    VersionedRecords,
+    require_capability,
+)
+from ._types import (
+    ABSENT,
+    ADOPT_SENTINEL_PREFIX,
+    UPDATE_ONLY_KINDS,
+    Absent,
+    Applied,
+    Body,
+    BumpRequest,
+    ChangeSet,
+    Confirmed,
+    Conflict,
+    ConsistencyToken,
+    EpochFloor,
+    GuardReport,
+    JsonValue,
+    LivenessKind,
+    LookupOutcome,
+    NotConfirmed,
+    OperationId,
+    Outcome,
+    PlacementView,
+    PruneReport,
+    ReclaimSet,
+    RecordKind,
+    RefView,
+    Revision,
+    StreamKind,
+    SyncReport,
+    Unknown,
+    UnknownReason,
+    Versioned,
+    WriterRow,
+    adopt_sentinel,
+    new_operation_id,
+)
+
+__all__ = [
+    # common and outcome types
+    "ABSENT",
+    "ADOPT_SENTINEL_PREFIX",
+    "UPDATE_ONLY_KINDS",
+    "Absent",
+    "Applied",
+    "Body",
+    "BumpRequest",
+    "ChangeSet",
+    "Confirmed",
+    "Conflict",
+    "ConsistencyToken",
+    "EpochFloor",
+    "GuardReport",
+    "JsonValue",
+    "LivenessKind",
+    "LookupOutcome",
+    "NotConfirmed",
+    "OperationId",
+    "Outcome",
+    "PlacementView",
+    "PruneReport",
+    "ReclaimSet",
+    "RecordKind",
+    "RefView",
+    "Revision",
+    "StreamKind",
+    "SyncReport",
+    "Unknown",
+    "UnknownReason",
+    "Versioned",
+    "WriterRow",
+    "adopt_sentinel",
+    "new_operation_id",
+    # errors
+    "CapabilityUnsupported",
+    "IntegrityViolation",
+    "InvalidRequest",
+    "NotProvisioned",
+    "StorageError",
+    "StorageUnavailable",
+    # protocols and the capability accessor
+    "AppendLog",
+    "CapabilityHost",
+    "CommittedHistory",
+    "EpochRefStore",
+    "HiveFence",
+    "Liveness",
+    "PlacementStore",
+    "StorageClock",
+    "VersionedRecords",
+    "require_capability",
+    # in-memory fakes
+    "DEFAULT_MAX_BODY_BYTES",
+    "FaultPlan",
+    "FenceSnapshot",
+    "InMemoryEpochRef",
+    "InMemoryHiveFence",
+    "InMemoryHqStorage",
+]

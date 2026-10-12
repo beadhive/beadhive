@@ -1,0 +1,310 @@
+"""Value, outcome and fence-record types of the HQ storage port (hq-storage-port-adr section 2).
+
+Every type here is a frozen value. Revisions are opaque, adapter-minted and compared by
+equality only; no port operation accepts "latest" as an expectation.
+"""
+
+from __future__ import annotations
+
+import uuid
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import datetime
+from enum import StrEnum
+from typing import Final, Generic, Literal, NewType, TypeVar, Union
+
+__all__ = [
+    "ABSENT",
+    "ADOPT_SENTINEL_PREFIX",
+    "UPDATE_ONLY_KINDS",
+    "Absent",
+    "Applied",
+    "Body",
+    "BumpRequest",
+    "ChangeSet",
+    "Confirmed",
+    "Conflict",
+    "ConsistencyToken",
+    "EpochFloor",
+    "GuardReport",
+    "JsonValue",
+    "LivenessKind",
+    "LookupOutcome",
+    "NotConfirmed",
+    "OperationId",
+    "Outcome",
+    "PlacementView",
+    "PruneReport",
+    "ReclaimSet",
+    "RecordKind",
+    "RefView",
+    "Revision",
+    "StreamKind",
+    "SyncReport",
+    "Unknown",
+    "UnknownReason",
+    "Versioned",
+    "WriterRow",
+    "adopt_sentinel",
+    "new_operation_id",
+]
+
+T = TypeVar("T")
+
+Revision = NewType("Revision", str)
+"""Opaque, adapter-minted. Compare by equality only."""
+
+OperationId = NewType("OperationId", str)
+"""Caller-minted canonical UUID text, one per intent. The store persists it as the witness."""
+
+
+def new_operation_id() -> OperationId:
+    """Mint a fresh :data:`OperationId` for one intent (never reuse it for a retry)."""
+    return OperationId(str(uuid.uuid4()))
+
+
+class Absent:
+    """The expectation "the record must not exist yet". Use the :data:`ABSENT` singleton."""
+
+    _instance: Absent | None = None
+
+    def __new__(cls) -> Absent:
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self) -> str:
+        return "ABSENT"
+
+    def __reduce__(self) -> str:
+        return "ABSENT"
+
+
+ABSENT: Final[Absent] = Absent()
+
+JsonValue = Union[  # noqa: UP007 - a recursive runtime alias needs the string forward refs
+    None, bool, int, float, str, Sequence["JsonValue"], Mapping[str, "JsonValue"]
+]
+Body = Mapping[str, JsonValue]
+"""Canonical JSON object. Adapters enforce a size cap and refuse non-JSON values."""
+
+
+class RecordKind(StrEnum):
+    """Versioned (compare-and-set) record kinds. Closed: a new kind is a port change plus
+    contract cases."""
+
+    PLACEMENT = "placement"  # hq_live_hive_leases | refs/bh/lease/<prefix>; UPDATE-only
+    FAILOVER_POLICY = "failover_policy"  # hq_live_failover_policy
+    AUTHORITY = "authority"  # frame grant / renewal / lifecycle record
+
+
+UPDATE_ONLY_KINDS: Final[frozenset[RecordKind]] = frozenset({RecordKind.PLACEMENT})
+"""Kinds a CAS may never create: operator provisioning seeds them (ADR section 2)."""
+
+
+class StreamKind(StrEnum):
+    """Append-only row streams."""
+
+    INBOX = "inbox"  # per-principal signed proposals and beats
+    RECEIPT = "receipt"  # trusted first-seen receipts and floors
+    REPORT = "report"  # frame reports and evidence
+
+
+class LivenessKind(StrEnum):
+    """Liveness row kinds, stamped by the store clock on every renewal."""
+
+    SESSION = "session"  # frame_<principal>_<epoch>_session
+    EVIDENCE = "evidence"  # measured evidence rows
+
+
+@dataclass(frozen=True)
+class Versioned(Generic[T]):
+    """A value at the revision the store issued for it."""
+
+    key: str
+    revision: Revision
+    body: T
+
+
+# --- outcomes ---------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Applied:
+    """The mutation committed. ``revision`` is the new revision (or head) the store issued."""
+
+    revision: Revision
+    operation: OperationId
+
+
+@dataclass(frozen=True)
+class Conflict:
+    """The expectation did not hold (or a serialization failure at commit). ``current`` is what
+    the store holds now; ``None`` when absent."""
+
+    current: Versioned[Body] | None
+
+
+UnknownReason = Literal["deadline", "transport", "commit"]
+
+
+@dataclass(frozen=True)
+class Unknown:
+    """The mutation may or may not have committed. Resolve it with the matching ``lookup`` using
+    the SAME ``operation``; ``expected`` is the ORIGINAL expectation, never a refreshed one.
+
+    ``reason``: ``"deadline"`` (the operation budget ran out awaiting the result),
+    ``"transport"`` (the result read failed after the request may have committed) or
+    ``"commit"`` (the commit acknowledgment itself was lost)."""
+
+    operation: OperationId
+    expected: Revision | Absent
+    reason: UnknownReason
+
+
+Outcome = Union[Applied, Conflict, Unknown]  # noqa: UP007 - runtime alias used in isinstance
+
+
+@dataclass(frozen=True)
+class Confirmed:
+    """The witnessed mutation is applied. ``revision`` is where the witness is visible; it may
+    already be superseded, so it is not a snapshot."""
+
+    operation: OperationId
+    revision: Revision
+    recorded_at: datetime  # store-clock stamp of the confirmed write
+
+
+@dataclass(frozen=True)
+class NotConfirmed:
+    """No confirmed outcome is visible NOW. Not proof that the mutation did not apply, and never
+    a licence to reissue it (ADR section 2, rules 2 and 3)."""
+
+    operation: OperationId
+
+
+LookupOutcome = Union[Confirmed, NotConfirmed]  # noqa: UP007
+
+
+# --- append log ---------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PruneReport:
+    """What one ``AppendLog.prune`` removed, measured against the store clock."""
+
+    stream: StreamKind
+    removed: int
+    retained: int
+    operation: OperationId
+
+
+# --- committed history ----------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ChangeSet:
+    """One publication: ordered canonical raw documents plus the explicit staging allowlist.
+
+    A document name is ``"<table>/<name>"`` and its table must be in ``tables``; an adapter
+    stages exactly ``tables`` and never "adds everything" (settled in bh-9fg5k)."""
+
+    documents: Sequence[tuple[str, bytes]]
+    tables: frozenset[str]
+
+
+@dataclass(frozen=True)
+class ConsistencyToken:
+    """One atomic combined read; maps onto root's ``HqConsistencyToken``."""
+
+    backend_identity: str
+    generation: str
+    revision: Revision
+
+
+@dataclass(frozen=True)
+class SyncReport:
+    """Local head against the remote, as observed by one fetch or sync."""
+
+    head: Revision
+    ahead: int
+    behind: int
+    diverged: bool
+
+
+# --- hive fence -----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class WriterRow:
+    """The ``bh_writer`` singleton (``id = 1``). Root ``writer_adopt`` re-exports it."""
+
+    frame: str
+    epoch: int
+    revision: str = ""
+
+
+@dataclass(frozen=True)
+class PlacementView:
+    """Placement as read from HQ, with the CAS token the next write must present."""
+
+    frame: str
+    epoch: int
+    token: Revision
+
+
+@dataclass(frozen=True)
+class RefView:
+    """``refs/bh/epoch`` as read from the hive remote, with its sha (the CAS expectation)."""
+
+    frame: str
+    epoch: int
+    sha: Revision
+
+
+@dataclass(frozen=True)
+class EpochFloor:
+    """The fence reads the domain's next-epoch choice needs."""
+
+    history_max: int  # highest bh_writer.epoch ever committed on main (0 when none)
+    writer: int | None  # live bh_writer.epoch (None: not cut over)
+
+
+@dataclass(frozen=True)
+class ReclaimSet:
+    """The failover reclaim that rides inside the bump commit (writer-partitioning condition 7):
+    in_progress beads claimed by ``dead_frame`` that the bump reverts. The one bead-data write
+    the port carries (operator-accepted scope exception, bh-xxkf7)."""
+
+    dead_frame: str
+    bead_ids: frozenset[str]
+
+
+@dataclass(frozen=True)
+class BumpRequest:
+    """One fence bump: the writer row, the implied ``adopt-<epoch>`` sentinel and the optional
+    reclaim, committed as ONE commit (conditions 1, 2 and 7)."""
+
+    frame: str
+    epoch: int
+    revision: str
+    operation: OperationId
+    reclaim: ReclaimSet | None = None
+
+
+@dataclass(frozen=True)
+class GuardReport:
+    """``bh_*`` guard-trigger conformance."""
+
+    expected: int
+    present: int
+    missing: tuple[str, ...]
+
+
+ADOPT_SENTINEL_PREFIX: Final[str] = "adopt-"
+"""The bump witness: the ``adopt-<epoch>`` mark id (condition 1)."""
+
+
+def adopt_sentinel(epoch: int) -> str:
+    """The sentinel mark id a bump to ``epoch`` writes."""
+    return f"{ADOPT_SENTINEL_PREFIX}{int(epoch)}"

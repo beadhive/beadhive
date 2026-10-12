@@ -9,12 +9,23 @@ import pytest
 
 from beadhive.hq_sql_session import SessionRenewer
 from beadhive.modules.state.contracts.ports import StateClock
+from beadhive_hq_storage import InMemoryHqStorage, LivenessKind, StorageClock
 from harness.clock import FakeClock
 
 
 def test_satisfies_state_clock_seam():
     clock: StateClock = FakeClock()
     assert clock.now() == datetime(2026, 1, 1, tzinfo=UTC)
+
+
+def test_satisfies_hq_storage_clock_port():
+    """The HQ storage fake takes this clock as its injected store clock (bh-9fg5k)."""
+    clock = FakeClock()
+    assert isinstance(clock, StorageClock)
+    store = InMemoryHqStorage(clock)
+    store.renew(LivenessKind.SESSION, "frame")
+    clock.advance(45)
+    assert store.ages(LivenessKind.SESSION) == {"frame": timedelta(seconds=45)}
 
 
 def test_advance_moves_wall_and_monotonic_together():
