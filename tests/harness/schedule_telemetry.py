@@ -41,6 +41,10 @@ SLOT_EVENTS_ENV = "BH_DOLT_SLOT_EVENTS"
 SAMPLE_SECONDS = 5.0
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _MAX_EVENTS_BYTES = 32 * 1024 * 1024
+# Bound at import, before any test runs: tests monkeypatch ``time.monotonic`` with finite fake
+# clocks, and the protocol hook's ``test_end`` event fires while that patch is still in force
+# (a StopIteration there killed the worker with INTERNALERROR, bh-518dc).
+_monotonic = time.monotonic
 
 
 def enabled(env: Mapping[str, str] | None = None) -> bool:
@@ -68,7 +72,7 @@ def emit(kind: str, path: str | None = None, **fields: Any) -> None:
     target = path or os.environ.get(EVENTS_ENV)
     if not target:
         return
-    payload = {"event": kind, "worker": worker_id(), "monotonic": time.monotonic(), **fields}
+    payload = {"event": kind, "worker": worker_id(), "monotonic": _monotonic(), **fields}
     with contextlib.suppress(OSError):
         handle = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         try:

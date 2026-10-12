@@ -715,8 +715,21 @@ def _logging_pipeline_keeps_caplogs_handler():
     and at ``pytest_configure`` time the ``BH_HOME`` sandbox above is not yet in place, so
     warming up there would read the operator's real ``config.yaml`` — precisely the real-state
     dependency this module exists to close off.
+
+    The teardown closes the opposite leak (bh-518dc): a test that re-points the pipeline with
+    ``log.configure(stream=buf)`` (``test_error_boundaries``' ``_log_buf``, among others) left
+    bh's root handler pinned to that test's dead ``StringIO`` for the rest of the worker. Every
+    later CLI diagnostic then vanished instead of reaching ``sys.stderr`` — and with it the
+    per-record flush that pushed anything already buffered there (the TRUSTED banner, which
+    ``emit_banner`` prints without flushing) out ahead of the command's stdout. Under CliRunner
+    the banner then surfaced *after* the JSON line, so
+    ``test_git_mode_command_raise_learn_join_cordon_and_keyless_raise`` failed only when such a
+    test shared its xdist worker. Whatever a test does to bh's handlers, root level, or structlog
+    configuration is put back to the pipeline it was handed.
     """
     import logging
+
+    import structlog
 
     from beadhive import log
 
@@ -728,6 +741,24 @@ def _logging_pipeline_keeps_caplogs_handler():
         # bh's own handler stays exactly where configure() put it — this restores, never reorders.
         if handler not in root.handlers:
             root.addHandler(handler)
+
+    def owned(handler):
+        return type(handler).__module__ == log.__name__
+
+    pipeline = [handler for handler in root.handlers if owned(handler)]
+    level = root.level
+    structlog_config = structlog.get_config()
+    configured = log._configured
+    yield
+    for handler in [h for h in root.handlers if owned(h) and h not in pipeline]:
+        root.removeHandler(handler)
+        handler.close()
+    for index, handler in enumerate(pipeline):
+        if handler not in root.handlers:
+            root.handlers.insert(index, handler)
+    root.setLevel(level)
+    structlog.configure(**structlog_config)
+    log._configured = configured
 
 
 @pytest.fixture
