@@ -901,12 +901,19 @@ test-system-smoke:
 # sandbox: host read-only, tmpfs HOME (so ~/.beads and ~/.gitconfig leave bd's resolution walk),
 # loopback up but no egress. 41ms per spawn — cheap enough to be the default rather than an
 # opt-in. Off Linux the wrapper says so on stderr and runs unfenced; BH_HERMETIC=0 forces that.
+# WORKSTEAL PACKING (bh-xqtp8). BH_TEST_WORKSTEAL_PACK=1 lays the selection out as worksteal's
+# initial per-worker chunks, each a balanced longest-first bin, Dolt-slot aware against
+# BH_DOLT_SLOTS (tests/harness/duration_order.py). Measured on this lane: wall 580/548 s -> 504 s,
+# idle tail ~100 s -> ~29 s per worker (docs/TEST_PROCESS_POLICY.md). Opt-in elsewhere; on here,
+# and BH_TEST_WORKSTEAL_PACK=0 turns it off for one run.
+integration_worksteal_pack := env_var_or_default("BH_TEST_WORKSTEAL_PACK", "1")
+
 # the LAND gate's complete integration pass — fenced and parallel
 # Match the native partition's work stealing so idle workers can take unstarted
 # fixture-heavy tests instead of leaving a late queue to one worker. Preserve the
 # complete integration collection, fixed worker bound, fence, and watchdog limit.
 test-integration-land:
-    uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
+    BH_TEST_WORKSTEAL_PACK={{integration_worksteal_pack}} uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
         ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{integration_workers}} tests --dist {{test_dist}} -m "integration"
 
 # ADR condition 9 (bh-p07dv): re-run the Dolt/bd trigger-semantics canary. REQUIRED on every Dolt

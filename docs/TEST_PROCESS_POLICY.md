@@ -330,3 +330,127 @@ because a full gate was running, which is larger than the effect measured:
 | After, unguarded, run 2 | 416 | 1,245 |
 
 The leak guard passed on all three guarded runs, so no test needs `cluster_destructive`.
+
+## Dolt slot throttle and worksteal packing on the integration lane (bh-xqtp8)
+
+**Question.** bh-56wtv's longest-first simulation predicted an integration-lane wall of total
+work / 16, about 415-435 s. Green gates took 513-593 s. The hypothesis was that
+`BH_DOLT_SLOTS=12` with 16 xdist workers makes workers queue for Dolt servers, or that slots are
+held longer than needed.
+
+**Answer.** The slots are not the main cause. Most of the gap is a scheduling defect: the xdist
+`worksteal` scheduler defeats longest-first ordering, so long tests start late and most workers sit
+idle for the last ~100 s. Two smaller costs are outside JUnit entirely: per-worker collection and
+the Dolt-slot capacity bound. Packing worksteal's initial chunks fixes the tail. Measured wall:
+**575-580 s before, 503-504 s after**.
+
+### Instrumentation
+
+`BH_TEST_SCHEDULE_TELEMETRY=1` (off by default, `tests/harness/schedule_telemetry.py`) records:
+
+- each test's worker, start, end and setup/call/teardown time;
+- each `dolt_server_slot` acquisition: queue wait, hold, and where in the test it was taken and
+  released;
+- each worker's collection time, idle gaps and idle tail;
+- a host sample every 5 s: load average, MemAvailable, and live `dolt` processes in the fence.
+
+The summary is written next to the JUnit report as `<report>.schedule.json`, and a one-line digest
+is printed in the terminal summary. `scripts/benchmark_xdist.py` already reads the same slot events
+via `BH_DOLT_SLOT_EVENTS`. Those events now also carry the worker id.
+
+**Historical JUnit data.** This covers 18 green `-n 16 --dist worksteal -m "integration"` runs in
+`.bh/validation/runs` (2026-10-10 to 2026-10-11). The gap between wall and JUnit test-seconds / 16
+was 188 s median (range 122-274 s). JUnit cannot explain the gap, for three reasons:
+
+- The slot wait is inside the test time, because the slot fixture runs in setup.
+- Worker collection is outside every test.
+- Idle workers record nothing.
+
+### What the telemetry showed (baseline, main dff07a5a)
+
+| Component | Per worker | Lane cost | Note |
+| --- | ---: | ---: | --- |
+| Collection before the first test | 21-44 s | 21-44 s of wall | Each worker imports all 581 test modules (11,851 items) to keep 279. Serial collection is 15 s; the rest is contention. |
+| Idle tail after a worker's last test | 100-126 s mean | ~110-125 s of wall | Long tests start at 340-460 s on a few workers while the rest are done. |
+| Dolt slot wait | 8-9 s median, 115-117 s max | 400-550 test-seconds | Concentrated on workers that reach a slot test while 12 long holders run. Saturated (all 12 held, someone queued) for only 176-201 s. |
+| Slot released before test end | — | 1.7 s total | Slots are taken at test start and released at teardown end. Teardown of all holders sums to 39 s. |
+
+**Why the tail happens.** On its first `schedule()`, worksteal hands worker *i* a contiguous chunk
+of `len(pending) // (workers - i)` items. With longest-first order, one worker gets the 17 longest
+tests. Others steal the tail half of its queue by count, not by duration. The long tests they steal
+then start late on another worker. A discrete-event simulation of that scheduler with measured
+durations reproduces the baseline wall: 536 s of test phase + 44 s of collection = 580 s.
+
+**Why the cap does not explain the gap.** 202 of 279 tests hold a slot (the `dolt_server` marker
+or a `rewound_*` fixture). That accounts for 75% of the work. Slot-holding work divided by 12 slots
+is 431-438 s, close to total / 16 (396-403 s without slot wait). So with perfect packing the cap
+costs at most ~35 s. The 150 s gap was mostly the tail.
+
+### Candidates, one at a time
+
+| Candidate | Result |
+| --- | --- |
+| Release slots earlier on teardown | **No-op.** Slots are released 1.7 s before test end in total. Nothing to move. |
+| Pool-aware accounting for rewindable clusters | **Already true.** `ClusterPool.release` parks (stops) the cluster under the slot, so an idle pooled cluster holds no slot. Hold time equals test duration, with no hold outside a test. |
+| Server sharing or pre-warming | **Not pursued.** Hold time is the test body (real bd and Dolt operations). Builds are a minor share (bh-t8hr4), and the pool already reuses them per worker. |
+| Worksteal packing (`BH_TEST_WORKSTEAL_PACK=1`) | **Adopted for the integration land lane.** See below. Tail drops from 100-126 s to 29-34 s per worker. Wall drops by 72-77 s. |
+| A different cap | **Not changed.** CPU has no headroom (see below). After packing, the slot bound (hold / 12 = 453-460 s) is only 7-40 s above the CPU ideal. |
+
+**Packing** (`tests/harness/duration_order.py::pack` and `tests/harness/worksteal_pack.py`) lays out
+the selected items as worksteal's exact initial chunks:
+
+- Each chunk is a longest-processing-time bin of predicted work, from `test_durations.json`, which
+  was refreshed from the 269 recent 16-worker lane reports.
+- Within a chunk, tests run longest first, so a steal takes only short tests.
+- With `BH_DOLT_SLOTS` < workers, slot-holding tests are binned onto `slots` chunks and slot-free
+  tests onto the rest.
+
+It runs `trylast` so that it orders the post-`-m` selection. xdist resets `config.option.dist` to
+`"no"` on workers, so the controller exports its `--dist` as `BH_TEST_XDIST_DIST`. The first
+"packed" run (`pack1` below) was silently a plain longest-first run because of this. It is opt-in
+everywhere, and `test-integration-land` turns it on (`BH_TEST_WORKSTEAL_PACK=0 just
+test-integration-land` turns it off). The stateful lane is unchanged, and measuring it there is a
+follow-up.
+
+### Runs
+
+Every run: `NO_COLOR=1 BH_DOLT_SLOTS=12 BH_TEST_TIMEOUT_SECONDS=2400 BH_TEST_SCHEDULE_TELEMETRY=1
+BH_TEST_REPORT_DIR=<dir> uv run python scripts/test-watchdog.py --timeout 2400 --
+./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n 16 tests --dist worksteal -m
+"integration"`, one lane at a time, on a shared 32-core / 47 GB host. Two other developers were
+running `-n 4` Dolt tests. The runs differ as follows:
+
+- Baselines set `BH_TEST_DURATIONS_FILE` to main's durations file. `base1` used main's file
+  in-tree.
+- `pack2` set `BH_TEST_WORKSTEAL_PACK=1`.
+- `pack3` ran `just test-integration-land` itself.
+
+All runs: 275 passed, 4 skipped, no failures.
+
+| Run | Order | Load at start | Wall (s) | Busy / 16 (s) | Collection (s) | Tail per worker (s) | Slot wait total (s) | Slot wait per worker, median / max (s) | Slot hold total (s) | Slot hold per worker, median (min-max) (s) | Mean slots held | Load median / max | Min MemAvailable (GB) | Max `dolt` procs |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| base1 | main | 8.3 | 580 | 436 | 44 | 100 | 547 | 8 / 115 | 5,257 | 371 (94-534) | 9.8 | 27 / 36 | 15.1 | 21 |
+| base2 | main | 26.2 | 575 | 428 | 21 | 126 | 401 | 9 / 117 | 5,234 | 355 (97-487) | 9.5 | 30 / 40 | 15.3 | 18 |
+| pack1 | longest-first, refreshed durations (packing inert, see above) | 8.5 | 548 | 420 | 21 | 107 | 381 | 7 / 120 | 5,168 | 320 (102-497) | 9.9 | 27 / 35 | 15.5 | 21 |
+| pack2 | packed | 14.7 | **504** | 453 | 22 | 29 | 507 | 17 / 126 | 5,521 | 408 (1-469) | 11.5 | 30 / 44 | 14.4 | 23 |
+| pack3 | packed, via `just` | 20.0 | **503** | 447 | 22 | 34 | 541 | 34 / 101 | 5,440 | 389 (60-464) | 11.4 | 26 / 37 | 15.5 | 22 |
+
+### Reading the numbers
+
+- **Before and after.** Wall goes from 575-580 s to 503-504 s (-13%). The gap to busy / 16 falls
+  from 144-147 s to 51-56 s, which closes about 63% of it.
+  - Refreshing the durations alone (`pack1`) is worth about 30 s.
+  - Packing is worth the rest.
+- **What remains.** About 22 s of collection, ~30 s of tail, and the slot bound. Packed runs keep
+  11.4-11.5 of 12 slots busy, so the lane is now slot-bound. Hold / 12 (453-460 s) + collection
+  (22 s) ≈ 475-482 s, against 503 s measured.
+  - Busy time rose 3-5%: more concurrent Dolt work is slightly slower per test.
+- **Cap headroom.** Memory has room: at least 14.4 GB available, and at most 23 `dolt` processes
+  in the fence. CPU does not: load median is 26-30 and peak is 36-44 on 32 cores, and that
+  includes the other developers' work. A higher cap would add Dolt servers to an oversubscribed
+  CPU. That is the condition behind load-induced timeouts like bh-u5b0e. It would also buy at most
+  the 7-40 s between the slot bound and the CPU ideal. So `BH_DOLT_SLOTS=12` stays.
+- **Flakes.** All five lanes were green, including both packed runs at the higher slot occupancy.
+  bh-u5b0e is a stateful-lane test and is untouched by this change.
+- **Next lever.** Collection, at 21-44 s per run. Each worker imports the whole suite to select
+  ~2% of it. A safe pre-filter for marker-selected lanes would recover most of that.

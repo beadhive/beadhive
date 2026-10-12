@@ -100,3 +100,97 @@ def test_refresh_fails_without_reports(tmp_path):
     assert (
         refresh.main(["--glob", str(tmp_path / "none*.xml"), "--output", str(tmp_path / "o")]) == 1
     )
+
+
+# -- worksteal packing (bh-xqtp8) ---------------------------------------------------------------
+
+
+def _marked(nodeid: str, *, marker: bool = False, fixtures: tuple[str, ...] = ()):
+    return SimpleNamespace(
+        nodeid=nodeid,
+        fixturenames=list(fixtures),
+        get_closest_marker=lambda name: object() if marker and name == "dolt_server" else None,
+    )
+
+
+def test_chunk_sizes_mirror_worksteal_initial_distribution():
+    assert duration_order.chunk_sizes(279, 16) == [17] * 9 + [18] * 7
+    assert sum(duration_order.chunk_sizes(5, 4)) == 5
+
+
+def test_slot_holders_are_the_marker_and_the_rewound_fixtures():
+    assert duration_order.holds_dolt_slot(_marked("t::a", marker=True))
+    assert duration_order.holds_dolt_slot(_marked("t::b", fixtures=("tmp_path", "rewound_world")))
+    assert not duration_order.holds_dolt_slot(_marked("t::c", fixtures=("tmp_path",)))
+
+
+def _chunks(order, workers):
+    out, start = [], 0
+    for size in duration_order.chunk_sizes(len(order), workers):
+        out.append(order[start : start + size])
+        start += size
+    return out
+
+
+def test_pack_balances_each_worksteal_chunk_longest_first():
+    seconds = [100, 90, 80, 70, 10, 10, 10, 10]
+    items = [item(f"tests/t.py::n{i}") for i in range(len(seconds))]
+    durations = {f"tests.t::n{i}": float(s) for i, s in enumerate(seconds)}
+    packed = duration_order.pack(items, durations, 0.0, 2, 0, lambda _: False)
+
+    assert sorted(packed, key=id) == sorted(items, key=id)
+    chunks = _chunks(packed, 2)
+    loads = [sum(durations[duration_order.junit_key(i.nodeid)] for i in c) for c in chunks]
+    assert loads == [190.0, 190.0]
+    for chunk in chunks:
+        weights = [durations[duration_order.junit_key(i.nodeid)] for i in chunk]
+        assert weights == sorted(weights, reverse=True)
+    # A plain longest-first sort would have handed the first chunk all four long tests.
+    assert loads != [340.0, 40.0]
+
+
+def test_pack_bins_slot_work_onto_as_many_chunks_as_there_are_slots():
+    durations = {f"tests.t::s{i}": 50.0 for i in range(4)} | {
+        f"tests.t::f{i}": 5.0 for i in range(4)
+    }
+    items = [item(f"tests/t.py::s{i}") for i in range(4)] + [
+        item(f"tests/t.py::f{i}") for i in range(4)
+    ]
+    holds = {i.nodeid: i.nodeid.split("::")[1].startswith("s") for i in items}
+    packed = duration_order.pack(items, durations, 0.0, 4, 2, lambda i: holds[i.nodeid])
+    chunks = _chunks(packed, 4)
+    assert [all(holds[i.nodeid] for i in c) for c in chunks] == [True, True, False, False]
+    # No split when the slot ceiling does not bind.
+    unsplit = _chunks(
+        duration_order.pack(items, durations, 0.0, 4, 4, lambda i: holds[i.nodeid]), 4
+    )
+    assert all(any(holds[i.nodeid] for i in c) for c in unsplit)
+
+
+def test_pack_is_deterministic_and_off_by_default():
+    items = [item(f"tests/t.py::n{i}") for i in range(7)]
+    durations = {f"tests.t::n{i}": float(i % 3) for i in range(7)}
+    first = duration_order.pack(items, durations, 0.0, 3, 2, lambda _: False)
+    assert first == duration_order.pack(items, durations, 0.0, 3, 2, lambda _: False)
+    assert duration_order.pack(items, durations, 0.0, 1, 2, lambda _: False) == items
+    assert not duration_order.pack_enabled({})
+    assert not duration_order.pack_enabled({duration_order.PACK_ENV: "0"})
+    assert duration_order.pack_enabled({duration_order.PACK_ENV: "1"})
+
+
+def test_pack_hook_only_acts_on_a_worksteal_worker():
+    from harness import worksteal_pack
+
+    def config(workerinput):
+        cfg = SimpleNamespace()
+        if workerinput is not None:
+            cfg.workerinput = workerinput
+        return cfg
+
+    # xdist resets a worker's own `dist` option to "no", so the controller's mode travels in env.
+    steal = {worksteal_pack.DIST_ENV: "worksteal"}
+    assert worksteal_pack.worksteal_workers(config({"workercount": 16}), steal) == 16
+    load = {worksteal_pack.DIST_ENV: "load"}
+    assert worksteal_pack.worksteal_workers(config({"workercount": 16}), load) == 0
+    assert worksteal_pack.worksteal_workers(config({"workercount": 16}), {}) == 0
+    assert worksteal_pack.worksteal_workers(config(None), steal) == 0
