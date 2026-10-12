@@ -939,3 +939,41 @@ it checks is identical on main d1b9918a.
   because it costs nothing measurable and keeps both lanes on one code path.
 - **What remains.** About 7 s of integration collection is now the 57 kept modules and their
   imports. The rest of the lane is slot-bound (bh-xqtp8).
+
+## Gate times after the 2026-10-12 overnight batch (bh-5xf0l)
+
+**Question.** The overnight batch of lane-packing and collection changes landed on main. What do
+the gate lanes cost now, against the morning baseline?
+
+**Answer.** `just check-all` is green on main 4e20e4bd at **1529 s (25.5 min)**, against about
+26 min at the morning baseline. The wall barely moved because the lanes run one after another and
+a fixed overhead dominates. The per-lane numbers moved more.
+
+All final numbers come from one `NO_COLOR=1 BH_DOLT_SLOTS=12 BH_TEST_TIMEOUT_SECONDS=2400 just
+check-all` run on main 4e20e4bd.
+
+| Lane | Baseline (d0931612, morning) | Intermediate | Final (4e20e4bd) |
+| --- | ---: | --- | --- |
+| `stateful-native` | 579 s | 597 s (b284705a) | **502.85 s**, 10,468 passed; pre-filter skipped 50/586 files |
+| `root-composition-native` | not separately recorded | 796 s regression (b5c8f9a3, bh-ju8vk) | **159.85 s**, 1,216 passed |
+| `test-integration-land` | 513 s | 492 s (b284705a) | **425.83 s**, 258 passed; pre-filter skipped 529/586 files |
+| demos | not recorded | not recorded | 32 s |
+| other suites | not recorded | not recorded | under 7 s each |
+| `check-all` wall | about 26 min | not recorded | **1529 s (25.5 min)** |
+
+### What moved each lane
+
+- **bh-1ikc0** (rewind) and **bh-ey9wj** (stateful worksteal packing) cut the stateful and
+  integration lanes.
+- **bh-ju8vk** removed the root-composition regression that bh-xxkf7 introduced: 796 s back to
+  160 s.
+- **bh-l1jje** (collection pre-filter) skips importing files a `-m` selection fully deselects,
+  which mostly helps the integration lane.
+- **bh-xxkf7** (storage port) saved close to nothing at the gate (bh-l2m59).
+
+### What remains
+
+- About 385 s of the wall is fixed non-test overhead.
+- The stateful lane is CPU-bound, with about 482 s busy per worker.
+- The integration lane is bound by long single Dolt tests and slot wait (bh-xqtp8).
+- bh-2znxs holds the decision on the duplicated integration-marked root-composition tests.
