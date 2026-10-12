@@ -857,7 +857,8 @@ hq-storage-check:
         --package beadhive-hq-storage --package beadhive-hq-storage-dolt
     uv run --no-sync python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
         ./scripts/hermetic.sh uv run --no-sync python scripts/pytest_with_report.py -n auto \
-        packages/beadhive-hq-storage/tests packages/beadhive-hq-storage-dolt/tests
+        packages/beadhive-hq-storage/tests packages/beadhive-hq-storage-dolt/tests \
+        -m "not dolt_machine_full"
     ./scripts/hermetic.sh uv build --package beadhive-hq-storage --no-build-isolation
     ./scripts/hermetic.sh uv build --package beadhive-hq-storage-dolt --no-build-isolation
 
@@ -936,6 +937,13 @@ test-integration-land:
 fence-canary:
     ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n auto tests \
         packages/beadhive-hq-storage-dolt/tests -m "fence_canary"
+
+# NIGHTLY/CANARY: the full fake-against-Dolt hypothesis budget the gate skips (hq-storage-check runs
+# fake-vs-fake plus a 5-example Dolt smoke). Default profile `gate` = 25 x 20, derandomized, no
+# shrinking; pass profile=nightly for the shrinking run capped at 100 examples (bh-xxkf7.3).
+hq-storage-dolt-machine profile="gate":
+    BH_HYPOTHESIS_PROFILE={{quote(profile)}} ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n 1 \
+        packages/beadhive-hq-storage-dolt/tests -m "dolt_machine_full"
 
 # PERIODIC ONLY: compare explicit xdist worker counts for both pytest land partitions. This does
 # not feed `PYTEST_XDIST_AUTO_NUM_WORKERS` back into contract tests or any validation recipe.

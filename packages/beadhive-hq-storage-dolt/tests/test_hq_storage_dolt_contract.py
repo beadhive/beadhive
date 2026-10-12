@@ -36,6 +36,10 @@ DOLT_MAX_EXAMPLES = 100
 real SQL round trip, so the nightly profile's 500 examples would run for most of an hour. The cap
 bounds the budget only; the comparison is never weakened."""
 
+DOLT_SMOKE_EXAMPLES = 2
+DOLT_SMOKE_STEPS = 8
+"""The gate's fake-against-Dolt examples (bh-xxkf7.3); the full budget runs out of the gate."""
+
 _servers: list[DoltSqlServer] = []
 
 
@@ -85,19 +89,35 @@ def _lazy_dolt() -> ContractAdapter:
     )
 
 
-def test_state_machine_fake_against_dolt() -> None:
-    """The gate profile's derandomized budget with shrinking excluded; other profiles shrink,
-    capped at :data:`DOLT_MAX_EXAMPLES` (ADR section 8)."""
+def _run_dolt_machine(budget_for_gate: dict[str, int] | None) -> None:
+    """Run the fake-against-Dolt machine. ``budget_for_gate`` overrides the examples under the
+    gate profile (the smoke); ``None`` keeps the gate profile's full budget. The gate profile
+    never shrinks against real Dolt; any other profile shrinks, capped at DOLT_MAX_EXAMPLES."""
     from hypothesis import settings
     from hypothesis.stateful import run_state_machine_as_test
 
     _server()  # skip before hypothesis starts when Dolt is unavailable
     machine = build_state_machine(fake_adapter(), _lazy_dolt())
     if PROFILE == GATE_PROFILE:
-        budget = settings(settings.default, phases=no_shrink_phases())
+        budget = settings(settings.default, phases=no_shrink_phases(), **(budget_for_gate or {}))
     else:
         budget = settings(
             settings.default,
             max_examples=min(settings.default.max_examples, DOLT_MAX_EXAMPLES),
         )
     run_state_machine_as_test(machine, settings=budget)
+
+
+def test_state_machine_fake_against_dolt_smoke() -> None:
+    """The gate's real-Dolt slice: a few derandomized, unshrunk examples (bh-xxkf7.3).
+    The full budget is ``dolt_machine_full`` below, run by ``just hq-storage-dolt-machine``."""
+    _run_dolt_machine(
+        {"max_examples": DOLT_SMOKE_EXAMPLES, "stateful_step_count": DOLT_SMOKE_STEPS}
+    )
+
+
+@pytest.mark.dolt_machine_full
+def test_state_machine_fake_against_dolt_full() -> None:
+    """The full fake-against-Dolt budget (the gate profile's 25 x 20, or the nightly cap),
+    deselected from the gate and run by ``just hq-storage-dolt-machine`` (bh-xxkf7.3)."""
+    _run_dolt_machine(None)

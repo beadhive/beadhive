@@ -51,6 +51,10 @@ unset, it loads `gate`, so every run is reproducible from the tree alone.
 | `nightly` | 500 examples x 40 steps | derandomized, shrinking on |
 | `dev` | hypothesis defaults | opt-in for local exploration |
 
+The fake-against-fake machine runs at the `gate` budget in the gate. The fake-against-Dolt
+machine runs a 2-example smoke there; its full budget runs in
+`just hq-storage-dolt-machine` (bh-xxkf7.3).
+
 `hypothesis` (MPL-2.0) is a dev-only dependency (root `dev` group). It is never a runtime
 dependency, and the contract module imports it lazily.
 
