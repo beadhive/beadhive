@@ -137,11 +137,16 @@ def _dolt_slot() -> Iterator[int]:
 
 
 class DoltSqlServer:
-    """One private ``dolt sql-server`` under ``base``. Use as a context manager."""
+    """One private ``dolt sql-server`` under ``base``. Use as a context manager.
 
-    def __init__(self, base: Path, driver: Driver) -> None:
+    ``hold_slot=False`` when the caller already holds a Dolt slot (a root test marked
+    ``dolt_server`` gets one from root's autouse fixture): a second, nested slot from a different
+    lock implementation is how slot holders deadlock each other."""
+
+    def __init__(self, base: Path, driver: Driver, *, hold_slot: bool = True) -> None:
         self.base = Path(base)
         self.driver = driver
+        self.hold_slot = hold_slot
         self.port = 0
         self._process: subprocess.Popen[bytes] | None = None
         self._slot: Any = None
@@ -152,12 +157,14 @@ class DoltSqlServer:
         dolt = shutil.which("dolt")
         if dolt is None:
             raise RuntimeError("dolt binary unavailable")
-        self._slot = _dolt_slot()
-        self._slot.__enter__()
+        self._slot = _dolt_slot() if self.hold_slot else None
+        if self._slot is not None:
+            self._slot.__enter__()
         try:
             self._start(dolt)
         except BaseException:
-            self._slot.__exit__(None, None, None)
+            if self._slot is not None:
+                self._slot.__exit__(None, None, None)
             raise
         return self
 

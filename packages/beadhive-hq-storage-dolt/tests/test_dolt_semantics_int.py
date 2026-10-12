@@ -1,11 +1,14 @@
-"""Dolt 2.3.5 storage-semantics contracts for the SQL HQ (bh-3nfbn; origin: spike bh-wtsrc).
+"""Dolt 2.3.5 storage-semantics contracts for the SQL HQ and the hive fence, folded into the Dolt
+adapter's suite (bh-br1cd; origin: bh-3nfbn, spikes bh-wtsrc, bh-sieai and bh-uhx2r).
 
 Permanent, real-Dolt contracts about what the server itself guarantees, independent of any Python
 adapter: grants confine a frame principal, operator triggers stamp server UTC, trigger-body DML is
 invoker-checked, host-pinned accounts refuse a leaked password, globals are not privilege-checked,
-and renewal rows leave no history. The HQ storage-port epic folds this file into its real-Dolt
-contract suite; ``docs/spikes/bh-wtsrc-receiver-removal-liveness.md`` records the evidence and the
-"Retired to permanent suites" table.
+and renewal rows leave no history. ``beadhive_hq_storage_dolt`` relies on every one of them (its
+stamping triggers, its ignored ``hq_live_*`` tables, its fence bump), so they run here, beside
+the adapter's contract suite, and nowhere else.
+``docs/spikes/bh-wtsrc-receiver-removal-liveness.md`` records the evidence and the "Retired to
+permanent suites" table.
 
 Layout, so sibling beads can extend it (add a new section; reuse the helpers, do not copy them):
 
@@ -19,10 +22,12 @@ Layout, so sibling beads can extend it (add a new section; reuse the helpers, do
    * write-guard engine contracts (merge/pull/cherry-pick/revert never fire the guard's
      triggers; Dolt CLI, no server) -- bh-sieai.
 
-Every server is owned by the test and runs with its own ``DOLT_ROOT_PATH`` and ``HOME``. Some
-probes deliberately run ``SET GLOBAL`` / ``SET PERSIST`` as an unprivileged frame principal; the
-isolated root keeps the persisted value inside ``tmp_path`` and out of the operator's
-``~/.dolt/config_global.json``.
+Every server is owned by the test (:class:`beadhive_hq_storage_dolt.contract.DoltSqlServer`: its
+own ``DOLT_ROOT_PATH``, ``HOME``, port and one ``BH_DOLT_SLOTS`` slot). Some probes deliberately
+run ``SET GLOBAL`` / ``SET PERSIST`` as an unprivileged frame principal; the isolated root keeps
+the persisted value inside ``tmp_path`` and out of the operator's ``~/.dolt/config_global.json``.
+No contract waits on wall time: the renewal-latency samples of the original spike stay in its
+evidence record, not in a gate.
 """
 
 from __future__ import annotations
@@ -31,17 +36,15 @@ import json
 import os
 import shutil
 import socket
-import statistics
 import subprocess
-import time
 from contextlib import contextmanager
 from pathlib import Path
 
-import pymysql
 import pytest
 
-from harness import write_guard as wg
-from harness.world import free_port
+from beadhive_hq_storage_dolt.contract import DoltSqlServer
+
+pymysql = pytest.importorskip("pymysql")
 
 pytestmark = [pytest.mark.integration, pytest.mark.dolt_server]
 
@@ -55,59 +58,13 @@ PASSWORD = "fixture-only"
 @contextmanager
 def _isolated_server(tmp_path: Path):
     """Start an owned dolt sql-server whose global config lives under *tmp_path* only."""
-    dolt = shutil.which("dolt")
-    if dolt is None:
+    if shutil.which("dolt") is None:
         pytest.skip("dolt binary unavailable")
-    root = tmp_path / "dolt-root"
-    (root / ".dolt").mkdir(parents=True)
-    home = tmp_path / "home"
-    home.mkdir()
-    data = tmp_path / "data"
-    data.mkdir()
-    (root / ".dolt" / "config_global.json").write_text(
-        json.dumps(
-            {
-                "user.name": "fixture operator",
-                "user.email": "operator@fixture.invalid",
-                "versioncheck.disabled": "true",
-                "metrics.disabled": "true",
-            }
-        )
-    )
-    port = free_port()
-    (tmp_path / "server.yaml").write_text(
-        f"data_dir: {data}\nlistener:\n  host: 127.0.0.1\n  port: {port}\n"
-    )
-    env = {**os.environ, "DOLT_ROOT_PATH": str(root), "HOME": str(home)}
-    with (tmp_path / "server.log").open("w") as log:
-        server = subprocess.Popen(
-            [dolt, "sql-server", "--config", str(tmp_path / "server.yaml")],
-            cwd=tmp_path,
-            env=env,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-        )
-    try:
-        end = time.monotonic() + 30
-        while True:
-            try:
-                with socket.create_connection(("127.0.0.1", port), timeout=0.2):
-                    break
-            except OSError:
-                if server.poll() is not None or time.monotonic() >= end:
-                    raise AssertionError("owned Dolt server failed to start") from None
-                time.sleep(0.1)
-        version = _connect(port).cursor()
+    with DoltSqlServer(tmp_path, pymysql.connect) as server:
+        version = _connect(server.port).cursor()
         version.execute("SELECT DOLT_VERSION()")
         assert version.fetchone()[0] == "2.3.5", "spike evidence is pinned to Dolt 2.3.5"
-        yield port, root
-    finally:
-        server.terminate()
-        try:
-            server.wait(timeout=15)
-        except subprocess.TimeoutExpired:
-            server.kill()
-            server.wait(timeout=15)
+        yield server.port, tmp_path / "dolt-root"
 
 
 def _connect(port, user="root", password="", database=None, bind_address=None):
@@ -293,10 +250,17 @@ def test_operator_trigger_stamps_server_utc_over_frame_literals_and_time_zone(tm
         _sql(frame_a, "SET timestamp = DEFAULT")
 
         # 4. A no-op renewal still fires the BEFORE UPDATE trigger and advances renewed_at.
-        before = _sql(root, "SELECT renewed_at FROM frame_a_session")[0][0]
-        time.sleep(0.05)
+        #    The operator backdates the row with the trigger briefly dropped, so the check
+        #    needs no wait: only the trigger can move it off the backdated value.
+        _sql(root, "DROP TRIGGER frame_a_session_upd")
+        _sql(root, "UPDATE frame_a_session SET renewed_at = '1970-01-02' WHERE id = 1")
+        _sql(
+            root,
+            "CREATE TRIGGER frame_a_session_upd BEFORE UPDATE ON frame_a_session "
+            "FOR EACH ROW SET NEW.renewed_at = UTC_TIMESTAMP(6)",
+        )
         _sql(frame_a, "UPDATE frame_a_session SET epoch = epoch WHERE id = 1")
-        assert _sql(root, "SELECT renewed_at FROM frame_a_session")[0][0] > before
+        assert abs(skew_s("frame_a_session")) < 5
 
         # 5. Even a frame-set GLOBAL time_zone does not move trigger-stamped UTC.
         _sql(frame_a, "SET GLOBAL time_zone = '+14:00'")
@@ -420,43 +384,20 @@ def test_any_frame_principal_can_set_server_globals_and_persist_config(tmp_path)
             _sql(root, statement)
 
 
-def test_session_rows_leave_no_history_and_renewal_latency_is_small(tmp_path):
+def test_session_rows_leave_no_history(tmp_path):
     with _isolated_server(tmp_path) as (port, _root):
         root = _provision(port)
         frame_a = _connect(port, "frame_a", PASSWORD, DB)
         head = _sql(root, "SELECT DOLT_HASHOF('HEAD')")[0][0]
 
-        persistent = []
-        for _ in range(200):
-            started = time.perf_counter()
+        for _ in range(20):
             _sql(frame_a, "UPDATE frame_a_session SET epoch = epoch WHERE id = 1")
-            persistent.append(time.perf_counter() - started)
-        reconnect = []
-        for _ in range(50):
-            started = time.perf_counter()
+        for _ in range(5):
             connection = _connect(port, "frame_a", PASSWORD, DB)
             _sql(connection, "UPDATE frame_a_session SET epoch = epoch WHERE id = 1")
             connection.close()
-            reconnect.append(time.perf_counter() - started)
 
-        def summary(samples):
-            ordered = sorted(samples)
-            return {
-                "n": len(ordered),
-                "p50_ms": round(statistics.median(ordered) * 1000, 2),
-                "p95_ms": round(ordered[int(len(ordered) * 0.95) - 1] * 1000, 2),
-                "max_ms": round(ordered[-1] * 1000, 2),
-            }
-
-        print(
-            "RENEWAL_LATENCY "
-            + json.dumps({"persistent": summary(persistent), "reconnect": summary(reconnect)})
-        )
-        # Loose bound: a renewal is a single-row autocommit UPDATE, far below any 300 s TTL.
-        assert statistics.median(persistent) < 0.5
-        assert statistics.median(reconnect) < 1.0
-
-        # 250 renewals: no Dolt commit, no staged or unstaged change, and an operator's
+        # 25 renewals: no Dolt commit, no staged or unstaged change, and an operator's
         # `-Am` commit cannot sweep the ignored rows into history.
         assert _sql(root, "SELECT DOLT_HASHOF('HEAD')")[0][0] == head
         pending = _sql(root, "SELECT table_name FROM dolt_status WHERE table_name LIKE 'frame_%'")
@@ -479,7 +420,47 @@ def test_session_rows_leave_no_history_and_renewal_latency_is_small(tmp_path):
 # operations that move rows between commits (pull-merge, branch merge, cherry-pick, revert) never
 # fire it.  That is what lets an epoch bump arrive on a stale replica, and it is also why the
 # guard stops raw bd but not an actor who can write a non-``main`` branch.  These tests drive the
-# Dolt CLI directly (no server, no bd) with the product-shaped guard from ``harness.write_guard``.
+# Dolt CLI directly (no server, no bd) with the product-shaped guard below (root's
+# ``tests/harness/write_guard.guard_ddl`` for one table; this package cannot import root tests).
+
+GUARD_REFUSAL = "bh-guard: this replica is not the bh_writer for main"
+
+
+def _guard_ddl(tables: tuple[str, ...]) -> str:
+    """The write guard as one ``delimiter //`` script: fence tables, the identity procedure,
+    and an inline-mark-then-CALL trigger per table and event."""
+    parts = [
+        "create table if not exists bh_writer (id int primary key, frame varchar(64), "
+        "epoch bigint);",
+        "create table if not exists bh_write_mark "
+        "(id varchar(36) primary key, epoch bigint, tbl varchar(64));",
+        "insert ignore into dolt_ignore values ('bh_local_%', 1);",
+        "delimiter //",
+        "drop procedure if exists bh_guard_check//",
+        "create procedure bh_guard_check()\nbegin\n  declare w varchar(64);\n"
+        "  declare me varchar(64);\n  declare r varchar(16);\n"
+        "  select frame into w from bh_writer where id = 1;\n"
+        "  select frame, role into me, r from bh_local_ident where id = 1;\n"
+        "  if coalesce(r, '') <> 'branch' and (w is null or me is null or w <> me) then\n"
+        f"    signal sqlstate '45000' set message_text = '{GUARD_REFUSAL}';\n"
+        "  end if;\nend//",
+    ]
+    for table in tables:
+        for event in ("insert", "update", "delete"):
+            name = f"bh_guard_{table}_{event[:3]}"
+            parts.append(
+                f"drop trigger if exists {name}//\n"
+                f"create trigger {name} before {event} on `{table}` for each row\n"
+                "begin\n  declare e bigint;\n"
+                "  if coalesce(active_branch(), 'main') = 'main' then\n"
+                "    select epoch into e from bh_writer where id = 1;\n"
+                f"    insert into bh_write_mark (id, epoch, tbl) values (uuid(), e, '{table}');\n"
+                "    call bh_guard_check();\n"
+                "  end if;\nend//"
+            )
+    parts.append("delimiter ;")
+    return "\n".join(parts) + "\n"
+
 
 ISSUE_INSERT = (
     "insert into issues (id, title, description, design, acceptance_criteria, notes) "
@@ -554,7 +535,7 @@ def test_merge_cherry_pick_and_revert_do_not_fire_the_guard_on_the_dolt_cli(tmp_
         "design text, acceptance_criteria text, notes text); "
         "create table scratch (id int primary key)",
     )
-    a.ok("sql", stdin=wg.guard_ddl(("issues",)) + "insert into bh_writer values (1, 'A', 1);\n")
+    a.ok("sql", stdin=_guard_ddl(("issues",)) + "insert into bh_writer values (1, 'A', 1);\n")
     a.ok("sql", "-q", "call dolt_commit('-Am', 'guard')")
     a.ok("remote", "add", "origin", f"file://{remote}")
     a.ok("push", "origin", "main")
@@ -579,7 +560,7 @@ def test_merge_cherry_pick_and_revert_do_not_fire_the_guard_on_the_dolt_cli(tmp_
     a.ok("sql", "-q", "call dolt_commit('-Am', 'w2')")
     a.ok("push", "origin", "main")
     b.ok("sql", "-q", "insert into scratch values (1); call dolt_commit('-Am', 'b local')")
-    assert wg.GUARD_REFUSAL in _cli_refusal(b.run("sql", "-q", ISSUE_INSERT.format(id="b0")))
+    assert GUARD_REFUSAL in _cli_refusal(b.run("sql", "-q", ISSUE_INSERT.format(id="b0")))
 
     b.ok("pull", "origin", "main")
     assert b.count("select count(*) from dolt_log where message like 'Merge%'") >= 1
@@ -600,9 +581,7 @@ def test_merge_cherry_pick_and_revert_do_not_fire_the_guard_on_the_dolt_cli(tmp_
     # No op minted a mark; the revert also took back the mark w2's commit carried.
     assert b.count("select count(*) from bh_write_mark") == marks_after_pull - 1
     # ... yet a direct write is still refused afterwards.
-    assert wg.GUARD_REFUSAL in _cli_refusal(
-        b.run("sql", "-q", "delete from issues where id = 'fb1'")
-    )
+    assert GUARD_REFUSAL in _cli_refusal(b.run("sql", "-q", "delete from issues where id = 'fb1'"))
 
 
 # --- contracts: epoch-fence engine semantics on one server (bh-uhx2r, folded from E1/E2) --------
