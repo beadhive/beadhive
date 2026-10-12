@@ -86,10 +86,13 @@ class _Placement:
     def __init__(self, frame: str, epoch: int):
         self.view = wa.PlacementView(frame, epoch)
 
-    def read(self):
+    def read(self, prefix):
         return self.view
 
-    def cas(self, frame, epoch, *, expected):  # pragma: no cover - step 2 never CASes
+    def compare_and_set(self, prefix, frame, epoch, **_):  # pragma: no cover - never CASes
+        raise AssertionError("step 2 must not move placement")
+
+    def lookup(self, prefix, operation):  # pragma: no cover - step 2 never CASes
         raise AssertionError("step 2 must not move placement")
 
 
@@ -242,7 +245,7 @@ def adopted(tmp_path):
     b = _clone(tmp_path, "b", url)
     node_b = _node(b)
     node_b.provision_ident("b")
-    result = wa.run_step2(node_b, _Placement("b", 2), frame="b", epoch=2)
+    result = wa.run_step2(node_b, _Placement("b", 2), prefix="fx", frame="b", epoch=2)
     assert result.landed, result
     assert node_b.remote_writer() == wa.WriterRow("b", 2, result.revision or "")
     return a, node_a, b, node_b

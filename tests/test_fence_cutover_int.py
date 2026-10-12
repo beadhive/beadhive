@@ -53,12 +53,15 @@ ISSUE_INSERT = (
 
 
 class _HQ:
-    """:class:`beadhive.fence_cutover.PlacementReader` over the fixture's HQ stand-in."""
+    """:class:`beadhive.fence_cutover.PlacementReader` over the fixture's HQ stand-in; with a
+    prefix it is also the read side of :class:`beadhive_hq_storage.PlacementStore` that
+    :func:`beadhive.writer_adopt.run_step2` re-checks (it never CASes)."""
 
     def __init__(self, cluster: Cluster):
         self.cluster = cluster
 
-    def read(self):
+    def read(self, prefix: str | None = None):
+        assert prefix in (None, self.cluster.prefix), prefix
         p = self.cluster.hq.placement()
         return None if p.writer is None else wa.PlacementView(p.writer, p.epoch)
 
@@ -299,7 +302,7 @@ def test_rollback_refuses_below_floor_until_rolled_forward(rewound_cluster):
     assert any(f.startswith("placement_ahead") for f in st.findings())
 
     # Roll forward (adopt step 2 at the placed epoch), then the rollback floors at 222.
-    result = wa.run_step2(node, _HQ(cluster), frame="a", epoch=legacy)
+    result = wa.run_step2(node, _HQ(cluster), prefix="fx", frame="a", epoch=legacy)
     assert result.landed, result
     back = _rollback(cluster, a)
     assert back.floor == legacy

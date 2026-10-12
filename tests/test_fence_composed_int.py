@@ -198,7 +198,12 @@ def _take(world: ProductWorld, name: str, *, reclaim=None) -> wa.Step2Result:
     """The director places ``name``; ``name`` runs the product adopt step 2 to completion."""
     placed = world.hq.place(name)
     result = wa.run_step2(
-        world.node(name), _HQ(world.cluster), frame=name, epoch=placed.epoch, reclaim=reclaim
+        world.node(name),
+        _HQ(world.cluster),
+        prefix=world.cluster.prefix,
+        frame=name,
+        epoch=placed.epoch,
+        reclaim=reclaim,
     )
     world.moves.observe("adopt", name)
     assert result.landed, result
@@ -411,7 +416,13 @@ class _ProductDriver:
         assert any(f.startswith("placement_ahead") for f in status.findings()), status.findings()
         ahead = cf.check_invariants(self.world)
         assert not ahead["ok"] and "audit" in ahead["violations"], ahead["violations"]
-        rolled = wa.run_step2(node, _HQ(self.world.cluster), frame=name, epoch=placed.epoch)
+        rolled = wa.run_step2(
+            node,
+            _HQ(self.world.cluster),
+            prefix=self.world.cluster.prefix,
+            frame=name,
+            epoch=placed.epoch,
+        )
         self.world.moves.observe("roll_forward", name)
         assert rolled.landed, rolled
         self.record("legacy_adopt", frame=name, epoch=placed.epoch, refused_write=True)
