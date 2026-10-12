@@ -719,3 +719,89 @@ each operation to the contract scenarios that cover it.
 - **Fake-against-fake self-check.** The gate runs the machine fake against fake, with
   `advance_clock` enabled. It also runs a mutant that reuses CAS revisions, and the machine
   must reject that mutant.
+
+### Settled by `bh-br1cd`
+
+The Dolt adapter is in `packages/beadhive-hq-storage-dolt`. Its README maps each operation to
+its Dolt statements, its `Applied` / `Conflict` / `Unknown` cases and the witness each lookup
+finds.
+
+- **`hq_sql_transport` stays in root.** It depends on root's `HqSqlConnection` settings and
+  the fnox `SecretBroker`, so moving it would pull root settings into the package or duplicate
+  them. `beadhive.hq_storage_composition` closes `hq_sql_transport.connect` into the adapter's
+  `Callable[[Role], Connection]` factory, one binding per `Role` (`operator`,
+  `placement_writer`, `publisher`, `frame`, `reader`). It also binds a hive's fence engine
+  with `fence_schema`'s 44 guard triggers. Root's transport deadline error has no numeric code,
+  so composition injects a predicate for it, and the adapter reports it as
+  `Unknown(reason="deadline")`.
+- **Real-Dolt shrink budget.** The gate runs fake against Dolt with the `gate` budget and
+  `no_shrink_phases()`. That measured 164 s on a loaded host. Every other profile shrinks
+  against Dolt, capped at 100 examples per run (`DOLT_MAX_EXAMPLES`). The cap bounds the budget
+  only; the comparison is unchanged.
+- **The Dolt-semantics tests are folded in.** `tests/test_hq_sql_dolt_semantics_int.py` moved
+  to `packages/beadhive-hq-storage-dolt/tests/test_dolt_semantics_int.py`; no copy remains in
+  `tests/`. This covers the bh-wtsrc grant, trigger, UTC and host-pin cases, the bh-sieai
+  merge, cherry-pick and revert trigger contract, and the bh-uhx2r E1 and E2 cases. The test
+  now owns its server through the package's `DoltSqlServer`, and inlines the one-table write
+  guard because the package cannot import root's test harness. Two changes remove its waits:
+  - the no-op-renewal case now backdates the row with its trigger dropped, instead of
+    sleeping;
+  - the renewal latency samples stay in the spike's evidence record and are no longer
+    asserted.
+  `just fence-canary` now includes the package's tests, so the canary cases still run on every
+  pin bump.
+- **Every mutation reaches one commit point,** even when the outcome is already a `Conflict`.
+  A lost acknowledgment is therefore always `Unknown`, as on the fake.
+- **Error classification by `args[0]`.**
+  - Before the commit point, `1213` or `1205` is a `Conflict` and anything else is
+    `StorageUnavailable`.
+  - At the commit point, `1213` is a `Conflict`. Otherwise the reason is `"deadline"` for
+    `TimeoutError`, `3024`, `1317` or root's predicate; `"transport"` for `2006`, `2013` or
+    `2055`; and `"commit"` for `1180` and anything unclassified.
+  - `prune` and `renew` have no `Unknown` outcome. A lost acknowledgment there raises
+    `StorageError`.
+
+#### Adapter-specific behaviour and deviations
+
+- **Placement witness.** For a port-written row, `request_id` holds the `OperationId` (the
+  section 2 witness table), so the placement cause rides in the body, not as root's
+  `cause_token`. `request_sha256` is still root's `placement_witness` over the row, and root's
+  `is_director_row` recognises the row (`tests/contracts/test_hq_storage_composition.py`).
+  Encoding the receiver's `{"authority", "lease"}` carrier and keeping `cause_token`
+  compatibility is `bh-sqfvq`'s. The adapter's `PlacementStore` already reads both body shapes.
+- **Placement `recorded_at`.** The receiver-compatible placement row has no stamp column. A
+  `Confirmed` placement lookup therefore carries the server clock at lookup time, which is an
+  upper bound on the write.
+- **Adapter-owned live tables.** Kinds other than placement, the three streams and liveness use
+  adapter-owned `dolt_ignore`'d tables: `hq_live_records`, `hq_live_append` and
+  `hq_live_liveness`. Each has a stamping trigger. Mapping them onto `hq_live_failover_policy`,
+  the per-principal inbox and session tables, and `hq_live_receipts` belongs to the migration
+  beads (`bh-sqfvq`, `bh-xnn5p`).
+- **Triggers on ignored tables are never committed.** On Dolt 2.3.5,
+  `information_schema.triggers` fails for a committed trigger whose table is ignored, because
+  it resolves the table at `HEAD`. `DoltAccounts.triggers()` reads `dolt_schemas` instead.
+- **`ChangeSet.tables` is a logical allowlist in Dolt.** Documents live in one committed
+  `hq_storage_documents` table keyed by `<table>/<name>`. Every publication stages exactly
+  `hq_storage_documents`, `hq_storage_publications` and `hq_storage_publication_meta`, and never
+  `-A`. Mapping onto the `hq_config_*` tables is `bh-x7xtc`'s.
+- **`HiveFence` takes its guard set from root.** The contract fence carries the fake's three
+  guard names, so the machine compares equal conformance reports. A bump that fails mid-batch
+  discards its partial working set with `DOLT_CHECKOUT` of the tables it touched, then raises
+  `StorageUnavailable`.
+- **`ReclaimSet` coverage.** A `ReclaimSet` reverts the lifecycle fields and clears
+  `claim-frame`. The `recovery:resumable` label and the audit comment are still root's, and
+  `bh-jhgum` decides whether `ReclaimSet` grows to carry them.
+- **`EpochRefStore` is not Dolt's.** `refs/bh/epoch` is a git ref in root, so the Dolt fence
+  harness pairs the real fence with `InMemoryEpochRef`.
+- **The Dolt-only interfaces are first-cut shapes.** `DoltHistory`, `DoltMerge` and
+  `DoltAccounts` are declared in the Dolt package, and `DoltHistory.table_history` accepts only
+  the closed `FenceTable` enum. Their final shapes are `bh-3kl1k`'s.
+- **Fix in the shared machine.** `build_state_machine` compared `SyncReport` values by raw head
+  text, which can only match fake against fake. It now projects the head through the
+  revision-equality tags, like every other revision.
+- **Fault injection on Dolt is real.** The harness wraps the connections or the engine it gives
+  the adapter. An armed fault fires at the named method's first commit point: the real commit
+  runs first when `applied`, and otherwise never reaches the server.
+
+No other divergence between the fake and Dolt was found. The contract suite passes on Dolt
+with the two clock-controlled scenarios skipped.

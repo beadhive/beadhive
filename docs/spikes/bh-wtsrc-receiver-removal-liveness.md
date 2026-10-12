@@ -7,7 +7,7 @@ map). Parent molecule `bh-qlgmm`. Proposal:
 **Executable evidence:**
 `tests/spikes/test_bh_wtsrc_receiver_removal_liveness.py` (`integration` + `dolt_server`, 7
 tests), retired by `bh-3nfbn`: see "Retired to permanent suites" at the end, and
-[`tests/test_hq_sql_dolt_semantics_int.py`](../../tests/test_hq_sql_dolt_semantics_int.py).
+[`packages/beadhive-hq-storage-dolt/tests/test_dolt_semantics_int.py`](../../packages/beadhive-hq-storage-dolt/tests/test_dolt_semantics_int.py).
 
 ## Question
 
@@ -72,7 +72,7 @@ signalled.
 **Commands:**
 
 ```sh
-uv run pytest tests/test_hq_sql_dolt_semantics_int.py -s -p no:cacheprovider  # retired file; see the table at the end
+uv run pytest packages/beadhive-hq-storage-dolt/tests/test_dolt_semantics_int.py -s -p no:cacheprovider  # retired file; see the table at the end
 ```
 
 ## Evidence
@@ -360,10 +360,10 @@ was retired by `bh-3nfbn`. The findings above stand; their tests now live in per
 
 | Spike test | Evidence | Permanent counterpart |
 |---|---|---|
-| `test_frame_grant_confines_writes_to_its_own_session_and_evidence` | E1 | `tests/test_hq_sql_dolt_semantics_int.py` (moved) |
-| `test_operator_trigger_stamps_server_utc_over_frame_literals_and_time_zone` | E2 | `tests/test_hq_sql_dolt_semantics_int.py` (moved) |
-| `test_trigger_body_writes_run_with_the_invoking_frame_privileges` | E3 | `tests/test_hq_sql_dolt_semantics_int.py` (moved, keeps `fence_canary`) |
-| `test_host_pinned_principal_refuses_a_leaked_password_from_another_address` | E4 | `tests/test_hq_sql_dolt_semantics_int.py` (moved) |
-| `test_any_frame_principal_can_set_server_globals_and_persist_config` | E4 | `tests/test_hq_sql_dolt_semantics_int.py` (moved) |
-| `test_session_rows_leave_no_history_and_renewal_latency_is_small` | E6 | `tests/test_hq_sql_dolt_semantics_int.py` (moved) |
+| `test_frame_grant_confines_writes_to_its_own_session_and_evidence` | E1 | `packages/beadhive-hq-storage-dolt/tests/test_dolt_semantics_int.py` (moved) |
+| `test_operator_trigger_stamps_server_utc_over_frame_literals_and_time_zone` | E2 | `packages/beadhive-hq-storage-dolt/tests/test_dolt_semantics_int.py` (moved) |
+| `test_trigger_body_writes_run_with_the_invoking_frame_privileges` | E3 | `packages/beadhive-hq-storage-dolt/tests/test_dolt_semantics_int.py` (moved, keeps `fence_canary`) |
+| `test_host_pinned_principal_refuses_a_leaked_password_from_another_address` | E4 | `packages/beadhive-hq-storage-dolt/tests/test_dolt_semantics_int.py` (moved) |
+| `test_any_frame_principal_can_set_server_globals_and_persist_config` | E4 | `packages/beadhive-hq-storage-dolt/tests/test_dolt_semantics_int.py` (moved) |
+| `test_session_rows_leave_no_history_and_renewal_latency_is_small` | E6 | `packages/beadhive-hq-storage-dolt/tests/test_dolt_semantics_int.py::test_session_rows_leave_no_history` (moved; the latency samples stay in this record, bh-br1cd) |
 | `test_scenario_10_slow_probe_keeps_session_fresh_and_expired_evidence_alone_blocks` | E7 | retired: renewal ignores a stalled conformance job (`test_hq_sql_session_int.py::test_renewal_is_one_update_per_tick_and_ignores_a_stalled_conformance_job`), evidence expiry blocks conformance alone while the session stays fresh (`test_hq_sql_session_int.py`, evidence-ttl block), and a sender stall past the TTL (`test_fence_composed_int.py::test_sender_stall_longer_than_the_ttl_is_stale_but_fails_over_only_past_failover_after`) |
