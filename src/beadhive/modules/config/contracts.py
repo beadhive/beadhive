@@ -875,6 +875,30 @@ class ValidationMemoryConfig(_Section):
         return _memory_size(value, name=info.field_name, allow_zero=True)
 
 
+class GatePushConfig(_Section):
+    """`work.gate.push` — the pre-push hook's opt-in per-key acceptance (attest-keys ADR 3.8)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    accept_attested_green: bool = Field(
+        False,
+        description=(
+            "Opt in: the push-main hook also accepts the exact pushed tree when every active "
+            "attest key is current or carried at that tree (selective_validation."
+            "attested_green). Off (the default) keeps today's aggregate-command lookup and full "
+            "gate byte for byte; an absent or red key, drift, or any error falls through to them."
+        ),
+    )
+
+
+class GateConfig(_Section):
+    """`work.gate` — gate-model settings (attest-keys single-gate ADR, 3.8)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    push: GatePushConfig = Field(default_factory=GatePushConfig)
+
+
 class WorkConfig(_Section):
     """Integration-plane driver (`bh work`) settings — drives a bead assigned -> merged."""
 
@@ -1096,6 +1120,10 @@ class WorkConfig(_Section):
             "Attest key catalog + impact resolver (Attested Green ADR, Amendment 1). Absent is "
             "today's whole-tree gate: no keys, native-full."
         ),
+    )
+    gate: GateConfig = Field(
+        default_factory=GateConfig,
+        description="Gate-model settings; today only the opt-in push-hook acceptance.",
     )
     dispatch: DispatchConfig = Field(default_factory=DispatchConfig)
     beads: BeadsConfig = Field(default_factory=BeadsConfig)

@@ -43,7 +43,7 @@ diagnostic compatibility; safety never depends on its presence or execution.
 
 **A SECOND, UNRELATED PRE-PUSH BEHAVIOUR LIVES HERE TOO** (bh-ku9n9.5):
 :func:`check_push_main`, the attested-green lookup the main-merge gate consults before it
-spends ~371s re-running `just check-all` on a tree something already proved. It shares nothing
+spends ~1536s re-running `just check-all` on a tree something already proved. It shares nothing
 with the fence above except the git lifecycle point — and, deliberately, the shape: a
 `(ok, detail)` predicate with the whole hook contract in a verb (`bh hive hook push-main`), so
 neither hook file owns logic that can drift from bh's own notion of the gate.
@@ -307,6 +307,35 @@ def push_main_cmd(cfg, entry, gate_cmd: str = "") -> tuple[str, str]:
     return cmd, ""
 
 
+def _attested_green_hit(cfg, entry, rev: str, on_miss: str) -> str | None:
+    """The opt-in per-key acceptance (attest-keys ADR 3.4, `work.gate.push.accept_attested_green`).
+
+    Returns the success detail (one line per key state) when the flag is on AND
+    `selective_validation.attested_green(entry, cfg, rev, "push-main")` holds for the exact pushed
+    tree; `None` for every other outcome, including any exception, so the caller falls through to
+    the aggregate lookup and the full gate. Flag unset, false, or any non-boolean is OFF: this
+    function then does nothing at all."""
+    try:
+        if config.layered(cfg, entry, "work.gate.push", "accept_attested_green", False) is not True:
+            return None
+        from . import selective_validation  # lazy: nothing is imported with the flag off
+
+        if not selective_validation.attested_green(entry, cfg, rev, PUSH_MAIN_PHASE):
+            return None
+        keys = selective_validation.attest_keys(
+            selective_validation.config.attest_config(cfg, entry)
+        )
+        tree = validation_ledger.tree_of(entry, rev)
+        verdicts = validation_ledger.key_verdicts(entry, tree, keys, cfg=cfg)
+        states = "\n".join(f"  {name}: {v.state.value}" for name, v in sorted(verdicts.items()))
+        return (
+            f"✓ attested green: every attest key is current or carried at tree {tree[:12]} — "
+            f"skipping the full gate for {rev[:12]}\n{states}"
+        )
+    except Exception:  # noqa: BLE001 — ANY failure means "fall through", never "pass"
+        return None
+
+
 def check_push_main(
     rev: str, hive_id: str = "", gate_cmd: str = "", on_miss: str = "gate runs"
 ) -> tuple[bool, str]:
@@ -330,7 +359,7 @@ def check_push_main(
     `green_verdict`, so this gate and every landing boundary get it from one place.
 
     That asymmetry is why the `except Exception` below is correct rather than lazy: the failure
-    mode of this lookup is "we ran the 371s gate we would have run anyway", so swallowing a
+    mode of this lookup is "we ran the 1536s gate we would have run anyway", so swallowing a
     surprise and falling through is strictly safer than propagating it (which, from a git hook,
     would BLOCK a push that today succeeds).
 
@@ -343,6 +372,13 @@ def check_push_main(
     *full* one. Unconfigured therefore looks up nothing at all and the gate runs — the tier
     contract's "a hive that supports nothing gets exactly today's behaviour".
 
+    **Per-key acceptance (opt-in).** With `work.gate.push.accept_attested_green` true (per hive or
+    global; default false) the exact pushed tree is also accepted when
+    `selective_validation.attested_green(..., "push-main")` holds: every active key current or
+    carried, none red, no drift. It is consulted after the bypass and before the aggregate
+    lookup below; an absent or red key, drift, or any exception falls through to that lookup and
+    then the full gate. With the flag off nothing in this paragraph runs.
+
     **`gate_cmd`** is what the caller says it will run on a miss. When given, the resolved phase
     must equal it exactly or the lookup refuses: a `push-main` key naming a *different* (and
     possibly weaker) command than the hook actually runs is precisely the "ambiguous
@@ -353,7 +389,7 @@ def check_push_main(
     verdict: every caller's `False` is the safe side of its own decision, which is the reason one
     predicate can serve both.
 
-    WHAT THIS DOES NOT SOLVE: only the HIT path is fast. A miss still runs ~371s inside the
+    WHAT THIS DOES NOT SOLVE: only the HIT path is fast. A miss still runs ~1536s inside the
     push, holding the connection git opened before the hook started, so the SSH keepalive from
     bh-53o8f (`scripts/push-main.sh` / `just push`) is still required — see that script's
     header. This makes the expensive path rarer; it does not make it safe to run bare."""
@@ -380,6 +416,9 @@ def check_push_main(
                 emit=False,
             )
             return True, bypassed.message
+        attested = _attested_green_hit(cfg, entry, rev, on_miss)
+        if attested is not None:
+            return True, attested
         cmd, refusal = push_main_cmd(cfg, entry, gate_cmd)
         if refusal:
             return False, f"{refusal} ({on_miss})"
