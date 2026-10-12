@@ -740,3 +740,73 @@ the bh-u5b0e load-timeout family. Even so, its tail was 16 s per worker.
 - **Next lever.** The longest single test (143 s) is now well under the 495 s per-worker share.
   The floor is busy / 16 plus collection, so the remaining wins are shorter tests and faster
   collection, not scheduling.
+
+## Worksteal packing on the root-composition lane (bh-ju8vk)
+
+**Question.** bh-xxkf7.7 registered the `beadhive-hq-storage` and `beadhive-hq-storage-dolt` root
+dependents in `PACKAGE_TESTS`, as `just root-composition-validate` requires. On main 9e35ee77,
+`just root-composition-native` went from about 815 tests and 55-60 s to 1,217 tests and 793 s.
+Why, and which lanes run those files now?
+
+**Answer.** The recipe ran `pytest -n 16` with xdist's default `--dist load`. The collection is
+sorted longest-first (`tests/harness/duration_order.py`). `load` then hands each worker a
+contiguous slice of that order, so worker 1 got the ~19 slowest tests, the Dolt `_int` files,
+and ran them back to back. Their durations add up to roughly 770 s, which is the 793 s wall. The
+recipe now packs like `stateful-native` and `test-integration-land`
+(`BH_TEST_WORKSTEAL_PACK={{worksteal_pack}}`, `--dist {{test_dist}}`). The collection is unchanged
+and only the schedule differs. Measured wall: **793 s before, 160 s after**.
+
+### Lane membership, before and after
+
+Node ids came from `pytest --collect-only -q` with each lane's exact selection, on 9e35ee77 and
+on this branch. The four sets are byte-identical before and after.
+
+| Lane | Selection | Items |
+| --- | --- | ---: |
+| `stateful-native` | `tests -m "not integration and not pants_profile"` minus every root-composition file (`--ignore`) | 10,468 |
+| `root-composition-native` | the registered root-composition files, no `-m` filter | 1,217 |
+| `test-integration-land` | `tests -m integration` | 262 |
+| whole tree | `tests` | 11,914 |
+
+- `stateful-native` and `root-composition-native` are disjoint. A file in `PACKAGE_TESTS` leaves
+  the stateful lane entirely.
+- `test-integration-land` takes no `--ignore`. The 34 integration-marked root-composition tests
+  therefore run in both `root-composition-native` and `test-integration-land` under `check-all`:
+  `test_fence_composed_int` (7), `test_fence_data_int` (12), `test_fence_orphan_int` (11),
+  `test_writer_adopt_int` (3) and one `tests/contracts/test_hq_storage_composition.py` test.
+- The union of the three lanes is the whole tree except the one `pants_profile` test, which
+  `pants-artifact-check` runs. No test leaves every lane.
+- `check-native` (`just check`) runs `root-composition-native`, so it runs these 34 Dolt
+  integration tests too.
+
+### Runs
+
+Both runs used `NO_COLOR=1 BH_DOLT_SLOTS=12 BH_TEST_TIMEOUT_SECONDS=2400`, one lane at a time on
+the shared host. Wall is the pytest session time.
+
+| Lane | Before (main 9e35ee77, `check-all` log) | After (packed) | Result after |
+| --- | ---: | ---: | --- |
+| `root-composition-native` | 793 s (1,215 passed, 1 skipped, 1 failed: bh-fdrnq) | **160 s** (176 s with the recipe's prerequisites) | 1,216 passed, 1 skipped |
+| `test-integration-land` | not reached: the gate stopped at root composition | **543 s** (547 s with the recipe's prerequisites) | 258 passed, 4 skipped |
+
+`test-integration-land` has no recipe change. Its row confirms the shared Dolt files still pass
+there.
+
+### Reading the numbers
+
+- **Floor.** The longest single test, `test_multi_executor_forwarding_survives_primary_failover_with_backup_reclaim`
+  (127-146 s), sets the lane's floor. Scheduling cannot bring the lane back to ~60 s while the
+  `_int` files run in it.
+- **The remaining cost is duplication.** It is a policy question and stays open. Each option
+  changes a contract:
+  1. Filter `root-composition-native` to `-m "not integration"` and keep the 34 in a
+     root-composition-only leaf. That leaf would be in `attest-root-composition` but not in
+     `check-all-native`, which breaks `check-attest-catalog`'s rule that the attest keys
+     partition the native gate.
+  2. Leave them only in root composition, and pass `--ignore` for those files to
+     `test-integration-land`. That breaks the complete-integration-collection rule
+     (`tests/test_workspace_native_gate.py`). It also stops the `integration` key from running
+     them on changes that do not select `root-composition`.
+  3. Filter `root-composition-native` to `-m "not integration"` and drop nothing else. A
+     package-only hq-storage change would then no longer run the Dolt root dependents, which
+     is the selective coverage bh-xxkf7.7 added.
