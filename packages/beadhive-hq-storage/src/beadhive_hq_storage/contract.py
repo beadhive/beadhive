@@ -56,6 +56,7 @@ from . import (
     Revision,
     StorageUnavailable,
     StreamKind,
+    SyncReport,
     Unknown,
     UnknownReason,
     Versioned,
@@ -1091,6 +1092,8 @@ class _Side:
             return ("confirmed", self.tag(value.revision))
         if isinstance(value, NotConfirmed):
             return ("not-confirmed",)
+        if isinstance(value, SyncReport):  # the head is a revision: compare its tag (bh-br1cd)
+            return ("sync", self.tag(value.head), value.ahead, value.behind, value.diverged)
         if isinstance(value, str):  # a revision (commit_bump)
             return ("revision", self.tag(value))
         return value
