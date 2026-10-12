@@ -16,6 +16,9 @@ from typing import Final, Generic, Literal, NewType, TypeVar, Union
 __all__ = [
     "ABSENT",
     "ADOPT_SENTINEL_PREFIX",
+    "CLAIM_FRAME_LABEL_PREFIX",
+    "RECOVERY_LABEL_PREFIX",
+    "RESUMABLE_LABEL",
     "UPDATE_ONLY_KINDS",
     "Absent",
     "Applied",
@@ -35,6 +38,7 @@ __all__ = [
     "Outcome",
     "PlacementView",
     "PruneReport",
+    "ReclaimNote",
     "ReclaimSet",
     "RecordKind",
     "RefView",
@@ -271,13 +275,36 @@ class EpochFloor:
 
 
 @dataclass(frozen=True)
+class ReclaimNote:
+    """The audit comment a reclaim leaves on one bead, inside the bump commit (M14 D5a).
+
+    The caller mints ``comment_id`` and stamps ``created_at`` (aware UTC, whole seconds are
+    stored); the store writes them as given."""
+
+    bead_id: str
+    comment_id: str
+    author: str
+    text: str
+    created_at: datetime
+
+
+@dataclass(frozen=True)
 class ReclaimSet:
     """The failover reclaim that rides inside the bump commit (writer-partitioning condition 7):
     in_progress beads claimed by ``dead_frame`` that the bump reverts. The one bead-data write
-    the port carries (operator-accepted scope exception, bh-xxkf7)."""
+    the port carries (operator-accepted scope exception, bh-xxkf7).
+
+    Every bead in ``bead_ids`` that is still ``in_progress`` is left exactly as ``bd unclaim
+    --force`` leaves it (``open``, no assignee, no ``started_at``) with its ``claim-frame``
+    label cleared. A bead also in ``resumable`` has every ``recovery:*`` label replaced by
+    ``recovery:resumable``, and each ``notes`` entry adds its audit comment. Every write is
+    guarded on ``in_progress``, so a bead that moved on is never touched. ``resumable`` and
+    every note's bead must be members of ``bead_ids`` (settled by bh-jhgum)."""
 
     dead_frame: str
     bead_ids: frozenset[str]
+    resumable: frozenset[str] = frozenset()
+    notes: tuple[ReclaimNote, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -300,6 +327,13 @@ class GuardReport:
     present: int
     missing: tuple[str, ...]
 
+
+CLAIM_FRAME_LABEL_PREFIX: Final[str] = "claim-frame:"
+"""Root ``work_backup.CLAIM_FRAME_DIMENSION`` as a label prefix: a reclaim clears it."""
+RECOVERY_LABEL_PREFIX: Final[str] = "recovery:"
+"""Root ``work_backup.RECOVERY_DIMENSION`` as a label prefix: a resumable reclaim replaces it."""
+RESUMABLE_LABEL: Final[str] = "recovery:resumable"
+"""The label a resumable reclaim leaves (root ``work_backup.RESUMABLE``)."""
 
 ADOPT_SENTINEL_PREFIX: Final[str] = "adopt-"
 """The bump witness: the ``adopt-<epoch>`` mark id (condition 1)."""

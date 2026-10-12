@@ -51,6 +51,7 @@ from . import (
     NotProvisioned,
     OperationId,
     PlacementStore,
+    ReclaimNote,
     ReclaimSet,
     RecordKind,
     Revision,
@@ -68,6 +69,7 @@ from . import (
 
 __all__ = [
     "BEADS_SEED",
+    "LABELS_SEED",
     "DEV_PROFILE",
     "GATE_BUDGET",
     "GATE_PROFILE",
@@ -107,6 +109,17 @@ BEADS_SEED: Mapping[str, tuple[str, str]] = {
     "bd-3": ("in_progress", "frame-live"),
 }
 """Bead rows (``id -> (status, assignee)``) every fence harness starts with."""
+
+LABELS_SEED: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("bd-1", "claim-frame:frame-dead"),
+        ("bd-1", "recovery:stale"),
+        ("bd-1", "area:fence"),
+        ("bd-2", "claim-frame:frame-dead"),
+        ("bd-3", "claim-frame:frame-live"),
+    }
+)
+"""Label rows (``(bead id, label)``) every fence harness starts with."""
 
 _T0 = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -241,6 +254,7 @@ class FakeFenceHarness:
             self.clock,
             writer=WriterRow(frame="", epoch=0) if cut_over else None,
             beads=BEADS_SEED,
+            labels=LABELS_SEED,
         )
         self.fence = self.fence_fake
         self.epoch_ref = InMemoryEpochRef(("frame-dead", 1))
@@ -862,6 +876,65 @@ def _case_bump_is_one_commit_with_sentinel_and_reclaim(f: FenceHarness) -> None:
     assert prior.beads["bd-1"] == BEADS_SEED["bd-1"]
     assert {mark for mark, _ in prior.marks} == {adopt_sentinel(1)}
     assert f.fence.writer() == snap.writer
+    assert snap.labels == LABELS_SEED - {("bd-1", "claim-frame:frame-dead")}
+    assert not snap.comments
+
+
+_NOTE_AT = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+
+
+def _note(bead: str, n: int) -> ReclaimNote:
+    return ReclaimNote(bead, f"c-{n}", "ops/adopt@frame-live", f"reclaimed {bead}", _NOTE_AT)
+
+
+@_scenario("fence", "HiveFence.commit_bump", "ReclaimSet", "ReclaimNote")
+def _case_bump_reclaim_marks_resumable_and_leaves_the_audit_note(f: FenceHarness) -> None:
+    before = f.fence.commit_bump(_bump("frame-a", 1))
+    reclaim = ReclaimSet(
+        dead_frame="frame-dead",
+        bead_ids=frozenset({"bd-1", "bd-2"}),
+        resumable=frozenset({"bd-1", "bd-2"}),
+        notes=(_note("bd-1", 1), _note("bd-2", 2)),
+    )
+    head = f.fence.commit_bump(_bump("frame-live", 2, reclaim=reclaim))
+    assert f.parent_of(head) == before  # still exactly one commit
+    snap = f.snapshot_at(head)
+    assert snap.beads["bd-1"] == ("open", "")
+    # claim-frame cleared and every recovery:* replaced by recovery:resumable; other labels kept
+    assert {label for bead, label in snap.labels if bead == "bd-1"} == {
+        "area:fence",
+        "recovery:resumable",
+    }
+    # bd-2 is not in_progress: none of its writes apply (labels, note)
+    assert {row for row in snap.labels if row[0] != "bd-1"} == {
+        row for row in LABELS_SEED if row[0] != "bd-1"
+    }
+    assert snap.comments == frozenset(
+        {("c-1", "bd-1", "ops/adopt@frame-live", "reclaimed bd-1", "2026-01-02 03:04:05")}
+    )
+    assert f.snapshot_at(before).comments == frozenset()
+
+
+@_scenario("fence", "HiveFence.commit_bump", "ReclaimSet", "InvalidRequest")
+def _case_bump_refuses_a_malformed_reclaim(f: FenceHarness) -> None:
+    f.fence.commit_bump(_bump("frame-a", 1))
+    beads = frozenset({"bd-1"})
+    bad = (
+        ReclaimSet("frame-dead", beads, resumable=frozenset({"bd-3"})),
+        ReclaimSet("frame-dead", beads, notes=(_note("bd-3", 1),)),
+        ReclaimSet("frame-dead", beads, notes=(_note("bd-1", 1), _note("bd-1", 1))),
+        ReclaimSet(
+            "frame-dead",
+            beads,
+            notes=(ReclaimNote("bd-1", "c-1", "a", "t", datetime(2026, 1, 1)),),  # noqa: DTZ001
+        ),
+    )
+    for reclaim in bad:
+        _raises(
+            InvalidRequest,
+            lambda reclaim=reclaim: f.fence.commit_bump(_bump("frame-b", 2, reclaim=reclaim)),
+        )
+    assert f.fence.writer() == WriterRow("frame-a", 1, "rev-frame-a-1")
 
 
 @_scenario("fence", "HiveFence.commit_bump", "HiveFence.epoch_floor", "IntegrityViolation")
@@ -1301,7 +1374,14 @@ def build_state_machine(a: ContractAdapter, b: ContractAdapter) -> Any:
                     epoch=epoch,
                     revision=f"rev-{frame}-{epoch}",
                     operation=op,
-                    reclaim=ReclaimSet("frame-dead", frozenset({"bd-1", "bd-2"}))
+                    reclaim=ReclaimSet(
+                        "frame-dead",
+                        frozenset({"bd-1", "bd-2"}),
+                        resumable=frozenset({"bd-1"}),
+                        notes=(
+                            ReclaimNote("bd-1", f"c-{op}", "ops/adopt@" + frame, "reclaimed", _T0),
+                        ),
+                    )
                     if reclaim
                     else None,
                 )
