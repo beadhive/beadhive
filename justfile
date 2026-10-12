@@ -751,9 +751,13 @@ stateful-native: root-composition-validate validation-evidence-refresh
 
 # The small root/package seam. Package-only impact selects this instead of the complete root,
 # integration and demo suites; the ordinary/full profiles still run both native partitions.
+# WORKSTEAL PACKING (bh-ju8vk), as on stateful-native and test-integration-land. The registered
+# hq-storage root dependents (bh-xxkf7.7) carry the Dolt `_int` files, and xdist's default `load`
+# hands worker 1 the first contiguous slice of the longest-first order: ~19 of the slowest tests
+# serially on one worker, 793 s wall for 1,217 items. Same collection; only the schedule changes.
 root-composition-native: root-composition-validate
-    uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{stateful_workers}} \
+    BH_TEST_WORKSTEAL_PACK={{worksteal_pack}} uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
+        ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{stateful_workers}} --dist {{test_dist}} \
         $(uv run python scripts/root_composition_tests.py)
 
 # Recursive PEX packaging executes the Pants engine and needs its pinned artifact cache. Keep

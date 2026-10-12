@@ -172,6 +172,10 @@ def test_native_test_recipes_collect_all_core_tests_without_pants_filtering() ->
     assert "--ignore" not in integration
     assert "root_composition_tests.py --ignore-args" in native
     assert "root_composition_tests.py" in composition
+    # Packed like the other Dolt-bearing lanes (bh-ju8vk): `load` serialised the _int files.
+    for body in (native, composition, integration):
+        assert "--dist {{test_dist}}" in body
+        assert "BH_TEST_WORKSTEAL_PACK={{worksteal_pack}}" in body
     assert "root-composition-validate" in _dependencies(justfile, "stateful-native")
     assert "root-composition-validate" in _dependencies(justfile, "root-composition-native")
     assert "root-composition-validate" in _dependencies(justfile, "root-workspace-check")
