@@ -3,42 +3,44 @@
 ``docs/design/hive-writer-partitioning-adr.md`` §1: placement — *who should write* a hive — is
 one ``hq_live_hive_leases`` row per hive, changed only by a compare-and-swap issued with a
 director/operator credential that holds ``UPDATE`` on that table and no other write right.
-Frames hold ``SELECT`` on it. The CAS is::
+Frames hold ``SELECT`` on it.
 
-    UPDATE hq_live_hive_leases SET revision=<fresh>, lease_json=<record>, ...
-    WHERE prefix=<prefix> AND revision=<expected>
-
-Rules this module enforces:
+Storage is the HQ storage port (``docs/design/hq-storage-port-adr.md``, bh-sqfvq): the row is a
+``RecordKind.PLACEMENT`` record, read and compare-and-set through ``VersionedRecords``. The Dolt
+adapter (``beadhive_hq_storage_dolt``) owns every SQL string and the row's wire encoding; root
+composes it in :mod:`beadhive.hq_storage_composition`. Rules this module enforces:
 
 * **Every write rewrites the CAS token** (condition 5, ``bh-cvk70`` E6). Dolt merges concurrent
   transactions cell by cell, so a write that kept ``revision`` could commit silently over a
-  competing CAS. The token is :func:`fresh_revision` — ``sha256(record ‖ uuid)`` in the
-  receiver's 64-hex format, so the trusted receiver can take the row over again on a Φ3
-  rollback and a director can take over a receiver-written row.
-* **``rowcount 0`` or a ``1213`` serialization failure means lost** (:class:`PlacementLost`),
-  never retried with the same expectation. A commit whose acknowledgment is lost is
-  :class:`PlacementUnknown`: read back, never re-issue.
+  competing CAS. The port mints a fresh revision on every write, in the receiver's 64-hex
+  format, so the trusted receiver can take the row over again on a Φ3 rollback and a director
+  can take over a receiver-written row.
+* **A port ``Conflict`` means lost** (:class:`PlacementLost`) — ``rowcount 0`` or a ``1213``
+  serialization failure, which the port deliberately does not tell apart — never retried with
+  the same expectation. An ``Unknown`` outcome is looked up by the write's ``OperationId``:
+  ``Confirmed`` is the write; anything else is :class:`PlacementUnknown` — read back, never
+  re-issue (``NotConfirmed`` never authorises a retry).
 * **The row keeps the receiver's shape.** ``lease_json`` is the canonical
   ``{"authority": <frame identity>, "lease": <five-field HostLease record>}`` the receiver writes
   and parses (``SqlTrustedReceiver._read_prior``), so the receiver keeps working against
   director-written rows. The 0.22.8 bridge also needs the row's epoch to equal
   ``refs/bh/epoch`` (:mod:`beadhive.hq_signed_hive_lease`); the director places at an explicit
-  epoch for that reason (:meth:`SqlPlacementDirector.place`).
+  epoch for that reason (:meth:`SqlPlacementDirector.place`). The port body is that carrier plus
+  ``director`` and an optional ``cause``; the adapter stores only the carrier in ``lease_json``.
 * **A director-written row is self-identifying** without a schema change: its
   ``request_sha256`` is :func:`placement_witness` over the row's own prefix, revision and record,
   which no receiver-accepted request digest can equal. That is the data switch that retires the
   0.22.8 proposal resolver for the hive (``hq_control_plane``): only the director and the
-  receiver can write the row, so the witness is as trustworthy as the grants.
+  receiver can write the row, so the witness is as trustworthy as the grants. A port read
+  reports it as the body's ``director``.
 * **A director row carries its cause** (bh-16347.6) — ``failover`` when the director's
   :class:`~beadhive.failover_observer.FailoverDirector` placed because the observer declared the
   placed frame dead, ``planned`` for an operator placement — in the ``request_id`` column of the
   same CAS, never in ``lease_json``: the carrier and the five-field lease stay exactly the
   receiver's, which the receiver, 0.22.x readers and the 0.22.8 bridge parse strictly. The
-  column is ``CHAR(36)``; the director already filled it with a random UUID nobody reads (the
-  receiver only looks a director row's ``request_id`` up in its inbox, where it is absent
-  either way). :func:`cause_token` is a UUID-shaped digest bound to the row's prefix and fresh
-  revision, so it cannot be copied from an earlier row; :func:`placement_cause` reads it back
-  and anything else — a pre-0.23.0 director row's random UUID, a receiver row — is
+  column is ``CHAR(36)``. :func:`cause_token` is a UUID-shaped digest bound to the row's prefix
+  and fresh revision, so it cannot be copied from an earlier row; :func:`placement_cause` reads
+  it back and anything else — a pre-0.23.0 director row's random UUID, a receiver row — is
   ``None`` (unknown). A frame that does not read the cause (any 0.22.x, or an older 0.23
   build) adopts with the kind unknown, which writes no reclaim: fail safe, never a rewind.
 * **No trigger may sit on a frame-writable HQ table** (condition 6, ``bh-cvk70`` E7d) and frames
@@ -46,10 +48,16 @@ Rules this module enforces:
   conformance checks (:func:`conformance` runs them against a server).
 
 The director never INSERTs: a never-placed hive gets its row from operator provisioning
-(:func:`seed_statement`), so the director credential stays ``UPDATE``-only on that table.
+(:func:`seed_statement`), so the director credential stays ``UPDATE``-only on that table (the
+port refuses a ``PLACEMENT`` CAS from ``ABSENT``).
 
-Pure where it can be; SQL only through a DB-API connection the caller provides or
-:class:`SqlPlacementDirector` opens. Typer-free.
+Until ``bh-xnn5p`` moves the signed-authority read, the failover policy and session staleness
+onto the port, the director shares one transaction with them through the adapter's transitional
+``DoltHqSessions`` capability, so a survey stays ONE read and ``failover_after`` stays in the
+placement CAS's own transaction. On storage without it (the in-memory fake), those cursor
+consumers are absent: a survey carries no failover policy and ``failover_after`` is refused.
+
+Pure where it can be; storage only through the port. Typer-free.
 """
 
 from __future__ import annotations
@@ -59,12 +67,26 @@ import json
 import re
 import time
 import uuid
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
+
+from beadhive_hq_storage import (
+    ABSENT,
+    Applied,
+    Confirmed,
+    Conflict,
+    OperationId,
+    RecordKind,
+    Revision,
+    StorageError,
+    Unknown,
+)
 
 from .host_lease_contracts import HostLease, _parse_stamp, now_stamp
 
 __all__ = [
+    "CAS_LOST",
     "DEFAULT_TENURE_S",
     "PLACEMENT_DOMAIN",
     "PLACEMENT_TABLE",
@@ -93,10 +115,12 @@ __all__ = [
     "parse_grant",
     "parse_row",
     "place_cas",
+    "placement_body",
     "placement_cause",
     "placement_witness",
     "read_row",
     "read_rows",
+    "record_from",
     "seed_statement",
 ]
 
@@ -114,8 +138,12 @@ CAUSE_FAILOVER = "failover"
 #: An operator (or any non-failover) placement: a planned handoff, reclaim applies nothing (D5c).
 CAUSE_PLANNED = "planned"
 PLACEMENT_CAUSES = (CAUSE_FAILOVER, CAUSE_PLANNED)
-#: MySQL/Dolt ``ER_LOCK_DEADLOCK``: Dolt's serialization failure at commit. A lost CAS.
+#: MySQL/Dolt ``ER_LOCK_DEADLOCK``: Dolt's serialization failure at commit. A lost CAS. The
+#: adapter classifies it (a port ``Conflict``); kept for the readers that name it.
 SERIALIZATION_FAILURE = 1213
+#: The reason a :class:`PlacementLost` from a port ``Conflict`` carries: the port reports a
+#: ``rowcount 0`` and a ``1213`` serialization failure alike (hq-storage-port-adr §2, condition 5).
+CAS_LOST = "rowcount 0 or 1213 serialization failure"
 #: Default tenure stamped into a director-written lease: the receiver's own 24 h bound. Expiry
 #: is a failover hint, never a write gate (bh-12hev); a receiver-mode reader still treats an
 #: elapsed lease as no holder, so on a Φ3 rollback the receiver's renewal keeps it current.
@@ -129,6 +157,7 @@ POLICY_WRITES = frozenset({"INSERT", "UPDATE", "DELETE"})
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _PREFIX = re.compile(r"[a-z][a-z0-9-]*")
 _LEASE_FIELDS = frozenset({"host_id", "label", "epoch", "adopted_at", "expires_at"})
+_BODY_FIELDS = frozenset({"authority", "lease", "director"})
 _MAX_ROW_BYTES = 65536
 
 
@@ -173,16 +202,18 @@ class PlacementUnseeded(PlacementError):
 
 
 class PlacementUnknown(PlacementError):
-    """The CAS was sent but its commit acknowledgment was lost. Read the row back: it is either
-    ``revision`` (won) or still ``expected`` / something else (lost). Never re-issue with the
-    same expectation."""
+    """The CAS was sent but its outcome is unknown, and the port's lookup by the write's
+    ``OperationId`` confirmed nothing. That is not proof it did not apply (a later write may
+    have superseded it): read the row back. Never re-issue with the same expectation, and never
+    mint a new operation for the same intent (hq-storage-port-adr §2, rule 3)."""
 
-    def __init__(self, prefix: str, expected: str, revision: str):
-        self.prefix, self.expected, self.revision = prefix, expected, revision
+    def __init__(self, prefix: str, expected: str, operation: str, reason: str = "commit"):
+        self.prefix, self.expected = prefix, expected
+        self.operation, self.reason = operation, reason
         super().__init__(
             f"placement CAS for {prefix} sent but its commit acknowledgment is unknown "
-            f"(expected revision {expected}, candidate revision {revision}); read the row back "
-            "— never re-issue with the same expectation"
+            f"({reason}; expected revision {expected}, operation {operation}) and no confirmed "
+            "write is visible; read the row back — never re-issue with the same expectation"
         )
 
 
@@ -380,7 +411,11 @@ def seed_statement(prefix: str, *, epoch: int, at: float | None = None) -> tuple
     """Operator DML seeding a never-placed hive's row as a released tombstone at `epoch`.
 
     Run by the operator's provisioning account (the director has no INSERT). Seed at the hive's
-    current ``refs/bh/epoch`` (1 when it was never fenced) so the first placement raises it."""
+    current ``refs/bh/epoch`` (1 when it was never fenced) so the first placement raises it.
+    Root mints the row; the statement text is the Dolt adapter's
+    (:func:`beadhive_hq_storage_dolt.placement_seed_statement`)."""
+    from beadhive_hq_storage_dolt import placement_seed_statement
+
     if not isinstance(prefix, str) or not _PREFIX.fullmatch(prefix):
         raise PlacementError("invalid hive prefix")
     if type(epoch) is not int or epoch < 1:
@@ -389,65 +424,86 @@ def seed_statement(prefix: str, *, epoch: int, at: float | None = None) -> tuple
     lease = HostLease(host_id="", label="", epoch=epoch, adopted_at=stamp, expires_at=stamp)
     body = lease_body({}, lease)
     revision = fresh_revision({"prefix": prefix, "lease": lease.to_record(), "seed": True})
-    return (
-        f"INSERT INTO {PLACEMENT_TABLE} (prefix,revision,lease_json,request_id,request_sha256) "
-        "VALUES (%s,%s,%s,%s,%s)",
-        (prefix, revision, body, str(uuid.uuid4()), placement_witness(prefix, revision, body)),
-    )
+    return placement_seed_statement(prefix, revision, body, str(uuid.uuid4()))
 
 
 # =============================================================================================
-# The CAS
+# The record on the port
 # =============================================================================================
 
 
-def _serialization_failure(exc: BaseException) -> bool:
-    args = getattr(exc, "args", ())
-    return bool(args) and args[0] == SERIALIZATION_FAILURE
+def placement_body(authority: Mapping, lease: HostLease, *, cause: str | None = None) -> dict:
+    """The port body of a director write: the receiver's carrier, ``director`` and the cause.
+
+    The Dolt adapter stores only ``{"authority", "lease"}`` in ``lease_json`` (:func:`lease_body`)
+    and the cause in ``request_id`` (:func:`cause_token`); the fake keeps the body as given."""
+    body = {"authority": dict(authority), "lease": lease.to_record(), "director": True}
+    if cause is not None:
+        body["cause"] = cause
+    return body
 
 
-def _rollback(connection) -> None:
-    try:
-        connection.rollback()
-    except Exception:  # noqa: BLE001 - the transaction is abandoned either way
-        pass
+def record_from(prefix: str, record) -> PlacementRecord:
+    """Parse a port ``PLACEMENT`` record (``Versioned``) the way :func:`parse_row` parses a raw
+    row: the exact carrier, a five-field lease, ``director`` from the witness. Raises
+    :class:`PlacementError` on any deviation (the adapter reads a non-canonical carrier without
+    ``director``, so it is refused here).
 
-
-def _read_row(cursor, prefix: str):
-    cursor.execute(
-        f"SELECT revision,lease_json,request_id,request_sha256 FROM {PLACEMENT_TABLE} "
-        "WHERE prefix=%s",
-        (prefix,),
+    ``request_id`` and ``request_sha256`` are reconstructed from the record (the port does not
+    carry the raw columns): the cause token, and the witness of a director row."""
+    body = getattr(record, "body", None)
+    if (
+        not isinstance(body, Mapping)
+        or not _BODY_FIELDS <= set(body)
+        or not set(body) <= _BODY_FIELDS | {"cause"}
+        or type(body["director"]) is not bool
+    ):
+        raise PlacementError("placement row carrier invalid")
+    revision = getattr(record, "revision", None)
+    if not isinstance(revision, str):
+        raise PlacementError("placement row carrier invalid")
+    authority = body["authority"]
+    if not isinstance(authority, dict):
+        raise PlacementError("placement row authority invalid")
+    lease = _lease(body["lease"])
+    director = body["director"]
+    cause = body.get("cause") if director else None
+    if cause is not None and cause not in PLACEMENT_CAUSES:
+        raise PlacementError("placement row cause invalid")
+    return PlacementRecord(
+        prefix=prefix,
+        revision=revision,
+        authority=dict(authority),
+        lease=lease,
+        request_id=cause_token(prefix, revision, cause) if cause is not None else "",
+        request_sha256=(
+            placement_witness(prefix, revision, lease_body(authority, lease)) if director else ""
+        ),
+        director=director,
+        cause=cause,
     )
-    return cursor.fetchone()
 
 
-def read_row(connection, prefix: str) -> PlacementRecord | None:
-    """The current placement row on `connection` (one read-only transaction), or ``None``."""
+def read_row(records, prefix: str) -> PlacementRecord | None:
+    """The current placement row through the port (`records`: ``VersionedRecords``), or ``None``.
+    A storage failure propagates as the port's ``StorageError``."""
     _check_prefix(prefix)
-    try:
-        with connection.cursor() as cursor:
-            row = _read_row(cursor, prefix)
-        return None if row is None else parse_row(prefix, row)
-    finally:
-        _rollback(connection)
+    record = records.read(RecordKind.PLACEMENT, prefix)
+    return None if record is None else record_from(prefix, record)
 
 
-def read_rows(cursor) -> tuple[dict[str, PlacementRecord], dict[str, str]]:
-    """Every placement row on `cursor`'s open transaction: ``({prefix: record}, {prefix:
-    reason})``. A row that does not parse is reported, never placed from or failed over."""
-    cursor.execute(
-        f"SELECT prefix,revision,lease_json,request_id,request_sha256 FROM {PLACEMENT_TABLE}"
-    )
-    records, invalid = {}, {}
-    for prefix, *row in cursor.fetchall():
-        prefix = _bytes(prefix).decode() if not isinstance(prefix, str) else prefix
+def read_rows(records: Iterable) -> tuple[dict[str, PlacementRecord], dict[str, str]]:
+    """Every placement record of a ``read_many``: ``({prefix: record}, {prefix: reason})``. A row
+    that does not parse is reported, never placed from or failed over."""
+    placed, invalid = {}, {}
+    for record in records:
+        prefix = getattr(record, "key", None)
         try:
             _check_prefix(prefix)
-            records[prefix] = parse_row(prefix, row)
-        except (PlacementError, UnicodeDecodeError, AttributeError) as exc:
+            placed[prefix] = record_from(prefix, record)
+        except PlacementError as exc:
             invalid[str(prefix)] = str(exc) or "placement row invalid"
-    return records, invalid
+    return placed, invalid
 
 
 def _check_prefix(prefix: str) -> None:
@@ -455,8 +511,34 @@ def _check_prefix(prefix: str) -> None:
         raise PlacementError("invalid hive prefix")
 
 
+# =============================================================================================
+# The CAS
+# =============================================================================================
+
+
+def _sessions(records):
+    """The adapter's transitional ``DoltHqSessions`` capability, or ``None`` (the fake)."""
+    from beadhive_hq_storage_dolt import DoltHqSessions
+
+    capability = getattr(records, "capability", None)
+    return None if capability is None else capability(DoltHqSessions)
+
+
+def _placed(prefix, revision, authority, lease, cause, operation) -> PlacementRecord:
+    return PlacementRecord(
+        prefix=prefix,
+        revision=str(revision),
+        authority=dict(authority),
+        lease=lease,
+        request_id=operation if cause is None else cause_token(prefix, revision, cause),
+        request_sha256=placement_witness(prefix, revision, lease_body(authority, lease)),
+        director=True,
+        cause=cause,
+    )
+
+
 def place_cas(
-    connection,
+    records,
     *,
     prefix: str,
     lease: HostLease,
@@ -464,19 +546,24 @@ def place_cas(
     expected_revision: str,
     cause: str | None = None,
     failover_after: Mapping[str, int | None] | None = None,
+    operation: str | None = None,
 ) -> PlacementRecord:
     """Move `prefix`'s placement row to `lease` iff it is still at `expected_revision`.
 
-    `cause` (``failover`` / ``planned``) rides in the same UPDATE as the row's ``request_id``
-    (:func:`cause_token`); ``None`` (a release) writes a random one, which reads as unknown.
-    `failover_after` (``{role: seconds | None}``) also sets the hive's failover policy in the
-    same transaction (:func:`beadhive.failover_policy.apply_changes`; refused, never clamped).
+    `records` is the HQ storage port (``VersionedRecords``). `cause` (``failover`` /
+    ``planned``) rides in the same CAS (the adapter's ``request_id`` :func:`cause_token`);
+    ``None`` (a release) carries none, which reads as unknown. `failover_after` (``{role:
+    seconds | None}``) also sets the hive's failover policy in the same transaction
+    (:func:`beadhive.failover_policy.apply_changes`; refused, never clamped) — through the
+    adapter's transitional ``DoltHqSessions`` capability, so it is refused on storage without
+    one. `operation` is the write's ``OperationId`` (minted when ``None``).
 
-    One transaction: read the row, check it is the expected one and that the epoch rule holds
-    (a placement raises the epoch; a release keeps it as a tombstone), then the single guarded
-    ``UPDATE`` with a fresh revision and the director witness. ``rowcount != 1`` or ``1213``
-    raise :class:`PlacementLost`; nothing is retried. Raises :class:`PlacementUnseeded` when
-    the row does not exist and :class:`PlacementUnknown` when the commit's fate is unknown."""
+    Read the row, check it is the expected one and that the epoch rule holds (a placement
+    raises the epoch; a release keeps it as a tombstone), then the single guarded CAS with a
+    fresh revision and the director witness. A ``Conflict`` raises :class:`PlacementLost`;
+    nothing is retried. An ``Unknown`` is looked up by `operation`: ``Confirmed`` returns the
+    write, anything else raises :class:`PlacementUnknown`. Raises :class:`PlacementUnseeded`
+    when the row does not exist."""
     _check_prefix(prefix)
     if not isinstance(expected_revision, str) or not _HEX64.fullmatch(expected_revision):
         raise PlacementError("expected placement revision must be the row's 64-hex revision")
@@ -484,71 +571,79 @@ def place_cas(
         raise PlacementError(f"placement cause must be one of {', '.join(PLACEMENT_CAUSES)}")
     if cause is not None and lease.is_tombstone:
         raise PlacementError("a release carries no placement cause")
-    revision = fresh_revision({"prefix": prefix, "lease": lease.to_record()})
-    body = lease_body(authority, lease)
-    witness = placement_witness(prefix, revision, body)
-    request_id = str(uuid.uuid4()) if cause is None else cause_token(prefix, revision, cause)
-    committing = False
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute("START TRANSACTION")
-            row = _read_row(cursor, prefix)
-            if row is None:
-                _rollback(connection)
-                raise PlacementUnseeded(
-                    f"hive {prefix} has no placement row; the operator seeds it first "
-                    "(the director credential holds UPDATE only)"
-                )
-            current = parse_row(prefix, row)
-            if current.revision != expected_revision:
-                _rollback(connection)
-                raise PlacementLost(prefix, expected_revision, "the row moved since it was read")
-            if lease.is_tombstone:
-                if lease.epoch != current.lease.epoch:
-                    _rollback(connection)
-                    raise PlacementError("a release keeps the placed epoch")
-            elif lease.epoch <= current.lease.epoch:
-                _rollback(connection)
-                raise PlacementError(
-                    f"placement must raise the epoch (row at {current.lease.epoch}, "
-                    f"asked {lease.epoch})"
-                )
-            if failover_after:
-                from .failover_policy import FailoverPolicyError, apply_changes
+    operation = OperationId(operation or str(uuid.uuid4()))
+    expected = Revision(expected_revision)
+    body = placement_body(authority, lease, cause=cause)
 
-                try:
-                    apply_changes(cursor, prefix, failover_after)
-                except FailoverPolicyError as exc:
-                    _rollback(connection)
-                    raise PlacementError(str(exc)) from None
-            matched = cursor.execute(
-                f"UPDATE {PLACEMENT_TABLE} SET revision=%s,lease_json=%s,request_id=%s,"
-                "request_sha256=%s WHERE prefix=%s AND revision=%s",
-                (revision, body, request_id, witness, prefix, expected_revision),
+    def check(found) -> None:
+        if found is None:
+            raise PlacementUnseeded(
+                f"hive {prefix} has no placement row; the operator seeds it first "
+                "(the director credential holds UPDATE only)"
             )
-            if matched != 1:
-                _rollback(connection)
-                raise PlacementLost(prefix, expected_revision, f"rowcount {matched or 0}")
-        committing = True
-        connection.commit()
+        current = record_from(prefix, found)
+        if current.revision != expected_revision:
+            raise PlacementLost(prefix, expected_revision, "the row moved since it was read")
+        if lease.is_tombstone:
+            if lease.epoch != current.lease.epoch:
+                raise PlacementError("a release keeps the placed epoch")
+        elif lease.epoch <= current.lease.epoch:
+            raise PlacementError(
+                f"placement must raise the epoch (row at {current.lease.epoch}, "
+                f"asked {lease.epoch})"
+            )
+
+    try:
+        if failover_after:
+            outcome = _cas_with_policy(
+                records, prefix, body, expected, operation, check, failover_after
+            )
+        else:
+            check(records.read(RecordKind.PLACEMENT, prefix))
+            outcome = records.compare_and_set(
+                RecordKind.PLACEMENT, prefix, body, expected=expected, operation=operation
+            )
     except PlacementError:
         raise
-    except Exception as exc:  # noqa: BLE001 - classified below; driver text never surfaces
-        _rollback(connection)
-        if _serialization_failure(exc):
-            raise PlacementLost(prefix, expected_revision, "1213 serialization failure") from None
-        if committing:
-            raise PlacementUnknown(prefix, expected_revision, revision) from None
+    except Exception:  # noqa: BLE001 - a StorageError, or anything raw; its text never surfaces
         raise PlacementError(f"placement CAS for {prefix} unavailable; nothing written") from None
-    return PlacementRecord(
-        prefix=prefix,
-        revision=revision,
-        authority=dict(authority),
-        lease=lease,
-        request_id=request_id,
-        request_sha256=witness,
-        director=True,
-        cause=cause,
+    if isinstance(outcome, Applied):
+        return _placed(prefix, outcome.revision, authority, lease, cause, operation)
+    if isinstance(outcome, Conflict):
+        raise PlacementLost(prefix, expected_revision, CAS_LOST)
+    reason = outcome.reason if isinstance(outcome, Unknown) else "commit"
+    try:
+        found = records.lookup(RecordKind.PLACEMENT, prefix, operation)
+    except StorageError:
+        found = None
+    if not isinstance(found, Confirmed):
+        raise PlacementUnknown(prefix, expected_revision, operation, reason)
+    return _placed(prefix, found.revision, authority, lease, cause, operation)
+
+
+def _cas_with_policy(records, prefix, body, expected, operation, check, failover_after):
+    """The CAS and the failover-policy rows in ONE transaction (transitional; ``bh-xnn5p``)."""
+    from .failover_policy import FailoverPolicyError, apply_changes
+
+    sessions = _sessions(records)
+    if sessions is None:
+        raise PlacementError(
+            "failover_after rides the placement CAS's own transaction, which needs dolt-server "
+            "HQ storage; nothing written"
+        )
+
+    def body_fn(tx):
+        check(tx.read(RecordKind.PLACEMENT, prefix))
+        try:
+            apply_changes(tx.cursor, prefix, failover_after)
+        except FailoverPolicyError as exc:
+            raise PlacementError(str(exc)) from None
+        return tx.compare_and_set(
+            RecordKind.PLACEMENT, prefix, body, expected=expected, operation=operation
+        )
+
+    return sessions.transact(
+        body_fn, operation=operation, expected=expected, passthrough=(PlacementError,)
     )
 
 
@@ -570,63 +665,90 @@ class Survey:
     failover: object = None
 
 
+class _PortSession:
+    """A survey/verify session over storage without ``DoltHqSessions`` (the fake): port reads,
+    and no cursor for the consumers not yet on the port."""
+
+    cursor = None
+
+    def __init__(self, records):
+        self._records = records
+
+    def head(self):
+        return None
+
+    def read(self, kind, key):
+        return self._records.read(kind, key)
+
+    def read_many(self, kind, keys=None):
+        return self._records.read_many(kind, keys)
+
+
 class SqlPlacementDirector:
     """The director/operator side of SQL placement, bound by ``placement_writer`` settings.
 
     The credential holds ``UPDATE`` on :data:`PLACEMENT_TABLE` and ``SELECT`` on what it must
     verify (the signed authority and registry); no other write right (:func:`check_grants`).
     The placed frame's identity comes from the operator-signed authority, verified exactly as
-    a frame verifies it, so the row names a real active grant the receiver also recognises."""
+    a frame verifies it, so the row names a real active grant the receiver also recognises.
 
-    def __init__(self, settings, *, broker=None, clock=time.time, connect=None):
+    Storage is the HQ port: `storage` when given (the in-memory fake in tests), else the Dolt
+    adapter composed over the ``placement_writer`` binding
+    (:func:`beadhive.hq_storage_composition.placement_storage`, `connect` replacing the
+    transport), whose every session checks it is that principal on that database's ``main``."""
+
+    def __init__(
+        self,
+        settings,
+        *,
+        broker=None,
+        clock=time.time,
+        connect: Callable | None = None,
+        storage=None,
+    ):
         self.settings = settings
         self.broker = broker
         self.clock = clock
         self._connect = connect
+        self._store = storage
 
-    def _open(self):
+    def _storage(self):
         binding = self.settings.get("placement_writer")
         if not binding or self.settings.get("runtime") is not None:
             raise PlacementError("separate placement writer capability unavailable")
-        if self._connect is not None:
-            return self._connect(binding)
-        from .hq_sql_transport import FnoxBroker, SqlTransportError, connect
+        if self._store is None:
+            from .hq_storage_composition import placement_storage
 
-        deadline = time.monotonic() + binding["operation_timeout"]
-        try:
-            return connect(binding, self.broker or FnoxBroker(), deadline=deadline)
-        except SqlTransportError:
-            raise PlacementError("verified placement writer connection unavailable") from None
+            self._store = placement_storage(binding, broker=self.broker, connect=self._connect)
+        return self._store
 
-    def _identity(self, cursor) -> None:
-        binding = self.settings["placement_writer"]
-        cursor.execute("SELECT CURRENT_USER(),DATABASE(),ACTIVE_BRANCH()")
-        user, database, branch = cursor.fetchone()
-        if (
-            not str(user).startswith(binding["user"] + "@")
-            or database != binding["database"]
-            or branch != "main"
-        ):
-            raise PlacementError("placement writer principal or endpoint mismatch")
+    @contextmanager
+    def _session(self) -> Iterator:
+        """One read-only session: the adapter's single transaction, or port reads on the fake."""
+        records = self._storage()
+        sessions = _sessions(records)
+        if sessions is None:
+            yield _PortSession(records)
+            return
+        with sessions.snapshot() as session:
+            yield session
 
-    def _verified(self, cursor):
+    def _verified(self, session):
+        """The operator-signed state and hive policies at the session's head."""
         from .hq_sql_runtime import SqlRuntimeAuthority
 
-        cursor.execute("START TRANSACTION")
-        cursor.execute("SELECT DOLT_HASHOF('HEAD')")
-        head = cursor.fetchone()[0]
+        if session.cursor is None:
+            raise PlacementError("verified placement needs dolt-server HQ storage")
         authority = SqlRuntimeAuthority(self.settings, broker=self.broker, clock=self.clock)
-        state, _crossref, policies = authority.verified_state_at(cursor, head)
+        state, _crossref, policies = authority.verified_state_at(session.cursor, session.head())
         return state, policies
 
     def read(self, prefix: str) -> PlacementRecord | None:
-        connection = self._open()
+        records = self._storage()
         try:
-            with connection.cursor() as cursor:
-                self._identity(cursor)
-            return read_row(connection, prefix)
-        finally:
-            connection.close()
+            return read_row(records, prefix)
+        except StorageError as exc:
+            raise PlacementError(f"placement read for {prefix} unavailable ({exc})") from None
 
     def survey(self, observe=None) -> Survey:
         """Every placement row plus the operator-signed state, in ONE verified read-only
@@ -635,25 +757,20 @@ class SqlPlacementDirector:
         The failover policy is read in the same transaction (:attr:`Survey.failover`)."""
         from .failover_policy import read_policy
 
-        connection = self._open()
+        self._storage()
         try:
-            with connection.cursor() as cursor:
-                self._identity(cursor)
-                state, policies = self._verified(cursor)
-                placements, invalid = read_rows(cursor)
-                failover = read_policy(cursor)
+            with self._session() as session:
+                state, policies = self._verified(session)
+                placements, invalid = read_rows(session.read_many(RecordKind.PLACEMENT))
+                failover = None if session.cursor is None else read_policy(session.cursor)
                 observed = None
                 if observe is not None:
-                    cursor.execute("SELECT DOLT_HASHOF('HEAD')")
-                    observed = observe(cursor, cursor.fetchone()[0], state)
+                    observed = observe(session.cursor, session.head(), state)
             return Survey(state, policies, placements, invalid, observed, failover)
         except PlacementError:
             raise
         except Exception:  # noqa: BLE001 - authority/transport failures never leak details
             raise PlacementError("verified placement survey unavailable") from None
-        finally:
-            _rollback(connection)
-            connection.close()
 
     @staticmethod
     def placeable(state: Mapping, policies: Mapping, prefix: str, frame_id: str) -> dict:
@@ -702,19 +819,17 @@ class SqlPlacementDirector:
             raise PlacementError("placement tenure must be within (0, 86400] seconds")
         if cause not in PLACEMENT_CAUSES:
             raise PlacementError(f"placement cause must be one of {', '.join(PLACEMENT_CAUSES)}")
-        connection = self._open()
+        records = self._storage()
         try:
-            with connection.cursor() as cursor:
-                self._identity(cursor)
-                state, policies = self._verified(cursor)
+            with self._session() as session:
+                state, policies = self._verified(session)
                 identity = self.placeable(state, policies, prefix, frame_id)
-                row = _read_row(cursor, prefix)
-            _rollback(connection)
+                row = session.read(RecordKind.PLACEMENT, prefix)
             if row is None:
                 raise PlacementUnseeded(
                     f"hive {prefix} has no placement row; the operator seeds it first"
                 )
-            current = parse_row(prefix, row)
+            current = record_from(prefix, row)
             target = current.lease.epoch + 1 if epoch is None else epoch
             started = self.clock() if at is None else at
             lease = HostLease(
@@ -725,7 +840,7 @@ class SqlPlacementDirector:
                 expires_at=now_stamp(started + tenure_s),
             )
             return place_cas(
-                connection,
+                records,
                 prefix=prefix,
                 lease=lease,
                 authority=identity,
@@ -736,10 +851,13 @@ class SqlPlacementDirector:
         except PlacementError:
             raise
         except Exception:  # noqa: BLE001 - authority/transport failures never leak details
-            _rollback(connection)
             raise PlacementError(f"verified placement for {prefix} unavailable") from None
-        finally:
-            connection.close()
+
+    @staticmethod
+    def _cursor(session):
+        if session.cursor is None:
+            raise PlacementError("the failover policy needs dolt-server HQ storage")
+        return session.cursor
 
     def failover_policy(self, scope: str | None = None, changes: Mapping | None = None):
         """The validated failover policy (read-only; :mod:`beadhive.failover_policy`). With
@@ -747,11 +865,10 @@ class SqlPlacementDirector:
         exactly as :meth:`set_failover_policy` would refuse — writing nothing."""
         from .failover_policy import FLEET_SCOPE, FailoverPolicyError, plan_changes, read_policy
 
-        connection = self._open()
+        self._storage()
         try:
-            with connection.cursor() as cursor:
-                self._identity(cursor)
-                cursor.execute("START TRANSACTION")
+            with self._session() as session:
+                cursor = self._cursor(session)
                 if changes:
                     return plan_changes(cursor, scope or FLEET_SCOPE, changes)
                 return read_policy(cursor)
@@ -761,9 +878,6 @@ class SqlPlacementDirector:
             raise
         except Exception:  # noqa: BLE001 - transport failures never leak details
             raise PlacementError("failover policy read unavailable") from None
-        finally:
-            _rollback(connection)
-            connection.close()
 
     def set_failover_policy(self, scope: str, changes: Mapping[str, int | None]):
         """Set (``seconds``) or clear (``None``) `scope`'s settings in one transaction;
@@ -771,67 +885,62 @@ class SqlPlacementDirector:
         it now loads. Never retried: a lost or unknown commit is reported; re-read and decide."""
         from .failover_policy import FailoverPolicyError, apply_changes
 
-        connection = self._open()
-        committing = False
+        sessions = _sessions(self._storage())
+        if sessions is None:
+            raise PlacementError("failover policy write unavailable; nothing written")
+        operation = OperationId(str(uuid.uuid4()))
+        written = []
+
+        def body(tx):
+            written.append(apply_changes(tx.cursor, scope, changes))
+            return Applied(Revision(""), operation)
+
         try:
-            with connection.cursor() as cursor:
-                self._identity(cursor)
-                cursor.execute("START TRANSACTION")
-                policy = apply_changes(cursor, scope, changes)
-            committing = True
-            connection.commit()
-            return policy
+            outcome = sessions.transact(
+                body,
+                operation=operation,
+                expected=ABSENT,
+                passthrough=(FailoverPolicyError, PlacementError),
+            )
         except FailoverPolicyError as exc:
-            _rollback(connection)
             raise PlacementError(str(exc)) from None
         except PlacementError:
-            _rollback(connection)
             raise
-        except Exception as exc:  # noqa: BLE001 - classified below; driver text never surfaces
-            _rollback(connection)
-            if _serialization_failure(exc):
-                raise PlacementLost(scope, "", "1213 serialization failure") from None
-            if committing:
-                raise PlacementError(
-                    "failover policy commit acknowledgment unknown; read it back "
-                    "(`bh hq placement policy`) before deciding again"
-                ) from None
+        except StorageError:
             raise PlacementError("failover policy write unavailable; nothing written") from None
-        finally:
-            connection.close()
+        if isinstance(outcome, Conflict):
+            raise PlacementLost(scope, "", "1213 serialization failure")
+        if not isinstance(outcome, Applied):
+            raise PlacementError(
+                "failover policy commit acknowledgment unknown; read it back "
+                "(`bh hq placement policy`) before deciding again"
+            )
+        return written[0]
 
     def release(
         self, prefix: str, *, expected_revision: str, at: float | None = None
     ) -> PlacementRecord:
         """Release `prefix`'s placement to a tombstone that keeps the epoch (planned handoff)."""
-        connection = self._open()
-        try:
-            with connection.cursor() as cursor:
-                self._identity(cursor)
-                row = _read_row(cursor, prefix)
-            _rollback(connection)
-            if row is None:
-                raise PlacementUnseeded(f"hive {prefix} has no placement row")
-            current = parse_row(prefix, row)
-            if current.lease.is_tombstone:
-                raise PlacementError(f"hive {prefix} placement is already released")
-            stamp = now_stamp(self.clock() if at is None else at)
-            tombstone = HostLease(
-                host_id="",
-                label="",
-                epoch=current.lease.epoch,
-                adopted_at=current.lease.adopted_at,
-                expires_at=stamp,
-            )
-            return place_cas(
-                connection,
-                prefix=prefix,
-                lease=tombstone,
-                authority=current.authority,
-                expected_revision=expected_revision,
-            )
-        finally:
-            connection.close()
+        current = self.read(prefix)
+        if current is None:
+            raise PlacementUnseeded(f"hive {prefix} has no placement row")
+        if current.lease.is_tombstone:
+            raise PlacementError(f"hive {prefix} placement is already released")
+        stamp = now_stamp(self.clock() if at is None else at)
+        tombstone = HostLease(
+            host_id="",
+            label="",
+            epoch=current.lease.epoch,
+            adopted_at=current.lease.adopted_at,
+            expires_at=stamp,
+        )
+        return place_cas(
+            self._storage(),
+            prefix=prefix,
+            lease=tombstone,
+            authority=current.authority,
+            expected_revision=expected_revision,
+        )
 
 
 # =============================================================================================
@@ -1017,29 +1126,22 @@ def conformance(
     """Run both checks against a server with an operator account that can read grants.
 
     `director` is ``'user'@'host'``; `frames` maps each frame account to the tables it may
-    write. Returns every violation (empty means conformant)."""
-    problems: list[str] = []
+    write. Returns every violation (empty means conformant). The reads are the Dolt adapter's
+    (:func:`beadhive_hq_storage_dolt.placement_conformance_rows`) on the operator's `cursor`."""
+    from beadhive_hq_storage_dolt import placement_conformance_rows
 
-    def grants(account: str) -> list[str]:
-        cursor.execute(f"SHOW GRANTS FOR {account}")
-        return [row[0] for row in cursor.fetchall()]
-
-    problems += [
-        f"{director}: {p}"
-        for p in check_grants(grants(director), role="director", database=database)
-    ]
+    tables = {account: tuple(writable) for account, writable in frames.items()}
+    grants, triggers = placement_conformance_rows(
+        cursor, accounts=[director, *tables], database=database
+    )
+    (_director, lines), *frame_grants = grants
+    problems = [f"{director}: {p}" for p in check_grants(lines, role="director", database=database)]
     writable: set[str] = set()
-    for account, tables in frames.items():
-        tables = tuple(tables)
-        writable.update(tables)
+    for account, lines in frame_grants:
+        writable.update(tables[account])
         problems += [
             f"{account}: {p}"
-            for p in check_grants(grants(account), role="frame", database=database, writable=tables)
+            for p in check_grants(lines, role="frame", database=database, writable=tables[account])
         ]
-    cursor.execute(
-        "SELECT trigger_name,event_object_table,action_statement FROM information_schema.triggers "
-        "WHERE trigger_schema=%s",
-        (database,),
-    )
-    problems += check_triggers(cursor.fetchall(), frame_writable=writable)
+    problems += check_triggers(triggers, frame_writable=writable)
     return problems

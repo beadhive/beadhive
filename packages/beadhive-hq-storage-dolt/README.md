@@ -27,7 +27,7 @@ or the engine's push), even when its outcome is already a `Conflict`. So a lost 
 
 | Operation | Dolt | `Applied` | `Conflict` | `Unknown`, and the witness its lookup finds |
 |---|---|---|---|---|
-| `compare_and_set` on `PLACEMENT` | `UPDATE hq_live_hive_leases ... WHERE prefix AND revision` | a fresh `sha256(record ‖ uuid4)` revision | `rowcount 0`, or `1213` at `COMMIT` | the `OperationId` in `request_id`; `lookup` |
+| `compare_and_set` on `PLACEMENT` | `UPDATE hq_live_hive_leases ... WHERE prefix AND revision` | a fresh `sha256(record ‖ uuid4)` revision; a caused carrier write's revision is bound to its `OperationId` | `rowcount 0`, or `1213` at `COMMIT` | the `OperationId` in `request_id`, or for a caused carrier write the revision bound to it under a verifying witness; `lookup` |
 | `compare_and_set` on the other kinds | `INSERT ... WHERE NOT EXISTS` from `ABSENT`, else a guarded `UPDATE` of `hq_live_records` | a fresh revision | `rowcount 0`, or `1213` | the `operation_id` column; `lookup` |
 | `append` | `INSERT` into `hq_live_append` | a new row, or the same key, operation and body again | any other replay of the key, a duplicate key, or `1213` | the natural key plus `operation_id`; `lookup_append` |
 | `prune` | `DELETE ... TIMESTAMPDIFF(MICROSECOND, recorded_at, UTC_TIMESTAMP(6)) > window` | `PruneReport` | not applicable | none: a lost acknowledgment raises `StorageError` |
@@ -36,6 +36,29 @@ or the engine's push), even when its outcome is already a `Conflict`. So a lost 
 | `CommittedHistory.push` | `DOLT_FETCH`, then `DOLT_PUSH` | the local head | not a fast-forward (`dolt_merge_base`) | the expectation is the remote head before the push |
 | `commit_bump` | the engine runs root's bump statements plus the `ReclaimSet` revert, then commits once | the new local head | not applicable: at or below the floor raises `IntegrityViolation` | none: a failed bump discards its partial working set and raises `StorageUnavailable` |
 | `HiveFence.push` | engine fetch, then engine push | the local head | the push returns `False`, or not a fast-forward | the `adopt-<epoch>` sentinel on the remote head; `lookup_bump` |
+
+**The placement carrier** (`bh-sqfvq`, `_placement.py`). A `PLACEMENT` body of `authority` and
+`lease`, plus an optional `cause` and `director`, is the trusted receiver's row:
+
+- `lease_json` is exactly `canonical({"authority", "lease"})`;
+- a `cause` (`failover` / `planned`) rides in `request_id` as root's cause token, bound to the
+  prefix and revision, so 0.23.x frames still read it;
+- an uncaused write puts its `OperationId` in `request_id`;
+- `request_sha256` is the director witness.
+
+A read of a canonical carrier row returns `director` (whether the witness verifies) and, on a
+director row, the `cause`. Any other row decodes as plain JSON without `director`. The
+operator's seed `INSERT` (`placement_seed_statement`) and the grant and trigger reads of root's
+conformance check (`placement_conformance_rows`) are here too.
+
+**`principals`** makes every session for a role first check `CURRENT_USER()`, `DATABASE()` and
+`ACTIVE_BRANCH()`, refusing a mismatch with `StorageUnavailable`.
+
+**`DoltHqSessions`** (transitional, Dolt-only) hands one transaction to both the port and the
+SQL not yet on it: `snapshot()` for the director's ONE-transaction survey, and `transact()` for
+the placement CAS plus its failover-policy rows, committed only when the CAS is `Applied`. It
+goes when `bh-xnn5p` moves the signed-authority read, the failover policy and session staleness
+onto the port.
 
 **Error classification** is by DB-API `args[0]` code; the adapter never imports a driver.
 

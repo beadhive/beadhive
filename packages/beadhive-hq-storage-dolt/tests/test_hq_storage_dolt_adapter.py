@@ -25,10 +25,13 @@ from beadhive_hq_storage import (
     Applied,
     BumpRequest,
     CapabilityUnsupported,
+    Confirmed,
     Conflict,
     InvalidRequest,
     LivenessKind,
+    NotConfirmed,
     RecordKind,
+    Revision,
     StorageUnavailable,
     StreamKind,
     Unknown,
@@ -39,14 +42,23 @@ from beadhive_hq_storage_dolt import (
     DoltAccounts,
     DoltHistory,
     DoltHiveFence,
+    DoltHqSessions,
     DoltHqStorage,
     DoltMerge,
     FenceTable,
     MergeRefused,
     Role,
+    cause_token,
     error_code,
+    operation_revision,
+    placement_seed_statement,
     placement_witness,
     unknown_reason,
+)
+from beadhive_hq_storage_dolt._placement import (
+    decode_placement,
+    encode_placement,
+    placement_witnessed,
 )
 from beadhive_hq_storage_dolt.contract import (
     DoltFenceHarness,
@@ -324,3 +336,210 @@ def test_history_and_merge_capabilities_over_a_fence(server: DoltSqlServer) -> N
     assert merge.preview_conflicts("main", "clash") == ("issues",)
     with pytest.raises(MergeRefused):
         merge.merge("clash", "refused")
+
+
+# --- the receiver placement carrier (bh-sqfvq) ----------------------------------------------
+
+_LEASE = {
+    "host_id": "host-a",
+    "label": "frame-a",
+    "epoch": 2,
+    "adopted_at": "2026-10-12T00:00:00Z",
+    "expires_at": "2026-10-13T00:00:00Z",
+}
+_AUTHORITY = {"frame_id": "frame-a", "holder_identity": "host-a"}
+
+
+def _carrier(**extra: Any) -> dict[str, Any]:
+    return {"authority": _AUTHORITY, "lease": _LEASE, **extra}
+
+
+def _canonical(value: Any) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+
+
+def test_a_caused_carrier_write_encodes_onto_the_receiver_columns() -> None:
+    op = new_operation_id()
+    row = encode_placement("ah", _carrier(cause="failover", director=True), operation=op)
+    assert row.lease_json == _canonical({"authority": _AUTHORITY, "lease": _LEASE})
+    assert row.revision == operation_revision("ah", row.lease_json, op)
+    assert re.fullmatch(r"[0-9a-f]{64}", row.revision)
+    assert row.request_id == cause_token("ah", row.revision, "failover")
+    assert row.request_sha256 == placement_witness("ah", row.revision, row.lease_json)
+    body = decode_placement("ah", row.revision, row.lease_json, row.request_id, row.request_sha256)
+    assert body == _carrier(cause="failover", director=True)
+    assert placement_witnessed(
+        "ah", row.revision, row.lease_json, row.request_id, row.request_sha256, op
+    )
+    assert not placement_witnessed(
+        "ah", row.revision, row.lease_json, row.request_id, row.request_sha256, new_operation_id()
+    )
+
+
+def test_an_uncaused_carrier_write_witnesses_its_operation_in_request_id() -> None:
+    op = new_operation_id()
+    first = encode_placement("ah", _carrier(), operation=op)
+    again = encode_placement("ah", _carrier(), operation=op)
+    assert first.request_id == op and first.revision != again.revision  # fresh every write
+    body = decode_placement("ah", first.revision, first.lease_json, op, first.request_sha256)
+    assert body == _carrier(director=True)
+    # A receiver row (a signed-request digest, not the witness) is not director-written, and a
+    # cause token in its request_id is never trusted.
+    token = cause_token("ah", first.revision, "failover")
+    assert decode_placement("ah", first.revision, first.lease_json, token, "e" * 64) == _carrier(
+        director=False
+    )
+
+
+def test_non_carrier_and_malformed_placement_rows_decode_without_a_director() -> None:
+    generic = encode_placement("ah", {"frame": "f", "epoch": 1}, operation=new_operation_id())
+    assert generic.lease_json == _canonical({"epoch": 1, "frame": "f"})
+    pretty = json.dumps({"authority": _AUTHORITY, "lease": _LEASE}, indent=1).encode()
+    assert "director" not in decode_placement("ah", "r", pretty, "x", "y")  # not canonical
+    assert decode_placement("ah", "r", b"\xff not json", "x", "y") == {}
+    assert decode_placement("ah", "r", b"[1]", "x", "y") == {}
+    for bad in (_carrier(director=False), _carrier(cause="forced"), _carrier(cause=None)):
+        with pytest.raises(InvalidRequest):
+            encode_placement("ah", bad, operation=new_operation_id())
+
+
+def test_the_seed_statement_inserts_a_witnessed_tombstone_row() -> None:
+    raw = _canonical({"authority": {}, "lease": _LEASE})
+    sql, params = placement_seed_statement("ah", "r" * 64, raw, "id")
+    assert sql == (
+        "INSERT INTO hq_live_hive_leases (prefix,revision,lease_json,request_id,"
+        "request_sha256) VALUES (%s,%s,%s,%s,%s)"
+    )
+    assert params == ("ah", "r" * 64, raw, "id", placement_witness("ah", "r" * 64, raw))
+
+
+def test_the_transitional_sessions_capability_is_offered() -> None:
+    sessions = DoltHqStorage(_Script().connect).capability(DoltHqSessions)
+    assert isinstance(sessions, DoltHqSessions)
+
+
+@dolt
+@pytest.mark.integration
+@pytest.mark.dolt_server
+def test_the_carrier_round_trips_on_the_receiver_row(server: DoltSqlServer) -> None:
+    hq = DoltHqHarness(server)
+    seeded = hq.provision(RecordKind.PLACEMENT, "ah", {"authority": {}, "lease": _LEASE})
+    read = hq.store.read(RecordKind.PLACEMENT, "ah")
+    assert read is not None and read.body == {"authority": {}, "lease": _LEASE, "director": True}
+    op = new_operation_id()
+    out = hq.store.compare_and_set(
+        RecordKind.PLACEMENT,
+        "ah",
+        _carrier(cause="failover", director=True),
+        expected=seeded,
+        operation=op,
+    )
+    assert isinstance(out, Applied)
+    ((revision, body, request_id, witness),) = server.sql(
+        hq.database,
+        "SELECT revision, lease_json, request_id, request_sha256 FROM hq_live_hive_leases "
+        "WHERE prefix = 'ah'",
+    )
+    assert revision == out.revision and body == _canonical(
+        {"authority": _AUTHORITY, "lease": _LEASE}
+    )
+    assert request_id == cause_token("ah", revision, "failover")  # what a 0.23 frame reads
+    assert witness == placement_witness("ah", revision, body)
+    read = hq.store.read(RecordKind.PLACEMENT, "ah")
+    assert read is not None and read.body == _carrier(cause="failover", director=True)
+    found = hq.store.lookup(RecordKind.PLACEMENT, "ah", op)
+    assert isinstance(found, Confirmed) and found.revision == revision
+    # The receiver's own CAS takes the row over: no witness, no cause, and op no longer visible.
+    server.sql(
+        hq.database,
+        "UPDATE hq_live_hive_leases SET revision = %s, request_id = %s, request_sha256 = %s "
+        "WHERE prefix = 'ah'",
+        params=("f" * 64, "00000000-0000-4000-8000-000000000001", "e" * 64),
+    )
+    read = hq.store.read(RecordKind.PLACEMENT, "ah")
+    assert read is not None and read.body == _carrier(director=False)
+    assert isinstance(hq.store.lookup(RecordKind.PLACEMENT, "ah", op), NotConfirmed)
+    release = new_operation_id()
+    out = hq.store.compare_and_set(
+        RecordKind.PLACEMENT, "ah", _carrier(), expected=Revision("f" * 64), operation=release
+    )
+    assert isinstance(out, Applied)
+    assert server.sql(
+        hq.database, "SELECT request_id FROM hq_live_hive_leases WHERE prefix = 'ah'"
+    ) == [(release,)]
+    assert isinstance(hq.store.lookup(RecordKind.PLACEMENT, "ah", release), Confirmed)
+
+
+@dolt
+@pytest.mark.integration
+@pytest.mark.dolt_server
+def test_a_principal_mismatch_is_refused_before_anything_is_sent(server: DoltSqlServer) -> None:
+    hq = DoltHqHarness(server)
+    hq.provision(RecordKind.PLACEMENT, "ah", {"authority": {}, "lease": _LEASE})
+    for principal in (("director", hq.database), ("root", "other_db")):
+        wrong = DoltHqStorage(hq._raw_factory, principals={Role.READER: principal})
+        with pytest.raises(StorageUnavailable, match="principal or endpoint mismatch"):
+            wrong.read(RecordKind.PLACEMENT, "ah")
+    right = DoltHqStorage(hq._raw_factory, principals={Role.READER: ("root", hq.database)})
+    assert right.read(RecordKind.PLACEMENT, "ah") is not None
+
+
+@dolt
+@pytest.mark.integration
+@pytest.mark.dolt_server
+def test_sessions_share_one_transaction_and_commit_only_an_applied_cas(
+    server: DoltSqlServer,
+) -> None:
+    hq = DoltHqHarness(server)
+    seeded = hq.provision(RecordKind.PLACEMENT, "ah", {"authority": {}, "lease": _LEASE})
+    sessions = require_capability(hq.store, DoltHqSessions)
+    with sessions.snapshot() as tx:
+        assert tx.head() == _head(server, hq.database)
+        assert [v.key for v in tx.read_many(RecordKind.PLACEMENT)] == ["ah"]
+        tx.cursor.execute("SELECT COUNT(*) FROM hq_live_hive_leases")
+        assert tx.cursor.fetchone()[0] == 1
+        with pytest.raises(InvalidRequest):
+            tx.compare_and_set(
+                RecordKind.PLACEMENT,
+                "ah",
+                _carrier(),
+                expected=seeded,
+                operation=new_operation_id(),
+            )
+    co_write = (
+        "INSERT INTO hq_live_liveness (kind, live_key, body, renewed_at) "
+        "VALUES ('session', %s, NULL, UTC_TIMESTAMP(6))"
+    )
+
+    def cas(key: str, expected: Revision) -> Any:
+        op = new_operation_id()
+
+        def body(tx: Any) -> Any:
+            tx.cursor.execute(co_write, (key,))
+            return tx.compare_and_set(
+                RecordKind.PLACEMENT,
+                "ah",
+                _carrier(cause="planned"),
+                expected=expected,
+                operation=op,
+            )
+
+        return sessions.transact(body, operation=op, expected=expected)
+
+    lost = cas("lost", Revision("0" * 64))
+    assert isinstance(lost, Conflict)  # rolled back, never committed: no co-write either
+    landed = cas("landed", seeded)
+    assert isinstance(landed, Applied)
+    keys = {k for (k,) in server.sql(hq.database, "SELECT live_key FROM hq_live_liveness")}
+    assert keys == {"landed"}
+
+    def refuse(tx: Any) -> Any:
+        tx.cursor.execute(co_write, ("refused",))
+        raise ValueError("the caller's own refusal")
+
+    with pytest.raises(ValueError, match="own refusal"):
+        sessions.transact(
+            refuse, operation=new_operation_id(), expected=seeded, passthrough=(ValueError,)
+        )
+    keys = {k for (k,) in server.sql(hq.database, "SELECT live_key FROM hq_live_liveness")}
+    assert keys == {"landed"}

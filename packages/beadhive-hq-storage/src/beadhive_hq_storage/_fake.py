@@ -261,7 +261,7 @@ class _ConsistentRead:
 
 class _PlacementView:
     """``PlacementStore`` over the fake's ``PLACEMENT`` records. The fake body is
-    ``{"frame", "epoch", "cause"}``; the real wire encoding is the adapter's (bh-sqfvq)."""
+    ``{"frame", "epoch", "cause"}``; the real wire encoding is the Dolt adapter's."""
 
     def __init__(self, storage: InMemoryHqStorage) -> None:
         self._storage = storage

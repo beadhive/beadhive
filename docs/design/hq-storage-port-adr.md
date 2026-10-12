@@ -805,3 +805,85 @@ finds.
 
 No other divergence between the fake and Dolt was found. The contract suite passes on Dolt
 with the two clock-controlled scenarios skipped.
+
+### Settled by `bh-sqfvq`
+
+`beadhive.hq_sql_placement` is the port's first production consumer. It holds no SQL string and
+no Dolt procedure call. The director's reads and its placement CAS go through
+`VersionedRecords` on `RecordKind.PLACEMENT`, over the Dolt adapter that
+`beadhive.hq_storage_composition.placement_storage` composes from the `placement_writer`
+binding. The unit tests run on `InMemoryHqStorage`.
+
+- **Placement body and wire encoding.** A director write's port body is the receiver's carrier,
+  `{"authority", "lease"}`, plus `"director": true` and an optional `cause`. The adapter
+  (`beadhive_hq_storage_dolt._placement`) stores:
+  - exactly `canonical({"authority", "lease"})` in `lease_json`;
+  - the cause in `request_id` as root's `cause_token`, so 0.23.x frames still read it;
+  - for a write with no cause, the `OperationId` in `request_id`;
+  - root's `placement_witness` in `request_sha256`.
+
+  Reading a canonical carrier row returns `director` (whether the witness verifies) and, on a
+  director row only, the `cause`. Any other row decodes as plain JSON without `director`, which
+  root refuses as `placement row carrier invalid`, as `parse_row` does for a raw row. Root and
+  adapter encodings are pinned equal in `tests/contracts/test_hq_storage_composition.py`.
+- **Deviation: the witness of a caused write.** The section 2 table puts the placement witness
+  in the request id column. A caused write cannot do that, because `request_id` must stay the
+  cause token. Its revision is bound to the `OperationId` instead: `operation_revision` is
+  `sha256` over the prefix, `lease_json` and the operation. `lookup` confirms a row whose
+  `request_id` is the operation, or whose revision is that operation's revision under a
+  verifying witness. The revision keeps the receiver's 64-hex format and is fresh for every
+  write, because an `OperationId` is minted once per intent (rule 3). Reusing one with an
+  identical carrier on the same hive would repeat a revision; the port already forbids that.
+- **`Unknown` handling.** `place_cas` looks an `Unknown` up by the write's `OperationId`:
+  - `Confirmed` returns the placement as applied (before, every lost acknowledgment raised);
+  - `NotConfirmed` or a failed lookup raises `PlacementUnknown`, which is never re-issued and
+    never re-minted.
+
+  `PlacementUnknown` now carries the `operation` and the `reason` instead of a candidate
+  revision, because the adapter mints the revision.
+- **Lost CAS reason.** The port reports `rowcount 0` and `1213` alike as `Conflict`, so
+  `PlacementLost.reason` is `CAS_LOST` (`rowcount 0 or 1213 serialization failure`). The
+  pre-CAS check still reports `the row moved since it was read`.
+- **The principal check moved into the adapter.** `DoltHqStorage(principals=...)` checks
+  `CURRENT_USER()`, `DATABASE()` and `ACTIVE_BRANCH()` at the start of every session for a role,
+  and refuses a mismatch with `StorageUnavailable`. The director's survey and place, and the
+  conformance check, still hide driver text.
+- **Deviation: the transitional `DoltHqSessions` capability.** The director reads the signed
+  authority (`hq_sql_runtime`), the failover policy (`failover_policy`) and session staleness
+  (`failover_observer`) in the same transaction as the placement rows. A `failover_after` write
+  shares the placement CAS's transaction. None of those three is on the port yet, so the Dolt
+  adapter offers a Dolt-only `DoltHqSessions` capability:
+  - `snapshot()` is one read-only transaction with port-shaped reads and the raw cursor;
+  - `transact()` commits only when the CAS is `Applied`, so a co-written policy row never lands
+    without it.
+
+  This keeps the one-transaction survey and the atomic `failover_after`. On storage without the
+  capability (the fake), a survey carries no failover policy, and `failover_after` and the
+  policy verbs are refused. `bh-xnn5p` removes each cursor use as it migrates those consumers,
+  and the capability goes with the last one.
+- **Table mapping.** Placement stays on `hq_live_hive_leases`. `FAILOVER_POLICY` is **not**
+  mapped onto `hq_live_failover_policy` here. That table holds one row per scope and setting,
+  bounded by `hq_liveness_policy`, and is written inside the placement CAS's transaction, so one
+  versioned record per key would change its shape. It moves with the failover policy in
+  `bh-xnn5p`, and `hq_live_records` stays adapter-owned until then.
+- **Seed and conformance SQL.** `seed_statement` renders the adapter's
+  `placement_seed_statement`. `conformance` reads grants and triggers through
+  `placement_conformance_rows` on the operator's cursor. It keeps
+  `information_schema.triggers`, so it behaves exactly as before; `DoltAccounts.triggers()`
+  reads `dolt_schemas`, and its final shape is `bh-3kl1k`'s.
+- **Connections.** A director call now opens one connection per port operation (one survey
+  session; then a read, a CAS and possibly a lookup), each under the binding's own operation
+  deadline. Before, a call held one connection for all of it.
+- **Not done here.** `writer_adopt.PlacementAuthority` is not yet an alias of `PlacementStore`:
+  `writer_adopt` still declares its own read-and-CAS protocol, which `host_adopt` implements
+  over the frame's raw-row read. Absorbing it means editing `writer_adopt`, which `bh-jhgum`
+  is changing in parallel, so it is left to `bh-jhgum` or a follow-on. The frame side
+  (`hq_control_plane.read_placement`) still parses the raw row of the runtime authority's
+  composite read with `parse_row`; it moves with the runtime authority (`bh-xnn5p`).
+- **Tests.** `tests/test_hq_sql_placement.py` drives the CAS, its `Conflict` and `Unknown`
+  branches and the director over `InMemoryHqStorage`, and its `FakeConnection` /
+  `FakeCursor` are gone. Assertions about SQL text, commit counts and closed connections moved
+  to `packages/beadhive-hq-storage-dolt/tests/test_hq_storage_dolt_adapter.py` on real Dolt.
+  `tests/test_failover_policy.py` drives `failover_after` through a fake `DoltHqSessions`. The
+  integration tests compose the adapter as the director does, and their assertions are
+  unchanged except that a racing loser's reason is now `CAS_LOST` or the pre-CAS `moved`.
