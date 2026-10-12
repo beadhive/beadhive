@@ -168,11 +168,16 @@ def test_release_is_a_dry_run_unless_confirmed_and_refuses_a_released_hive():
 
 
 class GrantCursor:
-    """``mysql.user``, the principal registry, SHOW GRANTS and triggers, in memory."""
+    """``mysql.user``, the principal registry, SHOW GRANTS and triggers, in memory.
+
+    SHOW GRANTS and the triggers are read through the Dolt adapter's ``DoltAccounts`` over this
+    cursor (bh-3kl1k), which maps rows by ``description``; the triggers come from the
+    database's ``dolt_schemas`` as ``(name, fragment)``, never ``information_schema.triggers``."""
 
     def __init__(self, grants, registry, triggers=()):
         self.grants, self.registry, self.triggers = grants, registry, list(triggers)
         self.result = []
+        self.description = None
 
     def __enter__(self):
         return self
@@ -181,6 +186,7 @@ class GrantCursor:
         return False
 
     def execute(self, sql, params=None):
+        self.description = None
         if sql.startswith("SELECT user,host FROM mysql.user"):
             (user,) = params
             self.result = [
@@ -189,8 +195,10 @@ class GrantCursor:
         elif sql.startswith("SELECT principal,epoch,inbox_table"):
             self.result = list(self.registry)
         elif sql.startswith("SHOW GRANTS FOR "):
+            self.description = (("Grants",),)
             self.result = [(line,) for line in self.grants[sql.removeprefix("SHOW GRANTS FOR ")]]
-        elif "information_schema.triggers" in sql:
+        elif f"`{DB}`.dolt_schemas" in sql and "type = 'trigger'" in sql:
+            self.description = (("n",), ("f",))
             self.result = list(self.triggers)
         else:
             raise AssertionError(sql)

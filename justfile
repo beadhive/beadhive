@@ -949,7 +949,7 @@ fence-canary:
 # fake-vs-fake plus a 5-example Dolt smoke). Default profile `gate` = 25 x 20, derandomized, no
 # shrinking; pass profile=nightly for the shrinking run capped at 100 examples (bh-xxkf7.3).
 hq-storage-dolt-machine profile="gate":
-    BH_HYPOTHESIS_PROFILE={{quote(profile)}} ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n 1 \
+    BH_HYPOTHESIS_PROFILE={{quote(profile)}} ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n 0 \
         packages/beadhive-hq-storage-dolt/tests -m "dolt_machine_full"
 
 # PERIODIC ONLY: compare explicit xdist worker counts for both pytest land partitions. This does
