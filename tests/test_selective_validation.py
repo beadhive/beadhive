@@ -703,3 +703,148 @@ def test_precheck_and_reordered_keys_all_resolve_from_the_run_cfg(monkeypatch) -
     ]
     assert all(in_scope for _, in_scope in scoped)
     assert identity._scoped_config.get() is None
+
+
+# ---- bh-3nn2b: opt-in runtime catalog drift check -----------------------------------------
+
+_DRIFT_CMD = "uv run python scripts/check_attest_catalog.py --live-catalog -"
+
+
+class _Ledger:
+    """In-memory stand-in for the verdict cache: only the (tree, cmd) identity matters."""
+
+    def __init__(self):
+        self.recorded: dict[tuple[str, str], int] = {}
+
+    @staticmethod
+    def cmd_hash(cmd):
+        return cmd
+
+    def green_verdict(self, _entry, rev, cmd, ttl=None, cfg=None):
+        return {"rc": 0} if self.recorded.get((rev, cmd)) == 0 else None
+
+    def record(self, _entry, rev, cmd, rc, cfg=None, phase="validation", **_kw):
+        self.recorded[(rev, cmd)] = rc
+
+
+def _drift_env(monkeypatch, tmp_path, *, drift_check=_DRIFT_CMD, model="legacy", keys=None):
+    keys = keys if keys is not None else [{"name": "unit", "cmd": "just attest-unit"}]
+    attest = AttestConfig.model_validate({"keys": keys, "drift_check": drift_check})
+    holder = {"attest": attest, "model": model}
+    monkeypatch.setattr(selective_validation.config, "attest_config", lambda *_: holder["attest"])
+    monkeypatch.setattr(
+        selective_validation.config,
+        "layered",
+        lambda _c, _e, section, key, default=None: (
+            holder["model"] if (section, key) == ("work.gate", "model") else default
+        ),
+    )
+    ledger = _Ledger()
+    monkeypatch.setattr(selective_validation, "validation_ledger", ledger)
+    calls: list[dict] = []
+
+    def fake_run(command, **kwargs):
+        calls.append({"command": command, **kwargs})
+        outcome = holder.get("outcome", SimpleNamespace(returncode=0, stdout="", stderr=""))
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(selective_validation.subprocess, "run", fake_run)
+    return holder, ledger, calls
+
+
+def test_unset_drift_check_changes_nothing_under_legacy(monkeypatch, tmp_path) -> None:
+    holder, ledger, calls = _drift_env(monkeypatch, tmp_path, drift_check=None)
+    assert selective_validation.catalog_drift({}, {}, "rev", tmp_path) is None
+    assert selective_validation.catalog_ok({}, {}, "rev", tmp_path)
+    assert calls == [] and ledger.recorded == {}
+
+
+def test_unset_drift_check_under_model_keys_is_drift(monkeypatch, tmp_path, capsys) -> None:
+    _drift_env(monkeypatch, tmp_path, drift_check=None, model="keys")
+    reason = selective_validation.catalog_drift({}, {}, "rev", tmp_path)
+    assert reason and "unset" in reason and "model: keys" in reason
+    assert not selective_validation.catalog_ok({}, {}, "rev", tmp_path)
+    assert "catalog drift" in capsys.readouterr().err
+
+
+def test_exact_match_passes_and_feeds_live_catalog_on_stdin(monkeypatch, tmp_path) -> None:
+    _holder, _ledger, calls = _drift_env(monkeypatch, tmp_path)
+    assert selective_validation.catalog_ok({}, {}, "rev", tmp_path)
+    (call,) = calls
+    assert call["command"] == _DRIFT_CMD.split() and call["cwd"] == tmp_path
+    assert json.loads(call["input"]) == [
+        {"name": "unit", "cmd": "just attest-unit", "enabled": True}
+    ]
+
+
+def test_nonzero_exit_is_drift_with_the_checker_reason(monkeypatch, tmp_path) -> None:
+    holder, ledger, _calls = _drift_env(monkeypatch, tmp_path)
+    holder["outcome"] = SimpleNamespace(
+        returncode=1, stdout="", stderr="live catalog is missing attest keys ['hq-storage']"
+    )
+    reason = selective_validation.catalog_drift({}, {}, "rev", tmp_path)
+    assert reason and "exited 1" in reason and "hq-storage" in reason
+    assert not selective_validation.catalog_ok({}, {}, "rev", tmp_path)
+    assert all(rc != 0 for rc in ledger.recorded.values())
+
+
+def test_timeout_is_drift_and_is_not_cached(monkeypatch, tmp_path) -> None:
+    holder, ledger, _calls = _drift_env(monkeypatch, tmp_path)
+    holder["outcome"] = selective_validation.subprocess.TimeoutExpired(_DRIFT_CMD, 60)
+    reason = selective_validation.catalog_drift({}, {}, "rev", tmp_path)
+    assert reason and "timed out" in reason
+    assert ledger.recorded == {}
+
+
+def test_unlaunchable_drift_check_is_drift(monkeypatch, tmp_path) -> None:
+    holder, _ledger, _calls = _drift_env(monkeypatch, tmp_path)
+    holder["outcome"] = FileNotFoundError("uv")
+    reason = selective_validation.catalog_drift({}, {}, "rev", tmp_path)
+    assert reason and "could not run" in reason
+
+
+def test_clean_result_is_cached_by_tree_digest_and_command(monkeypatch, tmp_path) -> None:
+    holder, _ledger, calls = _drift_env(monkeypatch, tmp_path)
+    assert selective_validation.catalog_ok({}, {}, "rev", tmp_path)
+    assert selective_validation.catalog_ok({}, {}, "rev", tmp_path)
+    assert len(calls) == 1  # the repeat is served from the cache
+    assert selective_validation.catalog_ok({}, {}, "other-tree", tmp_path)
+    assert len(calls) == 2  # a different tree re-checks
+
+
+def test_hq_catalog_edit_forces_a_recheck(monkeypatch, tmp_path) -> None:
+    holder, _ledger, calls = _drift_env(monkeypatch, tmp_path)
+    assert selective_validation.catalog_ok({}, {}, "rev", tmp_path)
+    holder["attest"] = AttestConfig.model_validate(
+        {
+            "keys": [{"name": "unit", "cmd": "just changed"}],
+            "drift_check": _DRIFT_CMD,
+        }
+    )
+    assert selective_validation.catalog_ok({}, {}, "rev", tmp_path)
+    assert len(calls) == 2
+
+
+def test_changed_drift_check_command_forces_a_recheck(monkeypatch, tmp_path) -> None:
+    holder, _ledger, calls = _drift_env(monkeypatch, tmp_path)
+    assert selective_validation.catalog_ok({}, {}, "rev", tmp_path)
+    holder["attest"] = AttestConfig.model_validate(
+        {"keys": [{"name": "unit", "cmd": "just attest-unit"}], "drift_check": "other-check"}
+    )
+    assert selective_validation.catalog_ok({}, {}, "rev", tmp_path)
+    assert len(calls) == 2
+
+
+def test_red_result_is_never_served_from_the_cache(monkeypatch, tmp_path) -> None:
+    holder, _ledger, calls = _drift_env(monkeypatch, tmp_path)
+    holder["outcome"] = SimpleNamespace(returncode=2, stdout="", stderr="drift")
+    assert not selective_validation.catalog_ok({}, {}, "rev", tmp_path)
+    assert not selective_validation.catalog_ok({}, {}, "rev", tmp_path)
+    assert len(calls) == 2
+
+
+def test_drift_check_config_defaults_are_opt_in() -> None:
+    default = AttestConfig()
+    assert default.drift_check is None and default.drift_check_timeout_seconds == 60.0
