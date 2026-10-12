@@ -744,7 +744,7 @@ root-composition-validate:
 # WORKSTEAL PACKING (bh-ey9wj), as on test-integration-land: wall 596/622 s -> ~530 s, idle tail
 # ~90 s -> ~12 s per worker (docs/TEST_PROCESS_POLICY.md). BH_TEST_WORKSTEAL_PACK=0 turns it off.
 stateful-native: root-composition-validate validation-evidence-refresh
-    BH_TEST_WORKSTEAL_PACK={{worksteal_pack}} uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
+    BH_TEST_WORKSTEAL_PACK={{worksteal_pack}} BH_TEST_PREFILTER={{test_prefilter}} uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
         ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{stateful_workers}} tests --dist {{test_dist}} \
         -m "not integration and not pants_profile" \
         $(uv run python scripts/root_composition_tests.py --ignore-args)
@@ -933,13 +933,27 @@ test-system-smoke:
 # idle tail ~100 s -> ~29 s per worker (docs/TEST_PROCESS_POLICY.md). Opt-in elsewhere; on here,
 # and BH_TEST_WORKSTEAL_PACK=0 turns it off for one run. stateful-native packs too (bh-ey9wj).
 worksteal_pack := env_var_or_default("BH_TEST_WORKSTEAL_PACK", "1")
+# COLLECTION PRE-FILTER (bh-l1jje). With a `-m` selection, skip importing test files whose every
+# item the expression deselects, per the checked-in marker index tests/harness/collection_index.json.
+# Content digests guard it: a changed or new test file is collected, and a changed conftest, pytest
+# plugin module (or their tests-local imports), ini value or pytest version falls back to full
+# collection for the whole run (the pytest header says which). Integration lane: per-worker
+# collection ~21-44 s -> see docs/TEST_PROCESS_POLICY.md. BH_TEST_PREFILTER=0 turns it off.
+test_prefilter := env_var_or_default("BH_TEST_PREFILTER", "1")
+
+# One full, serial, fenced collection. Run it after changing a conftest, a harness pytest plugin or
+# the modules they import, or many test files; a stale index only costs collection time, never a test.
+# rewrite the collection pre-filter's marker index (bh-l1jje)
+collection-index-refresh:
+    BH_TEST_PREFILTER_RECORD=tests/harness/collection_index.json ./scripts/hermetic.sh \
+        uv run python -m pytest --collect-only -q -p no:xdist -p no:cacheprovider tests
 
 # the LAND gate's complete integration pass — fenced and parallel
 # Match the native partition's work stealing so idle workers can take unstarted
 # fixture-heavy tests instead of leaving a late queue to one worker. Preserve the
 # complete integration collection, fixed worker bound, fence, and watchdog limit.
 test-integration-land:
-    BH_TEST_WORKSTEAL_PACK={{worksteal_pack}} uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
+    BH_TEST_WORKSTEAL_PACK={{worksteal_pack}} BH_TEST_PREFILTER={{test_prefilter}} uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
         ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{integration_workers}} tests --dist {{test_dist}} -m "integration"
 
 # ADR condition 9 (bh-p07dv): re-run the Dolt/bd trigger-semantics canary. REQUIRED on every Dolt
