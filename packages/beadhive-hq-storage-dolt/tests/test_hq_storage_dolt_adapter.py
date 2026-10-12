@@ -677,6 +677,30 @@ def _publish(db: _ConfigDb, expected: str, op: Any = None) -> Any:
     )
 
 
+class _FailingOn:
+    """Connection wrapper whose cursors raise on any statement containing ``needle``."""
+
+    def __init__(self, inner: Any, needle: str) -> None:
+        self._inner, self._needle = inner, needle
+
+    def cursor(self) -> Any:
+        inner, needle = self._inner.cursor(), self._needle
+
+        class Cursor:
+            def execute(self, operation: str, parameters: Any = None) -> Any:
+                if needle in operation:
+                    raise _Coded(2013, "injected: lost connection on the readback")
+                return inner.execute(operation, parameters)
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(inner, name)
+
+        return Cursor()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
 @dolt
 @pytest.mark.integration
 @pytest.mark.dolt_server
@@ -785,3 +809,48 @@ def test_a_lost_config_commit_acknowledgment_is_unknown_and_its_lookup_tells(
     found = db.history.lookup_publication(op, expected_head=Revision(parent))
     assert isinstance(found, Confirmed if applied else NotConfirmed)
     assert (db.head() != parent) is applied
+
+
+@dolt
+@pytest.mark.integration
+@pytest.mark.dolt_server
+def test_a_failed_post_commit_parent_readback_is_unknown_then_confirmed(
+    server: DoltSqlServer,
+) -> None:
+    from beadhive_hq_storage import ChangeSet
+
+    hq = DoltHqHarness(server)
+    failing = DoltHqStorage(lambda role: _FailingOn(hq._raw_factory(role), "dolt_commit_ancestors"))
+    head = failing.head()
+    operation = new_operation_id()
+    out = failing.publish(
+        ChangeSet((("cfg/a", b"1"),), frozenset({"cfg"})),
+        expected_head=head,
+        operation=operation,
+        author="Tester <t@example.com>",
+        message="post-commit readback fails",
+    )
+    assert isinstance(out, Unknown)
+    assert out.operation == operation
+    assert out.expected == head
+    assert out.reason == "transport"
+    assert hq.store.head() != head  # the commit really landed
+    found = hq.store.lookup_publication(operation, expected_head=head)
+    assert isinstance(found, Confirmed)
+
+
+@dolt
+@pytest.mark.integration
+@pytest.mark.dolt_server
+def test_a_config_publication_issues_no_post_commit_read_that_could_misclassify(
+    server: DoltSqlServer,
+) -> None:
+    db = _ConfigDb(server)
+    parent = db.head()
+    db.history = DoltConfigHistory(
+        lambda role: _FailingOn(db._factory(role), "dolt_commit_ancestors")
+    )
+    op = new_operation_id()
+    out = _publish(db, parent, op)
+    assert isinstance(out, Applied)  # never StorageUnavailable once DOLT_COMMIT has landed
+    assert isinstance(db.history.lookup_publication(op, expected_head=Revision(parent)), Confirmed)
