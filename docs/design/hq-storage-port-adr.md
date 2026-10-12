@@ -1185,3 +1185,20 @@ director's survey and its `failover_after` write no longer need it.
   run the adapter's statements on the frame's own connection, because the route resolution by
   `CURRENT_USER()` must share that session. `Liveness.renew` over the incarnation mapping is the
   same `UPDATE`.
+
+### Settled by `bh-xxkf7.3`
+
+The fake-against-Dolt state machine no longer runs at full budget in the gate. The lanes are:
+
+| Lane | Machine | Budget |
+|---|---|---|
+| `just hq-storage-check` (gate) | fake against fake | `gate`: 25 examples x 20 steps, under 1 s |
+| `just hq-storage-check` (gate) | fake against Dolt, `test_state_machine_fake_against_dolt_smoke` | 2 examples x 8 steps, derandomized, `no_shrink_phases()` |
+| `just hq-storage-dolt-machine` (nightly/canary) | fake against Dolt, `test_state_machine_fake_against_dolt_full` | default profile `gate`: 25 x 20, derandomized, no shrink; `profile=nightly` shrinks, capped at 100 examples |
+
+- **Selection.** The full test carries the `dolt_machine_full` marker. The gate deselects it
+  (`-m "not dolt_machine_full"`); the named recipe selects only it.
+- **Measured.** The gate's state-machine time against Dolt went from about 130 s (4 workers) to
+  about 4 s for the smoke; the whole `hq-storage-check` pytest run is now about 9 s.
+- The gate smoke is derandomized and unshrunk, as section 8 requires of any gate run against
+  real Dolt.

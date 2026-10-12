@@ -249,6 +249,7 @@ markers = [
     "always_run: asserts on git METADATA, so no tree-keyed verdict can vouch for it (bh-ku9n9.3)",
     # ADR condition 9 (bh-p07dv): the Dolt/bd trigger-semantics canary. Every Dolt or bd pin
     # bump re-runs it (`just fence-canary`); see tests/harness/trigger_canary.py.
+    "dolt_machine_full: the full fake-against-Dolt hypothesis budget (~130 s), out of the gate: run by `just hq-storage-dolt-machine` (bh-xxkf7.3)",
     "fence_canary: Dolt/bd trigger-semantics canary re-run on every Dolt or bd pin bump",
     # bh-i970d: the pooled `rewound_cluster` / `rewound_world` fixtures rebuild after a test
     # marked destructive, and fingerprint the restore before a test marked cluster_guard.

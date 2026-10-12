@@ -113,8 +113,10 @@ thresholds are root's) and the failover-policy grant are rendered here too.
 `beadhive_hq_storage_dolt.contract` holds the `dolt` `ContractAdapter`, its harnesses, real
 fault injection at the adapter's commit points, and `DoltSqlServer`: one private
 `dolt sql-server` that takes a `BH_DOLT_SLOTS` slot from root's lock files and waits for the
-server's ready line instead of sleeping. The machine runs the `gate` profile with shrinking
-excluded. Any other profile shrinks, capped at 100 examples.
+server's ready line instead of sleeping. The gate runs only a smoke of the machine against Dolt (2 examples x 8 steps,
+derandomized, shrinking excluded). The full budget (`dolt_machine_full`, `gate` profile
+25 x 20 without shrinking; any other profile shrinks, capped at 100 examples) is deselected
+from `just hq-storage-check` and runs under `just hq-storage-dolt-machine [profile=gate]`.
 
 ## Import rules
 
