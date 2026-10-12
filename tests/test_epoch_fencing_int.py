@@ -26,12 +26,14 @@ and after) so a failure names the step that let a stale write through.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
 import subprocess
 import sys
 import threading
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 import pytest
@@ -87,6 +89,19 @@ CLI_VIOLATION = (
 TXN_VIOLATION = "Committing this transaction resulted in a working set with constraint violations"
 #: bd's embedded auto-resolver declining bh_* conflicts (mergesettle.go:429-566).
 BH_CONFLICT_REFUSAL = "merge conflicts in bh_epoch_live, bh_writer require operator resolution"
+
+
+@contextlib.contextmanager
+def fenced_cluster(
+    root: Path, frames: Sequence[tuple[str, str]], *, writer: str = "c"
+) -> Iterator[Cluster]:
+    """A cluster with the in-data fence installed from ``writer`` (HQ epoch 1, published, every
+    frame pulled and given its local identity): the pooled template for ``rewound_custom``
+    (bh-t8hr4). Every test here starts from exactly this state, so the install is paid once per
+    composition per worker and rewound with the rest of the cluster, not re-run per test."""
+    with Cluster(root / "cluster", list(frames)) as cluster:
+        install_fence(cluster, writer)
+        yield cluster
 
 
 def _recorder(cluster: Cluster, *watch: str) -> Recorder:
@@ -186,11 +201,10 @@ def _hive_sync(frame: Frame, strategy: str | None) -> Run:
 # =============================================================================================
 
 
-def test_s1_planned_handoff_fences_the_idle_old_writer(rewound_cluster):
+def test_s1_planned_handoff_fences_the_idle_old_writer(rewound_custom):
     """B's bump lands; A's next push is non-fast-forward; once A has the bump, A's local
     ``main`` writes fail in SQL. Old writer: bd embedded, then bd server; adopter: Dolt CLI."""
-    cluster = rewound_cluster(FRAMES)
-    install_fence(cluster, "c")
+    cluster = rewound_custom(fenced_cluster, FRAMES)
     recorder = _recorder(cluster, "a", "b")
     for name in ("a", "b"):
         old = cluster[name]
@@ -231,12 +245,11 @@ def test_s1_planned_handoff_fences_the_idle_old_writer(rewound_cluster):
 # =============================================================================================
 
 
-def test_s2_handoff_mid_write_lands_before_the_bump_or_is_rejected(rewound_cluster):
+def test_s2_handoff_mid_write_lands_before_the_bump_or_is_rejected(rewound_custom):
     """The old writer is parked at its push CAS while the adopter runs. Bump first: the parked
     push is rejected. Write first: it lands, the adopter's push is rejected, adopt retries from
     the new head, so the write sits BELOW the bump. Never after it."""
-    cluster = rewound_cluster(FRAMES)
-    install_fence(cluster, "c")
+    cluster = rewound_custom(fenced_cluster, FRAMES)
     recorder = _recorder(cluster)
     c = cluster["c"]
     for name in ("a", "b"):
@@ -290,10 +303,9 @@ def test_s2_handoff_mid_write_lands_before_the_bump_or_is_rejected(rewound_clust
 
 
 def test_s3_partitioned_writer_is_fenced_and_its_unpublished_work_survives_on_an_orphan(
-    rewound_cluster,
+    rewound_custom,
 ):
-    cluster = rewound_cluster(FRAMES)
-    install_fence(cluster, "c")
+    cluster = rewound_custom(fenced_cluster, FRAMES)
     recorder = _recorder(cluster, "a", "b", "c")
     c = cluster["c"]
     for name in ("a", "b"):
@@ -354,9 +366,8 @@ def test_s3_partitioned_writer_is_fenced_and_its_unpublished_work_survives_on_an
 # =============================================================================================
 
 
-def test_s4_one_placement_cas_wins_and_a_loser_that_reached_step_2_abandons(rewound_cluster):
-    cluster = rewound_cluster(FRAMES)
-    install_fence(cluster, "c")
+def test_s4_one_placement_cas_wins_and_a_loser_that_reached_step_2_abandons(rewound_custom):
+    cluster = rewound_custom(fenced_cluster, FRAMES)
     recorder = _recorder(cluster, "a", "b")
     a, b = cluster["a"], cluster["b"]
     base = cluster.hq.placement().epoch
@@ -478,9 +489,8 @@ def _stale_path(cluster, recorder, stale: str, path: str, adopter: str = "c") ->
     return {"runs": runs, "state": state, "remote": remote}
 
 
-def test_s5_stale_writer_is_refused_on_every_default_bd_path(rewound_cluster):
-    cluster = rewound_cluster(FRAMES)
-    install_fence(cluster, "c")
+def test_s5_stale_writer_is_refused_on_every_default_bd_path(rewound_custom):
+    cluster = rewound_custom(fenced_cluster, FRAMES)
     recorder = _recorder(cluster, "a", "b")
     for stale in ("a", "b"):
         embedded = cluster[stale].kind == BD_EMBEDDED
@@ -533,7 +543,7 @@ def test_s5_stale_writer_is_refused_on_every_default_bd_path(rewound_cluster):
 
 
 def test_s5_server_mode_mark_is_not_in_the_write_commit_and_the_adopt_sentinel_closes_vc_merge(
-    rewound_cluster,
+    rewound_custom,
 ):
     """bd's server-mode write commit stages only ``issues`` and ``events`` (GH#2455), so the guard
     trigger's ``bh_write_mark`` row stays unstaged and the commit that carries the stale write
@@ -542,8 +552,7 @@ def test_s5_server_mode_mark_is_not_in_the_write_commit_and_the_adopt_sentinel_c
     proposal's bump it lands the stale write in server mode. Embedded bd commits with
     ``DOLT_COMMIT('-Am')`` and is refused. An ``adopt-<epoch>`` sentinel mark in every bump makes
     the server-mode merge refuse too."""
-    cluster = rewound_cluster(FRAMES)
-    install_fence(cluster, "c")
+    cluster = rewound_custom(fenced_cluster, FRAMES)
     recorder = _recorder(cluster, "a", "b")
     staged: dict[str, list[str]] = {}
     for name in ("a", "b"):
@@ -632,9 +641,8 @@ def test_s5_server_mode_mark_is_not_in_the_write_commit_and_the_adopt_sentinel_c
 # =============================================================================================
 
 
-def test_s6_hive_sync_bd_sync_and_pull_never_revert_bh_writer(rewound_cluster):
-    cluster = rewound_cluster(FRAMES)
-    install_fence(cluster, "c")
+def test_s6_hive_sync_bd_sync_and_pull_never_revert_bh_writer(rewound_custom):
+    cluster = rewound_custom(fenced_cluster, FRAMES)
     recorder = _recorder(cluster, "a", "b")
     for name in ("a", "b"):
         cluster[name].bd("federation", "add-peer", "hub", cluster.remote.url).check()
@@ -707,9 +715,8 @@ def test_s6_hive_sync_bd_sync_and_pull_never_revert_bh_writer(rewound_cluster):
 # =============================================================================================
 
 
-def test_force_paths_defeat_the_fence_and_are_detectable_afterwards(rewound_cluster):
-    cluster = rewound_cluster(FRAMES)
-    install_fence(cluster, "c")
+def test_force_paths_defeat_the_fence_and_are_detectable_afterwards(rewound_custom):
+    cluster = rewound_custom(fenced_cluster, FRAMES)
     recorder = _recorder(cluster, "a", "b")
     a, b, c = cluster["a"], cluster["b"], cluster["c"]
 
@@ -805,11 +812,10 @@ def test_force_paths_defeat_the_fence_and_are_detectable_afterwards(rewound_clus
     assert fence_audit(cluster)["stale_marks"] >= 1
 
 
-def test_force_remote_reset_data_lets_a_stale_store_republish(rewound_cluster):
+def test_force_remote_reset_data_lets_a_stale_store_republish(rewound_custom):
     """``bd dolt remote reset-data`` clears ``refs/dolt/data``; the stale store's next plain push
     then lands because there is no history left to be non-fast-forward against."""
-    cluster = rewound_cluster([("a", BD_EMBEDDED), ("c", DOLT_CLI)])
-    install_fence(cluster, "c")
+    cluster = rewound_custom(fenced_cluster, [("a", BD_EMBEDDED), ("c", DOLT_CLI)])
     recorder = _recorder(cluster, "a")
     a = cluster["a"]
     _make_stale(cluster, "a", "c")
@@ -834,9 +840,8 @@ def test_force_remote_reset_data_lets_a_stale_store_republish(rewound_cluster):
 # =============================================================================================
 
 
-def test_marks_grow_one_per_write_and_only_published_marks_may_be_pruned(rewound_cluster):
-    cluster = rewound_cluster([("a", BD_EMBEDDED), ("c", DOLT_CLI)])
-    install_fence(cluster, "c")
+def test_marks_grow_one_per_write_and_only_published_marks_may_be_pruned(rewound_custom):
+    cluster = rewound_custom(fenced_cluster, [("a", BD_EMBEDDED), ("c", DOLT_CLI)])
     recorder = _recorder(cluster, "a")
     a, c = cluster["a"], cluster["c"]
     held = cluster.hq.place("a").epoch
