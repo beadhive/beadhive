@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shlex
 import subprocess
 import tarfile
@@ -119,24 +120,61 @@ def configured(cfg, entry) -> bool:
     return bool(config.attest_config(cfg, entry).keys)
 
 
-def all_keys_green(entry, cfg, rev: str) -> bool:
-    """Return whether every configured key proves ``rev`` green.
+_TREE_ID = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+
+
+def attested_green(entry, cfg, rev: str, phase: str) -> bool:
+    """The one aggregate predicate: does the ledger prove every active key green for ``rev``'s tree?
+
+    Attest-keys ADR 3.4. All of these must hold, and any doubt answers ``False``:
+
+    - ``rev`` resolves to a tree (an unresolved tree could only match a literal);
+    - a key catalog is configured and no key is disabled (a disabled key is never proof);
+    - every key is current-green (qualifying) or validly carried at that exact tree;
+    - no key is current-red at that tree;
+    - :func:`catalog_ok` (the opt-in drift check) holds;
+    - ``work.always_run`` passes, as :func:`validation_ledger.green_verdict` requires.
 
     Optionality controls whether a lifecycle boundary may proceed; it never turns missing or
-    red evidence into proof that the aggregate full-gate command passed.
+    red evidence into proof. Every exception, including an unreadable ledger, is ``False``.
+    ``phase`` names the boundary asking; every phase requires every active key, which is the
+    ADR's hard limit for ``push-main``/``release``/``postland`` and the safe reading elsewhere.
     """
+    try:
+        return _attested_green(entry, cfg, rev, phase)
+    except Exception as exc:  # fail closed: an unreadable predicate input is never a pass
+        typer.echo(
+            f"attested_green({phase}) failed closed: {type(exc).__name__}: {exc}"[:300], err=True
+        )
+        return False
+
+
+def _attested_green(entry, cfg, rev: str, phase: str) -> bool:
+    if not rev or not phase:
+        return False
+    tree = validation_ledger.tree_of(entry, rev)
+    if not _TREE_ID.fullmatch(tree or ""):
+        return False
     keys = attest_keys(config.attest_config(cfg, entry))
     if not keys or any(key.is_disabled() for key in keys):
         return False
-    verdicts = validation_ledger.key_verdicts(entry, rev, keys, cfg=cfg)
-    return all(
-        verdict.state == validation_ledger.KeyVerdictState.CARRIED
-        or (
-            verdict.state == validation_ledger.KeyVerdictState.CURRENT
-            and validation_ledger.is_qualifying_green(verdict.record or {})
-        )
-        for verdict in verdicts.values()
-    )
+    verdicts = validation_ledger.key_verdicts(entry, tree, keys, cfg=cfg)
+    if set(verdicts) != {key.name for key in keys}:
+        return False
+    states = validation_ledger.KeyVerdictState
+    for verdict in verdicts.values():
+        if verdict.state == states.CURRENT and not validation_ledger.is_qualifying_green(
+            verdict.record or {}
+        ):
+            return False  # current-red (or malformed): a real result no carry can outvote
+        if verdict.state not in (states.CURRENT, states.CARRIED):
+            return False
+    return catalog_ok(entry, cfg, tree) and validation_ledger.always_run_ok(entry, cfg)
+
+
+def all_keys_green(entry, cfg, rev: str) -> bool:
+    """Compatibility alias for the release flow until the release slice."""
+    return attested_green(entry, cfg, rev, "release")
 
 
 def catalog_payload(entry, cfg) -> list[dict]:
@@ -632,6 +670,7 @@ __all__ = [
     "PRECHECK_PHASE",
     "UNRESOLVED_IMPACT_EXIT",
     "all_keys_green",
+    "attested_green",
     "cheapest_first",
     "configured",
     "error_unresolved_impact",

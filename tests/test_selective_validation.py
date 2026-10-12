@@ -468,6 +468,142 @@ def test_disabled_key_cannot_satisfy_all_keys_green(monkeypatch) -> None:
     assert not selective_validation.all_keys_green({}, {}, "head")
 
 
+# ---- bh-15u4d: the attested_green aggregate predicate (attest-keys ADR 3.4) --------------
+
+_TREE = "a" * 40
+_RUN = {"schema": 1, "run_id": "run-1", "lifecycle": "completed", "signal": None}
+_GREEN = {**_RUN, "verdict": "green", "exit_code": 0}
+_RED = {**_RUN, "verdict": "red", "exit_code": 1}
+
+
+def _verdict(name, state, record=None, reason=""):
+    from beadhive import validation_ledger as ledger
+
+    return ledger.KeyVerdict(name, _TREE, "h", ledger.KeyVerdictState(state), record, reason)
+
+
+def _predicate(monkeypatch, verdicts, *keys, catalog=True, always_run=True, tree=_TREE):
+    """Wire attested_green to canned collaborators; ``verdicts`` maps key name -> KeyVerdict."""
+    from beadhive import validation_ledger as ledger
+
+    attest = _attest(*(keys or [{"name": name, "cmd": f"just {name}"} for name in verdicts]))
+    monkeypatch.setattr(selective_validation.config, "attest_config", lambda *_: attest)
+    monkeypatch.setattr(ledger, "tree_of", lambda *_: tree)
+    monkeypatch.setattr(ledger, "key_verdicts", lambda *_a, **_k: verdicts)
+    monkeypatch.setattr(selective_validation, "catalog_ok", lambda *_a, **_k: catalog)
+    monkeypatch.setattr(ledger, "always_run_ok", lambda *_a, **_k: always_run)
+    return lambda: selective_validation.attested_green({}, {}, "head", "push-main")
+
+
+def test_attested_green_when_every_key_is_current_green(monkeypatch) -> None:
+    check = _predicate(
+        monkeypatch,
+        {"unit": _verdict("unit", "current", _GREEN), "docs": _verdict("docs", "current", _GREEN)},
+    )
+
+    assert check() is True
+
+
+def test_attested_green_accepts_a_mix_of_current_and_carried(monkeypatch) -> None:
+    check = _predicate(
+        monkeypatch,
+        {"unit": _verdict("unit", "current", _GREEN), "docs": _verdict("docs", "carried", {})},
+    )
+
+    assert check() is True
+
+
+def test_attested_green_refuses_an_absent_key(monkeypatch) -> None:
+    check = _predicate(
+        monkeypatch,
+        {
+            "unit": _verdict("unit", "current", _GREEN),
+            "docs": _verdict("docs", "absent", reason="missing"),
+        },
+    )
+
+    assert check() is False
+
+
+def test_attested_green_refuses_a_current_red_key(monkeypatch) -> None:
+    check = _predicate(
+        monkeypatch,
+        {"unit": _verdict("unit", "current", _GREEN), "docs": _verdict("docs", "current", _RED)},
+    )
+
+    assert check() is False
+
+
+def test_attested_green_refuses_a_disabled_key_with_a_reason(monkeypatch) -> None:
+    check = _predicate(
+        monkeypatch,
+        {"unit": _verdict("unit", "current", _GREEN)},
+        {"name": "unit", "cmd": "just unit"},
+        {"name": "slow", "cmd": "just slow", "enabled": False, "disabled_reason": "maintenance"},
+    )
+
+    assert check() is False
+
+
+def test_attested_green_refuses_catalog_drift(monkeypatch) -> None:
+    check = _predicate(monkeypatch, {"unit": _verdict("unit", "current", _GREEN)}, catalog=False)
+
+    assert check() is False
+
+
+def test_attested_green_refuses_a_red_always_run_set(monkeypatch) -> None:
+    check = _predicate(monkeypatch, {"unit": _verdict("unit", "current", _GREEN)}, always_run=False)
+
+    assert check() is False
+
+
+def test_attested_green_refuses_an_unresolved_tree(monkeypatch) -> None:
+    check = _predicate(monkeypatch, {"unit": _verdict("unit", "current", _GREEN)}, tree="head")
+
+    assert check() is False
+
+
+def test_attested_green_refuses_an_empty_catalog(monkeypatch) -> None:
+    check = _predicate(monkeypatch, {}, {"name": "unused", "cmd": "x"})
+    monkeypatch.setattr(selective_validation.config, "attest_config", lambda *_: _attest())
+
+    assert check() is False
+
+
+def test_attested_green_fails_closed_on_an_unreadable_ledger(monkeypatch) -> None:
+    check = _predicate(monkeypatch, {"unit": _verdict("unit", "current", _GREEN)})
+
+    def boom(*_a, **_k):
+        raise OSError("ledger unreadable")
+
+    monkeypatch.setattr(selective_validation.validation_ledger, "key_verdicts", boom)
+
+    assert check() is False
+
+
+def test_attested_green_fails_closed_on_any_exception(monkeypatch) -> None:
+    check = _predicate(monkeypatch, {"unit": _verdict("unit", "current", _GREEN)})
+
+    def boom(*_a, **_k):
+        raise RuntimeError("catalog exploded")
+
+    monkeypatch.setattr(selective_validation, "catalog_ok", boom)
+
+    assert check() is False
+
+
+def test_all_keys_green_alias_delegates_to_attested_green(monkeypatch) -> None:
+    seen = []
+    monkeypatch.setattr(
+        selective_validation,
+        "attested_green",
+        lambda *args: seen.append(args) or True,
+    )
+
+    assert selective_validation.all_keys_green("e", "c", "rev") is True
+    assert seen == [("e", "c", "rev", "release")]
+
+
 # ---- bh-2kodj: cheap-first order, generated-evidence precheck, opt-in fail-fast ----------
 
 _COSTS = {"docs": 9.0, "unit": 3.0, "stateful": 380.0, "integration": 325.0}
