@@ -18,8 +18,12 @@ Mapping, deliberately thin:
 * A nested request (``parent_lease``) is served from the parent's grant without taking a slot,
   never queueing host-wide; one that exceeds the parent's grant is refused.
 * ``report`` and ``cancel`` release the permit; both are idempotent.
+* ``reap`` reclaims the jobs and leases of owners an injected liveness probe reports dead, and
+  every nested lease under them (the conformance kit's killed-client rule). Without a probe every
+  owner is alive, and a real dead client's flock is released by the kernel exactly as today.
 
-No production call site uses this yet (``bh-uljpc`` is the port only).
+No production call site uses this yet; ``beadhive.validation_broker_engine`` selects it (or the
+local engine) for the gate wiring in ``bh-qhrl6``.
 """
 
 from __future__ import annotations
@@ -44,6 +48,8 @@ from beadhive_validation_broker import (
     JobSpec,
     LeaseLost,
     Outcome,
+    Owner,
+    ProcessLiveness,
     Usage,
 )
 
@@ -79,8 +85,10 @@ class SlotsEngine:
         *,
         phase: str = "validation",
         root: Path | None = None,
+        owner_alive: ProcessLiveness | None = None,
     ) -> None:
         self._cfg = cfg
+        self._owner_alive = owner_alive or (lambda _owner: True)
         self._entry = entry
         self._phase = phase
         self._root = root
@@ -159,6 +167,22 @@ class SlotsEngine:
     def events(self, since: int = 0) -> Iterator[BrokerEvent]:
         with self._lock:
             return iter([e for e in self._events if e.seq > since])
+
+    # ---- controls (not part of the port) ------------------------------------------------
+
+    def reap(self) -> None:
+        """Reclaim every job and lease whose owner the liveness probe reports dead."""
+        with self._lock:
+            alive: dict[Owner, bool] = {}
+            for held in list(self._jobs.values()):
+                if held.state not in ("queued", "running"):
+                    continue
+                owner = held.spec.owner
+                if owner not in alive:
+                    alive[owner] = bool(self._owner_alive(owner))
+                if not alive[owner]:
+                    held.cancelled = True
+                    self._finish(held, "lost", EventKind.ORPHAN_RECLAIMED, reason="owner dead")
 
     # ---- internals ---------------------------------------------------------------------
 
@@ -250,7 +274,12 @@ class SlotsEngine:
         for child_id in held.children:
             child = self._jobs[child_id]
             if child.state in ("queued", "running"):
-                self._finish(child, "cancelled", EventKind.CANCELLED, reason="parent released")
+                if state == "lost":
+                    self._finish(
+                        child, "lost", EventKind.ORPHAN_RECLAIMED, reason="parent reclaimed"
+                    )
+                else:
+                    self._finish(child, "cancelled", EventKind.CANCELLED, reason="parent released")
         held.state = state
         self._emit(kind, held.spec.job_id, **detail)
         held.release.set()

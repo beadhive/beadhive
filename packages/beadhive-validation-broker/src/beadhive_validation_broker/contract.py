@@ -1,16 +1,26 @@
 """Reusable broker conformance scenarios: safety, nested and killed-client.
 
 Each scenario is a function of an engine harness, defined once and run by every engine: this
-package runs them against :class:`~beadhive_validation_broker.InMemoryBroker`, and the local
-in-process engine (``bh-qrixp``) imports this module and runs the same bodies against itself.
-An adapter supplies a :class:`BrokerHarness`: a fresh broker per case plus the two controls a
-scenario cannot take from the port (kill a client, make the engine notice). A control an engine
-cannot provide raises :class:`ScenarioSkipped`, and the case skips rather than passing vacuously.
+package runs them against :class:`~beadhive_validation_broker.InMemoryBroker` and
+:class:`~beadhive_validation_broker.LocalEngine`, and the root package runs them against the
+slots engine (``beadhive.validation_broker_slots``). An adapter supplies a
+:class:`BrokerHarness`: a fresh broker per case plus the controls a scenario cannot take from the
+port (kill a client, make the engine notice). A control an engine cannot provide raises
+:class:`ScenarioSkipped`, and the case skips rather than passing vacuously.
 
 Scenarios drive only the six port operations. They never sleep and never read a wall clock: a
 grant is probed with ``wait_grant(timeout=0)``, so an engine that blocks for a grant must treat a
-zero timeout as a non-blocking poll. ``pytest`` is imported only inside the functions that build
-marks and fixtures, so the module stays importable with the standard library alone.
+zero timeout as a non-blocking poll. Two optional harness members cover engines whose admission
+is not synchronous or not sized:
+
+* ``settle()`` returns once the engine has acted on every state change so far (an engine that
+  admits on a holder thread waits for that thread's decision there, bounded by an event wait).
+  Scenarios call it before every probe; a synchronous engine omits it.
+* ``sized = False`` declares an engine that admits by count, not by a resource vector (the slots
+  engine). Scenarios that need reservations to be sized then skip.
+
+``pytest`` is imported only inside the functions that build marks and fixtures, so the module
+stays importable with the standard library alone.
 
 The group-latency replays, starvation bound, brake start-race and crash/reconcile checks of the
 ADR's full kit are deliberately out of scope here (``bh-fmuqq.3``).
@@ -23,7 +33,8 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from ._errors import BrokerUnavailable, GrantRefused, GrantTimeout, LeaseLost
-from ._fake import InMemoryBroker
+from ._fake import FakeAvailability, InMemoryBroker
+from ._local import LocalEngine
 from ._ports import BrokerPort
 from ._types import (
     LEASE_ENV,
@@ -40,6 +51,7 @@ from ._types import (
 )
 
 __all__ = [
+    "HARNESS_BUDGET",
     "SCENARIOS",
     "BrokerHarness",
     "ManualClock",
@@ -48,6 +60,7 @@ __all__ = [
     "fake_harness",
     "granted",
     "job",
+    "local_harness",
     "parametrize_scenarios",
     "run_scenario",
 ]
@@ -105,6 +118,7 @@ def job(
     priority: PriorityClass = PriorityClass.CHECK_SUBMIT,
     parent_lease: str | None = None,
     group: str = "gate-1",
+    expected_duration_s: float = 1.0,
 ) -> JobSpec:
     """A job with sensible defaults; scenarios override only what they test."""
     return JobSpec(
@@ -114,7 +128,7 @@ def job(
             cpu_min, cpu_min if cpu_max is None else cpu_max, memory_bytes, dict(pools or {})
         ),
         priority=priority,
-        expected_duration_s=1.0,
+        expected_duration_s=expected_duration_s,
         group=group,
         owner=owner or Owner(pid=1000),
         parent_lease=parent_lease,
@@ -127,6 +141,41 @@ def granted(broker: BrokerPort, handle: JobHandle) -> Grant | None:
         return broker.wait_grant(handle, timeout=0.0)
     except GrantTimeout:
         return None
+
+
+def _settle(harness: BrokerHarness) -> None:
+    settle = getattr(harness, "settle", None)
+    if settle is not None:
+        settle()
+
+
+def _probe(harness: BrokerHarness, handle: JobHandle) -> Grant | None:
+    _settle(harness)
+    return granted(harness.broker, handle)
+
+
+def _must_grant(harness: BrokerHarness, handle: JobHandle, why: str) -> Grant:
+    grant = _probe(harness, handle)
+    assert grant is not None, f"{handle.job_id}: {why}"
+    return grant
+
+
+def _must_wait(harness: BrokerHarness, handle: JobHandle, why: str) -> None:
+    assert _probe(harness, handle) is None, f"{handle.job_id}: {why}"
+
+
+def _must_be_lost(harness: BrokerHarness, handle: JobHandle, why: str) -> None:
+    _settle(harness)
+    try:
+        harness.broker.wait_grant(handle, timeout=0.0)
+    except LeaseLost:
+        return
+    raise AssertionError(f"{handle.job_id}: {why}")
+
+
+def _requires_sized(harness: BrokerHarness) -> None:
+    if not getattr(harness, "sized", True):
+        raise ScenarioSkipped("the engine admits by count; reservations are not sized")
 
 
 def _assert_safe(harness: BrokerHarness, live: dict[str, Grant]) -> None:
@@ -152,6 +201,7 @@ def safety_whole_reservation_never_over_admits(harness: BrokerHarness) -> None:
     finished: set[str] = set()
     running: dict[str, Grant] = {}
     while len(finished) < len(specs):
+        _settle(harness)
         for spec in specs:
             if spec.job_id in finished or spec.job_id in running:
                 continue
@@ -167,11 +217,13 @@ def safety_whole_reservation_never_over_admits(harness: BrokerHarness) -> None:
         broker.report(handles[job_id], OK, USED)
         finished.add(job_id)
         del running[job_id]
+    _settle(harness)
     status = broker.status()
     assert status.running == 0 and status.queued == 0
 
 
 def safety_refuses_what_can_never_fit(harness: BrokerHarness) -> None:
+    _requires_sized(harness)
     broker, budget = harness.broker, harness.budget
     too_much_cpu = job("cpu", cpu_min=budget.cpu + 1)
     too_much_memory = job("mem", memory_bytes=budget.memory_bytes + 1)
@@ -192,33 +244,43 @@ def safety_named_pools_are_counted(harness: BrokerHarness) -> None:
         raise ScenarioSkipped("the budget declares no named pool")
     name, size = next(iter(pools.items()))
     first = broker.submit(job("p1", pools={name: size}))
+    _must_grant(harness, first, "the whole pool is free")
     second = broker.submit(job("p2", pools={name: 1}))
-    assert granted(broker, first) is not None
-    assert granted(broker, second) is None, "the pool is exhausted; the second job must wait"
+    _must_wait(harness, second, "the pool is exhausted; the second job must wait")
     broker.report(first, OK, USED)
-    assert granted(broker, second) is not None
+    _must_grant(harness, second, "the pool was released")
 
 
 def safety_report_and_cancel_are_idempotent(harness: BrokerHarness) -> None:
     broker = harness.broker
     running = broker.submit(job("a"))
-    assert granted(broker, running) is not None
+    _must_grant(harness, running, "an idle engine admits a small job")
     broker.report(running, OK, USED)
     broker.report(running, OK, USED)
     broker.cancel(running, "late")
     holder = broker.submit(job("b", cpu_min=harness.budget.cpu))
+    _must_grant(harness, holder, "the whole host is free again")
     waiting = broker.submit(job("c", cpu_min=harness.budget.cpu))
-    assert granted(broker, holder) is not None
-    assert granted(broker, waiting) is None
+    _must_wait(harness, waiting, "the holder has the whole host")
     broker.cancel(holder, "not needed")
     broker.cancel(holder, "not needed")
-    try:
-        broker.wait_grant(holder, timeout=0.0)
-    except LeaseLost:
-        pass
-    else:
-        raise AssertionError("a cancelled job must not be granted")
-    assert granted(broker, waiting) is not None, "cancelling the holder frees the host"
+    _must_be_lost(harness, holder, "a cancelled job must not be granted")
+    _must_grant(harness, waiting, "cancelling the holder frees the host")
+
+
+def safety_cancelled_queued_job_is_never_admitted(harness: BrokerHarness) -> None:
+    broker = harness.broker
+    holder = broker.submit(job("holder", cpu_min=harness.budget.cpu))
+    _must_grant(harness, holder, "the host is idle")
+    queued = broker.submit(job("queued", cpu_min=harness.budget.cpu))
+    _must_wait(harness, queued, "the holder has the whole host")
+    broker.cancel(queued, "not needed")
+    broker.report(holder, OK, USED)
+    _must_be_lost(harness, queued, "a job cancelled while queued must never be granted")
+    _settle(harness)
+    status = broker.status()
+    assert (status.running, status.queued) == (0, 0), "nothing holds the host after the cancel"
+    _assert_safe(harness, {})
 
 
 def safety_unavailable_raises_broker_unavailable(harness: BrokerHarness) -> None:
@@ -252,8 +314,7 @@ def nested_request_draws_only_from_the_parent_grant(harness: BrokerHarness) -> N
         memory_bytes=budget.memory_bytes // 2,
     )
     parent_handle = broker.submit(parent_spec)
-    parent = granted(broker, parent_handle)
-    assert parent is not None
+    parent = _must_grant(harness, parent_handle, "the host is idle")
     assert parent.env()[LEASE_ENV] == parent.lease_id
     in_use_before = broker.status().in_use
 
@@ -266,8 +327,9 @@ def nested_request_draws_only_from_the_parent_grant(harness: BrokerHarness) -> N
             parent_lease=parent.lease_id,
         )
     )
-    child = granted(broker, child_handle)
-    assert child is not None, "a nested request that fits the parent's grant is served at once"
+    child = _must_grant(
+        harness, child_handle, "a nested request that fits the parent's grant is served at once"
+    )
     assert child.parent_lease == parent.lease_id
     assert parent.amounts.fits(child.amounts)
     assert broker.status().in_use == in_use_before, "nested draws are inside the parent's grant"
@@ -290,25 +352,56 @@ def nested_request_draws_only_from_the_parent_grant(harness: BrokerHarness) -> N
 
     # Releasing the parent revokes the nested lease with it.
     broker.report(parent_handle, OK, USED)
-    try:
-        broker.wait_grant(child_handle, timeout=0.0)
-    except LeaseLost:
-        pass
-    else:
-        raise AssertionError("the nested lease must end with its parent")
+    _must_be_lost(harness, child_handle, "the nested lease must end with its parent")
     assert broker.status().running == 0
 
 
 def nested_request_that_fits_later_waits_in_the_parent(harness: BrokerHarness) -> None:
     broker = harness.broker
-    parent = granted(broker, broker.submit(job("parent", cpu_min=2, cpu_max=2)))
-    assert parent is not None
+    parent = _must_grant(harness, broker.submit(job("parent", cpu_min=2, cpu_max=2)), "idle")
     first_handle = broker.submit(job("n1", cpu_min=2, parent_lease=parent.lease_id))
     second_handle = broker.submit(job("n2", cpu_min=2, parent_lease=parent.lease_id))
-    assert granted(broker, first_handle) is not None
-    assert granted(broker, second_handle) is None, "the parent's grant is spent; wait inside it"
+    _must_grant(harness, first_handle, "the parent's grant is free")
+    _must_wait(harness, second_handle, "the parent's grant is spent; wait inside it")
     broker.report(first_handle, OK, USED)
-    assert granted(broker, second_handle) is not None
+    _must_grant(harness, second_handle, "the sibling released its share of the parent")
+
+
+def nested_request_never_enters_the_host_queue(harness: BrokerHarness) -> None:
+    broker, budget = harness.broker, harness.budget
+    parent_handle = broker.submit(job("parent", cpu_min=budget.cpu, cpu_max=budget.cpu))
+    parent = _must_grant(harness, parent_handle, "the host is idle")
+    blocked = broker.submit(job("blocked", cpu_min=budget.cpu))
+    _must_wait(harness, blocked, "the parent holds the whole host")
+    in_use = broker.status().in_use
+    child_handle = broker.submit(job("child", cpu_min=1, parent_lease=parent.lease_id))
+    _must_grant(harness, child_handle, "a nested request is served past a full host queue")
+    _must_wait(harness, blocked, "the nested lease took nothing from the host")
+    assert broker.status().in_use == in_use, "a nested lease is never counted host-wide"
+    broker.report(child_handle, OK, USED)
+    broker.report(parent_handle, OK, USED)
+    _must_grant(harness, blocked, "the parent released the host")
+
+
+def nested_leases_end_when_the_parent_is_cancelled(harness: BrokerHarness) -> None:
+    broker = harness.broker
+    parent_handle = broker.submit(job("parent", cpu_min=2, cpu_max=2))
+    parent = _must_grant(harness, parent_handle, "the host is idle")
+    running = broker.submit(job("n1", cpu_min=2, parent_lease=parent.lease_id))
+    queued = broker.submit(job("n2", cpu_min=2, parent_lease=parent.lease_id))
+    _must_grant(harness, running, "the parent's grant is free")
+    _must_wait(harness, queued, "the parent's grant is spent")
+    broker.cancel(parent_handle, "gate abandoned")
+    _must_be_lost(harness, running, "a running nested lease ends with its cancelled parent")
+    _must_be_lost(harness, queued, "a queued nested request ends with its cancelled parent")
+    try:
+        broker.submit(job("late", cpu_min=1, parent_lease=parent.lease_id))
+    except LeaseLost:
+        pass
+    else:
+        raise AssertionError("a nested request under an ended parent must raise LeaseLost")
+    _settle(harness)
+    assert broker.status().running == 0
 
 
 # ---- killed client ------------------------------------------------------------------------
@@ -320,26 +413,20 @@ def killed_client_leases_and_nested_leases_are_reclaimed(harness: BrokerHarness)
     parent_handle = broker.submit(
         job("parent", owner=victim, cpu_min=budget.cpu, memory_bytes=budget.memory_bytes // 2)
     )
-    parent = granted(broker, parent_handle)
-    assert parent is not None
+    parent = _must_grant(harness, parent_handle, "the host is idle")
     child_handle = broker.submit(
         job("child", owner=victim, cpu_min=1, parent_lease=parent.lease_id)
     )
-    assert granted(broker, child_handle) is not None
+    _must_grant(harness, child_handle, "the child fits its parent")
     waiting_handle = broker.submit(job("waiting", owner=survivor, cpu_min=budget.cpu))
-    assert granted(broker, waiting_handle) is None, "the dead client's lease still holds the host"
+    _must_wait(harness, waiting_handle, "the dead client's lease still holds the host")
 
     harness.kill_owner(victim)
     harness.reap()
 
-    assert granted(broker, waiting_handle) is not None, "reclaim must free the capacity"
+    _must_grant(harness, waiting_handle, "reclaim must free the capacity")
     for lost in (parent_handle, child_handle):
-        try:
-            broker.wait_grant(lost, timeout=0.0)
-        except LeaseLost:
-            pass
-        else:
-            raise AssertionError(f"{lost.job_id}: a dead owner's lease must be reclaimed")
+        _must_be_lost(harness, lost, "a dead owner's lease must be reclaimed")
     try:
         broker.report(parent_handle, OK, USED)
     except LeaseLost:
@@ -349,6 +436,44 @@ def killed_client_leases_and_nested_leases_are_reclaimed(harness: BrokerHarness)
     reclaimed = [e for e in broker.events() if e.kind is EventKind.ORPHAN_RECLAIMED]
     assert {e.job_id for e in reclaimed} >= {"parent", "child"}
     _assert_safe(harness, {})
+
+
+def killed_client_nested_lease_of_a_live_process_dies_with_its_parent(
+    harness: BrokerHarness,
+) -> None:
+    broker = harness.broker
+    victim, helper = Owner(pid=4101, start_token="a"), Owner(pid=4102, start_token="b")
+    parent_handle = broker.submit(job("parent", owner=victim, cpu_min=2, cpu_max=2))
+    parent = _must_grant(harness, parent_handle, "the host is idle")
+    child_handle = broker.submit(
+        job("child", owner=helper, cpu_min=1, parent_lease=parent.lease_id)
+    )
+    _must_grant(harness, child_handle, "the child fits its parent")
+    harness.kill_owner(victim)
+    harness.reap()
+    _must_be_lost(harness, parent_handle, "the dead owner's lease is reclaimed")
+    _must_be_lost(harness, child_handle, "a nested lease never outlives its parent's grant")
+    _settle(harness)
+    assert broker.status().running == 0
+
+
+def killed_client_queued_job_is_dropped_and_live_leases_kept(harness: BrokerHarness) -> None:
+    broker, budget = harness.broker, harness.budget
+    victim, survivor = Owner(pid=4201, start_token="a"), Owner(pid=4202, start_token="b")
+    holder = broker.submit(job("holder", owner=survivor, cpu_min=budget.cpu))
+    grant = _must_grant(harness, holder, "the host is idle")
+    queued = broker.submit(job("queued", owner=victim, cpu_min=budget.cpu))
+    _must_wait(harness, queued, "the survivor holds the host")
+    harness.kill_owner(victim)
+    harness.reap()
+    _must_be_lost(harness, queued, "a dead client's queued job is dropped")
+    assert broker.wait_grant(holder, timeout=0.0) == grant, "a live owner's lease is untouched"
+    broker.report(holder, OK, USED)
+    _settle(harness)
+    status = broker.status()
+    assert (status.running, status.queued) == (0, 0), "the dropped job was never admitted"
+    reclaimed = {e.job_id for e in broker.events() if e.kind is EventKind.ORPHAN_RECLAIMED}
+    assert "queued" in reclaimed and "holder" not in reclaimed
 
 
 # ---- registry and adapters ----------------------------------------------------------------
@@ -369,6 +494,11 @@ SCENARIOS: tuple[Scenario, ...] = (
     Scenario("named_pools_are_counted", "safety", safety_named_pools_are_counted),
     Scenario("report_and_cancel_are_idempotent", "safety", safety_report_and_cancel_are_idempotent),
     Scenario(
+        "cancelled_queued_job_is_never_admitted",
+        "safety",
+        safety_cancelled_queued_job_is_never_admitted,
+    ),
+    Scenario(
         "unavailable_raises_broker_unavailable",
         "safety",
         safety_unavailable_raises_broker_unavailable,
@@ -381,10 +511,26 @@ SCENARIOS: tuple[Scenario, ...] = (
     Scenario(
         "waits_inside_the_parent", "nested", nested_request_that_fits_later_waits_in_the_parent
     ),
+    Scenario("never_enters_the_host_queue", "nested", nested_request_never_enters_the_host_queue),
+    Scenario(
+        "ends_when_the_parent_is_cancelled",
+        "nested",
+        nested_leases_end_when_the_parent_is_cancelled,
+    ),
     Scenario(
         "reclaims_leases_and_nested_leases",
         "killed-client",
         killed_client_leases_and_nested_leases_are_reclaimed,
+    ),
+    Scenario(
+        "nested_lease_of_a_live_process_dies_with_its_parent",
+        "killed-client",
+        killed_client_nested_lease_of_a_live_process_dies_with_its_parent,
+    ),
+    Scenario(
+        "queued_job_is_dropped_and_live_leases_kept",
+        "killed-client",
+        killed_client_queued_job_is_dropped_and_live_leases_kept,
     ),
 )
 
@@ -393,11 +539,15 @@ def run_scenario(scenario: Scenario, harness: BrokerHarness) -> None:
     scenario.run(harness)
 
 
+#: The budget every in-package harness is built with: 8 cpu, 8 GiB, a 4-slot ``dolt-servers``.
+HARNESS_BUDGET = Capacity(8.0, 8 * GIB, {"dolt-servers": 4})
+
+
 class _FakeHarness:
     def __init__(self) -> None:
         self.clock = ManualClock()
         self.dead: set[Owner] = set()
-        self.budget = Capacity(8.0, 8 * GIB, {"dolt-servers": 4})
+        self.budget = HARNESS_BUDGET
         self.broker = InMemoryBroker(
             self.budget, self.clock, owner_alive=lambda owner: owner not in self.dead
         )
@@ -415,6 +565,36 @@ class _FakeHarness:
 def fake_harness() -> BrokerHarness:
     """A fresh in-memory engine: 8 cpu, 8 GiB, and a 4-slot ``dolt-servers`` pool."""
     return _FakeHarness()
+
+
+class _LocalHarness:
+    def __init__(self) -> None:
+        self.clock = ManualClock()
+        self.dead: set[Owner] = set()
+        self.budget = HARNESS_BUDGET
+        # The host reports more than the budget even after the floor, so the budget binds.
+        self.availability = FakeAvailability(Capacity(64.0, 64 * GIB))
+        self.broker = LocalEngine(
+            self.budget,
+            self.clock,
+            availability=self.availability,
+            floor=Capacity(0.0, 4 * GIB),
+            owner_alive=lambda owner: owner not in self.dead,
+        )
+
+    def kill_owner(self, owner: Owner) -> None:
+        self.dead.add(owner)
+
+    def reap(self) -> None:
+        self.broker.reap()
+
+    def set_available(self, available: bool) -> None:
+        self.broker.set_available(available)
+
+
+def local_harness() -> BrokerHarness:
+    """A fresh local engine on the same budget, with a fake clock and fake availability."""
+    return _LocalHarness()
 
 
 def parametrize_scenarios(*, groups: tuple[str, ...] | None = None) -> Any:
