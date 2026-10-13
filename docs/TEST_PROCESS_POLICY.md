@@ -873,11 +873,13 @@ are identical with and without the pre-filter on both lanes.
   could pick its markers by version (`sys.version_info`) without its content changing. The index
   therefore matches only the interpreter it was recorded under. That is the gate's: the main
   clone's `just check-all` runs Python 3.12 (`./scripts/hermetic.sh uv run --no-sync python -V`),
-  so the index is recorded under 3.12. A bead worktree on 3.11 falls back to full collection,
-  which is safe; run `uv sync --python 3.12` in the worktree first to get the pre-filter there.
+  so the index is recorded under 3.12. `.python-version` (3.12, agreeing with `.mise.toml` and
+  `requires-python`) makes `uv` pick 3.12 for every checkout, so bead worktrees and the gate
+  resolve the same minor under `./scripts/hermetic.sh uv run`; `tests/test_python_pin.py` fails
+  if they drift. A worktree whose `.venv` predates the pin: run `uv sync` once to rebuild it.
   When the gate's interpreter changes minor version, every lane falls back until someone runs
   `just collection-index-refresh` under the new interpreter and commits the index. bh-tmrmr
-  tracks aligning the worktree and gate interpreters.
+  changes the pin in `.python-version`, `.mise.toml` and this index together.
 - **Order.** The selected *set* is identical. Without worksteal packing, the relative order
   can differ, because `stateful_fixtures`' Dolt interleave slices the whole collection. With
   packing, the default on both lanes, the order is rebuilt from the selection either way.
