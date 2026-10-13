@@ -308,6 +308,8 @@ def test_every_projection_declares_granularity_progress_and_interactivity() -> N
 
 
 def test_live_prompt_seams_are_guarded_and_mcp_projections_never_prompt() -> None:
+    catalog = operations()
+    operations_by_name = {op.name: op for op in catalog}
     prompt_paths = {}
     seam_paths: dict[str, set[str]] = {}
     for path, (name, projection) in _projected_cli().items():
@@ -322,7 +324,7 @@ def test_live_prompt_seams_are_guarded_and_mcp_projections_never_prompt() -> Non
             assert guard in projection["parameters"], (path, guard)
         for seam in policy["prompt_seams"]:
             seam_paths.setdefault(seam, set()).add(path)
-        operation = next(op for op in operations() if op.name == name)
+        operation = operations_by_name[name]
         if "mcp" in operation.surfaces:
             assert path == "doctor"
             assert "mcp-uses-pure-doctor-payload" in policy["guard_conditions"]
@@ -349,7 +351,7 @@ def test_live_prompt_seams_are_guarded_and_mcp_projections_never_prompt() -> Non
     assert seam_paths["beadhive.setup_guide.wizard:typer.prompt"] == {"setup guide"}
 
     interactive_operations = {
-        operation.name for operation in operations() if operation.constraints["interactive"]
+        operation.name for operation in catalog if operation.constraints["interactive"]
     }
     assert interactive_operations == {
         "dep.install",

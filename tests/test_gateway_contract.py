@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from copy import deepcopy
+from functools import cache
 from hashlib import sha256
 from pathlib import Path
 
@@ -14,6 +16,17 @@ from jsonschema.exceptions import ValidationError
 from starlette.routing import Route
 
 from beadhive import frame_bridge, gateway_contract, gateway_read
+
+
+@cache
+def _cached_baseline_document() -> dict[str, object]:
+    """Generate the unmutated gateway document once per pytest worker process."""
+    return gateway_contract.generate_document()
+
+
+def _baseline_document() -> dict[str, object]:
+    """Give a test an isolated copy of the worker's unmutated gateway document."""
+    return deepcopy(_cached_baseline_document())
 
 
 def _canonical_digest(value: object) -> str:
@@ -219,7 +232,7 @@ def test_gateway_contract_matches_the_independently_composed_live_surface() -> N
 
 
 def test_preflight_contracts_match_runtime_method_headers_auth_and_results() -> None:
-    document = gateway_contract.generate_document()
+    document = _baseline_document()
     operations = {operation["identifier"]: operation for operation in document["operations"]}
     preflights = [
         operation for operation in document["operations"] if operation["method"] == "OPTIONS"
@@ -286,7 +299,7 @@ def test_preflight_contracts_match_runtime_method_headers_auth_and_results() -> 
 
 
 def test_every_live_non_streaming_success_response_validates_resolved_wire_schema() -> None:
-    document = gateway_contract.generate_document()
+    document = _baseline_document()
     operations = {operation["identifier"]: operation for operation in document["operations"]}
     auth = {
         "Authorization": "Bearer review-token",
@@ -348,7 +361,7 @@ def test_every_live_non_streaming_success_response_validates_resolved_wire_schem
 
 
 def test_gateway_wire_references_resolve_to_versioned_digested_owned_contracts() -> None:
-    document = gateway_contract.generate_document()
+    document = _baseline_document()
     contracts = document["wireContracts"]
     assert [contract["contractVersion"] for contract in contracts] == [
         "gateway.read.v1",
@@ -428,9 +441,7 @@ def test_versioned_work_item_handoff_matches_generated_gateway_surface() -> None
             / "frame-bridge-work-items-v1.json"
         ).read_text()
     )
-    operations = {
-        operation["identifier"] for operation in gateway_contract.generate_document()["operations"]
-    }
+    operations = {operation["identifier"] for operation in _baseline_document()["operations"]}
 
     assert fixture["handoffVersion"] == "frame-bridge-work-items/v1"
     assert fixture["snapshotCapability"] == {
@@ -635,7 +646,7 @@ def test_checked_rich_event_subscription_schema_matches_live_whitespace_admissio
 def test_gateway_owned_wire_version_and_required_shape_drift_changes_artifact(
     monkeypatch,
 ) -> None:
-    baseline = gateway_contract.render_document()
+    baseline = gateway_contract.render_document(_baseline_document())
     baseline_document = json.loads(baseline)
     baseline_operations = {
         operation["identifier"]: operation for operation in baseline_document["operations"]
@@ -676,9 +687,7 @@ def test_gateway_owned_wire_version_and_required_shape_drift_changes_artifact(
 
 
 def test_gateway_contract_carries_canonical_and_transport_contracts() -> None:
-    operations = {
-        row["identifier"]: row for row in gateway_contract.generate_document()["operations"]
-    }
+    operations = {row["identifier"]: row for row in _baseline_document()["operations"]}
 
     work_items = operations["GET /v1/instances/{stage}/{slug}/hives/{hive_id:path}/snapshot"]
     assert work_items["classification"] == "composite"

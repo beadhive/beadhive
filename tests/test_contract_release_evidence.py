@@ -5,19 +5,42 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
-import sys
 import zipfile
+from copy import deepcopy
+from functools import cache
 from pathlib import Path
 
 import pytest
 
+import beadhive.contract_release_evidence as contract_release_evidence
 from beadhive.contract_release import RELEASE_VERSION, build_release, load_release, release_root
 from beadhive.contract_release_evidence import (
     RELEASE_NOTES_PATH,
     build_compatibility_report,
+    main,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@cache
+def _cached_release() -> dict:
+    """Build the contract release once per pytest worker process."""
+    return build_release()
+
+
+@cache
+def _cached_report() -> dict:
+    """Build the compatibility report once per pytest worker process."""
+    return build_compatibility_report()
+
+
+@pytest.fixture(autouse=True)
+def _reuse_cached_release(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let every report build reuse the worker's release instead of rebuilding it."""
+    monkeypatch.setattr(
+        contract_release_evidence, "build_release", lambda: deepcopy(_cached_release())
+    )
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -69,9 +92,9 @@ def _published_rows() -> list[tuple[str, dict[str, object]]]:
 
 
 def test_compatibility_report_accounts_for_every_published_and_candidate_artifact() -> None:
-    report = build_compatibility_report()
+    report = deepcopy(_cached_report())
     published = _published_rows()
-    candidate = build_release()["artifacts"]
+    candidate = deepcopy(_cached_release())["artifacts"]
 
     assert report["format_version"] == 1
     assert report["release_version"] == "2.0.0"
@@ -101,7 +124,7 @@ def test_compatibility_report_accounts_for_every_published_and_candidate_artifac
 
 
 def test_report_classifies_each_nonidentical_comparison_with_policy_evidence() -> None:
-    report = build_compatibility_report()
+    report = deepcopy(_cached_report())
     comparisons = report["historical_comparisons"]
 
     for row in comparisons:
@@ -139,34 +162,21 @@ def test_report_classifies_each_nonidentical_comparison_with_policy_evidence() -
 
 
 def test_compatibility_report_is_canonical_and_current() -> None:
-    report = build_compatibility_report()
+    report = deepcopy(_cached_report())
     canonical = (json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode()
     assert json.loads(canonical) == report
 
 
-def test_report_generator_check_is_read_only_and_deterministic(tmp_path: Path) -> None:
-    script = ROOT / "scripts" / "generate_contract_release_evidence.py"
+def test_report_generator_check_is_read_only_and_deterministic(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     first = tmp_path / "first.json"
     second = tmp_path / "second.json"
 
     for target in (first, second):
-        result = subprocess.run(
-            [sys.executable, str(script), "--write", "--output", str(target)],
-            cwd=ROOT,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == 0, result.stderr or result.stdout
-    checked = subprocess.run(
-        [sys.executable, str(script), "--check"],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert checked.returncode == 0, checked.stderr or checked.stdout
+        assert main(["--write", "--output", str(target)]) == 0
+    assert main(["--check"]) == 0
+    assert capsys.readouterr().err == ""
     assert first.read_bytes() == second.read_bytes()
 
 
@@ -256,7 +266,7 @@ def test_wheel_contains_the_exact_checksum_verified_release(tmp_path: Path) -> N
 
 
 def test_installed_release_matches_cli_mcp_and_api_runtime_projections() -> None:
-    candidate = build_release()
+    candidate = deepcopy(_cached_release())
     installed = load_release(release_root())
     expected_owners = {
         "cli": "beadhive.transport_inventory.document",
