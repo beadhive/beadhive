@@ -920,6 +920,14 @@ collection-index-refresh:
     BH_TEST_PREFILTER_RECORD=tests/harness/collection_index.json ./scripts/hermetic.sh \
         uv run python -m pytest --collect-only -q -p no:xdist -p no:cacheprovider tests
 
+# Rewrite tests/harness/test_durations.json (bh-0br25) from the newest full-lane validation reports
+# of the stateful, root-composition and integration lanes: every collected test, a per-module
+# median table for unknown tests, stale keys pruned, coverage printed per lane. Run it after a
+# change that moves test durations a lot. REPORTS is a JUnit glob; the default is this hive's
+# .bh/validation/runs/*/reports/*.xml.
+refresh-test-durations reports=".bh/validation/runs/*/reports/*.xml":
+    uv run python scripts/refresh_test_durations.py --lanes --min-seconds 0 --glob {{quote(reports)}}
+
 # the LAND gate's complete integration pass — fenced and parallel
 # Match the native partition's work stealing so idle workers can take unstarted
 # fixture-heavy tests instead of leaving a late queue to one worker. Preserve the
