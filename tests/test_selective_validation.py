@@ -449,7 +449,7 @@ def test_enable_disable_enable_restores_identical_execution(monkeypatch, capsys)
     assert disabled[0] == 0 and disabled[1:] != before[1:]
 
 
-def test_disabled_key_cannot_satisfy_all_keys_green(monkeypatch) -> None:
+def test_disabled_key_cannot_satisfy_attested_green(monkeypatch) -> None:
     attest = _attest(
         {
             "name": "stateful",
@@ -465,7 +465,7 @@ def test_disabled_key_cannot_satisfy_all_keys_green(monkeypatch) -> None:
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("disabled proof was consulted")),
     )
 
-    assert not selective_validation.all_keys_green({}, {}, "head")
+    assert not selective_validation.attested_green({}, {}, "head", "release")
 
 
 # ---- bh-15u4d: the attested_green aggregate predicate (attest-keys ADR 3.4) --------------
@@ -590,18 +590,6 @@ def test_attested_green_fails_closed_on_any_exception(monkeypatch) -> None:
     monkeypatch.setattr(selective_validation, "catalog_ok", boom)
 
     assert check() is False
-
-
-def test_all_keys_green_alias_delegates_to_attested_green(monkeypatch) -> None:
-    seen = []
-    monkeypatch.setattr(
-        selective_validation,
-        "attested_green",
-        lambda *args: seen.append(args) or True,
-    )
-
-    assert selective_validation.all_keys_green("e", "c", "rev") is True
-    assert seen == [("e", "c", "rev", "release")]
 
 
 # ---- bh-2kodj: cheap-first order, generated-evidence precheck, opt-in fail-fast ----------

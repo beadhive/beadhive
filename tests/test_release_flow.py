@@ -1611,7 +1611,7 @@ def test_selective_attest_seals_the_aggregate_only_after_every_key_is_green(hive
 
     monkeypatch.setattr(selective_validation, "configured", lambda *a, **k: True)
     monkeypatch.setattr(selective_validation, "run", lambda *a, **k: 0)
-    monkeypatch.setattr(selective_validation, "all_keys_green", lambda *a, **k: True)
+    monkeypatch.setattr(selective_validation, "attested_green", lambda *a, **k: True)
 
     result = _run(hive, "attest", "--if-needed", "--gate", GATE_CMD)
 
@@ -1626,7 +1626,7 @@ def test_selective_attest_does_not_claim_aggregate_green_when_an_optional_key_is
 
     monkeypatch.setattr(selective_validation, "configured", lambda *a, **k: True)
     monkeypatch.setattr(selective_validation, "run", lambda *a, **k: 0)
-    monkeypatch.setattr(selective_validation, "all_keys_green", lambda *a, **k: False)
+    monkeypatch.setattr(selective_validation, "attested_green", lambda *a, **k: False)
 
     result = _run(hive, "attest", "--if-needed", "--gate", GATE_CMD)
 
@@ -1647,11 +1647,45 @@ def test_selective_attest_passes_the_release_phase_and_its_legacy_command(hive, 
 
     monkeypatch.setattr(selective_validation, "configured", lambda *a, **k: True)
     monkeypatch.setattr(selective_validation, "run", run)
-    monkeypatch.setattr(selective_validation, "all_keys_green", lambda *a, **k: True)
+    monkeypatch.setattr(selective_validation, "attested_green", lambda *a, **k: True)
 
     assert _run(hive, "attest", "--if-needed", "--gate", GATE_CMD).exit_code == 0
     assert seen["phase"] == "release"
     assert seen["legacy_cmd"] == GATE_CMD
+
+
+def test_selective_attest_asks_attested_green_for_the_release_phase(hive, monkeypatch):
+    """The aggregate seal goes through the one predicate, named for the release boundary."""
+    from beadhive import selective_validation
+
+    asked: list[tuple] = []
+
+    def green(_entry, _cfg, rev, phase):
+        asked.append((rev, phase))
+        return True
+
+    monkeypatch.setattr(selective_validation, "configured", lambda *a, **k: True)
+    monkeypatch.setattr(selective_validation, "run", lambda *a, **k: 0)
+    monkeypatch.setattr(selective_validation, "attested_green", green)
+
+    assert _run(hive, "attest", "--if-needed", "--gate", GATE_CMD).exit_code == 0
+    assert asked == [(hive["sha"], "release")]
+
+
+def test_selective_attest_refuses_on_catalog_drift(hive, monkeypatch):
+    """Drift makes attested_green false, so a passing evaluator run still cannot seal."""
+    from beadhive import selective_validation
+
+    monkeypatch.setattr(selective_validation, "configured", lambda *a, **k: True)
+    monkeypatch.setattr(selective_validation, "run", lambda *a, **k: 0)
+    monkeypatch.setattr(selective_validation, "catalog_ok", lambda *a, **k: False)
+    monkeypatch.setattr(selective_validation.validation_ledger, "tree_of", lambda *a: "a" * 40)
+    monkeypatch.setattr(selective_validation, "attest_keys", lambda *_a: [object()])
+
+    result = _run(hive, "attest", "--if-needed", "--gate", GATE_CMD)
+
+    assert result.exit_code == 1
+    assert prepush.check_push_main(hive["sha"], hive_id="mr", gate_cmd=GATE_CMD)[0] is False
 
 
 def test_attest_still_defaults_to_running_the_gate_for_real(hive, monkeypatch):

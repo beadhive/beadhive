@@ -181,11 +181,6 @@ def _attested_green(entry, cfg, rev: str, phase: str) -> bool:
     return catalog_ok(entry, cfg, tree) and validation_ledger.always_run_ok(entry, cfg)
 
 
-def all_keys_green(entry, cfg, rev: str) -> bool:
-    """Compatibility alias for the release flow until the release slice."""
-    return attested_green(entry, cfg, rev, "release")
-
-
 def catalog_payload(entry, cfg) -> list[dict]:
     """The live HQ catalog as the drift-check command's stdin: name, cmd, enabled, by name."""
     keys = config.attest_config(cfg, entry).keys
@@ -874,7 +869,6 @@ __all__ = [
     "FULL_GATE_PHASES",
     "PRECHECK_PHASE",
     "UNRESOLVED_IMPACT_EXIT",
-    "all_keys_green",
     "attested_green",
     "cheapest_first",
     "configured",

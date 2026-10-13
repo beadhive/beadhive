@@ -203,6 +203,34 @@ def test_unaffected_key_runs_once_then_carries_from_its_root_across_two_lands(hi
     assert f"k: carried from {hive.tree(c1)[:12]} via receipt" in second[2]
 
 
+def test_release_predicate_holds_after_an_unattested_three_land_batch(hive) -> None:
+    """bh-jwugq: with only the pre-batch tree attested, the release attest at the batch head
+    runs just the key whose root does not cover HEAD, and `attested_green(release)` then holds."""
+    cfg = hive.cfg()
+    for key in (K, J):
+        validation_ledger.record(hive.entry, hive.c0, key["cmd"], 0, cfg=cfg)
+    hive.commit({"docs/r.md": "1"}, "bead 1")
+    c2 = hive.commit({"docs/r.md": "2"}, "bead 2")
+    c3 = hive.commit({"docs/r.md": "3", "j/a.txt": "j3"}, "bead 3")
+    hive.monkeypatch.setattr(selective_validation, "catalog_ok", lambda *_a: True)
+    assert selective_validation.attested_green(hive.entry, cfg, c3, "release") is False
+
+    rc, ran, _out, _spy = hive.land(c2, c3, cfg)  # the release attest: parent -> head
+
+    assert rc == 0
+    assert ran == ["just attest-j"]  # k is carried from its pre-batch root, not re-run
+    assert hive.carried(c3)["source_tree"] == hive.tree(hive.c0)
+    assert selective_validation.attested_green(hive.entry, cfg, c3, "release") is True
+
+
+def test_release_predicate_refuses_when_a_key_has_no_proof_at_head(hive) -> None:
+    cfg = hive.cfg()
+    c1 = hive.commit({"docs/r.md": "1"}, "bead 1")
+    hive.monkeypatch.setattr(selective_validation, "catalog_ok", lambda *_a: True)
+
+    assert selective_validation.attested_green(hive.entry, cfg, c1, "release") is False
+
+
 def test_high_water_off_restores_single_hop_sourcing(hive) -> None:
     cfg = hive.cfg(high_water=False)
     (_c1, _c2, c3), (_first, second, third) = _three_lands(hive, cfg)

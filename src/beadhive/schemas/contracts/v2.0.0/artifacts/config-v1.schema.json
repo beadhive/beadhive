@@ -236,7 +236,7 @@
     },
     "AttestTrivialConfig": {
       "additionalProperties": false,
-      "description": "A POLICY short-circuit: changes whose every path is trivially non-behavioral run a\nreduced key set instead of the full one.\n\nThis is deliberately NOT an impact-resolver concern. A receipt answers \"what did this\nchange touch\", proved from ownership and selectors; this answers \"what do we choose to\ntest\", which carries no proof at all. Keeping them apart is what stops a policy skip from\nbeing recorded as carried evidence: the keys this drops are treated exactly like a\ndisabled key -- they neither run, block, satisfy the aggregate, nor produce carryable\nproof, so `all_keys_green` still refuses to call the revision fully attested.",
+      "description": "A POLICY short-circuit: changes whose every path is trivially non-behavioral run a\nreduced key set instead of the full one.\n\nThis is deliberately NOT an impact-resolver concern. A receipt answers \"what did this\nchange touch\", proved from ownership and selectors; this answers \"what do we choose to\ntest\", which carries no proof at all. Keeping them apart is what stops a policy skip from\nbeing recorded as carried evidence: the keys this drops are treated exactly like a\ndisabled key -- they neither run, block, satisfy the aggregate, nor produce carryable\nproof, so `attested_green` still refuses to call the revision fully attested.",
       "properties": {
         "enabled": {
           "default": false,
