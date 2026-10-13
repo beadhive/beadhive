@@ -10,7 +10,6 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -101,9 +100,8 @@ def evidence() -> dict[str, object]:
             "activation_owner": "bh-ck1t6.3",
         },
         "global_certification_inputs": [
-            "scripts/test_closures.py",
-            "scripts/test_closure_certification.py",
-            "tests/closures.toml",
+            "scripts/fixture_certifier.py",
+            "tests/fixture_registry.toml",
         ],
         "closures": [
             _record(
@@ -399,16 +397,9 @@ def test_real_cli_is_byte_identical_and_preserves_every_clone_path(
     tmp_path: Path,
 ) -> None:
     seed = tmp_path / "seed"
-    for relative in (
-        "scripts/test_impact_selector.py",
-        "scripts/test_closure_certification.py",
-        "scripts/validation_artifacts.py",  # sibling dependency: tree-scoped evidence (bh-vi4ob.1)
-        "scripts/test_closures.py",
-        "tests/closures.toml",
-    ):
-        target = seed / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(ROOT / relative, target)
+    target = seed / "scripts/test_impact_selector.py"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ROOT / "scripts/test_impact_selector.py", target)
     (seed / "README.md").write_text("baseline\n", encoding="utf-8")
 
     def git(directory: Path, *args: str) -> None:
@@ -419,7 +410,9 @@ def test_real_cli_is_byte_identical_and_preserves_every_clone_path(
         )
 
     git(seed, "init", "--quiet")
-    shutil.copy2(selector._load_certification().DEFAULT_OUTPUT, seed / "runtime-certification.json")
+    (seed / "runtime-certification.json").write_text(
+        json.dumps({"schema_version": 2, "closures": []}), encoding="utf-8"
+    )
     git(seed, "add", ".")
     git(
         seed,
@@ -497,134 +490,10 @@ def test_real_cli_is_byte_identical_and_preserves_every_clone_path(
         text=True,
     )
 
-    assert json.loads(first.stdout)["activation"]["enabled"] is False
+    plan = json.loads(first.stdout)
+    assert plan["activation"]["enabled"] is False
+    # No certification verifier remains, so the CLI cannot trust any evidence file: fail closed.
+    assert plan["decision"] == "full"
+    assert plan["artifact_errors"] == ["certification-verifier-retired"]
     assert first.stdout == second.stdout
     assert _filesystem_identity(clone) == before
-
-
-@pytest.mark.parametrize("fails", (False, True), ids=("success", "failure"))
-def test_dependency_loader_restores_bytecode_and_module_state(
-    monkeypatch: pytest.MonkeyPatch, fails: bool
-) -> None:
-    module_name = "test_closure_certification_for_selector"
-    previous_module = object()
-    loaded_module = object()
-    observed_flags: list[bool] = []
-
-    class Loader:
-        def exec_module(self, _module: object) -> None:
-            observed_flags.append(sys.dont_write_bytecode)
-            if fails:
-                raise RuntimeError("loader failed")
-
-    fake_spec = SimpleNamespace(name=module_name, loader=Loader())
-    monkeypatch.setitem(sys.modules, module_name, previous_module)
-    monkeypatch.setattr(selector.importlib.util, "spec_from_file_location", lambda *_: fake_spec)
-    monkeypatch.setattr(selector.importlib.util, "module_from_spec", lambda _: loaded_module)
-    original_flag = sys.dont_write_bytecode
-
-    if fails:
-        with pytest.raises(RuntimeError, match="loader failed"):
-            selector._load_certification()
-    else:
-        assert selector._load_certification() is loaded_module
-
-    assert observed_flags == [True]
-    assert sys.dont_write_bytecode is original_flag
-    assert sys.modules[module_name] is previous_module
-
-
-def test_real_dependency_loading_leaves_no_module_registry_state(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    names = ("test_closure_certification_for_selector", "closure_registry")
-    for name in names:
-        monkeypatch.delitem(sys.modules, name, raising=False)
-    original_flag = sys.dont_write_bytecode
-
-    certification = selector._load_certification()
-
-    assert callable(certification.current_applicability)
-    assert sys.dont_write_bytecode is original_flag
-    assert not set(names) & set(sys.modules)
-
-
-def test_nested_dependency_loader_restores_state_on_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    certification = selector._load_certification()
-    module_name = "closure_registry"
-    previous_module = object()
-    loaded_module = object()
-    observed_flags: list[bool] = []
-
-    class Loader:
-        def exec_module(self, _module: object) -> None:
-            observed_flags.append(sys.dont_write_bytecode)
-            raise RuntimeError("nested loader failed")
-
-    fake_spec = SimpleNamespace(name=module_name, loader=Loader())
-    monkeypatch.setitem(sys.modules, module_name, previous_module)
-    monkeypatch.setattr(
-        certification.importlib.util, "spec_from_file_location", lambda *_: fake_spec
-    )
-    monkeypatch.setattr(certification.importlib.util, "module_from_spec", lambda _: loaded_module)
-    original_flag = sys.dont_write_bytecode
-
-    with pytest.raises(RuntimeError, match="nested loader failed"):
-        certification._load_test_closures()
-
-    assert observed_flags == [True]
-    assert sys.dont_write_bytecode is original_flag
-    assert sys.modules[module_name] is previous_module
-
-
-def test_checked_evidence_remains_uncertified_and_disabled() -> None:
-    checked = json.loads(selector._load_certification().DEFAULT_OUTPUT.read_text(encoding="utf-8"))
-
-    assert len(checked["closures"]) == 24
-    assert checked["policy"]["activation"] == "disabled"
-    assert all(row["certification"]["status"] == "uncertified" for row in checked["closures"])
-    assert not any(
-        row["certification"]["eligible_for_selective_activation"] for row in checked["closures"]
-    )
-
-
-def test_current_runtime_evidence_matches_the_checkout() -> None:
-    checked = json.loads(selector._load_certification().DEFAULT_OUTPUT.read_text(encoding="utf-8"))
-    certification = selector._load_certification()
-    artifact_errors = certification.validate_evidence(checked, ROOT)
-    applicability = certification.current_applicability(checked, ROOT)
-    projected = selector.apply_current_applicability(checked, applicability)
-    plan = selector.build_plan(
-        [
-            {
-                "status": "M",
-                "path": "src/beadhive/modules/hives/application/services.py",
-            }
-        ],
-        projected,
-        base=certification._git(ROOT, "rev-parse", "HEAD^"),
-        head=certification._git(ROOT, "rev-parse", "HEAD"),
-        merge_base=certification._git(ROOT, "rev-parse", "HEAD^"),
-        artifact_errors=artifact_errors,
-    )
-
-    assert artifact_errors == ()
-    assert sum(item["applicable"] for item in applicability.values()) >= 1
-    assert plan["changed_modules"] == ["module.hives"]
-    assert plan["decision"] == "full"
-    assert "certification-artifact-invalid" not in plan["fallback_reasons"]
-    assert {
-        "closure-not-certified",
-        "missing-or-stale-coverage",
-    } <= set(plan["fallback_reasons"])
-    assert applicability["config.store"]["applicable"] is True
-    assert applicability["module.planning"]["applicable"] is True
-    agents_exclusion = next(
-        item for item in plan["exclusions"] if item["closure"] == "module.agents"
-    )
-    assert agents_exclusion["status"] == "unaffected"
-    assert agents_exclusion["reason"] == "unaffected-current-digests-stable"
-    assert agents_exclusion["current_applicability"]["applicable"] is True
-    assert "applicability_fallback_reasons" not in agents_exclusion

@@ -245,39 +245,28 @@ check-attest-catalog:
 # network — except check_pants_ownership, which queries the local Pants engine (no network;
 # it only reads BUILD files) to keep every tracked file owned (bh-1j3ei.2).
 architecture-check:
-    just validation-evidence-refresh
     uv run python scripts/check_import_boundaries.py
     uv run python scripts/check_package_imports.py
     uv run python scripts/check_test_wall_clock.py
-    uv run python scripts/test_closure_certification.py --check
-    uv run python scripts/test_closure_shadow_policy.py --check
-    uv run python scripts/test_closure_promotion_policy.py --check
-    uv run python scripts/test_closure_operational_report.py --check
     uv run python scripts/check_pants_ownership.py
     uv run python scripts/pants_ci.py verify
 
 # Lifecycle gates cannot require the full-gate receipt they are in the process of establishing.
 # This explicit entry point checks the same structural evidence and freshness invariants for
 # check, check-all, and selective CI. architecture-check remains the explicit post-receipt audit.
-# The evidence refresh WRITES the closure evidence the checks below read, so it runs serially and
-# first. Every check after it is read-only and independent, so they run through a bounded pool
+# Every check is read-only and independent, so they run through a bounded pool
 # (scripts/run_checks_concurrently.py: per-check buffered output, non-zero exit if any check fails).
 # The transport-artifact-check and wire-schema-compat recipes are flattened into the pool so the
 # slowest single check, not their serial sum, bounds the wall time; tests/test_native_validation_graph.py
 # keeps both lists in lockstep.
 # run the backend-neutral architecture/contract checks (evidence refresh first, then concurrent)
 architecture-structural-check:
-    just validation-evidence-refresh
     uv run python scripts/run_checks_concurrently.py --jobs 4 \
         "uv run python scripts/render_transport_composition_evidence.py --check" \
         "uv run python scripts/check_native_impact_map.py" \
         "uv run python scripts/check_import_boundaries.py" \
         "uv run python scripts/check_package_imports.py" \
         "uv run python scripts/check_test_wall_clock.py" \
-        "uv run python scripts/test_closure_certification.py --check-structural" \
-        "uv run python scripts/test_closure_shadow_policy.py --check" \
-        "uv run python scripts/test_closure_promotion_policy.py --check" \
-        "uv run python scripts/test_closure_operational_report.py --check" \
         "uv run python scripts/render_operation_catalog.py --check" \
         "uv run python scripts/render_transport_inventory.py --check" \
         "uv run python -m beadhive.daemon_openapi --check" \
@@ -299,15 +288,6 @@ architecture-pants-check:
     uv run python scripts/check_pants_proven.py
     uv run python scripts/pants_ci.py verify
 
-# Rebuild derived test-closure evidence in git-private validation control state. Every worktree
-# shares one physical .git, so this directory is content-scoped (bh-vi4ob.1, scripts/
-# validation_artifacts.py's checkout_tree_scope()): two worktrees validating different checkouts
-# then never read or clobber each other's evidence. Derive the directory from the certification
-# script's own printed path rather than recomputing the scope here, so this can never drift from
-# where its writer actually resolved it.
-validation-evidence-refresh:
-    path="$(uv run python scripts/test_closure_certification.py)"; echo "$path"; dir="$(dirname "$path")"; uv run python scripts/test_closure_shadow_policy.py > "$dir/test-closure-shadow-policy.json"; uv run python scripts/test_closure_promotion_policy.py > "$dir/test-closure-promotion-policy.json"
-
 # Publish the live operation catalog (e.g. after registering a CLI verb) and regenerate every
 # artifact derived from it. Cuts the next minor wire release, or refreshes the one this branch
 # already cut; see docs/schemas/wire/README.md ("Add a CLI verb").
@@ -317,8 +297,6 @@ wire-publish:
     uv run python scripts/render_transport_inventory.py
     uv run python scripts/generate_contract_release.py --write
     uv run python scripts/generate_contract_release_evidence.py --write
-    just validation-evidence-refresh
-    uv run python scripts/test_closure_operational_report.py --write
 
 # Compare the candidate wire release with the target branch and validate its shared fixtures.
 # CI may set BH_WIRE_SCHEMA_BASE_REF to its actual target ref; local work defaults to main.
@@ -759,17 +737,11 @@ stateful_workers := "16"
 root-composition-validate:
     uv run python scripts/root_composition_tests.py --validate-only
 
-# Stateful tests consume the digest-bound closure evidence (certification, shadow-policy and
-# promotion-policy JSON) that `validation-evidence-refresh` writes. Depend on that minimal producer
-# rather than the whole structural check: selective validation can invoke `attest-stateful` on its
-# own, and that run may start before the architecture-contracts key in a different worker, but it
-# needs only fresh evidence, not the import/transport/wire-schema checks (those run once, in
-# architecture-structural-check).
 # Work stealing redistributes unstarted tests when an uneven fixture-heavy batch leaves idle
 # workers. Keep the same complete collection, fixed worker bound, and watchdog deadline.
 # WORKSTEAL PACKING (bh-ey9wj), as on test-integration-land: wall 596/622 s -> ~530 s, idle tail
 # ~90 s -> ~12 s per worker (docs/TEST_PROCESS_POLICY.md). BH_TEST_WORKSTEAL_PACK=0 turns it off.
-stateful-native: root-composition-validate validation-evidence-refresh
+stateful-native: root-composition-validate
     BH_TEST_WORKSTEAL_PACK={{worksteal_pack}} BH_TEST_PREFILTER={{test_prefilter}} uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
         ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{stateful_workers}} tests --dist {{test_dist}} \
         -m "not integration and not pants_profile" \
@@ -792,26 +764,6 @@ root-composition-native: root-composition-validate
 pants-artifact-check:
     ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -q \
         tests/test_beadhive_pants_artifacts.py::test_bh_pex_contains_and_resolves_the_backend
-
-# Advisory module/plugin closures. These commands never replace `just check` or `just check-all`;
-# the checked impact map adds shared-contract and reverse-dependent selectors to each direct set.
-test-closure closure:
-    ./scripts/hermetic.sh uv run python scripts/test_closures.py run {{quote(closure)}}
-
-test-closure-check:
-    uv run python scripts/test_closures.py check
-
-# Digest-bound prerequisite evidence only; selection and activation remain disabled.
-test-closure-certification-check:
-    uv run python scripts/test_closure_certification.py --check
-
-# Pure policy/evidence check only. It never runs a selected closure or changes a lifecycle gate.
-test-closure-shadow-policy-check:
-    uv run python scripts/test_closure_shadow_policy.py --check
-
-# Promotion scope/evidence check only. The trusted verifier still owns production eligibility.
-test-closure-promotion-policy-check:
-    uv run python scripts/test_closure_promotion_policy.py --check
 
 # Advisory only: emit a machine-readable impacted-test plan; never runs tests or changes policy.
 test-impact-plan base head="HEAD":
@@ -927,27 +879,6 @@ release-smoke-check:
     uv build --out-dir dist/release-smoke
     uv run --isolated --no-project --with dist/release-smoke/*.whl python -c "import beadhive"
     uv run --isolated --no-project --with dist/release-smoke/*.whl bh --version
-
-test-kernel:
-    just test-closure kernel
-
-test-module module:
-    just test-closure {{quote("module." + module)}}
-
-test-adapters:
-    just test-closure adapters
-
-test-plugin plugin:
-    just test-closure {{quote("plugin." + plugin)}}
-
-test-contracts:
-    just test-closure contracts
-
-test-integration:
-    just test-closure integration
-
-test-system-smoke:
-    just test-closure system-smoke
 
 # FENCED (bh-pxoby). Runs through `scripts/hermetic.sh`, which puts the suite in a bubblewrap
 # sandbox: host read-only, tmpfs HOME (so ~/.beads and ~/.gitconfig leave bd's resolution walk),

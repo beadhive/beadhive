@@ -108,25 +108,11 @@ Watch item: `tests/test_hq_authority_backend.py::test_real_foreign_holder_takeov
 failed once under 3-way concurrency during bh-p4bbw. Host contention is unconfirmed; if it recurs,
 diagnose contention before reaching for retries or longer sleeps.
 
-## Selective-CI policy
+## Selective validation
 
-The checked [Selective-CI operational report](SELECTIVE-CI-OPERATIONS.md) is the authoritative
-closure inventory and measurement ledger. As of 2026-09-10, production selective routes: **0**.
-All 24 closures are uncertified, so no before/after wall time, compute time, queue delay,
-full-suite frequency, miss rate, flake rate, or savings measurement is available. Focused
-developer timings and exact-tree receipt reuse are not extrapolated into production savings.
-
-Commit and main-integration are the only provisioned selective boundaries. They run a closure only
-after exact current certification, qualifying shadow evidence, and trusted route verification;
-otherwise they run `just check`. `leaf-merge`, `child-epic-finish`,
-`final-workstream-submit`, `final-workstream-review`, `scheduled`, and `release` are permanently
-full-only at this policy version and run `just check-all`.
-
-An escaped regression, boundary change, stale coverage, tool-version change, or schema change
-automatically restores `just check` and requires recertification before selective use. A new module
-or plugin must add a checked closure/conformance declaration before registration. To disable the
-provisioned routes in one change, set `selective_ci.mode = "full"` in
-`tests/selective-ci-policy.toml`.
+Closure certification and the selective-CI policy are retired. Selective validation is defined
+solely by the attest-key gate model: see
+[the attest-keys single gate model ADR](design/attest-keys-single-gate-model-adr.md).
 
 ## Fence spike-merge saving on integration runs (bh-y4c4z)
 

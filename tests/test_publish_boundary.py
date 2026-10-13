@@ -11,7 +11,7 @@ that passes because it is checking nothing is worse than no test: it is discharg
 nothing and it reads as coverage. So each checker is a pure function over inputs, exercised
 twice — once on the real code (must report zero violations) and once on a deliberately
 widened input (must report a violation). The widened inputs are not toys where it matters:
-`test_closure_guard_fires_on_deferred_import_injected_into_the_real_module` re-parses the
+`test_import_closure_guard_fires_on_deferred_import_injected_into_the_real_module` re-parses the
 REAL `publish_export.py` source with `from . import hub` injected into the deepest point of
 `export_public_snapshot`'s body, and
 `test_walker_flags_the_real_hub_capable_modules_in_this_package` runs the same walker over
@@ -371,7 +371,7 @@ def real_source() -> str:
     return (PKG_DIR / "publish_export.py").read_text()
 
 
-def test_closure_guard_fires_on_a_deferred_import_injected_into_the_real_module(
+def test_import_closure_guard_fires_on_a_deferred_import_injected_into_the_real_module(
     real_source, tmp_path
 ):
     """The mutation that matters: the REAL module's source, with `from . import hub` buried at
@@ -394,7 +394,7 @@ def test_closure_guard_fires_on_a_deferred_import_injected_into_the_real_module(
         (f"import {PKG_NAME}.hub", "hub"),
     ],
 )
-def test_closure_guard_fires_on_every_module_level_widening_spelling(
+def test_import_closure_guard_fires_on_every_module_level_widening_spelling(
     real_source, tmp_path, statement, expected
 ):
     widened = f"{statement}\n{real_source}"

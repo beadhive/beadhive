@@ -208,9 +208,6 @@ policy separately from adapter integration.
 Useful repository commands are:
 
 ```text
-just test-closure kernel.plugins
-just test-plugin <plugin-id>
-just test-contracts
 just architecture-check
 just check
 ```
