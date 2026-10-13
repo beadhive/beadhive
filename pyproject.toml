@@ -121,6 +121,7 @@ packages = [
     "packages/beadhive-beads-client/src/beads_v1_3",
     "packages/beadhive-plugins/src/beadhive_plugins",
     "packages/beadhive-worktrees/src/beadhive_worktrees",
+    "packages/beadhive-validation-broker/src/beadhive_validation_broker",
 ]
 
 # In-repo packages (bh-3fcl0.1): every packages/<name>/ is its own distribution and import name.
@@ -138,12 +139,13 @@ beadhive-hq-storage-dolt = { workspace = true }
 beadhive-beads-client = { workspace = true }
 beadhive-plugins = { workspace = true }
 beadhive-worktrees = { workspace = true }
+beadhive-validation-broker = { workspace = true }
 
 # Both groups are installed by plain `uv sync` (see `[tool.uv] default-groups` below), so dev
 # and CI checkouts keep resolving `beadhive-pants` from the workspace exactly as before this
 # bead — only the PUBLISHED wheel's hard-dependency graph changed.
 [tool.uv]
-default-groups = ["dev", "pants", "core", "plugins", "worktrees", "hq-storage"]
+default-groups = ["dev", "pants", "core", "plugins", "worktrees", "hq-storage", "validation-broker"]
 
 [dependency-groups]
 # The workspace member, for dev/CI only (bh-mxjoy): kept OUT of [project.optional-dependencies]'s
@@ -170,6 +172,11 @@ hq-storage = ["beadhive-hq-storage", "beadhive-hq-storage-dolt"]
 # import package too (see the wheel packages above) since `beadhive.worktree` composition binds
 # its native provider unconditionally, not as an optional extra.
 worktrees = ["beadhive-worktrees"]
+# The validation broker port, job/lease model and in-memory fake (bh-uljpc,
+# docs/design/validation-broker-adr.md): stdlib only, editable from the workspace for dev/CI. The
+# published wheel vendors the import package (see the wheel packages above) because
+# `beadhive.validation_broker_slots` adapts today's host slots to this port.
+validation-broker = ["beadhive-validation-broker"]
 dev = [
     "editables>=0.5",
     # Exact offline-capable generator for the checked-in Beads v1.3 SDK.

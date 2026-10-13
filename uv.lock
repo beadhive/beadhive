@@ -21,6 +21,7 @@ members = [
     "beadhive-package-template",
     "beadhive-pants",
     "beadhive-plugins",
+    "beadhive-validation-broker",
     "beadhive-worktrees",
 ]
 
@@ -167,6 +168,9 @@ pants = [
 plugins = [
     { name = "beadhive-plugins" },
 ]
+validation-broker = [
+    { name = "beadhive-validation-broker" },
+]
 worktrees = [
     { name = "beadhive-worktrees" },
 ]
@@ -219,6 +223,7 @@ hq-storage = [
 ]
 pants = [{ name = "beadhive-pants", editable = "packages/beadhive-pants" }]
 plugins = [{ name = "beadhive-plugins", editable = "packages/beadhive-plugins" }]
+validation-broker = [{ name = "beadhive-validation-broker", editable = "packages/beadhive-validation-broker" }]
 worktrees = [{ name = "beadhive-worktrees", editable = "packages/beadhive-worktrees" }]
 
 [[package]]
@@ -298,6 +303,11 @@ requires-dist = [{ name = "beadhive", editable = "." }]
 name = "beadhive-plugins"
 version = "0.1.0"
 source = { editable = "packages/beadhive-plugins" }
+
+[[package]]
+name = "beadhive-validation-broker"
+version = "0.1.0"
+source = { editable = "packages/beadhive-validation-broker" }
 
 [[package]]
 name = "beadhive-worktrees"

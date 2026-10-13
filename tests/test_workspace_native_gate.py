@@ -92,6 +92,7 @@ def test_workspace_packages_are_all_tested_and_built_by_the_gate() -> None:
         "beadhive-core",
         "beadhive-plugins",
         "beadhive-worktrees",
+        "beadhive-validation-broker",
     ):
         assert f"uv build --package {package}" in package_gate
     assert "uv build --package beadhive-bd-cli" not in package_gate
@@ -104,8 +105,10 @@ def test_workspace_packages_are_all_tested_and_built_by_the_gate() -> None:
     bd_cli_gate = "\n".join(_recipe_body(justfile, "bd-cli-check"))
     assert "--all-packages" not in bd_cli_gate
     assert "--package beadhive-bd-cli" in bd_cli_gate
+    # bh-9oc32: the broker grant may size the pool; unset, it is today's `-n auto`.
     assert (
-        "python scripts/pytest_with_report.py -n auto packages/beadhive-bd-cli/tests" in bd_cli_gate
+        "python scripts/pytest_with_report.py -n ${BH_GRANT_CPUS:-auto} "
+        "packages/beadhive-bd-cli/tests" in bd_cli_gate
     )
     assert "uv build --package beadhive-bd-cli" in bd_cli_gate
 
@@ -146,6 +149,7 @@ def test_workspace_packages_are_all_tested_and_built_by_the_gate() -> None:
         "beadhive-hq-storage-dolt",
         "beadhive-pants",
         "beadhive-plugins",
+        "beadhive-validation-broker",
         "beadhive-worktrees",
     ):
         assert complete_gate.count(f"uv build --package {package} ") == 1, package
@@ -155,6 +159,7 @@ def test_workspace_packages_are_all_tested_and_built_by_the_gate() -> None:
         "_template",
         "beadhive-core",
         "beadhive-plugins",
+        "beadhive-validation-broker",
         "beadhive-worktrees",
     }
 

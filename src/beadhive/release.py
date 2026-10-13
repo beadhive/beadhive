@@ -547,6 +547,8 @@ def attest(
                     err=True,
                 )
                 raise typer.Exit(REFUSED)
+            from .validation_key_runner import CheckoutKeyRunner
+
             rc = selective_validation.run(
                 entry,
                 cfg,
@@ -554,7 +556,7 @@ def attest(
                 head_rev=sha,
                 phase="release",
                 legacy_cmd=cmd,
-                runner=lambda key_cmd: worktree.clean_checkout(entry, sha, key_cmd, reuse=True),
+                runner=CheckoutKeyRunner(worktree, entry, sha, reuse=True),
                 receipt_override=release_receipt,
             )
             if (

@@ -307,6 +307,27 @@ work:
     admission_floor: "10%"        # wait until MemAvailable >= this; 0/none disables
     admission_timeout_seconds: 1800  # then refuse to start (exit 75); 0 waits indefinitely
     admission_poll_seconds: 5
+  validation_broker:              # opt-in validation broker engine (bh-qrixp); slots = today
+    engine: slots                 # slots | local; BH_VALIDATION_BROKER_ENGINE overrides it
+    budget:                       # local only: the most it grants at once
+      cpu: 0                      # 0 = every CPU the host reports
+      memory: "100%"              # bytes, K/M/G/T, or % of RAM
+      pools: {dolt-servers: 12}   # counted pools no sensor can see
+    floor:                        # local only: left free of measured availability
+      cpu: 0
+      memory: "4G"                # the floor is the larger of memory and memory_percent
+      memory_percent: 8.5
+    packer:                       # local only: the ADR's packer=group defaults
+      laggard_first: true
+      laggard_flex: true
+      easy: true
+      headroom_cpu: 8
+      group_major: false
+      aging: 4                    # only with group_major
+    repoll_seconds: 1
+    roots: []                     # local only (bh-mf1o4): execution roots, in preference order;
+                                  # e.g. [{path: /srv/bh-runs, kind: disk, max_bytes: 200G}]
+    setup: ["uv sync --all-packages --inexact"]  # local only (bh-qhrl6): a gate's one setup job
   validation: relaxed            # merge re-test depth: relaxed | conservative | loose (see below)
   validate:                      # optional per-boundary overrides (fall back to validate_cmd).
                                  # a `<phase>-main` key wins when the op targets the integration branch.
@@ -370,6 +391,50 @@ the retryable exit 75. Every run manifest records `memory`: the applied bounds a
 `BH_VALIDATION_MEMORY_FLOOR=0` skips only the floor. Without a user systemd manager or a delegated
 cgroup v2 memory controller, the bounds are skipped and the manifest's `memory.note` says why; the
 floor still applies wherever `/proc/meminfo` exists.
+
+`work.validation_broker` is host-owned and opt-in (bh-qrixp, the
+[validation broker ADR](design/validation-broker-adr.md)). The default `engine: slots` is today's
+host admission above, unchanged. `engine: local` (or `BH_VALIDATION_BROKER_ENGINE=local` for one
+invocation) selects the in-process local engine: it admits a job only when its whole minimum
+reservation fits `min(budget, measured MemAvailable/CPUs - floor)` less what is already granted,
+in cpu, memory and every named pool; orders by priority class, then laggard first within a gate;
+grants spare CPU up to each key's `cpu_max` (laggards first, others keeping `headroom_cpu` back);
+backfills only where it delays no reserved key (EASY); serves nested requests under
+`BH_VALIDATION_LEASE` from the parent's grant alone; and reclaims a dead client's leases. A local
+engine that is misconfigured, cannot measure the host (no `/proc/meminfo`) or errors falls back to
+the slots engine with a warning.
+
+**Side by side (bh-qhrl6).** Under `engine: local` the attest-key evaluator hands every pending key
+of a gate to the local engine as ONE gate group and runs the granted keys concurrently in one shared
+clean checkout: a `bh-run-*` directory in the granted execution root, or today's `verify-*` location
+without roots. The checkout is set up once, under the first grant, by the gate's per-tree setup job:
+the verify init rules, then each `work.validation_broker.setup` command (by default `uv sync
+--all-packages --inexact`, so no key's own sync changes the shared `.venv` under another key). Each
+key then runs through the same clean-checkout boundary, starting from the clean grant environment
+(`BH_GRANT_CPUS` and friends, never part of its command) plus, for parity with the slots path, the
+parent's `BH_*`, `GIT_*` and ssh-agent variables (never a stale `BH_GRANT_*` or
+`BH_VALIDATION_LEASE`), and records its own run and ledger verdict under the same `cmd_hash` as a
+sequential run. The **failure policy** is that the group finishes: a red key does not cancel its
+siblings, every key gets a verdict, and the gate's aggregate (and with it the boundary's rollback or
+bounce rule) applies once, after the group; `BH_VALIDATION_FAIL_FAST=1` still stops further keys
+from starting (running keys finish). A key the engine cannot run (it can never fit the budget, the
+engine errors, or setup fails) runs afterwards on today's sequential slots path, with a warning. The
+gate reports each key's wall time and the group wall. `just check-all-native` does the same with its
+`attest-*` recipes when `BH_VALIDATION_BROKER_ENGINE` names the local engine (a clean-checkout
+validation exports it when config selects `local`). Under `engine: slots` nothing of this runs.
+
+`work.validation_broker.roots` (bh-mf1o4, local engine only, empty by default) names the
+**execution roots** the local engine may place key runs on: each an existing absolute directory
+with a `kind` (`disk`, or `tmpfs` for a RAM-backed one) and a `max_bytes` bound. With roots, every
+key run is placed on exactly one root, tried in the listed order; it is admitted only when its
+expected disk footprint fits `min(max_bytes, measured free space)` less what that root has
+already granted, and on a `tmpfs` root the same bytes also count against memory. A gate's keys
+share the root of its first admitted key. The run's clean checkout (materialised there with
+`git worktree add` when the bead worktree lives elsewhere) and the hermetic fence's `TMPDIR`
+scratch both live in one `bh-run-*` directory under that root, removed when the run ends; a
+killed client's directory is reclaimed by the next run on that root. A missing root, or a `disk`
+root that is actually RAM-backed, makes the local engine fall back to slots with a warning.
+Without roots, runs use today's locations.
 
 The same guard is available for ad-hoc test runs. It waits for the floor, bounds the command in
 its own scope, and reports the peak; it takes **no** host validation slot, so never wrap

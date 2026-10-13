@@ -1,6 +1,7 @@
 # Validation broker — proposal and backend bake-off
 
-**Status:** proposal, 2026-09-26. Not an ADR. The bake-off decision bead produces the ADR.
+**Status:** proposal, 2026-09-26. Not an ADR. The bake-off decision is recorded in
+[validation-broker-adr.md](validation-broker-adr.md) (accepted 2026-10-13).
 **Seat:** planning (groom → plan), with the operator.
 **Workstream:** bh-alzfb (bake-off spikes bh-5mdar). Separate bug: bh-cesc7. See
 [Filed beads](#filed-beads).

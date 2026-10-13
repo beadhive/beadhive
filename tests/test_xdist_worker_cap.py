@@ -9,6 +9,7 @@ ROOT = Path(__file__).parents[1]
 JUSTFILE = ROOT / "justfile"
 AUTO_WORKER_ENV = "PYTEST_XDIST_AUTO_NUM_WORKERS"
 MEASURED_WORKER_BOUNDS = frozenset({"{{integration_workers}}", "{{stateful_workers}}"})
+GRANT_WORKERS = re.compile(r"^\$\{BH_GRANT_CPUS:-(?P<default>\{\{\w+\}\}|[^{}$]+)\}$")
 WORKER_ARG = re.compile(r"(?:^|\s)(?:-n\s*|--numprocesses(?:=|\s+))(?P<workers>[^\s\\]+)")
 
 
@@ -30,14 +31,25 @@ def _logical_recipe_lines(text: str) -> list[str]:
     return logical
 
 
+def _bounded_workers(workers: str) -> str:
+    """The worker count a recipe falls back to when BH_GRANT_CPUS is unset (bh-9oc32).
+
+    The grant wrapper is transparent to the policy: its default is still checked against the
+    measured bounds, so `${BH_GRANT_CPUS:-32}` is as unbounded as `-n 32`.
+    """
+    wrapped = GRANT_WORKERS.match(workers)
+    return wrapped.group("default") if wrapped else workers
+
+
 def _parallel_pytest_lines(text: str | None = None) -> list[tuple[str, str]]:
     parallel: list[tuple[str, str]] = []
     for line in _logical_recipe_lines(JUSTFILE.read_text() if text is None else text):
         if not ("pytest" in line or "pants_ci.py native" in line):
             continue
         for match in WORKER_ARG.finditer(line):
-            if match.group("workers") != "0":
-                parallel.append((line, match.group("workers")))
+            workers = _bounded_workers(match.group("workers"))
+            if workers != "0":
+                parallel.append((line, workers))
     return parallel
 
 
@@ -91,13 +103,23 @@ def test_parallel_recipe_inventory_checks_every_worker_arg_in_a_command() -> Non
     assert _unbounded_parallel_pytest_lines(candidate) == [candidate]
 
 
+def test_grant_wrapper_is_transparent_to_the_worker_bound_policy() -> None:
+    bounded = "uv run pytest -n ${BH_GRANT_CPUS:-{{stateful_workers}}} tests/a"
+    auto = "uv run pytest -n ${BH_GRANT_CPUS:-auto} tests/a"
+    unbounded = "uv run pytest -n ${BH_GRANT_CPUS:-32} tests/a"
+
+    assert _unbounded_parallel_pytest_lines(bounded) == []
+    assert _unbounded_parallel_pytest_lines(auto) == []
+    assert _unbounded_parallel_pytest_lines(unbounded) == [unbounded]
+
+
 def test_live_integration_recipe_redistributes_unstarted_tests_with_fixed_worker_bound() -> None:
     text = JUSTFILE.read_text()
 
     assert 'integration_workers := "16"' in text
     assert 'test_dist := env_var_or_default("BH_TEST_DIST", "worksteal")' in text
     assert (
-        "python scripts/pytest_with_report.py -n {{integration_workers}} tests "
+        "python scripts/pytest_with_report.py -n ${BH_GRANT_CPUS:-{{integration_workers}}} tests "
         '--dist {{test_dist}} -m "integration"' in text
     )
 
@@ -106,10 +128,15 @@ def test_stateful_recipe_uses_its_measured_fixed_worker_bound() -> None:
     text = JUSTFILE.read_text()
 
     assert 'stateful_workers := "16"' in text
-    assert "python scripts/pytest_with_report.py -n {{stateful_workers}} tests" in text
+    assert (
+        "python scripts/pytest_with_report.py -n ${BH_GRANT_CPUS:-{{stateful_workers}}} tests"
+        in text
+    )
     assert '-m "not integration and not pants_profile"' in text
     assert "root_composition_tests.py --ignore-args" in text
-    assert "python scripts/pytest_with_report.py -n {{stateful_workers}} \\" in text
+    assert (
+        "python scripts/pytest_with_report.py -n ${BH_GRANT_CPUS:-{{stateful_workers}}} \\" in text
+    )
 
 
 def test_just_exports_default_and_override_xdist_ceiling() -> None:

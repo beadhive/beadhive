@@ -193,6 +193,18 @@
           "title": "Policy",
           "type": "string"
         },
+        "resources": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttestKeyResourcesConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional validation reservation for this key (cpu_min, cpu_max, memory_mb, pools). Absent uses the built-in per-key default. Never part of the command or its hash."
+        },
         "selectors": {
           "additionalProperties": {
             "type": "string"
@@ -207,6 +219,59 @@
         "cmd"
       ],
       "title": "AttestKeyConfig",
+      "type": "object"
+    },
+    "AttestKeyResourcesConfig": {
+      "additionalProperties": false,
+      "description": "Optional per-key validation reservation (bh-9oc32): REPLACES the code default for the key.\n\nAbsent means the default in ``beadhive.validation_reservations``; there is no field-wise\nmerge, so an override states the whole reservation.",
+      "properties": {
+        "cpu_max": {
+          "description": "Most CPUs the broker may grant (speedup knee).",
+          "minimum": 0,
+          "title": "Cpu Max",
+          "type": "number"
+        },
+        "cpu_min": {
+          "description": "CPUs that must be free before the key starts.",
+          "minimum": 0,
+          "title": "Cpu Min",
+          "type": "number"
+        },
+        "expected_s": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Expected wall seconds; absent uses the measured default.",
+          "title": "Expected S"
+        },
+        "memory_mb": {
+          "description": "Memory in MiB at cpu_max, including tmpfs scratch.",
+          "minimum": 0,
+          "title": "Memory Mb",
+          "type": "integer"
+        },
+        "pools": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "description": "Named pool amounts, e.g. {'dolt-servers': 2}.",
+          "title": "Pools",
+          "type": "object"
+        }
+      },
+      "required": [
+        "cpu_min",
+        "cpu_max",
+        "memory_mb"
+      ],
+      "title": "AttestKeyResourcesConfig",
       "type": "object"
     },
     "AttestSemanticConfig": {
@@ -2745,6 +2810,195 @@
       "title": "RoutingTierConfig",
       "type": "object"
     },
+    "ValidationBrokerBudgetConfig": {
+      "additionalProperties": false,
+      "description": "`work.validation_broker.budget` — the most the local engine may grant at once (bh-qrixp).",
+      "properties": {
+        "cpu": {
+          "default": 0.0,
+          "description": "CPUs the local engine may grant at once; 0 means every CPU this host reports.",
+          "minimum": 0,
+          "title": "Cpu",
+          "type": "number"
+        },
+        "memory": {
+          "default": "100%",
+          "description": "Memory the local engine may grant at once: bytes, a K/M/G/T size or a percentage of RAM. Admission also never exceeds measured MemAvailable less the floor.",
+          "title": "Memory",
+          "type": "string"
+        },
+        "pools": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "description": "Named counted pools no sensor can see, e.g. dolt-servers: concurrent Dolt servers the host's validation keys may hold. A reservation naming an absent pool is refused.",
+          "title": "Pools",
+          "type": "object"
+        }
+      },
+      "title": "ValidationBrokerBudgetConfig",
+      "type": "object"
+    },
+    "ValidationBrokerConfig": {
+      "additionalProperties": false,
+      "description": "`work.validation_broker` — which engine admits validation jobs (bh-qrixp, opt-in).",
+      "properties": {
+        "budget": {
+          "$ref": "#/$defs/ValidationBrokerBudgetConfig",
+          "description": "The local engine's configured budget (cpu, memory, named pools)."
+        },
+        "engine": {
+          "default": "slots",
+          "description": "slots (default) keeps today's host file-lock slots exactly; local is the in-process reservation broker. BH_VALIDATION_BROKER_ENGINE temporarily overrides it. A local engine that is misconfigured, unavailable or failing falls back to slots, loudly.",
+          "enum": [
+            "slots",
+            "local"
+          ],
+          "title": "Engine",
+          "type": "string"
+        },
+        "floor": {
+          "$ref": "#/$defs/ValidationBrokerFloorConfig",
+          "description": "What the local engine leaves free of measured availability."
+        },
+        "packer": {
+          "$ref": "#/$defs/ValidationBrokerPackerConfig",
+          "description": "Ordering, backfill and flexible-grant knobs of the local engine."
+        },
+        "repoll_seconds": {
+          "default": 1.0,
+          "description": "Seconds between availability re-reads while a local-engine client waits.",
+          "exclusiveMinimum": 0,
+          "title": "Repoll Seconds",
+          "type": "number"
+        },
+        "roots": {
+          "description": "Execution roots (bh-mf1o4, local engine only), in preference order. Each key run is placed on exactly one root holding its checkout and fence scratch. Empty (default): runs use today's locations.",
+          "items": {
+            "$ref": "#/$defs/ValidationBrokerRootConfig"
+          },
+          "title": "Roots",
+          "type": "array"
+        },
+        "setup": {
+          "description": "Local engine only (bh-qhrl6): commands run once in a gate's shared checkout, after the verify init rules and before any key starts, so no key's own sync changes the shared environment under another key. A failing command sends the gate's keys to the sequential slots path. Default: sync every uv workspace package.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Setup",
+          "type": "array"
+        }
+      },
+      "title": "ValidationBrokerConfig",
+      "type": "object"
+    },
+    "ValidationBrokerFloorConfig": {
+      "additionalProperties": false,
+      "description": "`work.validation_broker.floor` — what the local engine leaves free (the AMBER floor).",
+      "properties": {
+        "cpu": {
+          "default": 0.0,
+          "description": "CPUs held back from the measured CPU count.",
+          "minimum": 0,
+          "title": "Cpu",
+          "type": "number"
+        },
+        "memory": {
+          "default": "4G",
+          "description": "Memory held back from measured MemAvailable: bytes, a K/M/G/T size or a percentage of RAM. The floor is the larger of this and memory_percent.",
+          "title": "Memory",
+          "type": "string"
+        },
+        "memory_percent": {
+          "default": 8.5,
+          "description": "Memory held back as a percentage of RAM; the larger of the two floors wins.",
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Memory Percent",
+          "type": "number"
+        }
+      },
+      "title": "ValidationBrokerFloorConfig",
+      "type": "object"
+    },
+    "ValidationBrokerPackerConfig": {
+      "additionalProperties": false,
+      "description": "`work.validation_broker.packer` — the group-aware packer's knobs (validation-broker ADR).",
+      "properties": {
+        "aging": {
+          "default": 4.0,
+          "description": "Work-seconds forgiven per second waited; only with group_major.",
+          "minimum": 0,
+          "title": "Aging",
+          "type": "number"
+        },
+        "easy": {
+          "default": true,
+          "description": "Generalised EASY backfill: a backfill never delays a reserved blocked key.",
+          "title": "Easy",
+          "type": "boolean"
+        },
+        "group_major": {
+          "default": false,
+          "description": "Reorder waiting gates by queued work minus aging x time waited; off admits gates in arrival order within a priority class.",
+          "title": "Group Major",
+          "type": "boolean"
+        },
+        "headroom_cpu": {
+          "default": 8.0,
+          "description": "CPUs held back from flexible grants for keys other than a laggard.",
+          "minimum": 0,
+          "title": "Headroom Cpu",
+          "type": "number"
+        },
+        "laggard_first": {
+          "default": true,
+          "description": "Within a gate, start the longest expected key first.",
+          "title": "Laggard First",
+          "type": "boolean"
+        },
+        "laggard_flex": {
+          "default": true,
+          "description": "Offer each gate's laggard spare CPU up to cpu_max before the headroom rule.",
+          "title": "Laggard Flex",
+          "type": "boolean"
+        }
+      },
+      "title": "ValidationBrokerPackerConfig",
+      "type": "object"
+    },
+    "ValidationBrokerRootConfig": {
+      "additionalProperties": false,
+      "description": "One `work.validation_broker.roots` entry — a bounded execution root (bh-mf1o4).",
+      "properties": {
+        "kind": {
+          "description": "disk, or tmpfs: a RAM-backed root whose usage also counts against memory.",
+          "enum": [
+            "disk",
+            "tmpfs"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "max_bytes": {
+          "description": "The most the root's runs may reserve at once: bytes or a K/M/G/T size. Admission also never exceeds the filesystem's measured free space.",
+          "title": "Max Bytes",
+          "type": "string"
+        },
+        "path": {
+          "description": "Absolute directory (~ expands) the local engine may place key runs on. Each run's clean checkout and hermetic fence TMPDIR scratch both live under it.",
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "kind",
+        "max_bytes"
+      ],
+      "title": "ValidationBrokerRootConfig",
+      "type": "object"
+    },
     "ValidationMemoryConfig": {
       "additionalProperties": false,
       "description": "Memory bounds and memory-aware admission for validation subprocesses (bh-jg7fy).",
@@ -3008,6 +3262,10 @@
           "description": "Optional absolute root for durable per-run validation artifacts. BH_VALIDATION_ARTIFACT_ROOT takes precedence for CI upload staging.",
           "title": "Validation Artifact Root",
           "type": "string"
+        },
+        "validation_broker": {
+          "$ref": "#/$defs/ValidationBrokerConfig",
+          "description": "Validation broker engine selection and the local engine's budget, floor and packer (validation-broker ADR). Opt-in: the default slots engine is today's admission."
         },
         "validation_bypass": {
           "default": false,

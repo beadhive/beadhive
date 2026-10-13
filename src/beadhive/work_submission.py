@@ -76,6 +76,8 @@ def _impl_check_unadmitted(api, bead, hive, *, permit=None):
         raise api.typer.Exit(2) from None
     if clean_sha and api.selective_validation.configured(cfg, entry):
         base = api.worktree.integration_base(entry, bead, api.config.integration_branch(cfg, entry))
+        from .validation_key_runner import CheckoutKeyRunner
+
         rc = api.selective_validation.run(
             entry,
             cfg,
@@ -84,10 +86,10 @@ def _impl_check_unadmitted(api, bead, hive, *, permit=None):
             phase="check",
             legacy_cmd=cmd,
             repo_path=str(target),
-            runner=lambda key_cmd: api.worktree.clean_checkout(
+            runner=CheckoutKeyRunner(
+                api.worktree,
                 entry,
                 sha,
-                key_cmd,
                 cfg=cfg,
                 reuse=False,
                 bead=bead,

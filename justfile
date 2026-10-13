@@ -177,6 +177,11 @@ check-all-native:
     set -euo pipefail
     recipes="$(just --summary --unsorted | tr ' ' '\n' | grep '^attest-' || true)"
     test -n "$recipes" || { echo "check-all-native: no attest-* recipes discovered" >&2; exit 1; }
+    # Engine local (bh-qhrl6): the same recipes side by side through the validation broker, which
+    # falls back to this loop's one-by-one order, loudly. Engine slots (unset) never takes it.
+    if [ "${BH_VALIDATION_BROKER_ENGINE:-slots}" != slots ]; then
+        exec uv run python -m beadhive.validation_recipes $recipes
+    fi
     for recipe in $recipes; do
         just "$recipe"
     done
@@ -681,6 +686,10 @@ export PYTEST_XDIST_AUTO_NUM_WORKERS := shell("workers=${PYTEST_XDIST_AUTO_NUM_W
 test_timeout_seconds := env_var_or_default("BH_TEST_TIMEOUT_SECONDS", "900")
 # The live partition owns shared local Dolt/runtime fixtures and therefore has a stricter,
 # host-independent ceiling than unit work.  This host currently uses half of its 32 cores.
+# BH_GRANT_CPUS (a validation broker grant, bh-9oc32) replaces the fixed/auto worker count of the
+# *-native recipes as `-n ${BH_GRANT_CPUS:-<current count>}`: unset (engine slots) it expands to
+# exactly the count below, byte for byte. It is read by the recipe shell, so it never enters the
+# command text the ledger hashes.
 integration_workers := "16"
 # xdist scheduler for the integration and stateful lanes. `worksteal` hands unstarted tests to idle
 # workers; set BH_TEST_DIST=load to opt out. Longest-first collection order is a separate switch
@@ -743,7 +752,7 @@ root-composition-validate:
 # ~90 s -> ~12 s per worker (docs/TEST_PROCESS_POLICY.md). BH_TEST_WORKSTEAL_PACK=0 turns it off.
 stateful-native: root-composition-validate
     BH_TEST_WORKSTEAL_PACK={{worksteal_pack}} BH_TEST_PREFILTER={{test_prefilter}} uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{stateful_workers}} tests --dist {{test_dist}} \
+        ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n ${BH_GRANT_CPUS:-{{stateful_workers}}} tests --dist {{test_dist}} \
         -m "not integration and not pants_profile" \
         $(uv run python scripts/root_composition_tests.py --ignore-args)
 
@@ -758,7 +767,7 @@ stateful-native: root-composition-validate
 # packages/beadhive-hq-storage*/ so a package-only change still selects them.
 root-composition-native: root-composition-validate
     BH_TEST_WORKSTEAL_PACK={{worksteal_pack}} uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{stateful_workers}} \
+        ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n ${BH_GRANT_CPUS:-{{stateful_workers}}} \
         --dist {{test_dist}} \
         -m "not integration" \
         $(uv run python scripts/root_composition_tests.py)
@@ -817,13 +826,15 @@ packages-check:
     uv run ruff format --check packages --exclude packages/beadhive-bd-cli --exclude packages/beadhive-hq-storage --exclude packages/beadhive-hq-storage-dolt --exclude packages/beadhive-pants
     ./scripts/hermetic.sh uv sync --locked --offline --inexact --no-default-groups \
         --package beadhive-package-template --package beadhive-core \
-        --package beadhive-plugins --package beadhive-worktrees
+        --package beadhive-plugins --package beadhive-worktrees \
+        --package beadhive-validation-broker
     uv run --no-sync python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run --no-sync python scripts/pytest_with_report.py -n auto $(uv run --no-sync python scripts/native_package_tests.py --relative)
+        ./scripts/hermetic.sh uv run --no-sync python scripts/pytest_with_report.py -n ${BH_GRANT_CPUS:-auto} $(uv run --no-sync python scripts/native_package_tests.py --relative)
     ./scripts/hermetic.sh uv build --package beadhive-package-template --no-build-isolation
     ./scripts/hermetic.sh uv build --package beadhive-core --no-build-isolation
     ./scripts/hermetic.sh uv build --package beadhive-plugins --no-build-isolation
     ./scripts/hermetic.sh uv build --package beadhive-worktrees --no-build-isolation
+    ./scripts/hermetic.sh uv build --package beadhive-validation-broker --no-build-isolation
 
 # lint + sandboxed tests for ONLY packages/beadhive-bd-cli (the `bd-cli` attest key, bh-vq34o).
 # Mirrors packages-check's structure, scoped to this one distribution: beadhive-bd-cli
@@ -834,7 +845,7 @@ bd-cli-check:
     uv run ruff format --check packages/beadhive-bd-cli
     ./scripts/hermetic.sh uv sync --locked --offline --inexact --no-default-groups --package beadhive-bd-cli
     uv run --no-sync python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run --no-sync python scripts/pytest_with_report.py -n auto packages/beadhive-bd-cli/tests
+        ./scripts/hermetic.sh uv run --no-sync python scripts/pytest_with_report.py -n ${BH_GRANT_CPUS:-auto} packages/beadhive-bd-cli/tests
     ./scripts/hermetic.sh uv build --package beadhive-bd-cli --no-build-isolation
 
 # lint + sandboxed tests for ONLY the two HQ storage packages (the `hq-storage` attest key,
@@ -915,7 +926,7 @@ collection-index-refresh:
 # complete integration collection, fixed worker bound, fence, and watchdog limit.
 test-integration-land:
     BH_TEST_WORKSTEAL_PACK={{worksteal_pack}} BH_TEST_PREFILTER={{test_prefilter}} uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{integration_workers}} tests --dist {{test_dist}} -m "integration"
+        ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n ${BH_GRANT_CPUS:-{{integration_workers}}} tests --dist {{test_dist}} -m "integration"
 
 # ADR condition 9 (bh-p07dv): re-run the Dolt/bd trigger-semantics canary. REQUIRED on every Dolt
 # or bd pin bump in flake.nix that leaves the configured range (BH_FENCE_CANARY_DOLT_RANGE /

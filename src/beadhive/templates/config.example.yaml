@@ -252,6 +252,19 @@ worktrees:
 #                                  # BH_VALIDATION_MEMORY_FLOOR overrides it per invocation.
 #     admission_timeout_seconds: 1800  # then refuse to start (exit 75); 0 waits forever.
 #     admission_poll_seconds: 5
+#   validation_broker:             # host-owned, opt-in validation broker engine (bh-qrixp).
+#     engine: slots                # slots (today's admission) | local; BH_VALIDATION_BROKER_ENGINE
+#                                  # overrides it. A failing local engine falls back to slots.
+#     budget: {cpu: 0, memory: "100%", pools: {dolt-servers: 12}}  # cpu 0 = every host CPU
+#     floor: {cpu: 0, memory: "4G", memory_percent: 8.5}  # larger memory floor wins
+#     packer: {laggard_first: true, laggard_flex: true, easy: true, headroom_cpu: 8,
+#              group_major: false, aging: 4}
+#     repoll_seconds: 1
+#     roots: []                    # local only (bh-mf1o4): one bounded root per key run holds its
+#                                  # checkout and fence scratch, e.g.
+#                                  # [{path: /srv/bh-runs, kind: disk, max_bytes: 200G}]
+#     setup: ["uv sync --all-packages --inexact"]  # local only (bh-qhrl6): run once per gate in
+#                                  # the keys' shared checkout before any key starts
 #   validate_subset: "./scripts/hermetic.sh uv run pytest -n auto --pyargs {tests}"
 #                                  # OPTIONAL template that re-runs only NAMED failing tests, one
 #                                  # required {tests} placeholder — a value missing it is rejected

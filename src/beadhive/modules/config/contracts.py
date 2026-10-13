@@ -26,6 +26,7 @@ from __future__ import annotations
 import datetime
 import difflib
 import json
+import os
 import re
 import types
 import typing
@@ -531,6 +532,34 @@ class RoutingConfig(_Section):
 _ATTEST_KEY_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 
 
+class AttestKeyResourcesConfig(_Section):
+    """Optional per-key validation reservation (bh-9oc32): REPLACES the code default for the key.
+
+    Absent means the default in ``beadhive.validation_reservations``; there is no field-wise
+    merge, so an override states the whole reservation."""
+
+    cpu_min: float = Field(..., ge=0, description="CPUs that must be free before the key starts.")
+    cpu_max: float = Field(..., ge=0, description="Most CPUs the broker may grant (speedup knee).")
+    memory_mb: int = Field(
+        ..., ge=0, description="Memory in MiB at cpu_max, including tmpfs scratch."
+    )
+    pools: dict[str, int] = Field(
+        default_factory=dict,
+        description="Named pool amounts, e.g. {'dolt-servers': 2}.",
+    )
+    expected_s: float | None = Field(
+        None, gt=0, description="Expected wall seconds; absent uses the measured default."
+    )
+
+    @model_validator(mode="after")
+    def _ordered(self) -> AttestKeyResourcesConfig:
+        if self.cpu_max < self.cpu_min:
+            raise ValueError("attest key resources need cpu_min <= cpu_max")
+        if any(amount < 0 for amount in self.pools.values()):
+            raise ValueError("attest key resources pool amounts must be non-negative")
+        return self
+
+
 class AttestKeyConfig(_Section):
     """One attest key (Attested Green ADR, Amendment 1): an OPAQUE command bh runs verbatim and
     never parses, an execution state, an evidence policy, and per-backend selectors only the
@@ -571,6 +600,13 @@ class AttestKeyConfig(_Section):
         description=(
             "Optional timezone-aware expiry. Once reached, a disabled key automatically runs "
             "again (fail-closed) even while enabled remains false."
+        ),
+    )
+    resources: AttestKeyResourcesConfig | None = Field(
+        None,
+        description=(
+            "Optional validation reservation for this key (cpu_min, cpu_max, memory_mb, pools). "
+            "Absent uses the built-in per-key default. Never part of the command or its hash."
         ),
     )
     selectors: dict[str, str] = Field(
@@ -902,6 +938,200 @@ class ValidationMemoryConfig(_Section):
         return _memory_size(value, name=info.field_name, allow_zero=True)
 
 
+class ValidationBrokerBudgetConfig(_Section):
+    """`work.validation_broker.budget` — the most the local engine may grant at once (bh-qrixp)."""
+
+    cpu: float = Field(
+        0.0,
+        ge=0,
+        description="CPUs the local engine may grant at once; 0 means every CPU this host reports.",
+    )
+    memory: str = Field(
+        "100%",
+        description=(
+            "Memory the local engine may grant at once: bytes, a K/M/G/T size or a percentage of "
+            "RAM. Admission also never exceeds measured MemAvailable less the floor."
+        ),
+    )
+    pools: dict[str, int] = Field(
+        default_factory=lambda: {"dolt-servers": 12},
+        description=(
+            "Named counted pools no sensor can see, e.g. dolt-servers: concurrent Dolt servers "
+            "the host's validation keys may hold. A reservation naming an absent pool is refused."
+        ),
+    )
+
+    @field_validator("memory", mode="before")
+    @classmethod
+    def _memory(cls, value, info):
+        return _memory_size(value, name=info.field_name, allow_zero=False)
+
+    @field_validator("pools")
+    @classmethod
+    def _non_negative_pools(cls, v):
+        for name, amount in v.items():
+            if amount < 0:
+                raise ValueError(f"work.validation_broker.budget.pools.{name} must be >= 0")
+        return v
+
+
+class ValidationBrokerFloorConfig(_Section):
+    """`work.validation_broker.floor` — what the local engine leaves free (the AMBER floor)."""
+
+    cpu: float = Field(0.0, ge=0, description="CPUs held back from the measured CPU count.")
+    memory: str = Field(
+        "4G",
+        description=(
+            "Memory held back from measured MemAvailable: bytes, a K/M/G/T size or a percentage "
+            "of RAM. The floor is the larger of this and memory_percent."
+        ),
+    )
+    memory_percent: float = Field(
+        8.5,
+        ge=0,
+        le=100,
+        description="Memory held back as a percentage of RAM; the larger of the two floors wins.",
+    )
+
+    @field_validator("memory", mode="before")
+    @classmethod
+    def _memory(cls, value, info):
+        return _memory_size(value, name=info.field_name, allow_zero=True)
+
+
+class ValidationBrokerPackerConfig(_Section):
+    """`work.validation_broker.packer` — the group-aware packer's knobs (validation-broker ADR)."""
+
+    laggard_first: bool = Field(
+        True, description="Within a gate, start the longest expected key first."
+    )
+    laggard_flex: bool = Field(
+        True,
+        description="Offer each gate's laggard spare CPU up to cpu_max before the headroom rule.",
+    )
+    easy: bool = Field(
+        True,
+        description="Generalised EASY backfill: a backfill never delays a reserved blocked key.",
+    )
+    headroom_cpu: float = Field(
+        8.0, ge=0, description="CPUs held back from flexible grants for keys other than a laggard."
+    )
+    group_major: bool = Field(
+        False,
+        description=(
+            "Reorder waiting gates by queued work minus aging x time waited; off admits gates "
+            "in arrival order within a priority class."
+        ),
+    )
+    aging: float = Field(
+        4.0, ge=0, description="Work-seconds forgiven per second waited; only with group_major."
+    )
+
+
+class ValidationBrokerRootConfig(_Section):
+    """One `work.validation_broker.roots` entry — a bounded execution root (bh-mf1o4)."""
+
+    path: str = Field(
+        ...,
+        description=(
+            "Absolute directory (~ expands) the local engine may place key runs on. Each run's "
+            "clean checkout and hermetic fence TMPDIR scratch both live under it."
+        ),
+    )
+    kind: Literal["disk", "tmpfs"] = Field(
+        ...,
+        description="disk, or tmpfs: a RAM-backed root whose usage also counts against memory.",
+    )
+    max_bytes: str = Field(
+        ...,
+        description=(
+            "The most the root's runs may reserve at once: bytes or a K/M/G/T size. Admission "
+            "also never exceeds the filesystem's measured free space."
+        ),
+    )
+
+    @field_validator("path")
+    @classmethod
+    def _absolute(cls, v):
+        if not os.path.isabs(os.path.expanduser(v)):
+            raise ValueError(f"work.validation_broker.roots path must be absolute: {v!r}")
+        return v
+
+    @field_validator("max_bytes", mode="before")
+    @classmethod
+    def _size(cls, value, info):
+        text = _memory_size(value, name=info.field_name, allow_zero=False)
+        if not text or text.endswith("%") or text.lower() in ("none", "infinity"):
+            raise ValueError("max_bytes must be bytes or a K/M/G/T size greater than zero")
+        return text
+
+
+class ValidationBrokerConfig(_Section):
+    """`work.validation_broker` — which engine admits validation jobs (bh-qrixp, opt-in)."""
+
+    engine: Literal["slots", "local"] = Field(
+        "slots",
+        description=(
+            "slots (default) keeps today's host file-lock slots exactly; local is the in-process "
+            "reservation broker. BH_VALIDATION_BROKER_ENGINE temporarily overrides it. A local "
+            "engine that is misconfigured, unavailable or failing falls back to slots, loudly."
+        ),
+    )
+    budget: ValidationBrokerBudgetConfig = Field(
+        default_factory=ValidationBrokerBudgetConfig,
+        description="The local engine's configured budget (cpu, memory, named pools).",
+    )
+    floor: ValidationBrokerFloorConfig = Field(
+        default_factory=ValidationBrokerFloorConfig,
+        description="What the local engine leaves free of measured availability.",
+    )
+    packer: ValidationBrokerPackerConfig = Field(
+        default_factory=ValidationBrokerPackerConfig,
+        description="Ordering, backfill and flexible-grant knobs of the local engine.",
+    )
+    repoll_seconds: float = Field(
+        1.0,
+        gt=0,
+        description="Seconds between availability re-reads while a local-engine client waits.",
+    )
+    roots: list[ValidationBrokerRootConfig] = Field(
+        default_factory=list,
+        description=(
+            "Execution roots (bh-mf1o4, local engine only), in preference order. Each key run "
+            "is placed on exactly one root holding its checkout and fence scratch. Empty "
+            "(default): runs use today's locations."
+        ),
+    )
+    setup: list[str] = Field(
+        default_factory=lambda: ["uv sync --all-packages --inexact"],
+        description=(
+            "Local engine only (bh-qhrl6): commands run once in a gate's shared checkout, after "
+            "the verify init rules and before any key starts, so no key's own sync changes the "
+            "shared environment under another key. A failing command sends the gate's keys to "
+            "the sequential slots path. Default: sync every uv workspace package."
+        ),
+    )
+
+    @field_validator("setup")
+    @classmethod
+    def _setup_commands(cls, v):
+        if any(not command.strip() for command in v):
+            raise ValueError("work.validation_broker.setup commands must be non-empty")
+        return v
+
+    @model_validator(mode="after")
+    def _distinct_roots(self):
+        paths = [os.path.normpath(os.path.expanduser(root.path)) for root in self.roots]
+        for i, first in enumerate(paths):
+            for second in paths[i + 1 :]:
+                if os.path.commonpath([first, second]) in (first, second):
+                    raise ValueError(
+                        "work.validation_broker.roots must be distinct and not nested: "
+                        f"{first} and {second}"
+                    )
+        return self
+
+
 class GatePushConfig(_Section):
     """`work.gate.push` — the pre-push hook's opt-in per-key acceptance (attest-keys ADR 3.8)."""
 
@@ -1082,6 +1312,13 @@ class WorkConfig(_Section):
         description=(
             "Host memory policy for validation children: MemoryHigh/MemoryMax in the user "
             "systemd scope and a MemAvailable admission floor."
+        ),
+    )
+    validation_broker: ValidationBrokerConfig = Field(
+        default_factory=ValidationBrokerConfig,
+        description=(
+            "Validation broker engine selection and the local engine's budget, floor and packer "
+            "(validation-broker ADR). Opt-in: the default slots engine is today's admission."
         ),
     )
     validation_protocol: Literal["none", "beadhive-validation-result/v1"] = Field(
@@ -2656,6 +2893,7 @@ __all__ = (
     "SCHEMA_VERSION",
     "SUBSET_PLACEHOLDER",
     "SchemaField",
+    "ValidationBrokerConfig",
     "WorkConfig",
     "WorktreeInitRule",
     "WorktreesConfig",

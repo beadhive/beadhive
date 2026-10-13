@@ -402,6 +402,8 @@ def _validate_group_checkout(
             reuse=reuse,
             phase=phase,
         )
+    from .validation_key_runner import CheckoutKeyRunner
+
     return selective_validation.run(
         entry,
         cfg,
@@ -410,10 +412,10 @@ def _validate_group_checkout(
         phase=phase,
         legacy_cmd=command,
         repo_path=str(repo_path),
-        runner=lambda key_cmd: worktree.clean_checkout(
+        runner=CheckoutKeyRunner(
+            worktree,
             entry,
             head_sha,
-            key_cmd,
             cfg=cfg,
             reuse=True,
             phase=phase,

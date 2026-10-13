@@ -99,6 +99,89 @@ def _blocks(key, rc) -> bool:
     return rc != 0 and not (rc == 75 and key.policy != "required")
 
 
+def _echo_key(name: str, rc: int, elapsed: float, unaffected: bool) -> None:
+    state = "ran green" if rc == 0 else "unknown" if rc == 75 else f"ran red (exit {rc})"
+    mark = "✓" if rc == 0 else "?" if rc == 75 else "✗"
+    if unaffected:
+        typer.echo(f"  {mark} {name}: {state} (no qualifying source verdict) [{elapsed:.3f}s]")
+    else:
+        typer.echo(f"  {mark} {name}: {state} ({elapsed:.3f}s)")
+
+
+def _side_by_side_engine(runner, cfg):
+    """The local broker engine when it is selected and ``runner`` can run a group, else None.
+
+    Only a runner with ``run_group`` (:class:`~beadhive.validation_key_runner.CheckoutKeyRunner`)
+    can share one checkout between keys; any other runner keeps today's sequential path, and so
+    does engine ``slots`` (nothing else is read for it).
+    """
+    if not callable(getattr(runner, "run_group", None)):
+        return None
+    from . import validation_broker_engine
+
+    return validation_broker_engine.local_engine(
+        cfg if isinstance(cfg, dict) else {}, warn=lambda line: typer.echo(line, err=True)
+    )
+
+
+def _run_side_by_side(
+    engine,
+    runner,
+    keys: Sequence,
+    costs: Mapping[str, float],
+    *,
+    entry,
+    cfg,
+    fail_fast: bool,
+    on_result: Callable[[str, int, float], None],
+):
+    """Every pending key as ONE gate group through ``engine`` (bh-qhrl6), then the report.
+
+    The group finishes: a red key does not stop its siblings, so every key records its own
+    verdict, and the caller's aggregate (and the boundary's rollback/bounce rules) applies once.
+    ``BH_VALIDATION_FAIL_FAST`` still stops further keys starting. Keys the engine cannot run come
+    back in ``fallback`` for the sequential path.
+    """
+    from . import validation_reservations
+    from .validation_side_by_side import GroupKey, summary_lines
+
+    group_keys = [
+        GroupKey(
+            name=key.name,
+            command=key.cmd,
+            reservation=validation_reservations.resolve_reservation(key.name, cfg, entry),
+            expected_seconds=costs.get(key.name)
+            or validation_reservations.expected_seconds(key.name, cfg, entry),
+            required=key.policy == "required",
+        )
+        for key in keys
+    ]
+    typer.echo(
+        f"  → running {len(group_keys)} key(s) side by side through the local validation broker"
+    )
+
+    def report(outcome) -> None:
+        if outcome.rc is not None:
+            on_result(outcome.name, outcome.rc, outcome.wall_s)
+
+    result = runner.run_group(
+        engine,
+        group_keys,
+        report=report,
+        fail_fast=fail_fast,
+        warn=lambda line: typer.echo(line, err=True),
+    )
+    for line in summary_lines(result):
+        typer.echo(line)
+    if result.fallback:
+        typer.echo(
+            f"  ! {len(result.fallback)} key(s) fall back to the sequential slots path: "
+            f"{', '.join(result.fallback)}",
+            err=True,
+        )
+    return result
+
+
 def warn_impact_fallback(reason: str) -> None:
     """Make fail-closed expansion visible even in long validation logs."""
     typer.echo("", err=True)
@@ -831,7 +914,30 @@ def _run(
 
     unaffected_run = dict(pending)
     names = [name for name, _ in pending]
-    for name in cheapest_first(names, historical_costs(entry, [by_name[n] for n in names])):
+    costs = historical_costs(entry, [by_name[n] for n in names])
+    ordered = cheapest_first(names, costs)
+    engine = None if stopped_after or not ordered else _side_by_side_engine(runner, cfg)
+    if engine is not None:
+        group = _run_side_by_side(
+            engine,
+            runner,
+            [by_name[name] for name in ordered],
+            costs,
+            entry=entry,
+            cfg=cfg,
+            fail_fast=fail_fast,
+            on_result=lambda name, rc, elapsed: _echo_key(name, rc, elapsed, unaffected_run[name]),
+        )
+        for outcome in group.outcomes.values():
+            outcomes[outcome.name] = outcome.rc
+            if outcome.rc is None:
+                typer.echo(
+                    f"  · {outcome.name}: not run — fail-fast after {group.stopped_after} "
+                    f"({FAIL_FAST_ENV})"
+                )
+        stopped_after = group.stopped_after
+        ordered = tuple(group.fallback)  # what the local engine could not run: today's path
+    for name in ordered:
         key = by_name[name]
         if stopped_after:
             typer.echo(f"  · {name}: not run — fail-fast after {stopped_after} ({FAIL_FAST_ENV})")
@@ -839,12 +945,7 @@ def _run(
             continue
         rc, elapsed = run_key(key)
         outcomes[name] = rc
-        state = "ran green" if rc == 0 else "unknown" if rc == 75 else f"ran red (exit {rc})"
-        mark = "✓" if rc == 0 else "?" if rc == 75 else "✗"
-        if unaffected_run[name]:
-            typer.echo(f"  {mark} {name}: {state} (no qualifying source verdict) [{elapsed:.3f}s]")
-        else:
-            typer.echo(f"  {mark} {name}: {state} ({elapsed:.3f}s)")
+        _echo_key(name, rc, elapsed, unaffected_run[name])
         if fail_fast and _blocks(key, rc):
             stopped_after = name
 

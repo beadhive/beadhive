@@ -1216,6 +1216,7 @@ def clean_checkout(
     phase="validation",
     observed_active_run_id=None,
     permit=None,
+    shared=None,
 ) -> int:
     """Compatibility facade for ``worktree_verify.impl_clean_checkout``."""
     return _worktree_verify.impl_clean_checkout(
@@ -1228,6 +1229,7 @@ def clean_checkout(
         phase=phase,
         observed_active_run_id=observed_active_run_id,
         permit=permit,
+        **({"shared": shared} if shared else {}),
     )
 
 
