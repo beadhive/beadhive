@@ -38,6 +38,7 @@ def _build_product_application(**kwargs):
     )
 
 
+pytest_plugins = ["pytester"]
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "host_daemon" / "v1" / "live-contract.json"
 DOC = ROOT / "docs" / "HOST-DAEMON.md"
@@ -642,27 +643,49 @@ def test_checked_handoff_pins_the_exact_ui_endpoint_recipe_and_release_boundary(
     assert contract["finalPlatformEvidence"]["owner"] != contract["releaseCertification"]["owner"]
 
 
-def test_every_live_contract_cell_links_to_an_exact_collected_test() -> None:
+def test_every_live_contract_cell_links_to_an_exact_collected_test(pytester, monkeypatch) -> None:
     contract = json.loads(FIXTURE.read_text())
     evidence = contract["executableEvidence"]
 
     assert set(evidence) == EVIDENCE_CELLS
     nodes = sorted({node for cell in evidence.values() for node in cell})
     assert all(evidence.values())
-    collected = subprocess.run(
-        [sys.executable, "-m", "pytest", "--collect-only", "-q", *nodes],
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        timeout=60,
-        check=False,
-    )
-    assert collected.returncode == 0, collected.stdout + collected.stderr
-    collected_nodes = tuple(
-        line for line in collected.stdout.splitlines() if line.startswith("tests/")
-    )
+    collected = _collect_node_ids(pytester, monkeypatch, nodes)
     for node in nodes:
-        assert any(actual == node or actual.startswith(f"{node}[") for actual in collected_nodes)
+        assert any(actual == node or actual.startswith(f"{node}[") for actual in collected), node
+
+
+class _Collector:
+    def __init__(self) -> None:
+        self.nodeids: list[str] = []
+
+    def pytest_collection_modifyitems(self, items) -> None:
+        self.nodeids.extend(item.nodeid for item in items)
+
+
+def _collect_node_ids(pytester, monkeypatch, nodes: list[str]) -> list[str]:
+    """Real pytest collection of ``nodes`` in this process, one call. pytester snapshots and
+    restores ``sys.modules``/``sys.path``; a collection error or an unknown node fails the run."""
+    monkeypatch.chdir(ROOT)
+    collector = _Collector()
+    run = pytester.inline_run(
+        "--collect-only", "-q", "-p", "no:cacheprovider", *nodes, plugins=[collector]
+    )
+    assert run.ret == 0, run.ret
+    return collector.nodeids
+
+
+def test_the_in_process_collection_fails_on_what_collection_would_not_find(
+    pytester, monkeypatch
+) -> None:
+    here = "tests/test_daemon_live_contract.py"
+    ok = f"{here}::test_the_in_process_collection_fails_on_what_collection_would_not_find"
+    assert _collect_node_ids(pytester, monkeypatch, [ok]) == [ok]
+    for bad in (f"{here}::test_no_such_test", "tests/test_no_such_file.py::test_x"):
+        pytester_run = pytester.inline_run(
+            "--collect-only", "-q", "-p", "no:cacheprovider", bad, plugins=[_Collector()]
+        )
+        assert pytester_run.ret != 0, bad
 
 
 def test_operator_runbook_checks_install_credentials_migration_outage_and_rollback() -> None:

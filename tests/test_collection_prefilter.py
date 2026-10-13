@@ -1,7 +1,10 @@
 """The marker-index collection pre-filter never drops a selected test (bh-l1jje).
 
-Each case runs a real pytest in a subprocess over a small project. Every test module appends its
-name to an import log when imported, so a case can tell a skipped file from a deselected one.
+Each plugin case runs a real pytest over a small project, in this process through
+``pytester.runpytest_inprocess`` (pytester restores ``sys.modules``/``sys.path`` after each run).
+Every test module appends its name to an import log when imported, so a case can tell a skipped
+file from a deselected one. The xdist-worker case is the one that keeps a real subprocess: the
+controller/worker hand-off of the skip set only exists across processes.
 """
 
 from __future__ import annotations
@@ -16,6 +19,8 @@ from pathlib import Path
 import pytest
 
 from harness import collection_prefilter as prefilter
+
+pytest_plugins = ["pytester"]
 
 HARNESS_ROOT = Path(prefilter.__file__).resolve().parents[1]
 LOG_IMPORT = (
@@ -42,17 +47,55 @@ FILES = {
 INDEX = "index.json"
 
 
+_SESSIONS: dict[Path, tuple[pytest.Pytester, pytest.MonkeyPatch]] = {}
+
+
 @pytest.fixture
-def project(tmp_path):
+def project(pytester, monkeypatch):
     for rel, text in FILES.items():
-        path = tmp_path / rel
+        path = pytester.path / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
-    return tmp_path
+    _SESSIONS[pytester.path] = (pytester, monkeypatch)
+    yield pytester.path
+    _SESSIONS.pop(pytester.path, None)
+
+
+def _outcome(project: Path, stdout: str):
+    ids = set(re.findall(r"PASSED (tests/\S+::\w+)", stdout))
+    imported = set((project / "imports.log").read_text().split())
+    header = [line for line in stdout.splitlines() if "collection prefilter" in line]
+    return ids, imported, header
 
 
 def run(project: Path, *args: str, prefilter_on: bool = True, record: bool = False, **env):
-    """Run pytest in ``project``; return (selected node ids, imported modules, header lines)."""
+    """Run pytest in ``project`` in-process; return (selected node ids, imported modules, header
+    lines)."""
+    pytester, monkeypatch = _SESSIONS[project]
+    log = project / "imports.log"
+    log.write_text("")
+    for key in list(os.environ):
+        if key.startswith(("BH_TEST_", "PYTEST_ADDOPTS", "PYTEST_PLUGINS")):
+            monkeypatch.delenv(key)
+    monkeypatch.delenv(prefilter.ENABLE_ENV, raising=False)
+    monkeypatch.delenv(prefilter.RECORD_ENV, raising=False)
+    monkeypatch.setenv("IMPORT_LOG", str(log))
+    monkeypatch.setenv("BH_TEST_PREFILTER_INDEX", str(project / INDEX))
+    if prefilter_on:
+        monkeypatch.setenv(prefilter.ENABLE_ENV, "1")
+    if record:
+        monkeypatch.setenv(prefilter.RECORD_ENV, str(project / INDEX))
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    result = pytester.runpytest_inprocess(
+        "-p", "harness.collection_prefilter", "-p", "no:cacheprovider", "-rA", "-v", *args
+    )
+    assert result.ret in (0, 5), result.stdout.str() + result.stderr.str()
+    return _outcome(project, result.stdout.str())
+
+
+def run_subprocess(project: Path, *args: str, prefilter_on: bool = True, **env):
+    """The same project run in a real child interpreter (the xdist controller/worker hand-off)."""
     log = project / "imports.log"
     log.write_text("")
     environ = {
@@ -67,8 +110,6 @@ def run(project: Path, *args: str, prefilter_on: bool = True, record: bool = Fal
     )
     if prefilter_on:
         environ[prefilter.ENABLE_ENV] = "1"
-    if record:
-        environ[prefilter.RECORD_ENV] = str(project / INDEX)
     environ.update(env)
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "-p", "harness.collection_prefilter"]
@@ -80,10 +121,7 @@ def run(project: Path, *args: str, prefilter_on: bool = True, record: bool = Fal
         check=False,
     )
     assert result.returncode in (0, 5), result.stdout + result.stderr
-    ids = set(re.findall(r"PASSED (tests/\S+::\w+)", result.stdout))
-    imported = set(log.read_text().split())
-    header = [line for line in result.stdout.splitlines() if "collection prefilter" in line]
-    return ids, imported, header
+    return _outcome(project, result.stdout)
 
 
 def record(project: Path) -> dict:
@@ -112,8 +150,8 @@ def test_record_writes_marker_sets_and_skips_files_with_no_selected_item(project
 
 def test_xdist_workers_receive_the_controllers_skip_set(project):
     record(project)
-    off = run(project, "-n", "2", "-m", "integration", prefilter_on=False)
-    on = run(project, "-n", "2", "-m", "integration")
+    off = run_subprocess(project, "-n", "2", "-m", "integration", prefilter_on=False)
+    on = run_subprocess(project, "-n", "2", "-m", "integration")
     assert on[0] == off[0] == {"tests/test_int.py::test_a"}
     assert on[1] == {"test_int", "test_empty"}
 
