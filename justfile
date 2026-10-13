@@ -781,10 +781,14 @@ stateful-native: root-composition-validate validation-evidence-refresh
 # hq-storage root dependents (bh-xxkf7.7) carry the Dolt `_int` files, and xdist's default `load`
 # hands worker 1 the first contiguous slice of the longest-first order: ~19 of the slowest tests
 # serially on one worker, 793 s wall for 1,217 items. Same collection; only the schedule changes.
+# INTEGRATION DEDUP (bh-s6yhj, decision bh-2znxs): the 34 integration-marked root dependents run
+# once, in test-integration-land, not here too; the integration key's selectors cover
+# packages/beadhive-hq-storage*/ so a package-only change still selects them.
 root-composition-native: root-composition-validate
     BH_TEST_WORKSTEAL_PACK={{worksteal_pack}} uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
         ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n {{stateful_workers}} \
         --dist {{test_dist}} \
+        -m "not integration" \
         $(uv run python scripts/root_composition_tests.py)
 
 # Recursive PEX packaging executes the Pants engine and needs its pinned artifact cache. Keep

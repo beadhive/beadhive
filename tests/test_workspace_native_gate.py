@@ -173,6 +173,8 @@ def test_native_test_recipes_collect_all_core_tests_without_pants_filtering() ->
     assert "--ignore" not in integration
     assert "root_composition_tests.py --ignore-args" in native
     assert "root_composition_tests.py" in composition
+    # The integration-marked root dependents run once, in test-integration-land (bh-s6yhj).
+    assert '-m "not integration"' in composition
     # Packed like the other Dolt-bearing lanes (bh-ju8vk): `load` serialised the _int files.
     for body in (native, composition, integration):
         assert "--dist {{test_dist}}" in body

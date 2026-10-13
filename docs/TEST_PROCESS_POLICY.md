@@ -764,20 +764,24 @@ on this branch. The four sets are byte-identical before and after.
 | Lane | Selection | Items |
 | --- | --- | ---: |
 | `stateful-native` | `tests -m "not integration and not pants_profile"` minus every root-composition file (`--ignore`) | 10,468 |
-| `root-composition-native` | the registered root-composition files, no `-m` filter | 1,217 |
+| `root-composition-native` | the registered root-composition files, `-m "not integration"` (bh-s6yhj; was no filter, 1,217) | 1,185 |
 | `test-integration-land` | `tests -m integration` | 262 |
 | whole tree | `tests` | 11,914 |
 
 - `stateful-native` and `root-composition-native` are disjoint. A file in `PACKAGE_TESTS` leaves
   the stateful lane entirely.
-- `test-integration-land` takes no `--ignore`. The 34 integration-marked root-composition tests
-  therefore run in both `root-composition-native` and `test-integration-land` under `check-all`:
+- `test-integration-land` takes no `--ignore`. Before bh-s6yhj the 34 integration-marked
+  root-composition tests ran in both `root-composition-native` and `test-integration-land` under
+  `check-all`. Since bh-s6yhj (decision bh-2znxs, option 3) `root-composition-native` filters
+  `-m "not integration"`, so they run once, in `test-integration-land`. The integration attest
+  key's selectors add `packages/beadhive-hq-storage/*` and `packages/beadhive-hq-storage-dolt/*`
+  (HQ catalog publish) so an hq-storage-only change still selects them. They are:
   `test_fence_composed_int` (7), `test_fence_data_int` (12), `test_fence_orphan_int` (11),
   `test_writer_adopt_int` (3) and one `tests/contracts/test_hq_storage_composition.py` test.
 - The union of the three lanes is the whole tree except the one `pants_profile` test, which
   `pants-artifact-check` runs. No test leaves every lane.
-- `check-native` (`just check`) runs `root-composition-native`, so it runs these 34 Dolt
-  integration tests too.
+- `check-native` (`just check`) runs `root-composition-native` but not the integration lane, so
+  since bh-s6yhj it no longer runs these 34 Dolt integration tests; `check-all-native` does.
 
 ### Runs
 
