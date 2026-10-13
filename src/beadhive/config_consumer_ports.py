@@ -74,6 +74,7 @@ work_settings = CapabilitySettings(
         "dispatch_terminate_grace",
         "duration_seconds",
         "enforce_signing",
+        "gate_model",
         "integration_branch",
         "harness_name",
         "ledger_ttl",

@@ -92,6 +92,11 @@ done
 # tree resolution, TTL, phase lookup, exit semantics. This file states no policy about it and
 # so cannot drift from bh's own notion of the gate; it just honours an exit code.
 #
+# Miss handling (bh-aq832): under `work.gate.model: keys` the verb runs ONLY the absent keys on a
+# miss and re-asks the aggregate predicate; legacy hives, drift, an evaluator error and a bh that
+# predates this all stay non-zero, so the full gate below -- and `record_full_gate`, which
+# belongs only to this legacy path -- run exactly as before.
+#
 # WHAT THIS DOES NOT FIX: only the HIT path is fast. The gate below still takes ~1536s inside
 # the push, holding the connection git opened before this hook started — so the bh-53o8f SSH
 # keepalive (`just push`) is STILL REQUIRED, and the warning right below still earns its place.

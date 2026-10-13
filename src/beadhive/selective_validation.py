@@ -21,6 +21,7 @@ import typer
 from . import config_work_settings as config
 from . import identity, validation_ledger, validation_records
 from .bootstrap.impact import attest_keys, impact_resolver
+from .modules.config.contracts import GATE_ALL_KEY_PHASES
 
 Runner = Callable[[str], int]
 
@@ -139,6 +140,9 @@ def attested_green(entry, cfg, rev: str, phase: str) -> bool:
     red evidence into proof. Every exception, including an unreadable ledger, is ``False``.
     ``phase`` names the boundary asking; every phase requires every active key, which is the
     ADR's hard limit for ``push-main``/``release``/``postland`` and the safe reading elsewhere.
+    For those three phases the profile must also resolve to every active key
+    (``P(phase) == active(C)``); :func:`config.gate_profile` pins them to ``all``, so a
+    configured subset there can only ever answer ``False`` here.
     """
     try:
         return _attested_green(entry, cfg, rev, phase)
@@ -152,6 +156,11 @@ def attested_green(entry, cfg, rev: str, phase: str) -> bool:
 def _attested_green(entry, cfg, rev: str, phase: str) -> bool:
     if not rev or not phase:
         return False
+    # The ADR 3.4 `model == keys` conjunct is deliberately NOT here yet: it would refuse every
+    # legacy-model `release attest --if-needed` and bh-72ubb's push acceptance. It is deferred
+    # to the cutover slice, bh-i3nc3.
+    if phase in GATE_ALL_KEY_PHASES and config.gate_profile(cfg, entry, phase) is not None:
+        return False  # P(phase) == active(C): a main-reaching profile must be every active key
     tree = validation_ledger.tree_of(entry, rev)
     if not _TREE_ID.fullmatch(tree or ""):
         return False
@@ -170,11 +179,6 @@ def _attested_green(entry, cfg, rev: str, phase: str) -> bool:
         if verdict.state not in (states.CURRENT, states.CARRIED):
             return False
     return catalog_ok(entry, cfg, tree) and validation_ledger.always_run_ok(entry, cfg)
-
-
-def all_keys_green(entry, cfg, rev: str) -> bool:
-    """Compatibility alias for the release flow until the release slice."""
-    return attested_green(entry, cfg, rev, "release")
 
 
 def catalog_payload(entry, cfg) -> list[dict]:
@@ -290,6 +294,11 @@ def record_full_gate_keys(entry, cfg, rev: str, cmd: str, rc: int) -> None:
         str(validation[phase]).strip() for phase in FULL_GATE_PHASES if phase in validation
     }
     if cmd.strip() not in full_commands:
+        return
+    # Under `work.gate.model: keys` the partition this expansion assumes is only trusted while
+    # the runtime drift check holds; a drifted catalog (including the evaluator's own drift
+    # fallback to the legacy command) records no key proof.
+    if config.gate_model(cfg, entry) == "keys" and not catalog_ok(entry, cfg, rev):
         return
     for key in keys:
         if not key.is_disabled():
@@ -455,6 +464,123 @@ def semantic_selection(attest, repo: str, base_rev: str, head_rev: str, keys: Se
         return None, record
 
 
+def _root_receipt_doubt(root_receipt, root, head_tree: str) -> str:
+    """Why a root-to-head receipt cannot carry anything, or ``""`` when it may.
+
+    The receipt must be a real, non-degraded answer about exactly the root tree and exactly the
+    head tree; unowned paths and global inputs anywhere in the span invalidate every key.
+    """
+    if root_receipt is None:
+        return "resolver gave no answer"
+    if root_receipt.fallback_reason:
+        return f"resolver fallback: {root_receipt.fallback_reason}"
+    if root_receipt.base_tree != root.tree or root_receipt.head_tree != head_tree:
+        return "receipt does not span this root to the head tree"
+    if root_receipt.unowned_paths:
+        return f"unowned paths in the span: {', '.join(root_receipt.unowned_paths[:3])}"
+    if root_receipt.global_inputs_hit:
+        return f"global inputs in the span: {', '.join(root_receipt.global_inputs_hit[:3])}"
+    return ""
+
+
+def high_water_carry(
+    entry,
+    cfg,
+    *,
+    resolver,
+    repo: str,
+    head_rev: str,
+    receipt,
+    keys: Sequence,
+) -> tuple[str, ...]:
+    """Carry each of ``keys`` from its root run, returning the names now carried at the head.
+
+    Attest-keys ADR, section 3.5.  ``keys`` are unaffected by ``receipt`` (base to head) but have
+    no qualifying run on the base to carry from, typically because the base itself only holds a
+    carry.  For each key the candidate roots come from
+    :func:`validation_ledger.carry_root_candidates`; every distinct root is resolved once,
+    root to head directly and shared across keys, and a key carries only when that whole-span
+    receipt lists it unaffected.  :func:`validation_ledger.carry_key_verdict` then re-reads the
+    root's current green run as the source and keeps its ``source_tree``, ``source_run_id`` and
+    ``at``, so no age or TTL is refreshed.
+
+    Every doubt costs a run, never proof: a lookup error drops the key's candidates, a resolver
+    error, fallback, unowned path, global input or tree mismatch drops the root, and a key left
+    without a carry stays pending.
+    """
+    head_tree = receipt.head_tree
+    if not head_tree or not receipt.base_tree or receipt.is_fallback:
+        return ()
+    max_roots = config.carry_max_roots(cfg, entry)
+    candidates: dict[str, tuple] = {}
+    for key in keys:
+        try:
+            candidates[key.name] = validation_ledger.carry_root_candidates(
+                entry,
+                receipt.base_tree,
+                key,
+                max_roots=max_roots,
+                exclude=(head_tree,),
+                cfg=cfg,
+            )
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+            candidates[key.name] = ()
+
+    # One resolve per distinct root, asked about every key that lists it.
+    wanted: dict[str, list] = {}
+    for key in keys:
+        for root in candidates[key.name]:
+            wanted.setdefault(root.tree, [])
+            if key not in wanted[root.tree]:
+                wanted[root.tree].append(key)
+    receipts: dict[str, object] = {}
+
+    def root_receipt(root):
+        if root.tree not in receipts:
+            try:
+                answer = resolver.resolve(repo, root.rev, head_rev, wanted[root.tree])
+            except Exception as exc:  # noqa: BLE001 - a root that cannot be resolved is skipped
+                typer.echo(
+                    f"  · high-water root {root.tree[:12]} skipped: {type(exc).__name__}: {exc}"[
+                        :300
+                    ]
+                )
+                answer = None
+            doubt = _root_receipt_doubt(answer, root, head_tree)
+            if answer is not None and doubt:
+                typer.echo(f"  · high-water root {root.tree[:12]} skipped: {doubt}"[:300])
+            receipts[root.tree] = None if doubt else answer
+        return receipts[root.tree]
+
+    carried: list[str] = []
+    for key in keys:
+        for root in candidates[key.name]:
+            proof = root_receipt(root)
+            if proof is None or not proof.is_unaffected(key.name):
+                continue
+            if not validation_ledger.carry_key_verdict(entry, key, proof, cfg=cfg):
+                continue
+            try:
+                found = validation_ledger.key_verdict(entry, head_rev, key, cfg=cfg)
+            except (KeyError, OSError, ValueError):
+                continue
+            record = found.record or {}
+            if (
+                found.state != validation_ledger.KeyVerdictState.CARRIED
+                or record.get("source_tree") != root.tree
+                or record.get("receipt_digest") != proof.digest
+            ):
+                continue
+            typer.echo(
+                f"  ✓ {key.name}: carried from root {root.tree[:12]} "
+                f"(run {root.run_id}, high-water past base {receipt.base_tree[:12]}) "
+                f"via receipt {proof.digest[:12]}"
+            )
+            carried.append(key.name)
+            break
+    return tuple(carried)
+
+
 def run(
     entry,
     cfg,
@@ -465,11 +591,22 @@ def run(
     repo_path: str | None = None,
     full: bool = False,
     receipt_override=None,
+    phase: str | None = None,
+    main_gate: bool = False,
+    legacy_cmd: str | None = None,
 ) -> int:
     """Resolve impact, carry proven greens, run invalidated keys, and aggregate policy.
 
     Exit 75 is UNKNOWN.  It blocks required keys and is tolerated for optional keys; every
     other non-zero result blocks regardless of policy.
+
+    ``phase`` (with ``main_gate`` for an op onto the integration branch, resolving
+    ``<phase>-main`` first exactly as :func:`config.validate_cmd` does) names the lifecycle
+    boundary.  It changes nothing under ``work.gate.model: legacy`` (the default).  Under
+    ``keys`` (attest-keys ADR 3.3) the runtime catalog drift check runs first and, on drift,
+    the phase's legacy command (``legacy_cmd``, else ``validate_cmd(phase)``) runs instead of
+    any key and no key proof is recorded; otherwise only the phase profile's keys are
+    evaluated and every other active key is reported ``not required by <phase>``.
     """
     # The whole selective run already holds one cfg; the inter-lane verdict/carry/tree reads
     # resolve the workspace root from it rather than re-loading config per git call (bh-931we).
@@ -483,7 +620,25 @@ def run(
             repo_path=repo_path,
             full=full,
             receipt_override=receipt_override,
+            phase=phase,
+            main_gate=main_gate,
+            legacy_cmd=legacy_cmd,
         )
+
+
+def _profile_keys(entry, cfg, keys: Sequence, phase: str | None, main_gate: bool):
+    """The phase profile's key names under ``model: keys``, or ``None`` for every active key.
+
+    A profile naming any key absent from the catalog is doubt, and doubt runs every key.
+    """
+    names = config.gate_profile(cfg, entry, phase, main_gate=main_gate)
+    if names is None:
+        return None
+    unknown = sorted(set(names) - {key.name for key in keys})
+    if unknown:
+        typer.echo(f"  · {phase} profile names unknown key(s) {unknown} — running every active key")
+        return None
+    return frozenset(names)
 
 
 def _run(
@@ -496,16 +651,42 @@ def _run(
     repo_path: str | None,
     full: bool,
     receipt_override,
+    phase: str | None,
+    main_gate: bool,
+    legacy_cmd: str | None,
 ) -> int:
     attest = config.attest_config(cfg, entry)
     keys = attest_keys(attest)
     if not keys:
         return runner(config.validate_cmd(cfg, entry))
+    profile = None
+    if config.gate_model(cfg, entry) == "keys":
+        if not catalog_ok(entry, cfg, head_rev):
+            fallback = (
+                legacy_cmd
+                if legacy_cmd is not None
+                else config.validate_cmd(cfg, entry, phase, main_gate=main_gate)
+            )
+            typer.echo(
+                f"  ! {phase or 'validation'}: attest catalog drift — running the legacy "
+                f"command {fallback!r}; no key proof is recorded"
+            )
+            return runner(fallback)
+        profile = _profile_keys(entry, cfg, keys, phase, main_gate)
     active_keys = tuple(key for key in keys if not key.is_disabled())
     for key in keys:
         if key.is_disabled():
             expiry = f" (until {key.disabled_until.isoformat()})" if key.disabled_until else ""
             typer.echo(f"  · {key.name}: DISABLED — {key.disabled_reason}{expiry}")
+    if profile is not None:
+        required = tuple(key for key in active_keys if key.name in profile)
+        if required:
+            for key in active_keys:
+                if key.name not in profile:
+                    typer.echo(f"  · {key.name}: not required by {phase}")
+            active_keys = required
+        else:
+            typer.echo(f"  · {phase} profile names no active key — running every active key")
     from . import registry
 
     repo = repo_path or str(registry.hive_dir(entry))
@@ -586,6 +767,7 @@ def _run(
 
     # (name, ran-for-want-of-a-source-verdict) for every key that must execute.
     pending: list[tuple[str, bool]] = []
+    uncarried: list[str] = []
     for name in receipt.unaffected_keys:
         key = by_name[name]
         if reuse_exact_tree(key):
@@ -599,7 +781,25 @@ def _run(
                 f"via receipt {receipt.digest[:12]}"
             )
             outcomes[name] = 0
-        elif key.policy == "required":
+        else:
+            uncarried.append(name)
+
+    if uncarried and config.carry_high_water(cfg, entry):
+        for name in high_water_carry(
+            entry,
+            cfg,
+            resolver=resolver,
+            repo=repo,
+            head_rev=head_rev,
+            receipt=receipt,
+            keys=[by_name[name] for name in uncarried],
+        ):
+            outcomes[name] = 0
+
+    for name in uncarried:
+        if name in outcomes:
+            continue
+        if by_name[name].policy == "required":
             pending.append((name, True))
         else:
             typer.echo(f"  ? {name}: unknown (no qualifying source verdict)")
@@ -669,12 +869,12 @@ __all__ = [
     "FULL_GATE_PHASES",
     "PRECHECK_PHASE",
     "UNRESOLVED_IMPACT_EXIT",
-    "all_keys_green",
     "attested_green",
     "cheapest_first",
     "configured",
     "error_unresolved_impact",
     "fail_fast_enabled",
+    "high_water_carry",
     "historical_costs",
     "precheck_cmd",
     "run",

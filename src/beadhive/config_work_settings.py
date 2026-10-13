@@ -11,6 +11,9 @@ from .modules.config.contracts import (
     DEFAULT_JUNK_GLOBS,
     DEFAULT_PRECIOUS_GLOBS,
     DEFAULT_PRECIOUS_MIN_BYTES,
+    GATE_ALL_KEY_PHASES,
+    GATE_PROFILE_ALL,
+    GATE_PROFILE_DEFAULT,
 )
 
 _config = FacadeBinding(f"{__package__}.config")
@@ -220,6 +223,66 @@ def ledger_ttl(cfg, entry) -> int:
     week, and a short TTL is cheap insurance against environmental rot — a green recorded before
     a toolchain upgrade says nothing about after it."""
     return duration_seconds(str(work_value(cfg, entry, "ledger_ttl", DEFAULT_LEDGER_TTL)))
+
+
+DEFAULT_CARRY_MAX_ROOTS = 3
+
+
+def carry_high_water(cfg, entry) -> bool:
+    """Whether carries discover roots beyond the receipt base (attest-keys ADR, section 3.5).
+
+    `work.gate.carry.high_water`, per-hive over global. Unset follows `work.gate.model`: on only
+    under `keys`, so a hive on the default `legacy` model keeps single-hop sourcing. Anything
+    but a real bool degrades to single-hop: discovery only ever adds carry candidates, so the
+    doubtful direction is to add none."""
+    value = layered(cfg, entry, "work.gate.carry", "high_water", None)
+    if value is None:
+        return layered(cfg, entry, "work.gate", "model", "legacy") == "keys"
+    return value is True
+
+
+def carry_max_roots(cfg, entry) -> int:
+    """`work.gate.carry.max_roots` (default 3): newest same-command green roots tried per key.
+    A malformed or negative value degrades to 0, which tries fewer roots, never more."""
+    value = layered(cfg, entry, "work.gate.carry", "max_roots", DEFAULT_CARRY_MAX_ROOTS)
+    if type(value) is not int or value < 0:
+        return 0
+    return value
+
+
+def gate_model(cfg, entry) -> str:
+    """`work.gate.model`, per-hive over global: `keys` only when set exactly; anything else,
+    including unset or a typo, is `legacy` (today's behaviour, the rollback)."""
+    return "keys" if layered(cfg, entry, "work.gate", "model", "legacy") == "keys" else "legacy"
+
+
+def gate_profile(cfg, entry, phase, main_gate=False):
+    """The key names `phase`'s profile names under `work.gate.model: keys`, or `None` for every
+    active key (attest-keys ADR 3.2/3.8).
+
+    Lookup order mirrors :func:`validate_cmd`: `<phase>-main` then `<phase>` when the op
+    targets the integration branch, then `default`. Profiles and subsets layer per name,
+    per-hive over global. push-main, release and postland always answer `None` whatever is
+    configured (the ADR 3.4 hard limit), and every doubt -- no phase, `all`, an unknown subset,
+    a malformed value, an empty list -- also answers `None`, which runs more, never less.
+    Whether the names exist in the catalog is the evaluator's check."""
+    if not phase or phase in GATE_ALL_KEY_PHASES:
+        return None
+    lookups = [f"{phase}-main", phase] if main_gate else [phase]
+    value = None
+    for name in [*lookups, GATE_PROFILE_DEFAULT]:
+        value = layered(cfg, entry, "work.gate.profiles", name, None)
+        if value is not None:
+            break
+    if value is None or value == GATE_PROFILE_ALL:
+        return None
+    if isinstance(value, str):
+        value = layered(cfg, entry, "work.gate.subsets", value, None)
+    if not isinstance(value, list) or not value:
+        return None
+    if not all(isinstance(name, str) and name for name in value):
+        return None
+    return tuple(dict.fromkeys(value))
 
 
 def enforce_signing(cfg, entry) -> bool:
@@ -580,6 +643,8 @@ __all__ = [
     "routing_tiers",
     "validate_cmd",
     "validate_cmd_is_configured",
+    "gate_model",
+    "gate_profile",
     "validation_bypass_enabled",
     "validation_mode",
     "demo_cmd",
@@ -594,6 +659,9 @@ __all__ = [
     "_DURATION",
     "duration_seconds",
     "ledger_ttl",
+    "DEFAULT_CARRY_MAX_ROOTS",
+    "carry_high_water",
+    "carry_max_roots",
     "enforce_signing",
     "beads_route",
     "batch_max_size",

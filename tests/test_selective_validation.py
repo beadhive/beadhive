@@ -449,7 +449,7 @@ def test_enable_disable_enable_restores_identical_execution(monkeypatch, capsys)
     assert disabled[0] == 0 and disabled[1:] != before[1:]
 
 
-def test_disabled_key_cannot_satisfy_all_keys_green(monkeypatch) -> None:
+def test_disabled_key_cannot_satisfy_attested_green(monkeypatch) -> None:
     attest = _attest(
         {
             "name": "stateful",
@@ -465,7 +465,7 @@ def test_disabled_key_cannot_satisfy_all_keys_green(monkeypatch) -> None:
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("disabled proof was consulted")),
     )
 
-    assert not selective_validation.all_keys_green({}, {}, "head")
+    assert not selective_validation.attested_green({}, {}, "head", "release")
 
 
 # ---- bh-15u4d: the attested_green aggregate predicate (attest-keys ADR 3.4) --------------
@@ -590,18 +590,6 @@ def test_attested_green_fails_closed_on_any_exception(monkeypatch) -> None:
     monkeypatch.setattr(selective_validation, "catalog_ok", boom)
 
     assert check() is False
-
-
-def test_all_keys_green_alias_delegates_to_attested_green(monkeypatch) -> None:
-    seen = []
-    monkeypatch.setattr(
-        selective_validation,
-        "attested_green",
-        lambda *args: seen.append(args) or True,
-    )
-
-    assert selective_validation.all_keys_green("e", "c", "rev") is True
-    assert seen == [("e", "c", "rev", "release")]
 
 
 # ---- bh-2kodj: cheap-first order, generated-evidence precheck, opt-in fail-fast ----------
@@ -984,3 +972,190 @@ def test_red_result_is_never_served_from_the_cache(monkeypatch, tmp_path) -> Non
 def test_drift_check_config_defaults_are_opt_in() -> None:
     default = AttestConfig()
     assert default.drift_check is None and default.drift_check_timeout_seconds == 60.0
+
+
+# ---- bh-3d3jb: phase profiles under work.gate.model (attest-keys ADR 3.2-3.4) ------------
+
+_GATE = {
+    "model": "keys",
+    "profiles": {"check": "fast", "default": "fast", "review": ["unit", "docs"]},
+    "subsets": {"fast": ["docs"]},
+}
+
+
+def _gate_cfg(**overrides):
+    return {"work": {"gate": {**_GATE, **overrides}}}
+
+
+def test_gate_profile_resolves_subsets_lists_and_default() -> None:
+    profile = selective_validation.config.gate_profile
+    cfg = _gate_cfg()
+
+    assert profile(cfg, {}, "check") == ("docs",)
+    assert profile(cfg, {}, "review") == ("unit", "docs")
+    assert profile(cfg, {}, "submit") == ("docs",)  # unlisted inner phase -> default
+    assert profile({}, {}, "check") is None  # nothing configured -> every key
+
+
+def test_main_reaching_phases_always_require_every_key_whatever_is_configured() -> None:
+    profile = selective_validation.config.gate_profile
+    cfg = _gate_cfg(profiles={"default": "fast", "push-main": "fast", "release": ["docs"]})
+
+    for phase in ("push-main", "release", "postland"):
+        assert profile(cfg, {}, phase) is None
+
+
+def test_merge_main_profile_wins_only_for_an_op_onto_main() -> None:
+    profile = selective_validation.config.gate_profile
+    cfg = _gate_cfg(profiles={"merge": ["unit"], "merge-main": ["docs"]})
+
+    assert profile(cfg, {}, "merge", main_gate=True) == ("docs",)
+    assert profile(cfg, {}, "merge") == ("unit",)
+    assert profile(_gate_cfg(profiles={"merge": ["unit"]}), {}, "merge", main_gate=True) == (
+        "unit",
+    )
+
+
+def test_profiles_and_subsets_layer_per_name_hive_over_global() -> None:
+    profile = selective_validation.config.gate_profile
+    entry = {"work": {"gate": {"profiles": {"check": "slim"}, "subsets": {"slim": ["unit"]}}}}
+
+    assert profile(_gate_cfg(), entry, "check") == ("unit",)
+    assert profile(_gate_cfg(), entry, "review") == ("unit", "docs")  # global, not shadowed
+
+
+def test_any_doubtful_profile_answers_every_key() -> None:
+    profile = selective_validation.config.gate_profile
+    for value in ("missing-subset", "all", [], [""], 3):
+        assert profile(_gate_cfg(profiles={"check": value}), {}, "check") is None
+    assert profile(_gate_cfg(), {}, None) is None
+
+
+def test_gate_model_defaults_to_legacy_for_anything_but_keys() -> None:
+    model = selective_validation.config.gate_model
+    assert model({}, {}) == "legacy"
+    assert model({"work": {"gate": {"model": "Keys"}}}, {}) == "legacy"
+    assert model({"work": {"gate": {"model": "keys"}}}, {}) == "keys"
+    assert model({"work": {"gate": {"model": "keys"}}}, {"work": {"gate": {"model": "x"}}}) == (
+        "legacy"
+    )
+
+
+def _profile_run(monkeypatch, cfg, phase, *, catalog=True):
+    ran: list[str] = []
+    attest = _attest({"name": "docs", "cmd": "just docs"}, {"name": "unit", "cmd": "just unit"})
+    monkeypatch.setattr(selective_validation.config, "attest_config", lambda *_: attest)
+    monkeypatch.setattr(selective_validation, "impact_resolver", lambda *_a, **_k: _Resolver())
+    monkeypatch.setattr(selective_validation, "catalog_ok", lambda *_a, **_k: catalog)
+    monkeypatch.setattr(selective_validation, "historical_costs", lambda *_a: {})
+
+    def runner(cmd):
+        ran.append(cmd)
+        return 0
+
+    rc = selective_validation.run(
+        {},
+        cfg,
+        base_rev="base",
+        head_rev="head",
+        repo_path="/repo",
+        runner=runner,
+        phase=phase,
+        legacy_cmd="just legacy",
+    )
+    return rc, ran
+
+
+def test_check_fast_profile_runs_only_the_subset_and_reports_the_rest(monkeypatch, capsys):
+    rc, ran = _profile_run(monkeypatch, _gate_cfg(), "check")
+
+    assert rc == 0 and ran == ["just docs"]
+    assert "unit: not required by check" in capsys.readouterr().out
+
+
+def test_legacy_model_ignores_the_profile_and_the_drift_check(monkeypatch, capsys):
+    rc, ran = _profile_run(monkeypatch, _gate_cfg(model="legacy"), "check", catalog=False)
+
+    assert rc == 0 and ran == ["just docs", "just unit"]
+    assert "not required by" not in capsys.readouterr().out
+
+
+def test_keys_model_drift_runs_the_phase_legacy_command_and_no_key(monkeypatch, capsys):
+    rc, ran = _profile_run(monkeypatch, _gate_cfg(), "check", catalog=False)
+
+    assert rc == 0 and ran == ["just legacy"]
+    assert "no key proof is recorded" in capsys.readouterr().out
+
+
+def test_keys_model_drift_without_legacy_cmd_uses_the_phase_command(monkeypatch) -> None:
+    ran: list[str] = []
+    attest = _attest({"name": "docs", "cmd": "just docs"})
+    monkeypatch.setattr(selective_validation.config, "attest_config", lambda *_: attest)
+    monkeypatch.setattr(selective_validation, "catalog_ok", lambda *_a, **_k: False)
+    cfg = {"work": {"gate": {"model": "keys"}, "validate": {"merge-main": "just full"}}}
+
+    selective_validation.run(
+        {},
+        cfg,
+        base_rev="base",
+        head_rev="head",
+        runner=lambda cmd: ran.append(cmd) or 0,
+        phase="merge",
+        main_gate=True,
+    )
+
+    assert ran == ["just full"]
+
+
+def test_profile_naming_an_unknown_key_runs_every_key(monkeypatch, capsys):
+    cfg = _gate_cfg(profiles={"check": ["docs", "ghost"]})
+    rc, ran = _profile_run(monkeypatch, cfg, "check")
+
+    assert rc == 0 and ran == ["just docs", "just unit"]
+    assert "unknown key(s) ['ghost']" in capsys.readouterr().out
+
+
+def test_main_reaching_phase_runs_every_key_under_keys(monkeypatch):
+    cfg = _gate_cfg(profiles={"default": "fast"})
+    for phase in ("release", "push-main", "postland"):
+        _rc, ran = _profile_run(monkeypatch, cfg, phase)
+        assert ran == ["just docs", "just unit"]
+
+
+def test_attested_green_requires_every_key_profile_at_main_reaching_phases(monkeypatch) -> None:
+    check = _predicate(
+        monkeypatch,
+        {"docs": _verdict("docs", "current", _GREEN)},
+    )
+    assert check() is True  # control
+    monkeypatch.setattr(selective_validation.config, "gate_profile", lambda *_a, **_k: ("docs",))
+    for phase in ("push-main", "release", "postland"):
+        assert selective_validation.attested_green({}, {}, "head", phase) is False
+
+
+def test_attested_green_keeps_legacy_model_acceptance(monkeypatch) -> None:
+    """The ADR `model == keys` conjunct is deferred (bh-i3nc3): legacy still answers."""
+    check = _predicate(monkeypatch, {"docs": _verdict("docs", "current", _GREEN)})
+    assert selective_validation.config.gate_model({}, {}) == "legacy"
+    assert check() is True
+
+
+def test_full_gate_records_no_key_proof_on_drift_under_keys(monkeypatch) -> None:
+    attest = _attest({"name": "unit", "cmd": "just attest-unit"})
+    monkeypatch.setattr(selective_validation.config, "attest_config", lambda *_: attest)
+    recorded = []
+    monkeypatch.setattr(
+        selective_validation.validation_ledger,
+        "record",
+        lambda _entry, rev, cmd, rc, **_k: recorded.append(cmd),
+    )
+    entry = {"work": {"validate": {"merge-main": "just check-all-native"}}}
+    cfg = {"work": {"gate": {"model": "keys"}}}
+
+    monkeypatch.setattr(selective_validation, "catalog_ok", lambda *_a, **_k: False)
+    selective_validation.record_full_gate_keys(entry, cfg, "head", "just check-all-native", 0)
+    assert recorded == []
+
+    monkeypatch.setattr(selective_validation, "catalog_ok", lambda *_a, **_k: True)
+    selective_validation.record_full_gate_keys(entry, cfg, "head", "just check-all-native", 0)
+    assert recorded == ["just attest-unit"]

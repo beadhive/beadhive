@@ -17,6 +17,37 @@ in the optional `just check-all-pants` profile (whether Pants stays is bh-ahm6x)
 graphs. The live native profile uses the path backend and keeps the catalog active; uncertainty
 falls back to the complete key set.
 
+### Gate model and phase profiles
+
+`work.gate.model` selects the gate model: `legacy` (the default) or `keys`. Under `legacy` every
+selective boundary runs every active key and nothing below applies. Under `keys`, each of the seven
+selective call sites (`check`, `submit`, `review`, batch `submit`/`merge`, bead `merge`,
+`molecule` pre-land and `release attest --if-needed`) passes its lifecycle phase, and the
+evaluator:
+
+1. runs the runtime catalog drift check (below). On drift it runs that phase's legacy command
+   instead of any key and records no key proof;
+2. evaluates only the keys of the phase's profile and reports every other active key as
+   `not required by <phase>`.
+
+`work.gate.profiles` maps a phase (`check`, `submit`, `review`, `merge`, `merge-main`, `molecule`,
+`postland`, `union`, `release`, `push-main`) or `default` to `all`, a `work.gate.subsets` name, or
+an explicit key list. An unlisted inner phase uses `default`, which is itself `all` when unset. A
+`merge-main` profile wins for a merge onto the integration branch, else `merge`. `push-main`,
+`release` and `postland` must be `all`; `bh config validate` rejects anything else there, and they
+never inherit `default`. Unknown phases, subset names or key names are rejected too. At run time, a
+profile that cannot be resolved, or that names a key outside the catalog, runs every active key.
+
+```yaml
+work:
+  gate:
+    model: keys
+    profiles: {check: fast}
+    subsets: {fast: [docs, unit]}
+  attest:
+    drift_check: "uv run python scripts/check_attest_catalog.py --live-catalog -"
+```
+
 ### Runtime catalog drift check
 
 The catalog lives only in HQ (`work.attest.keys`); there is no repo catalog file. `just
@@ -258,6 +289,26 @@ Only a current green verdict can be a carry source. Carries do not chain (see
 [high-water source discovery](design/attest-keys-single-gate-model-adr.md#35-high-water-source-discovery-for-carries-the-chaining-fix),
 which adds candidates without changing the rule), do not refresh the
 source verdict's age, and never transfer red or unknown results.
+
+### High-water carry roots
+
+When a base tree only holds a *carry* of a key, the next transition can still carry the key, from
+the run that earned it (attest-keys ADR, section 3.5). With `work.gate.carry.high_water` on (unset
+follows `work.gate.model`, so it is on only under `keys`), the evaluator tries these roots in order
+for each unaffected key with no run on the base:
+
+1. the `source_tree` / `source_run_id` of a valid carried record on the base;
+2. the newest `work.gate.carry.max_roots` (default 3) distinct trees holding a green run of the
+   same command.
+
+A root must still read as a current, fresh, qualifying green run of the same command, and its
+recorded commit must resolve locally to that exact tree; otherwise it is skipped. Each distinct
+root is resolved once, **root to head directly**, and the key carries only when that receipt has
+no fallback, no unowned path, no global input and lists the key unaffected. The carried record
+keeps the root's `source_tree`, `source_run_id` and `at`, so TTL still runs from the root run.
+A base whose own verdict is current (green, red or unknown) is never routed around. The evaluator
+prints the root tree and the receipt digest for every such carry. `high_water: false` restores
+single-hop sourcing.
 
 ## Operation and rollback
 

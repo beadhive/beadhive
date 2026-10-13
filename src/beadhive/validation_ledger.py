@@ -88,6 +88,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import secrets
 import shlex
 import time
@@ -938,6 +939,136 @@ def carry_key_verdict(
     except OSError:
         return False
     return True
+
+
+@dataclass(frozen=True)
+class CarryRoot:
+    """A candidate root for a high-water carry (attest-keys ADR, section 3.5).
+
+    ``tree`` holds a current, fresh, qualifying green run ``run_id`` of one key, and ``rev`` is
+    the local commit that run recorded, whose tree is exactly ``tree``.  A candidate is only a
+    place to diff from: it proves nothing until a receipt spanning ``tree`` to the head lists
+    the key unaffected, and :func:`carry_key_verdict` re-reads the run as the source.
+    """
+
+    tree: str
+    rev: str
+    run_id: str
+    origin: str  # "base-carry" (the base's carried record points here) | "ledger" (newest runs)
+
+
+_COMMIT_ID = re.compile(r"[0-9a-f]{7,64}")
+
+
+def _root_commit(entry, sha: object, tree: str) -> str | None:
+    """The commit ``sha`` names when it resolves locally to a commit whose tree is ``tree``.
+
+    Anything else — no recorded sha, a tree id, a commit this clone never fetched or has since
+    pruned, a tree mismatch — is None, so the candidate is skipped and never treated as a pass.
+    """
+    if not isinstance(sha, str) or not _COMMIT_ID.fullmatch(sha):
+        return None
+    res = run(
+        [
+            "git",
+            "-C",
+            str(registry.hive_dir(entry)),
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            f"{sha}^{{commit}}",
+        ],
+        check=False,
+        capture=True,
+    )
+    commit = (getattr(res, "stdout", "") or "").strip()
+    if res.returncode != 0 or not _COMMIT_ID.fullmatch(commit):
+        return None
+    return commit if tree_of(entry, commit) == tree else None
+
+
+def _carry_root(
+    entry,
+    key: AttestKey,
+    tree: str,
+    *,
+    origin: str,
+    run_id: object = None,
+    ttl: int | None,
+    cfg,
+) -> CarryRoot | None:
+    """``tree`` as a root when :func:`verdict` still reads a qualifying green run of ``key`` there
+    (fresh within TTL, newest execution wins) whose commit resolves locally."""
+    source = verdict(entry, tree, key.cmd, ttl, cfg)
+    if (
+        source is None
+        or not validation_records.is_qualifying_green(source)
+        or source.get("tree") != tree
+        or source.get("command_hash") != cmd_hash(key.cmd)
+        or not isinstance(source.get("run_id"), str)
+        or (run_id is not None and source.get("run_id") != run_id)
+    ):
+        return None
+    commit = _root_commit(entry, source.get("sha"), tree)
+    if commit is None:
+        return None
+    return CarryRoot(tree=tree, rev=commit, run_id=source["run_id"], origin=origin)
+
+
+def carry_root_candidates(
+    entry,
+    base_tree: str,
+    key: AttestKey,
+    *,
+    max_roots: int,
+    exclude: tuple[str, ...] = (),
+    ttl: int | None = None,
+    cfg=None,
+) -> tuple[CarryRoot, ...]:
+    """High-water root candidates for carrying ``key`` past a base that has no run of its own.
+
+    Tried in order (attest-keys ADR, section 3.5): the root a *valid* carried record on
+    ``base_tree`` points at, then the newest ``max_roots`` distinct trees the ledger holds a
+    green run of the same command on.  The base tree itself is the caller's single-hop source and
+    is never repeated here, nor is anything in ``exclude`` (the head tree).
+
+    A carried record is never the source: it only names where to look, and the root it names
+    must still read as a current green run with the same ``run_id``.  Any doubt about the base
+    — a current verdict (green is the single-hop source; red or unknown must not be routed
+    around) — yields no candidates.
+    """
+    if key.is_disabled() or not base_tree:
+        return ()
+    base = key_verdict(entry, base_tree, key, ttl, cfg)
+    if base.state == KeyVerdictState.CURRENT or base.reason == "unknown":
+        return ()
+    seen = {base_tree, *exclude}
+    roots: list[CarryRoot] = []
+    if base.state == KeyVerdictState.CARRIED:
+        record = base.record or {}
+        tree = record.get("source_tree")
+        if isinstance(tree, str) and tree and tree not in seen:
+            seen.add(tree)
+            root = _carry_root(
+                entry,
+                key,
+                tree,
+                origin="base-carry",
+                run_id=record.get("source_run_id"),
+                ttl=ttl,
+                cfg=cfg,
+            )
+            if root is not None:
+                roots.append(root)
+    if max_roots > 0:
+        newest = validation_records.green_trees(
+            registry.hive_dir(entry), command_hash=cmd_hash(key.cmd)
+        )
+        for tree in [tree for tree in newest if tree not in seen][:max_roots]:
+            root = _carry_root(entry, key, tree, origin="ledger", ttl=ttl, cfg=cfg)
+            if root is not None:
+                roots.append(root)
+    return tuple(roots)
 
 
 def key_verdict(

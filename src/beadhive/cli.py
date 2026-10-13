@@ -3185,6 +3185,11 @@ def hive_hook_push_main(
         raise typer.Exit(1)
 
     ok, detail = prepush.check_push_main(rev, hive_id=hive_id, gate_cmd=gate)
+    if not ok:
+        typer.echo(detail, err=True)
+        ok, detail = prepush.run_missing_keys(rev, hive_id=hive_id, gate_cmd=gate)
+        if not ok and not detail:
+            raise typer.Exit(1)  # legacy / not opted in: nothing more to say, the gate runs
     typer.echo(detail, err=not ok)
     raise typer.Exit(0 if ok else 1)
 

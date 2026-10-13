@@ -719,6 +719,31 @@ def latest_run(hive: str | Path, *, tree: str, command_hash: str) -> dict | None
     return record.to_mapping() if record is not None else None
 
 
+def green_trees(hive: str | Path, *, command_hash: str) -> list[str]:
+    """Trees with a qualifying green execution of one command, newest execution first.
+
+    A discovery hint for high-water carry roots, never evidence: each tree is distinct and the
+    caller must still re-read it through the verdict path, which applies TTL, the
+    newest-execution-wins rule (a later red revokes) and the derived pointer check.
+    """
+    root = _validation_root(hive)
+    directory = root / "runs" if root else None
+    if directory is None or not directory.is_dir():
+        return []
+    greens = sorted(
+        (
+            value
+            for value in _read_run_directory(directory)
+            if value.get("command_hash") == command_hash
+            and isinstance(value.get("tree"), str)
+            and is_qualifying_green(value)
+        ),
+        key=_run_order_key,
+        reverse=True,
+    )
+    return list(dict.fromkeys(value["tree"] for value in greens))
+
+
 def _wall_seconds(run: dict) -> float | None:
     try:
         seconds = (

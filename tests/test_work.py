@@ -8279,3 +8279,172 @@ def test_baml_required_loop_refuses_invalid_artifact_before_loop_or_claim(
 
     assert stub_localloop.instances == []
     assert not fakebd.did("update", "--claim")
+
+
+# ---- bh-3d3jb: phase profiles and the work.gate.model switch (attest-keys ADR 3.2/3.3) -----
+
+
+def _enable_gate(hive, gate: str, drift_check: str | None = '"true"'):
+    """Add a `work.gate` flow mapping (and optionally `work.attest.drift_check`) to the catalog
+    `_enable_test_attest_catalog` wrote."""
+    drift = f"    drift_check: {drift_check}\n" if drift_check is not None else ""
+    text = hive.cfg_path.read_text().replace(
+        "  attest:\n", f"  gate: {gate}\n  attest:\n{drift}", 1
+    )
+    hive.cfg_path.write_text(text)
+    config_store.clear_load_cache()
+
+
+_FAST_CHECK = "{model: keys, profiles: {check: fast}, subsets: {fast: [alpha]}}"
+
+
+def _phase_spy(monkeypatch) -> list:
+    """Record (phase, main_gate, legacy_cmd) for every selective run, then run it for real."""
+    seen: list = []
+    real = selective_validation.run
+
+    def spy(*args, **kwargs):
+        seen.append((kwargs.get("phase"), kwargs.get("main_gate", False), kwargs.get("legacy_cmd")))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(selective_validation, "run", spy)
+    return seen
+
+
+def test_keys_model_check_fast_profile_runs_only_the_subset(hive, fakebd, tmp_path, capsys):
+    log = tmp_path / "attest.log"
+    _enable_test_attest_catalog(hive, log)
+    _enable_gate(hive, _FAST_CHECK)
+    fakebd.seed("mr-301", title="t")
+    work.claim(bead="mr-301", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-301"), "feat: the change")
+    capsys.readouterr()
+
+    work.check(bead="mr-301", hive="myrepo")
+
+    assert log.read_text().splitlines() == ["alpha"]
+    out = capsys.readouterr().out
+    assert "alpha: ran green" in out
+    assert "beta: not required by check" in out
+    assert "paused: DISABLED" in out
+
+
+def test_keys_model_submit_without_a_profile_still_runs_every_key(hive, fakebd, tmp_path):
+    """Only `check` names a subset; `submit` falls back to `default`, itself `all`."""
+    log = tmp_path / "attest.log"
+    _enable_test_attest_catalog(hive, log)
+    _enable_gate(hive, _FAST_CHECK)
+    fakebd.seed("mr-302", title="t")
+    work.claim(bead="mr-302", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-302"), "feat: the change")
+
+    work.check(bead="mr-302", hive="myrepo")
+    work.submit(bead="mr-302", hive="myrepo")
+
+    assert log.read_text().splitlines() == ["alpha", "beta"]  # alpha reused, beta ran
+
+
+def test_legacy_model_ignores_profiles_and_runs_every_key(hive, fakebd, tmp_path, capsys):
+    log = tmp_path / "attest.log"
+    _enable_test_attest_catalog(hive, log)
+    _enable_gate(hive, "{profiles: {check: fast}, subsets: {fast: [alpha]}}", drift_check=None)
+    fakebd.seed("mr-303", title="t")
+    work.claim(bead="mr-303", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-303"), "feat: the change")
+    capsys.readouterr()
+
+    work.check(bead="mr-303", hive="myrepo")
+
+    assert log.read_text().splitlines() == ["alpha", "beta"]
+    assert "not required by" not in capsys.readouterr().out
+
+
+def test_keys_model_drift_runs_the_legacy_command_and_records_no_key_proof(
+    hive, fakebd, tmp_path, capsys
+):
+    log = tmp_path / "attest.log"
+    _enable_test_attest_catalog(hive, log)
+    _enable_gate(hive, _FAST_CHECK, drift_check='"false"')
+    legacy = json.dumps(f"sh -c 'echo legacy >> {log}'")
+    hive.cfg_path.write_text(
+        hive.cfg_path.read_text().replace('  validate_cmd: "true"\n', f"  validate_cmd: {legacy}\n")
+    )
+    config_store.clear_load_cache()
+    fakebd.seed("mr-304", title="t")
+    work.claim(bead="mr-304", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-304"), "feat: the change")
+    capsys.readouterr()
+
+    work.check(bead="mr-304", hive="myrepo")
+
+    assert log.read_text().splitlines() == ["legacy"]
+    captured = capsys.readouterr()
+    assert "attest catalog drift" in captured.out + captured.err
+    cfg = config.load()
+    entry, _main, target, _branch = worktree.locate(cfg, "myrepo", "mr-304")
+    sha = worktree.head_full_sha(target)
+    keys = selective_validation.attest_keys(selective_validation.config.attest_config(cfg, entry))
+    for key in keys:
+        verdict = validation_ledger.key_verdict(entry, sha, key, cfg=cfg)
+        assert verdict.state == validation_ledger.KeyVerdictState.ABSENT
+
+
+def test_single_bead_call_sites_pass_their_phase(hive, fakebd, tmp_path, monkeypatch):
+    _enable_test_attest_catalog(hive, tmp_path / "attest.log")
+    seen = _phase_spy(monkeypatch)
+    fakebd.seed("mr-305", title="t")
+    work.claim(bead="mr-305", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-305"), "feat: the change")
+
+    work.check(bead="mr-305", hive="myrepo")
+    work.submit(bead="mr-305", hive="myrepo")
+    work.review(bead="mr-305", run_validate=True, demo=False, view=["log"], hive="myrepo")
+    fakebd.resolve_review("mr-305")
+    work.merge(bead="mr-305", hive="myrepo", rm=False, molecule=False)
+
+    assert [(phase, main_gate) for phase, main_gate, _cmd in seen] == [
+        ("check", False),
+        ("submit", False),
+        ("review", False),
+        ("merge", True),  # onto the integration branch: merge-main resolves first, as today
+    ]
+    assert all(cmd == "true" for _phase, _main, cmd in seen)  # each site's legacy command
+
+
+def test_batch_and_molecule_call_sites_pass_their_phase(hive, fakebd, tmp_path, monkeypatch):
+    _enable_test_attest_catalog(hive, tmp_path / "attest.log")
+    seen = _phase_spy(monkeypatch)
+    fakebd.seed("mr-1", title="epic", issue_type="epic")
+    _claim_and_commit_batch(hive, fakebd)
+
+    work.submit(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+    fakebd.resolve_review("mr-1.1")
+    work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+    work.finish(epic="mr-1", hive="myrepo")
+
+    assert [(phase, main_gate) for phase, main_gate, _cmd in seen] == [
+        ("submit", False),
+        ("merge", False),
+        ("molecule", False),
+    ]
+
+
+def test_keys_model_merge_main_profile_wins_onto_main(hive, fakebd, tmp_path, capsys):
+    log = tmp_path / "attest.log"
+    _enable_test_attest_catalog(hive, log)
+    _enable_gate(
+        hive,
+        "{model: keys, profiles: {merge: [alpha], merge-main: [beta], submit: [alpha]}}",
+    )
+    fakebd.seed("mr-306", title="t")
+    work.claim(bead="mr-306", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-306"), "feat: the change")
+    work.submit(bead="mr-306", hive="myrepo")
+    fakebd.resolve_review("mr-306")
+    capsys.readouterr()
+
+    work.merge(bead="mr-306", hive="myrepo", rm=False, molecule=False)
+
+    out = capsys.readouterr().out
+    assert "alpha: not required by merge" in out
+    assert "beta: " in out and "beta: not required" not in out

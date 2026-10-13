@@ -580,6 +580,16 @@ Resolves per-hive `entry.work.beads.route` > global `work.beads.route` > `api`.
 See [BEADS-SERVICE.md](BEADS-SERVICE.md) for the full behavior table.
 `bh work approve` / `bounce` are outside this key and always fail closed without a service.
 
+## `work.gate` — gate model and phase profiles
+
+| Key | Default | Values | Effect |
+|---|---|---|---|
+| `work.gate.model` | `legacy` | `legacy` \| `keys`, per hive or global | `keys` runs each selective boundary's phase profile through the evaluator, with the runtime catalog drift check and a fallback to the phase's legacy command on drift. `legacy` is today's behaviour and the rollback. |
+| `work.gate.profiles.<phase>` | unset (`all`) | `all`, a subset name, or a key list | Keys a phase requires under `model: keys`. Phases: `check`, `submit`, `review`, `merge`, `merge-main`, `molecule`, `postland`, `union`, `release`, `push-main`, plus `default`. `push-main`, `release` and `postland` must be `all`. |
+| `work.gate.subsets.<name>` | none | list of key names | Named key subsets a profile may reference. |
+
+See [ATTEST-KEYS.md](ATTEST-KEYS.md#gate-model-and-phase-profiles).
+
 ## `work.gate.push` — per-key acceptance at the push hook
 
 | Key | Default | Values | Effect |

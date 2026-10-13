@@ -247,3 +247,74 @@ def test_renamed_key_table_lists_every_rename():
         "BH_*",
     ):
         assert token in table
+
+
+# ---- work.gate profiles (bh-3d3jb, attest-keys ADR 3.2/3.8) -------------------------------
+
+_KEYS = [{"name": "docs", "cmd": "just docs"}, {"name": "unit", "cmd": "just unit"}]
+
+
+def _gate_problems(gate, keys=_KEYS, hive_work=None):
+    cfg = {"schema_version": SCHEMA_VERSION, "work": {"gate": gate, "attest": {"keys": keys}}}
+    if hive_work is not None:
+        cfg["managed_repos"] = [
+            {"provider": "github", "org": "o", "repo": "r", "prefix": "rr", "work": hive_work}
+        ]
+    return _messages(_errors(validate_config(cfg)))
+
+
+def test_gate_defaults_are_legacy_and_empty():
+    from beadhive.modules.config.contracts import GateConfig
+
+    gate = GateConfig()
+    assert gate.model == "legacy" and gate.profiles == {} and gate.subsets == {}
+
+
+def test_valid_gate_profiles_are_accepted():
+    gate = {
+        "model": "keys",
+        "profiles": {"check": "fast", "default": "all", "review": ["unit"], "push-main": "all"},
+        "subsets": {"fast": ["docs"]},
+    }
+    assert _gate_problems(gate) == ""
+
+
+def test_unknown_gate_phase_is_rejected():
+    assert "unknown gate phase" in _gate_problems({"profiles": {"lint": "all"}})
+
+
+def test_unknown_gate_model_is_rejected():
+    assert "work.gate.model" in _gate_problems({"model": "fast"})
+
+
+def test_unknown_subset_is_rejected():
+    assert "unknown subset 'fast'" in _gate_problems({"profiles": {"check": "fast"}})
+
+
+def test_unknown_key_names_are_rejected_in_profiles_and_subsets():
+    assert "unknown key name(s) ['ghost']" in _gate_problems({"profiles": {"check": ["ghost"]}})
+    assert "work.gate.subsets.fast: unknown key name(s) ['ghost']" in _gate_problems(
+        {"subsets": {"fast": ["docs", "ghost"]}}
+    )
+
+
+def test_non_all_profile_for_a_main_reaching_phase_is_rejected():
+    for phase in ("push-main", "release", "postland"):
+        for value in ("fast", ["docs"]):
+            problems = _gate_problems({"profiles": {phase: value}, "subsets": {"fast": ["docs"]}})
+            assert f"work.gate.profiles.{phase} must be 'all'" in problems
+
+
+def test_hive_profile_may_reference_a_global_subset_and_its_own_catalog():
+    hive_work = {
+        "gate": {"profiles": {"check": "fast"}},
+        "attest": {"keys": [{"name": "lint", "cmd": "just lint"}]},
+    }
+    problems = _gate_problems({"subsets": {"fast": ["lint"]}}, keys=[], hive_work=hive_work)
+    assert problems == ""
+
+
+def test_hive_subset_naming_a_key_outside_its_catalog_is_rejected():
+    hive_work = {"gate": {"subsets": {"fast": ["ghost"]}}}
+    problems = _gate_problems({}, hive_work=hive_work)
+    assert "hive rr: work.gate.subsets.fast: unknown key name(s) ['ghost']" in problems

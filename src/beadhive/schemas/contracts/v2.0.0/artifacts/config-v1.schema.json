@@ -236,7 +236,7 @@
     },
     "AttestTrivialConfig": {
       "additionalProperties": false,
-      "description": "A POLICY short-circuit: changes whose every path is trivially non-behavioral run a\nreduced key set instead of the full one.\n\nThis is deliberately NOT an impact-resolver concern. A receipt answers \"what did this\nchange touch\", proved from ownership and selectors; this answers \"what do we choose to\ntest\", which carries no proof at all. Keeping them apart is what stops a policy skip from\nbeing recorded as carried evidence: the keys this drops are treated exactly like a\ndisabled key -- they neither run, block, satisfy the aggregate, nor produce carryable\nproof, so `all_keys_green` still refuses to call the revision fully attested.",
+      "description": "A POLICY short-circuit: changes whose every path is trivially non-behavioral run a\nreduced key set instead of the full one.\n\nThis is deliberately NOT an impact-resolver concern. A receipt answers \"what did this\nchange touch\", proved from ownership and selectors; this answers \"what do we choose to\ntest\", which carries no proof at all. Keeping them apart is what stops a policy skip from\nbeing recorded as carried evidence: the keys this drops are treated exactly like a\ndisabled key -- they neither run, block, satisfy the aggregate, nor produce carryable\nproof, so `attested_green` still refuses to call the revision fully attested.",
       "properties": {
         "enabled": {
           "default": false,
@@ -1174,12 +1174,83 @@
       "title": "FrameHivePolicy",
       "type": "object"
     },
+    "GateCarryConfig": {
+      "additionalProperties": false,
+      "description": "High-water carry source discovery (attest-keys ADR, section 3.5).\n\nA carry's source is always a current green run of the key (its *root*). With high-water\ndiscovery the evaluator may also try the root that a valid carried record on the receipt\nbase points at, and the newest same-command green roots within TTL, each re-proven by one\nreceipt spanning root to head. The root's age and TTL are kept; nothing is refreshed.",
+      "properties": {
+        "high_water": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Discover carry roots beyond the receipt base. Unset follows work.gate.model: on under `keys`, off otherwise (single-hop sourcing, today's behaviour). false restores single-hop sourcing explicitly.",
+          "title": "High Water"
+        },
+        "max_roots": {
+          "default": 3,
+          "description": "Newest same-command green runs within TTL tried as carry roots per key, after the base's own root. 0 disables that ledger scan.",
+          "minimum": 0,
+          "title": "Max Roots",
+          "type": "integer"
+        }
+      },
+      "title": "GateCarryConfig",
+      "type": "object"
+    },
     "GateConfig": {
       "additionalProperties": false,
-      "description": "`work.gate` — gate-model settings (attest-keys single-gate ADR, 3.8).",
+      "description": "`work.gate` — gate-model settings (attest-keys single-gate ADR, 3.2, 3.5 and 3.8).",
       "properties": {
+        "carry": {
+          "$ref": "#/$defs/GateCarryConfig",
+          "description": "High-water carry source discovery."
+        },
+        "model": {
+          "default": "legacy",
+          "description": "Gate model. legacy (the default) runs today's per-phase command strings and every catalog key at every selective boundary; keys runs each phase's profile through the selective evaluator, with the runtime catalog drift check and a fallback to the phase's legacy command on drift. Setting legacy is the rollback.",
+          "enum": [
+            "legacy",
+            "keys"
+          ],
+          "title": "Model",
+          "type": "string"
+        },
+        "profiles": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            ]
+          },
+          "description": "Per-phase key profile, consulted only under model: keys. Keys are phases (check, submit, review, merge, merge-main, molecule, postland, union, release, push-main) or `default`; values are `all`, a subset name, or an explicit list of key names. An unlisted inner phase uses `default` (itself `all` when unset). push-main, release and postland must be `all`. A `merge-main` profile wins for a merge onto the integration branch, else `merge`.",
+          "title": "Profiles",
+          "type": "object"
+        },
         "push": {
           "$ref": "#/$defs/GatePushConfig"
+        },
+        "subsets": {
+          "additionalProperties": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "description": "Named key subsets a profile may reference, e.g. fast: [docs, unit].",
+          "title": "Subsets",
+          "type": "object"
         }
       },
       "title": "GateConfig",
@@ -2809,7 +2880,7 @@
         },
         "gate": {
           "$ref": "#/$defs/GateConfig",
-          "description": "Gate-model settings; today only the opt-in push-hook acceptance."
+          "description": "Gate-model settings (attest-keys ADR): high-water carry discovery and the opt-in push-hook acceptance."
         },
         "identity": {
           "anyOf": [
