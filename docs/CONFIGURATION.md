@@ -580,6 +580,12 @@ Resolves per-hive `entry.work.beads.route` > global `work.beads.route` > `api`.
 See [BEADS-SERVICE.md](BEADS-SERVICE.md) for the full behavior table.
 `bh work approve` / `bounce` are outside this key and always fail closed without a service.
 
+## `work.gate.push` — per-key acceptance at the push hook
+
+| Key | Default | Values | Effect |
+|---|---|---|---|
+| `work.gate.push.accept_attested_green` | `false` | bool, per hive or global | Opt in: the `push-main` pre-push hook also accepts the exact pushed tree when every active attest key is current or carried (`selective_validation.attested_green`), printing each key's state. An absent or red key, drift or any error falls through to the aggregate lookup and then the full gate; off is byte-identical to before. See [ATTEST-KEYS.md](ATTEST-KEYS.md#accepting-per-key-proof-at-the-push-hook). |
+
 ## `work.dispatch` — collapsed dispatch
 
 `work.dispatch.*` tunes how the root dispatcher dispatches a ready epic's beads: the default

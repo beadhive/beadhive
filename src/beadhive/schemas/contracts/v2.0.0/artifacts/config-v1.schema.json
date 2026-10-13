@@ -60,6 +60,26 @@
       "additionalProperties": false,
       "description": "The attest key catalog and impact resolver (Attested Green ADR, Amendment 1). Absent (the\ndefault) is today's behavior: no keys, native-full.",
       "properties": {
+        "drift_check": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Opt-in runtime catalog drift check (attest-keys ADR, 3.6): an OPAQUE command bh runs at the evaluated revision's checkout with the live catalog (name, cmd, enabled) as JSON on stdin. Exit 0 means no drift; anything else is drift. Unset (the default) runs nothing.",
+          "title": "Drift Check"
+        },
+        "drift_check_timeout_seconds": {
+          "default": 60.0,
+          "description": "Seconds the drift-check command may run before it counts as drift.",
+          "exclusiveMinimum": 0,
+          "title": "Drift Check Timeout Seconds",
+          "type": "number"
+        },
         "impact": {
           "$ref": "#/$defs/AttestImpactConfig",
           "description": "Impact resolver backend selection."
@@ -1152,6 +1172,31 @@
         "evict_after_s"
       ],
       "title": "FrameHivePolicy",
+      "type": "object"
+    },
+    "GateConfig": {
+      "additionalProperties": false,
+      "description": "`work.gate` — gate-model settings (attest-keys single-gate ADR, 3.8).",
+      "properties": {
+        "push": {
+          "$ref": "#/$defs/GatePushConfig"
+        }
+      },
+      "title": "GateConfig",
+      "type": "object"
+    },
+    "GatePushConfig": {
+      "additionalProperties": false,
+      "description": "`work.gate.push` — the pre-push hook's opt-in per-key acceptance (attest-keys ADR 3.8).",
+      "properties": {
+        "accept_attested_green": {
+          "default": false,
+          "description": "Opt in: the push-main hook also accepts the exact pushed tree when every active attest key is current or carried at that tree (selective_validation.attested_green). Off (the default) keeps today's aggregate-command lookup and full gate byte for byte; an absent or red key, drift, or any error falls through to them.",
+          "title": "Accept Attested Green",
+          "type": "boolean"
+        }
+      },
+      "title": "GatePushConfig",
       "type": "object"
     },
     "GenaiConfig": {
@@ -2761,6 +2806,10 @@
           "description": "When true, merge refuses a branch unless EVERY commit in the merge range carries a signature git verifies as TRUSTED (`git log --format=%G?` = G), names the offending commits, and does not merge. No grandfathering: commits made before the flag was turned on are refused like any other — re-sign them (rebase) or leave the flag off. Default false because turning it on for an unprepared fleet would block every merge. Verification needs `gpg.ssh.allowedsignersfile` pointing at a real file — bh keeps one in the HQ store and `bh host identity` enrolls this host + wires it up. WITHOUT a usable one git reports even a perfectly-signed commit as N (key unset) or U (file missing) and never G — measured, git 2.54 — so the gate refuses everything until that file is real.",
           "title": "Enforce Signing",
           "type": "boolean"
+        },
+        "gate": {
+          "$ref": "#/$defs/GateConfig",
+          "description": "Gate-model settings; today only the opt-in push-hook acceptance."
         },
         "identity": {
           "anyOf": [

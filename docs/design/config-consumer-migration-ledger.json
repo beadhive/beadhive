@@ -791,21 +791,21 @@
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 85,
+        "line": 94,
         "path": "tests/test_hive_hook_push_main.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 331,
+        "line": 340,
         "path": "tests/test_hive_hook_push_main.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 362,
+        "line": 371,
         "path": "tests/test_hive_hook_push_main.py",
         "target": "beadhive.config.load"
       },

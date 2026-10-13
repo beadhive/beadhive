@@ -27,14 +27,23 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from beadhive import config, host, prepush, validation_ledger, validation_records
+from beadhive import (
+    config,
+    host,
+    prepush,
+    selective_validation,
+    validation_ledger,
+    validation_records,
+)
 from beadhive.cli import app
+from beadhive.modules.config.contracts import AttestConfig
 from harness.validation_state import age as age_verdict
 from harness.validation_state import latest as latest_verdict
 from harness.validation_state import pointer as verdict_pointer
 from harness.validation_state import rewrite as rewrite_verdict
 
 runner = CliRunner()
+_REAL_ATTESTED_GREEN = selective_validation.attested_green
 
 
 @pytest.fixture(autouse=True)
@@ -520,5 +529,176 @@ def test_the_ssh_keepalive_caveat_is_recorded_where_a_reader_will_hit_it():
     for path in (GATE_SCRIPT, ROOT / "docs" / "design" / "attested-green-adr.md"):
         text = path.read_text()
         assert "bh-53o8f" in text and "keepalive" in text, path
-        assert "371s" in text, path
+        # The script carries the 2026-10-12 measurement (bh-72ubb); the ADR keeps its original.
+        assert ("1536s" if path == GATE_SCRIPT else "371s") in text, path
     assert "keepalive" in (ROOT / "docs" / "WORK.md").read_text()
+
+
+# ---- bh-72ubb: opt-in per-key acceptance (`work.gate.push.accept_attested_green`) -----------
+
+
+def _keys_state(monkeypatch, states: dict[str, str], *, green: bool = True, calls=None):
+    """Stub the per-key collaborators: `attested_green` answers `green`, and each key reports
+    the state in `states`. Records every `attested_green` call in `calls`."""
+
+    def fake_green(entry, cfg, rev, phase):
+        if calls is not None:
+            calls.append((rev, phase))
+        return green
+
+    monkeypatch.setattr(selective_validation, "attested_green", fake_green)
+    attest = AttestConfig.model_validate(
+        {"keys": [{"name": name, "cmd": f"just {name}"} for name in states]}
+    )
+    monkeypatch.setattr(selective_validation.config, "attest_config", lambda *_: attest)
+    monkeypatch.setattr(
+        validation_ledger,
+        "key_verdicts",
+        lambda entry, tree, keys, ttl=None, cfg=None: {
+            name: validation_ledger.KeyVerdict(
+                name, tree, "h", validation_ledger.KeyVerdictState(state)
+            )
+            for name, state in states.items()
+        },
+    )
+
+
+def _flag(hive, value) -> None:
+    hive["entry"].setdefault("work", {})["gate"] = {"push": {"accept_attested_green": value}}
+
+
+def test_flag_on_accepts_all_current_or_carried_keys_and_prints_each_state(hive, monkeypatch):
+    _flag(hive, True)
+    calls: list = []
+    _keys_state(monkeypatch, {"docs": "current", "unit": "carried"}, calls=calls)
+
+    res = _lookup(hive)  # no aggregate verdict exists at all
+
+    assert res.exit_code == 0, res.output
+    assert "docs: current" in res.output and "unit: carried" in res.output
+    assert calls == [(hive["sha"], "push-main")]
+
+
+def test_flag_on_is_also_honoured_from_global_scope(hive, monkeypatch):
+    hive["cfg"]["work"] = {"gate": {"push": {"accept_attested_green": True}}}
+    _keys_state(monkeypatch, {"docs": "current"})
+
+    assert _lookup(hive).exit_code == 0
+
+
+@pytest.mark.parametrize("value", [False, "true", 1, None])
+def test_only_a_real_true_enables_the_flag(hive, monkeypatch, value):
+    _flag(hive, value)
+    calls: list = []
+    _keys_state(monkeypatch, {"docs": "current"}, calls=calls)
+
+    assert _lookup(hive).exit_code != 0
+    assert calls == []
+
+
+def test_flag_on_absent_key_falls_through_to_the_gate(hive, monkeypatch):
+    _flag(hive, True)
+    _keys_state(monkeypatch, {"docs": "current", "unit": "absent"}, green=False)
+
+    assert _lookup(hive).exit_code != 0
+
+
+def test_flag_on_red_key_falls_through_to_the_gate(hive, monkeypatch):
+    """`attested_green` is the red-key authority; its False must never become a pass."""
+    _flag(hive, True)
+    _keys_state(monkeypatch, {"docs": "current"}, green=False)
+
+    assert _lookup(hive).exit_code != 0
+
+
+def test_flag_on_drift_falls_through_to_the_gate(hive, monkeypatch):
+    """The REAL predicate with every key current-green but `catalog_ok` False."""
+    _flag(hive, True)
+    green = {
+        "schema": 1,
+        "run_id": "r",
+        "lifecycle": "completed",
+        "signal": None,
+        "verdict": "green",
+        "exit_code": 0,
+    }
+    _keys_state(monkeypatch, {"docs": "current"})
+    monkeypatch.setattr(selective_validation, "attested_green", _REAL_ATTESTED_GREEN, raising=True)
+    monkeypatch.setattr(
+        validation_ledger,
+        "key_verdicts",
+        lambda entry, tree, keys, ttl=None, cfg=None: {
+            "docs": validation_ledger.KeyVerdict(
+                "docs", tree, "h", validation_ledger.KeyVerdictState.CURRENT, green
+            )
+        },
+    )
+    monkeypatch.setattr(validation_ledger, "always_run_ok", lambda *_a, **_k: True)
+    monkeypatch.setattr(selective_validation, "catalog_ok", lambda *_a, **_k: True)
+    assert _lookup(hive).exit_code == 0  # control: with no drift the real predicate accepts
+
+    monkeypatch.setattr(selective_validation, "catalog_ok", lambda *_a, **_k: False)
+
+    assert _lookup(hive).exit_code != 0
+
+
+def test_flag_on_exception_falls_through_to_the_gate(hive, monkeypatch):
+    _flag(hive, True)
+
+    def boom(*_a, **_k):
+        raise RuntimeError("ledger exploded")
+
+    monkeypatch.setattr(selective_validation, "attested_green", boom)
+
+    assert _lookup(hive).exit_code != 0
+
+
+def test_flag_on_exception_still_reaches_the_aggregate_lookup(hive, monkeypatch):
+    """A failing per-key path removes only itself: a real aggregate verdict still hits."""
+    _flag(hive, True)
+    _attest(hive)
+    monkeypatch.setattr(
+        selective_validation,
+        "attested_green",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    res = _lookup(hive)
+
+    assert res.exit_code == 0, res.output
+    assert "already passed" in res.output  # the aggregate message, not the per-key one
+
+
+def test_flag_on_display_failure_falls_through(hive, monkeypatch):
+    _flag(hive, True)
+    _keys_state(monkeypatch, {"docs": "current"})
+    monkeypatch.setattr(
+        validation_ledger,
+        "key_verdicts",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("unreadable")),
+    )
+
+    assert _lookup(hive).exit_code != 0
+
+
+def test_flag_off_never_consults_attested_green_and_matches_legacy_output(hive, monkeypatch):
+    """Flag unset == flag false == today: same exit code and same text, miss and hit."""
+    calls: list = []
+    _keys_state(monkeypatch, {"docs": "current"}, calls=calls)
+
+    unset_miss = prepush.check_push_main(hive["sha"], "mr", GATE_CMD)
+    _flag(hive, False)
+    false_miss = prepush.check_push_main(hive["sha"], "mr", GATE_CMD)
+    _attest(hive)
+    false_hit = prepush.check_push_main(hive["sha"], "mr", GATE_CMD)
+    del hive["entry"]["work"]["gate"]
+    unset_hit = prepush.check_push_main(hive["sha"], "mr", GATE_CMD)
+
+    assert unset_miss == false_miss and unset_miss[0] is False
+    assert false_hit[0] is True and false_hit[0] == unset_hit[0]
+    assert false_hit[1].split(" at ")[0] == unset_hit[1].split(" at ")[0]
+    assert calls == []
+
+
+def test_the_hook_file_gains_no_flag_logic():
+    assert "accept_attested_green" not in GATE_SCRIPT.read_text()

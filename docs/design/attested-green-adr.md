@@ -16,6 +16,10 @@
 > [Amendment 1](#amendment-1--key-scoped-verdict-transfer-proven-by-build-graph-impact) (epic
 > bh-1j3ei): one *key's* verdict may carry from one tree to another when a build-graph resolver
 > receipt proves none of that key's inputs changed. The whole-tree rules below stand.
+>
+> **Amended 2026-10-12** by
+> [Amendment 2](#amendment-2--attest-keys-as-the-single-gate-model) (workstream bh-gt7t9):
+> attest keys become the single gate model.
 
 ## Context
 
@@ -500,3 +504,13 @@ to bh-1j3ei.5. The Pants backend itself is bh-1j3ei.7. Making the repo-wide depe
 resolve (today it fails with `UnownedDependencyError` on `cryptography`) is bh-1j3ei.2. Until
 those land, every hive runs `native-full`, and this ADR behaves exactly as it did before the
 amendment.
+
+## Amendment 2 — attest keys as the single gate model
+
+Accepted 2026-10-12 (workstream bh-gt7t9). The full decision, model, migration, rollback and
+safety argument live in the sibling ADR
+[Attest keys as the single gate model](attest-keys-single-gate-model-adr.md). In short: the HQ
+per-hive `work.attest.keys` catalog is the only description of "tested", main-reaching phases
+require every active key, carries discover their source by high-water checkpoint, and the
+closure-certification surface is removed. It amends no Amendment 1 rule: high-water carry
+implements the documented "diff T0 against T2 directly".

@@ -17,6 +17,31 @@ in the optional `just check-all-pants` profile (whether Pants stays is bh-ahm6x)
 graphs. The live native profile uses the path backend and keeps the catalog active; uncertainty
 falls back to the complete key set.
 
+### Runtime catalog drift check
+
+The catalog lives only in HQ (`work.attest.keys`); there is no repo catalog file. `just
+check-attest-catalog` catches drift at lint time. For runtime, a hive may opt in with
+`work.attest.drift_check`, an opaque command bh runs at the evaluated revision's checkout with the
+live catalog (`[{name, cmd, enabled}]`) as JSON on stdin. Exit 0 means no drift. Any other exit, a
+timeout (`work.attest.drift_check_timeout_seconds`, default 60) or an unset command under
+`work.gate.model: keys` is drift, and `selective_validation.catalog_ok` returns False. A clean
+result is cached by (tree, catalog digest, drift-check command hash), so an HQ catalog edit forces
+a re-check. Unset
+(the default) changes nothing. This repository's command is
+`uv run python scripts/check_attest_catalog.py --live-catalog -`, which compares the live keys
+and `just attest-<name>` commands against the justfile recipes, `KEY_RECIPES` and the table below.
+
+### Accepting per-key proof at the push hook
+
+`work.gate.push.accept_attested_green` (default `false`; per hive or global) lets the
+`push-main` pre-push hook accept the exact pushed tree when
+`selective_validation.attested_green(..., "push-main")` holds: every active key is current or
+carried at that tree, none is red, the catalog has not drifted and `work.always_run` passes. The
+hook then exits 0 and prints each key's state. An absent or red key, drift, or any error falls
+through to the existing path unchanged: the aggregate `work.validate.push-main` lookup, then the
+full gate in `scripts/main-push-gate.sh`. With the flag off, nothing here runs and the hook behaves
+as before. The hook file holds no logic; the decision lives in `prepush.check_push_main`.
+
 | Key | Opaque command | Pants selector | Covers |
 |---|---|---|---|
 | `docs` | `just attest-docs` | `attest:docs` | Markdown lint |
@@ -229,7 +254,9 @@ Every backend follows the same rules:
    without a selector does too.
 6. A command that reads Git metadata or other state outside the graph never carries.
 
-Only a current green verdict can be a carry source. Carries do not chain, do not refresh the
+Only a current green verdict can be a carry source. Carries do not chain (see
+[high-water source discovery](design/attest-keys-single-gate-model-adr.md#35-high-water-source-discovery-for-carries-the-chaining-fix),
+which adds candidates without changing the rule), do not refresh the
 source verdict's age, and never transfer red or unknown results.
 
 ## Operation and rollback
