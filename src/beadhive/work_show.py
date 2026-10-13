@@ -333,6 +333,8 @@ def _legacy_review(
                 cfg,
                 base_rev=base,
                 head_rev=branch,
+                phase="review",
+                legacy_cmd=cmd,
                 repo_path=str(worktree.clone_for_branch(entry, branch)),
                 runner=lambda key_cmd: worktree.clean_checkout(
                     entry, branch, key_cmd, reuse=not fresh

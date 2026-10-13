@@ -81,6 +81,8 @@ def _impl_check_unadmitted(api, bead, hive, *, permit=None):
             cfg,
             base_rev=base,
             head_rev=sha,
+            phase="check",
+            legacy_cmd=cmd,
             repo_path=str(target),
             runner=lambda key_cmd: api.worktree.clean_checkout(
                 entry,
@@ -603,6 +605,8 @@ def impl__validate_submit_checkout(api, entry, branch, cfg, bead=None, override=
             cfg,
             base_rev=base,
             head_rev=branch,
+            phase="submit",
+            legacy_cmd=command,
             repo_path=str(api.worktree.clone_for_branch(entry, branch)),
             runner=lambda key_cmd: api.worktree.clean_checkout(
                 entry, branch, key_cmd, reuse=True, bead=bead, phase="submit"

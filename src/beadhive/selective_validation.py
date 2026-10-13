@@ -21,6 +21,7 @@ import typer
 from . import config_work_settings as config
 from . import identity, validation_ledger, validation_records
 from .bootstrap.impact import attest_keys, impact_resolver
+from .modules.config.contracts import GATE_ALL_KEY_PHASES
 
 Runner = Callable[[str], int]
 
@@ -139,6 +140,9 @@ def attested_green(entry, cfg, rev: str, phase: str) -> bool:
     red evidence into proof. Every exception, including an unreadable ledger, is ``False``.
     ``phase`` names the boundary asking; every phase requires every active key, which is the
     ADR's hard limit for ``push-main``/``release``/``postland`` and the safe reading elsewhere.
+    For those three phases the profile must also resolve to every active key
+    (``P(phase) == active(C)``); :func:`config.gate_profile` pins them to ``all``, so a
+    configured subset there can only ever answer ``False`` here.
     """
     try:
         return _attested_green(entry, cfg, rev, phase)
@@ -152,6 +156,11 @@ def attested_green(entry, cfg, rev: str, phase: str) -> bool:
 def _attested_green(entry, cfg, rev: str, phase: str) -> bool:
     if not rev or not phase:
         return False
+    # The ADR 3.4 `model == keys` conjunct is deliberately NOT here yet: it would refuse every
+    # legacy-model `release attest --if-needed` and bh-72ubb's push acceptance. It is deferred
+    # to the cutover slice, bh-i3nc3.
+    if phase in GATE_ALL_KEY_PHASES and config.gate_profile(cfg, entry, phase) is not None:
+        return False  # P(phase) == active(C): a main-reaching profile must be every active key
     tree = validation_ledger.tree_of(entry, rev)
     if not _TREE_ID.fullmatch(tree or ""):
         return False
@@ -290,6 +299,11 @@ def record_full_gate_keys(entry, cfg, rev: str, cmd: str, rc: int) -> None:
         str(validation[phase]).strip() for phase in FULL_GATE_PHASES if phase in validation
     }
     if cmd.strip() not in full_commands:
+        return
+    # Under `work.gate.model: keys` the partition this expansion assumes is only trusted while
+    # the runtime drift check holds; a drifted catalog (including the evaluator's own drift
+    # fallback to the legacy command) records no key proof.
+    if config.gate_model(cfg, entry) == "keys" and not catalog_ok(entry, cfg, rev):
         return
     for key in keys:
         if not key.is_disabled():
@@ -582,11 +596,22 @@ def run(
     repo_path: str | None = None,
     full: bool = False,
     receipt_override=None,
+    phase: str | None = None,
+    main_gate: bool = False,
+    legacy_cmd: str | None = None,
 ) -> int:
     """Resolve impact, carry proven greens, run invalidated keys, and aggregate policy.
 
     Exit 75 is UNKNOWN.  It blocks required keys and is tolerated for optional keys; every
     other non-zero result blocks regardless of policy.
+
+    ``phase`` (with ``main_gate`` for an op onto the integration branch, resolving
+    ``<phase>-main`` first exactly as :func:`config.validate_cmd` does) names the lifecycle
+    boundary.  It changes nothing under ``work.gate.model: legacy`` (the default).  Under
+    ``keys`` (attest-keys ADR 3.3) the runtime catalog drift check runs first and, on drift,
+    the phase's legacy command (``legacy_cmd``, else ``validate_cmd(phase)``) runs instead of
+    any key and no key proof is recorded; otherwise only the phase profile's keys are
+    evaluated and every other active key is reported ``not required by <phase>``.
     """
     # The whole selective run already holds one cfg; the inter-lane verdict/carry/tree reads
     # resolve the workspace root from it rather than re-loading config per git call (bh-931we).
@@ -600,7 +625,25 @@ def run(
             repo_path=repo_path,
             full=full,
             receipt_override=receipt_override,
+            phase=phase,
+            main_gate=main_gate,
+            legacy_cmd=legacy_cmd,
         )
+
+
+def _profile_keys(entry, cfg, keys: Sequence, phase: str | None, main_gate: bool):
+    """The phase profile's key names under ``model: keys``, or ``None`` for every active key.
+
+    A profile naming any key absent from the catalog is doubt, and doubt runs every key.
+    """
+    names = config.gate_profile(cfg, entry, phase, main_gate=main_gate)
+    if names is None:
+        return None
+    unknown = sorted(set(names) - {key.name for key in keys})
+    if unknown:
+        typer.echo(f"  · {phase} profile names unknown key(s) {unknown} — running every active key")
+        return None
+    return frozenset(names)
 
 
 def _run(
@@ -613,16 +656,42 @@ def _run(
     repo_path: str | None,
     full: bool,
     receipt_override,
+    phase: str | None,
+    main_gate: bool,
+    legacy_cmd: str | None,
 ) -> int:
     attest = config.attest_config(cfg, entry)
     keys = attest_keys(attest)
     if not keys:
         return runner(config.validate_cmd(cfg, entry))
+    profile = None
+    if config.gate_model(cfg, entry) == "keys":
+        if not catalog_ok(entry, cfg, head_rev):
+            fallback = (
+                legacy_cmd
+                if legacy_cmd is not None
+                else config.validate_cmd(cfg, entry, phase, main_gate=main_gate)
+            )
+            typer.echo(
+                f"  ! {phase or 'validation'}: attest catalog drift — running the legacy "
+                f"command {fallback!r}; no key proof is recorded"
+            )
+            return runner(fallback)
+        profile = _profile_keys(entry, cfg, keys, phase, main_gate)
     active_keys = tuple(key for key in keys if not key.is_disabled())
     for key in keys:
         if key.is_disabled():
             expiry = f" (until {key.disabled_until.isoformat()})" if key.disabled_until else ""
             typer.echo(f"  · {key.name}: DISABLED — {key.disabled_reason}{expiry}")
+    if profile is not None:
+        required = tuple(key for key in active_keys if key.name in profile)
+        if required:
+            for key in active_keys:
+                if key.name not in profile:
+                    typer.echo(f"  · {key.name}: not required by {phase}")
+            active_keys = required
+        else:
+            typer.echo(f"  · {phase} profile names no active key — running every active key")
     from . import registry
 
     repo = repo_path or str(registry.hive_dir(entry))

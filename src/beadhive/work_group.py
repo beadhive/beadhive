@@ -407,6 +407,8 @@ def _validate_group_checkout(
         cfg,
         base_rev=base_sha,
         head_rev=head_sha,
+        phase=phase,
+        legacy_cmd=command,
         repo_path=str(repo_path),
         runner=lambda key_cmd: worktree.clean_checkout(
             entry,
