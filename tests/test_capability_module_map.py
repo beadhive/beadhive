@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/capability_module_map.py"
@@ -25,6 +28,34 @@ def test_capability_module_map_is_reproducible_from_the_measured_revision() -> N
     artifact = json.loads(capability_module_map.DEFAULT_OUTPUT.read_text(encoding="utf-8"))
 
     assert artifact == capability_module_map.build_map()
+
+
+def test_git_object_reader_matches_per_object_git_reads() -> None:
+    module = _module()
+    revision = module.SOURCE_REVISION
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=ROOT, check=True, capture_output=True, text=True
+        ).stdout
+
+    reader = module.GitObjectReader(ROOT)
+    try:
+        listed = reader.list_tree(revision, "src/beadhive/modules/config")
+        assert listed == tuple(
+            git(
+                "ls-tree", "-r", "--name-only", revision, "--", "src/beadhive/modules/config"
+            ).splitlines()
+        )
+        assert listed
+        for path in listed[:10]:
+            expected = git("show", f"{revision}:{path}")
+            assert reader.read_blob(revision, path) == expected
+            assert reader.read_blob(revision, path) == expected  # memoised read is identical
+        with pytest.raises(FileNotFoundError):
+            reader.read_blob(revision, "no/such/path.py")
+    finally:
+        reader.close()
 
 
 def test_capability_module_map_freezes_every_required_evidence_family() -> None:

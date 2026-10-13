@@ -110,15 +110,97 @@ def _git(*args: str) -> str:
     ).stdout
 
 
-@cache
+class GitObjectReader:
+    """Read-only access to git objects at a fixed revision (the ``list_tree``/``read_blob`` seam).
+
+    Blob reads go through one long-lived ``git cat-file --batch`` process and are memoised, so a
+    build costs O(1) git processes rather than one per file.  Tree listings are one ``ls-tree``
+    per distinct (revision, prefix).  Call ``close`` to reap the batch process; the reader
+    restarts it lazily if used again.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self._process: subprocess.Popen[bytes] | None = None
+        self._blobs: dict[tuple[str, str], str] = {}
+        self._trees: dict[tuple[str, str, bool], tuple[str, ...]] = {}
+
+    def list_tree(self, rev: str, prefix: str, *, recursive: bool = True) -> tuple[str, ...]:
+        key = (rev, prefix, recursive)
+        if key not in self._trees:
+            args = ["git", "ls-tree", *(["-r"] if recursive else []), "--name-only", rev]
+            if recursive:
+                args.append("--")
+            args.append(prefix)
+            output = subprocess.run(
+                args, cwd=self.root, check=True, capture_output=True, text=True
+            ).stdout
+            self._trees[key] = tuple(output.splitlines())
+        return self._trees[key]
+
+    def _batch(self) -> subprocess.Popen[bytes]:
+        if self._process is None:
+            self._process = subprocess.Popen(
+                ["git", "cat-file", "--batch"],
+                cwd=self.root,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+        return self._process
+
+    def read_blob(self, rev: str, path: str) -> str:
+        key = (rev, path)
+        cached = self._blobs.get(key)
+        if cached is not None:
+            return cached
+        spec = f"{rev}:{path}"
+        process = self._batch()
+        assert process.stdin is not None and process.stdout is not None
+        process.stdin.write(spec.encode() + b"\n")
+        process.stdin.flush()
+        header = process.stdout.readline().split()
+        if len(header) != 3 or header[1] != b"blob":
+            raise FileNotFoundError(f"no blob at {spec}")
+        data = process.stdout.read(int(header[2]))
+        process.stdout.read(1)  # newline that follows every object body
+        # Match ``subprocess`` text mode (universal newlines) so output is byte-identical.
+        text = data.decode().replace("\r\n", "\n").replace("\r", "\n")
+        self._blobs[key] = text
+        return text
+
+    def close(self) -> None:
+        process, self._process = self._process, None
+        if process is not None:
+            assert process.stdin is not None and process.stdout is not None
+            process.stdin.close()
+            process.wait()
+            process.stdout.close()
+
+
+_READER = GitObjectReader(ROOT)
+
+
 def _revision_files(prefix: str) -> tuple[str, ...]:
-    output = _git("ls-tree", "-r", "--name-only", SOURCE_REVISION, "--", prefix)
-    return tuple(path for path in output.splitlines() if path.endswith(".py"))
+    return tuple(
+        path for path in _READER.list_tree(SOURCE_REVISION, prefix) if path.endswith(".py")
+    )
+
+
+def _source(path: str) -> str:
+    return _READER.read_blob(SOURCE_REVISION, path)
 
 
 @cache
-def _source(path: str) -> str:
-    return _git("show", f"{SOURCE_REVISION}:{path}")
+def _tree(path: str) -> ast.Module:
+    """The parsed tree for a revision source path; parsed once and treated as read-only."""
+    return ast.parse(_source(path), filename=path)
+
+
+@cache
+def _nodes(path: str) -> tuple[ast.AST, ...]:
+    """``ast.walk`` order for a revision source path, computed once per build."""
+    return tuple(ast.walk(_tree(path)))
 
 
 def _module(path: str) -> str:
@@ -216,43 +298,31 @@ def _call_coupling(
 ) -> dict[str, Any]:
     inbound: Counter[tuple[str, str, str]] = Counter()
     outbound: Counter[tuple[str, str, str]] = Counter()
+    owner_of: dict[str, str | None] = {}
     for path in all_paths:
         importer = _module(path)
-        tree = ast.parse(_source(path), filename=path)
-        aliases: dict[str, str] = {}
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    aliases[alias.asname or alias.name.split(".")[0]] = alias.name
-            elif isinstance(node, ast.ImportFrom):
-                base = _resolve_from(
-                    importer,
-                    path.endswith("/__init__.py"),
-                    node.level,
-                    node.module,
-                )
-                for alias in node.names:
-                    target = f"{base}.{alias.name}" if base else alias.name
-                    aliases[alias.asname or alias.name] = target
-        for node in ast.walk(tree):
+        aliases = _revision_aliases(path)
+        for node in _nodes(path):
             if not isinstance(node, ast.Call):
                 continue
             parts = _call_name(node.func)
             if not parts or parts[0] not in aliases:
                 continue
             target = ".".join((aliases[parts[0]], *parts[1:]))
-            candidates = sorted(
-                (
-                    module
-                    for module in modules
-                    if target == module or target.startswith(module + ".")
-                ),
-                key=len,
-                reverse=True,
-            )
-            if not candidates:
+            if target not in owner_of:
+                candidates = sorted(
+                    (
+                        module
+                        for module in modules
+                        if target == module or target.startswith(module + ".")
+                    ),
+                    key=len,
+                    reverse=True,
+                )
+                owner_of[target] = candidates[0] if candidates else None
+            target_module = owner_of[target]
+            if target_module is None:
                 continue
-            target_module = candidates[0]
             symbol = target.removeprefix(target_module).lstrip(".") or "<module>"
             key = (importer, target_module, symbol)
             if importer not in selected and target_module in selected:
@@ -284,10 +354,12 @@ def _test_inventory(slice_name: str) -> tuple[str, ...]:
     )
 
 
-def _import_aliases(path: str, tree: ast.AST) -> dict[str, str]:
+def _import_aliases(
+    path: str, tree: ast.AST, nodes: Iterable[ast.AST] | None = None
+) -> dict[str, str]:
     importer = _module(path)
     aliases: dict[str, str] = {}
-    for node in ast.walk(tree):
+    for node in ast.walk(tree) if nodes is None else nodes:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 aliases[alias.asname or alias.name.split(".")[0]] = alias.name
@@ -305,11 +377,15 @@ def _import_aliases(path: str, tree: ast.AST) -> dict[str, str]:
 
 
 @cache
+def _revision_aliases(path: str) -> dict[str, str]:
+    return _import_aliases(path, _tree(path), _nodes(path))
+
+
+@cache
 def _source_namespaces() -> dict[str, dict[str, str]]:
     namespaces: dict[str, dict[str, str]] = {}
     for path in _revision_files("src/beadhive"):
-        tree = ast.parse(_source(path), filename=path)
-        namespaces[_module(path)] = _import_aliases(path, tree)
+        namespaces[_module(path)] = _revision_aliases(path)
     return namespaces
 
 
@@ -367,11 +443,19 @@ def _dynamic_seams_in_source(
     path: str,
     selected: set[str],
     namespaces: dict[str, dict[str, str]],
+    *,
+    revision_path: bool = False,
 ) -> list[dict[str, Any]]:
-    tree = ast.parse(source, filename=path)
-    aliases = _import_aliases(path, tree)
+    """Dynamic seams in one test source.  ``revision_path`` reuses the per-build parse caches."""
+    if revision_path:
+        aliases = _revision_aliases(path)
+        nodes: Iterable[ast.AST] = _nodes(path)
+    else:
+        tree = ast.parse(source, filename=path)
+        aliases = _import_aliases(path, tree)
+        nodes = ast.walk(tree)
     records: list[dict[str, Any]] = []
-    for node in ast.walk(tree):
+    for node in nodes:
         if not isinstance(node, ast.Call):
             continue
         raw_call = ".".join(_call_name(node.func))
@@ -431,7 +515,9 @@ def _dynamic_test_seams(paths: tuple[str, ...], selected: set[str]) -> list[dict
     namespaces = _source_namespaces()
     for path in paths:
         source = _source(path)
-        records.extend(_dynamic_seams_in_source(source, path, selected, namespaces))
+        records.extend(
+            _dynamic_seams_in_source(source, path, selected, namespaces, revision_path=True)
+        )
     return sorted(records, key=lambda row: (row["path"], row["line"], row["expression"]))
 
 
@@ -450,11 +536,11 @@ def _slice_metrics(
         source = _source(path)
         physical += len(source.splitlines())
         nonblank += sum(bool(line.strip()) for line in source.splitlines())
-        tree = ast.parse(source, filename=path)
+        tree = _tree(path)
         functions += sum(
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) for node in ast.walk(tree)
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) for node in _nodes(path)
         )
-        classes += sum(isinstance(node, ast.ClassDef) for node in ast.walk(tree))
+        classes += sum(isinstance(node, ast.ClassDef) for node in _nodes(path))
         decisions += _decision_nodes(tree)
     inbound = tuple(
         edge for edge in edges if edge.importer not in selected and edge.imported_module in selected
@@ -499,6 +585,13 @@ def _slice_metrics(
 
 
 def build_map() -> dict[str, Any]:
+    try:
+        return _build_map()
+    finally:
+        _READER.close()
+
+
+def _build_map() -> dict[str, Any]:
     all_paths = _revision_files("src/beadhive")
     all_test_paths = _revision_files("tests")
     modules, edges, dynamic, components, cyclic = _materialized_import_graph()
