@@ -692,12 +692,6 @@ kind = "sleep"
 reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
 
 [[allow]]
-path = "tests/test_test_closure_certification_process.py"
-anchor = "test_bounded_probe_terminates_and_reaps_nested_children"
-kind = "sleep"
-reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
-
-[[allow]]
 path = "tests/test_test_watchdog.py"
 anchor = "test_timeout_reports_process_diagnostics_without_signaling_unregistered_python"
 kind = "elapsed-assert"

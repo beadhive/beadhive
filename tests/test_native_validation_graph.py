@@ -103,11 +103,6 @@ def test_backend_neutral_structural_gate_owns_shared_contract_checks() -> None:
         "check_import_boundaries.py",
         "check_package_imports.py",
         "check_test_wall_clock.py",
-        "test_closure_certification.py --check-structural",
-        "test_closure_shadow_policy.py --check",
-        "test_closure_promotion_policy.py --check",
-        "test_closure_operational_report.py --check",
-        "validation-evidence-refresh",
     ):
         assert required in neutral
     assert "pants" not in neutral.lower()
@@ -130,16 +125,14 @@ def test_backend_neutral_structural_gate_owns_shared_contract_checks() -> None:
     assert "check_pants_proven.py" not in native_audit
 
 
-def test_stateful_attestation_waits_for_its_closure_evidence_producer() -> None:
+def test_stateful_attestation_does_not_rerun_the_structural_check() -> None:
     justfile = (ROOT / "justfile").read_text(encoding="utf-8")
     stateful = _dependencies(justfile, "stateful-native")
 
-    # `attest-stateful` is a standalone selective-validation key. Its consumer must establish
-    # current-tree evidence itself instead of relying on the architecture key to finish first,
-    # but only through the minimal evidence producer: re-running the whole structural check
-    # here duplicated the architecture-contracts lane (bh-wtrjy).
-    assert "validation-evidence-refresh" in stateful
+    # `attest-stateful` is a standalone selective-validation key; re-running the whole structural
+    # check here duplicated the architecture-contracts lane (bh-wtrjy).
     assert "architecture-structural-check" not in stateful
+    assert "validation-evidence-refresh" not in stateful
 
 
 def test_recursive_pants_artifact_is_excluded_only_from_native_profile() -> None:
@@ -157,10 +150,9 @@ def test_recursive_pants_artifact_is_excluded_only_from_native_profile() -> None
     assert "test_bh_pex_contains_and_resolves_the_backend" in artifact
 
 
-def test_structural_gate_refreshes_evidence_serially_before_the_concurrent_pool() -> None:
+def test_structural_gate_is_one_concurrent_pool() -> None:
     body = _recipe_body(
         (ROOT / "justfile").read_text(encoding="utf-8"), "architecture-structural-check"
     )
-    assert body[0] == "just validation-evidence-refresh"
-    assert body[1].startswith("uv run python scripts/run_checks_concurrently.py")
-    assert all(line.startswith('"uv run ') for line in body[2:])
+    assert body[0].startswith("uv run python scripts/run_checks_concurrently.py")
+    assert all(line.startswith('"uv run ') for line in body[1:])

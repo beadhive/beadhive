@@ -14,9 +14,6 @@ python_sources(
         "render_transport_composition_evidence.py": {
             "dependencies": ["./check_import_boundaries.py:lib"]
         },
-        "test_closure_shadow_verifier.py": {
-            "dependencies": ["./test_closure_shadow_policy.py:lib"]
-        },
     },
 )
 
