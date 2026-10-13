@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import asyncio
 import faulthandler
 import json
@@ -39,6 +38,7 @@ def _build_product_application(**kwargs):
     )
 
 
+pytest_plugins = ["pytester"]
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "host_daemon" / "v1" / "live-contract.json"
 DOC = ROOT / "docs" / "HOST-DAEMON.md"
@@ -643,63 +643,49 @@ def test_checked_handoff_pins_the_exact_ui_endpoint_recipe_and_release_boundary(
     assert contract["finalPlatformEvidence"]["owner"] != contract["releaseCertification"]["owner"]
 
 
-def test_every_live_contract_cell_links_to_an_exact_collected_test() -> None:
+def test_every_live_contract_cell_links_to_an_exact_collected_test(pytester, monkeypatch) -> None:
     contract = json.loads(FIXTURE.read_text())
     evidence = contract["executableEvidence"]
 
     assert set(evidence) == EVIDENCE_CELLS
     nodes = sorted({node for cell in evidence.values() for node in cell})
     assert all(evidence.values())
+    collected = _collect_node_ids(pytester, monkeypatch, nodes)
     for node in nodes:
-        assert _node_is_a_collectable_test(node), node
+        assert any(actual == node or actual.startswith(f"{node}[") for actual in collected), node
 
 
-def _node_is_a_collectable_test(node: str) -> bool:
-    """Resolve a pytest node id in-process, with no nested ``pytest --collect-only``.
+class _Collector:
+    def __init__(self) -> None:
+        self.nodeids: list[str] = []
 
-    ``path::test_fn`` / ``path::TestClass::test_fn`` resolve against the module's AST: the file
-    must exist, the function must be a module-level ``test_*`` function (or a method of a
-    ``Test*`` class), exactly where pytest collects it. A ``[id]`` suffix must be one of the
-    function's ``parametrize`` ids; a bare node matches any parametrized variants."""
-    path, _, rest = node.partition("::")
-    file = ROOT / path
-    if not rest or not file.is_file():
-        return False
-    parts = rest.split("::")
-    name, _, param = parts[-1].partition("[")
-    if param and not parts[-1].endswith("]"):
-        return False
-    param = param[:-1]
-    source = file.read_text()
-    scope: list[ast.stmt] = ast.parse(source).body
-    for owner in parts[:-1]:
-        classes = [n for n in scope if isinstance(n, ast.ClassDef) and n.name == owner]
-        if not owner.startswith("Test") or not classes:
-            return False
-        scope = classes[-1].body
-    funcs = [
-        n for n in scope if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef) and n.name == name
-    ]
-    if not name.startswith("test") or not funcs:
-        return False
-    if not param:
-        return True
-    decorators = "\n".join(
-        ast.get_source_segment(source, d) or "" for d in funcs[-1].decorator_list
+    def pytest_collection_modifyitems(self, items) -> None:
+        self.nodeids.extend(item.nodeid for item in items)
+
+
+def _collect_node_ids(pytester, monkeypatch, nodes: list[str]) -> list[str]:
+    """Real pytest collection of ``nodes`` in this process, one call. pytester snapshots and
+    restores ``sys.modules``/``sys.path``; a collection error or an unknown node fails the run."""
+    monkeypatch.chdir(ROOT)
+    collector = _Collector()
+    run = pytester.inline_run(
+        "--collect-only", "-q", "-p", "no:cacheprovider", *nodes, plugins=[collector]
     )
-    return "parametrize" in decorators and param in decorators
+    assert run.ret == 0, run.ret
+    return collector.nodeids
 
 
-def test_the_in_process_node_resolver_rejects_what_collection_would_not_find() -> None:
+def test_the_in_process_collection_fails_on_what_collection_would_not_find(
+    pytester, monkeypatch
+) -> None:
     here = "tests/test_daemon_live_contract.py"
-    assert _node_is_a_collectable_test(
-        f"{here}::test_the_in_process_node_resolver_rejects_what_collection_would_not_find"
-    )
-    assert not _node_is_a_collectable_test(f"{here}::test_no_such_test")
-    assert not _node_is_a_collectable_test(f"{here}::_node_is_a_collectable_test")
-    assert not _node_is_a_collectable_test("tests/test_no_such_file.py::test_x")
-    assert not _node_is_a_collectable_test(f"{here}::test_no_such_test[x]")
-    assert not _node_is_a_collectable_test(here)
+    ok = f"{here}::test_the_in_process_collection_fails_on_what_collection_would_not_find"
+    assert _collect_node_ids(pytester, monkeypatch, [ok]) == [ok]
+    for bad in (f"{here}::test_no_such_test", "tests/test_no_such_file.py::test_x"):
+        pytester_run = pytester.inline_run(
+            "--collect-only", "-q", "-p", "no:cacheprovider", bad, plugins=[_Collector()]
+        )
+        assert pytester_run.ret != 0, bad
 
 
 def test_operator_runbook_checks_install_credentials_migration_outage_and_rollback() -> None:
