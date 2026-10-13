@@ -297,3 +297,24 @@ def test_config_rejects_bad_roots() -> None:
     ):
         with pytest.raises(ValueError):
             ValidationBrokerConfig.model_validate({"roots": bad})
+
+
+# ---- local_engine: the side-by-side gate's engine (bh-qhrl6) ---------------------------------
+
+
+def test_local_engine_is_none_under_slots_and_the_probed_engine_under_local(meminfo) -> None:
+    from beadhive.validation_broker_engine import local_engine
+    from beadhive_validation_broker import LocalEngine
+
+    warnings: list[str] = []
+    ports = {
+        "probe": MeminfoAvailability(meminfo, cpu_count=lambda: 16),
+        "clock": ManualClock(),
+        "owner_alive": lambda _owner: True,
+        "warn": warnings.append,
+    }
+    assert local_engine({}, environ={}, **ports) is None
+    assert warnings == []  # slots: nothing to say
+    assert isinstance(local_engine({}, environ={ENGINE_ENV: "local"}, **ports), LocalEngine)
+    assert local_engine({}, environ={ENGINE_ENV: "bogus"}, **ports) is None
+    assert len(warnings) == 1 and "bogus" in warnings[0]

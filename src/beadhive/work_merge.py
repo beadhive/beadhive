@@ -326,6 +326,8 @@ def impl__validate_molecule_checkout(api, entry, mol_branch, cfg, mode, override
         )
     elif api.selective_validation.configured(cfg, entry):
         base = api.config.integration_branch(cfg, entry)
+        from .validation_key_runner import CheckoutKeyRunner
+
         rc = api.selective_validation.run(
             entry,
             cfg,
@@ -334,8 +336,8 @@ def impl__validate_molecule_checkout(api, entry, mol_branch, cfg, mode, override
             phase="molecule",
             legacy_cmd=command,
             repo_path=str(api.worktree.clone_for_branch(entry, mol_branch)),
-            runner=lambda key_cmd: api.worktree.clean_checkout(
-                entry, mol_branch, key_cmd, cfg=cfg, reuse=True, phase="molecule"
+            runner=CheckoutKeyRunner(
+                api.worktree, entry, mol_branch, cfg=cfg, reuse=True, phase="molecule"
             ),
         )
     else:
@@ -379,6 +381,8 @@ def impl__postland_revalidate_molecule(
         ):
             # Key model: exact-tree reuse (unmoved base) and carry from the validated pre-land
             # molecule tree (moved base) via the evaluator; legacy never takes this branch.
+            from .validation_key_runner import CheckoutKeyRunner
+
             vrc = api.selective_validation.run(
                 entry,
                 cfg,
@@ -387,8 +391,8 @@ def impl__postland_revalidate_molecule(
                 phase="postland",
                 legacy_cmd=command,
                 repo_path=str(api.worktree.clone_for_branch(entry, base)),
-                runner=lambda key_cmd: api.worktree.clean_checkout(
-                    entry, base, key_cmd, cfg=cfg, reuse=True, phase="postland"
+                runner=CheckoutKeyRunner(
+                    api.worktree, entry, base, cfg=cfg, reuse=True, phase="postland"
                 ),
             )
         else:
@@ -1094,6 +1098,8 @@ def _union_key_validator(api, cfg, entry):
     command = api.config.validate_cmd(cfg, entry, "union")
 
     def validate(base_rev, head_rev, base):
+        from .validation_key_runner import CheckoutKeyRunner
+
         return api.selective_validation.run(
             entry,
             cfg,
@@ -1102,9 +1108,7 @@ def _union_key_validator(api, cfg, entry):
             phase="union",
             legacy_cmd=command,
             repo_path=str(api.worktree.clone_for_branch(entry, base)),
-            runner=lambda key_cmd: api.worktree.clean_checkout(
-                entry, base, key_cmd, cfg=cfg, reuse=True, phase="union"
-            ),
+            runner=CheckoutKeyRunner(api.worktree, entry, base, cfg=cfg, reuse=True, phase="union"),
         )
 
     return validate
@@ -1222,6 +1226,8 @@ def impl__postland_revalidate_bead(
             phase="merge",
         )
     elif api.selective_validation.configured(cfg, entry):
+        from .validation_key_runner import CheckoutKeyRunner
+
         vrc = api.selective_validation.run(
             entry,
             cfg,
@@ -1231,8 +1237,8 @@ def impl__postland_revalidate_bead(
             main_gate=on_main,
             legacy_cmd=command,
             repo_path=str(api.worktree.clone_for_branch(entry, base)),
-            runner=lambda key_cmd: api.worktree.clean_checkout(
-                entry, base, key_cmd, cfg=cfg, reuse=True, bead=bead, phase="merge"
+            runner=CheckoutKeyRunner(
+                api.worktree, entry, base, cfg=cfg, reuse=True, bead=bead, phase="merge"
             ),
         )
     else:

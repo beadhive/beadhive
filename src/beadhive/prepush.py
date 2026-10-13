@@ -467,6 +467,7 @@ def run_missing_keys(rev: str, hive_id: str = "", gate_cmd: str = "") -> tuple[b
         if config.layered(cfg, entry, "work.gate.push", "accept_attested_green", False) is not True:
             return False, ""
         from . import selective_validation, worktree  # lazy: legacy hooks import neither
+        from .validation_key_runner import CheckoutKeyRunner
 
         if not selective_validation.configured(cfg, entry):
             return False, ""
@@ -475,12 +476,11 @@ def run_missing_keys(rev: str, hive_id: str = "", gate_cmd: str = "") -> tuple[b
         parent = _git(["rev-parse", "--verify", "-q", f"{rev}^"], registry.hive_dir(entry))
         base = (parent.stdout or "").strip() if getattr(parent, "returncode", 1) == 0 else ""
 
-        def key_runner(key_cmd: str) -> int:
-            if key_cmd.strip() == gate_cmd.strip():
-                return 1  # the evaluator's legacy fallback: only the hook script runs the gate
-            return worktree.clean_checkout(
-                entry, rev, key_cmd, cfg=cfg, reuse=True, phase="push-main"
-            )
+        # The evaluator's legacy fallback (the gate command) is refused with exit 1: only the
+        # hook script runs the gate.
+        key_runner = CheckoutKeyRunner(
+            worktree, entry, rev, refuse=gate_cmd, cfg=cfg, reuse=True, phase="push-main"
+        )
 
         rc = selective_validation.run(
             entry,

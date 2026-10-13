@@ -95,13 +95,16 @@ PACKAGE_TESTS: dict[str, tuple[str, ...]] = {
         "tests/test_plugins.py",
     ),
     # Root tests that adapt today's host slots to the validation broker port (bh-uljpc), select
-    # the broker engine (bh-qrixp), resolve per-key reservations (bh-9oc32) and set up a run
-    # inside its execution root (bh-mf1o4).
+    # the broker engine (bh-qrixp), resolve per-key reservations (bh-9oc32), set up a run
+    # inside its execution root (bh-mf1o4) and run a gate's keys side by side (bh-qhrl6).
     "beadhive-validation-broker": (
         "tests/test_validation_broker_engine.py",
         "tests/test_validation_broker_slots.py",
+        "tests/test_validation_key_runner.py",
         "tests/test_validation_reservations.py",
         "tests/test_validation_run_root.py",
+        "tests/test_validation_side_by_side.py",
+        "tests/test_validation_side_by_side_gate.py",
     ),
     "beadhive-worktrees": (
         "tests/test_retire.py",

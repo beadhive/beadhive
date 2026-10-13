@@ -328,6 +328,8 @@ def _legacy_review(
         cmd = config.validate_cmd(cfg, entry)
         typer.echo(f"\n## Validation ({cmd})")
         if selective_validation.configured(cfg, entry):
+            from .validation_key_runner import CheckoutKeyRunner
+
             rc = selective_validation.run(
                 entry,
                 cfg,
@@ -336,9 +338,7 @@ def _legacy_review(
                 phase="review",
                 legacy_cmd=cmd,
                 repo_path=str(worktree.clone_for_branch(entry, branch)),
-                runner=lambda key_cmd: worktree.clean_checkout(
-                    entry, branch, key_cmd, reuse=not fresh
-                ),
+                runner=CheckoutKeyRunner(worktree, entry, branch, reuse=not fresh),
             )
         else:
             rc = worktree.clean_checkout(entry, branch, cmd, reuse=not fresh)

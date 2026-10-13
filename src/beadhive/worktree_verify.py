@@ -18,6 +18,8 @@ import shutil
 import subprocess
 import tempfile
 import time
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import typer
@@ -168,6 +170,20 @@ def run(*args, **kwargs):
 
 def wt_dir(*args, **kwargs):
     return _call_facade("wt_dir", *args, **kwargs)
+
+
+@dataclass(frozen=True)
+class SharedCheckout:
+    """A clean checkout one side-by-side gate's keys share (bh-qhrl6).
+
+    Its owner (the group runner) created it, ran the per-tree setup in it and removes it; a key
+    run in it skips the per-run checkout, init rules and cleanup, takes its admission from the
+    broker grant instead of a host slot, and starts from ``env`` (the grant environment).
+    Recording is unchanged: the same run record, ledger verdict and ``cmd_hash``.
+    """
+
+    path: Path
+    env: Mapping[str, str] = field(default_factory=dict)
 
 
 def impl__rules(cfg, entry):
@@ -690,6 +706,42 @@ def impl__prepare_verify_worktree(main: Path, entry, branch: str, cmd: str):
     return tmp, 0
 
 
+def _with_engine(cfg, env: dict[str, str]) -> dict[str, str]:
+    """Under engine local, name it to the validation command; under slots ``env`` is unchanged.
+
+    ``check-all-native`` reads ``BH_VALIDATION_BROKER_ENGINE`` to run its attest recipes side by
+    side (bh-qhrl6), so a hive that selects ``local`` in config reaches it too.
+    """
+    from . import validation_broker_engine
+
+    try:
+        if validation_broker_engine.configured_engine(cfg or {}, env) == "local":
+            env[validation_broker_engine.ENGINE_ENV] = "local"
+    except ValueError:
+        pass  # an invalid name means slots; the engine selection itself says so loudly
+    return env
+
+
+@contextlib.contextmanager
+def impl_shared_verify_checkout(entry, branch: str, label: str):
+    """Today's clean-checkout location for a side-by-side gate's shared checkout (bh-qhrl6).
+
+    One detached ``verify-*`` worktree of ``branch``, created and marked exactly as a single
+    run's is, and removed when the block exits. Raises ``RuntimeError`` when it cannot be made.
+    """
+    main = registry.hive_dir(entry)
+    tmp, rc = _prepare_verify_worktree(main, entry, branch, label)
+    if tmp is None:
+        raise RuntimeError(f"could not create a verify checkout of {branch} (exit {rc})")
+    try:
+        yield tmp
+    finally:
+        _run_git(["git", "-C", str(main), "worktree", "remove", "--force", str(tmp)], check=False)
+        if tmp.exists():
+            shutil.rmtree(tmp, ignore_errors=True)
+        _remove_verify_marker(tmp, marker_root=_verify_marker_root(main))
+
+
 def _resolve_validation_executable(
     command: list[str], *, cwd: Path, env: dict[str, str]
 ) -> Path | None:
@@ -745,6 +797,7 @@ def _impl_clean_checkout_unadmitted(
     bead=None,
     phase="validation",
     permit=None,
+    shared: SharedCheckout | None = None,
 ) -> int:
     """Validate `branch` from a throwaway detached worktree, so the result never depends on
     dirty local state. Each invocation gets its OWN verify-<leaf>-<rand6> dir (bh-nikb): two
@@ -799,7 +852,7 @@ def _impl_clean_checkout_unadmitted(
         entry, sha, cmd, cfg=cfg, bead=bead, phase=phase, branch=branch
     ):
         return 0
-    tmp, rc = _prepare_verify_worktree(main, entry, branch, cmd)
+    tmp, rc = (shared.path, 0) if shared else _prepare_verify_worktree(main, entry, branch, cmd)
     if tmp is None:
         tree = validation_ledger.tree_of(entry, sha)
         failed = validation_records.begin_run(
@@ -842,6 +895,8 @@ def _impl_clean_checkout_unadmitted(
     def cleanup_verify_checkout() -> None:
         if memory_scratch is not None:
             shutil.rmtree(memory_scratch, ignore_errors=True)
+        if shared:
+            return  # the group runner owns (and removes) a shared checkout
         _run_git(["git", "-C", str(main), "worktree", "remove", "--force", str(tmp)], check=False)
         if tmp.exists():  # git refused (locked / half-registered): never strand the checkout
             shutil.rmtree(tmp, ignore_errors=True)
@@ -881,7 +936,7 @@ def _impl_clean_checkout_unadmitted(
         )
         # From this point the run manifest is authoritative.  Remove the 0.15.1 worktree-keyed
         # compatibility marker; the run-id active pointer is sufficient for liveness/reaping.
-        if run_record is not None:
+        if run_record is not None and not shared:
             _remove_verify_marker(tmp, marker_root=_verify_marker_root(main))
         # Synchronous-contract heartbeat (bh-i0p1.4): only printed once we're actually about to pay
         # the real cost (the reuse short-circuit above already returned for a cheap hit), so this
@@ -901,7 +956,8 @@ def _impl_clean_checkout_unadmitted(
         raise
     try:
         try:
-            run_init(cfg, entry, tmp, verify_only=True)
+            if not shared:  # a shared checkout ran the init rules once, in its setup job
+                run_init(cfg, entry, tmp, verify_only=True)
         except BaseException:
             if run_record is not None:
                 validation_records.finish_run(main, run_record["run_id"], reason="setup_failure")
@@ -918,7 +974,11 @@ def _impl_clean_checkout_unadmitted(
                     reused=False,
                 )
             raise
-        child_base_env = _color_neutral_env(otel.telemetry_neutral_env())
+        child_base_env = (
+            dict(shared.env)
+            if shared
+            else _with_engine(cfg, _color_neutral_env(otel.telemetry_neutral_env()))
+        )
         resolved_executable = _resolve_validation_executable(
             command_argv, cwd=tmp, env=child_base_env
         )
@@ -1106,12 +1166,17 @@ def impl_clean_checkout(
     phase="validation",
     observed_active_run_id=None,
     permit=None,
+    shared: SharedCheckout | None = None,
 ) -> int:
     """Canonical clean-checkout gate, bounded by host-wide validation admission.
 
     ``observed_active_run_id`` carries an exact blocker noticed by the submit lifecycle. It is
     deliberately an identity rather than a copied outcome: after acquiring the identity lock we
     re-read the authoritative run and accept it only if its tree and command still match.
+
+    ``shared`` (bh-qhrl6) runs the command in a side-by-side gate's shared checkout. Its broker
+    grant is the admission, so no host slot is taken; identity locking, reuse and coalescing are
+    unchanged.
     """
     if cfg is None:
         try:
@@ -1132,7 +1197,15 @@ def impl_clean_checkout(
             phase=phase,
             observed_active_run_id=observed_active_run_id,
             permit=permit,
+            **({"shared": shared} if shared else {}),
         )
+
+
+def _host_slot(cfg, entry, phase, shared):
+    """Today's host slot, or the broker grant a shared checkout's key already holds."""
+    if shared:
+        return contextlib.nullcontext(None)
+    return validation_admission.host_slot(cfg, entry, phase=phase)
 
 
 def _impl_clean_checkout_scoped(
@@ -1146,7 +1219,9 @@ def _impl_clean_checkout_scoped(
     phase,
     observed_active_run_id,
     permit,
+    shared: SharedCheckout | None = None,
 ) -> int:
+    on_shared = {"shared": shared} if shared else {}
     sha = _branch_sha(entry, branch)
     tree = validation_ledger.tree_of(entry, sha)
     bypass_requested = validation_bypass.enabled(cfg, entry) and (
@@ -1190,9 +1265,10 @@ def _impl_clean_checkout_scoped(
                 bead=bead,
                 phase=phase,
                 permit=permit,
+                **on_shared,
             )
     if not reuse:
-        with validation_admission.host_slot(cfg, entry, phase=phase) as permit:
+        with _host_slot(cfg, entry, phase, shared) as permit:
             return _impl_clean_checkout_unadmitted(
                 entry,
                 branch,
@@ -1202,6 +1278,7 @@ def _impl_clean_checkout_scoped(
                 bead=bead,
                 phase=phase,
                 permit=permit,
+                **on_shared,
             )
 
     main = registry.hive_dir(entry)
@@ -1287,7 +1364,7 @@ def _impl_clean_checkout_scoped(
             return rc
         if _reuse_verdict_hit(entry, sha, cmd, cfg=cfg, bead=bead, phase=phase, branch=branch):
             return 0
-        with validation_admission.host_slot(cfg, entry, phase=phase) as permit:
+        with _host_slot(cfg, entry, phase, shared) as permit:
             return _impl_clean_checkout_unadmitted(
                 entry,
                 branch,
@@ -1297,6 +1374,7 @@ def _impl_clean_checkout_scoped(
                 bead=bead,
                 phase=phase,
                 permit=permit,
+                **on_shared,
             )
 
 

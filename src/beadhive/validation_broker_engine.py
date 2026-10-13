@@ -14,7 +14,9 @@ undercount memory). A local engine that is misconfigured, unavailable (no ``/pro
 erroring falls back to the slots engine with a loud warning, at selection time or later through
 :class:`beadhive_validation_broker.FailoverBroker`.
 
-No validation path calls this yet: wiring gates through the broker is ``bh-qhrl6``.
+A gate's pending attest keys run side by side through the local engine itself
+(:func:`local_engine`, ``bh-qhrl6``): there a failing engine sends the keys it has not started
+back to today's sequential slots path, loudly, instead of to the slots engine's port.
 """
 
 from __future__ import annotations
@@ -53,6 +55,7 @@ __all__ = [
     "build_local_engine",
     "configured_engine",
     "execution_roots",
+    "local_engine",
     "select_engine",
 ]
 
@@ -180,13 +183,44 @@ def select_engine(
     def slots() -> SlotsEngine:
         return SlotsEngine(cfg, entry, phase=phase, root=root)
 
+    local = local_engine(
+        cfg,
+        environ=environ,
+        probe=probe,
+        clock=clock,
+        owner_alive=owner_alive,
+        warn=warn,
+        disk_space=disk_space,
+        memory_backed=memory_backed,
+    )
+    if local is None:
+        return slots()
+    return FailoverBroker(local, slots, warn=warn)
+
+
+def local_engine(
+    cfg: dict,
+    *,
+    environ: Mapping[str, str] | None = None,
+    probe: MeminfoAvailability | None = None,
+    clock: Clock = time.monotonic,
+    owner_alive: ProcessLiveness = pid_alive,
+    warn: Callable[[str], None] = _warn,
+    disk_space: DiskSpace = statvfs_free,
+    memory_backed: Callable[[Path], bool] = _memory_backed,
+) -> LocalEngine | None:
+    """The probed local engine when it is the configured engine, else ``None``.
+
+    ``None`` without a word under slots; ``None`` with a loud warning when the engine name is
+    invalid or the local engine is misconfigured or unavailable (the caller uses slots).
+    """
     try:
         name = configured_engine(cfg, environ)
     except ValueError as exc:
         warn(f"⚠ validation broker: {exc}; using the slots engine")
-        return slots()
+        return None
     if name == "slots":
-        return slots()
+        return None
     try:
         local = build_local_engine(
             broker_settings(cfg),
@@ -201,5 +235,5 @@ def select_engine(
         warn(
             f"⚠ validation broker: the local engine is unavailable ({exc}); using the slots engine"
         )
-        return slots()
-    return FailoverBroker(local, slots, warn=warn)
+        return None
+    return local

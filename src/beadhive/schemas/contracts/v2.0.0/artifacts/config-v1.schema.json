@@ -2879,6 +2879,14 @@
           },
           "title": "Roots",
           "type": "array"
+        },
+        "setup": {
+          "description": "Local engine only (bh-qhrl6): commands run once in a gate's shared checkout, after the verify init rules and before any key starts, so no key's own sync changes the shared environment under another key. A failing command sends the gate's keys to the sequential slots path. Default: sync every uv workspace package.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Setup",
+          "type": "array"
         }
       },
       "title": "ValidationBrokerConfig",

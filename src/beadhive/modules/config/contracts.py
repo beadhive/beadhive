@@ -1102,6 +1102,22 @@ class ValidationBrokerConfig(_Section):
             "(default): runs use today's locations."
         ),
     )
+    setup: list[str] = Field(
+        default_factory=lambda: ["uv sync --all-packages --inexact"],
+        description=(
+            "Local engine only (bh-qhrl6): commands run once in a gate's shared checkout, after "
+            "the verify init rules and before any key starts, so no key's own sync changes the "
+            "shared environment under another key. A failing command sends the gate's keys to "
+            "the sequential slots path. Default: sync every uv workspace package."
+        ),
+    )
+
+    @field_validator("setup")
+    @classmethod
+    def _setup_commands(cls, v):
+        if any(not command.strip() for command in v):
+            raise ValueError("work.validation_broker.setup commands must be non-empty")
+        return v
 
     @model_validator(mode="after")
     def _distinct_roots(self):
