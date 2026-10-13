@@ -702,3 +702,161 @@ def test_flag_off_never_consults_attested_green_and_matches_legacy_output(hive, 
 
 def test_the_hook_file_gains_no_flag_logic():
     assert "accept_attested_green" not in GATE_SCRIPT.read_text()
+
+
+# ---- bh-aq832: a push-main miss runs ONLY the absent keys  ------------------
+
+
+def _keys_hive(hive, monkeypatch, states: dict[str, str], *, model="keys", flag=True):
+    """A keys-model hive whose per-key states live in the mutable `states` dict; the fake
+    `clean_checkout` turns a key `current` when its command runs; `ran` records each command."""
+    hive["entry"].setdefault("work", {})["gate"] = {
+        "model": model,
+        "push": {"accept_attested_green": flag},
+    }
+    ran: list[str] = []
+    attest = AttestConfig.model_validate(
+        {"keys": [{"name": name, "cmd": f"just {name}"} for name in states]}
+    )
+    monkeypatch.setattr(selective_validation.config, "attest_config", lambda *_: attest)
+    monkeypatch.setattr(selective_validation, "catalog_ok", lambda *_a, **_k: True)
+    monkeypatch.setattr(validation_ledger, "always_run_ok", lambda *_a, **_k: True)
+    green = {
+        "schema": 1,
+        "run_id": "r",
+        "lifecycle": "completed",
+        "signal": None,
+        "verdict": "green",
+        "exit_code": 0,
+    }
+    monkeypatch.setattr(
+        validation_ledger,
+        "key_verdicts",
+        lambda entry, tree, keys, ttl=None, cfg=None: {
+            name: validation_ledger.KeyVerdict(
+                name,
+                tree,
+                "h",
+                validation_ledger.KeyVerdictState(state),
+                green if state == "current" else None,
+            )
+            for name, state in states.items()
+        },
+    )
+
+    def fake_checkout(entry, rev, cmd, **_kw):
+        ran.append(cmd)
+        states[cmd.removeprefix("just ")] = "current"
+        return 0
+
+    monkeypatch.setattr("beadhive.worktree.clean_checkout", fake_checkout)
+
+    def fake_run(entry, cfg, *, runner, phase, legacy_cmd, **_kw):
+        assert phase == "push-main"
+        for name, state in list(states.items()):
+            if state == "absent":
+                if runner(f"just {name}"):
+                    return 1
+        return 0
+
+    monkeypatch.setattr(selective_validation, "run", fake_run)
+    return ran
+
+
+def _run_missing(hive, gate: str = GATE_CMD):
+    return runner.invoke(
+        app, ["hive", "hook", "push-main", hive["sha"], "--hive", "mr", "--gate", gate]
+    )
+
+
+def test_run_missing_runs_only_the_absent_key_then_passes(hive, monkeypatch):
+    ran = _keys_hive(hive, monkeypatch, {"docs": "current", "unit": "absent", "lint": "carried"})
+
+    res = _run_missing(hive)
+
+    assert res.exit_code == 0, res.output
+    assert ran == ["just unit"]
+    assert "attested green" in res.output
+
+
+def test_run_missing_with_nothing_missing_runs_no_key(hive, monkeypatch):
+    ran = _keys_hive(hive, monkeypatch, {"docs": "current", "unit": "carried"})
+
+    assert _run_missing(hive).exit_code == 0
+    assert ran == []
+
+
+def test_run_missing_red_key_runs_the_full_gate(hive, monkeypatch):
+    _keys_hive(hive, monkeypatch, {"docs": "current", "unit": "absent"})
+    monkeypatch.setattr("beadhive.worktree.clean_checkout", lambda *_a, **_k: 1)
+
+    assert _run_missing(hive).exit_code != 0
+
+
+def test_run_missing_drift_runs_no_key_and_the_full_gate(hive, monkeypatch):
+    ran = _keys_hive(hive, monkeypatch, {"docs": "current", "unit": "absent"})
+    monkeypatch.setattr(selective_validation, "catalog_ok", lambda *_a, **_k: False)
+
+    assert _run_missing(hive).exit_code != 0
+    assert ran == []
+
+
+def test_run_missing_evaluator_error_runs_the_full_gate(hive, monkeypatch):
+    _keys_hive(hive, monkeypatch, {"docs": "current", "unit": "absent"})
+
+    def boom(*_a, **_k):
+        raise RuntimeError("evaluator exploded")
+
+    monkeypatch.setattr(selective_validation, "run", boom)
+
+    assert _run_missing(hive).exit_code != 0
+
+
+def test_run_missing_never_runs_the_legacy_gate_command_itself(hive, monkeypatch):
+    """The evaluator's own drift fallback hands the runner the legacy gate command; the verb must
+    refuse it, so the full gate runs only from the hook script (where it is recorded)."""
+    ran = _keys_hive(hive, monkeypatch, {"docs": "current", "unit": "absent"})
+
+    def fallback_run(entry, cfg, *, runner, legacy_cmd, **_kw):
+        return runner(legacy_cmd)
+
+    monkeypatch.setattr(selective_validation, "run", fallback_run)
+
+    assert _run_missing(hive).exit_code != 0
+    assert ran == []
+
+
+def test_run_missing_still_failing_the_predicate_after_the_run_is_not_a_pass(hive, monkeypatch):
+    _keys_hive(hive, monkeypatch, {"docs": "current", "unit": "absent"})
+    monkeypatch.setattr(
+        selective_validation, "run", lambda *_a, **_k: 0
+    )  # claims success, ran nothing
+
+    assert _run_missing(hive).exit_code != 0
+
+
+@pytest.mark.parametrize(("model", "flag"), [("legacy", True), ("keys", False), ("keys", "true")])
+def test_run_missing_is_inert_unless_keys_model_and_opted_in(hive, monkeypatch, model, flag):
+    ran = _keys_hive(
+        hive, monkeypatch, {"docs": "current", "unit": "absent"}, model=model, flag=flag
+    )
+
+    res = _run_missing(hive)
+
+    assert res.exit_code != 0
+    assert ran == []
+
+
+def test_legacy_miss_prints_exactly_the_lookup_detail(hive):
+    """A legacy hive's miss output is the lookup's own detail line, nothing added."""
+    _ok, detail = prepush.check_push_main(hive["sha"], "mr", GATE_CMD)
+    res = _lookup(hive)
+
+    assert res.exit_code == 1
+    assert res.output == detail + "\n"
+
+
+def test_the_gate_script_stays_one_verb_call_and_keeps_the_legacy_gate_and_recording():
+    text = GATE_SCRIPT.read_text()
+    assert 'hive hook push-main "$gate" --gate "$gate_cmd"; then' in text
+    assert "scripts/record_full_gate.py" in text and "$gate_cmd || rc=$?" in text

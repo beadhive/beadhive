@@ -439,3 +439,66 @@ def check_push_main(
         )
     except Exception as exc:  # noqa: BLE001 — ANY failure means "run the gate", never "pass"
         return False, f"• verdict lookup failed ({type(exc).__name__}: {exc}) — {on_miss}"
+
+
+def run_missing_keys(rev: str, hive_id: str = "", gate_cmd: str = "") -> tuple[bool, str]:
+    """`(ok, detail)` after running ONLY the push-main keys that are absent for `rev`'s tree
+    (attest-keys ADR 3.4/3.3, `docs/design/attest-keys-single-gate-model-adr.md`).
+
+    Called by `bh hive hook push-main` after :func:`check_push_main` missed. It is
+    inert (`ok=False`, empty detail) unless the hive is on `work.gate.model: keys` AND the opt-in
+    `work.gate.push.accept_attested_green` is true: a legacy hive, and a keys hive that has not
+    opted into per-key acceptance, get exactly the full gate as before.
+
+    Otherwise: refuse on catalog drift up front, run `selective_validation.run(phase="push-main")`
+    so only the keys without a current or carried verdict execute, then RE-ASK the one predicate
+    (:func:`_attested_green_hit`) -- the exit is never the evaluator's rc alone. **Every doubt is
+    `ok=False`, which means the caller runs the legacy full gate**: drift, an evaluator error or
+    non-zero rc, an unresolvable tree, any exception, or the evaluator reaching for the legacy
+    command (its own drift fallback). The legacy command is never run from here -- it stays in
+    the hook script, where `record_full_gate` records it."""
+    try:
+        cfg = config.load()
+        entry = registry.resolve_hive(cfg, hive_id) if hive_id else registry.current_hive(cfg)
+        if not entry:
+            return False, ""
+        if config.gate_model(cfg, entry) != "keys":
+            return False, ""
+        if config.layered(cfg, entry, "work.gate.push", "accept_attested_green", False) is not True:
+            return False, ""
+        from . import selective_validation, worktree  # lazy: legacy hooks import neither
+
+        if not selective_validation.configured(cfg, entry):
+            return False, ""
+        if not selective_validation.catalog_ok(entry, cfg, rev):
+            return False, "• attest catalog drift — the full gate runs"
+        parent = _git(["rev-parse", "--verify", "-q", f"{rev}^"], registry.hive_dir(entry))
+        base = (parent.stdout or "").strip() if getattr(parent, "returncode", 1) == 0 else ""
+
+        def key_runner(key_cmd: str) -> int:
+            if key_cmd.strip() == gate_cmd.strip():
+                return 1  # the evaluator's legacy fallback: only the hook script runs the gate
+            return worktree.clean_checkout(
+                entry, rev, key_cmd, cfg=cfg, reuse=True, phase="push-main"
+            )
+
+        rc = selective_validation.run(
+            entry,
+            cfg,
+            base_rev=base or rev,
+            head_rev=rev,
+            phase=PUSH_MAIN_PHASE,
+            legacy_cmd=gate_cmd,
+            runner=key_runner,
+        )
+        if rc != 0:
+            return False, f"• missing keys did not all pass (exit {rc}) — the full gate runs"
+        hit = _attested_green_hit(cfg, entry, rev, "gate runs")
+        if hit is None:
+            return False, "• keys ran but the tree is still not attested green — the full gate runs"
+        return True, hit
+    except Exception as exc:  # noqa: BLE001 — ANY failure means "run the gate", never "pass"
+        return (
+            False,
+            f"• running missing keys failed ({type(exc).__name__}: {exc}) — the full gate runs",
+        )
