@@ -4212,6 +4212,8 @@ def test_tree_template_restores_a_byte_identical_tree_with_working_git_paths(tmp
     repo, linked = live / "repo", live / "linked"
     repo.mkdir()
     _git("init", "-q", "-b", "main", cwd=repo)
+    _git("config", "user.email", "human@example.com", cwd=repo)
+    _git("config", "user.name", "human", cwd=repo)
     _commit(repo, "chore: init")
     _git("worktree", "add", "-q", "-b", "side", str(linked), cwd=repo)
     captured = tree_digest(live)
