@@ -108,25 +108,17 @@ Watch item: `tests/test_hq_authority_backend.py::test_real_foreign_holder_takeov
 failed once under 3-way concurrency during bh-p4bbw. Host contention is unconfirmed; if it recurs,
 diagnose contention before reaching for retries or longer sleeps.
 
-## Selective-CI policy
+## Selective validation
 
-The checked [Selective-CI operational report](SELECTIVE-CI-OPERATIONS.md) is the authoritative
-closure inventory and measurement ledger. As of 2026-09-10, production selective routes: **0**.
-All 24 closures are uncertified, so no before/after wall time, compute time, queue delay,
-full-suite frequency, miss rate, flake rate, or savings measurement is available. Focused
-developer timings and exact-tree receipt reuse are not extrapolated into production savings.
+Closure certification and the selective-CI policy are retired. Selective validation is defined
+solely by the attest-key gate model: see
+[the attest-keys single gate model ADR](design/attest-keys-single-gate-model-adr.md).
 
-Commit and main-integration are the only provisioned selective boundaries. They run a closure only
-after exact current certification, qualifying shadow evidence, and trusted route verification;
-otherwise they run `just check`. `leaf-merge`, `child-epic-finish`,
-`final-workstream-submit`, `final-workstream-review`, `scheduled`, and `release` are permanently
-full-only at this policy version and run `just check-all`.
-
-An escaped regression, boundary change, stale coverage, tool-version change, or schema change
-automatically restores `just check` and requires recertification before selective use. A new module
-or plugin must add a checked closure/conformance declaration before registration. To disable the
-provisioned routes in one change, set `selective_ci.mode = "full"` in
-`tests/selective-ci-policy.toml`.
+Policy: plain selective `bh work submit` and `bh work merge` is the default path for every bead.
+`--override-validation` and `work.validation_bypass` are audited exceptions for a broken gate or
+an incident, never a routine way past a slow or red key. Fix the key, narrow the profile, or
+carry. The gate settings, the approved profile example and the rollback table are in
+[ATTEST-KEYS.md](ATTEST-KEYS.md#gate-model-and-phase-profiles).
 
 ## Fence spike-merge saving on integration runs (bh-y4c4z)
 
@@ -764,20 +756,24 @@ on this branch. The four sets are byte-identical before and after.
 | Lane | Selection | Items |
 | --- | --- | ---: |
 | `stateful-native` | `tests -m "not integration and not pants_profile"` minus every root-composition file (`--ignore`) | 10,468 |
-| `root-composition-native` | the registered root-composition files, no `-m` filter | 1,217 |
+| `root-composition-native` | the registered root-composition files, `-m "not integration"` (bh-s6yhj; was no filter, 1,217) | 1,185 |
 | `test-integration-land` | `tests -m integration` | 262 |
 | whole tree | `tests` | 11,914 |
 
 - `stateful-native` and `root-composition-native` are disjoint. A file in `PACKAGE_TESTS` leaves
   the stateful lane entirely.
-- `test-integration-land` takes no `--ignore`. The 34 integration-marked root-composition tests
-  therefore run in both `root-composition-native` and `test-integration-land` under `check-all`:
+- `test-integration-land` takes no `--ignore`. Before bh-s6yhj the 34 integration-marked
+  root-composition tests ran in both `root-composition-native` and `test-integration-land` under
+  `check-all`. Since bh-s6yhj (decision bh-2znxs, option 3) `root-composition-native` filters
+  `-m "not integration"`, so they run once, in `test-integration-land`. The integration attest
+  key's selectors add `packages/beadhive-hq-storage/*` and `packages/beadhive-hq-storage-dolt/*`
+  (HQ catalog publish) so an hq-storage-only change still selects them. They are:
   `test_fence_composed_int` (7), `test_fence_data_int` (12), `test_fence_orphan_int` (11),
   `test_writer_adopt_int` (3) and one `tests/contracts/test_hq_storage_composition.py` test.
 - The union of the three lanes is the whole tree except the one `pants_profile` test, which
   `pants-artifact-check` runs. No test leaves every lane.
-- `check-native` (`just check`) runs `root-composition-native`, so it runs these 34 Dolt
-  integration tests too.
+- `check-native` (`just check`) runs `root-composition-native` but not the integration lane, so
+  since bh-s6yhj it no longer runs these 34 Dolt integration tests; `check-all-native` does.
 
 ### Runs
 

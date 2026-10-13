@@ -16,7 +16,6 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-import tempfile
 import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -63,21 +62,6 @@ def _command(*argv: str) -> Callable[[Path], Outcome]:
         return Outcome(result.returncode == 0, detail)
 
     return run
-
-
-def _certification(root: Path) -> Outcome:
-    """Derive runtime closure certification into a private temp file and check it.
-
-    Writing to a temp path keeps this pre-check from touching the shared tree-scoped evidence a
-    concurrently running lane may be reading.
-    """
-    with tempfile.TemporaryDirectory(prefix="bh-evidence-precheck-") as tmp:
-        output = str(Path(tmp) / "test-closure-certification.json")
-        script = "scripts/test_closure_certification.py"
-        derived = _command(script, "--output", output)(root)
-        if not derived.ok:
-            return derived
-        return _command(script, "--check-structural", "--output", output)(root)
 
 
 def module_evidence_errors(evidence: dict, ledger: dict, metrics: dict) -> list[str]:
@@ -148,12 +132,6 @@ CHECKS: tuple[Check, ...] = (
         "add an owning paths selector for every listed path (bh config, scope fleet), then "
         "uv run python scripts/check_native_impact_map.py",
         _command("scripts/check_native_impact_map.py"),
-    ),
-    Check(
-        "test-closure certification (runtime evidence)",
-        "tests/closures.toml",
-        "just validation-evidence-refresh, then fix the reported closure declarations",
-        _certification,
     ),
     Check(
         "operation catalog",

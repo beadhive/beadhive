@@ -9,11 +9,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib.util
 import json
-import os
 import subprocess
-import sys
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
@@ -23,70 +20,13 @@ from .repository import find_repository
 ROOT = find_repository()
 
 
-# Mirrors scripts/validation_artifacts.py's _SELF_REFERENTIAL_EXCLUDES: the operational report is
-# generated FROM this evidence, so it must not feed back into the key that locates it.
-_SELF_REFERENTIAL_EXCLUDES = frozenset({"docs/SELECTIVE-CI-OPERATIONS.md"})
-
-
-def _checkout_tree_scope() -> str:
-    """A content-addressed key for the exact checkout currently under validation.
-
-    Every worktree in this repo shares one physical ``.git``, so the evidence directory below is
-    shared by every worktree on the host. This hashes real on-disk bytes for every tracked path --
-    never the Git index's blob ids, so an uncommitted edit is never mistaken for its last-staged
-    content -- purely to partition that shared directory (bh-vi4ob.1): two worktrees validating
-    different content can never read or clobber each other's evidence, including two worktrees on
-    the very same commit but with different uncommitted edits, which a cheaper key such as
-    ``git rev-parse HEAD^{tree}`` cannot guard against. This package cannot import the ``scripts``
-    module (a separate distribution), so the same logic as
-    ``scripts/validation_artifacts.py:checkout_tree_scope`` is recomputed here rather than shared.
-    """
-    completed = subprocess.run(
-        ("git", "-C", str(ROOT), "ls-files", "--stage", "-z"),
-        check=True,
-        capture_output=True,
-    )
-    digest = hashlib.sha256()
-    for raw in completed.stdout.split(b"\0"):
-        if not raw:
-            continue
-        header, encoded_path = raw.split(b"\t", 1)
-        mode, _object_id, stage = header.decode().split()
-        relative = encoded_path.decode()
-        if stage != "0" or relative in _SELF_REFERENTIAL_EXCLUDES:
-            continue
-        path = ROOT / relative
-        content = os.readlink(path).encode() if path.is_symlink() else path.read_bytes()
-        blob = hashlib.sha256(content).hexdigest()
-        digest.update(f"{mode}\0{relative}\0sha256:{blob}\n".encode())
-    return digest.hexdigest()
-
-
-def _default_evidence() -> Path:
-    configured = os.environ.get("BH_VALIDATION_EVIDENCE_DIR")
-    base = (
-        Path(configured).expanduser().resolve()
-        if configured
-        else Path(
-            subprocess.run(
-                ("git", "-C", str(ROOT), "rev-parse", "--path-format=absolute", "--git-common-dir"),
-                check=True,
-                capture_output=True,
-                text=True,
-            ).stdout.strip()
-        )
-        / "bh"
-        / "validation"
-        / "evidence"
-    )
-    return base / _checkout_tree_scope() / "test-closure-certification.json"
-
-
-DEFAULT_EVIDENCE = _default_evidence()
 SELECTOR_VERSION = "bh-test-impact-selector-v1"
 PLAN_SCHEMA_VERSION = 1
 FULL_GATE = "just check"
-_MISSING_MODULE = object()
+# The closure-certification verifier is retired (attest keys are the single gate model), so no
+# evidence file can be re-verified here: the CLI always reports the artifact as invalid and the
+# plan fails closed to the full gate.
+UNVERIFIED_EVIDENCE = "certification-verifier-retired"
 _CURRENT_APPLICABILITY_FIELDS = frozenset(
     {
         "recorded_input_digest",
@@ -150,31 +90,6 @@ def selector_digest() -> str:
         "version": SELECTOR_VERSION,
     }
     return _digest(payload)
-
-
-def _exec_module_without_bytecode(spec: Any, module: Any) -> None:
-    """Execute one source dependency without leaving bytecode or interpreter state behind."""
-    previous_bytecode = sys.dont_write_bytecode
-    previous_module = sys.modules.get(spec.name, _MISSING_MODULE)
-    try:
-        sys.dont_write_bytecode = True
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
-    finally:
-        sys.dont_write_bytecode = previous_bytecode
-        if previous_module is _MISSING_MODULE:
-            sys.modules.pop(spec.name, None)
-        else:
-            sys.modules[spec.name] = previous_module
-
-
-def _load_certification():
-    path = ROOT / "scripts" / "test_closure_certification.py"
-    spec = importlib.util.spec_from_file_location("test_closure_certification_for_selector", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    _exec_module_without_bytecode(spec, module)
-    return module
 
 
 def apply_current_applicability(
@@ -618,19 +533,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", required=True, help="target revision used to find one merge base")
     parser.add_argument("--head", default="HEAD", help="candidate revision (default: HEAD)")
-    parser.add_argument("--evidence", type=Path, default=DEFAULT_EVIDENCE)
+    parser.add_argument("--evidence", type=Path, required=True)
     args = parser.parse_args(argv)
     evidence = json.loads(args.evidence.read_text(encoding="utf-8"))
-    certification = _load_certification()
-    artifact_errors = certification.validate_evidence(evidence, ROOT, verify_receipt=True)
-    applicability = certification.current_applicability(evidence, ROOT)
-    current_evidence = apply_current_applicability(evidence, applicability)
     plan = select_range(
         SubprocessGit(ROOT),
-        current_evidence,
+        evidence,
         base=args.base,
         head=args.head,
-        artifact_errors=artifact_errors,
+        artifact_errors=(UNVERIFIED_EVIDENCE,),
     )
     print(json.dumps(plan, indent=2, sort_keys=True))
     return 0

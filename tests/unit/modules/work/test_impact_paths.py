@@ -60,3 +60,36 @@ def test_paths_backend_is_available_without_a_plugin() -> None:
 
     assert isinstance(resolver, FailClosedResolver)
     assert isinstance(resolver.backend, PathsImpactBackend)
+
+
+_INTEGRATION_SELECTORS = (
+    "src/*",
+    "tests/*",
+    "scripts/*",
+    "pyproject.toml",
+    "uv.lock",
+    "justfile",
+)
+_HQ_STORAGE_SELECTORS = (
+    "packages/beadhive-hq-storage/*",
+    "packages/beadhive-hq-storage-dolt/*",
+)
+
+
+def test_hq_storage_only_change_selects_integration_with_package_selectors() -> None:
+    # root-composition-native filters out integration-marked tests (bh-s6yhj), so the
+    # integration key must itself own the hq-storage packages.
+    keys = (
+        _key("docs", "*.md"),
+        _key("integration", *_INTEGRATION_SELECTORS, *_HQ_STORAGE_SELECTORS),
+    )
+    for path in (
+        "packages/beadhive-hq-storage/src/x.py",
+        "packages/beadhive-hq-storage-dolt/src/y.py",
+    ):
+        receipt = FailClosedResolver(PathsImpactBackend(), _Diff(path)).resolve(
+            "/repo", "base", "head", keys
+        )
+
+        assert receipt.invalidated_keys == ("integration",)
+        assert receipt.unaffected_keys == ("docs",)

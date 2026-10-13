@@ -17,18 +17,35 @@ in the optional `just check-all-pants` profile (whether Pants stays is bh-ahm6x)
 graphs. The live native profile uses the path backend and keeps the catalog active; uncertainty
 falls back to the complete key set.
 
+`just check-all-native` is generated from the keys: it discovers every `attest-*` recipe with
+`just --summary --unsorted` and runs `just attest-<key>` for each in declaration order, so it has
+no leaf list to edit. `just check-native` runs the keys named by the justfile `fast_keys` variable
+(a named key subset). Adding a key needs only its `attest-<key>` recipe, a `KEY_RECIPES` entry in
+`scripts/check_attest_catalog.py`, a row in the table below and the HQ catalog entry;
+`just check-attest-catalog` names whichever piece is missing and enforces that each leaf is owned
+by exactly one key and that the keys' leaves are the complete native gate.
+
 ### Gate model and phase profiles
 
 `work.gate.model` selects the gate model: `legacy` (the default) or `keys`. Under `legacy` every
-selective boundary runs every active key and nothing below applies. Under `keys`, each of the seven
-selective call sites (`check`, `submit`, `review`, batch `submit`/`merge`, bead `merge`,
-`molecule` pre-land and `release attest --if-needed`) passes its lifecycle phase, and the
-evaluator:
+selective boundary runs every active key and nothing below applies; post-land, union and push-main
+run their `work.validate.<phase>` command strings. Under `keys`, every boundary is evaluated per
+key, not as a command string. The selective call sites (`check`, `submit`, `review`, batch
+`submit`/`merge`, bead `merge`, `molecule` pre-land, `release attest --if-needed`), the post-land
+re-validation of the integration tip (`postland`), the union-conflict re-validation (`union`) and
+the push-main miss path all pass their lifecycle phase to the same evaluator, which:
 
 1. runs the runtime catalog drift check (below). On drift it runs that phase's legacy command
    instead of any key and records no key proof;
 2. evaluates only the keys of the phase's profile and reports every other active key as
    `not required by <phase>`.
+
+The `work.validate.<phase>` strings are therefore only fallbacks under `keys`: they run on drift,
+and for a hive with no catalog. A push-main miss (no exact-tree aggregate verdict, no attested
+green tree) runs only the keys that are absent for the pushed tree, then re-asks the one
+`attested_green` predicate; any doubt runs the full gate command as before (this miss path needs
+`work.gate.push.accept_attested_green`, below). `bh release attest --if-needed` requires every
+active key through the `release` profile.
 
 `work.gate.profiles` maps a phase (`check`, `submit`, `review`, `merge`, `merge-main`, `molecule`,
 `postland`, `union`, `release`, `push-main`) or `default` to `all`, a `work.gate.subsets` name, or
@@ -72,6 +89,104 @@ hook then exits 0 and prints each key's state. An absent or red key, drift, or a
 through to the existing path unchanged: the aggregate `work.validate.push-main` lookup, then the
 full gate in `scripts/main-push-gate.sh`. With the flag off, nothing here runs and the hook behaves
 as before. The hook file holds no logic; the decision lives in `prepush.check_push_main`.
+
+### HQ is the single catalog source
+
+The key catalog (`work.attest.keys`) lives only in HQ, per hive. There is no repo manifest and no
+second copy to keep in step: `bh` reads the live catalog at run time. The only repo-side artifacts
+are the `attest-<key>` justfile recipes and the drift guard, which compares them with the live
+catalog (next section). `work.gate.subsets` and `work.gate.profiles` name keys from that catalog;
+`bh config validate` rejects an unknown key or subset name when a catalog is in effect.
+
+### Gate settings reference
+
+Every field defaults to today's behaviour, so a hive that sets none of them is unchanged. All of
+them resolve per hive over the global value; `bh config validate` checks them.
+
+| Field | Default | Rollback |
+|---|---|---|
+| `work.gate.model` | `legacy` | Set `legacy`. Restores command strings at post-land, union and push and the aggregate-only push lookup. No ledger migration is needed. |
+| `work.gate.profiles.<phase>` | unset: every phase uses `default`, which is `all` when unset | Remove the entry. `push-main`, `release` and `postland` are pinned to `all` and cannot be narrowed. Profiles are read only under `model: keys`. |
+| `work.gate.subsets.<name>` | none | Remove the subset (and any profile naming it). |
+| `work.gate.carry.high_water` | unset: on under `keys`, off under `legacy` | Set `false` to restore single-hop carry sourcing. |
+| `work.gate.carry.max_roots` | `3` | Set `0` to disable the ledger scan for extra roots (the base's own root is still tried). |
+| `work.gate.push.accept_attested_green` | `false` | Set `false`. The push hook goes back to the aggregate lookup and the full gate. |
+| `work.attest.drift_check` | unset | Unset it. Under `model: keys` an unset command counts as drift (the phase's legacy command runs, no key proof is recorded), so set it before switching to `keys`. |
+| `work.attest.drift_check_timeout_seconds` | `60` (must be greater than 0) | Remove the override. A timeout counts as drift. |
+
+The fastest whole-model rollback is one setting, `work.gate.model: legacy`. The narrower switches
+above revert one feature each; `work.attest.impact.backend: native-full` (see
+[Operation and rollback](#operation-and-rollback)) invalidates every key on every change.
+
+### Fleet example: the approved bh profiles
+
+This is the operator-approved configuration (2026-10-13) that the bh cutover (bh-i3nc3) publishes
+together with `work.gate.model: keys`. Wall times were measured at `2e60e00f`.
+
+| Key | What it runs | Wall time |
+|---|---|---|
+| `docs` | `lint-md` | 17 s |
+| `unit` | `lint`, `license-check` | 10 s |
+| `architecture-contracts` | `architecture-structural-check` | 65 s |
+| `packages` | `packages-check`, `beads-client-check` | 46 s |
+| `bd-cli` | `bd-cli-check` | 47 s |
+| `hq-storage` | `hq-storage-check` | 27 s |
+| `root-composition` | `root-composition-native`, `root-workspace-check` | 214 s |
+| `demos` | `demo-local-loop`, `demo-live-ingress` | 184 s |
+| `stateful` | `stateful-native` (about 10.5k tests) | 596 s |
+| `integration` | `require-bd`, `test-integration-land` (Dolt) | 467 to 612 s |
+
+```yaml
+work:
+  gate:
+    model: keys
+    subsets:
+      fast: [docs, unit, architecture-contracts, packages, bd-cli, hq-storage]   # about 3.5 min worst case
+      inner: [docs, unit, architecture-contracts, packages, bd-cli, hq-storage, root-composition, stateful]   # no Dolt lanes
+    profiles:
+      check: fast        # local loop; the developer adds targeted tests
+      review: fast       # reviewer re-check; usually reused from submit
+      submit: inner      # catches stateful and composition reds before review
+      merge: inner       # bead into a container
+      union: inner       # plus selector filtering on the delta
+      merge-main: all    # anything that lands on main proves every affected key
+      molecule: all
+      postland: all      # required: main-reaching
+      release: all       # required: main-reaching
+      push-main: all     # required: main-reaching
+    push:
+      accept_attested_green: true
+```
+
+Each profile is still filtered by the path selectors and satisfied by exact-tree reuse or carry, so
+an unaffected key never re-runs. Under the legacy model every selective boundary ran all ten keys
+(carry-forward was off; only exact-tree reuse applied).
+
+Rationale: the integration and demo keys (Dolt and live, 3 to 10 minutes, the most load-sensitive)
+leave the inner loop and run only at the boundary that lands on main, where carry makes them cheap
+when untouched. `stateful` stays at submit because every red in the 2026-10-12 overnight sample was
+a stateful red; revisit that with bh-kdbfr (the `check-native` scope). Another hive adapts this by
+listing its own keys in `subsets`, keeping every cheap key in `fast`, adding its slow stateful and
+composition keys to `inner`, and leaving its slow shared-resource keys (databases, live services)
+only in `all`.
+
+Note that the justfile `fast_keys` variable is separate: it is the subset `just check-native`
+runs, not the HQ `fast` subset above.
+
+### Policy: plain selective submit and merge is the default
+
+Plain `bh work submit` and `bh work merge` (selective, key-based) are the default for every bead.
+`bh work submit --override-validation` and a hive's `work.validation_bypass` are audited
+exceptions, not routine tools: use them only for a broken gate or an incident, with a reason, and
+see [Emergency validation bypass](WORK.md#emergency-validation-bypass) for the audit trail. A
+bypass is never a green key proof. Do not reach for either to skip a slow or red key; fix the key,
+narrow the profile, or carry.
+
+### Model predicate status
+
+The ADR 3.4 `model == keys` conjunct of `attested_green` is not in the predicate yet. It lands with
+the bh cutover (bh-i3nc3), together with the model switch, so until then `attested_green` does not
+check the model, and legacy-model `release attest --if-needed` keeps working.
 
 | Key | Opaque command | Pants selector | Covers |
 |---|---|---|---|
@@ -349,10 +464,11 @@ The fallback and bypass contracts remain unchanged:
   invoke key selection and creates no green key proof.
 - Disabled or policy-skipped keys create no proof. A red, unknown, or interrupted key also
   cannot satisfy a later boundary.
-- A successful configured full gate expands into key proof only at the documented full-gate
-  phases (`molecule`, `merge-main`, `push-main`, and `postland`) and only when the command is the
-  exact configured partition. Ordinary submit and merge commands prove only keys they ran or
-  safely carried from qualifying evidence.
+- Under `work.gate.model: legacy` (or on drift fallback) a successful configured full gate
+  expands into key proof only at the documented full-gate phases (`molecule`, `merge-main`,
+  `push-main`, and `postland`) and only when the command is the exact configured partition.
+  Ordinary submit and merge commands prove only keys they ran or safely carried from qualifying
+  evidence.
 
 For a one-off diagnostic, request the consumer's `--full` mode where exposed. To roll back a
 hive, set `work.attest.impact.backend: native-full` (or remove the impact block). This retains

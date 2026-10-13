@@ -584,17 +584,32 @@ See [BEADS-SERVICE.md](BEADS-SERVICE.md) for the full behavior table.
 
 | Key | Default | Values | Effect |
 |---|---|---|---|
-| `work.gate.model` | `legacy` | `legacy` \| `keys`, per hive or global | `keys` runs each selective boundary's phase profile through the evaluator, with the runtime catalog drift check and a fallback to the phase's legacy command on drift. `legacy` is today's behaviour and the rollback. |
-| `work.gate.profiles.<phase>` | unset (`all`) | `all`, a subset name, or a key list | Keys a phase requires under `model: keys`. Phases: `check`, `submit`, `review`, `merge`, `merge-main`, `molecule`, `postland`, `union`, `release`, `push-main`, plus `default`. `push-main`, `release` and `postland` must be `all`. |
-| `work.gate.subsets.<name>` | none | list of key names | Named key subsets a profile may reference. |
+| `work.gate.model` | `legacy` | `legacy` \| `keys`, per hive or global | `keys` evaluates every selective boundary (including post-land, union and the push-main miss path) per key through its phase profile, with the runtime catalog drift check and a fallback to the phase's `work.validate` command on drift. Rollback: set `legacy`. |
+| `work.gate.profiles.<phase>` | unset (`default`, itself `all`) | `all`, a subset name, or a key list | Keys a phase requires under `model: keys`. Phases: `check`, `submit`, `review`, `merge`, `merge-main`, `molecule`, `postland`, `union`, `release`, `push-main`, plus `default`. `push-main`, `release` and `postland` must be `all`. Rollback: remove the entry. |
+| `work.gate.subsets.<name>` | none | list of key names | Named key subsets a profile may reference. Rollback: remove the entry. |
+| `work.gate.carry.high_water` | unset (on under `keys`, off under `legacy`) | bool | Discover carry roots beyond the receipt base. Rollback: `false` restores single-hop sourcing. |
+| `work.gate.carry.max_roots` | `3` | int, `0` or more | Newest same-command green runs tried as extra carry roots per key. Rollback: `0` disables that scan. |
 
-See [ATTEST-KEYS.md](ATTEST-KEYS.md#gate-model-and-phase-profiles).
+Worked example (the operator-approved bh profiles) and the per-field rollback table:
+[ATTEST-KEYS.md](ATTEST-KEYS.md#gate-settings-reference).
+
+## `work.attest.drift_check` — runtime catalog drift guard
+
+HQ `work.attest.keys` is the single catalog source; the drift check guards it against the repo's
+recipes at run time.
+
+| Key | Default | Values | Effect |
+|---|---|---|---|
+| `work.attest.drift_check` | unset | non-blank command | An opaque command run at the evaluated revision's checkout with the live catalog (`name`, `cmd`, `enabled`) as JSON on stdin. Exit 0 is no drift; anything else is drift. Under `work.gate.model: keys`, unset also counts as drift. Rollback: unset it (and use `model: legacy`). |
+| `work.attest.drift_check_timeout_seconds` | `60` | float, greater than 0 | A run longer than this counts as drift. |
+
+See [ATTEST-KEYS.md](ATTEST-KEYS.md#runtime-catalog-drift-check).
 
 ## `work.gate.push` — per-key acceptance at the push hook
 
 | Key | Default | Values | Effect |
 |---|---|---|---|
-| `work.gate.push.accept_attested_green` | `false` | bool, per hive or global | Opt in: the `push-main` pre-push hook also accepts the exact pushed tree when every active attest key is current or carried (`selective_validation.attested_green`), printing each key's state. An absent or red key, drift or any error falls through to the aggregate lookup and then the full gate; off is byte-identical to before. See [ATTEST-KEYS.md](ATTEST-KEYS.md#accepting-per-key-proof-at-the-push-hook). |
+| `work.gate.push.accept_attested_green` | `false` | bool, per hive or global | Opt in: the `push-main` pre-push hook also accepts the exact pushed tree when every active attest key is current or carried (`selective_validation.attested_green`), printing each key's state. Under `model: keys` a miss runs only the absent keys. An absent or red key, drift or any error falls through to the aggregate lookup and then the full gate; off is byte-identical to before. Rollback: `false`. See [ATTEST-KEYS.md](ATTEST-KEYS.md#accepting-per-key-proof-at-the-push-hook). |
 
 ## `work.dispatch` — collapsed dispatch
 

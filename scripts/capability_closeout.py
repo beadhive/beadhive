@@ -358,8 +358,23 @@ def _cycle_disposition(component: set[str]) -> tuple[str, str, str]:
     raise AssertionError(f"unowned cycle: {sorted(component)}")
 
 
+def _historical_closure_registry() -> dict[str, Any]:
+    """The module-closure registry as it stood at ``SOURCE_REVISION``.
+
+    The registry file is retired from the working tree (attest keys are the single gate model),
+    so it is located inside the pinned historical revision by content rather than by name.
+    """
+    for name in _git("ls-tree", "--name-only", SOURCE_REVISION, "tests/").splitlines():
+        if not name.endswith(".toml"):
+            continue
+        document = tomllib.loads(_source(SOURCE_REVISION, name))
+        if isinstance(document.get("closures"), list):
+            return document
+    raise RuntimeError(f"no module-closure registry found at {SOURCE_REVISION}")
+
+
 def _closure_rows() -> dict[str, Any]:
-    registry = tomllib.loads(_git("show", f"{SOURCE_REVISION}:tests/closures.toml"))
+    registry = _historical_closure_registry()
     rows = {}
     for module in MODULES:
         closure = next(row for row in registry["closures"] if row["id"] == f"module.{module}")

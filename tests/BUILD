@@ -189,10 +189,8 @@ python_sources(
 files(
     name="test-config",
     sources=[
-        "closures.toml",
         "fixture_config.yaml",
         "fixture_workspace.toml",
-        "selective-ci-policy.toml",
         "wall_clock_allowlist.toml",
         "proof/**/*",
         "schemas/**/*",
