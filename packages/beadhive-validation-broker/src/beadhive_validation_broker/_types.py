@@ -13,6 +13,8 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
+from ._roots import ROOT_POOL_PREFIX
+
 __all__ = [
     "LEASE_ENV",
     "BrakeLevel",
@@ -82,19 +84,26 @@ class Reservation:
 
     ``cpu_min`` must be free for admission; the broker may grant up to ``cpu_max`` (the key's
     measured speedup knee). Memory and named pools (``dolt-servers`` and friends) are fixed
-    amounts.
+    amounts. ``disk_bytes`` is the run's expected footprint in its execution root (checkout and
+    fence scratch); it is ignored unless the engine has execution roots (``bh-mf1o4``), and on a
+    ``tmpfs`` root it also counts as memory.
     """
 
     cpu_min: float
     cpu_max: float
     memory_bytes: int
     pools: Mapping[str, int] = field(default_factory=dict)
+    disk_bytes: int = 0
 
     def __post_init__(self) -> None:
         if self.cpu_min < 0 or self.cpu_max < self.cpu_min:
             raise ValueError("a reservation needs 0 <= cpu_min <= cpu_max")
-        if self.memory_bytes < 0 or any(amount < 0 for amount in self.pools.values()):
-            raise ValueError("a reservation's memory and pool amounts must be non-negative")
+        if (
+            self.memory_bytes < 0
+            or self.disk_bytes < 0
+            or any(amount < 0 for amount in self.pools.values())
+        ):
+            raise ValueError("a reservation's memory, disk and pool amounts must be non-negative")
 
     def minimum(self) -> Capacity:
         return Capacity(self.cpu_min, self.memory_bytes, dict(self.pools))
@@ -138,7 +147,8 @@ class Grant:
     """The amounts actually granted, exported to the job through :meth:`env`.
 
     The grant reaches the client through its lease, never through a runner's environment, and it
-    never enters ``cmd_hash``.
+    never enters ``cmd_hash``. ``root`` is the execution root the run was placed on (``bh-mf1o4``)
+    or ``None`` when the engine has no roots: the run then uses today's locations.
     """
 
     lease_id: str
@@ -146,6 +156,7 @@ class Grant:
     amounts: Capacity
     parent_lease: str | None = None
     granted_at: float = 0.0  # broker clock (monotonic seconds)
+    root: str | None = None
 
     def env(self) -> dict[str, str]:
         """The framework-generic grant contract; runner profiles map it further."""
@@ -156,7 +167,13 @@ class Grant:
             "BH_GRANT_MEMORY_MB": str(math.ceil(self.amounts.memory_bytes / _MB)),
         }
         for name, amount in self.amounts.pools.items():
+            if name.startswith(ROOT_POOL_PREFIX):
+                continue  # exported as BH_GRANT_ROOT / BH_GRANT_DISK_BYTES below
             out["BH_GRANT_" + name.upper().replace("-", "_")] = str(amount)
+        if self.root is not None:
+            out["BH_GRANT_ROOT"] = self.root
+            disk = self.amounts.pools.get(ROOT_POOL_PREFIX + self.root, 0)
+            out["BH_GRANT_DISK_BYTES"] = str(disk)
         return out
 
 

@@ -1,4 +1,4 @@
-"""Host adapters for the local engine's two probe ports: availability and process liveness.
+"""Host adapters for the local engine's probe ports: availability, disk space and liveness.
 
 Stdlib only (no psutil): memory comes from ``/proc/meminfo`` and CPUs from the scheduler
 affinity mask. Both readers take their source as a parameter, so tests feed a file they wrote
@@ -15,7 +15,13 @@ from pathlib import Path
 
 from ._types import Capacity, Owner
 
-__all__ = ["MeminfoAvailability", "host_cpu_count", "pid_alive"]
+__all__ = [
+    "MeminfoAvailability",
+    "current_owner",
+    "host_cpu_count",
+    "pid_alive",
+    "statvfs_free",
+]
 
 MEMINFO = Path("/proc/meminfo")
 _PROC = Path("/proc")
@@ -67,6 +73,14 @@ class MeminfoAvailability:
         return value
 
 
+def statvfs_free(path: str) -> int:
+    """A :data:`~beadhive_validation_broker.DiskSpace`: bytes an unprivileged writer may still use
+    on the filesystem holding ``path`` (``f_bavail * f_frsize``). Raises ``OSError`` when the
+    path cannot be read, which makes that root count as full."""
+    st = os.statvfs(path)
+    return int(st.f_bavail) * int(st.f_frsize)
+
+
 def _start_token(pid: int, proc: Path) -> str | None:
     """The process start time in clock ticks (``/proc/<pid>/stat`` field 22), if readable."""
     try:
@@ -76,6 +90,13 @@ def _start_token(pid: int, proc: Path) -> str | None:
     # The command name (field 2) may hold spaces and parentheses; split after its last ")".
     fields = stat.rpartition(")")[2].split()
     return fields[19] if len(fields) > 19 else None
+
+
+def current_owner(*, proc: Path = _PROC) -> Owner:
+    """This process as a lease or run-directory :class:`Owner` that :func:`pid_alive` can probe:
+    its pid, its start token (so a recycled pid never reads as alive) and this host's name."""
+    pid = os.getpid()
+    return Owner(pid=pid, start_token=_start_token(pid, proc), host=os.uname().nodename)
 
 
 def pid_alive(owner: Owner, *, proc: Path = _PROC, hostname: str | None = None) -> bool:

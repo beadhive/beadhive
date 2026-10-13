@@ -260,6 +260,9 @@ worktrees:
 #     packer: {laggard_first: true, laggard_flex: true, easy: true, headroom_cpu: 8,
 #              group_major: false, aging: 4}
 #     repoll_seconds: 1
+#     roots: []                    # local only (bh-mf1o4): one bounded root per key run holds its
+#                                  # checkout and fence scratch, e.g.
+#                                  # [{path: /srv/bh-runs, kind: disk, max_bytes: 200G}]
 #   validate_subset: "./scripts/hermetic.sh uv run pytest -n auto --pyargs {tests}"
 #                                  # OPTIONAL template that re-runs only NAMED failing tests, one
 #                                  # required {tests} placeholder — a value missing it is rejected

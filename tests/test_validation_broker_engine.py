@@ -14,14 +14,18 @@ from beadhive.validation_broker_engine import (
     ENGINE_ENV,
     broker_settings,
     configured_engine,
+    execution_roots,
     select_engine,
 )
 from beadhive.validation_broker_slots import SlotsEngine
 from beadhive_validation_broker import (
     Capacity,
+    ExecutionRoot,
     FailoverBroker,
+    FakeDiskSpace,
     MeminfoAvailability,
     Outcome,
+    RootKind,
     Usage,
 )
 from beadhive_validation_broker.contract import ManualClock, job
@@ -45,7 +49,7 @@ def meminfo(tmp_path):
     return path
 
 
-def _select(cfg, tmp_path, meminfo, environ=None, warnings=None):
+def _select(cfg, tmp_path, meminfo, environ=None, warnings=None, **extra):
     return select_engine(
         cfg,
         root=tmp_path / "slots",
@@ -54,6 +58,7 @@ def _select(cfg, tmp_path, meminfo, environ=None, warnings=None):
         clock=ManualClock(),
         owner_alive=lambda _owner: True,
         warn=(warnings if warnings is not None else []).append,
+        **extra,
     )
 
 
@@ -191,3 +196,104 @@ def test_config_rejects_bad_values() -> None:
     ):
         with pytest.raises(ValueError):
             ValidationBrokerConfig.model_validate(bad)
+
+
+# ---- execution roots (bh-mf1o4) -------------------------------------------------------------
+
+
+def _roots_cfg(*roots: dict) -> dict:
+    return {"work": {"validation_broker": {"engine": "local", "roots": list(roots)}}}
+
+
+def test_roots_default_to_empty_and_slots_ignores_them(tmp_path, meminfo) -> None:
+    assert ValidationBrokerConfig().roots == []
+    assert partition_of("work.validation_broker.roots") == HOST
+    cfg = _roots_cfg({"path": str(tmp_path / "missing"), "kind": "disk", "max_bytes": "1G"})
+    cfg["work"]["validation_broker"]["engine"] = "slots"
+    warnings: list[str] = []
+    assert type(_select(cfg, tmp_path, meminfo, warnings=warnings)) is SlotsEngine
+    assert warnings == [], "slots never resolves roots"
+
+
+def test_local_without_roots_grants_no_root(tmp_path, meminfo) -> None:
+    engine = _select({}, tmp_path, meminfo, environ={ENGINE_ENV: "local"})
+    assert engine._primary.roots == ()
+    handle = engine.submit(job("a", disk_bytes=GIB))
+    assert engine.wait_grant(handle, timeout=0).root is None
+    engine.report(handle, OK, USED)
+
+
+def test_local_places_runs_on_the_configured_roots(tmp_path, meminfo) -> None:
+    disk, ram = tmp_path / "disk-root", tmp_path / "ram-root"
+    disk.mkdir()
+    ram.mkdir()
+    cfg = _roots_cfg(
+        {"path": str(disk), "kind": "disk", "max_bytes": "2G"},
+        {"path": str(ram), "kind": "tmpfs", "max_bytes": "4G"},
+    )
+    space = FakeDiskSpace({str(disk.resolve()): 100 * GIB, str(ram.resolve()): 100 * GIB})
+    engine = _select(cfg, tmp_path, meminfo, disk_space=space, memory_backed=lambda p: False)
+    assert engine._primary.roots == (
+        ExecutionRoot(str(disk.resolve()), RootKind.DISK, 2 * GIB),
+        ExecutionRoot(str(ram.resolve()), RootKind.TMPFS, 4 * GIB),
+    )
+    first = engine.submit(job("a", disk_bytes=GIB, group="g1"))
+    second = engine.submit(job("b", disk_bytes=3 * GIB, group="g2"))
+    assert engine.wait_grant(first, timeout=0).root == str(disk.resolve())
+    grant = engine.wait_grant(second, timeout=0)
+    assert grant.root == str(ram.resolve()), "too big for the disk root's 2G bound"
+    assert grant.amounts.memory_bytes == 3 * GIB, "tmpfs space is memory"
+    engine.report(first, OK, USED)
+    engine.report(second, OK, USED)
+
+
+@pytest.mark.parametrize("problem", ["missing", "disk-on-ram"])
+def test_an_unusable_root_falls_back_to_slots_loudly(problem, tmp_path, meminfo) -> None:
+    path = tmp_path / "root"
+    if problem != "missing":
+        path.mkdir()
+    cfg = _roots_cfg({"path": str(path), "kind": "disk", "max_bytes": "1G"})
+    warnings: list[str] = []
+    engine = _select(
+        cfg,
+        tmp_path,
+        meminfo,
+        warnings=warnings,
+        disk_space=FakeDiskSpace(),
+        memory_backed=lambda p: True,
+    )
+    assert type(engine) is SlotsEngine
+    assert len(warnings) == 1 and "local engine is unavailable" in warnings[0]
+    expected = "not an existing directory" if problem == "missing" else "RAM-backed"
+    assert expected in warnings[0]
+
+
+def test_a_tmpfs_root_may_be_ram_backed_and_paths_expand(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "runs").mkdir()
+    settings = broker_settings(_roots_cfg({"path": "~/runs", "kind": "tmpfs", "max_bytes": "512M"}))
+    assert execution_roots(settings, memory_backed=lambda p: True) == (
+        ExecutionRoot(str((tmp_path / "runs").resolve()), RootKind.TMPFS, 512 * 1024**2),
+    )
+
+
+def test_config_rejects_bad_roots() -> None:
+    for bad in (
+        [{"path": "relative", "kind": "disk", "max_bytes": "1G"}],
+        [{"path": "/r", "kind": "nfs", "max_bytes": "1G"}],
+        [{"path": "/r", "kind": "disk", "max_bytes": "50%"}],
+        [{"path": "/r", "kind": "disk", "max_bytes": "0"}],
+        [{"path": "/r", "kind": "disk", "max_bytes": "none"}],
+        [{"path": "/r", "kind": "disk"}],
+        [{"path": "/r", "kind": "disk", "max_bytes": "1G", "extra": 1}],
+        [
+            {"path": "/r", "kind": "disk", "max_bytes": "1G"},
+            {"path": "/r/inner", "kind": "tmpfs", "max_bytes": "1G"},
+        ],
+        [
+            {"path": "/r", "kind": "disk", "max_bytes": "1G"},
+            {"path": "/r/", "kind": "disk", "max_bytes": "1G"},
+        ],
+    ):
+        with pytest.raises(ValueError):
+            ValidationBrokerConfig.model_validate({"roots": bad})

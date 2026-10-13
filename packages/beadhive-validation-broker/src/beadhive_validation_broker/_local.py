@@ -38,6 +38,19 @@ whole grant is refused (``GrantRefused``); one that fits later waits inside the 
 :data:`~beadhive_validation_broker.ProcessLiveness` probe reports dead, with every nested lease
 under them, emitting ``ORPHAN_RECLAIMED``.
 
+**Execution roots** (``bh-mf1o4``, opt-in). With ``roots`` configured, every top-level job is
+placed on exactly one :class:`~beadhive_validation_broker.ExecutionRoot`, recorded as
+``Grant.root``. The root's space is a counted pool (``root:<path>``) bounded by
+``min(max_bytes, measured free bytes)`` through the
+:data:`~beadhive_validation_broker.DiskSpace` port, so a job is admitted only when its
+``disk_bytes`` fit that root; on a ``tmpfs`` root ``disk_bytes`` is added to the memory
+reservation too. Roots are tried in configured order (the operator's preference) and the first
+feasible one wins. A gate group is **pinned** to the root of its first admitted key while any of
+its keys is live, so concurrent keys of one gate can share one checkout; a group is only pinned
+to a root whose bound fits every queued key of the group. Nested jobs run in the parent's root
+and carve their disk from the parent's grant. Without roots nothing here changes: ``disk_bytes``
+is ignored and ``Grant.root`` is ``None``.
+
 Durable leases, reconcile on restart and the brake's signals are out of scope here
 (``bh-fmuqq.2``, ``bh-6a76l``).
 """
@@ -47,11 +60,12 @@ from __future__ import annotations
 import itertools
 import math
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 
 from ._errors import BrokerUnavailable, GrantRefused, GrantTimeout, LeaseLost
 from ._ports import Availability, Clock, ProcessLiveness
+from ._roots import ROOT_POOL_PREFIX, DiskSpace, ExecutionRoot, validate_roots
 from ._types import (
     ZERO,
     BrakeLevel,
@@ -132,16 +146,22 @@ class _Profile:
         self.free = self.free - extra
         self.ends[index][1] = self.ends[index][1] + extra
 
-    def reserve(self, need: Capacity, duration: float) -> float | None:
+    def earliest(self, need: Capacity, duration: float) -> float | None:
+        """The earliest future start at which ``need`` fits for ``duration``, if any."""
         times = sorted(
             {end for end, _ in self.ends if end > self.now}
             | {end for _s, end, _n in self.reservations}
         )
         for t in times:
             if self.feasible(need, t, duration):
-                self.reservations.append((t, t + duration, need))
                 return t
         return None
+
+    def reserve(self, need: Capacity, duration: float) -> float | None:
+        t = self.earliest(need, duration)
+        if t is not None:
+            self.reservations.append((t, t + duration, need))
+        return t
 
 
 @dataclass
@@ -159,6 +179,7 @@ class _Group:
     order: int
     first_seen: float
     admitted: bool = False
+    root: ExecutionRoot | None = None  # pinned while any of the group's keys is live
 
 
 class LocalEngine:
@@ -176,10 +197,20 @@ class LocalEngine:
         owner_alive: ProcessLiveness | None = None,
         policy: PackerPolicy | None = None,
         repoll_seconds: float = 1.0,
+        roots: Sequence[ExecutionRoot] = (),
+        disk_space: DiskSpace | None = None,
     ) -> None:
         if repoll_seconds <= 0:
             raise ValueError("repoll_seconds must be positive")
-        self._budget = budget
+        if any(name.startswith(ROOT_POOL_PREFIX) for name in budget.pools):
+            raise ValueError(f"pool names starting with {ROOT_POOL_PREFIX!r} are reserved")
+        self._roots = validate_roots(roots)
+        if self._roots and disk_space is None:
+            raise ValueError("execution roots need a disk_space probe")
+        self._disk_space = disk_space
+        # Each root's bound joins the budget as a counted pool; without roots this is ``budget``.
+        root_pools = {root.pool: root.max_bytes for root in self._roots}
+        self._budget = Capacity(budget.cpu, budget.memory_bytes, {**budget.pools, **root_pools})
         self._clock = clock
         self._availability = availability
         self._floor = floor
@@ -202,6 +233,10 @@ class LocalEngine:
     @property
     def policy(self) -> PackerPolicy:
         return self._policy
+
+    @property
+    def roots(self) -> tuple[ExecutionRoot, ...]:
+        return self._roots
 
     # ---- controls (not part of the port) ------------------------------------------------
 
@@ -233,8 +268,7 @@ class LocalEngine:
             if job.parent_lease is not None:
                 self._check_nested(job)
             else:
-                if not self._budget.fits(job.reservation.minimum()):
-                    raise GrantRefused(f"{job.job_id}: reservation exceeds the host budget")
+                self._check_budget(job)
                 self._probe()  # a failing availability probe refuses before anything is queued
             arrival = next(self._arrivals)
             handle = JobHandle(job.job_id, self.name, str(arrival))
@@ -304,6 +338,8 @@ class LocalEngine:
             if self._measured is not None:
                 signals["measured_cpu"] = self._measured.cpu
                 signals["measured_memory_bytes"] = float(self._measured.memory_bytes)
+            for path, free in self._measure_roots().items():
+                signals["root_free_bytes:" + path] = float(free)
             return BrokerStatus(
                 backend=self.name,
                 budget=self._budget,
@@ -358,8 +394,75 @@ class LocalEngine:
         parent = self._lease_holder(job)
         if parent.state != _RUNNING or parent.grant is None:
             raise LeaseLost(f"{job.job_id}: parent lease {job.parent_lease} is not running")
-        if not parent.grant.amounts.fits(job.reservation.minimum()):
+        if not parent.grant.amounts.fits(self._need(job, self._root_of(parent))):
             raise GrantRefused(f"{job.job_id}: reservation can never fit its parent's grant")
+
+    def _check_budget(self, job: JobSpec) -> None:
+        """Refuse at submit what can never fit the budget (on any root, or the pinned one)."""
+        if not self._roots:
+            if not self._budget.fits(job.reservation.minimum()):
+                raise GrantRefused(f"{job.job_id}: reservation exceeds the host budget")
+            return
+        if not self._gate_roots(job.group, [job]):
+            group = self._groups.get(job.group)
+            pinned = group.root if group is not None else None
+            where = f"its gate's root {pinned.path}" if pinned is not None else "any root"
+            raise GrantRefused(
+                f"{job.job_id}: reservation exceeds the budget of {where} (with its gate's "
+                "other queued keys)"
+            )
+
+    # ---- execution roots ---------------------------------------------------------------
+
+    def _root_of(self, entry: _Entry) -> ExecutionRoot | None:
+        if entry.grant is None or entry.grant.root is None:
+            return None
+        return next(r for r in self._roots if r.path == entry.grant.root)
+
+    @staticmethod
+    def _need(spec: JobSpec, root: ExecutionRoot | None) -> Capacity:
+        """The minimum reservation placed on ``root``: disk joins as the root's pool, and as
+        memory too on a tmpfs root. Without a root it is exactly ``minimum()``."""
+        base = spec.reservation.minimum()
+        if root is None:
+            return base
+        disk = spec.reservation.disk_bytes
+        memory = base.memory_bytes + (disk if root.memory_backed else 0)
+        return Capacity(base.cpu, memory, {**base.pools, root.pool: disk})
+
+    def _root_options(self, entry: _Entry) -> list[ExecutionRoot | None]:
+        """The roots ``entry`` may start on now, in preference order."""
+        if not self._roots:
+            return [None]
+        return list(self._gate_roots(entry.spec.group, []))
+
+    def _gate_roots(self, group: str, extra: list[JobSpec]) -> list[ExecutionRoot]:
+        """The roots a gate may run on: its pinned root, else every root whose bound fits each
+        of its queued keys (plus ``extra``), so pinning can never strand a later key."""
+        state = self._groups.get(group)
+        options = [state.root] if state is not None and state.root is not None else self._roots
+        specs = [
+            e.spec
+            for e in self._entries.values()
+            if e.spec.group == group and e.spec.parent_lease is None and e.state == _QUEUED
+        ] + extra
+        return [
+            root
+            for root in options
+            if all(self._budget.fits(self._need(spec, root)) for spec in specs)
+        ]
+
+    def _measure_roots(self) -> dict[str, int]:
+        """Free bytes per root; an unreadable root reads as 0 (nothing is admitted to it)."""
+        if self._disk_space is None:
+            return {}
+        free: dict[str, int] = {}
+        for root in self._roots:
+            try:
+                free[root.path] = max(0, int(self._disk_space(root.path)))
+            except Exception:  # noqa: BLE001 - an unreadable root is a full root, never optimistic
+                free[root.path] = 0
+        return free
 
     def _end(self, entry: _Entry, state: str, kind: EventKind, **detail: object) -> None:
         for child_id in list(entry.children):
@@ -399,6 +502,14 @@ class LocalEngine:
             limit = Capacity(
                 min(limit.cpu, room.cpu), min(limit.memory_bytes, room.memory_bytes), pools
             )
+        if self._roots:
+            # Like memory, measured free space is not credited back with what running leases
+            # will still write: conservative by design.
+            pools = dict(limit.pools)
+            free = self._measure_roots()
+            for root in self._roots:
+                pools[root.pool] = min(pools[root.pool], free[root.path])
+            limit = Capacity(limit.cpu, limit.memory_bytes, pools)
         return limit - self._in_use()
 
     # ---- admission ---------------------------------------------------------------------
@@ -437,11 +548,12 @@ class LocalEngine:
             for child in children:
                 if child.state == _RUNNING and child.grant is not None:
                     free = free - child.grant.amounts
+            root = self._root_of(parent)
             for child in sorted(children, key=lambda e: e.arrival):
-                if child.state != _QUEUED or not free.fits(child.spec.reservation.minimum()):
+                if child.state != _QUEUED or not free.fits(self._need(child.spec, root)):
                     continue
                 cpu = min(child.spec.reservation.cpu_max, free.cpu)
-                grant = self._admit(child, cpu, parent.grant.lease_id)
+                grant = self._admit(child, cpu, parent.grant.lease_id, root)
                 free = free - grant.amounts
 
     def _admit_host(self) -> None:
@@ -469,9 +581,9 @@ class LocalEngine:
         if not chosen:
             return
         extra = self._flex(chosen, profile) if self._brake == BrakeLevel.GREEN else {}
-        for entry, _index in chosen:
+        for entry, _index, root in chosen:
             reservation = entry.spec.reservation
-            self._admit(entry, reservation.cpu_min + extra.get(entry.spec.job_id, 0.0), None)
+            self._admit(entry, reservation.cpu_min + extra.get(entry.spec.job_id, 0.0), None, root)
 
     def _group_key(self, group: str, keys: list[_Entry], now: float) -> tuple:
         state = self._groups[group]
@@ -485,12 +597,12 @@ class LocalEngine:
 
     def _pick(
         self, candidates: list[_Entry], profile: _Profile, now: float
-    ) -> list[tuple[_Entry, int]]:
+    ) -> list[tuple[_Entry, int, ExecutionRoot | None]]:
         groups: dict[str, list[_Entry]] = {}
         for entry in candidates:
             groups.setdefault(entry.spec.group, []).append(entry)
         policy = self._policy
-        chosen: list[tuple[_Entry, int]] = []
+        chosen: list[tuple[_Entry, int, ExecutionRoot | None]] = []
         head_taken = False
         for group in sorted(groups, key=lambda g: self._group_key(g, groups[g], now)):
             state = self._groups[group]
@@ -500,14 +612,21 @@ class LocalEngine:
                 keys = sorted(groups[group], key=lambda e: e.arrival)
             reserved = False
             for position, entry in enumerate(keys):
-                need = entry.spec.reservation.minimum()
                 duration = entry.spec.expected_duration_s
-                if profile.feasible(need, now, duration):
-                    chosen.append((entry, profile.start_now(need, duration)))
+                needs = [(root, self._need(entry.spec, root)) for root in self._root_options(entry)]
+                placed = next(
+                    ((root, need) for root, need in needs if profile.feasible(need, now, duration)),
+                    None,
+                )
+                if placed is not None:
+                    root, need = placed
+                    chosen.append((entry, profile.start_now(need, duration), root))
+                    if root is not None:
+                        state.root = root  # the gate's later keys share this root
                     if position == 0:
                         state.admitted = True  # its first key in order started: finish the group
                     continue
-                if profile.free.fits(need):
+                if any(profile.free.fits(need) for _root, need in needs):
                     self._backfill_refused += 1  # fits now, but would delay a reservation
                 if reserved or not policy.easy:
                     continue
@@ -516,10 +635,24 @@ class LocalEngine:
                         head_taken = True
                         if not policy.group_major:
                             state.admitted = True  # arrival-order admission holds the head
-                    if profile.reserve(need, duration) is not None:
+                    if self._reserve(profile, needs, duration):
                         self._easy_reservations += 1
                     reserved = True
         return chosen
+
+    @staticmethod
+    def _reserve(
+        profile: _Profile, needs: list[tuple[ExecutionRoot | None, Capacity]], duration: float
+    ) -> bool:
+        """Hold an EASY reservation on whichever root can start the key earliest."""
+        best: tuple[float, Capacity] | None = None
+        for _root, need in needs:
+            t = profile.earliest(need, duration)
+            if t is not None and (best is None or t < best[0]):
+                best = (t, need)
+        if best is None:
+            return False
+        return profile.reserve(best[1], duration) is not None
 
     def _is_laggard(self, entry: _Entry) -> bool:
         """The group's longest unfinished key (ties: the earliest arrival)."""
@@ -533,16 +666,18 @@ class LocalEngine:
         longest = min(peers, key=lambda e: (-e.spec.expected_duration_s, e.arrival))
         return longest is entry
 
-    def _flex(self, chosen: list[tuple[_Entry, int]], profile: _Profile) -> dict[str, float]:
+    def _flex(
+        self, chosen: list[tuple[_Entry, int, ExecutionRoot | None]], profile: _Profile
+    ) -> dict[str, float]:
         policy = self._policy
-        laggards = {e.spec.job_id for e, _ in chosen if self._is_laggard(e)}
+        laggards = {e.spec.job_id for e, _i, _r in chosen if self._is_laggard(e)}
         if policy.laggard_flex:
             ordered = [c for c in chosen if c[0].spec.job_id in laggards]
             ordered += [c for c in chosen if c[0].spec.job_id not in laggards]
         else:
             ordered = list(chosen)
         extra: dict[str, float] = {}
-        for entry, index in ordered:
+        for entry, index, _root in ordered:
             reservation = entry.spec.reservation
             want = reservation.cpu_max - reservation.cpu_min
             if want <= _EPS:
@@ -559,16 +694,23 @@ class LocalEngine:
             profile.grow(index, give)
         return extra
 
-    def _admit(self, entry: _Entry, cpu: float, parent_lease: str | None) -> Grant:
+    def _admit(
+        self, entry: _Entry, cpu: float, parent_lease: str | None, root: ExecutionRoot | None
+    ) -> Grant:
         spec = entry.spec
-        amounts = Capacity(cpu, spec.reservation.memory_bytes, dict(spec.reservation.pools))
+        need = self._need(spec, root)
+        amounts = Capacity(cpu, need.memory_bytes, dict(need.pools))
         entry.grant = Grant(
             lease_id=f"local-lease-{entry.arrival}",
             job_id=spec.job_id,
             amounts=amounts,
             parent_lease=parent_lease,
             granted_at=self._clock(),
+            root=None if root is None else root.path,
         )
         entry.state = _RUNNING
-        self._emit(EventKind.ADMITTED, spec.job_id, lease=entry.grant.lease_id, cpu=cpu)
+        detail: dict[str, object] = {"lease": entry.grant.lease_id, "cpu": cpu}
+        if root is not None:
+            detail["root"] = root.path
+        self._emit(EventKind.ADMITTED, spec.job_id, **detail)
         return entry.grant
