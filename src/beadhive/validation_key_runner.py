@@ -86,6 +86,9 @@ PASSTHROUGH_PREFIXES = ("BH_", "GIT_")
 PASSTHROUGH_NAMES = frozenset({"SSH_AUTH_SOCK", "SSH_AGENT_PID"})
 _GRANT_ONLY_PREFIXES = ("BH_GRANT_",)
 _GRANT_ONLY_NAMES = frozenset({LEASE_ENV})
+#: Never reach a key: keys do not choose an engine, and a nested ``check-all-native`` must not
+#: recurse into the local runner.
+_KEY_DROPPED_NAMES = frozenset({validation_broker_engine.ENGINE_ENV})
 
 
 def _passthrough(parent: Mapping[str, str]) -> dict[str, str]:
@@ -94,6 +97,7 @@ def _passthrough(parent: Mapping[str, str]) -> dict[str, str]:
         for name, value in parent.items()
         if (name in PASSTHROUGH_NAMES or name.startswith(PASSTHROUGH_PREFIXES))
         and name not in _GRANT_ONLY_NAMES
+        and name not in _KEY_DROPPED_NAMES
         and not name.startswith(_GRANT_ONLY_PREFIXES)
     }
 
@@ -101,8 +105,9 @@ def _passthrough(parent: Mapping[str, str]) -> dict[str, str]:
 def key_environ(grant: Grant, overlay: Mapping[str, str] | None = None) -> dict[str, str]:
     """A key's environment: :func:`grant_environ` (the allow-listed environment plus the grant),
     the parent's ``BH_*`` / ``GIT_*`` / ssh-agent variables (never ``BH_GRANT_*`` or
-    ``BH_VALIDATION_LEASE``, which only the grant sets), then the run directory's overlay
-    (``TMPDIR``), with the same telemetry and colour neutrality every validation child gets
+    ``BH_VALIDATION_LEASE``, which only the grant sets, nor ``BH_VALIDATION_BROKER_ENGINE``,
+    which no key chooses), then the run directory's overlay (``TMPDIR``), with the
+    same telemetry and colour neutrality every validation child gets
     (``OTEL_SDK_DISABLED=true``, ``NO_COLOR=1``)."""
     from . import worktree_verify
 

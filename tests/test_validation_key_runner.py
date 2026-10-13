@@ -346,6 +346,7 @@ def test_a_key_sees_the_parents_bh_git_and_ssh_settings_but_only_its_own_grant(
     monkeypatch.setenv("BH_GRANT_CPUS", "99")  # stale, from an enclosing grant
     monkeypatch.setenv("BH_GRANT_DOLT_SERVERS", "99")
     monkeypatch.setenv("BH_VALIDATION_LEASE", "stale-lease")
+    monkeypatch.setenv(ENGINE_ENV, "local")
     monkeypatch.setenv("VIRTUAL_ENV", "/leaked/venv")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "nope")
 
@@ -355,4 +356,5 @@ def test_a_key_sees_the_parents_bh_git_and_ssh_settings_but_only_its_own_grant(
     assert env["GIT_WORKSPACE"] == "/srv/ws" and env["SSH_AUTH_SOCK"] == "/run/agent.sock"
     assert env["BH_GRANT_CPUS"] == "3" and env["BH_GRANT_DOLT_SERVERS"] == "2"
     assert env["BH_VALIDATION_LEASE"] == "lease-1"
+    assert ENGINE_ENV not in env  # keys never choose an engine
     assert "VIRTUAL_ENV" not in env and "AWS_SECRET_ACCESS_KEY" not in env
