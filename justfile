@@ -177,6 +177,11 @@ check-all-native:
     set -euo pipefail
     recipes="$(just --summary --unsorted | tr ' ' '\n' | grep '^attest-' || true)"
     test -n "$recipes" || { echo "check-all-native: no attest-* recipes discovered" >&2; exit 1; }
+    # Engine local (bh-qhrl6): the same recipes side by side through the validation broker, which
+    # falls back to this loop's one-by-one order, loudly. Engine slots (unset) never takes it.
+    if [ "${BH_VALIDATION_BROKER_ENGINE:-slots}" != slots ]; then
+        exec uv run python -m beadhive.validation_recipes $recipes
+    fi
     for recipe in $recipes; do
         just "$recipe"
     done

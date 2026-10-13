@@ -101,6 +101,7 @@ PACKAGE_TESTS: dict[str, tuple[str, ...]] = {
         "tests/test_validation_broker_engine.py",
         "tests/test_validation_broker_slots.py",
         "tests/test_validation_key_runner.py",
+        "tests/test_validation_recipes.py",
         "tests/test_validation_reservations.py",
         "tests/test_validation_run_root.py",
         "tests/test_validation_side_by_side.py",
