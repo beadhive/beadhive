@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/capability_closeout.py"
@@ -20,13 +23,50 @@ def _module():
     return module
 
 
-def test_capability_closeout_is_reproducible() -> None:
+@pytest.fixture(scope="module")
+def proof() -> dict:
+    """One real build of the proof from the frozen measured revision, shared by the tests."""
+    return _module().build_proof()
+
+
+def test_capability_closeout_is_reproducible(proof: dict) -> None:
+    # The second side is an independent, real build on a fresh module instance (cold caches).
+    assert proof == _module().build_proof()
+
+
+def test_git_object_reader_matches_per_object_git_reads() -> None:
     module = _module()
-    assert module.build_proof() == module.build_proof()
+    revision = module.SOURCE_REVISION
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=ROOT, check=True, capture_output=True, text=True
+        ).stdout
+
+    reader = module.GitObjectReader(ROOT)
+    try:
+        listed = reader.list_tree(revision, "src/beadhive/modules/config")
+        assert listed == tuple(
+            git(
+                "ls-tree", "-r", "--name-only", revision, "--", "src/beadhive/modules/config"
+            ).splitlines()
+        )
+        assert listed
+        assert reader.list_tree(revision, "tests/", recursive=False) == tuple(
+            git("ls-tree", "--name-only", revision, "tests/").splitlines()
+        )
+        for path in listed[:10] + (module.LEDGER_PATH,):
+            expected = git("show", f"{revision}:{path}")
+            assert reader.read_blob(revision, path) == expected
+            assert reader.read_blob(revision, path) == expected  # memoised read is identical
+        with pytest.raises(FileNotFoundError):
+            reader.read_blob(revision, "no/such/path.py")
+    finally:
+        reader.close()
 
 
-def test_capability_closeout_proves_every_acceptance_boundary() -> None:
-    data = _module().build_proof()
+def test_capability_closeout_proves_every_acceptance_boundary(proof: dict) -> None:
+    data = proof
     assert data["measured_source_revision"] == _module().SOURCE_REVISION
     current = data["repository_history"][-1]
     assert (
