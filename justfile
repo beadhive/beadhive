@@ -817,13 +817,15 @@ packages-check:
     uv run ruff format --check packages --exclude packages/beadhive-bd-cli --exclude packages/beadhive-hq-storage --exclude packages/beadhive-hq-storage-dolt --exclude packages/beadhive-pants
     ./scripts/hermetic.sh uv sync --locked --offline --inexact --no-default-groups \
         --package beadhive-package-template --package beadhive-core \
-        --package beadhive-plugins --package beadhive-worktrees
+        --package beadhive-plugins --package beadhive-worktrees \
+        --package beadhive-validation-broker
     uv run --no-sync python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
         ./scripts/hermetic.sh uv run --no-sync python scripts/pytest_with_report.py -n auto $(uv run --no-sync python scripts/native_package_tests.py --relative)
     ./scripts/hermetic.sh uv build --package beadhive-package-template --no-build-isolation
     ./scripts/hermetic.sh uv build --package beadhive-core --no-build-isolation
     ./scripts/hermetic.sh uv build --package beadhive-plugins --no-build-isolation
     ./scripts/hermetic.sh uv build --package beadhive-worktrees --no-build-isolation
+    ./scripts/hermetic.sh uv build --package beadhive-validation-broker --no-build-isolation
 
 # lint + sandboxed tests for ONLY packages/beadhive-bd-cli (the `bd-cli` attest key, bh-vq34o).
 # Mirrors packages-check's structure, scoped to this one distribution: beadhive-bd-cli

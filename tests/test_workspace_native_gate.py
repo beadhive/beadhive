@@ -92,6 +92,7 @@ def test_workspace_packages_are_all_tested_and_built_by_the_gate() -> None:
         "beadhive-core",
         "beadhive-plugins",
         "beadhive-worktrees",
+        "beadhive-validation-broker",
     ):
         assert f"uv build --package {package}" in package_gate
     assert "uv build --package beadhive-bd-cli" not in package_gate
@@ -146,6 +147,7 @@ def test_workspace_packages_are_all_tested_and_built_by_the_gate() -> None:
         "beadhive-hq-storage-dolt",
         "beadhive-pants",
         "beadhive-plugins",
+        "beadhive-validation-broker",
         "beadhive-worktrees",
     ):
         assert complete_gate.count(f"uv build --package {package} ") == 1, package
@@ -155,6 +157,7 @@ def test_workspace_packages_are_all_tested_and_built_by_the_gate() -> None:
         "_template",
         "beadhive-core",
         "beadhive-plugins",
+        "beadhive-validation-broker",
         "beadhive-worktrees",
     }
 
