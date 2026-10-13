@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 import typer
 
 from beadhive import host, registry, work_logic, worktree
 from test_work import (
+    _TEMPLATE_EPIC,
     CONFIG_YAML,
     _commit,
     _git,
     _minted_host_identity,
-    _start_and_land_children,
+    _restored_landed_children,
     _wt_of,
     fakebd,
     hive,
@@ -24,30 +26,43 @@ from test_work import (
 __all__ = ["_minted_host_identity", "fakebd", "hive"]
 
 
+#: One signing key per pytest session base directory, i.e. per xdist worker (bh-gb56v). The
+#: seat's signing config is stamped into the templated molecule, so the key outlives a test.
+_SIGNERS: dict[Path, tuple[Path, Path]] = {}
+
+
+def _worker_signer(tmp_path_factory) -> tuple[Path, Path]:
+    base = tmp_path_factory.getbasetemp()
+    if base not in _SIGNERS:
+        key = tmp_path_factory.mktemp("top-level-signer") / "top-level-composition-signer"
+        subprocess.run(
+            [
+                "ssh-keygen",
+                "-t",
+                "ed25519",
+                "-N",
+                "",
+                "-C",
+                "agents@test.dev",
+                "-f",
+                str(key),
+                "-q",
+            ],
+            check=True,
+        )
+        public_key = key.with_suffix(".pub")
+        allowed_signers = key.parent / "allowed_signers"
+        allowed_signers.write_text(
+            f'agents@test.dev namespaces="git" {public_key.read_text().strip()}\n'
+        )
+        _SIGNERS[base] = (public_key, allowed_signers)
+    return _SIGNERS[base]
+
+
 @pytest.fixture(autouse=True)
-def _real_ssh_signing_identity(hive, monkeypatch, tmp_path):
+def _real_ssh_signing_identity(hive, monkeypatch, tmp_path_factory):
     """Give the hermetic dispatcher seat a real host key for signed wrapper commits."""
-    key = tmp_path / "top-level-composition-signer"
-    subprocess.run(
-        [
-            "ssh-keygen",
-            "-t",
-            "ed25519",
-            "-N",
-            "",
-            "-C",
-            "agents@test.dev",
-            "-f",
-            str(key),
-            "-q",
-        ],
-        check=True,
-    )
-    public_key = key.with_suffix(".pub")
-    allowed_signers = tmp_path / "allowed_signers"
-    allowed_signers.write_text(
-        f'agents@test.dev namespaces="git" {public_key.read_text().strip()}\n'
-    )
+    public_key, allowed_signers = _worker_signer(tmp_path_factory)
     _git("config", "gpg.ssh.allowedSignersFile", str(allowed_signers), cwd=hive.main)
     monkeypatch.setattr(host, "signing_key", lambda: str(public_key))
 
@@ -56,7 +71,7 @@ def _wrap_reviewed_top_level_epic_over_advanced_integration(
     hive,
     fakebd,
     *,
-    epic="mr-top-level-composed",
+    epic=_TEMPLATE_EPIC,
     count=2,
     subject="",
     reverse_parents=False,
@@ -64,7 +79,7 @@ def _wrap_reviewed_top_level_epic_over_advanced_integration(
     integration="main",
 ):
     """Build the canonical signed top-level recovery graph with ordered real-Git parents."""
-    seat = _start_and_land_children(hive, fakebd, epic=epic, count=count)
+    seat = _restored_landed_children(hive, fakebd, epic=epic, count=count)
     branch = f"wt/bead/epic/{epic}"
     if direct_noise:
         _commit(seat, "chore: unreviewed top-level noise", fname="top-level-noise.txt")
@@ -96,7 +111,7 @@ def _wrap_reviewed_top_level_epic_over_advanced_integration(
 
 def _wrap_reviewed_side_that_absorbed_advanced_main(hive, fakebd, *, epic: str):
     """Reproduce the real bh-j5uyb graph: old first-parent spine, new main via a child side."""
-    seat = _start_and_land_children(hive, fakebd, epic=epic, count=2)
+    seat = _restored_landed_children(hive, fakebd, epic=epic, count=2)
     branch = f"wt/bead/epic/{epic}"
     boundary = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
 
@@ -139,7 +154,7 @@ def test_top_level_epic_submit_accepts_root_first_wrapper_over_configured_main(
     hive, fakebd, capsys
 ):
     """A parentless epic binds its one recovery wrapper to the configured integration branch."""
-    epic = "mr-top-level-composed"
+    epic = _TEMPLATE_EPIC
     _wrap_reviewed_top_level_epic_over_advanced_integration(hive, fakebd, epic=epic)
 
     capsys.readouterr()
@@ -164,7 +179,7 @@ def test_top_level_epic_accepts_reviewed_first_parent_boundary_ancestral_to_adva
     hive, fakebd, capsys
 ):
     """The bh-j5uyb shape audits only commits above main despite its older reviewed spine."""
-    epic = "mr-top-level-reviewed-main-ancestry"
+    epic = _TEMPLATE_EPIC
     seat, boundary, integration_tip, reviewed_tip = _wrap_reviewed_side_that_absorbed_advanced_main(
         hive, fakebd, epic=epic
     )
@@ -256,11 +271,11 @@ def test_top_level_root_first_wrapper_rejects_noncanonical_or_unreviewed_history
     hive, fakebd, capsys, malformation, expected
 ):
     """Top-level composition is one narrow allowance, not a subject-based history bypass."""
-    epic = f"mr-top-level-{malformation}"
+    epic = _TEMPLATE_EPIC
     branch = f"wt/bead/epic/{epic}"
 
     if malformation == "empty-reviewed-side":
-        seat = _start_and_land_children(hive, fakebd, epic=epic, count=0)
+        seat = _restored_landed_children(hive, fakebd, epic=epic, count=0)
         reviewed_tip = _git("rev-parse", branch, cwd=hive.main).stdout.strip()
         _commit(hive.main, "feat: advance configured main", fname="main-advance.txt")
         main_tip = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
