@@ -327,6 +327,7 @@ work:
     repoll_seconds: 1
     roots: []                     # local only (bh-mf1o4): execution roots, in preference order;
                                   # e.g. [{path: /srv/bh-runs, kind: disk, max_bytes: 200G}]
+    setup: ["uv sync --all-packages --inexact"]  # local only (bh-qhrl6): a gate's one setup job
   validation: relaxed            # merge re-test depth: relaxed | conservative | loose (see below)
   validate:                      # optional per-boundary overrides (fall back to validate_cmd).
                                  # a `<phase>-main` key wins when the op targets the integration branch.
@@ -401,7 +402,26 @@ grants spare CPU up to each key's `cpu_max` (laggards first, others keeping `hea
 backfills only where it delays no reserved key (EASY); serves nested requests under
 `BH_VALIDATION_LEASE` from the parent's grant alone; and reclaims a dead client's leases. A local
 engine that is misconfigured, cannot measure the host (no `/proc/meminfo`) or errors falls back to
-the slots engine with a warning. No gate runs through the broker yet; that is `bh-qhrl6`.
+the slots engine with a warning.
+
+**Side by side (bh-qhrl6).** Under `engine: local` the attest-key evaluator hands every pending key
+of a gate to the local engine as ONE gate group and runs the granted keys concurrently in one shared
+clean checkout: a `bh-run-*` directory in the granted execution root, or today's `verify-*` location
+without roots. The checkout is set up once, under the first grant, by the gate's per-tree setup job:
+the verify init rules, then each `work.validation_broker.setup` command (by default `uv sync
+--all-packages --inexact`, so no key's own sync changes the shared `.venv` under another key). Each
+key then runs through the same clean-checkout boundary, starting from the clean grant environment
+(`BH_GRANT_CPUS` and friends, never part of its command) plus, for parity with the slots path, the
+parent's `BH_*`, `GIT_*` and ssh-agent variables (never a stale `BH_GRANT_*` or
+`BH_VALIDATION_LEASE`), and records its own run and ledger verdict under the same `cmd_hash` as a
+sequential run. The **failure policy** is that the group finishes: a red key does not cancel its
+siblings, every key gets a verdict, and the gate's aggregate (and with it the boundary's rollback or
+bounce rule) applies once, after the group; `BH_VALIDATION_FAIL_FAST=1` still stops further keys
+from starting (running keys finish). A key the engine cannot run (it can never fit the budget, the
+engine errors, or setup fails) runs afterwards on today's sequential slots path, with a warning. The
+gate reports each key's wall time and the group wall. `just check-all-native` does the same with its
+`attest-*` recipes when `BH_VALIDATION_BROKER_ENGINE` names the local engine (a clean-checkout
+validation exports it when config selects `local`). Under `engine: slots` nothing of this runs.
 
 `work.validation_broker.roots` (bh-mf1o4, local engine only, empty by default) names the
 **execution roots** the local engine may place key runs on: each an existing absolute directory

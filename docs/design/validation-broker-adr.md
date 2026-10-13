@@ -604,6 +604,35 @@ per run that holds checkout and scratch together. As built:
   in its source repository, read-only inside the fence. A killed client's directory, including
   a SIGKILLed fence's scratch, is reclaimed by the next run on that root through an owner marker.
 
+Running a gate side by side (`bh-qhrl6`), as built:
+
+- **One gate group, one shared checkout.** Under engine `local` the evaluator submits every
+  pending key as one group and runs granted keys on threads in one clean checkout of the tree,
+  created on the first grant (a `run_directory` in its root, or today's `verify-*` location
+  without roots). The per-tree setup job is the verify init rules plus
+  `work.validation_broker.setup` (default `uv sync --all-packages --inexact`), run once under
+  that first grant. The evidence ordering hazard above (`bh-cbz4j`) was fixed at its source, so
+  setup does not refresh validation evidence.
+- **Recording unchanged.** Each key still goes through the clean-checkout boundary with its own
+  command, identity lock, reuse and coalescing, so its run record and ledger verdict match a
+  sequential run's (`cmd_hash` included). The grant is the admission; no host slot is taken.
+- **Failure policy: the group finishes.** Every started key runs to completion and records its
+  verdict; the aggregate and the boundary's rollback or bounce rule apply once afterwards.
+  `BH_VALIDATION_FAIL_FAST` keeps stopping further keys from starting.
+- **Fallback.** The gate uses the local engine directly rather than `FailoverBroker`, whose
+  fallback is the slots engine's port (concurrent waits on host slots). A key the local engine
+  refuses, a lost lease, a failed setup or an engine error sends the keys not yet started to
+  today's sequential path, loudly; started keys keep their grants.
+- **Key environment.** A key starts from `grant_environ` (the clean allow-list plus the grant)
+  and, for parity with the slots path whose keys inherit the whole environment, also receives
+  the parent's `BH_*`, `GIT_*`, `SSH_AUTH_SOCK` and `SSH_AGENT_PID` (so `BH_DOLT_SLOTS`,
+  `BH_TEST_TIMEOUT_SECONDS`, `BH_HQ_*`, `GIT_WORKSPACE` and the agent reach it). `BH_GRANT_*`
+  and `BH_VALIDATION_LEASE` come only from the grant; every other variable stays behind the
+  allow-list.
+- **`check-all-native`.** When `BH_VALIDATION_BROKER_ENGINE` is set to anything but `slots`
+  (a clean-checkout validation exports it when config selects `local`), the recipe hands its
+  discovered `attest-*` recipes to `python -m beadhive.validation_recipes`, the same runner.
+
 **Current figures, by reference only:** the full gate is 1,448 s on `2c256557`, with stateful at
 526 s and integration at 447 s, run sequentially. The ADR's own 2026-09-30 measurements are not
 restated.
