@@ -893,7 +893,7 @@ def _beadyard_parser():
     if __package__:
         from .beadyard_identity import parse_document
     else:
-        from beadyard_identity import parse_document
+        from beadyard_identity import parse_document  # pants: no-infer-dep
 
     return parse_document
 
@@ -902,7 +902,7 @@ def _beadyard_parser_id():
     if __package__:
         from .beadyard_identity import parse_id
     else:
-        from beadyard_identity import parse_id
+        from beadyard_identity import parse_id  # pants: no-infer-dep
 
     return parse_id
 
