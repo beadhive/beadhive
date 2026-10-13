@@ -368,6 +368,7 @@ def parity(root: Path, *, python_executable: str | None = None) -> dict:
     for package, module in (
         ("beadhive-hq-storage", "beadhive_hq_storage"),
         ("beadhive-hq-storage-dolt", "beadhive_hq_storage_dolt"),
+        ("beadhive-validation-broker", "beadhive_validation_broker"),
     ):
         shutil.copytree(source / "packages" / package / "src" / module, site / module)
     bootstrap = f"import site,sys;sys.path.insert(0,{str(site)!r});site.addsitedir({str(site)!r});"
