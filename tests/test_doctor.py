@@ -28,7 +28,15 @@ from beadhive import (
 )
 from beadhive.metadata import RepoMetadata
 from beadhive.safety import Category
-from test_work import _git, fakebd, hive  # noqa: F401 — fixtures resolved by name
+from test_work import (  # noqa: F401 — fixtures resolved by name
+    _git,
+    fake_build_verifier,
+    fakebd,
+    hive,
+)
+
+# The build verifier is incidental to these tests; keep the real Pants run out of doctor_payload.
+pytestmark = pytest.mark.usefixtures("fake_build_verifier")
 
 
 def _mol_branch(main, epic):

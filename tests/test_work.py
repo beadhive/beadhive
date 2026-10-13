@@ -418,6 +418,37 @@ class FakeBd:
 # ---- fixtures --------------------------------------------------------------
 
 
+class _NoFindingsBuildVerifier:
+    """A BuildVerifier that reports a clean build. Satisfies the plugin port; spawns nothing."""
+
+    def verify(self, repo):
+        return ()
+
+
+@pytest.fixture
+def fake_build_verifier(monkeypatch):
+    """Inject a fake ``BuildVerifierProvider`` at the doctor's build-verify seam (bh-um0rg).
+
+    ``doctor._data_build_verify`` keys on ``Path.cwd()``: from the repository root it finds
+    ``pants.toml`` and runs the real Pants verifier (~13 s per ``doctor_payload``), which is
+    incidental to every doctor test that is not about build verification. Plugin discovery stays
+    real; only the provider the discovered owner resolves to is replaced, through the existing
+    ``providers=`` parameter of ``collect_build_verify_diagnostics``.
+    """
+    from beadhive import doctor
+    from beadhive.bootstrap import build_verify
+
+    fake = build_verify.BuildVerifierProvider(
+        "pants", lambda _selectors: _NoFindingsBuildVerifier()
+    )
+    real = doctor.collect_build_verify_diagnostics
+
+    def _with_fake(repo, attest, **kwargs):
+        return real(repo, attest, **{**kwargs, "providers": (fake,)})
+
+    monkeypatch.setattr(doctor, "collect_build_verify_diagnostics", _with_fake)
+
+
 @pytest.fixture
 def hive(tmp_path, monkeypatch):
     ws_root = tmp_path / "ws"

@@ -602,19 +602,15 @@ def test_compatibility_gate_fails_closed_for_other_unimplemented_keywords(
     ],
 )
 def test_actual_gate_cli_rejects_same_major_not_mutations(
-    tmp_path: Path, mutation: str, diagnostic_path: str
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], mutation: str, diagnostic_path: str
 ) -> None:
-    """Exercise main(), Git baseline loading, release validation, and the exit status together."""
+    """Exercise run(), baseline loading, release validation, and the exit status together.
+
+    The baseline is a plain directory read through ``FilesystemReader`` (no git); the real
+    git-backed CLI path is ``test_actual_gate_cli_allows_additive_catalog_operation``.
+    """
     repo = tmp_path / "wire-gate-repo"
     shutil.copytree(ROOT / "docs" / "schemas" / "wire", repo / "docs" / "schemas" / "wire")
-    (repo / "scripts").mkdir()
-    shutil.copy2(
-        ROOT / "scripts" / "check_wire_schema_compat.py",
-        repo / "scripts" / "check_wire_schema_compat.py",
-    )
-    _git(repo, "init", "-q")
-    _git(repo, "config", "user.name", "Wire Gate Test")
-    _git(repo, "config", "user.email", "wire-gate@example.invalid")
     if mutation in {"allof-changed-def", "dynamicref-changed-def"}:
         baseline_schema_path = (
             repo / "docs" / "schemas" / "wire" / f"v{LATEST}" / "factory-snapshot-v1.schema.json"
@@ -629,10 +625,8 @@ def test_actual_gate_cli_rejects_same_major_not_mutations(
         else:
             baseline_schema["$dynamicRef"] = "#compat-guard"
         baseline_schema_path.write_text(json.dumps(baseline_schema, indent=2) + "\n")
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-qm", "baseline release")
-    _git(repo, "branch", "baseline")
-    _git(repo, "switch", "-qc", "candidate")
+    baseline = tmp_path / "wire-gate-baseline"
+    shutil.copytree(repo, baseline)
 
     wire = repo / "docs" / "schemas" / "wire"
     candidate_release = wire / f"v{NEXT_PATCH}"
@@ -665,45 +659,45 @@ def test_actual_gate_cli_rejects_same_major_not_mutations(
             "not": {},
         }
     schema_path.write_text(json.dumps(schema, indent=2) + "\n")
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-qm", f"candidate {mutation}")
 
-    env = os.environ.copy()
-    env["BH_WIRE_SCHEMA_BASE_REF"] = "baseline"
-    result = subprocess.run(
-        [sys.executable, "scripts/check_wire_schema_compat.py"],
-        cwd=repo,
-        env=env,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    status = _COMPAT.run(repo, "baseline", baseline_reader=FilesystemReader(baseline))
+    result = capsys.readouterr()
 
-    assert result.returncode == 1, result.stdout + result.stderr
-    assert "wire-schema-compat: incompatible change:" in result.stderr
+    assert status == 1, result.out + result.err
+    assert "wire-schema-compat: incompatible change:" in result.err
     assert (
         f"{artifact_id} {diagnostic_path}: unsupported compatibility keyword 'not' changed"
-        in result.stderr
+        in result.err
     )
-    assert "initial release validated" not in result.stdout
-    assert _git(repo, "rev-parse", "baseline").stdout != _git(repo, "rev-parse", "HEAD").stdout
+    assert "initial release validated" not in result.out
+    assert (baseline / "docs/schemas/wire/index.json").read_bytes() != (
+        repo / "docs/schemas/wire/index.json"
+    ).read_bytes()
 
 
-def _catalog_gate_candidate(tmp_path: Path, mutation: str) -> tuple[Path, str, str]:
+def _catalog_gate_candidate(
+    tmp_path: Path, mutation: str, *, use_git: bool = False
+) -> tuple[Path, Path | str, str]:
+    """Build a candidate tree; the baseline is a git branch or, by default, a plain directory."""
     repo = tmp_path / f"catalog-gate-{mutation}"
     wire = repo / "docs" / "schemas" / "wire"
     shutil.copytree(ROOT / "docs" / "schemas" / "wire", wire)
-    (repo / "scripts").mkdir()
-    shutil.copy2(
-        ROOT / "scripts" / "check_wire_schema_compat.py",
-        repo / "scripts" / "check_wire_schema_compat.py",
-    )
-    _git(repo, "init", "-q")
-    _git(repo, "config", "user.name", "Catalog Gate Test")
-    _git(repo, "config", "user.email", "catalog-gate@example.invalid")
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-qm", "immutable supported baseline")
-    _git(repo, "branch", "baseline")
+    baseline: Path | str = tmp_path / f"catalog-baseline-{mutation}"
+    if use_git:
+        (repo / "scripts").mkdir()
+        shutil.copy2(
+            ROOT / "scripts" / "check_wire_schema_compat.py",
+            repo / "scripts" / "check_wire_schema_compat.py",
+        )
+        _git(repo, "init", "-q")
+        _git(repo, "config", "user.name", "Catalog Gate Test")
+        _git(repo, "config", "user.email", "catalog-gate@example.invalid")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-qm", "immutable supported baseline")
+        _git(repo, "branch", "baseline")
+        baseline = _git(repo, "rev-parse", "baseline").stdout.strip()
+    else:
+        shutil.copytree(repo, baseline)
 
     candidate_release = wire / f"v{NEXT_PATCH}"
     shutil.copytree(wire / f"v{LATEST}", candidate_release)
@@ -746,13 +740,14 @@ def _catalog_gate_candidate(tmp_path: Path, mutation: str) -> tuple[Path, str, s
         diagnostic = "$.policy.catalog_role: value changed"
     catalog_path.write_text(json.dumps(catalog, indent=2) + "\n")
 
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-qm", f"candidate catalog {mutation}")
-    return repo, _git(repo, "rev-parse", "baseline").stdout.strip(), diagnostic
+    if use_git:
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-qm", f"candidate catalog {mutation}")
+    return repo, baseline, diagnostic
 
 
 def test_actual_gate_cli_allows_additive_catalog_operation(tmp_path: Path) -> None:
-    repo, baseline, _diagnostic = _catalog_gate_candidate(tmp_path, "add")
+    repo, baseline, _diagnostic = _catalog_gate_candidate(tmp_path, "add", use_git=True)
     result = subprocess.run(
         [sys.executable, "scripts/check_wire_schema_compat.py"],
         cwd=repo,
@@ -770,21 +765,21 @@ def test_actual_gate_cli_allows_additive_catalog_operation(tmp_path: Path) -> No
 @pytest.mark.parametrize(
     "mutation", ["remove", "identity", "signature", "result", "projection", "policy"]
 )
-def test_actual_gate_cli_rejects_breaking_catalog_changes(tmp_path: Path, mutation: str) -> None:
+def test_actual_gate_cli_rejects_breaking_catalog_changes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], mutation: str
+) -> None:
     repo, baseline, diagnostic = _catalog_gate_candidate(tmp_path, mutation)
-    result = subprocess.run(
-        [sys.executable, "scripts/check_wire_schema_compat.py"],
-        cwd=repo,
-        env={**os.environ, "BH_WIRE_SCHEMA_BASE_REF": "baseline"},
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    assert isinstance(baseline, Path)
 
-    assert baseline != _git(repo, "rev-parse", "HEAD").stdout.strip()
-    assert result.returncode == 1, result.stdout + result.stderr
-    assert "urn:beadhive:wire-catalog:operations:1" in result.stderr
-    assert diagnostic in result.stderr
+    status = _COMPAT.run(repo, "baseline", baseline_reader=FilesystemReader(baseline))
+    result = capsys.readouterr()
+
+    assert (baseline / "docs/schemas/wire/index.json").read_bytes() != (
+        repo / "docs/schemas/wire/index.json"
+    ).read_bytes()
+    assert status == 1, result.out + result.err
+    assert "urn:beadhive:wire-catalog:operations:1" in result.err
+    assert diagnostic in result.err
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -858,3 +853,17 @@ def test_host_push_amendment_is_specific_to_catalog_v2() -> None:
     old["catalog_version"] = candidate["catalog_version"] = "3.0.0"
     assert not _COMPAT._approved_host_push_draft(old, candidate)
     assert catalog_compatibility_errors(old, candidate)
+
+
+def test_batched_git_reader_matches_per_file_git_show_on_this_repository() -> None:
+    """The one real git-backed reader check: batching must not change a single byte."""
+    names = _git(ROOT, "ls-tree", "-r", "--name-only", "HEAD", "docs/schemas/wire").stdout.split()
+    assert len(names) > 100
+    with _COMPAT.GitReader(ROOT, "HEAD") as reader:
+        for name in [*names, *names[:5]]:  # repeats exercise the memoised path
+            expected = subprocess.run(
+                ["git", "show", f"HEAD:{name}"], cwd=ROOT, check=True, capture_output=True
+            ).stdout
+            assert reader.read(Path(name)) == expected, name
+        with pytest.raises(OSError):
+            reader.read(Path("docs/schemas/wire/does-not-exist.json"))

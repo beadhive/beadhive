@@ -16,7 +16,10 @@ import pytest
 
 from beadhive import doctor as doctor_mod
 from beadhive import mcp as mcp_mod
-from test_work import fakebd, hive  # noqa: F401 — fixtures resolved by name
+from test_work import fake_build_verifier, fakebd, hive  # noqa: F401 — fixtures resolved by name
+
+# The build verifier is incidental to these tests; keep the real Pants run out of doctor_payload.
+pytestmark = pytest.mark.usefixtures("fake_build_verifier")
 
 # The section keys beadhive://doctor exposes (kept in lockstep with doctor.doctor_payload).
 _SECTIONS = {
