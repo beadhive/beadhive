@@ -114,6 +114,12 @@ Closure certification and the selective-CI policy are retired. Selective validat
 solely by the attest-key gate model: see
 [the attest-keys single gate model ADR](design/attest-keys-single-gate-model-adr.md).
 
+Policy: plain selective `bh work submit` and `bh work merge` is the default path for every bead.
+`--override-validation` and `work.validation_bypass` are audited exceptions for a broken gate or
+an incident, never a routine way past a slow or red key. Fix the key, narrow the profile, or
+carry. The gate settings, the approved profile example and the rollback table are in
+[ATTEST-KEYS.md](ATTEST-KEYS.md#gate-model-and-phase-profiles).
+
 ## Fence spike-merge saving on integration runs (bh-y4c4z)
 
 Measures the effect of retiring the four fence spikes (bh-n0zj5 jbb6r, bh-3nfbn wtsrc and the
