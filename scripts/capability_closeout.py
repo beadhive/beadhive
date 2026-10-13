@@ -145,18 +145,83 @@ def _git(*args: str) -> str:
     ).stdout
 
 
-@cache
+class GitObjectReader:
+    """Read-only access to git objects at a fixed revision (the ``list_tree``/``read_blob`` seam).
+
+    Blob reads go through one long-lived ``git cat-file --batch`` process and are memoised, so a
+    build costs O(1) git processes rather than one per file.  Tree listings are one ``ls-tree``
+    per distinct (revision, prefix).  Call ``close`` to reap the batch process; the reader
+    restarts it lazily if used again.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self._process: subprocess.Popen[bytes] | None = None
+        self._blobs: dict[tuple[str, str], str] = {}
+        self._trees: dict[tuple[str, str, bool], tuple[str, ...]] = {}
+
+    def list_tree(self, rev: str, prefix: str, *, recursive: bool = True) -> tuple[str, ...]:
+        key = (rev, prefix, recursive)
+        if key not in self._trees:
+            args = ["git", "ls-tree", *(["-r"] if recursive else []), "--name-only", rev]
+            if recursive:
+                args.append("--")
+            args.append(prefix)
+            output = subprocess.run(
+                args, cwd=self.root, check=True, capture_output=True, text=True
+            ).stdout
+            self._trees[key] = tuple(output.splitlines())
+        return self._trees[key]
+
+    def _batch(self) -> subprocess.Popen[bytes]:
+        if self._process is None:
+            self._process = subprocess.Popen(
+                ["git", "cat-file", "--batch"],
+                cwd=self.root,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+        return self._process
+
+    def read_blob(self, rev: str, path: str) -> str:
+        key = (rev, path)
+        cached = self._blobs.get(key)
+        if cached is not None:
+            return cached
+        spec = f"{rev}:{path}"
+        process = self._batch()
+        assert process.stdin is not None and process.stdout is not None
+        process.stdin.write(spec.encode() + b"\n")
+        process.stdin.flush()
+        header = process.stdout.readline().split()
+        if len(header) != 3 or header[1] != b"blob":
+            raise FileNotFoundError(f"no blob at {spec}")
+        data = process.stdout.read(int(header[2]))
+        process.stdout.read(1)  # newline that follows every object body
+        # Match ``subprocess`` text mode (universal newlines) so output is byte-identical.
+        text = data.decode().replace("\r\n", "\n").replace("\r", "\n")
+        self._blobs[key] = text
+        return text
+
+    def close(self) -> None:
+        process, self._process = self._process, None
+        if process is not None:
+            assert process.stdin is not None and process.stdout is not None
+            process.stdin.close()
+            process.wait()
+            process.stdout.close()
+
+
+_READER = GitObjectReader(ROOT)
+
+
 def _paths(revision: str, prefix: str) -> tuple[str, ...]:
-    return tuple(
-        line
-        for line in _git("ls-tree", "-r", "--name-only", revision, "--", prefix).splitlines()
-        if line.endswith(".py")
-    )
+    return tuple(path for path in _READER.list_tree(revision, prefix) if path.endswith(".py"))
 
 
-@cache
 def _source(revision: str, path: str) -> str:
-    return _git("show", f"{revision}:{path}")
+    return _READER.read_blob(revision, path)
 
 
 def _module(path: str) -> str:
@@ -364,7 +429,7 @@ def _historical_closure_registry() -> dict[str, Any]:
     The registry file is retired from the working tree (attest keys are the single gate model),
     so it is located inside the pinned historical revision by content rather than by name.
     """
-    for name in _git("ls-tree", "--name-only", SOURCE_REVISION, "tests/").splitlines():
+    for name in _READER.list_tree(SOURCE_REVISION, "tests/", recursive=False):
         if not name.endswith(".toml"):
             continue
         document = tomllib.loads(_source(SOURCE_REVISION, name))
@@ -435,6 +500,13 @@ def _baseline_metrics(module: str, baseline_map: dict[str, Any]) -> dict[str, An
 
 
 def build_proof() -> dict[str, Any]:
+    try:
+        return _build_proof()
+    finally:
+        _READER.close()
+
+
+def _build_proof() -> dict[str, Any]:
     baseline_map = json.loads(
         (ROOT / "docs/design/capability-module-dependency-map.json").read_text(encoding="utf-8")
     )
