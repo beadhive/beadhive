@@ -538,7 +538,9 @@ def attest(
             release_receipt = (
                 _release_metadata_receipt(entry, main, parent, sha, keys) if parent else None
             )
-            if release_receipt and not selective_validation.all_keys_green(entry, cfg, parent):
+            if release_receipt and not selective_validation.attested_green(
+                entry, cfg, parent, "release"
+            ):
                 typer.echo(
                     "✗ release metadata bump parent is not fully attested green — refusing "
                     "carry-forward",
@@ -555,7 +557,11 @@ def attest(
                 runner=lambda key_cmd: worktree.clean_checkout(entry, sha, key_cmd, reuse=True),
                 receipt_override=release_receipt,
             )
-            if rc == 0 and selective and selective_validation.all_keys_green(entry, cfg, sha):
+            if (
+                rc == 0
+                and selective
+                and selective_validation.attested_green(entry, cfg, sha, "release")
+            ):
                 validation_ledger.record(entry, sha, cmd, 0)
             elif rc == 0 and selective:
                 typer.echo(

@@ -667,7 +667,7 @@ class AttestTrivialConfig(_Section):
     test", which carries no proof at all. Keeping them apart is what stops a policy skip from
     being recorded as carried evidence: the keys this drops are treated exactly like a
     disabled key -- they neither run, block, satisfy the aggregate, nor produce carryable
-    proof, so `all_keys_green` still refuses to call the revision fully attested."""
+    proof, so `attested_green` still refuses to call the revision fully attested."""
 
     enabled: bool = Field(
         False,
