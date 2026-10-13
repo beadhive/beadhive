@@ -531,6 +531,34 @@ class RoutingConfig(_Section):
 _ATTEST_KEY_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 
 
+class AttestKeyResourcesConfig(_Section):
+    """Optional per-key validation reservation (bh-9oc32): REPLACES the code default for the key.
+
+    Absent means the default in ``beadhive.validation_reservations``; there is no field-wise
+    merge, so an override states the whole reservation."""
+
+    cpu_min: float = Field(..., ge=0, description="CPUs that must be free before the key starts.")
+    cpu_max: float = Field(..., ge=0, description="Most CPUs the broker may grant (speedup knee).")
+    memory_mb: int = Field(
+        ..., ge=0, description="Memory in MiB at cpu_max, including tmpfs scratch."
+    )
+    pools: dict[str, int] = Field(
+        default_factory=dict,
+        description="Named pool amounts, e.g. {'dolt-servers': 2}.",
+    )
+    expected_s: float | None = Field(
+        None, gt=0, description="Expected wall seconds; absent uses the measured default."
+    )
+
+    @model_validator(mode="after")
+    def _ordered(self) -> AttestKeyResourcesConfig:
+        if self.cpu_max < self.cpu_min:
+            raise ValueError("attest key resources need cpu_min <= cpu_max")
+        if any(amount < 0 for amount in self.pools.values()):
+            raise ValueError("attest key resources pool amounts must be non-negative")
+        return self
+
+
 class AttestKeyConfig(_Section):
     """One attest key (Attested Green ADR, Amendment 1): an OPAQUE command bh runs verbatim and
     never parses, an execution state, an evidence policy, and per-backend selectors only the
@@ -571,6 +599,13 @@ class AttestKeyConfig(_Section):
         description=(
             "Optional timezone-aware expiry. Once reached, a disabled key automatically runs "
             "again (fail-closed) even while enabled remains false."
+        ),
+    )
+    resources: AttestKeyResourcesConfig | None = Field(
+        None,
+        description=(
+            "Optional validation reservation for this key (cpu_min, cpu_max, memory_mb, pools). "
+            "Absent uses the built-in per-key default. Never part of the command or its hash."
         ),
     )
     selectors: dict[str, str] = Field(

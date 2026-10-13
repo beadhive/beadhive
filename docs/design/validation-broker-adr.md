@@ -376,6 +376,9 @@ From `key-profiles.measured.json` (artifact on branch `wt/bead/issue/bh-5mdar.2`
 - The design record's `dolt-servers: 8` for stateful is replaced by 2 (at most 2 seen); bd-cli
   needs a pool slot per worker.
 - Expected durations come from each key's history; the table is the seed.
+- The engine config key landed as `work.validation_broker.engine` (plus `budget`, `floor`,
+  `packer`, `repoll_seconds`), not `work.validation.broker.engine`, because `work.validation` is
+  already a string field (`bh-qrixp`).
 - The grant never enters `cmd_hash` (Attested Green unchanged). stateful passed at 4, 8 and 16
   workers.
 
@@ -561,8 +564,8 @@ above live on their `wt/bead/issue/bh-5mdar.N` branches and are not on `main`.
 | Bead | Delivers |
 |---|---|
 | `bh-uljpc` | The broker port, job model and `SlotsEngine` in `packages/beadhive-validation-broker`. |
-| `bh-qrixp` | `LocalEngine`, in-process, selected by `work.validation.broker.engine` (`slots` or `local`, default `slots`) with the `BH_VALIDATION_BROKER_ENGINE` override. |
-| `bh-9oc32` | Default per-key reservations and grant export to key commands. |
+| `bh-qrixp` | `LocalEngine`, in-process, selected by `work.validation_broker.engine` (`slots` or `local`, default `slots`; the section also holds budget, floor, packer, repoll_seconds) with the `BH_VALIDATION_BROKER_ENGINE` override. |
+| `bh-9oc32` | Default per-key reservations (`validation_reservations.py`, override `work.attest.keys[].resources`) and the grant exported as `BH_GRANT_CPUS` to the `*-native` recipes. |
 | `bh-mf1o4` | Broker-owned execution roots: exactly one bounded root per run holds both the checkout and the fence scratch, never straddling. A worktree outside every root is materialised into the chosen root. |
 | `bh-qhrl6` | Pending attest keys run side by side through the broker. |
 
