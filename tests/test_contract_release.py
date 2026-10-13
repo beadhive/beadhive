@@ -84,6 +84,12 @@ def _write_release_document(root: Path) -> None:
         write_release(root)
 
 
+def _validate(root: Path, candidate: dict | None = None) -> tuple[str, ...]:
+    """Validate a tree against an isolated candidate copy instead of rebuilding the release."""
+    document = _release_document() if candidate is None else deepcopy(candidate)
+    return contract_release._validate_release_candidate(root, document)
+
+
 def _files(root: Path) -> dict[str, bytes]:
     return {
         path.relative_to(root).as_posix(): path.read_bytes()
@@ -235,8 +241,8 @@ def test_generator_is_offline_and_byte_identical_across_two_clean_runs(
     write_release(second)
 
     assert _files(first) == _files(second)
-    assert validate_release(first) == ()
-    assert validate_release(second) == ()
+    assert _validate(first) == ()
+    assert _validate(second) == ()
 
 
 def test_two_fresh_processes_generate_byte_identical_release(tmp_path: Path) -> None:
@@ -261,7 +267,7 @@ def test_two_fresh_processes_generate_byte_identical_release(tmp_path: Path) -> 
 def test_checked_release_is_current_and_install_lookup_is_path_safe() -> None:
     assert validate_release(release_root()) == ()
     loaded = load_release(release_root())
-    assert loaded == build_release()
+    assert loaded == _release_document()
     artifact = loaded["artifacts"][0]
     assert load_artifact(artifact["id"], release_root()) == artifact["document"]
 
@@ -553,13 +559,13 @@ def test_integrity_gate_rejects_path_escape_symlink_and_metadata_drift(tmp_path:
     inventory = json.loads(inventory_path.read_text())
     inventory["artifacts"][0]["path"] = "../escape.json"
     inventory_path.write_text(json.dumps(inventory, indent=2, sort_keys=True) + "\n")
-    assert any("path escapes release root" in error for error in validate_release(root))
+    assert any("path escapes release root" in error for error in _validate(root))
 
     _write_release_document(root)
     artifact_path = root / json.loads(inventory_path.read_text())["artifacts"][0]["path"]
     artifact_path.unlink()
     artifact_path.symlink_to(root / "inventory.json")
-    assert any("symlink" in error for error in validate_release(root))
+    assert any("symlink" in error for error in _validate(root))
     artifact_path.unlink()
 
     for field in ("source_owner", "compatibility_policy", "examples", "sha256"):
@@ -568,13 +574,13 @@ def test_integrity_gate_rejects_path_escape_symlink_and_metadata_drift(tmp_path:
         row = inventory["artifacts"][0]
         row[field] = [] if field == "examples" else "drift"
         inventory_path.write_text(json.dumps(inventory, indent=2, sort_keys=True) + "\n")
-        assert any(field in error for error in validate_release(root))
+        assert any(field in error for error in _validate(root))
 
     _write_release_document(root)
     inventory = json.loads(inventory_path.read_text())
     artifact_path = root / inventory["artifacts"][0]["path"]
     artifact_path.write_text('{"version":1,"$id":"non-canonical"}\n')
-    assert any("canonical JSON" in error for error in validate_release(root))
+    assert any("canonical JSON" in error for error in _validate(root))
 
 
 def test_writer_refuses_root_symlink_and_atomically_replaces_nested_symlink(
@@ -593,10 +599,10 @@ def test_writer_refuses_root_symlink_and_atomically_replaces_nested_symlink(
     sentinel.write_text("outside\n")
     (release / "artifacts").symlink_to(elsewhere, target_is_directory=True)
 
-    assert any("symlink" in error for error in validate_release(release))
+    assert any("symlink" in error for error in _validate(release))
     _write_release_document(release)
 
-    assert validate_release(release) == ()
+    assert _validate(release) == ()
     assert (release / "artifacts").is_dir()
     assert not (release / "artifacts").is_symlink()
     assert sentinel.read_text() == "outside\n"
@@ -852,7 +858,7 @@ def test_validate_release_rejects_public_operation_access_narrowing(
 
     assert any(
         "compatibility baseline" in error and "access" in error
-        for error in validate_release(target)
+        for error in _validate(target, restricted)
     )
 
 
@@ -1121,7 +1127,7 @@ def test_validate_release_rejects_unknown_access_extension_on_existing_operation
 
     assert any(
         "compatibility baseline" in error and "extension metadata" in error
-        for error in validate_release(target)
+        for error in _validate(target, restricted)
     )
 
 
@@ -1414,7 +1420,7 @@ def test_validate_release_rejects_minus_sign_extension_bypasses(
 
     assert any(
         "compatibility baseline" in error and "non-canonical extension" in error
-        for error in validate_release(target)
+        for error in _validate(target, restricted)
     )
 
 
@@ -1477,7 +1483,7 @@ def test_validate_release_rejects_nested_extension_bypasses(
 
     assert any(
         "compatibility baseline" in error and "extension metadata" in error
-        for error in validate_release(target)
+        for error in _validate(target, restricted)
     )
 
 
@@ -1786,7 +1792,7 @@ def test_release_write_and_check_paths_enforce_compatibility_baseline(
     with pytest.raises(ValueError, match="compatibility baseline"):
         write_release(target)
     assert not target.exists()
-    assert any("compatibility baseline" in error for error in validate_release(release_root()))
+    assert any("compatibility baseline" in error for error in _validate(release_root(), breaking))
     assert main(["--check"]) == 1
     assert "compatibility baseline" in capsys.readouterr().out
     assert main(["--write"]) == 1
@@ -1803,7 +1809,7 @@ def test_release_write_and_check_paths_accept_additive_evolution(
 
     target = tmp_path / "additive"
     write_release(target)
-    assert validate_release(target) == ()
+    assert _validate(target, additive) == ()
 
 
 @pytest.mark.parametrize(
@@ -1862,7 +1868,7 @@ def test_writer_failure_leaves_existing_target_byte_identical(
 
     assert _files(target) == before
     monkeypatch.setattr(contract_release, "build_release", lambda: deepcopy(old))
-    assert validate_release(target) == ()
+    assert _validate(target, old) == ()
 
 
 def test_validate_uses_candidate_exact_tree_and_write_removes_stale_target_entries(
@@ -1879,11 +1885,11 @@ def test_validate_uses_candidate_exact_tree_and_write_removes_stale_target_entri
     inventory["artifacts"].append(stale_row)
     _write_json(target / "inventory.json", inventory)
 
-    assert any("unlisted release entry" in error for error in validate_release(target))
+    assert any("unlisted release entry" in error for error in _validate(target))
 
     _write_release_document(target)
     assert not stale.exists()
-    assert validate_release(target) == ()
+    assert _validate(target) == ()
 
 
 def _staging_siblings(target: Path) -> list[Path]:
@@ -2029,8 +2035,7 @@ def test_stale_file_directory_and_symlink_are_rejected_then_atomically_removed(
         stale.symlink_to(outside, target_is_directory=True)
 
     assert any(
-        "unlisted release entry" in error or "symlink" in error
-        for error in validate_release(target)
+        "unlisted release entry" in error or "symlink" in error for error in _validate(target)
     )
 
     _write_release_document(target)
@@ -2038,6 +2043,6 @@ def test_stale_file_directory_and_symlink_are_rejected_then_atomically_removed(
         path.as_posix(): payload for path, payload in render_release(_release_document()).items()
     }
     assert _files(target) == expected
-    assert validate_release(target) == ()
+    assert _validate(target) == ()
     assert sentinel.read_text() == '{"outside":true}\n'
     assert _staging_siblings(target) == []
