@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import types
 
-from beadhive import config, hive
+from beadhive import bd, config, hive
 
 # ---- fake adapter -----------------------------------------------------------
 
@@ -338,6 +338,15 @@ def _stub_hive_init_prereqs(monkeypatch, tmp_path):
     monkeypatch.setattr(hive.registry, "register", lambda *a, **k: None)
     monkeypatch.setattr(
         hive, "run", lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="", stderr="")
+    )
+    # Onboarding reaches the real `bd` binary through the `bd.run` seam (9 calls, one of them a
+    # ~13 s `bd init`). The Beads database is incidental here: these tests exercise the
+    # installer-dispatch tail, and the onboard steps are proven by the onboard and integration
+    # tests. Answer every call at the `bd.run` port with a success (`bd.json` routes through it).
+    monkeypatch.setattr(
+        bd,
+        "run",
+        lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="{}", stderr=""),
     )
 
 

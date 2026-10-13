@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import faulthandler
 import json
@@ -649,20 +650,56 @@ def test_every_live_contract_cell_links_to_an_exact_collected_test() -> None:
     assert set(evidence) == EVIDENCE_CELLS
     nodes = sorted({node for cell in evidence.values() for node in cell})
     assert all(evidence.values())
-    collected = subprocess.run(
-        [sys.executable, "-m", "pytest", "--collect-only", "-q", *nodes],
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        timeout=60,
-        check=False,
-    )
-    assert collected.returncode == 0, collected.stdout + collected.stderr
-    collected_nodes = tuple(
-        line for line in collected.stdout.splitlines() if line.startswith("tests/")
-    )
     for node in nodes:
-        assert any(actual == node or actual.startswith(f"{node}[") for actual in collected_nodes)
+        assert _node_is_a_collectable_test(node), node
+
+
+def _node_is_a_collectable_test(node: str) -> bool:
+    """Resolve a pytest node id in-process, with no nested ``pytest --collect-only``.
+
+    ``path::test_fn`` / ``path::TestClass::test_fn`` resolve against the module's AST: the file
+    must exist, the function must be a module-level ``test_*`` function (or a method of a
+    ``Test*`` class), exactly where pytest collects it. A ``[id]`` suffix must be one of the
+    function's ``parametrize`` ids; a bare node matches any parametrized variants."""
+    path, _, rest = node.partition("::")
+    file = ROOT / path
+    if not rest or not file.is_file():
+        return False
+    parts = rest.split("::")
+    name, _, param = parts[-1].partition("[")
+    if param and not parts[-1].endswith("]"):
+        return False
+    param = param[:-1]
+    source = file.read_text()
+    scope: list[ast.stmt] = ast.parse(source).body
+    for owner in parts[:-1]:
+        classes = [n for n in scope if isinstance(n, ast.ClassDef) and n.name == owner]
+        if not owner.startswith("Test") or not classes:
+            return False
+        scope = classes[-1].body
+    funcs = [
+        n for n in scope if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef) and n.name == name
+    ]
+    if not name.startswith("test") or not funcs:
+        return False
+    if not param:
+        return True
+    decorators = "\n".join(
+        ast.get_source_segment(source, d) or "" for d in funcs[-1].decorator_list
+    )
+    return "parametrize" in decorators and param in decorators
+
+
+def test_the_in_process_node_resolver_rejects_what_collection_would_not_find() -> None:
+    here = "tests/test_daemon_live_contract.py"
+    assert _node_is_a_collectable_test(
+        f"{here}::test_the_in_process_node_resolver_rejects_what_collection_would_not_find"
+    )
+    assert not _node_is_a_collectable_test(f"{here}::test_no_such_test")
+    assert not _node_is_a_collectable_test(f"{here}::_node_is_a_collectable_test")
+    assert not _node_is_a_collectable_test("tests/test_no_such_file.py::test_x")
+    assert not _node_is_a_collectable_test(f"{here}::test_no_such_test[x]")
+    assert not _node_is_a_collectable_test(here)
 
 
 def test_operator_runbook_checks_install_credentials_migration_outage_and_rollback() -> None:

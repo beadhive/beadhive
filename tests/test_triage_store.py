@@ -325,8 +325,10 @@ def test_the_run_history_is_capped(tmp_path, monkeypatch):
     """Bounded like everything else here: a tree that keeps failing does not grow an unbounded
     file. The newest runs are the ones kept."""
     entry, repo = _hive(tmp_path, monkeypatch)
+    # The cap lives in `triage_store.store`; a clean checkout per run only wraps it. The
+    # sibling tests keep the clean_checkout -> store wiring, so call the store directly here.
     for i in range(triage_store._MAX_RUNS + 3):
-        worktree.clean_checkout(entry, "main", _runner(1) + f" # run{i}")
+        triage_store.store(entry, "main", _runner(1) + f" # run{i}", 1, None, None, None)
 
     runs = _results(repo)["runs"]
     assert len(runs) == triage_store._MAX_RUNS
