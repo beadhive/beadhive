@@ -35,7 +35,7 @@ from ._types import (
     Usage,
 )
 
-__all__ = ["InMemoryBroker", "RecordedReport"]
+__all__ = ["FakeAvailability", "InMemoryBroker", "RecordedReport"]
 
 _QUEUED, _RUNNING, _DONE, _CANCELLED, _LOST = "queued", "running", "done", "cancelled", "lost"
 
@@ -47,6 +47,34 @@ class RecordedReport:
     job_id: str
     outcome: Outcome
     usage: Usage
+
+
+class FakeAvailability:
+    """An :data:`~beadhive_validation_broker.Availability` a test sets by hand.
+
+    ``set`` changes what the host reports free; ``fail`` makes the next reads raise, the way a
+    missing ``/proc/meminfo`` does. ``reads`` counts probes, so a test can prove one happened.
+    """
+
+    def __init__(self, available: Capacity) -> None:
+        self.available = available
+        self.error: Exception | None = None
+        self.reads = 0
+
+    def set(self, available: Capacity) -> None:
+        self.available = available
+
+    def fail(self, error: Exception | None = None) -> None:
+        self.error = error or OSError("availability probe failed")
+
+    def recover(self) -> None:
+        self.error = None
+
+    def __call__(self) -> Capacity:
+        self.reads += 1
+        if self.error is not None:
+            raise self.error
+        return self.available
 
 
 @dataclass

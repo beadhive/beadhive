@@ -21,7 +21,12 @@ from beadhive_validation_broker import (
     Outcome,
     Usage,
 )
-from beadhive_validation_broker.contract import job
+from beadhive_validation_broker.contract import (
+    ScenarioSkipped,
+    job,
+    parametrize_scenarios,
+    run_scenario,
+)
 
 OK, USED = Outcome(0), Usage(wall_s=1.0)
 GENEROUS = 10.0  # an upper bound on an event wait, never a delay the test depends on
@@ -121,8 +126,10 @@ def test_environment_override_wins_like_host_slot(tmp_path, monkeypatch) -> None
     monkeypatch.setenv("BH_VALIDATION_MEMORY_FLOOR", "0")
     engine = SlotsEngine({"work": {"validation_slots": 5}}, root=tmp_path)
     assert engine.status().budget.cpu == validation_admission.configured_slots({}) == 1
-    first, second = engine.submit(job("a")), engine.submit(job("b"))
+    first = engine.submit(job("a"))
     engine.wait_grant(first, timeout=GENEROUS)
+    # Submitted only once the first holds the permit: two holder threads race for one slot.
+    second = engine.submit(job("b"))
     with pytest.raises(GrantTimeout):
         engine.wait_grant(second, timeout=0.0)
     engine.report(first, OK, USED)
@@ -180,3 +187,72 @@ def test_a_memory_floor_refusal_propagates_unchanged(tmp_path, monkeypatch) -> N
     with pytest.raises(typer.Exit) as excinfo:
         engine.wait_grant(handle, timeout=GENEROUS)
     assert excinfo.value.exit_code == 75
+
+
+# ---- the shared conformance kit (bh-qrixp) ------------------------------------------------
+
+
+class _SlotsHarness:
+    """The kit's harness over one host slot in a temp root.
+
+    The slots engine admits on a holder thread, so ``settle`` waits (an event wait, bounded by
+    ``GENEROUS``) until every queued top-level job either holds a permit or the permits are all
+    held. It admits by count, so ``sized`` is false and the sizing-only scenario skips.
+    """
+
+    sized = False
+
+    def __init__(self, root) -> None:
+        self.dead: set = set()
+        self.slots = 1
+        self.broker = SlotsEngine(
+            {"work": {"validation_slots": self.slots}},
+            root=root,
+            owner_alive=lambda owner: owner not in self.dead,
+        )
+        self.budget = self.broker.status().budget
+
+    def kill_owner(self, owner) -> None:
+        self.dead.add(owner)
+
+    def reap(self) -> None:
+        self.broker.reap()
+
+    def set_available(self, available: bool) -> None:
+        raise ScenarioSkipped("the slots engine is in-process file locks; it cannot be taken down")
+
+    def settle(self) -> None:
+        import time
+
+        deadline = time.monotonic() + GENEROUS  # a bound on the wait, never a delay relied on
+        while True:
+            with self.broker._lock:
+                top = [h for h in self.broker._jobs.values() if h.spec.parent_lease is None]
+                running = sum(1 for h in top if h.state == "running")
+                queued = [h for h in top if h.state == "queued"]
+            if not queued or running >= self.slots:
+                return
+            assert time.monotonic() < deadline, "the slots engine never admitted a queued job"
+            queued[0].admitted.wait(0.05)
+
+
+@parametrize_scenarios()
+def test_slots_engine_passes_the_conformance_kit(scenario, tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("BH_VALIDATION_SLOTS", raising=False)
+    monkeypatch.setenv("BH_VALIDATION_MEMORY_FLOOR", "0")
+    harness = _SlotsHarness(tmp_path)
+    try:
+        run_scenario(scenario, harness)
+    except ScenarioSkipped as skipped:
+        pytest.skip(str(skipped))
+    finally:
+        for held in list(harness.broker._jobs.values()):
+            harness.broker.cancel(held.handle, "test teardown")
+
+
+def test_slots_reap_without_a_probe_reclaims_nothing(engine) -> None:
+    handle = engine.submit(job("a"))
+    engine.wait_grant(handle, timeout=GENEROUS)
+    engine.reap()
+    assert engine.wait_grant(handle, timeout=0.0).job_id == "a"
+    engine.report(handle, OK, USED)

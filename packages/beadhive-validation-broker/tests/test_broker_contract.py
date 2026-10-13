@@ -1,4 +1,4 @@
-"""The shared conformance scenarios, run against the in-memory fake."""
+"""The shared conformance scenarios, run against the in-memory fake and the local engine."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from beadhive_validation_broker.contract import (
     SCENARIOS,
     ScenarioSkipped,
     fake_harness,
+    local_harness,
     parametrize_scenarios,
     run_scenario,
 )
@@ -15,6 +16,11 @@ from beadhive_validation_broker.contract import (
 @parametrize_scenarios()
 def test_fake_passes_the_scenario(scenario: contract.Scenario) -> None:
     run_scenario(scenario, fake_harness())
+
+
+@parametrize_scenarios()
+def test_local_engine_passes_the_scenario(scenario: contract.Scenario) -> None:
+    run_scenario(scenario, local_harness())
 
 
 def test_scenarios_cover_safety_nested_and_killed_client() -> None:
@@ -44,3 +50,26 @@ def test_the_scenarios_detect_an_engine_that_over_admits() -> None:
     except AssertionError:
         return
     raise AssertionError("an over-admitting engine passed the safety scenario")
+
+
+def test_the_scenarios_detect_a_local_engine_that_over_admits() -> None:
+    """The same bite against the local engine: an unbounded budget must fail safety."""
+    harness = local_harness()
+    harness.broker._budget = type(harness.budget)(1e9, 1 << 60, {"dolt-servers": 99})  # type: ignore[attr-defined]
+    over = next(s for s in SCENARIOS if s.name == "whole_reservation_never_over_admits")
+    try:
+        run_scenario(over, harness)
+    except AssertionError:
+        return
+    raise AssertionError("an over-admitting local engine passed the safety scenario")
+
+
+def test_a_count_only_engine_skips_the_sizing_scenario() -> None:
+    harness = fake_harness()
+    harness.sized = False  # type: ignore[attr-defined]
+    refuse = next(s for s in SCENARIOS if s.name == "refuses_what_can_never_fit")
+    try:
+        run_scenario(refuse, harness)
+    except ScenarioSkipped:
+        return
+    raise AssertionError("expected ScenarioSkipped")
