@@ -2871,6 +2871,14 @@
           "exclusiveMinimum": 0,
           "title": "Repoll Seconds",
           "type": "number"
+        },
+        "roots": {
+          "description": "Execution roots (bh-mf1o4, local engine only), in preference order. Each key run is placed on exactly one root holding its checkout and fence scratch. Empty (default): runs use today's locations.",
+          "items": {
+            "$ref": "#/$defs/ValidationBrokerRootConfig"
+          },
+          "title": "Roots",
+          "type": "array"
         }
       },
       "title": "ValidationBrokerConfig",
@@ -2949,6 +2957,38 @@
         }
       },
       "title": "ValidationBrokerPackerConfig",
+      "type": "object"
+    },
+    "ValidationBrokerRootConfig": {
+      "additionalProperties": false,
+      "description": "One `work.validation_broker.roots` entry — a bounded execution root (bh-mf1o4).",
+      "properties": {
+        "kind": {
+          "description": "disk, or tmpfs: a RAM-backed root whose usage also counts against memory.",
+          "enum": [
+            "disk",
+            "tmpfs"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "max_bytes": {
+          "description": "The most the root's runs may reserve at once: bytes or a K/M/G/T size. Admission also never exceeds the filesystem's measured free space.",
+          "title": "Max Bytes",
+          "type": "string"
+        },
+        "path": {
+          "description": "Absolute directory (~ expands) the local engine may place key runs on. Each run's clean checkout and hermetic fence TMPDIR scratch both live under it.",
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "kind",
+        "max_bytes"
+      ],
+      "title": "ValidationBrokerRootConfig",
       "type": "object"
     },
     "ValidationMemoryConfig": {

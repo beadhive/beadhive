@@ -325,6 +325,8 @@ work:
       group_major: false
       aging: 4                    # only with group_major
     repoll_seconds: 1
+    roots: []                     # local only (bh-mf1o4): execution roots, in preference order;
+                                  # e.g. [{path: /srv/bh-runs, kind: disk, max_bytes: 200G}]
   validation: relaxed            # merge re-test depth: relaxed | conservative | loose (see below)
   validate:                      # optional per-boundary overrides (fall back to validate_cmd).
                                  # a `<phase>-main` key wins when the op targets the integration branch.
@@ -400,6 +402,19 @@ backfills only where it delays no reserved key (EASY); serves nested requests un
 `BH_VALIDATION_LEASE` from the parent's grant alone; and reclaims a dead client's leases. A local
 engine that is misconfigured, cannot measure the host (no `/proc/meminfo`) or errors falls back to
 the slots engine with a warning. No gate runs through the broker yet; that is `bh-qhrl6`.
+
+`work.validation_broker.roots` (bh-mf1o4, local engine only, empty by default) names the
+**execution roots** the local engine may place key runs on: each an existing absolute directory
+with a `kind` (`disk`, or `tmpfs` for a RAM-backed one) and a `max_bytes` bound. With roots, every
+key run is placed on exactly one root, tried in the listed order; it is admitted only when its
+expected disk footprint fits `min(max_bytes, measured free space)` less what that root has
+already granted, and on a `tmpfs` root the same bytes also count against memory. A gate's keys
+share the root of its first admitted key. The run's clean checkout (materialised there with
+`git worktree add` when the bead worktree lives elsewhere) and the hermetic fence's `TMPDIR`
+scratch both live in one `bh-run-*` directory under that root, removed when the run ends; a
+killed client's directory is reclaimed by the next run on that root. A missing root, or a `disk`
+root that is actually RAM-backed, makes the local engine fall back to slots with a warning.
+Without roots, runs use today's locations.
 
 The same guard is available for ad-hoc test runs. It waits for the floor, bounds the command in
 its own scope, and reports the peak; it takes **no** host validation slot, so never wrap

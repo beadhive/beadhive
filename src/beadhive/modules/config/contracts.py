@@ -26,6 +26,7 @@ from __future__ import annotations
 import datetime
 import difflib
 import json
+import os
 import re
 import types
 import typing
@@ -1027,6 +1028,44 @@ class ValidationBrokerPackerConfig(_Section):
     )
 
 
+class ValidationBrokerRootConfig(_Section):
+    """One `work.validation_broker.roots` entry — a bounded execution root (bh-mf1o4)."""
+
+    path: str = Field(
+        ...,
+        description=(
+            "Absolute directory (~ expands) the local engine may place key runs on. Each run's "
+            "clean checkout and hermetic fence TMPDIR scratch both live under it."
+        ),
+    )
+    kind: Literal["disk", "tmpfs"] = Field(
+        ...,
+        description="disk, or tmpfs: a RAM-backed root whose usage also counts against memory.",
+    )
+    max_bytes: str = Field(
+        ...,
+        description=(
+            "The most the root's runs may reserve at once: bytes or a K/M/G/T size. Admission "
+            "also never exceeds the filesystem's measured free space."
+        ),
+    )
+
+    @field_validator("path")
+    @classmethod
+    def _absolute(cls, v):
+        if not os.path.isabs(os.path.expanduser(v)):
+            raise ValueError(f"work.validation_broker.roots path must be absolute: {v!r}")
+        return v
+
+    @field_validator("max_bytes", mode="before")
+    @classmethod
+    def _size(cls, value, info):
+        text = _memory_size(value, name=info.field_name, allow_zero=False)
+        if not text or text.endswith("%") or text.lower() in ("none", "infinity"):
+            raise ValueError("max_bytes must be bytes or a K/M/G/T size greater than zero")
+        return text
+
+
 class ValidationBrokerConfig(_Section):
     """`work.validation_broker` — which engine admits validation jobs (bh-qrixp, opt-in)."""
 
@@ -1055,6 +1094,26 @@ class ValidationBrokerConfig(_Section):
         gt=0,
         description="Seconds between availability re-reads while a local-engine client waits.",
     )
+    roots: list[ValidationBrokerRootConfig] = Field(
+        default_factory=list,
+        description=(
+            "Execution roots (bh-mf1o4, local engine only), in preference order. Each key run "
+            "is placed on exactly one root holding its checkout and fence scratch. Empty "
+            "(default): runs use today's locations."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _distinct_roots(self):
+        paths = [os.path.normpath(os.path.expanduser(root.path)) for root in self.roots]
+        for i, first in enumerate(paths):
+            for second in paths[i + 1 :]:
+                if os.path.commonpath([first, second]) in (first, second):
+                    raise ValueError(
+                        "work.validation_broker.roots must be distinct and not nested: "
+                        f"{first} and {second}"
+                    )
+        return self
 
 
 class GatePushConfig(_Section):

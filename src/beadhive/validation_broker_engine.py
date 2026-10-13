@@ -8,7 +8,9 @@ local engine's settings.
 
 ``local`` builds :class:`beadhive_validation_broker.LocalEngine` from the budget, floor and packer
 settings, with ``/proc/meminfo`` availability, ``time.monotonic`` and the pid liveness probe, and
-probes it once. A local engine that is misconfigured, unavailable (no ``/proc/meminfo``) or
+probes it once. ``work.validation_broker.roots`` (bh-mf1o4) adds execution roots: each must be
+an existing directory, and a root declared ``disk`` that is RAM-backed is refused (it would
+undercount memory). A local engine that is misconfigured, unavailable (no ``/proc/meminfo``) or
 erroring falls back to the slots engine with a loud warning, at selection time or later through
 :class:`beadhive_validation_broker.FailoverBroker`.
 
@@ -28,15 +30,19 @@ from beadhive_validation_broker import (
     BrokerPort,
     Capacity,
     Clock,
+    DiskSpace,
+    ExecutionRoot,
     FailoverBroker,
     LocalEngine,
     MeminfoAvailability,
     PackerPolicy,
     ProcessLiveness,
+    RootKind,
     pid_alive,
+    statvfs_free,
 )
 
-from . import validation_memory
+from . import config_paths, validation_memory
 from .modules.config.contracts import ValidationBrokerConfig
 from .validation_broker_slots import SlotsEngine
 
@@ -46,6 +52,7 @@ __all__ = [
     "broker_settings",
     "build_local_engine",
     "configured_engine",
+    "execution_roots",
     "select_engine",
 ]
 
@@ -83,19 +90,52 @@ def broker_settings(cfg: dict) -> ValidationBrokerConfig:
     return ValidationBrokerConfig.model_validate(raw if raw is not None else {})
 
 
+def _memory_backed(path: Path) -> bool:
+    return config_paths.statfs_type(path) in config_paths.MEMORY_BACKED_MAGICS
+
+
+def execution_roots(
+    settings: ValidationBrokerConfig,
+    *,
+    memory_backed: Callable[[Path], bool] = _memory_backed,
+) -> tuple[ExecutionRoot, ...]:
+    """``work.validation_broker.roots`` resolved: ``~`` expanded, symlinks resolved, sizes in
+    bytes. Raises ``ValueError`` for a missing directory or a ``disk`` root that is RAM-backed."""
+    roots = []
+    for entry in settings.roots:
+        path = Path(entry.path).expanduser()
+        if not path.is_dir():
+            raise ValueError(f"execution root {path} is not an existing directory")
+        path = path.resolve()
+        if entry.kind == "disk" and memory_backed(path):
+            raise ValueError(
+                f"execution root {path} is declared disk but is RAM-backed (tmpfs/ramfs); "
+                "declare it kind: tmpfs so its usage counts against memory"
+            )
+        size = validation_memory.parse_size(entry.max_bytes, None)
+        if size is None:
+            raise ValueError(f"execution root {path} needs a max_bytes size")
+        roots.append(ExecutionRoot(str(path), RootKind(entry.kind), size))
+    return tuple(roots)
+
+
 def build_local_engine(
     settings: ValidationBrokerConfig,
     *,
     probe: MeminfoAvailability,
     clock: Clock,
     owner_alive: ProcessLiveness,
+    disk_space: DiskSpace = statvfs_free,
+    memory_backed: Callable[[Path], bool] = _memory_backed,
 ) -> LocalEngine:
     """A local engine whose budget and floor are resolved against this host's memory and CPUs.
 
     The budget is ``budget.cpu`` (0: every CPU) and ``budget.memory`` (a percentage of RAM or a
     size; none: all of RAM); the memory floor is the larger of ``floor.memory`` and
-    ``floor.memory_percent`` of RAM. Raises when the host cannot be measured.
+    ``floor.memory_percent`` of RAM. Raises when the host cannot be measured or a root is
+    invalid (:func:`execution_roots`).
     """
+    roots = execution_roots(settings, memory_backed=memory_backed)
     total = probe.total_memory_bytes()
     measured = probe()
     budget_memory = validation_memory.parse_size(settings.budget.memory, total) or total
@@ -116,6 +156,8 @@ def build_local_engine(
         owner_alive=owner_alive,
         policy=PackerPolicy(**settings.packer.model_dump()),
         repoll_seconds=settings.repoll_seconds,
+        roots=roots,
+        disk_space=disk_space if roots else None,
     )
 
 
@@ -130,6 +172,8 @@ def select_engine(
     clock: Clock = time.monotonic,
     owner_alive: ProcessLiveness = pid_alive,
     warn: Callable[[str], None] = _warn,
+    disk_space: DiskSpace = statvfs_free,
+    memory_backed: Callable[[Path], bool] = _memory_backed,
 ) -> BrokerPort:
     """The configured validation broker engine, falling back to slots loudly."""
 
@@ -149,6 +193,8 @@ def select_engine(
             probe=probe or MeminfoAvailability(),
             clock=clock,
             owner_alive=owner_alive,
+            disk_space=disk_space,
+            memory_backed=memory_backed,
         )
         local.status()  # one live probe before any job depends on it
     except Exception as exc:  # noqa: BLE001 - any local failure means today's slots, loudly
