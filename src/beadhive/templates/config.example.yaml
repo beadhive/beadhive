@@ -263,6 +263,8 @@ worktrees:
 #     roots: []                    # local only (bh-mf1o4): one bounded root per key run holds its
 #                                  # checkout and fence scratch, e.g.
 #                                  # [{path: /srv/bh-runs, kind: disk, max_bytes: 200G}]
+#     setup: ["uv sync --all-packages --inexact"]  # local only (bh-qhrl6): run once per gate in
+#                                  # the keys' shared checkout before any key starts
 #   validate_subset: "./scripts/hermetic.sh uv run pytest -n auto --pyargs {tests}"
 #                                  # OPTIONAL template that re-runs only NAMED failing tests, one
 #                                  # required {tests} placeholder — a value missing it is rejected
