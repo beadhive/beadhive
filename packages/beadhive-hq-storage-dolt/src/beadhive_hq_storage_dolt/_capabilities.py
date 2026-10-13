@@ -363,7 +363,11 @@ def _run_on_cursor(cursor: Any, statements: Sequence[str], rows: bool) -> list[d
     for statement in statements:
         cursor.execute(statement)
         description = getattr(cursor, "description", None)
-        if rows and description:
+        if rows:
+            if description is None:
+                # A row query through a cursor that reports no result set must not read as "no
+                # rows" (SHOW GRANTS would read as "no grants"): raise so callers fail closed.
+                raise RuntimeError("cursor reported no result set for a row query")
             names = [d[0] for d in description]
             out = [dict(zip(names, r, strict=True)) for r in cursor.fetchall()]
     return out

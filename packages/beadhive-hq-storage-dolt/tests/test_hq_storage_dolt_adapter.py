@@ -60,10 +60,12 @@ from beadhive_hq_storage_dolt import (
     MergeRefused,
     Revocation,
     Role,
+    SqlDoltAccounts,
     cause_token,
     config_change_set,
     config_document_kind,
     config_documents_digest,
+    cursor_runner,
     error_code,
     evidence_ddl,
     incarnation_key,
@@ -1111,3 +1113,25 @@ def test_a_failed_post_commit_head_read_in_commit_bump_is_unknown_then_confirmed
     assert isinstance(healthy.push(), Applied)
     found = healthy.lookup_bump("frame-a", 1, operation=bump.operation)
     assert isinstance(found, Confirmed) and found.revision == _head(server, hive.database)
+
+
+class _NoDescriptionCursor:
+    description = None
+
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    def execute(self, operation: str, parameters: Any = None) -> None:
+        self.statements.append(operation)
+
+    def fetchall(self) -> list:
+        return []
+
+
+def test_a_row_query_through_a_cursor_without_a_description_raises_not_empty() -> None:
+    cursor = _NoDescriptionCursor()
+    accounts = SqlDoltAccounts(cursor_runner(cursor))
+    with pytest.raises(RuntimeError, match="no result set"):
+        accounts.grants("u", "%")  # must not read as "no grants"
+    # statements that return no rows are unaffected
+    cursor_runner(cursor).execute(["SELECT 1"])
