@@ -25,6 +25,7 @@ from typer.testing import CliRunner
 
 from beadhive import cli, cli_entrypoint, hq_sql_config
 from beadhive import worktree_local_reclaim as lr
+from harness.tree_templates import worker_templates
 
 GIB = 1024**3
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,15 +56,18 @@ def git_env(monkeypatch, tmp_path):
 class Hive:
     """A real repo plus one linked worktree per safety scenario under a fake tmpfs root."""
 
-    def __init__(self, tmp_path: Path) -> None:
+    def __init__(self, tmp_path: Path, leaves: dict[str, Path] | None = None) -> None:
         self.repo = tmp_path / "repo"
         self.root = tmp_path / "bh-worktrees"
+        self.remote = tmp_path / "remote.git"
         self.leaves: dict[str, Path] = {}
+        if leaves is not None:  # a restored template: the tree is already in place
+            self.leaves = leaves
+            return
         self.repo.mkdir()
         _git(self.repo, "init", "-q")
         (self.repo / ".gitignore").write_text(".venv/\n")
         (self.repo / "README").write_text("base\n")
-        self.remote = tmp_path / "remote.git"
         self.remote.mkdir()
         _git(self.remote, "init", "--bare", "-q")
         _git(self.repo, "remote", "add", "origin", str(self.remote))
@@ -86,8 +90,7 @@ class Hive:
         return path
 
 
-@pytest.fixture
-def hive(git_env, tmp_path):
+def _build_hive(tmp_path: Path) -> Hive:
     h = Hive(tmp_path)
     h.leaf("landed-a")
     h.leaf("landed-b")
@@ -115,6 +118,17 @@ def hive(git_env, tmp_path):
     (unknown / ".git").write_text("gitdir: /nonexistent/worktrees/unknown\n")
     h.leaves["unknown"] = unknown
     return h
+
+
+@pytest.fixture
+def hive(git_env, tmp_path_factory):
+    """The scenario tree, built with real git once per worker and restored byte-identically onto
+    the worker's fixed live root before each test, so the absolute worktree paths Git recorded
+    stay valid (bh-gb56v)."""
+    templates = worker_templates(tmp_path_factory, "local-reclaim-hive")
+    if "hive" not in templates:
+        templates.capture("hive", _build_hive(templates.reset_live()).leaves)
+    return Hive(templates.live, templates.restore("hive"))
 
 
 class FakeTmpfs:

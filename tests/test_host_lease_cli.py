@@ -28,6 +28,7 @@ from typer.testing import CliRunner
 
 from beadhive import config, host, host_fence, host_lease, registry
 from beadhive.cli import app
+from harness.tree_templates import worker_templates
 
 runner = CliRunner()
 
@@ -42,17 +43,33 @@ def _git(args, cwd):
     return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, check=False)
 
 
-def _bare(tmp_path, name):
+@pytest.fixture
+def repo_templates(tmp_path_factory):
+    """An empty bare remote and an empty client clone, built with real git once per worker and
+    copied per test (bh-gb56v). Neither records a path; `remote add` runs per test."""
+    templates = worker_templates(tmp_path_factory, "host-lease-repos")
+    if "bare" not in templates:
+        live = templates.reset_live()
+        _git(["init", "--bare", "-q", str(live)], live)
+        templates.capture("bare")
+        live = templates.reset_live()
+        _git(["init", "-q"], live)
+        _git(["config", "user.email", "t@example.invalid"], live)
+        _git(["config", "user.name", "t"], live)
+        templates.capture("clone")
+    return templates
+
+
+def _bare(templates, tmp_path, name):
     path = tmp_path / name
-    _git(["init", "--bare", "-q", str(path)], tmp_path)
+    path.mkdir()
+    templates.restore("bare", into=path)
     return path
 
 
-def _clone_with_origin(path, origin):
+def _clone_with_origin(templates, path, origin):
     path.mkdir(parents=True)
-    _git(["init", "-q"], path)
-    _git(["config", "user.email", "t@example.invalid"], path)
-    _git(["config", "user.name", "t"], path)
+    templates.restore("clone", into=path)
     _git(["remote", "add", "origin", str(origin)], path)
     return path
 
@@ -74,44 +91,44 @@ def _write_config(hives):
 
 
 @pytest.fixture
-def hq(tmp_path):
+def hq(tmp_path, repo_templates):
     """This host's local HQ clone, with a REAL `origin` wired to a real bare remote."""
-    hq_remote = _bare(tmp_path, "hq.git")
+    hq_remote = _bare(repo_templates, tmp_path, "hq.git")
     hq_dir = config.hq_dir()
-    _clone_with_origin(hq_dir, hq_remote)
+    _clone_with_origin(repo_templates, hq_dir, hq_remote)
     return hq_dir
 
 
-def _register_hive(tmp_path, monkeypatch, workspace, org, repo, prefix):
-    hive_remote = _bare(tmp_path, f"{repo}.git")
+def _register_hive(templates, tmp_path, workspace, org, repo, prefix):
+    hive_remote = _bare(templates, tmp_path, f"{repo}.git")
     hive_dir = workspace / "github" / org / repo
-    _clone_with_origin(hive_dir, hive_remote)
+    _clone_with_origin(templates, hive_dir, hive_remote)
     return hive_dir, hive_remote, ("github", org, repo, prefix)
 
 
 @pytest.fixture
-def one_hive(tmp_path, monkeypatch, hq):
+def one_hive(tmp_path, monkeypatch, hq, repo_templates):
     """One registered hive (PREFIX_A), with a real, `origin`-wired remote of its own."""
     workspace = tmp_path / "workspace"
     monkeypatch.setattr(registry, "workspace_root", lambda: str(workspace))
     hive_dir, hive_remote, entry = _register_hive(
-        tmp_path, monkeypatch, workspace, "o", "r", PREFIX_A
+        repo_templates, tmp_path, workspace, "o", "r", PREFIX_A
     )
     _write_config([entry])
     return {"hq_dir": hq, "hive_dir": hive_dir, "hive_remote": hive_remote}
 
 
 @pytest.fixture
-def two_hives(tmp_path, monkeypatch, hq):
+def two_hives(tmp_path, monkeypatch, hq, repo_templates):
     """Two registered hives (PREFIX_A, PREFIX_B), each with its own real remote — packup's
     "every held lease" only means something with more than one hive in play."""
     workspace = tmp_path / "workspace"
     monkeypatch.setattr(registry, "workspace_root", lambda: str(workspace))
     dir_a, remote_a, entry_a = _register_hive(
-        tmp_path, monkeypatch, workspace, "oa", "ra", PREFIX_A
+        repo_templates, tmp_path, workspace, "oa", "ra", PREFIX_A
     )
     dir_b, remote_b, entry_b = _register_hive(
-        tmp_path, monkeypatch, workspace, "ob", "rb", PREFIX_B
+        repo_templates, tmp_path, workspace, "ob", "rb", PREFIX_B
     )
     _write_config([entry_a, entry_b])
     return {

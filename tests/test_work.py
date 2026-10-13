@@ -9,6 +9,7 @@ Beads while every git/worktree op runs for real. Non-`bd` calls (the validation 
 from __future__ import annotations
 
 import contextlib
+import copy
 import datetime
 import io
 import json
@@ -52,6 +53,7 @@ from beadhive import (
 from beadhive.modules.work.domain.impact import AttestKey, ImpactReceipt, KeyEvidence
 from beadhive.run import run as real_run
 from harness.processes import process_context
+from harness.tree_templates import TreeTemplates, copy_tree, tree_digest, worker_templates
 from harness.validation_state import age as age_verdict
 
 _CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
@@ -449,10 +451,12 @@ def fake_build_verifier(monkeypatch):
     monkeypatch.setattr(doctor, "collect_build_verify_diagnostics", _with_fake)
 
 
-@pytest.fixture
-def hive(tmp_path, monkeypatch):
-    ws_root = tmp_path / "ws"
-    main = ws_root / "github" / "myorg" / "myrepo"
+def _base_hive(templates: TreeTemplates) -> None:
+    """Capture the hive's repository and bare remote, built with real git once per worker.
+
+    `remote add` is the one path-bearing step, so it runs per test against the copied remote."""
+    live = templates.reset_live()
+    main = live / "ws" / "github" / "myorg" / "myrepo"
     main.mkdir(parents=True)
     _git("init", "-q", "-b", "main", cwd=main)
     _git("config", "user.email", "human@example.com", cwd=main)
@@ -460,9 +464,19 @@ def hive(tmp_path, monkeypatch):
     (main / "README.md").write_text("# x\n")
     _git("add", "-A", cwd=main)
     _git("commit", "-qm", "chore: init", cwd=main)
+    _git("init", "-q", "--bare", str(live / "remote.git"), cwd=live)
+    templates.capture("base")
 
+
+@pytest.fixture
+def hive(tmp_path, monkeypatch, tmp_path_factory):
+    templates = worker_templates(tmp_path_factory, "work-hive")
+    if "base" not in templates:
+        _base_hive(templates)
+    templates.restore("base", into=tmp_path)
+    ws_root = tmp_path / "ws"
+    main = ws_root / "github" / "myorg" / "myrepo"
     remote = tmp_path / "remote.git"
-    _git("init", "-q", "--bare", str(remote), cwd=tmp_path)
     _git("remote", "add", "origin", str(remote), cwd=main)
 
     cfg_path = tmp_path / "config.yaml"
@@ -479,7 +493,15 @@ def hive(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.delenv("GIT_CONFIG_GLOBAL", raising=False)
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    return SimpleNamespace(main=main, wts=tmp_path / "wts", remote=remote, cfg_path=cfg_path)
+    return SimpleNamespace(
+        main=main,
+        wts=tmp_path / "wts",
+        remote=remote,
+        cfg_path=cfg_path,
+        root=tmp_path,
+        templates=templates,
+        monkeypatch=monkeypatch,
+    )
 
 
 @pytest.fixture
@@ -647,8 +669,8 @@ def test_refine_dry_run_rejects_merge_before_backup_or_rebase(
 ):
     """The CLI dry-run traverses the real plan loader but refuses a merge row before any
     safety-ref or rebase mutation can begin."""
-    epic = "mr-refine-merge"
-    _start_and_land_children(hive, fakebd, epic, count=1)
+    epic = _TEMPLATE_EPIC
+    _restored_landed_children(hive, fakebd, epic, count=1)
     entry = registry.resolve_hive(config.load(), "myrepo")
     branch = f"wt/bead/epic/{epic}"
     base = worktree.base_of(entry, branch, "main")
@@ -693,8 +715,8 @@ def test_refine_autosquash_rejects_merge_range_before_backup_or_rebase(
 ):
     """A fixup marker makes autosquash active, but an assembled epic range also contains its
     reviewed merge bubble. Both preview and apply must refuse before any topology rewrite seam."""
-    epic = f"mr-autosquash-merge-{dry_run}"
-    seat = _start_and_land_children(hive, fakebd, epic, count=1)
+    epic = _TEMPLATE_EPIC
+    seat = _restored_landed_children(hive, fakebd, epic, count=1)
     entry = registry.resolve_hive(config.load(), "myrepo")
     branch = f"wt/bead/epic/{epic}"
     rows = worktree.commit_rows(entry, "main", branch)
@@ -4043,19 +4065,17 @@ def _land_two_bead_molecule(hive, fakebd, epic="mr-1"):
         work.merge(bead=bid, hive="myrepo", rm=False, molecule=False)
 
 
-def _start_and_land_children(hive, fakebd, epic="mr-epic", count=6, dispatcher="disp/lead"):
-    """Assemble a real epic seat whose reviewed child topology exceeds the leaf limit."""
+def _start_epic(hive, fakebd, epic, dispatcher):
     fakebd.seed(epic, title="epic", issue_type="epic")
     fakebd.states[epic] = {"kickoff": "approved"}
     work.start(epic=epic, as_=dispatcher, hive="myrepo")
+
+
+def _start_and_land_children(hive, fakebd, epic="mr-epic", count=6, dispatcher="disp/lead"):
+    """Assemble a real epic seat whose reviewed child topology exceeds the leaf limit."""
+    _start_epic(hive, fakebd, epic, dispatcher)
     for index in range(1, count + 1):
-        bid = f"{epic}.{index}"
-        fakebd.seed(bid, title=f"child {index}", parent=epic)
-        work.claim(bead=bid, as_="dev/child", hive="myrepo")
-        _commit(_wt_of(hive, bid), f"feat: {bid}", fname=f"child-{index}.txt")
-        work.submit(bead=bid, as_="dev/child", hive="myrepo")
-        fakebd.resolve_review(bid)
-        work.merge(bead=bid, hive="myrepo", rm=False, molecule=False)
+        _land_epic_child(hive, fakebd, epic, index)
     return worktree.locate(config.load(), "myrepo", epic, kind="epic")[2]
 
 
@@ -4070,11 +4090,172 @@ def _land_epic_child(hive, fakebd, epic, index):
     return child
 
 
+# ---- session templates for the landed-molecule setups (bh-gb56v) ------------
+#
+# Landing a molecule through real claims, submits and merges is the setup of the topology tests,
+# not their subject, and it is identical across them. `_from_template` runs a chain of setup
+# steps once per worker on a fixed live root, snapshots the universe (the test's `tmp_path` hive
+# and its BH_HOME) after every step, and restores a byte-identical copy for each later test
+# together with the FakeBd state and the output the steps printed. Git stays real throughout.
+
+#: The epic the templated topology tests share, so one landed molecule serves all of them.
+_TEMPLATE_EPIC = "mr-epic"
+
+
+def _rebase_path(value: str, moves: dict[Path, Path]) -> str:
+    """Move every path-list component of ``value`` under an old root onto its new root."""
+    parts = value.split(os.pathsep)
+    for index, part in enumerate(parts):
+        for old, new in moves.items():
+            if part == str(old) or part.startswith(f"{old}/"):
+                parts[index] = str(new) + part[len(str(old)) :]
+    return os.pathsep.join(parts)
+
+
+def _enter_live(hive, moves: dict[Path, Path]) -> None:
+    """Point the test's environment and its `hive` handle at the live universe."""
+    for name, value in list(os.environ.items()):
+        moved = _rebase_path(value, moves)
+        if moved != value:
+            hive.monkeypatch.setenv(name, moved)
+    for attr in ("main", "wts", "remote", "cfg_path", "root"):
+        setattr(hive, attr, Path(_rebase_path(str(getattr(hive, attr)), moves)))
+    config_store.clear_load_cache()
+
+
+def _from_template(hive, fakebd, steps):
+    """Bring the hive to the state after ``steps`` from this worker's templates; return the last
+    step's result. ``steps`` is a sequence of ``(label, step)`` with ``step(hive, fakebd)``.
+
+    The snapshot after step *k* is keyed by the pristine universe's digest plus the first *k*
+    labels, so a longer chain resumes from a shorter one. Call it only as a test's first action:
+    FakeBd must be untouched (enforced) and the universe's files are part of the key, but
+    monkeypatches made before the call are not, so a test that patches setup behaviour must run
+    its setup for real.
+    """
+    if vars(fakebd) != vars(FakeBd()):
+        raise AssertionError("templated setup needs an untouched FakeBd")
+    templates = hive.templates
+    bh_home = Path(os.environ["BH_HOME"])
+    moves = {hive.root: templates.live / "root", bh_home: templates.live / "bh-home"}
+    normalize = {str(old).encode(): f"<{new.name}>".encode() for old, new in moves.items()}
+    flavor = (
+        tree_digest(hive.root, normalize=normalize),
+        tree_digest(bh_home, exclude={"host.yaml"}, normalize=normalize),
+    )
+    labels = [label for label, _step in steps]
+    keys = [(flavor, *labels[: index + 1]) for index in range(len(steps))]
+    done = max((index + 1 for index, key in enumerate(keys) if key in templates), default=0)
+
+    if done:
+        payload = templates.restore(keys[done - 1])
+        _enter_live(hive, moves)
+    else:
+        live = templates.reset_live()
+        copy_tree(hive.root, moves[hive.root])
+        copy_tree(bh_home, moves[bh_home])
+        _enter_live(hive, moves)
+        _git("remote", "set-url", "origin", str(hive.remote), cwd=hive.main)
+        stale = {str(old).encode(): b"<stale>" for old in moves}
+        assert tree_digest(live, normalize=stale) == tree_digest(live), "unrelocated path"
+        payload = {"fakebd": copy.deepcopy(vars(fakebd)), "out": "", "err": "", "result": None}
+
+    for index in range(done, len(steps)):
+        vars(fakebd).update(copy.deepcopy(payload["fakebd"]))
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            result = steps[index][1](hive, fakebd)
+        payload = {
+            "fakebd": copy.deepcopy(vars(fakebd)),
+            "out": payload["out"] + out.getvalue(),
+            "err": payload["err"] + err.getvalue(),
+            "result": result,
+        }
+        templates.capture(keys[index], payload)
+    if done < len(steps):
+        payload = templates.restore(keys[-1])  # the building test also runs on a fresh copy
+
+    vars(fakebd).clear()
+    vars(fakebd).update(payload["fakebd"])
+    sys.stdout.write(payload["out"])
+    sys.stderr.write(payload["err"])
+    return payload["result"]
+
+
+def _restored_landed_children(hive, fakebd, epic=_TEMPLATE_EPIC, count=6, dispatcher="disp/lead"):
+    """`_start_and_land_children` from this worker's templates, one snapshot per landed child."""
+    steps = [
+        (("start", epic, dispatcher), lambda h, f: _start_epic(h, f, epic, dispatcher)),
+        *[
+            (("child", epic, index), lambda h, f, i=index: _land_epic_child(h, f, epic, i))
+            for index in range(1, count + 1)
+        ],
+    ]
+    _from_template(hive, fakebd, steps)
+    return worktree.locate(config.load(), "myrepo", epic, kind="epic")[2]
+
+
+def _restored_two_bead_molecule(hive, fakebd, epic="mr-1"):
+    """`_land_two_bead_molecule` from this worker's templates."""
+    _from_template(
+        hive,
+        fakebd,
+        [(("two-bead", epic), lambda h, f: _land_two_bead_molecule(h, f, epic))],
+    )
+
+
+def test_tree_template_restores_a_byte_identical_tree_with_working_git_paths(tmp_path):
+    """A restore replaces whatever the previous test left with the captured bytes, and the
+    absolute paths Git recorded for a linked worktree still resolve on the fixed live root."""
+    templates = TreeTemplates(tmp_path / "templates")
+    live = templates.reset_live()
+    repo, linked = live / "repo", live / "linked"
+    repo.mkdir()
+    _git("init", "-q", "-b", "main", cwd=repo)
+    _git("config", "user.email", "human@example.com", cwd=repo)
+    _git("config", "user.name", "human", cwd=repo)
+    _commit(repo, "chore: init")
+    _git("worktree", "add", "-q", "-b", "side", str(linked), cwd=repo)
+    captured = tree_digest(live)
+    templates.capture("repo", {"beads": ["mr-1"]})
+
+    _commit(linked, "feat: a later test's write", fname="later.txt")
+    (live / "stray.txt").write_text("left behind")
+    payload = templates.restore("repo")
+
+    assert tree_digest(live) == captured
+    assert not (live / "stray.txt").exists()
+    assert _git("log", "-1", "--format=%s", "side", cwd=repo).stdout.strip() == "chore: init"
+    assert str(linked) in _git("worktree", "list", "--porcelain", cwd=repo).stdout
+    assert _git("status", "--porcelain", cwd=linked).stdout == ""
+    payload["beads"].append("mr-2")  # a test's payload is its own copy
+    assert templates.restore("repo") == {"beads": ["mr-1"]}
+
+
+def test_tree_template_refuses_a_snapshot_a_test_wrote_into(tmp_path):
+    """Writing into a snapshot instead of the live root fails the next restore, so the write
+    cannot leak into every later test that restores the same template."""
+    from harness.tree_templates import SnapshotMutated
+
+    templates = TreeTemplates(tmp_path / "templates")
+    (templates.reset_live() / "README").write_text("template\n")
+    templates.capture("readme")
+    (templates.root / "snapshot-0" / "README").write_text("mutated\n")
+
+    with pytest.raises(SnapshotMutated, match="changed after capture"):
+        templates.restore("readme")
+
+
+def test_templated_setup_refuses_a_fakebd_the_test_already_used(hive, fakebd):
+    """Template keys cover the universe's files, not FakeBd; a used FakeBd must build for real."""
+    fakebd.seed("mr-1", title="seeded before setup")
+
+    with pytest.raises(AssertionError, match="untouched FakeBd"):
+        _restored_two_bead_molecule(hive, fakebd)
+
+
 def _open_epic_with_refresh(hive, fakebd, epic):
-    fakebd.seed(epic, title="epic", issue_type="epic")
-    fakebd.states[epic] = {"kickoff": "approved"}
-    work.start(epic=epic, as_="disp/lead", hive="myrepo")
-    _land_epic_child(hive, fakebd, epic, 1)
+    _restored_landed_children(hive, fakebd, epic, count=1)
     _commit(hive.main, "fix: integration advanced", fname="main-advance.txt")
     child = f"{epic}.2"
     fakebd.seed(child, title="child 2", parent=epic)
@@ -4150,7 +4331,7 @@ def _wrap_reviewed_epic_over_advanced_root(
     The accepted form checks out the root first and merges the reviewed epic as parent two.  The
     reverse form preserves the historical bad wrapper as an explicit malformed control.
     """
-    seat = _start_and_land_children(hive, fakebd, epic=epic, count=count)
+    seat = _restored_landed_children(hive, fakebd, epic=epic, count=count)
     branch = f"wt/bead/epic/{epic}"
     if direct_noise:
         _commit(seat, "chore: unreviewed epic noise", fname="noise.txt")
@@ -4224,7 +4405,7 @@ def _append_reviewed_suffix_behind_unsafe_wrapper(
 
 def test_epic_finish_accepts_proven_container_refresh_topology(hive, fakebd, capsys):
     """A normal lifecycle refresh crosses the moving merge-base without becoming child work."""
-    epic = "mr-safe-refresh"
+    epic = _TEMPLATE_EPIC
     branch, refresh, child, _seat = _open_epic_with_refresh(hive, fakebd, epic)
     assert _git("log", "-1", "--format=%s", refresh, cwd=hive.main).stdout.strip() == (
         f"chore(merge): refresh {branch} from main"
@@ -4335,7 +4516,7 @@ def test_epic_history_rejects_malformed_container_refresh(
     hive, fakebd, capsys, malformation, expected
 ):
     """Every refresh allowance is structural; malformed real-Git bubbles fail directly."""
-    epic = f"mr-refresh-{malformation}"
+    epic = _TEMPLATE_EPIC
     branch, refresh, child, seat = _open_epic_with_refresh(hive, fakebd, epic)
     malformed = _malformed_container_refresh(hive, branch, refresh, malformation)
     _git("update-ref", f"refs/heads/{branch}", malformed, cwd=hive.main)
@@ -4375,7 +4556,7 @@ def test_epic_submit_accepts_root_first_wrapper_and_recurses_into_reviewed_topol
     reviewed two-child epic.  The audit must recurse into that reviewed side and account its two
     child bubbles plus the explicit wrapper, while the ordinary configured leaf limit stays ten.
     """
-    epic = "mr-composed"
+    epic = _TEMPLATE_EPIC
     _wrap_reviewed_epic_over_advanced_root(hive, fakebd, epic=epic)
 
     capsys.readouterr()
@@ -4405,7 +4586,7 @@ def test_epic_submit_accepts_oldest_root_first_wrapper_followed_by_reviewed_chil
     Both the wrapper's reviewed side and the newer outer suffix remain independently
     attributable: four child commits, four child bubbles, and the one wrapper.
     """
-    epic = "mr-composed-suffix"
+    epic = _TEMPLATE_EPIC
     _wrap_reviewed_epic_over_advanced_root(hive, fakebd, epic=epic)
     _land_reviewed_suffix_children(hive, fakebd, epic=epic, start=3)
 
@@ -4431,7 +4612,7 @@ def test_epic_submit_accepts_oldest_root_first_wrapper_followed_by_reviewed_chil
 def test_root_first_wrapper_rejects_noncanonical_outer_placement(
     hive, fakebd, capsys, malformation
 ):
-    epic = f"mr-{malformation}-compose"
+    epic = _TEMPLATE_EPIC
     seat = _wrap_reviewed_epic_over_advanced_root(hive, fakebd, epic=epic)
     branch = f"wt/bead/epic/{epic}"
     wrapper = _git("rev-parse", branch, cwd=hive.main).stdout.strip()
@@ -4496,7 +4677,7 @@ def test_root_first_wrapper_rejects_noncanonical_outer_placement(
 
 @pytest.mark.parametrize("malformation", ["direct-noise", "missing-linkage", "unaccounted-merge"])
 def test_root_first_wrapper_rejects_unreviewed_outer_suffix(hive, fakebd, capsys, malformation):
-    epic = f"mr-{malformation}-suffix"
+    epic = _TEMPLATE_EPIC
     seat = _wrap_reviewed_epic_over_advanced_root(hive, fakebd, epic=epic)
     branch = f"wt/bead/epic/{epic}"
 
@@ -4536,7 +4717,7 @@ def test_root_first_wrapper_rejects_unreviewed_outer_suffix(hive, fakebd, capsys
 
 
 def test_root_first_wrapper_rejects_duplicate_child_attribution_in_suffix(hive, fakebd, capsys):
-    epic = "mr-duplicate-attribution"
+    epic = _TEMPLATE_EPIC
     _wrap_reviewed_epic_over_advanced_root(hive, fakebd, epic=epic)
     branch = f"wt/bead/epic/{epic}"
     tip = _git("rev-parse", branch, cwd=hive.main).stdout.strip()
@@ -4567,7 +4748,7 @@ def test_root_first_wrapper_rejects_duplicate_child_attribution_in_suffix(hive, 
 
 
 def test_epic_submit_rejects_noncanonical_composition_subject(hive, fakebd, capsys):
-    epic = "mr-wrong-subject-compose"
+    epic = _TEMPLATE_EPIC
     _wrap_reviewed_epic_over_advanced_root(
         hive,
         fakebd,
@@ -4584,7 +4765,7 @@ def test_epic_submit_rejects_noncanonical_composition_subject(hive, fakebd, caps
 
 
 def test_epic_submit_rejects_wrong_epic_composition_wrapper(hive, fakebd, capsys):
-    epic = "mr-wrong-epic-compose"
+    epic = _TEMPLATE_EPIC
     _wrap_reviewed_epic_over_advanced_root(
         hive,
         fakebd,
@@ -4610,7 +4791,7 @@ def _wrap_reviewed_epic_with_reversed_parents(
 ):
     """Build and prove the reviewed-tip-first parent pair for a canonical-looking wrapper."""
     root = "mr-root"
-    seat = _start_and_land_children(hive, fakebd, epic=epic, count=2)
+    seat = _restored_landed_children(hive, fakebd, epic=epic, count=2)
     branch = f"wt/bead/epic/{epic}"
     reviewed_tip = _git("rev-parse", branch, cwd=hive.main).stdout.strip()
 
@@ -4639,7 +4820,7 @@ def test_epic_submit_rejects_canonical_composition_wrapper_with_reversed_parents
     hive, fakebd, capsys
 ):
     """A canonical subject cannot disguise a reviewed-tip-first wrapper."""
-    epic = "mr-reverse-compose"
+    epic = _TEMPLATE_EPIC
     _wrap_reviewed_epic_with_reversed_parents(
         hive,
         fakebd,
@@ -4660,7 +4841,7 @@ def test_epic_submit_rejects_buried_canonical_reversal_after_reviewed_suffixes(
     hive, fakebd, capsys
 ):
     """Reviewed provenance remains visible alongside the exact reversed-boundary diagnostic."""
-    epic = "mr-buried-reverse-compose"
+    epic = _TEMPLATE_EPIC
     _wrap_reviewed_epic_with_reversed_parents(
         hive,
         fakebd,
@@ -4756,7 +4937,7 @@ def test_buried_reversed_wrapper_reports_identity_before_parent_order(
 def test_buried_reversed_wrapper_rejects_invalid_reviewed_suffix(
     hive, fakebd, capsys, malformation
 ):
-    epic = f"mr-buried-reverse-{malformation}"
+    epic = _TEMPLATE_EPIC
     _wrap_reviewed_epic_with_reversed_parents(
         hive,
         fakebd,
@@ -4804,7 +4985,7 @@ def test_buried_reversed_wrapper_rejects_invalid_reviewed_suffix(
 
 
 def test_buried_reversed_wrapper_rejects_malformed_parent_count(hive, fakebd, capsys):
-    epic = "mr-buried-reverse-parent-count"
+    epic = _TEMPLATE_EPIC
     _wrap_reviewed_epic_with_reversed_parents(
         hive,
         fakebd,
@@ -4893,7 +5074,7 @@ def test_reversed_composition_wrapper_reports_identity_before_parent_order(
 
 def test_root_first_wrapper_rejects_wrong_authoritative_parent_identity(hive, fakebd, capsys):
     """The epic token cannot make a wrapper for a different bd parent trustworthy."""
-    epic = "mr-wrong-parent-compose"
+    epic = _TEMPLATE_EPIC
     _wrap_reviewed_epic_over_advanced_root(
         hive,
         fakebd,
@@ -4913,7 +5094,7 @@ def test_root_first_wrapper_rejects_wrong_authoritative_parent_identity(hive, fa
 def test_root_first_wrapper_never_hides_unaccounted_review_history(
     hive, fakebd, capsys, malformation
 ):
-    epic = "mr-unaccounted-compose"
+    epic = _TEMPLATE_EPIC
     _wrap_reviewed_epic_over_advanced_root(
         hive,
         fakebd,
@@ -4971,7 +5152,7 @@ def test_root_first_wrapper_rejects_an_empty_reviewed_side(hive, fakebd, capsys)
 
 def test_root_first_wrapper_requires_a_proven_landed_child_integration(hive, fakebd, capsys):
     """A non-empty second-parent range made only of direct noise is not reviewed topology."""
-    epic = "mr-no-child-compose"
+    epic = _TEMPLATE_EPIC
     _wrap_reviewed_epic_over_advanced_root(
         hive,
         fakebd,
@@ -5097,8 +5278,8 @@ def test_epic_submit_and_finish_accept_reviewed_topology_over_leaf_limit(hive, f
     """Six one-commit children produce twelve commits over base. The ordinary leaf maximum is
     still ten, but every commit is accounted for by a reviewed child plus its no-ff bubble, so
     epic submit and the merge-time preflight both accept the graph without rewriting it."""
-    epic = "mr-assembled"
-    _start_and_land_children(hive, fakebd, epic, count=6)
+    epic = _TEMPLATE_EPIC
+    _restored_landed_children(hive, fakebd, epic, count=6)
     branch = f"wt/bead/epic/{epic}"
     assert worktree.history(registry.resolve_hive(config.load(), "myrepo"), branch, "main")[0] == 12
 
@@ -5132,8 +5313,8 @@ def test_epic_submit_and_finish_accept_reviewed_topology_over_leaf_limit(hive, f
 def test_epic_submit_rejects_unaccounted_direct_commit(hive, fakebd, capsys):
     """A conventional-looking checkpoint committed directly on the epic spine is not child
     provenance. A larger numeric allowance must never turn that noise into accepted history."""
-    epic = "mr-noisy-epic"
-    seat = _start_and_land_children(hive, fakebd, epic, count=1)
+    epic = _TEMPLATE_EPIC
+    seat = _restored_landed_children(hive, fakebd, epic, count=1)
     _commit(seat, "chore: direct epic checkpoint", fname="direct.txt")
 
     with pytest.raises(typer.Exit):
@@ -5147,8 +5328,8 @@ def test_epic_submit_rejects_unaccounted_direct_commit(hive, fakebd, capsys):
 def test_epic_finish_rechecks_and_rejects_missing_child_linkage(hive, fakebd, capsys):
     """Finish independently re-runs the topology guard. Removing the durable linkage from an
     otherwise plausible child bubble makes the range unverifiable and leaves main untouched."""
-    epic = "mr-unlinked-epic"
-    _start_and_land_children(hive, fakebd, epic, count=1)
+    epic = _TEMPLATE_EPIC
+    _restored_landed_children(hive, fakebd, epic, count=1)
     fakebd.beads[f"{epic}.1"]["metadata"].pop("git.commits")
     main_before = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
 
@@ -5167,7 +5348,7 @@ def test_epic_finish_rechecks_and_rejects_missing_child_linkage(hive, fakebd, ca
 
 
 def test_finish_one_shot_override_cannot_bypass_clean_target_guard(hive, fakebd):
-    _land_two_bead_molecule(hive, fakebd, "mr-1")
+    _restored_two_bead_molecule(hive, fakebd, "mr-1")
     fakebd.beads["mr-1"]["issue_type"] = "epic"
     dirty = hive.main / "README.md"
     dirty.write_text(dirty.read_text() + "\nuncommitted\n")
@@ -5187,8 +5368,8 @@ def test_finish_one_shot_override_cannot_bypass_clean_target_guard(hive, fakebd)
 
 
 def test_finish_lands_reviewed_molecule_with_unattended_orca_scratch(hive, fakebd):
-    epic = "mr-scratch-finish"
-    _start_and_land_children(hive, fakebd, epic=epic, count=1)
+    epic = _TEMPLATE_EPIC
+    _restored_landed_children(hive, fakebd, epic=epic, count=1)
     work.submit(bead=epic, as_="disp/lead", hive="myrepo")
     fakebd.resolve_review(epic)
     screenshot = hive.main / ".orca" / "drops" / "Screenshot 2026-08-10.png"
@@ -5206,8 +5387,8 @@ def test_finish_lands_reviewed_molecule_with_unattended_orca_scratch(hive, fakeb
 
 
 def test_finish_refuses_colliding_untracked_file_without_bouncing_review(hive, fakebd, capsys):
-    epic = "mr-colliding-finish"
-    _start_and_land_children(hive, fakebd, epic=epic, count=1)
+    epic = _TEMPLATE_EPIC
+    _restored_landed_children(hive, fakebd, epic=epic, count=1)
     work.submit(bead=epic, as_="disp/lead", hive="myrepo")
     fakebd.resolve_review(epic)
     review_before = fakebd.states[epic]["review"]
@@ -5228,8 +5409,8 @@ def test_finish_refuses_colliding_untracked_file_without_bouncing_review(hive, f
 def test_epic_submit_rejects_landed_direct_child_without_integration(hive, fakebd, capsys):
     """A child disposition alone is not reviewed topology. Every landed direct work child must
     be attributable to exactly one lifecycle bubble in the assembled epic range."""
-    epic = "mr-missing-child-bubble"
-    _start_and_land_children(hive, fakebd, epic, count=1)
+    epic = _TEMPLATE_EPIC
+    _restored_landed_children(hive, fakebd, epic, count=1)
     missing = f"{epic}.2"
     fakebd.seed(
         missing,
@@ -5251,7 +5432,7 @@ def test_merge_molecule_closes_swarm_bead(hive, fakebd):
     """Landing a molecule closes the swarm orchestration bead created at kickoff (bh-7tno) —
     otherwise every landed molecule leaves one permanent open type:molecule bead behind. A
     swarm over a DIFFERENT epic stays untouched."""
-    _land_two_bead_molecule(hive, fakebd, "mr-1")
+    _restored_two_bead_molecule(hive, fakebd, "mr-1")
     fakebd.seed("mr-swarm", title="Swarm: mr-1", issue_type="molecule")
     fakebd.swarms = [
         {"id": "mr-swarm", "epic_id": "mr-1", "status": "active"},
@@ -5266,7 +5447,7 @@ def test_merge_molecule_closes_swarm_bead(hive, fakebd):
 
 
 def test_merge_molecule_lands_as_one_bubble(hive, fakebd):
-    _land_two_bead_molecule(hive, fakebd, "mr-1")
+    _restored_two_bead_molecule(hive, fakebd, "mr-1")
     main_before = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
 
     work.merge(bead="mr-1", hive="myrepo", molecule=True)
@@ -6093,7 +6274,7 @@ def test_dispatch_gate_passes_wellformed_and_resolves_parent(hive, fakebd, monke
 def test_finish_lands_molecule_like_merge_molecule(hive, fakebd):
     """finish <epic> is the epic-only alias of `merge --molecule`: lands the assembled molecule as
     one bubble and closes the epic."""
-    _land_two_bead_molecule(hive, fakebd, "mr-1")
+    _restored_two_bead_molecule(hive, fakebd, "mr-1")
     fakebd.beads["mr-1"]["issue_type"] = "epic"  # finish guards issue_type == epic
     work.finish(epic="mr-1", hive="myrepo")
     assert (
@@ -6105,7 +6286,7 @@ def test_finish_lands_molecule_like_merge_molecule(hive, fakebd):
 
 
 def test_finish_one_shot_override_is_molecule_phase_and_exact_container(hive, fakebd, capsys):
-    _land_two_bead_molecule(hive, fakebd, "mr-1")
+    _restored_two_bead_molecule(hive, fakebd, "mr-1")
     fakebd.beads["mr-1"]["issue_type"] = "epic"
     branch = "wt/bead/epic/mr-1"
     sha = worktree._branch_sha(config.managed_repos(config.load())[0], branch)
@@ -6136,27 +6317,25 @@ def test_finish_rejects_non_epic(hive, fakebd):
         work.finish(epic="mr-5", hive="myrepo")
 
 
-def test_validation_mode_gates_molecule_clean_checkouts(hive, fakebd, monkeypatch):
+@pytest.mark.parametrize(("mode", "expected"), [("relaxed", 1), ("loose", 0), ("conservative", 2)])
+def test_validation_mode_gates_molecule_clean_checkouts(hive, fakebd, monkeypatch, mode, expected):
     """relaxed runs exactly the assembled-mol pre-land check (1 clean_checkout); loose skips even
     that (0); conservative adds the post-land re-test (2). Asserts mode gating at the molecule
     boundary without depending on validate outcome (config validate_cmd is `true`). Molecule lands
-    in every mode."""
-    seen = []
+    in every mode. Each mode lands its own copy of the worker's templated molecule (bh-gb56v)."""
+    epic = "mr-1"
+    _restored_two_bead_molecule(hive, fakebd, epic)  # setup ran its own validations
+    seen = []  # count only the molecule-land boundary
     real_cc = worktree.clean_checkout
     monkeypatch.setattr(
         worktree,
         "clean_checkout",
         lambda entry, branch, cmd, **kw: seen.append(branch) or real_cc(entry, branch, cmd, **kw),
     )
-
-    for mode, expected in (("relaxed", 1), ("loose", 0), ("conservative", 2)):
-        epic = f"mr-{mode}"
-        _land_two_bead_molecule(hive, fakebd, epic)  # setup runs its own validations
-        monkeypatch.setattr(config, "validation_mode", lambda cfg, entry, m=mode: m)
-        seen.clear()  # count only the molecule-land boundary
-        work.merge(bead=epic, hive="myrepo", molecule=True)
-        assert len(seen) == expected, f"{mode}: {seen}"
-        assert fakebd.beads[epic]["status"] == "closed"
+    monkeypatch.setattr(config, "validation_mode", lambda cfg, entry, m=mode: m)
+    work.merge(bead=epic, hive="myrepo", molecule=True)
+    assert len(seen) == expected, f"{mode}: {seen}"
+    assert fakebd.beads[epic]["status"] == "closed"
 
 
 def test_validation_mode_per_point_entrypoint(hive, fakebd, monkeypatch):
@@ -6191,7 +6370,7 @@ def test_merge_molecule_revalidates_and_rolls_back_when_main_went_stale_red(hive
     hive.cfg_path.write_text(
         CONFIG_YAML.replace('validate_cmd: "true"', 'validate_cmd: "test ! -f main_advance.txt"')
     )
-    _land_two_bead_molecule(hive, fakebd, "mr-1")
+    _restored_two_bead_molecule(hive, fakebd, "mr-1")
 
     # a concurrent commit lands directly on main AFTER the molecule forked → stale. (The bead
     # merges parked the clone on wt/bead/epic/mr-1, so check out main first or it poisons the mol.)
@@ -6217,7 +6396,7 @@ def test_merge_molecule_does_not_rewrite_shared_main_on_postland_red(hive, fakeb
     hive.cfg_path.write_text(
         CONFIG_YAML.replace('validate_cmd: "true"', 'validate_cmd: "test ! -f main_advance.txt"')
     )
-    _land_two_bead_molecule(hive, fakebd, "mr-1")
+    _restored_two_bead_molecule(hive, fakebd, "mr-1")
 
     # main moves AND becomes shared (pushed → has an upstream). Check out main first: the bead
     # merges parked the clone on wt/bead/epic/mr-1.
@@ -6460,7 +6639,7 @@ def test_merge_molecule_lands_and_auto_closes_adopted_origin_report(hive, fakebd
     """Regression: an adopted origin report linked child-of the epic is
     PROVENANCE, not molecule work. It must NOT gate the land while still open, and it auto-closes
     WITH the molecule — so a report->promote->adopt->file->finish loop can actually land."""
-    _land_two_bead_molecule(hive, fakebd, "mr-1")
+    _restored_two_bead_molecule(hive, fakebd, "mr-1")
     # An open origin report hangs off the epic as an adopted-provenance child (still open on land).
     fakebd.seed("mr-1.rpt", title="origin report", parent="mr-1", labels=["intake:promoted"])
     assert fakebd.beads["mr-1.rpt"]["status"] == "open"
@@ -7546,7 +7725,7 @@ def test_merge_group_refuses_a_stray_positional_instead_of_dropping_it(hive, fak
 
 def test_review_molecule_aggregates_intent_and_change(hive, fakebd, capsys):
     """Molecule review: epic brief + every child's acceptance + the container change vs main."""
-    _land_two_bead_molecule(hive, fakebd, "mr-1")
+    _restored_two_bead_molecule(hive, fakebd, "mr-1")
     fakebd.beads["mr-1"]["title"] = "the epic"
     fakebd.beads["mr-1.1"]["acceptance_criteria"] = "accept one"
     fakebd.beads["mr-1.2"]["acceptance_criteria"] = "accept two"
@@ -8133,7 +8312,7 @@ def test_merge_molecule_records_the_landing_bubble_onto_the_epic(hive, fakebd):
     """The --molecule path: each child bead already recorded its own merge-commit sha when it
     landed onto the container (single-bead `_merge_bead`); the final molecule land additionally
     records the OUTER `--no-ff` bubble sha onto the epic itself, not onto the children again."""
-    _land_two_bead_molecule(hive, fakebd, "mr-1")
+    _restored_two_bead_molecule(hive, fakebd, "mr-1")
     for bid in ("mr-1.1", "mr-1.2"):
         assert len(_linkage(fakebd, bid)) == 2  # each child's own branch + child-merge commit
 
