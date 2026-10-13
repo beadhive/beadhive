@@ -575,7 +575,20 @@ def attest_config(cfg, entry):
         semantic_cfg = AttestSemanticConfig(**semantic)
     except ValueError:
         semantic_cfg = AttestSemanticConfig()
-    return AttestConfig(keys=keys, impact=impact_cfg, trivial=trivial_cfg, semantic=semantic_cfg)
+    drift = {}
+    for field in ("drift_check", "drift_check_timeout_seconds"):
+        value = layered(cfg, entry, "work.attest", field, None)
+        if value is not None:
+            drift[field] = value
+    try:
+        AttestConfig(**drift)
+    except ValueError:
+        # An invalid drift section degrades to UNSET; under `model: keys` an unset drift check
+        # is itself drift, so this only ever invalidates more.
+        drift = {}
+    return AttestConfig(
+        keys=keys, impact=impact_cfg, trivial=trivial_cfg, semantic=semantic_cfg, **drift
+    )
 
 
 # ---- release (release-order planning, bh-k2j8) -------------------------------

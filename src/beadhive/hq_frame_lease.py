@@ -115,8 +115,11 @@ def read(plane, prefix, *, git, error, decode, lease_ref, json_decode, holder_id
         expiry = record["authority"]["candidate_expires_at"]
         if expiry is not None and plane.clock() >= expiry:
             return sha, None
-    if plane._read()[0] != revision:
-        raise error("authority changed during hive lease read")
+        # Closes the bracket over the holder qualification's config read above. An unqualified
+        # read has no step after the identical closing read before this block, so it does not
+        # repeat it back to back (bh-a6cm3).
+        if plane._read()[0] != revision:
+            raise error("authority changed during hive lease read")
     return sha, lease
 
 

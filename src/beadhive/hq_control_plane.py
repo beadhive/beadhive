@@ -438,14 +438,21 @@ class GitControlPlane:
         This is a Git read bracket, not an atomic SQL composite snapshot promise.
         Every read verifies protected policy/witnesses and current validity.
         """
-        revision, _, _ = self._read()
-        desired = self.fetch_config(manifest.frame_id, holder_identity=manifest.host_id)
+        # One verified read opens the bracket and every constituent decision is taken from it
+        # (bh-a6cm3): desired state and the observation's trusted authority come from this
+        # ``state`` and the transport from this custody-verified ``policy``. The closing read
+        # below is a second full read (custody re-hash, signature, witness, expiry); witness
+        # revisions are monotonic, so an unchanged revision there proves no other revision
+        # existed in between, i.e. the per-constituent re-reads this replaced could only have
+        # returned these same content-addressed bytes.
+        revision, state, policy = self._read()
+        desired = self._desired(manifest.frame_id, state, holder_identity=manifest.host_id)
         from .beadyard_identity_file import read_identity
 
         owner = read_identity(self.hq_dir)
         if manifest.beadyard_id != owner or desired["authority"].get("beadyard_id") != owner:
             raise ControlPlaneError("frame belongs to a different beadyard")
-        observation = self.observe(manifest, now=now)
+        observation = self._observe_verified(manifest, state, policy, now=now)
         current, _, _ = self._read()
         if current != revision:
             raise ControlPlaneError("authority changed during eligibility read")
@@ -557,6 +564,30 @@ class GitControlPlane:
             manifest,
             now=now,
             observer_dir=observer_dir,
+            remote=self._remote(policy),
+            transport_options=["-c", "protocol.ext.allow=always"],
+            trusted_authority_lookup=trusted_authority,
+        )
+
+    def _observe_verified(self, manifest, state, policy, *, now=None):
+        """:meth:`observe` against an authority ``state``/``policy`` this caller already read.
+
+        Only for a caller that brackets the observation with a closing :meth:`_read` and
+        refuses on a changed revision (:meth:`read_eligibility`), so the trusted authority
+        here is the one that bracket proves current.
+        """
+        from . import host_heartbeat_core as hb
+
+        def trusted_authority(_directory, frame):
+            try:
+                return self._watch(frame, state)
+            except ControlPlaneError:
+                return None
+
+        return hb.observe(
+            self.hq_dir,
+            manifest,
+            now=now,
             remote=self._remote(policy),
             transport_options=["-c", "protocol.ext.allow=always"],
             trusted_authority_lookup=trusted_authority,
@@ -885,9 +916,12 @@ class GitControlPlane:
         )
 
     def watch_state(self, frame):
+        _, state, _ = self._read()
+        return self._watch(frame, state)
+
+    def _watch(self, frame, state):
         from dataclasses import replace
 
-        _, state, _ = self._read()
         entry = state.get("frames", {}).get(frame)
         if entry is None:
             return None
@@ -933,6 +967,9 @@ class GitControlPlane:
 
     def fetch_config(self, frame, *, holder_identity=None):
         _, state, _ = self._read()
+        return self._desired(frame, state, holder_identity=holder_identity)
+
+    def _desired(self, frame, state, *, holder_identity=None):
         entry = state.get("frames", {}).get(frame)
         if entry is None:
             raise ControlPlaneError("unknown declared frame")

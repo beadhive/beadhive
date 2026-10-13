@@ -965,3 +965,32 @@ def test_emergency_commands_are_privileged_and_not_projected_to_mcp():
     assert all(operation.privilege == "privileged" for operation in selected)
     assert all(operation.constraints["hq_write"] for operation in selected)
     assert all(operation.surfaces.get("mcp") is None for operation in selected)
+
+
+def test_bare_prefix_takes_one_decision_against_its_catalog_entry(monkeypatch):
+    """bh-a6cm3: ``{"prefix"}`` is decided once, against the resolved catalog entry; an
+    unresolved catalog still refuses a bound frame and never a legacy host."""
+    from beadhive import registry
+
+    calls = []
+    allowed = policy.EligibilityDecision((("fixture", True),))
+
+    def decide(host_id, hive=None, **_kwargs):
+        calls.append(hive)
+        return None if host_id == "legacy" else allowed
+
+    def missing(_cfg, prefix):
+        raise KeyError(prefix)
+
+    entry = {"prefix": "bh", "requires": {"isolation": "kvm"}}
+    monkeypatch.setattr(policy, "decision_for", decide)
+    monkeypatch.setattr(registry, "resolve_hive", lambda _cfg, _prefix: entry)
+    assert policy.require_eligible("host", {"prefix": "bh"}) is allowed
+    assert policy.require_eligible("legacy", {"prefix": "bh"}) is None
+    assert calls == [entry, entry]
+    calls.clear()
+    monkeypatch.setattr(registry, "resolve_hive", missing)
+    with pytest.raises(policy.EligibilityError, match="hive_catalog_available"):
+        policy.require_eligible("host", {"prefix": "bh"})
+    assert policy.require_eligible("legacy", {"prefix": "bh"}) is None
+    assert calls == [{"prefix": "bh"}, {"prefix": "bh"}]

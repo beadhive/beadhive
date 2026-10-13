@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sys
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 KEY_RECIPES = {
@@ -90,9 +92,71 @@ def _recipe_body(justfile: str, recipe: str) -> list[str]:
     return match.group(1).splitlines() if match else []
 
 
-def check(justfile: str, push_hook: str | None = None) -> list[str]:
+def catalog_key_errors(configured: Iterable[str], source: str = "configured catalog") -> list[str]:
+    """Fail closed when a key set differs from KEY_RECIPES (a missing key never runs)."""
+    names = set(configured)
+    expected = set(KEY_RECIPES)
+    errors: list[str] = []
+    if expected - names:
+        errors.append(f"{source} is missing attest keys {sorted(expected - names)!r}")
+    if names - expected:
+        errors.append(f"{source} has keys with no KEY_RECIPES entry {sorted(names - expected)!r}")
+    return errors
+
+
+def docs_keys(docs: str) -> list[str]:
+    """Key names from the first column of the docs/ATTEST-KEYS.md catalog table."""
+    return re.findall(r"(?m)^\| `([-\w]+)` \| `just attest-", docs)
+
+
+def live_catalog_errors(live: object, justfile: str, docs: str | None = None) -> list[str]:
+    """Compare the live HQ catalog (JSON ``[{name, cmd, enabled}]``) with this tree.
+
+    The key set must equal the justfile ``attest-*`` recipes, ``KEY_RECIPES`` and the docs
+    table, and each key's ``cmd`` must be exactly ``just attest-<name>``. Reuses
+    ``catalog_key_errors``; there is no second catalog copy.
+    """
+    if not isinstance(live, list) or not all(
+        isinstance(item, dict) and isinstance(item.get("name"), str) for item in live
+    ):
+        return ["live catalog must be a JSON list of {name, cmd, enabled} objects"]
+    names = [item["name"] for item in live]
+    errors: list[str] = []
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        errors.append(f"live HQ catalog has duplicate keys {duplicates!r}")
+    errors += catalog_key_errors(names, "live HQ catalog")
+    recipes = set(re.findall(r"(?m)^(attest-[-\w]+):", justfile))
+    recipe_keys = {recipe.removeprefix("attest-") for recipe in recipes}
+    only_live = sorted(set(names) - recipe_keys)
+    only_recipes = sorted(recipe_keys - set(names))
+    if only_live:
+        errors.append(f"live HQ catalog has keys with no justfile recipe {only_live!r}")
+    if only_recipes:
+        errors.append(
+            f"justfile has attest recipes absent from the live HQ catalog {only_recipes!r}"
+        )
+    errors += catalog_key_errors(recipe_keys, "justfile attest-* recipes")
+    if docs is not None:
+        errors += catalog_key_errors(docs_keys(docs), "docs/ATTEST-KEYS.md table")
+    for item in live:
+        expected = f"just attest-{item['name']}"
+        if item["name"] in KEY_RECIPES and item.get("cmd") != expected:
+            errors.append(
+                f"live HQ catalog key {item['name']!r} cmd {item.get('cmd')!r} != {expected!r}"
+            )
+    return errors
+
+
+def check(justfile: str, push_hook: str | None = None, docs: str | None = None) -> list[str]:
     expected = [leaf for _, leaves in KEY_RECIPES.values() for leaf in leaves]
     errors: list[str] = []
+    recipes = set(re.findall(r"(?m)^(attest-[-\w]+):", justfile))
+    errors += catalog_key_errors(
+        (name.removeprefix("attest-") for name in recipes), "justfile attest-* recipes"
+    )
+    if docs is not None:
+        errors += catalog_key_errors(docs_keys(docs), "docs/ATTEST-KEYS.md table")
     if sorted(expected) != sorted(NATIVE_FULL):
         errors.append(
             f"attest keys must partition check-all-native: expected {sorted(NATIVE_FULL)!r}, "
@@ -149,10 +213,37 @@ def check(justfile: str, push_hook: str | None = None) -> list[str]:
     return errors
 
 
-def main() -> int:
+def live_catalog_main(source: str) -> int:
+    """``--live-catalog <path|->``: exit nonzero when the live HQ catalog drifts from this tree."""
+    try:
+        raw = sys.stdin.read() if source == "-" else Path(source).read_text(encoding="utf-8")
+        live = json.loads(raw)
+    except (OSError, ValueError) as exc:
+        print(f"attest-catalog: cannot read live catalog: {exc}", file=sys.stderr)
+        return 1
+    justfile = (ROOT / "justfile").read_text(encoding="utf-8")
+    docs = (ROOT / "docs" / "ATTEST-KEYS.md").read_text(encoding="utf-8")
+    errors = live_catalog_errors(live, justfile, docs)
+    if errors:
+        print("attest-catalog: live catalog drift", file=sys.stderr)
+        for error in errors:
+            print(f"  - {error}", file=sys.stderr)
+        return 1
+    print(f"attest-catalog: live catalog OK ({len(live)} keys)")
+    return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] == "--live-catalog":
+        if len(args) != 2:
+            print("usage: check_attest_catalog.py [--live-catalog <path|->]", file=sys.stderr)
+            return 2
+        return live_catalog_main(args[1])
     justfile = (ROOT / "justfile").read_text(encoding="utf-8")
     push_hook = (ROOT / "scripts" / "main-push-gate.sh").read_text(encoding="utf-8")
-    errors = check(justfile, push_hook)
+    docs = (ROOT / "docs" / "ATTEST-KEYS.md").read_text(encoding="utf-8")
+    errors = check(justfile, push_hook, docs)
     if errors:
         print("attest-catalog: invalid", file=sys.stderr)
         for error in errors:

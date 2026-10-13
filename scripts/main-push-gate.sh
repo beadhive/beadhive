@@ -11,9 +11,10 @@
 # or unreadable attestation — or no `bh` at all — can never mean "pass". See that block below.
 #
 # IT DOES NOT SOLVE bh-53o8f, and nobody should read it as having done so: the MISS path still
-# runs ~371s inside the push, on a connection git opened before this hook started, so the SSH
-# keepalive (`just push` / scripts/push-main.sh) is still required for any push that has not
-# just been attested. It makes the expensive path rarer; it does not make it safe to run bare.
+# runs ~1536s (25.6 min, measured 2026-10-12 on main 0a55736d) inside the push, on a connection
+# git opened before this hook started, so the SSH keepalive (`just push` /
+# scripts/push-main.sh) is still required for any push that has not just been attested. It
+# makes the expensive path rarer; it does not make it safe to run bare.
 #
 # Every route to the shared branch ends in a push of `refs/heads/main` from a host with the
 # hooks installed — `bh work merge`'s local `--no-ff` land, `bh work finish`'s molecule bubble,
@@ -91,7 +92,7 @@ done
 # tree resolution, TTL, phase lookup, exit semantics. This file states no policy about it and
 # so cannot drift from bh's own notion of the gate; it just honours an exit code.
 #
-# WHAT THIS DOES NOT FIX: only the HIT path is fast. The gate below still takes ~371s inside
+# WHAT THIS DOES NOT FIX: only the HIT path is fast. The gate below still takes ~1536s inside
 # the push, holding the connection git opened before this hook started — so the bh-53o8f SSH
 # keepalive (`just push`) is STILL REQUIRED, and the warning right below still earns its place.
 if ${BH_EXEC:-bh} hive hook push-main "$gate" --gate "$gate_cmd"; then

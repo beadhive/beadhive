@@ -60,6 +60,26 @@
       "additionalProperties": false,
       "description": "The attest key catalog and impact resolver (Attested Green ADR, Amendment 1). Absent (the\ndefault) is today's behavior: no keys, native-full.",
       "properties": {
+        "drift_check": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Opt-in runtime catalog drift check (attest-keys ADR, 3.6): an OPAQUE command bh runs at the evaluated revision's checkout with the live catalog (name, cmd, enabled) as JSON on stdin. Exit 0 means no drift; anything else is drift. Unset (the default) runs nothing.",
+          "title": "Drift Check"
+        },
+        "drift_check_timeout_seconds": {
+          "default": 60.0,
+          "description": "Seconds the drift-check command may run before it counts as drift.",
+          "exclusiveMinimum": 0,
+          "title": "Drift Check Timeout Seconds",
+          "type": "number"
+        },
         "impact": {
           "$ref": "#/$defs/AttestImpactConfig",
           "description": "Impact resolver backend selection."
@@ -1184,14 +1204,31 @@
     },
     "GateConfig": {
       "additionalProperties": false,
-      "description": "Lifecycle gate model settings (attest-keys ADR, Amendment 2). Only carry discovery is\nconfigurable here so far.",
+      "description": "`work.gate` — gate-model settings (attest-keys single-gate ADR, 3.5 and 3.8).",
       "properties": {
         "carry": {
           "$ref": "#/$defs/GateCarryConfig",
           "description": "High-water carry source discovery."
+        },
+        "push": {
+          "$ref": "#/$defs/GatePushConfig"
         }
       },
       "title": "GateConfig",
+      "type": "object"
+    },
+    "GatePushConfig": {
+      "additionalProperties": false,
+      "description": "`work.gate.push` — the pre-push hook's opt-in per-key acceptance (attest-keys ADR 3.8).",
+      "properties": {
+        "accept_attested_green": {
+          "default": false,
+          "description": "Opt in: the push-main hook also accepts the exact pushed tree when every active attest key is current or carried at that tree (selective_validation.attested_green). Off (the default) keeps today's aggregate-command lookup and full gate byte for byte; an absent or red key, drift, or any error falls through to them.",
+          "title": "Accept Attested Green",
+          "type": "boolean"
+        }
+      },
+      "title": "GatePushConfig",
       "type": "object"
     },
     "GenaiConfig": {
@@ -2804,7 +2841,7 @@
         },
         "gate": {
           "$ref": "#/$defs/GateConfig",
-          "description": "Lifecycle gate model (attest-keys ADR): high-water carry discovery."
+          "description": "Gate-model settings (attest-keys ADR): high-water carry discovery and the opt-in push-hook acceptance."
         },
         "identity": {
           "anyOf": [

@@ -2363,7 +2363,16 @@ def test_eligibility_bracket_after_new_beat_admission_and_expiry_waiver(backend,
         b["accept"](seq)
     apply(b, "admit")
     publish(b, b["lease"](4, state_seen="active"))
-    revision, desired, observation = b["plane"].read_eligibility(b["manifest"])
+    # One opening and one closing authority read bracket the whole decision (bh-a6cm3):
+    # desired state and the heartbeat's trusted authority come from the opening read.
+    plane, reads, original_read = b["plane"], [], b["plane"]._read
+    plane._read = lambda **kw: reads.append(kw) or original_read(**kw)
+    plane.fetch_config = plane.watch_state = lambda *_a, **_k: pytest.fail("independent read")
+    try:
+        revision, desired, observation = plane.read_eligibility(b["manifest"])
+    finally:
+        del plane._read, plane.fetch_config, plane.watch_state
+    assert len(reads) == 2
     assert revision == b["plane"]._read()[0]
     assert desired["state"] == "active"
     assert observation.verified and not observation.fresh and observation.lease.seq == 4

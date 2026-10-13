@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
+import io
 import json
 import os
+import re
 import shlex
 import subprocess
+import tarfile
+import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
 
 import typer
 
@@ -114,24 +120,156 @@ def configured(cfg, entry) -> bool:
     return bool(config.attest_config(cfg, entry).keys)
 
 
-def all_keys_green(entry, cfg, rev: str) -> bool:
-    """Return whether every configured key proves ``rev`` green.
+_TREE_ID = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+
+
+def attested_green(entry, cfg, rev: str, phase: str) -> bool:
+    """The one aggregate predicate: does the ledger prove every active key green for ``rev``'s tree?
+
+    Attest-keys ADR 3.4. All of these must hold, and any doubt answers ``False``:
+
+    - ``rev`` resolves to a tree (an unresolved tree could only match a literal);
+    - a key catalog is configured and no key is disabled (a disabled key is never proof);
+    - every key is current-green (qualifying) or validly carried at that exact tree;
+    - no key is current-red at that tree;
+    - :func:`catalog_ok` (the opt-in drift check) holds;
+    - ``work.always_run`` passes, as :func:`validation_ledger.green_verdict` requires.
 
     Optionality controls whether a lifecycle boundary may proceed; it never turns missing or
-    red evidence into proof that the aggregate full-gate command passed.
+    red evidence into proof. Every exception, including an unreadable ledger, is ``False``.
+    ``phase`` names the boundary asking; every phase requires every active key, which is the
+    ADR's hard limit for ``push-main``/``release``/``postland`` and the safe reading elsewhere.
     """
+    try:
+        return _attested_green(entry, cfg, rev, phase)
+    except Exception as exc:  # fail closed: an unreadable predicate input is never a pass
+        typer.echo(
+            f"attested_green({phase}) failed closed: {type(exc).__name__}: {exc}"[:300], err=True
+        )
+        return False
+
+
+def _attested_green(entry, cfg, rev: str, phase: str) -> bool:
+    if not rev or not phase:
+        return False
+    tree = validation_ledger.tree_of(entry, rev)
+    if not _TREE_ID.fullmatch(tree or ""):
+        return False
     keys = attest_keys(config.attest_config(cfg, entry))
     if not keys or any(key.is_disabled() for key in keys):
         return False
-    verdicts = validation_ledger.key_verdicts(entry, rev, keys, cfg=cfg)
-    return all(
-        verdict.state == validation_ledger.KeyVerdictState.CARRIED
-        or (
-            verdict.state == validation_ledger.KeyVerdictState.CURRENT
-            and validation_ledger.is_qualifying_green(verdict.record or {})
-        )
-        for verdict in verdicts.values()
+    verdicts = validation_ledger.key_verdicts(entry, tree, keys, cfg=cfg)
+    if set(verdicts) != {key.name for key in keys}:
+        return False
+    states = validation_ledger.KeyVerdictState
+    for verdict in verdicts.values():
+        if verdict.state == states.CURRENT and not validation_ledger.is_qualifying_green(
+            verdict.record or {}
+        ):
+            return False  # current-red (or malformed): a real result no carry can outvote
+        if verdict.state not in (states.CURRENT, states.CARRIED):
+            return False
+    return catalog_ok(entry, cfg, tree) and validation_ledger.always_run_ok(entry, cfg)
+
+
+def all_keys_green(entry, cfg, rev: str) -> bool:
+    """Compatibility alias for the release flow until the release slice."""
+    return attested_green(entry, cfg, rev, "release")
+
+
+def catalog_payload(entry, cfg) -> list[dict]:
+    """The live HQ catalog as the drift-check command's stdin: name, cmd, enabled, by name."""
+    keys = config.attest_config(cfg, entry).keys
+    return sorted(
+        ({"name": key.name, "cmd": key.cmd, "enabled": key.enabled} for key in keys),
+        key=lambda item: item["name"],
     )
+
+
+def catalog_digest(payload: Sequence[Mapping]) -> str:
+    """Stable digest of the catalog payload; any HQ catalog edit changes it."""
+    canonical = json.dumps(list(payload), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _drift_cache_cmd(digest: str, drift_check: str) -> str:
+    """The ledger identity of one drift verdict: (tree, catalog digest, drift-check cmd_hash)."""
+    return f"catalog-drift:{digest}:{validation_ledger.cmd_hash(drift_check)}"
+
+
+def _archive_checkout(entry, rev: str, target: Path) -> None:
+    """Materialise ``rev``'s tree under ``target`` without touching the hive checkout."""
+    from . import registry
+
+    archive = subprocess.run(
+        ["git", "-C", str(registry.hive_dir(entry)), "archive", "--format=tar", rev],
+        capture_output=True,
+        check=True,
+    ).stdout
+    with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
+        tar.extractall(target, filter="data")
+
+
+def catalog_drift(entry, cfg, rev: str, checkout: Path | str | None = None) -> str | None:
+    """Why the live HQ catalog cannot be trusted at ``rev``, or ``None`` when it matches.
+
+    Opt-in guard (attest-keys ADR, 3.6). With ``work.attest.drift_check`` unset and the gate
+    model not ``keys`` nothing runs and nothing changes. Exit 0 from the opaque command is "no
+    drift"; a nonzero exit, a timeout, an unlaunchable command, or an unset command under
+    ``model: keys`` is drift. Only a clean verdict is cached, keyed by (tree, catalog digest,
+    drift-check cmd_hash), so a red or timed-out check always re-runs.
+    """
+    attest = config.attest_config(cfg, entry)
+    command = attest.drift_check
+    if command is None:
+        if config.layered(cfg, entry, "work.gate", "model", "legacy") == "keys":
+            return "drift check unset: work.attest.drift_check is required under model: keys"
+        return None
+    payload = catalog_payload(entry, cfg)
+    digest = catalog_digest(payload)
+    cache_cmd = _drift_cache_cmd(digest, command)
+    if validation_ledger.green_verdict(entry, rev, cache_cmd, cfg=cfg) is not None:
+        return None
+    try:
+        with tempfile.TemporaryDirectory(prefix="bh-drift-") as scratch:
+            cwd = checkout
+            if cwd is None:
+                cwd = Path(scratch)
+                _archive_checkout(entry, rev, cwd)
+            result = subprocess.run(
+                shlex.split(command),
+                cwd=cwd,
+                input=json.dumps(payload),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=attest.drift_check_timeout_seconds,
+            )
+    except subprocess.TimeoutExpired:
+        return f"drift check timed out after {attest.drift_check_timeout_seconds:g}s"
+    except (OSError, ValueError, subprocess.CalledProcessError, tarfile.TarError) as exc:
+        return f"drift check could not run: {type(exc).__name__}: {exc}"[:300]
+    validation_ledger.record(
+        entry, rev, cache_cmd, result.returncode, cfg=cfg, phase="catalog-drift"
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        return f"drift check exited {result.returncode}: {detail}"[:2000]
+    return None
+
+
+def catalog_ok(entry, cfg, rev: str, checkout: Path | str | None = None) -> bool:
+    """True when the live HQ catalog matches the repo at ``rev`` (or no check is configured).
+
+    Fails closed: every drift reason from :func:`catalog_drift` is printed and reads False.
+    """
+    try:
+        reason = catalog_drift(entry, cfg, rev, checkout)
+    except Exception as exc:  # fail closed: an unreadable check is drift, never a pass
+        reason = f"drift check failed: {type(exc).__name__}: {exc}"[:300]
+    if reason is not None:
+        typer.echo(f"attest catalog drift: {reason}", err=True)
+    return reason is None
 
 
 def record_full_gate_keys(entry, cfg, rev: str, cmd: str, rc: int) -> None:
@@ -668,6 +806,7 @@ __all__ = [
     "PRECHECK_PHASE",
     "UNRESOLVED_IMPACT_EXIT",
     "all_keys_green",
+    "attested_green",
     "cheapest_first",
     "configured",
     "error_unresolved_impact",
