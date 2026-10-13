@@ -319,3 +319,33 @@ def test_the_keepalive_is_explained_where_someone_would_delete_it():
     assert "ServerAliveInterval" in text
     assert "DO NOT REMOVE IT AS UNEXPLAINED CRUFT" in text
     assert "bh-53o8f" in text
+
+
+# ---- bh-aq832: the verb decides; the script only honours its exit code ------------------------
+
+
+def _bh_stub(stub_dir: Path, exit_code: int) -> dict:
+    stub = stub_dir / "bh"
+    stub.write_text(f'#!/bin/sh\necho "BH-ARGS $*" >&2\nexit {exit_code}\n')
+    stub.chmod(0o755)
+    return {}
+
+
+def test_a_missing_bh_127_still_runs_the_full_gate(tmp_path):
+    res = _run_gate(MAIN_PUSH, tmp_path)  # no `bh` on PATH at all
+    assert "JUST-RAN check-all-native" in res.stdout
+
+
+def test_a_nonzero_verb_answer_runs_the_full_gate(tmp_path):
+    for code in (1, 2, 127):
+        _bh_stub(tmp_path, code)
+        res = _run_gate(MAIN_PUSH, tmp_path)
+        assert "JUST-RAN check-all-native" in res.stdout, code
+        assert "BH-ARGS hive hook push-main" in res.stderr
+
+
+def test_a_zero_verb_answer_skips_the_full_gate(tmp_path):
+    _bh_stub(tmp_path, 0)
+    res = _run_gate(MAIN_PUSH, tmp_path)
+    assert res.returncode == 0
+    assert "JUST-RAN" not in res.stdout
