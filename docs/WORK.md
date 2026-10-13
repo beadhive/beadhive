@@ -399,6 +399,9 @@ audit record under the hive's private validation store. A bypass is never stored
 green receipt and never satisfies an attestation. Review approval, history, topology, dirty-tree,
 freshness, merge-slot, and conflict guards still run.
 
+Plain selective submit and merge is the default; a bypass or `--override-validation` is an audited
+exception, not a routine step.
+
 This mode permits unvalidated code to land and push. Keep it scoped to the affected hive, inspect
 the audit records after recovery, disable it as soon as the gate is usable, then run the restored
 configured validation before treating the resulting tree as green.
@@ -841,6 +844,10 @@ work:
     merge-main: "just check-all"   # ad-hoc bead → main
 ```
 
+Under `work.gate.model: keys` these command strings are only fallbacks: post-land, union and the
+push-main miss path run the key evaluator with the phase's profile, and the strings run only on
+catalog drift or for a hive with no catalog. See [ATTEST-KEYS.md](ATTEST-KEYS.md#gate-model-and-phase-profiles).
+
 `postland` (fires only when `main` moved) and intermediate bead→`mol/<epic>` merges stay on the
 fast `just check`; bump them to `just check-all` if integration-level conflicts start surfacing.
 
@@ -952,7 +959,8 @@ surface for a human.
 1. **Path-scoped.** Union applies only when *every* conflicted path matches at least one
    glob. A single out-of-whitelist path skips union entirely and falls straight to the
    bounce.
-2. **Validation-gated.** After a successful union merge the hive's `validate_cmd` is
+2. **Validation-gated.** After a successful union merge the hive's `validate_cmd` (under
+   `work.gate.model: keys`, the `union` profile through the key evaluator) is
    re-run from a clean checkout. On failure, the integration branch is hard-reset to its
    pre-union tip and the bead branch is restored from its backup ref before bouncing —
    the broken result is never committed.
