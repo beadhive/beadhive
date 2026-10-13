@@ -1390,6 +1390,62 @@ def test_try_merge_rebase_union_validation_failure_restores(tmp_path, monkeypatc
     assert _gitout("rev-parse", b2, cwd=repo) == branch_before  # bead branch restored
 
 
+def test_try_merge_rebase_union_validator_receives_the_span_and_keeps_reset_on_red(
+    tmp_path, monkeypatch
+):
+    """bh-usmrs: a key-model union validator (not the command string) gates the union result; it is
+    handed (pre-union tip, base, base), a green lands, and a red resets main and the bead branch."""
+    cfg, entry, repo = _shared_base_hive(tmp_path, monkeypatch, "L0\n")
+    _, t1, b1 = worktree.ensure(cfg, "mr", "uk-1")
+    _, t2, b2 = worktree.ensure(cfg, "mr", "uk-2")
+    _append(t1, "fromA\n")
+    _append(t2, "fromB\n")
+    assert worktree.merge_no_ff(entry, b1, "main")[0] == 0
+    main_before = _gitout("rev-parse", "main", cwd=repo)
+    branch_before = _gitout("rev-parse", b2, cwd=repo)
+    calls: list[tuple[str, str, str]] = []
+
+    def red(base_rev, head_rev, base):
+        calls.append((base_rev, head_rev, base))
+        return 3
+
+    rc, _out, how = worktree.try_merge_rebase(
+        entry,
+        b2,
+        "main",
+        t2,
+        union_globs=("*.txt",),
+        validate_cmd="true",  # a green command string must NOT be what decides
+        union_validate=red,
+    )
+
+    assert rc != 0 and how == "conflict"
+    assert calls == [(main_before, "main", "main")]
+    assert _gitout("rev-parse", "main", cwd=repo) == main_before
+    assert _gitout("rev-parse", b2, cwd=repo) == branch_before
+
+
+def test_try_merge_rebase_union_validator_green_lands_without_the_command(tmp_path, monkeypatch):
+    cfg, entry, _repo = _shared_base_hive(tmp_path, monkeypatch, "L0\n")
+    _, t1, b1 = worktree.ensure(cfg, "mr", "ug-1")
+    _, t2, b2 = worktree.ensure(cfg, "mr", "ug-2")
+    _append(t1, "fromA\n")
+    _append(t2, "fromB\n")
+    assert worktree.merge_no_ff(entry, b1, "main")[0] == 0
+
+    rc, _out, how = worktree.try_merge_rebase(
+        entry,
+        b2,
+        "main",
+        t2,
+        union_globs=("*.txt",),
+        validate_cmd="false",  # would fail if the command path were taken
+        union_validate=lambda *_a: 0,
+    )
+
+    assert (rc, how) == (0, "union")
+
+
 def test_try_merge_rebase_union_skipped_for_nonwhitelisted_path(tmp_path, monkeypatch):
     """A conflict on a path OUTSIDE the whitelist skips the union tier entirely and bounces as
     today — integration and bead branch both untouched."""
