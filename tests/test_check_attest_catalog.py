@@ -15,19 +15,82 @@ def test_catalog_partitions_check_all() -> None:
     assert MODULE.main() == 0
 
 
-def test_both_explicit_profiles_fail_closed_on_missing_steps() -> None:
+def test_pants_profiles_fail_closed_on_missing_steps() -> None:
     source = (ROOT / "justfile").read_text()
     assert MODULE.check(source) == []
     for recipe, step in (
-        ("check-native", "stateful-native"),
         ("check-pants", "test-changed"),
-        ("check-all-native", "packages-check"),
         ("check-all-pants", "pants-attest"),
         ("check-all-pants", "pants-artifact-check"),
     ):
         declaration = next(line for line in source.splitlines() if line.startswith(f"{recipe}:"))
         changed = source.replace(declaration, declaration.replace(f" {step}", ""), 1)
         assert any(recipe in error for error in MODULE.check(changed))
+
+
+def test_check_all_native_cannot_be_hand_listed_or_lose_discovery() -> None:
+    source = (ROOT / "justfile").read_text()
+    handlisted = source.replace("check-all-native:\n", "check-all-native: lint\n", 1)
+    assert any("must not hand-list" in error for error in MODULE.check(handlisted))
+    for shape in MODULE.DISCOVERY_SHAPES:
+        changed = source.replace(shape, "true", 1)
+        assert any("must discover attest-*" in error for error in MODULE.check(changed)), shape
+
+
+def test_check_native_is_a_validated_key_subset() -> None:
+    source = (ROOT / "justfile").read_text()
+    keys = MODULE.fast_keys(source)
+    assert keys
+    assert set(keys) <= set(MODULE.KEY_RECIPES)
+    unknown = source.replace('fast_keys := "', 'fast_keys := "nonesuch ', 1)
+    assert any("unknown key 'nonesuch'" in error for error in MODULE.check(unknown))
+    unnamed = source.replace("fast_keys := ", "slow_keys := ", 1)
+    assert any("fast_keys variable" in error for error in MODULE.check(unnamed))
+    handlisted = source.replace("check-native:\n", "check-native: lint\n", 1)
+    assert any("named key subset" in error for error in MODULE.check(handlisted))
+    assert set(MODULE.fast_gate_leaves(source)) <= set(MODULE.native_gate_leaves(source))
+
+
+def test_leaf_partition_requires_each_leaf_owned_once_and_the_union_complete() -> None:
+    source = (ROOT / "justfile").read_text()
+    leaves = MODULE.native_gate_leaves(source)
+    assert len(leaves) == len(set(leaves))
+    assert sorted(leaves) == sorted(
+        leaf for _, key_leaves in MODULE.KEY_RECIPES.values() for leaf in key_leaves
+    )
+    # A leaf run by an attest recipe but unknown to KEY_RECIPES is an unowned part of the gate.
+    extra = source.replace(
+        "attest-docs:\n    just lint-md\n", "attest-docs:\n    just lint-md\n    just fmt\n", 1
+    )
+    errors = MODULE.check(extra)
+    assert any("partition the native gate" in error for error in errors)
+    assert any("docs: attest-docs invokes ['fmt']" in error for error in errors)
+    # A leaf dropped from a key body leaves the gate incomplete.
+    dropped = source.replace("    just lint-md\n", "", 1)
+    assert any("does not invoke" in error for error in MODULE.check(dropped))
+    # Two keys owning one leaf is rejected.
+    shared = source.replace(
+        "attest-hq-storage:\n    just hq-storage-check\n",
+        "attest-hq-storage:\n    just hq-storage-check\n    just lint-md\n",
+        1,
+    )
+    assert MODULE.check(shared)
+
+
+def test_pants_only_steps_cannot_join_a_key() -> None:
+    source = (ROOT / "justfile").read_text()
+    changed = source.replace(
+        "attest-docs:\n    just lint-md\n",
+        "attest-docs:\n    just lint-md\n    just pants-attest\n",
+        1,
+    )
+    assert any("Pants-only step" in error for error in MODULE.check(changed))
+
+
+def test_a_new_attest_recipe_without_its_catalog_pieces_is_named() -> None:
+    source = (ROOT / "justfile").read_text() + "\nattest-newkey:\n    just lint-md\n"
+    errors = MODULE.check(source)
+    assert any("no KEY_RECIPES entry ['newkey']" in error for error in errors)
 
 
 def test_recipe_body_is_checked_when_recipe_has_dependencies() -> None:

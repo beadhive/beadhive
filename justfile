@@ -55,7 +55,20 @@ check: check-native
 
 # Stable fast entry points. Native collects the complete non-integration core suite directly;
 # Pants retains its impact-selected developer route.
-check-native: lint lint-md license-check architecture-structural-check stateful-native root-composition-native beads-client-check
+# The fast profile is a NAMED KEY SUBSET (attest-keys-single-gate-model-adr.md section 3.7), not a
+# second hand-listed leaf list: it runs `just attest-<key>` for each key in `fast_keys`. Every name
+# must be a real key (check-attest-catalog fails closed on an unknown one). `packages` and
+# `root-composition` are whole keys, so the fast profile also runs their `packages-check` and
+# `root-workspace-check` leaves; the leaf-level list it replaced ran only `beads-client-check` and
+# `root-composition-native` from them.
+fast_keys := "docs unit architecture-contracts stateful root-composition packages"
+
+check-native:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for key in {{fast_keys}}; do
+        just "attest-$key"
+    done
 
 # Compare the checked-in SDK and exercise the package without the root app.
 beads-client-check:
@@ -154,7 +167,19 @@ check-all-pants: require-bd lint lint-md license-check architecture-structural-c
 
 # Full native validation runs every core and workspace test directly with pytest. Pants remains
 # available through check-all-pants; this mode deliberately has no Pants engine prerequisite.
-check-all-native: require-bd lint lint-md license-check architecture-structural-check stateful-native root-composition-native root-workspace-check beads-client-check test-integration-land demo-local-loop demo-live-ingress packages-check bd-cli-check hq-storage-check
+check-all-native:
+    #!/usr/bin/env bash
+    # Generated from the key recipes, not hand-listed: run `just attest-<key>` for every attest-*
+    # recipe in declaration order (`--unsorted`; the default summary is alphabetical). A new key
+    # needs its recipe, a KEY_RECIPES entry, a docs row and the HQ catalog entry, and no edit here.
+    # check-attest-catalog proves the recipe set equals the catalog and partitions the leaves. An
+    # empty discovery is an error, never a vacuous green.
+    set -euo pipefail
+    recipes="$(just --summary --unsorted | tr ' ' '\n' | grep '^attest-' || true)"
+    test -n "$recipes" || { echo "check-all-native: no attest-* recipes discovered" >&2; exit 1; }
+    for recipe in $recipes; do
+        just "$recipe"
+    done
 
 # Attest-key commands deliberately partition check-all-native, the push gate. Pants steps belong
 # only to the optional check-all-pants profile, never to a key (native is the primary framework;

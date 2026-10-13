@@ -17,6 +17,14 @@ in the optional `just check-all-pants` profile (whether Pants stays is bh-ahm6x)
 graphs. The live native profile uses the path backend and keeps the catalog active; uncertainty
 falls back to the complete key set.
 
+`just check-all-native` is generated from the keys: it discovers every `attest-*` recipe with
+`just --summary --unsorted` and runs `just attest-<key>` for each in declaration order, so it has
+no leaf list to edit. `just check-native` runs the keys named by the justfile `fast_keys` variable
+(a named key subset). Adding a key needs only its `attest-<key>` recipe, a `KEY_RECIPES` entry in
+`scripts/check_attest_catalog.py`, a row in the table below and the HQ catalog entry;
+`just check-attest-catalog` names whichever piece is missing and enforces that each leaf is owned
+by exactly one key and that the keys' leaves are the complete native gate.
+
 ### Gate model and phase profiles
 
 `work.gate.model` selects the gate model: `legacy` (the default) or `keys`. Under `legacy` every

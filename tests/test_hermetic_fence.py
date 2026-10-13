@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 
 import pytest
+from scripts.check_attest_catalog import native_gate_leaves
 
 from beadhive import test_report
 
@@ -273,7 +274,9 @@ def test_the_demo_is_back_on_the_check_all_line():
     justfile = (REPO / "justfile").read_text()
     alias = next(ln for ln in justfile.splitlines() if ln.startswith("check-all:"))
     assert alias.strip() == "check-all: check-all-native"
-    line = next(ln for ln in justfile.splitlines() if ln.startswith("check-all-native:"))
+    # check-all-native is generated from the attest-* recipes; the demos are the `demos` key's
+    # leaves, so assert them against the leaf set that generated gate actually reaches.
+    line = " ".join(native_gate_leaves(justfile))
 
     assert "demo-local-loop" in line, (
         "`demo-local-loop` is off the check-all line again — that is the ONLY end-to-end proof "

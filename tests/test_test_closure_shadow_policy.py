@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from scripts.check_attest_catalog import fast_gate_leaves
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "test_closure_shadow_policy.py"
@@ -411,7 +412,7 @@ def test_architecture_gate_checks_shadow_policy_without_replacing_full_gate() ->
     justfile = (ROOT / "justfile").read_text(encoding="utf-8")
 
     assert "uv run python scripts/test_closure_shadow_policy.py --check" in justfile
-    assert "check-native: lint lint-md license-check architecture-structural-check" in justfile
+    assert "architecture-structural-check" in fast_gate_leaves(justfile)
 
 
 def test_simulation_labelled_positive_control_meets_predeclared_bar() -> None:

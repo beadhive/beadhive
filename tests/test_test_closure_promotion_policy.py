@@ -10,6 +10,7 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
+from scripts.check_attest_catalog import fast_gate_leaves, native_gate_leaves
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "test_closure_promotion_policy.py"
@@ -234,9 +235,7 @@ def test_just_gate_checks_promotion_evidence_without_renaming_full_gates() -> No
     justfile = (ROOT / "justfile").read_text(encoding="utf-8")
 
     assert "uv run python scripts/test_closure_promotion_policy.py --check" in justfile
-    assert "check-native: lint lint-md license-check architecture-structural-check" in justfile
-    assert (
-        "check-all-native: require-bd lint lint-md license-check architecture-structural-check"
-        in justfile
-    )
+    # Both profiles are key-derived now, so pin the leaf sets they reach, not a dependency line.
+    assert "architecture-structural-check" in fast_gate_leaves(justfile)
+    assert "architecture-structural-check" in native_gate_leaves(justfile)
     assert promotion.load_policy(CONFIG).mode == "certified"

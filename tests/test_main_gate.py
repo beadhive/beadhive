@@ -20,6 +20,7 @@ import subprocess
 from pathlib import Path
 
 from ruamel.yaml import YAML
+from scripts.check_attest_catalog import fast_gate_leaves, native_gate_leaves
 
 ROOT = Path(__file__).resolve().parents[1]
 GATE = ROOT / "scripts" / "main-push-gate.sh"
@@ -58,13 +59,16 @@ def _run_gate(
 
 def test_check_all_cannot_report_green_without_bd():
     assert _recipe_deps("check-all").strip() == "check-all-native"
-    assert "require-bd" in _recipe_deps("check-all-native")
+    # check-all-native is generated from the attest-* recipes; the bd guard lives in the
+    # integration key, which the generated gate always runs.
+    assert "require-bd" in native_gate_leaves((ROOT / "justfile").read_text())
 
 
 def test_the_fast_check_is_not_burdened_with_the_bd_requirement():
     """`check` excludes integration by construction, so the guard would only cost contributors
     without `bd` a gate they can legitimately run."""
     assert "require-bd" not in _recipe_deps("check")
+    assert "require-bd" not in fast_gate_leaves((ROOT / "justfile").read_text())
 
 
 def test_lefthook_pre_push_runs_the_main_gate_and_feeds_it_the_ref_list():

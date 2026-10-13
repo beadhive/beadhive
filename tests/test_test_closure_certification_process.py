@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -357,22 +358,34 @@ def _assert_production_full_gate_wiring(repo: Path) -> None:
     assert {"stateful-pants", "stateful-native"} <= check_all_dependencies
     assert "architecture-pants-check" in check_all_dependencies
     assert "test" not in check_all_dependencies
-    native_dependencies = {item["recipe"] for item in check_all_native["dependencies"]}
-    assert "architecture-structural-check" in native_dependencies
-    assert "architecture-pants-check" not in native_dependencies
-    assert "stateful-pants" not in native_dependencies
-    assert "pants-attest" not in native_dependencies
 
-    def recipe_closure(name: str, seen: set[str] | None = None) -> set[str]:
+    # check-all-native is generated: its body runs `just attest-<key>` for every attest-* recipe,
+    # so the native gate is the closure of those recipes through both dependencies and the
+    # `just <recipe>` invocations in their bodies.
+    def recipe_closure(names: list[str], seen: set[str] | None = None) -> set[str]:
         visited = set() if seen is None else seen
-        if name in visited:
-            return visited
-        visited.add(name)
-        for dependency in recipes[name]["dependencies"]:
-            recipe_closure(dependency["recipe"], visited)
+        for name in names:
+            if name in visited:
+                continue
+            visited.add(name)
+            invoked = [
+                match.group(1)
+                for row in recipes[name]["body"]
+                for match in re.finditer(r"(?:^|&&|;)\s*just ([-\w]+)", row[0])
+            ]
+            recipe_closure(
+                [item["recipe"] for item in recipes[name]["dependencies"]] + invoked, visited
+            )
         return visited
 
-    native_graph = recipe_closure("check-all-native")
+    assert not check_all_native["dependencies"], "check-all-native must not hand-list steps"
+    native_keys = sorted(name for name in recipes if name.startswith("attest-"))
+    assert native_keys, "no attest-* recipes: the generated native gate would be vacuous"
+    native_graph = recipe_closure(native_keys)
+    assert "architecture-structural-check" in native_graph
+    assert "architecture-pants-check" not in native_graph
+    assert "stateful-pants" not in native_graph
+    assert "pants-attest" not in native_graph
     assert (
         not {"architecture-pants-check", "stateful-pants", "pants-attest", "pants-artifact-check"}
         & native_graph

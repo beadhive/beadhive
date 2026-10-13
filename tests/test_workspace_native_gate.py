@@ -11,6 +11,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from scripts.check_attest_catalog import fast_gate_leaves
 from scripts.native_package_tests import UnsafeNativePackagePath, package_test_roots
 
 ROOT = Path(__file__).parents[1]
@@ -179,7 +180,8 @@ def test_native_test_recipes_collect_all_core_tests_without_pants_filtering() ->
     assert "root-composition-validate" in _dependencies(justfile, "stateful-native")
     assert "root-composition-validate" in _dependencies(justfile, "root-composition-native")
     assert "root-composition-validate" in _dependencies(justfile, "root-workspace-check")
-    assert {"stateful-native", "root-composition-native"} <= _dependencies(justfile, "check-native")
+    # check-native is a named key subset: it reaches these leaves through attest-<key> recipes.
+    assert {"stateful-native", "root-composition-native"} <= set(fast_gate_leaves(justfile))
     assert '-m "integration"' in integration
 
 
