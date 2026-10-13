@@ -973,3 +973,64 @@ check-all` run on main 4e20e4bd.
 - The stateful lane is CPU-bound, with about 482 s busy per worker.
 - The integration lane is bound by long single Dolt tests and slot wait (bh-xqtp8).
 - bh-2znxs holds the decision on the duplicated integration-marked root-composition tests.
+
+## Validation broker v1 and the stateful triage: full-gate times (2026-10-13)
+
+These are the all-keys gate times measured overnight. Every key was green unless noted.
+
+### Engine slots (the default): keys run one after another, total is the sum
+
+The baseline is main 2c256557. The triage beads (bh-fiy4a, bh-c2gnl, bh-um0rg, bh-qxg5c,
+bh-svvnj, bh-gf36w, bh-o6f8s) then landed; the second column is the merge gate for bh-o6f8s on
+main c1dfbefe. The merge gate for bh-gf36w on 2c1b437e totalled 1,341.5 s (stateful 434.5 s,
+integration 452.6 s).
+
+| Key | Baseline (s) | After triage (s) |
+| --- | ---: | ---: |
+| `unit` | 10.7 | 10.3 |
+| `docs` | 17.2 | 18.2 |
+| `hq-storage` | 26.7 | 27.5 |
+| `architecture-contracts` | 46.0 | 38.0 |
+| `packages` | 44.6 | 47.3 |
+| `bd-cli` | 43.4 | 49.7 |
+| `root-composition` | 90.3 | 89.6 |
+| `demos` | 181.8 | 159.2 |
+| `integration` | 446.7 | 454.5 |
+| `stateful` | 526.5 | **431.1** |
+| **Total** | **1,448** | **1,340.3** |
+
+### Engine local (`BH_VALIDATION_BROKER_ENGINE=local`): all ten keys side by side
+
+The host has 32 CPUs and 47 GiB, with `BH_DOLT_SLOTS=12`. Times are key wall seconds.
+
+| Key | 2d7c991e | c1dfbefe |
+| --- | ---: | ---: |
+| `unit` | 4.1 | 2.4 |
+| `docs` | 10.3 | 11.1 |
+| `architecture-contracts` | 51.3 | 48.1 |
+| `root-composition` | 147.0 | 145.0 |
+| `demos` | 228.5 | 221.8 |
+| `stateful` | 499.9 | 491.4 |
+| `hq-storage` | 20.6 | 19.9 |
+| `packages` | 46.4 | 48.3 |
+| `integration` | 773.8 | 772.0 |
+| `bd-cli` | 37.9 | 31.2 |
+| **Group wall** | **812.8** (840 with checkout and setup) | **804.4** (831 with setup) |
+| Sum of key walls | 1,819.7 | 1,791.0 |
+
+Peak host memory rose by 8.7 GiB over a 25.8 GiB baseline on 2d7c991e, and by 8.9 GiB (25.7 to
+34.6 GiB) on c1dfbefe. Peak shmem was 7.5 GiB and 7.4 GiB. An earlier run on main 0a954541 had a
+group wall of 825.6 s (integration 790.6 s, stateful 500.7 s, demos 224.4 s). It was red only on
+the bh-7sxp6 environment leak, which turned `root-composition` red at 107.3 s.
+
+### Reading
+
+Running the keys side by side cuts the all-keys gate from 1,448 s (1,340 s under slots today)
+to about 805-813 s, a 44% drop. That misses the target of 12 minutes or less. Integration slows
+from about 450 s alone to about 775 s when it shares the host with stateful, and
+`root-composition` (90 to 145 s) and `demos` (159 to 222 s) slow too. Memory was not the binding
+limit. Engine slots stays the default, because no key may be slower; the follow-up is bh-itn9m.
+The triage beads cut the stateful lane under slots from 526.5 s to 431 s (-18%).
+
+The durations file behind worksteal packing is regenerated from these lanes' reports with
+`just refresh-test-durations` (bh-0br25). Re-run it after a change that moves test durations.

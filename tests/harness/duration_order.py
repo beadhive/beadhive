@@ -3,7 +3,8 @@
 Late-scheduled 300-400 s tests leave one xdist worker running while the rest idle.  Ordering the
 collection by recorded duration (descending) lets ``--dist worksteal`` hand the long tests out
 first and fill the tail with short ones.  The durations file is regenerated from validation JUnit
-reports by ``scripts/refresh_test_durations.py``.
+reports by ``scripts/refresh_test_durations.py`` (``just refresh-test-durations``).  A test the
+file does not list takes its module's median from the ``modules`` table, then the global median.
 
 Opt out with ``BH_TEST_DURATION_ORDER=0``.  ``BH_TEST_DURATIONS_FILE`` points at another file.
 Ordering is a pure sort: stable, deterministic, and it never adds, drops, or deselects an item.
@@ -61,7 +62,10 @@ def junit_key(nodeid: str) -> str:
     """Map a pytest nodeid onto the ``classname::name`` form JUnit reports use."""
     path, _, rest = nodeid.partition("::")
     module = path.removesuffix(".py").replace("/", ".")
-    *classes, name = rest.split("::") if rest else [""]
+    # A parametrize id may itself contain "::" (``[[::1]:80]``); only the part before "[" is a path.
+    head, bracket, params = rest.partition("[")
+    *classes, name = head.split("::") if head else [""]
+    name += bracket + params
     return f"{'.'.join([module, *classes])}::{name}"
 
 
@@ -75,18 +79,63 @@ def load(path: Path) -> tuple[dict[str, float], float]:
         return {}, 0.0
 
 
-def order_items(items: Sequence, durations: Mapping[str, float], fallback: float) -> list:
-    """Stable descending sort; unknown tests take ``fallback`` so they follow known-long ones."""
+def module_of_key(key: str) -> str:
+    """The module part of a ``classname::name`` key: the leading segments before a class name.
+
+    Module and package directory names are lowercase here; test classes are capitalised, so the
+    module ends where the first capitalised segment of the classname starts.
+    """
+    segments: list[str] = []
+    for segment in key.partition("::")[0].split("."):
+        if segment[:1].isupper():
+            break
+        segments.append(segment)
+    return ".".join(segments)
+
+
+def load_modules(path: Path) -> dict[str, float]:
+    """Per-module median seconds (the ``modules`` table); empty when absent or malformed."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return {str(key): float(value) for key, value in data["modules"].items()}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return {}
+
+
+def predicted_seconds(
+    nodeid: str,
+    durations: Mapping[str, float],
+    fallback: float,
+    modules: Mapping[str, float] | None = None,
+) -> float:
+    """Recorded seconds, else the test's module median, else the global *fallback*."""
+    key = junit_key(nodeid)
+    known = durations.get(key)
+    if known is not None:
+        return known
+    return (modules or {}).get(module_of_key(key), fallback)
+
+
+def order_items(
+    items: Sequence,
+    durations: Mapping[str, float],
+    fallback: float,
+    modules: Mapping[str, float] | None = None,
+) -> list:
+    """Stable descending sort; unknown tests take their module median, else ``fallback``."""
     if not durations:
         return list(items)
-    return sorted(items, key=lambda item: -durations.get(junit_key(item.nodeid), fallback))
+    return sorted(
+        items, key=lambda item: -predicted_seconds(item.nodeid, durations, fallback, modules)
+    )
 
 
 def apply(items: Sequence, env: Mapping[str, str] | None = None) -> list:
     if not enabled(env):
         return list(items)
-    durations, fallback = load(durations_path(env))
-    return order_items(items, durations, fallback)
+    path = durations_path(env)
+    durations, fallback = load(path)
+    return order_items(items, durations, fallback, load_modules(path))
 
 
 def pack_enabled(env: Mapping[str, str] | None = None) -> bool:
@@ -118,6 +167,7 @@ def pack(
     workers: int,
     slots: int,
     holds: Callable[[object], bool],
+    modules: Mapping[str, float] | None = None,
 ) -> list:
     """Lay *items* out as ``workers`` worksteal chunks of balanced predicted work.
 
@@ -131,7 +181,9 @@ def pack(
     if workers <= 1 or not items:
         return list(items)
     sizes = chunk_sizes(len(items), workers)
-    weight = {id(item): durations.get(junit_key(item.nodeid), fallback) for item in items}
+    weight = {
+        id(item): predicted_seconds(item.nodeid, durations, fallback, modules) for item in items
+    }
     ordered = sorted(items, key=lambda i: -weight[id(i)])
     everywhere = range(workers)
     phases: list[tuple[list, range]] = [(ordered, everywhere)]
@@ -152,5 +204,6 @@ def pack(
 
 
 def apply_pack(items: Sequence, workers: int, slots: int, env: Mapping[str, str] | None = None):
-    durations, fallback = load(durations_path(env))
-    return pack(items, durations, fallback, workers, slots, holds_dolt_slot)
+    path = durations_path(env)
+    durations, fallback = load(path)
+    return pack(items, durations, fallback, workers, slots, holds_dolt_slot, load_modules(path))

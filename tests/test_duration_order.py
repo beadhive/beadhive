@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,6 +24,9 @@ def item(nodeid: str):
         ("tests/test_a.py::test_x", "tests.test_a::test_x"),
         ("tests/test_a.py::TestC::test_x[p-1]", "tests.test_a.TestC::test_x[p-1]"),
         ("tests/sub/test_a.py::test_x", "tests.sub.test_a::test_x"),
+        # A parametrize id may contain "::"; it stays inside the name.
+        ("tests/test_a.py::test_x[[::1]:80]", "tests.test_a::test_x[[::1]:80]"),
+        ("tests/test_a.py::TestC::test_x[a::b]", "tests.test_a.TestC::test_x[a::b]"),
     ],
 )
 def test_junit_key_matches_report_classname_and_name(nodeid, key):
@@ -34,6 +38,60 @@ def test_longest_first_with_unknown_after_known_long_and_stable():
     items = [item(f"tests/t.py::{n}") for n in ("tiny", "new1", "mid", "new2", "slow")]
     names = [i.nodeid.split("::")[1] for i in duration_order.order_items(items, durations, 0.05)]
     assert names == ["slow", "mid", "new1", "new2", "tiny"]
+
+
+@pytest.mark.parametrize(
+    ("key", "module"),
+    [
+        ("tests.test_a::test_x", "tests.test_a"),
+        ("tests.test_a.TestC::test_x[p]", "tests.test_a"),
+        (
+            "packages.beadhive-core.tests.test_b.TestD.TestE::t",
+            "packages.beadhive-core.tests.test_b",
+        ),
+    ],
+)
+def test_module_of_key_stops_at_the_first_class_segment(key, module):
+    assert duration_order.module_of_key(key) == module
+
+
+def test_unknown_tests_take_their_module_median_before_the_global_median():
+    durations = {"tests.t::known": 1.0}
+    modules = {"tests.slow": 20.0, "tests.t": 0.5}
+    items = [item(n) for n in ("tests/t.py::new", "tests/fast.py::new", "tests/slow.py::Cls::new")]
+    ordered = duration_order.order_items(
+        [item("tests/t.py::known"), *items], durations, 0.05, modules
+    )
+    assert [i.nodeid for i in ordered] == [
+        "tests/slow.py::Cls::new",
+        "tests/t.py::known",
+        "tests/t.py::new",
+        "tests/fast.py::new",
+    ]
+    assert duration_order.predicted_seconds("tests/t.py::known", durations, 0.05, modules) == 1.0
+    assert duration_order.predicted_seconds("tests/fast.py::x", durations, 0.05, modules) == 0.05
+
+
+def test_pack_weighs_unknown_tests_by_module_median():
+    items = [item(f"tests/slow.py::n{i}") for i in range(2)] + [
+        item(f"tests/fast.py::n{i}") for i in range(2)
+    ]
+    packed = duration_order.pack(
+        items, {"tests.x::y": 1.0}, 0.0, 2, 0, lambda _: False, {"tests.slow": 9.0}
+    )
+    chunks = _chunks(packed, 2)
+    assert [sorted(i.nodeid.split("::")[0] for i in c) for c in chunks] == [
+        ["tests/fast.py", "tests/slow.py"],
+    ] * 2
+
+
+def test_modules_table_is_loaded_and_tolerates_absence(tmp_path):
+    path = tmp_path / "d.json"
+    path.write_text(json.dumps({"median": 0, "tests": {}, "modules": {"tests.t": 2}}))
+    assert duration_order.load_modules(path) == {"tests.t": 2.0}
+    path.write_text(json.dumps({"median": 0, "tests": {}}))
+    assert duration_order.load_modules(path) == {}
+    assert duration_order.load_modules(tmp_path / "missing.json") == {}
 
 
 def test_order_is_deterministic_and_lossless():
@@ -94,6 +152,64 @@ def test_refresh_takes_median_across_runs_and_skips_skipped(tmp_path):
     data = json.loads(out.read_text())
     assert data["tests"] == {"tests.t::slow": 20.0}
     assert duration_order.load(out)[0] == {"tests.t::slow": 20.0}
+
+
+def _lane_reports(runs: Path) -> None:
+    """Three newest-first full stateful runs, one full integration run, one partial run."""
+    layout = [
+        ("a", 1, [("tests.s", "one", 1.0), ("tests.s", "two", 3.0)]),
+        ("b", 2, [("tests.s", "one", 2.0), ("tests.s", "two", 5.0), ("tests.gone", "x", 9.0)]),
+        ("c", 3, [("tests.s", "one", 3.0), ("tests.s", "two", 4.0), ("tests.s.C", "sk", 0.0)]),
+        ("d", 4, [("tests.i", "slow", 10.0), ("tests.i", "also", 2.0)]),
+        ("e", 5, [("tests.s", "one", 99.0)]),  # partial: covers 1 of 3 stateful tests
+    ]
+    for name, stamp, cases in layout:
+        directory = runs / f"run-{name}" / "reports"
+        directory.mkdir(parents=True)
+        report = directory / "r.xml"
+        _report(report, [(c, n, t, c == "tests.s.C") for c, n, t in cases])
+        os.utime(report, (stamp, stamp))
+
+
+def _fake_collect(lane):
+    return {
+        "stateful": {"tests.s::one", "tests.s::two", "tests.s.C::sk", "tests.s::new"},
+        "root-composition": {"tests.r::only"},
+        "integration": {"tests.i::slow", "tests.i::also"},
+    }[lane.name]
+
+
+def test_lane_refresh_keeps_full_lane_reports_prunes_and_adds_module_medians(tmp_path, capsys):
+    runs = tmp_path / "runs"
+    _lane_reports(runs)
+    _report(runs / "run-d" / "reports" / "rc.xml", [("tests.r", "only", 0.4, False)])
+    out = tmp_path / "out.json"
+    args = ["--lanes", "--min-seconds", "0", "--min-fill", "0.5", "--reports", "2"]
+    args += ["--glob", str(runs / "*/reports/*.xml"), "--output", str(out)]
+    assert refresh.main(args, collect=_fake_collect) == 0
+    data = json.loads(out.read_text())
+    # Newest two stateful reports (b, c) set the medians; the partial run (e) and the pruned
+    # "tests.gone" key do not appear; the skipped-only test is recorded at the floor.
+    assert data["tests"] == {
+        "tests.i::also": 2.0,
+        "tests.i::slow": 10.0,
+        "tests.r::only": 0.4,
+        "tests.s.C::sk": 0.01,
+        "tests.s::one": 2.5,
+        "tests.s::two": 4.5,
+    }
+    assert data["modules"] == {"tests.i": 6.0, "tests.r": 0.4, "tests.s": 3.5}
+    report = capsys.readouterr().out
+    assert "stateful: coverage 3/4 (75.0%) from 2 reports" in report
+    assert "integration: coverage 2/2 (100.0%)" in report
+    assert duration_order.load_modules(out)["tests.s"] == 3.5
+
+
+def test_lane_refresh_fails_when_a_lane_has_no_full_report(tmp_path):
+    runs = tmp_path / "runs"
+    _lane_reports(runs)
+    args = ["--lanes", "--glob", str(runs / "*/reports/*.xml"), "--output", str(tmp_path / "o")]
+    assert refresh.main(args, collect=_fake_collect) == 1
 
 
 def test_refresh_fails_without_reports(tmp_path):
