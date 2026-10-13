@@ -33,9 +33,10 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from ._errors import BrokerUnavailable, GrantRefused, GrantTimeout, LeaseLost
-from ._fake import FakeAvailability, InMemoryBroker
+from ._fake import FakeAvailability, FakeDiskSpace, InMemoryBroker
 from ._local import LocalEngine
 from ._ports import BrokerPort
+from ._roots import ExecutionRoot
 from ._types import (
     LEASE_ENV,
     Capacity,
@@ -119,13 +120,18 @@ def job(
     parent_lease: str | None = None,
     group: str = "gate-1",
     expected_duration_s: float = 1.0,
+    disk_bytes: int = 0,
 ) -> JobSpec:
     """A job with sensible defaults; scenarios override only what they test."""
     return JobSpec(
         job_id=job_id,
         command=("true",),
         reservation=Reservation(
-            cpu_min, cpu_min if cpu_max is None else cpu_max, memory_bytes, dict(pools or {})
+            cpu_min,
+            cpu_min if cpu_max is None else cpu_max,
+            memory_bytes,
+            dict(pools or {}),
+            disk_bytes,
         ),
         priority=priority,
         expected_duration_s=expected_duration_s,
@@ -568,18 +574,22 @@ def fake_harness() -> BrokerHarness:
 
 
 class _LocalHarness:
-    def __init__(self) -> None:
+    def __init__(self, roots: tuple[ExecutionRoot, ...] = ()) -> None:
         self.clock = ManualClock()
         self.dead: set[Owner] = set()
         self.budget = HARNESS_BUDGET
         # The host reports more than the budget even after the floor, so the budget binds.
         self.availability = FakeAvailability(Capacity(64.0, 64 * GIB))
+        # Every root reports more free space than its bound, so the bound binds there too.
+        self.disk_space = FakeDiskSpace({root.path: root.max_bytes * 2 for root in roots})
         self.broker = LocalEngine(
             self.budget,
             self.clock,
             availability=self.availability,
             floor=Capacity(0.0, 4 * GIB),
             owner_alive=lambda owner: owner not in self.dead,
+            roots=roots,
+            disk_space=self.disk_space if roots else None,
         )
 
     def kill_owner(self, owner: Owner) -> None:
@@ -592,9 +602,13 @@ class _LocalHarness:
         self.broker.set_available(available)
 
 
-def local_harness() -> BrokerHarness:
-    """A fresh local engine on the same budget, with a fake clock and fake availability."""
-    return _LocalHarness()
+def local_harness(roots: tuple[ExecutionRoot, ...] = ()) -> BrokerHarness:
+    """A fresh local engine on the same budget, with a fake clock and fake availability.
+
+    ``roots`` places every key run on one execution root (``bh-mf1o4``), read through a fake
+    disk-space probe; the safety contract must hold unchanged with roots configured.
+    """
+    return _LocalHarness(tuple(roots))
 
 
 def parametrize_scenarios(*, groups: tuple[str, ...] | None = None) -> Any:

@@ -13,6 +13,7 @@ scenarios. A **library package** under
 |---|---|
 | `beadhive_validation_broker` | `BrokerPort` (`submit`, `wait_grant`, `report`, `cancel`, `status`, `events`); `JobSpec`, `Reservation` (cpu min/max, memory bytes, named pools), `Capacity`, `Owner`, `PriorityClass`; `Grant`, `Lease`, `LEASE_ENV` (`BH_VALIDATION_LEASE`); `Outcome`, `Usage`, `BrokerStatus`, `BrokerEvent`, `EventKind`, `BrakeLevel`; `BrokerError`, `BrokerUnavailable`, `GrantRefused`, `GrantTimeout`, `LeaseLost`; `InMemoryBroker` |
 | `beadhive_validation_broker` (engines) | `LocalEngine` + `PackerPolicy` (the local in-process engine); `FailoverBroker` (primary engine, loud fallback); `Availability` port with `MeminfoAvailability` (stdlib `/proc/meminfo`) and `FakeAvailability`; `pid_alive` liveness probe |
+| `beadhive_validation_broker` (roots) | `ExecutionRoot` + `RootKind` (`disk` / `tmpfs`) + `validate_roots`; `Reservation.disk_bytes`, `Grant.root`; `DiskSpace` port with `statvfs_free` and `FakeDiskSpace` |
 | `beadhive_validation_broker.contract` | `SCENARIOS` (safety, nested, killed-client), `BrokerHarness`, `fake_harness`, `local_harness`, `parametrize_scenarios`, `run_scenario`, `job`, `granted`, `ManualClock` |
 
 ## Rules every engine keeps
@@ -34,6 +35,12 @@ scenarios. A **library package** under
   within a gate; generalised EASY backfill; flexible grants (`laggard_flex`, `headroom_cpu`);
   nested leases served only from the parent; dead owners reclaimed on every admission pass.
   Clock, availability and liveness are ports, so its tests own time and the host.
+  Opt-in **execution roots** (`bh-mf1o4`): with `roots`, every top-level run is placed on exactly
+  one root, in preference order, admitted only when its `disk_bytes` fit
+  `min(max_bytes, measured free)` less what is granted there (a counted `root:<path>` pool); a
+  `tmpfs` root's disk also counts as memory. A gate is pinned to one root while it has live keys,
+  so its keys can share one checkout. Without roots, `disk_bytes` is ignored and `Grant.root` is
+  `None`.
 * The `slots` engine that reproduces today's host admission is root-side
   (`beadhive.validation_broker_slots`), as is the selection between `slots` and `local`
   (`beadhive.validation_broker_engine`, `work.validation_broker.engine`).

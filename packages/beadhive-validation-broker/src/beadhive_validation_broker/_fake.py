@@ -35,7 +35,7 @@ from ._types import (
     Usage,
 )
 
-__all__ = ["FakeAvailability", "InMemoryBroker", "RecordedReport"]
+__all__ = ["FakeAvailability", "FakeDiskSpace", "InMemoryBroker", "RecordedReport"]
 
 _QUEUED, _RUNNING, _DONE, _CANCELLED, _LOST = "queued", "running", "done", "cancelled", "lost"
 
@@ -75,6 +75,34 @@ class FakeAvailability:
         if self.error is not None:
             raise self.error
         return self.available
+
+
+class FakeDiskSpace:
+    """A :data:`~beadhive_validation_broker.DiskSpace` a test sets by hand, per root path.
+
+    ``set`` changes the free bytes a path reports; ``fail`` makes reads of one path raise, the way
+    an unmounted or unreadable root does. A path never set raises too. ``reads`` counts probes.
+    """
+
+    def __init__(self, free: dict[str, int] | None = None) -> None:
+        self.free: dict[str, int] = dict(free or {})
+        self.failing: set[str] = set()
+        self.reads = 0
+
+    def set(self, path: str, free_bytes: int) -> None:
+        self.free[path] = free_bytes
+
+    def fail(self, path: str) -> None:
+        self.failing.add(path)
+
+    def recover(self, path: str) -> None:
+        self.failing.discard(path)
+
+    def __call__(self, path: str) -> int:
+        self.reads += 1
+        if path in self.failing or path not in self.free:
+            raise OSError(f"cannot read free space at {path}")
+        return self.free[path]
 
 
 @dataclass

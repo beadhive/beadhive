@@ -23,7 +23,9 @@ from beadhive_validation_broker import (
     Outcome,
     Owner,
     Usage,
+    current_owner,
     pid_alive,
+    statvfs_free,
 )
 from beadhive_validation_broker.contract import ManualClock, granted, job
 
@@ -74,6 +76,20 @@ def test_pid_alive_compares_the_start_token(tmp_path) -> None:
     assert not pid_alive(Owner(me, "111"), proc=tmp_path), "a reused pid is a dead owner"
     assert pid_alive(Owner(me), proc=tmp_path), "no token: the pid alone decides"
     assert pid_alive(Owner(me, "111"), proc=tmp_path / "nowhere"), "unreadable token: alive"
+
+
+def test_current_owner_is_this_process_with_a_token_pid_alive_accepts(tmp_path) -> None:
+    me = os.getpid()
+    _fake_stat(tmp_path, me, "777")
+    owner = current_owner(proc=tmp_path)
+    assert (owner.pid, owner.start_token, owner.host) == (me, "777", os.uname().nodename)
+    assert pid_alive(owner, proc=tmp_path)
+
+
+def test_statvfs_free_reads_the_filesystem_and_raises_for_a_missing_root(tmp_path) -> None:
+    assert statvfs_free(str(tmp_path)) > 0
+    with pytest.raises(OSError):
+        statvfs_free(str(tmp_path / "missing"))
 
 
 def test_pid_alive_never_reclaims_another_hosts_owner(tmp_path) -> None:
