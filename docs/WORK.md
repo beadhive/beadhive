@@ -307,6 +307,24 @@ work:
     admission_floor: "10%"        # wait until MemAvailable >= this; 0/none disables
     admission_timeout_seconds: 1800  # then refuse to start (exit 75); 0 waits indefinitely
     admission_poll_seconds: 5
+  validation_broker:              # opt-in validation broker engine (bh-qrixp); slots = today
+    engine: slots                 # slots | local; BH_VALIDATION_BROKER_ENGINE overrides it
+    budget:                       # local only: the most it grants at once
+      cpu: 0                      # 0 = every CPU the host reports
+      memory: "100%"              # bytes, K/M/G/T, or % of RAM
+      pools: {dolt-servers: 12}   # counted pools no sensor can see
+    floor:                        # local only: left free of measured availability
+      cpu: 0
+      memory: "4G"                # the floor is the larger of memory and memory_percent
+      memory_percent: 8.5
+    packer:                       # local only: the ADR's packer=group defaults
+      laggard_first: true
+      laggard_flex: true
+      easy: true
+      headroom_cpu: 8
+      group_major: false
+      aging: 4                    # only with group_major
+    repoll_seconds: 1
   validation: relaxed            # merge re-test depth: relaxed | conservative | loose (see below)
   validate:                      # optional per-boundary overrides (fall back to validate_cmd).
                                  # a `<phase>-main` key wins when the op targets the integration branch.
@@ -370,6 +388,18 @@ the retryable exit 75. Every run manifest records `memory`: the applied bounds a
 `BH_VALIDATION_MEMORY_FLOOR=0` skips only the floor. Without a user systemd manager or a delegated
 cgroup v2 memory controller, the bounds are skipped and the manifest's `memory.note` says why; the
 floor still applies wherever `/proc/meminfo` exists.
+
+`work.validation_broker` is host-owned and opt-in (bh-qrixp, the
+[validation broker ADR](design/validation-broker-adr.md)). The default `engine: slots` is today's
+host admission above, unchanged. `engine: local` (or `BH_VALIDATION_BROKER_ENGINE=local` for one
+invocation) selects the in-process local engine: it admits a job only when its whole minimum
+reservation fits `min(budget, measured MemAvailable/CPUs - floor)` less what is already granted,
+in cpu, memory and every named pool; orders by priority class, then laggard first within a gate;
+grants spare CPU up to each key's `cpu_max` (laggards first, others keeping `headroom_cpu` back);
+backfills only where it delays no reserved key (EASY); serves nested requests under
+`BH_VALIDATION_LEASE` from the parent's grant alone; and reclaims a dead client's leases. A local
+engine that is misconfigured, cannot measure the host (no `/proc/meminfo`) or errors falls back to
+the slots engine with a warning. No gate runs through the broker yet; that is `bh-qhrl6`.
 
 The same guard is available for ad-hoc test runs. It waits for the floor, bounds the command in
 its own scope, and reports the peak; it takes **no** host validation slot, so never wrap

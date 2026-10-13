@@ -17,6 +17,7 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         "work.validation_slots",
         "work.validation_priority",
         "work.validation_memory",
+        "work.validation_broker",
         "work.dispatch.max_beads_per_session",
         "work.dispatch.auto_budget",
         "beads",

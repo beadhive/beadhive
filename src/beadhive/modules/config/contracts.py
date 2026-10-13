@@ -902,6 +902,126 @@ class ValidationMemoryConfig(_Section):
         return _memory_size(value, name=info.field_name, allow_zero=True)
 
 
+class ValidationBrokerBudgetConfig(_Section):
+    """`work.validation_broker.budget` — the most the local engine may grant at once (bh-qrixp)."""
+
+    cpu: float = Field(
+        0.0,
+        ge=0,
+        description="CPUs the local engine may grant at once; 0 means every CPU this host reports.",
+    )
+    memory: str = Field(
+        "100%",
+        description=(
+            "Memory the local engine may grant at once: bytes, a K/M/G/T size or a percentage of "
+            "RAM. Admission also never exceeds measured MemAvailable less the floor."
+        ),
+    )
+    pools: dict[str, int] = Field(
+        default_factory=lambda: {"dolt-servers": 12},
+        description=(
+            "Named counted pools no sensor can see, e.g. dolt-servers: concurrent Dolt servers "
+            "the host's validation keys may hold. A reservation naming an absent pool is refused."
+        ),
+    )
+
+    @field_validator("memory", mode="before")
+    @classmethod
+    def _memory(cls, value, info):
+        return _memory_size(value, name=info.field_name, allow_zero=False)
+
+    @field_validator("pools")
+    @classmethod
+    def _non_negative_pools(cls, v):
+        for name, amount in v.items():
+            if amount < 0:
+                raise ValueError(f"work.validation_broker.budget.pools.{name} must be >= 0")
+        return v
+
+
+class ValidationBrokerFloorConfig(_Section):
+    """`work.validation_broker.floor` — what the local engine leaves free (the AMBER floor)."""
+
+    cpu: float = Field(0.0, ge=0, description="CPUs held back from the measured CPU count.")
+    memory: str = Field(
+        "4G",
+        description=(
+            "Memory held back from measured MemAvailable: bytes, a K/M/G/T size or a percentage "
+            "of RAM. The floor is the larger of this and memory_percent."
+        ),
+    )
+    memory_percent: float = Field(
+        8.5,
+        ge=0,
+        le=100,
+        description="Memory held back as a percentage of RAM; the larger of the two floors wins.",
+    )
+
+    @field_validator("memory", mode="before")
+    @classmethod
+    def _memory(cls, value, info):
+        return _memory_size(value, name=info.field_name, allow_zero=True)
+
+
+class ValidationBrokerPackerConfig(_Section):
+    """`work.validation_broker.packer` — the group-aware packer's knobs (validation-broker ADR)."""
+
+    laggard_first: bool = Field(
+        True, description="Within a gate, start the longest expected key first."
+    )
+    laggard_flex: bool = Field(
+        True,
+        description="Offer each gate's laggard spare CPU up to cpu_max before the headroom rule.",
+    )
+    easy: bool = Field(
+        True,
+        description="Generalised EASY backfill: a backfill never delays a reserved blocked key.",
+    )
+    headroom_cpu: float = Field(
+        8.0, ge=0, description="CPUs held back from flexible grants for keys other than a laggard."
+    )
+    group_major: bool = Field(
+        False,
+        description=(
+            "Reorder waiting gates by queued work minus aging x time waited; off admits gates "
+            "in arrival order within a priority class."
+        ),
+    )
+    aging: float = Field(
+        4.0, ge=0, description="Work-seconds forgiven per second waited; only with group_major."
+    )
+
+
+class ValidationBrokerConfig(_Section):
+    """`work.validation_broker` — which engine admits validation jobs (bh-qrixp, opt-in)."""
+
+    engine: Literal["slots", "local"] = Field(
+        "slots",
+        description=(
+            "slots (default) keeps today's host file-lock slots exactly; local is the in-process "
+            "reservation broker. BH_VALIDATION_BROKER_ENGINE temporarily overrides it. A local "
+            "engine that is misconfigured, unavailable or failing falls back to slots, loudly."
+        ),
+    )
+    budget: ValidationBrokerBudgetConfig = Field(
+        default_factory=ValidationBrokerBudgetConfig,
+        description="The local engine's configured budget (cpu, memory, named pools).",
+    )
+    floor: ValidationBrokerFloorConfig = Field(
+        default_factory=ValidationBrokerFloorConfig,
+        description="What the local engine leaves free of measured availability.",
+    )
+    packer: ValidationBrokerPackerConfig = Field(
+        default_factory=ValidationBrokerPackerConfig,
+        description="Ordering, backfill and flexible-grant knobs of the local engine.",
+    )
+    repoll_seconds: float = Field(
+        1.0,
+        gt=0,
+        description="Seconds between availability re-reads while a local-engine client waits.",
+    )
+
+
 class GatePushConfig(_Section):
     """`work.gate.push` — the pre-push hook's opt-in per-key acceptance (attest-keys ADR 3.8)."""
 
@@ -1082,6 +1202,13 @@ class WorkConfig(_Section):
         description=(
             "Host memory policy for validation children: MemoryHigh/MemoryMax in the user "
             "systemd scope and a MemAvailable admission floor."
+        ),
+    )
+    validation_broker: ValidationBrokerConfig = Field(
+        default_factory=ValidationBrokerConfig,
+        description=(
+            "Validation broker engine selection and the local engine's budget, floor and packer "
+            "(validation-broker ADR). Opt-in: the default slots engine is today's admission."
         ),
     )
     validation_protocol: Literal["none", "beadhive-validation-result/v1"] = Field(
@@ -2656,6 +2783,7 @@ __all__ = (
     "SCHEMA_VERSION",
     "SUBSET_PLACEHOLDER",
     "SchemaField",
+    "ValidationBrokerConfig",
     "WorkConfig",
     "WorktreeInitRule",
     "WorktreesConfig",
