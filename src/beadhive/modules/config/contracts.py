@@ -29,6 +29,7 @@ import json
 import re
 import types
 import typing
+from collections.abc import Mapping, Sequence
 from copy import copy
 from dataclasses import dataclass
 from pathlib import Path
@@ -917,16 +918,133 @@ class GatePushConfig(_Section):
     )
 
 
+#: The closed lifecycle phase vocabulary a `work.gate.profiles` entry may name (attest-keys
+#: ADR 3.2). `default` is not a phase: it is the profile every unlisted inner phase uses.
+GATE_PHASES = (
+    "check",
+    "submit",
+    "review",
+    "merge",
+    "merge-main",
+    "molecule",
+    "postland",
+    "union",
+    "release",
+    "push-main",
+)
+#: Main-reaching phases: their profile is validator-locked to every active key (ADR 3.4 hard
+#: limit, a correctness rule rather than a default). They never inherit `default`.
+GATE_ALL_KEY_PHASES = ("push-main", "release", "postland")
+#: The profile value meaning "every active key".
+GATE_PROFILE_ALL = "all"
+GATE_PROFILE_DEFAULT = "default"
+
+
+def _gate_profile_names(value: str | list[str]) -> list[str]:
+    return [value] if isinstance(value, str) else list(value)
+
+
 class GateConfig(_Section):
-    """`work.gate` — gate-model settings (attest-keys single-gate ADR, 3.5 and 3.8)."""
+    """`work.gate` — gate-model settings (attest-keys single-gate ADR, 3.2, 3.5 and 3.8)."""
 
     model_config = ConfigDict(extra="forbid")
 
+    model: Literal["legacy", "keys"] = Field(
+        "legacy",
+        description=(
+            "Gate model. legacy (the default) runs today's per-phase command strings and every "
+            "catalog key at every selective boundary; keys runs each phase's profile through "
+            "the selective evaluator, with the runtime catalog drift check and a fallback to "
+            "the phase's legacy command on drift. Setting legacy is the rollback."
+        ),
+    )
+    profiles: dict[str, str | list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Per-phase key profile, consulted only under model: keys. Keys are phases (check, "
+            "submit, review, merge, merge-main, molecule, postland, union, release, push-main) "
+            "or `default`; values are `all`, a subset name, or an explicit list of key names. "
+            "An unlisted inner phase uses `default` (itself `all` when unset). push-main, "
+            "release and postland must be `all`. A `merge-main` profile wins for a merge onto "
+            "the integration branch, else `merge`."
+        ),
+    )
+    subsets: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description="Named key subsets a profile may reference, e.g. fast: [docs, unit].",
+    )
     carry: GateCarryConfig = Field(
         default_factory=GateCarryConfig,
         description="High-water carry source discovery.",
     )
     push: GatePushConfig = Field(default_factory=GatePushConfig)
+
+    @field_validator("profiles")
+    @classmethod
+    def _known_phases(cls, v):
+        unknown = sorted(set(v) - set(GATE_PHASES) - {GATE_PROFILE_DEFAULT})
+        if unknown:
+            raise ValueError(
+                f"unknown gate phase(s) {unknown}: profiles name one of "
+                f"{[*GATE_PHASES, GATE_PROFILE_DEFAULT]}"
+            )
+        for phase in GATE_ALL_KEY_PHASES:
+            if phase in v and v[phase] != GATE_PROFILE_ALL:
+                raise ValueError(
+                    f"work.gate.profiles.{phase} must be {GATE_PROFILE_ALL!r}: push-main, "
+                    "release and postland require every active key"
+                )
+        for phase, value in v.items():
+            names = _gate_profile_names(value)
+            if not names:
+                raise ValueError(f"work.gate.profiles.{phase} must not be empty")
+            for name in names:
+                if not _ATTEST_KEY_NAME.fullmatch(name):
+                    raise ValueError(
+                        f"work.gate.profiles.{phase}: {name!r} is not a lowercase slug"
+                    )
+        return v
+
+    @field_validator("subsets")
+    @classmethod
+    def _slug_subsets(cls, v):
+        for subset, names in v.items():
+            if subset == GATE_PROFILE_ALL or not _ATTEST_KEY_NAME.fullmatch(subset):
+                raise ValueError(f"invalid gate subset name {subset!r}")
+            if not names:
+                raise ValueError(f"work.gate.subsets.{subset} must not be empty")
+            for name in names:
+                if not _ATTEST_KEY_NAME.fullmatch(name):
+                    raise ValueError(f"work.gate.subsets.{subset}: {name!r} is not a key name")
+        return v
+
+
+def gate_reference_errors(
+    profiles: Mapping[str, str | list[str]],
+    subsets: Mapping[str, list[str]],
+    key_names: Sequence[str],
+) -> list[str]:
+    """Unknown subset or key names in an EFFECTIVE (layered) gate configuration.
+
+    A string profile is `all` or a subset name; a list profile names keys directly. Key names
+    are checked only when a catalog is in effect: with no keys the profiles are never consulted
+    (a no-catalog hive keeps its `validate_cmd`)."""
+    errors: list[str] = []
+    known = set(key_names)
+    for phase, value in sorted(profiles.items()):
+        if isinstance(value, str):
+            if value != GATE_PROFILE_ALL and value not in subsets:
+                errors.append(f"work.gate.profiles.{phase}: unknown subset {value!r}")
+        elif known:
+            missing = sorted(set(value) - known)
+            if missing:
+                errors.append(f"work.gate.profiles.{phase}: unknown key name(s) {missing}")
+    if known:
+        for subset, names in sorted(subsets.items()):
+            missing = sorted(set(names) - known)
+            if missing:
+                errors.append(f"work.gate.subsets.{subset}: unknown key name(s) {missing}")
+    return errors
 
 
 class WorkConfig(_Section):
@@ -2210,6 +2328,31 @@ class BeadhiveConfig(BaseSettings):
     managed_repos: list[ManagedRepoEntry] = Field(
         default_factory=list, description="Managed hives — maintained by `bh hive init`."
     )
+
+    @model_validator(mode="after")
+    def _gate_references(self):
+        """Unknown subset or key names in `work.gate`, checked on the EFFECTIVE view: the
+        global section alone, then each hive layered over it the way the readers layer it
+        (profiles and subsets per name, the attest key list replaced whole)."""
+        glob = self.work
+        errors = gate_reference_errors(
+            glob.gate.profiles, glob.gate.subsets, [key.name for key in glob.attest.keys]
+        )
+        for repo in self.managed_repos:
+            hive = repo.work
+            if hive is None:
+                continue
+            keys = hive.attest.keys if "keys" in hive.attest.model_fields_set else glob.attest.keys
+            hive_errors = gate_reference_errors(
+                {**glob.gate.profiles, **hive.gate.profiles},
+                {**glob.gate.subsets, **hive.gate.subsets},
+                [key.name for key in keys],
+            )
+            label = repo.prefix or repo.repo or "?"
+            errors += [f"hive {label}: {error}" for error in hive_errors if error not in errors]
+        if errors:
+            raise ValueError("; ".join(errors))
+        return self
 
     @classmethod
     def settings_customise_sources(
