@@ -41,6 +41,7 @@ from typer.testing import CliRunner
 
 from beadhive import config, host, prepush, release, validation_ledger, validation_records
 from beadhive.cli import app
+from harness.tree_templates import worker_templates
 from harness.validation_state import age as age_verdict
 from harness.validation_state import latest as latest_verdict
 from harness.validation_state import pointer as verdict_pointer
@@ -65,27 +66,42 @@ def _git(*args: str, cwd: Path) -> str:
     ).stdout.strip()
 
 
-@pytest.fixture
-def hive(tmp_path, monkeypatch):
-    """A real registered hive with a real `origin` bare remote and `push-main` wired to the gate.
+def _capture_base_hive(templates) -> None:
+    """The hive's clone and bare remote, built with real git once per worker (bh-gb56v).
 
-    Real git throughout, on purpose: the identity half of every lookup here is
-    `rev^{tree}` resolved in the hive's own clone, and the recovery branch is a real `ls-remote`
-    against a real remote. A stubbed resolver or a faked remote would prove nothing about the
-    two things this bead is actually for."""
-    repo = tmp_path / "ws" / "github" / "myorg" / "myrepo"
+    `remote add` is the one path-bearing step, so it runs per test against the copied remote."""
+    live = templates.reset_live()
+    repo = live / "ws" / "github" / "myorg" / "myrepo"
     repo.mkdir(parents=True)
-    remote = tmp_path / "origin.git"
+    remote = live / "origin.git"
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(remote)], check=True)
     _git("init", "-q", "-b", "main", cwd=repo)
     _git("config", "user.email", "t@example.com", cwd=repo)
     _git("config", "user.name", "t", cwd=repo)
     _git("config", "commit.gpgsign", "false", cwd=repo)
     _git("config", "tag.gpgsign", "false", cwd=repo)
-    _git("remote", "add", "origin", str(remote), cwd=repo)
     (repo / "f.txt").write_text("hi\n")
     _git("add", "f.txt", cwd=repo)
     _git("commit", "-qm", "chore: seed", cwd=repo)
+    templates.capture("base")
+
+
+@pytest.fixture
+def hive(tmp_path, monkeypatch, tmp_path_factory):
+    """A real registered hive with a real `origin` bare remote and `push-main` wired to the gate.
+
+    Real git throughout, on purpose: the identity half of every lookup here is
+    `rev^{tree}` resolved in the hive's own clone, and the recovery branch is a real `ls-remote`
+    against a real remote. A stubbed resolver or a faked remote would prove nothing about the
+    two things this bead is actually for. The clone and remote are restored per test from a
+    once-per-worker template."""
+    templates = worker_templates(tmp_path_factory, "release-flow-hive")
+    if "base" not in templates:
+        _capture_base_hive(templates)
+    templates.restore("base", into=tmp_path)
+    repo = tmp_path / "ws" / "github" / "myorg" / "myrepo"
+    remote = tmp_path / "origin.git"
+    _git("remote", "add", "origin", str(remote), cwd=repo)
 
     monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path / "ws"))
     entry = {
