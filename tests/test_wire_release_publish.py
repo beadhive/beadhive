@@ -9,13 +9,15 @@ contract-release gate.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
-import os
 import shutil
 import subprocess
 import sys
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 
@@ -87,15 +89,19 @@ def _catalog_is_current(repo: Path) -> bool:
     return target.read_text(encoding="utf-8") == PUBLISH.render_catalog()
 
 
-def _wire_gate(repo: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [sys.executable, "scripts/check_wire_schema_compat.py"],
-        cwd=repo,
-        env={**os.environ, "BH_WIRE_SCHEMA_BASE_REF": "main"},
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+@dataclass(frozen=True)
+class GateResult:
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+def _wire_gate(repo: Path) -> GateResult:
+    """Run the gate in-process; the baseline is still read from the repo's real git history."""
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        status = COMPAT.run(repo, "main")
+    return GateResult(status, out.getvalue(), err.getvalue())
 
 
 def _contract_errors() -> list[str]:
@@ -294,3 +300,23 @@ def test_a_base_without_a_supported_release_validates_the_new_baseline(repo: Pat
 
     assert gate.returncode == 0, gate.stdout + gate.stderr
     assert f"{supported[-1]} validated as the new supported baseline" in gate.stdout
+
+
+def test_publish_reads_base_versions_from_the_real_git_merge_base(tmp_path: Path) -> None:
+    """The one real-git proof of publish's base lookup; the other tests use a snapshot."""
+    root = tmp_path / "real"
+    (root / WIRE).mkdir(parents=True)
+    shutil.copy2(ROOT / WIRE / "index.json", root / WIRE / "index.json")
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.name", "Wire Publish Test")
+    git("config", "user.email", "wire-publish@example.invalid")
+    assert PUBLISH._base_versions(root, "main") is None
+    git("add", ".")
+    git("commit", "-qm", "integration base")
+
+    expected = {row["version"] for row in _index(root)["releases"]}
+    assert PUBLISH._base_versions(root, "main") == expected

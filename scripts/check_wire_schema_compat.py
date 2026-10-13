@@ -49,19 +49,61 @@ class FilesystemReader:
         return (self.root / path).read_bytes()
 
 
-@dataclass(frozen=True)
 class GitReader:
-    root: Path
-    commit: str
+    """Read blobs at one commit through a single long-lived ``git cat-file --batch`` process.
+
+    Reads are memoised, so a path requested twice costs one object lookup.  Call ``close``
+    (or use as a context manager) to reap the process.
+    """
+
+    def __init__(self, root: Path, commit: str) -> None:
+        self.root = root
+        self.commit = commit
+        self._process: subprocess.Popen[bytes] | None = None
+        self._cache: dict[Path, bytes] = {}
+
+    def _batch(self) -> subprocess.Popen[bytes]:
+        if self._process is None:
+            self._process = subprocess.Popen(
+                ["git", "cat-file", "--batch"],
+                cwd=self.root,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+        return self._process
 
     def read(self, path: Path) -> bytes:
-        result = subprocess.run(
-            ["git", "show", f"{self.commit}:{path.as_posix()}"],
-            cwd=self.root,
-            check=True,
-            capture_output=True,
-        )
-        return result.stdout
+        cached = self._cache.get(path)
+        if cached is not None:
+            return cached
+        spec = f"{self.commit}:{path.as_posix()}"
+        process = self._batch()
+        assert process.stdin is not None and process.stdout is not None
+        process.stdin.write(spec.encode() + b"\n")
+        process.stdin.flush()
+        header = process.stdout.readline().split()
+        if len(header) != 3 or header[1] != b"blob":
+            raise FileNotFoundError(f"no blob at {spec}")
+        size = int(header[2])
+        data = process.stdout.read(size)
+        process.stdout.read(1)  # trailing newline after the object body
+        self._cache[path] = data
+        return data
+
+    def close(self) -> None:
+        process, self._process = self._process, None
+        if process is not None:
+            assert process.stdin is not None and process.stdout is not None
+            process.stdin.close()
+            process.wait()
+            process.stdout.close()
+
+    def __enter__(self) -> GitReader:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
 
 
 @dataclass(frozen=True)
@@ -957,18 +999,22 @@ def _baseline_has_wire_index(root: Path, commit: str) -> bool:
     return result.returncode == 0
 
 
-def main() -> int:
-    root = Path(__file__).resolve().parents[1]
+def run(root: Path, base_ref: str, *, baseline_reader: Reader | None = None) -> int:
+    """Validate the working tree at ``root`` against the baseline and return the exit status.
+
+    Without ``baseline_reader`` the baseline is the merge base with ``base_ref`` read through
+    git.  Passing a reader (for example a ``FilesystemReader`` over a baseline copy) skips git.
+    """
+    git_reader: GitReader | None = None
     try:
         candidate_reader = FilesystemReader(root)
         candidate = load_repository(candidate_reader)
-        base_ref = os.environ.get("BH_WIRE_SCHEMA_BASE_REF", "main")
-        base_commit = _merge_base(root, base_ref)
-        if base_commit is None or not _baseline_has_wire_index(root, base_commit):
-            print(f"wire-schema-compat: initial release validated; no baseline at {base_ref!r}")
-            return 0
-
-        baseline_reader = GitReader(root, base_commit)
+        if baseline_reader is None:
+            base_commit = _merge_base(root, base_ref)
+            if base_commit is None or not _baseline_has_wire_index(root, base_commit):
+                print(f"wire-schema-compat: initial release validated; no baseline at {base_ref!r}")
+                return 0
+            baseline_reader = git_reader = GitReader(root, base_commit)
         baseline = load_repository(baseline_reader, require_deprecation_marks=False)
         if baseline.latest is None:
             print(
@@ -1010,6 +1056,14 @@ def main() -> int:
     except (ValueError, KeyError) as exc:
         print(f"wire-schema-compat: invalid release: {exc}", file=sys.stderr)
         return 2
+    finally:
+        if git_reader is not None:
+            git_reader.close()
+
+
+def main() -> int:
+    root = Path(__file__).resolve().parents[1]
+    return run(root, os.environ.get("BH_WIRE_SCHEMA_BASE_REF", "main"))
 
 
 if __name__ == "__main__":
