@@ -21,6 +21,7 @@ from ._types import (
     BrakeLevel,
     BrokerEvent,
     BrokerStatus,
+    Capacity,
     Grant,
     JobHandle,
     JobSpec,
@@ -29,7 +30,7 @@ from ._types import (
     Usage,
 )
 
-__all__ = ["BrakeControl", "BrokerPort", "Clock", "ProcessLiveness"]
+__all__ = ["Availability", "BrakeControl", "BrokerPort", "Clock", "ProcessLiveness"]
 
 #: A monotonic-seconds source. The fake takes one so tests own time; production passes
 #: ``time.monotonic``.
@@ -93,3 +94,10 @@ class BrakeControl(Protocol):
 
 #: Whether a lease owner is still alive (pid alive with the same start token).
 ProcessLiveness = Callable[[Owner], bool]
+
+
+#: What the host has free right now (cpu, memory bytes and, optionally, measured pools). The local
+#: engine clamps its configured budget with it; a failing probe raises and admits nothing.
+#: Production passes :class:`~beadhive_validation_broker.MeminfoAvailability`; tests pass
+#: :class:`~beadhive_validation_broker.FakeAvailability`.
+Availability = Callable[[], Capacity]

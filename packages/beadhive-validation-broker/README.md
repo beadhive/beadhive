@@ -12,7 +12,8 @@ scenarios. A **library package** under
 | Module | Holds |
 |---|---|
 | `beadhive_validation_broker` | `BrokerPort` (`submit`, `wait_grant`, `report`, `cancel`, `status`, `events`); `JobSpec`, `Reservation` (cpu min/max, memory bytes, named pools), `Capacity`, `Owner`, `PriorityClass`; `Grant`, `Lease`, `LEASE_ENV` (`BH_VALIDATION_LEASE`); `Outcome`, `Usage`, `BrokerStatus`, `BrokerEvent`, `EventKind`, `BrakeLevel`; `BrokerError`, `BrokerUnavailable`, `GrantRefused`, `GrantTimeout`, `LeaseLost`; `InMemoryBroker` |
-| `beadhive_validation_broker.contract` | `SCENARIOS` (safety, nested, killed-client), `BrokerHarness`, `fake_harness`, `parametrize_scenarios`, `run_scenario`, `job`, `granted`, `ManualClock` |
+| `beadhive_validation_broker` (engines) | `LocalEngine` + `PackerPolicy` (the local in-process engine); `FailoverBroker` (primary engine, loud fallback); `Availability` port with `MeminfoAvailability` (stdlib `/proc/meminfo`) and `FakeAvailability`; `pid_alive` liveness probe |
+| `beadhive_validation_broker.contract` | `SCENARIOS` (safety, nested, killed-client), `BrokerHarness`, `fake_harness`, `local_harness`, `parametrize_scenarios`, `run_scenario`, `job`, `granted`, `ManualClock` |
 
 ## Rules every engine keeps
 
@@ -26,7 +27,17 @@ scenarios. A **library package** under
 
 ## Engines
 
-This package ships only the fake. The `slots` engine that reproduces today's host admission is
-root-side (`beadhive.validation_broker_slots`), because that behaviour is root code. The local
-in-process engine (`bh-qrixp`) runs `contract.SCENARIOS` against itself by supplying a
-`BrokerHarness`.
+* `InMemoryBroker` — the test double: `(priority, arrival)` order, no packer.
+* `LocalEngine` (`bh-qrixp`) — production-grade and in-process. Whole-minimum-reservation
+  admission against `min(budget, measured available - floor)` less what is granted, in cpu,
+  memory and named pools; strict priority classes, then admitted gates first and laggard first
+  within a gate; generalised EASY backfill; flexible grants (`laggard_flex`, `headroom_cpu`);
+  nested leases served only from the parent; dead owners reclaimed on every admission pass.
+  Clock, availability and liveness are ports, so its tests own time and the host.
+* The `slots` engine that reproduces today's host admission is root-side
+  (`beadhive.validation_broker_slots`), as is the selection between `slots` and `local`
+  (`beadhive.validation_broker_engine`, `work.validation_broker.engine`).
+
+Every engine passes `contract.SCENARIOS` by supplying a `BrokerHarness`. A harness whose engine
+admits on another thread provides `settle()`; one that admits by count, not by a sized
+reservation, sets `sized = False` and the sizing-only scenario skips.
