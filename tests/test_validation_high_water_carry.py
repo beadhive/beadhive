@@ -393,3 +393,126 @@ def test_carry_settings_degrade_toward_fewer_candidates(work, expected) -> None:
 
     cfg = {"work": work}
     assert (settings.carry_high_water(cfg, {}), settings.carry_max_roots(cfg, {})) == expected
+
+
+# ---- bh-usmrs: post-land and union run the evaluator under work.gate.model: keys ----------
+
+
+def _keys_cfg(hive: Hive, model: str = "keys") -> dict:
+    cfg = hive.cfg()
+    cfg["work"]["gate"]["model"] = model
+    hive.monkeypatch.setattr(selective_validation, "catalog_ok", lambda *_a, **_k: True)
+    cfg["work"]["validate"] = {"postland": "just legacy-postland", "union": "just legacy-union"}
+    return cfg
+
+
+def _land_api(hive: Hive, cfg: dict, *, red: frozenset = frozenset()):
+    """A minimal work_merge api over the REAL evaluator, ledger and config; checkouts are recorded
+    (and ledger-recorded at the tip, as the production runner does) instead of shelling out."""
+    ran: list[str] = []
+    events: list[str] = []
+    monkeypatch = hive.monkeypatch
+    spy = _Spy(FailClosedResolver(hive.backend, GitTreeDiff()))
+    monkeypatch.setattr(selective_validation, "impact_resolver", lambda *_a, **_k: spy)
+    monkeypatch.setattr(selective_validation.typer, "echo", lambda *_a, **_k: None)
+
+    def clean_checkout(entry, rev, cmd, **_kw):
+        ran.append(cmd)
+        rc = 1 if cmd in red else 0
+        validation_ledger.record(entry, hive.git("rev-parse", rev), cmd, rc, cfg=cfg)
+        return rc
+
+    api = SimpleNamespace(
+        config=selective_validation.config,
+        selective_validation=selective_validation,
+        worktree=SimpleNamespace(
+            clean_checkout=clean_checkout, clone_for_branch=lambda *_a: hive.repo
+        ),
+        otel=SimpleNamespace(count_validation=lambda *_a, **_k: None),
+        typer=SimpleNamespace(
+            echo=lambda msg, **_k: events.append(f"echo:{msg}"),
+            Exit=type("Exit", (Exception,), {}),
+        ),
+        _rollback_or_keep=lambda *_a: events.append("rollback") or True,
+    )
+    return api, ran, events
+
+
+def _same_tree_commit(hive: Hive, rev: str, message: str) -> str:
+    return hive.git("commit-tree", f"{rev}^{{tree}}", "-p", "HEAD", "-m", message)
+
+
+def _postland(hive, api, cfg, mol, tip):
+    hive.git("update-ref", "refs/heads/tip", tip)
+    from beadhive import work_merge
+
+    work_merge.impl__postland_revalidate_molecule(
+        api, cfg, hive.entry, str(hive.repo), "tip", mol, "conservative", False, "e-1", mol, {}
+    )
+
+
+def test_keys_postland_onto_unmoved_main_reuses_every_key_and_runs_nothing(hive) -> None:
+    cfg = _keys_cfg(hive)
+    mol = hive.commit({"docs/r.md": "1", "j/a.txt": "j1"}, "molecule")
+    assert hive.land(hive.c0, mol, cfg)[0] == 0  # the pre-land molecule gate ran every key
+    tip = _same_tree_commit(hive, mol, "chore(merge): molecule e-1")  # byte-identical tree
+    api, ran, events = _land_api(hive, cfg)
+
+    _postland(hive, api, cfg, mol, tip)
+
+    assert ran == [] and events == []
+
+
+def test_keys_postland_onto_moved_main_runs_only_the_delta_affected_keys(hive) -> None:
+    cfg = _keys_cfg(hive)
+    mol = hive.commit({"docs/r.md": "1"}, "molecule")
+    assert hive.land(hive.c0, mol, cfg)[0] == 0
+    moved = hive.commit({"docs/r.md": "2", "j/a.txt": "moved"}, "main moved underneath")
+    api, ran, events = _land_api(hive, cfg)
+
+    _postland(hive, api, cfg, mol, moved)
+
+    assert ran == ["just attest-j"]  # k carried from the validated molecule tree
+    assert "rollback" not in events
+
+
+def test_keys_postland_red_key_rolls_back_with_the_existing_message(hive) -> None:
+    cfg = _keys_cfg(hive)
+    mol = hive.commit({"docs/r.md": "1"}, "molecule")
+    assert hive.land(hive.c0, mol, cfg)[0] == 0
+    moved = hive.commit({"j/a.txt": "red"}, "main moved underneath")
+    api, ran, events = _land_api(hive, cfg, red=frozenset({"just attest-j"}))
+
+    with pytest.raises(api.typer.Exit):
+        _postland(hive, api, cfg, mol, moved)
+
+    assert events[0] == "rollback"
+    assert "post-land validation failed (exit 1)" in events[1]
+    assert "Rolled tip back to" in events[1]
+
+
+def test_legacy_postland_runs_the_command_string_unchanged(hive) -> None:
+    cfg = _keys_cfg(hive, model="legacy")
+    mol = hive.commit({"docs/r.md": "1"}, "molecule")
+    api, ran, events = _land_api(hive, cfg)
+
+    _postland(hive, api, cfg, mol, _same_tree_commit(hive, mol, "land"))
+
+    assert ran == ["just legacy-postland"]
+
+
+def test_keys_union_validator_runs_only_affected_keys_and_legacy_has_none(hive) -> None:
+    from beadhive import work_merge
+
+    cfg = _keys_cfg(hive)
+    pre = hive.commit({"docs/r.md": "1"}, "main tip")
+    assert hive.land(hive.c0, pre, cfg)[0] == 0
+    result = hive.commit({"j/a.txt": "union"}, "union result")
+    api, ran, _events = _land_api(hive, cfg)
+
+    validate = work_merge._union_key_validator(api, cfg, hive.entry)
+    assert validate(pre, result, "main") == 0
+    assert ran == ["just attest-j"]
+
+    legacy = _keys_cfg(hive, model="legacy")
+    assert work_merge._union_key_validator(api, legacy, hive.entry) is None

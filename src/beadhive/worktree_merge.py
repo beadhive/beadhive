@@ -233,7 +233,7 @@ def merge_with_union(entry, branch, base, union_globs, **idkw) -> tuple[int, str
 
 
 def _try_union_tier(
-    entry, branch, base, target: Path, backup, union_globs, validate_cmd, idkw
+    entry, branch, base, target: Path, backup, union_globs, validate_cmd, idkw, union_validate=None
 ) -> tuple[int, str, str]:
     """The bounded union tier. Precondition: the main clone is clean on `base` and the bead
     branch sits at `backup` (its pre-merge tip). Returns (rc, out, how):
@@ -261,7 +261,15 @@ def _try_union_tier(
         worktree.reset_hard(target, backup)
         return rc, dout + out, "conflict"
 
-    if validate_cmd:
+    if union_validate is not None:
+        # Key model: the evaluator runs only the keys the union result invalidates, carrying the
+        # rest from the pre-union tip; red resets exactly as the command path does.
+        vrc = union_validate(pre_union, base, base)
+        if vrc != 0:
+            worktree.reset_hard(main, pre_union)
+            worktree.reset_hard(target, backup)
+            return vrc, dout + out, "conflict"
+    elif validate_cmd:
         vrc = worktree.clean_checkout(entry, base, validate_cmd, phase="union")
         if vrc != 0:
             worktree.reset_hard(main, pre_union)  # never land a union result that fails validation
@@ -283,6 +291,7 @@ def try_merge_rebase(
     message="",
     union_globs: tuple[str, ...] = (),
     validate_cmd: str = "",
+    union_validate=None,
 ) -> tuple[int, str, str]:
     """Integration merge with a bounded **rebase-then-retry** conflict recovery and an optional
     **bounded union tier**, returning (rc, output, how) where how ∈ {"clean", "rebased", "union"}
@@ -336,7 +345,7 @@ def try_merge_rebase(
         worktree.rebase_abort(target)
         worktree.reset_hard(target, backup)
         urc, uout, uhow = _try_union_tier(
-            entry, branch, base, target, backup, union_globs, validate_cmd, idkw
+            entry, branch, base, target, backup, union_globs, validate_cmd, idkw, union_validate
         )
         if uhow == "union":
             return urc, out + rout + uout, "union"
@@ -368,7 +377,7 @@ def try_merge_rebase(
     if rc2 != 0:
         worktree.reset_hard(target, backup)  # restore the pre-rebase bead branch — never drop work
         urc, uout, uhow = _try_union_tier(
-            entry, branch, base, target, backup, union_globs, validate_cmd, idkw
+            entry, branch, base, target, backup, union_globs, validate_cmd, idkw, union_validate
         )
         if uhow == "union":
             return urc, out + rout + out2 + uout, "union"

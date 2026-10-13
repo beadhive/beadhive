@@ -373,14 +373,33 @@ def impl__postland_revalidate_molecule(
     is byte-identical to the molecule's, which the pre-land run just proved — and the `stale` arm
     above is exactly the case where the base MOVED, so that tree is new and the lookup misses."""
     if mode == "conservative" or (mode != "loose" and stale):
-        vrc = api.worktree.clean_checkout(
-            entry,
-            base,
-            api.config.validate_cmd(cfg, entry, "postland"),
-            cfg=cfg,
-            reuse=True,
-            phase="postland",
-        )
+        command = api.config.validate_cmd(cfg, entry, "postland")
+        if api.selective_validation.configured(cfg, entry) and (
+            api.config.gate_model(cfg, entry) == "keys"
+        ):
+            # Key model: exact-tree reuse (unmoved base) and carry from the validated pre-land
+            # molecule tree (moved base) via the evaluator; legacy never takes this branch.
+            vrc = api.selective_validation.run(
+                entry,
+                cfg,
+                base_rev=mol_branch,
+                head_rev=base,
+                phase="postland",
+                legacy_cmd=command,
+                repo_path=str(api.worktree.clone_for_branch(entry, base)),
+                runner=lambda key_cmd: api.worktree.clean_checkout(
+                    entry, base, key_cmd, cfg=cfg, reuse=True, phase="postland"
+                ),
+            )
+        else:
+            vrc = api.worktree.clean_checkout(
+                entry,
+                base,
+                command,
+                cfg=cfg,
+                reuse=True,
+                phase="postland",
+            )
         if not getattr(vrc, "bypassed", False):
             api.otel.count_validation(vrc == 0, {"bh.work.phase": "postland"})
         if vrc != 0:
@@ -1063,6 +1082,34 @@ def impl__guard_signed_history(api, entry, branch, base, cfg):
         raise api.typer.Exit(1)
 
 
+def _union_key_validator(api, cfg, entry):
+    """Under `work.gate.model: keys` (with a catalog) a callable `(base_rev, head_rev, base)` that
+    runs the evaluator for phase `union`; otherwise None, so the union tier keeps running the
+    `validate.union` command string exactly as before."""
+    if not (
+        api.selective_validation.configured(cfg, entry)
+        and api.config.gate_model(cfg, entry) == "keys"
+    ):
+        return None
+    command = api.config.validate_cmd(cfg, entry, "union")
+
+    def validate(base_rev, head_rev, base):
+        return api.selective_validation.run(
+            entry,
+            cfg,
+            base_rev=base_rev,
+            head_rev=head_rev,
+            phase="union",
+            legacy_cmd=command,
+            repo_path=str(api.worktree.clone_for_branch(entry, base)),
+            runner=lambda key_cmd: api.worktree.clean_checkout(
+                entry, base, key_cmd, cfg=cfg, reuse=True, phase="union"
+            ),
+        )
+
+    return validate
+
+
 def impl__merge_bead_no_ff(api, entry, branch, base, target, cfg, bead, main, slot_attrs):
     """rebase-then-retry the merge: a replay-resolvable conflict (a coupled sibling's change
     already landed on the base — e.g. both beads added the same boilerplate line) is recovered by
@@ -1089,6 +1136,7 @@ def impl__merge_bead_no_ff(api, entry, branch, base, target, cfg, bead, main, sl
             message=f"chore(merge): bead {bead}",
             union_globs=tuple(api.config.union_globs(cfg, entry)),
             validate_cmd=api.config.validate_cmd(cfg, entry, "union"),
+            union_validate=_union_key_validator(api, cfg, entry),
         )
     except api.worktree.MergePreconditionError as exc:
         api.typer.echo(f"✗ workspace precondition failed — nothing landed: {exc}", err=True)
