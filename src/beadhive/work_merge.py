@@ -331,6 +331,8 @@ def impl__validate_molecule_checkout(api, entry, mol_branch, cfg, mode, override
             cfg,
             base_rev=base,
             head_rev=mol_branch,
+            phase="molecule",
+            legacy_cmd=command,
             repo_path=str(api.worktree.clone_for_branch(entry, mol_branch)),
             runner=lambda key_cmd: api.worktree.clean_checkout(
                 entry, mol_branch, key_cmd, cfg=cfg, reuse=True, phase="molecule"
@@ -1177,6 +1179,9 @@ def impl__postland_revalidate_bead(
             cfg,
             base_rev=pre,
             head_rev=base,
+            phase="merge",
+            main_gate=on_main,
+            legacy_cmd=command,
             repo_path=str(api.worktree.clone_for_branch(entry, base)),
             runner=lambda key_cmd: api.worktree.clean_checkout(
                 entry, base, key_cmd, cfg=cfg, reuse=True, bead=bead, phase="merge"

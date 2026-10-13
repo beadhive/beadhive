@@ -17,6 +17,37 @@ in the optional `just check-all-pants` profile (whether Pants stays is bh-ahm6x)
 graphs. The live native profile uses the path backend and keeps the catalog active; uncertainty
 falls back to the complete key set.
 
+### Gate model and phase profiles
+
+`work.gate.model` selects the gate model: `legacy` (the default) or `keys`. Under `legacy` every
+selective boundary runs every active key and nothing below applies. Under `keys`, each of the seven
+selective call sites (`check`, `submit`, `review`, batch `submit`/`merge`, bead `merge`,
+`molecule` pre-land and `release attest --if-needed`) passes its lifecycle phase, and the
+evaluator:
+
+1. runs the runtime catalog drift check (below). On drift it runs that phase's legacy command
+   instead of any key and records no key proof;
+2. evaluates only the keys of the phase's profile and reports every other active key as
+   `not required by <phase>`.
+
+`work.gate.profiles` maps a phase (`check`, `submit`, `review`, `merge`, `merge-main`, `molecule`,
+`postland`, `union`, `release`, `push-main`) or `default` to `all`, a `work.gate.subsets` name, or
+an explicit key list. An unlisted inner phase uses `default`, which is itself `all` when unset. A
+`merge-main` profile wins for a merge onto the integration branch, else `merge`. `push-main`,
+`release` and `postland` must be `all`; `bh config validate` rejects anything else there, and they
+never inherit `default`. Unknown phases, subset names or key names are rejected too. At run time, a
+profile that cannot be resolved, or that names a key outside the catalog, runs every active key.
+
+```yaml
+work:
+  gate:
+    model: keys
+    profiles: {check: fast}
+    subsets: {fast: [docs, unit]}
+  attest:
+    drift_check: "uv run python scripts/check_attest_catalog.py --live-catalog -"
+```
+
 ### Runtime catalog drift check
 
 The catalog lives only in HQ (`work.attest.keys`); there is no repo catalog file. `just

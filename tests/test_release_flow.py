@@ -1635,6 +1635,25 @@ def test_selective_attest_does_not_claim_aggregate_green_when_an_optional_key_is
     assert prepush.check_push_main(hive["sha"], hive_id="mr", gate_cmd=GATE_CMD)[0] is False
 
 
+def test_selective_attest_passes_the_release_phase_and_its_legacy_command(hive, monkeypatch):
+    """bh-3d3jb: release is one of the seven call sites; drift falls back to its own gate."""
+    from beadhive import selective_validation
+
+    seen: dict = {}
+
+    def run(*_a, **kwargs):
+        seen.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(selective_validation, "configured", lambda *a, **k: True)
+    monkeypatch.setattr(selective_validation, "run", run)
+    monkeypatch.setattr(selective_validation, "all_keys_green", lambda *a, **k: True)
+
+    assert _run(hive, "attest", "--if-needed", "--gate", GATE_CMD).exit_code == 0
+    assert seen["phase"] == "release"
+    assert seen["legacy_cmd"] == GATE_CMD
+
+
 def test_attest_still_defaults_to_running_the_gate_for_real(hive, monkeypatch):
     """The default must stay OFF. `attest`'s designed job is the tree `cz bump` just wrote, which
     by construction has no verdict to reuse — a reusing default would make a bump-tree attestation

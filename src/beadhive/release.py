@@ -550,6 +550,8 @@ def attest(
                 cfg,
                 base_rev=parent or sha,
                 head_rev=sha,
+                phase="release",
+                legacy_cmd=cmd,
                 runner=lambda key_cmd: worktree.clean_checkout(entry, sha, key_cmd, reuse=True),
                 receipt_override=release_receipt,
             )
