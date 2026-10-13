@@ -193,6 +193,18 @@
           "title": "Policy",
           "type": "string"
         },
+        "resources": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttestKeyResourcesConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional validation reservation for this key (cpu_min, cpu_max, memory_mb, pools). Absent uses the built-in per-key default. Never part of the command or its hash."
+        },
         "selectors": {
           "additionalProperties": {
             "type": "string"
@@ -207,6 +219,59 @@
         "cmd"
       ],
       "title": "AttestKeyConfig",
+      "type": "object"
+    },
+    "AttestKeyResourcesConfig": {
+      "additionalProperties": false,
+      "description": "Optional per-key validation reservation (bh-9oc32): REPLACES the code default for the key.\n\nAbsent means the default in ``beadhive.validation_reservations``; there is no field-wise\nmerge, so an override states the whole reservation.",
+      "properties": {
+        "cpu_max": {
+          "description": "Most CPUs the broker may grant (speedup knee).",
+          "minimum": 0,
+          "title": "Cpu Max",
+          "type": "number"
+        },
+        "cpu_min": {
+          "description": "CPUs that must be free before the key starts.",
+          "minimum": 0,
+          "title": "Cpu Min",
+          "type": "number"
+        },
+        "expected_s": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Expected wall seconds; absent uses the measured default.",
+          "title": "Expected S"
+        },
+        "memory_mb": {
+          "description": "Memory in MiB at cpu_max, including tmpfs scratch.",
+          "minimum": 0,
+          "title": "Memory Mb",
+          "type": "integer"
+        },
+        "pools": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "description": "Named pool amounts, e.g. {'dolt-servers': 2}.",
+          "title": "Pools",
+          "type": "object"
+        }
+      },
+      "required": [
+        "cpu_min",
+        "cpu_max",
+        "memory_mb"
+      ],
+      "title": "AttestKeyResourcesConfig",
       "type": "object"
     },
     "AttestSemanticConfig": {
