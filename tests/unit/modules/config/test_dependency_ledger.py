@@ -4,6 +4,8 @@ import ast
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[4]
 SCRIPT = ROOT / "scripts/config_dependency_ledger.py"
 
@@ -16,15 +18,22 @@ def _ledger_module():
     return module
 
 
-def test_checked_config_dependency_ledger_is_current():
+@pytest.fixture(scope="module")
+def built() -> tuple:
+    """Build the live ledger once per worker; the tests only read it."""
     module = _ledger_module()
+    return module, module.build_ledger()
+
+
+def test_checked_config_dependency_ledger_is_current(built):
+    module, ledger = built
     checked = module.DEFAULT_LEDGER.read_text(encoding="utf-8")
 
-    assert checked == module._render(module.build_ledger())
+    assert checked == module._render(ledger)
 
 
-def test_dependency_ledger_records_honest_compatibility_and_no_ci_graduation():
-    ledger = _ledger_module().build_ledger()
+def test_dependency_ledger_records_honest_compatibility_and_no_ci_graduation(built):
+    _module, ledger = built
 
     assert ledger["baseline"]["historical_test_blast_radius"] == 129
     assert ledger["current"]["production_config_importer_count"] < 95
@@ -47,8 +56,8 @@ def test_dependency_ledger_records_honest_compatibility_and_no_ci_graduation():
     assert ledger["selective_ci_graduation_claimed"] is False
 
 
-def test_dependency_ledger_records_indirect_adapter_patch_points_exactly():
-    ledger = _ledger_module().build_ledger()
+def test_dependency_ledger_records_indirect_adapter_patch_points_exactly(built):
+    _module, ledger = built
     points = ledger["current"]["config_patch_points"]
 
     assert ledger["schema_version"] == 2

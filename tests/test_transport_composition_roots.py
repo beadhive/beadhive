@@ -6,7 +6,6 @@ import ast
 import importlib
 import json
 import os
-import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -139,19 +138,31 @@ def test_checked_inventory_names_every_installed_composition_root() -> None:
             assert "tests/test_transport_inventory.py" in row["test_closure"]
 
 
-def test_live_composition_evidence_is_current_and_closes_every_root() -> None:
-    result = subprocess.run(
-        ["uv", "run", "python", "scripts/render_transport_composition_evidence.py", "--check"],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stderr
-    sys.path.insert(0, str(ROOT / "scripts"))
-    from scripts import render_transport_composition_evidence as composition_evidence
+@pytest.fixture(scope="session")
+def composition_evidence(tmp_path_factory: pytest.TempPathFactory) -> dict:
+    """Render the live evidence once per worker, in-process, with a failing ``git`` first on PATH.
 
-    evidence = json.loads(composition_evidence.render())
+    Rendering succeeding under the failing ``git`` proves the evidence needs no unreachable git
+    object; ``render()`` is the same live semantic validation ``--check`` performs.
+    """
+    fake_bin = tmp_path_factory.mktemp("failing-git")
+    fake_git = fake_bin / "git"
+    fake_git.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+    fake_git.chmod(0o755)
+    sys.path.insert(0, str(ROOT / "scripts"))
+    try:
+        from scripts import render_transport_composition_evidence as composition_evidence_script
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+            rendered = composition_evidence_script.render()
+    finally:
+        sys.path.remove(str(ROOT / "scripts"))
+    return json.loads(rendered)
+
+
+def test_live_composition_evidence_is_current_and_closes_every_root(composition_evidence) -> None:
+    evidence = composition_evidence
     assert evidence["format_version"] == 1
     assert evidence["validation_cadence"] == "strict"
     assert evidence["artifact_drift_gate"] == "just transport-artifact-check"
@@ -175,20 +186,11 @@ def test_live_composition_evidence_is_current_and_closes_every_root() -> None:
     assert all(not row["current_shape"]["cycle_member"] for row in evidence["roots"])
 
 
-def test_live_composition_evidence_does_not_require_an_unreachable_git_object(tmp_path) -> None:
-    fake_git = tmp_path / "git"
-    fake_git.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
-    fake_git.chmod(0o755)
-    result = subprocess.run(
-        [sys.executable, "scripts/render_transport_composition_evidence.py", "--check"],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"},
-    )
-
-    assert result.returncode == 0, result.stderr
+def test_live_composition_evidence_does_not_require_an_unreachable_git_object(
+    composition_evidence,
+) -> None:
+    # The session render ran with a failing ``git`` first on PATH and still succeeded.
+    assert composition_evidence["roots"]
 
 
 @pytest.mark.parametrize("surface", ROOTS)
