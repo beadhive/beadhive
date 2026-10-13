@@ -16,7 +16,15 @@ import pytest
 
 from beadhive import config, doctor
 from beadhive.run import run
-from test_work import _git, fakebd, hive  # noqa: F401 — fixtures resolved by name
+from test_work import (  # noqa: F401 — fixtures resolved by name
+    _git,
+    fake_build_verifier,
+    fakebd,
+    hive,
+)
+
+# The build verifier is incidental to these tests; keep the real Pants run out of doctor_payload.
+pytestmark = pytest.mark.usefixtures("fake_build_verifier")
 
 DAY = 86400
 

@@ -26,7 +26,10 @@ from typer.testing import CliRunner
 from beadhive import deps, jsonout
 from beadhive import setup as setup_mod
 from beadhive.cli import app
-from test_work import fakebd, hive  # noqa: F401 — fixtures resolved by name
+from test_work import fake_build_verifier, fakebd, hive  # noqa: F401 — fixtures resolved by name
+
+# The build verifier is incidental to these tests; keep the real Pants run out of doctor_payload.
+pytestmark = pytest.mark.usefixtures("fake_build_verifier")
 
 runner = CliRunner()
 

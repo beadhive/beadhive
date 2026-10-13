@@ -22,10 +22,12 @@ for new behavior.
 
 from __future__ import annotations
 
+import pytest
 from typer.testing import CliRunner
 
 from beadhive import cli, config, home_migration
 from beadhive.cli import app
+from test_work import fake_build_verifier  # noqa: F401 — fixture resolved by name
 
 runner = CliRunner()
 
@@ -58,6 +60,7 @@ def test_hive_flag_accepted_on_git_passthrough():
     assert "-a/--all and --hive only apply to" not in result.output
 
 
+@pytest.mark.usefixtures("fake_build_verifier")
 def test_no_routing_flags_is_a_plain_cwd_invocation():
     """Baseline: no -a/--hive at all never trips the gate on any verb."""
     result = runner.invoke(app, ["doctor"])
@@ -67,6 +70,7 @@ def test_no_routing_flags_is_a_plain_cwd_invocation():
 # ---- _root: best-effort steps must never crash the CLI ------------------------
 
 
+@pytest.mark.usefixtures("fake_build_verifier")
 def test_root_survives_a_raising_home_migration(monkeypatch):
     """migrate_home_if_needed is wrapped in a bare try/except in `_root` — a raise there must
     not take down the CLI (bh-sn9q placement rule: best-effort, never blocks a real command)."""
@@ -79,6 +83,7 @@ def test_root_survives_a_raising_home_migration(monkeypatch):
     assert result.exit_code == 0
 
 
+@pytest.mark.usefixtures("fake_build_verifier")
 def test_root_survives_a_raising_hive_key_migration(monkeypatch):
     def _boom():
         raise RuntimeError("bad config")
@@ -88,6 +93,7 @@ def test_root_survives_a_raising_hive_key_migration(monkeypatch):
     assert result.exit_code == 0
 
 
+@pytest.mark.usefixtures("fake_build_verifier")
 def test_root_survives_a_raising_otel_init(monkeypatch):
     """config.load()/observaloop_env/otel.init are wrapped together in `_root` — telemetry
     init failing must degrade to telemetry-off, not break the invoked command."""
