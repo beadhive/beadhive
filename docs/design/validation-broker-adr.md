@@ -583,7 +583,26 @@ above live on their `wt/bead/issue/bh-5mdar.N` branches and are not on `main`.
 
 The execution-roots model (`bh-mf1o4`) refines this ADR's "disk-backed fence scratch"
 recommendation: rather than pointing only the scratch at disk, the broker picks one bounded root
-per run that holds checkout and scratch together.
+per run that holds checkout and scratch together. As built:
+
+- **Space is a counted pool.** Each root's bound is a `root:<path>` pool in the local engine's
+  budget, clamped by the filesystem's measured free space through a `DiskSpace` port, so
+  admission, release, EASY backfill and nested carving treat disk exactly like `dolt-servers`.
+  Like memory, measured free space is not credited back with what running leases will still
+  write: conservative, never optimistic. An unreadable root reads as full.
+- **Order and pinning.** Roots are tried in configured order, so the operator states the
+  preference (disk first saves the memory a tmpfs root costs). A gate is pinned to the root of
+  its first admitted key while it has live keys, and only to a root whose bound fits every
+  queued key, so `bh-qhrl6` can run a gate's keys in one shared checkout without stranding a
+  larger key.
+- **tmpfs is memory.** A `tmpfs` root adds the run's disk reservation to its memory reservation.
+  A root declared `disk` that is RAM-backed is refused at selection (slots fallback, loudly).
+- **The run directory.** `beadhive.validation_run_root.run_directory` holds the checkout
+  (`git worktree add` of the exact tree, verified by tree id, unless the source already is a
+  clean checkout of it inside the root), the `TMPDIR` the hermetic fence puts its scratch under,
+  and the report drop zone. The fence itself is unchanged. The checkout's git object store stays
+  in its source repository, read-only inside the fence. A killed client's directory, including
+  a SIGKILLed fence's scratch, is reclaimed by the next run on that root through an owner marker.
 
 **Current figures, by reference only:** the full gate is 1,448 s on `2c256557`, with stateful at
 526 s and integration at 447 s, run sequentially. The ADR's own 2026-09-30 measurements are not
