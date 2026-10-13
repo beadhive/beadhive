@@ -586,7 +586,7 @@ _MCP_COARSE_GRAINED = {
 # A composite is a deliberately hand-authored MCP handler which coordinates multiple canonical
 # operations.  Keep this separate from merely coarse batch/opaque tools: those still implement one
 # operation, whereas these entries sanction a wider agent-facing unit over catalog operations.
-# Every component is validated in ``operations()`` so a rename cannot leave a dangling composite.
+# Every component is validated in ``_build_operations()`` so a rename cannot leave a dangling composite.
 _MCP_COMPOSITES = {
     "hive.onboard": ("hive.init", "sync"),
 }
@@ -897,7 +897,7 @@ def _result_schema(name: str) -> str:
     return JSON_VALUE_ARTIFACT_ID
 
 
-def operations() -> tuple[OperationSpec, ...]:
+def _build_operations() -> tuple[OperationSpec, ...]:
     rows = _cli_rows()
     names = set(rows) | set(_MCP_TOOLS) | set(_MCP_RESOURCES)
     result = []
@@ -1010,6 +1010,108 @@ def operations() -> tuple[OperationSpec, ...]:
     return tuple(result)
 
 
+# Every module-level declaration ``_build_operations`` reads.  The process-wide snapshot is keyed
+# on their rendered content, so a test that monkeypatches a declaration (``_CLI_ROWS``,
+# ``monkeypatch.setitem(_MCP_TOOLS, ...)``) is rebuilt on the next read without an explicit
+# invalidation, and restoring it reuses a fresh build of the original declaration.
+_CATALOG_INPUT_NAMES = (
+    "JSON_VALUE_ARTIFACT_ID",
+    "HIVE_STATUS_ARTIFACT_ID",
+    "HIVE_SURVEY_ARTIFACT_ID",
+    "HIVE_ONBOARD_ARTIFACT_ID",
+    "HIVE_READY_ARTIFACT_ID",
+    "_CLI_ROWS",
+    "_READ_PATHS",
+    "_HIDDEN_PATHS",
+    "_CLI_PARENT_ROWS",
+    "_CLI_ALIAS_TARGETS",
+    "_SEMANTIC_ALIASES",
+    "_CLI_PARAMETER_MAP",
+    "_PASSTHROUGH_PATHS",
+    "_CLI_PROMPT_POLICY",
+    "_MCP_NOTIFICATION_URIS",
+    "_MCP_COARSE_GRAINED",
+    "_MCP_COMPOSITES",
+    "_SECRET_PATHS",
+    "_HQ_READS",
+    "_OVERRIDE_NAMES",
+    "_MCP_RESOURCE_DIVERGENCE",
+    "_MCP_TOOLS",
+    "_MCP_RESOURCES",
+)
+_catalog_cache: dict[str, Any] = {}
+
+
+def _catalog_inputs_key() -> str:
+    namespace = globals()
+    return repr(tuple(namespace[name] for name in _CATALOG_INPUT_NAMES))
+
+
+def _thaw(value: Any) -> Any:
+    """Copy the JSON-shaped containers of a catalog value; leaves are immutable scalars."""
+    if isinstance(value, dict):
+        return {key: _thaw(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_thaw(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_thaw(item) for item in value)
+    return value
+
+
+def _copy_operation(operation: OperationSpec) -> OperationSpec:
+    return replace(
+        operation,
+        parameters=tuple(
+            replace(parameter, schema=_thaw(parameter.schema)) for parameter in operation.parameters
+        ),
+        constraints=_thaw(operation.constraints),
+        surfaces=_thaw(operation.surfaces),
+    )
+
+
+def _catalog_snapshot() -> tuple[OperationSpec, ...]:
+    """Return the shared catalog build for the current declarations; never hand it out.
+
+    The snapshot owns copies of every container so it shares nothing with the module tables or
+    with any caller.  Module readers here only read it; :func:`operations` returns copies.
+    """
+    key = _catalog_inputs_key()
+    if _catalog_cache.get("key") != key:
+        snapshot = tuple(_copy_operation(operation) for operation in _build_operations())
+        _catalog_cache.clear()
+        _catalog_cache.update(key=key, operations=snapshot, derived={})
+    return _catalog_cache["operations"]
+
+
+def _derived(name: str, compute):
+    """Memoize one value derived from the current snapshot; dropped with the snapshot."""
+    _catalog_snapshot()
+    derived = _catalog_cache["derived"]
+    if name not in derived:
+        derived[name] = compute()
+    return derived[name]
+
+
+def clear_catalog_cache() -> None:
+    """Drop the process-wide catalog snapshot so the next read rebuilds it from scratch."""
+    _catalog_cache.clear()
+
+
+def operations() -> tuple[OperationSpec, ...]:
+    """Return the canonical catalog, built once per process per declaration content.
+
+    Each call returns independent copies, so a caller mutating a projection dict cannot alter
+    the shared snapshot or what any later caller observes.
+    """
+    return tuple(_copy_operation(operation) for operation in _catalog_snapshot())
+
+
+def _operations_by_name() -> dict[str, OperationSpec]:
+    return _derived(
+        "by_name", lambda: {operation.name: operation for operation in _catalog_snapshot()}
+    )
+
+
 class MCPProjectionError(ValueError):
     """The requested operation is not safe and declared for the requested MCP surface."""
 
@@ -1052,7 +1154,7 @@ def _validated_mcp_projection(operation: OperationSpec) -> dict[str, Any]:
 
 
 def _allowlisted_mcp_operation(name: str) -> tuple[OperationSpec, dict[str, Any]]:
-    operation = next((row for row in operations() if row.name == name), None)
+    operation = _operations_by_name().get(name)
     if operation is None:
         raise MCPProjectionError(f"unknown catalog operation {name!r}")
     return operation, _validated_mcp_projection(operation)
@@ -1092,8 +1194,12 @@ def mcp_resource_projection(name: str) -> tuple[str, tuple[str, ...]]:
 
 def mcp_tool_projections() -> dict[str, tuple[str, tuple[str, ...]]]:
     """Materialize the deterministic safe MCP tool inventory from one catalog snapshot."""
+    return dict(_derived("mcp_tool_projections", _build_mcp_tool_projections))
+
+
+def _build_mcp_tool_projections() -> dict[str, tuple[str, tuple[str, ...]]]:
     result = {}
-    for operation in operations():
+    for operation in _catalog_snapshot():
         projection = operation.surfaces.get("mcp")
         if projection and projection.get("tool"):
             result[operation.name] = _tool_projection(
@@ -1110,8 +1216,12 @@ def mcp_tool_composites() -> dict[str, tuple[str, ...]]:
     result is derived from the same validated catalog snapshot as names and signatures so server
     construction never needs a second composite allowlist.
     """
+    return dict(_derived("mcp_tool_composites", _build_mcp_tool_composites))
+
+
+def _build_mcp_tool_composites() -> dict[str, tuple[str, ...]]:
     result = {}
-    for operation in operations():
+    for operation in _catalog_snapshot():
         projection = operation.surfaces.get("mcp")
         if projection and projection.get("tool"):
             validated = _validated_mcp_projection(operation)
@@ -1123,8 +1233,12 @@ def mcp_tool_composites() -> dict[str, tuple[str, ...]]:
 
 def mcp_resource_projections() -> dict[str, tuple[str, tuple[str, ...]]]:
     """Materialize the deterministic safe MCP resource inventory from one catalog snapshot."""
+    return dict(_derived("mcp_resource_projections", _build_mcp_resource_projections))
+
+
+def _build_mcp_resource_projections() -> dict[str, tuple[str, tuple[str, ...]]]:
     result = {}
-    for operation in operations():
+    for operation in _catalog_snapshot():
         projection = operation.surfaces.get("mcp")
         if projection and projection.get("resource"):
             result[operation.name] = _resource_projection(
@@ -1162,7 +1276,7 @@ def mcp_notification_uris(name: str, **parameters: Any) -> tuple[str, ...]:
 def document() -> dict[str, Any]:
     """Return the deterministic language-neutral catalog document."""
     operation_rows = []
-    for operation in operations():
+    for operation in _catalog_snapshot():
         row = asdict(operation)
         row["parameters"] = list(row["parameters"])
         operation_rows.append(row)
@@ -1266,7 +1380,7 @@ from ._registry import (  # noqa: E402
     bind_registered_operation_names as _bind_registered_operation_names,
 )
 
-_bind_registered_operation_names(frozenset(operation.name for operation in operations()))
+_bind_registered_operation_names(frozenset(operation.name for operation in _catalog_snapshot()))
 del _bind_registered_operation_names
 
 
