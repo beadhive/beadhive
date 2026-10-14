@@ -179,6 +179,7 @@ print("REPRO-OK")
 '''
 
 
+@pytest.mark.integration
 def test_serve_path_imports_are_resident_and_survive_a_vanished_env(tmp_path):
     """The bh-fwhlu reproduction: the env goes away mid-session, the server keeps working."""
     pytest.importorskip("fastmcp")

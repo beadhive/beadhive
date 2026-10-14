@@ -185,6 +185,7 @@ def _install_git_wrapper(
     wrapper.chmod(0o755)
 
 
+@pytest.mark.integration
 def test_bump_creates_one_exact_signed_commit_and_tag_without_generated_artifact_churn(
     tmp_path: Path,
 ) -> None:
@@ -220,6 +221,7 @@ def test_bump_creates_one_exact_signed_commit_and_tag_without_generated_artifact
     assert (tmp_path / "bh.log").read_text().splitlines() == ["release preflight"]
 
 
+@pytest.mark.integration
 def test_explicit_gate_override_is_forwarded_to_preflight(tmp_path: Path) -> None:
     release_repo = _release_repo(tmp_path)
 
@@ -279,6 +281,7 @@ def test_missing_signing_configuration_refuses_before_mutation(tmp_path: Path) -
     assert _must_git(release_repo.root, "tag", "--list", "v0.16.2") == ""
 
 
+@pytest.mark.integration
 def test_verify_rejects_good_signature_text_when_git_exits_nonzero(tmp_path: Path) -> None:
     release_repo = _release_repo(tmp_path)
     assert release_repo.transaction("bump", "0.16.2").returncode == 0
@@ -316,6 +319,7 @@ def test_rollback_verifies_head_even_when_reset_claims_success(tmp_path: Path) -
     assert _must_git(release_repo.root, "tag", "--list", "v0.16.2") == ""
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("bad_tag", ["lightweight", "unsigned", "wrong-target", "invalid"])
 def test_verify_refuses_unacceptable_local_release_tags(tmp_path: Path, bad_tag: str) -> None:
     release_repo = _release_repo(tmp_path)
@@ -343,6 +347,7 @@ def test_verify_refuses_unacceptable_local_release_tags(tmp_path: Path, bad_tag:
     assert result.returncode == 1
 
 
+@pytest.mark.integration
 def test_verify_refuses_wrong_version_before_release(tmp_path: Path) -> None:
     release_repo = _release_repo(tmp_path)
     assert release_repo.transaction("bump", "0.16.2").returncode == 0

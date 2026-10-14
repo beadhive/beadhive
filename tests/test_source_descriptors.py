@@ -293,7 +293,15 @@ def _alive(pid: int) -> bool:
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="descendant check uses /proc")
-@pytest.mark.parametrize("count", [1, 3, 5])
+@pytest.mark.parametrize(
+    "count",
+    # [1] is the stateful smoke case; the larger streams run at main-bound gates (bh-dcwkf).
+    [
+        1,
+        pytest.param(3, marks=pytest.mark.integration),
+        pytest.param(5, marks=pytest.mark.integration),
+    ],
+)
 def test_current_installed_cli_resolves_registry_and_reaps_every_descriptor_stream(
     tmp_path: Path, count: int
 ) -> None:

@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "demo_live_ingress_matrix.py"
 SPEC = importlib.util.spec_from_file_location("demo_live_ingress_matrix", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
@@ -15,6 +17,7 @@ demo_live_ingress_matrix = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(demo_live_ingress_matrix)
 
 
+@pytest.mark.integration
 def test_parity_does_not_require_venv_or_ensurepip(tmp_path) -> None:
     real_python = sys.executable
     python_without_venv = tmp_path / "python-without-venv"

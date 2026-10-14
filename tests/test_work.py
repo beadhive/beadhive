@@ -1876,6 +1876,7 @@ def _submit_in_process(bead, results, fakebd, active_retry=None):
     results.put((bead, rc, output.getvalue()))
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("slots", [1, 2])
 def test_concurrent_submit_processes_share_host_capacity_and_coalesce_retry(
     hive, fakebd, monkeypatch, slots

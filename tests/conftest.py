@@ -36,3 +36,25 @@ def _outer_broker_environment_removed(monkeypatch: pytest.MonkeyPatch) -> None:
             "BH_VALIDATION_LEASE",
         }:
             monkeypatch.delenv(name, raising=False)
+
+
+#: The signed-HQ backend fixture (real SSH-signed pre-receive guard, git broker process and frame
+#: sandbox). The process boundary is what its tests prove, so they run in the integration lane
+#: (bh-100df). Matched by defining module, since ``backend`` is also a parametrize name elsewhere;
+#: the module is imported both as ``tests.<name>`` and ``<name>``.
+_SIGNED_HQ_BACKEND_MODULE = "test_hq_authority_backend"
+
+
+def _requests_signed_hq_backend(item: pytest.Item) -> bool:
+    info = getattr(item, "_fixtureinfo", None)
+    defs = info.name2fixturedefs.get("backend") if info is not None else None
+    if not defs:
+        return False
+    module = getattr(defs[-1].func, "__module__", "")
+    return module.rpartition(".")[2] == _SIGNED_HQ_BACKEND_MODULE
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    for item in items:
+        if _requests_signed_hq_backend(item):
+            item.add_marker(pytest.mark.integration)
