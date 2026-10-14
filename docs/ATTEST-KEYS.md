@@ -184,9 +184,10 @@ narrow the profile, or carry.
 
 ### Model predicate status
 
-The ADR 3.4 `model == keys` conjunct of `attested_green` is not in the predicate yet. It lands with
-the bh cutover (bh-i3nc3), together with the model switch, so until then `attested_green` does not
-check the model, and legacy-model `release attest --if-needed` keeps working.
+`attested_green` requires `work.gate.model: keys`, including when every key has green evidence.
+Under `legacy`, `release attest --if-needed` uses the full gate's exact-tree aggregate proof
+through `clean_checkout(reuse=True)`. Rolling back the model therefore preserves release
+attestation without interpreting key evidence as aggregate proof.
 
 | Key | Opaque command | Pants selector | Covers |
 |---|---|---|---|

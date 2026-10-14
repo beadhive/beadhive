@@ -1792,7 +1792,7 @@
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 1853,
+        "line": 1883,
         "path": "tests/test_release_flow.py",
         "target": "beadhive.config.load"
       },

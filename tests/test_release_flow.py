@@ -1625,6 +1625,8 @@ def test_if_needed_asks_for_prove_or_skip_rather_than_a_second_lookup(hive, monk
 def test_selective_attest_seals_the_aggregate_only_after_every_key_is_green(hive, monkeypatch):
     from beadhive import selective_validation
 
+    hive["entry"]["work"]["gate"] = {"model": "keys"}
+
     monkeypatch.setattr(selective_validation, "configured", lambda *a, **k: True)
     monkeypatch.setattr(selective_validation, "run", lambda *a, **k: 0)
     monkeypatch.setattr(selective_validation, "attested_green", lambda *a, **k: True)
@@ -1640,6 +1642,8 @@ def test_selective_attest_does_not_claim_aggregate_green_when_an_optional_key_is
 ):
     from beadhive import selective_validation
 
+    hive["entry"]["work"]["gate"] = {"model": "keys"}
+
     monkeypatch.setattr(selective_validation, "configured", lambda *a, **k: True)
     monkeypatch.setattr(selective_validation, "run", lambda *a, **k: 0)
     monkeypatch.setattr(selective_validation, "attested_green", lambda *a, **k: False)
@@ -1654,6 +1658,8 @@ def test_selective_attest_does_not_claim_aggregate_green_when_an_optional_key_is
 def test_selective_attest_passes_the_release_phase_and_its_legacy_command(hive, monkeypatch):
     """bh-3d3jb: release is one of the seven call sites; drift falls back to its own gate."""
     from beadhive import selective_validation
+
+    hive["entry"]["work"]["gate"] = {"model": "keys"}
 
     seen: dict = {}
 
@@ -1674,6 +1680,8 @@ def test_selective_attest_asks_attested_green_for_the_release_phase(hive, monkey
     """The aggregate seal goes through the one predicate, named for the release boundary."""
     from beadhive import selective_validation
 
+    hive["entry"]["work"]["gate"] = {"model": "keys"}
+
     asked: list[tuple] = []
 
     def green(_entry, _cfg, rev, phase):
@@ -1692,6 +1700,8 @@ def test_selective_attest_refuses_on_catalog_drift(hive, monkeypatch):
     """Drift makes attested_green false, so a passing evaluator run still cannot seal."""
     from beadhive import selective_validation
 
+    hive["entry"]["work"]["gate"] = {"model": "keys"}
+
     monkeypatch.setattr(selective_validation, "configured", lambda *a, **k: True)
     monkeypatch.setattr(selective_validation, "run", lambda *a, **k: 0)
     monkeypatch.setattr(selective_validation, "catalog_ok", lambda *a, **k: False)
@@ -1702,6 +1712,26 @@ def test_selective_attest_refuses_on_catalog_drift(hive, monkeypatch):
 
     assert result.exit_code == 1
     assert prepush.check_push_main(hive["sha"], hive_id="mr", gate_cmd=GATE_CMD)[0] is False
+
+
+@pytest.mark.parametrize("rc", [0, 1])
+def test_legacy_if_needed_uses_aggregate_proof_even_with_green_keys(hive, monkeypatch, rc):
+    from beadhive import selective_validation
+
+    hive["entry"]["work"]["attest"] = {"keys": [{"name": "unit", "cmd": "just attest-unit"}]}
+    seen = _clean_checkout_spy(monkeypatch, rc=rc)
+
+    def unexpected(*_a, **_k):
+        pytest.fail("legacy release must use exact-tree aggregate proof")
+
+    monkeypatch.setattr(selective_validation, "run", unexpected)
+    monkeypatch.setattr(selective_validation, "attested_green", unexpected)
+
+    result = _run(hive, "attest", "--if-needed", "--gate", GATE_CMD)
+
+    assert result.exit_code == rc
+    assert seen["reuse"] is True
+    assert prepush.check_push_main(hive["sha"], hive_id="mr", gate_cmd=GATE_CMD)[0] == (rc == 0)
 
 
 def test_attest_still_defaults_to_running_the_gate_for_real(hive, monkeypatch):
