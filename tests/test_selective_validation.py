@@ -467,7 +467,8 @@ def test_disabled_key_cannot_satisfy_attested_green(monkeypatch) -> None:
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("disabled proof was consulted")),
     )
 
-    assert not selective_validation.attested_green({}, {}, "head", "release")
+    cfg = {"work": {"gate": {"model": "keys"}}}
+    assert not selective_validation.attested_green({}, cfg, "head", "release")
 
 
 # ---- bh-15u4d: the attested_green aggregate predicate (attest-keys ADR 3.4) --------------

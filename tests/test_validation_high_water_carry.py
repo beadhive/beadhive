@@ -207,6 +207,7 @@ def test_release_predicate_holds_after_an_unattested_three_land_batch(hive) -> N
     """bh-jwugq: with only the pre-batch tree attested, the release attest at the batch head
     runs just the key whose root does not cover HEAD, and `attested_green(release)` then holds."""
     cfg = hive.cfg()
+    cfg["work"]["gate"]["model"] = "keys"
     for key in (K, J):
         validation_ledger.record(hive.entry, hive.c0, key["cmd"], 0, cfg=cfg)
     hive.commit({"docs/r.md": "1"}, "bead 1")
@@ -225,6 +226,7 @@ def test_release_predicate_holds_after_an_unattested_three_land_batch(hive) -> N
 
 def test_release_predicate_refuses_when_a_key_has_no_proof_at_head(hive) -> None:
     cfg = hive.cfg()
+    cfg["work"]["gate"]["model"] = "keys"
     c1 = hive.commit({"docs/r.md": "1"}, "bead 1")
     hive.monkeypatch.setattr(selective_validation, "catalog_ok", lambda *_a: True)
 
