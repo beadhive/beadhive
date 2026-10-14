@@ -709,14 +709,38 @@ def _write_dolt_metadata(hive_dir, **fields):
     (hive_dir / ".beads" / "metadata.json").write_text(json.dumps(fields))
 
 
-def test_data_store_engine_silent_when_no_beads_dir(hive, fakebd, monkeypatch):  # noqa: F811
+@pytest.fixture
+def no_host_dolt_servers(monkeypatch):
+    """Hermetic running-server inventory: the real scan reads the HOST's process table, which
+    includes dolt servers other concurrent tests start (bh-v0f8c). Tests whose subject is not
+    zombie detection inject this empty inventory through the `_data_running_servers` seam."""
+    empty = {
+        "backend": "(unset)",
+        "shared_server_dir": "",
+        "shared_server_dir_exists": False,
+        "authoritative": "",
+        "detail": "",
+        "servers": [],
+        "zombies": [],
+    }
+    monkeypatch.setattr(doctor, "_data_running_servers", lambda: dict(empty))
+
+
+def test_data_store_engine_silent_when_no_beads_dir(
+    hive,  # noqa: F811
+    fakebd,  # noqa: F811
+    no_host_dolt_servers,
+    monkeypatch,
+):
     """The plain `hive` fixture has no `.beads/` checkout — nothing to report, matching the
     acceptance bar's silent-by-default rule."""
     monkeypatch.delenv("BEADS_DOLT_SHARED_SERVER", raising=False)
     assert doctor._data_store_engine(config.load()) == {"relevant": False}
 
 
-def test_data_store_engine_silent_for_an_all_embedded_fleet(prefix_hive, monkeypatch):
+def test_data_store_engine_silent_for_an_all_embedded_fleet(
+    prefix_hive, no_host_dolt_servers, monkeypatch
+):
     """No new noise for users who never migrate (bh-areg.3's own acceptance bar)."""
     _write_dolt_metadata(prefix_hive.main, dolt_mode="embedded")
     monkeypatch.delenv("BEADS_DOLT_SHARED_SERVER", raising=False)
@@ -724,7 +748,9 @@ def test_data_store_engine_silent_for_an_all_embedded_fleet(prefix_hive, monkeyp
     assert doctor._data_store_engine(_cfg_one_hive("mr")) == {"relevant": False}
 
 
-def test_data_store_engine_reports_a_reachable_server_mode_hive(prefix_hive, monkeypatch):
+def test_data_store_engine_reports_a_reachable_server_mode_hive(
+    prefix_hive, no_host_dolt_servers, monkeypatch
+):
     _write_dolt_metadata(prefix_hive.main, dolt_mode="server")
     monkeypatch.delenv("BEADS_DOLT_SHARED_SERVER", raising=False)
     monkeypatch.setattr(
@@ -741,7 +767,9 @@ def test_data_store_engine_reports_a_reachable_server_mode_hive(prefix_hive, mon
     assert data["mismatches"] == []
 
 
-def test_data_store_engine_reports_an_unreachable_server_mode_hive(prefix_hive, monkeypatch):
+def test_data_store_engine_reports_an_unreachable_server_mode_hive(
+    prefix_hive, no_host_dolt_servers, monkeypatch
+):
     _write_dolt_metadata(prefix_hive.main, dolt_mode="server")
     monkeypatch.setattr(
         doctor.dolt_health,
@@ -755,7 +783,9 @@ def test_data_store_engine_reports_an_unreachable_server_mode_hive(prefix_hive, 
     assert "refused" in data["detail"]
 
 
-def test_data_store_engine_reports_engine_metadata_mismatch(prefix_hive, monkeypatch):
+def test_data_store_engine_reports_engine_metadata_mismatch(
+    prefix_hive, no_host_dolt_servers, monkeypatch
+):
     """Newly-in-scope surfacing (bh-areg.1's review): metadata pins embedded but the shared
     server is actually active for this run — bd's own main.go warns about exactly this."""
     _write_dolt_metadata(prefix_hive.main, dolt_mode="embedded")
@@ -824,7 +854,9 @@ def test_render_store_engine_shows_mismatch_warning(capsys):
     assert "⚠ mr:" in out
 
 
-def test_section_store_engine_renders_end_to_end(prefix_hive, monkeypatch, capsys):
+def test_section_store_engine_renders_end_to_end(
+    prefix_hive, no_host_dolt_servers, monkeypatch, capsys
+):
     _write_dolt_metadata(prefix_hive.main, dolt_mode="server")
     monkeypatch.setattr(
         doctor.dolt_health,

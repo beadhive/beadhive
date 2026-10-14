@@ -133,7 +133,7 @@
   "tests/test_dispatch_status.py": {"digest": "2474a904f324bfa77c09e96ece85d33799799179353d479a695303c742fc2ca0", "marks": [[]]},
   "tests/test_dispatch_supervisor.py": {"digest": "df0a17f1dc17f983f32be027789db12b5506ef333663832f6eb129be11fe9edb", "marks": [[], ["parametrize"]]},
   "tests/test_docs_role_vocabulary.py": {"digest": "d63146416ed053b6b9a8d74dc036d1f5a3c4418c57dadcf9da0f7b3225cdf66c", "marks": [[], ["parametrize"]]},
-  "tests/test_doctor.py": {"digest": "e1b899395e1b02a8f2f1bf48ae350200a2d55bc8853b45fb7198c1fb6fb491b3", "marks": [["usefixtures"]]},
+  "tests/test_doctor.py": {"digest": "20105e9921dbabdbf267dc04c06907fbfcc166b7d9cd0243f3610747dad24a6b", "marks": [["usefixtures"]]},
   "tests/test_doctor_channels.py": {"digest": "c97b12452894c4de6b0eaf08ad836f6a13f3212cd0c217162b4bac72dee763df", "marks": [["parametrize", "usefixtures"], ["usefixtures"]]},
   "tests/test_doctor_dispatch.py": {"digest": "1846e812e4b0903d1e140c1601cbe1757fcfad63922acedd0914909467213342", "marks": [[]]},
   "tests/test_doctor_schema_skew.py": {"digest": "d5da1281d6084abacae5f27c8e33c26cf8cfb0ef52a4ee6f657b3a7f9ffefe07", "marks": [[]]},
