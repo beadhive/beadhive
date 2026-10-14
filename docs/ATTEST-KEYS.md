@@ -129,7 +129,8 @@ above revert one feature each; `work.attest.impact.backend: native-full` (see
 
 ### Fleet example: the approved bh profiles
 
-This is hive bh's initial operator-selected policy (2026-10-13) at the keys cutover (bh-i3nc3).
+This is hive bh's operator-selected policy (2026-10-14), after the configurable-profile fix
+(0.25.1), published at HQ revision `i0tfpfh7u0qj46cktgmtn3dat8jp5sol`.
 `fast` and `inner` are this hive's subset names, not prescribed profiles.
 Wall times were measured at `2e60e00f`.
 
@@ -159,9 +160,9 @@ work:
       submit: inner      # catches stateful and composition reds before review
       merge: inner       # bead into a container
       union: inner       # plus selector filtering on the delta
-      merge-main: all    # bh's initial cutover uses every key for land
-      molecule: all
-      postland: all      # bh's initial postland policy
+      merge-main: inner  # bh chooses eight keys for land
+      molecule: inner
+      postland: inner    # matches bh's land policy
       release: all       # bh chooses every key for release
       push-main: all     # push adds missing integration and demo evidence
     push:
@@ -173,8 +174,9 @@ an unaffected key never re-runs. Under the legacy model every selective boundary
 (carry-forward was off; only exact-tree reuse applied).
 
 Rationale: the integration and demo keys (Dolt and live, 3 to 10 minutes, the most load-sensitive)
-leave the inner loop and run at land, push or release in the initial cutover policy, where
-carry makes them cheap when untouched.
+leave the inner loop and run at push or release in this policy. Push reuses the eight land keys
+and adds only missing integration and demo evidence; qualifying carry can avoid either command.
+The subsets, attested-green acceptance and slots engine were unchanged by this publication.
 `stateful` stays at submit because every red in the 2026-10-12 overnight sample was a stateful
 red; revisit that with bh-kdbfr (the `check-native` scope). Other projects choose their own key
 sets, names and phase policies based on their workflow and acceptable risk.
