@@ -152,6 +152,7 @@ async def _surface(transport) -> tuple[dict[str, dict], dict[str, dict]]:
         return schemas, outcomes
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("mode", ["sessionful", "stateless"])
 def test_authenticated_product_mcp_matches_exact_stdio_surface(tmp_path: Path, mode: str) -> None:
     settings, bearer = _settings(tmp_path, mode=mode)

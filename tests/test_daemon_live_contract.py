@@ -1240,6 +1240,7 @@ def _assert_live_server_cleanup(cleanup: dict[str, Any]) -> None:
     }
 
 
+@pytest.mark.integration
 def test_real_product_app_composes_concurrent_cli_stdio_http_operator_and_activity(
     tmp_path: Path,
 ) -> None:

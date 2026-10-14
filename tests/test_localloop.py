@@ -259,6 +259,7 @@ while True:
 # ---- HARD REQUIREMENT 1: process-group termination -------------------------------------------
 
 
+@pytest.mark.integration
 @async_test
 async def test_naive_terminate_leaks_a_grandchild(tmp_path):
     """The measured failure mode, reproduced: `proc.terminate()` signals the DIRECT CHILD only.
@@ -284,6 +285,7 @@ async def test_naive_terminate_leaks_a_grandchild(tmp_path):
     assert not _pid_alive(grandchild)
 
 
+@pytest.mark.integration
 @async_test
 async def test_cancel_reaps_the_whole_process_group(tmp_path):
     """The fix: SIGTERM the child, then `os.killpg` the group — no PPID-1 orphan survives."""

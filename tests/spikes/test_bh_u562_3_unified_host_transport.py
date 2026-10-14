@@ -24,6 +24,8 @@ PROOF = ROOT / "docs/spikes/proofs/bh_u562_3_unified_host_transport.py"
 MCP_HEADERS = {"Authorization": "Bearer mcp-token"}
 OPERATOR_HEADERS = {"Authorization": "Bearer operator-token"}
 
+pytestmark = pytest.mark.integration
+
 # Inert input for every current tool. The discovery assertion below makes this table fail closed
 # when a new tool is added. Refusal is a valid parity result; transport machinery failure is not.
 TOOL_ARGS = {

@@ -859,6 +859,7 @@ def _wait_processes_gone(pids: list[int], timeout: float = 30.0) -> bool:
     return all(wait_pid_gone(pid, timeout) for pid in pids)
 
 
+@pytest.mark.integration
 @pytest.mark.skipif(sys.platform != "linux", reason="feature demo verifies Linux process groups")
 def test_real_bh_stream_operator_feature_demo(tmp_path):
     """Bounded real command demo: seed, mutate, close the consumer, and prove clean teardown."""

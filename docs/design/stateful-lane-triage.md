@@ -305,7 +305,7 @@ the median test is under 0.5 s; only duration packing helps (see the durations p
 | `tests/test_host_lease_cli.py` | 19 | 37.3 | C | G9 | 0.0 | 5.0 | 0.0 | Template bare repo for lease refs |
 | `tests/test_host_heartbeat.py` | 62 | 36.2 | A (kept) | - | 0.0 | 0.0 | 0.0 | Real SSH signatures are the subject, but 62 tests at 0.48 s median: keep in stateful so signature regressions fail at submit |
 | `tests/test_collection_prefilter.py` | 15 | 34.1 | B | G4 | 0.0 | 20.0 | 0.0 | `pytester.runpytest_inprocess` for the plugin cases; keep the xdist-worker case real |
-| `tests/test_release_transaction.py` | 17 | 33.0 | A | G2 | 15.0 | 0.0 | 0.0 | The signed bump-commit and tag tests move; refusal tests stay |
+| `tests/test_release_transaction.py` | 17 | 33.0 | A | G2 | 15.0 | 0.0 | 0.0 | The eight tests that complete a real signed bump move (about 18 s in a 2026-10-14 run); refusal, rollback and stale-metadata tests stay |
 | `tests/test_safety.py` | 132 | 32.9 | none | - | 0.0 | 0.0 | 0.0 | 132 tests at 0.23 s median; packing only |
 | `tests/test_test_closure_shadow_policy.py` | 62 | 32.6 | R | - | 0.0 | 0.0 | 32.6 | Removed by bh-rqmmm |
 | `tests/test_sync_remote.py` | 67 | 31.8 | none | - | 0.0 | 0.0 | 0.0 | 67 tests at 0.46 s median; packing only |

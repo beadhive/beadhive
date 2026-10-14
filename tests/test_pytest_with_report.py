@@ -6,6 +6,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import pytest
 from scripts.pytest_with_report import COVERAGE_ENV_VAR, pytest_argv
 from scripts.report_timings import rankings
 
@@ -81,6 +82,7 @@ def test_coverage_switch_writes_to_the_same_drop_zone(tmp_path: Path) -> None:
     assert coverage.name != junit.name
 
 
+@pytest.mark.integration
 def test_coverage_switch_produces_xml_in_the_drop_zone(tmp_path: Path) -> None:
     result = subprocess.run(
         [

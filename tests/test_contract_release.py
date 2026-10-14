@@ -245,6 +245,7 @@ def test_generator_is_offline_and_byte_identical_across_two_clean_runs(
     assert _validate(second) == ()
 
 
+@pytest.mark.integration
 def test_two_fresh_processes_generate_byte_identical_release(tmp_path: Path) -> None:
     first = tmp_path / "first-process"
     second = tmp_path / "second-process"

@@ -746,6 +746,7 @@ def _catalog_gate_candidate(
     return repo, baseline, diagnostic
 
 
+@pytest.mark.integration
 def test_actual_gate_cli_allows_additive_catalog_operation(tmp_path: Path) -> None:
     repo, baseline, _diagnostic = _catalog_gate_candidate(tmp_path, "add", use_git=True)
     result = subprocess.run(
