@@ -4,6 +4,8 @@ import json
 import re
 from types import SimpleNamespace
 
+import pytest
+
 from beadhive import selective_validation
 from beadhive.modules.config.contracts import AttestConfig
 from beadhive.modules.work.domain.impact import ImpactReceipt, KeyEvidence
@@ -482,7 +484,9 @@ def _verdict(name, state, record=None, reason=""):
     return ledger.KeyVerdict(name, _TREE, "h", ledger.KeyVerdictState(state), record, reason)
 
 
-def _predicate(monkeypatch, verdicts, *keys, catalog=True, always_run=True, tree=_TREE):
+def _predicate(
+    monkeypatch, verdicts, *keys, catalog=True, always_run=True, tree=_TREE, model="keys"
+):
     """Wire attested_green to canned collaborators; ``verdicts`` maps key name -> KeyVerdict."""
     from beadhive import validation_ledger as ledger
 
@@ -492,7 +496,8 @@ def _predicate(monkeypatch, verdicts, *keys, catalog=True, always_run=True, tree
     monkeypatch.setattr(ledger, "key_verdicts", lambda *_a, **_k: verdicts)
     monkeypatch.setattr(selective_validation, "catalog_ok", lambda *_a, **_k: catalog)
     monkeypatch.setattr(ledger, "always_run_ok", lambda *_a, **_k: always_run)
-    return lambda: selective_validation.attested_green({}, {}, "head", "push-main")
+    cfg = {"work": {"gate": {"model": model}}} if model is not None else {}
+    return lambda: selective_validation.attested_green({}, cfg, "head", "push-main")
 
 
 def test_attested_green_when_every_key_is_current_green(monkeypatch) -> None:
@@ -1130,14 +1135,14 @@ def test_attested_green_requires_every_key_profile_at_main_reaching_phases(monke
     assert check() is True  # control
     monkeypatch.setattr(selective_validation.config, "gate_profile", lambda *_a, **_k: ("docs",))
     for phase in ("push-main", "release", "postland"):
-        assert selective_validation.attested_green({}, {}, "head", phase) is False
+        cfg = {"work": {"gate": {"model": "keys"}}}
+        assert selective_validation.attested_green({}, cfg, "head", phase) is False
 
 
-def test_attested_green_keeps_legacy_model_acceptance(monkeypatch) -> None:
-    """The ADR `model == keys` conjunct is deferred (bh-i3nc3): legacy still answers."""
-    check = _predicate(monkeypatch, {"docs": _verdict("docs", "current", _GREEN)})
-    assert selective_validation.config.gate_model({}, {}) == "legacy"
-    assert check() is True
+@pytest.mark.parametrize("model", [None, "legacy"])
+def test_attested_green_refuses_legacy_model_even_with_every_key_green(monkeypatch, model):
+    check = _predicate(monkeypatch, {"docs": _verdict("docs", "current", _GREEN)}, model=model)
+    assert check() is False
 
 
 def test_full_gate_records_no_key_proof_on_drift_under_keys(monkeypatch) -> None:

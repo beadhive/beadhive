@@ -614,6 +614,7 @@ def test_flag_on_red_key_falls_through_to_the_gate(hive, monkeypatch):
 def test_flag_on_drift_falls_through_to_the_gate(hive, monkeypatch):
     """The REAL predicate with every key current-green but `catalog_ok` False."""
     _flag(hive, True)
+    hive["entry"]["work"]["gate"]["model"] = "keys"
     green = {
         "schema": 1,
         "run_id": "r",

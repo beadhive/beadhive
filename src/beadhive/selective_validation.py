@@ -212,6 +212,7 @@ def attested_green(entry, cfg, rev: str, phase: str) -> bool:
 
     Attest-keys ADR 3.4. All of these must hold, and any doubt answers ``False``:
 
+    - ``work.gate.model`` is ``keys``;
     - ``rev`` resolves to a tree (an unresolved tree could only match a literal);
     - a key catalog is configured and no key is disabled (a disabled key is never proof);
     - every key is current-green (qualifying) or validly carried at that exact tree;
@@ -239,9 +240,8 @@ def attested_green(entry, cfg, rev: str, phase: str) -> bool:
 def _attested_green(entry, cfg, rev: str, phase: str) -> bool:
     if not rev or not phase:
         return False
-    # The ADR 3.4 `model == keys` conjunct is deliberately NOT here yet: it would refuse every
-    # legacy-model `release attest --if-needed` and bh-72ubb's push acceptance. It is deferred
-    # to the cutover slice, bh-i3nc3.
+    if config.gate_model(cfg, entry) != "keys":
+        return False
     if phase in GATE_ALL_KEY_PHASES and config.gate_profile(cfg, entry, phase) is not None:
         return False  # P(phase) == active(C): a main-reaching profile must be every active key
     tree = validation_ledger.tree_of(entry, rev)

@@ -522,7 +522,7 @@ def attest(
         raise typer.Exit(0)
 
     if not background:
-        if if_needed:
+        if if_needed and config.gate_model(cfg, entry) == "keys":
             from . import config_work_settings, selective_validation
             from .bootstrap.impact import attest_keys
 
@@ -573,7 +573,8 @@ def attest(
                 )
                 rc = REFUSED
         else:
-            rc = worktree.clean_checkout(entry, sha, cmd, reuse=False)
+            # Legacy rollback keeps exact-tree aggregate proof and never asks the keys predicate.
+            rc = worktree.clean_checkout(entry, sha, cmd, reuse=if_needed)
         typer.echo(
             f"{'✓ attested green' if rc == 0 else f'✗ RED (exit {rc}) — recorded, not attested'}"
             f": {sha[:12]} under {cmd!r}",
