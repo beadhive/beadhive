@@ -2065,3 +2065,27 @@ def test_an_already_published_version_is_reported_as_spent(monkeypatch):
 
     assert published is True
     assert "IS ALREADY ON PyPI" in detail
+
+
+def test_narrow_release_profile_cannot_seal_broader_push_proof(hive):
+    entry = hive["entry"]
+    entry["work"]["gate"] = {
+        "model": "keys",
+        "profiles": {"release": "publish-smoke", "push-main": "all"},
+        "subsets": {"publish-smoke": ["docs"]},
+        "push": {"accept_attested_green": True},
+    }
+    entry["work"]["attest"] = {
+        "drift_check": "true",
+        "keys": [
+            {"name": "docs", "cmd": "true docs"},
+            {"name": "unit", "cmd": "true unit"},
+        ],
+    }
+    validation_ledger.record(entry, hive["sha"], "true docs", 0)
+    result = _run(hive, "attest", "--if-needed", "--gate", GATE_CMD)
+    assert result.exit_code == 0, result.output
+    assert validation_ledger.green_verdict(entry, hive["sha"], GATE_CMD) is None
+    assert prepush.check_push_main(hive["sha"], hive_id="mr", gate_cmd=GATE_CMD)[0] is False
+    assert _await(hive).exit_code == 0
+    assert _preflight(hive).exit_code == 0

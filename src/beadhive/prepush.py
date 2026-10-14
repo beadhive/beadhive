@@ -322,14 +322,13 @@ def _attested_green_hit(cfg, entry, rev: str, on_miss: str) -> str | None:
 
         if not selective_validation.attested_green(entry, cfg, rev, PUSH_MAIN_PHASE):
             return None
-        keys = selective_validation.attest_keys(
-            selective_validation.config.attest_config(cfg, entry)
-        )
+        keys = selective_validation.required_keys(entry, cfg, PUSH_MAIN_PHASE)
         tree = validation_ledger.tree_of(entry, rev)
         verdicts = validation_ledger.key_verdicts(entry, tree, keys, cfg=cfg)
         states = "\n".join(f"  {name}: {v.state.value}" for name, v in sorted(verdicts.items()))
         return (
-            f"✓ attested green: every attest key is current or carried at tree {tree[:12]} — "
+            "✓ attested green: every push-main profile key is current or carried "
+            f"at tree {tree[:12]} — "
             f"skipping the full gate for {rev[:12]}\n{states}"
         )
     except Exception:  # noqa: BLE001 — ANY failure means "fall through", never "pass"
@@ -374,10 +373,10 @@ def check_push_main(
 
     **Per-key acceptance (opt-in).** With `work.gate.push.accept_attested_green` true (per hive or
     global; default false) the exact pushed tree is also accepted when
-    `selective_validation.attested_green(..., "push-main")` holds: every active key current or
-    carried, none red, no drift. It is consulted after the bypass and before the aggregate
-    lookup below; an absent or red key, drift, or any exception falls through to that lookup and
-    then the full gate. With the flag off nothing in this paragraph runs.
+    `selective_validation.attested_green(..., "push-main")` holds: every required profile key
+    current or carried, none red, no drift. It is consulted after the bypass and before the
+    aggregate lookup below. An absent or red required key, drift, or any exception falls through
+    to that lookup and then the full gate. With the flag off none of this runs.
 
     **`gate_cmd`** is what the caller says it will run on a miss. When given, the resolved phase
     must equal it exactly or the lookup refuses: a `push-main` key naming a *different* (and

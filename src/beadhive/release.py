@@ -267,6 +267,24 @@ def _resolve(hive_id: str, gate_cmd: str):
         return None, "", f"• could not resolve the gate ({type(exc).__name__}: {exc})"
 
 
+def _check_release(rev: str, hive: str, gate: str, on_miss: str) -> tuple[bool, str]:
+    """Keys releases prove their configured profile; legacy releases retain push gate lookup."""
+    from . import prepush, selective_validation
+
+    try:
+        entry, _cmd, refusal = _resolve(hive, gate)
+        if refusal:
+            return False, refusal
+        cfg = config.load()
+        if config.gate_model(cfg, entry) == "keys" and selective_validation.configured(cfg, entry):
+            if selective_validation.attested_green(entry, cfg, rev, "release"):
+                return True, f"✓ attested green: release profile for {rev[:12]}"
+            return False, f"• no green release profile for {rev[:12]} — {on_miss}"
+        return prepush.check_push_main(rev, hive_id=hive, gate_cmd=gate, on_miss=on_miss)
+    except Exception as exc:
+        return False, f"• release proof lookup failed ({type(exc).__name__}: {exc}) — {on_miss}"
+
+
 def _marker_path(entry) -> Path | None:
     """Canonical bump-gate control path, without creating anything.
 
@@ -405,11 +423,7 @@ def preflight(rev: str = _REV, gate: str = _GATE, hive: str = _HIVE):
     unconfigured or mismatched `work.validate.push-main`, no hive, an unresolvable rev, any
     exception. There is no flag that turns a refusal into a pass; the way to bump without proof
     is to not call this verb, which is a visible choice rather than a silent one."""
-    from . import prepush
-
-    ok, detail = prepush.check_push_main(
-        rev, hive_id=hive, gate_cmd=gate, on_miss="THE BUMP IS REFUSED"
-    )
+    ok, detail = _check_release(rev, hive, gate, "THE BUMP IS REFUSED")
     typer.echo(detail, err=not ok)
     if ok:
         return
@@ -542,7 +556,7 @@ def attest(
                 entry, cfg, parent, "release"
             ):
                 typer.echo(
-                    "✗ release metadata bump parent is not fully attested green — refusing "
+                    "✗ release metadata bump parent has no green release profile — refusing "
                     "carry-forward",
                     err=True,
                 )
@@ -564,10 +578,13 @@ def attest(
                 and selective
                 and selective_validation.attested_green(entry, cfg, sha, "release")
             ):
-                validation_ledger.record(entry, sha, cmd, 0)
+                # A subset proves this release policy, never the legacy full-gate command.
+                required = selective_validation.required_keys(entry, cfg, "release")
+                if {key.name for key in required} == {key.name for key in keys}:
+                    validation_ledger.record(entry, sha, cmd, 0)
             elif rc == 0 and selective:
                 typer.echo(
-                    "✗ selective policy passed, but not every key is green — "
+                    "✗ selective policy passed, but not every required key is green — "
                     "the full gate was not attested",
                     err=True,
                 )
@@ -716,6 +733,13 @@ def await_cmd(
         # THE MARKER IS FETCHED, BUT ONLY *ENFORCED* ON A GENUINE MISS, BELOW (bh-d3u1o) — the
         # ledger read right after it is what decides green/red, unconditionally on the marker.
         marker, tree = _marker_for_tree(entry, rev)
+        cfg = config.load()
+        if config.gate_model(cfg, entry) == "keys":
+            from . import selective_validation
+
+            if selective_validation.attested_green(entry, cfg, rev, "release"):
+                typer.echo(f"✓ attested green: release profile at tree {tree[:12]}")
+                return
         hit = validation_ledger.verdict(entry, rev, cmd)
         if hit is not None and validation_ledger.is_qualifying_green(hit):
             when = datetime.datetime.fromtimestamp(float(hit["at"])).astimezone()
@@ -1814,11 +1838,7 @@ def preview(
                 f"`just release-preview --next`"
             )
 
-    from . import prepush
-
-    ok, detail = prepush.check_push_main(
-        rev, hive_id=hive, gate_cmd=gate, on_miss="REPORTED HERE, not enforced"
-    )
+    ok, detail = _check_release(rev, hive, gate, "REPORTED HERE, not enforced")
 
     for line in (lead, f"  green    {detail}"):
         if line:

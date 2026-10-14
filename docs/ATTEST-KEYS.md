@@ -44,16 +44,25 @@ The `work.validate.<phase>` strings are therefore only fallbacks under `keys`: t
 and for a hive with no catalog. A push-main miss (no exact-tree aggregate verdict, no attested
 green tree) runs only the keys that are absent for the pushed tree, then re-asks the one
 `attested_green` predicate; any doubt runs the full gate command as before (this miss path needs
-`work.gate.push.accept_attested_green`, below). `bh release attest --if-needed` requires every
-active key through the `release` profile.
+`work.gate.push.accept_attested_green`, below). `bh release attest --if-needed` requires the keys
+selected by the project's `release` profile.
 
 `work.gate.profiles` maps a phase (`check`, `submit`, `review`, `merge`, `merge-main`, `molecule`,
 `postland`, `union`, `release`, `push-main`) or `default` to `all`, a `work.gate.subsets` name, or
-an explicit key list. An unlisted inner phase uses `default`, which is itself `all` when unset. A
-`merge-main` profile wins for a merge onto the integration branch, else `merge`. `push-main`,
-`release` and `postland` must be `all`; `bh config validate` rejects anything else there, and they
-never inherit `default`. Unknown phases, subset names or key names are rejected too. At run time, a
-profile that cannot be resolved, or that names a key outside the catalog, runs every active key.
+an explicit key list. Every phase is configurable and an unlisted phase uses `default`,
+which requires every active key when unset. A `merge-main` profile wins for a merge onto the
+integration branch, else `merge`. Projects define and name their own subsets and choose the
+strictness and policy at each boundary. There are no prescribed strictness levels or fixed
+profile names; `all` is the built-in wildcard for every active key.
+
+As advisory defaults, projects can start with all keys at publication boundaries, use smaller
+subsets for frequent feedback, and increase coverage where their risk and evidence justify it.
+These are policy choices, not validator restrictions. Unknown phases, subset names or key names
+are rejected. At run time, a profile that cannot be resolved, or that names a key outside the
+catalog, requires every active key. Profile proof covers only that phase's required keys; it
+never creates green evidence for omitted keys.
+Release preflight, preview and await also consult the release profile. A narrower release
+profile does not record a full-gate command verdict, so it cannot satisfy a broader push profile.
 
 ```yaml
 work:
@@ -106,7 +115,7 @@ them resolve per hive over the global value; `bh config validate` checks them.
 | Field | Default | Rollback |
 |---|---|---|
 | `work.gate.model` | `legacy` | Set `legacy`. Restores command strings at post-land, union and push and the aggregate-only push lookup. No ledger migration is needed. |
-| `work.gate.profiles.<phase>` | unset: every phase uses `default`, which is `all` when unset | Remove the entry. `push-main`, `release` and `postland` are pinned to `all` and cannot be narrowed. Profiles are read only under `model: keys`. |
+| `work.gate.profiles.<phase>` | unset: every phase uses `default`, which is `all` when unset | Remove the entry. Every phase is configurable; profile names and strictness belong to the project. Profiles are read only under `model: keys`. |
 | `work.gate.subsets.<name>` | none | Remove the subset (and any profile naming it). |
 | `work.gate.carry.high_water` | unset: on under `keys`, off under `legacy` | Set `false` to restore single-hop carry sourcing. |
 | `work.gate.carry.max_roots` | `3` | Set `0` to disable the ledger scan for extra roots (the base's own root is still tried). |
@@ -120,8 +129,9 @@ above revert one feature each; `work.attest.impact.backend: native-full` (see
 
 ### Fleet example: the approved bh profiles
 
-This is the operator-approved configuration (2026-10-13) that the bh cutover (bh-i3nc3) publishes
-together with `work.gate.model: keys`. Wall times were measured at `2e60e00f`.
+This is hive bh's initial operator-selected policy (2026-10-13) at the keys cutover (bh-i3nc3).
+`fast` and `inner` are this hive's subset names, not prescribed profiles.
+Wall times were measured at `2e60e00f`.
 
 | Key | What it runs | Wall time |
 |---|---|---|
@@ -149,11 +159,11 @@ work:
       submit: inner      # catches stateful and composition reds before review
       merge: inner       # bead into a container
       union: inner       # plus selector filtering on the delta
-      merge-main: all    # anything that lands on main proves every affected key
+      merge-main: all    # bh's initial cutover uses every key for land
       molecule: all
-      postland: all      # required: main-reaching
-      release: all       # required: main-reaching
-      push-main: all     # required: main-reaching
+      postland: all      # bh's initial postland policy
+      release: all       # bh chooses every key for release
+      push-main: all     # push adds missing integration and demo evidence
     push:
       accept_attested_green: true
 ```
@@ -163,12 +173,11 @@ an unaffected key never re-runs. Under the legacy model every selective boundary
 (carry-forward was off; only exact-tree reuse applied).
 
 Rationale: the integration and demo keys (Dolt and live, 3 to 10 minutes, the most load-sensitive)
-leave the inner loop and run only at the boundary that lands on main, where carry makes them cheap
-when untouched. `stateful` stays at submit because every red in the 2026-10-12 overnight sample was
-a stateful red; revisit that with bh-kdbfr (the `check-native` scope). Another hive adapts this by
-listing its own keys in `subsets`, keeping every cheap key in `fast`, adding its slow stateful and
-composition keys to `inner`, and leaving its slow shared-resource keys (databases, live services)
-only in `all`.
+leave the inner loop and run at land, push or release in the initial cutover policy, where
+carry makes them cheap when untouched.
+`stateful` stays at submit because every red in the 2026-10-12 overnight sample was a stateful
+red; revisit that with bh-kdbfr (the `check-native` scope). Other projects choose their own key
+sets, names and phase policies based on their workflow and acceptable risk.
 
 Note that the justfile `fast_keys` variable is separate: it is the subset `just check-native`
 runs, not the HQ `fast` subset above.

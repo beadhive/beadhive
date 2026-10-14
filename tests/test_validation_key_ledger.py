@@ -135,3 +135,128 @@ def test_disabled_key_ignores_existing_green_and_cannot_write_carry(ledger):
     assert found.reason == "disabled"
     assert not validation_ledger.carry_key_verdict(entry, disabled, receipt(disabled))
     assert validation_ledger.key_verdict(entry, "head", disabled).state == "absent"
+
+
+@pytest.mark.parametrize("phase", ["postland", "release", "push-main", "merge-main"])
+def test_project_profile_proof_requires_only_its_keys(ledger, phase):
+    from beadhive import registry, selective_validation
+
+    entry, _key = ledger
+    repo = registry.hive_dir(entry)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "fixture",
+        ],
+        check=True,
+    )
+    cfg = {
+        "work": {
+            "gate": {
+                "model": "keys",
+                "profiles": {phase: "project-smoke"},
+                "subsets": {"project-smoke": ["docs"]},
+            },
+            "attest": {
+                "drift_check": "true",
+                "keys": [
+                    {"name": "docs", "cmd": "just docs"},
+                    {"name": "unit", "cmd": "just unit"},
+                ],
+            },
+        }
+    }
+    validation_ledger.record(entry, "HEAD", "just docs", 0, cfg=cfg)
+    validation_ledger.record(entry, "HEAD", "just unit", 1, cfg=cfg)
+    assert selective_validation.attested_green(entry, cfg, "HEAD", phase)
+
+    cfg["work"]["gate"]["profiles"][phase] = "all"
+    assert not selective_validation.attested_green(entry, cfg, "HEAD", phase)
+    cfg["work"]["gate"]["profiles"][phase] = "project-smoke"
+    validation_ledger.record(entry, "HEAD", "just docs", 1, cfg=cfg)
+    assert not selective_validation.attested_green(entry, cfg, "HEAD", phase)
+
+
+def test_land_profile_then_push_reuses_eight_and_runs_only_two_missing_keys(ledger):
+    from beadhive import registry, selective_validation
+
+    entry, _key = ledger
+    repo = registry.hive_dir(entry)
+    (repo / "fixture.txt").write_text("fixture\n")
+    subprocess.run(["git", "-C", str(repo), "add", "fixture.txt"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "fixture",
+        ],
+        check=True,
+    )
+    inner = [
+        "docs",
+        "unit",
+        "architecture-contracts",
+        "packages",
+        "bd-cli",
+        "hq-storage",
+        "root-composition",
+        "stateful",
+    ]
+    names = inner + ["integration", "demos"]
+    cfg = {
+        "work": {
+            "gate": {
+                "model": "keys",
+                "profiles": {"merge-main": "team-land", "push-main": "all"},
+                "subsets": {"team-land": inner},
+            },
+            "attest": {
+                "drift_check": "true",
+                "keys": [{"name": name, "cmd": "true " + name} for name in names],
+            },
+        }
+    }
+    ran = []
+
+    def runner(cmd):
+        ran.append(cmd.removeprefix("true "))
+        validation_ledger.record(entry, "HEAD", cmd, 0, cfg=cfg)
+        return 0
+
+    def run(phase):
+        return selective_validation.run(
+            entry,
+            cfg,
+            base_rev="HEAD",
+            head_rev="HEAD",
+            repo_path=str(repo),
+            runner=runner,
+            full=True,
+            phase=phase,
+        )
+
+    assert run("merge-main") == 0
+    assert set(ran) == set(inner) and len(ran) == 8
+    assert selective_validation.attested_green(entry, cfg, "HEAD", "merge-main")
+    assert not selective_validation.attested_green(entry, cfg, "HEAD", "push-main")
+    ran.clear()
+    assert run("push-main") == 0
+    assert set(ran) == {"integration", "demos"} and len(ran) == 2
+    assert selective_validation.attested_green(entry, cfg, "HEAD", "push-main")

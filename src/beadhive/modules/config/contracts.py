@@ -1140,8 +1140,8 @@ class GatePushConfig(_Section):
     accept_attested_green: bool = Field(
         False,
         description=(
-            "Opt in: the push-main hook also accepts the exact pushed tree when every active "
-            "attest key is current or carried at that tree (selective_validation."
+            "Opt in: the push-main hook also accepts the exact pushed tree when every key required "
+            "by its configured profile is current or carried at that tree (selective_validation."
             "attested_green). Off (the default) keeps today's aggregate-command lookup and full "
             "gate byte for byte; an absent or red key, drift, or any error falls through to them."
         ),
@@ -1149,7 +1149,7 @@ class GatePushConfig(_Section):
 
 
 #: The closed lifecycle phase vocabulary a `work.gate.profiles` entry may name (attest-keys
-#: ADR 3.2). `default` is not a phase: it is the profile every unlisted inner phase uses.
+#: ADR 3.2). `default` is not a phase: it is the profile every unlisted phase uses.
 GATE_PHASES = (
     "check",
     "submit",
@@ -1162,9 +1162,6 @@ GATE_PHASES = (
     "release",
     "push-main",
 )
-#: Main-reaching phases: their profile is validator-locked to every active key (ADR 3.4 hard
-#: limit, a correctness rule rather than a default). They never inherit `default`.
-GATE_ALL_KEY_PHASES = ("push-main", "release", "postland")
 #: The profile value meaning "every active key".
 GATE_PROFILE_ALL = "all"
 GATE_PROFILE_DEFAULT = "default"
@@ -1194,8 +1191,9 @@ class GateConfig(_Section):
             "Per-phase key profile, consulted only under model: keys. Keys are phases (check, "
             "submit, review, merge, merge-main, molecule, postland, union, release, push-main) "
             "or `default`; values are `all`, a subset name, or an explicit list of key names. "
-            "An unlisted inner phase uses `default` (itself `all` when unset). push-main, "
-            "release and postland must be `all`. A `merge-main` profile wins for a merge onto "
+            "Every phase accepts project-defined profiles and inherits `default` (itself `all` "
+            "when unset). Projects determine their own strictness and boundary policy. "
+            "A `merge-main` profile wins for a merge onto "
             "the integration branch, else `merge`."
         ),
     )
@@ -1218,12 +1216,6 @@ class GateConfig(_Section):
                 f"unknown gate phase(s) {unknown}: profiles name one of "
                 f"{[*GATE_PHASES, GATE_PROFILE_DEFAULT]}"
             )
-        for phase in GATE_ALL_KEY_PHASES:
-            if phase in v and v[phase] != GATE_PROFILE_ALL:
-                raise ValueError(
-                    f"work.gate.profiles.{phase} must be {GATE_PROFILE_ALL!r}: push-main, "
-                    "release and postland require every active key"
-                )
         for phase, value in v.items():
             names = _gate_profile_names(value)
             if not names:

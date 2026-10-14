@@ -11,7 +11,6 @@ from .modules.config.contracts import (
     DEFAULT_JUNK_GLOBS,
     DEFAULT_PRECIOUS_GLOBS,
     DEFAULT_PRECIOUS_MIN_BYTES,
-    GATE_ALL_KEY_PHASES,
     GATE_PROFILE_ALL,
     GATE_PROFILE_DEFAULT,
 )
@@ -262,11 +261,11 @@ def gate_profile(cfg, entry, phase, main_gate=False):
 
     Lookup order mirrors :func:`validate_cmd`: `<phase>-main` then `<phase>` when the op
     targets the integration branch, then `default`. Profiles and subsets layer per name,
-    per-hive over global. push-main, release and postland always answer `None` whatever is
-    configured (the ADR 3.4 hard limit), and every doubt -- no phase, `all`, an unknown subset,
+    per-hive over global. Every phase may use a project-defined subset or key list and inherits
+    `default` when unset. Every doubt -- no phase, `all`, an unknown subset,
     a malformed value, an empty list -- also answers `None`, which runs more, never less.
     Whether the names exist in the catalog is the evaluator's check."""
-    if not phase or phase in GATE_ALL_KEY_PHASES:
+    if not phase:
         return None
     lookups = [f"{phase}-main", phase] if main_gate else [phase]
     value = None

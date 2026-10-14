@@ -99,7 +99,8 @@ Adopt one standard. The HQ attest-key catalog is the only description of what "t
   justfile `attest-*` recipes at `T`, plus the checked-in `KEY_RECIPES` and the
   `docs/ATTEST-KEYS.md` table, as bh-x9hco's checker reads them. This is a declaration that is
   *checked against* `C`, not a second catalog.
-- **Profile** `P(phase)`: a set of key names, either `all` or a named subset.
+- **Profile** `P(phase)`: a project-owned set of key names: `all`, a named subset, or an explicit list.
+  Every lifecycle phase is configurable; subset names, strictness and policy belong to each project.
 - **Verdict state** of key K at tree T is one of three, unchanged from Amendment 1:
   - `current`: K ran on T; green or red.
   - `carried`: a green verdict transferred by receipt from a root run.
@@ -139,10 +140,9 @@ remain unproven, so they can never satisfy the aggregate predicate.
 attested_green(entry, cfg, rev, phase) :=
       model == keys
   and catalog_ok(entry, cfg, rev)                                           # 3.6
-  and P(phase) == active(C)     when phase ∈ {push-main, release, postland}  # hard limit
   and ∀ K ∈ P(phase) ∩ active(C):
         state(K, tree(rev)) ∈ {current-green (qualifying), carried (valid on read)}
-  and no K is current-red at tree(rev)
+  and no required K is current-red at tree(rev)
   and work.always_run passes (as green_verdict does today)
 ```
 
@@ -233,8 +233,8 @@ work:
     profiles:                # consulted only when model: keys
       default: all           # every phase not listed requires every active key
       check: fast            # a subset name or an explicit list
-      # submit / review / merge / merge-main / molecule / union: all (default)
-      # push-main / release / postland: must be all (validator-enforced hard limit)
+      # Every phase accepts a named subset or key list, or inherits default.
+      # This example's subset name is not a predefined strictness level.
     subsets:
       fast: [docs, unit, architecture-contracts]
     carry:
@@ -329,10 +329,11 @@ Not retired:
 
 ## 7. Safety argument (Attested Green holds)
 
-1. **The predicate is never weaker than Amendment 1's Decision 4 extension.** That amendment already
-   permits `push-main` to exit 0 when every required key is current or carried *at the exact tree
-   pushed*. `attested_green` is that condition plus two conjuncts: the runtime drift check, and the
-   all-keys hard limit at main-reaching phases. Adding conjuncts can only turn passes into runs.
+1. **Proof follows project policy.** Every key required by the configured phase profile must
+   be qualifying current green or validly carried at the exact tree, and the catalog drift check
+   must pass. Narrowing a profile is an explicit project policy choice; omitted keys acquire no
+   proof and a later broader profile still requires their evidence. Advisory defaults may keep
+   publication boundaries broad and feedback loops smaller; no boundary is locked to a subset.
 2. **Exact tree.** The predicate reads `(tree, cmd_hash)` slots for `tree(rev)`. A rebase, a
    near-miss, or a subtree match still runs fresh.
 3. **Carries obey every Amendment 1 rule.**

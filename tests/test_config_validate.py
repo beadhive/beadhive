@@ -298,11 +298,13 @@ def test_unknown_key_names_are_rejected_in_profiles_and_subsets():
     )
 
 
-def test_non_all_profile_for_a_main_reaching_phase_is_rejected():
-    for phase in ("push-main", "release", "postland"):
+def test_every_phase_accepts_valid_named_and_explicit_profiles():
+    from beadhive.modules.config.contracts import GATE_PHASES
+
+    for phase in GATE_PHASES:
         for value in ("fast", ["docs"]):
             problems = _gate_problems({"profiles": {phase: value}, "subsets": {"fast": ["docs"]}})
-            assert f"work.gate.profiles.{phase} must be 'all'" in problems
+            assert problems == "", (phase, value, problems)
 
 
 def test_hive_profile_may_reference_a_global_subset_and_its_own_catalog():

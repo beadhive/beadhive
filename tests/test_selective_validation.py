@@ -1003,12 +1003,18 @@ def test_gate_profile_resolves_subsets_lists_and_default() -> None:
     assert profile({}, {}, "check") is None  # nothing configured -> every key
 
 
-def test_main_reaching_phases_always_require_every_key_whatever_is_configured() -> None:
-    profile = selective_validation.config.gate_profile
-    cfg = _gate_cfg(profiles={"default": "fast", "push-main": "fast", "release": ["docs"]})
+def test_every_phase_honors_project_profile_names_and_default() -> None:
+    from beadhive.modules.config.contracts import GATE_PHASES
 
-    for phase in ("push-main", "release", "postland"):
-        assert profile(cfg, {}, phase) is None
+    profile = selective_validation.config.gate_profile
+    for phase in GATE_PHASES:
+        cfg = _gate_cfg(
+            profiles={"default": "team-default", phase: "publish-smoke"},
+            subsets={"team-default": ["unit"], "publish-smoke": ["docs"]},
+        )
+        assert profile(cfg, {}, phase) == ("docs",), phase
+        cfg["work"]["gate"]["profiles"].pop(phase)
+        assert profile(cfg, {}, phase) == ("unit",), phase
 
 
 def test_merge_main_profile_wins_only_for_an_op_onto_main() -> None:
@@ -1121,23 +1127,11 @@ def test_profile_naming_an_unknown_key_runs_every_key(monkeypatch, capsys):
     assert "unknown key(s) ['ghost']" in capsys.readouterr().out
 
 
-def test_main_reaching_phase_runs_every_key_under_keys(monkeypatch):
+def test_every_phase_uses_the_configured_default_under_keys(monkeypatch):
     cfg = _gate_cfg(profiles={"default": "fast"})
     for phase in ("release", "push-main", "postland"):
         _rc, ran = _profile_run(monkeypatch, cfg, phase)
-        assert ran == ["just docs", "just unit"]
-
-
-def test_attested_green_requires_every_key_profile_at_main_reaching_phases(monkeypatch) -> None:
-    check = _predicate(
-        monkeypatch,
-        {"docs": _verdict("docs", "current", _GREEN)},
-    )
-    assert check() is True  # control
-    monkeypatch.setattr(selective_validation.config, "gate_profile", lambda *_a, **_k: ("docs",))
-    for phase in ("push-main", "release", "postland"):
-        cfg = {"work": {"gate": {"model": "keys"}}}
-        assert selective_validation.attested_green({}, cfg, "head", phase) is False
+        assert ran == ["just docs"]
 
 
 @pytest.mark.parametrize("model", [None, "legacy"])
