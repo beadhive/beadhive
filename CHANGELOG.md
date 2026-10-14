@@ -13,6 +13,79 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.25.0 (2026-10-14)
+
+### Feat
+
+- **hq-storage**: give the in-memory fence peers on one remote and admitted local writes
+- **hq-storage**: give PlacementStore an ABSENT expectation and a lookup
+- **hq-storage-dolt**: map root's runtime tables and own the runtime statements
+- **hq-storage**: add the AtomicRecords multi-record compare-and-set to the port, fake and contract
+- **hq-storage**: map the HQ config publication onto the committed hq_config tables
+- **hq-storage**: encode the receiver placement carrier and cause in the Dolt adapter
+- **hq**: Dolt adapter for the HQ storage port passing the shared contract suite
+- **hq**: HQ storage port, in-memory fake with injected clock, and the shared contract suite
+
+### Fix
+
+- **validation**: require the keys model for attested green
+- **validation**: fail when the attest catalog key set drifts from the justfile recipes
+- **just**: keep the -n bound on its own continuation line in root-composition-native
+- **test**: forward the atomic write on the placement Counting double
+- **test**: bin slot-holding work first and spread slot-free work over every chunk
+- **demo**: vendor the HQ storage packages into the isolated parity install
+- **test**: answer the dolt_schemas trigger read in the placement CLI grant double
+- **just**: run the full fake-vs-Dolt machine serially with -n 0
+- **test**: register root tests for the hq-storage packages in PACKAGE_TESTS
+- **test**: restore bh's logging pipeline after every stateful test
+- **test**: bind the real monotonic clock in schedule telemetry
+- **hq-storage**: commit_bump answers Unknown once the bump may have committed
+- **hq-storage-dolt**: publish returns Unknown when the post-commit parent readback fails
+- **test**: stop Dolt's detached send-metrics racing the cluster rewind restore
+- **test**: skip exiting empty-argv processes in the rewind guard process print
+- **test**: run the child pytest runs in test_pytest_with_report from the repo root
+- **test**: run the stale-takeover HQ on one lagged plane timeline instead of rewinding the clock
+- **test**: drop wall-clock allowlist entries for retired fence spikes and move the spike-merge measurement out of the generated report
+
+### Refactor
+
+- **hq**: fail closed when a Dolt capability cursor reports no result set
+- **validation**: keep the broker engine selector out of keys
+- **scripts**: read capability closeout objects through one batched git reader
+- **scripts**: read capability map objects through one batched git reader and parse each source once
+- **validation**: add SlotsEngine, today's host slots behind the broker port
+- **validation**: add the beadhive-validation-broker library with the broker port, job model and in-memory fake
+- **mcp**: build the operation catalog and MCP registry once per process
+- **wire**: run the wire-schema gate in-process through its Reader seam
+- **validation**: retire the closure-certification selective_ci machinery
+- **validation**: post-land and union merges run the evaluator under the key gate model
+- **validation**: on a push-main miss under model keys, run only the absent keys
+- **validation**: release attest asks attested_green for the release phase
+- **validation**: pass the lifecycle phase through the selective call sites
+- **validation**: add work.gate model, profiles and subsets with config validation
+- **adopt**: drive the port PlacementStore and drop PlacementAuthority
+- **fence**: put fence_audit, fence_orphan, fence_cutover and hive_forward behind the Dolt-only capabilities
+- **hq**: migrate runtime, receiver, operator and session onto the HQ storage port
+- **fence**: typed HiveFence bump with a grown ReclaimSet replaces FenceData.commit_bump(SQL)
+- **hq**: migrate hq_sql_config publication and recovery onto the HQ storage port
+- **hq**: migrate hq_sql_placement onto the HQ storage port
+
+### Perf
+
+- **validation**: run a gate's pending attest keys side by side through the local broker
+- **validation**: configure execution roots and set each run up inside its one root
+- **validation-broker**: place each key run on exactly one bounded execution root
+- **validation**: select the broker engine from work.validation_broker, slots by default
+- **validation-broker**: local in-process engine with reservation admission and group-aware packing
+- **hq**: skip the back-to-back duplicate closing read of an unqualified hive lease read
+- **hq**: decide require_eligible against the catalog entry with one authority read
+- **hq**: take a Git eligibility read's constituents from its opening authority read
+- **test**: skip importing test files a -m selection fully deselects
+- **test**: pack the root-composition lane with worksteal like the other Dolt lanes
+- **test**: pack worksteal chunks on the stateful lane
+- **test**: cut pooled fence-cluster rewind from ~6.9 s to ~0.8 s per test
+- **test**: pack worksteal chunks by predicted work and Dolt-slot need
+
 ## v0.24.4 (2026-10-11)
 
 ### Fix
