@@ -448,6 +448,69 @@ cutover). No child depends on a wrapper-library bead, because none is recommende
 Suggested order, by seconds per unit of risk: G3, G5, G7 (all P1), then G4, G8, G6, G10, G9,
 G11 after each group, and G1/G2 together with `bh-i3nc3`.
 
+## Measured after Group A (`bh-0hsdi`, tree `96188a28`)
+
+Group A (`bh-100df`, `bh-dcwkf`) is on main, and so are the B and C children (G3 to G10) and
+G11 (`bh-0br25`). The first full-lane reports after them are the stateful run
+`run-feb02d3c56aa04dfacfe57bafb0aaee2` (tree `08a6cfb6`, 10,354 tests, 16 workers) and the
+integration run `run-9074c623077b0ccff3aad564a519a83c` (push-main gate on `96188a28`, 373 tests,
+369 passed, 4 skipped, 16 workers).
+
+| Lane | Baseline (`2e60e00f`) | After A projection | Measured pytest wall | Measured key wall | Measured summed |
+|---|---:|---:|---:|---:|---:|
+| Stateful | 551 s | 250-280 s (After A, wall); 224 s (After C) | 257.7 s | 289.1 s | 3,392.6 s |
+| Integration | 447 s | 606 s | 523.7 s | 543.9 s | 8,050.4 s |
+
+- **Stateful** lands inside the 250-280 s band and 34 s above the After C figure. The summed time
+  (3,392.6 s) is 4% above the After C projection (3,247.2 s), so the B and C savings arrived
+  almost as planned. The packing factor is 257.7 / (3,392.6 / 16) = 1.215, against 1.104
+  projected: the lane is now 35 tests of 10 s or more (600.6 s, 18% of the sum) plus a long tail
+  of fast tests, and the workers finish unevenly.
+- **Integration** is 82 s (14%) faster than the 606 s projection. Summed time is 8,050 s against
+  8,565 s projected, because the moved HQ tests ran faster on the idle host than their stateful
+  baseline numbers. The 4 skipped are the pre-existing skips. The 519 s / 507.7 s figure first
+  reported by the coordinator was an earlier run of the same tree; the numbers above are the
+  push-main gate run.
+- **Durations file.** `tests/harness/test_durations.json` was regenerated with
+  `just refresh-test-durations` over all runs under `.bh/validation/runs`, so the lane takes
+  its newest full-lane reports: stateful from 6 reports (100% coverage, 10,354 of 10,354),
+  root-composition from 6 reports (1,316 of 1,316), and integration from the one post-A report
+  (373 of 373). The moved HQ and process-boundary tests are now filed under the integration
+  lane's report. The file holds 12,043 tests and 588 modules. Integration has a single sample,
+  so its medians are one observation each until the next full integration run.
+
+## Group D: the next move-or-seam list
+
+Everything left in the stateful lane at 10 s or more, grouped by what still makes it slow.
+Residuals are estimates (the same convention as C: each child must measure before it converts).
+Seconds are from the stateful JUnit above; "saved" is summed seconds leaving the lane, and the
+wall gain is saved / 16 x 1.215.
+
+| Key | Tests (stateful s) | Disposition | Seam | Saved s | What still proves the behaviour |
+|---|---|---|---|---:|---|
+| D1 | `test_wire_schemas.py::test_actual_gate_cli_rejects_*` and `test_actual_gate_cli_rejects_same_major_not_mutations[*]` (10 tests, 139.5 s; 13 to 15 s each) | Seam (B) | Call `check_wire_schema_compat.run(root, base_ref, baseline_reader=...)` over a `FilesystemReader` baseline copy instead of spawning the CLI plus git per mutation. Keep `test_actual_gate_cli_allows_additive_catalog_operation` (A12, integration) as the one real CLI case | 125 | The in-process `run()` asserts the same exit status and diagnostics; A12 proves the argv and git path |
+| D2 | `test_wire_release_publish.py` (10 tests, 161.3 s; 8 at 10 s or more) | Seam (B) | Same `Reader` seam for the publish and floor tests; one baseline copy per module instead of a git history per test. Keep one real-git publish case | 120 | The in-process publish gate and one real-git publish test |
+| D3 | `unit/modules/config/test_dependency_ledger.py` (4 tests, 78.1 s; three at 25 to 26 s) | Cached fixture (C) | C9 shares `build_ledger()` per module, but xdist spreads the three tests over workers, so each builds. Cache the ledger once per session in a file under `tmp_path_factory.getbasetemp().parent` with a file lock | 52 | The ledger test still compares a real build to the checked file |
+| D4 | `test_transport_composition_roots.py` (2 tests, 54.2 s; 27.3 and 26.9 s) | Cached fixture (C) | The two tests still render separately. One session render shared through the same worker-shared cache as D3, with the failing-`git` `PATH` guard on that single render | 27 | The `--check` render, with the no-git-object property proved on the shared build |
+| D5 | `test_capability_closeout.py` (36.1 s), `test_capability_module_map.py` (15.3 s), `test_gateway_contract.py` (21.5 s for 2) | Cached fixture (C) | Share the session `build_proof()` and `operations()` catalog with the reproducibility comparisons; keep one independent second build as the determinism check | 15 (estimate) | One real second build per reproducibility test |
+| D6 | `test_contract_release.py` (16 tests at 5 s or more, 124 s of 276.7 s file) and `test_contract_release_evidence.py` (6 tests, 42.7 s) | Cached fixture (C) | The integrity-gate (12.8 s) and stale-file/symlink (8.1 s, 7.9 s) mutation tests validate against the per-worker cached candidate instead of `build_release()`; the two-builds determinism test and the checked-release test stay real | 20 (estimate) | Checked-release and offline-generator tests keep the real builds |
+| D7 | `test_work.py` (40 tests at 5 s or more, 264.6 s of 716 s) and `test_work_top_level_composition.py` (8 tests, 60.4 s) | Cached fixture (C) | Epic/finish topology family (`root_first_wrapper`, `reviewed_first_parent`, `container_refresh`): restore a per-worker topology template with `cp -a`, extending the G9 repo/molecule templates to the epic-over-leaf-limit shapes. Git topology stays real because it is the subject | 90 (estimate) | The same real-git topology assertions on a restored copy |
+| D8 | `test_check_package_imports.py::test_real_repository_packages_classify_and_pass` (18.0 s), `test_check_test_wall_clock.py::test_repository_tests_are_clean` (9.4 s), `test_dependency_ledger.py::test_checked_config_dependency_ledger_is_current` (26.5 s) | Operator call (delete duplicate) | Same optional cut as the section above: `architecture-structural-check` and `generated-evidence-check` already run these scripts at every boundary | 54 (not counted) | The gate scripts |
+| **Total counted (D1 to D7)** | | | | **449** | |
+
+Projection: 449 summed seconds is about 34 s of wall, so the stateful pytest wall goes from
+257.7 s to about 224 s (key wall about 255 s). D1 and D2 are 245 s of that (55%) with the lowest
+risk, because the `Reader` seam already exists and A12 stays real; do them first. D7 is the
+largest residual in the file by name (`test_work.py` is 716 s, 21% of the lane) but is the least
+certain, so measure the template before counting it. After D the lane is limited by packing, not
+by single items: the longest remaining test would be about 27 s against a wall of about 224 s.
+
+**Not proposed.** No further test needs to move to integration: what is left in stateful needs
+no live process boundary beyond what A12 already covers. The integration tail is the opposite
+case (`test_hq_authority_backend.py` 1,602 s, `test_epoch_fencing_int.py` 1,131 s and
+`test_fence_composed_int.py` 642 s, together 42% of its summed time) and is covered by the
+earlier recommendation to give the signed-HQ family its own attest key, not by a seam.
+
 ## Side findings (not filed)
 
 - `bh doctor`, when run from the beadhive checkout, spends about 13 s in the real Pants build
