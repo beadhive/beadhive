@@ -954,7 +954,7 @@ class ValidationBrokerBudgetConfig(_Section):
         ),
     )
     pools: dict[str, int] = Field(
-        default_factory=lambda: {"dolt-servers": 12},
+        default_factory=lambda: {"dolt-servers": 28},
         description=(
             "Named counted pools no sensor can see, e.g. dolt-servers: concurrent Dolt servers "
             "the host's validation keys may hold. A reservation naming an absent pool is refused."

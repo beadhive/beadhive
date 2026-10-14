@@ -113,7 +113,8 @@ def run_recipes(
     """Run ``recipes`` side by side through ``engine``, or one by one when it is ``None``."""
     if engine is None:
         return _sequential(recipes, cwd, run)
-    setup = validation_broker_engine.broker_settings(cfg).setup
+    settings = validation_broker_engine.broker_settings(cfg)
+    setup = settings.setup
     keys = []
     for recipe in recipes:
         name = recipe.removeprefix(RECIPE_PREFIX)
@@ -159,6 +160,7 @@ def run_recipes(
         report=report,
         fail_fast=fail_fast,
         warn=lambda line: _say(line, err=True),
+        laggard_first=settings.packer.laggard_first,
     )
     for line in summary_lines(result):
         _say(line)

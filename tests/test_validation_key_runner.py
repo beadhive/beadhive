@@ -209,7 +209,7 @@ def _run_group(runner, keys, broker=None):
     reported = []
     warnings: list[str] = []
     result = runner.run_group(
-        broker or InMemoryBroker(Capacity(64, 1 << 40, {"dolt-servers": 12}), ManualClock()),
+        broker or InMemoryBroker(Capacity(64, 1 << 40, {"dolt-servers": 28}), ManualClock()),
         keys,
         report=reported.append,
         warn=warnings.append,

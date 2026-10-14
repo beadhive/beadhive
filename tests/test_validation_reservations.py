@@ -55,10 +55,27 @@ def test_measured_profiles_match_the_adr_table() -> None:
     assert (stateful.cpu_min, stateful.cpu_max) == (8, 16)
     assert stateful.memory_bytes == 8704 * MIB
     assert dict(stateful.pools) == {"dolt-servers": 2}
-    assert dict(resolve_reservation("integration").pools) == {"dolt-servers": 4}
+    integration = resolve_reservation("integration")
+    assert (integration.cpu_min, integration.cpu_max) == (8, 16)
+    assert integration.memory_bytes == 7680 * MIB
+    assert dict(integration.pools) == {"dolt-servers": 16}
     assert dict(resolve_reservation("bd-cli").pools) == {"dolt-servers": 10}
     assert dict(resolve_reservation("docs").pools) == {}
-    assert DEFAULT_EXPECTED_SECONDS["stateful"] == 332.0
+    assert DEFAULT_EXPECTED_SECONDS["stateful"] == 289.0
+    assert DEFAULT_EXPECTED_SECONDS["integration"] == 519.0
+
+
+def test_integration_and_stateful_grants_match_the_recipe_worker_counts() -> None:
+    """bh-itn9m: cpu_max is the -n each runs under slots, and integration is the laggard."""
+    justfile = (ROOT / "justfile").read_text()
+    assert 'integration_workers := "16"' in justfile
+    assert 'stateful_workers := "16"' in justfile
+    assert resolve_reservation("integration").cpu_max == 16
+    assert resolve_reservation("stateful").cpu_max == 16
+    assert (
+        resolve_reservation("integration").cpu_max + resolve_reservation("stateful").cpu_min <= 32
+    )
+    assert max(DEFAULT_EXPECTED_SECONDS, key=DEFAULT_EXPECTED_SECONDS.__getitem__) == "integration"
 
 
 def test_an_unknown_key_resolves_the_fallback() -> None:
@@ -74,7 +91,7 @@ def test_an_override_replaces_the_default_wholesale() -> None:
     assert (reservation.cpu_min, reservation.cpu_max) == (2, 4)
     assert reservation.memory_bytes == 100 * MIB
     assert dict(reservation.pools) == {}  # replaced, not merged with the default pool
-    assert expected_seconds("stateful", cfg) == 332.0
+    assert expected_seconds("stateful", cfg) == DEFAULT_EXPECTED_SECONDS["stateful"]
 
 
 def test_an_override_can_set_expected_wall_and_pools() -> None:
@@ -182,3 +199,33 @@ def test_recipes_honour_the_grant_and_fall_back_to_their_current_count(
     assert _shell_expand(expression, {}) == default  # unset: exactly today's worker count
     assert _shell_expand(expression, {"BH_GRANT_CPUS": ""}) == default
     assert _shell_expand(expression, {"BH_GRANT_CPUS": "6"}) == "6"
+
+
+DOLT_FROM_GRANT = "env ${BH_GRANT_DOLT_SERVERS:+BH_DOLT_SLOTS=$BH_GRANT_DOLT_SERVERS}"
+
+
+def test_integration_lane_takes_its_dolt_slots_from_the_grant() -> None:
+    """bh-itn9m / bh-0pjeb D4: the grant's dolt-servers pool is the lane's BH_DOLT_SLOTS."""
+    justfile = (ROOT / "justfile").read_text()
+    recipe = justfile.split("\ntest-integration-land:\n", 1)[1].split("\n\n", 1)[0]
+    assert recipe.lstrip().startswith(DOLT_FROM_GRANT + " ")
+
+
+@pytest.mark.parametrize(
+    ("environ", "slots"),
+    [
+        ({"BH_GRANT_DOLT_SERVERS": "16", "BH_DOLT_SLOTS": "12"}, "16"),  # engine local: the grant
+        ({"BH_DOLT_SLOTS": "12"}, "12"),  # engine slots: the operator's value, untouched
+        ({}, "unset"),  # nothing set: the harness default applies, untouched
+    ],
+)
+def test_the_dolt_slot_prefix_leaves_the_slots_path_unchanged(environ, slots) -> None:
+    env = {"PATH": os.environ["PATH"], **environ}
+    out = subprocess.run(
+        ["sh", "-c", DOLT_FROM_GRANT + " sh -c 'echo \"${BH_DOLT_SLOTS:-unset}\"'"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert out.stdout.strip() == slots

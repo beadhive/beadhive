@@ -37,7 +37,7 @@ CATALOG = (
     {"name": "integration", "cmd": "just integration"},
 )
 COSTS = {"docs": 9.0, "unit": 3.0, "stateful": 380.0, "integration": 325.0}
-BIG = Capacity(64, 1 << 40, {"dolt-servers": 12})
+BIG = Capacity(64, 1 << 40, {"dolt-servers": 28})
 
 
 @pytest.fixture(autouse=True)
@@ -206,30 +206,30 @@ def test_an_unavailable_local_engine_is_todays_sequential_path(gate, monkeypatch
 
 def test_a_key_the_engine_cannot_fit_runs_afterwards_on_the_slots_path(gate, capsys) -> None:
     run, engine, entry, _ = gate
-    # stateful reserves cpu_min 8 (bh-9oc32): it can never fit a 6-CPU budget.
-    engine(InMemoryBroker(Capacity(6, 1 << 40, {"dolt-servers": 12}), ManualClock()))
+    # integration reserves 16 dolt-servers (bh-itn9m): it can never fit a 12-server pool.
+    engine(InMemoryBroker(Capacity(64, 1 << 40, {"dolt-servers": 12}), ManualClock()))
     checkouts = _Checkouts(lambda cmd: 0)
 
     assert run(_runner(checkouts, entry)) == 0
     shared = [cmd for cmd, kwargs in checkouts.calls if "shared" in kwargs]
     sequential = [cmd for cmd, kwargs in checkouts.calls if "shared" not in kwargs]
-    assert sorted(shared) == ["just docs", "just integration", "just unit"]
-    assert sequential == ["just stateful"]
-    assert checkouts.calls[-1][0] == "just stateful"  # after the group
+    assert sorted(shared) == ["just docs", "just stateful", "just unit"]
+    assert sequential == ["just integration"]
+    assert checkouts.calls[-1][0] == "just integration"  # after the group
     captured = capsys.readouterr()
-    assert "1 key(s) fall back to the sequential slots path: stateful" in captured.err
-    assert "✓ stateful: ran green" in captured.out
+    assert "1 key(s) fall back to the sequential slots path: integration" in captured.err
+    assert "✓ integration: ran green" in captured.out
 
 
 def test_fail_fast_after_the_group_starts_no_fallback_key(gate, monkeypatch, capsys) -> None:
     run, engine, entry, _ = gate
     monkeypatch.setenv(selective_validation.FAIL_FAST_ENV, "1")
-    engine(InMemoryBroker(Capacity(6, 1 << 40, {"dolt-servers": 12}), ManualClock()))
+    engine(InMemoryBroker(Capacity(64, 1 << 40, {"dolt-servers": 12}), ManualClock()))
     checkouts = _Checkouts(lambda cmd: 1 if cmd == "just unit" else 0)
 
     assert run(_runner(checkouts, entry)) == 1
-    assert "just stateful" not in [cmd for cmd, _ in checkouts.calls]
-    assert "stateful: not run — fail-fast after unit" in capsys.readouterr().out
+    assert "just integration" not in [cmd for cmd, _ in checkouts.calls]
+    assert "integration: not run — fail-fast after unit" in capsys.readouterr().out
 
 
 # ---- the boundary's rollback rule is unchanged under engine local ---------------------------

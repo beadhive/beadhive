@@ -197,7 +197,8 @@ class CheckoutKeyRunner:
         phase = str(self.kwargs.get("phase", "validation"))
         sha = worktree._branch_sha(self.entry, self.ref) or self.ref
         group = f"{phase}:{sha[:12]}:{os.getpid()}:{secrets.token_hex(3)}"
-        setup = validation_broker_engine.broker_settings(cfg).setup
+        settings = validation_broker_engine.broker_settings(cfg)
+        setup = settings.setup
         main = registry.hive_dir(self.entry)
 
         @contextmanager
@@ -217,6 +218,7 @@ class CheckoutKeyRunner:
             report=report,
             fail_fast=fail_fast,
             warn=warn,
+            laggard_first=settings.packer.laggard_first,
         )
 
     @contextmanager

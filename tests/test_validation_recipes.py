@@ -24,7 +24,7 @@ from beadhive_validation_broker.contract import ManualClock
 ROOT = Path(__file__).resolve().parents[1]
 GENEROUS = 10.0
 RECIPES = ("attest-docs", "attest-unit", "attest-packages")
-BIG = Capacity(64, 1 << 40, {"dolt-servers": 12})
+BIG = Capacity(64, 1 << 40, {"dolt-servers": 28})
 
 
 class _Just:

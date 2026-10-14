@@ -107,7 +107,7 @@ def test_local_is_selected_and_resolves_budget_and_floor(tmp_path, meminfo) -> N
     engine = _select({}, tmp_path, meminfo, environ={ENGINE_ENV: "local"}, warnings=warnings)
     assert isinstance(engine, FailoverBroker) and engine.name == "local"
     status = engine.status()
-    assert status.budget == Capacity(16.0, 64 * GIB, {"dolt-servers": 12})
+    assert status.budget == Capacity(16.0, 64 * GIB, {"dolt-servers": 28})
     local = engine._primary
     assert local._floor == Capacity(0.0, int(64 * GIB * 0.085)), "8.5% of RAM beats 4G here"
     assert local.policy.headroom_cpu == 8.0 and local.policy.easy
