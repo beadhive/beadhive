@@ -240,7 +240,7 @@ testpaths = ["tests"]
 pythonpath = [".", "src"]
 markers = [
     "real_service: isolated Beads v1.3 HTTP conformance (opt in)",
-    "integration: real-bd AGF topology harness (slower; needs the bd binary)",
+    "integration: real process boundaries: bd AGF topology, signed-HQ backend, live daemons and CLI subprocesses (slower)",
     "pants_profile: executes the Pants engine; required by the Pants full gate only",
     # Not documentation: conftest's `_bound_concurrent_dolt_servers` makes a marked test hold one
     # of `harness.world.MAX_CONCURRENT_DOLT_SERVER_TESTS` run-wide slots. That is the ONLY thing
