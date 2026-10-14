@@ -312,7 +312,7 @@ work:
     budget:                       # local only: the most it grants at once
       cpu: 0                      # 0 = every CPU the host reports
       memory: "100%"              # bytes, K/M/G/T, or % of RAM
-      pools: {dolt-servers: 12}   # counted pools no sensor can see
+      pools: {dolt-servers: 28}   # counted pools no sensor can see
     floor:                        # local only: left free of measured availability
       cpu: 0
       memory: "4G"                # the floor is the larger of memory and memory_percent
@@ -398,7 +398,9 @@ host admission above, unchanged. `engine: local` (or `BH_VALIDATION_BROKER_ENGIN
 invocation) selects the in-process local engine: it admits a job only when its whole minimum
 reservation fits `min(budget, measured MemAvailable/CPUs - floor)` less what is already granted,
 in cpu, memory and every named pool; orders by priority class, then laggard first within a gate;
-grants spare CPU up to each key's `cpu_max` (laggards first, others keeping `headroom_cpu` back);
+grants spare CPU up to each key's `cpu_max` (laggards first, others keeping `headroom_cpu` back;
+side by side, `laggard_first` also submits a gate's keys longest expected first, so the laggard
+takes its whole grant before shorter keys claim CPU, bh-itn9m);
 backfills only where it delays no reserved key (EASY); serves nested requests under
 `BH_VALIDATION_LEASE` from the parent's grant alone; and reclaims a dead client's leases. A local
 engine that is misconfigured, cannot measure the host (no `/proc/meminfo`) or errors falls back to

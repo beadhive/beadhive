@@ -20,6 +20,7 @@ from beadhive.validation_side_by_side import (
     KeyOutcome,
     group_priority,
     run_group,
+    submission_order,
     summary_lines,
 )
 from beadhive_validation_broker import (
@@ -30,6 +31,7 @@ from beadhive_validation_broker import (
     InMemoryBroker,
     JobHandle,
     LeaseLost,
+    LocalEngine,
     Owner,
     PriorityClass,
     Reservation,
@@ -40,8 +42,8 @@ GENEROUS = 10.0
 OWNER = Owner(pid=4242)
 
 
-def _key(name: str, *, cpu: int = 1, required: bool = True) -> GroupKey:
-    return GroupKey(name, f"just attest-{name}", Reservation(cpu, cpu, 0), 10.0, required)
+def _key(name: str, *, cpu: int = 1, required: bool = True, expected: float = 10.0) -> GroupKey:
+    return GroupKey(name, f"just attest-{name}", Reservation(cpu, cpu, 0), expected, required)
 
 
 class GatedBroker:
@@ -404,3 +406,79 @@ def test_the_in_memory_fake_broker_runs_a_group_too() -> None:
 )
 def test_group_priority(phase, priority) -> None:
     assert group_priority(phase) is priority
+
+
+def test_keys_are_submitted_longest_expected_first_by_default() -> None:
+    """bh-itn9m: the engine admits on every submit, so the laggard must be submitted first."""
+    broker = GatedBroker(capacity=3)
+    keys = [_key("a", expected=10), _key("b", expected=50), _key("c", expected=30)]
+    _run(broker, keys, FakeWorkspace())
+    assert [spec.key for spec in broker.specs.values()] == ["b", "c", "a"]
+
+
+def test_laggard_first_off_submits_in_the_callers_order() -> None:
+    broker = GatedBroker(capacity=3)
+    keys = [_key("a", expected=10), _key("b", expected=50), _key("c", expected=30)]
+    _run(broker, keys, FakeWorkspace(), laggard_first=False)
+    assert [spec.key for spec in broker.specs.values()] == ["a", "b", "c"]
+
+
+def test_submission_order_is_stable_for_equal_estimates() -> None:
+    keys = [_key("a"), _key("b", expected=20), _key("c"), _key("d")]
+    assert [k.name for k in submission_order(keys)] == ["b", "a", "c", "d"]
+    assert submission_order(keys, laggard_first=False) == keys
+
+
+#: The justfile's attest-* declaration order up to integration (check-all-native submits in it).
+CATALOG_PREFIX = ("docs", "unit", "stateful", "root-composition", "integration")
+
+
+def _catalog_keys(*names: str) -> list[GroupKey]:
+    from beadhive.validation_reservations import expected_seconds, resolve_reservation
+
+    return [
+        GroupKey(name, f"just attest-{name}", resolve_reservation(name), expected_seconds(name))
+        for name in names
+    ]
+
+
+def _first_grants(engine, keys, **extra) -> tuple[dict[str, str], list[str]]:
+    """Each key's first grant env and the admission order, while every key still runs."""
+    rendezvous = threading.Barrier(len(keys), timeout=GENEROUS)
+    workspace = FakeWorkspace(lambda key, grant: rendezvous.wait() and 0)
+    result, _, _ = _run(engine, keys, workspace, **extra)
+    assert {o.rc for o in result.outcomes.values()} == {0}
+    admitted = [e.job_id.split("/")[-1] for e in engine.events() if e.kind.value == "admitted"]
+    return {k: g.env()["BH_GRANT_CPUS"] for k, g in workspace.grants.items()}, admitted
+
+
+def test_laggard_first_gives_integration_16_and_stateful_at_least_8_on_32_cpus() -> None:
+    """bh-itn9m: catalog order puts stateful first; integration (the laggard) still gets 16.
+
+    Before, stateful (submitted first) flexed to 16 and integration stopped at its cpu_max 8, so
+    it ran 8 xdist workers side by side and ~780 s instead of ~520 s.
+    """
+    engine = LocalEngine(Capacity(32, 64 << 30, {"dolt-servers": 28}), ManualClock())
+    cpus, admitted = _first_grants(engine, _catalog_keys(*CATALOG_PREFIX))
+
+    assert admitted[:2] == ["integration", "stateful"]
+    assert cpus["integration"] == "16"
+    assert int(cpus["stateful"]) >= 8
+
+
+def test_without_laggard_first_stateful_takes_the_flex_and_integration_stops_short() -> None:
+    """The contrast: catalog order is what left integration short on 2026-10-13."""
+    engine = LocalEngine(Capacity(32, 64 << 30, {"dolt-servers": 28}), ManualClock())
+    cpus, admitted = _first_grants(engine, _catalog_keys(*CATALOG_PREFIX), laggard_first=False)
+
+    assert admitted == list(CATALOG_PREFIX)
+    assert cpus["stateful"] == "16"
+    assert int(cpus["integration"]) < 16
+
+
+def test_integration_is_granted_its_dolt_servers() -> None:
+    engine = LocalEngine(Capacity(32, 64 << 30, {"dolt-servers": 28}), ManualClock())
+    keys = _catalog_keys("integration")
+    workspace = FakeWorkspace()
+    _run(engine, keys, workspace)
+    assert workspace.grants["integration"].env()["BH_GRANT_DOLT_SERVERS"] == "16"

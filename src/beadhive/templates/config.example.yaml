@@ -255,7 +255,7 @@ worktrees:
 #   validation_broker:             # host-owned, opt-in validation broker engine (bh-qrixp).
 #     engine: slots                # slots (today's admission) | local; BH_VALIDATION_BROKER_ENGINE
 #                                  # overrides it. A failing local engine falls back to slots.
-#     budget: {cpu: 0, memory: "100%", pools: {dolt-servers: 12}}  # cpu 0 = every host CPU
+#     budget: {cpu: 0, memory: "100%", pools: {dolt-servers: 28}}  # cpu 0 = every host CPU
 #     floor: {cpu: 0, memory: "4G", memory_percent: 8.5}  # larger memory floor wins
 #     packer: {laggard_first: true, laggard_flex: true, easy: true, headroom_cpu: 8,
 #              group_major: false, aging: 4}

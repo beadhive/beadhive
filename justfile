@@ -856,7 +856,7 @@ hq-storage-check:
     ./scripts/hermetic.sh uv sync --locked --offline --inexact --no-default-groups \
         --package beadhive-hq-storage --package beadhive-hq-storage-dolt
     uv run --no-sync python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run --no-sync python scripts/pytest_with_report.py -n auto \
+        ./scripts/hermetic.sh uv run --no-sync python scripts/pytest_with_report.py -n ${BH_GRANT_CPUS:-auto} \
         packages/beadhive-hq-storage/tests packages/beadhive-hq-storage-dolt/tests \
         -m "not dolt_machine_full"
     ./scripts/hermetic.sh uv build --package beadhive-hq-storage --no-build-isolation
@@ -870,7 +870,7 @@ root-workspace-check: root-composition-validate
     uv run ruff format --check packages/beadhive-pants
     ./scripts/hermetic.sh uv sync --locked --offline --inexact --no-default-groups --package beadhive-pants
     uv run --no-sync python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run --no-sync python scripts/pytest_with_report.py -n auto \
+        ./scripts/hermetic.sh uv run --no-sync python scripts/pytest_with_report.py -n ${BH_GRANT_CPUS:-auto} \
         -m "not pants_profile" packages/beadhive-pants/tests
     ./scripts/hermetic.sh uv build --package beadhive-pants --no-build-isolation
     just release-smoke-check
@@ -929,11 +929,13 @@ refresh-test-durations reports=".bh/validation/runs/*/reports/*.xml":
     uv run python scripts/refresh_test_durations.py --lanes --min-seconds 0 --glob {{quote(reports)}}
 
 # the LAND gate's complete integration pass — fenced and parallel
+# DOLT SLOTS FROM THE GRANT (bh-itn9m): under a validation broker grant, BH_DOLT_SLOTS is the
+# grant's dolt-servers pool (BH_GRANT_DOLT_SERVERS); without one (engine slots) it is untouched.
 # Match the native partition's work stealing so idle workers can take unstarted
 # fixture-heavy tests instead of leaving a late queue to one worker. Preserve the
 # complete integration collection, fixed worker bound, fence, and watchdog limit.
 test-integration-land:
-    BH_TEST_WORKSTEAL_PACK={{worksteal_pack}} BH_TEST_PREFILTER={{test_prefilter}} uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
+    env ${BH_GRANT_DOLT_SERVERS:+BH_DOLT_SLOTS=$BH_GRANT_DOLT_SERVERS} BH_TEST_WORKSTEAL_PACK={{worksteal_pack}} BH_TEST_PREFILTER={{test_prefilter}} uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
         ./scripts/hermetic.sh uv run python scripts/pytest_with_report.py -n ${BH_GRANT_CPUS:-{{integration_workers}}} tests --dist {{test_dist}} -m "integration"
 
 # ADR condition 9 (bh-p07dv): re-run the Dolt/bd trigger-semantics canary. REQUIRED on every Dolt

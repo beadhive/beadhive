@@ -22,6 +22,14 @@ engine error, a lost lease, a setup or root mismatch) is returned in
 :attr:`GroupResult.fallback`; the caller runs those keys afterwards on today's sequential slots
 path. After the first engine error no further key starts here.
 
+**Laggard-first submission (bh-itn9m).** The engine admits on every ``submit``, so the order keys
+are submitted in decides who sees an idle host first. With ``laggard_first`` (the default, the
+engine's ``work.validation_broker.packer.laggard_first``) keys are submitted longest expected
+first (ties: the caller's order): the gate's laggard takes its whole flexible grant before a
+shorter key claims the CPU it would have flexed into. Submitted in catalog order, ``stateful``
+took 16 CPUs and ``integration`` (the laggard) was left at 8 workers and ran ~780 s instead of
+~520 s. Off, keys are submitted in the caller's order.
+
 Everything that touches the world is a port: the broker, the workspace factory and its
 ``execute``, the clock. Threads copy the caller's context (``contextvars``), so a scoped config
 (``identity.config_scope``) reaches every key.
@@ -61,6 +69,7 @@ __all__ = [
     "WorkspaceFactory",
     "group_priority",
     "run_group",
+    "submission_order",
 ]
 
 #: Lifecycle phases a developer is waiting on; everything else is a land.
@@ -177,6 +186,13 @@ def _spec(key: GroupKey, group: str, priority: PriorityClass, owner: Owner) -> J
     )
 
 
+def submission_order(keys: Sequence[GroupKey], *, laggard_first: bool = True) -> list[GroupKey]:
+    """The order ``keys`` are submitted in: longest expected first, or as given (module doc)."""
+    if not laggard_first:
+        return list(keys)
+    return sorted(keys, key=lambda key: -key.expected_seconds)  # stable: ties keep caller order
+
+
 def _quietly(action: Callable[[], object]) -> None:
     try:
         action()
@@ -196,6 +212,7 @@ def run_group(
     fail_fast: bool = False,
     clock: Clock = time.monotonic,
     warn: Callable[[str], None] = lambda _message: None,
+    laggard_first: bool = True,
 ) -> GroupResult:
     """Run ``keys`` concurrently as gate ``group``; see the module docstring for the policy.
 
@@ -246,7 +263,7 @@ def run_group(
         with shared.lock:
             return shared.stopped_after
 
-    for key in keys:
+    for key in submission_order(keys, laggard_first=laggard_first):
         if shared.tripped:
             fall_back(key.name, shared.tripped)
             continue

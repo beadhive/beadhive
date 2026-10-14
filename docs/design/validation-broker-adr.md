@@ -356,8 +356,8 @@ From `key-profiles.measured.json` (artifact on branch `wt/bead/issue/bh-5mdar.2`
 
 | Key | cpu min | cpu max | memory at max | `dolt-servers` | Expected wall |
 |---|---|---|---|---|---|
-| stateful | 8 | 16 | 8.5 GiB (≈ 4.4 GiB + 0.2 GiB/worker) | 2 | 332 s |
-| integration | 4 | 8 | 2.5 GiB | 4 | 357 s |
+| stateful | 8 | 16 | 8.5 GiB (≈ 4.4 GiB + 0.2 GiB/worker) | 2 | 289 s |
+| integration | 8 | 16 | 7.5 GiB (incl. 16 Dolt slots × ≈ 0.2 GiB) | 16 | 519 s |
 | demos | 1 | 2 | 0.5 GiB | 0 | 161 s |
 | root-composition | 4 | 8 | 1.0 GiB | 0 | 51 s |
 | bd-cli | 8 | 16 | 2.2 GiB (≈ 0.1 GiB/worker) | 10 (one per worker) | 33 s |
@@ -366,6 +366,19 @@ From `key-profiles.measured.json` (artifact on branch `wt/bead/issue/bh-5mdar.2`
 | docs | 1 | 2 | 0.25 GiB | 0 | 8 s |
 | unit | 1 | 1 | 0.25 GiB | 0 | 2 s |
 
+- **integration flexes to 16 first and takes its Dolt slots from the grant (`bh-itn9m`).** Side
+  by side on a 32-CPU host, stateful (submitted first in catalog order) flexed to 16 and
+  integration stopped at its `cpu_max` 8, so it ran 8 xdist workers and took 774–791 s against
+  447–471 s alone at 16. integration now reserves 8–16 CPUs (the recipe's worker count) and the
+  side-by-side runner submits a gate's keys longest expected first (`packer.laggard_first`), so
+  the laggard takes its whole 16 and stateful (8–16) still gets at least 8. `test-integration-land`
+  sets `BH_DOLT_SLOTS` from `BH_GRANT_DOLT_SERVERS` when granted (slots path untouched), and
+  integration reserves 16 `dolt-servers` (one per worker) to get past the ~455 s floor of 12 slots
+  (`bh-0pjeb` D4). A test Dolt `sql-server` peaked at ~200 MiB RSS, so 16 slots hold ~3.2 GiB
+  (6.4 GiB if every slot ran two servers); the memory reservation carries it. The budget's
+  `dolt-servers` default is 28, the catalog's sum, so the pool never serialises one gate by itself.
+  Expected walls were re-measured alone at 16 workers on main `96188a28`. `hq-storage-check` and
+  `root-workspace-check` read `BH_GRANT_CPUS` too.
 - **Admit against `min(budget, available − AMBER floor)`**, not RAM and not a static budget.
   Idle availability on this host ranged 6.4–12.9 GiB as other agents' tmpfs moved 4.3 GiB.
 - **stateful's tmpfs scratch counts as memory.** Better, point the fence's `TMPDIR` scratch at a

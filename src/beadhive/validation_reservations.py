@@ -10,6 +10,26 @@ is the only source.
 ``work.attest.keys[].resources`` REPLACES a key's default wholesale. An unknown key resolves to
 :data:`FALLBACK`, never an error, so a new catalog key admits conservatively instead of failing.
 
+``integration`` reserves up to 16 CPUs (bh-itn9m), the recipe's fixed worker count
+(``integration_workers``), so under the local engine it runs the same ``-n`` it runs under slots.
+It used to stop at ``cpu_max`` 8 (the bh-5mdar.2 knee, measured on a smaller selection) and ran
+~780 s side by side against ~520 s alone at 16 workers: submitted in catalog order, ``stateful``
+flexed to 16 first. It is now the gate's laggard (expected 519 s vs stateful's 289 s, both
+measured alone at 16 workers on main 96188a28) and ``run_group`` submits it first (laggard-first
+submission), so it flexes to its whole 16 before shorter keys claim CPU; ``stateful`` (8..16)
+still gets at least its ``cpu_min`` 8 beside it on a 32-CPU host. integration's ``cpu_min`` 8 is
+the same watchdog floor as stateful's.
+
+``integration`` also takes its Dolt concurrency from the grant (bh-itn9m, bh-0pjeb D4):
+``test-integration-land`` sets ``BH_DOLT_SLOTS`` from ``BH_GRANT_DOLT_SERVERS`` when a grant is
+present; without one (the slots path) ``BH_DOLT_SLOTS`` is untouched. Its ``dolt-servers``
+reservation is 16, one per worker, past the ~455 s floor that 12 slots set. Memory: a test Dolt
+``sql-server`` peaked at ~200 MiB RSS (measured 2026-10-14 on ``test_epoch_fencing_int``), so 16
+slots hold ~3.2 GiB (6.4 GiB if every slot ran two servers, as the backup round trip does). The
+reservation is 7.5 GiB: 2.5 GiB measured at 8 workers, doubled for 16, plus 12 extra slots x
+200 MiB. The budget's ``dolt-servers`` pool default (28) is the sum of the catalog's
+reservations, so the pool alone never serialises one gate; memory admission bounds the host.
+
 ``stateful`` keeps ``cpu_min`` 8 (the ADR's floor option) rather than scaling
 ``BH_TEST_TIMEOUT_SECONDS``: at 4 workers it took 1,042 s, past the 900 s watchdog.
 
@@ -54,7 +74,7 @@ def _res(cpu_min: int, cpu_max: int, memory_mb: int, **pools: int) -> Reservatio
 #: Every key of the live attest catalog (scripts/check_attest_catalog.KEY_RECIPES).
 DEFAULT_RESERVATIONS: Mapping[str, Reservation] = {
     "stateful": _res(8, 16, 8704, dolt_servers=2),
-    "integration": _res(4, 8, 2560, dolt_servers=4),
+    "integration": _res(8, 16, 7680, dolt_servers=16),
     "demos": _res(1, 2, 512),
     "root-composition": _res(4, 8, 1024),
     "bd-cli": _res(8, 16, 2253, dolt_servers=10),
@@ -65,10 +85,11 @@ DEFAULT_RESERVATIONS: Mapping[str, Reservation] = {
     "hq-storage": FALLBACK,
 }
 
-#: Median wall seconds at ``cpu_max`` (bh-5mdar.2).
+#: Median wall seconds at ``cpu_max`` (bh-5mdar.2; integration and stateful re-measured alone at
+#: 16 workers for bh-itn9m).
 DEFAULT_EXPECTED_SECONDS: Mapping[str, float] = {
-    "stateful": 332.0,
-    "integration": 357.0,
+    "stateful": 289.0,
+    "integration": 519.0,
     "demos": 161.0,
     "root-composition": 51.0,
     "bd-cli": 33.0,
