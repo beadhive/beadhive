@@ -585,7 +585,7 @@ See [BEADS-SERVICE.md](BEADS-SERVICE.md) for the full behavior table.
 | Key | Default | Values | Effect |
 |---|---|---|---|
 | `work.gate.model` | `legacy` | `legacy` \| `keys`, per hive or global | `keys` evaluates every selective boundary (including post-land, union and the push-main miss path) per key through its phase profile, with the runtime catalog drift check and a fallback to the phase's `work.validate` command on drift. Rollback: set `legacy`. |
-| `work.gate.profiles.<phase>` | unset (`default`, itself `all`) | `all`, a subset name, or a key list | Keys a phase requires under `model: keys`. Phases: `check`, `submit`, `review`, `merge`, `merge-main`, `molecule`, `postland`, `union`, `release`, `push-main`, plus `default`. `push-main`, `release` and `postland` must be `all`. Rollback: remove the entry. |
+| `work.gate.profiles.<phase>` | unset (`default`, itself `all`) | `all`, a subset name, or a key list | Keys a phase requires under `model: keys`. Phases: `check`, `submit`, `review`, `merge`, `merge-main`, `molecule`, `postland`, `union`, `release`, `push-main`, plus `default`. Every phase accepts project-defined named subsets or key lists; projects own their strictness and policy. Rollback: remove the entry. |
 | `work.gate.subsets.<name>` | none | list of key names | Named key subsets a profile may reference. Rollback: remove the entry. |
 | `work.gate.carry.high_water` | unset (on under `keys`, off under `legacy`) | bool | Discover carry roots beyond the receipt base. Rollback: `false` restores single-hop sourcing. |
 | `work.gate.carry.max_roots` | `3` | int, `0` or more | Newest same-command green runs tried as extra carry roots per key. Rollback: `0` disables that scan. |

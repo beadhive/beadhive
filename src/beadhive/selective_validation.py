@@ -21,7 +21,6 @@ import typer
 from . import config_work_settings as config
 from . import identity, validation_ledger, validation_records
 from .bootstrap.impact import attest_keys, impact_resolver
-from .modules.config.contracts import GATE_ALL_KEY_PHASES
 
 Runner = Callable[[str], int]
 
@@ -208,25 +207,13 @@ _TREE_ID = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 
 
 def attested_green(entry, cfg, rev: str, phase: str) -> bool:
-    """The one aggregate predicate: does the ledger prove every active key green for ``rev``'s tree?
+    """Does the ledger prove the project's configured phase profile green for this tree?
 
-    Attest-keys ADR 3.4. All of these must hold, and any doubt answers ``False``:
-
-    - ``work.gate.model`` is ``keys``;
-    - ``rev`` resolves to a tree (an unresolved tree could only match a literal);
-    - a key catalog is configured and no key is disabled (a disabled key is never proof);
-    - every key is current-green (qualifying) or validly carried at that exact tree;
-    - no key is current-red at that tree;
-    - :func:`catalog_ok` (the opt-in drift check) holds;
-    - ``work.always_run`` passes, as :func:`validation_ledger.green_verdict` requires.
-
-    Optionality controls whether a lifecycle boundary may proceed; it never turns missing or
-    red evidence into proof. Every exception, including an unreadable ledger, is ``False``.
-    ``phase`` names the boundary asking; every phase requires every active key, which is the
-    ADR's hard limit for ``push-main``/``release``/``postland`` and the safe reading elsewhere.
-    For those three phases the profile must also resolve to every active key
-    (``P(phase) == active(C)``); :func:`config.gate_profile` pins them to ``all``, so a
-    configured subset there can only ever answer ``False`` here.
+    Requires the keys model, a resolved tree, a catalog with no disabled keys, qualifying
+    current or carried evidence for every required key, no required current-red key, a clean
+    catalog drift check and passing always-run checks. Unset or doubtful profiles require
+    every catalog key. Missing or red evidence outside a valid profile does not satisfy that
+    key and does not block this boundary. Every exception fails closed.
     """
     try:
         return _attested_green(entry, cfg, rev, phase)
@@ -242,14 +229,13 @@ def _attested_green(entry, cfg, rev: str, phase: str) -> bool:
         return False
     if config.gate_model(cfg, entry) != "keys":
         return False
-    if phase in GATE_ALL_KEY_PHASES and config.gate_profile(cfg, entry, phase) is not None:
-        return False  # P(phase) == active(C): a main-reaching profile must be every active key
     tree = validation_ledger.tree_of(entry, rev)
     if not _TREE_ID.fullmatch(tree or ""):
         return False
     keys = attest_keys(config.attest_config(cfg, entry))
     if not keys or any(key.is_disabled() for key in keys):
         return False
+    keys = required_keys(entry, cfg, phase)
     verdicts = validation_ledger.key_verdicts(entry, tree, keys, cfg=cfg)
     if set(verdicts) != {key.name for key in keys}:
         return False
@@ -724,6 +710,15 @@ def _profile_keys(entry, cfg, keys: Sequence, phase: str | None, main_gate: bool
     return frozenset(names)
 
 
+def required_keys(entry, cfg, phase: str, *, main_gate: bool = False) -> tuple:
+    """The phase's catalog keys; an unset or doubtful profile requires the full catalog."""
+    keys = attest_keys(config.attest_config(cfg, entry))
+    profile = _profile_keys(entry, cfg, keys, phase, main_gate)
+    if profile is None:
+        return tuple(keys)
+    return tuple(key for key in keys if key.name in profile) or tuple(keys)
+
+
 def _run(
     entry,
     cfg,
@@ -980,5 +975,6 @@ __all__ = [
     "precheck_cmd",
     "run",
     "record_full_gate_keys",
+    "required_keys",
     "warn_impact_fallback",
 ]
