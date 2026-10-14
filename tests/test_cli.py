@@ -25,11 +25,18 @@ from __future__ import annotations
 import pytest
 from typer.testing import CliRunner
 
-from beadhive import cli, config, home_migration
+from beadhive import cli, config, hive_services, home_migration
 from beadhive.cli import app
 from test_work import fake_build_verifier  # noqa: F401 — fixture resolved by name
 
 runner = CliRunner()
+
+# `hive_services` captures the unpatched `hive.onboard` at import time and treats any later
+# replacement as an injected test seam. `hive onboard` imports it lazily, so without this
+# eager import the first patch below would be captured as the "original" and the CLI would
+# fall through to the real onboarding path (KeyError on the captured kwargs). Importing it
+# here makes the seam independent of test order and of which checkout runs the tests.
+assert hive_services._ORIGINAL_HIVE_ONBOARD is not None
 
 
 # ---- _root: -a/--hive routing-flag gate ---------------------------------------

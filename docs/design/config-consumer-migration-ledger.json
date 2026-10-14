@@ -175,28 +175,28 @@
       {
         "facade_target": "beadhive.config.migrate_hive_keys_if_needed",
         "kind": "direct-facade",
-        "line": 91,
+        "line": 98,
         "path": "tests/test_cli.py",
         "target": "beadhive.config.migrate_hive_keys_if_needed"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 116,
+        "line": 123,
         "path": "tests/test_cli.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.claude_source",
         "kind": "direct-facade",
-        "line": 117,
+        "line": 124,
         "path": "tests/test_cli.py",
         "target": "beadhive.config.claude_source"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 135,
+        "line": 142,
         "path": "tests/test_cli.py",
         "target": "beadhive.config.load"
       },

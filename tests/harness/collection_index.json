@@ -57,7 +57,7 @@
   "tests/test_child_env.py": {"digest": "46843e5b08bc2f953686d720819c583872c09a41df98cb1046958d9cbc002e90", "marks": [[]]},
   "tests/test_claim_authority.py": {"digest": "14fa0d4bd313eacd8fddea994bc4f973f1b630d541d5bfbd1f95b85269af8ff9", "marks": [[]]},
   "tests/test_claim_fence.py": {"digest": "7b195a76bc0c138a292a5a92fc0cbc10ea8851ca6d4d41953efa507525e0ba7b", "marks": [[], ["parametrize"]]},
-  "tests/test_cli.py": {"digest": "32597331d48c6ed94e3ff9aba8b92f187f17cf82e7702a9e9b61e33c29c9f8d6", "marks": [[], ["usefixtures"]]},
+  "tests/test_cli.py": {"digest": "f058cafad9a607f86bf59b15bbb3e40175cfb21e1ae3d97223600fdfe420efe5", "marks": [[], ["usefixtures"]]},
   "tests/test_cli_lazy_import.py": {"digest": "b2ab556365f2fdaced406bde4e696fcf473463837c2c22c9e9d0e1d230514be0", "marks": [[]]},
   "tests/test_cli_projection.py": {"digest": "5d8d1c0af59e41cb9b5de40cf445e0c9201eed40dfc08d3a0df7b595fb7933c6", "marks": [[], ["parametrize"]]},
   "tests/test_cluster_rewind_int.py": {"digest": "88f2545e8b1e428502280f40f60a3c4911818e2cab5da4c78747c09b948a4833", "marks": [["cluster_guard", "dolt_server", "integration", "skipif"]]},
