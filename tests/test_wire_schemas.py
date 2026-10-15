@@ -185,6 +185,28 @@ def test_catalog_compatibility_allows_only_the_approved_authority_cli_flags() ->
     assert catalog_compatibility_errors(old, wrong_op)
 
 
+def test_catalog_allows_operator_settings_only_on_the_frame_lifecycle_verbs() -> None:
+    """bh-siluj: the lifecycle verbs append the same optional `operator_settings` string."""
+    base = _catalog()
+    for name in ("host.admit", "host.emergency-admit", "host.frame-retire"):
+        old = deepcopy(base)
+        operation = _operation(old, name)
+        operation["parameters"] = [
+            p for p in operation["parameters"] if p["name"] != "operator_settings"
+        ]
+        cli = operation["surfaces"]["cli"]
+        cli["parameters"] = [p for p in cli["parameters"] if p != "operator_settings"]
+        approved = deepcopy(old)
+        _append_string_param(approved, name, "operator_settings")
+        assert catalog_compatibility_errors(old, approved) == []
+        unapproved = deepcopy(old)
+        _append_string_param(unapproved, name, "max_duration")
+        assert catalog_compatibility_errors(old, unapproved)
+    wrong_op = deepcopy(base)
+    _append_string_param(wrong_op, "host.provision", "operator_settings")
+    assert catalog_compatibility_errors(base, wrong_op)
+
+
 @pytest.mark.parametrize("mutation", [None, "required", "type", "order", "other", "operation"])
 def test_catalog_allows_only_reviewed_optional_release_provision_inputs(mutation):
     old = _catalog()

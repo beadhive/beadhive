@@ -492,8 +492,12 @@ beadyard identity, nor rewrite history, without an operator rebind.
 A released `bh` builds its control plane from the running host's `host.yaml`. An operator host
 whose `host.yaml` has no `hq.sql.authority_writer` binds it from a file instead, with
 `BH_HQ_OPERATOR_SETTINGS=<file>` (or `--operator-settings <file>`, which wins over the env var)
-on `bh hq authority rebind|grant|observe|bind-beadyard|status|check|mode|mode-trusted|mode-signed|join`
-and `bh host release-upgrade plan|apply|check`. The file is JSON or YAML:
+on `bh hq authority rebind|grant|observe|bind-beadyard|status|check|mode|mode-trusted|mode-signed|join`,
+`bh host release-upgrade plan|apply|check` and, from wire 2.9.0 (`bh-siluj`), the frame lifecycle
+verbs `bh host admit|cordon|drain|park|resume|quarantine|frame-retire|emergency-admit|emergency-revoke
+plan|apply|check`. This is what lets an operator host that is also a frame (its own `host.yaml`
+binds `hq.sql.runtime`, which the authority writer refuses) run them: the file's plane replaces
+the host's, and `hq.authority_mode` follows the same file. The file is JSON or YAML:
 
 ```json
 {

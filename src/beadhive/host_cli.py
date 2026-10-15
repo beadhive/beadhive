@@ -1867,23 +1867,30 @@ def _frame_lifecycle(
     supersede,
     deadline,
     emergency_options=None,
+    operator_settings=None,
 ):
-    from .hq_control_plane import control_plane
+    from . import hq_authority_enforce
+    from .hq_operator_settings import select_plane
 
     try:
-        result = control_plane().lifecycle(
-            verb,
-            frame_id,
-            action,
-            expected=expected,
-            expected_host_id=expected_host_id,
-            expected_release=expected_release,
-            operator_key=str(operator_key) if operator_key else "",
-            confirm=confirm,
-            supersede=supersede,
-            deadline=deadline,
-            **(emergency_options or {}),
-        )
+        # bh-siluj: an operator host that is also a frame carries hq.sql.runtime in its own
+        # host.yaml, which the authority writer refuses. Select the plane exactly as
+        # `bh hq authority` does: --operator-settings, else $BH_HQ_OPERATOR_SETTINGS, else
+        # this host's config; hq.authority_mode follows the same file.
+        with hq_authority_enforce.operator_settings(operator_settings):
+            result = select_plane(operator_settings).lifecycle(
+                verb,
+                frame_id,
+                action,
+                expected=expected,
+                expected_host_id=expected_host_id,
+                expected_release=expected_release,
+                operator_key=str(operator_key) if operator_key else "",
+                confirm=confirm,
+                supersede=supersede,
+                deadline=deadline,
+                **(emergency_options or {}),
+            )
         if verb == "emergency-admit" and action == "plan":
             try:
                 from .heartbeat_report import installed_release
@@ -1923,6 +1930,13 @@ def _lifecycle_command(verb: str, *, operation: str | None = None):
         deadline: float | None = typer.Option(
             None, "--deadline", help="drain deadline, Unix seconds"
         ),
+        operator_settings: Annotated[
+            str | None,
+            typer.Option(
+                "--operator-settings",
+                help="operator settings file; overrides $BH_HQ_OPERATOR_SETTINGS",
+            ),
+        ] = None,
     ) -> None:
         _frame_lifecycle(
             verb,
@@ -1935,6 +1949,7 @@ def _lifecycle_command(verb: str, *, operation: str | None = None):
             confirm,
             supersede,
             deadline,
+            operator_settings=operator_settings,
         )
 
     command.__name__ = f"{operation.replace('-', '_')}_cmd"
@@ -2047,6 +2062,13 @@ def emergency_admit_cmd(
     expected_release: str = typer.Option("", "--expected-release"),
     operator_key: Annotated[Path | None, typer.Option("--operator-key")] = None,
     confirm: bool = typer.Option(False, "--confirm"),
+    operator_settings: Annotated[
+        str | None,
+        typer.Option(
+            "--operator-settings",
+            help="operator settings file; overrides $BH_HQ_OPERATOR_SETTINGS",
+        ),
+    ] = None,
 ) -> None:
     """Authorize one hive for at most 30 minutes using separate protected operator authority."""
     _frame_lifecycle(
@@ -2066,6 +2088,7 @@ def emergency_admit_cmd(
             "emergency_duration": duration,
             "execution_digest": execution_digest,
         },
+        operator_settings=operator_settings,
     )
 
 

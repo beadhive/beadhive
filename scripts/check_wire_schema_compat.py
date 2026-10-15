@@ -809,6 +809,22 @@ def _approved_host_push_draft(old: dict[str, Any], new: dict[str, Any]) -> bool:
 _APPROVED_OPTIONAL_STRING_PARAMS: dict[str, tuple[str, ...]] = {
     "host.release-upgrade": ("operator_settings",),
     "hq.authority": ("operator_settings", "max_duration", "min_remaining"),
+    # bh-siluj (acceptance criteria: the frame lifecycle verbs honour --operator-settings
+    # exactly as `bh hq authority` does): the same appended optional string, nothing else.
+    **{
+        f"host.{verb}": ("operator_settings",)
+        for verb in (
+            "admit",
+            "cordon",
+            "drain",
+            "park",
+            "resume",
+            "quarantine",
+            "frame-retire",
+            "emergency-admit",
+            "emergency-revoke",
+        )
+    },
 }
 _OPTIONAL_STRING_PARAM = {
     "privilege": "inherited",

@@ -137,12 +137,12 @@ host eligible|identity:string:o,hive:string:o,as_json:boolean:o
 host heartbeat|record:string:r,as_json:boolean:o
 host heartbeat-report|free_sessions:integer:o
 host heartbeat-send|free_sessions:integer:o
-host admit|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o
-host cordon|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o
-host drain|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o
-host park|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o
-host resume|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o
-host quarantine|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o
+host admit|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o,operator_settings:string:o
+host cordon|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o,operator_settings:string:o
+host drain|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o,operator_settings:string:o
+host park|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o,operator_settings:string:o
+host resume|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o,operator_settings:string:o
+host quarantine|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o,operator_settings:string:o
 host identity|dry_run:boolean:o
 host init|role:string:r,label:string:o,identity_kind:string:o,identity_value:string:o,remote_only_hive:array:o,force:boolean:o
 host lease adopt|hive:string:r,force:boolean:o
@@ -152,9 +152,9 @@ host packup|
 host provision|role:string:o,answers:string:o,auto:boolean:o,dry_run:boolean:o,force:boolean:o,push:boolean:o
 host release|hive:string:o,all_hives:boolean:o
 host retire|dry_run:boolean:o,backup:boolean:o,confirm:boolean:o,purge:boolean:o
-host emergency-admit|action:string:r,frame_id:string:r,hive:string:o,reason:string:o,duration:integer:o,execution_digest:string:o,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o
-host emergency-revoke|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o
-host frame-retire|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o
+host emergency-admit|action:string:r,frame_id:string:r,hive:string:o,reason:string:o,duration:integer:o,execution_digest:string:o,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,operator_settings:string:o
+host emergency-revoke|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o,operator_settings:string:o
+host frame-retire|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o,operator_settings:string:o
 host release-upgrade|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_epoch:integer:o,expected_release:string:o,expected_config_head:string:o,release_id:string:o,release_digest:string:o,profile:string:o,config_revision:string:o,expires_at:number:o,plan_sha256:string:o,operator_key:string:o,confirm:boolean:o,operator_settings:string:o,frame_address:string:o,password_stdin:boolean:o
 host rm|host_id:string:r,dry_run:boolean:o,confirm:boolean:o,force:boolean:o
 host show|host_id:string:r,as_json:boolean:o

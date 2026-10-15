@@ -5260,6 +5260,14 @@
           "schema": {
             "type": "number"
           }
+        },
+        {
+          "name": "operator_settings",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
         }
       ],
       "privilege": "ordinary-mutation",
@@ -5290,7 +5298,8 @@
             "operator_key",
             "confirm",
             "supersede",
-            "deadline"
+            "deadline",
+            "operator_settings"
           ],
           "path": "host admit",
           "progress": {
@@ -5743,6 +5752,14 @@
           "schema": {
             "type": "number"
           }
+        },
+        {
+          "name": "operator_settings",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
         }
       ],
       "privilege": "ordinary-mutation",
@@ -5773,7 +5790,8 @@
             "operator_key",
             "confirm",
             "supersede",
-            "deadline"
+            "deadline",
+            "operator_settings"
           ],
           "path": "host cordon",
           "progress": {
@@ -6634,6 +6652,14 @@
           "schema": {
             "type": "number"
           }
+        },
+        {
+          "name": "operator_settings",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
         }
       ],
       "privilege": "ordinary-mutation",
@@ -6664,7 +6690,8 @@
             "operator_key",
             "confirm",
             "supersede",
-            "deadline"
+            "deadline",
+            "operator_settings"
           ],
           "path": "host drain",
           "progress": {
@@ -6842,6 +6869,14 @@
           "schema": {
             "type": "boolean"
           }
+        },
+        {
+          "name": "operator_settings",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
         }
       ],
       "privilege": "privileged",
@@ -6874,7 +6909,8 @@
             "expected_host_id",
             "expected_release",
             "operator_key",
-            "confirm"
+            "confirm",
+            "operator_settings"
           ],
           "path": "host emergency-admit",
           "progress": {
@@ -6967,6 +7003,14 @@
           "schema": {
             "type": "number"
           }
+        },
+        {
+          "name": "operator_settings",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
         }
       ],
       "privilege": "privileged",
@@ -6997,7 +7041,8 @@
             "operator_key",
             "confirm",
             "supersede",
-            "deadline"
+            "deadline",
+            "operator_settings"
           ],
           "path": "host emergency-revoke",
           "progress": {
@@ -7090,6 +7135,14 @@
           "schema": {
             "type": "number"
           }
+        },
+        {
+          "name": "operator_settings",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
         }
       ],
       "privilege": "ordinary-mutation",
@@ -7120,7 +7173,8 @@
             "operator_key",
             "confirm",
             "supersede",
-            "deadline"
+            "deadline",
+            "operator_settings"
           ],
           "path": "host frame-retire",
           "progress": {
@@ -7792,6 +7846,14 @@
           "schema": {
             "type": "number"
           }
+        },
+        {
+          "name": "operator_settings",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
         }
       ],
       "privilege": "ordinary-mutation",
@@ -7822,7 +7884,8 @@
             "operator_key",
             "confirm",
             "supersede",
-            "deadline"
+            "deadline",
+            "operator_settings"
           ],
           "path": "host park",
           "progress": {
@@ -8021,6 +8084,14 @@
           "schema": {
             "type": "number"
           }
+        },
+        {
+          "name": "operator_settings",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
         }
       ],
       "privilege": "ordinary-mutation",
@@ -8051,7 +8122,8 @@
             "operator_key",
             "confirm",
             "supersede",
-            "deadline"
+            "deadline",
+            "operator_settings"
           ],
           "path": "host quarantine",
           "progress": {
@@ -8348,6 +8420,14 @@
           "schema": {
             "type": "number"
           }
+        },
+        {
+          "name": "operator_settings",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
         }
       ],
       "privilege": "ordinary-mutation",
@@ -8378,7 +8458,8 @@
             "operator_key",
             "confirm",
             "supersede",
-            "deadline"
+            "deadline",
+            "operator_settings"
           ],
           "path": "host resume",
           "progress": {
