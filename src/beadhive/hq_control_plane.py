@@ -1943,12 +1943,25 @@ class SqlControlPlane:
         from .host_heartbeat_core import ObservationAuthority
         from .hq_authority_payload import authority_payload
         from .hq_sql_operator import SqlRuntimeOperator
-        from .hq_sql_signatures import fingerprint
+        from .hq_sql_signatures import fingerprint, public_key_problem
 
         _require_operator_key(operator_key)
 
         if not isinstance(authority, ObservationAuthority):
             raise ControlPlaneError("validated candidate authority required")
+        # Validate both keys before any read or mutation, naming which key and why
+        # (fixed reasons, never key material) instead of the generic "unavailable"
+        # (bh-k1jwq).  OpenSSH trailing comments, spaces included, are accepted.
+        for role, key in (
+            ("candidate public key", public_key),
+            (
+                "operator public key (runtime_operator_public_key)",
+                self.settings.get("runtime_operator_public_key"),
+            ),
+        ):
+            problem = public_key_problem(key)
+            if problem is not None:
+                raise ControlPlaneError(f"SQL candidate grant: {role} invalid: {problem}")
         operator = self._operator()
         budget = self._operator_deadline()
         try:

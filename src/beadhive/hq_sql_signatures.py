@@ -65,18 +65,50 @@ def sql_principal(authority) -> str:
     return "frame_" + hashlib.sha256(canonical(identity)).hexdigest()[:20]
 
 
-def fingerprint(public_key: str) -> str:
-    """OpenSSH SHA256 fingerprint of an Ed25519 public key, without shell tools."""
+def _key_problem(public_key) -> tuple[str | None, bytes]:
+    """``(reason, wire)`` for one OpenSSH public-key line; reason is None when valid.
+
+    Accepts the ``authorized_keys`` shape OpenSSH writes: ``ssh-ed25519 <base64>``
+    followed by an optional free-form trailing comment, which may itself contain
+    spaces (``ssh-keygen -C "Jane Doe laptop"``).  Reasons are fixed text naming the
+    structural defect, never key material or comment content (bh-k1jwq).
+    """
+    if not isinstance(public_key, str):
+        return "not text", b""
+    text = public_key.strip()
+    if not text:
+        return "empty", b""
+    if any(ch in text for ch in "\r\n\x00"):
+        return "must be a single OpenSSH public-key line", b""
+    parts = text.split(maxsplit=2)
+    if parts[0] != "ssh-ed25519":
+        return "key type is not ssh-ed25519", b""
+    if len(parts) < 2:
+        return "key data missing", b""
     try:
-        parts = public_key.strip().split()
-        if len(parts) not in (2, 3) or parts[0] != "ssh-ed25519":
-            raise ValueError()
         wire = base64.b64decode(parts[1], validate=True)
         key = serialization.load_ssh_public_key(" ".join(parts[:2]).encode())
-        if not isinstance(key, Ed25519PublicKey):
-            raise ValueError()
     except (ValueError, TypeError, binascii.Error):
-        raise SqlSignatureError("invalid granted Ed25519 public key") from None
+        return "key data is not a valid base64 OpenSSH blob", b""
+    if not isinstance(key, Ed25519PublicKey):
+        return "key data is not an Ed25519 key", b""
+    return None, wire
+
+
+def public_key_problem(public_key) -> str | None:
+    """Non-secret reason `public_key` is not a usable Ed25519 key line, else None."""
+    return _key_problem(public_key)[0]
+
+
+def fingerprint(public_key: str) -> str:
+    """OpenSSH SHA256 fingerprint of an Ed25519 public key, without shell tools.
+
+    The trailing comment is ignored, exactly as ``ssh-keygen -lf`` ignores it, so a
+    key's fingerprint never depends on its description.
+    """
+    reason, wire = _key_problem(public_key)
+    if reason is not None:
+        raise SqlSignatureError(f"invalid granted Ed25519 public key: {reason}")
     return "SHA256:" + base64.b64encode(hashlib.sha256(wire).digest()).decode().rstrip("=")
 
 

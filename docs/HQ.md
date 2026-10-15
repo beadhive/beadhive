@@ -583,6 +583,21 @@ authority needs); that is infrastructure the operator or director provisions, no
 to work, fail closed, with a message naming both fixes (unpin to `inherit`, or the operator runs
 `mode-signed`); `bh doctor` shows the same line.
 
+### Admission public keys {#admission-public-keys}
+
+Operator and candidate runtime keys are one OpenSSH public-key line:
+`ssh-ed25519 <base64> [comment]`. The comment is optional and free-form, and it may contain
+spaces, such as the `Jane Doe's MacBook Pro` that `ssh-keygen -C` writes. The fingerprint
+ignores the comment, as `ssh-keygen -lf` does, so SQL and Git HQ agree on the same key. The
+stored record keeps the line verbatim. `authorized_keys` options before the key type, other
+key types, and text spanning several lines are refused (bh-k1jwq).
+
+A SQL candidate grant validates both keys before it reads or writes the authority. The refusal
+names the key and the defect, for example `SQL candidate grant: operator public key
+(runtime_operator_public_key) invalid: key type is not ssh-ed25519`. It never echoes key
+material or the comment. `SQL candidate grant unavailable` therefore no longer stands in for a
+malformed key.
+
 ### Switching runbook {#authority-switching}
 
 **Goal: take the factory to trusted with one command.** Upgrade first, then raise the fleet once.
