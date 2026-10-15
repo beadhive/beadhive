@@ -49,6 +49,19 @@ _fleet_transaction: ContextVar[_FleetTransaction | None] = ContextVar(
     "fleet_transaction", default=None
 )
 _fleet_read_host: ContextVar[Mapping | None] = ContextVar("fleet_read_host", default=None)
+#: Set for a command whose config reads only feed hive-local work (the ``bh bd`` passthrough);
+#: only then may an ordinary SQL fleet read degrade to the cached verified snapshot (bh-kjxe9).
+_hive_local_reads: ContextVar[bool] = ContextVar("hive_local_reads", default=False)
+
+
+@contextmanager
+def hive_local_reads():
+    """Mark the enclosed config reads as hive-local (see :data:`_hive_local_reads`)."""
+    token = _hive_local_reads.set(True)
+    try:
+        yield
+    finally:
+        _hive_local_reads.reset(token)
 
 
 def fleet_transaction_active() -> bool:
@@ -193,11 +206,13 @@ def sql_selected(api, host=None) -> bool:
     return selected
 
 
-def _sql_attachment(api, host=None):
+def _sql_attachment(api, host=None, *, hive_local=False):
     from .hq_control_plane import attach_fleet_config
 
     host = host if host is not None else api.load_host()
-    return attach_fleet_config(bootstrap=host.get("hq") or {})
+    # Pass the flag only when set, so the ordinary read keeps its exact original call shape.
+    extra = {"hive_local": True} if hive_local else {}
+    return attach_fleet_config(bootstrap=host.get("hq") or {}, **extra)
 
 
 def _fleet_document(api, snapshot):
@@ -226,8 +241,10 @@ def load_fleet(api):
         _validate_settings(api, fleet, scope="fleet")
         return fleet
     active = _fleet_transaction.get()
-    snapshot = active.snapshot if active is not None else _sql_attachment(api)[1]
-    return _fleet_document(api, snapshot)
+    if active is not None:
+        return _fleet_document(api, active.snapshot)
+    # Only an ordinary read outside any transaction, inside a hive-local command, may degrade.
+    return _fleet_document(api, _sql_attachment(api, hive_local=_hive_local_reads.get())[1])
 
 
 def fleet_snapshot(api):

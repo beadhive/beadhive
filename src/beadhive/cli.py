@@ -526,6 +526,10 @@ def _root(
     ),
 ):
     """Workspace beads CLI. -a/-r route `bd`/`git` across hives (need git_workspace)."""
+    if ctx.invoked_subcommand == "bd":
+        # A bead read/write needs only hive-local config: in trusted mode a transient HQ
+        # config outage may degrade to the bounded-age cached verified snapshot (bh-kjxe9).
+        ctx.with_resource(config.hive_local_config_reads())
     _announce_authority_enforcement(ctx)
     # `--help` / completion is informational: it must never read runtime config — which may
     # sit behind HQ SQL that is down during partial degradation (bh-o01m6) — so the config
@@ -4755,7 +4759,7 @@ def _handle_cli_error(exc: Exception) -> None:
         for leaf in leaves:
             typer.echo(f"  ↳ {type(leaf).__name__}: {leaf}", err=True)
     if command in ("worktree", "wt") and any(
-        type(e).__name__ == "SqlConfigError" for e in (exc, *leaves)
+        "SqlConfigError" in {c.__name__ for c in type(e).__mro__} for e in (exc, *leaves)
     ):
         # Partial degradation (bh-o01m6): point at the path that works without HQ.
         typer.echo(

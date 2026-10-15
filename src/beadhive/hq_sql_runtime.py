@@ -63,6 +63,33 @@ class SqlRuntimeCapabilityMissing(SqlRuntimeError):
     Fail-closed like every floor refusal; the message names the grant, never the account."""
 
 
+class _ProvisioningRefusal(SqlRuntimeError):
+    """One same-sequence transition is not reviewed provisioning; ``str`` is the reason."""
+
+
+#: The message every same-sequence refusal starts with (tests and operators match on it).
+AMENDED_REFUSAL = "HQ runtime rollback or amended authority detected"
+#: Where an operator finds the recovery procedure for a refused restore floor (bh-lso8w).
+FLOOR_RECOVERY_DOC = "docs/HQ.md#restore-floor-recovery"
+#: ``DOLT_DIFF_SUMMARY`` rows a same-sequence transition may show. Stamp triggers live in
+#: ``dolt_schemas``; the one-time liveness schema adds the ``frame_*`` ignore rule and creates
+#: ``hq_liveness_policy`` (bh-lso8w). Anything else, including a later policy edit, refuses.
+_SCHEMA_CHANGES = frozenset(
+    {
+        ("dolt_schemas", "dolt_schemas", "modified", 1, 0),
+        ("", "dolt_schemas", "added", 1, 1),
+    }
+)
+_IGNORE_CHANGES = frozenset(
+    {
+        ("dolt_ignore", "dolt_ignore", "modified", 1, 0),
+        ("", "dolt_ignore", "added", 1, 1),
+    }
+)
+_POLICY_ADDED = ("", "hq_liveness_policy", "added", 1, 1)
+_POLICY_COLUMNS = ["singleton_id", "session_ttl_s", "evidence_ttl_s"]
+
+
 class SessionOnlyIncarnation(SqlRuntimeError):
     """The incarnation is routed to its session table and has no signed inbox (bh-owqdg)."""
 
@@ -338,10 +365,17 @@ class SqlRuntimeAuthority:
             else:
                 previous_sequence, previous_head = 1, settings["runtime_initial_revision"]
             if sequence < previous_sequence:
-                raise SqlRuntimeError("HQ runtime rollback or amended authority detected")
+                raise SqlRuntimeError(
+                    f"{AMENDED_REFUSAL}: authority sequence {sequence} at head {head[:12]} is "
+                    f"below restore floor sequence {previous_sequence} at {previous_head[:12]}; "
+                    f"see {FLOOR_RECOVERY_DOC}"
+                )
             if head != previous_head:
                 if runtime_statements(cursor).has_ancestor(head, previous_head) != 1:
-                    raise SqlRuntimeError("HQ runtime history fork detected")
+                    raise SqlRuntimeError(
+                        f"HQ runtime history fork detected: head {head[:12]} does not descend "
+                        f"from restore floor {previous_head[:12]}; see {FLOOR_RECOVERY_DOC}"
+                    )
                 if sequence == previous_sequence:
                     self._verify_provisioning_descendant(cursor, previous_head, head)
             body = json.dumps(
@@ -391,21 +425,28 @@ class SqlRuntimeAuthority:
             ) from None
 
     def _check_provisioning_descendant(self, cursor, previous_head, head):
-        """Accept only immutable, additive session/evidence timestamp-trigger pairs.
+        """Accept only reviewed session provisioning at an unchanged authority sequence.
 
-        Incarnation rows are ignored by Dolt; their triggers are committed separately
-        before the reviewed authority cutover. Neither the authority, registry, policy,
-        ignore rules nor existing schema may change at the same authority sequence.
-        Additions cannot target an existing registered or authorized incarnation;
-        canonical unused pairs are inert structure, not an authorization proof.
+        Two kinds of first-parent transition qualify. The one-time liveness schema
+        (:func:`beadhive.hq_sql_session_provision.provision_liveness_schema`) adds exactly the
+        ``frame_*`` ignore rule and creates ``hq_liveness_policy`` with one valid row, so a
+        floor taken before an HQ was first provisioned for session rows stays connected
+        (bh-lso8w). After it, a transition may only add immutable session/evidence
+        timestamp-trigger pairs. Incarnation rows are ignored by Dolt; their triggers are
+        committed separately before the reviewed authority cutover. Neither the authority,
+        registry, an existing policy or ignore rule, nor existing schema may change at the
+        same authority sequence. Additions cannot target an existing registered or authorized
+        incarnation; canonical unused pairs are inert structure, not an authorization proof.
         Commit messages and working-table contents supply no part of this proof.
+
+        A refusal names the offending commit, the reason and the tables changed since the
+        floor, never row contents, so an operator can recover natively
+        (:data:`FLOOR_RECOVERY_DOC`).
         """
         from .hq_framelease_contracts import ObservationAuthority
-        from .hq_sql_session import _policy
         from .hq_sql_signatures import sql_principal
 
         sql = runtime_statements(cursor)
-        refusal = "HQ runtime rollback or amended authority detected"
         _backend, _generation, _sequence, _crossref, state, _policies = self._signed_authority_at(
             sql, previous_head
         )
@@ -418,37 +459,111 @@ class SqlRuntimeAuthority:
             ):
                 authority = ObservationAuthority(**existing["authority"])
                 reserved.add((sql_principal(authority), authority.epoch))
-        if [tuple(row) for row in sql.ignore_rows_at(previous_head)] != [("frame_*", 1)]:
-            raise SqlRuntimeError(refusal)
-        _policy(sql.liveness_policy(at=previous_head))
         # Check every first-parent transition, so an unsafe edit followed by its
         # reversal cannot hide behind a safe endpoint diff. Merges and an excessive
         # unobserved provisioning history refuse rather than widen the exception.
+        tip = head
         for _ in range(64):
             parents = sql.first_parents(head)
             if len(parents) != 1 or parents[0][1] != 0 or not parents[0][0]:
-                raise SqlRuntimeError(refusal)
+                raise self._amended(
+                    sql, previous_head, tip, f"commit {head[:12]} is a merge or has no parent"
+                )
             parent = parents[0][0]
-            SqlRuntimeAuthority._check_provisioning_commit(
-                sql, parent, head, epochs=epochs, reserved=reserved
-            )
+            try:
+                SqlRuntimeAuthority._check_provisioning_commit(
+                    sql, parent, head, epochs=epochs, reserved=reserved
+                )
+            except _ProvisioningRefusal as refusal:
+                raise self._amended(
+                    sql, previous_head, tip, f"commit {head[:12]} {refusal}"
+                ) from None
             if parent == previous_head:
                 return
             head = parent
-        raise SqlRuntimeError(refusal)
+        raise self._amended(
+            sql, previous_head, tip, "more than 64 same-sequence commits follow the floor"
+        )
+
+    @staticmethod
+    def _amended(sql, floor, head, reason) -> SqlRuntimeError:
+        """The refusal for a same-sequence descendant, with native recovery diagnostics."""
+        try:
+            changed = sorted({row[1] or row[0] for row in sql.diff_summary(floor, head)})
+            since = ", ".join(changed) or "nothing"
+        except Exception:  # noqa: BLE001 - the diagnostic is optional, the refusal is not
+            since = "unavailable"
+        return SqlRuntimeError(
+            f"{AMENDED_REFUSAL}: head {head[:12]} keeps the authority sequence of restore floor "
+            f"{floor[:12]} and descends from it, but {reason}; tables changed since the floor: "
+            f"{since}. Only reviewed session provisioning may share an authority sequence; "
+            f"see {FLOOR_RECOVERY_DOC}"
+        )
+
+    @staticmethod
+    def _check_liveness_schema(sql, previous_head, head):
+        """The one-time liveness schema: exactly the ``frame_*`` rule and one policy row."""
+        before = sorted(tuple(row) for row in sql.ignore_all_at(previous_head))
+        after = sorted(tuple(row) for row in sql.ignore_all_at(head))
+        if any(row[0] == "frame_*" for row in before):
+            raise _ProvisioningRefusal("re-adds the frame_* ignore rule or liveness policy")
+        if after != sorted([*before, ("frame_*", 1)]):
+            raise _ProvisioningRefusal("changes dolt_ignore beyond adding the frame_* rule")
+        rows, columns = sql.policy_table_at(head)
+        if columns != _POLICY_COLUMNS or len(rows) != 1 or rows[0][0] != 1:
+            raise _ProvisioningRefusal("creates a liveness policy that is not one singleton row")
+        from .hq_sql_session import SessionError, _policy
+
+        try:
+            _policy([tuple(rows[0][1:])])
+        except SessionError:
+            raise _ProvisioningRefusal("creates a liveness policy outside its TTL bounds") from None
+
+    @staticmethod
+    def _liveness_committed(sql, revision) -> bool:
+        """Whether `revision` already has the ``frame_*`` rule and a valid liveness policy."""
+        from .hq_sql_session import SessionError, _policy
+
+        if [tuple(row) for row in sql.ignore_rows_at(revision)] != [("frame_*", 1)]:
+            return False
+        try:
+            _policy(sql.liveness_policy(at=revision))
+        except SessionError:
+            return False
+        return True
 
     @staticmethod
     def _check_provisioning_commit(cursor, previous_head, head, *, epochs, reserved):
         from .hq_sql_session import evidence_ddl, session_ddl
 
         sql = runtime_statements(cursor)
-        refusal = "HQ runtime rollback or amended authority detected"
-        changes = sql.diff_summary(previous_head, head)
-        if len(changes) != 1 or tuple(changes[0]) not in (
-            ("dolt_schemas", "dolt_schemas", "modified", 1, 0),
-            ("", "dolt_schemas", "added", 1, 1),
-        ):
-            raise SqlRuntimeError(refusal)
+        changes = {tuple(row) for row in sql.diff_summary(previous_head, head)}
+        schema = changes & _SCHEMA_CHANGES
+        ignore = changes & _IGNORE_CHANGES
+        policy = changes & {_POLICY_ADDED}
+        unexpected = changes - schema - ignore - policy
+        if unexpected or not changes or len(schema) > 1 or len(ignore) > 1:
+            names = sorted({row[1] or row[0] for row in unexpected or changes})
+            raise _ProvisioningRefusal(
+                "changes tables outside reviewed session provisioning ("
+                + (", ".join(names) or "no tables")
+                + ")"
+            )
+        if ignore or policy:
+            if not (ignore and policy):
+                raise _ProvisioningRefusal(
+                    "edits the frame_* ignore rule or liveness policy outside the one-time "
+                    "liveness schema provisioning"
+                )
+            SqlRuntimeAuthority._check_liveness_schema(sql, previous_head, head)
+        elif not SqlRuntimeAuthority._liveness_committed(sql, previous_head):
+            raise _ProvisioningRefusal(
+                "adds stamp triggers before the frame_* ignore rule and liveness policy are "
+                "committed"
+            )
+        if not schema:
+            return
+        refusal = "adds schema that is not a canonical session/evidence stamp-trigger pair"
         snapshots = []
         for revision in (previous_head, head):
             rows, columns = sql.schemas_at(revision)
@@ -459,20 +574,20 @@ class SqlRuntimeAuthority:
                 "extra",
                 "sql_mode",
             ]:
-                raise SqlRuntimeError(refusal)
+                raise _ProvisioningRefusal(refusal)
             snapshots.append({(row[0], row[1]): tuple(row[2:]) for row in rows})
         before, after = snapshots
         if any(after.get(key) != fragment for key, fragment in before.items()):
-            raise SqlRuntimeError(refusal)
+            raise _ProvisioningRefusal("rewrites or removes an existing schema fragment")
         added = {key: fragment for key, fragment in after.items() if key not in before}
         if not added or len(added) > 128:
-            raise SqlRuntimeError(refusal)
+            raise _ProvisioningRefusal(refusal)
         incarnations = set()
         for (kind, name), (fragment, extra, sql_mode) in added.items():
             try:
                 metadata = json.loads(extra)
             except (ValueError, TypeError):
-                raise SqlRuntimeError(refusal) from None
+                raise _ProvisioningRefusal(refusal) from None
             if (
                 not isinstance(metadata, dict)
                 or set(metadata) != {"CreatedAt"}
@@ -482,12 +597,12 @@ class SqlRuntimeAuthority:
                 or len(sql_mode) > 256
                 or not re.fullmatch(r"[A-Z_,]*", sql_mode)
             ):
-                raise SqlRuntimeError(refusal)
+                raise _ProvisioningRefusal(refusal)
             match = re.fullmatch(
                 r"frame_([a-z][a-z0-9_]{0,30})_([0-9]{1,10})_(session|evidence)_stamp", name
             )
             if kind != "trigger" or match is None:
-                raise SqlRuntimeError(refusal)
+                raise _ProvisioningRefusal(refusal)
             principal, epoch_text, route = match.groups()
             epoch = int(epoch_text)
             if (
@@ -495,22 +610,24 @@ class SqlRuntimeAuthority:
                 or not re.fullmatch(r"frame_[0-9a-f]{20}", principal)
                 or (principal, epoch) in reserved
             ):
-                raise SqlRuntimeError(refusal)
+                raise _ProvisioningRefusal(
+                    "adds stamp triggers for an incarnation that is not an unauthorized next epoch"
+                )
             expected = (session_ddl if route == "session" else evidence_ddl)(principal, epoch)[1]
             if fragment != expected:
-                raise SqlRuntimeError(refusal)
+                raise _ProvisioningRefusal(refusal)
             incarnations.add((principal, epoch))
         for principal, epoch in incarnations:
             if not all(
                 ("trigger", f"frame_{principal}_{epoch}_{route}_stamp") in added
                 for route in ("session", "evidence")
             ):
-                raise SqlRuntimeError(refusal)
+                raise _ProvisioningRefusal("adds an incomplete session/evidence trigger pair")
         # At most 128 added rows form at most 64 complete pairs. Read only these
         # targets from the protected parent registry, whose contents cannot change
         # in a verified transition. Historical registry size is not a trust limit.
         if sql.registered_at(previous_head, sorted(incarnations)):
-            raise SqlRuntimeError(refusal)
+            raise _ProvisioningRefusal("adds stamp triggers for an already registered incarnation")
 
     #: How far back fleet-default discovery walks for the newest operator-signed authority.
     DISCOVERY_DEPTH = 64

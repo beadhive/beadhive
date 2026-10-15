@@ -583,6 +583,21 @@ authority needs); that is infrastructure the operator or director provisions, no
 to work, fail closed, with a message naming both fixes (unpin to `inherit`, or the operator runs
 `mode-signed`); `bh doctor` shows the same line.
 
+### Admission public keys {#admission-public-keys}
+
+Operator and candidate runtime keys are one OpenSSH public-key line:
+`ssh-ed25519 <base64> [comment]`. The comment is optional and free-form, and it may contain
+spaces, such as the `Jane Doe's MacBook Pro` that `ssh-keygen -C` writes. The fingerprint
+ignores the comment, as `ssh-keygen -lf` does, so SQL and Git HQ agree on the same key. The
+stored record keeps the line verbatim. `authorized_keys` options before the key type, other
+key types, and text spanning several lines are refused (bh-k1jwq).
+
+A SQL candidate grant validates both keys before it reads or writes the authority. The refusal
+names the key and the defect, for example `SQL candidate grant: operator public key
+(runtime_operator_public_key) invalid: key type is not ssh-ed25519`. It never echoes key
+material or the comment. `SQL candidate grant unavailable` therefore no longer stands in for a
+malformed key.
+
 ### Switching runbook {#authority-switching}
 
 **Goal: take the factory to trusted with one command.** Upgrade first, then raise the fleet once.
@@ -654,7 +669,7 @@ Nothing in it is shipped: the modes above remain the behaviour of 0.24.0. See
 ## Partial degradation: reclaim space before restoring HQ {#hq-partial-degradation}
 
 When memory or tmpfs pressure makes HQ SQL unavailable, HQ-backed commands fail with
-`SqlConfigError: verified HQ config connection unavailable` — including `bh worktree rm` and
+`SqlConfigUnavailable: verified HQ config connection unavailable` — including `bh worktree rm` and
 `bh worktree prune`, the very commands that would free the space. The **first-line procedure**
 is the HQ-independent, fail-closed reclaimer:
 
@@ -667,6 +682,38 @@ It reads only local Git and process state (never HQ or runtime config, not even 
 and removes only clean, unlocked, unused, provably landed worktrees; everything else is kept and
 reported. Once HQ is back, finish with the full classifier (`bh worktree prune`). Details:
 [WORKTREES.md](WORKTREES.md#partial-degradation-bh-worktree-local-reclaim-first-line-procedure).
+
+### Transient config-read outages: retry, then the cached snapshot {#config-read-retry}
+
+On `dolt-server` HQ every `bh` command reads and verifies the committed config snapshot. A read
+that cannot reach the reader, or that fails mid-read, is retried up to 3 times in total. The
+waits are 0.25 s and then 0.5 s, and a retry never runs past the caller's deadline. A
+verification refusal (rollback, fork, schema, identity or digest) is never retried. If every
+attempt fails, the error names the reader endpoint and the outcome, but never the account
+(bh-kjxe9):
+
+```text
+SqlConfigUnavailable: verified HQ config connection unavailable (reader 10.10.10.120:3308; failed 3 of 3 attempts)
+```
+
+Each verified read also leaves an owner-only (`0600`) copy of the snapshot next to the config
+restore floor (`<hq.sql.floor_path>.snapshot`). A command whose config reads only feed
+hive-local work may then fall back to that copy, but only when all of the following hold:
+
+- the command is the `bh bd` passthrough, such as `bh bd update` or `bh bd close`;
+- the frame's authority mode is **trusted**. Signed mode always fails closed, and its error ends
+  `no cached fallback in signed authority mode`;
+- the copy was verified within `hq.sql.cache_ttl` seconds (default 30, at most 300);
+- the local restore floor still names the copy's exact head. Once any reader has verified a
+  newer head, the copy is refused, so the fallback can never serve a revision below the floor;
+- the copy is still owner-only and its document digest matches.
+
+A fallback prints one warning per command, naming the reader, the snapshot head and the
+snapshot's age. Later reads in the same command reuse the copy and do not retry HQ again. When
+the fallback is refused, the error says why, for example
+`no cached fallback: cached snapshot older than hq.sql.cache_ttl (30s)`. Authority-sensitive
+reads (`bh work` verbs, placement, publication, grants, and fleet-config transactions) never use
+the copy.
 
 ## See also
 
@@ -863,6 +910,55 @@ edited.
 **Existing fleets.** As the server-local administrator, grant `SELECT ON <runtime>.*` to the
 authority writer, observer, director and each existing frame account before the first session
 provisioning. Since bh-aprgo, `provision` grants it to the new frame account itself.
+
+### Restore floors across provisioning {#restore-floor-recovery}
+
+Every authority reader keeps a restore floor: the authority sequence and runtime head it last
+verified. A head with a lower sequence is a rollback, and a head that does not descend from the
+floor is a fork. Both are refused. Session provisioning commits to the runtime database without
+publishing authority, so it creates a descendant with the **same** sequence. A reader accepts
+such a head only if every first-parent commit since its floor is reviewed provisioning
+(bh-lso8w):
+
+- **The one-time liveness schema.** `provision_liveness_schema` adds exactly the `frame_*` row
+  to `dolt_ignore` and creates `hq_liveness_policy` with one singleton row whose TTLs are in
+  bounds. Before bh-lso8w a floor taken before this commit refused every later head as
+  `amended authority`. It now stays connected. The same holds when a native operator run
+  commits the ignore rule, the policy and the first stamp triggers together.
+- **Stamp-trigger pairs.** After the liveness schema exists, a commit may only add canonical
+  `frame_<principal>_<epoch>_session_stamp` / `_evidence_stamp` pairs for an unregistered,
+  unauthorized next epoch.
+
+Any other same-sequence change still refuses. This includes editing an existing policy or
+ignore rule, ignoring another table, touching the authority or registry, adding unrelated
+tables, merges, and an edit later reverted. The refusal names where the history went wrong. It
+gives no row contents:
+
+```text
+HQ runtime rollback or amended authority detected: head 3f0c9e1a2b4d keeps the authority
+sequence of restore floor 9a1b2c3d4e5f and descends from it, but commit 3f0c9e1a2b4d changes
+tables outside reviewed session provisioning (hq_liveness_policy); tables changed since the
+floor: dolt_ignore, hq_liveness_policy. Only reviewed session provisioning may share an
+authority sequence; see docs/HQ.md#restore-floor-recovery
+```
+
+Rollback and fork refusals name both heads and both sequences in the same way.
+
+**Recovering natively.** The floor is never edited by hand: it is the reader's proof against
+replay.
+
+1. Read the message. *Below restore floor sequence* or *does not descend* is a real rollback
+   or fork. Stop and investigate the HQ server before anything else.
+2. For a same-sequence refusal, the named commit and table list show what changed. Inspect it
+   on the server with `SELECT * FROM DOLT_DIFF_SUMMARY('<floor>','<head>')` and
+   `dolt_log`. If the change is reviewed provisioning that this `bh` predates, upgrade the
+   reader. No other action is needed.
+3. If the change is intended but is not provisioning (for example a corrected TTL in
+   `hq_liveness_policy`), the operator publishes the authority again from the server-local
+   binding. That raises the sequence above every floor. Readers then accept the new head
+   because it descends from their floor.
+4. If the change is not intended, revert it with a new commit, then publish again as in
+   step 3. A revert alone is still refused, because every commit since the floor is checked.
 
 ### Soak check: sender stall (Φ3, O4) {#sender-stall-soak}
 

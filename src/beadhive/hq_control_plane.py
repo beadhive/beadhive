@@ -1943,12 +1943,25 @@ class SqlControlPlane:
         from .host_heartbeat_core import ObservationAuthority
         from .hq_authority_payload import authority_payload
         from .hq_sql_operator import SqlRuntimeOperator
-        from .hq_sql_signatures import fingerprint
+        from .hq_sql_signatures import fingerprint, public_key_problem
 
         _require_operator_key(operator_key)
 
         if not isinstance(authority, ObservationAuthority):
             raise ControlPlaneError("validated candidate authority required")
+        # Validate both keys before any read or mutation, naming which key and why
+        # (fixed reasons, never key material) instead of the generic "unavailable"
+        # (bh-k1jwq).  OpenSSH trailing comments, spaces included, are accepted.
+        for role, key in (
+            ("candidate public key", public_key),
+            (
+                "operator public key (runtime_operator_public_key)",
+                self.settings.get("runtime_operator_public_key"),
+            ),
+        ):
+            problem = public_key_problem(key)
+            if problem is not None:
+                raise ControlPlaneError(f"SQL candidate grant: {role} invalid: {problem}")
         operator = self._operator()
         budget = self._operator_deadline()
         try:
@@ -3276,17 +3289,21 @@ def control_plane(hq_dir=None):
     return GitControlPlane(hq_dir or config.hq_dir(), authority_anchor=cfg.get("authority_anchor"))
 
 
-def attach_fleet_config(hq_dir=None, *, bootstrap=None, operator_key=None):
+def attach_fleet_config(hq_dir=None, *, bootstrap=None, operator_key=None, hive_local=False):
     """Read back central config using only host-injected connection/trust inputs.
 
     Returning a binding and committed snapshot performs no checkout/Beads hydration,
-    source migration, host identity change or implicit backend switch.
+    source migration, host identity change or implicit backend switch. `hive_local` lets a
+    SQL read that only feeds hive-local config degrade a transient outage to the bounded-age
+    cached verified snapshot in trusted mode (``load_snapshot_or_cached``, bh-kjxe9).
     """
     settings = bootstrap if bootstrap is not None else config.load_host().get("hq", {})
     mode = settings.get("mode", "git")
     sql = _validated_sql_binding(settings.get("sql", {}))
     if sql.enabled:
         store = SqlControlPlane(sql.model_dump()).config_store()
+        if hive_local:
+            return store, store.load_snapshot_or_cached()
         return store, store.load_snapshot()
     if mode != "git":
         raise ControlPlaneError(f"unsupported HQ configuration bootstrap mode: {mode}")

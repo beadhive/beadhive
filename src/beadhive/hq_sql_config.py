@@ -119,6 +119,26 @@ class SqlConfigError(ValueError):
     """Committed configuration unavailable, inconsistent, or conflicted."""
 
 
+class SqlConfigUnavailable(SqlConfigError):
+    """The verified config reader could not be reached or answered (transient, bh-kjxe9).
+
+    Only this subclass is retried and only it may degrade to a cached verified snapshot.
+    Verification refusals (rollback, fork, schema, identity, digest) stay plain
+    :class:`SqlConfigError` and fail closed at once.
+    """
+
+
+#: Bounded retry of a transient config read (bh-kjxe9): attempts in total, first backoff.
+#: The backoff doubles per retry (0.25 s, then 0.5 s), so a dead reader costs at most
+#: 0.75 s of sleep on top of the per-attempt connection deadline.
+CONFIG_READ_ATTEMPTS = 3
+CONFIG_READ_BACKOFF_S = 0.25
+#: Process-level degraded snapshot per pinned binding: once a hive-local read has fallen back,
+#: later reads in the same command reuse it until its age bound instead of retrying again.
+_DEGRADED: dict[tuple, FleetConfigSnapshot] = {}
+_degraded_warned: set[tuple] = set()
+
+
 class PublicationUnknown(SqlConfigError):
     """DOLT_COMMIT may have succeeded; recover by immutable publication ID.
 
@@ -382,6 +402,12 @@ def _recovery(publication_id, expected_revision, confirmed, head, rows, descends
     return PublicationRecovery(publication_id, expected_revision, head, sequence, digest)
 
 
+def _warn_stderr(message: str) -> None:
+    import sys
+
+    print(message, file=sys.stderr)
+
+
 class _BoundedCursor:
     def __init__(self, cursor, connection, deadline, timeout):
         self.cursor, self.connection = cursor, connection
@@ -421,10 +447,11 @@ def _bounded_cursor(connection, deadline, timeout):
 class SqlFleetConfigRevisionStore:
     """One-connection AS OF read and original-parent Dolt publication CAS."""
 
-    def __init__(self, settings, *, broker=None, clock=time.time, history=None):
+    def __init__(self, settings, *, broker=None, clock=time.time, history=None, sleep=time.sleep):
         self.settings = settings
         self.broker = broker or FnoxBroker()
         self.clock = clock
+        self.sleep = sleep
         self._history = history
 
     @property
@@ -447,7 +474,12 @@ class SqlFleetConfigRevisionStore:
         try:
             return connect(binding, self.broker, deadline=deadline), deadline
         except SqlTransportError:
-            raise SqlConfigError("verified HQ config connection unavailable") from None
+            raise SqlConfigUnavailable("verified HQ config connection unavailable") from None
+
+    def endpoint(self, role="reader") -> str:
+        """``<role> <host>:<port>`` of a binding: names where, never who (no user/secret)."""
+        binding = self.settings.get(role) or {}
+        return f"{role} {binding.get('host') or '?'}:{binding.get('port') or '?'}"
 
     @staticmethod
     def _head(cursor):
@@ -757,6 +789,158 @@ class SqlFleetConfigRevisionStore:
                 temporary.unlink(missing_ok=True)
 
     def load_snapshot(self, *, revision=None, deadline=None):
+        """Read and verify the current committed snapshot, retrying a transient outage.
+
+        Only :class:`SqlConfigUnavailable` is retried, at most :data:`CONFIG_READ_ATTEMPTS`
+        times with doubling backoff, and never past the caller's `deadline`. The final error
+        names the reader endpoint and how many attempts failed (bh-kjxe9).
+        """
+        delay = CONFIG_READ_BACKOFF_S
+        attempt = 1
+        while True:
+            try:
+                snapshot = self._load_snapshot_once(revision=revision, deadline=deadline)
+            except SqlConfigUnavailable as exc:
+                if attempt >= CONFIG_READ_ATTEMPTS or (
+                    deadline is not None and time.monotonic() + delay >= deadline
+                ):
+                    raise SqlConfigUnavailable(
+                        f"{exc} ({self.endpoint()}; failed {attempt} of "
+                        f"{CONFIG_READ_ATTEMPTS} attempts)"
+                    ) from None
+                self.sleep(delay)
+                attempt += 1
+                delay *= 2
+                continue
+            self._remember(snapshot)
+            return snapshot
+
+    # ---- bounded-age verified snapshot cache (bh-kjxe9) ----------------------------------
+
+    def _cache_path(self) -> Path | None:
+        floor = self.settings.get("floor_path")
+        if not floor or not Path(floor).is_absolute():
+            return None
+        path = Path(floor)
+        return path.with_name(path.name + ".snapshot")
+
+    def _degraded_key(self) -> tuple:
+        settings = self.settings
+        return (
+            settings.get("backend_identity"),
+            settings.get("generation"),
+            settings.get("floor_path"),
+        )
+
+    def _remember(self, snapshot) -> None:
+        """Persist the snapshot just verified against the floor, owner-only, best effort."""
+        _DEGRADED.pop(self._degraded_key(), None)
+        path = self._cache_path()
+        if path is None:
+            return
+        body = json.dumps(
+            {
+                "backend_identity": snapshot.backend_identity,
+                "generation": snapshot.generation,
+                "head": snapshot.commit_revision,
+                "fetched_at": snapshot.fetched_at,
+                "digest": _digest(snapshot.documents),
+                "documents": [[item.path, item.content] for item in snapshot.documents],
+            },
+            sort_keys=True,
+        )
+        temporary = path.with_name(path.name + f".{os.getpid()}.tmp")
+        try:
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as handle:
+                handle.write(body)
+            os.replace(temporary, path)
+        except OSError:
+            temporary.unlink(missing_ok=True)
+
+    def _cache_refusal(self, now) -> tuple[str | None, FleetConfigSnapshot | None]:
+        """``(reason, snapshot)``: the cached snapshot iff it is within ``hq.sql.cache_ttl``
+        and the local restore floor still names its exact head; else a fixed reason."""
+        settings = self.settings
+        path = self._cache_path()
+        if path is None or not path.exists() or path.is_symlink():
+            return "no cached verified snapshot", None
+        floor_path = Path(settings["floor_path"])
+        try:
+            if path.stat().st_mode & 0o077 or floor_path.stat().st_mode & 0o077:
+                return "cached snapshot custody changed", None
+            cached = json.loads(path.read_text())
+            floor = json.loads(floor_path.read_text())
+            documents = tuple(FleetConfigDocument(p, c) for p, c in cached["documents"])
+            fetched_at = float(cached["fetched_at"])
+            head = cached["head"]
+            backend = cached["backend_identity"]
+            generation = cached["generation"]
+            digest = cached["digest"]
+        except (OSError, ValueError, KeyError, TypeError):
+            return "cached snapshot unreadable", None
+        if (
+            backend != "sql:" + str(settings.get("backend_identity"))
+            or generation != settings.get("generation")
+            or (floor.get("backend"), floor.get("generation"))
+            != (settings.get("backend_identity"), generation)
+        ):
+            return "cached snapshot belongs to another backend or generation", None
+        if floor.get("head") != head:
+            return "restore floor moved past the cached snapshot", None
+        if _digest(documents) != digest:
+            return "cached snapshot digest mismatch", None
+        ttl = settings["cache_ttl"]
+        if not fetched_at <= now < fetched_at + ttl:
+            return f"cached snapshot older than hq.sql.cache_ttl ({ttl}s)", None
+        return None, FleetConfigSnapshot(
+            backend_identity=backend,
+            commit_revision=head,
+            generation=generation,
+            fetched_at=fetched_at,
+            valid_until=fetched_at + ttl,
+            documents=documents,
+        )
+
+    def load_snapshot_or_cached(self, *, warn=None):
+        """:meth:`load_snapshot`, degrading a transient outage to the cached verified snapshot.
+
+        For hive-local reads only (the ``bh bd`` passthrough). The fallback needs **trusted**
+        authority mode, a snapshot verified within ``hq.sql.cache_ttl``, and a local restore
+        floor that still names that snapshot's head (same revision floor). Signed mode, a
+        verification refusal, or a stale/absent/moved cache all fail closed. One warning is
+        printed per process and binding.
+        """
+        from . import hq_authority_enforce as authority_mode
+
+        key = self._degraded_key()
+        now = self.clock()
+        reused = _DEGRADED.get(key)
+        if reused is not None and reused.fetched_at <= now < reused.valid_until:
+            return reused
+        try:
+            return self.load_snapshot()
+        except SqlConfigUnavailable as exc:
+            if not authority_mode.trusted():
+                raise SqlConfigUnavailable(
+                    f"{exc}; no cached fallback in signed authority mode"
+                ) from None
+            reason, snapshot = self._cache_refusal(self.clock())
+            if snapshot is None:
+                raise SqlConfigUnavailable(f"{exc}; no cached fallback: {reason}") from None
+            _DEGRADED[key] = snapshot
+            if key not in _degraded_warned:
+                _degraded_warned.add(key)
+                age = max(0, int(self.clock() - snapshot.fetched_at))
+                message = (
+                    f"⚠ {exc}; using the cached verified HQ config "
+                    f"{snapshot.commit_revision[:12]} ({age}s old, "
+                    f"hq.sql.cache_ttl={self.settings['cache_ttl']}s) for this hive-local command"
+                )
+                (warn or _warn_stderr)(message)
+            return snapshot
+
+    def _load_snapshot_once(self, *, revision=None, deadline=None):
         connection, deadline = self._open("reader", deadline=deadline)
         try:
             binding = self.settings["reader"]
@@ -773,7 +957,7 @@ class SqlFleetConfigRevisionStore:
         except SqlConfigError:
             raise
         except Exception:
-            raise SqlConfigError("committed HQ configuration unavailable") from None
+            raise SqlConfigUnavailable("committed HQ configuration unavailable") from None
         finally:
             connection.close()
 
