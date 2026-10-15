@@ -138,6 +138,18 @@ class HqRuntimeStatements:
             (revision,),
         )
 
+    def ignore_all_at(self, revision: str) -> Any:
+        """Every ``(pattern, ignored)`` row of ``dolt_ignore AS OF revision``, by pattern."""
+        return self._all(
+            "SELECT pattern,ignored FROM dolt_ignore AS OF %s ORDER BY pattern", (revision,)
+        )
+
+    def policy_table_at(self, revision: str) -> tuple[Any, list[str]]:
+        """``(rows, column names)`` of the whole liveness policy table ``AS OF revision``."""
+        self._cursor.execute("SELECT * FROM hq_liveness_policy AS OF %s", (revision,))
+        rows = self._cursor.fetchall()
+        return rows, [column[0] for column in self._cursor.description]
+
     def liveness_policy(self, *, at: str | None = None) -> Any:
         """The committed TTL rows, ``AS OF at`` or on the working set."""
         if at is None:

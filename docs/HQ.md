@@ -911,6 +911,55 @@ edited.
 authority writer, observer, director and each existing frame account before the first session
 provisioning. Since bh-aprgo, `provision` grants it to the new frame account itself.
 
+### Restore floors across provisioning {#restore-floor-recovery}
+
+Every authority reader keeps a restore floor: the authority sequence and runtime head it last
+verified. A head with a lower sequence is a rollback, and a head that does not descend from the
+floor is a fork. Both are refused. Session provisioning commits to the runtime database without
+publishing authority, so it creates a descendant with the **same** sequence. A reader accepts
+such a head only if every first-parent commit since its floor is reviewed provisioning
+(bh-lso8w):
+
+- **The one-time liveness schema.** `provision_liveness_schema` adds exactly the `frame_*` row
+  to `dolt_ignore` and creates `hq_liveness_policy` with one singleton row whose TTLs are in
+  bounds. Before bh-lso8w a floor taken before this commit refused every later head as
+  `amended authority`. It now stays connected. The same holds when a native operator run
+  commits the ignore rule, the policy and the first stamp triggers together.
+- **Stamp-trigger pairs.** After the liveness schema exists, a commit may only add canonical
+  `frame_<principal>_<epoch>_session_stamp` / `_evidence_stamp` pairs for an unregistered,
+  unauthorized next epoch.
+
+Any other same-sequence change still refuses. This includes editing an existing policy or
+ignore rule, ignoring another table, touching the authority or registry, adding unrelated
+tables, merges, and an edit later reverted. The refusal names where the history went wrong. It
+gives no row contents:
+
+```text
+HQ runtime rollback or amended authority detected: head 3f0c9e1a2b4d keeps the authority
+sequence of restore floor 9a1b2c3d4e5f and descends from it, but commit 3f0c9e1a2b4d changes
+tables outside reviewed session provisioning (hq_liveness_policy); tables changed since the
+floor: dolt_ignore, hq_liveness_policy. Only reviewed session provisioning may share an
+authority sequence; see docs/HQ.md#restore-floor-recovery
+```
+
+Rollback and fork refusals name both heads and both sequences in the same way.
+
+**Recovering natively.** The floor is never edited by hand: it is the reader's proof against
+replay.
+
+1. Read the message. *Below restore floor sequence* or *does not descend* is a real rollback
+   or fork. Stop and investigate the HQ server before anything else.
+2. For a same-sequence refusal, the named commit and table list show what changed. Inspect it
+   on the server with `SELECT * FROM DOLT_DIFF_SUMMARY('<floor>','<head>')` and
+   `dolt_log`. If the change is reviewed provisioning that this `bh` predates, upgrade the
+   reader. No other action is needed.
+3. If the change is intended but is not provisioning (for example a corrected TTL in
+   `hq_liveness_policy`), the operator publishes the authority again from the server-local
+   binding. That raises the sequence above every floor. Readers then accept the new head
+   because it descends from their floor.
+4. If the change is not intended, revert it with a new commit, then publish again as in
+   step 3. A revert alone is still refused, because every commit since the floor is checked.
+
 ### Soak check: sender stall (Φ3, O4) {#sender-stall-soak}
 
 The Φ3 soak (O4) must show that a session sender which stalls for longer than `session_ttl_s`
