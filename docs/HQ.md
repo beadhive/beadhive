@@ -426,6 +426,27 @@ a **deprecated alias** that prints a deprecation line. `rebind` is a value of th
 `action` argument of the `hq.authority` operation, so the operation catalog and wire contract
 are unchanged.
 
+**Re-binding a frame grant (`--frame`, SQL HQ, `bh-2chzr`).** A plain rebind keeps every frame
+grant's `config_revision`, so it never re-admits a frame to a changed hive policy. A grant whose
+revision differs from the hive's signed `frame_policy.config_revision` cannot take that hive's
+lease: adopt refuses with "signed frame policy is not bound to this frame's active grant", the
+receiver and the placement director refuse it too, and `bh host eligible --hive <prefix>`
+reports it as the failing predicate `hive_policy_bound` (with both revisions and the repair).
+The repair is
+
+```sh
+bh hq authority rebind --frame <frame> --expected-revision <R> --operator-key <key> --confirm
+```
+
+which rebinds as above and also sets that frame's active and candidate grant `config_revision`
+to the revision the current config's `managed_repos[].frame_policy` entries carry. It refuses,
+publishing nothing, when no hive has a frame policy or when hives carry different revisions
+(align them in `fleet.yaml` first). Only the revision changes: holder, instance, key, epoch and
+audience stay, so the frame keeps its principal, route and replay floor. A signed-liveness frame's
+next heartbeat carries the new revision; until it lands (one beat interval) its older beats no
+longer verify. In trusted mode `--operator-key` may be omitted; signed mode still requires it.
+Git HQ refuses `--frame`: re-grant the frame with `bh hq authority grant`.
+
 ### Fleet-config edits and the bound head {#config-edit-tolerance}
 
 The SQL authority is signed against one config head (H0) and carries a `hive_policies`

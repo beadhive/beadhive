@@ -146,7 +146,7 @@ class HqControlPlane(Protocol):
     def publish_registration_evidence(self, manifest, *, signing_key): ...
     def grant(self, authority, public_key, desired, *, expected, operator_key): ...
     def accept_observation(self, frame, *, expected, operator_key, holder_identity=""): ...
-    def renew(self, *, expected, operator_key, duration=None, ceiling=None): ...
+    def renew(self, *, expected, operator_key, duration=None, ceiling=None, frame=None): ...
     def lifecycle(
         self,
         verb,
@@ -889,7 +889,13 @@ class GitControlPlane:
             raise ControlPlaneError("authority changed before readback")
         return sha
 
-    def renew(self, *, expected, operator_key, duration=None, ceiling=None):
+    def renew(self, *, expected, operator_key, duration=None, ceiling=None, frame=None):
+        if frame:
+            # bh-2chzr: the grant re-bind is SQL-only; a Git HQ grant is re-issued by `grant`.
+            raise ControlPlaneError(
+                "rebind --frame re-binds a SQL HQ frame grant; on Git HQ re-grant the frame "
+                "with `bh hq authority grant`"
+            )
         sha, state, _ = self._operator_read()
         if not sha:
             raise ControlPlaneError("cannot renew absent authority")
@@ -2097,7 +2103,14 @@ class SqlControlPlane:
                 raise
             raise ControlPlaneError("SQL authority identity binding unavailable") from None
 
-    def renew(self, *, expected, operator_key, duration=None, ceiling=None):
+    def renew(self, *, expected, operator_key, duration=None, ceiling=None, frame=None):
+        """Rebind: re-sign the current authority against the current config head.
+
+        `frame` (``bh hq authority rebind --frame``, bh-2chzr) also re-binds that frame's
+        active/candidate grant ``config_revision`` to the current hive frame-policy revision.
+        Without it a grant keeps its revision (a plain rebind never re-admits a frame to a
+        changed policy), which is how a grant could stay on an old revision through every
+        rebind and release upgrade while adopt refused it."""
         _require_operator_key(operator_key)
         # Validate the explicit duration against the ceiling before any I/O.
         _signed_expiry(0, duration, ceiling)
@@ -2111,6 +2124,8 @@ class SqlControlPlane:
             state["revision"] += 1
             state["issued_at"] = self.clock()
             state["expires_at"] = _signed_expiry(state["issued_at"], duration, ceiling)
+            if frame:
+                self._rebind_frame_grant(state, frame)
             return operator.publish(
                 state,
                 expected_revision=expected,
@@ -2121,6 +2136,50 @@ class SqlControlPlane:
             if isinstance(exc, ControlPlaneError):
                 raise
             raise ControlPlaneError("SQL authority renewal unavailable") from None
+
+    def _rebind_frame_grant(self, state, frame):
+        """Point `frame`'s active/candidate grant at the current frame-policy revision.
+
+        The target is the ``config_revision`` the current config head's ``managed_repos``
+        frame policies carry: the projection the publication about to be signed will bind.
+        A grant serves every hive its revision matches, so the target must be unambiguous:
+        refused when no hive has a frame policy, or when hives carry different revisions
+        (align them in fleet.yaml first). Only ``config_revision`` changes — never the
+        incarnation binding (holder, instance, key, epoch, audience), so the frame keeps its
+        principal, route and replay floor and its next beat follows the new revision.
+        """
+        from .hq_hive_policy import project_hive_policies
+
+        entry = state.get("frames", {}).get(frame)
+        records = [entry[slot] for slot in ("active", "candidate") if entry and entry.get(slot)]
+        if not records:
+            raise ControlPlaneError(
+                f"rebind --frame {frame}: no active or candidate grant for that frame"
+            )
+        try:
+            snapshot = self.config_store().load_snapshot()
+            policies = project_hive_policies(
+                snapshot, valid_until=state["expires_at"], now=state["issued_at"]
+            )
+        except ValueError:
+            raise ControlPlaneError(
+                f"rebind --frame {frame}: current hive frame policies unavailable"
+            ) from None
+        revisions = sorted({policy["config_revision"] for policy in policies.values()})
+        if len(revisions) != 1:
+            detail = (
+                "no managed hive carries a frame_policy"
+                if not revisions
+                else "managed hives carry different frame_policy.config_revision values ("
+                + ", ".join(
+                    f"{prefix}={policy['config_revision']}"
+                    for prefix, policy in sorted(policies.items())
+                )
+                + "); align them in fleet.yaml and publish the config first"
+            )
+            raise ControlPlaneError(f"rebind --frame {frame}: {detail}. Nothing was changed.")
+        for record in records:
+            record["authority"]["config_revision"] = revisions[0]
 
     def accept_observation(self, frame, *, expected, operator_key, holder_identity=""):
         _require_operator_key(operator_key)
@@ -2440,30 +2499,80 @@ class SqlControlPlane:
         ``refs/bh/epoch`` toward a lease that can never be accepted (bh-qv8ig: agent-hitch
         burned epochs 18-21 this way). Read-only.
         """
+        binding, policy = self._hive_policy_binding(prefix)
+        if policy is None:
+            raise ControlPlaneError(
+                f"PLACEMENT: hive {prefix} has no operator-signed frame policy in the HQ "
+                f"authority, so no hive lease for it can be accepted. Give its fleet.yaml "
+                f"managed_repos entry a frame_policy (config_revision "
+                f"{binding['grant_config_revision']}), publish the config, renew the HQ "
+                f"authority, then adopt again. Nothing was changed."
+            )
+        if not binding["bound"]:
+            if binding["slot"] != "active":
+                detail = f"this frame's grant is in the {binding['slot']} slot, not active"
+            else:
+                detail = (
+                    f"the hive policy is on config revision {binding['policy_config_revision']} "
+                    f"but this frame's grant is on {binding['grant_config_revision']}; re-bind "
+                    f"the grant from an operator host: {binding['repair']}"
+                )
+            raise ControlPlaneError(
+                f"PLACEMENT: hive {prefix}'s signed frame policy is not bound to this frame's "
+                f"active grant ({detail}). Nothing was changed."
+            )
+        return policy
+
+    def hive_policy_binding(self, prefix, *, holder_identity=None):
+        """Read-only: is `holder_identity`'s grant bound to `prefix`'s signed frame policy?
+
+        The predicate adopt, the receiver and the placement director all enforce: an active
+        grant whose ``config_revision`` equals the hive policy's. ``bh host eligible --hive``
+        reports it as ``hive_policy_bound`` (bh-2chzr). `holder_identity` defaults to this
+        frame; another identity is looked up in the same verified authority state. Returns a
+        dict with ``bound``, both revisions, the ``slot`` and the ``repair`` command."""
+        return self._hive_policy_binding(prefix, holder_identity=holder_identity)[0]
+
+    def _hive_policy_binding(self, prefix, *, holder_identity=None):
         enforce = authority_enforced()
         try:
-            _head, _state, _route, slot, record, _snapshot, policies, *_ = (
+            _head, state, route, slot, record, _snapshot, policies, *_ = (
                 self._runtime_authority().read_frame_composite(enforce=enforce)
             )
         except ValueError as exc:
             if isinstance(exc, ControlPlaneError):
                 raise
             raise ControlPlaneError("qualified SQL hive policy unavailable") from None
+        frame_id = route.frame_id
+        if holder_identity is not None and holder_identity != route.holder_identity:
+            matches = [
+                (fid, name, candidate)
+                for fid, entry in (state.get("frames") or {}).items()
+                for name in ("active", "candidate")
+                if (candidate := (entry or {}).get(name)) is not None
+                and candidate["authority"]["holder_identity"] == holder_identity
+            ]
+            if len(matches) != 1:
+                raise ControlPlaneError(f"no unique current grant for {holder_identity}")
+            frame_id, slot, record = matches[0]
         policy = policies.get(prefix)
-        if policy is None:
-            raise ControlPlaneError(
-                f"PLACEMENT: hive {prefix} has no operator-signed frame policy in the HQ "
-                f"authority, so no hive lease for it can be accepted. Give its fleet.yaml "
-                f"managed_repos entry a frame_policy (config_revision "
-                f"{record['authority']['config_revision']}), publish the config, renew the HQ "
-                f"authority, then adopt again. Nothing was changed."
-            )
-        if slot != "active" or policy["config_revision"] != record["authority"]["config_revision"]:
-            raise ControlPlaneError(
-                f"PLACEMENT: hive {prefix}'s signed frame policy is not bound to this frame's "
-                "active grant (config revision or admission slot differs). Nothing was changed."
-            )
-        return policy
+        grant_revision = record["authority"]["config_revision"]
+        binding = {
+            "prefix": prefix,
+            "frame_id": frame_id,
+            "slot": slot,
+            "grant_config_revision": grant_revision,
+            "policy_config_revision": policy["config_revision"] if policy else None,
+            "bound": policy is not None
+            and slot == "active"
+            and policy["config_revision"] == grant_revision,
+            "repair": (
+                f"bh hq authority rebind --frame {frame_id} --expected-revision <R> "
+                "--operator-key <key> --confirm (R from `bh hq authority status`; "
+                "--operator-key may be omitted in trusted mode)"
+            ),
+        }
+        return binding, policy
 
     @staticmethod
     def _public_observation(row, route, slot, *, granted_public_key, now, signed=False):

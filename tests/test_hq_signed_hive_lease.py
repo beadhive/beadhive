@@ -877,3 +877,45 @@ def test_switched_dual_write_holder_uses_session_and_verified_proposal(tmp_path)
     ):
         plane, _ = _plane(a, fence=EpochFence(22, "host-a"), rows=[row], session=bad)
         assert plane.read_hive_lease("ah", holder_identity="host-a") is None
+
+
+# ---- bh-2chzr: a grant left on an old config revision -----------------------------------
+
+
+def test_require_hive_policy_names_the_grant_rebind_when_revisions_differ(tmp_path):
+    a = _frame(tmp_path)
+    a.record["authority"]["config_revision"] = "3fhtuca3"
+    plane, _ = _plane(a, fence=None)
+    with pytest.raises(ControlPlaneError) as caught:
+        plane.require_hive_policy("ah")
+    message = str(caught.value)
+    assert "not bound to this frame's active grant" in message
+    assert "desired-1" in message and "3fhtuca3" in message
+    assert "bh hq authority rebind --frame frame-a" in message
+
+
+def test_hive_policy_binding_reports_self_and_another_frame(tmp_path):
+    a = _frame(tmp_path)
+    b = _frame(tmp_path, "b", "host-b")
+    b.record["authority"]["config_revision"] = "3fhtuca3"
+    plane, _ = _plane(a, fence=None)
+    state = {"frames": {"frame-a": {"active": a.record}, "frame-b": {"active": b.record}}}
+    composite = plane._runtime_authority().read_frame_composite
+
+    def with_state(**kwargs):
+        result = composite(**kwargs)
+        return (result[0], state, *result[2:])
+
+    plane._runtime_authority = lambda: SimpleNamespace(read_frame_composite=with_state)
+    mine = plane.hive_policy_binding("ah")
+    assert mine["bound"] and mine["frame_id"] == "frame-a"
+    other = plane.hive_policy_binding("ah", holder_identity="host-b")
+    assert not other["bound"]
+    assert (other["frame_id"], other["slot"]) == ("frame-b", "active")
+    assert (other["policy_config_revision"], other["grant_config_revision"]) == (
+        "desired-1",
+        "3fhtuca3",
+    )
+    assert other["repair"].startswith("bh hq authority rebind --frame frame-b")
+    with pytest.raises(ControlPlaneError, match="no unique current grant"):
+        plane.hive_policy_binding("ah", holder_identity="host-z")

@@ -2196,6 +2196,27 @@ def rm_cmd(
     typer.echo(f"✓ removed {removed}")
 
 
+def _hive_policy_predicate(payload, hq_dir, prefix, identity):
+    """Add ``hive_policy_bound`` on SQL HQ (bh-2chzr): the frame's grant ``config_revision``
+    must equal the hive's signed frame-policy revision, or adopt refuses. It used to surface
+    only as adopt's refusal while every listed predicate passed. Git HQ: not reported."""
+    from .hq_control_plane import control_plane
+
+    try:
+        plane = control_plane(hq_dir)
+        if getattr(plane, "config_backend", None) != "sql":
+            return
+        binding = plane.hive_policy_binding(prefix, holder_identity=identity)
+    except (ValueError, OSError, RuntimeError, AttributeError):
+        binding = {"bound": False}
+    bound = binding.get("bound") is True
+    payload["predicates"]["hive_policy_bound"] = bound
+    payload["hive_policy_binding"] = binding
+    if not bound:
+        payload["eligible"] = False
+        payload["reason"] += ", hive_policy_bound"
+
+
 @app.command("eligible", help="explain frame eligibility and optional hive lease ownership")
 def eligible_cmd(
     identity: str = typer.Argument("", help="host or frame ID; defaults to this host"),
@@ -2242,6 +2263,8 @@ def eligible_cmd(
         payload["eligible"] = payload["eligible"] and held
         if not held:
             payload["reason"] += ", current_hive_lease_holder"
+        if decision is not None:
+            _hive_policy_predicate(payload, hq_dir, str(entry["prefix"]), identity)
     # BH_HQ_AUTHORITY_ENFORCE=false (UNSUPPORTED, bh-6pqul) marks each waived predicate.
     waived = set(payload.get("waived", ()))
     if as_json:
@@ -2258,6 +2281,14 @@ def eligible_cmd(
                 ],
                 (("predicate", "PREDICATE"), ("result", "RESULT")),
             )
+        )
+    binding = payload.get("hive_policy_binding") or {}
+    if not as_json and binding.get("bound") is False and binding.get("repair"):
+        typer.echo(
+            f"hive_policy_bound: policy config revision {binding.get('policy_config_revision')}, "
+            f"grant {binding.get('grant_config_revision')} (slot {binding.get('slot')}); "
+            f"repair: {binding['repair']}",
+            err=True,
         )
     if not payload["eligible"]:
         raise typer.Exit(1)
