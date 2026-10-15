@@ -2549,13 +2549,19 @@ class SqlControlPlane:
     def _hive_policy_binding(self, prefix, *, holder_identity=None):
         enforce = authority_enforced()
         try:
+            # Session-routed (bh-n0ttm): liveness is irrelevant to the binding, but without
+            # ``session_liveness`` the composite reads the receiver's public-observation row,
+            # which a session-only incarnation's principal is not granted. The switch reads
+            # the session tables when they exist and the observation row otherwise.
             _head, state, route, slot, record, _snapshot, policies, *_ = (
-                self._runtime_authority().read_frame_composite(enforce=enforce)
+                self._runtime_authority().read_frame_composite(
+                    enforce=enforce, session_liveness=True
+                )
             )
         except ValueError as exc:
             if isinstance(exc, ControlPlaneError):
                 raise
-            raise ControlPlaneError("qualified SQL hive policy unavailable") from None
+            raise ControlPlaneError(f"qualified SQL hive policy unavailable: {exc}") from None
         frame_id = route.frame_id
         if holder_identity is not None and holder_identity != route.holder_identity:
             matches = [

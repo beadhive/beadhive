@@ -2237,8 +2237,14 @@ def _hive_policy_predicate(payload, hq_dir, prefix, identity):
         if getattr(plane, "config_backend", None) != "sql":
             return
         binding = plane.hive_policy_binding(prefix, holder_identity=identity)
-    except (ValueError, OSError, RuntimeError, AttributeError):
-        binding = {"bound": False}
+    except (ValueError, OSError, RuntimeError, AttributeError) as exc:
+        # Unreadable is ineligible, but say why (bh-n0ttm). A control-plane refusal is a
+        # composed message without credentials or driver text; anything else is named only
+        # by its class, since arbitrary exception text may carry paths or connection detail.
+        from .hq_control_plane import ControlPlaneError
+
+        reason = str(exc) if isinstance(exc, ControlPlaneError) else type(exc).__name__
+        binding = {"prefix": prefix, "bound": False, "error": reason}
     bound = binding.get("bound") is True
     payload["predicates"]["hive_policy_bound"] = bound
     payload["hive_policy_binding"] = binding
