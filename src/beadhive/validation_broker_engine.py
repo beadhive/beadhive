@@ -104,7 +104,9 @@ class BrokerResolution:
     sources: dict[str, str]
 
 
-def resolve_broker(cfg: dict, entry=None) -> BrokerResolution:
+def resolve_broker(
+    cfg: dict, entry=None, *, cpu_count: Callable[[], int | None] = os.cpu_count
+) -> BrokerResolution:
     """Layer the hive's ``work.validation_broker`` over the merged host/fleet one.
 
     Hive-owned fields (``engine``, ``setup``, ``packer`` field by field) resolve hive over
@@ -141,12 +143,20 @@ def resolve_broker(cfg: dict, entry=None) -> BrokerResolution:
         if asked > host_eff.cpu or asked <= 0:
             budget["cpu"] = host_eff.cpu
             sources["budget.cpu"] = "host cap"
+    elif host_eff.cpu == 0 and "cpu" in hive_budget:
+        total = cpu_count()  # no host cap configured: the host's CPU count is the ceiling
+        if total and float(hive_budget["cpu"]) > total:
+            budget["cpu"] = float(total)
+            sources["budget.cpu"] = "host cap"
     if isinstance(hive_budget.get("pools"), dict):
         pools = dict(host_eff.pools)
         for name, amount in hive_budget["pools"].items():
             ceiling = host_eff.pools.get(name)
-            pools[name] = amount if ceiling is None else min(amount, ceiling)
-            if ceiling is not None and amount > ceiling:
+            if ceiling is None:  # the host defines the pools; a hive cannot add one
+                sources["budget.pools"] = "host cap"
+                continue
+            pools[name] = min(amount, ceiling)
+            if amount > ceiling:
                 sources["budget.pools"] = "host cap"
         budget["pools"] = pools
     merged["budget"] = budget
@@ -177,7 +187,8 @@ def broker_settings(cfg: dict, entry=None) -> ValidationBrokerConfig:
 
 
 def describe_broker(cfg: dict, entry=None, environ: Mapping[str, str] | None = None) -> dict:
-    """Effective broker settings plus a ``sources`` map, for ``bh config broker``."""
+    """Effective broker settings plus a ``sources`` map (``python -m
+    beadhive.validation_broker_engine`` prints it)."""
     resolution = resolve_broker(cfg, entry)
     env = os.environ if environ is None else environ
     sources = dict(resolution.sources)

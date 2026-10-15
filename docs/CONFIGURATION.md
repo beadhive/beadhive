@@ -75,7 +75,7 @@ See [HQ](HQ.md#fleet-writes-after-init) for Git behavior and the
 | `engine`, `setup` | hive | hive over host/fleet; `BH_VALIDATION_BROKER_ENGINE` still wins for one invocation |
 | `packer` | hive | hive over host/fleet, field by field |
 | per-key reservations (`work.attest.keys[].resources`) | hive | hive over host/fleet (unchanged) |
-| `budget.cpu`, `budget.memory`, `budget.pools` | host, hive may ask for less | hive over host/fleet, then **capped by the host's configured budget**: a nonzero host `cpu`, a host `memory`, and each host pool are ceilings. A hive asking for more (or `cpu: 0`, "every CPU", under a host cap) gets the host value. With no host budget configured the ceiling is the measured host |
+| `budget.cpu`, `budget.memory`, `budget.pools` | host, hive may ask for less | hive over host/fleet, then **capped by the host's configured budget**: a nonzero host `cpu`, a host `memory`, and each host pool are ceilings. A hive asking for more (or `cpu: 0`, "every CPU", under a host cap) gets the host value. With no host `cpu` configured the ceiling is the host's CPU count (`os.cpu_count()`). A pool the host does not define is ignored: only the host adds pools |
 | `floor`, `repoll_seconds`, `roots` | host | host/fleet only; a hive overlay is ignored |
 
 This **differs from `work.validation_slots`**, which deliberately ignores hive overlays. Slots are

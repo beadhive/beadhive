@@ -424,3 +424,22 @@ def test_describe_broker_reports_each_source() -> None:
     assert report["sources"]["floor"] == "global"
     assert report["sources"]["packer"] == "default"
     assert describe_broker(cfg, None, {ENGINE_ENV: "local"})["sources"]["engine"] == ENGINE_ENV
+
+
+def test_a_hive_cpu_is_capped_at_the_host_cpu_count_without_a_host_budget() -> None:
+    from beadhive.validation_broker_engine import resolve_broker
+
+    greedy = resolve_broker({}, _hive(budget={"cpu": 64}), cpu_count=lambda: 16)
+    assert greedy.settings.budget.cpu == 16 and greedy.sources["budget.cpu"] == "host cap"
+    modest = resolve_broker({}, _hive(budget={"cpu": 8}), cpu_count=lambda: 16)
+    assert modest.settings.budget.cpu == 8 and modest.sources["budget.cpu"] == "hive"
+    host = {"work": {"validation_broker": {"budget": {"cpu": 64}}}}
+    assert resolve_broker(host, None, cpu_count=lambda: 16).settings.budget.cpu == 64
+
+
+def test_a_pool_the_host_does_not_define_is_ignored() -> None:
+    from beadhive.validation_broker_engine import resolve_broker
+
+    resolved = resolve_broker({}, _hive(budget={"pools": {"gpus": 4, "dolt-servers": 3}}))
+    assert resolved.settings.budget.pools == {"dolt-servers": 3}
+    assert resolved.sources["budget.pools"] == "host cap"
