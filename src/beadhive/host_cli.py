@@ -1867,23 +1867,30 @@ def _frame_lifecycle(
     supersede,
     deadline,
     emergency_options=None,
+    operator_settings=None,
 ):
-    from .hq_control_plane import control_plane
+    from . import hq_authority_enforce
+    from .hq_operator_settings import select_plane
 
     try:
-        result = control_plane().lifecycle(
-            verb,
-            frame_id,
-            action,
-            expected=expected,
-            expected_host_id=expected_host_id,
-            expected_release=expected_release,
-            operator_key=str(operator_key) if operator_key else "",
-            confirm=confirm,
-            supersede=supersede,
-            deadline=deadline,
-            **(emergency_options or {}),
-        )
+        # bh-siluj: an operator host that is also a frame carries hq.sql.runtime in its own
+        # host.yaml, which the authority writer refuses. Select the plane exactly as
+        # `bh hq authority` does: --operator-settings, else $BH_HQ_OPERATOR_SETTINGS, else
+        # this host's config; hq.authority_mode follows the same file.
+        with hq_authority_enforce.operator_settings(operator_settings):
+            result = select_plane(operator_settings).lifecycle(
+                verb,
+                frame_id,
+                action,
+                expected=expected,
+                expected_host_id=expected_host_id,
+                expected_release=expected_release,
+                operator_key=str(operator_key) if operator_key else "",
+                confirm=confirm,
+                supersede=supersede,
+                deadline=deadline,
+                **(emergency_options or {}),
+            )
         if verb == "emergency-admit" and action == "plan":
             try:
                 from .heartbeat_report import installed_release
@@ -1923,6 +1930,13 @@ def _lifecycle_command(verb: str, *, operation: str | None = None):
         deadline: float | None = typer.Option(
             None, "--deadline", help="drain deadline, Unix seconds"
         ),
+        operator_settings: Annotated[
+            str | None,
+            typer.Option(
+                "--operator-settings",
+                help="operator settings file; overrides $BH_HQ_OPERATOR_SETTINGS",
+            ),
+        ] = None,
     ) -> None:
         _frame_lifecycle(
             verb,
@@ -1935,6 +1949,7 @@ def _lifecycle_command(verb: str, *, operation: str | None = None):
             confirm,
             supersede,
             deadline,
+            operator_settings=operator_settings,
         )
 
     command.__name__ = f"{operation.replace('-', '_')}_cmd"
@@ -2047,6 +2062,13 @@ def emergency_admit_cmd(
     expected_release: str = typer.Option("", "--expected-release"),
     operator_key: Annotated[Path | None, typer.Option("--operator-key")] = None,
     confirm: bool = typer.Option(False, "--confirm"),
+    operator_settings: Annotated[
+        str | None,
+        typer.Option(
+            "--operator-settings",
+            help="operator settings file; overrides $BH_HQ_OPERATOR_SETTINGS",
+        ),
+    ] = None,
 ) -> None:
     """Authorize one hive for at most 30 minutes using separate protected operator authority."""
     _frame_lifecycle(
@@ -2066,6 +2088,7 @@ def emergency_admit_cmd(
             "emergency_duration": duration,
             "execution_digest": execution_digest,
         },
+        operator_settings=operator_settings,
     )
 
 
@@ -2196,6 +2219,27 @@ def rm_cmd(
     typer.echo(f"✓ removed {removed}")
 
 
+def _hive_policy_predicate(payload, hq_dir, prefix, identity):
+    """Add ``hive_policy_bound`` on SQL HQ (bh-2chzr): the frame's grant ``config_revision``
+    must equal the hive's signed frame-policy revision, or adopt refuses. It used to surface
+    only as adopt's refusal while every listed predicate passed. Git HQ: not reported."""
+    from .hq_control_plane import control_plane
+
+    try:
+        plane = control_plane(hq_dir)
+        if getattr(plane, "config_backend", None) != "sql":
+            return
+        binding = plane.hive_policy_binding(prefix, holder_identity=identity)
+    except (ValueError, OSError, RuntimeError, AttributeError):
+        binding = {"bound": False}
+    bound = binding.get("bound") is True
+    payload["predicates"]["hive_policy_bound"] = bound
+    payload["hive_policy_binding"] = binding
+    if not bound:
+        payload["eligible"] = False
+        payload["reason"] += ", hive_policy_bound"
+
+
 @app.command("eligible", help="explain frame eligibility and optional hive lease ownership")
 def eligible_cmd(
     identity: str = typer.Argument("", help="host or frame ID; defaults to this host"),
@@ -2242,6 +2286,8 @@ def eligible_cmd(
         payload["eligible"] = payload["eligible"] and held
         if not held:
             payload["reason"] += ", current_hive_lease_holder"
+        if decision is not None:
+            _hive_policy_predicate(payload, hq_dir, str(entry["prefix"]), identity)
     # BH_HQ_AUTHORITY_ENFORCE=false (UNSUPPORTED, bh-6pqul) marks each waived predicate.
     waived = set(payload.get("waived", ()))
     if as_json:
@@ -2258,6 +2304,14 @@ def eligible_cmd(
                 ],
                 (("predicate", "PREDICATE"), ("result", "RESULT")),
             )
+        )
+    binding = payload.get("hive_policy_binding") or {}
+    if not as_json and binding.get("bound") is False and binding.get("repair"):
+        typer.echo(
+            f"hive_policy_bound: policy config revision {binding.get('policy_config_revision')}, "
+            f"grant {binding.get('grant_config_revision')} (slot {binding.get('slot')}); "
+            f"repair: {binding['repair']}",
+            err=True,
         )
     if not payload["eligible"]:
         raise typer.Exit(1)

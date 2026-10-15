@@ -426,6 +426,27 @@ a **deprecated alias** that prints a deprecation line. `rebind` is a value of th
 `action` argument of the `hq.authority` operation, so the operation catalog and wire contract
 are unchanged.
 
+**Re-binding a frame grant (`--frame`, SQL HQ, `bh-2chzr`).** A plain rebind keeps every frame
+grant's `config_revision`, so it never re-admits a frame to a changed hive policy. A grant whose
+revision differs from the hive's signed `frame_policy.config_revision` cannot take that hive's
+lease: adopt refuses with "signed frame policy is not bound to this frame's active grant", the
+receiver and the placement director refuse it too, and `bh host eligible --hive <prefix>`
+reports it as the failing predicate `hive_policy_bound` (with both revisions and the repair).
+The repair is
+
+```sh
+bh hq authority rebind --frame <frame> --expected-revision <R> --operator-key <key> --confirm
+```
+
+which rebinds as above and also sets that frame's active and candidate grant `config_revision`
+to the revision the current config's `managed_repos[].frame_policy` entries carry. It refuses,
+publishing nothing, when no hive has a frame policy or when hives carry different revisions
+(align them in `fleet.yaml` first). Only the revision changes: holder, instance, key, epoch and
+audience stay, so the frame keeps its principal, route and replay floor. A signed-liveness frame's
+next heartbeat carries the new revision; until it lands (one beat interval) its older beats no
+longer verify. In trusted mode `--operator-key` may be omitted; signed mode still requires it.
+Git HQ refuses `--frame`: re-grant the frame with `bh hq authority grant`.
+
 ### Fleet-config edits and the bound head {#config-edit-tolerance}
 
 The SQL authority is signed against one config head (H0) and carries a `hive_policies`
@@ -471,8 +492,12 @@ beadyard identity, nor rewrite history, without an operator rebind.
 A released `bh` builds its control plane from the running host's `host.yaml`. An operator host
 whose `host.yaml` has no `hq.sql.authority_writer` binds it from a file instead, with
 `BH_HQ_OPERATOR_SETTINGS=<file>` (or `--operator-settings <file>`, which wins over the env var)
-on `bh hq authority rebind|grant|observe|bind-beadyard|status|check|mode|mode-trusted|mode-signed|join`
-and `bh host release-upgrade plan|apply|check`. The file is JSON or YAML:
+on `bh hq authority rebind|grant|observe|bind-beadyard|status|check|mode|mode-trusted|mode-signed|join`,
+`bh host release-upgrade plan|apply|check` and, from wire 2.9.0 (`bh-siluj`), the frame lifecycle
+verbs `bh host admit|cordon|drain|park|resume|quarantine|frame-retire|emergency-admit|emergency-revoke
+plan|apply|check`. This is what lets an operator host that is also a frame (its own `host.yaml`
+binds `hq.sql.runtime`, which the authority writer refuses) run them: the file's plane replaces
+the host's, and `hq.authority_mode` follows the same file. The file is JSON or YAML:
 
 ```json
 {
@@ -730,6 +755,15 @@ signed proposal, and 0.22.8 let a frame resolve it from its own proposals at the
   the dead frame's claims, and a frame that does not read the cause reclaims nothing.
 - Lease expiry (the tenure) is a failover hint, never a write gate. An HQ outage blocks handoff,
   never writes.
+- A past `expires_at` therefore does not free a hive under signed or session liveness, and
+  `bh host adopt` does not treat it as expired (`bh-rlzab`). Its refusal says so and names what
+  does: authenticated stale liveness evidence older than `host.lease.evict_after_s`, a
+  quarantined or retired holder, a release, a director `place`, or `--force`. On Git HQ (no
+  signed liveness) expiry is still real and a past lease is adopted without `--force`.
+- A **session-only** frame (session rows, no signed inbox) cannot publish its own hive-lease
+  proposal, so `bh host lease release` on it refuses and names the director verb instead:
+  `bh hq placement release <prefix> --expected-revision <R> --confirm` from a host whose
+  operator settings carry `placement_writer`.
 
 The operator drives it with the hidden `bh hq placement show|seed|place|release|check|policy`
 verb, documented only in the [placement runbook](design/hq-placement-runbook.md). It binds the

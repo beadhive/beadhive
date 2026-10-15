@@ -105,6 +105,31 @@ class HostLeaseRejected(HostLeaseError):
     caller learns it won."""
 
 
+def held_refusal(prefix: str, lease: HostLease, *, at: float | None = None) -> str:
+    """The operator-facing refusal for adopting `prefix` while `lease` names another host.
+
+    When the lease's recorded expiry has passed but expiry is only a failover hint here
+    (signed or session liveness: :attr:`HostLease.advisory_expiry`), the plain "wait for it to
+    expire" advice is wrong and reads like a bug (bh-rlzab). Say instead why the past expiry
+    does not free the hive (writer-partitioning ADR §4: time triggers reassignment, it never
+    ends a tenure) and what does."""
+    head = f"{prefix} is held by another host — host lease: {lease.describe()}.\n"
+    force = "force a takeover (dangerous: `--force` is how split-brain happens — ADR Limitation 3)."
+    if not lease.hint_elapsed(at):
+        return head + f"  Wait for it to expire, have that host release it, or {force}"
+    return head + (
+        "  Its recorded expiry has passed, but on this HQ expiry is only a failover hint "
+        "(signed/session liveness; writer-partitioning ADR §4: time triggers reassignment, it "
+        "never ends a tenure), so a past expiry does not free the hive and waiting will not "
+        "help.\n"
+        "  Adopt takes it without --force only when the holder is provably gone: authenticated "
+        "stale liveness evidence older than host.lease.evict_after_s, or a quarantined or "
+        f"retired holder (`bh host quarantine` / `bh host frame-retire`). Otherwise have that "
+        f"host release it, have the director place this frame (`bh hq placement place {prefix} "
+        f"--frame <frame> --expected-revision <R>`), or {force}"
+    )
+
+
 def ttl_for_role(role: str, base_ttl: float = DEFAULT_TTL) -> float:
     """The lease TTL a host in `role` should take, from the configured `base_ttl`
     (``host.lease.ttl``) scaled by :data:`ROLE_TTL_SCALE`.
@@ -288,11 +313,7 @@ def adopt(
         )
     if current is not None and not current.is_expired(at) and current.host_id != host_id:
         if not force and not frame_eligibility.evictable(current.host_id, hq_dir=cwd, at=at):
-            raise HostLeaseRejected(
-                f"{prefix} is held by another host — host lease: {current.describe()}.\n"
-                f"  Wait for it to expire, have that host release it, or force a takeover "
-                f"(dangerous: `--force` is how split-brain happens — Limitation 3)."
-            )
+            raise HostLeaseRejected(held_refusal(prefix, current, at=at))
         log.get_logger(__name__).warning(
             "host_lease_forced_takeover",
             hive_prefix=prefix,

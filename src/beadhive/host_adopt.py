@@ -380,11 +380,7 @@ def adopt(
         and not force
         and not evict
     ):
-        raise HostLeaseRejected(
-            f"{prefix} is held by another host — host lease: {lease.describe()}.\n"
-            f"  Wait for it to expire, have that host release it, or force a takeover "
-            f"(dangerous: `--force` is how split-brain happens — ADR Limitation 3)."
-        )
+        raise HostLeaseRejected(host_lease.held_refusal(prefix, lease, at=at))
 
     epoch = _next_epoch(fence, lease)
 
