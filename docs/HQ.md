@@ -764,6 +764,8 @@ signed proposal, and 0.22.8 let a frame resolve it from its own proposals at the
   proposal, so `bh host lease release` on it refuses and names the director verb instead:
   `bh hq placement release <prefix> --expected-revision <R> --confirm` from a host whose
   operator settings carry `placement_writer`.
+  Nothing in `bh setup` or `bh doctor` provisions that account: create it first, see
+  [Provision the director account](design/hq-placement-runbook.md#provision-the-director-account).
 
 The operator drives it with the hidden `bh hq placement show|seed|place|release|check|policy`
 verb, documented only in the [placement runbook](design/hq-placement-runbook.md). It binds the
