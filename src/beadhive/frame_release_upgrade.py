@@ -461,8 +461,12 @@ def prepare_config(
         or not isinstance(request.get("release"), dict)
         or set(request["release"]) != {"id", "digest"}
         or request["release"].get("digest") == record["desired"]["release"]["digest"]
+        and request["release"] != record["desired"]["release"]
     ):
         raise ValueError("prepare-config original runtime/config/identity/release CAS mismatch")
+    # Targeting the still-admitted release cancels an unapplied preparation (bh-odevt): the
+    # canonical manifest returns to what the authority admits, whatever was prepared since.
+    rollback = request["release"] == record["desired"]["release"]
     path = f"hosts/{authority['holder_identity']}.yaml"
     matches = [document for document in snapshot.documents if document.path == path]
     if len(matches) != 1:
@@ -482,7 +486,8 @@ def prepare_config(
         or manifest.capabilities is None
         or manifest.capabilities.model_dump() != record["desired"]["caps"]
         or manifest.release is None
-        or manifest.release.model_dump() not in (record["desired"]["release"], request["release"])
+        or not rollback
+        and manifest.release.model_dump() not in (record["desired"]["release"], request["release"])
     ):
         raise ValueError("prepare-config canonical manifest differs from incumbent identity/state")
     proposed = {**raw, "release": request["release"]}
@@ -525,6 +530,7 @@ def prepare_config(
         "canonical_release_before": manifest.release.model_dump(),
         "release": request["release"],
         "state": expected_state,
+        "rollback": rollback,
         "already_prepared": unchanged,
         "applied": False,
     }
