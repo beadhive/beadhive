@@ -206,13 +206,7 @@ def prepare(original, frame, head, snapshot, request, *, now):
         history = history[-HISTORY_LIMIT:]
     next_record = copy.deepcopy(old)
     next_record.pop("emergency", None)  # Bound to the archived authority; kept there.
-    next_record["authority"] = {
-        **a,
-        "epoch": entry["epoch_floor"] + 1,
-        "config_revision": request["config_revision"],
-        # An active rotation stays admitted; the request expiry bounds only the plan.
-        "candidate_expires_at": None if active else request["expires_at"],
-    }
+    next_record["authority"] = next_authority(original, frame, request)
     next_record["desired"] = {
         **old["desired"],
         "release": request["release"],
@@ -241,6 +235,18 @@ def prepare(original, frame, head, snapshot, request, *, now):
     )
     guard.validate_state(state)
     return state, plan_digest
+
+
+def next_authority(original, frame, request):
+    """The reviewed next incarnation's authority: same identity, next epoch."""
+    slot, old = selected(original, frame)
+    return {
+        **old["authority"],
+        "epoch": original["frames"][frame]["epoch_floor"] + 1,
+        "config_revision": request["config_revision"],
+        # An active rotation stays admitted; the request expiry bounds only the plan.
+        "candidate_expires_at": None if slot == "active" else request["expires_at"],
+    }
 
 
 def route_for(state, frame):
@@ -382,6 +388,8 @@ def release_upgrade(
         "state": rotated["state"],
         "rotation": "active" if state["frames"][frame]["active"] is rotated else "pending",
     }
+    if result.get("route") == "session":
+        result["preflight"] = operator.preflight(route="session", deadline=budget)
     if action == "plan":
         return result
     if action == "provision":
@@ -395,6 +403,7 @@ def release_upgrade(
                 "provision requires --confirm, exact reviewed plan digest, "
                 "frame address and password stdin"
             )
+        _require_ready(result["preflight"], "provision")
         result["revision"] = operator.provision_release_route(
             route,
             expected_revision=head,
@@ -409,6 +418,8 @@ def release_upgrade(
         raise ValueError(
             "apply requires --confirm, approved operator key and exact reviewed plan digest"
         )
+    if "preflight" in result:
+        _require_ready(result["preflight"], "apply")
     result["revision"] = operator.publish(
         state,
         expected_revision=head,
@@ -418,6 +429,15 @@ def release_upgrade(
         release_upgrade={"frame": frame, "request": request, "plan_sha256": digest},
     )
     return result
+
+
+def _require_ready(preflight, action):
+    if not preflight["ready"][action]:
+        raise ValueError(
+            f"{action} preflight: this operator binding lacks "
+            + "; ".join(preflight[action])
+            + f". See {preflight['docs']}; the authority and canonical config are unchanged"
+        )
 
 
 def prepare_config(
@@ -534,10 +554,31 @@ def prepare_config(
         "already_prepared": unchanged,
         "applied": False,
     }
+    if not rollback:
+        # Expose the next epoch's route family and this binding's capabilities before the
+        # canonical release changes (bh-aprgo, bh-t759y).
+        authority_next = next_authority(original, frame, request)
+        principal = sql_principal(ObservationAuthority(**authority_next))
+        result.update(
+            operator.describe_release_route(
+                principal, authority_next["epoch"], frame, deadline=deadline
+            )
+        )
+        if result.get("route") == "session":
+            result["preflight"] = operator.preflight(route="session", deadline=deadline)
     if not confirm:
         return result
     if plan_sha256 != digest:
         raise ValueError("prepare-config --confirm requires the exact reviewed preparation digest")
+    if result.get("preflight", {}).get("runtime_read"):
+        # After session provisioning every floor re-verifies a provisioning commit; a binding
+        # that cannot would strand the operator between preparation and apply.
+        raise ValueError(
+            "prepare-config preflight: this operator binding cannot verify the restore floor "
+            "across session provisioning ("
+            + "; ".join(result["preflight"]["runtime_read"])
+            + f"). See {result['preflight']['docs']}; the canonical config is unchanged"
+        )
     operator.authority.fresh_runtime_head_fence(head, deadline=deadline)
     if not unchanged:
         try:

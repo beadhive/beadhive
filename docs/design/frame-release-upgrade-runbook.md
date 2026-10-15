@@ -266,7 +266,9 @@ family rather than silently changing a reviewed plan.
 
 Use the existing `--operator-settings` file format for server-local provisioning.
 Its `hq.sql.authority_writer` credential must have DDL, account creation, and grant
-privileges on the isolated HQ server. Keep this provisioning credential off the
+privileges on the isolated HQ server, as listed in
+[HQ: Runtime SQL privileges](../HQ.md#runtime-sql-privileges). Use the same server-local
+settings for the session-route `apply`. Keep this provisioning credential off the
 frame and separate from the ordinary least-privilege authority writer. The
 runtime database must already have its committed `frame_*` ignore rule and
 liveness policy. Provisioning never initializes or changes those protections.

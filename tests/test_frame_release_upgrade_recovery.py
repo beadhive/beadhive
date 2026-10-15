@@ -1,7 +1,7 @@
 """Release-upgrade recovery paths found in the 0.24.3 fleet upgrade (bh-upgrade-p1 batch).
 
 * bh-odevt: prepare-config cancels an unapplied preparation back to the admitted release.
-* bh-aprgo: missing runtime read privileges are named, never masked.
+* bh-t759y / bh-aprgo: missing inspection/read privileges are named, never masked.
 """
 
 from __future__ import annotations
@@ -388,3 +388,167 @@ def test_report_gates_actions_only_for_session_routes():
     )
     assert session["ready"] == {"apply": False, "provision": False}
     assert any("TRIGGER" in item for item in session["apply"])
+
+
+# --------------------------------------------------------------------------------------------
+# bh-t759y: missing session inspection is named, never masked
+# --------------------------------------------------------------------------------------------
+
+
+def test_apply_on_session_route_refuses_named_missing_inspection(fixture):
+    store = Store(fixture.snapshot)
+    missing = {
+        "route": "session",
+        "runtime_read": [],
+        "apply": ["incarnation trigger inspection (information_schema.triggers): TRIGGER ON x.*"],
+        "provision": ["..."],
+        "ready": {"apply": False, "provision": False},
+        "docs": capabilities.DOCS,
+    }
+    operator = Operator(fixture, incumbent="session", preflight=missing)
+    operator.publish = lambda *a, **k: pytest.fail("publication must not start")
+    reviewed = upgrade.release_upgrade(
+        plane(fixture, store, operator), "frame", "plan", request=fixture.request
+    )
+    with pytest.raises(ValueError, match="apply preflight.*TRIGGER.*unchanged") as refused:
+        upgrade.release_upgrade(
+            plane(fixture, store, operator),
+            "frame",
+            "apply",
+            request=fixture.request,
+            operator_key="key",
+            confirm=True,
+            plan_sha256=reviewed["plan_sha256"],
+        )
+    assert "publication unavailable" not in str(refused.value)
+
+
+def test_publish_names_inspection_gap_instead_of_publication_unavailable(fixture, monkeypatch):
+    """The production writer maps a hidden-trigger drift report to the named capability."""
+    import time
+
+    from beadhive.hq_sql_operator import SqlOperatorError, SqlRuntimeOperator
+
+    state, digest = upgrade.prepare(
+        fixture.state, "frame", "runtime-head", fixture.snapshot, fixture.request, now=1000
+    )
+    route = upgrade.route_for(state, "frame")
+    session = session_table(route[0], route[4])
+    evidence = session.replace("_session", "_evidence")
+
+    class Cursor:
+        rowcount = 1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def execute(self, sql, parameters=None):
+            self.sql, self.parameters = sql, parameters
+            if "information_schema.triggers" in sql:
+                raise _DoltError(1105, "command denied to user 'w'@'%'")
+
+        def fetchone(self):
+            if self.sql == "SELECT CURRENT_USER()":
+                return ("operator@localhost",)
+            if "CURRENT_USER()" in self.sql:
+                return "operator@localhost", "runtime", "main", "2.3.5"
+            if "DOLT_HASHOF" in self.sql:
+                return ("runtime-head",)
+            raise AssertionError(self.sql)
+
+        def fetchall(self):
+            if "information_schema.tables" in self.sql:
+                return [(session,), (evidence,)]
+            if "information_schema.user_privileges" in self.sql:
+                return [("'operator'@'localhost'", "runtime", "SELECT", "NO")]
+            if "dolt_status" in self.sql:
+                return []
+            if self.sql.startswith("DESCRIBE"):
+                table = self.sql.split()[1]
+                rows = [
+                    ("id", "tinyint", "NO", "PRI", None, ""),
+                    ("epoch", "bigint unsigned", "NO", "", None, ""),
+                ]
+                if table.endswith("_session"):
+                    return [*rows, ("renewed_at", "datetime(6)", "YES", "", None, "")]
+                return [
+                    *rows,
+                    *[
+                        (n, k, "NO", "", None, "")
+                        for n, k in (
+                            ("release_id", "varchar(128)"),
+                            ("release_digest", "varchar(80)"),
+                            ("profile", "varchar(64)"),
+                            ("status", "varchar(32)"),
+                            ("report_digest", "varchar(80)"),
+                        )
+                    ],
+                    ("measured_at", "datetime(6)", "YES", "", None, ""),
+                ]
+            if "check_constraints" in self.sql:
+                return [("(`id` = 1)",)]
+            if self.sql.startswith("SHOW INDEX"):
+                return [("t", 0, "PRIMARY", 1, "id")]
+            if "SELECT id,epoch" in self.sql:
+                return [(1, route[4])]
+            if "dolt_schemas" in self.sql:
+                from beadhive.hq_sql_session import evidence_ddl, session_ddl
+
+                name = self.parameters[0]
+                ddl = session_ddl if "_session_" in name else evidence_ddl
+                return [(ddl(route[0], route[4])[1],)]
+            return []
+
+    class Connection:
+        commits = rollbacks = 0
+
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            self.commits += 1
+
+        def rollback(self):
+            self.rollbacks += 1
+
+        def close(self):
+            pass
+
+    connection = Connection()
+    crossref = (
+        fixture.snapshot.backend_identity,
+        fixture.snapshot.generation,
+        fixture.snapshot.commit_revision,
+    )
+    operator = SqlRuntimeOperator(
+        {
+            "authority_writer": {"user": "operator", "database": "runtime"},
+            "runtime_operator_public_key": fixture.public,
+            "runtime_backend_identity": "runtime-backend",
+            "runtime_generation": "runtime-generation",
+        },
+        clock=lambda: 1000,
+    )
+    monkeypatch.setattr(operator, "_open", lambda **kwargs: (connection, time.monotonic() + 30))
+    monkeypatch.setattr(
+        operator.authority, "verified_state_at", lambda *a, **k: (fixture.state, crossref, {})
+    )
+    monkeypatch.setattr(
+        operator.authority, "load_latest_config_at", lambda *a, **k: fixture.snapshot
+    )
+    with pytest.raises(SqlOperatorError) as refused:
+        operator.publish(
+            state,
+            expected_revision="runtime-head",
+            operator_key=str(fixture.key),
+            provisioned_route=route,
+            release_upgrade={"frame": "frame", "request": fixture.request, "plan_sha256": digest},
+        )
+    message = str(refused.value)
+    assert "publication unavailable" not in message
+    assert "TRIGGER ON `runtime`.*" in message and "SELECT ON `mysql`.*" in message
+    assert "server-local" in message and "'w'" not in message
+    assert connection.commits == 0 and connection.rollbacks == 1

@@ -341,14 +341,7 @@ class SqlRuntimeOperator:
                     principal, frame_id, holder, instance, epoch, signer = provisioned_route
                     table = self._provisioned_table(sql, principal, epoch)
                     if release_upgrade is not None and table == session_table(principal, epoch):
-                        from .hq_sql_session_provision import validate_incarnation
-
-                        validate_incarnation(
-                            sql,
-                            principal,
-                            epoch,
-                            database=self.settings["authority_writer"]["database"],
-                        )
+                        self._validate_session_route(sql, principal, epoch)
                     sql.insert_route((principal, frame_id, holder, instance, epoch, table, signer))
                     sql.insert_floor_seed(frame_id, holder, epoch)
                 body = canonical(state, limit=4 * 1024 * 1024)
@@ -425,6 +418,58 @@ class SqlRuntimeOperator:
                 connection.rollback()
                 raise SqlOperatorError("protected authority publication unavailable") from None
             raise AuthorityPublicationUnknown(expected_revision) from None
+        finally:
+            connection.close()
+
+    def _validate_session_route(self, sql, principal, epoch):
+        """Re-check the provisioned session route, naming why it cannot (bh-t759y).
+
+        Drift and a missing inspection privilege both refuse before any write; neither may
+        surface as the publisher's generic "publication unavailable"."""
+        from .hq_sql_capabilities import denied, session_inspection
+        from .hq_sql_session import SessionError
+        from .hq_sql_session_provision import validate_incarnation
+
+        database = self.settings["authority_writer"]["database"]
+        try:
+            validate_incarnation(sql, principal, epoch, database=database)
+        except SessionError as error:
+            missing = session_inspection(sql, database)
+            if missing:
+                raise SqlOperatorError(_inspection_refusal(missing)) from None
+            raise SqlOperatorError(f"reviewed session route invalid: {error}") from None
+        except Exception as error:
+            if denied(error):
+                raise SqlOperatorError(
+                    _inspection_refusal(session_inspection(sql, database))
+                ) from None
+            raise
+
+    def preflight(self, *, route, deadline=None) -> dict:
+        """Redacted capability report of this binding for the reviewed route (bh-aprgo).
+
+        Read-only: probes reads and its own privilege rows; never writes or commits."""
+        from .hq_sql_capabilities import CapabilityProbeError, report
+
+        connection, _deadline = self._open(deadline=deadline)
+        try:
+            with connection.cursor() as cursor:
+                sql = runtime_statements(cursor)
+                self._identity(sql)
+                head = sql.head()
+                return report(
+                    sql,
+                    database=self.settings["authority_writer"]["database"],
+                    config_database=(self.settings.get("reader") or {}).get("database"),
+                    head=head,
+                    route=route,
+                )
+        except SqlOperatorError:
+            raise
+        except CapabilityProbeError as error:
+            raise SqlOperatorError(str(error)) from None
+        except Exception:
+            raise SqlOperatorError("operator capability preflight unavailable") from None
         finally:
             connection.close()
 
@@ -636,3 +681,14 @@ class SqlRuntimeOperator:
             raise SqlOperatorError("inbox prune unavailable") from None
         finally:
             connection.close()
+
+
+def _inspection_refusal(missing) -> str:
+    named = "; ".join(str(item) for item in missing) or "a session inspection privilege"
+    return (
+        "this authority writer cannot inspect the provisioned session route ("
+        + named
+        + "). Run apply with the server-local administrative --operator-settings used for "
+        "provision (docs/design/frame-release-upgrade-runbook.md), or grant the listed "
+        "read capabilities; the authority is unchanged"
+    )
