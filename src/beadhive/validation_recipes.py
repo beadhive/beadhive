@@ -113,7 +113,7 @@ def run_recipes(
     """Run ``recipes`` side by side through ``engine``, or one by one when it is ``None``."""
     if engine is None:
         return _sequential(recipes, cwd, run)
-    settings = validation_broker_engine.broker_settings(cfg)
+    settings = validation_broker_engine.broker_settings(cfg, entry)
     setup = settings.setup
     keys = []
     for recipe in recipes:
@@ -205,7 +205,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         _say("check-all-native: no attest-* recipes given", err=True)
         return 1
     cfg, entry = _context()
-    engine = validation_broker_engine.local_engine(cfg, warn=lambda line: _say(line, err=True))
+    engine = validation_broker_engine.local_engine(
+        cfg, entry=entry, warn=lambda line: _say(line, err=True)
+    )
     if engine is None:
         _say("check-all-native: running the attest recipes one by one (slots engine)", err=True)
     from .selective_validation import fail_fast_enabled
