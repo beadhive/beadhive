@@ -706,7 +706,7 @@ def impl__prepare_verify_worktree(main: Path, entry, branch: str, cmd: str):
     return tmp, 0
 
 
-def _with_engine(cfg, env: dict[str, str]) -> dict[str, str]:
+def _with_engine(cfg, env: dict[str, str], entry=None) -> dict[str, str]:
     """Under engine local, name it to the validation command; under slots ``env`` is unchanged.
 
     ``check-all-native`` reads ``BH_VALIDATION_BROKER_ENGINE`` to run its attest recipes side by
@@ -715,7 +715,7 @@ def _with_engine(cfg, env: dict[str, str]) -> dict[str, str]:
     from . import validation_broker_engine
 
     try:
-        if validation_broker_engine.configured_engine(cfg or {}, env) == "local":
+        if validation_broker_engine.configured_engine(cfg or {}, env, entry) == "local":
             env[validation_broker_engine.ENGINE_ENV] = "local"
     except ValueError:
         pass  # an invalid name means slots; the engine selection itself says so loudly
@@ -977,7 +977,7 @@ def _impl_clean_checkout_unadmitted(
         child_base_env = (
             dict(shared.env)
             if shared
-            else _with_engine(cfg, _color_neutral_env(otel.telemetry_neutral_env()))
+            else _with_engine(cfg, _color_neutral_env(otel.telemetry_neutral_env()), entry)
         )
         resolved_executable = _resolve_validation_executable(
             command_argv, cwd=tmp, env=child_base_env

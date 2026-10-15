@@ -23,7 +23,8 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 import typer
@@ -51,11 +52,15 @@ from .validation_broker_slots import SlotsEngine
 __all__ = [
     "ENGINES",
     "ENGINE_ENV",
+    "BrokerResolution",
     "broker_settings",
     "build_local_engine",
     "configured_engine",
+    "describe_broker",
     "execution_roots",
     "local_engine",
+    "main",
+    "resolve_broker",
     "select_engine",
 ]
 
@@ -67,30 +72,134 @@ def _warn(message: str) -> None:
     typer.echo(message, err=True)
 
 
-def _raw_settings(cfg: dict) -> object:
-    work = cfg.get("work") if isinstance(cfg, dict) else None
-    return work.get("validation_broker") if isinstance(work, dict) else None
+def _section(owner: object) -> dict:
+    """``owner['work']['validation_broker']`` as a dict; anything unreadable is empty."""
+    work = owner.get("work") if isinstance(owner, dict) else None
+    raw = work.get("validation_broker") if isinstance(work, dict) else None
+    return raw if isinstance(raw, dict) else {}
 
 
-def configured_engine(cfg: dict, environ: Mapping[str, str] | None = None) -> str:
-    """The engine name: the env override, else ``work.validation_broker.engine``, else slots."""
+def _mapping(value: object) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+#: Fields a hive chooses (hive over host/fleet). ``budget`` is requested per hive but bounded by
+#: the host; :data:`HOST_OWNED` come from the host layer only.
+HIVE_OWNED = ("engine", "setup")
+HOST_OWNED = ("floor", "repoll_seconds", "roots")
+
+
+@dataclass(frozen=True)
+class BrokerResolution:
+    """The effective ``work.validation_broker`` for one hive and where each field came from.
+
+    ``memory_ceiling`` is the host's own configured ``budget.memory`` (``None``: the host's
+    measured RAM), which :func:`build_local_engine` applies once RAM is known.
+    ``sources`` maps a dotted field to ``hive``, ``global`` (the merged host/fleet ``work``),
+    ``default`` or ``host cap`` (a hive request the host limit lowered).
+    """
+
+    settings: ValidationBrokerConfig
+    memory_ceiling: str | None
+    sources: dict[str, str]
+
+
+def resolve_broker(
+    cfg: dict, entry=None, *, cpu_count: Callable[[], int | None] = os.cpu_count
+) -> BrokerResolution:
+    """Layer the hive's ``work.validation_broker`` over the merged host/fleet one.
+
+    Hive-owned fields (``engine``, ``setup``, ``packer`` field by field) resolve hive over
+    global. ``budget`` fields are requested per hive but never exceed the host's configured
+    budget (a nonzero ``cpu``, ``memory``, each shared pool); ``floor``, ``repoll_seconds`` and
+    ``roots`` come from the host layer only. Unlike ``configured_slots``, which ignores hive
+    overlays because one host-wide capacity is shared by every hive, the broker's engine and
+    packer are per-project choices while its budget stays bounded by what the host may grant.
+    """
+    host, hive = _section(cfg), _section(entry)
+    sources: dict[str, str] = {}
+
+    def origin(field: str, in_hive: bool, in_host: bool) -> None:
+        sources[field] = "hive" if in_hive else "global" if in_host else "default"
+
+    merged = {k: v for k, v in host.items() if k not in ("budget", "packer")}
+    for field in HIVE_OWNED:
+        if field in hive:
+            merged[field] = hive[field]
+        origin(field, field in hive, field in host)
+    host_packer, hive_packer = _mapping(host.get("packer")), _mapping(hive.get("packer"))
+    merged["packer"] = {**host_packer, **hive_packer}
+    origin("packer", bool(hive_packer), bool(host_packer))
+    for field in HOST_OWNED:
+        origin(field, False, field in host)
+
+    host_budget, hive_budget = _mapping(host.get("budget")), _mapping(hive.get("budget"))
+    host_eff = ValidationBrokerConfig.model_validate({"budget": host_budget}).budget
+    budget = {**host_budget, **hive_budget}
+    for field in ("cpu", "memory", "pools"):
+        origin(f"budget.{field}", field in hive_budget, field in host_budget)
+    if host_eff.cpu > 0 and "cpu" in hive_budget:
+        asked = float(hive_budget["cpu"])
+        if asked > host_eff.cpu or asked <= 0:
+            budget["cpu"] = host_eff.cpu
+            sources["budget.cpu"] = "host cap"
+    elif host_eff.cpu == 0 and "cpu" in hive_budget:
+        total = cpu_count()  # no host cap configured: the host's CPU count is the ceiling
+        if total and float(hive_budget["cpu"]) > total:
+            budget["cpu"] = float(total)
+            sources["budget.cpu"] = "host cap"
+    if isinstance(hive_budget.get("pools"), dict):
+        pools = dict(host_eff.pools)
+        for name, amount in hive_budget["pools"].items():
+            ceiling = host_eff.pools.get(name)
+            if ceiling is None:  # the host defines the pools; a hive cannot add one
+                sources["budget.pools"] = "host cap"
+                continue
+            pools[name] = min(amount, ceiling)
+            if amount > ceiling:
+                sources["budget.pools"] = "host cap"
+        budget["pools"] = pools
+    merged["budget"] = budget
+    settings = ValidationBrokerConfig.model_validate(merged)
+    memory_ceiling = host_eff.memory if "memory" in host_budget else None
+    return BrokerResolution(settings, memory_ceiling, sources)
+
+
+def configured_engine(cfg: dict, environ: Mapping[str, str] | None = None, entry=None) -> str:
+    """The engine name: the env override, else the hive's ``work.validation_broker.engine`` over
+    the host/fleet one, else slots."""
     env = os.environ if environ is None else environ
     override = env.get(ENGINE_ENV)
     if override is not None and override.strip():
         name, source = override.strip().lower(), ENGINE_ENV
     else:
-        raw = _raw_settings(cfg)
-        value = raw.get("engine", "slots") if isinstance(raw, dict) else "slots"
+        value = _section(entry).get("engine", _section(cfg).get("engine", "slots"))
         name, source = str(value).strip().lower(), "work.validation_broker.engine"
     if name not in ENGINES:
         raise ValueError(f"{source} must be one of {', '.join(ENGINES)}, not {name!r}")
     return name
 
 
-def broker_settings(cfg: dict) -> ValidationBrokerConfig:
-    """``work.validation_broker`` validated against the config contract (defaults filled)."""
-    raw = _raw_settings(cfg)
-    return ValidationBrokerConfig.model_validate(raw if raw is not None else {})
+def broker_settings(cfg: dict, entry=None) -> ValidationBrokerConfig:
+    """The effective ``work.validation_broker`` for the hive (:func:`resolve_broker`),
+    validated against the config contract (defaults filled)."""
+    return resolve_broker(cfg, entry).settings
+
+
+def describe_broker(cfg: dict, entry=None, environ: Mapping[str, str] | None = None) -> dict:
+    """Effective broker settings plus a ``sources`` map (``python -m
+    beadhive.validation_broker_engine`` prints it)."""
+    resolution = resolve_broker(cfg, entry)
+    env = os.environ if environ is None else environ
+    sources = dict(resolution.sources)
+    if (env.get(ENGINE_ENV) or "").strip():
+        sources["engine"] = ENGINE_ENV
+    return {
+        "engine": configured_engine(cfg, env, entry),
+        "settings": resolution.settings.model_dump(),
+        "memory_ceiling": resolution.memory_ceiling,
+        "sources": sources,
+    }
 
 
 def _memory_backed(path: Path) -> bool:
@@ -130,6 +239,7 @@ def build_local_engine(
     owner_alive: ProcessLiveness,
     disk_space: DiskSpace = statvfs_free,
     memory_backed: Callable[[Path], bool] = _memory_backed,
+    memory_ceiling: str | None = None,
 ) -> LocalEngine:
     """A local engine whose budget and floor are resolved against this host's memory and CPUs.
 
@@ -146,6 +256,10 @@ def build_local_engine(
         validation_memory.parse_size(settings.floor.memory, total) or 0,
         int(total * settings.floor.memory_percent / 100),
     )
+    if memory_ceiling is not None:
+        budget_memory = min(
+            budget_memory, validation_memory.parse_size(memory_ceiling, total) or total
+        )
     budget = Capacity(
         settings.budget.cpu or measured.cpu,
         min(budget_memory, total),
@@ -185,6 +299,7 @@ def select_engine(
 
     local = local_engine(
         cfg,
+        entry,
         environ=environ,
         probe=probe,
         clock=clock,
@@ -200,6 +315,7 @@ def select_engine(
 
 def local_engine(
     cfg: dict,
+    entry=None,
     *,
     environ: Mapping[str, str] | None = None,
     probe: MeminfoAvailability | None = None,
@@ -215,15 +331,17 @@ def local_engine(
     invalid or the local engine is misconfigured or unavailable (the caller uses slots).
     """
     try:
-        name = configured_engine(cfg, environ)
+        name = configured_engine(cfg, environ, entry)
     except ValueError as exc:
         warn(f"⚠ validation broker: {exc}; using the slots engine")
         return None
     if name == "slots":
         return None
     try:
+        resolution = resolve_broker(cfg, entry)
         local = build_local_engine(
-            broker_settings(cfg),
+            resolution.settings,
+            memory_ceiling=resolution.memory_ceiling,
             probe=probe or MeminfoAvailability(),
             clock=clock,
             owner_alive=owner_alive,
@@ -237,3 +355,42 @@ def local_engine(
         )
         return None
     return local
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """``python -m beadhive.validation_broker_engine [--hive H] [--json]``: show a hive's
+    effective ``work.validation_broker`` and where each field came from (default: the hive
+    owning the current directory)."""
+    import argparse
+    import json
+
+    from . import registry
+    from .config_work_settings import load
+
+    parser = argparse.ArgumentParser(prog="python -m beadhive.validation_broker_engine")
+    parser.add_argument("--hive", default="", help="hive to resolve (default: owner of cwd)")
+    parser.add_argument("--json", action="store_true", help="machine-readable output")
+    args = parser.parse_args(argv)
+    cfg = load()
+    entry = registry.resolve_hive(cfg, args.hive) if args.hive else registry.current_hive(cfg)
+    try:
+        report = describe_broker(cfg, entry)
+    except ValueError as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        return 1
+    if args.json:
+        typer.echo(json.dumps(report, indent=2, sort_keys=True, default=str))
+        return 0
+    who = f"{entry['org']}/{entry['repo']}" if entry else "(no hive: host/fleet only)"
+    typer.echo(f"work.validation_broker for {who}")
+    sources, settings = report["sources"], report["settings"]
+    typer.echo(f"  engine: {report['engine']}  [{sources['engine']}]")
+    for name in ("cpu", "memory", "pools"):
+        typer.echo(f"  budget.{name}: {settings['budget'][name]}  [{sources[f'budget.{name}']}]")
+    for name in ("packer", "setup", "floor", "repoll_seconds", "roots"):
+        typer.echo(f"  {name}: {settings[name]}  [{sources[name]}]")
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

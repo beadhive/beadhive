@@ -392,15 +392,16 @@ the retryable exit 75. Every run manifest records `memory`: the applied bounds a
 cgroup v2 memory controller, the bounds are skipped and the manifest's `memory.note` says why; the
 floor still applies wherever `/proc/meminfo` exists.
 
-`work.validation_broker` is host-owned and opt-in (bh-qrixp, the
-[validation broker ADR](design/validation-broker-adr.md)). The default `engine: slots` is today's
-host admission above, unchanged. `engine: local` (or `BH_VALIDATION_BROKER_ENGINE=local` for one
-invocation) selects the in-process local engine: it admits a job only when its whole minimum
-reservation fits `min(budget, measured MemAvailable/CPUs - floor)` less what is already granted,
-in cpu, memory and every named pool; orders by priority class, then laggard first within a gate;
-grants spare CPU up to each key's `cpu_max` (laggards first, others keeping `headroom_cpu` back;
-side by side, `laggard_first` also submits a gate's keys longest expected first, so the laggard
-takes its whole grant before shorter keys claim CPU, bh-itn9m);
+`work.validation_broker` is opt-in (bh-qrixp, the [validation broker
+ADR](design/validation-broker-adr.md)). The default `engine: slots` is today's host admission above,
+unchanged. A hive may select its own engine and budget; the host caps the budget (see
+[layering](CONFIGURATION.md#validation-broker-layering)). `engine: local` (or
+`BH_VALIDATION_BROKER_ENGINE=local` for one invocation) selects the in-process local engine: it
+admits a job only when its whole minimum reservation fits `min(budget, measured MemAvailable/CPUs -
+floor)` less what is already granted, in cpu, memory and every named pool; orders by priority class,
+then laggard first within a gate; grants spare CPU up to each key's `cpu_max` (laggards first,
+others keeping `headroom_cpu` back; side by side, `laggard_first` also submits a gate's keys longest
+expected first, so the laggard takes its whole grant before shorter keys claim CPU, bh-itn9m);
 backfills only where it delays no reserved key (EASY); serves nested requests under
 `BH_VALIDATION_LEASE` from the parent's grant alone; and reclaims a dead client's leases. A local
 engine that is misconfigured, cannot measure the host (no `/proc/meminfo`) or errors falls back to

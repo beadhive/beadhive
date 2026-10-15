@@ -318,3 +318,128 @@ def test_local_engine_is_none_under_slots_and_the_probed_engine_under_local(memi
     assert isinstance(local_engine({}, environ={ENGINE_ENV: "local"}, **ports), LocalEngine)
     assert local_engine({}, environ={ENGINE_ENV: "bogus"}, **ports) is None
     assert len(warnings) == 1 and "bogus" in warnings[0]
+
+
+# ---- hive overlay over host/fleet, host caps the budget (bh-m2a8r) ---------------------------
+
+
+def _hive(**broker) -> dict:
+    return {"org": "o", "repo": "r", "work": {"validation_broker": broker}}
+
+
+def test_hive_engine_and_budget_apply_only_to_that_hive(tmp_path, meminfo) -> None:
+    from beadhive.validation_broker_engine import local_engine
+
+    ports = {
+        "probe": MeminfoAvailability(meminfo, cpu_count=lambda: 32),
+        "clock": ManualClock(),
+        "owner_alive": lambda _owner: True,
+        "environ": {},
+    }
+    hive = _hive(engine="local", budget={"cpu": 12})
+    assert configured_engine({}, {}, hive) == "local"
+    assert configured_engine({}, {}, _hive()) == "slots"
+    assert configured_engine({}, {}, None) == "slots"
+    engine = local_engine({}, hive, **ports)
+    assert engine is not None and engine.status().budget.cpu == 12.0
+    assert local_engine({}, _hive(), **ports) is None, "another hive stays on slots"
+    assert local_engine({}, None, **ports) is None
+
+
+def test_hive_overrides_global_for_engine_packer_and_setup() -> None:
+    cfg = {
+        "work": {
+            "validation_broker": {
+                "engine": "local",
+                "packer": {"headroom_cpu": 4, "easy": False},
+                "setup": ["echo host"],
+            }
+        }
+    }
+    hive = _hive(engine="slots", packer={"headroom_cpu": 2}, setup=["echo hive"])
+    assert configured_engine(cfg, {}, hive) == "slots"
+    assert configured_engine(cfg, {}, _hive()) == "local"
+    settings = broker_settings(cfg, hive)
+    assert (settings.packer.headroom_cpu, settings.packer.easy) == (2, False)
+    assert settings.setup == ["echo hive"]
+    assert broker_settings(cfg, _hive()).setup == ["echo host"]
+    assert configured_engine(cfg, {ENGINE_ENV: "slots"}, _hive(engine="local")) == "slots"
+
+
+def test_the_host_budget_caps_what_a_hive_asks_for(tmp_path, meminfo) -> None:
+    from beadhive.validation_broker_engine import resolve_broker
+
+    cfg = {
+        "work": {
+            "validation_broker": {
+                "budget": {"cpu": 16, "memory": "50%", "pools": {"dolt-servers": 10}},
+                "floor": {"memory": "1G"},
+            }
+        }
+    }
+    greedy = _hive(
+        engine="local",
+        budget={"cpu": 64, "memory": "100%", "pools": {"dolt-servers": 99}},
+        floor={"memory": "0"},
+    )
+    resolved = resolve_broker(cfg, greedy)
+    assert resolved.settings.budget.cpu == 16
+    assert resolved.settings.budget.pools == {"dolt-servers": 10}
+    assert resolved.settings.floor.memory == "1G", "the floor is host-owned"
+    assert resolved.sources["budget.cpu"] == resolved.sources["budget.pools"] == "host cap"
+    engine = _select({**cfg}, tmp_path, meminfo, environ={ENGINE_ENV: "local"})
+    assert engine._primary._budget.memory_bytes == 32 * GIB
+    from beadhive.validation_broker_engine import build_local_engine
+
+    built = build_local_engine(
+        resolved.settings,
+        memory_ceiling=resolved.memory_ceiling,
+        probe=MeminfoAvailability(meminfo, cpu_count=lambda: 32),
+        clock=ManualClock(),
+        owner_alive=lambda _owner: True,
+    )
+    assert built._budget == Capacity(16.0, 32 * GIB, {"dolt-servers": 10}), "memory capped at 50%"
+    smaller = resolve_broker(cfg, _hive(budget={"cpu": 4, "pools": {"dolt-servers": 3}}))
+    assert smaller.settings.budget.cpu == 4 and smaller.settings.budget.pools == {"dolt-servers": 3}
+    assert smaller.sources["budget.cpu"] == "hive"
+
+
+def test_an_uncapped_host_lets_the_hive_pick_its_budget() -> None:
+    from beadhive.validation_broker_engine import resolve_broker
+
+    resolved = resolve_broker({}, _hive(budget={"cpu": 16}))
+    assert resolved.settings.budget.cpu == 16 and resolved.memory_ceiling is None
+    assert resolved.sources["budget.cpu"] == "hive"
+    assert resolved.sources["budget.memory"] == "default"
+
+
+def test_describe_broker_reports_each_source() -> None:
+    from beadhive.validation_broker_engine import describe_broker
+
+    cfg = {"work": {"validation_broker": {"floor": {"cpu": 1}, "budget": {"cpu": 8}}}}
+    report = describe_broker(cfg, _hive(engine="local", budget={"cpu": 99}), {})
+    assert report["engine"] == "local"
+    assert report["sources"]["engine"] == "hive"
+    assert report["sources"]["budget.cpu"] == "host cap"
+    assert report["sources"]["floor"] == "global"
+    assert report["sources"]["packer"] == "default"
+    assert describe_broker(cfg, None, {ENGINE_ENV: "local"})["sources"]["engine"] == ENGINE_ENV
+
+
+def test_a_hive_cpu_is_capped_at_the_host_cpu_count_without_a_host_budget() -> None:
+    from beadhive.validation_broker_engine import resolve_broker
+
+    greedy = resolve_broker({}, _hive(budget={"cpu": 64}), cpu_count=lambda: 16)
+    assert greedy.settings.budget.cpu == 16 and greedy.sources["budget.cpu"] == "host cap"
+    modest = resolve_broker({}, _hive(budget={"cpu": 8}), cpu_count=lambda: 16)
+    assert modest.settings.budget.cpu == 8 and modest.sources["budget.cpu"] == "hive"
+    host = {"work": {"validation_broker": {"budget": {"cpu": 64}}}}
+    assert resolve_broker(host, None, cpu_count=lambda: 16).settings.budget.cpu == 64
+
+
+def test_a_pool_the_host_does_not_define_is_ignored() -> None:
+    from beadhive.validation_broker_engine import resolve_broker
+
+    resolved = resolve_broker({}, _hive(budget={"pools": {"gpus": 4, "dolt-servers": 3}}))
+    assert resolved.settings.budget.pools == {"dolt-servers": 3}
+    assert resolved.sources["budget.pools"] == "host cap"

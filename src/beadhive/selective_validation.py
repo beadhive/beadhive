@@ -107,7 +107,7 @@ def _echo_key(name: str, rc: int, elapsed: float, unaffected: bool) -> None:
         typer.echo(f"  {mark} {name}: {state} ({elapsed:.3f}s)")
 
 
-def _side_by_side_engine(runner, cfg):
+def _side_by_side_engine(runner, cfg, entry=None):
     """The local broker engine when it is selected and ``runner`` can run a group, else None.
 
     Only a runner with ``run_group`` (:class:`~beadhive.validation_key_runner.CheckoutKeyRunner`)
@@ -119,7 +119,7 @@ def _side_by_side_engine(runner, cfg):
     from . import validation_broker_engine
 
     return validation_broker_engine.local_engine(
-        cfg if isinstance(cfg, dict) else {}, warn=lambda line: typer.echo(line, err=True)
+        cfg if isinstance(cfg, dict) else {}, entry, warn=lambda line: typer.echo(line, err=True)
     )
 
 
@@ -911,7 +911,7 @@ def _run(
     names = [name for name, _ in pending]
     costs = historical_costs(entry, [by_name[n] for n in names])
     ordered = cheapest_first(names, costs)
-    engine = None if stopped_after or not ordered else _side_by_side_engine(runner, cfg)
+    engine = None if stopped_after or not ordered else _side_by_side_engine(runner, cfg, entry)
     if engine is not None:
         group = _run_side_by_side(
             engine,

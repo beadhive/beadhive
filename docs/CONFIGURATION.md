@@ -64,6 +64,30 @@ publication responsibility; in SQL mode, the selected committed SQL store is aut
 See [HQ](HQ.md#fleet-writes-after-init) for Git behavior and the
 [migration runbook](design/dolt-hq-config-migration-runbook.md) for a guarded mode transition.
 
+### Validation broker layering {#validation-broker-layering}
+
+`work.validation_broker` is resolved **per hive** (bh-m2a8r): the hive's
+`managed_repos[*].work.validation_broker` overlay is read on top of the merged host/fleet
+`work.validation_broker`. Ownership is split by what each field means:
+
+| Field | Owner | Resolution |
+|---|---|---|
+| `engine`, `setup` | hive | hive over host/fleet; `BH_VALIDATION_BROKER_ENGINE` still wins for one invocation |
+| `packer` | hive | hive over host/fleet, field by field |
+| per-key reservations (`work.attest.keys[].resources`) | hive | hive over host/fleet (unchanged) |
+| `budget.cpu`, `budget.memory`, `budget.pools` | host, hive may ask for less | hive over host/fleet, then **capped by the host's configured budget**: a nonzero host `cpu`, a host `memory`, and each host pool are ceilings. A hive asking for more (or `cpu: 0`, "every CPU", under a host cap) gets the host value. With no host `cpu` configured the ceiling is the host's CPU count (`os.cpu_count()`). A pool the host does not define is ignored: only the host adds pools |
+| `floor`, `repoll_seconds`, `roots` | host | host/fleet only; a hive overlay is ignored |
+
+This **differs from `work.validation_slots`**, which deliberately ignores hive overlays. Slots are
+one host-wide capacity shared by every hive's gates, so a hive must not resize it. The broker's
+engine, packer and per-key policy are properties of the project being validated (what it runs and
+how its keys pack), so they follow the hive; what the host can grant is still a host property, so
+the budget and floor never exceed what the host layer allows.
+
+`uv run python -m beadhive.validation_broker_engine [--hive H] [--json]` prints the effective
+settings for a hive and the source of each field: `hive`, `global` (merged host/fleet), `default`,
+`host cap` (a hive request the host limit lowered) or `BH_VALIDATION_BROKER_ENGINE`.
+
 ## HQ configuration authority {#hq-configuration-authority}
 
 The `hq` section configures the fleet **configuration** backend and its separate runtime

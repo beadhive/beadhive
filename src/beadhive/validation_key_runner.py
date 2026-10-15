@@ -197,7 +197,7 @@ class CheckoutKeyRunner:
         phase = str(self.kwargs.get("phase", "validation"))
         sha = worktree._branch_sha(self.entry, self.ref) or self.ref
         group = f"{phase}:{sha[:12]}:{os.getpid()}:{secrets.token_hex(3)}"
-        settings = validation_broker_engine.broker_settings(cfg)
+        settings = validation_broker_engine.broker_settings(cfg, self.entry)
         setup = settings.setup
         main = registry.hive_dir(self.entry)
 
