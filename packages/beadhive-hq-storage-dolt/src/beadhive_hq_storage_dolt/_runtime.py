@@ -229,6 +229,27 @@ class HqRuntimeStatements:
     def grant_select(self, database: str, table: str, account: str) -> None:
         self._cursor.execute(f"GRANT SELECT ON `{database}`.`{table}` TO {account}")
 
+    def grant_select_database(self, database: str, account: str) -> None:
+        """Read-only ``SELECT`` on every table of ``database``, including tables created later
+        (two-argument ``DOLT_DIFF_SUMMARY`` checks SELECT on all of them)."""
+        self._cursor.execute(f"GRANT SELECT ON `{database}`.* TO {account}")
+
+    def own_privileges(self) -> tuple[Any, Any]:
+        """``(CURRENT_USER(), rows)``: every global and schema privilege row as
+        ``(grantee, schema, privilege, is_grantable)``, global rows with schema ``'*'``.
+
+        Dolt 2.3.5 refuses even an account's own ``SHOW GRANTS`` without ``mysql`` access, but
+        serves ``information_schema`` privilege views to any account; the caller keeps only
+        its own grantee's rows."""
+        user = self._one("SELECT CURRENT_USER()")[0]
+        rows = self._all(
+            "SELECT grantee,'*',privilege_type,is_grantable "
+            "FROM information_schema.user_privileges "
+            "UNION ALL SELECT grantee,table_schema,privilege_type,is_grantable "
+            "FROM information_schema.schema_privileges"
+        )
+        return user, rows
+
     # -- frame inboxes, results, leases and observations --------------------------------------
 
     def inbox_heartbeats(self, table: str) -> Any:

@@ -820,6 +820,50 @@ so 0.22.x readers and the receiver keep working, and the sender dual-writes sign
 An incarnation provisioned without an inbox is registered under its session table name, which
 0.22.x readers refuse: provision session-only incarnations only once no 0.22.x reader remains.
 
+### Runtime SQL privileges {#runtime-sql-privileges}
+
+Every account that reads the signed authority also checks its durable restore floor. When
+session provisioning commits a trigger pair at the same authority sequence, that check
+re-verifies the commit. It reads `dolt_ignore`, `hq_liveness_policy`, `dolt_schemas` history
+and `dolt_commit_ancestors`, and runs the two-argument `DOLT_DIFF_SUMMARY`. Dolt 2.3.5
+authorizes that diff only with `SELECT` on **every** table of the runtime database. This
+includes unrelated tables and incarnation tables that are provisioned later. Per-table
+grants are therefore never enough.
+
+The supported grants (bh-aprgo) are listed below. `<runtime>` is the runtime database and
+`<config>` is the config database.
+
+| Account | Grants |
+|---|---|
+| Authority writer (remote operator, `hq.sql.authority_writer`) | `SELECT ON <runtime>.*`; `UPDATE ON <runtime>.hq_authority`; `INSERT ON <runtime>.hq_principal_registry`; `INSERT ON <runtime>.hq_live_floors`; `EXECUTE ON PROCEDURE <runtime>.dolt_add` and `<runtime>.dolt_commit`; `SELECT` on `<config>.hq_config_meta`, `hq_config_documents`, `hq_config_publications` |
+| Observer, director | `SELECT ON <runtime>.*`, plus their existing table-level writes and config reads |
+| Frame | `SELECT ON <runtime>.*`; `SELECT, UPDATE` on its own `frame_<principal>_<epoch>_session` / `_evidence`; its inbox `SELECT, INSERT` while it has one; config reads |
+| Server-local provisioning/apply binding | The authority writer's grants, plus `CREATE`, `TRIGGER`, `INSERT`, `SELECT ON <runtime>.* WITH GRANT OPTION`; `SELECT ON <config>.* WITH GRANT OPTION`; `CREATE USER ON *.*`; `SELECT ON mysql.*` |
+
+`SELECT ON <runtime>.*` is read-only. It grants no write, and every frame write right is still
+limited to the frame's own rows (`check_provisioning`). Do not grant `TRIGGER` or `mysql`
+access to a remote operator or a frame. Re-validating a provisioned session route needs both:
+`information_schema.triggers` lists a trigger only to a holder of `TRIGGER`, and the
+account/grant checks read `mysql.user`. So `provision` and a session-route `apply` run with the
+server-local binding's `--operator-settings`. The remote binding still runs `prepare-config`,
+`plan` and `check` ([release-upgrade runbook](design/frame-release-upgrade-runbook.md#session-only-provisioning-on-0243)).
+
+**Preflight.** `bh host release-upgrade prepare-config` and `plan` print a `preflight` object
+for a session route. It names, per action, each missing capability and the grant that
+satisfies it. It never names an account, host or secret. Reads are probed directly. Privileges
+that cannot be probed without writing are read from the account's own rows in
+`information_schema.user_privileges` and `schema_privileges`. `prepare-config --confirm`
+refuses before the canonical release changes if the binding could not verify the floor after
+provisioning. `provision` and `apply` refuse before writing if the binding lacks their
+capabilities. A floor that meets the gap reports
+`HQ runtime restore-floor verification denied: ... needs SELECT ON <runtime>.*`. That message
+means a missing privilege, not a rollback. The floor still refuses, and no restore floor is
+edited.
+
+**Existing fleets.** As the server-local administrator, grant `SELECT ON <runtime>.*` to the
+authority writer, observer, director and each existing frame account before the first session
+provisioning. Since bh-aprgo, `provision` grants it to the new frame account itself.
+
 ### Soak check: sender stall (Φ3, O4) {#sender-stall-soak}
 
 The Φ3 soak (O4) must show that a session sender which stalls for longer than `session_ttl_s`

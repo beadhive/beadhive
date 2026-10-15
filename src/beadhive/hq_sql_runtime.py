@@ -57,6 +57,12 @@ class SqlRuntimeUnavailable(SqlRuntimeError):
     """A connection/credential/transport failure with budget still remaining."""
 
 
+class SqlRuntimeCapabilityMissing(SqlRuntimeError):
+    """This account lacks a read privilege the restore-floor verification needs (bh-aprgo).
+
+    Fail-closed like every floor refusal; the message names the grant, never the account."""
+
+
 class SessionOnlyIncarnation(SqlRuntimeError):
     """The incarnation is routed to its session table and has no signed inbox (bh-owqdg)."""
 
@@ -337,7 +343,7 @@ class SqlRuntimeAuthority:
                 if runtime_statements(cursor).has_ancestor(head, previous_head) != 1:
                     raise SqlRuntimeError("HQ runtime history fork detected")
                 if sequence == previous_sequence:
-                    self._check_provisioning_descendant(cursor, previous_head, head)
+                    self._verify_provisioning_descendant(cursor, previous_head, head)
             body = json.dumps(
                 {"backend": backend, "generation": generation, "sequence": sequence, "head": head},
                 sort_keys=True,
@@ -357,6 +363,32 @@ class SqlRuntimeAuthority:
                     os.close(directory)
             finally:
                 temporary.unlink(missing_ok=True)
+
+    def _verify_provisioning_descendant(self, cursor, previous_head, head):
+        """:meth:`_check_provisioning_descendant`, naming a missing read privilege (bh-aprgo).
+
+        A denied read still refuses the floor; it only stops masquerading as an outage."""
+        from .hq_sql_capabilities import denied
+
+        try:
+            self._check_provisioning_descendant(cursor, previous_head, head)
+        except SqlRuntimeError:
+            raise
+        except Exception as error:
+            if not denied(error):
+                raise
+            try:
+                database = runtime_statements(cursor).session_identity()[1]
+            except Exception:  # noqa: BLE001 - only the message's database name is lost
+                database = None
+            database = database or "<runtime database>"
+            raise SqlRuntimeCapabilityMissing(
+                "HQ runtime restore-floor verification denied: verifying a provisioning commit "
+                f"needs SELECT ON `{database}`.* (two-argument DOLT_DIFF_SUMMARY checks every "
+                "table, including incarnation tables provisioned later; dolt_ignore and "
+                "hq_liveness_policy history are read too). This is a privilege gap, not "
+                "evidence of rollback; see docs/HQ.md#runtime-sql-privileges"
+            ) from None
 
     def _check_provisioning_descendant(self, cursor, previous_head, head):
         """Accept only immutable, additive session/evidence timestamp-trigger pairs.

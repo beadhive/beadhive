@@ -1,6 +1,7 @@
 """Release-upgrade recovery paths found in the 0.24.3 fleet upgrade (bh-upgrade-p1 batch).
 
 * bh-odevt: prepare-config cancels an unapplied preparation back to the admitted release.
+* bh-aprgo: missing runtime read privileges are named, never masked.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import pytest
 
 import test_frame_release_upgrade as base
 from beadhive import frame_release_upgrade as upgrade
+from beadhive import hq_sql_capabilities as capabilities
 from beadhive.hq_sql_runtime_schema import inbox_table, session_table
 
 fixture = base.fixture
@@ -292,3 +294,97 @@ def test_rollback_is_not_a_rotation_plan(fixture):
             "plan",
             request=rollback_request(fixture, store),
         )
+
+
+# --------------------------------------------------------------------------------------------
+# bh-aprgo: runtime read capabilities over a scripted Dolt cursor
+# --------------------------------------------------------------------------------------------
+
+
+class ScriptedCursor:
+    """Denies statements matching ``deny`` the way Dolt 2.3.5 does (1105 + message)."""
+
+    def __init__(self, *, deny=(), grants=()):
+        # ``grants``: (schema, privilege, grantable) rows of this account ("w"@"%"). Dolt
+        # serves every account's rows to everyone, so a foreign admin row is always present.
+        self.deny = deny
+        self.grants = [("'w'@'%'", *row) for row in grants] + [
+            ("'admin'@'localhost'", "*", "ALL PRIVILEGES", "YES")
+        ]
+
+    def execute(self, sql, params=None):
+        self.sql = sql
+        for needle in self.deny:
+            if needle in sql:
+                raise _DoltError(1105, "Access denied for user 'acct'@'host' to table 'x'")
+
+    def fetchall(self):
+        if "information_schema.user_privileges" in self.sql:
+            return self.grants
+        return []
+
+    def fetchone(self):
+        return ("w@%",) if self.sql == "SELECT CURRENT_USER()" else None
+
+    @property
+    def description(self):
+        return [("type",), ("name",), ("fragment",), ("extra",), ("sql_mode",)]
+
+
+class _DoltError(Exception):
+    pass
+
+
+def test_table_level_grants_report_the_database_wide_diff_requirement():
+    cursor = ScriptedCursor(deny=("DOLT_DIFF_SUMMARY", "dolt_ignore"))
+    found = capabilities.runtime_read(cursor, "beadhive_hq_runtime", "h")
+    text = "; ".join(str(item) for item in found)
+    assert "DOLT_DIFF_SUMMARY" in text and "dolt_ignore" in text
+    assert "SELECT ON `beadhive_hq_runtime`.*" in text
+    assert "acct" not in text and "host" not in text  # redacted
+    assert capabilities.runtime_read(ScriptedCursor(), "beadhive_hq_runtime", "h") == []
+
+
+def test_non_privilege_probe_failure_is_unknown_not_missing():
+    class Broken(ScriptedCursor):
+        def execute(self, sql, params=None):
+            raise _DoltError(2013, "Lost connection")
+
+    with pytest.raises(capabilities.CapabilityProbeError):
+        capabilities.runtime_read(Broken(), "db", "h")
+
+
+@pytest.mark.parametrize(
+    ("grants", "inspect", "provision"),
+    [
+        ([("db", "SELECT", "NO")], 2, 6),
+        ([("db", "SELECT", "NO"), ("db", "TRIGGER", "NO"), ("mysql", "SELECT", "NO")], 0, 5),
+        (
+            [
+                ("*", privilege, "YES")
+                for privilege in ("SELECT", "INSERT", "CREATE", "TRIGGER", "CREATE USER")
+            ],
+            0,
+            0,
+        ),
+    ],
+)
+def test_session_inspection_and_provisioning_are_read_from_own_grants(grants, inspect, provision):
+    cursor = ScriptedCursor(grants=grants)
+    assert len(capabilities.session_inspection(cursor, "db")) == inspect
+    assert len(capabilities.provisioning(cursor, "db", "cfg")) == provision
+    assert capabilities.denied(_DoltError(1105, "command denied to user"))
+    assert not capabilities.denied(_DoltError(1105, "table not found: x"))
+
+
+def test_report_gates_actions_only_for_session_routes():
+    restricted = ScriptedCursor(deny=("DOLT_DIFF_SUMMARY",), grants=[("db", "SELECT", "NO")])
+    inbox = capabilities.report(
+        restricted, database="db", config_database="cfg", head="h", route="inbox"
+    )
+    assert inbox["ready"] == {"apply": True, "provision": False} and inbox["runtime_read"]
+    session = capabilities.report(
+        restricted, database="db", config_database="cfg", head="h", route="session"
+    )
+    assert session["ready"] == {"apply": False, "provision": False}
+    assert any("TRIGGER" in item for item in session["apply"])

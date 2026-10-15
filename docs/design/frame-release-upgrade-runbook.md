@@ -311,7 +311,10 @@ command completes missing supported objects and refuses conflicting schemas,
 triggers, account bindings, or unrelated dirty state. A successful retry keeps
 the existing password, session renewal, and conformance evidence unchanged.
 If `apply` has already committed, use `check` and cut over to that incarnation;
-do not provision another epoch to retry it.
+do not provision another epoch to retry it. If a remote `check` or `plan` refuses with
+"restore-floor verification denied" after provisioning, grant that binding
+`SELECT ON <runtime>.*` ([HQ: Runtime SQL privileges](../HQ.md#runtime-sql-privileges)). The
+message reports a privilege gap, not a rollback. Do not edit a restore floor.
 
 ### Activate the reviewed frame credentials through the public CLI
 

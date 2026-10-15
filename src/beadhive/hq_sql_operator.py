@@ -21,7 +21,7 @@ import time
 from . import hq_authority_enforce
 from . import hq_authority_guard as guard
 from .hq_hive_policy import project_hive_policies
-from .hq_sql_runtime import SqlRuntimeAuthority
+from .hq_sql_runtime import SqlRuntimeAuthority, SqlRuntimeCapabilityMissing
 from .hq_sql_runtime_schema import (
     evidence_table,
     inbox_table,
@@ -105,6 +105,11 @@ class SqlRuntimeOperator:
             return head, state, crossref, policies
         except SqlOperatorError:
             raise
+        except SqlRuntimeCapabilityMissing as error:
+            # A named privilege gap (bh-aprgo), still a refusal; never an outage guess.
+            raise SqlOperatorError(
+                f"protected authority writer read unavailable: {error}"
+            ) from None
         except Exception:
             raise SqlOperatorError("protected authority writer read unavailable") from None
         finally:
@@ -508,14 +513,10 @@ class SqlRuntimeOperator:
                     database=database,
                 )
                 account = f"'{principal}'@'{frame_address}'"
-                for table in (
-                    "hq_authority",
-                    "hq_principal_registry",
-                    "hq_live_hive_leases",
-                    "hq_live_public_observations",
-                    "hq_live_results",
-                ):
-                    sql.grant_select(database, table, account)
+                # Read-only, database-wide (bh-aprgo): the frame's restore floor re-verifies
+                # later provisioning commits with DOLT_DIFF_SUMMARY, which Dolt authorizes only
+                # with SELECT on every table. The frame still writes only its own two rows.
+                sql.grant_select_database(database, account)
                 config_database = self.settings["reader"]["database"]
                 for table in ("hq_config_meta", "hq_config_documents", "hq_config_publications"):
                     sql.grant_select(config_database, table, account)
