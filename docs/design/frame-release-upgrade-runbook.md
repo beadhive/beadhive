@@ -227,16 +227,71 @@ uncertain, use public `check` to read back `canonical_config_head` and
 An already prepared exact target is an idempotent no-op; never repeat using a
 stale preparation digest or infer that a refused acknowledgment means no change.
 
+### Cancel an unapplied preparation {#cancel-an-unapplied-preparation}
+
+If provisioning or `apply` fails after `prepare-config`, the canonical manifest names the
+target release, but the authority still admits the old one. To return the manifest to the
+admitted release, run `prepare-config` with that release as the target. Use the same
+`--expected-*` values (the current runtime HEAD, epoch and admitted digest), the current
+`canonical_config_head` from `check`, and `--release-id`/`--release-digest` set to the
+**admitted** release. Leave out `--target-route`:
+
+```sh
+bh host release-upgrade prepare-config <frame> --operator-settings <settings> \
+  --expected-revision <runtime-head> --expected-host-id <uuid> \
+  --expected-epoch <current-epoch> --expected-release <admitted-sha256-digest> \
+  --expected-config-head <canonical-config-head> \
+  --release-id <admitted-release-id> --release-digest <admitted-sha256-digest> \
+  --profile <profile> --config-revision <config-revision> \
+  --candidate-expires-at <review-expiry-within-24h>
+```
+
+The review reports `rollback: true`, the prepared `canonical_release_before` and a
+preparation digest. Repeat it with `--plan-sha256 <digest> --confirm`. Only that manifest's
+release changes. The authority, its identity and epoch, every other document and every restore
+floor stay as they are. No private publisher API, SQL edit or rebind is needed. The same
+config-head CAS and runtime-HEAD fences apply as for a forward preparation, so a concurrent
+change refuses. An already-restored manifest is an idempotent no-op (`already_prepared:
+true`). If the acknowledgment is uncertain, read `canonical_config_head` and
+`canonical_release` back with `check`, then review again at that head. `plan` refuses a
+rollback target, because returning to the admitted release is not a rotation. A rollback after
+`apply` has committed is the [rollback rotation](#active-frame-release-rotation), not this.
+
 For a frame already routed to its session table, `plan`, `apply`, and `check`
 report `route: session`, the actual `session_table` and `evidence_table`, and
 whether provisioning is complete. The compatibility field `inbox_table` names
-the actual session table. A legacy inbox route retains the existing inbox
-provisioning procedure above; the session provision action refuses that route
-family rather than silently changing a reviewed plan.
+the actual session table. By default, a legacy inbox route keeps the existing inbox
+provisioning procedure above, and the session provision action refuses that route family
+rather than silently changing a reviewed plan.
+
+### Migrate a legacy inbox to session rows {#migrate-a-legacy-inbox-to-session-rows}
+
+To move an admitted legacy-inbox frame to session rows at its next epoch, add
+`--target-route session` to **every** `prepare-config`, `plan`, `provision` and `apply`
+command of the rotation. The flag is part of the reviewed request, so plan digests with and
+without it differ, and neither authorizes the other. `prepare-config` and `plan` then report
+`route: session`, `incumbent_route: inbox` and `route_transition: inbox-to-session`, before
+the canonical release changes. Frame identity, the signer, the hive lease and its tenure are
+preserved as in any rotation. No re-adoption, floor edit or hidden API call is needed. An
+unsupported transition refuses at `prepare-config`, for example a next epoch already
+provisioned with an inbox. `apply` refuses to register the transition on anything but the
+provisioned session/evidence tables. A later rotation of the now-session frame inherits the
+session family without the flag.
+
+`prepare-config` and `plan` also print a `preflight` object: for this operator binding, what
+each action is still missing, with the grant that satisfies it
+([HQ: Runtime SQL privileges](../HQ.md#runtime-sql-privileges)). A remote least-privilege
+operator normally has `ready.apply: false` and `ready.provision: false` for a session route.
+Run `provision` **and** `apply` with the server-local `--operator-settings`, and keep running
+`prepare-config`, `plan` and `check` from the remote operator. `provision` and `apply` refuse
+before writing, with the named capability, if their binding cannot inspect triggers and
+accounts. A refusal never reports the generic "protected authority publication unavailable".
 
 Use the existing `--operator-settings` file format for server-local provisioning.
 Its `hq.sql.authority_writer` credential must have DDL, account creation, and grant
-privileges on the isolated HQ server. Keep this provisioning credential off the
+privileges on the isolated HQ server, as listed in
+[HQ: Runtime SQL privileges](../HQ.md#runtime-sql-privileges). Use the same server-local
+settings for the session-route `apply`. Keep this provisioning credential off the
 frame and separate from the ordinary least-privilege authority writer. The
 runtime database must already have its committed `frame_*` ignore rule and
 liveness policy. Provisioning never initializes or changes those protections.
@@ -281,7 +336,10 @@ command completes missing supported objects and refuses conflicting schemas,
 triggers, account bindings, or unrelated dirty state. A successful retry keeps
 the existing password, session renewal, and conformance evidence unchanged.
 If `apply` has already committed, use `check` and cut over to that incarnation;
-do not provision another epoch to retry it.
+do not provision another epoch to retry it. If a remote `check` or `plan` refuses with
+"restore-floor verification denied" after provisioning, grant that binding
+`SELECT ON <runtime>.*` ([HQ: Runtime SQL privileges](../HQ.md#runtime-sql-privileges)). The
+message reports a privilege gap, not a rollback. Do not edit a restore floor.
 
 ### Activate the reviewed frame credentials through the public CLI
 

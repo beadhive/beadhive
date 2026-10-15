@@ -841,6 +841,10 @@ _APPROVED_OPTIONAL_REPAIR_PARAMS = {
     "host.release-upgrade": {
         "frame_address": {"type": "string"},
         "password_stdin": {"type": "boolean"},
+        # bh-ct91o (operator approval: Brian Cripe, 2026-10-15, recorded on bh-ct91o): the
+        # reviewed legacy-inbox -> session transition is one appended optional string. Callers
+        # that omit it keep their exact request, plan digest and route family.
+        "target_route": {"type": "string"},
     },
     # bh-7iovd: the reviewed HQ-independent recovery route and its bounded path
     # scope append only these exact optional inputs to the existing public verbs.

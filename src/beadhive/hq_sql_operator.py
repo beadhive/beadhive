@@ -21,7 +21,7 @@ import time
 from . import hq_authority_enforce
 from . import hq_authority_guard as guard
 from .hq_hive_policy import project_hive_policies
-from .hq_sql_runtime import SqlRuntimeAuthority
+from .hq_sql_runtime import SqlRuntimeAuthority, SqlRuntimeCapabilityMissing
 from .hq_sql_runtime_schema import (
     evidence_table,
     inbox_table,
@@ -105,6 +105,11 @@ class SqlRuntimeOperator:
             return head, state, crossref, policies
         except SqlOperatorError:
             raise
+        except SqlRuntimeCapabilityMissing as error:
+            # A named privilege gap (bh-aprgo), still a refusal; never an outage guess.
+            raise SqlOperatorError(
+                f"protected authority writer read unavailable: {error}"
+            ) from None
         except Exception:
             raise SqlOperatorError("protected authority writer read unavailable") from None
         finally:
@@ -335,15 +340,19 @@ class SqlRuntimeOperator:
                 if provisioned_route is not None:
                     principal, frame_id, holder, instance, epoch, signer = provisioned_route
                     table = self._provisioned_table(sql, principal, epoch)
-                    if release_upgrade is not None and table == session_table(principal, epoch):
-                        from .hq_sql_session_provision import validate_incarnation
-
-                        validate_incarnation(
-                            sql,
-                            principal,
-                            epoch,
-                            database=self.settings["authority_writer"]["database"],
+                    if (
+                        release_upgrade is not None
+                        and release_upgrade["request"].get("route") == "session"
+                        and table != session_table(principal, epoch)
+                    ):
+                        # The reviewed legacy-inbox -> session transition (bh-ct91o) lands
+                        # only on the provisioned session route, never on an inbox.
+                        raise SqlOperatorError(
+                            "reviewed session route transition requires the provisioned "
+                            "session/evidence tables and no inbox at the new epoch"
                         )
+                    if release_upgrade is not None and table == session_table(principal, epoch):
+                        self._validate_session_route(sql, principal, epoch)
                     sql.insert_route((principal, frame_id, holder, instance, epoch, table, signer))
                     sql.insert_floor_seed(frame_id, holder, epoch)
                 body = canonical(state, limit=4 * 1024 * 1024)
@@ -423,6 +432,58 @@ class SqlRuntimeOperator:
         finally:
             connection.close()
 
+    def _validate_session_route(self, sql, principal, epoch):
+        """Re-check the provisioned session route, naming why it cannot (bh-t759y).
+
+        Drift and a missing inspection privilege both refuse before any write; neither may
+        surface as the publisher's generic "publication unavailable"."""
+        from .hq_sql_capabilities import denied, session_inspection
+        from .hq_sql_session import SessionError
+        from .hq_sql_session_provision import validate_incarnation
+
+        database = self.settings["authority_writer"]["database"]
+        try:
+            validate_incarnation(sql, principal, epoch, database=database)
+        except SessionError as error:
+            missing = session_inspection(sql, database)
+            if missing:
+                raise SqlOperatorError(_inspection_refusal(missing)) from None
+            raise SqlOperatorError(f"reviewed session route invalid: {error}") from None
+        except Exception as error:
+            if denied(error):
+                raise SqlOperatorError(
+                    _inspection_refusal(session_inspection(sql, database))
+                ) from None
+            raise
+
+    def preflight(self, *, route, deadline=None) -> dict:
+        """Redacted capability report of this binding for the reviewed route (bh-aprgo).
+
+        Read-only: probes reads and its own privilege rows; never writes or commits."""
+        from .hq_sql_capabilities import CapabilityProbeError, report
+
+        connection, _deadline = self._open(deadline=deadline)
+        try:
+            with connection.cursor() as cursor:
+                sql = runtime_statements(cursor)
+                self._identity(sql)
+                head = sql.head()
+                return report(
+                    sql,
+                    database=self.settings["authority_writer"]["database"],
+                    config_database=(self.settings.get("reader") or {}).get("database"),
+                    head=head,
+                    route=route,
+                )
+        except SqlOperatorError:
+            raise
+        except CapabilityProbeError as error:
+            raise SqlOperatorError(str(error)) from None
+        except Exception:
+            raise SqlOperatorError("operator capability preflight unavailable") from None
+        finally:
+            connection.close()
+
     @staticmethod
     def _provisioned_table(cursor, principal: str, epoch: int) -> str:
         """The registry ``inbox_table`` for a new incarnation, chosen by what the operator
@@ -438,8 +499,11 @@ class SqlRuntimeOperator:
             return session
         raise SqlOperatorError("preprovisioned frame inbox or session tables missing")
 
-    def describe_release_route(self, principal, epoch, frame, *, deadline=None):
-        """Report the actual new route, or inherit the incumbent's provisioning family."""
+    def describe_release_route(self, principal, epoch, frame, *, target_route=None, deadline=None):
+        """Report the actual new route, or inherit the incumbent's provisioning family.
+
+        ``target_route="session"`` is the reviewed legacy-inbox -> session transition
+        (bh-ct91o): an unprovisioned next epoch then reports the session family."""
         connection, _deadline = self._open(deadline=deadline)
         try:
             with connection.cursor() as cursor:
@@ -461,14 +525,18 @@ class SqlRuntimeOperator:
                     if present & {session, evidence}
                     else None
                 )
+                prior = sql.latest_route_for_frame(frame)
+                incumbent = (
+                    "session"
+                    if prior and prior[2] == session_table(prior[0], prior[1])
+                    else "inbox"
+                )
                 if table is None:
-                    prior = sql.latest_route_for_frame(frame)
                     table = (
-                        session
-                        if prior and prior[2] == session_table(prior[0], prior[1])
-                        else inbox
+                        session if incumbent == "session" or target_route == "session" else inbox
                     )
                 return {
+                    "incumbent_route": incumbent if prior else None,
                     "principal": principal,
                     "inbox_table": table,
                     "route": "session" if table == session else "inbox",
@@ -508,14 +576,10 @@ class SqlRuntimeOperator:
                     database=database,
                 )
                 account = f"'{principal}'@'{frame_address}'"
-                for table in (
-                    "hq_authority",
-                    "hq_principal_registry",
-                    "hq_live_hive_leases",
-                    "hq_live_public_observations",
-                    "hq_live_results",
-                ):
-                    sql.grant_select(database, table, account)
+                # Read-only, database-wide (bh-aprgo): the frame's restore floor re-verifies
+                # later provisioning commits with DOLT_DIFF_SUMMARY, which Dolt authorizes only
+                # with SELECT on every table. The frame still writes only its own two rows.
+                sql.grant_select_database(database, account)
                 config_database = self.settings["reader"]["database"]
                 for table in ("hq_config_meta", "hq_config_documents", "hq_config_publications"):
                     sql.grant_select(config_database, table, account)
@@ -635,3 +699,14 @@ class SqlRuntimeOperator:
             raise SqlOperatorError("inbox prune unavailable") from None
         finally:
             connection.close()
+
+
+def _inspection_refusal(missing) -> str:
+    named = "; ".join(str(item) for item in missing) or "a session inspection privilege"
+    return (
+        "this authority writer cannot inspect the provisioned session route ("
+        + named
+        + "). Run apply with the server-local administrative --operator-settings used for "
+        "provision (docs/design/frame-release-upgrade-runbook.md), or grant the listed "
+        "read capabilities; the authority is unchanged"
+    )

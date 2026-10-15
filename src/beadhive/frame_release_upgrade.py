@@ -28,6 +28,22 @@ from .hq_sql_signatures import canonical, sql_principal
 PENDING_DOMAIN = "beadhive/sql-release-upgrade/v1"
 ACTIVE_DOMAIN = "beadhive/sql-active-release-rotation/v1"
 HISTORY_LIMIT = 16
+REQUEST_FIELDS = frozenset(
+    {
+        "expected_revision",
+        "host_id",
+        "epoch",
+        "old_release",
+        "config_head",
+        "release",
+        "profile",
+        "config_revision",
+        "expires_at",
+    }
+)
+#: The one supported explicit route transition (bh-ct91o): a legacy inbox incumbent moves to
+#: session rows at the reviewed next epoch. Absent means "inherit the incumbent's family".
+TARGET_ROUTES = frozenset({"session"})
 
 
 def candidate(state, frame):
@@ -107,18 +123,9 @@ def manifest_for(snapshot, frame, record, request, *, state="pending"):
 def validate_request(request, *, now):
     if (
         not isinstance(request, dict)
-        or set(request)
-        != {
-            "expected_revision",
-            "host_id",
-            "epoch",
-            "old_release",
-            "config_head",
-            "release",
-            "profile",
-            "config_revision",
-            "expires_at",
-        }
+        or set(request) not in (REQUEST_FIELDS, REQUEST_FIELDS | {"route"})
+        or "route" in request
+        and request["route"] not in TARGET_ROUTES
         or not isinstance(request["release"], dict)
         or set(request["release"]) != {"id", "digest"}
     ):
@@ -206,13 +213,7 @@ def prepare(original, frame, head, snapshot, request, *, now):
         history = history[-HISTORY_LIMIT:]
     next_record = copy.deepcopy(old)
     next_record.pop("emergency", None)  # Bound to the archived authority; kept there.
-    next_record["authority"] = {
-        **a,
-        "epoch": entry["epoch_floor"] + 1,
-        "config_revision": request["config_revision"],
-        # An active rotation stays admitted; the request expiry bounds only the plan.
-        "candidate_expires_at": None if active else request["expires_at"],
-    }
+    next_record["authority"] = next_authority(original, frame, request)
     next_record["desired"] = {
         **old["desired"],
         "release": request["release"],
@@ -241,6 +242,18 @@ def prepare(original, frame, head, snapshot, request, *, now):
     )
     guard.validate_state(state)
     return state, plan_digest
+
+
+def next_authority(original, frame, request):
+    """The reviewed next incarnation's authority: same identity, next epoch."""
+    slot, old = selected(original, frame)
+    return {
+        **old["authority"],
+        "epoch": original["frames"][frame]["epoch_floor"] + 1,
+        "config_revision": request["config_revision"],
+        # An active rotation stays admitted; the request expiry bounds only the plan.
+        "candidate_expires_at": None if slot == "active" else request["expires_at"],
+    }
 
 
 def route_for(state, frame):
@@ -375,26 +388,31 @@ def release_upgrade(
         "frame_id": frame,
         "old_epoch": request["epoch"],
         "new_epoch": route[4],
-        **operator.describe_release_route(route[0], route[4], frame, deadline=budget),
+        **_describe(operator, route[0], route[4], frame, request, deadline=budget),
         "authority": rotated["authority"],
         "release": request["release"],
         "profile": request["profile"],
         "state": rotated["state"],
         "rotation": "active" if state["frames"][frame]["active"] is rotated else "pending",
     }
+    if result.get("route") == "session":
+        result["preflight"] = operator.preflight(route="session", deadline=budget)
     if action == "plan":
         return result
     if action == "provision":
         if result["route"] != "session":
             raise ValueError(
                 "reviewed route is a legacy inbox; session provisioning requires "
-                "an incumbent session route, preserving the reviewed route family"
+                "an incumbent session route or the explicit reviewed transition "
+                "(--target-route session in prepare-config, plan and provision), "
+                "preserving the reviewed route family"
             )
         if not confirm or plan_sha256 != digest or not frame_address or not password:
             raise ValueError(
                 "provision requires --confirm, exact reviewed plan digest, "
                 "frame address and password stdin"
             )
+        _require_ready(result["preflight"], "provision")
         result["revision"] = operator.provision_release_route(
             route,
             expected_revision=head,
@@ -409,6 +427,8 @@ def release_upgrade(
         raise ValueError(
             "apply requires --confirm, approved operator key and exact reviewed plan digest"
         )
+    if "preflight" in result:
+        _require_ready(result["preflight"], "apply")
     result["revision"] = operator.publish(
         state,
         expected_revision=head,
@@ -418,6 +438,37 @@ def release_upgrade(
         release_upgrade={"frame": frame, "request": request, "plan_sha256": digest},
     )
     return result
+
+
+def _describe(operator, principal, epoch, frame, request, *, deadline):
+    """The next route, refusing a reviewed transition the next epoch cannot take (bh-ct91o)."""
+    target = request.get("route")
+    if target is None:
+        described = operator.describe_release_route(principal, epoch, frame, deadline=deadline)
+    else:
+        described = operator.describe_release_route(
+            principal, epoch, frame, target_route=target, deadline=deadline
+        )
+    incumbent = described.get("incumbent_route")
+    if target is not None and described.get("route") != target:
+        raise ValueError(
+            f"reviewed {target} route transition is unavailable: the next epoch is already "
+            f"provisioned as a {described.get('route')} route; review that route instead"
+        )
+    if incumbent is not None and "route" in described:
+        described["route_transition"] = (
+            "none" if incumbent == described["route"] else f"{incumbent}-to-{described['route']}"
+        )
+    return described
+
+
+def _require_ready(preflight, action):
+    if not preflight["ready"][action]:
+        raise ValueError(
+            f"{action} preflight: this operator binding lacks "
+            + "; ".join(preflight[action])
+            + f". See {preflight['docs']}; the authority and canonical config are unchanged"
+        )
 
 
 def prepare_config(
@@ -461,8 +512,14 @@ def prepare_config(
         or not isinstance(request.get("release"), dict)
         or set(request["release"]) != {"id", "digest"}
         or request["release"].get("digest") == record["desired"]["release"]["digest"]
+        and request["release"] != record["desired"]["release"]
     ):
         raise ValueError("prepare-config original runtime/config/identity/release CAS mismatch")
+    # Targeting the still-admitted release cancels an unapplied preparation (bh-odevt): the
+    # canonical manifest returns to what the authority admits, whatever was prepared since.
+    rollback = request["release"] == record["desired"]["release"]
+    if rollback and "route" in request:
+        raise ValueError("prepare-config rollback to the admitted release takes no route target")
     path = f"hosts/{authority['holder_identity']}.yaml"
     matches = [document for document in snapshot.documents if document.path == path]
     if len(matches) != 1:
@@ -482,7 +539,8 @@ def prepare_config(
         or manifest.capabilities is None
         or manifest.capabilities.model_dump() != record["desired"]["caps"]
         or manifest.release is None
-        or manifest.release.model_dump() not in (record["desired"]["release"], request["release"])
+        or not rollback
+        and manifest.release.model_dump() not in (record["desired"]["release"], request["release"])
     ):
         raise ValueError("prepare-config canonical manifest differs from incumbent identity/state")
     proposed = {**raw, "release": request["release"]}
@@ -525,13 +583,35 @@ def prepare_config(
         "canonical_release_before": manifest.release.model_dump(),
         "release": request["release"],
         "state": expected_state,
+        "rollback": rollback,
         "already_prepared": unchanged,
         "applied": False,
     }
+    if not rollback:
+        # Expose the next epoch's route family and this binding's capabilities before the
+        # canonical release changes (bh-ct91o, bh-aprgo, bh-t759y).
+        authority_next = next_authority(original, frame, request)
+        principal = sql_principal(ObservationAuthority(**authority_next))
+        result.update(
+            _describe(
+                operator, principal, authority_next["epoch"], frame, request, deadline=deadline
+            )
+        )
+        if result.get("route") == "session":
+            result["preflight"] = operator.preflight(route="session", deadline=deadline)
     if not confirm:
         return result
     if plan_sha256 != digest:
         raise ValueError("prepare-config --confirm requires the exact reviewed preparation digest")
+    if result.get("preflight", {}).get("runtime_read"):
+        # After session provisioning every floor re-verifies a provisioning commit; a binding
+        # that cannot would strand the operator between preparation and apply.
+        raise ValueError(
+            "prepare-config preflight: this operator binding cannot verify the restore floor "
+            "across session provisioning ("
+            + "; ".join(result["preflight"]["runtime_read"])
+            + f"). See {result['preflight']['docs']}; the canonical config is unchanged"
+        )
     operator.authority.fresh_runtime_head_fence(head, deadline=deadline)
     if not unchanged:
         try:
