@@ -44,6 +44,27 @@ Name the file with `--operator-settings <path>` or `BH_HQ_OPERATOR_SETTINGS`, as
 `bh hq authority`. The file may also carry `authority_writer`; `check` then uses that operator
 account to read other accounts' grants.
 
+### Provision the director account
+
+No `bh setup` or `bh doctor` step creates the director account or the settings file, and none
+reports their absence. Until an operator does both, `bh hq placement show|place|release` refuses
+and the failover loop cannot start. A session-only frame's `bh host lease release` refusal sends
+you to this verb, so provision it before you need it:
+
+1. On the HQ server, with the server-local provisioning account, create the `director` account
+   and grant it `SELECT` on the runtime database, `UPDATE` on `hq_live_hive_leases`, and (for
+   `policy`) `INSERT, UPDATE, DELETE` on `hq_live_failover_policy` (create that table first, see
+   [failover policy](#provision-it-once)). Grant it nothing else. Store its password in your
+   secret store (the `credential:` entry above).
+2. Write the operator settings file shown above on the host that will run the director verb, with
+   `runtime: null` and `placement_writer` set. Do not put it in `host.yaml`.
+3. Export `BH_HQ_OPERATOR_SETTINGS=<path>` (or pass `--operator-settings <path>`), then verify with
+   `bh hq placement show <prefix>` and `bh hq placement check`. `check` exits 1 and names any
+   missing or excess grant.
+
+A missing binding shows up as a refusal naming `hq.sql.placement_writer`. That refusal is the
+only absence report today.
+
 ## 3. The verb
 
 Every action prints JSON and exits 1 on a refusal. `place` and `release` are dry runs unless you

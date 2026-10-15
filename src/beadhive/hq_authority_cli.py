@@ -255,11 +255,14 @@ def authority_cmd(
                     ceiling = hq_authority_ceiling.resolve_ceiling(
                         cli=max_duration, settings=getattr(plane, "authority_max_duration_s", None)
                     )
+                    # --frame (bh-2chzr) also re-binds that frame's grant to the current
+                    # hive frame-policy config revision; omitted, grants keep theirs.
                     sha = plane.renew(
                         expected=expected,
                         operator_key=key,
                         duration=duration,
                         ceiling=ceiling,
+                        **({"frame": frame} if frame else {}),
                     )
                 elif action == "bind-beadyard":
                     sha = plane.bind_beadyard(expected=expected, operator_key=key)
