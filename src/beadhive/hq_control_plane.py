@@ -3289,17 +3289,21 @@ def control_plane(hq_dir=None):
     return GitControlPlane(hq_dir or config.hq_dir(), authority_anchor=cfg.get("authority_anchor"))
 
 
-def attach_fleet_config(hq_dir=None, *, bootstrap=None, operator_key=None):
+def attach_fleet_config(hq_dir=None, *, bootstrap=None, operator_key=None, hive_local=False):
     """Read back central config using only host-injected connection/trust inputs.
 
     Returning a binding and committed snapshot performs no checkout/Beads hydration,
-    source migration, host identity change or implicit backend switch.
+    source migration, host identity change or implicit backend switch. `hive_local` lets a
+    SQL read that only feeds hive-local config degrade a transient outage to the bounded-age
+    cached verified snapshot in trusted mode (``load_snapshot_or_cached``, bh-kjxe9).
     """
     settings = bootstrap if bootstrap is not None else config.load_host().get("hq", {})
     mode = settings.get("mode", "git")
     sql = _validated_sql_binding(settings.get("sql", {}))
     if sql.enabled:
         store = SqlControlPlane(sql.model_dump()).config_store()
+        if hive_local:
+            return store, store.load_snapshot_or_cached()
         return store, store.load_snapshot()
     if mode != "git":
         raise ControlPlaneError(f"unsupported HQ configuration bootstrap mode: {mode}")

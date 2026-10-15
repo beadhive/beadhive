@@ -735,9 +735,9 @@ existing classifier remains the sole removal guard.
 
 **When the host is degraded and HQ is unreachable, run this first.** Memory or tmpfs pressure
 can take HQ SQL (and the verified runtime config behind it) down; `bh worktree rm` and
-`bh worktree prune` both need that config, so they fail with `SqlConfigError: verified HQ config
-connection unavailable` exactly when the space they would free is what HQ needs to come back
-(bh-o01m6). `local-reclaim` breaks that cycle:
+`bh worktree prune` both need that config, so they fail with
+`SqlConfigUnavailable: verified HQ config connection unavailable` exactly when the space
+they would free is what HQ needs to come back (bh-o01m6). `local-reclaim` breaks that cycle:
 
 ```sh
 # 1. Preview — classify and measure only (same checks, nothing removed).

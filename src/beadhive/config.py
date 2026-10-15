@@ -284,6 +284,12 @@ def load_fleet():
     return _config_store.load_fleet(_facade())
 
 
+def hive_local_config_reads():
+    """Context: config reads here only feed hive-local work; a trusted frame may then serve
+    them from the bounded-age cached verified HQ snapshot during a transient outage."""
+    return _config_store.hive_local_reads()
+
+
 def load_fleet_raw_for_repair():
     """Opaque local Git FLEET source for explicit repair only."""
     return _config_store.load_fleet_raw_for_repair(_facade())
