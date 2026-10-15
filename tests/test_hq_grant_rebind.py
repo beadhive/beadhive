@@ -215,4 +215,22 @@ def test_eligible_fails_closed_when_the_binding_cannot_be_read(monkeypatch):
     payload = _payload()
     host_cli._hive_policy_predicate(payload, "/hq", "bh-app", "host-x")
     assert payload["predicates"]["hive_policy_bound"] is False
+    assert payload["eligible"] is False
+    assert payload["hive_policy_binding"] == {
+        "prefix": "bh-app",
+        "bound": False,
+        "error": "qualified SQL hive policy unavailable",
+    }
     assert json.dumps(payload)
+
+
+def test_eligible_names_only_the_class_of_a_non_control_plane_read_failure(monkeypatch):
+    def unreadable(*_a, **_k):
+        raise OSError("/secret/path/key.pem: permission denied")
+
+    plane = SimpleNamespace(config_backend="sql", hive_policy_binding=unreadable)
+    monkeypatch.setattr("beadhive.hq_control_plane.control_plane", lambda *_a: plane)
+    payload = _payload()
+    host_cli._hive_policy_predicate(payload, "/hq", "bh-app", "host-x")
+    assert payload["hive_policy_binding"]["error"] == "OSError"
+    assert "secret" not in json.dumps(payload)
