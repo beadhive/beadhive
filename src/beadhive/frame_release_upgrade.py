@@ -28,6 +28,22 @@ from .hq_sql_signatures import canonical, sql_principal
 PENDING_DOMAIN = "beadhive/sql-release-upgrade/v1"
 ACTIVE_DOMAIN = "beadhive/sql-active-release-rotation/v1"
 HISTORY_LIMIT = 16
+REQUEST_FIELDS = frozenset(
+    {
+        "expected_revision",
+        "host_id",
+        "epoch",
+        "old_release",
+        "config_head",
+        "release",
+        "profile",
+        "config_revision",
+        "expires_at",
+    }
+)
+#: The one supported explicit route transition (bh-ct91o): a legacy inbox incumbent moves to
+#: session rows at the reviewed next epoch. Absent means "inherit the incumbent's family".
+TARGET_ROUTES = frozenset({"session"})
 
 
 def candidate(state, frame):
@@ -107,18 +123,9 @@ def manifest_for(snapshot, frame, record, request, *, state="pending"):
 def validate_request(request, *, now):
     if (
         not isinstance(request, dict)
-        or set(request)
-        != {
-            "expected_revision",
-            "host_id",
-            "epoch",
-            "old_release",
-            "config_head",
-            "release",
-            "profile",
-            "config_revision",
-            "expires_at",
-        }
+        or set(request) not in (REQUEST_FIELDS, REQUEST_FIELDS | {"route"})
+        or "route" in request
+        and request["route"] not in TARGET_ROUTES
         or not isinstance(request["release"], dict)
         or set(request["release"]) != {"id", "digest"}
     ):
@@ -381,7 +388,7 @@ def release_upgrade(
         "frame_id": frame,
         "old_epoch": request["epoch"],
         "new_epoch": route[4],
-        **operator.describe_release_route(route[0], route[4], frame, deadline=budget),
+        **_describe(operator, route[0], route[4], frame, request, deadline=budget),
         "authority": rotated["authority"],
         "release": request["release"],
         "profile": request["profile"],
@@ -396,7 +403,9 @@ def release_upgrade(
         if result["route"] != "session":
             raise ValueError(
                 "reviewed route is a legacy inbox; session provisioning requires "
-                "an incumbent session route, preserving the reviewed route family"
+                "an incumbent session route or the explicit reviewed transition "
+                "(--target-route session in prepare-config, plan and provision), "
+                "preserving the reviewed route family"
             )
         if not confirm or plan_sha256 != digest or not frame_address or not password:
             raise ValueError(
@@ -429,6 +438,28 @@ def release_upgrade(
         release_upgrade={"frame": frame, "request": request, "plan_sha256": digest},
     )
     return result
+
+
+def _describe(operator, principal, epoch, frame, request, *, deadline):
+    """The next route, refusing a reviewed transition the next epoch cannot take (bh-ct91o)."""
+    target = request.get("route")
+    if target is None:
+        described = operator.describe_release_route(principal, epoch, frame, deadline=deadline)
+    else:
+        described = operator.describe_release_route(
+            principal, epoch, frame, target_route=target, deadline=deadline
+        )
+    incumbent = described.get("incumbent_route")
+    if target is not None and described.get("route") != target:
+        raise ValueError(
+            f"reviewed {target} route transition is unavailable: the next epoch is already "
+            f"provisioned as a {described.get('route')} route; review that route instead"
+        )
+    if incumbent is not None and "route" in described:
+        described["route_transition"] = (
+            "none" if incumbent == described["route"] else f"{incumbent}-to-{described['route']}"
+        )
+    return described
 
 
 def _require_ready(preflight, action):
@@ -487,6 +518,8 @@ def prepare_config(
     # Targeting the still-admitted release cancels an unapplied preparation (bh-odevt): the
     # canonical manifest returns to what the authority admits, whatever was prepared since.
     rollback = request["release"] == record["desired"]["release"]
+    if rollback and "route" in request:
+        raise ValueError("prepare-config rollback to the admitted release takes no route target")
     path = f"hosts/{authority['holder_identity']}.yaml"
     matches = [document for document in snapshot.documents if document.path == path]
     if len(matches) != 1:
@@ -556,12 +589,12 @@ def prepare_config(
     }
     if not rollback:
         # Expose the next epoch's route family and this binding's capabilities before the
-        # canonical release changes (bh-aprgo, bh-t759y).
+        # canonical release changes (bh-ct91o, bh-aprgo, bh-t759y).
         authority_next = next_authority(original, frame, request)
         principal = sql_principal(ObservationAuthority(**authority_next))
         result.update(
-            operator.describe_release_route(
-                principal, authority_next["epoch"], frame, deadline=deadline
+            _describe(
+                operator, principal, authority_next["epoch"], frame, request, deadline=deadline
             )
         )
         if result.get("route") == "session":

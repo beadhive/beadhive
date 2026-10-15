@@ -2003,6 +2003,12 @@ def release_upgrade_cmd(
     password_stdin: bool = typer.Option(
         False, "--password-stdin", help="provision: read new frame account password from stdin"
     ),
+    target_route: str = typer.Option(
+        "",
+        "--target-route",
+        help="session: reviewed legacy-inbox to session-row transition at the next epoch "
+        "(repeat it on prepare-config, plan, provision and apply)",
+    ),
 ):
     """Review a release rotation of a pending or active SQL frame, preserving identity.
 
@@ -2033,6 +2039,7 @@ def release_upgrade_cmd(
                     "profile": profile,
                     "config_revision": config_revision,
                     "expires_at": expires_at,
+                    **({"route": target_route} if target_route else {}),
                 },
                 plan_sha256=plan_sha256,
                 operator_key=str(operator_key) if operator_key else "",

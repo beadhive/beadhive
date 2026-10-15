@@ -1,6 +1,7 @@
 """Release-upgrade recovery paths found in the 0.24.3 fleet upgrade (bh-upgrade-p1 batch).
 
 * bh-odevt: prepare-config cancels an unapplied preparation back to the admitted release.
+* bh-ct91o: an explicit reviewed legacy-inbox -> session route transition.
 * bh-t759y / bh-aprgo: missing inspection/read privileges are named, never masked.
 """
 
@@ -552,3 +553,161 @@ def test_publish_names_inspection_gap_instead_of_publication_unavailable(fixture
     assert "TRIGGER ON `runtime`.*" in message and "SELECT ON `mysql`.*" in message
     assert "server-local" in message and "'w'" not in message
     assert connection.commits == 0 and connection.rollbacks == 1
+
+
+# --------------------------------------------------------------------------------------------
+# bh-ct91o: explicit legacy inbox -> session transition
+# --------------------------------------------------------------------------------------------
+
+
+def session_request(fixture):
+    return {**copy.deepcopy(fixture.request), "route": "session"}
+
+
+def test_legacy_inbox_plan_names_the_explicit_session_transition(fixture):
+    store, operator = Store(fixture.snapshot), Operator(fixture, incumbent="inbox")
+    inherited = upgrade.release_upgrade(
+        plane(fixture, store, operator), "frame", "plan", request=fixture.request
+    )
+    assert inherited["route"] == "inbox" and inherited["route_transition"] == "none"
+    assert "preflight" not in inherited
+    with pytest.raises(ValueError, match="--target-route session"):
+        upgrade.release_upgrade(
+            plane(fixture, store, operator),
+            "frame",
+            "provision",
+            request=fixture.request,
+            confirm=True,
+            plan_sha256=inherited["plan_sha256"],
+            frame_address="10.0.0.2",
+            password="secret",
+        )
+    reviewed = upgrade.release_upgrade(
+        plane(fixture, store, operator), "frame", "plan", request=session_request(fixture)
+    )
+    assert reviewed["route"] == "session" and reviewed["route_transition"] == "inbox-to-session"
+    assert reviewed["preflight"]["ready"]["provision"]
+    # The transition is part of the reviewed digest: neither plan authorizes the other.
+    assert reviewed["plan_sha256"] != inherited["plan_sha256"]
+    # Identity and tenure-relevant authority fields are those of the inherited plan.
+    assert reviewed["authority"] == inherited["authority"]
+
+
+def test_session_transition_refuses_an_already_provisioned_inbox(fixture):
+    store, operator = Store(fixture.snapshot), Operator(fixture, incumbent="inbox")
+    state, _digest = upgrade.prepare(
+        fixture.state, "frame", "runtime-head", fixture.snapshot, session_request(fixture), now=1000
+    )
+    principal, epoch = upgrade.route_for(state, "frame")[0], upgrade.route_for(state, "frame")[4]
+    operator.provisioned = {inbox_table(principal, epoch)}
+    with pytest.raises(ValueError, match="already provisioned as a inbox route"):
+        upgrade.release_upgrade(
+            plane(fixture, store, operator), "frame", "plan", request=session_request(fixture)
+        )
+
+
+def test_prepare_config_exposes_route_and_preflight_before_mutation(fixture):
+    fixture.manifest["release"] = copy.deepcopy(fixture.record["desired"]["release"])
+    base.replace_manifest(fixture)
+    store = Store(fixture.snapshot)
+    blocked = {
+        "route": "session",
+        "runtime_read": ["restore-floor diff (two-argument DOLT_DIFF_SUMMARY): SELECT ON x.*"],
+        "apply": ["restore-floor diff"],
+        "provision": ["restore-floor diff"],
+        "ready": {"apply": False, "provision": False},
+        "docs": capabilities.DOCS,
+    }
+    operator = Operator(fixture, incumbent="inbox", preflight=blocked)
+    request = {**session_request(fixture), "config_head": store.snapshot.commit_revision}
+    reviewed = upgrade.release_upgrade(
+        plane(fixture, store, operator), "frame", "prepare-config", request=request
+    )
+    assert reviewed["route_transition"] == "inbox-to-session"
+    assert reviewed["preflight"]["runtime_read"] and not store.published
+    with pytest.raises(ValueError, match="DOLT_DIFF_SUMMARY.*canonical config is unchanged"):
+        upgrade.release_upgrade(
+            plane(fixture, store, operator),
+            "frame",
+            "prepare-config",
+            request=request,
+            confirm=True,
+            plan_sha256=reviewed["plan_sha256"],
+        )
+    assert not store.published
+    with pytest.raises(ValueError, match="invalid release-upgrade request"):
+        upgrade.release_upgrade(
+            plane(fixture, store, operator),
+            "frame",
+            "prepare-config",
+            request={**request, "route": "inbox"},
+        )
+
+
+def test_session_transition_publication_refuses_a_legacy_inbox_table(fixture, monkeypatch):
+    import time
+
+    from beadhive.hq_sql_operator import SqlOperatorError, SqlRuntimeOperator
+
+    request = session_request(fixture)
+    state, digest = upgrade.prepare(
+        fixture.state, "frame", "runtime-head", fixture.snapshot, request, now=1000
+    )
+    route = upgrade.route_for(state, "frame")
+    inbox = inbox_table(route[0], route[4])
+
+    class Cursor:
+        rowcount = 1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def execute(self, sql, parameters=None):
+            self.sql = sql
+
+        def fetchone(self):
+            if "CURRENT_USER()" in self.sql:
+                return "operator@localhost", "runtime", "main", "2.3.5"
+            return ("runtime-head",)
+
+        def fetchall(self):
+            return [(inbox,)] if "information_schema.tables" in self.sql else []
+
+    connection = SimpleNamespace(
+        cursor=Cursor,
+        commit=lambda: pytest.fail("no commit"),
+        rollback=lambda: None,
+        close=lambda: None,
+    )
+    crossref = (
+        fixture.snapshot.backend_identity,
+        fixture.snapshot.generation,
+        fixture.snapshot.commit_revision,
+    )
+    operator = SqlRuntimeOperator(
+        {
+            "authority_writer": {"user": "operator", "database": "runtime"},
+            "runtime_operator_public_key": fixture.public,
+            "runtime_backend_identity": "runtime-backend",
+            "runtime_generation": "runtime-generation",
+        },
+        clock=lambda: 1000,
+    )
+    monkeypatch.setattr(operator, "_open", lambda **kwargs: (connection, time.monotonic() + 30))
+    monkeypatch.setattr(
+        operator.authority, "verified_state_at", lambda *a, **k: (fixture.state, crossref, {})
+    )
+    monkeypatch.setattr(
+        operator.authority, "load_latest_config_at", lambda *a, **k: fixture.snapshot
+    )
+    with pytest.raises(SqlOperatorError, match="session route transition requires"):
+        operator.publish(
+            state,
+            expected_revision="runtime-head",
+            operator_key=str(fixture.key),
+            provisioned_route=route,
+            release_upgrade={"frame": "frame", "request": request, "plan_sha256": digest},
+        )

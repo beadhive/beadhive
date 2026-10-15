@@ -340,6 +340,17 @@ class SqlRuntimeOperator:
                 if provisioned_route is not None:
                     principal, frame_id, holder, instance, epoch, signer = provisioned_route
                     table = self._provisioned_table(sql, principal, epoch)
+                    if (
+                        release_upgrade is not None
+                        and release_upgrade["request"].get("route") == "session"
+                        and table != session_table(principal, epoch)
+                    ):
+                        # The reviewed legacy-inbox -> session transition (bh-ct91o) lands
+                        # only on the provisioned session route, never on an inbox.
+                        raise SqlOperatorError(
+                            "reviewed session route transition requires the provisioned "
+                            "session/evidence tables and no inbox at the new epoch"
+                        )
                     if release_upgrade is not None and table == session_table(principal, epoch):
                         self._validate_session_route(sql, principal, epoch)
                     sql.insert_route((principal, frame_id, holder, instance, epoch, table, signer))
@@ -488,8 +499,11 @@ class SqlRuntimeOperator:
             return session
         raise SqlOperatorError("preprovisioned frame inbox or session tables missing")
 
-    def describe_release_route(self, principal, epoch, frame, *, deadline=None):
-        """Report the actual new route, or inherit the incumbent's provisioning family."""
+    def describe_release_route(self, principal, epoch, frame, *, target_route=None, deadline=None):
+        """Report the actual new route, or inherit the incumbent's provisioning family.
+
+        ``target_route="session"`` is the reviewed legacy-inbox -> session transition
+        (bh-ct91o): an unprovisioned next epoch then reports the session family."""
         connection, _deadline = self._open(deadline=deadline)
         try:
             with connection.cursor() as cursor:
@@ -511,14 +525,18 @@ class SqlRuntimeOperator:
                     if present & {session, evidence}
                     else None
                 )
+                prior = sql.latest_route_for_frame(frame)
+                incumbent = (
+                    "session"
+                    if prior and prior[2] == session_table(prior[0], prior[1])
+                    else "inbox"
+                )
                 if table is None:
-                    prior = sql.latest_route_for_frame(frame)
                     table = (
-                        session
-                        if prior and prior[2] == session_table(prior[0], prior[1])
-                        else inbox
+                        session if incumbent == "session" or target_route == "session" else inbox
                     )
                 return {
+                    "incumbent_route": incumbent if prior else None,
                     "principal": principal,
                     "inbox_table": table,
                     "route": "session" if table == session else "inbox",

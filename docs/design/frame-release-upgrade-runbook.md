@@ -260,9 +260,32 @@ rollback target, because returning to the admitted release is not a rotation. A 
 For a frame already routed to its session table, `plan`, `apply`, and `check`
 report `route: session`, the actual `session_table` and `evidence_table`, and
 whether provisioning is complete. The compatibility field `inbox_table` names
-the actual session table. A legacy inbox route retains the existing inbox
-provisioning procedure above; the session provision action refuses that route
-family rather than silently changing a reviewed plan.
+the actual session table. By default, a legacy inbox route keeps the existing inbox
+provisioning procedure above, and the session provision action refuses that route family
+rather than silently changing a reviewed plan.
+
+### Migrate a legacy inbox to session rows {#migrate-a-legacy-inbox-to-session-rows}
+
+To move an admitted legacy-inbox frame to session rows at its next epoch, add
+`--target-route session` to **every** `prepare-config`, `plan`, `provision` and `apply`
+command of the rotation. The flag is part of the reviewed request, so plan digests with and
+without it differ, and neither authorizes the other. `prepare-config` and `plan` then report
+`route: session`, `incumbent_route: inbox` and `route_transition: inbox-to-session`, before
+the canonical release changes. Frame identity, the signer, the hive lease and its tenure are
+preserved as in any rotation. No re-adoption, floor edit or hidden API call is needed. An
+unsupported transition refuses at `prepare-config`, for example a next epoch already
+provisioned with an inbox. `apply` refuses to register the transition on anything but the
+provisioned session/evidence tables. A later rotation of the now-session frame inherits the
+session family without the flag.
+
+`prepare-config` and `plan` also print a `preflight` object: for this operator binding, what
+each action is still missing, with the grant that satisfies it
+([HQ: Runtime SQL privileges](../HQ.md#runtime-sql-privileges)). A remote least-privilege
+operator normally has `ready.apply: false` and `ready.provision: false` for a session route.
+Run `provision` **and** `apply` with the server-local `--operator-settings`, and keep running
+`prepare-config`, `plan` and `check` from the remote operator. `provision` and `apply` refuse
+before writing, with the named capability, if their binding cannot inspect triggers and
+accounts. A refusal never reports the generic "protected authority publication unavailable".
 
 Use the existing `--operator-settings` file format for server-local provisioning.
 Its `hq.sql.authority_writer` credential must have DDL, account creation, and grant
