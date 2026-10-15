@@ -174,6 +174,25 @@ OPEN_ADMISSION_REFUSED = (
 )
 
 
+def session_only_lease_refusal(prefix: str, operation: str) -> str:
+    """Why a session-only frame cannot move its own hive lease, and what can (bh-rlzab).
+
+    A 0.23 session-only incarnation (server-stamped ``_session``/``_evidence`` rows, no signed
+    inbox table) has nowhere to publish a signed hive-lease proposal, and a frame holds only
+    ``SELECT`` on the placement row. Placement is then the director's: name the verb rather
+    than surface the runtime's internal "has no signed inbox"."""
+    return (
+        f"{prefix}: this frame's incarnation is session-only (server-stamped session rows, no "
+        f"signed inbox), so it cannot publish a hive-lease {operation} itself: placement is the "
+        f"director's on a session-only frame. From a host with the director credential "
+        f"(BH_HQ_OPERATOR_SETTINGS or --operator-settings carrying hq.sql.placement_writer) run "
+        f"`bh hq placement show {prefix}` for the revision, then "
+        f"`bh hq placement release {prefix} --expected-revision <R> --confirm` to release it, "
+        f"or `bh hq placement place {prefix} --frame <frame> --expected-revision <R> --confirm` "
+        f"to move it directly. No hive-lease proposal was published."
+    )
+
+
 def open_admission_guard(desired: dict) -> dict:
     """Open admission (bh-taa04.3): in a TRUSTED fleet a registering frame is admitted directly
     — one authority write recording its holder identity, instance and runtime key as an
@@ -2876,6 +2895,7 @@ class SqlControlPlane:
         import uuid
 
         from .host_lease_contracts import HostLease, lease_ref
+        from .hq_sql_runtime import SessionOnlyIncarnation
         from .hq_sql_signatures import sign_hive_request
 
         lease_ref(prefix)
@@ -2946,6 +2966,8 @@ class SqlControlPlane:
                 deadline=deadline,
             )
             return request_id, digest.removeprefix("sha256:"), binding, authority["audience"]
+        except SessionOnlyIncarnation:
+            raise ControlPlaneError(session_only_lease_refusal(prefix, operation)) from None
         except ValueError as exc:
             if isinstance(exc, ControlPlaneError):
                 raise

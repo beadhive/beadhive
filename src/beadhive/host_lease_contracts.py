@@ -85,6 +85,18 @@ class HostLease:
         clock = at if at is not None else time.time()
         return _parse_stamp(self.expires_at) <= clock
 
+    def hint_elapsed(self, at: float | None = None) -> bool:
+        """Whether an :attr:`advisory_expiry` holder lease is past its recorded ``expires_at``
+        (bh-rlzab). :meth:`is_expired` deliberately answers ``False`` for such a lease, so a
+        refusal uses this to explain why a past expiry does not free the hive. ``False`` for a
+        tombstone, a non-advisory lease (its expiry is real) and an unparseable stamp such as
+        the fence-derived ``"unknown"``."""
+        if self.is_tombstone or not self.advisory_expiry:
+            return False
+        expiry = _parse_stamp(self.expires_at)
+        clock = at if at is not None else time.time()
+        return 0 < expiry <= clock
+
     def held_by(self, host_id: str, at: float | None = None) -> bool:  # noqa: ARG002
         """Whether this lease names `host_id` as its holder (a tombstone names nobody).
 

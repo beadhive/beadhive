@@ -730,6 +730,15 @@ signed proposal, and 0.22.8 let a frame resolve it from its own proposals at the
   the dead frame's claims, and a frame that does not read the cause reclaims nothing.
 - Lease expiry (the tenure) is a failover hint, never a write gate. An HQ outage blocks handoff,
   never writes.
+- A past `expires_at` therefore does not free a hive under signed or session liveness, and
+  `bh host adopt` does not treat it as expired (`bh-rlzab`). Its refusal says so and names what
+  does: authenticated stale liveness evidence older than `host.lease.evict_after_s`, a
+  quarantined or retired holder, a release, a director `place`, or `--force`. On Git HQ (no
+  signed liveness) expiry is still real and a past lease is adopted without `--force`.
+- A **session-only** frame (session rows, no signed inbox) cannot publish its own hive-lease
+  proposal, so `bh host lease release` on it refuses and names the director verb instead:
+  `bh hq placement release <prefix> --expected-revision <R> --confirm` from a host whose
+  operator settings carry `placement_writer`.
 
 The operator drives it with the hidden `bh hq placement show|seed|place|release|check|policy`
 verb, documented only in the [placement runbook](design/hq-placement-runbook.md). It binds the
