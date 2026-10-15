@@ -13,6 +13,17 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.25.2 (2026-10-15)
+
+### Fix
+
+- **validation**: cap hive broker cpu at the host CPU count and ignore undefined pools
+- **validation**: resolve work.validation_broker per hive, host-capped budget
+
+### Perf
+
+- **validation**: give integration its full grant first, with Dolt slots from the grant
+
 ## v0.25.1 (2026-10-14)
 
 ### Fix
