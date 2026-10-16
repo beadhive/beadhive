@@ -581,6 +581,24 @@ def _entry(group, org, repo, prefix, kind, upstream="", furnish="", contribution
     return m
 
 
+#: The identity keys `register` writes. Every OTHER key on an existing entry — per-hive
+#: overrides, `frame_policy`, the HQ `dolt_remote` descriptor (bh-b1scz.2) — belongs to another
+#: owner and is carried across a re-registration instead of being silently dropped.
+REGISTER_OWNED_KEYS = frozenset(
+    {"provider", "org", "repo", "prefix", "kind", "upstream", "furnish", "contribution"}
+)
+
+
+def _carry_unowned(entry, prior):
+    """``entry`` plus every key of ``prior`` that `register` does not own, in prior order."""
+    if not prior:
+        return entry
+    for k, v in prior.items():
+        if str(k) not in REGISTER_OWNED_KEYS and k not in entry:
+            entry[k] = v
+    return entry
+
+
 def furnish_of(entry) -> str:
     """The hive's declared footprint: "full" (tracked scaffolding + scaffold commit) or "none"
     (zero-footprint: local-only .beads, nothing committed). A missing key infers the
@@ -650,8 +668,14 @@ def register(group, org, repo, prefix, kind, upstream="", furnish="", contributi
         else config.SCOPE_HOST
     )
     with config._write_transaction(scope):
-        kept = [e for e in _managed_repos_base() if _key(e) != key]
-        kept.append(_entry(group, org, repo, prefix, kind, upstream, furnish, contribution))
+        base = _managed_repos_base()
+        prior = next((e for e in base if _key(e) == key), None)
+        kept = [e for e in base if _key(e) != key]
+        kept.append(
+            _carry_unowned(
+                _entry(group, org, repo, prefix, kind, upstream, furnish, contribution), prior
+            )
+        )
         kept.sort(key=lambda e: (str(e["org"]), str(e["repo"])))
         _save_managed_repos(kept)
     from . import metadata  # lazy: metadata imports registry (avoid an import cycle)

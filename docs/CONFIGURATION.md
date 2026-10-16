@@ -148,6 +148,8 @@ boundaries.
 | `managed_repos[].frame_policy.requires` | Optional requirements: `isolation`, `trust_zone`, `arch`, `harness`, `harnesses`, and positive `max_sessions`. |
 | `execution_hives` (host document) | Optional list of hive prefixes the frame may execute (default: unset, no restriction). Frame `capabilities.isolation` also accepts `workstation` beside `kvm`, `microvm` and `container`. |
 | `managed_repos[].frame_policy.evict_after_s` | Required positive finite interval used by protected takeover policy. |
+| `managed_repos[].dolt_remote` | Optional HQ-declared desired Dolt remote for the hive (`dolt-remote-descriptor/v1`, [ADR](design/hq-dolt-remote-descriptor-adr.md)): `url` (required; `s3://bucket/path`, `aws://[table:bucket]/db`, `file:///abs`, `git+ssh://…`), `name` (default `origin`), `credentials` (host profile label; empty = ambient AWS chain). Absent keeps today's Git-origin behaviour. URLs with credentials, unknown S3 query keys or a location another hive already declares are refused with a value-free, path-specific error. Applied only by `bh hive remote --reconcile` and onboarding; see the [runbook](design/hq-dolt-remotes-runbook.md). |
+| `dolt.remote_credentials.<label>` | HOST-only credential source for descriptors naming `<label>`: `source` = `ambient` (default), `instance-role`, `aws-profile` (+ `aws_profile`) or `fnox` (+ `access_key_id`, `secret_access_key`, optional `session_token` fnox refs). Lookups only; values are injected into the one bd child that needs them and never printed, logged or stored. |
 
 Each HOST-local `hq.sql.<role>.tls_mode` independently accepts `required` (the default)
 or `disabled`. `required` verifies the configured CA and matching `server_name`, requires
