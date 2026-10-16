@@ -852,6 +852,7 @@ def _act_bd_init(ctx: Ctx) -> None:
     from . import hive  # via hive.run so it honors the same run binding hive.init used
 
     _ensure_derived(ctx)
+    stores_entry = _partitioned_entry(ctx)
     if (ctx.base / ".beads").exists():
         # ponytail: idempotent — skip bd init so re-runs (e.g. to add --skills) never abort.
         # Never touches dolt_mode: an already-initialized hive (embedded or otherwise) is left
@@ -861,9 +862,15 @@ def _act_bd_init(ctx: Ctx) -> None:
         typer.echo("ℹ beads already initialized — skipping bd init.")
         hive._ensure_bd_backup_gitignored(ctx.base)
         _configure_auto_export(ctx)
+        if stores_entry is not None:  # a partitioned hive may still lack its public store
+            _bootstrap_stores(ctx, stores_entry)
         return
     env = dict(os.environ, BD_NON_INTERACTIVE="1")
-    if ctx.furnish:
+    if stores_entry is not None and _declares_internal_remote(stores_entry):
+        # bh-lniwf.4: a managed private hive clones its HQ-declared internal store FIRST and
+        # never reaches the origin refs/dolt/data probe below (two-store ADR section 6).
+        _bootstrap_stores(ctx, stores_entry)
+    elif ctx.furnish:
         bd_init = [
             "bd",
             "init",
@@ -918,6 +925,8 @@ def _act_bd_init(ctx: Ctx) -> None:
             )
         # Same reasoning as the furnished branch above: a bare `bd init` mints a fresh store.
         _bypass_gh2455_dirty_config(ctx)
+    if stores_entry is not None and not _declares_internal_remote(stores_entry):
+        _bootstrap_stores(ctx, stores_entry)  # the public store, after the legacy internal mint
     # One call site for all three fresh-mint paths above (never reached by the existing-hive
     # skip branch): persist dolt_mode for real. Automatic Dolt backup stays at bd's shared-server
     # default (off); opting into a backup is an explicit operator decision.
@@ -925,6 +934,53 @@ def _act_bd_init(ctx: Ctx) -> None:
     hive._ensure_bd_backup_gitignored(ctx.base)
     _configure_auto_export(ctx)
     _guard_beads_remote(ctx)
+
+
+def _partitioned_entry(ctx: Ctx):
+    """The HQ-declared entry for this hive when it declares `stores` (bh-lniwf.2), else None.
+
+    Read BEFORE registration: a managed hive's entry exists in fleet config ahead of the host
+    onboarding it, and that declaration is what must win over origin auto-detection. A hive
+    without `stores` returns None and onboarding is byte-for-byte unchanged."""
+    from . import store_target
+
+    if ctx.cfg is None:
+        return None
+    entry = registry.find_entry(ctx.cfg, ctx.provider, ctx.org, ctx.repo)
+    if entry is None or entry.get("stores") is None:
+        return None
+    try:
+        store_target.configured_stores(entry)
+    except store_target.StoreConfigInvalid as e:
+        typer.echo(f"✗ beads: {e}", err=True)
+        raise typer.Exit(1) from None
+    return entry
+
+
+def _declares_internal_remote(entry) -> bool:
+    from . import store_bootstrap
+
+    phases = store_bootstrap.plan_bootstrap(entry)
+    return phases[0].name == store_bootstrap.PHASE_INTERNAL
+
+
+def _bootstrap_stores(ctx: Ctx, entry) -> None:
+    """Run the partitioned-store phases (store_bootstrap): the internal clone when one is
+    declared and absent, then the public store. A failure names its phase and exits; the other
+    store and the config are left untouched, so a re-run resumes idempotently."""
+    from . import store_bootstrap
+
+    internal_args = (
+        (SHARED_SERVER_FLAG,) if ctx.furnish else (SHARED_SERVER_FLAG, "--setup-exclude")
+    )
+    try:
+        phases = store_bootstrap.execute_bootstrap(entry, internal_args=internal_args)
+    except store_bootstrap.BootstrapError as e:
+        typer.echo(f"✗ beads: {e}", err=True)
+        raise typer.Exit(1) from None
+    for phase in phases:
+        if phase.mutates:
+            typer.echo(f"• beads: {phase.name} → {phase.target.beads_dir} ({phase.target.scope})")
 
 
 def _ensure_server_mode_persisted(ctx: Ctx) -> None:
