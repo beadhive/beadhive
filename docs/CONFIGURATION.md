@@ -340,6 +340,11 @@ remote names across the fleet, every invalid authority/sync combination, an inte
 that is not the hive's `dolt_remote`, a public `remote` with no descriptor of its own, and two
 descriptors (hive-level or nested) sharing one Dolt remote location.
 
+A public store with `source: github-issues` and `sync: pull-only` is filled only on demand by
+`bh hive project-issues <hive> [--dry-run] [--json]` — a pull-only `bd github sync` into that
+store, with the credential taken from the environment (`GITHUB_TOKEN` / `GH_TOKEN` / `gh auth`)
+and never written to config ([github-issue-projection.md](design/github-issue-projection.md)).
+
 ## `bh config` commands
 
 | Command | Effect |
