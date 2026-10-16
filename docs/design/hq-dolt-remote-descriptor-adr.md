@@ -54,7 +54,9 @@ from whatever the public code repository carries.
 ## The descriptor contract (`dolt-remote-descriptor/v1`)
 
 This section is the stable contract other molecules reference. `bh-lniwf` (two stores per
-repository) nests the same model per store rather than inventing a second one.
+repository) nests the same model per store rather than inventing a second one: the hive's
+`dolt_remote` is the internal store's descriptor and a public store nests its own at
+`managed_repos[].stores.public.dolt_remote` (bh-rz379, two-store ADR section 2).
 
 | Item | Value |
 |---|---|
@@ -210,6 +212,14 @@ The value must name the hive being onboarded, so a leftover export cannot seed a
 Seeding mints a fresh local store, registers the remote and pushes. A seed push to a remote that
 turns out to hold data fails as a non-fast-forward and is never forced. A failed bootstrap
 removes what it created, so the hive's prior state and the descriptor remain intact for a retry.
+
+Two facts of `bd bootstrap` shape the clone on the shared server (bh-rz379, measured with the
+pinned bd): it never auto-starts the shared server, unlike `bd init --shared-server`, so bh
+starts it first (the probe-then-start step hub hydration and `hq clone` already take); and it
+clones into bd's generic `beads` database unless `.beads/metadata.json` names one, so bh stamps
+`dolt_mode: server` plus `dolt_database: <sanitized prefix>` before the clone and records
+`dolt_server_database` after it (`bh-g5ujg`). `Engine.clone_remote` accepts a `.beads/` holding
+only that stamp and still refuses any initialised store.
 
 The seed switch is an environment variable rather than a `--seed-remote` flag on `bh hive init`
 and `bh hive onboard` because adding a parameter to an already-published operation is a wire

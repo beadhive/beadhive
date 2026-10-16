@@ -12,7 +12,7 @@ import subprocess
 import pytest
 import typer
 
-from beadhive import engine, hive, onboard, store_locator
+from beadhive import engine, hive, hub, onboard, store_locator
 
 URL = "s3://acme-beads/beads/github/acme/widget"
 AWS = {"AWS_ACCESS_KEY_ID": "AKIAFIXTURE", "AWS_SECRET_ACCESS_KEY": "fixture-secret"}
@@ -98,6 +98,7 @@ def wired(monkeypatch):
     monkeypatch.setattr(hive, "_ensure_bd_backup_gitignored", lambda base: False)
     monkeypatch.setattr(hive, "cleanup_failed_bd_init", lambda base: cleanups.append(base))
     monkeypatch.setattr(store_locator, "ensure_server_mode_persisted", lambda base: False)
+    monkeypatch.setattr(hub, "_ensure_shared_server_running", lambda base: None)
 
     def guard(ctx):
         raise AssertionError("descriptor path must not consult Git push access / sync.remote")
@@ -219,3 +220,117 @@ def test_seed_into_a_populated_remote_is_rejected_and_cleaned_up(
 
     assert "phase: seed-push" in capsys.readouterr().err
     assert cleanups == [tmp_path]
+
+
+# ---- one ordered flow with partitioned stores (bh-rz379) ----------------------------------
+
+
+def _partitioned(tmp_path, monkeypatch, *, public_remote=True):
+    """A GIT_WORKSPACE checkout of acme/widget whose HQ entry declares both stores."""
+    from beadhive import store_bootstrap
+
+    workspace = tmp_path / "ws"
+    checkout = workspace / "github" / "acme" / "widget"
+    checkout.mkdir(parents=True)
+    monkeypatch.setenv("GIT_WORKSPACE", str(workspace))
+    monkeypatch.delenv("BEADS_DIR", raising=False)
+    public = {"prefix": "widpub", "path": str(tmp_path / "stores" / "public")}
+    if public_remote:
+        public["dolt_remote"] = {"name": "widget-pub", "url": "file:///srv/remotes/widget-pub"}
+    cfg = _cfg({"name": "widget-private", "url": URL})
+    cfg["managed_repos"][0]["stores"] = {"internal": {"remote": "widget-private"}, "public": public}
+    mints: list[tuple] = []
+
+    def runner(argv, cwd, env):
+        mints.append((list(argv), cwd))
+        (cwd / ".beads").mkdir()
+        return _done()
+
+    monkeypatch.setattr(store_bootstrap, "_default_runner", runner)
+    return checkout, cfg, mints
+
+
+def test_partitioned_hive_clones_internal_once_through_hq_then_mints_public(
+    tmp_path, monkeypatch, wired
+):
+    fake, bd_calls, _ = wired
+    checkout, cfg, mints = _partitioned(tmp_path, monkeypatch)
+
+    def clone(cwd, url, *, env=None, extra_env=None):
+        fake.calls.append(("clone", url, dict(env or {}), dict(extra_env or {})))
+        (checkout / ".beads").mkdir(exist_ok=True)
+        fake.remotes["origin"] = url
+        return _done()
+
+    monkeypatch.setattr(fake, "clone_remote", clone)
+
+    onboard._act_bd_init(_ctx(checkout, cfg))
+
+    clones = [c for c in fake.calls if c[0] == "clone"]
+    assert [c[1] for c in clones] == [URL]  # exactly one internal clone, from the HQ descriptor
+    assert clones[0][2]["BEADS_DOLT_SHARED_SERVER"] == "1"
+    assert ("add", "widget-private", URL) in fake.calls  # b1scz registration, then...
+    (mint,) = mints  # ...the public store is minted at its detached root, never cloned
+    assert mint[1] == tmp_path / "stores" / "public" and "--remote" not in mint[0]
+    assert ("add", "widget-pub", "file:///srv/remotes/widget-pub") in fake.calls
+    assert not any(c[:2] == ["init", "--remote"] for c in bd_calls)
+
+
+def test_partitioned_hive_without_hq_descriptor_fails_closed_before_any_probe(
+    tmp_path, monkeypatch, wired
+):
+    fake, _bd_calls, _ = wired
+    checkout, cfg, mints = _partitioned(tmp_path, monkeypatch, public_remote=False)
+    del cfg["managed_repos"][0]["dolt_remote"]
+
+    with pytest.raises(typer.Exit):
+        onboard._act_bd_init(_ctx(checkout, cfg))
+    assert fake.calls == [] and mints == []
+    assert not (checkout / ".beads").exists()
+
+
+def test_public_remote_registration_failure_names_the_public_phase(
+    tmp_path, monkeypatch, wired, capsys
+):
+    fake, _bd_calls, _ = wired
+    checkout, cfg, _mints = _partitioned(tmp_path, monkeypatch)
+    (checkout / ".beads").mkdir()  # internal already present: a re-run adds only public
+
+    def add(cwd, name, url, *, extra_env=None):
+        fake.calls.append(("add", name, url))
+        return _done(1, f"Error: cannot reach {url}")
+
+    monkeypatch.setattr(fake, "add_remote", add)
+    with pytest.raises(typer.Exit):
+        onboard._act_bd_init(_ctx(checkout, cfg))
+    err = capsys.readouterr().err
+    assert "[public-init]" in err and "widget-pub" in err
+    assert not (tmp_path / "stores" / "public" / ".beads").exists()
+    assert (checkout / ".beads").is_dir()
+    assert [c for c in fake.calls if c[0] == "clone"] == []
+
+
+def test_hq_clone_names_its_own_shared_server_database_before_bootstrap(
+    tmp_path, monkeypatch, wired
+):
+    """`bd bootstrap` would otherwise land every HQ-cloned hive in bd's generic `beads`
+    database on the shared server (bh-g5ujg); the stamp names it from the prefix first."""
+    import json
+
+    fake, _bd_calls, _ = wired
+    seen = []
+    persisted = []
+
+    def clone(cwd, url, *, env=None, extra_env=None):
+        seen.append(json.loads((cwd / ".beads" / "metadata.json").read_text()))
+        return _done()
+
+    monkeypatch.setattr(fake, "clone_remote", clone)
+    monkeypatch.setattr(
+        store_locator,
+        "ensure_server_database_persisted",
+        lambda base, db: persisted.append(db),
+    )
+    onboard._act_bd_init(_ctx(tmp_path, _cfg({"url": URL})))
+    assert seen == [{"dolt_database": "widget", "dolt_mode": "server"}]
+    assert persisted == ["widget"]

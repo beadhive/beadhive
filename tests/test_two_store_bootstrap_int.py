@@ -104,6 +104,10 @@ def test_managed_bootstrap_selects_private_data_and_never_reads_origin(
     add_file_remote(author, tmp_path / "private-remote", name="private")
     push(author, "private")
 
+    # The public store's own remote (an empty file:// location: registered, never cloned).
+    public_url = f"file://{tmp_path / 'public-remote'}"
+    (tmp_path / "public-remote").mkdir()
+
     # Managed second host: the HQ entry declares the internal store's remote descriptor.
     workspace = tmp_path / "ws"
     managed_host = workspace / "github" / "acme" / "widget"
@@ -116,7 +120,15 @@ def test_managed_bootstrap_selects_private_data_and_never_reads_origin(
         "repo": "widget",
         "prefix": "widget",
         "dolt_remote": {"name": "widget-private", "url": private_url},
-        "stores": {"internal": {"remote": "widget-private"}},
+        "stores": {
+            "internal": {"remote": "widget-private"},
+            # bh-rz379: the public store nests its OWN dolt-remote-descriptor/v1.
+            "public": {
+                "prefix": "widpub",
+                "path": str(tmp_path / "stores" / "widget-public"),
+                "dolt_remote": {"name": "widget-pub", "url": public_url},
+            },
+        },
     }
 
     def _no_origin_probe(_ctx):
@@ -129,6 +141,20 @@ def test_managed_bootstrap_selects_private_data_and_never_reads_origin(
     assert _titles(managed_host) == {"private plan"}
     metadata = json.loads((managed_host / ".beads" / "metadata.json").read_text())
     assert metadata.get("dolt_mode") == "server"
+    # Its own shared-server database, named from the prefix (never bd's generic `beads`).
+    assert metadata.get("dolt_database") == "widget"
+    # One ordered flow: the HQ clone registered the internal descriptor under its own name...
+    internal_remotes = {
+        r["name"]: r["url"] for r in bd_json("dolt", "remote", "list", cwd=managed_host)
+    }
+    assert internal_remotes.get("widget-private") == private_url
+    # ...and the public store was minted fresh (no corpus) with ITS OWN remote registered.
+    public_root = tmp_path / "stores" / "widget-public"
+    assert _titles(public_root) == set()
+    public_remotes = {
+        r["name"]: r["url"] for r in bd_json("dolt", "remote", "list", cwd=public_root)
+    }
+    assert public_remotes == {"widget-pub": public_url}
 
     monkeypatch.setattr(onboard, "_origin_has_dolt_data", original_probe)
     # Ordinary (unmanaged) host, same origin: today's auto-bootstrap sees the public corpus only

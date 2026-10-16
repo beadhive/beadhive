@@ -147,6 +147,27 @@ def _hint_line(url: str) -> str:
     return f"{_SYNC_REMOTE_KEY}: {json.dumps(url)}\n"
 
 
+#: The only ``metadata.json`` keys a store-less ``.beads/`` may carry before a clone: the
+#: shared-server identity stamp that names the database the clone lands in (bh-rz379; the same
+#: stamp hub hydration writes before its bootstrap, bh-fnn3d / bh-g5ujg).
+_CLONE_IDENTITY_KEYS = frozenset({"dolt_mode", "dolt_database"})
+
+
+def _initialised_store(beads: Path) -> bool:
+    """Whether ``beads`` already holds a store a clone must not land over: Dolt data on disk,
+    or a ``metadata.json`` recording more than the pre-clone identity stamp."""
+    if any((beads / marker).exists() for marker in ("embeddeddolt", "dolt")):
+        return True
+    path = beads / "metadata.json"
+    if not path.exists():
+        return False
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return True
+    return not (isinstance(data, dict) and set(data) <= _CLONE_IDENTITY_KEYS)
+
+
 def _drop_hint(config_path: Path, url: str, prior: str | None) -> None:
     """Remove the one-call bootstrap hint, keeping anything bd itself wrote meanwhile; restore
     the file's absence when bh created it and nothing else landed."""
@@ -813,7 +834,7 @@ class BdEngine:
         from . import store_locator
 
         beads = store_locator.embedded_store_dir(Path(cwd)).parent  # the hive's .beads/
-        if any((beads / marker).exists() for marker in ("metadata.json", "embeddeddolt", "dolt")):
+        if _initialised_store(beads):
             return _refused(args, "refusing to clone over an already-initialised beads store")
         config_path = beads / "config.yaml"
         prior = config_path.read_text() if config_path.is_file() else None
