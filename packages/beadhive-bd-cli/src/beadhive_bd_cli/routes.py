@@ -13,12 +13,23 @@ from typing import Any
 
 from .transport import BdTransport
 
-__all__ = ["CliRoutes", "public_snapshot_argv"]
+__all__ = ["CliRoutes", "github_pull_only_argv", "public_snapshot_argv"]
 
 
 def public_snapshot_argv(output: Path) -> list[str]:
     """The deliberately narrow one-hive public snapshot route."""
     return ["export", "-o", str(output)]
+
+
+def github_pull_only_argv(*, dry_run: bool = False) -> list[str]:
+    """The ONE GitHub sync shape a public projection store runs (bh-lniwf.6).
+
+    GitHub is authoritative for that store, so the sync is pull-only and every conflict resolves
+    to GitHub's version. No branch adds ``--push-only``, ``--issues`` or ``--parent``."""
+    args = ["github", "sync", "--pull-only", "--prefer-github"]
+    if dry_run:
+        args.append("--dry-run")
+    return args
 
 
 class CliRoutes:
@@ -300,6 +311,14 @@ class CliRoutes:
         return self._bd.json(
             ["find-duplicates", "--threshold", str(threshold), "--method", method], self._cwd
         )
+
+    def github_pull_only(self, *, dry_run: bool = False, timeout: float | None = None) -> Any:
+        """Captured ``bd github sync --pull-only --prefer-github`` (see
+        :func:`github_pull_only_argv`); the caller's transport selects the store."""
+        kwargs: dict[str, Any] = {"capture": True}
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        return self._bd.run(github_pull_only_argv(dry_run=dry_run), self._cwd, **kwargs)
 
     def public_snapshot_export(self, output: Path) -> Any:
         return self._bd.run(public_snapshot_argv(output), self._cwd)
