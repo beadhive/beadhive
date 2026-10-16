@@ -18,7 +18,8 @@ import pytest
 from beadhive import claim_authority, heartbeat_sender, hosts, work_assignment
 from beadhive import frame_eligibility as policy
 from beadhive import hq_sql_runtime as runtime
-from beadhive.hq_control_plane import SqlControlPlane
+from beadhive.hq_control_plane import ControlPlaneError, SqlControlPlane
+from beadhive.hq_framelease_contracts import HeartbeatError
 from beadhive.hq_sql_operator import SqlRuntimeOperator
 from beadhive.hq_sql_placement import PROTECTED_TABLES, check_triggers
 from beadhive.hq_sql_runtime import (
@@ -676,3 +677,105 @@ def test_rotated_session_owner_still_requires_exact_protected_lease_and_admissio
     else:
         assert plane.read_hive_lease("bh", holder_identity="other") is None
         assert plane.read_hive_lease("bh", holder_identity="host-1") is None
+
+
+class _CompositePlane:
+    """A plane whose composite read returns a fixed route; nothing else is reachable."""
+
+    def __init__(self, route):
+        self.route = route
+
+    def _runtime_authority(self):
+        route = self.route
+        return SimpleNamespace(
+            read_frame_composite=lambda: (
+                "head",
+                {},
+                route,
+                "active",
+                {"authority": {}, "desired": {}},
+                None,
+                None,
+                None,
+                None,
+            )  # fmt: skip
+        )
+
+
+def _beat_route(table):
+    return PrincipalBinding("frame_a", "frame", "host", "inst", 2, table, "fp")
+
+
+@pytest.mark.parametrize("sign", [False, True])
+def test_beat_skips_a_session_only_route_before_release_grant_or_signer(monkeypatch, capsys, sign):
+    """A frame cut over inbox to session (only principal + credential key changed) skips,
+    whatever the host identity, installed release or signing key would have said."""
+    from beadhive import heartbeat_report as report
+
+    plane = _CompositePlane(_beat_route(session_table("frame_a", 2)))
+    monkeypatch.setattr("beadhive.hq_control_plane.control_plane", lambda *_: plane)
+    monkeypatch.setattr("beadhive.hq_control_plane.SqlControlPlane", type(plane), raising=True)
+    monkeypatch.setattr(report.host, "host_id", lambda: "someone-else")
+    monkeypatch.setattr(report.host, "signing_key", lambda: "key" if sign else None)
+    monkeypatch.setattr(report, "installed_release", lambda: pytest.fail("measured release"))
+    assert heartbeat_sender.main(["beat"]) == 0
+    assert "session-only" in capsys.readouterr().err
+
+
+def test_beat_probes_the_route_before_the_composite_read(monkeypatch, capsys):
+    """Receiver liveness: a session-only principal is not granted the receiver observation the
+    composite read selects, so the session-only route must be recognised on its own read."""
+    route = _beat_route(session_table("frame_a", 2))
+
+    def composite():
+        raise SqlRuntimeError("qualified frame composite unavailable")
+
+    runtime = SimpleNamespace(
+        load_frame_binding=lambda *, expected_head, deadline=None: route,
+        read_frame_composite=composite,
+    )
+    plane = SimpleNamespace(_runtime_authority=lambda: runtime)
+    monkeypatch.setattr("beadhive.hq_control_plane.control_plane", lambda *_: plane)
+    monkeypatch.setattr("beadhive.hq_control_plane.SqlControlPlane", SimpleNamespace)
+    assert heartbeat_sender.main(["beat"]) == 0
+    assert "beat skipped: session-only incarnation" in capsys.readouterr().err
+    # An unreadable route is not proof of anything: the full beat names its refusal.
+    runtime.load_frame_binding = lambda **_: composite()
+    assert heartbeat_sender.main(["beat"]) == 1
+    assert "heartbeat refused (transport)" in capsys.readouterr().err
+
+
+def test_beat_on_an_inbox_route_still_reaches_the_grant_checks(monkeypatch, capsys):
+    from beadhive import heartbeat_report as report
+
+    plane = _CompositePlane(_beat_route(inbox_table("frame_a", 2)))
+    monkeypatch.setattr("beadhive.hq_control_plane.control_plane", lambda *_: plane)
+    monkeypatch.setattr("beadhive.hq_control_plane.SqlControlPlane", type(plane))
+    monkeypatch.setattr(report.host, "host_id", lambda: "someone-else")
+    assert heartbeat_sender.main(["beat"]) == 1
+    err = capsys.readouterr().err
+    assert "heartbeat refused (grant)" in err
+    assert "someone-else" not in err
+
+
+@pytest.mark.parametrize(
+    ("exc", "category"),
+    [
+        (HeartbeatError("installed release differs from reviewed grant"), "release"),
+        (HeartbeatError("local host identity differs from current grant"), "grant"),
+        (HeartbeatError("no recorded host signing key"), "signer"),
+        (HeartbeatError("committed host manifest unavailable"), "configuration"),
+        (SqlRuntimeError("password=hunter2 at db.internal"), "transport"),
+        (ConnectionError("db.internal"), "transport"),
+        (KeyError("anything"), "configuration"),
+        (ControlPlaneError("heartbeat does not match current granted incarnation"), "grant"),
+        (
+            ControlPlaneError("AUTHORITY_NOT_READY: SQL runtime binding unavailable"),
+            "configuration",
+        ),
+    ],
+)
+def test_refusal_category_is_a_fixed_redacted_word(exc, category):
+    from beadhive.heartbeat_report import refusal_category
+
+    assert refusal_category(exc) == category

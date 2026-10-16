@@ -396,10 +396,14 @@ def main(argv: list[str] | None = None) -> int:
         except SessionOnlyIncarnation:
             print("beat skipped: session-only incarnation (no signed inbox)", file=sys.stderr)
             return 0
-        except Exception:
-            # Transport, signing and config exceptions may contain credential references.
+        except Exception as exc:
+            # Transport, signing and config exceptions may contain credential references:
+            # print only a fixed cause category, never the exception text.
+            from .heartbeat_report import refusal_category
+
             print(
-                "heartbeat refused; verify release, grant, configuration and signer",
+                f"heartbeat refused ({refusal_category(exc)}); verify release, grant, "
+                "configuration, signer and transport",
                 file=sys.stderr,
             )
             return 1

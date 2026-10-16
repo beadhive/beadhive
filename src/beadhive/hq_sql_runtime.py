@@ -1367,8 +1367,13 @@ class SqlRuntimeAuthority:
         finally:
             connection.close()
 
-    def load_frame_binding(self, *, expected_head: str, deadline=None) -> PrincipalBinding:
-        """Resolve a frame's table from the *authenticated* principal and committed registry."""
+    def load_frame_binding(self, *, expected_head: str | None, deadline=None) -> PrincipalBinding:
+        """Resolve a frame's table from the *authenticated* principal and committed registry.
+
+        ``expected_head=None`` reads the route at the current head without pinning it: only for
+        a routing question asked before any authority read (the beat's session-only probe,
+        bh-t8qw0), never for a write that must be fenced to the authority it verified.
+        """
         connection, deadline = self._open(deadline=deadline)
         try:
             binding = self.settings["runtime"]
@@ -1387,7 +1392,7 @@ class SqlRuntimeAuthority:
                 principal_name = principal.split("@", 1)[0]
                 sql.begin()
                 head = sql.head()
-                if head != expected_head:
+                if expected_head is not None and head != expected_head:
                     raise SqlRuntimeError("HQ authority changed during frame binding")
                 rows = sql.route_at(head, principal_name)
                 if len(rows) != 1:
