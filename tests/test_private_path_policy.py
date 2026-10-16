@@ -524,6 +524,10 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     | _owned("doctor.py", "_devshell_only_warnings", ".nix-profile")
     | _owned("doctor.py", "_data_layout", ".git")
     | _owned("host.py", "discover_signing_key", ".ssh")
+    # The AWS SDK's own shared config/credentials files below the operator's home: a read-only
+    # existence probe deciding whether ambient Dolt S3 credentials exist (bh-b1scz.4). Never
+    # read, never written, and not repository state.
+    | _owned("dolt_remote_credentials.py", "_shared_files", ".aws/config", ".aws/credentials")
     # The protected macOS mise fnox install below the passwd-database account home (not HOME,
     # not a repository): a read-only, ownership/mode-checked lookup of one pinned binary.
     | _owned("hq_sql_transport.py", "_fnox_binary", ".local/share/mise/installs/fnox/1.36.0/fnox")

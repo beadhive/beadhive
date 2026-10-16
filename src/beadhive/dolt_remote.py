@@ -270,3 +270,27 @@ def redact_url(url: str) -> str:
 
 def capabilities_for(family: RemoteFamily) -> RemoteCapabilities:
     return _FAMILIES[family]
+
+
+#: Measured on the pinned bd 1.3.0 (ADR evidence item 10): its EMBEDDED Dolt engine rejects
+#: ``s3://`` at push time ("unknown url scheme: 's3'") although it registers the URL, while the
+#: pinned Dolt 2.3.5 CLI and server speak it. ``aws://`` works in both modes.
+S3_EMBEDDED = RemoteCapabilities(
+    RemoteFamily.S3,
+    SupportLevel.UNSUPPORTED,
+    object_store=True,
+    credentials="aws",
+    note="bd 1.3.0's embedded engine does not speak s3://; use server mode or aws://",
+)
+
+
+def for_store_mode(target: RemoteTarget, *, embedded: bool) -> RemoteTarget:
+    """``target`` as the hive's storage mode can actually drive it."""
+    if embedded and target.family == RemoteFamily.S3 and not target.error:
+        return RemoteTarget(
+            url=target.url,
+            family=target.family,
+            capabilities=S3_EMBEDDED,
+            location=target.location,
+        )
+    return target
