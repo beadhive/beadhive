@@ -135,6 +135,63 @@ class HiveSyncRecord:
     dolt_status: str = "absent"
 
 
+@dataclass(frozen=True)
+class HqRemote:
+    """A hive's HQ-declared non-Git Dolt remote (bh-b1scz.7) as this sync sees it: the
+    redacted operator label, the name to push/pull, and the per-call credential env (or the
+    value-free reason it could not be resolved)."""
+
+    label: str
+    name: str
+    extra_env: dict = field(default_factory=dict, repr=False)
+    missing: str = ""
+
+
+def _hq_remote(cfg, hive_id: str, *, resolve_credentials: bool = True) -> HqRemote | None:
+    """The non-Git HQ descriptor for ``hive_id``, or None (no descriptor, or a Git one whose
+    state honestly rides refs/dolt/data). A dry run passes ``resolve_credentials=False`` so a
+    preview never fetches a secret it will not use."""
+    from . import dolt_remote, dolt_remote_credentials
+    from .modules.config.contracts import DoltRemoteDescriptor
+
+    provider, _, rest = hive_id.partition("/")
+    org, _, repo = rest.partition("/")
+    entry = registry.find_entry(cfg, provider, org, repo)
+    raw = (entry or {}).get("dolt_remote")
+    if not raw:
+        return None
+    descriptor = DoltRemoteDescriptor(**dict(raw))
+    target = dolt_remote.classify(descriptor.url)
+    if target.family == dolt_remote.RemoteFamily.GIT:
+        return None
+    if not resolve_credentials:
+        return HqRemote(label=f"{descriptor.name} ({target.describe()})", name=descriptor.name)
+    creds = dolt_remote_credentials.resolve(target, descriptor.credentials, cfg)
+    return HqRemote(
+        label=f"{descriptor.name} ({target.describe()})",
+        name=descriptor.name,
+        extra_env=dict(creds.env),
+        missing="" if creds.ok else creds.missing,
+    )
+
+
+def _apply_hq_remote(record: HiveSyncRecord, hq: HqRemote) -> None:
+    """Re-state a record for an object-store data plane: Git's refs/dolt/data says nothing
+    about it, and it has no read-only ahead/behind, so the honest state is ``unknown``."""
+    if record.status in (SyncStatus.REMOTE_ONLY, SyncStatus.BLOCKED, SyncStatus.DIRTY):
+        return
+    if record.dolt_status == "absent":
+        return
+    record.reasons = [reason for reason in record.reasons if "refs/dolt/data" not in reason]
+    record.reasons.append(
+        f"HQ remote {hq.label}: ahead/behind unknown (no read-only diff for this family); "
+        "would attempt idempotent bd dolt push"
+    )
+    record.dolt_status = "unknown"
+    if record.status == SyncStatus.CLEAN:
+        record.status = SyncStatus.UNPUSHED_DOLT
+
+
 def assess_hive(
     hive_id: str, clone_path: Path, *, fetch: bool = False, remote_only: bool = False
 ) -> HiveSyncRecord:
@@ -315,13 +372,17 @@ def _dolt_stderr(result) -> str:
 
 
 def _push_dolt_state(
-    cfg, clone_path: Path, *, remote: str = "", force: bool = False
+    cfg, clone_path: Path, *, remote: str = "", force: bool = False, extra_env=None
 ) -> tuple[bool, str]:
     """Push this hive's ``refs/dolt/data`` via the configured ``Engine`` (bh-dw3e.6 wiring).
     Returns ``(ok, reason)`` — ``reason`` is bd's full captured stderr on failure (see
     ``_dolt_stderr``), empty on success."""
     result = engine.get_engine(cfg).push_state(
-        clone_path, message=f"sync-remote {clone_path}", remote=remote, force=force
+        clone_path,
+        message=f"sync-remote {clone_path}",
+        remote=remote,
+        force=force,
+        **({"extra_env": extra_env} if extra_env else {}),
     )
     ok = result.returncode == 0
     return ok, ("" if ok else _dolt_stderr(result))
@@ -337,13 +398,17 @@ def _auto_merge_notices(result) -> list[str]:
     return [line.strip() for line in lines if "auto-merged" in line.lower()]
 
 
-def _pull_dolt_state(cfg, clone_path: Path, *, remote: str = "") -> tuple[bool, str, list[str]]:
+def _pull_dolt_state(
+    cfg, clone_path: Path, *, remote: str = "", extra_env=None
+) -> tuple[bool, str, list[str]]:
     """Pull this hive's ``refs/dolt/data`` via the configured ``Engine``. Returns
     ``(ok, reason, auto_merge_notices)``: ``reason`` is bd's full captured stderr on failure
     (see ``_dolt_stderr``), empty on success; ``notices`` are extracted regardless of
     success/failure, since an auto-merge can happen on a pull that otherwise reports success.
     Mutating — never called under ``--dry-run``."""
-    result = engine.get_engine(cfg).pull_state(clone_path, remote=remote)
+    result = engine.get_engine(cfg).pull_state(
+        clone_path, remote=remote, **({"extra_env": extra_env} if extra_env else {})
+    )
     ok = result.returncode == 0
     return ok, ("" if ok else _dolt_stderr(result)), _auto_merge_notices(result)
 
@@ -434,6 +499,30 @@ def sync_remote(
         targets,
         workers=_ASSESS_WORKERS,
     )
+    # HQ-declared object-store remotes (bh-b1scz.7): never described as refs/dolt/data, never
+    # given a Git-derived ahead/behind, pushed/pulled with this host's credentials only.
+    hq_remotes = {
+        hive_id: _hq_remote(cfg, hive_id, resolve_credentials=not dry_run) for hive_id, _ in targets
+    }
+    for (hive_id, _), record in zip(targets, records, strict=True):
+        if hq_remotes[hive_id] is not None:
+            _apply_hq_remote(record, hq_remotes[hive_id])
+
+    def _label(hive_id: str) -> str:
+        hq = hq_remotes.get(hive_id)
+        return hq.label if hq else "refs/dolt/data"
+
+    def _remote_for(hive_id: str) -> str:
+        hq = hq_remotes.get(hive_id)
+        return remote or (hq.name if hq and hq.name != "origin" else "")
+
+    def _creds_missing(hive_id: str) -> str:
+        hq = hq_remotes.get(hive_id)
+        return hq.missing if hq else ""
+
+    def _env(hive_id: str):
+        hq = hq_remotes.get(hive_id)
+        return hq.extra_env if hq else None
 
     # Pull-then-push (bh-ummb9.1 wiring; the pull leg's own behaviour — auto-merge reporting,
     # per-remote nuance, dry-run ahead/behind — is bh-ummb9.2/.3's job, not this one's). Never
@@ -447,11 +536,18 @@ def sync_remote(
                 continue
             if record.dolt_status in ("absent", "no-remote", None):
                 continue
-            ok, reason, auto_merges = _pull_dolt_state(cfg, clone_path, remote=remote)
+            if _creds_missing(hive_id):
+                typer.echo(f"  {hive_id}: ✗ credentials: {_creds_missing(hive_id)}", err=True)
+                pull_failed.add(hive_id)
+                plan.offending.append(hive_id)
+                continue
+            ok, reason, auto_merges = _pull_dolt_state(
+                cfg, clone_path, remote=_remote_for(hive_id), extra_env=_env(hive_id)
+            )
             if ok:
                 typer.echo(f"  {hive_id}: pulled")
             else:
-                typer.echo(f"  {hive_id}: ✗ failed to pull dolt: refs/dolt/data", err=True)
+                typer.echo(f"  {hive_id}: ✗ failed to pull dolt: {_label(hive_id)}", err=True)
                 if reason:
                     _echo_reason(reason)
                 pull_failed.add(hive_id)
@@ -476,7 +572,7 @@ def sync_remote(
         # hive's push-worthiness/offending status — the live loop pulls every eligible hive
         # regardless), so a hive that won't really be pulled is never described as if it would.
         if dry_run and pull and record.dolt_status not in ("absent", "no-remote", None):
-            typer.echo(f"    would pull{', then push' if push else ''}: refs/dolt/data")
+            typer.echo(f"    would pull{', then push' if push else ''}: {_label(hive_id)}")
 
         is_unknown_dolt = (
             record.status == SyncStatus.UNPUSHED_DOLT and record.dolt_status == "unknown"
@@ -527,7 +623,7 @@ def sync_remote(
                     "origin; may be rejected as non-fast-forward (pull first)"
                 )
             elif record.dolt_status in _DOLT_PUSHABLE:
-                typer.echo("    would push dolt: refs/dolt/data")
+                typer.echo(f"    would push dolt: {_label(hive_id)}")
             continue
 
         failed_here = False
@@ -542,14 +638,19 @@ def sync_remote(
                 for name, err in failed:
                     typer.echo(f"    ✗ failed to push git: {name}: {err}", err=True)
 
-        if record.dolt_status in _DOLT_PUSHABLE:
-            ok, reason = _push_dolt_state(cfg, clone_path, remote=remote, force=force)
+        if record.dolt_status in _DOLT_PUSHABLE and _creds_missing(hive_id):
+            failed_here = True
+            typer.echo(f"    ✗ credentials: {_creds_missing(hive_id)}", err=True)
+        elif record.dolt_status in _DOLT_PUSHABLE:
+            ok, reason = _push_dolt_state(
+                cfg, clone_path, remote=_remote_for(hive_id), force=force, extra_env=_env(hive_id)
+            )
             if ok:
                 plan.dolt_pushed.append(hive_id)
-                typer.echo("    pushed dolt: refs/dolt/data")
+                typer.echo(f"    pushed dolt: {_label(hive_id)}")
             else:
                 failed_here = True
-                typer.echo("    ✗ failed to push dolt: refs/dolt/data", err=True)
+                typer.echo(f"    ✗ failed to push dolt: {_label(hive_id)}", err=True)
                 if reason:
                     _echo_reason(reason)
 

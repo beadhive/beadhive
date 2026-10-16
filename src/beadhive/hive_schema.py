@@ -7,9 +7,9 @@ schema + read/write/validate only, ``extra="forbid"``, a raise-loud ``load`` plu
 ``try_load`` for callers that just want "no record yet" instead of a caught exception.
 
 WHY A SEPARATE FILE, NOT A NEW FIELD ON ``managed_repos`` ENTRIES: a hive's `managed_repos`
-entry (`registry.py`) is IDENTITY data, rewritten WHOLESALE by `registry.register()` from only
-its own known fields (`prefix`/`kind`/`upstream`/`furnish`/`contribution`) — any other key
-living on that same mapping would be silently dropped the next time that hive re-registers.
+entry (`registry.py`) is fleet-DECLARED data: `registry.register()` rewrites its identity
+fields (`prefix`/`kind`/`upstream`/`furnish`/`contribution`) and carries every other declared
+key (bh-b1scz.2), but nothing there is meant to churn on a probe cadence.
 This module's record is PROBE-REFRESHED data on a different, more frequent cadence (see
 `refresh` below) — exactly why `hosts.py` didn't stuff host facts into `managed_repos` either.
 

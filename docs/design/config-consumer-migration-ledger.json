@@ -553,28 +553,28 @@
       {
         "facade_target": "beadhive.config.worktrees_root",
         "kind": "direct-facade",
-        "line": 2357,
+        "line": 2358,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.worktrees_root"
       },
       {
         "facade_target": "beadhive.config.worktrees_root",
         "kind": "direct-facade",
-        "line": 2427,
+        "line": 2428,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.worktrees_root"
       },
       {
         "facade_target": "beadhive.config.enforce_signing",
         "kind": "direct-facade",
-        "line": 2605,
+        "line": 2606,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.enforce_signing"
       },
       {
         "facade_target": "beadhive.config.enforce_signing",
         "kind": "direct-facade",
-        "line": 2618,
+        "line": 2619,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.enforce_signing"
       },
@@ -2932,7 +2932,7 @@
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       }
     ],
-    "test_config_importer_count": 170,
+    "test_config_importer_count": 174,
     "test_config_importers": [
       "tests/contracts/test_config_contract_compatibility.py",
       "tests/contracts/test_config_resolution_compatibility.py",
@@ -2986,6 +2986,9 @@
       "tests/test_doctor.py",
       "tests/test_doctor_channels.py",
       "tests/test_doctor_dispatch.py",
+      "tests/test_dolt_remote_credentials.py",
+      "tests/test_dolt_remote_descriptor.py",
+      "tests/test_dolt_remote_reconcile.py",
       "tests/test_enforce_signing.py",
       "tests/test_engine.py",
       "tests/test_fleet_config_consumers.py",
@@ -3037,6 +3040,7 @@
       "tests/test_hq_authority_enforce.py",
       "tests/test_hq_bootstrap.py",
       "tests/test_hq_clone.py",
+      "tests/test_hq_dolt_remotes_e2e.py",
       "tests/test_hq_local_bootstrap_int.py",
       "tests/test_hq_push.py",
       "tests/test_hq_remote.py",

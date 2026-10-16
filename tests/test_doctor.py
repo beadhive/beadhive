@@ -1329,6 +1329,7 @@ _DOCTOR_SECTIONS = {
     "worktrees",
     "molecules",
     "prefix_mismatches",
+    "hq_remotes",
     "node_id",
     "beads_role",
     "beads_routing",
