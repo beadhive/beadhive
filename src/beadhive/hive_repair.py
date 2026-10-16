@@ -429,6 +429,78 @@ def _repair_role(cfg, hive: str, yes: bool, dry_run: bool) -> None:
     typer.echo("✓ beads.role set")
 
 
+# ---- bd routing keys (bh-5lpl9.1) ---------------------------------------------
+# bd's own routing ladder falls back to a heuristic (`routing.mode auto`, keyed on the writer's
+# role) when `routing.mode` is unset. bh routes by subject and visibility instead
+# (docs/design/beads-methodology-divergence-adr.md), so a bh-managed hive DECLARES bd's routing
+# rather than leaving the heuristic operative: `routing.mode: explicit` and `routing.default: .`
+# (this hive's own store). Rationale: docs/design/beads-multi-repo-adoption-adr.md section 3.
+# Both are config-file keys (`bd config` reports `"location": "config.yaml"`), so reads parse
+# `.beads/config.yaml` directly instead of paying one `bd config get` per key per hive.
+
+#: The ONE expected-value table — onboard and doctor both read it.
+EXPECTED_ROUTING: dict[str, str] = {"routing.mode": "explicit", "routing.default": "."}
+
+
+def read_routing(hive_dir: Path) -> dict[str, str] | None:
+    """The hive's current `routing.*` values from `<hive_dir>/.beads/config.yaml`, or None when the
+    file is absent or unparseable. bd writes `routing.mode` as a flat dotted key and
+    `routing.default` nested under `routing:` (measured, bd 1.3.0), so both shapes are read;
+    a flat key wins over a nested one. A key that is not set reads as ``""``."""
+    from ruamel.yaml import YAML
+    from ruamel.yaml.error import YAMLError
+
+    path = Path(hive_dir) / ".beads" / "config.yaml"
+    try:
+        data = YAML(typ="safe").load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, YAMLError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    nested = data.get("routing") if isinstance(data.get("routing"), dict) else {}
+    out: dict[str, str] = {}
+    for key in EXPECTED_ROUTING:
+        leaf = key.split(".", 1)[1]
+        value = data.get(key, nested.get(leaf))
+        out[key] = "" if value is None else str(value).strip()
+    return out
+
+
+def routing_drift(current: dict[str, str]) -> dict[str, str]:
+    """``{key: current}`` for every routing key whose value is not the expected one."""
+    return {k: current.get(k, "") for k, v in EXPECTED_ROUTING.items() if current.get(k) != v}
+
+
+@dataclass
+class RoutingPlan:
+    entry: dict
+    cwd: Path
+    current: dict[str, str]
+
+    @property
+    def drift(self) -> dict[str, str]:
+        return routing_drift(self.current)
+
+    @property
+    def in_sync(self) -> bool:
+        return not self.drift
+
+
+def apply_routing(plan: RoutingPlan, actor: str, *, overwrite: bool = True) -> list[str]:
+    """`bd config set <key> <expected>` for each drifted key. ``overwrite=False`` (onboard's
+    mode) only fills keys that are UNSET and leaves an operator's differing value alone."""
+    changes: list[str] = []
+    for key, current in plan.drift.items():
+        if current and not overwrite:
+            continue
+        target = EXPECTED_ROUTING[key]
+        res = bd.run(["config", "set", key, target], plan.cwd, actor=actor, pin_process_cwd=True)
+        if res.returncode != 0:
+            raise RepairError(f"`bd config set {key}` failed: {bd.err_line(res)}")
+        changes.append(f"{key}: '{current}' -> '{target}'")
+    return changes
+
+
 # ---- server-database mode (bh-td8t9) ----------------------------------------
 # A server-mode hive with no `dolt_server_database` key still RESOLVES a name — `store_locator
 # .server_database`'s order-2 grandfather clause falls back to `dolt_database`. That derivation

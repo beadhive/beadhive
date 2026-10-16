@@ -10,9 +10,9 @@ pipeline. What it establishes is the *shape* the eventual publish step must be w
 with a test that fails loudly if that shape is widened. A future publish step calls
 `export_public_snapshot()`; it does not hand-roll another `bd export` invocation.
 
-WHY A BOUNDARY EXISTS AT ALL. This hive's bead data is already public — it rides
-`refs/dolt/data` on the same public GitHub remote as the code — so exporting *this* hive's
-issues exposes nothing new. The risk is scope creep past that fact: `bh` also maintains
+WHY A BOUNDARY EXISTS AT ALL. Only a store the operator declared PUBLIC may be exported
+(amended by bh-lniwf.1: once a repository is partitioned its internal store is private even
+though its code is public). The other risk is scope creep past one store: `bh` also maintains
 machine-local AGGREGATE stores that span every registered hive, and some registered hives are
 private. Concretely, in this package:
 
@@ -35,13 +35,14 @@ DIRECT reference to the fan-out entry points instead (`bd.passthrough`, `route.f
 `route.targets`) and bans the aggregate modules transitively. That split is the honest one —
 see the ADR section for why it is drawn there and not somewhere flatteringly stricter.
 
-NO HIVE-SELECTION PARAMETER EXISTS. `export_public_snapshot()` takes a `hive_root` PATH, not a
-hive NAME: a path is "the checkout you are already standing in", while a name is a registry
-lookup — the `-r <hive>` shape, the first step toward `--all`. There is deliberately no
-`hive=`/`scope=`/`all=` parameter, not even one defaulting safely, because a parameter that
-exists is a parameter a caller can pass. `hive_root` is additionally refused at runtime when it
-points into bh's machine-local aggregate area ($BH_HOME and friends), which is the one way a
-path-shaped argument could still address the cross-hive view.
+NO HIVE-SELECTION PARAMETER EXISTS. `export_public_snapshot()` takes a resolved PUBLIC
+`StoreTarget` (bh-lniwf.7), not a hive NAME: a name is a registry lookup — the `-r <hive>`
+shape, the first step toward `--all`. There is deliberately no `hive=`/`scope=`/`all=`
+parameter, not even one defaulting safely, because a parameter that exists is a parameter a
+caller can pass. The store must be an explicitly selected public store (the internal store is
+private after rollout even when the code is public — docs/design/two-store-scope-adr.md
+section 8), and is additionally refused at runtime when it points into bh's machine-local
+aggregate area ($BH_HOME and friends).
 
 THE INVOCATION ITSELF is bh-7jm7v.1's decision, verbatim: `bd export -o <dest>/issues.jsonl`,
 with `--all`, `--include-memories` and `--include-infra` named as permanently forbidden (each
@@ -71,7 +72,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from . import bd, bd_cli, config
+from . import bd_cli, config
+from .store_target import SCOPE_PUBLIC, StoreTarget
+from .store_target import routes as store_routes
 
 #: Filename bh-7jm7v.1 fixed for the public snapshot.
 PUBLIC_SNAPSHOT_FILENAME = "issues.jsonl"
@@ -143,50 +146,64 @@ def _aggregate_store_dirs() -> list[Path]:
     return [config.home(), config.hub_dir(), config.hq_dir(), config.cache_dir()]
 
 
-def _resolve_hive_root(hive_root: Path | str) -> Path:
-    """Validate that `hive_root` is one hive's own checkout, or refuse.
+def _resolve_public_store(store: StoreTarget) -> Path:
+    """Validate that `store` is an explicitly selected PUBLIC store, or refuse.
 
-    Two refusals, both about scope rather than tidiness:
+    Three refusals, all about scope rather than tidiness:
 
-    1. Inside bh's aggregate area — that is the cross-hive view (`hub`/`hq`) or another hive's
-       cache clone, i.e. exactly the widening this module exists to prevent, arriving through
-       the one parameter that takes a path.
-    2. No `.beads/` — not a hive checkout at all, so whatever `bd -C` found there (an ancestor
-       directory's database, most likely) is not the thing the caller named.
+    1. Not a public `StoreTarget` (bh-lniwf.7, docs/design/two-store-scope-adr.md section 8) —
+       the internal store is private after rollout even when the repository's CODE is public,
+       and the legacy single store is refused too: only a store the operator declared public,
+       and the caller resolved explicitly, is publishable.
+    2. Inside bh's aggregate area — that is the cross-hive view (`hub`/`hq`) or another hive's
+       cache clone, i.e. exactly the widening this module exists to prevent.
+    3. No initialized `.beads/` at the store — bd would otherwise fall back to whatever store
+       its cwd discovery finds, which is not the thing the caller named.
     """
-    root = Path(hive_root).expanduser().resolve()
+    if not isinstance(store, StoreTarget):
+        raise PublishScopeError(
+            f"refusing to publish {store!r}: a public snapshot takes a resolved public "
+            "StoreTarget (store_target.resolve_store(entry, 'public')), never a path or name"
+        )
+    if store.scope != SCOPE_PUBLIC:
+        raise PublishScopeError(
+            f"refusing to publish the {store.scope} store of {store.hive}: only an explicitly "
+            "selected public store may be exported or published (two-store ADR section 8)"
+        )
+    root = store.store_root.expanduser().resolve()
     for aggregate in _aggregate_store_dirs():
         agg = aggregate.expanduser().resolve()
         if root == agg or root.is_relative_to(agg):
             raise PublishScopeError(
                 f"refusing to publish from {root}: it is inside bh's machine-local aggregate "
                 f"area ({agg}), which holds a CROSS-HIVE view that can span private hives. "
-                "A public snapshot is taken from one hive's own checkout."
+                "A public snapshot is taken from one hive's own public store."
             )
-    if not (root / ".beads").is_dir():
+    if not store.beads_dir.is_dir():
         raise PublishScopeError(
-            f"refusing to publish from {root}: no .beads/ directory — not a hive checkout."
+            f"refusing to publish from {root}: no .beads/ directory — the public store is not "
+            "initialized."
         )
     return root
 
 
-def export_public_snapshot(hive_root: Path | str, dest_dir: Path | str) -> Path:
-    """Write `hive_root`'s public bead snapshot to `<dest_dir>/issues.jsonl` and return its path.
+def export_public_snapshot(store: StoreTarget, dest_dir: Path | str) -> Path:
+    """Write `store`'s public bead snapshot to `<dest_dir>/issues.jsonl` and return its path.
 
-    `hive_root` is the checkout of the ONE hive being published (a path, never a hive name —
-    see the module docstring). There is no parameter for selecting a different hive, several,
-    or the aggregate; adding one is the regression `tests/test_publish_boundary.py` fails on.
+    `store` is ONE hive's explicitly resolved public store (a value, never a hive name — see the
+    module docstring). There is no parameter for selecting a different hive, several, or the
+    aggregate; adding one is the regression `tests/test_publish_boundary.py` fails on. The
+    detached store is selected through its own `BEADS_DIR` (`StoreTarget.env`), and bd runs in
+    the store's own root, never the code checkout.
 
-    Raises `PublishScopeError` if `hive_root` is not a single hive's checkout, and
+    Raises `PublishScopeError` if `store` is not an explicitly selected public store, and
     `RuntimeError` if `bd` exits non-zero (a partial/absent snapshot must not read as success).
     """
-    root = _resolve_hive_root(hive_root)
+    root = _resolve_public_store(store)
     dest = Path(dest_dir).expanduser()
     dest.mkdir(parents=True, exist_ok=True)
     argv = public_snapshot_argv(dest)
-    res = (
-        bd_cli.package().CliRoutes(bd, root).public_snapshot_export(dest / PUBLIC_SNAPSHOT_FILENAME)
-    )
+    res = store_routes(store, cwd=root).public_snapshot_export(dest / PUBLIC_SNAPSHOT_FILENAME)
     if res.returncode != 0:
         raise RuntimeError(f"bd {' '.join(argv)} failed in {root} (exit {res.returncode})")
     return dest / PUBLIC_SNAPSHOT_FILENAME

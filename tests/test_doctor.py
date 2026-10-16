@@ -1331,6 +1331,8 @@ _DOCTOR_SECTIONS = {
     "prefix_mismatches",
     "node_id",
     "beads_role",
+    "beads_routing",
+    "stores",
     "store_engine",
     "dispatch",
     "host_daemon",

@@ -411,6 +411,8 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     | _owned("hive_repair.py", "detect_node_id", ".beads")
     | _owned("hive_repair.py", "detect_role", ".beads")
     | _owned("hive_repair.py", "detect_server_database", ".beads")
+    # bd's own routing keys live in the hive's beads config file (bh-5lpl9.1); read-only.
+    | _owned("hive_repair.py", "read_routing", ".beads")
     | _owned("transport_locator.py", "transport_lookup", ".beads")
     | _owned("host_provision.py", "_beads_dirs", ".beads")
     | _owned("host_provision.py", "_store_state", ".beads")
@@ -433,7 +435,7 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     | _owned("localloop.py", "_default_instructions", ".beads")
     | _owned("mcp.py", "hq_intake_resource", ".beads")
     | _owned("onboard.py", "_act_bd_init", ".beads")
-    | _owned("publish_export.py", "_resolve_hive_root", ".beads")
+    | _owned("publish_export.py", "_resolve_public_store", ".beads")
     | _owned("report.py", "_target", ".beads")
     | _owned("safety.py", "_scan_bd_dolt_state", ".beads")
     | _owned("storage_migrate.py", "_metadata_path", ".beads")
@@ -443,6 +445,8 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     | _owned("storage_migrate.py", "migrate_hive", ".beads")
     | _owned("storage_migrate.py", "plan_targets", ".beads")
     | _owned("store_locator.py", "<module>", ".beads")
+    # The StoreTarget seam names each store's beads directory (bh-lniwf.3); it creates nothing.
+    | _owned("store_target.py", "resolve_store", ".beads")
     | _owned("store_locator.py", "embedded_store_dir", ".beads")
     | _owned("store_locator.py", "has_direct_server_database", ".dolt")
     # Harnesses/plugins own these exact configuration and agent-install callsites.

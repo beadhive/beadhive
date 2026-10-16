@@ -154,6 +154,20 @@ def local_checkout_source(entry) -> Path | None:
     return cache_store.local_checkout_source(registry.hive_dir(entry))
 
 
+def hydration_source(cfg, entry) -> Path | None:
+    """Where the hub hydrates ``entry`` from — its INTERNAL store only (bh-lniwf.7).
+
+    A one-store hive keeps today's selection: the live checkout when it has ``.beads/``, else
+    the minimal cache clone fetched from the code origin's ``refs/dolt/data``. A partitioned hive
+    (``managed_repos[*].stores``, docs/design/two-store-scope-adr.md section 7) is hydrated ONLY
+    from its local checkout, whose ``.beads`` is the internal store: its code origin may carry the
+    PUBLIC projection, and its detached public store is never registered, so a public record can
+    never surface in the aggregate as a second, dispatchable copy of work."""
+    if entry.get("stores") is not None:
+        return local_checkout_source(entry)
+    return local_checkout_source(entry) or _fetch_cache(cfg, entry)
+
+
 def _managed_repo_paths(cfg, managed) -> set[str]:
     """Every path a managed hive can be registered under — its live checkout (hive_dir)
     and its blobless cache — so a registration matching neither is genuinely stale."""
@@ -888,9 +902,14 @@ def sync():
     for i, e in enumerate(managed, 1):
         prefix = str(e["prefix"])
         typer.echo(f"• syncing {prefix} ({i}/{n})", err=True)
-        src = local_checkout_source(e) or _fetch_cache(cfg, e)
+        src = hydration_source(cfg, e)
         if src is None:
-            typer.echo(f"  ⚠ skip {prefix}: not cloned and no remote beads data", err=True)
+            why = (
+                "partitioned hive not cloned locally — never hydrated from the code origin"
+                if e.get("stores") is not None
+                else "not cloned and no remote beads data"
+            )
+            typer.echo(f"  ⚠ skip {prefix}: {why}", err=True)
             skipped.append(prefix)
             continue
         commit = _hive_commit(cfg, src)

@@ -358,6 +358,14 @@ class BeadsConfig(_Section):
             "route. An unknown value is refused, never defaulted."
         ),
     )
+    explicit_routing: bool = Field(
+        False,
+        description=(
+            "Declare bd's own routing on the hive (bh-5lpl9.1): onboard sets `routing.mode: "
+            "explicit` and `routing.default: .` in .beads/config.yaml when absent, and "
+            "`bh doctor` lists hives where either is unset or differs. Off by default."
+        ),
+    )
 
 
 class ConflictConfig(_Section):
@@ -2413,6 +2421,176 @@ class FrameHivePolicy(_Section):
         return value
 
 
+# ---- managed_repos[*].stores (bh-lniwf.2) ---------------------------------------
+# Optional per-repository bead stores: docs/design/two-store-scope-adr.md. Absent = today's one
+# implicit store at the checkout's .beads, byte-for-byte. A store NAMES a remote descriptor
+# (bh-b1scz's `dolt-remote-descriptor/v1`, declared per hive as `managed_repos[*].dolt_remote`)
+# and never embeds a URL, credential or transport detail; `git-origin` is reserved for "ride the
+# code origin's refs/dolt/data". (Not `origin`: that is the descriptor's own default NAME.)
+
+STORE_SCOPES: tuple[str, ...] = ("internal", "public")
+GIT_ORIGIN_REMOTE = "git-origin"
+_STORE_PREFIX_RE = re.compile(r"[a-z][a-z0-9-]*")
+_REMOTE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+_SYNC_FOR_AUTHORITY: dict[str, frozenset[str]] = {
+    "local": frozenset({"push-pull", "none"}),
+    "remote": frozenset({"pull-only", "none"}),
+}
+
+
+class StoreDescriptor(_Section):
+    """One bead store of a managed repository (``managed_repos[*].stores.<scope>``)."""
+
+    prefix: str | None = Field(
+        None,
+        description="Bead-id prefix of this store. Unique across every managed store. "
+        "`internal` defaults to (and must equal) the hive `prefix`; required for `public`.",
+    )
+    path: str | None = Field(
+        None,
+        description="Detached store root holding `.beads/` (absolute or `~`). `internal`: "
+        "absent = the checkout's own `.beads`; `public`: required, outside the checkout.",
+    )
+    remote: str | None = Field(
+        None,
+        description="Name of the hive's HQ Dolt remote descriptor (`dolt_remote.name`, "
+        "bh-b1scz), never a URL or credential. `git-origin` is reserved for the code "
+        "origin's refs/dolt/data.",
+    )
+    authority: Literal["local", "remote"] | None = Field(
+        None,
+        description="Who is canonical: `local` (this store; internal) or `remote` (the "
+        "external system, e.g. GitHub; public).",
+    )
+    sync: Literal["push-pull", "pull-only", "none"] | None = Field(
+        None,
+        description="Sync direction. `local` authority allows push-pull|none; `remote` "
+        "authority allows pull-only|none.",
+    )
+    source: Literal["github-issues"] | None = Field(
+        None, description="Projection source of a `public` store; forbidden on `internal`."
+    )
+    dispatch: bool | None = Field(
+        None,
+        description="Whether the store may issue operational work. Only `internal` may; a "
+        "public store set to true is rejected.",
+    )
+
+    @field_validator("prefix")
+    @classmethod
+    def _valid_prefix(cls, value):
+        if value is not None and not _STORE_PREFIX_RE.fullmatch(value):
+            raise ValueError(
+                f"store prefix {value!r} must start with a lowercase letter and contain only "
+                "lowercase letters, digits and hyphens"
+            )
+        return value
+
+    @field_validator("path")
+    @classmethod
+    def _valid_path(cls, value):
+        if value is not None and not (value.startswith("/") or value.startswith("~")):
+            raise ValueError(f"store path {value!r} must be absolute or start with ~")
+        return value
+
+    @field_validator("remote")
+    @classmethod
+    def _valid_remote(cls, value):
+        if value is None:
+            return value
+        if "://" in value or "@" in value or ":" in value:
+            raise ValueError(
+                f"store remote {value!r} must name an HQ remote descriptor, not embed a URL, "
+                "host or credential — declare the URL on the descriptor (bh-b1scz)"
+            )
+        if not _REMOTE_NAME_RE.fullmatch(value):
+            raise ValueError(f"store remote {value!r} is not a valid descriptor name")
+        return value
+
+    def effective_authority(self, scope: str) -> str:
+        return self.authority or ("local" if scope == "internal" else "remote")
+
+    def effective_sync(self, scope: str) -> str:
+        if self.sync:
+            return self.sync
+        return "push-pull" if self.effective_authority(scope) == "local" else "pull-only"
+
+
+class ManagedRepoStores(_Section):
+    """``managed_repos[*].stores`` — the explicit internal/public store pair (bh-lniwf.2)."""
+
+    internal: StoreDescriptor | None = Field(
+        None, description="The private, operational store (required when `stores` is set)."
+    )
+    public: StoreDescriptor | None = Field(
+        None, description="The optional public projection store (explicit access only)."
+    )
+
+    @model_validator(mode="after")
+    def _coherent(self):
+        problems = store_pair_problems(self)
+        if problems:
+            raise ValueError("; ".join(problems))
+        return self
+
+
+def store_pair_problems(stores: ManagedRepoStores) -> list[str]:
+    """Every per-repository store rule (two-store ADR sections 2-4), as messages."""
+    problems: list[str] = []
+    internal, public = stores.internal, stores.public
+    if internal is None:
+        return [
+            "stores.internal is required when `stores` is declared — the operational store "
+            "must be named, never inferred"
+        ]
+    for scope, store in (("internal", internal), ("public", public)):
+        if store is None:
+            continue
+        authority = store.effective_authority(scope)
+        sync = store.effective_sync(scope)
+        if sync not in _SYNC_FOR_AUTHORITY[authority]:
+            allowed = "|".join(sorted(_SYNC_FOR_AUTHORITY[authority]))
+            problems.append(
+                f"stores.{scope}: sync={sync!r} is invalid with authority={authority!r} "
+                f"(allowed: {allowed})"
+            )
+    if internal.effective_authority("internal") != "local":
+        problems.append("stores.internal: authority must be 'local' (bh writes it)")
+    if internal.path is not None:
+        problems.append(
+            "stores.internal: path is not supported — the internal store stays at the "
+            "checkout's .beads (two-store ADR section 11)"
+        )
+    if internal.source is not None:
+        problems.append("stores.internal: source is only valid on a public store")
+    if internal.dispatch is False:
+        problems.append("stores.internal: dispatch cannot be false — it is the operational store")
+    if public is not None:
+        if not public.prefix:
+            problems.append("stores.public: prefix is required")
+        if not public.path:
+            problems.append("stores.public: path is required (a detached store root)")
+        if public.effective_authority("public") != "remote":
+            problems.append(
+                "stores.public: authority must be 'remote' (GitHub is authoritative for the "
+                "projection; sync is pull-only)"
+            )
+        if public.dispatch:
+            problems.append(
+                "stores.public: dispatch cannot be true — a public store is never operational"
+            )
+        if internal.prefix and public.prefix == internal.prefix:
+            problems.append("stores: internal and public must use different prefixes")
+        if internal.remote is not None and internal.remote == public.remote:
+            problems.append("stores: internal and public must name different remotes")
+        if internal.remote == GIT_ORIGIN_REMOTE:
+            problems.append(
+                "stores.internal: remote cannot be 'git-origin' when a public store exists — that "
+                "would publish private beads on the code origin's refs/dolt/data"
+            )
+    return problems
+
+
 class ManagedRepoEntry(_Section):
     """One entry in ``managed_repos`` — a hive `bh hive init` maintains, with optional
     per-hive overrides of the sections above."""
@@ -2476,9 +2654,64 @@ class ManagedRepoEntry(_Section):
     )
     hitch: HitchConfig | None = Field(None, description="Per-hive `hitch` section override.")
     herdr: HerdrConfig | None = Field(None, description="Per-hive `herdr` section override.")
+    stores: ManagedRepoStores | None = Field(
+        None,
+        description="Optional explicit internal/public bead stores (bh-lniwf.2). Absent = the "
+        "one implicit store at the checkout's .beads (today's behavior).",
+    )
+
+    @model_validator(mode="after")
+    def _internal_prefix_is_hive_prefix(self):
+        internal = self.stores.internal if self.stores is not None else None
+        if internal is not None and internal.prefix and self.prefix:
+            if internal.prefix != self.prefix:
+                raise ValueError(
+                    f"stores.internal.prefix {internal.prefix!r} must equal the hive prefix "
+                    f"{self.prefix!r} — the internal store keeps the hive's ids"
+                )
+        return self
 
 
 # ---- top level ------------------------------------------------------------------
+
+
+def fleet_store_problems(entries: Sequence[ManagedRepoEntry]) -> list[str]:
+    """Cross-entry store collisions, as messages (two-store ADR section 4)."""
+    problems: list[str] = []
+    hive_prefixes: dict[str, str] = {}
+    for entry in entries:
+        if entry.prefix:
+            hive_prefixes.setdefault(entry.prefix, f"{entry.org}/{entry.repo}")
+    claimed: dict[str, str] = {}
+    paths: dict[str, str] = {}
+    remotes: dict[str, str] = {}
+    for entry in entries:
+        if entry.stores is None:
+            continue
+        hive = f"{entry.org}/{entry.repo}"
+        for scope in STORE_SCOPES:
+            store = getattr(entry.stores, scope)
+            if store is None:
+                continue
+            label = f"{hive} stores.{scope}"
+            if scope == "public" and store.prefix:
+                owner = hive_prefixes.get(store.prefix) or claimed.get(store.prefix)
+                if owner:
+                    problems.append(f"{label}: prefix {store.prefix!r} is already used by {owner}")
+                claimed[store.prefix] = label
+            if store.path:
+                key = os.path.normpath(os.path.expanduser(store.path))
+                if key in paths:
+                    problems.append(f"{label}: path {store.path!r} is already used by {paths[key]}")
+                paths[key] = label
+            if store.remote and store.remote != GIT_ORIGIN_REMOTE:
+                if store.remote in remotes:
+                    problems.append(
+                        f"{label}: remote {store.remote!r} is already used by "
+                        f"{remotes[store.remote]} — each store needs its own remote path"
+                    )
+                remotes[store.remote] = label
+    return problems
 
 
 class LegacyBeadsConfig(BaseModel):
@@ -2557,6 +2790,17 @@ class BeadhiveConfig(BaseSettings):
     managed_repos: list[ManagedRepoEntry] = Field(
         default_factory=list, description="Managed hives — maintained by `bh hive init`."
     )
+
+    @model_validator(mode="after")
+    def _store_references(self):
+        """Fleet-wide store uniqueness (bh-lniwf.2): every store-declared prefix is unique
+        across EVERY managed store (hive prefixes included), and every detached path and every
+        non-`git-origin` remote name is unique. Legacy entries without `stores` are untouched, so
+        a pre-existing hive-prefix collision is still only reported, never newly rejected."""
+        errors = fleet_store_problems(self.managed_repos)
+        if errors:
+            raise ValueError("; ".join(errors))
+        return self
 
     @model_validator(mode="after")
     def _gate_references(self):

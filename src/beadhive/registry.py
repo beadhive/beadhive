@@ -191,6 +191,20 @@ def _bead_exists(entry, bead: str) -> bool:
         return False
 
 
+def public_store_owner(cfg, bead: str):
+    """The hive entry whose configured PUBLIC store (``stores.public.prefix``, bh-lniwf.2) owns
+    ``bead``'s prefix, else None. Store prefixes are unique fleet-wide, so the prefix alone
+    identifies a public projection id. Reads the raw config only (no store, no validation —
+    `store_target.configured_stores` validates where a store is actually used)."""
+    for entry in hives(cfg):
+        stores = entry.get("stores") if hasattr(entry, "get") else None
+        public = stores.get("public") if hasattr(stores, "get") else None
+        prefix = str(public.get("prefix", "") or "") if hasattr(public, "get") else ""
+        if prefix and bead.startswith(f"{prefix}-"):
+            return entry
+    return None
+
+
 def resolve_bead_hive(cfg, bead: str, hive: str = "", *, verify: bool = True) -> BeadHiveResolution:
     """Resolve an exact bead id to one registered hive without changing state.
 
@@ -199,6 +213,12 @@ def resolve_bead_hive(cfg, bead: str, hive: str = "", *, verify: bool = True) ->
     first pass (including multi-hyphen prefixes); any non-unique or unsuccessful
     prefix result falls back to an exact read across every registered hive.
     """
+    if public_store_owner(cfg, bead) is not None:
+        # A PUBLIC projection id (bh-lniwf.5): its prefix belongs to a configured public store,
+        # which bead -> hive discovery never reads. It must not be "found" by an exact read of
+        # an internal store either, so a public record can never shadow internal work.
+        return BeadHiveResolution(bead, None)
+
     if hive:
         entry = resolve_hive(cfg, hive)
         return BeadHiveResolution(bead, entry if not verify or _bead_exists(entry, bead) else None)
@@ -581,6 +601,24 @@ def _entry(group, org, repo, prefix, kind, upstream="", furnish="", contribution
     return m
 
 
+#: The identity keys `register` writes. Every OTHER key on an existing entry — per-hive
+#: overrides, `frame_policy`, the HQ `dolt_remote` descriptor (bh-b1scz.2) — belongs to another
+#: owner and is carried across a re-registration instead of being silently dropped.
+REGISTER_OWNED_KEYS = frozenset(
+    {"provider", "org", "repo", "prefix", "kind", "upstream", "furnish", "contribution"}
+)
+
+
+def _carry_unowned(entry, prior):
+    """``entry`` plus every key of ``prior`` that `register` does not own, in prior order."""
+    if not prior:
+        return entry
+    for k, v in prior.items():
+        if str(k) not in REGISTER_OWNED_KEYS and k not in entry:
+            entry[k] = v
+    return entry
+
+
 def furnish_of(entry) -> str:
     """The hive's declared footprint: "full" (tracked scaffolding + scaffold commit) or "none"
     (zero-footprint: local-only .beads, nothing committed). A missing key infers the
@@ -650,8 +688,14 @@ def register(group, org, repo, prefix, kind, upstream="", furnish="", contributi
         else config.SCOPE_HOST
     )
     with config._write_transaction(scope):
-        kept = [e for e in _managed_repos_base() if _key(e) != key]
-        kept.append(_entry(group, org, repo, prefix, kind, upstream, furnish, contribution))
+        base = _managed_repos_base()
+        prior = next((e for e in base if _key(e) == key), None)
+        kept = [e for e in base if _key(e) != key]
+        kept.append(
+            _carry_unowned(
+                _entry(group, org, repo, prefix, kind, upstream, furnish, contribution), prior
+            )
+        )
         kept.sort(key=lambda e: (str(e["org"]), str(e["repo"])))
         _save_managed_repos(kept)
     from . import metadata  # lazy: metadata imports registry (avoid an import cycle)

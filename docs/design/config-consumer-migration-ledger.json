@@ -553,28 +553,28 @@
       {
         "facade_target": "beadhive.config.worktrees_root",
         "kind": "direct-facade",
-        "line": 2355,
+        "line": 2357,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.worktrees_root"
       },
       {
         "facade_target": "beadhive.config.worktrees_root",
         "kind": "direct-facade",
-        "line": 2425,
+        "line": 2427,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.worktrees_root"
       },
       {
         "facade_target": "beadhive.config.enforce_signing",
         "kind": "direct-facade",
-        "line": 2603,
+        "line": 2605,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.enforce_signing"
       },
       {
         "facade_target": "beadhive.config.enforce_signing",
         "kind": "direct-facade",
-        "line": 2616,
+        "line": 2618,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.enforce_signing"
       },
@@ -2932,7 +2932,7 @@
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       }
     ],
-    "test_config_importer_count": 165,
+    "test_config_importer_count": 170,
     "test_config_importers": [
       "tests/contracts/test_config_contract_compatibility.py",
       "tests/contracts/test_config_resolution_compatibility.py",
@@ -2943,6 +2943,7 @@
       "tests/test_alerts.py",
       "tests/test_always_run.py",
       "tests/test_backup.py",
+      "tests/test_beads_explicit_routing.py",
       "tests/test_beadyard_identity.py",
       "tests/test_bh.py",
       "tests/test_check_verify_env.py",
@@ -3083,6 +3084,10 @@
       "tests/test_role_execution.py",
       "tests/test_runtime.py",
       "tests/test_source_descriptors.py",
+      "tests/test_store_descriptors.py",
+      "tests/test_store_routing.py",
+      "tests/test_store_scope_ops.py",
+      "tests/test_store_target.py",
       "tests/test_structural_facade_contracts.py",
       "tests/test_sugar_verbs.py",
       "tests/test_suite_hermeticity.py",

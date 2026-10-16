@@ -602,6 +602,33 @@ def _scan_dolt_ref(path: str, has_origin: bool, *, fetch: bool = False) -> DoltR
 # ---------------------------------------------------------------------------
 
 
+def store_dolt_state(target, *, fetch: bool = False) -> DoltRefInfo:
+    """The Dolt durability state of one resolved store (``store_target.StoreTarget``).
+
+    Git-ref safety checks apply ONLY to stores whose transport rides the code origin's
+    ``refs/dolt/data`` (``git-ref``: the legacy store, or a store naming ``git-origin``). A store
+    on an HQ remote descriptor (S3 and friends, bh-b1scz) has no Git ref to compare and no read-only
+    ahead/behind proof from here, so it reports ``"unknown"`` with the reason — never
+    ``"clean"`` (docs/design/two-store-scope-adr.md section 9). A store with no remote at all is
+    ``"no-remote"``. A detached store is scanned at its own root, not the code checkout."""
+    # Transport labels are store_target.TRANSPORT_* — compared by value so this module stays
+    # free of an import edge into the store seam (safety sits below registry).
+    if target.transport == "descriptor":
+        return DoltRefInfo(
+            status="unknown",
+            reason=(
+                f"store remote is HQ descriptor {target.remote!r}: no Git ref to compare and "
+                "no read-only ahead/behind proof for a non-Git transport; the epoch fence is "
+                "advisory for it (bh-tfapu)"
+            ),
+        )
+    if target.transport == "none" and target.detached:
+        return DoltRefInfo(status="no-remote", reason="detached store has no remote configured")
+    path = str(Path(target.store_root if target.detached else target.repo_dir).resolve())
+    rc, origin_url = _run(["remote", "get-url", "origin"], path)
+    return _scan_dolt_ref(path, rc == 0 and bool(origin_url), fetch=fetch)
+
+
 def scan(repo_path: str | Path, *, fetch: bool = False) -> ScanResult:
     """Scan a git repository and return a structured safety record.
 
