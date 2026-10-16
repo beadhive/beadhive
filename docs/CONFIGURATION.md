@@ -604,6 +604,18 @@ Resolves per-hive `entry.work.beads.route` > global `work.beads.route` > `api`.
 See [BEADS-SERVICE.md](BEADS-SERVICE.md) for the full behavior table.
 `bh work approve` / `bounce` are outside this key and always fail closed without a service.
 
+### bd's own routing keys (`routing.mode`, `routing.default`) {#bd-routing-keys}
+
+These live in each hive's `.beads/config.yaml`, not in bh config. Every bh-managed hive
+declares `routing.mode: explicit` and `routing.default: .` so bd's actor-based `auto`
+heuristic is never the operative rule. With `work.beads.explicit_routing: true` (off by
+default; per-hive or global) `bh hive onboard` sets them when absent and `bh doctor` lists
+hives where they are unset or differ. Fix one with
+`bh -r <hive> bd config set routing.mode explicit` (and `routing.default .`).
+Why: [beads-multi-repo-adoption-adr.md](design/beads-multi-repo-adoption-adr.md) §3; the
+routing rule bh uses instead is in
+[beads-methodology-divergence-adr.md](design/beads-methodology-divergence-adr.md).
+
 ## `work.gate` — gate model and phase profiles
 
 | Key | Default | Values | Effect |
