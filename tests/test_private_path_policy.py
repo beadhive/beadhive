@@ -411,6 +411,8 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     | _owned("hive_repair.py", "detect_node_id", ".beads")
     | _owned("hive_repair.py", "detect_role", ".beads")
     | _owned("hive_repair.py", "detect_server_database", ".beads")
+    # bd's own routing keys live in the hive's beads config file (bh-5lpl9.1); read-only.
+    | _owned("hive_repair.py", "read_routing", ".beads")
     | _owned("transport_locator.py", "transport_lookup", ".beads")
     | _owned("host_provision.py", "_beads_dirs", ".beads")
     | _owned("host_provision.py", "_store_state", ".beads")

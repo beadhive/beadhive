@@ -358,6 +358,14 @@ class BeadsConfig(_Section):
             "route. An unknown value is refused, never defaulted."
         ),
     )
+    explicit_routing: bool = Field(
+        False,
+        description=(
+            "Declare bd's own routing on the hive (bh-5lpl9.1): onboard sets `routing.mode: "
+            "explicit` and `routing.default: .` in .beads/config.yaml when absent, and "
+            "`bh doctor` lists hives where either is unset or differs. Off by default."
+        ),
+    )
 
 
 class ConflictConfig(_Section):

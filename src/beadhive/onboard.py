@@ -1189,6 +1189,41 @@ def _act_beads_role(ctx: Ctx) -> None:
         )
 
 
+def _act_beads_routing(ctx: Ctx) -> None:
+    """Declare bd's routing as explicit (bh-5lpl9.1) when `work.beads.explicit_routing` is on.
+
+    Sets `routing.mode: explicit` and `routing.default: .` in the hive's `.beads/config.yaml`
+    when UNSET, so bd's actor-based `auto` heuristic is never the operative rule — bh routes by
+    subject and visibility instead (docs/design/beads-methodology-divergence-adr.md). An
+    existing differing value is reported, never overwritten — changing it is an explicit
+    operator act (`bh -r <hive> bd config set <key> <value>`). `hive_repair.EXPECTED_ROUTING`
+    is the one expected-value table. Off by default: with the key unset this step does
+    nothing at all."""
+    from . import config, hive_repair
+
+    entry = registry.find_entry(ctx.cfg, ctx.provider, ctx.org, ctx.repo) if ctx.cfg else None
+    if not config.beads_explicit_routing(ctx.cfg, entry):
+        return
+    current = hive_repair.read_routing(Path(ctx.base))
+    if current is None:
+        return
+    plan = hive_repair.RoutingPlan(entry=entry or {}, cwd=Path(ctx.base), current=current)
+    try:
+        changes = hive_repair.apply_routing(plan, "", overwrite=False)
+    except hive_repair.RepairError as e:
+        typer.echo(f"⚠ beads: {e}")
+        return
+    for change in changes:
+        typer.echo(f"• beads: set {change}")
+    for key, value in plan.drift.items():
+        if value:
+            typer.echo(
+                f"⚠ {key}='{value}' is not '{hive_repair.EXPECTED_ROUTING[key]}' — left "
+                f"unchanged; run `{config.BINARY_ALIAS} -r {ctx.hive} bd config set {key} "
+                f"{hive_repair.EXPECTED_ROUTING[key]}` to fix"
+            )
+
+
 def _installer(name: str, run_it):
     """Wrap an installer body so it records itself in plan.installers_run when it runs."""
 
@@ -1613,6 +1648,13 @@ def build_steps(ctx: Ctx) -> list[Step]:
     beads_role = Step(
         "beads-role", "set beads.role", _act_beads_role, requires=["register"], mutates=True
     )
+    beads_routing = Step(
+        "beads-routing",
+        "declare bd routing explicit",
+        _act_beads_routing,
+        requires=["register"],
+        mutates=True,
+    )
 
     # Generic plugin steps: one per registered plugin that declares an on_onboard hook. When
     # the registry is empty, no plugin step is built (integrations are not hardcoded here).
@@ -1642,6 +1684,7 @@ def build_steps(ctx: Ctx) -> list[Step]:
         register,
         node_id,
         beads_role,
+        beads_routing,
         *installers,
         *plugin_steps,
         hq_parent,

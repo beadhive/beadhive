@@ -77,6 +77,7 @@ def test_existing_clean_folder_runs_full_dag_in_order(world, synced, monkeypatch
         "register",
         "node-id",
         "beads-role",
+        "beads-routing",
         "hq-parent",
         "hub-sync",
         "footprint",
@@ -92,6 +93,7 @@ def test_existing_clean_folder_runs_full_dag_in_order(world, synced, monkeypatch
     assert order("register") > order("bd-init")
     assert order("node-id") > order("register")
     assert order("beads-role") > order("register")
+    assert order("beads-routing") > order("register")
     assert order("hub-sync") > order("register")
     assert plan.steps_run[-1] == "footprint"
     assert plan.registered is True

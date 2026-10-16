@@ -784,6 +784,54 @@ def _section_beads_role(cfg):
     _render_beads_role(_data_beads_role(cfg))
 
 
+# ---- bd routing section (bh-5lpl9.1) -------------------------------------------
+# bd falls back to its actor-based `routing.mode auto` heuristic when `routing.mode` is unset;
+# bh routes by subject and visibility instead (docs/design/beads-methodology-divergence-adr.md),
+# so a hive with `work.beads.explicit_routing` on must DECLARE bd's routing
+# (`hive_repair.EXPECTED_ROUTING`). Silent — no header at all — when no hive opts in, so a fleet
+# that never enables the key sees byte-identical doctor output. Only drift is listed.
+
+
+def _data_beads_routing(cfg) -> list[dict]:
+    """Opted-in hives whose `.beads/config.yaml` leaves `routing.mode` / `routing.default` unset
+    or different from `hive_repair.EXPECTED_ROUTING`. Reads the file directly (no bd process).
+    A hive with no readable config is reported unresolvable (`actual=None`), never skipped."""
+    findings = []
+    for e in registry.hives(cfg):
+        if not config.beads_explicit_routing(cfg, e):
+            continue
+        hive_id = f"{e['provider']}/{e['org']}/{e['repo']}"
+        current = hive_repair.read_routing(registry.hive_dir(e))
+        drift = None if current is None else hive_repair.routing_drift(current)
+        if drift == {}:
+            continue
+        findings.append(
+            {
+                "hive": hive_id,
+                "actual": drift,
+                "expected": dict(hive_repair.EXPECTED_ROUTING),
+                "remediation": (
+                    f"{config.BINARY_ALIAS} -r {hive_id} bd config set routing.mode explicit && "
+                    f"{config.BINARY_ALIAS} -r {hive_id} bd config set routing.default ."
+                ),
+            }
+        )
+    return findings
+
+
+def _render_beads_routing(findings: list[dict]) -> None:
+    if not findings:
+        return
+    typer.echo(f"\n# bd routing ({len(findings)})")
+    for f in findings:
+        if f["actual"] is None:
+            typer.echo(f"  ⚠ {f['hive']}: unresolvable (no readable .beads/config.yaml)")
+        else:
+            got = ", ".join(f"{k}='{v}'" if v else f"{k} unset" for k, v in f["actual"].items())
+            typer.echo(f"  ⚠ {f['hive']}: {got} (expected routing.mode='explicit', default='.')")
+        typer.echo(f"    fix: {f['remediation']}")
+
+
 # ---- store engine section (bh-areg.3) ----------------------------------------
 # "Nothing in bh knows a store engine can be DOWN" — embedded mode has no liveness question
 # (in-process engine); mode (a) — bd's shared `dolt sql-server` — can be down, wedged, or on
@@ -3174,6 +3222,7 @@ def _collect(cfg, *, full_seats: bool = False) -> dict:
         "prefix_mismatches": _timed(timings, "prefix_mismatches", _data_prefix_mismatches, cfg),
         "node_id": _timed(timings, "node_id", _data_node_id, cfg),
         "beads_role": _timed(timings, "beads_role", _data_beads_role, cfg),
+        "beads_routing": _timed(timings, "beads_routing", _data_beads_routing, cfg),
         "store_engine": _timed(timings, "store_engine", _data_store_engine, cfg),
         "dispatch": _timed(timings, "dispatch", _data_dispatch, cfg),
         "host_daemon": _timed(timings, "host_daemon", _data_host_daemon, cfg),
@@ -3240,7 +3289,8 @@ def doctor_payload(*, full_seats: bool = False) -> dict:
     Returns a JSON-able dict keyed by section (``config``, ``providers``, ``orgs``, ``hives``,
     ``inventory``, ``disk_usage``, ``worktree_disk_usage``, ``ram_backed``, ``fleet_health``,
     ``worktrees``, ``molecules``,
-    ``prefix_mismatches``, ``node_id``, ``beads_role``, ``group_auth``, ``mcp``, ``harness_plugin``,
+    ``prefix_mismatches``, ``node_id``, ``beads_role``, ``beads_routing``, ``group_auth``,
+    ``mcp``, ``harness_plugin``,
     ``seats``,
     ``install``, ``observability``, ``build_verify``, ``writer_fence``, ``forward``,
     ``warnings``), plus
@@ -3342,6 +3392,7 @@ def doctor(as_json: bool = False, verbose: bool = False, seats: bool = False):
     _render_prefix_mismatches(data["prefix_mismatches"])
     _render_node_id(data["node_id"])
     _render_beads_role(data["beads_role"])
+    _render_beads_routing(data.get("beads_routing") or [])
     _render_store_engine(data["store_engine"])
     _render_dispatch(data["dispatch"])
     _render_host_daemon(data["host_daemon"])
