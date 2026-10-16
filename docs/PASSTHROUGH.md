@@ -135,6 +135,13 @@ bh git workspace --help            # → git-workspace --help
 
 ## Hive routing (`-a` / `-r`)
 
+`-r <hive>` (and `bh report <hive>`) is bh's spelling of bd's `--repo` override — the top
+rung of the routing ladder. Routing is by subject and visibility, never by actor; the
+operative table is in
+[beads-methodology-divergence-adr.md](design/beads-methodology-divergence-adr.md), and what
+bh adopts from beads' routing is in
+[beads-multi-repo-adoption-adr.md](design/beads-multi-repo-adoption-adr.md).
+
 Run the passthrough across hives instead of the current directory. Flags are **global** —
 they go on `bh`, before the subcommand:
 
