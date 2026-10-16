@@ -68,10 +68,10 @@ def test_dependency_ledger_records_indirect_adapter_patch_points_exactly(built):
         if point["path"] == "tests/test_hq_sql_provision_history_int.py"
     }
     assert provisioning_patches == {
-        (997, "beadhive.config.load", "beadhive.config.load", "direct-facade"),
-        (998, "beadhive.config.hq_dir", "beadhive.config.hq_dir", "direct-facade"),
+        (1068, "beadhive.config.load", "beadhive.config.load", "direct-facade"),
+        (1069, "beadhive.config.hq_dir", "beadhive.config.hq_dir", "direct-facade"),
         (
-            999,
+            1070,
             "beadhive.config.fleet_sql_selected",
             "beadhive.config.fleet_sql_selected",
             "direct-facade",

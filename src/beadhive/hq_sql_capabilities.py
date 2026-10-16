@@ -12,7 +12,11 @@ A release upgrade crosses three privilege tiers on Dolt 2.3.5:
   provisioned incarnation without repairing it. ``information_schema.triggers`` lists a
   trigger only to a holder of ``TRIGGER``, and the account/grant checks read ``mysql``.
 * **provisioning** — the server-local binding that creates tables, stamping triggers, the
-  pinned frame account and its grants.
+  pinned frame account and its grants. Granting the frame ``SELECT, UPDATE`` on its new session
+  and evidence tables is a delegation: the binding must itself hold ``UPDATE`` (and the grant
+  option) at a level covering tables that do not exist yet, i.e. ``UPDATE ON <runtime>.* WITH
+  GRANT OPTION``. Dolt 2.3.5 refuses the grant otherwise, after the tables, triggers and account
+  already exist (bh-t759y).
 
 Each missing capability is reported by name with the grant that satisfies it, never with an
 account name, host or secret. Reads are real probes (a denial is the finding); privileges that
@@ -193,6 +197,14 @@ def provisioning(cursor, database: str, config_database: str | None) -> list[Mis
     ]
     if not _holds(grants, "CREATE USER", "*"):
         problems.append(Missing("pinned frame account creation", "CREATE USER ON *.*"))
+    if not _holds(grants, "UPDATE", database, option=True):
+        problems.append(
+            Missing(
+                "frame session/evidence write grants",
+                f"UPDATE ON `{database}`.* WITH GRANT OPTION; the frame's tables are created "
+                "during provisioning, so a per-table grant cannot be delegated",
+            )
+        )
     for target in (database, config_database):
         if target and not _holds(grants, "SELECT", target, option=True):
             problems.append(

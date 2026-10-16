@@ -358,15 +358,41 @@ def test_non_privilege_probe_failure_is_unknown_not_missing():
 @pytest.mark.parametrize(
     ("grants", "inspect", "provision"),
     [
-        ([("db", "SELECT", "NO")], 2, 6),
-        ([("db", "SELECT", "NO"), ("db", "TRIGGER", "NO"), ("mysql", "SELECT", "NO")], 0, 5),
+        ([("db", "SELECT", "NO")], 2, 7),
+        ([("db", "SELECT", "NO"), ("db", "TRIGGER", "NO"), ("mysql", "SELECT", "NO")], 0, 6),
         (
             [
                 ("*", privilege, "YES")
-                for privilege in ("SELECT", "INSERT", "CREATE", "TRIGGER", "CREATE USER")
+                for privilege in ("SELECT", "UPDATE", "INSERT", "CREATE", "TRIGGER", "CREATE USER")
             ],
             0,
             0,
+        ),
+        # The binding 0.25.3 documented: ready, yet unable to delegate the frame's UPDATE.
+        (
+            [
+                *[("db", privilege, "YES") for privilege in ("SELECT", "CREATE", "TRIGGER")],
+                ("db", "INSERT", "YES"),
+                ("cfg", "SELECT", "YES"),
+                ("*", "CREATE USER", "NO"),
+                ("mysql", "SELECT", "NO"),
+            ],
+            0,
+            1,
+        ),
+        # UPDATE held but not grantable is still a gap.
+        (
+            [
+                *[("db", privilege, "NO") for privilege in ("SELECT", "CREATE", "TRIGGER")],
+                ("db", "SELECT", "YES"),
+                ("db", "INSERT", "NO"),
+                ("db", "UPDATE", "NO"),
+                ("cfg", "SELECT", "YES"),
+                ("*", "CREATE USER", "NO"),
+                ("mysql", "SELECT", "NO"),
+            ],
+            0,
+            1,
         ),
     ],
 )
@@ -376,6 +402,63 @@ def test_session_inspection_and_provisioning_are_read_from_own_grants(grants, in
     assert len(capabilities.provisioning(cursor, "db", "cfg")) == provision
     assert capabilities.denied(_DoltError(1105, "command denied to user"))
     assert not capabilities.denied(_DoltError(1105, "table not found: x"))
+
+
+def test_provision_denial_names_the_missing_delegation(fixture, monkeypatch):
+    """A server denial mid-provision names the capability, never the generic outage."""
+    import time
+
+    from beadhive import hq_sql_session_provision
+    from beadhive.hq_sql_operator import SqlOperatorError, SqlRuntimeOperator
+
+    class Cursor(ScriptedCursor):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def fetchone(self):
+            if "CURRENT_USER()" in self.sql and self.sql != "SELECT CURRENT_USER()":
+                return "w@%", "runtime", "main", "2.3.5"
+            if "DOLT_HASHOF" in self.sql:
+                return ("runtime-head",)
+            return super().fetchone()
+
+    class Connection:
+        def cursor(self):
+            return Cursor(grants=[("runtime", "SELECT", "YES"), ("runtime", "CREATE", "NO")])
+
+        def close(self):
+            pass
+
+    def denied_grant(*args, **kwargs):
+        raise _DoltError(1105, "command denied to user 'w'@'%'")
+
+    operator = SqlRuntimeOperator(
+        {
+            "authority_writer": {"user": "w", "database": "runtime"},
+            "reader": {"database": "cfg"},
+            "runtime_operator_public_key": fixture.public,
+            "runtime_backend_identity": "runtime-backend",
+            "runtime_generation": "runtime-generation",
+        },
+        clock=lambda: 1000,
+    )
+    monkeypatch.setattr(operator, "_open", lambda **kwargs: (Connection(), time.monotonic() + 30))
+    monkeypatch.setattr(operator.authority, "verified_state_at", lambda *a, **k: None)
+    monkeypatch.setattr(hq_sql_session_provision, "resume_incarnation", denied_grant)
+    with pytest.raises(SqlOperatorError) as refused:
+        operator.provision_release_route(
+            ("frame_p", "frame", "holder", "instance", 4, "signer"),
+            expected_revision="runtime-head",
+            frame_address="127.0.0.1",
+            password="secret",
+        )
+    message = str(refused.value)
+    assert "provisioning denied" in message and "unavailable" not in message
+    assert "UPDATE ON `runtime`.* WITH GRANT OPTION" in message
+    assert "'w'" not in message and "secret" not in message
 
 
 def test_report_gates_actions_only_for_session_routes():
