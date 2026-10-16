@@ -302,6 +302,38 @@ managed_repos:
 - There is **no `enforcement:` block** — enforcement is fixed behavior, not config
   ([LABELS](LABELS.md#enforcement)).
 - Provider entries carry **no codes** (only org codes go in prefixes).
+- Re-registering a hive (`bh hive init`, a prefix repair) rewrites only the keys `register`
+  owns (`provider`, `org`, `repo`, `prefix`, `kind`, `upstream`, `furnish`, `contribution`);
+  every other key on the entry — per-hive overrides, `frame_policy`, `stores` — is carried.
+
+### `managed_repos[*].stores` — internal and public bead stores {#stores}
+
+Optional, and absent by default: an entry without `stores` is one store at the checkout's
+`.beads`, exactly as before. Declaring it splits the repository into a private, operational
+`internal` store and an optional `public` projection store
+([two-store-scope-adr.md](design/two-store-scope-adr.md)):
+
+```yaml
+managed_repos:
+  - {provider: github, org: beadhive, repo: beadhive, prefix: bh,
+     stores: {internal: {remote: beadhive-private},
+              public: {prefix: bhpub, path: ~/.beadhive/stores/github/beadhive/beadhive/public,
+                       remote: git-origin, source: github-issues}},
+     dolt_remote: {name: beadhive-private, url: "s3://<bucket>/internal/beadhive"}}
+```
+
+| Key | Default | Rule |
+|---|---|---|
+| `prefix` | internal: the hive `prefix` | public: required; unique across every managed store |
+| `path` | internal: the checkout's `.beads` | public: required, absolute or `~`, unique fleet-wide |
+| `remote` | none | the name of the hive's HQ Dolt remote descriptor (`dolt_remote.name`, `bh-b1scz`), never a URL; `git-origin` = the code origin's `refs/dolt/data`; internal may not be `git-origin` when a public store exists |
+| `authority` | internal `local`, public `remote` | internal must be `local`, public must be `remote` |
+| `sync` | `local`: `push-pull`; `remote`: `pull-only` | `local` allows `push-pull`/`none`; `remote` allows `pull-only`/`none` |
+| `source` | none | public only: `github-issues` |
+| `dispatch` | internal yes, public no | a public store can never be operational |
+
+`bh config validate` rejects a `stores` block without `internal`, duplicate prefixes, paths or
+remote names across the fleet, and every invalid authority/sync combination.
 
 ## `bh config` commands
 
