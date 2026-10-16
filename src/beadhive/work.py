@@ -54,6 +54,7 @@ from . import (
     registry,  # noqa: F401 - injected lifecycle collaborator
     release_order,  # noqa: F401 - injected lifecycle collaborator
     selective_validation,  # noqa: F401 - injected validation collaborator
+    store_target,
     test_report,  # noqa: F401 - injected submission collaborator
     triage_store,  # noqa: F401 - injected submission collaborator
     validation_admission,  # noqa: F401 - injected submission collaborator
@@ -430,6 +431,33 @@ def promote_cmd(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
     return work_intake.promote(bead, as_, hive)
 
 
+def _refuse_public(verb: str, *values) -> None:
+    """Refuse an operational verb aimed at a PUBLIC projection bead (bh-lniwf.5).
+
+    Operational work lives only in a hive's internal store (docs/design/two-store-scope-adr.md
+    section 5). A public id is recognised by its store prefix — unique fleet-wide — so it is
+    refused before anything resolves, reads or mutates a store; a public record can never stand
+    in for an internal bead or gate. A fleet with no `stores` declarations pays one config scan
+    and is otherwise unchanged."""
+    # Only real strings: a direct (non-CLI) call can leave Typer's OptionInfo defaults in place.
+    ids = [b.strip() for v in values if isinstance(v, str) for b in v.split(",") if b.strip()]
+    if not ids:
+        return
+    cfg = config.load()
+    for bead in ids:
+        hit = store_target.bead_scope(cfg, bead)
+        if hit is None:
+            continue
+        entry, scope = hit
+        typer.echo(
+            f"✗ `bh work {verb}` refuses {bead}: it belongs to the {scope} store of "
+            f"{registry.hive_key(entry)}, a projection that never claims, assigns, submits, "
+            "reviews, merges or dispatches work — file or link an internal bead instead",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+
 def assign(
     bead: str = _BEAD,
     to: str = typer.Option(..., "--to", help="dev/<name> to assign + provision for"),
@@ -450,6 +478,7 @@ def assign(
     orchestrator (`--json` for the schema).
 
     Served by the `beadhive_core` lifecycle handlers through the one `work_lifecycle` seam."""
+    _refuse_public("assign", bead)
     return work_lifecycle.assign(bead, to, as_, hive, preview, as_json)
 
 
@@ -504,6 +533,7 @@ def claim(
     external orchestrator (`--json` for the schema).
 
     Served by the `beadhive_core` lifecycle handlers through the one `work_lifecycle` seam."""
+    _refuse_public("claim", bead, group, collapse)
     return work_lifecycle.claim(bead, as_, group, collapse, hive, preview, as_json)
 
 
@@ -1090,6 +1120,7 @@ def approve(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
     change can't be self-released into the wrong version window."""
     # Served by the API-first `beadhive_core` review handlers through the one `work_review`
     # composition seam (bh-bwnys.1); this docstring is the public `--help` contract.
+    _refuse_public("approve", bead)
     return work_review.approve(bead, as_, hive)
 
 
@@ -1101,6 +1132,7 @@ def bounce(bead: str = _BEAD, message: str = _BOUNCE_MSG, as_: str = _AS, hive: 
     member, so bouncing any member resolves it and blocks `merge --group` (bh-n5z3.6)."""
     # Served by the API-first `beadhive_core` review handlers through the one `work_review`
     # composition seam (bh-bwnys.1), which also records the feedback as a bead comment.
+    _refuse_public("bounce", bead)
     return work_review.bounce(bead, message, as_, hive)
 
 
@@ -1295,6 +1327,7 @@ def start(epic: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
     (the retired `ensure_integration_branch`). Child beads assigned afterward fork off the
     container; `finish` lands it and tears the seat down."""
     otel.set_bead(epic)  # stamp ws.bead/ws.epic on this verb span
+    _refuse_public("start", epic)
     cfg = config.load()
     entry, main, _target, _branch = worktree.locate(cfg, hive, epic, kind="epic")
     actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
@@ -1577,6 +1610,7 @@ def resume(
     print the feedback, and re-assert the claim. Address the feedback and `submit` again.
 
     Served by the `beadhive_core` lifecycle handlers through the one `work_lifecycle` seam."""
+    _refuse_public("resume", bead)
     return work_lifecycle.resume(bead, as_, hive)
 
 

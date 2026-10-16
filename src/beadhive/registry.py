@@ -191,6 +191,20 @@ def _bead_exists(entry, bead: str) -> bool:
         return False
 
 
+def public_store_owner(cfg, bead: str):
+    """The hive entry whose configured PUBLIC store (``stores.public.prefix``, bh-lniwf.2) owns
+    ``bead``'s prefix, else None. Store prefixes are unique fleet-wide, so the prefix alone
+    identifies a public projection id. Reads the raw config only (no store, no validation —
+    `store_target.configured_stores` validates where a store is actually used)."""
+    for entry in hives(cfg):
+        stores = entry.get("stores") if hasattr(entry, "get") else None
+        public = stores.get("public") if hasattr(stores, "get") else None
+        prefix = str(public.get("prefix", "") or "") if hasattr(public, "get") else ""
+        if prefix and bead.startswith(f"{prefix}-"):
+            return entry
+    return None
+
+
 def resolve_bead_hive(cfg, bead: str, hive: str = "", *, verify: bool = True) -> BeadHiveResolution:
     """Resolve an exact bead id to one registered hive without changing state.
 
@@ -199,6 +213,12 @@ def resolve_bead_hive(cfg, bead: str, hive: str = "", *, verify: bool = True) ->
     first pass (including multi-hyphen prefixes); any non-unique or unsuccessful
     prefix result falls back to an exact read across every registered hive.
     """
+    if public_store_owner(cfg, bead) is not None:
+        # A PUBLIC projection id (bh-lniwf.5): its prefix belongs to a configured public store,
+        # which bead -> hive discovery never reads. It must not be "found" by an exact read of
+        # an internal store either, so a public record can never shadow internal work.
+        return BeadHiveResolution(bead, None)
+
     if hive:
         entry = resolve_hive(cfg, hive)
         return BeadHiveResolution(bead, entry if not verify or _bead_exists(entry, bead) else None)

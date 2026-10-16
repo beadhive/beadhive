@@ -318,16 +318,9 @@ def bead_scope(cfg: Mapping[str, Any], bead: str) -> tuple[Mapping[str, Any], st
 
     Store prefixes are unique fleet-wide (bh-lniwf.2), so a public id is recognisable by its
     prefix alone; operational resolution uses this to refuse a public id outright instead of
-    reading it from any internal store."""
-    for entry in registry.hives(cfg):
-        try:
-            stores = configured_stores(entry)
-        except StoreConfigInvalid:
-            continue
-        public = stores.public if stores is not None else None
-        if public is not None and public.prefix and bead.startswith(f"{public.prefix}-"):
-            return entry, SCOPE_PUBLIC
-    return None
+    reading it from any internal store (`registry.public_store_owner`)."""
+    entry = registry.public_store_owner(cfg, bead)
+    return None if entry is None else (entry, SCOPE_PUBLIC)
 
 
 def _refuse_database_flags(args: list[str]) -> None:
