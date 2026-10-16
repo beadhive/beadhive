@@ -335,6 +335,12 @@ repeat `plan` and `provision` against the currently verified revision. The
 command completes missing supported objects and refuses conflicting schemas,
 triggers, account bindings, or unrelated dirty state. A successful retry keeps
 the existing password, session renewal, and conformance evidence unchanged.
+If `provision` refuses with "session provisioning denied (...)", the server-local binding is
+missing the named privilege, usually `UPDATE ON <runtime>.* WITH GRANT OPTION`. The runtime
+HEAD and authority are unchanged, and the uncommitted trigger fragments and the account are
+the partial objects a retry completes. Do not drop them or commit them by hand. Grant the
+named privilege, then run `plan` and `provision` again. If the preparation was cancelled in
+the meantime, run `prepare-config` for the target first.
 If `apply` has already committed, use `check` and cut over to that incarnation;
 do not provision another epoch to retry it. If a remote `check` or `plan` refuses with
 "restore-floor verification denied" after provisioning, grant that binding

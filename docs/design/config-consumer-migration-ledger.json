@@ -1204,21 +1204,21 @@
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 997,
+        "line": 1068,
         "path": "tests/test_hq_sql_provision_history_int.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.hq_dir",
         "kind": "direct-facade",
-        "line": 998,
+        "line": 1069,
         "path": "tests/test_hq_sql_provision_history_int.py",
         "target": "beadhive.config.hq_dir"
       },
       {
         "facade_target": "beadhive.config.fleet_sql_selected",
         "kind": "direct-facade",
-        "line": 999,
+        "line": 1070,
         "path": "tests/test_hq_sql_provision_history_int.py",
         "target": "beadhive.config.fleet_sql_selected"
       },

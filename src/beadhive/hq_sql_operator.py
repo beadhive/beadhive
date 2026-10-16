@@ -555,6 +555,7 @@ class SqlRuntimeOperator:
         from .hq_sql_session_provision import resume_incarnation
 
         principal, _frame, _holder, _instance, epoch, _signer = route
+        database = self.settings["authority_writer"]["database"]
         connection, deadline = self._open(deadline=deadline)
         try:
             with connection.cursor() as cursor:
@@ -566,7 +567,6 @@ class SqlRuntimeOperator:
                         "original authority revision changed before provisioning"
                     )
                 self.authority.verified_state_at(sql, head, deadline=deadline, allow_expired=True)
-                database = self.settings["authority_writer"]["database"]
                 resume_incarnation(
                     sql,
                     principal,
@@ -588,7 +588,25 @@ class SqlRuntimeOperator:
                 return result
         except (SqlOperatorError, ValueError):
             raise
-        except Exception:
+        except Exception as error:
+            from .hq_sql_capabilities import denied, provisioning
+
+            if denied(error):
+                try:
+                    missing = provisioning(
+                        sql, database, (self.settings.get("reader") or {}).get("database")
+                    )
+                except Exception:  # noqa: BLE001 - the denial is still the finding
+                    missing = []
+                named = "; ".join(str(item) for item in missing) or (
+                    "a privilege the provisioning preflight does not check"
+                )
+                raise SqlOperatorError(
+                    f"session provisioning denied ({named}); grant it to the server-local "
+                    "binding (docs/HQ.md#runtime-sql-privileges) and resume with the same "
+                    "reviewed plan through the CLI. Partial objects are kept for that resume; "
+                    "the authority is unchanged"
+                ) from None
             raise SqlOperatorError(
                 "session provisioning unavailable; use a server-local operator binding with "
                 "DDL, CREATE USER and GRANT privileges, then replan/resume through the CLI"

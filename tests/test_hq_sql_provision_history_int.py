@@ -563,7 +563,23 @@ def test_public_cli_provisions_and_rotates_session_route_with_persisted_floors(
                 ),
             )
             cursor.execute("CREATE USER 'provisioner'@'localhost' IDENTIFIED BY 'fixture-secret'")
-            cursor.execute("GRANT ALL ON *.* TO 'provisioner'@'localhost' WITH GRANT OPTION")
+            # Exactly the documented server-local binding (docs/HQ.md#runtime-sql-privileges),
+            # never ALL: a broad fixture grant hid the missing UPDATE delegation (bh-t759y).
+            # UPDATE ON <runtime>.* WITH GRANT OPTION is granted after the gap is shown.
+            config_db = config_settings["reader"]["database"]
+            for grant in (
+                f"GRANT SELECT ON `{DB}`.* TO {{u}} WITH GRANT OPTION",
+                f"GRANT UPDATE ON `{DB}`.`hq_authority` TO {{u}}",
+                f"GRANT INSERT ON `{DB}`.`hq_principal_registry` TO {{u}}",
+                f"GRANT INSERT ON `{DB}`.`hq_live_floors` TO {{u}}",
+                f"GRANT EXECUTE ON PROCEDURE `{DB}`.`dolt_add` TO {{u}}",
+                f"GRANT EXECUTE ON PROCEDURE `{DB}`.`dolt_commit` TO {{u}}",
+                f"GRANT CREATE, TRIGGER, INSERT ON `{DB}`.* TO {{u}}",
+                f"GRANT SELECT ON `{config_db}`.* TO {{u}} WITH GRANT OPTION",
+                "GRANT CREATE USER ON *.* TO {u}",
+                "GRANT SELECT ON `mysql`.* TO {u}",
+            ):
+                cursor.execute(grant.format(u="'provisioner'@'localhost'"))
             settings = {
                 **config_settings,
                 "enabled": True,
@@ -718,6 +734,61 @@ def test_public_cli_provisions_and_rotates_session_route_with_persisted_floors(
                 reader.verified_state_at(cursor, _head(cursor))
             reviewed = invoke("plan")
             assert reviewed["route"] == "session" and not reviewed["provisioned"]
+            # Without the UPDATE delegation the preflight names it and provision refuses
+            # before writing anything (bh-t759y; 0.25.3 reported ready, then failed midway).
+            update_grant = f"UPDATE ON `{DB}`.* WITH GRANT OPTION"
+            assert not reviewed["preflight"]["ready"]["provision"]
+            assert any(update_grant in item for item in reviewed["preflight"]["provision"])
+            assert reviewed["preflight"]["ready"]["apply"]
+            provision_flags = [
+                "--confirm",
+                "--plan-sha256",
+                reviewed["plan_sha256"],
+                "--frame-address",
+                "127.0.0.1",
+                "--password-stdin",
+            ]
+            before = _head(cursor)
+            gap = runner.invoke(
+                host_cli.app,
+                ["release-upgrade", "provision", *arguments, *provision_flags],
+                input="fixture-secret\n",
+            )
+            assert gap.exit_code == 1 and update_grant in gap.output
+            assert "provisioner" not in gap.output and "fixture-secret" not in gap.output
+            assert _head(cursor) == before
+            assert not invoke("plan")["provisioning_incomplete"]
+            if preparation_failure == "lost_ack":
+                # Reproduce the 0.25.3 partial state: tables, triggers and an account with no
+                # table grants, uncommitted schemas, runtime HEAD unmoved. Supported resume
+                # after the grant completes it without manual SQL.
+                import pymysql
+
+                from beadhive.hq_sql_capabilities import denied
+
+                restricted = pymysql.connect(
+                    host="127.0.0.1", port=port, user="provisioner",
+                    password="fixture-secret", database=DB, autocommit=True,
+                )  # fmt: skip
+                with restricted.cursor() as partial, pytest.raises(pymysql.MySQLError) as caught:
+                    resume_incarnation(
+                        partial,
+                        reviewed["principal"],
+                        reviewed["new_epoch"],
+                        frame_address="127.0.0.1",
+                        password="fixture-secret",
+                        database=DB,
+                    )
+                assert denied(caught.value)
+                restricted.close()
+                assert _head(cursor) == before
+                partial_plan = invoke("plan")
+                assert partial_plan["plan_sha256"] == reviewed["plan_sha256"]
+            cursor.execute(
+                f"GRANT UPDATE ON `{DB}`.* TO 'provisioner'@'localhost' WITH GRANT OPTION"
+            )
+            reviewed = invoke("plan")
+            assert reviewed["preflight"]["ready"]["provision"], reviewed["preflight"]
             if preparation_failure is None:
                 from beadhive import hq_sql_session_provision
                 from beadhive.hq_sql_session import SessionError

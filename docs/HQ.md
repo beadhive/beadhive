@@ -885,15 +885,22 @@ The supported grants (bh-aprgo) are listed below. `<runtime>` is the runtime dat
 | Authority writer (remote operator, `hq.sql.authority_writer`) | `SELECT ON <runtime>.*`; `UPDATE ON <runtime>.hq_authority`; `INSERT ON <runtime>.hq_principal_registry`; `INSERT ON <runtime>.hq_live_floors`; `EXECUTE ON PROCEDURE <runtime>.dolt_add` and `<runtime>.dolt_commit`; `SELECT` on `<config>.hq_config_meta`, `hq_config_documents`, `hq_config_publications` |
 | Observer, director | `SELECT ON <runtime>.*`, plus their existing table-level writes and config reads |
 | Frame | `SELECT ON <runtime>.*`; `SELECT, UPDATE` on its own `frame_<principal>_<epoch>_session` / `_evidence`; its inbox `SELECT, INSERT` while it has one; config reads |
-| Server-local provisioning/apply binding | The authority writer's grants, plus `CREATE`, `TRIGGER`, `INSERT`, `SELECT ON <runtime>.* WITH GRANT OPTION`; `SELECT ON <config>.* WITH GRANT OPTION`; `CREATE USER ON *.*`; `SELECT ON mysql.*` |
+| Server-local provisioning/apply binding | The authority writer's grants, plus `CREATE`, `TRIGGER`, `INSERT`, `SELECT ON <runtime>.* WITH GRANT OPTION`; `UPDATE ON <runtime>.* WITH GRANT OPTION`; `SELECT ON <config>.* WITH GRANT OPTION`; `CREATE USER ON *.*`; `SELECT ON mysql.*` |
 
 `SELECT ON <runtime>.*` is read-only. It grants no write, and every frame write right is still
-limited to the frame's own rows (`check_provisioning`). Do not grant `TRIGGER` or `mysql`
-access to a remote operator or a frame. Re-validating a provisioned session route needs both:
-`information_schema.triggers` lists a trigger only to a holder of `TRIGGER`, and the
-account/grant checks read `mysql.user`. So `provision` and a session-route `apply` run with the
-server-local binding's `--operator-settings`. The remote binding still runs `prepare-config`,
-`plan` and `check` ([release-upgrade runbook](design/frame-release-upgrade-runbook.md#session-only-provisioning-on-0243)).
+limited to the frame's own rows (`check_provisioning`).
+
+The provisioning binding's `UPDATE ON <runtime>.* WITH GRANT OPTION` exists only so it can
+delegate `SELECT, UPDATE` on each new frame's session and evidence tables. Those tables are
+created during provisioning, so no per-table grant can be prepared for them, and Dolt refuses
+the delegation without it. That refusal comes after the tables, triggers and account exist
+(bh-t759y). Keep this binding server-local, like its DDL and `CREATE USER` rights.
+
+Do not grant `TRIGGER` or `mysql` access to a remote operator or a frame. Re-validating a
+provisioned session route needs both: `information_schema.triggers` lists a trigger only to a
+holder of `TRIGGER`, and the account/grant checks read `mysql.user`. So `provision` and a
+session-route `apply` run with the server-local binding's `--operator-settings`. The remote
+binding still runs `prepare-config`, `plan` and `check` ([release-upgrade runbook](design/frame-release-upgrade-runbook.md#session-only-provisioning-on-0243)).
 
 **Preflight.** `bh host release-upgrade prepare-config` and `plan` print a `preflight` object
 for a session route. It names, per action, each missing capability and the grant that
@@ -910,6 +917,12 @@ edited.
 **Existing fleets.** As the server-local administrator, grant `SELECT ON <runtime>.*` to the
 authority writer, observer, director and each existing frame account before the first session
 provisioning. Since bh-aprgo, `provision` grants it to the new frame account itself.
+Also grant the server-local provisioning binding `UPDATE ON <runtime>.* WITH GRANT OPTION`
+if it predates 0.25.4. Without it, `provision` before 0.25.4 passed preflight and then failed
+with "session provisioning unavailable", leaving the next epoch's tables, triggers and an
+account with no table grants. Keep those objects. After the grant, the same reviewed `plan` and
+`provision` resume them
+([release-upgrade runbook](design/frame-release-upgrade-runbook.md#session-only-provisioning-on-0243)).
 
 ### Restore floors across provisioning {#restore-floor-recovery}
 
