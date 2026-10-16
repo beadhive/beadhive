@@ -445,6 +445,8 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     | _owned("storage_migrate.py", "migrate_hive", ".beads")
     | _owned("storage_migrate.py", "plan_targets", ".beads")
     | _owned("store_locator.py", "<module>", ".beads")
+    # The StoreTarget seam names each store's beads directory (bh-lniwf.3); it creates nothing.
+    | _owned("store_target.py", "resolve_store", ".beads")
     | _owned("store_locator.py", "embedded_store_dir", ".beads")
     | _owned("store_locator.py", "has_direct_server_database", ".dolt")
     # Harnesses/plugins own these exact configuration and agent-install callsites.
