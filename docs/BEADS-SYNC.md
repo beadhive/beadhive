@@ -278,6 +278,93 @@ remote by family and report its ahead/behind as unknown rather than reading Git 
 [ADR](design/hq-dolt-remote-descriptor-adr.md) and the
 [operator runbook](design/hq-dolt-remotes-runbook.md).
 
+## Pull-only contribution hives (external upstreams)
+
+An external contribution target such as `contrib/briancripe/beads` reads its bead state from
+somebody else's upstream and keeps its Git `origin` as our writable contribution fork. Bulk sync
+must never publish either one. `src/beadhive/sync_policy.py` derives the boundary from
+authoritative configuration (bh-0azjq), so it does not depend on a Git `upstream` pushurl of
+`disabled://read-only` happening to protect Dolt. A hive is **pull-only** when any of these
+hold:
+
+- the registry entry declares `contribution: pull`;
+- the registry entry is `kind: external` with no `contribution` override;
+- the hive's `.beads/config.yaml` sets `no-push: true`.
+
+The approved configuration for the reference hive:
+
+```yaml
+# fleet registry (managed_repos entry)
+{provider: contrib, org: briancripe, repo: beads, prefix: bd, kind: external,
+ contribution: pull, upstream: gastownhall/beads, furnish: none}
+```
+
+```yaml
+# <hive>/.beads/config.yaml
+no-push: true
+dolt:
+    auto-push: false
+sync.remote: "git+https://github.com/gastownhall/beads.git"
+routing:
+    mode: auto
+    contributor: <path of the local Beadhive planning hive>
+```
+
+The Git remotes stay `origin` = the fork and `upstream` = the canonical repository with a
+disabled pushurl. The Dolt store needs a remote that reaches the upstream bead source, for
+example `upstream` = `git+https://github.com/gastownhall/beads.git` (Git-backed,
+`refs/dolt/data`).
+
+What `bh hive sync` does for a pull-only hive, on every path (default, `--all`, a named hive,
+`--push`, `--remote`, `--force`, the deprecated `sync-remote` alias):
+
+- **Never pushes.** Neither `bd dolt push` nor `git push` runs. The refusal is a correctness rule,
+  not an option: no flag re-enables it. Unpushed contribution branches are reported as
+  `withheld` and leave only through the explicit, gated contribution flow.
+- **Pulls the declared upstream.** The pull leg picks the Dolt remote whose URL matches the
+  registry `upstream` or the Git `upstream` remote, falling back to a Dolt remote named
+  `upstream`. That remote is distinct from Git `origin`. An explicit `--remote` still wins, since
+  a pull is a read. If an upstream is declared but no Dolt remote reaches it, the pull is refused
+  instead of quietly reading the fork. That refusal is a real fault, so the hive is offending.
+- **Reports a policy skip as a skip.** Human output marks the hive `[pull-only]` and prints
+  `push skipped — pull-only (…)`. Dry-run prints `would skip push`. A policy skip is never
+  printed as `pushed` and does not affect the exit status, and a dirty contribution checkout is
+  not a fleet failure either. Only a genuine pull failure or routing refusal exits non-zero.
+  Programmatic callers get `SyncPlan.policy_skipped` / `pulled` / `pull_sources` and
+  `sync_remote.plan_payload()`, whose per-hive `outcome` is one of `offending`,
+  `policy-skipped`, `pushed`, `pulled` or `unchanged`.
+- **Diagnoses `sync.remote`.** When `sync.remote` disagrees with the resolved upstream source
+  (typically because `bd init` derived it from the fork `origin`), sync prints the mismatch and
+  a repair command. It never changes the setting itself.
+- **Skips federation sync.** `bh hive sync peers` is bidirectional, so a pull-only hive is
+  reported and skipped there (not offending).
+
+Safe repairs, none of which publish anything or create an upstream commit:
+
+```sh
+cd <hive>
+bd dolt remote list                      # what the Dolt store actually reads/writes
+bd dolt remote add upstream git+https://github.com/gastownhall/beads.git
+bd config set sync.remote git+https://github.com/gastownhall/beads.git
+bd config set no-push true
+git remote set-url --push upstream disabled://read-only
+bh hive sync remotes <hive> --pull --dry-run   # confirm: "would pull from upstream"
+```
+
+Local planning beads belong in a separate writable store (the local Beadhive hive, via
+`routing.contributor`). Because the pull-only hive never pushes, nothing written locally can
+reach the upstream store. Configuration changes are local edits: they create no upstream
+metadata commits and keep the registered prefix and upstream identity.
+
+This is different from missing-local-clone handling (bh-b8hmc, bh-7bs8y). A **remote-only** hive
+has no checkout on this host, so `--all` reports it and moves on, and `bh sync` hydrates its
+cache. A **pull-only** hive has a checkout and is pulled; only its push legs are withheld.
+
+A pull-only hive can also have an [HQ-declared remote](#hq-declared-remotes-object-stores). The
+push stays withheld, and the withheld Dolt state is named by that remote's label. The pull uses
+the resolved upstream route when one exists and otherwise the HQ remote. Either way it runs with
+the HQ remote's credentials, and missing credentials refuse the pull.
+
 ## Open questions
 
 - Does the developer pull the **hive remote** directly, or a dispatcher-curated ref? Direct is
