@@ -13,6 +13,22 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.25.3 (2026-10-16)
+
+### Fix
+
+- **control-plane**: read the hive-policy binding on the session route and name unreadable bindings
+- **hq**: keep restore floors connected across the liveness schema commit
+- **cli**: retry a transient HQ config read and let bh bd use the cached snapshot
+- **hq**: accept OpenSSH key comments with spaces in SQL admission
+- **fleet**: migrate a reviewed legacy inbox to session rows at the next epoch
+- **hq**: name missing session inspection instead of masking apply refusals
+- **hq**: document runtime read grants and name restore-floor privilege gaps
+- **fleet**: cancel an unapplied release preparation back to the admitted release
+- **control-plane**: honour operator settings in the frame lifecycle verbs
+- **control-plane**: surface and repair a frame grant left on an old config revision
+- **control-plane**: explain held past-expiry leases and session-only release refusals
+
 ## v0.25.2 (2026-10-15)
 
 ### Fix
