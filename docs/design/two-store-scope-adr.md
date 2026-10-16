@@ -59,7 +59,8 @@ managed_repos:
 |---|---|---|
 | `prefix` | the store's bead-id prefix | required for `public`; `internal` defaults to and must equal the hive `prefix` |
 | `path` | detached store root (holds `.beads/`) | `internal`: absent = `<checkout>/.beads`; `public`: required, absolute or `~`, outside the checkout |
-| `remote` | the **name** of the hive's `bh-b1scz` descriptor (`dolt_remote.name`, which itself defaults to `origin`); `git-origin` is reserved for the code origin's `refs/dolt/data` | never a URL (`://`), never credentials; unique across stores |
+| `remote` | the **name** of the store's `dolt-remote-descriptor/v1`: `internal` names the hive's `dolt_remote` (whose `name` defaults to `origin`); `public` names its own nested `dolt_remote`; `git-origin` is reserved for the code origin's `refs/dolt/data` | never a URL (`://`), never credentials; unique across stores; `internal` defaults to the hive descriptor's name |
+| `dolt_remote` | `public` only: the store's own nested `dolt-remote-descriptor/v1` (`{url, name, credentials}`, bh-rz379) | the same model and value-free errors as `managed_repos[].dolt_remote`; `remote` defaults to and must equal its `name`; `name` may not be `git-origin`; forbidden on `internal` |
 | `authority` | who is canonical: `local` (this store) or `remote` (the external system) | `internal` must be `local`; `public` must be `remote` |
 | `sync` | `push-pull`, `pull-only` or `none` | `local` allows `push-pull`/`none`; `remote` allows `pull-only`/`none` |
 | `source` | projection source for a `public` store | `github-issues` (only value); forbidden on `internal` |
@@ -68,6 +69,26 @@ managed_repos:
 Validation lives in `modules/config/contracts.py` (`StoreDescriptor`, `ManagedRepoStores`,
 `BeadhiveConfig._store_references`). Declaring `stores:` without `internal` is rejected as an
 ambiguous default: the operational store must be named, never inferred.
+
+**One descriptor per store (bh-rz379).** Every store's remote is a `dolt-remote-descriptor/v1`;
+no second remote model exists. The internal store's descriptor **is** the hive's
+`managed_repos[].dolt_remote` (so `bh hive remote` reconciliation and onboarding keep one source
+of truth): when both are declared, `stores.internal.remote` must name it. A public store that
+publishes anywhere but the code origin nests its own descriptor:
+
+```yaml
+stores:
+  internal: {remote: beadhive-private}
+  public:
+    prefix: bhpub
+    path: ~/.beadhive/stores/github/beadhive/beadhive/public
+    dolt_remote: {name: beadhive-public, url: "s3://<bucket>/public/github/beadhive/beadhive"}
+dolt_remote: {name: beadhive-private, url: "s3://<bucket>/internal/github/beadhive/beadhive"}
+```
+
+A public `remote` other than `git-origin` without a nested descriptor is rejected: a public
+store never borrows the internal store's descriptor. "One location per database" (the
+`bh-b1scz` ADR) holds across every descriptor in the fleet, nested ones included.
 
 ## 3. Authority and sync direction
 
@@ -129,13 +150,18 @@ The subject-and-visibility table in the
 Order is security-sensitive (`store_bootstrap.plan_bootstrap`):
 
 1. **Internal first.** A managed hive whose internal store names an HQ remote descriptor
-   clones it (`bd init --remote <resolved url>`, a plain full-history clone) **before** any
-   probe of the code origin's `refs/dolt/data`. A private hive therefore cannot bootstrap from
-   a public ref by accident.
+   clones it (a plain full-history clone) **before** any probe of the code origin's
+   `refs/dolt/data`. A private hive therefore cannot bootstrap from a public ref by accident.
+   The clone is the `bh-b1scz` HQ-remote bootstrap (`onboard._bootstrap_from_hq_remote`:
+   `bd bootstrap` against the descriptor, credentials, seeding, redaction, registration);
+   `store_bootstrap` only orders the phases and delegates, so there is one clone path
+   (bh-rz379). It lands in the hive's own shared-server database, named from the prefix.
 2. **Origin probe only when no internal remote is declared** — today's unmanaged/public-clone
    behaviour, unchanged.
 3. **Public second**, initialised independently at its detached `path` with its own prefix,
-   never replacing the internal store.
+   never replacing the internal store. It is minted fresh; a nested `dolt_remote` is then
+   registered under its name (never cloned from, until a public second-host bootstrap is
+   designed). A registration failure discards the fresh mint so a retry redoes the phase.
 
 Each phase reports its name on failure and leaves the other store and the prior config
 untouched; an already-initialised store is skipped, so a retry is idempotent. Resolving a

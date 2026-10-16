@@ -1118,9 +1118,80 @@
           ],
           "title": "Backend",
           "type": "string"
+        },
+        "remote_credentials": {
+          "additionalProperties": {
+            "$ref": "#/$defs/DoltRemoteCredentialConfig"
+          },
+          "description": "HOST-local credential profiles for HQ Dolt remote descriptors, keyed by the descriptor's `credentials` label (bh-b1scz). Lookups only, never secret values.",
+          "title": "Remote Credentials",
+          "type": "object"
         }
       },
       "title": "DoltConfig",
+      "type": "object"
+    },
+    "DoltRemoteCredentialConfig": {
+      "additionalProperties": false,
+      "description": "HOST-local credential source for one ``credentials`` label. Never holds a secret value:\n``fnox`` entries are lookups resolved through the host's fnox broker at call time.",
+      "properties": {
+        "access_key_id": {
+          "$ref": "#/$defs/HqFnoxRef"
+        },
+        "aws_profile": {
+          "default": "",
+          "description": "AWS profile name for source=aws-profile.",
+          "title": "Aws Profile",
+          "type": "string"
+        },
+        "secret_access_key": {
+          "$ref": "#/$defs/HqFnoxRef"
+        },
+        "session_token": {
+          "$ref": "#/$defs/HqFnoxRef"
+        },
+        "source": {
+          "default": "ambient",
+          "description": "ambient = AWS SDK chain; instance-role = trust instance metadata; aws-profile = set AWS_PROFILE; fnox = read keys through the fnox broker.",
+          "enum": [
+            "ambient",
+            "instance-role",
+            "aws-profile",
+            "fnox"
+          ],
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "title": "DoltRemoteCredentialConfig",
+      "type": "object"
+    },
+    "DoltRemoteDescriptor": {
+      "additionalProperties": false,
+      "description": "``dolt-remote-descriptor/v1``: the non-secret desired Dolt remote of one hive.\n\nFleet-owned (``managed_repos[].dolt_remote``). Absent means today's behaviour.\nCredentials never live here — ``credentials`` only names a host-local profile.",
+      "properties": {
+        "credentials": {
+          "default": "",
+          "description": "Host credential profile label (dolt.remote_credentials.<label>); empty = ambient AWS SDK chain.",
+          "title": "Credentials",
+          "type": "string"
+        },
+        "name": {
+          "default": "origin",
+          "description": "Canonical Dolt remote name to register it under.",
+          "title": "Name",
+          "type": "string"
+        },
+        "url": {
+          "description": "Dolt remote URL (s3://bucket/path, file:///abs, git+ssh://…).",
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "title": "DoltRemoteDescriptor",
       "type": "object"
     },
     "ExcludeConfig": {
@@ -2206,6 +2277,18 @@
           "description": "Marks a hive as a Contribution-plane target. Today only `pull` (upstream is a read rail; nothing yet consumes it as a push/PR target).",
           "title": "Contribution"
         },
+        "dolt_remote": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DoltRemoteDescriptor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "HQ-declared desired Dolt remote (dolt-remote-descriptor/v1); absent keeps today's Git-origin behaviour."
+        },
         "frame_policy": {
           "anyOf": [
             {
@@ -2894,6 +2977,18 @@
           "description": "Whether the store may issue operational work. Only `internal` may; a public store set to true is rejected.",
           "title": "Dispatch"
         },
+        "dolt_remote": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DoltRemoteDescriptor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The store's own `dolt-remote-descriptor/v1` (bh-rz379). Public stores only: the internal store's descriptor is the hive's `dolt_remote`. `remote` names it and defaults to its `name`."
+        },
         "path": {
           "anyOf": [
             {
@@ -2930,7 +3025,7 @@
             }
           ],
           "default": null,
-          "description": "Name of the hive's HQ Dolt remote descriptor (`dolt_remote.name`, bh-b1scz), never a URL or credential. `git-origin` is reserved for the code origin's refs/dolt/data.",
+          "description": "Name of the store's HQ Dolt remote descriptor, never a URL or credential: `internal` names the hive's `dolt_remote` (bh-b1scz); `public` names its own nested `dolt_remote`. `git-origin` is reserved for the code origin's refs/dolt/data.",
           "title": "Remote"
         },
         "source": {

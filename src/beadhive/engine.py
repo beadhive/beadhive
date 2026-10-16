@@ -91,6 +91,100 @@ class SyncOutcome:
     no_peers: bool = False
 
 
+@dataclass(frozen=True)
+class DoltRemoteEntry:
+    """One registered Dolt remote as bd's server-side configuration reports it. ``url`` is the
+    raw registration (it is compared, never rendered: render with ``dolt_remote.redact_url``)."""
+
+    name: str
+    url: str
+
+
+@dataclass(frozen=True)
+class RemoteListing:
+    """Outcome of ``bd dolt remote list --json``. ``ok`` False means the read failed and the
+    registration is UNKNOWN — never read an empty ``remotes`` as "no remote" then."""
+
+    ok: bool
+    error: str = ""
+    remotes: tuple[DoltRemoteEntry, ...] = ()
+
+    def get(self, name: str) -> DoltRemoteEntry | None:
+        return next((remote for remote in self.remotes if remote.name == name), None)
+
+
+def _extra_env(env, extra_env):
+    """``env`` (or the current environment) plus ``extra_env``; ``None`` when neither is set so
+    the bd child keeps inheriting exactly as before."""
+    if env is None and not extra_env:
+        return None
+    merged = dict(os.environ if env is None else env)
+    merged.update(extra_env or {})
+    return merged
+
+
+def _unsupported(args, target, op):
+    """An explicit, typed refusal shaped like a failed bd call (exit 2, nothing ran)."""
+    dolt_remote = importlib.import_module("beadhive.dolt_remote")
+    error = dolt_remote.UnsupportedRemoteOperation(target, op)
+    result = subprocess.CompletedProcess(
+        args=["bd", *args], returncode=2, stdout="", stderr=f"bh: {error}\n"
+    )
+    result.unsupported = error
+    return result
+
+
+def _refused(args, why: str):
+    return subprocess.CompletedProcess(
+        args=["bd", *args], returncode=1, stdout="", stderr=f"bh: {why}\n"
+    )
+
+
+_SYNC_REMOTE_KEY = "sync.remote"
+
+
+def _hint_line(url: str) -> str:
+    return f"{_SYNC_REMOTE_KEY}: {json.dumps(url)}\n"
+
+
+#: The only ``metadata.json`` keys a store-less ``.beads/`` may carry before a clone: the
+#: shared-server identity stamp that names the database the clone lands in (bh-rz379; the same
+#: stamp hub hydration writes before its bootstrap, bh-fnn3d / bh-g5ujg).
+_CLONE_IDENTITY_KEYS = frozenset({"dolt_mode", "dolt_database"})
+
+
+def _initialised_store(beads: Path) -> bool:
+    """Whether ``beads`` already holds a store a clone must not land over: Dolt data on disk,
+    or a ``metadata.json`` recording more than the pre-clone identity stamp."""
+    if any((beads / marker).exists() for marker in ("embeddeddolt", "dolt")):
+        return True
+    path = beads / "metadata.json"
+    if not path.exists():
+        return False
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return True
+    return not (isinstance(data, dict) and set(data) <= _CLONE_IDENTITY_KEYS)
+
+
+def _drop_hint(config_path: Path, url: str, prior: str | None) -> None:
+    """Remove the one-call bootstrap hint, keeping anything bd itself wrote meanwhile; restore
+    the file's absence when bh created it and nothing else landed."""
+    if not config_path.is_file():
+        return
+    hint = _hint_line(url)
+    lines = [
+        line
+        for line in config_path.read_text().splitlines(keepends=True)
+        if line != hint and line.rstrip("\n") != hint.rstrip("\n")
+    ]
+    if prior is None and not "".join(lines).strip():
+        config_path.unlink()
+        return
+    config_path.write_text("".join(lines))
+
+
 def _int(val) -> int:
     try:
         return int(val)
@@ -270,16 +364,24 @@ class Engine(Protocol):
         ...
 
     def push_state(
-        self, cwd, actor: str = "", message: str = "", *, remote: str = "", force: bool = False
+        self,
+        cwd,
+        actor: str = "",
+        message: str = "",
+        *,
+        remote: str = "",
+        force: bool = False,
+        extra_env=None,
     ):
         """Publish authoritative bead state (commit + push for `bd`/Dolt). `remote` targets a
         named remote instead of the default; `force` overwrites remote changes (`bd dolt push
-        --remote/--force`)."""
+        --remote/--force`). `extra_env` adds host credentials to the push child only."""
         ...
 
-    def pull_state(self, cwd, *, remote: str = ""):
+    def pull_state(self, cwd, *, remote: str = "", extra_env=None):
         """Refresh `cwd`'s bead state from the authoritative remote. `remote` pulls from a
-        named remote instead of the default (`bd dolt pull --remote`)."""
+        named remote instead of the default (`bd dolt pull --remote`). `extra_env` adds host
+        credentials to the pull child only."""
         ...
 
     def bootstrap(self, cwd, *, env=None):
@@ -329,6 +431,36 @@ class Engine(Protocol):
     ) -> SyncOutcome:
         """Bidirectional peer sync (`bd federation sync`). With conflicts and no `strategy`
         (`ours`|`theirs`), bd pauses and reports the conflicted tables."""
+        ...
+
+    def list_remotes(self, cwd) -> RemoteListing:
+        """The Dolt remotes registered in ``cwd``'s store (bd's server-side configuration —
+        authoritative, unlike filesystem config). Local read; never a network fetch."""
+        ...
+
+    def get_remote(self, cwd, name: str) -> DoltRemoteEntry | None:
+        """One named registration, or None (also None when the listing itself failed)."""
+        ...
+
+    def add_remote(self, cwd, name: str, url: str, *, extra_env=None):
+        """Register ``url`` as ``name``. Refused (exit 2, typed) for a family bh does not
+        implement. Idempotent for the same URL; REFUSES (exit 1) a different URL under an
+        existing name, because bd 1.3.0's ``dolt remote add`` silently re-points it."""
+        ...
+
+    def remove_remote(self, cwd, name: str):
+        """Drop the ``name`` registration. Removes configuration only — never remote data."""
+        ...
+
+    def replace_remote(self, cwd, name: str, url: str, *, extra_env=None):
+        """Re-point ``name`` at ``url`` (remove + add, restoring the old URL if the add fails).
+        An explicit operation for migration tooling; reconciliation never calls it."""
+        ...
+
+    def clone_remote(self, cwd, url: str, *, env=None, extra_env=None):
+        """Initialise ``cwd``'s store from ``url`` with full history (``bd bootstrap`` against
+        an explicit source). Refuses an already-initialised store; never treats a failed clone
+        as an empty remote."""
         ...
 
 
@@ -473,7 +605,7 @@ class BdEngine:
             pin_process_cwd=True,
         )
 
-    def push_state(self, cwd, actor="", message="", *, remote="", force=False):
+    def push_state(self, cwd, actor="", message="", *, remote="", force=False, extra_env=None):
         # Extracted from report.py's `file_report()` cache-push tail: commit (result unchecked,
         # matching the original — an empty commit is not itself a failure) then push.
         # Both go through `_state_call`: the push is the network leg, and the commit can itself
@@ -537,6 +669,7 @@ class BdEngine:
         store_bytes = _state_store_bytes(cwd)
         fsck_timeout = _fsck_timeout(cwd)
         push_env = dict(os.environ)
+        push_env.update(extra_env or {})
         push_env.setdefault("BEADS_FSCK_TIMEOUT", str(fsck_timeout))
         started = time.monotonic()
         pushed = self._state_call(args, cwd, actor=actor, timeout=fsck_timeout + 60.0, env=push_env)
@@ -591,14 +724,141 @@ class BdEngine:
             )
         return pushed
 
-    def pull_state(self, cwd, *, remote=""):
+    def pull_state(self, cwd, *, remote="", extra_env=None):
         skipped = _forward_noop(cwd, ["dolt", "pull"])
         if skipped is not None:
             return skipped
         args = ["dolt", "pull"]
         if remote:
             args += ["--remote", remote]
-        return self._state_call(args, cwd)
+        return self._state_call(args, cwd, env=_extra_env(None, extra_env))
+
+    # ---- remote lifecycle (bh-b1scz.3; docs/design/hq-dolt-remote-descriptor-adr.md) ----
+
+    def list_remotes(self, cwd):
+        # Verified output shape (bd 1.3.0, real binary): `[]` with no remotes, else
+        # `[{"name","url","sql_url","status"}]`. Local state only: bd reads the SQL-backed
+        # `dolt_remotes` the running server serves, which is the authoritative registration.
+        res = self.invoke(["dolt", "remote", "list", "--json"], cwd=cwd, capture=True)
+        if res.returncode == 124:
+            return RemoteListing(ok=False, error="timeout")
+        if res.returncode != 0:
+            return RemoteListing(ok=False, error=_stderr_tail(res) or f"exit {res.returncode}")
+        try:
+            data = json.loads(res.stdout or "")
+        except ValueError:
+            data = None
+        if not isinstance(data, list):
+            return RemoteListing(ok=False, error="parse-error")
+        remotes = tuple(
+            DoltRemoteEntry(name=str(row.get("name") or ""), url=str(row.get("url") or ""))
+            for row in data
+            if isinstance(row, dict) and row.get("name")
+        )
+        return RemoteListing(ok=True, remotes=remotes)
+
+    def get_remote(self, cwd, name):
+        listing = self.list_remotes(cwd)
+        return listing.get(name) if listing.ok else None
+
+    def add_remote(self, cwd, name, url, *, extra_env=None):
+        dolt_remote = importlib.import_module("beadhive.dolt_remote")
+        args = ["dolt", "remote", "add", str(name), str(url)]
+        target = dolt_remote.classify(url)
+        if not target.allows(dolt_remote.RemoteOp.ADD):
+            return _unsupported(args, target, dolt_remote.RemoteOp.ADD)
+        # Measured on bd 1.3.0: `dolt remote add` with an EXISTING name exits 0 and silently
+        # re-points it. An add must never be a hidden replace, so probe first.
+        listing = self.list_remotes(cwd)
+        if not listing.ok:
+            return _refused(args, f"cannot read current remotes ({listing.error}); nothing added")
+        prior = listing.get(str(name))
+        if prior is not None:
+            if dolt_remote.same_remote(prior.url, str(url)):
+                return subprocess.CompletedProcess(
+                    args=["bd", *args], returncode=0, stdout="", stderr=""
+                )
+            return _refused(
+                args,
+                f"remote {name!r} is already registered at "
+                f"{dolt_remote.redact_url(prior.url)}; not replaced (use replace_remote)",
+            )
+        return self.invoke(args, cwd=cwd, capture=True, env=_extra_env(None, extra_env))
+
+    def remove_remote(self, cwd, name):
+        return self.invoke(["dolt", "remote", "remove", str(name)], cwd=cwd, capture=True)
+
+    def replace_remote(self, cwd, name, url, *, extra_env=None):
+        dolt_remote = importlib.import_module("beadhive.dolt_remote")
+        args = ["dolt", "remote", "add", str(name), str(url)]
+        target = dolt_remote.classify(url)
+        if not target.allows(dolt_remote.RemoteOp.REPLACE):
+            return _unsupported(args, target, dolt_remote.RemoteOp.REPLACE)
+        listing = self.list_remotes(cwd)
+        if not listing.ok:
+            return _refused(
+                args, f"cannot read current remotes ({listing.error}); nothing replaced"
+            )
+        prior = listing.get(str(name))
+        # bd's add re-points an existing name in one call, so a replace is a single add; the
+        # prior URL is restored if that add fails part-way.
+        added = self.invoke(args, cwd=cwd, capture=True, env=_extra_env(None, extra_env))
+        if added.returncode and prior is not None:
+            restored = self.invoke(
+                ["dolt", "remote", "add", str(name), prior.url], cwd=cwd, capture=True
+            )
+            note = "restored the previous URL" if restored.returncode == 0 else "RESTORE FAILED"
+            added = subprocess.CompletedProcess(
+                args=getattr(added, "args", ["bd", *args]),
+                returncode=added.returncode,
+                stdout=getattr(added, "stdout", "") or "",
+                stderr=f"{(getattr(added, 'stderr', '') or '').rstrip()}\nbh: {note} for {name}\n",
+            )
+        return added
+
+    def clone_remote(self, cwd, url, *, env=None, extra_env=None):
+        """Full-history initialisation from an explicit URL (bd 1.3.0 evidence, ADR "Bootstrap
+        from a descriptor"): ``bd bootstrap`` clones when ``sync.remote`` names a source and
+        exits non-zero when the source holds no Dolt data. ``bd init --remote`` is deliberately
+        NOT used: it reads "no data" as empty and mints a fresh store, which would turn a wrong
+        URL or a failed authentication into a silently empty hive.
+
+        The URL is handed to bd through ``.beads/config.yaml`` for this one call and removed
+        afterwards (the file is tracked in a furnished hive); push and pull then use the
+        registration bootstrap created."""
+        dolt_remote = importlib.import_module("beadhive.dolt_remote")
+        args = ["bootstrap", "--non-interactive"]
+        target = dolt_remote.classify(url)
+        if not target.allows(dolt_remote.RemoteOp.CLONE):
+            return _unsupported(args, target, dolt_remote.RemoteOp.CLONE)
+        from . import store_locator
+
+        beads = store_locator.embedded_store_dir(Path(cwd)).parent  # the hive's .beads/
+        if _initialised_store(beads):
+            return _refused(args, "refusing to clone over an already-initialised beads store")
+        config_path = beads / "config.yaml"
+        prior = config_path.read_text() if config_path.is_file() else None
+        kept = [
+            line
+            for line in (prior or "").splitlines(keepends=True)
+            if not line.startswith(f"{_SYNC_REMOTE_KEY}:")
+        ]
+        if kept and not kept[-1].endswith("\n"):
+            kept[-1] += "\n"
+        beads.mkdir(parents=True, exist_ok=True)
+        config_path.write_text("".join(kept) + _hint_line(url))
+        try:
+            result = self.invoke(
+                args,
+                cwd=cwd,
+                env=_extra_env(env, extra_env),
+                capture=True,
+                hive_aware=False,
+                pin_process_cwd=True,
+            )
+        finally:
+            _drop_hint(config_path, url, prior)
+        return result
 
     def backup(self, cwd, dest, *, actor=""):
         # `bd backup add` + `bd backup sync` — bd's own wrapper around Dolt-native

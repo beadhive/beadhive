@@ -2341,6 +2341,55 @@ def sync_peers_cmd(
 hive_app.add_typer(sync_app, name="sync", rich_help_panel=HIVE_PANEL)
 
 
+def _run_hive_remote(
+    hive: list[str], all_hives: bool, reconcile: bool, dry_run: bool, as_json: bool
+) -> None:
+    import json as _json
+
+    from . import dolt_remote_reconcile
+
+    if not _hive_args_ok(hive or [], all_hives):
+        typer.echo("✗ pass one or more HIVE, or --all", err=True)
+        raise typer.Exit(1)
+    preview = dry_run or not reconcile
+    try:
+        reports = dolt_remote_reconcile.reconcile(
+            list(hive or []) or None, dry_run=preview, cfg=config.load()
+        )
+    except (KeyError, ValueError) as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(1) from None
+    title = "reconcile" if reconcile or dry_run else "status"
+    if as_json:
+        payload = dolt_remote_reconcile.to_json(reports, dry_run=preview)
+        typer.echo(_json.dumps(payload, indent=2))
+    else:
+        for line in dolt_remote_reconcile.render(reports, dry_run=preview, title=title):
+            typer.echo(line)
+    if any(report.failing for report in reports):
+        raise typer.Exit(1)
+
+
+@hive_app.command(
+    "remote",
+    help="compare each hive's HQ-declared Dolt remote (managed_repos[].dolt_remote) with bd's "
+    "registration. Read-only unless --reconcile, which installs a MISSING registration "
+    "(idempotent) and never replaces, removes, pushes or pulls.",
+)
+def hive_remote(
+    hive: list[str] = _HIVE_ARG,
+    all_hives: bool = _ALL_OPT,
+    reconcile: bool = typer.Option(
+        False, "--reconcile", help="install a missing HQ-declared registration"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="with --reconcile: report the exact mutation, change nothing"
+    ),
+    as_json: bool = typer.Option(False, "--json", help="emit the versioned report"),
+):
+    _run_hive_remote(hive, all_hives, reconcile, dry_run, as_json)
+
+
 @hive_app.command(
     "sync-remote",
     hidden=True,

@@ -49,7 +49,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from pydantic_core import PydanticUndefined
+from pydantic_core import PydanticCustomError, PydanticUndefined
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from ...complexity import ComplexityTier, tier_names
@@ -2063,6 +2063,210 @@ class ObservaloopConfig(_Section):
     )
 
 
+# ---- dolt remote descriptor (bh-b1scz, docs/design/hq-dolt-remote-descriptor-adr.md) ----
+
+#: The stable contract id other molecules cite (bh-lniwf nests the same model per store).
+DOLT_REMOTE_DESCRIPTOR_CONTRACT = "dolt-remote-descriptor/v1"
+DOLT_REMOTE_DEFAULT_NAME = "origin"
+#: The only query keys an ``s3://`` URL may carry: Dolt's provider-addressing parameters.
+DOLT_REMOTE_S3_QUERY_KEYS = frozenset({"endpoint", "region", "path-style"})
+#: Schemes whose URL may carry a (password-less) login name: Git SSH routes by user.
+DOLT_REMOTE_USER_SCHEMES = frozenset({"git+ssh", "ssh"})
+#: Families that address one database by a storage location (bucket path or directory).
+DOLT_REMOTE_LOCATION_SCHEMES = frozenset({"s3", "aws", "gs", "file", "az", "oss"})
+_DOLT_REMOTE_NAME = re.compile(r"[A-Za-z][A-Za-z0-9._-]{0,62}")
+_DOLT_REMOTE_LABEL = re.compile(r"[a-z0-9][a-z0-9_-]{0,62}")
+_DOLT_REMOTE_SCHEME = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*)://(.*)", re.DOTALL)
+_DOLT_REMOTE_SECRET_KEY = re.compile(
+    r"(key|secret|token|passw|credential|signature|sig|auth|session)", re.IGNORECASE
+)
+
+
+@dataclass(frozen=True)
+class DoltRemoteUrlParts:
+    """A Dolt remote URL split without ``urllib``'s IPv6 guess (``aws://[table:bucket]/db``)."""
+
+    scheme: str
+    userinfo: str
+    host: str
+    path: str
+    query: tuple[tuple[str, str], ...]
+    fragment: str
+
+
+def _dolt_remote_error(code: str, message: str) -> PydanticCustomError:
+    return PydanticCustomError(code, message)
+
+
+def split_dolt_remote_url(url: str) -> DoltRemoteUrlParts:
+    """Split *url* into parts, raising a value-free ``PydanticCustomError`` when malformed."""
+
+    if not isinstance(url, str) or not url.strip():
+        raise _dolt_remote_error("dolt_remote_url_required", "Dolt remote URL is required")
+    if url != url.strip() or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in url):
+        raise _dolt_remote_error(
+            "dolt_remote_url_malformed", "Dolt remote URL contains whitespace or control bytes"
+        )
+    match = _DOLT_REMOTE_SCHEME.fullmatch(url)
+    if match is None:
+        raise _dolt_remote_error(
+            "dolt_remote_url_malformed", "Dolt remote URL needs an explicit scheme://"
+        )
+    scheme, rest = match.group(1).lower(), match.group(2)
+    rest, hash_mark, fragment = rest.partition("#")
+    if hash_mark:
+        raise _dolt_remote_error(
+            "dolt_remote_url_malformed", "Dolt remote URL may not carry a #fragment"
+        )
+    rest, _, query_text = rest.partition("?")
+    authority, slash, path = rest.partition("/")
+    path = slash + path
+    userinfo, at, host = authority.rpartition("@")
+    if not at:
+        userinfo, host = "", authority
+    query: list[tuple[str, str]] = []
+    if query_text:
+        for item in query_text.split("&"):
+            key, _, value = item.partition("=")
+            if not key:
+                raise _dolt_remote_error(
+                    "dolt_remote_url_malformed", "Dolt remote URL has an empty query key"
+                )
+            query.append((key, value))
+    return DoltRemoteUrlParts(scheme, userinfo, host, path, tuple(query), fragment)
+
+
+def validate_dolt_remote_url(url: str) -> DoltRemoteUrlParts:
+    """Reject secrets and malformed shapes; accept unknown schemes (classified at runtime)."""
+
+    parts = split_dolt_remote_url(url)
+    if parts.userinfo and (":" in parts.userinfo or parts.scheme not in DOLT_REMOTE_USER_SCHEMES):
+        raise _dolt_remote_error(
+            "dolt_remote_embedded_credential",
+            "Dolt remote URL may not embed credentials; configure them on the host",
+        )
+    for key, _value in parts.query:
+        if _DOLT_REMOTE_SECRET_KEY.search(key) and key.lower() not in DOLT_REMOTE_S3_QUERY_KEYS:
+            raise _dolt_remote_error(
+                "dolt_remote_embedded_credential",
+                "Dolt remote URL may not embed credentials; configure them on the host",
+            )
+    if parts.query and parts.scheme != "s3":
+        raise _dolt_remote_error(
+            "dolt_remote_query_unsupported", "only s3:// Dolt remote URLs take query parameters"
+        )
+    unknown = [key for key, _ in parts.query if key.lower() not in DOLT_REMOTE_S3_QUERY_KEYS]
+    if unknown:
+        raise _dolt_remote_error(
+            "dolt_remote_query_unsupported",
+            "s3:// query keys are limited to endpoint, region and path-style",
+        )
+    if parts.scheme == "file":
+        if parts.host not in ("", "localhost") or not parts.path.startswith("/"):
+            raise _dolt_remote_error(
+                "dolt_remote_url_malformed", "file:// Dolt remote needs an absolute path"
+            )
+    elif parts.scheme in DOLT_REMOTE_LOCATION_SCHEMES:
+        if not parts.host or parts.path.strip("/") == "":
+            raise _dolt_remote_error(
+                "dolt_remote_url_malformed",
+                "object-store Dolt remote needs scheme://bucket/database-path",
+            )
+    elif not parts.host:
+        raise _dolt_remote_error("dolt_remote_url_malformed", "Dolt remote URL needs a host")
+    return parts
+
+
+def dolt_remote_location(url: str) -> str | None:
+    """Normalised storage location of an object-store/file URL, else ``None``.
+
+    Two managed hives with the same location would share one Dolt history (ADR, "One location
+    per database"); a different S3 ``endpoint`` is a different location, so the query stays.
+    """
+
+    try:
+        parts = split_dolt_remote_url(url)
+    except PydanticCustomError:
+        return None
+    if parts.scheme not in DOLT_REMOTE_LOCATION_SCHEMES:
+        return None
+    path = parts.path.rstrip("/")
+    if parts.scheme == "file":
+        return f"file://{os.path.normpath(path or '/')}"
+    query = "&".join(f"{k.lower()}={v}" for k, v in sorted(parts.query))
+    location = f"{parts.scheme}://{parts.host.lower()}{path}"
+    return f"{location}?{query}" if query else location
+
+
+class DoltRemoteDescriptor(_Section):
+    """``dolt-remote-descriptor/v1``: the non-secret desired Dolt remote of one hive.
+
+    Fleet-owned (``managed_repos[].dolt_remote``). Absent means today's behaviour.
+    Credentials never live here — ``credentials`` only names a host-local profile.
+    """
+
+    url: str = Field(description="Dolt remote URL (s3://bucket/path, file:///abs, git+ssh://…).")
+    name: str = Field(
+        DOLT_REMOTE_DEFAULT_NAME, description="Canonical Dolt remote name to register it under."
+    )
+    credentials: str = Field(
+        "",
+        description="Host credential profile label (dolt.remote_credentials.<label>); "
+        "empty = ambient AWS SDK chain.",
+    )
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def _valid_url(cls, value):
+        if not isinstance(value, str):
+            raise _dolt_remote_error("dolt_remote_url_required", "Dolt remote URL is required")
+        validate_dolt_remote_url(value)
+        return value
+
+    @field_validator("name")
+    @classmethod
+    def _valid_name(cls, value):
+        if not _DOLT_REMOTE_NAME.fullmatch(value):
+            raise _dolt_remote_error("dolt_remote_name_invalid", "invalid Dolt remote name")
+        return value
+
+    @field_validator("credentials")
+    @classmethod
+    def _valid_label(cls, value):
+        if value and not _DOLT_REMOTE_LABEL.fullmatch(value):
+            raise _dolt_remote_error(
+                "dolt_remote_credentials_label_invalid", "invalid credential profile label"
+            )
+        return value
+
+
+class DoltRemoteCredentialConfig(_Section):
+    """HOST-local credential source for one ``credentials`` label. Never holds a secret value:
+    ``fnox`` entries are lookups resolved through the host's fnox broker at call time."""
+
+    source: Literal["ambient", "instance-role", "aws-profile", "fnox"] = Field(
+        "ambient",
+        description="ambient = AWS SDK chain; instance-role = trust instance metadata; "
+        "aws-profile = set AWS_PROFILE; fnox = read keys through the fnox broker.",
+    )
+    aws_profile: str = Field("", description="AWS profile name for source=aws-profile.")
+    access_key_id: HqFnoxRef = Field(default_factory=HqFnoxRef)
+    secret_access_key: HqFnoxRef = Field(default_factory=HqFnoxRef)
+    session_token: HqFnoxRef = Field(default_factory=HqFnoxRef)
+
+    @model_validator(mode="after")
+    def _complete_source(self):
+        if self.aws_profile and not re.fullmatch(r"[A-Za-z0-9_.+-]{1,64}", self.aws_profile):
+            raise ValueError("invalid AWS profile name")
+        if self.source == "aws-profile" and not self.aws_profile:
+            raise ValueError("source aws-profile needs aws_profile")
+        if self.source == "fnox":
+            for ref in (self.access_key_id, self.secret_access_key):
+                if not (ref.config_path and ref.profile and ref.key):
+                    raise ValueError("source fnox needs access_key_id and secret_access_key refs")
+        return self
+
+
 # ---- dolt / dimensions / passthrough / log / archive / metadata --------------
 
 
@@ -2083,6 +2287,21 @@ class DoltConfig(_Section):
         "docker",
         description="Container runtime pre-step (none = no probe, external Dolt server).",
     )
+    remote_credentials: dict[str, DoltRemoteCredentialConfig] = Field(
+        default_factory=dict,
+        description="HOST-local credential profiles for HQ Dolt remote descriptors, keyed by "
+        "the descriptor's `credentials` label (bh-b1scz). Lookups only, never secret values.",
+    )
+
+    @field_validator("remote_credentials")
+    @classmethod
+    def _valid_labels(cls, value):
+        for label in value:
+            if not _DOLT_REMOTE_LABEL.fullmatch(label):
+                raise _dolt_remote_error(
+                    "dolt_remote_credentials_label_invalid", "invalid credential profile label"
+                )
+        return value
 
 
 class DimensionConfig(_Section):
@@ -2453,9 +2672,15 @@ class StoreDescriptor(_Section):
     )
     remote: str | None = Field(
         None,
-        description="Name of the hive's HQ Dolt remote descriptor (`dolt_remote.name`, "
-        "bh-b1scz), never a URL or credential. `git-origin` is reserved for the code "
-        "origin's refs/dolt/data.",
+        description="Name of the store's HQ Dolt remote descriptor, never a URL or credential: "
+        "`internal` names the hive's `dolt_remote` (bh-b1scz); `public` names its own nested "
+        "`dolt_remote`. `git-origin` is reserved for the code origin's refs/dolt/data.",
+    )
+    dolt_remote: DoltRemoteDescriptor | None = Field(
+        None,
+        description="The store's own `dolt-remote-descriptor/v1` (bh-rz379). Public stores "
+        "only: the internal store's descriptor is the hive's `dolt_remote`. `remote` names it "
+        "and defaults to its `name`.",
     )
     authority: Literal["local", "remote"] | None = Field(
         None,
@@ -2506,6 +2731,26 @@ class StoreDescriptor(_Section):
         if not _REMOTE_NAME_RE.fullmatch(value):
             raise ValueError(f"store remote {value!r} is not a valid descriptor name")
         return value
+
+    @model_validator(mode="after")
+    def _remote_names_the_nested_descriptor(self):
+        """A nested descriptor is what ``remote`` names: default the name from it, and refuse a
+        store that names one remote while nesting another, or nests the reserved code origin."""
+        nested = self.dolt_remote
+        if nested is None:
+            return self
+        if nested.name == GIT_ORIGIN_REMOTE:
+            raise ValueError(
+                f"store dolt_remote.name {GIT_ORIGIN_REMOTE!r} is reserved for the code origin's "
+                "refs/dolt/data — name the descriptor something else"
+            )
+        if self.remote is None:
+            self.remote = nested.name
+        elif self.remote != nested.name:
+            raise ValueError(
+                f"store remote {self.remote!r} does not name its nested dolt_remote {nested.name!r}"
+            )
+        return self
 
     def effective_authority(self, scope: str) -> str:
         return self.authority or ("local" if scope == "internal" else "remote")
@@ -2565,6 +2810,11 @@ def store_pair_problems(stores: ManagedRepoStores) -> list[str]:
         problems.append("stores.internal: source is only valid on a public store")
     if internal.dispatch is False:
         problems.append("stores.internal: dispatch cannot be false — it is the operational store")
+    if internal.dolt_remote is not None:
+        problems.append(
+            "stores.internal: dolt_remote is not supported — the internal store's descriptor is "
+            "the hive's own `dolt_remote` (bh-b1scz); name it with stores.internal.remote"
+        )
     if public is not None:
         if not public.prefix:
             problems.append("stores.public: prefix is required")
@@ -2583,6 +2833,12 @@ def store_pair_problems(stores: ManagedRepoStores) -> list[str]:
             problems.append("stores: internal and public must use different prefixes")
         if internal.remote is not None and internal.remote == public.remote:
             problems.append("stores: internal and public must name different remotes")
+        if public.remote not in (None, GIT_ORIGIN_REMOTE) and public.dolt_remote is None:
+            problems.append(
+                f"stores.public: remote {public.remote!r} has no descriptor — a public store "
+                "declares its own `dolt_remote` (or names 'git-origin'); it never borrows the "
+                "hive's internal descriptor"
+            )
         if internal.remote == GIT_ORIGIN_REMOTE:
             problems.append(
                 "stores.internal: remote cannot be 'git-origin' when a public store exists — that "
@@ -2654,6 +2910,11 @@ class ManagedRepoEntry(_Section):
     )
     hitch: HitchConfig | None = Field(None, description="Per-hive `hitch` section override.")
     herdr: HerdrConfig | None = Field(None, description="Per-hive `herdr` section override.")
+    dolt_remote: DoltRemoteDescriptor | None = Field(
+        None,
+        description="HQ-declared desired Dolt remote (dolt-remote-descriptor/v1); absent keeps "
+        "today's Git-origin behaviour.",
+    )
     stores: ManagedRepoStores | None = Field(
         None,
         description="Optional explicit internal/public bead stores (bh-lniwf.2). Absent = the "
@@ -2671,8 +2932,41 @@ class ManagedRepoEntry(_Section):
                 )
         return self
 
+    @model_validator(mode="after")
+    def _internal_remote_is_hive_descriptor(self):
+        """The internal store's descriptor IS the hive's ``dolt_remote`` (bh-rz379): when both
+        are declared, ``stores.internal.remote`` must name it, and a public store may not."""
+        internal = self.stores.internal if self.stores is not None else None
+        if internal is None or self.dolt_remote is None:
+            return self
+        hive_name = self.dolt_remote.name
+        if internal.remote is not None and internal.remote != hive_name:
+            raise ValueError(
+                f"stores.internal.remote {internal.remote!r} must name the hive dolt_remote "
+                f"{hive_name!r} — the hive descriptor is the internal store's remote"
+            )
+        public = self.stores.public
+        if public is not None and public.remote == hive_name:
+            raise ValueError(
+                f"stores.public.remote {hive_name!r} names the hive's internal descriptor — "
+                "a public store declares its own dolt_remote"
+            )
+        return self
+
 
 # ---- top level ------------------------------------------------------------------
+
+
+def _declared_dolt_remotes(entry: ManagedRepoEntry) -> list[DoltRemoteDescriptor]:
+    """Every descriptor one hive declares: the hive's own (its internal store) and each store's
+    nested one (bh-rz379). One location per database holds across all of them."""
+    found = [entry.dolt_remote] if entry.dolt_remote is not None else []
+    if entry.stores is not None:
+        for scope in STORE_SCOPES:
+            store = getattr(entry.stores, scope)
+            if store is not None and store.dolt_remote is not None:
+                found.append(store.dolt_remote)
+    return found
 
 
 def fleet_store_problems(entries: Sequence[ManagedRepoEntry]) -> list[str]:
@@ -2790,6 +3084,24 @@ class BeadhiveConfig(BaseSettings):
     managed_repos: list[ManagedRepoEntry] = Field(
         default_factory=list, description="Managed hives — maintained by `bh hive init`."
     )
+
+    @field_validator("managed_repos")
+    @classmethod
+    def _distinct_dolt_remote_locations(cls, value):
+        """Each object-store database needs its own path (ADR "One location per database")."""
+        seen: set[str] = set()
+        for repo in value:
+            for descriptor in _declared_dolt_remotes(repo):
+                location = dolt_remote_location(descriptor.url)
+                if location is None:
+                    continue
+                if location in seen:
+                    raise _dolt_remote_error(
+                        "dolt_remote_path_shared",
+                        "two managed stores declare the same Dolt remote location",
+                    )
+                seen.add(location)
+        return value
 
     @model_validator(mode="after")
     def _store_references(self):

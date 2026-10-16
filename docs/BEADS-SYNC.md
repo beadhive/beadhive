@@ -268,6 +268,16 @@ corrected by bh-tfapu), recorded here because both are easy to get wrong from th
   exact reservation afterward. A lost preflight means no data was attempted; a postflight loss
   means `DATA MAY HAVE LANDED` and requires reconciliation. Raw OS-level bd bypasses both checks.
 
+## HQ-declared remotes (object stores)
+
+State rides `refs/dolt/data` by default. A hive whose data must not live beside its code can
+declare a different Dolt remote in HQ fleet configuration (`managed_repos[].dolt_remote`, for
+example an S3 bucket path); onboarding then clones from it before any Git-origin probe, and
+`bh hive remote` compares and reconciles each host's registration. Sync and doctor name such a
+remote by family and report its ahead/behind as unknown rather than reading Git refs. See the
+[ADR](design/hq-dolt-remote-descriptor-adr.md) and the
+[operator runbook](design/hq-dolt-remotes-runbook.md).
+
 ## Open questions
 
 - Does the developer pull the **hive remote** directly, or a dispatcher-curated ref? Direct is

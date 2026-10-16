@@ -642,6 +642,52 @@ def _section_prefix_mismatches(cfg):
     _render_prefix_mismatches(_data_prefix_mismatches(cfg))
 
 
+# ---- HQ Dolt remotes (bh-b1scz.7) ---------------------------------------------
+# Compares each hive's HQ descriptor (managed_repos[].dolt_remote) with bd's own registration:
+# read-only, local (`bd dolt remote list`), and silent for a fleet that declares none. Object
+# stores have no read-only ahead/behind, so their sync state is reported as unknown — never
+# inferred from, or described as, refs/dolt/data.
+
+
+def _data_hq_remotes(cfg) -> list[dict]:
+    from . import dolt_remote_reconcile
+
+    rows = []
+    for entry in registry.hives(cfg):
+        if not entry.get("dolt_remote"):
+            continue
+        try:
+            report = dolt_remote_reconcile.reconcile_hive(
+                entry, cfg, dry_run=True, check_credentials=False
+            )
+        except Exception as exc:  # noqa: BLE001 - a diagnostic row, never a doctor crash
+            report = dolt_remote_reconcile.HiveRemoteReport(
+                dolt_remote_reconcile._hive_label(entry),
+                dolt_remote_reconcile.Outcome.ERROR,
+                detail=f"{type(exc).__name__} while comparing (details withheld)",
+            )
+        rows.append(report.to_json())
+    return rows
+
+
+def _render_hq_remotes(rows: list[dict]) -> None:
+    if not rows:
+        return
+    typer.echo(f"\n# HQ Dolt remotes ({len(rows)})")
+    for row in rows:
+        good = row["outcome"] in {"in-sync", "no-local-store"}
+        glyph = "✓" if good else "⚠"
+        typer.echo(f"  {glyph} {row['hive']}: {row['outcome']} — HQ {row['desired']}")
+        if row["actual"] and not good:
+            typer.echo(f"    registered: {row['actual']}")
+        if row["outcome"] == "would-add":
+            typer.echo(f"    fix: bh hive remote {row['hive']} --reconcile")
+        elif not good and row["detail"]:
+            typer.echo(f"    {row['detail']}")
+        for caveat in row["caveats"]:
+            typer.echo(f"    note: {caveat}")
+
+
 # ---- node_id section (bh-y85rj) ----------------------------------------------
 # bd's own `bd reclaim --help`: a lease is only meaningful on the replica that granted it, and
 # reclaim SKIPS a lease another replica granted (unless --any-replica) — but only when node_id
@@ -3282,6 +3328,7 @@ def _collect(cfg, *, full_seats: bool = False) -> dict:
         "worktrees": _timed(timings, "worktrees", _data_worktrees, cfg),
         "molecules": _timed(timings, "molecules", _data_molecules, cfg),
         "prefix_mismatches": _timed(timings, "prefix_mismatches", _data_prefix_mismatches, cfg),
+        "hq_remotes": _timed(timings, "hq_remotes", _data_hq_remotes, cfg),
         "node_id": _timed(timings, "node_id", _data_node_id, cfg),
         "beads_role": _timed(timings, "beads_role", _data_beads_role, cfg),
         "beads_routing": _timed(timings, "beads_routing", _data_beads_routing, cfg),
@@ -3352,9 +3399,8 @@ def doctor_payload(*, full_seats: bool = False) -> dict:
     Returns a JSON-able dict keyed by section (``config``, ``providers``, ``orgs``, ``hives``,
     ``inventory``, ``disk_usage``, ``worktree_disk_usage``, ``ram_backed``, ``fleet_health``,
     ``worktrees``, ``molecules``,
-    ``prefix_mismatches``, ``node_id``, ``beads_role``, ``beads_routing``, ``stores``,
-    ``group_auth``,
-    ``mcp``, ``harness_plugin``,
+    ``prefix_mismatches``, ``hq_remotes``, ``node_id``, ``beads_role``, ``beads_routing``,
+    ``stores``, ``group_auth``, ``mcp``, ``harness_plugin``,
     ``seats``,
     ``install``, ``observability``, ``build_verify``, ``writer_fence``, ``forward``,
     ``warnings``), plus
@@ -3454,6 +3500,7 @@ def doctor(as_json: bool = False, verbose: bool = False, seats: bool = False):
     _render_worktrees(data["worktrees"])
     _render_molecules(data["molecules"])
     _render_prefix_mismatches(data["prefix_mismatches"])
+    _render_hq_remotes(data.get("hq_remotes") or [])
     _render_node_id(data["node_id"])
     _render_beads_role(data["beads_role"])
     _render_beads_routing(data.get("beads_routing") or [])

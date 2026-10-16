@@ -148,6 +148,8 @@ boundaries.
 | `managed_repos[].frame_policy.requires` | Optional requirements: `isolation`, `trust_zone`, `arch`, `harness`, `harnesses`, and positive `max_sessions`. |
 | `execution_hives` (host document) | Optional list of hive prefixes the frame may execute (default: unset, no restriction). Frame `capabilities.isolation` also accepts `workstation` beside `kvm`, `microvm` and `container`. |
 | `managed_repos[].frame_policy.evict_after_s` | Required positive finite interval used by protected takeover policy. |
+| `managed_repos[].dolt_remote` | Optional HQ-declared desired Dolt remote for the hive (`dolt-remote-descriptor/v1`, [ADR](design/hq-dolt-remote-descriptor-adr.md)): `url` (required; `s3://bucket/path`, `aws://[table:bucket]/db`, `file:///abs`, `git+ssh://…`), `name` (default `origin`), `credentials` (host profile label; empty = ambient AWS chain). Absent keeps today's Git-origin behaviour. URLs with credentials, unknown S3 query keys or a location another hive already declares are refused with a value-free, path-specific error. Applied only by `bh hive remote --reconcile` and onboarding; see the [runbook](design/hq-dolt-remotes-runbook.md). |
+| `dolt.remote_credentials.<label>` | HOST-only credential source for descriptors naming `<label>`: `source` = `ambient` (default), `instance-role`, `aws-profile` (+ `aws_profile`) or `fnox` (+ `access_key_id`, `secret_access_key`, optional `session_token` fnox refs). Lookups only; values are injected into the one bd child that needs them and never printed, logged or stored. |
 
 Each HOST-local `hq.sql.<role>.tls_mode` independently accepts `required` (the default)
 or `disabled`. `required` verifies the configured CA and matching `server_name`, requires
@@ -326,14 +328,17 @@ managed_repos:
 |---|---|---|
 | `prefix` | internal: the hive `prefix` | public: required; unique across every managed store |
 | `path` | internal: the checkout's `.beads` | public: required, absolute or `~`, unique fleet-wide |
-| `remote` | none | the name of the hive's HQ Dolt remote descriptor (`dolt_remote.name`, `bh-b1scz`), never a URL; `git-origin` = the code origin's `refs/dolt/data`; internal may not be `git-origin` when a public store exists |
+| `remote` | internal: the hive `dolt_remote.name` when one is declared; public: its nested `dolt_remote.name` | the name of the store's Dolt remote descriptor, never a URL: internal names the hive's `dolt_remote` (`bh-b1scz`), public names its own nested one; `git-origin` = the code origin's `refs/dolt/data`; internal may not be `git-origin` when a public store exists |
+| `dolt_remote` | none | public only: the store's own `dolt-remote-descriptor/v1` (`{url, name, credentials}`, same rules as `managed_repos[].dolt_remote`); registered on the public store after it is minted |
 | `authority` | internal `local`, public `remote` | internal must be `local`, public must be `remote` |
 | `sync` | `local`: `push-pull`; `remote`: `pull-only` | `local` allows `push-pull`/`none`; `remote` allows `pull-only`/`none` |
 | `source` | none | public only: `github-issues` |
 | `dispatch` | internal yes, public no | a public store can never be operational |
 
 `bh config validate` rejects a `stores` block without `internal`, duplicate prefixes, paths or
-remote names across the fleet, and every invalid authority/sync combination.
+remote names across the fleet, every invalid authority/sync combination, an internal `remote`
+that is not the hive's `dolt_remote`, a public `remote` with no descriptor of its own, and two
+descriptors (hive-level or nested) sharing one Dolt remote location.
 
 ## `bh config` commands
 

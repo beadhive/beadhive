@@ -37,7 +37,11 @@ from typing import Any
 from pydantic import ValidationError
 
 from . import registry
-from .modules.config.contracts import GIT_ORIGIN_REMOTE, ManagedRepoStores
+from .modules.config.contracts import (
+    DOLT_REMOTE_DEFAULT_NAME,
+    GIT_ORIGIN_REMOTE,
+    ManagedRepoStores,
+)
 
 SCOPE_LEGACY = "legacy"
 SCOPE_INTERNAL = "internal"
@@ -262,8 +266,18 @@ def resolve_store(
         prefix=str(internal.prefix or prefix),
         authority=internal.effective_authority(SCOPE_INTERNAL),
         sync=internal.effective_sync(SCOPE_INTERNAL),
-        remote=internal.remote,
+        remote=internal.remote or hive_descriptor_name(entry),
     )
+
+
+def hive_descriptor_name(entry: Mapping[str, Any]) -> str | None:
+    """The name of the hive's own ``dolt_remote`` descriptor (bh-b1scz; default ``origin``),
+    or None when the hive declares none. That descriptor IS the internal store's remote
+    (bh-rz379), so an internal store that names no remote still resolves to it."""
+    raw = (entry or {}).get("dolt_remote")
+    if not isinstance(raw, Mapping) or not raw.get("url"):
+        return None
+    return str(raw.get("name") or DOLT_REMOTE_DEFAULT_NAME)
 
 
 def operational_store(entry: Mapping[str, Any], *, cwd: Path | str | None = None) -> StoreTarget:
