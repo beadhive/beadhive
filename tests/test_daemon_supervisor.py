@@ -683,3 +683,60 @@ def test_product_selection_seam_exposes_typed_detect_only_platform_handoff(tmp_p
     assert "bh-q0lol.14" in state.handoff
     with pytest.raises(daemon_supervisor.SupervisorUnavailableError, match="detect-only"):
         daemon_supervisor.run_lifecycle("install", key=key)
+
+
+# --- bh-7vqse: configurable readiness budget; a timeout is "unknown", not a failure --------
+
+
+def test_readiness_timeout_defaults_reads_config_and_env_wins(monkeypatch):
+    monkeypatch.delenv(daemon_supervisor.READINESS_TIMEOUT_ENV, raising=False)
+    assert daemon_supervisor.readiness_timeout({}) == 2.0
+    configured = {"host": {"daemon": {"status": {"readiness_timeout_seconds": 7.5}}}}
+    assert daemon_supervisor.readiness_timeout(configured) == 7.5
+    monkeypatch.setenv(daemon_supervisor.READINESS_TIMEOUT_ENV, "12")
+    assert daemon_supervisor.readiness_timeout(configured) == 12.0
+    for bad in ("0", "-1", "301", "nan", "soon"):
+        monkeypatch.setenv(daemon_supervisor.READINESS_TIMEOUT_ENV, bad)
+        with pytest.raises(ValueError, match=daemon_supervisor.READINESS_TIMEOUT_ENV):
+            daemon_supervisor.readiness_timeout(configured)
+
+
+def test_readiness_timeout_is_reported_unknown_with_its_budget(tmp_path, monkeypatch):
+    key = _key(tmp_path)
+    local = _local_status(key)
+    monkeypatch.setattr(host_daemon, "daemon_status", lambda expected: local)
+    monkeypatch.setenv(daemon_supervisor.READINESS_TIMEOUT_ENV, "7")
+    budgets = []
+
+    def slow(url, headers, timeout):  # noqa: ARG001
+        budgets.append(timeout)
+        raise TimeoutError("read timed out")
+
+    status = daemon_supervisor.daemon_service_status(
+        key=key, backend=daemon_supervisor.RecordingSupervisorBackend(), bearer="s", request=slow
+    )
+    assert budgets == [7.0]
+    assert status.state == "readiness-unknown"
+    assert status.readiness.state == "unknown"
+    assert status.readiness.detail.startswith("readiness unknown (timeout after 7s)")
+    assert status.readiness.reason_code == "readiness_timeout"
+    assert status.readiness.retryable is True
+    assert not status.healthy
+
+
+def test_http_request_maps_an_httpx_timeout_to_timeout_error(monkeypatch):
+    import httpx
+
+    def timed_out(self, url, headers=None):  # noqa: ARG001
+        raise httpx.ReadTimeout("timed out")
+
+    monkeypatch.setattr(httpx.Client, "get", timed_out)
+    with pytest.raises(TimeoutError):
+        daemon_supervisor._http_request("http://127.0.0.1:1/api/v1/factory", {}, 0.1)
+
+    def refused(self, url, headers=None):  # noqa: ARG001
+        raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(httpx.Client, "get", refused)
+    with pytest.raises(ConnectionError):
+        daemon_supervisor._http_request("http://127.0.0.1:1/api/v1/factory", {}, 0.1)

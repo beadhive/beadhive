@@ -111,6 +111,31 @@ in `github/beadhive/beadhive` as uppercase `%2F` when inserting the canonical hi
 The terminal routes intentionally return `terminal.unavailable` with
 `code=pty_verdict_pending` and `verdictBead=bh-lx6e.3`. Do not manufacture terminal availability.
 
+## Readiness
+
+`bh host daemon status`, `bh doctor` and hive readiness read the daemon's authenticated
+`/api/v1/factory` readiness with a request budget of 2 seconds by default. Set
+`host.daemon.status.readiness_timeout_seconds` (or `BH_HOST_DAEMON_READINESS_TIMEOUT` for one
+shell; it wins) to wait longer, up to 300 seconds. When the budget runs out the status is
+`readiness-unknown` with `readiness unknown (timeout after Ns)` and reason `readiness_timeout`:
+the daemon is running, its aggregate is simply slow. It is not reported as a failure.
+
+The aggregate has four dependencies: `hq`, `dolt`, `bead-state` and `run-journals`. Until the
+operator decides whether a host role or profile scopes any of them out (bh-7vqse), every
+dependency applies on every host, and the rule for an operator (non-factory) host is
+conservative: it reports `degraded`, never `ready`, when it carries less than a factory does.
+These reasons are expected there and need no action:
+
+| Dependency | Reason | Why an operator host shows it |
+| --- | --- | --- |
+| `dolt` | `partial_dolt_availability` | only some registered hives are served locally |
+| `bead-state` | `partial_hive_availability`, `stale_data` | some hive sources are not checked out |
+| `run-journals` | `degraded` with any reason | few or no dispatched runs to journal |
+| `run-journals` | `run_journals_stale` | the last run is older than the stale bound |
+
+`hq` not `ready`, or any other dependency `unavailable`, is a real fault on every host. A factory
+host must report `ready`.
+
 ## Beads service supervision
 
 When a hive is enabled with `bh host beads enable`, the daemon also supervises that hive's

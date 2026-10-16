@@ -43,6 +43,10 @@ if TYPE_CHECKING:
 LifecycleAction = Literal["install", "start", "stop", "remove"]
 Request = Callable[[str, dict[str, str], float], tuple[int, dict[str, Any]]]
 REQUIRED_FACTORY_DEPENDENCIES = frozenset({"hq", "dolt", "bead-state", "run-journals"})
+#: Overrides ``host.daemon.status.readiness_timeout_seconds`` (bh-7vqse).
+READINESS_TIMEOUT_ENV = "BH_HOST_DAEMON_READINESS_TIMEOUT"
+#: The readiness request budget when neither the env nor the config sets one.
+DEFAULT_READINESS_TIMEOUT_SECONDS = 2.0
 _PRODUCT_ERROR_STATES = {
     "daemon_draining": ("draining", "authenticated daemon is draining"),
     "factory_source_unavailable": (
@@ -375,8 +379,37 @@ def _http_request(url: str, headers: dict[str, str], timeout: float) -> tuple[in
         except ValueError:
             payload = {}
         return response.status_code, payload if isinstance(payload, dict) else {}
+    except httpx.TimeoutException as exc:
+        # The listener accepted or is still connecting: its readiness is unknown, not failed.
+        raise TimeoutError(str(exc)) from exc
     except httpx.HTTPError as exc:
         raise ConnectionError(str(exc)) from exc
+
+
+def readiness_timeout(cfg: dict[str, Any] | None = None) -> float:
+    """The authenticated readiness request budget in seconds (bh-7vqse).
+
+    ``BH_HOST_DAEMON_READINESS_TIMEOUT`` wins, then ``host.daemon.status.
+    readiness_timeout_seconds``, then :data:`DEFAULT_READINESS_TIMEOUT_SECONDS`. An invalid
+    override is refused by name rather than silently replaced by the default."""
+    import math
+
+    raw = os.environ.get(READINESS_TIMEOUT_ENV, "").strip()
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            value = math.nan
+        if not math.isfinite(value) or not 0 < value <= 300:
+            raise ValueError(f"{READINESS_TIMEOUT_ENV} must be seconds in (0, 300], got {raw!r}")
+        return value
+    try:
+        loaded = config.load() if cfg is None else cfg
+        from .config_schema import BeadhiveConfig
+
+        return BeadhiveConfig.model_validate(loaded).host.daemon.status.readiness_timeout_seconds
+    except (AttributeError, FileNotFoundError, TypeError, ValueError):
+        return DEFAULT_READINESS_TIMEOUT_SECONDS
 
 
 def _product_error(payload: dict[str, Any]) -> tuple[str, bool] | None:
@@ -430,10 +463,14 @@ def daemon_service_status(
     key: DaemonKey | None = None,
     backend: SupervisorBackend | None = None,
     bearer: str | None = None,
-    timeout: float = 2.0,
+    timeout: float | None = None,
     request: Request = _http_request,
 ) -> DaemonServiceStatus:
-    """Return the one status object shared by CLI, Doctor, setup, and hive readiness."""
+    """Return the one status object shared by CLI, Doctor, setup, and hive readiness.
+
+    ``timeout`` defaults to :func:`readiness_timeout`. A readiness request that runs out of
+    it reports ``readiness-unknown`` ("readiness unknown (timeout after Ns)"), never a failure:
+    the daemon is running and may simply be slow to aggregate its dependencies."""
     from . import daemon_local_state
     from .daemon_contract import (
         CONTRACT_VERSION,
@@ -482,13 +519,29 @@ def daemon_service_status(
 
     url_host = f"[{record.listener_host}]" if ":" in record.listener_host else record.listener_host
     url = f"{_listener_scheme()}://{url_host}:{record.listener_port}/api/v1/factory"
+    if timeout is None:
+        timeout = readiness_timeout()
     try:
         status_code, payload = request(
             url,
             {"Authorization": f"Bearer {credential}"},
             timeout,
         )
-    except (ConnectionError, OSError, TimeoutError) as exc:
+    except TimeoutError:
+        readiness = ReadinessStatus(
+            "unknown",
+            False,
+            None,
+            (),
+            f"readiness unknown (timeout after {timeout:g}s); raise "
+            f"host.daemon.status.readiness_timeout_seconds or {READINESS_TIMEOUT_ENV}",
+            "readiness_timeout",
+            True,
+        )
+        return DaemonServiceStatus(
+            "readiness-unknown", expected, local, supervisor, listener, identity, readiness
+        )
+    except (ConnectionError, OSError) as exc:
         readiness = ReadinessStatus("unavailable", False, None, (), f"listener unreachable: {exc}")
         return DaemonServiceStatus(
             "listener-unreachable", expected, local, supervisor, listener, identity, readiness
