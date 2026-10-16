@@ -366,12 +366,111 @@ def _required_private_file(path: Path | None, *, label: str, private: bool) -> N
         raise DaemonConfigurationError(f"{label} must not be accessible by group or others")
 
 
+#: How to provision the bearer verifier (docs/HOST-DAEMON.md "Install and credentials").
+VERIFIER_RECIPE = (
+    "provision an owner-only (0600) verifier outside any temporary directory, e.g. under "
+    "BH_HOME, with the docs/HOST-DAEMON.md 'Install and credentials' recipe "
+    "(beadhive.daemon_auth.provision_credential_file), then set "
+    "host.daemon.auth.credential_file to its absolute path"
+)
+
+_FIXED_TEMPORARY_ROOTS = (
+    "/tmp",
+    "/var/tmp",
+    "/private/tmp",
+    "/private/var/tmp",
+    "/var/folders",
+    "/private/var/folders",
+)
+
+
+def temporary_roots() -> tuple[Path, ...]:
+    """Directories a reboot, upgrade or temp cleaner may clear (this platform's and ``TMPDIR``)."""
+    import tempfile
+
+    roots = {Path(root) for root in _FIXED_TEMPORARY_ROOTS}
+    for root in (os.environ.get("TMPDIR"), tempfile.gettempdir()):
+        if root:
+            roots.add(Path(root))
+    resolved = set()
+    for root in roots:
+        resolved.add(root)
+        try:
+            resolved.add(root.resolve())
+        except OSError:
+            pass
+    return tuple(sorted(resolved))
+
+
+def temporary_root(path: Path | str | None) -> Path | None:
+    """The temporary directory ``path`` lies under, or ``None`` for a durable location.
+
+    Both the path as written and its resolution are checked, so a symlinked home under a
+    temporary directory (or the macOS ``/var`` -> ``/private/var`` link) is recognised.
+    """
+    if path is None:
+        return None
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        return None
+    forms = {candidate}
+    try:
+        forms.add(candidate.resolve())
+    except OSError:
+        pass
+    for root in temporary_roots():
+        if any(form == root or form.is_relative_to(root) for form in forms):
+            return root
+    return None
+
+
+def _require_verifier(path: Path | None) -> None:
+    """The bearer verifier, named with its provisioning recipe when it is missing."""
+    if path is not None and path.is_absolute() and not path.exists():
+        root = temporary_root(path)
+        cause = (
+            f" (it was recorded under the temporary directory {root}, which a reboot or "
+            "upgrade may clear)"
+            if root is not None
+            else ""
+        )
+        raise DaemonConfigurationError(
+            f"auth credential_file {path} does not exist{cause}; {VERIFIER_RECIPE}"
+        )
+    _required_private_file(path, label="auth credential_file", private=True)
+
+
+def verifier_problems(config: HostDaemonConfig) -> list[str]:
+    """Doctor's view of the bearer verifier: a missing or unusable file (named with its
+    provisioning recipe), then any :func:`verifier_advisories`."""
+    if not config.enabled:
+        return []
+    problems = []
+    try:
+        _require_verifier(config.auth.credential_file)
+    except DaemonConfigurationError as exc:
+        problems.append(str(exc))
+    return problems + verifier_advisories(config)
+
+
+def verifier_advisories(config: HostDaemonConfig) -> list[str]:
+    """Doctor/setup warnings for a verifier that works now but will not survive (bh-resac)."""
+    root = temporary_root(config.auth.credential_file)
+    if root is None or not Path(config.auth.credential_file).exists():
+        return []
+    return [
+        f"auth credential_file {config.auth.credential_file} is under the temporary directory "
+        f"{root}; a reboot or upgrade may delete it. {VERIFIER_RECIPE[0].upper()}"
+        f"{VERIFIER_RECIPE[1:]}"
+    ]
+
+
 def validate_for_listener_startup(config: HostDaemonConfig) -> HostDaemonConfig:
     """Refuse disabled, incomplete, or insecure material before a socket is bound."""
 
     if not config.enabled:
         raise DaemonConfigurationError("host daemon is disabled")
-    _required_private_file(config.auth.credential_file, label="auth credential_file", private=True)
+    _require_verifier(config.auth.credential_file)
     if config.tls.enabled:
         _required_private_file(
             config.tls.certificate_file, label="TLS certificate_file", private=False
