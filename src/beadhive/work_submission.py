@@ -315,6 +315,7 @@ def impl__guard_fork_remote(api, entry, remote):
 def impl_submit(api, bead, as_, hive, group, override_validation="", override_actor=""):
     from .hq_authority_expiry import warn_if_expiring
 
+    api._refuse_public("submit", bead, group)  # bh-lniwf.5: never a public projection id
     warn_if_expiring()
     cfg = api.config.load()
     api.guard.guard_primary(hive, cfg=cfg, verb="work submit")

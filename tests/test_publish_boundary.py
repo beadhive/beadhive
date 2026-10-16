@@ -33,7 +33,9 @@ from pathlib import Path
 
 import pytest
 
+from beadhive import bd as bd_mod
 from beadhive import config, publish_export
+from beadhive.store_target import SCOPE_INTERNAL, SCOPE_LEGACY, SCOPE_PUBLIC, StoreTarget
 
 PKG_DIR = Path(publish_export.__file__).parent
 PKG_NAME = PKG_DIR.name
@@ -54,9 +56,9 @@ DIRECT_BANNED_ATTRS = frozenset({"passthrough", "fan_out", "targets"})
 DIRECT_BANNED_NAMES = frozenset({"importlib", "__import__", "exec", "eval", "compile"})
 
 # The signature is PINNED, not pattern-matched: any added/renamed parameter fails here and
-# forces whoever adds it to read the ADR first. `hive_root` is a path (the checkout you are
-# standing in); a hive NAME would be a registry lookup, i.e. the `-r <hive>` shape.
-PINNED_EXPORT_PARAMS = ("hive_root", "dest_dir")
+# forces whoever adds it to read the ADR first. `store` is a resolved PUBLIC StoreTarget
+# (bh-lniwf.7); a hive NAME would be a registry lookup, i.e. the `-r <hive>` shape.
+PINNED_EXPORT_PARAMS = ("store", "dest_dir")
 
 
 # --------------------------------------------------------------------------------------
@@ -207,11 +209,28 @@ def test_export_public_snapshot_has_no_hive_selection_parameter():
     assert signature_violations(params) == []
 
 
+def _public_store(root: Path, *, scope: str = SCOPE_PUBLIC) -> StoreTarget:
+    """A resolved store at `root` (its `.beads/` lives directly under it)."""
+    return StoreTarget(
+        hive="github/acme/widget",
+        scope=scope,
+        repo_dir=root.parent / "checkout",
+        beads_dir=root / ".beads",
+        prefix="widpub",
+        authority="remote",
+        sync="pull-only",
+        remote="git-origin",
+        detached=scope == SCOPE_PUBLIC,
+    )
+
+
 def test_export_public_snapshot_runs_the_decided_invocation(tmp_path, monkeypatch):
     """The one integration-shaped assertion: the sanctioned function really does emit
-    bh-7jm7v.1's argv, scoped by `-C` to the hive it was handed and no other."""
-    hive = tmp_path / "hive"
-    (hive / ".beads").mkdir(parents=True)
+    bh-7jm7v.1's argv, run in the ONE public store it was handed (selected by its own
+    BEADS_DIR) and no other."""
+    monkeypatch.delenv("BEADS_DIR", raising=False)
+    root = tmp_path / "public"
+    (root / ".beads").mkdir(parents=True)
     dest = tmp_path / "out"
     calls = []
 
@@ -219,45 +238,67 @@ def test_export_public_snapshot_runs_the_decided_invocation(tmp_path, monkeypatc
         calls.append((list(args), Path(cwd), kwargs))
         return subprocess.CompletedProcess(args=args, returncode=0)
 
-    monkeypatch.setattr(publish_export.bd, "run", fake_run)
-    out = publish_export.export_public_snapshot(hive, dest)
+    monkeypatch.setattr(bd_mod, "run", fake_run)
+    out = publish_export.export_public_snapshot(_public_store(root), dest)
 
     assert out == dest / "issues.jsonl"
-    assert len(calls) == 1, "a public snapshot is ONE bd invocation against ONE hive"
+    assert len(calls) == 1, "a public snapshot is ONE bd invocation against ONE store"
     argv, cwd, kwargs = calls[0]
     assert argv == ["export", "-o", str(dest / "issues.jsonl")]
     assert argv_violations(argv) == []
-    assert cwd == hive.resolve()
-    assert kwargs == {}
+    assert cwd == root.resolve()
+    assert kwargs["env"]["BEADS_DIR"] == str(root / ".beads")
+    assert not kwargs["actor"] and not kwargs["text_input"]
 
 
 def test_export_public_snapshot_raises_when_bd_fails(tmp_path, monkeypatch):
-    hive = tmp_path / "hive"
-    (hive / ".beads").mkdir(parents=True)
+    monkeypatch.delenv("BEADS_DIR", raising=False)
+    root = tmp_path / "public"
+    (root / ".beads").mkdir(parents=True)
     monkeypatch.setattr(
-        publish_export.bd,
+        bd_mod,
         "run",
         lambda args, cwd, **kw: subprocess.CompletedProcess(args=args, returncode=2),
     )
     with pytest.raises(RuntimeError, match="exit 2"):
-        publish_export.export_public_snapshot(hive, tmp_path / "out")
+        publish_export.export_public_snapshot(_public_store(root), tmp_path / "out")
+
+
+@pytest.mark.parametrize("scope", [SCOPE_INTERNAL, SCOPE_LEGACY])
+def test_export_public_snapshot_refuses_every_non_public_store(scope, tmp_path, monkeypatch):
+    """bh-lniwf.7 / two-store ADR section 8: the internal store is private after rollout even
+    when the repository's code is public, and the legacy single store is refused too."""
+    root = tmp_path / "checkout"
+    (root / ".beads").mkdir(parents=True)
+    monkeypatch.setattr(bd_mod, "run", lambda *a, **kw: pytest.fail("bd was invoked"))
+    with pytest.raises(publish_export.PublishScopeError, match="only an explicitly"):
+        publish_export.export_public_snapshot(_public_store(root, scope=scope), tmp_path / "out")
+
+
+def test_export_public_snapshot_refuses_a_path_or_name(tmp_path, monkeypatch):
+    monkeypatch.setattr(bd_mod, "run", lambda *a, **kw: pytest.fail("bd was invoked"))
+    for not_a_store in (tmp_path, "github/acme/widget"):
+        with pytest.raises(publish_export.PublishScopeError, match="resolved public"):
+            publish_export.export_public_snapshot(not_a_store, tmp_path / "out")
 
 
 @pytest.mark.parametrize("store", ["home", "hub_dir", "hq_dir", "cache_dir"])
 def test_export_public_snapshot_refuses_the_aggregate_stores(store, tmp_path, monkeypatch):
-    """The runtime half of the boundary: `hive_root` is a path, and the one path that would
-    still address the cross-hive view is bh's own machine-local aggregate area."""
+    """The runtime half of the boundary: the one store location that would still address the
+    cross-hive view is bh's own machine-local aggregate area."""
     root = getattr(config, store)()
     (root / ".beads").mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(publish_export.bd, "run", lambda *a, **kw: pytest.fail("bd was invoked"))
+    monkeypatch.setattr(bd_mod, "run", lambda *a, **kw: pytest.fail("bd was invoked"))
     with pytest.raises(publish_export.PublishScopeError, match="aggregate area"):
-        publish_export.export_public_snapshot(root, tmp_path / "out")
+        publish_export.export_public_snapshot(_public_store(root), tmp_path / "out")
 
 
-def test_export_public_snapshot_refuses_a_non_hive_directory(tmp_path, monkeypatch):
-    monkeypatch.setattr(publish_export.bd, "run", lambda *a, **kw: pytest.fail("bd was invoked"))
-    with pytest.raises(publish_export.PublishScopeError, match="not a hive checkout"):
-        publish_export.export_public_snapshot(tmp_path / "nothing-here", tmp_path / "out")
+def test_export_public_snapshot_refuses_an_uninitialized_store(tmp_path, monkeypatch):
+    monkeypatch.setattr(bd_mod, "run", lambda *a, **kw: pytest.fail("bd was invoked"))
+    with pytest.raises(publish_export.PublishScopeError, match="not initialized"):
+        publish_export.export_public_snapshot(
+            _public_store(tmp_path / "nothing-here"), tmp_path / "out"
+        )
 
 
 def test_public_snapshot_envelope_is_the_decided_shape():

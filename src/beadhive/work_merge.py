@@ -799,6 +799,8 @@ def impl_merge(api, bead, hive, rm, molecule, group, override_validation="", ove
     inside, so it stays bisectable), then close every member — release the slot either way."""
     from .hq_authority_expiry import warn_if_expiring
 
+    api._refuse_public("merge", bead, group)  # bh-lniwf.5: never a public projection id
+
     warn_if_expiring()
     cfg = api.config.load()
     api.guard.guard_primary(hive, cfg=cfg, verb="work merge")

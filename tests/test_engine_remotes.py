@@ -212,6 +212,23 @@ def test_clone_remote_refuses_an_initialised_store(bd_engine, tmp_path):
     assert rec.calls == []
 
 
+@pytest.mark.parametrize(
+    ("metadata", "refused"),
+    [
+        ({"dolt_mode": "server", "dolt_database": "widget"}, False),  # pre-clone identity stamp
+        ({"dolt_mode": "server", "dolt_database": "widget", "project_id": "p"}, True),
+        ({"database": "dolt", "backend": "dolt"}, True),
+    ],
+)
+def test_clone_remote_admits_only_a_bare_identity_stamp(bd_engine, tmp_path, metadata, refused):
+    eng, rec = bd_engine
+    (tmp_path / ".beads").mkdir()
+    (tmp_path / ".beads" / "metadata.json").write_text(json.dumps(metadata))
+    result = eng.clone_remote(tmp_path, "file:///srv/r")
+    assert ("already-initialised" in (result.stderr or "")) is refused
+    assert bool(rec.calls) is not refused
+
+
 def test_clone_remote_hands_bd_a_one_call_hint_and_removes_it(bd_engine, tmp_path):
     eng, rec = bd_engine
     beads = tmp_path / ".beads"

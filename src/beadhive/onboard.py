@@ -852,6 +852,7 @@ def _act_bd_init(ctx: Ctx) -> None:
     from . import hive  # via hive.run so it honors the same run binding hive.init used
 
     _ensure_derived(ctx)
+    stores_entry = _partitioned_entry(ctx)
     if (ctx.base / ".beads").exists():
         # ponytail: idempotent — skip bd init so re-runs (e.g. to add --skills) never abort.
         # Never touches dolt_mode: an already-initialized hive (embedded or otherwise) is left
@@ -861,17 +862,48 @@ def _act_bd_init(ctx: Ctx) -> None:
         typer.echo("ℹ beads already initialized — skipping bd init.")
         hive._ensure_bd_backup_gitignored(ctx.base)
         _configure_auto_export(ctx)
+        if stores_entry is not None:  # a partitioned hive may still lack its public store
+            _bootstrap_stores(ctx, stores_entry, descriptor=_hq_remote_descriptor(ctx))
         return
     env = dict(os.environ, BD_NON_INTERACTIVE="1")
+    # ONE ordered flow (bh-rz379). The operational store comes first: from the HQ
+    # dolt-remote-descriptor/v1 when the hive declares one — HQ policy wins BEFORE any Git-origin
+    # probe (bh-b1scz.6), so a managed private hive never bootstraps from the code repository's
+    # public refs/dolt/data — else today's mint / origin-bootstrap chain. A partitioned hive
+    # (bh-lniwf.4) runs the same two steps through `store_bootstrap`'s phase order, which then
+    # initialises the public store; its internal phase delegates the clone to the HQ bootstrap
+    # below, so there is exactly one clone path and no double clone.
     descriptor = _hq_remote_descriptor(ctx)
-    if descriptor is not None:
-        # HQ policy wins BEFORE any Git-origin probe (bh-b1scz.6): a managed private hive must
-        # never bootstrap from the code repository's public refs/dolt/data.
-        _bootstrap_from_hq_remote(ctx, descriptor, env)
-        _ensure_server_mode_persisted(ctx)
-        hive._ensure_bd_backup_gitignored(ctx.base)
-        _configure_auto_export(ctx)
-        return
+    hq_sourced = False
+
+    def operational_store() -> None:
+        nonlocal hq_sourced
+        if descriptor is not None:
+            _bootstrap_from_hq_remote(ctx, descriptor, env)
+            hq_sourced = True
+        else:
+            _bootstrap_from_origin_or_mint(ctx, env)
+
+    if stores_entry is None:
+        operational_store()
+    else:
+        _bootstrap_stores(ctx, stores_entry, descriptor=descriptor, legacy=operational_store)
+        hq_sourced = hq_sourced or descriptor is not None
+    # One call site for every fresh-store path above (never reached by the existing-hive skip
+    # branch): persist dolt_mode for real. Automatic Dolt backup stays at bd's shared-server
+    # default (off); opting into a backup is an explicit operator decision.
+    _ensure_server_mode_persisted(ctx)
+    hive._ensure_bd_backup_gitignored(ctx.base)
+    _configure_auto_export(ctx)
+    if not hq_sourced:  # an HQ-declared remote is never the Git origin's (bh-dhl6 guard)
+        _guard_beads_remote(ctx)
+
+
+def _bootstrap_from_origin_or_mint(ctx: Ctx, env: dict) -> None:
+    """Today's no-HQ-policy path: a furnished hive mints; a zero-footprint hive bootstraps from
+    origin's refs/dolt/data when it carries one, else mints with zero tracked footprint."""
+    from . import hive
+
     if ctx.furnish:
         bd_init = [
             "bd",
@@ -927,13 +959,82 @@ def _act_bd_init(ctx: Ctx) -> None:
             )
         # Same reasoning as the furnished branch above: a bare `bd init` mints a fresh store.
         _bypass_gh2455_dirty_config(ctx)
-    # One call site for all three fresh-mint paths above (never reached by the existing-hive
-    # skip branch): persist dolt_mode for real. Automatic Dolt backup stays at bd's shared-server
-    # default (off); opting into a backup is an explicit operator decision.
-    _ensure_server_mode_persisted(ctx)
-    hive._ensure_bd_backup_gitignored(ctx.base)
-    _configure_auto_export(ctx)
-    _guard_beads_remote(ctx)
+
+
+def _partitioned_entry(ctx: Ctx):
+    """The HQ-declared entry for this hive when it declares `stores` (bh-lniwf.2), else None.
+
+    Read BEFORE registration: a managed hive's entry exists in fleet config ahead of the host
+    onboarding it, and that declaration is what must win over origin auto-detection. A hive
+    without `stores` returns None and onboarding is byte-for-byte unchanged."""
+    from . import store_target
+
+    if ctx.cfg is None:
+        return None
+    entry = registry.find_entry(ctx.cfg, ctx.provider, ctx.org, ctx.repo)
+    if entry is None or entry.get("stores") is None:
+        return None
+    try:
+        store_target.configured_stores(entry)
+    except store_target.StoreConfigInvalid as e:
+        typer.echo(f"✗ beads: {e}", err=True)
+        raise typer.Exit(1) from None
+    return entry
+
+
+def _bootstrap_stores(ctx: Ctx, entry, *, descriptor=None, legacy=None) -> None:
+    """Run the partitioned-store phases (store_bootstrap) in their one order: the internal
+    store first — cloned from the hive's HQ descriptor through `_bootstrap_from_hq_remote`
+    (credentials, seeding, redaction, registration) when one is declared and the store is
+    absent, else `legacy` — then the public store, minted at its detached path and given its
+    own nested remote when it declares one. A failure names its phase and exits; the other store
+    and the config are left untouched, so a re-run resumes idempotently."""
+    from . import store_bootstrap
+
+    def clone_internal(phase, url: str) -> None:
+        if descriptor is None or descriptor.name != phase.remote or descriptor.url != url:
+            raise store_bootstrap.RemoteUnresolved(
+                store_bootstrap.PHASE_INTERNAL,
+                f"internal store remote {phase.remote!r} is not the hive's HQ dolt_remote — "
+                "refusing to fall back to the code origin",
+            )
+        _bootstrap_from_hq_remote(ctx, descriptor, dict(os.environ, BD_NON_INTERACTIVE="1"))
+
+    try:
+        phases = store_bootstrap.execute_bootstrap(
+            entry,
+            legacy=legacy,
+            clone_internal=clone_internal,
+            register_public=lambda phase, url: _register_public_remote(ctx, entry, phase, url),
+        )
+    except store_bootstrap.BootstrapError as e:
+        typer.echo(f"✗ beads: {e}", err=True)
+        raise typer.Exit(1) from None
+    for phase in phases:
+        if phase.mutates:
+            typer.echo(f"• beads: {phase.name} → {phase.target.beads_dir} ({phase.target.scope})")
+
+
+def _register_public_remote(ctx: Ctx, entry, phase, url: str) -> None:
+    """Register a public store's own nested descriptor (bh-rz379) on its fresh mint, with that
+    descriptor's host credentials. Raises with a redacted reason; store_bootstrap discards the
+    mint and names the public phase."""
+    from . import dolt_remote, dolt_remote_credentials, engine, store_target
+
+    nested = store_target.configured_stores(entry).public.dolt_remote
+    target = dolt_remote.classify(url)
+    if not target.allows(dolt_remote.RemoteOp.ADD):
+        raise RuntimeError(f"{target.redacted}: {target.error or target.capabilities.note}")
+    creds = dolt_remote_credentials.resolve(target, nested.credentials, ctx.cfg)
+    if not creds.ok:
+        raise RuntimeError(f"credentials: {creds.missing}")
+    added = engine.get_engine(ctx.cfg).add_remote(
+        phase.target.store_root, str(phase.remote), url, extra_env=creds.env
+    )
+    if added.returncode:
+        tail = (getattr(added, "stderr", "") or "").strip().splitlines()
+        raise RuntimeError(tail[-1] if tail else f"exit {added.returncode}")
+    typer.echo(f"• beads: public remote {phase.remote} → {target.redacted}")
 
 
 #: Explicit, per-invocation operator intent to SEED an empty HQ remote while onboarding. Its
@@ -996,6 +1097,8 @@ def _bootstrap_from_hq_remote(ctx: Ctx, descriptor, env: dict) -> None:
     server_env = dict(env, BEADS_DOLT_SHARED_SERVER="1")
     if not _seed_requested(ctx):
         typer.echo(f"• beads: cloning full history from the HQ remote {shown}")
+        database = _stamp_clone_identity(ctx)
+        _start_shared_server_for_clone(ctx)
         cloned = eng.clone_remote(ctx.base, descriptor.url, env=server_env, extra_env=creds.env)
         if cloned.returncode:
             tail = (getattr(cloned, "stderr", "") or "").strip().splitlines()
@@ -1010,6 +1113,8 @@ def _bootstrap_from_hq_remote(ctx: Ctx, descriptor, env: dict) -> None:
                 "seed it from a fresh store",
                 cleanup=True,
             )
+        if database:  # recorded, never re-derived (bh-g5ujg); bd's bootstrap drops the key
+            store_locator.ensure_server_database_persisted(ctx.base, database)
         if descriptor.name != "origin":
             _register_hq_remote(ctx, eng, descriptor, target, creds, shown)
             bootstrap_origin = eng.get_remote(ctx.base, "origin")
@@ -1062,6 +1167,47 @@ def _bootstrap_from_hq_remote(ctx: Ctx, descriptor, env: dict) -> None:
             f"{reason}. A remote that already holds data rejects a seed; clone it instead",
             cleanup=True,
         )
+
+
+def _stamp_clone_identity(ctx: Ctx) -> str | None:
+    """Name the shared-server database the HQ clone lands in BEFORE `bd bootstrap` reads it.
+
+    Without it `bd bootstrap` clones into bd's generic `beads` database, a name every hive on
+    the shared server would claim (bh-g5ujg): the two-store clone this path replaced named it
+    from the prefix (`bd init --prefix`), and hub hydration stamps the same identity for the
+    same reason (bh-fnn3d). Returns the database, or None when the prefix cannot name one (the
+    clone then keeps bd's own default)."""
+    from . import hub_bulk
+
+    database = store_locator.sanitize_database_name(ctx.prefix or "")
+    if not database or database in hub_bulk.GENERIC_DATABASE_NAMES:
+        return None
+    beads = ctx.base / ".beads"
+    beads.mkdir(exist_ok=True)
+    stamp = {"dolt_database": database, "dolt_mode": "server"}
+    (beads / "metadata.json").write_text(json.dumps(stamp, indent=2, sort_keys=True) + "\n")
+    return database
+
+
+def _start_shared_server_for_clone(ctx: Ctx) -> None:
+    """`bd bootstrap` never auto-starts the shared server (unlike the `bd init --shared-server`
+    the two-store clone used to run), so a fresh host needs it started first — the same
+    probe-then-start step hub hydration and `hq clone` take (bh-rz379). `bd dolt start` refuses
+    to run outside a beads workspace, and a `.beads/` with a `config.yaml` is the least that
+    counts: an empty one is written for the start and removed again, so the clone still lands
+    in a store-less `.beads/` (a failed clone's cleanup removes the directory too)."""
+    from . import hub
+
+    beads = ctx.base / ".beads"
+    config_path = beads / "config.yaml"
+    created = not config_path.exists()
+    beads.mkdir(exist_ok=True)
+    config_path.touch()
+    try:
+        hub._ensure_shared_server_running(ctx.base)
+    finally:
+        if created and config_path.is_file() and not config_path.read_text().strip():
+            config_path.unlink()
 
 
 def _register_hq_remote(ctx: Ctx, eng, descriptor, target, creds, shown: str) -> None:
@@ -1334,6 +1480,41 @@ def _act_beads_role(ctx: Ctx) -> None:
             f"left unchanged; run `{config.BINARY_ALIAS} hive repair --hive {ctx.hive} --role "
             "--yes` to fix"
         )
+
+
+def _act_beads_routing(ctx: Ctx) -> None:
+    """Declare bd's routing as explicit (bh-5lpl9.1) when `work.beads.explicit_routing` is on.
+
+    Sets `routing.mode: explicit` and `routing.default: .` in the hive's `.beads/config.yaml`
+    when UNSET, so bd's actor-based `auto` heuristic is never the operative rule — bh routes by
+    subject and visibility instead (docs/design/beads-methodology-divergence-adr.md). An
+    existing differing value is reported, never overwritten — changing it is an explicit
+    operator act (`bh -r <hive> bd config set <key> <value>`). `hive_repair.EXPECTED_ROUTING`
+    is the one expected-value table. Off by default: with the key unset this step does
+    nothing at all."""
+    from . import config, hive_repair
+
+    entry = registry.find_entry(ctx.cfg, ctx.provider, ctx.org, ctx.repo) if ctx.cfg else None
+    if not config.beads_explicit_routing(ctx.cfg, entry):
+        return
+    current = hive_repair.read_routing(Path(ctx.base))
+    if current is None:
+        return
+    plan = hive_repair.RoutingPlan(entry=entry or {}, cwd=Path(ctx.base), current=current)
+    try:
+        changes = hive_repair.apply_routing(plan, "", overwrite=False)
+    except hive_repair.RepairError as e:
+        typer.echo(f"⚠ beads: {e}")
+        return
+    for change in changes:
+        typer.echo(f"• beads: set {change}")
+    for key, value in plan.drift.items():
+        if value:
+            typer.echo(
+                f"⚠ {key}='{value}' is not '{hive_repair.EXPECTED_ROUTING[key]}' — left "
+                f"unchanged; run `{config.BINARY_ALIAS} -r {ctx.hive} bd config set {key} "
+                f"{hive_repair.EXPECTED_ROUTING[key]}` to fix"
+            )
 
 
 def _installer(name: str, run_it):
@@ -1760,6 +1941,13 @@ def build_steps(ctx: Ctx) -> list[Step]:
     beads_role = Step(
         "beads-role", "set beads.role", _act_beads_role, requires=["register"], mutates=True
     )
+    beads_routing = Step(
+        "beads-routing",
+        "declare bd routing explicit",
+        _act_beads_routing,
+        requires=["register"],
+        mutates=True,
+    )
 
     # Generic plugin steps: one per registered plugin that declares an on_onboard hook. When
     # the registry is empty, no plugin step is built (integrations are not hardcoded here).
@@ -1789,6 +1977,7 @@ def build_steps(ctx: Ctx) -> list[Step]:
         register,
         node_id,
         beads_role,
+        beads_routing,
         *installers,
         *plugin_steps,
         hq_parent,

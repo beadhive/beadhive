@@ -304,6 +304,41 @@ managed_repos:
 - There is **no `enforcement:` block** — enforcement is fixed behavior, not config
   ([LABELS](LABELS.md#enforcement)).
 - Provider entries carry **no codes** (only org codes go in prefixes).
+- Re-registering a hive (`bh hive init`, a prefix repair) rewrites only the keys `register`
+  owns (`provider`, `org`, `repo`, `prefix`, `kind`, `upstream`, `furnish`, `contribution`);
+  every other key on the entry — per-hive overrides, `frame_policy`, `stores` — is carried.
+
+### `managed_repos[*].stores` — internal and public bead stores {#stores}
+
+Optional, and absent by default: an entry without `stores` is one store at the checkout's
+`.beads`, exactly as before. Declaring it splits the repository into a private, operational
+`internal` store and an optional `public` projection store
+([two-store-scope-adr.md](design/two-store-scope-adr.md)):
+
+```yaml
+managed_repos:
+  - {provider: github, org: beadhive, repo: beadhive, prefix: bh,
+     stores: {internal: {remote: beadhive-private},
+              public: {prefix: bhpub, path: ~/.beadhive/stores/github/beadhive/beadhive/public,
+                       remote: git-origin, source: github-issues}},
+     dolt_remote: {name: beadhive-private, url: "s3://<bucket>/internal/beadhive"}}
+```
+
+| Key | Default | Rule |
+|---|---|---|
+| `prefix` | internal: the hive `prefix` | public: required; unique across every managed store |
+| `path` | internal: the checkout's `.beads` | public: required, absolute or `~`, unique fleet-wide |
+| `remote` | internal: the hive `dolt_remote.name` when one is declared; public: its nested `dolt_remote.name` | the name of the store's Dolt remote descriptor, never a URL: internal names the hive's `dolt_remote` (`bh-b1scz`), public names its own nested one; `git-origin` = the code origin's `refs/dolt/data`; internal may not be `git-origin` when a public store exists |
+| `dolt_remote` | none | public only: the store's own `dolt-remote-descriptor/v1` (`{url, name, credentials}`, same rules as `managed_repos[].dolt_remote`); registered on the public store after it is minted |
+| `authority` | internal `local`, public `remote` | internal must be `local`, public must be `remote` |
+| `sync` | `local`: `push-pull`; `remote`: `pull-only` | `local` allows `push-pull`/`none`; `remote` allows `pull-only`/`none` |
+| `source` | none | public only: `github-issues` |
+| `dispatch` | internal yes, public no | a public store can never be operational |
+
+`bh config validate` rejects a `stores` block without `internal`, duplicate prefixes, paths or
+remote names across the fleet, every invalid authority/sync combination, an internal `remote`
+that is not the hive's `dolt_remote`, a public `remote` with no descriptor of its own, and two
+descriptors (hive-level or nested) sharing one Dolt remote location.
 
 ## `bh config` commands
 
@@ -605,6 +640,18 @@ Resolves per-hive `entry.work.beads.route` > global `work.beads.route` > `api`.
 
 See [BEADS-SERVICE.md](BEADS-SERVICE.md) for the full behavior table.
 `bh work approve` / `bounce` are outside this key and always fail closed without a service.
+
+### bd's own routing keys (`routing.mode`, `routing.default`) {#bd-routing-keys}
+
+These live in each hive's `.beads/config.yaml`, not in bh config. Every bh-managed hive
+declares `routing.mode: explicit` and `routing.default: .` so bd's actor-based `auto`
+heuristic is never the operative rule. With `work.beads.explicit_routing: true` (off by
+default; per-hive or global) `bh hive onboard` sets them when absent and `bh doctor` lists
+hives where they are unset or differ. Fix one with
+`bh -r <hive> bd config set routing.mode explicit` (and `routing.default .`).
+Why: [beads-multi-repo-adoption-adr.md](design/beads-multi-repo-adoption-adr.md) §3; the
+routing rule bh uses instead is in
+[beads-methodology-divergence-adr.md](design/beads-methodology-divergence-adr.md).
 
 ## `work.gate` — gate model and phase profiles
 

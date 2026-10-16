@@ -39,6 +39,11 @@ DIRECT_BD_ADMIN_SCOPES = {
         "_bd",
         "_bd_version",
     },
+    "store_bootstrap.py": {
+        # Store bootstrap administration (bh-lniwf.4): the injectable runner that mints or clones
+        # one partitioned store with `bd init`; process-cwd-pinned like onboard's own mint.
+        "_default_runner",
+    },
     "storage_migrate.py": {
         # One-shot storage administration needs status/config probes plus a deliberately unusual
         # process-cwd-pinned runner while moving a hive between embedded and server mode.

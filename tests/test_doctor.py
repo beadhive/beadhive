@@ -1332,6 +1332,8 @@ _DOCTOR_SECTIONS = {
     "hq_remotes",
     "node_id",
     "beads_role",
+    "beads_routing",
+    "stores",
     "store_engine",
     "dispatch",
     "host_daemon",

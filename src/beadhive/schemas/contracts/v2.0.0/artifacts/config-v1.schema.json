@@ -371,6 +371,12 @@
       "additionalProperties": false,
       "description": "How the migrated work/planning cohorts reach Beads (``work.beads``, bh-m36pc).",
       "properties": {
+        "explicit_routing": {
+          "default": false,
+          "description": "Declare bd's own routing on the hive (bh-5lpl9.1): onboard sets `routing.mode: explicit` and `routing.default: .` in .beads/config.yaml when absent, and `bh doctor` lists hives where either is unset or differs. Off by default.",
+          "title": "Explicit Routing",
+          "type": "boolean"
+        },
         "route": {
           "default": "api",
           "description": "Which Beads route the migrated cohorts (assign / claim / resume / abandon / submit state, plan file, ready / schedule / claim-next, dispatch reads) may take. api (default): the supervised Beads service only; when no capable session can be opened the command fails closed, naming `bh host beads start --hive <hive>`. api+cli-fallback: the API when a capable session opens, else the bd CLI route selected before the first Beads operation (never a retry). cli: always the bd CLI route. An unknown value is refused, never defaulted.",
@@ -2446,6 +2452,18 @@
           "default": null,
           "description": "Per-hive `repowise` section override."
         },
+        "stores": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ManagedRepoStores"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional explicit internal/public bead stores (bh-lniwf.2). Absent = the one implicit store at the checkout's .beads (today's behavior)."
+        },
         "toolchain": {
           "anyOf": [
             {
@@ -2519,6 +2537,38 @@
         }
       },
       "title": "ManagedRepoEntry",
+      "type": "object"
+    },
+    "ManagedRepoStores": {
+      "additionalProperties": false,
+      "description": "``managed_repos[*].stores`` — the explicit internal/public store pair (bh-lniwf.2).",
+      "properties": {
+        "internal": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StoreDescriptor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The private, operational store (required when `stores` is set)."
+        },
+        "public": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StoreDescriptor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The optional public projection store (explicit access only)."
+        }
+      },
+      "title": "ManagedRepoStores",
       "type": "object"
     },
     "MetadataConfig": {
@@ -2891,6 +2941,127 @@
         "model"
       ],
       "title": "RoutingTierConfig",
+      "type": "object"
+    },
+    "StoreDescriptor": {
+      "additionalProperties": false,
+      "description": "One bead store of a managed repository (``managed_repos[*].stores.<scope>``).",
+      "properties": {
+        "authority": {
+          "anyOf": [
+            {
+              "enum": [
+                "local",
+                "remote"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Who is canonical: `local` (this store; internal) or `remote` (the external system, e.g. GitHub; public).",
+          "title": "Authority"
+        },
+        "dispatch": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Whether the store may issue operational work. Only `internal` may; a public store set to true is rejected.",
+          "title": "Dispatch"
+        },
+        "dolt_remote": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DoltRemoteDescriptor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The store's own `dolt-remote-descriptor/v1` (bh-rz379). Public stores only: the internal store's descriptor is the hive's `dolt_remote`. `remote` names it and defaults to its `name`."
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Detached store root holding `.beads/` (absolute or `~`). `internal`: absent = the checkout's own `.beads`; `public`: required, outside the checkout.",
+          "title": "Path"
+        },
+        "prefix": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Bead-id prefix of this store. Unique across every managed store. `internal` defaults to (and must equal) the hive `prefix`; required for `public`.",
+          "title": "Prefix"
+        },
+        "remote": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Name of the store's HQ Dolt remote descriptor, never a URL or credential: `internal` names the hive's `dolt_remote` (bh-b1scz); `public` names its own nested `dolt_remote`. `git-origin` is reserved for the code origin's refs/dolt/data.",
+          "title": "Remote"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "const": "github-issues",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Projection source of a `public` store; forbidden on `internal`.",
+          "title": "Source"
+        },
+        "sync": {
+          "anyOf": [
+            {
+              "enum": [
+                "push-pull",
+                "pull-only",
+                "none"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Sync direction. `local` authority allows push-pull|none; `remote` authority allows pull-only|none.",
+          "title": "Sync"
+        }
+      },
+      "title": "StoreDescriptor",
       "type": "object"
     },
     "ValidationBrokerBudgetConfig": {

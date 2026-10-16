@@ -299,6 +299,13 @@ def beads_route(cfg, entry):
     return layered(cfg, entry, "work.beads", "route", "api")
 
 
+def beads_explicit_routing(cfg, entry) -> bool:
+    """`work.beads.explicit_routing` (per-hive > global > False): whether onboard declares
+    bd's `routing.mode: explicit` / `routing.default: .` and doctor reports drift from them
+    (bh-5lpl9.1, docs/design/beads-multi-repo-adoption-adr.md section 3)."""
+    return bool(layered(cfg, entry, "work.beads", "explicit_routing", False))
+
+
 def batch_max_size(cfg, entry):
     """Max issues a planner-declared `batch:<group>` may hold (handled+validated+merged as one
     unit). Default 5 — keeps a batch bubble small enough to stay reviewable / bisectable."""
@@ -662,6 +669,7 @@ __all__ = [
     "carry_high_water",
     "carry_max_roots",
     "enforce_signing",
+    "beads_explicit_routing",
     "beads_route",
     "batch_max_size",
     "dispatch_value",

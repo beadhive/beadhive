@@ -16,6 +16,17 @@
 >
 > Neither decided section pre-writes any of .3/.4's content.
 
+## Amendment (bh-lniwf.1, 2026-10-16) — only an explicit public store is publishable
+
+The sections below assume a hive's bead data "is already public" because it rides
+`refs/dolt/data` on a public code remote. That stops being true once a repository is
+partitioned per [two-store-scope-adr.md](two-store-scope-adr.md): Beadhive's **internal**
+store becomes private after rollout, and only an **explicitly selected public store** may be
+exported or published. `export_public_snapshot` therefore takes a resolved public
+`StoreTarget` (never a checkout path or a hive name) and refuses every other scope — the
+internal store of a repository whose code is public, and the legacy single store, included.
+The flag set (.1), field allow-list (.2), aggregate ban (.3) and envelope (.4) are unchanged.
+
 ## bh-7jm7v.1 — the exact `bd export` flag set for a public snapshot
 
 ### The question

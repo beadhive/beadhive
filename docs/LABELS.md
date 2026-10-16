@@ -65,3 +65,10 @@ are always enforced; only the *linter* is a reporting-vs-failing toggle.
 [INTEGRATIONS](INTEGRATIONS.md): `classify`, `derive_prefix`, `register` (comment-preserving
 upsert into `managed_repos`), `repos_sync`, `effective_providers`, and hive resolution
 (`resolve_hive`, `hive_dir`, `all_hive_targets`) for [routing](PASSTHROUGH.md).
+
+Which of beads' native multi-repo features these implement — hydration as the hub,
+`bh report <hive>` as bd's `--repo` override, `routing.mode: explicit` on every hive, one
+prefix per store — is recorded in
+[beads-multi-repo-adoption-adr.md](design/beads-multi-repo-adoption-adr.md); the features bh
+rejects (routing by actor, phase stores) are in
+[beads-methodology-divergence-adr.md](design/beads-methodology-divergence-adr.md).
