@@ -863,6 +863,15 @@ def _act_bd_init(ctx: Ctx) -> None:
         _configure_auto_export(ctx)
         return
     env = dict(os.environ, BD_NON_INTERACTIVE="1")
+    descriptor = _hq_remote_descriptor(ctx)
+    if descriptor is not None:
+        # HQ policy wins BEFORE any Git-origin probe (bh-b1scz.6): a managed private hive must
+        # never bootstrap from the code repository's public refs/dolt/data.
+        _bootstrap_from_hq_remote(ctx, descriptor, env)
+        _ensure_server_mode_persisted(ctx)
+        hive._ensure_bd_backup_gitignored(ctx.base)
+        _configure_auto_export(ctx)
+        return
     if ctx.furnish:
         bd_init = [
             "bd",
@@ -925,6 +934,144 @@ def _act_bd_init(ctx: Ctx) -> None:
     hive._ensure_bd_backup_gitignored(ctx.base)
     _configure_auto_export(ctx)
     _guard_beads_remote(ctx)
+
+
+#: Explicit, per-invocation operator intent to SEED an empty HQ remote while onboarding. Its
+#: value must name the hive being onboarded (prefix or provider/org/repo), so a stale export
+#: cannot seed a different hive. A failed clone is never read as "empty" (ADR, "Bootstrap from a
+#: descriptor"); only this names the empty case.
+SEED_REMOTE_ENV = "BH_ONBOARD_SEED_REMOTE"
+
+
+def _hq_remote_descriptor(ctx: Ctx):
+    """The hive's HQ ``dolt_remote`` descriptor, or None (no policy: today's behaviour)."""
+    from .modules.config.contracts import DoltRemoteDescriptor
+
+    if not ctx.cfg:
+        return None
+    entry = registry.find_entry(ctx.cfg, ctx.provider, ctx.org, ctx.repo)
+    raw = (entry or {}).get("dolt_remote")
+    return DoltRemoteDescriptor(**dict(raw)) if raw else None
+
+
+def _seed_requested(ctx: Ctx) -> bool:
+    wanted = (os.environ.get(SEED_REMOTE_ENV) or "").strip()
+    return bool(wanted) and wanted in {ctx.prefix, ctx.hive}
+
+
+def _hq_remote_failed(ctx: Ctx, phase: str, detail: str, *, cleanup: bool) -> None:
+    from . import hive
+
+    if cleanup:
+        hive.cleanup_failed_bd_init(ctx.base)
+    typer.echo(f"✗ beads: HQ remote bootstrap failed (phase: {phase}) — {detail}", err=True)
+    typer.echo(
+        "  Nothing was cloned over or deleted: the HQ declaration is unchanged and this "
+        "checkout holds no partial store, so re-running onboarding is safe.",
+        err=True,
+    )
+    raise typer.Exit(1)
+
+
+def _bootstrap_from_hq_remote(ctx: Ctx, descriptor, env: dict) -> None:
+    """Materialise the store from the HQ-declared remote instead of the Git origin.
+
+    Populated remote: ``Engine.clone_remote`` (full history through ``bd bootstrap``). A clone
+    failure — empty, missing, unauthorised or unreachable alike — stops here, names its phase and
+    leaves nothing behind. Empty remote: only with ``BH_ONBOARD_SEED_REMOTE=<this hive>``, a
+    fresh store is minted, registered and pushed; a remote that turns out to hold data rejects
+    that push as a non-fast-forward (never forced)."""
+    from . import dolt_remote, dolt_remote_credentials, engine
+
+    target = dolt_remote.classify(descriptor.url)  # onboarding lands on server mode
+    shown = f"{descriptor.name} → {target.redacted} ({target.family.value})"
+    if not target.allows(dolt_remote.RemoteOp.CLONE):
+        _hq_remote_failed(
+            ctx, "preflight", f"{shown}: {target.error or target.capabilities.note}", cleanup=False
+        )
+    creds = dolt_remote_credentials.resolve(target, descriptor.credentials, ctx.cfg)
+    if not creds.ok:
+        _hq_remote_failed(ctx, "credentials", creds.missing, cleanup=False)
+    eng = engine.get_engine(ctx.cfg)
+    server_env = dict(env, BEADS_DOLT_SHARED_SERVER="1")
+    if not _seed_requested(ctx):
+        typer.echo(f"• beads: cloning full history from the HQ remote {shown}")
+        cloned = eng.clone_remote(ctx.base, descriptor.url, env=server_env, extra_env=creds.env)
+        if cloned.returncode:
+            tail = (getattr(cloned, "stderr", "") or "").strip().splitlines()
+            reason = (tail[-1] if tail else f"exit {cloned.returncode}").replace(
+                descriptor.url, target.redacted
+            )
+            _hq_remote_failed(
+                ctx,
+                "clone",
+                f"{reason}. A failed clone is never treated as an empty remote; if this remote "
+                f"is verified EMPTY, re-run with {SEED_REMOTE_ENV}={ctx.prefix or ctx.hive} to "
+                "seed it from a fresh store",
+                cleanup=True,
+            )
+        if descriptor.name != "origin":
+            _register_hq_remote(ctx, eng, descriptor, target, creds, shown)
+            bootstrap_origin = eng.get_remote(ctx.base, "origin")
+            if bootstrap_origin and dolt_remote.same_remote(bootstrap_origin.url, descriptor.url):
+                eng.remove_remote(ctx.base, "origin")
+        return
+    typer.echo(
+        f"• beads: seeding the empty HQ remote {shown} from a fresh store ({SEED_REMOTE_ENV})"
+    )
+    bd_init = [
+        "bd",
+        "init",
+        "--prefix",
+        ctx.prefix,
+        SHARED_SERVER_FLAG,
+        "--skip-agents",
+        "--skip-hooks",
+        "--init-if-missing",
+    ]
+    if not ctx.furnish:
+        bd_init.insert(4, "--setup-exclude")
+    _run_bd_mint(bd_init + ["--non-interactive"], ctx, env=env)
+    _bypass_gh2455_dirty_config(ctx)
+    # bd init wires the Git origin as `origin` when it can; a brand-new store has no history
+    # to protect, and HQ policy outranks that probe, so the declared name is re-pointed.
+    bd_mod.run(["config", "unset", "sync.remote"], ctx.base, capture=True)
+    wired = eng.get_remote(ctx.base, descriptor.name)
+    if wired is not None and not dolt_remote.same_remote(wired.url, descriptor.url):
+        replaced = eng.replace_remote(
+            ctx.base, descriptor.name, descriptor.url, extra_env=creds.env
+        )
+        if replaced.returncode:
+            _hq_remote_failed(ctx, "register", f"{shown}: could not register", cleanup=True)
+    else:
+        _register_hq_remote(ctx, eng, descriptor, target, creds, shown)
+    pushed = eng.push_state(
+        ctx.base,
+        message="seed HQ-declared remote",
+        remote=descriptor.name,
+        extra_env=dict(creds.env),
+    )
+    if pushed.returncode:
+        tail = (getattr(pushed, "stderr", "") or "").strip().splitlines()
+        reason = (tail[-1] if tail else f"exit {pushed.returncode}").replace(
+            descriptor.url, target.redacted
+        )
+        _hq_remote_failed(
+            ctx,
+            "seed-push",
+            f"{reason}. A remote that already holds data rejects a seed; clone it instead",
+            cleanup=True,
+        )
+
+
+def _register_hq_remote(ctx: Ctx, eng, descriptor, target, creds, shown: str) -> None:
+    added = eng.add_remote(ctx.base, descriptor.name, descriptor.url, extra_env=creds.env)
+    if added.returncode:
+        tail = (getattr(added, "stderr", "") or "").strip().splitlines()
+        reason = (tail[-1] if tail else f"exit {added.returncode}").replace(
+            descriptor.url, target.redacted
+        )
+        _hq_remote_failed(ctx, "register", f"{shown}: {reason}", cleanup=True)
 
 
 def _ensure_server_mode_persisted(ctx: Ctx) -> None:
