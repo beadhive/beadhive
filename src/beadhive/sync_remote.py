@@ -35,7 +35,7 @@ from pathlib import Path
 
 import typer
 
-from . import bd, config, engine, fleet, registry
+from . import bd, config, engine, fleet, registry, sync_policy
 from .run import run
 from .safety import Category, DoltRefInfo, scan
 
@@ -92,7 +92,7 @@ _RECENT_LIMIT = 8
 _ASSESS_WORKERS = 4
 
 
-def _dolt_reason(dolt: DoltRefInfo) -> str:
+def _dolt_reason(dolt: DoltRefInfo, *, pull_only: bool = False) -> str:
     """Human-readable reason line for a pushable dolt state — "unknown" (couldn't be verified:
     unreachable peer, timeout, or — on the no-network path — a bd-managed store, bh-fl26)
     gets its own honest wording instead of the git-ref-flavored message. Verified ahead/behind
@@ -100,6 +100,8 @@ def _dolt_reason(dolt: DoltRefInfo) -> str:
     present."""
     if dolt.status == "unknown":
         detail = dolt.reason or "bd-managed store — no read-only remote check ran"
+        if pull_only:
+            return f"dolt state could not be verified ({detail}); push withheld (pull-only)"
         return f"dolt state could not be verified ({detail}); would attempt idempotent bd dolt push"
     if dolt.status == "behind":
         detail = f"{dolt.behind} behind" if dolt.behind else "behind"
@@ -133,6 +135,9 @@ class HiveSyncRecord:
     reasons: list[str] = field(default_factory=list)
     unpushed_branches: list[str] = field(default_factory=list)
     dolt_status: str = "absent"
+    # Effective contribution policy (bh-0azjq): "read-write" or "pull-only" + why.
+    policy: str = sync_policy.READ_WRITE
+    policy_reasons: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -193,7 +198,12 @@ def _apply_hq_remote(record: HiveSyncRecord, hq: HqRemote) -> None:
 
 
 def assess_hive(
-    hive_id: str, clone_path: Path, *, fetch: bool = False, remote_only: bool = False
+    hive_id: str,
+    clone_path: Path,
+    *,
+    fetch: bool = False,
+    remote_only: bool = False,
+    pull_only: bool = False,
 ) -> HiveSyncRecord:
     """Pure, read-only classification of one hive — never mutates anything.
 
@@ -212,6 +222,9 @@ def assess_hive(
     ``fetch=True`` (still read-only, but pays a real network fetch) consults ``bd federation
     status`` for the dolt state, yielding verified ahead/behind counts instead of the
     no-network path's ``unknown``. The default ``False`` keeps today's no-network behavior.
+
+    ``pull_only=True`` (bh-0azjq) only changes reason WORDING: a pull-only hive's unverifiable
+    Dolt state is never described as something a push would be attempted for.
     """
     if not clone_path.exists():
         return HiveSyncRecord(
@@ -258,12 +271,12 @@ def assess_hive(
         status = SyncStatus.UNPUSHED_GIT
         reasons.append(f"unpushed git branch(es): {', '.join(unpushed_branches)}")
         if dolt_unpushed:
-            reasons.append(_dolt_reason(dolt))
+            reasons.append(_dolt_reason(dolt, pull_only=pull_only))
         elif dolt.status == "behind":
-            reasons.append(_dolt_reason(dolt))
+            reasons.append(_dolt_reason(dolt, pull_only=pull_only))
     elif dolt_unpushed:
         status = SyncStatus.UNPUSHED_DOLT
-        reasons.append(_dolt_reason(dolt))
+        reasons.append(_dolt_reason(dolt, pull_only=pull_only))
     else:
         # "behind" is deliberately NOT in _DOLT_PUSHABLE (there is nothing local to push) —
         # but it's still a real, actionable state (bh-ummb9.3): surface it as a labelled
@@ -271,7 +284,7 @@ def assess_hive(
         # visible in both --dry-run and a live run.
         status = SyncStatus.CLEAN
         if dolt.status == "behind":
-            reasons.append(_dolt_reason(dolt))
+            reasons.append(_dolt_reason(dolt, pull_only=pull_only))
 
     return HiveSyncRecord(
         hive=hive_id,
@@ -293,6 +306,63 @@ class SyncPlan:
     dolt_pushed: list[str] = field(default_factory=list)
     offending: list[str] = field(default_factory=list)
     auto_merges: dict[str, list[str]] = field(default_factory=dict)
+    # bh-0azjq: a pull-only hive's push legs are WITHHELD by policy — a distinct outcome from a
+    # successful push (``pushed_branches``/``dolt_pushed``) and from a failure (``offending``).
+    # Maps hive id -> what was withheld ("dolt: refs/dolt/data", "git: <branch>", …).
+    policy_skipped: dict[str, list[str]] = field(default_factory=dict)
+    pulled: list[str] = field(default_factory=list)
+    # hive id -> the Dolt remote name a pull-only hive's pull leg read from ("" = bd default).
+    pull_sources: dict[str, str] = field(default_factory=dict)
+
+
+PLAN_SCHEMA = 1
+
+
+def plan_payload(plan: SyncPlan) -> dict:
+    """The machine-readable form of a ``SyncPlan`` (``bh hive sync remotes --json``).
+
+    Each hive carries a single ``outcome`` so a consumer never has to infer it: ``offending``
+    (refused or failed — the non-zero exit cause), ``policy-skipped`` (push legs withheld by a
+    pull-only contribution policy — NOT a failure), ``pushed``, ``pulled`` or ``unchanged``.
+    """
+    hives = []
+    for record in plan.records:
+        hive_id = record.hive
+        if hive_id in plan.offending:
+            outcome = "offending"
+        elif hive_id in plan.policy_skipped:
+            outcome = "policy-skipped"
+        elif hive_id in plan.pushed_branches or hive_id in plan.dolt_pushed:
+            outcome = "pushed"
+        elif hive_id in plan.pulled:
+            outcome = "pulled"
+        else:
+            outcome = "unchanged"
+        hives.append(
+            {
+                "hive": hive_id,
+                "status": str(record.status),
+                "policy": record.policy,
+                "policy_reasons": list(record.policy_reasons),
+                "reasons": list(record.reasons),
+                "dolt_status": record.dolt_status,
+                "unpushed_branches": list(record.unpushed_branches),
+                "outcome": outcome,
+                "pulled": hive_id in plan.pulled,
+                "pull_source": plan.pull_sources.get(hive_id),
+                "pushed_branches": list(plan.pushed_branches.get(hive_id, [])),
+                "dolt_pushed": hive_id in plan.dolt_pushed,
+                "withheld": list(plan.policy_skipped.get(hive_id, [])),
+                "auto_merges": list(plan.auto_merges.get(hive_id, [])),
+            }
+        )
+    return {
+        "schema": PLAN_SCHEMA,
+        "dry_run": plan.dry_run,
+        "ok": not plan.offending,
+        "hives": hives,
+        "offending": list(plan.offending),
+    }
 
 
 def _last_stderr_line(result) -> str:
@@ -413,20 +483,57 @@ def _pull_dolt_state(
     return ok, ("" if ok else _dolt_stderr(result)), _auto_merge_notices(result)
 
 
-def _resolve_targets(cfg, hive_ids: list[str] | None) -> list[tuple[str, Path]]:
-    """The ``(hive_id, clone_path)`` pairs this run addresses: every registered hive (HQ
+def _pull_eligible(record: HiveSyncRecord) -> bool:
+    """Whether the pull leg addresses this hive: a local checkout with an actual Dolt remote —
+    "absent"/"no-remote" mirrors the push leg's own ``_DOLT_PUSHABLE`` gate."""
+    if record.status == SyncStatus.REMOTE_ONLY:
+        return False
+    return record.dolt_status not in ("absent", "no-remote", None)
+
+
+def _dolt_remotes(clone_path: Path) -> list[dict]:
+    """The hive's configured Dolt remotes (``bd dolt remote list``) — name + url, read-only."""
+    data = bd.json(["dolt", "remote", "list"], clone_path)
+    return [r for r in data if isinstance(r, dict)] if isinstance(data, list) else []
+
+
+def _git_remote_url(clone_path: Path, name: str) -> str:
+    """The Git remote ``name``'s fetch URL, or "" when it is not configured. Read-only."""
+    result = run(
+        ["git", "-C", str(clone_path), "remote", "get-url", name], check=False, capture=True
+    )
+    return (result.stdout or "").strip() if result.returncode == 0 else ""
+
+
+def _resolve_pull_route(
+    policy: sync_policy.SyncPolicy, clone_path: Path, remote: str
+) -> sync_policy.PullRoute:
+    """Gather a pull-only hive's remote facts (Dolt remotes, Git origin/upstream, sync.remote)
+    and resolve its declared upstream bead source (see ``sync_policy.pull_route``)."""
+    return sync_policy.pull_route(
+        policy,
+        dolt_remotes=_dolt_remotes(clone_path),
+        git_upstream_url=_git_remote_url(clone_path, sync_policy.UPSTREAM_REMOTE),
+        git_origin_url=_git_remote_url(clone_path, "origin"),
+        sync_remote_url=bd.sync_remote(clone_path),
+        explicit_remote=remote,
+    )
+
+
+def _resolve_targets(cfg, hive_ids: list[str] | None) -> list[tuple[str, Path, dict]]:
+    """The ``(hive_id, clone_path, entry)`` triples this run addresses: every registered hive (HQ
     skipped, as today) when ``hive_ids`` is empty/None, else exactly the resolved hives named —
     each resolved via ``registry.resolve_hive`` (prefix/triplet/flexible match), refusing HQ the
     same way ``hive_sync._targets`` does."""
     real_hives = registry.hives(cfg)
     if not hive_ids:
-        targets: list[tuple[str, Path]] = []
+        targets: list[tuple[str, Path, dict]] = []
         for entry in cfg.get("managed_repos", []) or []:
             if entry not in real_hives:
                 typer.echo("  (skipping HQ — local-only by design)")
                 continue
             provider, org, repo = str(entry["provider"]), str(entry["org"]), str(entry["repo"])
-            targets.append((f"{provider}/{org}/{repo}", registry.hive_dir(entry)))
+            targets.append((f"{provider}/{org}/{repo}", registry.hive_dir(entry), entry))
         return targets
 
     targets = []
@@ -436,7 +543,7 @@ def _resolve_targets(cfg, hive_ids: list[str] | None) -> list[tuple[str, Path]]:
             typer.echo("✗ HQ is local-only by design — it has no remote to sync", err=True)
             raise typer.Exit(1)
         provider, org, repo = str(entry["provider"]), str(entry["org"]), str(entry["repo"])
-        targets.append((f"{provider}/{org}/{repo}", registry.hive_dir(entry)))
+        targets.append((f"{provider}/{org}/{repo}", registry.hive_dir(entry), entry))
     return targets
 
 
@@ -494,19 +601,26 @@ def sync_remote(
     # specifying it promises that its local checkout is the target, so retain the BLOCKED error
     # for a missing/invalid path.
     remote_only_ok = not hive_ids
+    # bh-0azjq: the contribution policy is derived from authoritative config (registry entry +
+    # the hive's effective Beads config) BEFORE any leg runs, so no flag can bypass it.
+    policies = [sync_policy.resolve(entry, clone_path) for _, clone_path, entry in targets]
+    pull_only = {t[0]: p.pull_only for t, p in zip(targets, policies, strict=True)}
     records = fleet.fanout(
-        lambda t: assess_hive(t[0], t[1], remote_only=remote_only_ok),
+        lambda t: assess_hive(t[0], t[1], remote_only=remote_only_ok, pull_only=pull_only[t[0]]),
         targets,
         workers=_ASSESS_WORKERS,
     )
     # HQ-declared object-store remotes (bh-b1scz.7): never described as refs/dolt/data, never
     # given a Git-derived ahead/behind, pushed/pulled with this host's credentials only.
     hq_remotes = {
-        hive_id: _hq_remote(cfg, hive_id, resolve_credentials=not dry_run) for hive_id, _ in targets
+        hive_id: _hq_remote(cfg, hive_id, resolve_credentials=not dry_run)
+        for hive_id, _, _ in targets
     }
-    for (hive_id, _), record in zip(targets, records, strict=True):
+    for (hive_id, _, _), record, policy in zip(targets, records, policies, strict=True):
         if hq_remotes[hive_id] is not None:
             _apply_hq_remote(record, hq_remotes[hive_id])
+        record.policy = policy.label
+        record.policy_reasons = list(policy.reasons)
 
     def _label(hive_id: str) -> str:
         hq = hq_remotes.get(hive_id)
@@ -524,6 +638,20 @@ def sync_remote(
         hq = hq_remotes.get(hive_id)
         return hq.extra_env if hq else None
 
+    # bh-0azjq: a pull-only hive's pull reads its declared upstream bead source. A route that
+    # resolves a remote wins; otherwise the HQ-declared remote (or bd's default) is used.
+    routes: dict[str, sync_policy.PullRoute] = {}
+    if pull:
+        for (hive_id, clone_path, _), record, policy in zip(
+            targets, records, policies, strict=True
+        ):
+            if policy.pull_only and _pull_eligible(record):
+                routes[hive_id] = _resolve_pull_route(policy, clone_path, remote)
+
+    def _pull_remote(hive_id: str) -> str:
+        route = routes.get(hive_id)
+        return route.remote if route is not None and route.remote else _remote_for(hive_id)
+
     # Pull-then-push (bh-ummb9.1 wiring; the pull leg's own behaviour — auto-merge reporting,
     # per-remote nuance, dry-run ahead/behind — is bh-ummb9.2/.3's job, not this one's). Never
     # runs under --dry-run (mutates), and only for a hive with an actual dolt remote —
@@ -531,21 +659,35 @@ def sync_remote(
     # clone (or a bd store with no configured remote) is never handed to `bd dolt pull`.
     pull_failed: set[str] = set()
     if pull and not dry_run:
-        for (hive_id, clone_path), record in zip(targets, records, strict=True):
-            if record.status == SyncStatus.REMOTE_ONLY:
+        for (hive_id, clone_path, _), record in zip(targets, records, strict=True):
+            if not _pull_eligible(record):
                 continue
-            if record.dolt_status in ("absent", "no-remote", None):
-                continue
+            route = routes.get(hive_id)
+            if route is not None:
+                for note in route.notes:
+                    typer.echo(f"  {hive_id}: • {note}")
+                if route.refused:
+                    # A declared upstream with no Dolt remote reaching it: pulling bd's default
+                    # (usually the writable fork) would read the WRONG source. Genuine routing
+                    # fault — offending, but nothing is published.
+                    typer.echo(f"  {hive_id}: ✗ pull refused: {route.refused}", err=True)
+                    pull_failed.add(hive_id)
+                    plan.offending.append(hive_id)
+                    continue
             if _creds_missing(hive_id):
                 typer.echo(f"  {hive_id}: ✗ credentials: {_creds_missing(hive_id)}", err=True)
                 pull_failed.add(hive_id)
                 plan.offending.append(hive_id)
                 continue
+            pull_remote = _pull_remote(hive_id)
+            if route is not None:
+                plan.pull_sources[hive_id] = pull_remote
             ok, reason, auto_merges = _pull_dolt_state(
-                cfg, clone_path, remote=_remote_for(hive_id), extra_env=_env(hive_id)
+                cfg, clone_path, remote=pull_remote, extra_env=_env(hive_id)
             )
             if ok:
-                typer.echo(f"  {hive_id}: pulled")
+                plan.pulled.append(hive_id)
+                typer.echo(f"  {hive_id}: pulled" + (f" from {pull_remote}" if pull_remote else ""))
             else:
                 typer.echo(f"  {hive_id}: ✗ failed to pull dolt: {_label(hive_id)}", err=True)
                 if reason:
@@ -559,10 +701,10 @@ def sync_remote(
                 typer.echo(f"  {hive_id}: ⚠ {notice}")
                 plan.auto_merges.setdefault(hive_id, []).append(notice)
 
-    for (hive_id, clone_path), record in zip(targets, records, strict=True):
+    for (hive_id, clone_path, _), record, policy in zip(targets, records, policies, strict=True):
         plan.records.append(record)
 
-        typer.echo(f"  {hive_id}: {record.status}")
+        typer.echo(f"  {hive_id}: {record.status}" + (" [pull-only]" if policy.pull_only else ""))
         for reason in record.reasons:
             typer.echo(f"    - {reason}")
 
@@ -571,8 +713,19 @@ def sync_remote(
         # live pull loop's own eligibility exactly (same dolt_status gate, independent of this
         # hive's push-worthiness/offending status — the live loop pulls every eligible hive
         # regardless), so a hive that won't really be pulled is never described as if it would.
-        if dry_run and pull and record.dolt_status not in ("absent", "no-remote", None):
-            typer.echo(f"    would pull{', then push' if push else ''}: {_label(hive_id)}")
+        if dry_run and pull and _pull_eligible(record):
+            route = routes.get(hive_id)
+            if route is not None:
+                for note in route.notes:
+                    typer.echo(f"    • {note}")
+            if route is not None and route.refused:
+                typer.echo(f"    would refuse pull: {route.refused}")
+            elif policy.pull_only:
+                pull_remote = _pull_remote(hive_id)
+                source = f" from {pull_remote}" if pull_remote else ""
+                typer.echo(f"    would pull{source}: {_label(hive_id)} (push withheld: pull-only)")
+            else:
+                typer.echo(f"    would pull{', then push' if push else ''}: {_label(hive_id)}")
 
         is_unknown_dolt = (
             record.status == SyncStatus.UNPUSHED_DOLT and record.dolt_status == "unknown"
@@ -587,7 +740,11 @@ def sync_remote(
                 for item in recent:
                     typer.echo(f"      - {item.get('id', '?')}: {item.get('title', '')}")
 
-        if record.status in _OFFENDING:
+        # A dirty tree only matters to a push leg. A pull-only hive never pushes from bulk sync,
+        # so contributor work-in-progress in its fork checkout is not a fleet failure.
+        if record.status in _OFFENDING and not (
+            policy.pull_only and record.status == SyncStatus.DIRTY
+        ):
             plan.offending.append(hive_id)
             continue
 
@@ -601,6 +758,21 @@ def sync_remote(
         if hive_id in pull_failed:
             # Already reported + offending above; don't compound with a push against
             # possibly-stale local state.
+            continue
+
+        if policy.pull_only:
+            # bh-0azjq — unconditional correctness rule: neither external bead state nor the
+            # contribution fork's branches are published by a bulk sync. --push, --remote and
+            # --force do not override it; contribution branches go out only through the
+            # explicit, gated contribution flow.
+            withheld = [f"git: {name}" for name in record.unpushed_branches]
+            if record.dolt_status in _DOLT_PUSHABLE:
+                withheld.append(f"dolt: {_label(hive_id)}")
+            plan.policy_skipped[hive_id] = withheld
+            verb = "would skip push" if dry_run else "push skipped"
+            typer.echo(f"    {verb} — {policy.describe()}; --push/--remote/--force do not override")
+            if withheld:
+                typer.echo(f"    withheld: {', '.join(withheld)}")
             continue
 
         if dry_run:
@@ -658,6 +830,11 @@ def sync_remote(
             plan.offending.append(hive_id)
 
     typer.echo(f"\n# {len(plan.records)} hive(s) assessed")
+    if plan.policy_skipped:
+        typer.echo(
+            f"• {len(plan.policy_skipped)} pull-only hive(s): push withheld by contribution "
+            "policy (not a failure)"
+        )
     if plan.offending:
         typer.echo(f"✗ {len(plan.offending)} hive(s) could not be safely synced:", err=True)
         for hive_id in plan.offending:

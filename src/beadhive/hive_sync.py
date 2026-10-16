@@ -14,6 +14,8 @@ Rules (bh-wty3 plan):
   sync_remote's assessment pass); a live sync is a WRITE and runs serially per hive.
 - Conflicts are data: a paused sync prints the conflicted tables + the re-run instruction
   and lands the hive in the offending list instead of half-merging.
+- A PULL-ONLY contribution target (bh-0azjq, see ``sync_policy``) is never live-synced:
+  federation sync is bidirectional, so it is reported and skipped, never offending.
 - NO PEER TOWNS IS A STATE, NOT A FAULT (bh-libi): a hive with nobody to federate with is
   reported and skipped, never counted as offending — which is what ``--dry-run`` has always
   done (``(no peers)``), and what the live pass now does too.
@@ -27,7 +29,7 @@ from datetime import UTC, datetime
 
 import typer
 
-from . import config, engine, fleet, guard, jsonout, registry
+from . import config, engine, fleet, guard, jsonout, registry, sync_policy
 
 _STATUS_WORKERS = 4  # read-only federation_status calls; matches sync_remote's fleet pass
 _COMPARISON_SCHEMA = 1
@@ -346,6 +348,16 @@ def _live_pass(
     sync_peer = peer if peer and peer != "all" else None
     for entry in entries:
         hive_id = _hive_id(entry)
+        policy = sync_policy.resolve(entry, registry.hive_dir(entry))
+        if policy.pull_only:
+            # bh-0azjq: `bd federation sync` is bidirectional — it would PUSH this hive's bead
+            # state. A pull-only contribution target is skipped (not offending); its upstream is
+            # read through `bh hive sync remotes --pull`.
+            typer.echo(
+                f"• {hive_id}: federation sync skipped — {policy.describe()}; read upstream "
+                "with `bh hive sync remotes --pull`"
+            )
+            continue
         if strategy:  # break-glass on a cut-over hive (bh-16347.10): refuse before any bd call
             refusal = guard.cut_over_break_glass_refusal(
                 "hive sync --strategy", registry.hive_dir(entry), cfg=cfg, entry=entry
