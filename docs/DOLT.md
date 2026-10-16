@@ -34,6 +34,15 @@ Either way, distribution is unchanged and git-native: issue history travels as `
 on each repo's own git remote, and the cross-hive view is the [hub](HUB.md) on disk. Storage
 mode is a *local* engine choice; it is not where your data is published.
 
+That is the **default**, not a guarantee for every store. A hive that declares
+`managed_repos[*].stores` ([two-store-scope-adr.md](design/two-store-scope-adr.md)) keeps its
+private internal store on an HQ remote descriptor (S3 first), and only its public store may ride
+the code origin's `refs/dolt/data`. Diagnostics name each store's transport: `git-ref` stores
+get the Git-ref ahead/behind checks; descriptor stores report `unknown`, because no read-only
+proof exists for them. The epoch fence (`refs/bh/epoch`) is a Git ref, so it is **advisory**
+for a non-Git store — and even for Git stores it is reserve-push-verify, not atomic with the
+data push (`bh-tfapu`).
+
 ### Which mode is this hive on
 
 The persisted answer is a filesystem fact, never a live probe — `bh` reads

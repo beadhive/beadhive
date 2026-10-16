@@ -65,6 +65,13 @@ Builds/refreshes the hub from `managed_repos`. For each hive:
   `bd bootstrap` (pulls `refs/dolt/data`) → just the beads data (~tens of MB/hive).
 - then `bd repo sync` hydrates the unified view.
 
+A **partitioned** hive (one declaring `managed_repos[*].stores`,
+[two-store-scope-adr.md](design/two-store-scope-adr.md)) is hydrated from its **internal**
+store only — the local checkout's `.beads/` — and is never cache-cloned from its code origin,
+whose `refs/dolt/data` may carry the public projection. Its detached public store is never
+registered in the hub, so a public record never appears as a second, dispatchable copy of work
+(`hub.hydration_source`). An uncloned partitioned hive is skipped with a warning.
+
 The source decision is also the cache-reclaim proof: once the registered local checkout contains
 `.beads/`, `bh sync` no longer reads that hive's minimal clone. `bh backup reclaim --root cache
 --dry-run` reports those caches as `SUPERSEDED` and separately reports `RETAINED` caches that are

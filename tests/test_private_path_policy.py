@@ -435,7 +435,7 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     | _owned("localloop.py", "_default_instructions", ".beads")
     | _owned("mcp.py", "hq_intake_resource", ".beads")
     | _owned("onboard.py", "_act_bd_init", ".beads")
-    | _owned("publish_export.py", "_resolve_hive_root", ".beads")
+    | _owned("publish_export.py", "_resolve_public_store", ".beads")
     | _owned("report.py", "_target", ".beads")
     | _owned("safety.py", "_scan_bd_dolt_state", ".beads")
     | _owned("storage_migrate.py", "_metadata_path", ".beads")

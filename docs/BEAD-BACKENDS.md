@@ -37,6 +37,10 @@ Supported Dolt remotes: `git+ssh://` / `git+https://` (same repo as the code —
 `file://` remotes. `bd init` auto-configures a Dolt remote named `origin` when a git origin
 exists.
 
+bh does not assume every store rides the code origin: a partitioned hive's internal store lives
+on an HQ-declared remote and is selected locally through `BEADS_DIR`-aware `StoreTarget`
+resolution ([two-store-scope-adr.md](design/two-store-scope-adr.md)).
+
 **JSONL's role: export only.** Upstream CONFIG.md: *"Older releases briefly made
 `.beads/issues.jsonl` look like the default git-tracked source of truth; current releases treat
 it as an optional export for viewers, interchange, and issue-level migration."* Exports are
