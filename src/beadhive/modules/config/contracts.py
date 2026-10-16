@@ -2672,9 +2672,15 @@ class StoreDescriptor(_Section):
     )
     remote: str | None = Field(
         None,
-        description="Name of the hive's HQ Dolt remote descriptor (`dolt_remote.name`, "
-        "bh-b1scz), never a URL or credential. `git-origin` is reserved for the code "
-        "origin's refs/dolt/data.",
+        description="Name of the store's HQ Dolt remote descriptor, never a URL or credential: "
+        "`internal` names the hive's `dolt_remote` (bh-b1scz); `public` names its own nested "
+        "`dolt_remote`. `git-origin` is reserved for the code origin's refs/dolt/data.",
+    )
+    dolt_remote: DoltRemoteDescriptor | None = Field(
+        None,
+        description="The store's own `dolt-remote-descriptor/v1` (bh-rz379). Public stores "
+        "only: the internal store's descriptor is the hive's `dolt_remote`. `remote` names it "
+        "and defaults to its `name`.",
     )
     authority: Literal["local", "remote"] | None = Field(
         None,
@@ -2725,6 +2731,26 @@ class StoreDescriptor(_Section):
         if not _REMOTE_NAME_RE.fullmatch(value):
             raise ValueError(f"store remote {value!r} is not a valid descriptor name")
         return value
+
+    @model_validator(mode="after")
+    def _remote_names_the_nested_descriptor(self):
+        """A nested descriptor is what ``remote`` names: default the name from it, and refuse a
+        store that names one remote while nesting another, or nests the reserved code origin."""
+        nested = self.dolt_remote
+        if nested is None:
+            return self
+        if nested.name == GIT_ORIGIN_REMOTE:
+            raise ValueError(
+                f"store dolt_remote.name {GIT_ORIGIN_REMOTE!r} is reserved for the code origin's "
+                "refs/dolt/data — name the descriptor something else"
+            )
+        if self.remote is None:
+            self.remote = nested.name
+        elif self.remote != nested.name:
+            raise ValueError(
+                f"store remote {self.remote!r} does not name its nested dolt_remote {nested.name!r}"
+            )
+        return self
 
     def effective_authority(self, scope: str) -> str:
         return self.authority or ("local" if scope == "internal" else "remote")
@@ -2784,6 +2810,11 @@ def store_pair_problems(stores: ManagedRepoStores) -> list[str]:
         problems.append("stores.internal: source is only valid on a public store")
     if internal.dispatch is False:
         problems.append("stores.internal: dispatch cannot be false — it is the operational store")
+    if internal.dolt_remote is not None:
+        problems.append(
+            "stores.internal: dolt_remote is not supported — the internal store's descriptor is "
+            "the hive's own `dolt_remote` (bh-b1scz); name it with stores.internal.remote"
+        )
     if public is not None:
         if not public.prefix:
             problems.append("stores.public: prefix is required")
@@ -2802,6 +2833,12 @@ def store_pair_problems(stores: ManagedRepoStores) -> list[str]:
             problems.append("stores: internal and public must use different prefixes")
         if internal.remote is not None and internal.remote == public.remote:
             problems.append("stores: internal and public must name different remotes")
+        if public.remote not in (None, GIT_ORIGIN_REMOTE) and public.dolt_remote is None:
+            problems.append(
+                f"stores.public: remote {public.remote!r} has no descriptor — a public store "
+                "declares its own `dolt_remote` (or names 'git-origin'); it never borrows the "
+                "hive's internal descriptor"
+            )
         if internal.remote == GIT_ORIGIN_REMOTE:
             problems.append(
                 "stores.internal: remote cannot be 'git-origin' when a public store exists — that "
@@ -2895,8 +2932,41 @@ class ManagedRepoEntry(_Section):
                 )
         return self
 
+    @model_validator(mode="after")
+    def _internal_remote_is_hive_descriptor(self):
+        """The internal store's descriptor IS the hive's ``dolt_remote`` (bh-rz379): when both
+        are declared, ``stores.internal.remote`` must name it, and a public store may not."""
+        internal = self.stores.internal if self.stores is not None else None
+        if internal is None or self.dolt_remote is None:
+            return self
+        hive_name = self.dolt_remote.name
+        if internal.remote is not None and internal.remote != hive_name:
+            raise ValueError(
+                f"stores.internal.remote {internal.remote!r} must name the hive dolt_remote "
+                f"{hive_name!r} — the hive descriptor is the internal store's remote"
+            )
+        public = self.stores.public
+        if public is not None and public.remote == hive_name:
+            raise ValueError(
+                f"stores.public.remote {hive_name!r} names the hive's internal descriptor — "
+                "a public store declares its own dolt_remote"
+            )
+        return self
+
 
 # ---- top level ------------------------------------------------------------------
+
+
+def _declared_dolt_remotes(entry: ManagedRepoEntry) -> list[DoltRemoteDescriptor]:
+    """Every descriptor one hive declares: the hive's own (its internal store) and each store's
+    nested one (bh-rz379). One location per database holds across all of them."""
+    found = [entry.dolt_remote] if entry.dolt_remote is not None else []
+    if entry.stores is not None:
+        for scope in STORE_SCOPES:
+            store = getattr(entry.stores, scope)
+            if store is not None and store.dolt_remote is not None:
+                found.append(store.dolt_remote)
+    return found
 
 
 def fleet_store_problems(entries: Sequence[ManagedRepoEntry]) -> list[str]:
@@ -3021,17 +3091,16 @@ class BeadhiveConfig(BaseSettings):
         """Each object-store database needs its own path (ADR "One location per database")."""
         seen: set[str] = set()
         for repo in value:
-            if repo.dolt_remote is None:
-                continue
-            location = dolt_remote_location(repo.dolt_remote.url)
-            if location is None:
-                continue
-            if location in seen:
-                raise _dolt_remote_error(
-                    "dolt_remote_path_shared",
-                    "two managed hives declare the same Dolt remote location",
-                )
-            seen.add(location)
+            for descriptor in _declared_dolt_remotes(repo):
+                location = dolt_remote_location(descriptor.url)
+                if location is None:
+                    continue
+                if location in seen:
+                    raise _dolt_remote_error(
+                        "dolt_remote_path_shared",
+                        "two managed stores declare the same Dolt remote location",
+                    )
+                seen.add(location)
         return value
 
     @model_validator(mode="after")

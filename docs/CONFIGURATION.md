@@ -328,14 +328,17 @@ managed_repos:
 |---|---|---|
 | `prefix` | internal: the hive `prefix` | public: required; unique across every managed store |
 | `path` | internal: the checkout's `.beads` | public: required, absolute or `~`, unique fleet-wide |
-| `remote` | none | the name of the hive's HQ Dolt remote descriptor (`dolt_remote.name`, `bh-b1scz`), never a URL; `git-origin` = the code origin's `refs/dolt/data`; internal may not be `git-origin` when a public store exists |
+| `remote` | internal: the hive `dolt_remote.name` when one is declared; public: its nested `dolt_remote.name` | the name of the store's Dolt remote descriptor, never a URL: internal names the hive's `dolt_remote` (`bh-b1scz`), public names its own nested one; `git-origin` = the code origin's `refs/dolt/data`; internal may not be `git-origin` when a public store exists |
+| `dolt_remote` | none | public only: the store's own `dolt-remote-descriptor/v1` (`{url, name, credentials}`, same rules as `managed_repos[].dolt_remote`); registered on the public store after it is minted |
 | `authority` | internal `local`, public `remote` | internal must be `local`, public must be `remote` |
 | `sync` | `local`: `push-pull`; `remote`: `pull-only` | `local` allows `push-pull`/`none`; `remote` allows `pull-only`/`none` |
 | `source` | none | public only: `github-issues` |
 | `dispatch` | internal yes, public no | a public store can never be operational |
 
 `bh config validate` rejects a `stores` block without `internal`, duplicate prefixes, paths or
-remote names across the fleet, and every invalid authority/sync combination.
+remote names across the fleet, every invalid authority/sync combination, an internal `remote`
+that is not the hive's `dolt_remote`, a public `remote` with no descriptor of its own, and two
+descriptors (hive-level or nested) sharing one Dolt remote location.
 
 ## `bh config` commands
 

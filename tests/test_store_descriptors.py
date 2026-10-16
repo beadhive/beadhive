@@ -129,7 +129,12 @@ def test_detached_paths_and_remote_names_are_unique_fleet_wide():
         prefix="wid",
         stores={
             "internal": {"prefix": "wid", "remote": "beadhive-private"},
-            "public": {**PUBLIC, "prefix": "widpub", "remote": "widget-pub"},
+            "public": {
+                **PUBLIC,
+                "prefix": "widpub",
+                "remote": "widget-pub",
+                "dolt_remote": {"name": "widget-pub", "url": "file:///srv/remotes/widget-pub"},
+            },
         },
     )
     message = _error(a, b)
@@ -191,3 +196,84 @@ def test_register_without_a_previous_entry_adds_no_stores(world):
     registry.register("github", "acme", "gadget", "gad", "personal")
     entry = registry.find_entry(config.load(), "github", "acme", "gadget")
     assert "stores" not in entry
+
+
+# ---- dolt-remote-descriptor/v1 nested per store (bh-rz379) ---------------------------------
+
+HIVE_DESCRIPTOR = {"name": "beadhive-private", "url": "s3://fleet/beads/github/beadhive/beadhive"}
+PUBLIC_DESCRIPTOR = {"name": "beadhive-pub", "url": "file:///srv/remotes/beadhive-public"}
+
+
+def _described(stores, descriptor=HIVE_DESCRIPTOR, **kw):
+    entry = _entry(stores=stores, **kw)
+    if descriptor is not None:
+        entry["dolt_remote"] = descriptor
+    return entry
+
+
+def test_a_public_store_nests_its_own_descriptor_and_remote_defaults_to_its_name():
+    public = {**PUBLIC, "remote": None, "dolt_remote": PUBLIC_DESCRIPTOR}
+    cfg = _validate(_described({"internal": INTERNAL, "public": public}))
+    store = cfg.managed_repos[0].stores.public
+    assert store.remote == "beadhive-pub"
+    assert store.dolt_remote.url == PUBLIC_DESCRIPTOR["url"]
+
+
+@pytest.mark.parametrize(
+    ("stores", "needle"),
+    [
+        (
+            {"internal": {**INTERNAL, "dolt_remote": HIVE_DESCRIPTOR}},
+            "the internal store's descriptor is the hive's own `dolt_remote`",
+        ),
+        (
+            {"internal": INTERNAL, "public": {**PUBLIC, "remote": "beadhive-pub"}},
+            "has no descriptor",
+        ),
+        (
+            {
+                "internal": INTERNAL,
+                "public": {**PUBLIC, "remote": "other", "dolt_remote": PUBLIC_DESCRIPTOR},
+            },
+            "does not name its nested dolt_remote",
+        ),
+        (
+            {
+                "internal": INTERNAL,
+                "public": {
+                    **PUBLIC,
+                    "remote": None,
+                    "dolt_remote": {**PUBLIC_DESCRIPTOR, "name": "git-origin"},
+                },
+            },
+            "is reserved for the code origin",
+        ),
+        (
+            {
+                "internal": INTERNAL,
+                "public": {**PUBLIC, "remote": None, "dolt_remote": {"url": "s3://a:b@x/y"}},
+            },
+            "dolt_remote_embedded_credential",
+        ),
+    ],
+)
+def test_nested_descriptors_follow_the_store_and_descriptor_rules(stores, needle):
+    assert needle in _error(_described(stores))
+
+
+def test_internal_remote_must_name_the_hive_descriptor():
+    stores = {"internal": {**INTERNAL, "remote": "elsewhere"}}
+    assert "must name the hive dolt_remote 'beadhive-private'" in _error(_described(stores))
+
+
+def test_internal_store_without_a_remote_takes_the_hive_descriptor():
+    _validate(_described({"internal": {"prefix": "bh"}}))
+
+
+def test_two_stores_never_share_one_dolt_remote_location():
+    public = {
+        **PUBLIC,
+        "remote": None,
+        "dolt_remote": {"name": "beadhive-pub", "url": HIVE_DESCRIPTOR["url"]},
+    }
+    assert "dolt_remote_path_shared" in _error(_described({"internal": INTERNAL, "public": public}))

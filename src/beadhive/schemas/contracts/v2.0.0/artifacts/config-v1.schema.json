@@ -2977,6 +2977,18 @@
           "description": "Whether the store may issue operational work. Only `internal` may; a public store set to true is rejected.",
           "title": "Dispatch"
         },
+        "dolt_remote": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DoltRemoteDescriptor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The store's own `dolt-remote-descriptor/v1` (bh-rz379). Public stores only: the internal store's descriptor is the hive's `dolt_remote`. `remote` names it and defaults to its `name`."
+        },
         "path": {
           "anyOf": [
             {
@@ -3013,7 +3025,7 @@
             }
           ],
           "default": null,
-          "description": "Name of the hive's HQ Dolt remote descriptor (`dolt_remote.name`, bh-b1scz), never a URL or credential. `git-origin` is reserved for the code origin's refs/dolt/data.",
+          "description": "Name of the store's HQ Dolt remote descriptor, never a URL or credential: `internal` names the hive's `dolt_remote` (bh-b1scz); `public` names its own nested `dolt_remote`. `git-origin` is reserved for the code origin's refs/dolt/data.",
           "title": "Remote"
         },
         "source": {
