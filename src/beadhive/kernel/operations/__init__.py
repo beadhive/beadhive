@@ -105,6 +105,7 @@ hive policy|action:string:o,key:string:o,value:string:o,hive_id:string:o,as_json
 hive prefix|provider:string:r,org:string:r,repo:string:r,kind:string:o
 hive ready|verbose:boolean:o,as_json:boolean:o
 hive reclaim|hive_id:string:r,dry_run:boolean:o,backup:boolean:o,confirm:boolean:o,purge:boolean:o
+hive remote|hive:string:o,all_hives:boolean:o,reconcile:boolean:o,dry_run:boolean:o,as_json:boolean:o
 hive repair|prefix:string:o,node_id:boolean:o,role:boolean:o,server_database:boolean:o,hive:string:o,yes:boolean:o,dry_run:boolean:o
 hive retire|hive_id:string:r,dry_run:boolean:o,backup:boolean:o,confirm:boolean:o,purge:boolean:o
 hive rm|hive_id:string:r,dry_run:boolean:o,confirm:boolean:o
