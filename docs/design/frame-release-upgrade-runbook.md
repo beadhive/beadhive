@@ -410,7 +410,9 @@ conformant evidence for the exact approved release. These are documented module
 CLI entrypoints ([HQ heartbeat sender](../HQ.md)), not private API calls. If
 background units still reference the old interpreter, regenerate them with the
 published interpreter's `-m beadhive.heartbeat_sender units --install` and reload
-the existing systemd/launchd manager using its normal supported workflow. If the
+the existing systemd/launchd manager using its normal supported workflow. The
+reinstall keeps operator-set `HOME`, `WorkingDirectory` and other environment
+values, and refuses with a diff rather than dropping a hand-added directive. If the
 frame daemon retains old settings, restart it through the existing public
 `bh host daemon stop` / `bh host daemon start` commands and its configured
 supervisor. Keep the existing frame and hive adoption intact.

@@ -698,3 +698,45 @@ def test_enospc_during_control_record_write_releases_lock_and_partial_file(tmp_p
     assert not host_daemon._lock_held(paths.lock)
     assert not paths.control.exists()
     assert not list(paths.directory.glob("*.tmp"))
+
+
+def test_daemon_units_carry_home_and_keep_operator_values_on_reinstall(tmp_path, monkeypatch):
+    """bh-atdi0: HOME and WorkingDirectory from the installing environment; a reinstall keeps
+    the operator's environment and refuses (with a diff) to drop a directive bh does not
+    generate."""
+    home = tmp_path / "operator-home"
+    monkeypatch.setenv("HOME", str(home))
+    key = _key(tmp_path)
+    unit_dir = tmp_path / "systemd" / "user"
+    unit = f"{daemon_supervisor.service_name(key)}.service"
+    commands = CommandFixture(
+        {("loginctl", "show-user", "1234", "-p", "Linger", "--value"): (0, "yes\n", "")}
+    )
+    systemd = daemon_platform.SystemdUserSupervisorBackend(
+        unit_dir=unit_dir, daemon_binary="/opt/bh-host-daemon", uid=1234, run=commands
+    )
+    systemd.install(key)
+    path = unit_dir / unit
+    text = path.read_text()
+    assert f'Environment="HOME={home}"' in text and f"WorkingDirectory={home}\n" in text
+    path.write_text(text.replace("Restart=on-failure\n", "Restart=on-failure\nEnvironment=X=1\n"))
+    systemd.install(key)
+    assert 'Environment="X=1"' in path.read_text()
+    path.write_text(path.read_text().replace("RestartSec=2\n", "RestartSec=2\nNice=5\n"))
+    with pytest.raises(daemon_supervisor.SupervisorError, match=r"(?s)drop.*-Nice=5"):
+        systemd.install(key)
+    assert "Nice=5" in path.read_text()
+
+    agent_dir = tmp_path / "Library" / "LaunchAgents"
+    launchd = daemon_platform.LaunchAgentSupervisorBackend(
+        agent_dir=agent_dir, daemon_binary="/opt/bh-host-daemon", uid=1234, run=CommandFixture()
+    )
+    launchd.install(key)
+    plist = agent_dir / f"dev.beadhive.{daemon_supervisor.service_name(key)}.plist"
+    payload = plistlib.loads(plist.read_bytes())
+    assert payload["EnvironmentVariables"]["HOME"] == str(home)
+    assert payload["WorkingDirectory"] == str(home)
+    payload["EnvironmentVariables"]["HOME"] = "/Users/operator"
+    plist.write_bytes(plistlib.dumps(payload))
+    launchd.install(key)
+    assert plistlib.loads(plist.read_bytes())["EnvironmentVariables"]["HOME"] == "/Users/operator"
