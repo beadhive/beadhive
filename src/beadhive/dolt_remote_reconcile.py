@@ -110,8 +110,12 @@ def reconcile_hive(
     home: Path | None = None,
     broker=None,
     hive_dir: Path | None = None,
+    check_credentials: bool = True,
 ) -> HiveRemoteReport:
-    """Compare and (outside ``dry_run``) install one hive's missing registration."""
+    """Compare and (outside ``dry_run``) install one hive's missing registration.
+
+    ``check_credentials=False`` (read-only diagnostics such as ``bh doctor``) skips resolving
+    credentials, so a preview never fetches a secret it would not use."""
 
     label = _hive_label(entry)
     raw = entry.get("dolt_remote")
@@ -166,6 +170,11 @@ def reconcile_hive(
     if not target.allows(RemoteOp.ADD):
         report.outcome = Outcome.UNSUPPORTED
         report.detail = target.error or target.capabilities.note
+        return report
+    if not check_credentials and dry_run:
+        report.outcome = Outcome.WOULD_ADD
+        report.mutation = f"bd dolt remote add {name} {target.redacted}"
+        report.detail = "registration missing"
         return report
     creds = dolt_remote_credentials.resolve(
         target, descriptor.credentials, cfg, environ=environ, home=home, broker=broker
