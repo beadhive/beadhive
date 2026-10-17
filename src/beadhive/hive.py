@@ -749,6 +749,26 @@ def _ensure_export_exclude(base=None) -> bool:
     return True
 
 
+#: bd's own ignore pattern for its root gate lock (`.beads.gate.lock`), from the block `bd init`
+#: appends to the root .gitignore; `bd bootstrap` writes no ignore rules at all.
+_GATE_LOCK_PATTERN = "*.gate.lock*"
+
+
+def _ensure_gate_lock_exclude(base=None) -> bool:
+    """Exclude bd's root gate lock through `.git/info/exclude` (zero-footprint), for a store
+    that `bd bootstrap` cloned rather than `bd init` minted. Returns True when written."""
+    base = _base(base)
+    probe = run(["git", "check-ignore", "-q", ".beads.gate.lock"], cwd=str(base), check=False)
+    if getattr(probe, "returncode", 1) == 0:
+        return False
+    exclude = base / ".git/info/exclude"
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    existing = exclude.read_text() if exclude.exists() else ""
+    sep = "" if not existing or existing.endswith("\n") else "\n"
+    exclude.write_text(existing + sep + f"# Beads gate lock (bd)\n{_GATE_LOCK_PATTERN}\n")
+    return True
+
+
 def _untrack_export_jsonl(base=None) -> bool:
     """Stage removal of tracked JSONL exports in a Dolt-backed furnished hive.
 

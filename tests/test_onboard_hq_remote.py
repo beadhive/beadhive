@@ -405,7 +405,7 @@ def test_zero_footprint_clone_excludes_the_store_and_bds_gate_lock(tmp_path):
     onboard._exclude_clone_footprint(ctx)  # idempotent
     assert _ignored(repo, ".beads/metadata.json") and _ignored(repo, ".beads.gate.lock")
     exclude = (repo / ".git" / "info" / "exclude").read_text().splitlines()
-    assert exclude.count(onboard._GATE_LOCK_PATTERN) == 1
+    assert exclude.count(hive._GATE_LOCK_PATTERN) == 1
     assert not (repo / ".gitignore").exists()
 
 
