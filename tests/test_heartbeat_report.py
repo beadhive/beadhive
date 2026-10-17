@@ -8,6 +8,7 @@ from ruamel.yaml import YAML
 from beadhive import heartbeat_report as report
 from beadhive import release_measurement
 from beadhive.hq_framelease_contracts import HeartbeatError
+from beadhive.hq_sql_runtime_schema import inbox_table
 
 
 @pytest.fixture
@@ -34,6 +35,8 @@ def plane(monkeypatch):
         instance_ref="instance-a",
         signer_fingerprint="SHA256:fingerprint",
         epoch=2,
+        principal="factory_p",
+        inbox_table=inbox_table("factory_p", 2),
     )
     record = {
         "authority": {"audience": yard, "beadyard_id": yard, "config_revision": "rev"},
