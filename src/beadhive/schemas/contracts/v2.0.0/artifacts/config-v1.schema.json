@@ -801,6 +801,14 @@
           "title": "Dependency Probe Timeout Seconds",
           "type": "number"
         },
+        "readiness_timeout_seconds": {
+          "default": 2.0,
+          "description": "Seconds `bh host daemon status`, doctor and hive readiness wait for the daemon's authenticated readiness response; past it readiness is reported unknown, not failed. Env override: BH_HOST_DAEMON_READINESS_TIMEOUT.",
+          "exclusiveMinimum": 0,
+          "maximum": 300,
+          "title": "Readiness Timeout Seconds",
+          "type": "number"
+        },
         "run_journal_stale_after_seconds": {
           "default": 900.0,
           "description": "Maximum age of the newest observed run journal before factory coverage and the run-journals dependency become explicitly stale.",

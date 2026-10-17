@@ -271,6 +271,16 @@ class DaemonStatusConfig(_DaemonSection):
             "run-journals dependency become explicitly stale."
         ),
     )
+    readiness_timeout_seconds: float = Field(
+        2.0,
+        gt=0,
+        le=300,
+        description=(
+            "Seconds `bh host daemon status`, doctor and hive readiness wait for the daemon's "
+            "authenticated readiness response; past it readiness is reported unknown, not failed. "
+            "Env override: BH_HOST_DAEMON_READINESS_TIMEOUT."
+        ),
+    )
 
 
 class DaemonFailoverConfig(_DaemonSection):
