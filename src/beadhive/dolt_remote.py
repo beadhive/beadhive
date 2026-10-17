@@ -129,14 +129,19 @@ _FAMILIES: dict[RemoteFamily, RemoteCapabilities] = {
 }
 
 #: An ``s3://`` URL with a custom endpoint addresses an S3-COMPATIBLE service. Dolt accepts it
-#: (dolthub/dolt#11571, released in 2.3.2), but a binary accepting a URL is not proof that a
-#: provider works (bh-hx39m) — so it stays an extension point until an end-to-end proof lands.
+#: (dolthub/dolt#11571, released in 2.3.2); a binary accepting a URL is not proof that a provider
+#: works (bh-hx39m), so this stayed an extension point until bh-82gpi proved it end to end on
+#: the pinned Dolt 2.3.5 / bd 1.3.0 against an S3-compatible endpoint (moto server mode): reconcile,
+#: push through ``bh hive sync remotes``, fresh clone with identical history, an interrupted push
+#: and its retry, status and doctor (tests/test_hq_dolt_remotes_e2e.py::test_s3_leg_round_trip).
+#: Like plain ``s3://`` it needs server mode (:data:`S3_EMBEDDED`), and there the credentials
+#: must be in the dolt sql-server's environment — the server performs the transfer.
 S3_COMPATIBLE = RemoteCapabilities(
     RemoteFamily.S3,
-    SupportLevel.EXTENSION_POINT,
+    SupportLevel.IMPLEMENTED,
     object_store=True,
     credentials="aws",
-    note="S3-compatible endpoint: accepted by Dolt, not claimed without a compatibility proof",
+    note="S3-compatible endpoint (Dolt s3://…?endpoint=); server mode, proven by bh-82gpi",
 )
 
 _SCHEMES: dict[str, RemoteFamily] = {

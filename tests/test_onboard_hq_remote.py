@@ -156,7 +156,9 @@ def test_clone_failure_is_never_empty_names_the_phase_and_leaves_nothing(tmp_pat
     assert bd_calls == [] and [c[0] for c in fake.calls] == ["clone"]  # no fresh mint
 
 
-@pytest.mark.parametrize("url", ["gs://acme/widget", "s3://b/w?endpoint=https://minio:9000"])
+@pytest.mark.parametrize(
+    "url", ["gs://acme/widget", "https://doltremoteapi.dolthub.com/acme/widget"]
+)
 def test_unsupported_family_fails_in_preflight_without_touching_anything(
     tmp_path, wired, url, capsys
 ):
@@ -334,3 +336,81 @@ def test_hq_clone_names_its_own_shared_server_database_before_bootstrap(
     onboard._act_bd_init(_ctx(tmp_path, _cfg({"url": URL})))
     assert seen == [{"dolt_database": "widget", "dolt_mode": "server"}]
     assert persisted == ["widget"]
+
+
+# ---- two-store hygiene on the HQ-remote paths (bh-lniwf.8) -------------------------------
+
+
+def _partitioned_cfg(name="widget-private"):
+    cfg = _cfg({"name": name, "url": URL})
+    cfg["managed_repos"][0]["stores"] = {
+        "internal": {"remote": name},
+        "public": {
+            "prefix": "widpub",
+            "path": "/srv/stores/widget-public",
+            "source": "github-issues",
+        },
+    }
+    return cfg
+
+
+def _descriptor(cfg):
+    from beadhive.modules.config.contracts import DoltRemoteDescriptor
+
+    return DoltRemoteDescriptor(**cfg["managed_repos"][0]["dolt_remote"])
+
+
+def test_partitioned_hive_drops_bds_auto_wired_code_origin(tmp_path, capsys):
+    cfg = _partitioned_cfg()
+    fake = FakeEngine(remotes={"origin": "git+file:///srv/git/widget.git", "widget-private": URL})
+    onboard._drop_code_origin_registration(_ctx(tmp_path, cfg), fake, _descriptor(cfg))
+    assert fake.calls == [("remove", "origin")]
+    assert fake.remotes == {"widget-private": URL}
+    assert "dropped the code origin" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("cfg", "remotes"),
+    [
+        # A one-store hive keeps today's behaviour.
+        (_cfg({"name": "widget-private", "url": URL}), {"origin": "git+file:///srv/w.git"}),
+        # The HQ descriptor IS `origin`: nothing auto-wired to drop.
+        (_partitioned_cfg("origin"), {"origin": URL}),
+        # A non-Git `origin` is not the code origin's refs/dolt/data.
+        (_partitioned_cfg(), {"origin": "file:///srv/elsewhere"}),
+        # Nothing registered.
+        (_partitioned_cfg(), {}),
+    ],
+)
+def test_code_origin_registration_is_left_alone_otherwise(tmp_path, cfg, remotes):
+    fake = FakeEngine(remotes=remotes)
+    onboard._drop_code_origin_registration(_ctx(tmp_path, cfg), fake, _descriptor(cfg))
+    assert fake.calls == [] and fake.remotes == remotes
+
+
+def _git_repo(path):
+    path.mkdir()
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    return path
+
+
+def _ignored(repo, rel):
+    return subprocess.run(["git", "-C", str(repo), "check-ignore", "-q", rel]).returncode == 0
+
+
+def test_zero_footprint_clone_excludes_the_store_and_bds_gate_lock(tmp_path):
+    repo = _git_repo(tmp_path / "hive")
+    ctx = _ctx(repo, _cfg())
+    onboard._exclude_clone_footprint(ctx)
+    onboard._exclude_clone_footprint(ctx)  # idempotent
+    assert _ignored(repo, ".beads/metadata.json") and _ignored(repo, ".beads.gate.lock")
+    exclude = (repo / ".git" / "info" / "exclude").read_text().splitlines()
+    assert exclude.count(onboard._GATE_LOCK_PATTERN) == 1
+    assert not (repo / ".gitignore").exists()
+
+
+def test_furnished_clone_footprint_is_not_rewritten(tmp_path):
+    repo = _git_repo(tmp_path / "hive")
+    before = (repo / ".git" / "info" / "exclude").read_text()
+    onboard._exclude_clone_footprint(_ctx(repo, _cfg(), furnish=True))
+    assert (repo / ".git" / "info" / "exclude").read_text() == before

@@ -41,11 +41,15 @@ def test_documented_aws_forms_are_s3_capable(url):
     assert not target.capabilities.read_only_diff  # ahead/behind is honestly unknowable
 
 
-def test_custom_endpoint_is_not_claimed():
-    target = dolt_remote.classify("s3://b/db?endpoint=https://minio.example:9000&path-style=true")
+def test_custom_endpoint_is_implemented_after_its_end_to_end_proof():
+    # bh-82gpi: proven against an S3-compatible endpoint (moto server mode); server mode only.
+    target = dolt_remote.classify("s3://b/db?endpoint=https://s3.example:9000&path-style=true")
     assert target.family == RemoteFamily.S3
-    assert target.capabilities.support == SupportLevel.EXTENSION_POINT
-    assert not target.allows(RemoteOp.ADD)
+    assert target.capabilities.support == SupportLevel.IMPLEMENTED
+    assert target.allows(RemoteOp.ADD) and target.allows(RemoteOp.PUSH)
+    assert target.capabilities.credentials == "aws"
+    embedded = dolt_remote.for_store_mode(target, embedded=True)
+    assert not embedded.allows(RemoteOp.PUSH)
 
 
 def test_embedded_store_cannot_drive_s3_but_can_drive_aws():
