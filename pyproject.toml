@@ -210,6 +210,11 @@ dev = [
     # `just check` schema gate stands on its own. Draft 2020-12 support lands well before 4.x.
     "jsonschema>=4",
     "commitizen>=4.16.4",
+    # S3-compatible endpoint for the server-mode Dolt remote proofs (bh-82gpi, bh-lniwf.8):
+    # moto in SERVER mode on loopback, dummy credentials only, never real S3. Apache-2.0,
+    # operator-approved as DEV-ONLY (2026-10-17); MinIO is end-of-life and is not used. The
+    # tests that need it are `integration`-marked and skip (never fail) when it is absent.
+    "moto[server]>=5.1",
 ]
 
 [tool.commitizen]
