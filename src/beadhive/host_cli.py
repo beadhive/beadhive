@@ -233,6 +233,7 @@ def daemon_serve(
     ),
 ) -> None:
     from . import daemon_state_broker, host_daemon
+    from .daemon_config import DaemonConfigurationError
 
     try:
         host_daemon.serve(
@@ -241,7 +242,8 @@ def daemon_serve(
             shutdown_budget=shutdown_budget,
             state_broker_factory=daemon_state_broker.DaemonStateBroker.for_host,
         )
-    except host_daemon.DaemonError as exc:
+    except (host_daemon.DaemonError, DaemonConfigurationError) as exc:
+        # Named, with its remedy (e.g. a missing verifier's provisioning recipe, bh-resac).
         typer.echo(f"✗ {exc}", err=True)
         raise typer.Exit(1) from exc
 

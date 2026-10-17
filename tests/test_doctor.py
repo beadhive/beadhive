@@ -10,13 +10,17 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from typer.testing import CliRunner
 
 from beadhive import (
     config,
+    daemon_auth,
+    daemon_config,
     daemon_supervisor,
     doctor,
     dolt_health,
@@ -26,6 +30,8 @@ from beadhive import (
     safety,
     worktree,
 )
+from beadhive.daemon_config import DaemonConfigurationError, HostDaemonConfig
+from beadhive.daemon_contract import AuthScope
 from beadhive.metadata import RepoMetadata
 from beadhive.safety import Category
 from test_work import (  # noqa: F401 — fixtures resolved by name
@@ -2959,3 +2965,112 @@ def test_ram_warn_gib_config_default_and_fallback():
     assert config.worktrees_ram_warn_bytes({"worktrees": {"ram_warn_gib": 0}}) == 0
     assert config.worktrees_ram_warn_bytes({"worktrees": {"ram_warn_gib": 1.5}}) == int(1.5 * _GIB)
     assert config.worktrees_ram_warn_bytes({"worktrees": {"ram_warn_gib": "junk"}}) == 4 * _GIB
+
+
+# --- bh-resac: the daemon's bearer verifier is never recorded under a temporary directory ---
+# On the operator Mac the daemon could not start after an upgrade: its configuration named a
+# temporary verifier file that had since been deleted. Durable config now refuses such a path
+# at write time; daemon start, setup and doctor name a missing verifier with its provisioning
+# recipe instead of a bare failure.
+
+_VERIFIER_KEY = "host.daemon.auth.credential_file"
+
+
+def _provision(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    daemon_auth.provision_credential_file(
+        path,
+        credential_id="operator-ui",
+        audience="beadhive-host",
+        principal="operator:local",
+        scopes=(AuthScope.OPERATOR_READ,),
+        expires_at=int(time.time()) + 3600,
+    )
+    return path
+
+
+def _daemon(path: Path) -> dict:
+    return {"host": {"daemon": {"enabled": True, "auth": {"credential_file": str(path)}}}}
+
+
+@pytest.fixture
+def temporary(monkeypatch, tmp_path):
+    """``tmp_path/tmp`` is this host's only temporary directory; ``tmp_path/home`` is durable."""
+    root = tmp_path / "tmp"
+    root.mkdir()
+    monkeypatch.setattr(daemon_config, "temporary_roots", lambda: (root.resolve(),))
+    return root
+
+
+def test_temporary_root_recognises_platform_temp_directories(monkeypatch):
+    monkeypatch.setenv("TMPDIR", "/var/folders/xy/T")
+    assert daemon_config.temporary_root("/tmp/verifier.json") is not None
+    assert daemon_config.temporary_root("/var/folders/xy/T/verifier.json") is not None
+    assert daemon_config.temporary_root("/private/var/folders/ab/T/v.json") is not None
+    assert daemon_config.temporary_root("/Users/operator/.beadhive/verifier.json") is None
+    assert daemon_config.temporary_root("relative/verifier.json") is None
+    assert daemon_config.temporary_root(None) is None
+
+
+def test_config_write_refuses_a_temporary_verifier_path(temporary, tmp_path):
+    for dotted, raw, as_json in (
+        (_VERIFIER_KEY, str(temporary / "verifier.json"), False),
+        ("host.daemon", f'{{"auth": {{"credential_file": "{temporary}/v.json"}}}}', True),
+        ("host.daemon.auth", f'{{"credential_file": "{temporary}/v.json"}}', True),
+    ):
+        result = config.set_value(dotted, raw, as_json=as_json, cfg={})
+        assert not result["ok"], dotted
+        message = " ".join(item["message"] for item in result["problems"])
+        assert "temporary directory" in message and "HOST-DAEMON.md" in message
+    durable = config.set_value(_VERIFIER_KEY, str(tmp_path / "home" / "verifier.json"), cfg={})
+    assert durable["ok"], durable["problems"]
+
+
+def test_upgrade_that_cleared_a_temporary_verifier_names_it_with_the_recipe(
+    temporary, tmp_path, monkeypatch
+):
+    """The reinstall path: a verifier recorded under a temp dir before the guard existed."""
+    verifier = _provision(temporary / "daemon-credentials.json")
+    settings = HostDaemonConfig.model_validate(_daemon(verifier)["host"]["daemon"])
+    # Works today, but setup and doctor warn that it will not survive.
+    daemon_config.validate_for_listener_startup(settings)
+    advisories = daemon_supervisor.setup_advisories(_daemon(verifier))
+    assert [item["id"] for item in advisories][-1] == "host-daemon-verifier"
+    assert "temporary directory" in advisories[-1]["message"]
+    assert "HOST-DAEMON.md" in advisories[-1]["message"]
+
+    verifier.unlink()  # the upgrade / reboot cleared the temp directory
+    with pytest.raises(DaemonConfigurationError) as refused:
+        daemon_config.validate_for_listener_startup(settings)
+    message = str(refused.value)
+    assert str(verifier) in message and "does not exist" in message
+    assert "recorded under the temporary directory" in message
+    assert "provision_credential_file" in message
+    problems = doctor._data_daemon_verifier(_daemon(verifier))
+    assert len(problems) == 1 and "does not exist" in problems[0]
+    advisory = daemon_supervisor.setup_advisories(_daemon(verifier))[0]
+    assert advisory["id"] == "host-daemon-structural" and "HOST-DAEMON.md" in advisory["message"]
+
+    # `bh host daemon serve` names it too, instead of a traceback.
+    from beadhive.cli import app
+
+    config.save(_daemon(verifier))
+    result = CliRunner().invoke(app, ["host", "daemon", "serve"])
+    assert result.exit_code == 1
+    assert "does not exist" in result.output and "HOST-DAEMON.md" in result.output
+
+    # Reprovisioned into the durable owner-only location, everything is clean.
+    durable = _provision(tmp_path / "home" / "daemon-credentials.json")
+    assert durable.stat().st_mode & 0o077 == 0
+    settings = HostDaemonConfig.model_validate(_daemon(durable)["host"]["daemon"])
+    daemon_config.validate_for_listener_startup(settings)
+    assert doctor._data_daemon_verifier(_daemon(durable)) == []
+    assert daemon_config.verifier_advisories(settings) == []
+
+
+def test_missing_durable_verifier_is_named_without_a_temporary_cause(temporary, tmp_path):
+    missing = tmp_path / "home" / "daemon-credentials.json"
+    settings = HostDaemonConfig.model_validate(_daemon(missing)["host"]["daemon"])
+    with pytest.raises(DaemonConfigurationError, match="does not exist; provision") as refused:
+        daemon_config.validate_for_listener_startup(settings)
+    assert "recorded under the temporary directory" not in str(refused.value)

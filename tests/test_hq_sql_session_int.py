@@ -707,3 +707,109 @@ def test_session_only_rotation_ownership_cli_and_guard_parity(tmp_path, monkeypa
         assert policy.incumbent_primary("bh")[2].epoch == 19
         a.close()
         root.close()
+
+
+@pytest.mark.parametrize("liveness", ["receiver", "signed"])
+def test_beat_skips_a_frame_cut_over_from_inbox_to_session(tmp_path, monkeypatch, capsys, liveness):
+    """bh-t8qw0: ``heartbeat_sender beat`` on a session-only incarnation skips with exit 0.
+
+    One frame (``frame-0``/``host-0``/``vm-0``) cut over from its legacy inbox principal to a
+    session-only one: only the runtime principal and its credential changed. The beat must
+    skip before release, grant, configuration or signer can refuse, and a refusal on the
+    legacy principal names a redacted category, never the principal, host or credential.
+    """
+    from types import SimpleNamespace
+
+    from beadhive import (
+        heartbeat_report,
+        heartbeat_sender,
+        host,
+        hq_control_plane,
+        hq_sql_runtime,
+    )
+    from beadhive.hq_control_plane import SqlControlPlane
+    from beadhive.hq_sql_runtime import LIVENESS_ENV, SqlRuntimeAuthority
+    from beadhive.hq_sql_runtime_schema import inbox_ddl, inbox_table
+
+    monkeypatch.setenv(LIVENESS_ENV, liveness)
+    authority = dict(
+        frame_id="frame-0", holder_identity="host-0", instance_ref="vm-0", epoch=2,
+        key_fingerprint="SHA256:0", config_revision="desired", audience="fixture",
+        candidate_expires_at=None,
+    )  # fmt: skip
+    record = dict(
+        authority=authority, state="active", cordoned=False, public_key="provider-verified",
+        desired=dict(declared=True, release={"id": "fixture", "digest": RELEASE}),
+    )  # fmt: skip
+    state = {"frames": {"frame-0": {"active": record, "candidate": None}}, "expires_at": 1e12}
+    credentials = {"frame_a": PASSWORD, "frame_old": "fixture-legacy-credential"}
+    with _server(tmp_path) as port:
+        root = _provisioned(port, frames=(("frame_a", 2),))
+        # The pre-cutover legacy incarnation: an inbox route and its own account/credential.
+        _sql(root, inbox_ddl("frame_old", 1))
+        _sql(
+            root,
+            "INSERT INTO hq_principal_registry VALUES (%s,%s,%s,%s,%s,%s,%s)",
+            ("frame_old", "frame-0", "host-0", "vm-0", 1, inbox_table("frame_old", 1), "SHA256:0"),
+        )
+        _sql(root, "CALL DOLT_COMMIT('-Am','legacy route')")
+        _sql(
+            root,
+            "CREATE USER 'frame_old'@'127.0.0.1' IDENTIFIED BY %s",
+            (credentials["frame_old"],),
+        )
+        _sql(root, f"GRANT SELECT ON `{DB}`.`hq_principal_registry` TO 'frame_old'@'127.0.0.1'")
+
+        def frame_plane(principal):
+            runtime = SqlRuntimeAuthority(
+                {"runtime": {"user": principal, "database": DB, "operation_timeout": 30}},
+                broker=object(),
+            )
+
+            def connect(deadline=None):
+                context = ssl.create_default_context(cafile=str(tmp_path / "ca.crt"))
+                connection = pymysql.connect(
+                    host="127.0.0.1", port=port, user=principal,
+                    password=credentials[principal], database=DB, ssl=context,
+                    autocommit=False, connect_timeout=5, read_timeout=15, write_timeout=15,
+                )  # fmt: skip
+                return connection, deadline or time.monotonic() + 30
+
+            monkeypatch.setattr(runtime, "_open", connect)
+            monkeypatch.setattr(runtime, "verified_state_at", lambda *args, **kw: (state, (), {}))
+            monkeypatch.setattr(
+                runtime,
+                "bound_config_at",
+                lambda *args, **kw: (SimpleNamespace(beadyard_id=None, documents=()), "c"),
+            )
+            for fence in ("fresh_runtime_head_fence", "fresh_config_head_fence"):
+                monkeypatch.setattr(runtime, fence, lambda *args, **kw: None)
+            plane = SqlControlPlane({})
+            plane.settings["runtime"] = runtime.settings["runtime"]
+            monkeypatch.setattr(plane, "_runtime_authority", lambda: runtime)
+            return plane
+
+        monkeypatch.setattr(hq_sql_runtime, "project_hive_policies", lambda *args, **kw: {})
+        monkeypatch.setattr(host, "host_id", lambda: "host-0")
+        monkeypatch.setattr(host, "signing_key", lambda: None)  # a signer refusal, if reached
+        monkeypatch.setattr(
+            heartbeat_report, "installed_release", lambda: pytest.fail("measured release")
+        )
+        for principal in ("frame_a", "frame_old"):
+            plane = frame_plane(principal)
+            monkeypatch.setattr(hq_control_plane, "control_plane", lambda *_a, p=plane: p)
+            code = heartbeat_sender.main(["beat"])
+            err = capsys.readouterr().err
+            if principal == "frame_a":
+                assert code == 0, err
+                assert "beat skipped: session-only incarnation" in err
+            else:
+                # The legacy inbox route is never skipped; its refusal is a redacted category.
+                assert code == 1 and "skipped" not in err, err
+                assert any(f"heartbeat refused ({c})" in err for c in REFUSAL_WORDS), err
+                for secret in ("frame_old", "host-0", credentials["frame_old"], "127.0.0.1"):
+                    assert secret not in err
+        root.close()
+
+
+REFUSAL_WORDS = ("release", "grant", "configuration", "signer", "transport")

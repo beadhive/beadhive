@@ -16,7 +16,6 @@ import argparse
 import json
 import math
 import os
-import plistlib
 import re
 import shlex
 import shutil
@@ -27,6 +26,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from . import service_units
 from .kernel.daemon.contracts import supervision as daemon_supervisor
 from .kernel.daemon.contracts.identity import DaemonKey, DaemonPaths
 
@@ -291,18 +291,25 @@ def _result_detail(result: subprocess.CompletedProcess[str], fallback: str) -> s
     return (result.stderr or result.stdout or fallback).strip()
 
 
-def _environment_lines(key: DaemonKey) -> tuple[str, ...]:
-    values = {"BH_HOME": key.bh_home}
+def _environment(key: DaemonKey) -> dict[str, str]:
+    """``HOME`` and ``BH_HOME`` (plus ``GIT_WORKSPACE`` when set) from the installing
+    environment: a LaunchAgent inherits no login shell (bh-atdi0)."""
+    values = {"HOME": service_units.install_home(), "BH_HOME": key.bh_home}
     workspace = os.environ.get("GIT_WORKSPACE")
     if workspace:
         values["GIT_WORKSPACE"] = workspace
-    lines = []
     for name, value in values.items():
         if "\n" in value or "\0" in value:
             raise daemon_supervisor.SupervisorError(f"{name} contains an unsafe service value")
-        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-        lines.append(f'Environment="{name}={escaped}"')
-    return tuple(lines)
+    return values
+
+
+def _merged(merge, *args) -> bytes:
+    """Regenerate over an installed unit, keeping operator values (``service_units``)."""
+    try:
+        return merge(*args).content
+    except (service_units.UnitConflict, ValueError) as exc:
+        raise daemon_supervisor.SupervisorError(str(exc)) from None
 
 
 class SystemdUserSupervisorBackend:
@@ -365,9 +372,17 @@ class SystemdUserSupervisorBackend:
             )
         return True, True, "systemd user manager is available and linger is enabled"
 
-    def _unit_text(self, key: DaemonKey) -> str:
+    def _unit_text(
+        self, key: DaemonKey, env: dict[str, str] | None = None, directory: str | None = None
+    ) -> str:
         binary = shlex.quote(self.daemon_binary)
-        environment = "\n".join(_environment_lines(key))
+        env = _environment(key) if env is None else env
+        if directory is None:
+            directory = service_units.working_directory(env)
+        environment = (
+            service_units.systemd_environment(env)
+            + service_units.systemd_working_directory(directory)
+        ).rstrip("\n")
         timeout = max(1, math.ceil(self.shutdown_budget))
         return (
             "[Unit]\n"
@@ -403,7 +418,15 @@ class SystemdUserSupervisorBackend:
         self._require_manageable(key)
         self.unit_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         path = self._path(key)
-        text = self._unit_text(key)
+        env = _environment(key)
+        text = _merged(
+            service_units.merge_systemd,
+            self._unit(key),
+            path.read_bytes() if path.is_file() else None,
+            lambda e, d: self._unit_text(key, e, d).encode(),
+            env,
+            service_units.working_directory(env),
+        ).decode()
         previously_installed = path.exists()
         if not previously_installed or path.read_text(encoding="utf-8") != text:
             path.write_text(text, encoding="utf-8")
@@ -555,12 +578,13 @@ class LaunchAgentSupervisorBackend:
     def _target(self, key: DaemonKey) -> str:
         return f"{self._domain()}/{self._label(key)}"
 
-    def _plist(self, key: DaemonKey) -> bytes:
+    def _payload(
+        self, key: DaemonKey, env: dict[str, str] | None = None, directory: str | None = None
+    ) -> dict:
         paths = DaemonPaths.for_key(key)
-        environment = {"BH_HOME": key.bh_home}
-        workspace = os.environ.get("GIT_WORKSPACE")
-        if workspace:
-            environment["GIT_WORKSPACE"] = workspace
+        environment = _environment(key) if env is None else env
+        if directory is None:
+            directory = service_units.working_directory(environment)
         payload = {
             "Label": self._label(key),
             "ProgramArguments": [self.daemon_binary],
@@ -572,7 +596,23 @@ class LaunchAgentSupervisorBackend:
             "StandardOutPath": str(paths.directory / "stdout.log"),
             "StandardErrorPath": str(paths.directory / "stderr.log"),
         }
-        return plistlib.dumps(payload, fmt=plistlib.FMT_XML, sort_keys=True)
+        if directory is not None:
+            payload["WorkingDirectory"] = directory
+        return payload
+
+    def _plist(self, key: DaemonKey) -> bytes:
+        """The plist to write: regenerated over an installed one without dropping operator
+        values (``service_units``)."""
+        path = self._path(key)
+        env = _environment(key)
+        return _merged(
+            service_units.merge_launchd,
+            path.name,
+            path.read_bytes() if path.is_file() else None,
+            lambda e, d: self._payload(key, e, d),
+            env,
+            service_units.working_directory(env),
+        )
 
     def install(self, key: DaemonKey) -> daemon_supervisor.SupervisorState:
         _account_uid(key, self.uid)

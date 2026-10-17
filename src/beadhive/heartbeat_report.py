@@ -85,14 +85,62 @@ def refresh_conformance():
     return heartbeat_conformance.refresh(measure_conformance, path=conformance_cache_path())
 
 
+class CategorisedHeartbeatError(HeartbeatError):
+    """A refusal that names a redacted cause category and never the underlying detail."""
+
+    def __init__(self, category: str, message: str):
+        super().__init__(message)
+        self.category = category
+
+
+REFUSAL_CATEGORIES = ("release", "grant", "configuration", "signer", "transport")
+
+
+def refusal_category(exc: BaseException) -> str:
+    """The redacted cause category of a beat failure: one of :data:`REFUSAL_CATEGORIES`.
+
+    Only the exception class and fixed bh-authored messages are inspected; the result is a
+    fixed word, so no credential, host or account name can leak through it.
+    """
+    from .hq_control_plane import ControlPlaneError
+    from .hq_sql_runtime import SqlRuntimeError
+
+    category = getattr(exc, "category", None)
+    if category in REFUSAL_CATEGORIES:
+        return category
+    if isinstance(exc, ControlPlaneError):
+        # Publication: the plane re-checks the lease against the granted incarnation.
+        text = str(exc)
+        return "grant" if "grant" in text or "incarnation" in text else "configuration"
+    if isinstance(exc, HeartbeatError):
+        text = str(exc)
+        if "signing key" in text:
+            return "signer"
+        if "release" in text:
+            return "release"
+        if "grant" in text or "identity" in text:
+            return "grant"
+        return "configuration"
+    if isinstance(exc, SqlRuntimeError | OSError | TimeoutError):
+        return "transport"
+    return "configuration"
+
+
 def generate(
-    plane, *, free_sessions: int = 0, cached: bool = False, now: float | None = None
+    plane,
+    *,
+    free_sessions: int = 0,
+    cached: bool = False,
+    now: float | None = None,
+    require_inbox: bool = False,
 ) -> HeartbeatLease:
     """Read verified authority and report actual checks; never publish or admit.
 
     ``cached=True`` is the decoupled beat: conformance comes from the local cache written by
     the conformance job (:func:`refresh_conformance`) instead of being measured inline.
-    ``now`` (epoch seconds) overrides the beat clock for tests.
+    ``now`` (epoch seconds) overrides the beat clock for tests. ``require_inbox`` raises
+    :class:`~beadhive.hq_sql_runtime.SessionOnlyIncarnation` as soon as the frame route shows
+    no signed inbox, before any release, grant, configuration or signer step can refuse first.
     """
     if type(free_sessions) is not int or not 0 <= free_sessions <= 1024:
         raise HeartbeatError("free sessions must be between zero and 1024")
@@ -104,6 +152,12 @@ def generate(
         _, _, route, _, record, snapshot, _, row, _ = (
             plane._runtime_authority().read_frame_composite()
         )
+        if require_inbox:
+            from .hq_sql_runtime import SessionOnlyIncarnation
+            from .hq_sql_runtime_schema import routed_to_inbox
+
+            if not routed_to_inbox(route.inbox_table, route.principal, route.epoch):
+                raise SessionOnlyIncarnation("session-only incarnation has no signed inbox")
         authority, desired = record["authority"], record["desired"]
         local_id = host.host_id()
         if local_id != route.holder_identity:
@@ -197,18 +251,46 @@ def generate(
         )
     except HeartbeatError:
         raise
-    except Exception:
-        raise HeartbeatError(
-            "measured heartbeat unavailable; verify local configuration and SQL authority"
+    except Exception as exc:
+        from .hq_sql_runtime import SessionOnlyIncarnation
+
+        if isinstance(exc, SessionOnlyIncarnation):
+            raise
+        raise CategorisedHeartbeatError(
+            refusal_category(exc),
+            "measured heartbeat unavailable; verify local configuration and SQL authority",
         ) from None
+
+
+def session_only_route(plane) -> bool:
+    """Whether the authenticated runtime principal's committed route has no signed inbox.
+
+    Asked first, on one routing read alone, so a session-only incarnation is recognised
+    before the composite authority read (whose receiver observation a session-only principal
+    may not be granted), the release, grant and manifest checks, or the signer. ``False``
+    when the route cannot be read: the full beat then names its own redacted refusal.
+    """
+    from .hq_sql_runtime_schema import routed_to_inbox
+
+    try:
+        route = plane._runtime_authority().load_frame_binding(expected_head=None)
+        return not routed_to_inbox(route.inbox_table, route.principal, route.epoch)
+    except Exception:
+        return False
 
 
 def send(plane, *, free_sessions: int = 0, cached: bool = False) -> str:
     """Measure again immediately before explicit signed publication.
 
-    With ``cached=True`` conformance is read from the local cache, never measured inline.
+    With ``cached=True`` (the decoupled beat) conformance is read from the local cache, never
+    measured inline, and a session-only incarnation raises
+    :class:`~beadhive.hq_sql_runtime.SessionOnlyIncarnation` before anything else can refuse.
     """
-    lease = generate(plane, free_sessions=free_sessions, cached=cached)
+    if cached and session_only_route(plane):
+        from .hq_sql_runtime import SessionOnlyIncarnation
+
+        raise SessionOnlyIncarnation("session-only incarnation has no signed inbox")
+    lease = generate(plane, free_sessions=free_sessions, cached=cached, require_inbox=cached)
     key = host.signing_key()
     if not key:
         raise HeartbeatError("no recorded host signing key")
@@ -336,10 +418,12 @@ def register(app: typer.Typer) -> None:
                 typer.echo(json.dumps({"digest": send(plane, free_sessions=free_sessions)}))
             else:
                 typer.echo(generate(plane, free_sessions=free_sessions).model_dump_json())
-        except Exception:
-            # Transport, signing and config exceptions may contain credential references.
+        except Exception as exc:
+            # Transport, signing and config exceptions may contain credential references:
+            # print only a fixed cause category, never the exception text.
             typer.echo(
-                "measured heartbeat refused; verify release, grant, configuration and signer",
+                f"measured heartbeat refused ({refusal_category(exc)}); verify release, grant, "
+                "configuration, signer and transport",
                 err=True,
             )
             raise typer.Exit(1) from None
