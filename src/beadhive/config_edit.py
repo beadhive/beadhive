@@ -85,6 +85,7 @@ def validate(api, parts: list[str], value) -> list[dict]:
             TypeAdapter(list[RoutingTierConfig]).validate_python(value)
         except ValueError as exc:
             problems.append(problem("error", f"{dotted} is invalid: {exc}"))
+    problems.extend(_temporary_verifier_problems(parts, value))
     if not literal_checked:
         choices = literal_choices(dotted)
         if choices is not None and value not in choices:
@@ -97,6 +98,34 @@ def validate(api, parts: list[str], value) -> list[dict]:
             message += f" (did you mean '{suggestion}'?)"
         problems.append(problem("warning", message))
     return problems
+
+
+_VERIFIER_KEY = ("host", "daemon", "auth", "credential_file")
+
+
+def _temporary_verifier_problems(parts: list[str], value) -> list[dict]:
+    """Durable config never records the daemon's bearer verifier under a temporary directory
+    (bh-resac): an upgrade or reboot clears it and the daemon can no longer start."""
+    if tuple(parts) != _VERIFIER_KEY[: len(parts)]:
+        return []
+    for part in _VERIFIER_KEY[len(parts) :]:
+        if not isinstance(value, dict):
+            return []
+        value = value.get(part)
+    if not isinstance(value, str):
+        return []
+    from .daemon_config import VERIFIER_RECIPE, temporary_root
+
+    root = temporary_root(value)
+    if root is None:
+        return []
+    return [
+        problem(
+            "error",
+            f"{'.'.join(_VERIFIER_KEY)} {value} is under the temporary directory {root}, which "
+            f"a reboot or upgrade may clear; {VERIFIER_RECIPE}",
+        )
+    ]
 
 
 def descend(cfg, parts: list[str]):

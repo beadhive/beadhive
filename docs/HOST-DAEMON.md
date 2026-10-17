@@ -44,6 +44,12 @@ credential = provision_credential_file(
 print(credential.bearer.reveal_for_authority())
 ```
 
+Keep the verifier in a durable, owner-only location such as `BH_HOME`, never under a temporary
+directory (`/tmp`, `/var/tmp`, `TMPDIR`, macOS `/var/folders`): a reboot or upgrade clears those,
+and the daemon then cannot start. `bh config set host.daemon.auth.credential_file` refuses such a
+path. `bh doctor`, `bh setup check` and `bh host daemon serve` name a missing verifier with this
+recipe, and warn about one that still exists under a temporary directory.
+
 Provision separate credentials for `mcp:control`, `operator:read`, `activity:publish`, and
 `terminal:attach`; one scope never implies another. Configure the absolute verifier path and the
 exact browser origin in the host-scoped configuration:

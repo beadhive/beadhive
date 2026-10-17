@@ -1179,10 +1179,18 @@ def _data_host_daemon(cfg) -> dict:
             "healthy": False,
             "detail": str(exc),
         }
+    verifier = _data_daemon_verifier(cfg)
+    if verifier:
+        data["verifier_problems"] = verifier
     failover = _data_failover_policy(cfg)
     if failover is not None:
         data["failover_policy"] = failover
     return data
+
+
+def _data_daemon_verifier(cfg) -> list[str]:
+    """The bearer verifier named with its provisioning recipe when missing or temporary."""
+    return daemon_supervisor.verifier_problems(cfg or {})
 
 
 def _data_failover_policy(cfg) -> dict | None:
@@ -1238,6 +1246,8 @@ def _render_host_daemon(d: dict) -> None:
     if not d["configured"]:
         typer.echo(f"  - {d['detail']}")
         return
+    for problem in d.get("verifier_problems", ()):
+        typer.echo(f"  ✗ verifier: {problem}")
     if d["state"] == "diagnostics-unavailable":
         typer.echo(f"  ! diagnostics unavailable: {d['detail']}")
         _render_failover_policy(d.get("failover_policy"))

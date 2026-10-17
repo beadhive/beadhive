@@ -683,7 +683,43 @@ def configured(cfg: dict[str, Any] | None = None) -> bool:
 
 
 def setup_advisories(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
-    """Structural and moving readiness facts, both advisory to the core setup gate."""
+    """Structural and moving readiness facts, both advisory to the core setup gate.
+
+    A verifier that works now but lies under a temporary directory is appended last
+    (bh-resac): it will not survive a reboot or upgrade."""
+    try:
+        raw = config.load() if cfg is None else cfg
+    except FileNotFoundError:
+        return []
+    advisories = _setup_advisories(raw)
+    if configured(raw):
+        try:
+            from .config_schema import BeadhiveConfig
+            from .daemon_config import verifier_advisories
+
+            settings = BeadhiveConfig.model_validate(raw).host.daemon
+        except (TypeError, ValueError):
+            return advisories
+        advisories.extend(
+            {"id": "host-daemon-verifier", "category": "structural", "message": f"⚠ {message}"}
+            for message in verifier_advisories(settings)
+        )
+    return advisories
+
+
+def verifier_problems(cfg: dict[str, Any]) -> list[str]:
+    """Doctor's bearer-verifier findings for a loaded config (``daemon_config``); none when the
+    daemon is disabled or its configuration does not parse (reported elsewhere)."""
+    try:
+        from .config_schema import BeadhiveConfig
+        from .daemon_config import verifier_problems as problems
+
+        return problems(BeadhiveConfig.model_validate(cfg).host.daemon)
+    except (OSError, TypeError, ValueError):
+        return []
+
+
+def _setup_advisories(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
     try:
         raw = config.load() if cfg is None else cfg
     except FileNotFoundError:
