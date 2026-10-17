@@ -69,6 +69,14 @@ this installs a per-user LaunchAgent. On Linux it installs a persistent `systemd
 when the user manager/linger capability is available. Containers supervise the daemon as their
 main workload; they do not run an OS supervisor inside the container.
 
+The generated unit carries `HOME` and `BH_HOME` (and `GIT_WORKSPACE` when set) from the installing
+environment and a `WorkingDirectory` of that `HOME`, because a LaunchAgent inherits no login shell.
+Reinstalling over an existing unit keeps the operator's environment variables, `WorkingDirectory`
+and extra LaunchAgent keys; a `systemd` directive bh does not generate makes the install refuse
+with a diff instead of dropping it. The heartbeat sender's units
+(`python -m beadhive.heartbeat_sender units --install`) follow the same rule; their `--replace`
+flag overwrites deliberately.
+
 ## Opt-in migration
 
 Keep existing clients on MCP stdio while bringing up the authenticated listener. Validate
