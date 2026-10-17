@@ -2391,6 +2391,37 @@ def hive_remote(
 
 
 @hive_app.command(
+    "project-issues",
+    help="pull one hive's GitHub Issues into its configured PUBLIC bead store "
+    "(`bd github sync --pull-only`; GitHub is authoritative). Never pushes to GitHub, never "
+    "touches the internal store; refuses a hive without a pull-only github-issues public store. "
+    "Credentials stay ambient (GITHUB_TOKEN / GH_TOKEN / gh auth) and are never printed.",
+)
+def hive_project_issues(
+    hive_id: str = typer.Argument(..., metavar="HIVE", help="the hive whose issues to project"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="show what would be imported or updated, write nothing"
+    ),
+    as_json: bool = typer.Option(False, "--json", help="emit the versioned report"),
+):
+    from . import github_projection, jsonout, store_target
+
+    entry = registry.resolve_hive(config.load(), hive_id)
+    try:
+        report = github_projection.project(entry, dry_run=dry_run)
+    except (github_projection.ProjectionError, store_target.StoreResolutionError) as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(1) from None
+    if as_json:
+        jsonout.emit(github_projection.payload(report))
+    else:
+        for line in github_projection.render(report):
+            typer.echo(line)
+    if not report.ok:
+        raise typer.Exit(1)
+
+
+@hive_app.command(
     "sync-remote",
     hidden=True,
     help="DEPRECATED — alias for `bh hive sync remotes --push`. Kept working, never removed "

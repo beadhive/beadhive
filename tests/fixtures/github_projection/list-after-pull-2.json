@@ -1,0 +1,60 @@
+[
+  {
+    "id": "pubz-1792173486778-3-a2382253",
+    "title": "Docs typo",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "created_at": "2026-11-01T00:00:00Z",
+    "updated_at": "2026-11-01T00:00:00Z",
+    "external_ref": "https://github.com/acme/widget/issues/4",
+    "source_system": "github:https://github.com/acme/widget/issues/4:4",
+    "metadata": null,
+    "labels": [
+      "documentation"
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0
+  },
+  {
+    "id": "pubz-1792173474940-2-e53d65f9",
+    "title": "Add dark mode",
+    "description": "Please.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "feature",
+    "created_at": "2026-01-03T00:00:00Z",
+    "updated_at": "2026-10-16T17:58:07Z",
+    "external_ref": "https://github.com/acme/widget/issues/2",
+    "source_system": "github:https://github.com/acme/widget/issues/2:2",
+    "metadata": null,
+    "labels": [
+      "enhancement"
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0
+  },
+  {
+    "id": "pubz-1792173474840-1-91433c92",
+    "title": "Crash on start (macOS)",
+    "description": "It crashes.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "bug",
+    "created_at": "2026-01-01T00:00:00Z",
+    "updated_at": "2026-10-16T17:58:06Z",
+    "external_ref": "https://github.com/acme/widget/issues/1",
+    "source_system": "github:https://github.com/acme/widget/issues/1:1",
+    "metadata": null,
+    "labels": [
+      "area:cli",
+      "bug",
+      "os:macos"
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0
+  }
+]
