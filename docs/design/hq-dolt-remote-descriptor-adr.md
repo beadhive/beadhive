@@ -48,8 +48,9 @@ from whatever the public code repository carries.
    missing registration. A conflicting registration is reported as `migration-required` and
    left alone; moving a corpus is `bh-ksmt0`'s transactional job.
 5. **S3 first.** The documented AWS forms (`s3://bucket/path` and `aws://[table:bucket]/db`)
-   are implemented. An S3-compatible service addressed with a custom `endpoint` is an extension
-   point: classified, reported, and refused until a compatibility proof lands.
+   are implemented. An S3-compatible service addressed with a custom `endpoint` was an extension
+   point until its compatibility proof landed (`bh-82gpi`, evidence items 12–14); it is now
+   implemented for server-mode hives.
 
 ## The descriptor contract (`dolt-remote-descriptor/v1`)
 
@@ -137,7 +138,7 @@ refused for mutation until proved), `unsupported` (unknown scheme).
 | `file` | `file:///abs/path` | implemented (fixtures, local disks) | yes | no | no |
 | `s3` | `s3://bucket/path` | implemented (AWS S3, standard endpoint; server mode only) | yes | no | no |
 | `aws` | `aws://[table:bucket]/db` | implemented (AWS S3 + DynamoDB) | yes | no | no |
-| `s3` + `endpoint=` | `s3://b/p?endpoint=...&region=...` | extension point (S3-compatible) | yes | no | no |
+| `s3` + `endpoint=` | `s3://b/p?endpoint=...&region=...&path-style=...` | implemented (S3-compatible; server mode only; `bh-82gpi`) | yes | no | no |
 | `gs` | `gs://bucket/path` | extension point | yes | no | no |
 | `hosted` | `https://`/`http://` (DoltHub, DoltLab, remotesapi) | extension point | no | no | no |
 | unknown | anything else | unsupported | n/a | n/a | n/a |
@@ -151,11 +152,20 @@ An unknown scheme is a typed `unsupported` result. It is never treated as Git: t
 assumption that every remote is a Git repository carrying `refs/dolt/data` is exactly the
 misclassification this table removes.
 
-The S3-compatible row is deliberately not claimed. Dolt 2.3.2 and later (dolthub/dolt#11571)
-implement `s3://` with `endpoint`, `region` and `path-style` query parameters for any provider
-with conditional writes; that a binary accepts the URL is prerequisite evidence, not proof that
-a given provider works (`bh-hx39m`). A provider is promoted to `implemented` only by a recorded
-end-to-end proof.
+The S3-compatible row was not claimed until it was proved. Dolt 2.3.2 and later
+(dolthub/dolt#11571) implement `s3://` with `endpoint`, `region` and `path-style` query
+parameters for any provider with conditional writes; that a binary accepts the URL is
+prerequisite evidence, not proof that a given provider works (`bh-hx39m`). A provider is
+promoted to `implemented` only by a recorded end-to-end proof. `bh-82gpi` recorded it: the full
+lifecycle — reconcile, push through `bh hive sync remotes`, a fresh clone with identical
+history, an interrupted push and its retry, status and doctor — passes on the pinned Dolt 2.3.5
+and bd 1.3.0 in server mode against an S3-compatible endpoint (moto in server mode, the test
+fixture `tests/harness/s3.py`; `tests/test_hq_dolt_remotes_e2e.py::test_s3_leg_round_trip`, run
+by the integration gate key). `beadhive.dolt_remote.S3_COMPATIBLE` is therefore `implemented`.
+What the proof does not cover is any particular hosted provider's quirks (R2, Wasabi, Ceph,
+…); a provider that differs from the S3 API moto models is the operator's to verify. As with
+plain `s3://`, an embedded hive cannot drive it, and the credentials must be in the shared
+server's environment (next section).
 
 ## One location per database
 
@@ -236,9 +246,14 @@ the preferred long-term surface and is raised as a decision for the operator on 
   metadata service; no local probe is possible), `aws-profile` (sets `AWS_PROFILE`), or `fnox`
   (access key id, secret and optional session token read through the existing fnox broker).
 - Resolved values are injected into the environment of the single bd child that needs them and
-  nowhere else. bd routes push and pull through a Dolt CLI subprocess when it sees `AWS_*` in
-  its environment, which is what makes per-call injection work against a shared server
-  ([Bucket Federation Quickstart][bucket-federation], "Auth works in the shell").
+  nowhere else. The Bucket Federation Quickstart says bd routes push and pull through a Dolt
+  CLI subprocess when it sees `AWS_*` in its environment, which would make per-call injection
+  work against a shared server ([Bucket Federation Quickstart][bucket-federation], "Auth works
+  in the shell"). **Measured otherwise for `s3://` on the pinned bd 1.3.0** (evidence item 13):
+  in server mode the dolt sql-server performs the transfer and sees only its own environment,
+  so credentials set on the bd child alone fail with an AWS credential error. Ambient
+  credentials work when the shared server was started with them; the `aws-profile` and `fnox`
+  sources do not reach a running server yet (`bh-pphik`).
 - Before any remote mutation, bh checks that a credential source exists for an object-store
   family and fails with the *name* of what is missing, never a value.
 - Every rendered URL passes through one redaction function: user info is replaced and any
@@ -305,6 +320,20 @@ stores, 2026-10-16:
     to the same `s3://` URL reached the S3 `GetObject` call (scheme understood).
 11. With a closed endpoint, the failure arrived in well under a second: an unavailable service
     is an immediate, named transport error, not a hang.
+12. (Items 12–14: `bh-82gpi`, same binaries, 2026-10-17, against moto 5.2 in server mode on
+    loopback with dummy credentials.) A plain Dolt 2.3.5 repository pushed to and cloned from
+    `s3://<bucket>/<db>?endpoint=http://127.0.0.1:<port>&path-style=true&region=us-east-1` with
+    full history; a server-mode bd store did the same through `bd dolt push` and `bd bootstrap`,
+    and bh's lifecycle passed end to end (`test_s3_leg_round_trip`).
+13. With the AWS credentials only on the bd client (the shared server started without them),
+    `bd dolt push` failed from the server: `Error 1105 (HY000): failed to get remote db; … get
+    credentials: failed to refresh cached credentials, no EC2 IMDS role found`. With the same
+    credentials in the server's start-up environment it succeeded.
+14. `bd bootstrap` into a fresh server-mode store first retries the not-yet-existing database
+    three times (10, 20 and 40 s, "possible transient restart") and only then clones: every
+    server-mode clone costs about 70 s (`bh-mi40l`). Stopping the endpoint mid-sync made
+    `bh hive sync remotes --push` fail loudly with nothing written; the retry after it came back
+    landed the same change.
 
 ## References
 

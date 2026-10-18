@@ -225,8 +225,16 @@ Conservative options were taken and recorded as `DECISION ASK` comments on `bh-l
   rejected until a use case exists;
 - publishing from a legacy single-store hive is refused once it goes through the boundary.
 
+## Proof and operator guide (`bh-lniwf.8`)
+
+`tests/test_two_store_e2e_int.py` proves the contract end to end for one checkout (internal on
+an S3-compatible remote, public on the code origin's Git ref, an offline GitHub stub), including
+the failure cases. Publication of the public store goes through
+`public_publish.publish_public` (public store only, Git Dolt refs only, never the internal
+descriptor's location, never forced). Running it is documented in the operator guide
+[TWO-STORES.md](../TWO-STORES.md).
+
 ## Out of scope
 
-The GitHub projection itself (`bh-lniwf.6`), the end-to-end proof and operator guide
-(`bh-lniwf.8`), migrating the live Beadhive corpus (`bh-l3zvc`), and remote migration
-(`bh-ksmt0`).
+The GitHub projection itself (`bh-lniwf.6`), migrating the live Beadhive corpus (`bh-l3zvc`),
+and remote migration (`bh-ksmt0`).

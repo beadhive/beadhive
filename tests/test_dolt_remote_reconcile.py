@@ -121,9 +121,7 @@ def test_the_url_under_another_name_is_reported_not_renamed(hive_dir):
     assert report.outcome == Outcome.NAME_MISMATCH and eng.added == []
 
 
-@pytest.mark.parametrize(
-    "url", ["gs://acme/api", "s3://b/api?endpoint=https://minio:9000", "future://h/api"]
-)
+@pytest.mark.parametrize("url", ["gs://acme/api", "future://h/api"])
 def test_unsupported_families_are_refused_before_mutation(hive_dir, url):
     eng = FakeEngine()
     report = _run(_entry(url), eng, hive_dir)

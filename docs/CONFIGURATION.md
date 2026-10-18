@@ -345,6 +345,10 @@ A public store with `source: github-issues` and `sync: pull-only` is filled only
 store, with the credential taken from the environment (`GITHUB_TOKEN` / `GH_TOKEN` / `gh auth`)
 and never written to config ([github-issue-projection.md](design/github-issue-projection.md)).
 
+Running a partitioned hive — layout, bootstrap modes, explicit public sync and publication,
+diagnostics, recovery, and the separate rollout gate for a live hive — is in the operator guide
+[TWO-STORES.md](TWO-STORES.md).
+
 ## `bh config` commands
 
 | Command | Effect |

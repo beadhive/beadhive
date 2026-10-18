@@ -989,7 +989,7 @@ def _bootstrap_stores(ctx: Ctx, entry, *, descriptor=None, legacy=None) -> None:
     absent, else `legacy` — then the public store, minted at its detached path and given its
     own nested remote when it declares one. A failure names its phase and exits; the other store
     and the config are left untouched, so a re-run resumes idempotently."""
-    from . import store_bootstrap
+    from . import store_bootstrap, store_target
 
     def clone_internal(phase, url: str) -> None:
         if descriptor is None or descriptor.name != phase.remote or descriptor.url != url:
@@ -1007,7 +1007,9 @@ def _bootstrap_stores(ctx: Ctx, entry, *, descriptor=None, legacy=None) -> None:
             clone_internal=clone_internal,
             register_public=lambda phase, url: _register_public_remote(ctx, entry, phase, url),
         )
-    except store_bootstrap.BootstrapError as e:
+    except (store_bootstrap.BootstrapError, store_target.StoreResolutionError) as e:
+        # A store that cannot even be planned (e.g. a public path inside the checkout) is
+        # refused before any phase runs: nothing was created.
         typer.echo(f"✗ beads: {e}", err=True)
         raise typer.Exit(1) from None
     for phase in phases:
@@ -1082,7 +1084,7 @@ def _bootstrap_from_hq_remote(ctx: Ctx, descriptor, env: dict) -> None:
     leaves nothing behind. Empty remote: only with ``BH_ONBOARD_SEED_REMOTE=<this hive>``, a
     fresh store is minted, registered and pushed; a remote that turns out to hold data rejects
     that push as a non-fast-forward (never forced)."""
-    from . import dolt_remote, dolt_remote_credentials, engine
+    from . import dolt_remote, dolt_remote_credentials, engine, hive
 
     target = dolt_remote.classify(descriptor.url)  # onboarding lands on server mode
     shown = f"{descriptor.name} → {target.redacted} ({target.family.value})"
@@ -1115,11 +1117,13 @@ def _bootstrap_from_hq_remote(ctx: Ctx, descriptor, env: dict) -> None:
             )
         if database:  # recorded, never re-derived (bh-g5ujg); bd's bootstrap drops the key
             store_locator.ensure_server_database_persisted(ctx.base, database)
+        _exclude_clone_footprint(ctx)
         if descriptor.name != "origin":
             _register_hq_remote(ctx, eng, descriptor, target, creds, shown)
             bootstrap_origin = eng.get_remote(ctx.base, "origin")
             if bootstrap_origin and dolt_remote.same_remote(bootstrap_origin.url, descriptor.url):
                 eng.remove_remote(ctx.base, "origin")
+            _drop_code_origin_registration(ctx, eng, descriptor)
         return
     typer.echo(
         f"• beads: seeding the empty HQ remote {shown} from a fresh store ({SEED_REMOTE_ENV})"
@@ -1137,6 +1141,12 @@ def _bootstrap_from_hq_remote(ctx: Ctx, descriptor, env: dict) -> None:
     if not ctx.furnish:
         bd_init.insert(4, "--setup-exclude")
     _run_bd_mint(bd_init + ["--non-interactive"], ctx, env=env)
+    if not ctx.furnish and hive._relocate_bd_gitignore(ctx.base):
+        # Zero-footprint, as on the no-HQ mint path: bd's stray root .gitignore would leave the
+        # checkout dirty, and a dirty checkout refuses `bh hive sync remotes --push`.
+        typer.echo(
+            "• beads: relocated bd's .gitignore block into .git/info/exclude (zero-footprint)"
+        )
     _bypass_gh2455_dirty_config(ctx)
     # bd init wires the Git origin as `origin` when it can; a brand-new store has no history
     # to protect, and HQ policy outranks that probe, so the declared name is re-pointed.
@@ -1150,6 +1160,7 @@ def _bootstrap_from_hq_remote(ctx: Ctx, descriptor, env: dict) -> None:
             _hq_remote_failed(ctx, "register", f"{shown}: could not register", cleanup=True)
     else:
         _register_hq_remote(ctx, eng, descriptor, target, creds, shown)
+    _drop_code_origin_registration(ctx, eng, descriptor)
     pushed = eng.push_state(
         ctx.base,
         message="seed HQ-declared remote",
@@ -1167,6 +1178,46 @@ def _bootstrap_from_hq_remote(ctx: Ctx, descriptor, env: dict) -> None:
             f"{reason}. A remote that already holds data rejects a seed; clone it instead",
             cleanup=True,
         )
+
+
+def _exclude_clone_footprint(ctx: Ctx) -> None:
+    """Keep a zero-footprint HQ clone zero-footprint. Unlike `bd init --setup-exclude`, the
+    `bd bootstrap` clone leaves `.beads/` and bd's root gate lock untracked, so the checkout
+    reads as dirty and `bh hive sync remotes --push` refuses it; exclude both locally, the same
+    `.git/info/exclude` convention the mint path ends with."""
+    from . import hive
+
+    if ctx.furnish:
+        return
+    hive._ensure_stealth_exclude(ctx.base)
+    hive._ensure_gate_lock_exclude(ctx.base)
+
+
+def _drop_code_origin_registration(ctx: Ctx, eng, descriptor) -> None:
+    """Remove bd's auto-wired ``origin`` Git registration from a PARTITIONED hive's internal store.
+
+    `bd init` wires the checkout's Git origin as the Dolt remote ``origin`` when it can. When HQ
+    declares a differently named remote for the internal store of a hive with a public store,
+    that registration would let a bare `bd dolt push` publish the private corpus on the code
+    origin's refs/dolt/data (two-store ADR section 3: the internal remote is never git-origin),
+    so it is dropped. A one-store hive is left exactly as before."""
+    from . import dolt_remote
+
+    if descriptor.name == "origin" or _partitioned_entry(ctx) is None:
+        return
+    wired = eng.get_remote(ctx.base, "origin")
+    if wired is None or dolt_remote.classify(wired.url).family != dolt_remote.RemoteFamily.GIT:
+        return
+    removed = eng.remove_remote(ctx.base, "origin")
+    if removed.returncode:
+        _hq_remote_failed(
+            ctx,
+            "register",
+            "could not remove bd's auto-wired `origin` (the code origin) from the private "
+            "internal store",
+            cleanup=True,
+        )
+    typer.echo("• beads: dropped the code origin's auto-wired Dolt remote from the internal store")
 
 
 def _stamp_clone_identity(ctx: Ctx) -> str | None:
