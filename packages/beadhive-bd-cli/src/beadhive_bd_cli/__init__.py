@@ -24,7 +24,7 @@ from . import coordination, reads
 from .lifecycle import CliIssues, CliLeases, CliStateReads
 from .planning import KICKOFF_REASON, RELEASE_HOLD_MARKER, CliMoleculeFiler, CliPlanningGates
 from .review import CliGateOperations, CliStateOperations
-from .routes import CliRoutes, public_snapshot_argv
+from .routes import CliRoutes, github_pull_only_argv, public_snapshot_argv
 from .transport import (
     BdResult,
     BdTransport,
@@ -53,6 +53,7 @@ __all__ = [
     "SubprocessBd",
     "coordination",
     "err_line",
+    "github_pull_only_argv",
     "names_bead",
     "parse_json_tail",
     "public_snapshot_argv",

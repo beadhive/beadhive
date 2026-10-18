@@ -866,6 +866,41 @@ def publish_refusal(args, actor: str) -> str | None:
     return None
 
 
+#: The only `bd github sync` flags a GitHub-authoritative public store admits (bh-lniwf.6).
+_PUBLIC_PULL_FLAGS = frozenset({"--pull-only", "--prefer-github", "--dry-run", "--json"})
+
+
+def public_store_github_refusal(args) -> str | None:
+    """The refusal MESSAGE for a `bd github …` invocation against a PUBLIC projection store, or
+    ``None`` when allowed (also ``None`` for every non-github verb — nothing to gate).
+
+    A public store is GitHub-authoritative and pull-only (docs/design/two-store-scope-adr.md
+    section 3), so the one admitted shape is `github sync --pull-only` with at most
+    `--prefer-github` / `--dry-run` / `--json`. Bare (bidirectional) sync, `--push-only`,
+    `github push`, selective `--issues` / `--parent` and every other github sub-verb are
+    refused regardless of seat — unlike :func:`publish_refusal`, no seat may publish from a
+    projection store."""
+    positionals = _positionals(args)
+    if not positionals or positionals[0] != "github":
+        return None
+    sub = positionals[1] if len(positionals) > 1 else ""
+    flags = [a.split("=", 1)[0] for a in args if a.startswith("-")]
+    if sub == "sync" and len(positionals) == 2 and "--pull-only" in flags:
+        if set(flags) <= _PUBLIC_PULL_FLAGS:
+            return None
+    if sub == "sync" and "--pull-only" not in flags:
+        return (
+            "bare or push `bd github sync` is refused on a public projection store — GitHub is "
+            "authoritative for it, so only `bd github sync --pull-only` runs (bh-lniwf.6)."
+        )
+    shown = " ".join(str(a) for a in args)
+    return (
+        f"`bd {shown}` is refused on a public projection store — the only admitted shape is "
+        "`bd github sync --pull-only [--prefer-github] [--dry-run]`; nothing is ever pushed to "
+        "GitHub from it (bh-lniwf.6)."
+    )
+
+
 def guard_bd(args, actor: str) -> None:
     """Gate a raw bd invocation forwarded through `ws bd`. Only `github push`/`github sync` are
     guarded here (`create`/`import` are handled + allowed upstream; reads are harmless) — every

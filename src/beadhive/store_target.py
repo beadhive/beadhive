@@ -19,7 +19,11 @@ falls back. A public request against a hive without a public store raises
 Two bd behaviours measured in the spike (docs/spikes/bh-5lpl9.4-store-partitioning.md) shape
 the guards here: a ``BEADS_DIR`` that does not exist SILENTLY falls back to cwd discovery (so
 :meth:`StoreTarget.require_present` checks first), and an inherited ``BEADS_DIR`` pointing at a
-different store would silently win (so :meth:`StoreTarget.env` refuses that conflict).
+different store would silently win (so :meth:`StoreTarget.env` refuses that conflict). A third,
+measured for bh-lniwf.6 (bd 1.3.0): ``bd -C <dir>`` re-discovers the store from ``<dir>`` and
+IGNORES ``BEADS_DIR`` — ``bd -C <checkout>`` with ``BEADS_DIR=<public>/.beads`` reads and writes
+the checkout's INTERNAL store. :class:`StoreTransport` therefore scopes every call to a detached
+store with ``-C <store root>`` (and still sets ``BEADS_DIR``), whatever cwd the caller passed.
 
 Typer-free and subprocess-free: :func:`routes` hands the package's named ``bd`` routes a
 :class:`StoreTransport` over the one shared ``bd.run`` seam.
@@ -357,22 +361,34 @@ class StoreTransport:
     named route in ``beadhive_bd_cli.CliRoutes`` therefore works against a detached store
     without a single new argv builder in the shell."""
 
-    def __init__(self, target: StoreTarget, inner: Any) -> None:
+    def __init__(
+        self, target: StoreTarget, inner: Any, *, extra_env: Mapping[str, str] | None = None
+    ) -> None:
         self._target = target
         self._inner = inner
+        self._extra_env = dict(extra_env or {})
+        if BEADS_DIR_ENV in self._extra_env:
+            raise StoreResolutionError(f"{BEADS_DIR_ENV} is selected by the store, not extra_env")
+
+    def scoped_cwd(self, cwd):
+        """The ``-C`` directory: a detached store's own root (bd ignores ``BEADS_DIR`` under
+        ``-C <checkout>``), else the caller's ``cwd``."""
+        return self._target.store_root if self._target.detached else cwd
 
     def run(self, args, cwd, actor="", capture=False, text_input=None, *, timeout=None):
         _refuse_database_flags(list(args))
         self._target.require_present()
+        env = self._target.env()
+        env.update(self._extra_env)
         kwargs: dict[str, Any] = {
             "actor": actor,
             "capture": capture,
             "text_input": text_input,
-            "env": self._target.env(),
+            "env": env,
         }
         if timeout is not None:
             kwargs["timeout"] = timeout
-        return self._inner.run(list(args), cwd, **kwargs)
+        return self._inner.run(list(args), self.scoped_cwd(cwd), **kwargs)
 
     def json(self, args, cwd, *, strict=False):
         res = self.run([*args, "--json"], cwd, capture=True)
@@ -384,10 +400,17 @@ class StoreTransport:
             return None
 
 
-def routes(target: StoreTarget, *, cwd: Path | str | None = None):
+def routes(
+    target: StoreTarget,
+    *,
+    cwd: Path | str | None = None,
+    extra_env: Mapping[str, str] | None = None,
+):
     """Named ``beadhive_bd_cli`` routes against ``target``'s store, run in ``cwd`` (default:
-    the target's repository checkout — bd runs in the code repository, the store is selected by
-    environment)."""
+    the target's repository checkout). A detached store always runs in its own root — see
+    :meth:`StoreTransport.scoped_cwd`. ``extra_env`` adds variables to the child environment
+    only (never ``BEADS_DIR``; that is the store's)."""
     from . import bd, bd_cli  # lazy: bd imports registry; keep this module import-light
 
-    return bd_cli.package().CliRoutes(StoreTransport(target, bd), cwd or target.repo_dir)
+    transport = StoreTransport(target, bd, extra_env=extra_env)
+    return bd_cli.package().CliRoutes(transport, cwd or target.repo_dir)

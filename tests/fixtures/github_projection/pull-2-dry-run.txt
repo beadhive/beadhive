@@ -1,0 +1,7 @@
+Dry run mode - no changes will be made
+
+  [dry-run] Would update local issue: 1 - Crash on start (macOS)
+  [dry-run] Would update local issue: 2 - Add dark mode
+  [dry-run] Would import: 4 - Docs typo
+
+Run without --dry-run to apply changes

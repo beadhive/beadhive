@@ -2161,10 +2161,12 @@ def validate_dolt_remote_url(url: str) -> DoltRemoteUrlParts:
             "dolt_remote_query_unsupported",
             "s3:// query keys are limited to endpoint, region and path-style",
         )
-    if parts.scheme == "file":
+    if parts.scheme in ("file", "git+file"):
+        # `git+file:///abs/repo.git` is a local Git repository carrying refs/dolt/data — the
+        # form bd itself registers for a path origin — so, like file://, it has no host.
         if parts.host not in ("", "localhost") or not parts.path.startswith("/"):
             raise _dolt_remote_error(
-                "dolt_remote_url_malformed", "file:// Dolt remote needs an absolute path"
+                "dolt_remote_url_malformed", f"{parts.scheme}:// Dolt remote needs an absolute path"
             )
     elif parts.scheme in DOLT_REMOTE_LOCATION_SCHEMES:
         if not parts.host or parts.path.strip("/") == "":

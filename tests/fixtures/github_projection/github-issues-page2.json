@@ -1,0 +1,83 @@
+[
+ {
+  "id": 1001,
+  "number": 1,
+  "title": "Crash on start (macOS)",
+  "body": "It crashes.",
+  "state": "open",
+  "html_url": "https://github.com/acme/widget/issues/1",
+  "labels": [
+   {
+    "name": "bug"
+   },
+   {
+    "name": "area:cli"
+   },
+   {
+    "name": "os:macos"
+   }
+  ],
+  "user": {
+   "login": "alice"
+  },
+  "created_at": "2026-01-01T00:00:00Z",
+  "updated_at": "2026-11-01T00:00:00Z",
+  "comments": 3,
+  "milestone": {
+   "title": "v1"
+  }
+ },
+ {
+  "id": 1002,
+  "number": 2,
+  "title": "Add dark mode",
+  "body": "Please.",
+  "state": "open",
+  "html_url": "https://github.com/acme/widget/issues/2",
+  "labels": [
+   {
+    "name": "enhancement"
+   }
+  ],
+  "user": {
+   "login": "bob"
+  },
+  "created_at": "2026-01-03T00:00:00Z",
+  "updated_at": "2026-11-01T00:00:00Z"
+ },
+ {
+  "id": 1003,
+  "number": 3,
+  "title": "A PR",
+  "body": "",
+  "state": "open",
+  "html_url": "https://github.com/acme/widget/pull/3",
+  "labels": [],
+  "pull_request": {
+   "url": "x"
+  },
+  "user": {
+   "login": "carol"
+  },
+  "created_at": "2026-01-05T00:00:00Z",
+  "updated_at": "2026-01-05T00:00:00Z"
+ },
+ {
+  "id": 1004,
+  "number": 4,
+  "title": "Docs typo",
+  "body": "",
+  "state": "open",
+  "html_url": "https://github.com/acme/widget/issues/4",
+  "labels": [
+   {
+    "name": "documentation"
+   }
+  ],
+  "user": {
+   "login": "dan"
+  },
+  "created_at": "2026-11-01T00:00:00Z",
+  "updated_at": "2026-11-01T00:00:00Z"
+ }
+]

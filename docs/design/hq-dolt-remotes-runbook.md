@@ -43,7 +43,7 @@ Supported URL families (the full table is in the ADR):
 | `aws://[dynamo-table:bucket]/db` | implemented (AWS S3 + DynamoDB, any mode) |
 | `file:///absolute/path` | implemented (local disks, test fixtures) |
 | `git+ssh://…`, `git+https://…`, `git+file://…` | implemented (today's default) |
-| `s3://bucket/path?endpoint=…&region=…&path-style=…` | extension point, refused |
+| `s3://bucket/path?endpoint=…&region=…&path-style=…` | implemented (S3-compatible endpoint, server mode; proved by `bh-82gpi`) |
 | `gs://bucket/path` | extension point, refused |
 | `https://doltremoteapi.dolthub.com/…`, DoltLab | extension point, refused |
 
@@ -55,8 +55,11 @@ logs. Pick one source per host.
 **Ambient (default).** Leave the descriptor's `credentials` empty and provide the standard AWS
 SDK chain to the account that runs `bh` and bd's server: `AWS_PROFILE`, or
 `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, or `~/.aws/credentials`/`~/.aws/config`. A shared
-Dolt server only sees the environment it started with; bd routes push and pull through a Dolt
-CLI child when it sees `AWS_*` in its own environment, which is what `bh` supplies per call.
+Dolt server only sees the environment it started with — and for `s3://` (plain or
+S3-compatible) on the pinned bd 1.3.0 the **server** performs the transfer, so the credentials
+must be in the shared server's environment when it starts. Credentials on the `bh`/bd process
+alone fail with `get credentials: failed to refresh cached credentials` (measured by `bh-82gpi`;
+follow-up `bh-pphik`). Restart the shared server after changing them.
 
 **Labelled profile.** Set `credentials: "<label>"` in the descriptor and map the label in this
 host's own `config.yaml`:
@@ -72,7 +75,9 @@ dolt:
 For `source: fnox`, give `access_key_id` and `secret_access_key` (and optionally
 `session_token`) as fnox references (`config_path`, `profile`, `key`); values are read through
 the fnox broker for the one bd call that needs them. `instance-role` trusts the EC2 instance
-metadata service and skips the local probe.
+metadata service and skips the local probe. On a server-mode hive with an `s3://` remote the
+per-call `aws-profile` and `fnox` values do not reach the running server (`bh-pphik`); use
+ambient credentials in the server's environment or an instance role there.
 
 `bh` checks that a credential source exists **before** it changes anything and names what is
 missing, never a value.
@@ -174,13 +179,18 @@ prints this note for a leased hive.
 An interrupted push (proved in `tests/test_hq_dolt_remotes_e2e.py`) fails loudly and changes no
 configuration; re-running the same sync after the fault clears lands the change.
 
+## S3-compatible services
+
+`s3://<bucket>/<db>?endpoint=<url>&path-style=true&region=<region>` addresses any S3-compatible
+service (Dolt 2.3.2 and later). It is implemented for server-mode hives since `bh-82gpi` proved
+the lifecycle against an S3-compatible endpoint (moto in server mode). The proof covers the S3
+API as moto models it; verify a specific provider (Cloudflare R2, Ceph, Wasabi, …) on a
+disposable bucket before relying on it. An embedded hive refuses it, as it refuses `s3://`.
+
 ## Extension points
 
 These families are classified and reported but refused for mutation until proved:
 
-- **S3-compatible services** (`s3://…?endpoint=`; MinIO, Cloudflare R2, …). Dolt 2.3.2 and later
-  accept them. Promotion needs an end-to-end proof against the provider (`bh-82gpi`), then a
-  change to the capability table in `beadhive.dolt_remote`.
 - **Google Cloud Storage** (`gs://`) needs Application Default Credentials support in
   `beadhive.dolt_remote_credentials`.
 - **Hosted Dolt** (DoltHub, DoltLab, any remotesapi over `https://`) needs Dolt credential
@@ -192,8 +202,9 @@ These families are classified and reported but refused for mutation until proved
   `file://` remotes: distinct paths, reconcile, a causal bead pushed through
   `bh hive sync remotes`, a fresh store cloned with identical commit history, an interrupted
   push and its retry, drift, and doctor.
-- The S3 leg runs only with an operator-supplied disposable bucket:
-  `BH_TEST_S3_URL_BASE=s3://<bucket>/<prefix>` plus AWS credentials. Neither moto nor MinIO is
-  a dependency, so CI skips it with that reason (`bh-82gpi`).
+- The S3 leg (`test_s3_leg_round_trip`, `bh-82gpi`) runs the same lifecycle in server mode
+  against moto in server mode on loopback (`tests/harness/s3.py`, dummy credentials, never real
+  S3). `moto[server]` is a dev-only dependency; without it the leg skips, never fails. It runs
+  under the integration gate key (attest/push), not the per-bead submit keys.
 - `tests/test_dolt_remote_credentials.py` proves, offline, that the pinned embedded bd speaks
   `aws://` and rejects `s3://`.

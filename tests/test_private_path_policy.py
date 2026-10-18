@@ -495,6 +495,7 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     | _owned("hive.py", "_remove_stealth_exclude", ".git/info/exclude")
     | _owned("hive.py", "_ensure_stealth_exclude", ".git/info/exclude")
     | _owned("hive.py", "_ensure_export_exclude", ".git/info/exclude")
+    | _owned("hive.py", "_ensure_gate_lock_exclude", ".git/info/exclude")
     | _owned("hive.py", "_relocate_bd_gitignore", ".gitignore", ".git/info/exclude")
     | _owned("hive.py", "_ensure_bd_backup_gitignored", ".beads/.gitignore", ".git/info/exclude")
     | _owned("hive_migrate.py", "migrate", ".git")

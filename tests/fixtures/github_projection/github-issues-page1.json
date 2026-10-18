@@ -1,0 +1,12 @@
+[
+ {"id": 1001, "number": 1, "title": "Crash on start", "body": "It crashes.", "state": "open",
+  "html_url": "https://github.com/acme/widget/issues/1", "labels": [{"name": "bug"}, {"name": "priority::high"}, {"name": "area:cli"}],
+  "user": {"login": "alice"}, "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z", "comments": 3,
+  "milestone": {"title": "v1"}},
+ {"id": 1002, "number": 2, "title": "Add dark mode", "body": "Please.", "state": "closed",
+  "html_url": "https://github.com/acme/widget/issues/2", "labels": [{"name": "enhancement"}],
+  "user": {"login": "bob"}, "created_at": "2026-01-03T00:00:00Z", "updated_at": "2026-01-04T00:00:00Z", "closed_at": "2026-01-04T00:00:00Z"},
+ {"id": 1003, "number": 3, "title": "A PR", "body": "", "state": "open",
+  "html_url": "https://github.com/acme/widget/pull/3", "labels": [], "pull_request": {"url": "x"},
+  "user": {"login": "carol"}, "created_at": "2026-01-05T00:00:00Z", "updated_at": "2026-01-05T00:00:00Z"}
+]

@@ -98,6 +98,9 @@ store never borrows the internal store's descriptor. "One location per database"
 - **Public: GitHub-authoritative, pull-only.** GitHub is the system of record for the
   projection, so sync pulls (`bd github sync --pull-only`) and never pushes. Each imported
   issue keeps its stable identity in `external_ref`; a re-pull updates it in place.
+  Implemented by `bh hive project-issues` (`bh-lniwf.6`): `external_ref` is the issue's
+  GitHub URL, and mapper limits are recorded in
+  [github-issue-projection.md](github-issue-projection.md).
 
 This **supersedes** the local-canonical push model of `bh-7vu4` / `bh-t9pe` (both closed in
 favour of `bh-lniwf.6`). Pushing bead state *to* GitHub would make two systems claim the same
@@ -205,7 +208,7 @@ remote CAS stops a stale host's push. Diagnostics report such stores' sync and f
 | 3 | Hub / hydration? | Internal only; `source_repo` stays meaningful | implemented here (`bh-lniwf.7`) |
 | 4 | Migration without losing history? | No split needed; remote move is a full-history clone | by `bh-ksmt0` (remote move); no split here |
 | 5 | Default endpoint scheme? | None blessed; stores name a descriptor; `origin` reserved | by `bh-b1scz` |
-| 6 | GitHub fidelity? | Lossy; title/body/state/labels/identity survive | deferred to `bh-lniwf.6` |
+| 6 | GitHub fidelity? | Lossy; title/body/state/labels/identity survive | `bh-lniwf.6`: [github-issue-projection.md](github-issue-projection.md) |
 | 7 | Fork bd? | No | implemented here |
 
 With these answers `bh-5lpl9.4` is eligible to close **GO**, and `bh-5lpl9.6` can link
@@ -222,8 +225,16 @@ Conservative options were taken and recorded as `DECISION ASK` comments on `bh-l
   rejected until a use case exists;
 - publishing from a legacy single-store hive is refused once it goes through the boundary.
 
+## Proof and operator guide (`bh-lniwf.8`)
+
+`tests/test_two_store_e2e_int.py` proves the contract end to end for one checkout (internal on
+an S3-compatible remote, public on the code origin's Git ref, an offline GitHub stub), including
+the failure cases. Publication of the public store goes through
+`public_publish.publish_public` (public store only, Git Dolt refs only, never the internal
+descriptor's location, never forced). Running it is documented in the operator guide
+[TWO-STORES.md](../TWO-STORES.md).
+
 ## Out of scope
 
-The GitHub projection itself (`bh-lniwf.6`), the end-to-end proof and operator guide
-(`bh-lniwf.8`), migrating the live Beadhive corpus (`bh-l3zvc`), and remote migration
-(`bh-ksmt0`).
+The GitHub projection itself (`bh-lniwf.6`), migrating the live Beadhive corpus (`bh-l3zvc`),
+and remote migration (`bh-ksmt0`).

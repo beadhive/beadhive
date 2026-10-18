@@ -178,18 +178,41 @@ class _FakeRun:
         return SimpleNamespace(returncode=0, stdout="[]", stderr="")
 
 
-def test_named_routes_run_in_repo_and_select_the_detached_store(ws, monkeypatch):
+def test_named_routes_select_the_detached_store_by_its_own_root(ws, monkeypatch):
+    """bd 1.3.0 ignores BEADS_DIR under `-C <checkout>` (measured, bh-lniwf.6): a detached
+    store must be scoped by its own root, whatever cwd the caller passes."""
     fake = _FakeRun()
     monkeypatch.setattr(bd_mod, "run", fake)
     public = store_target.resolve_store(_partitioned(ws), "public")
     (ws.public_root / ".beads").mkdir(parents=True)
 
     assert store_target.routes(public).issue_list(all_=True) == []
+    store_target.routes(public, cwd=ws.checkout).issue_list()
 
-    (call,) = fake.calls
-    assert call.args == ["list", "--all", "--json"]
-    assert call.cwd == ws.checkout  # bd runs in the code repository
-    assert call.env["BEADS_DIR"] == str(ws.public_root / ".beads")
+    first, second = fake.calls
+    assert first.args == ["list", "--all", "--json"]
+    assert first.cwd == second.cwd == ws.public_root  # never the code checkout
+    assert first.env["BEADS_DIR"] == str(ws.public_root / ".beads")
+
+
+def test_internal_routes_still_run_in_the_callers_checkout(ws, monkeypatch):
+    fake = _FakeRun()
+    monkeypatch.setattr(bd_mod, "run", fake)
+    worktree = ws.tmp / "wt"
+    internal = store_target.resolve_store(_partitioned(ws), cwd=worktree)
+    store_target.routes(internal).issue_list()
+    assert fake.calls[0].cwd == worktree
+
+
+def test_extra_env_reaches_the_child_but_cannot_select_a_store(ws, monkeypatch):
+    fake = _FakeRun()
+    monkeypatch.setattr(bd_mod, "run", fake)
+    public = store_target.resolve_store(_partitioned(ws), "public")
+    (ws.public_root / ".beads").mkdir(parents=True)
+    store_target.routes(public, extra_env={"GITHUB_OWNER": "acme"}).issue_list()
+    assert fake.calls[0].env["GITHUB_OWNER"] == "acme"
+    with pytest.raises(StoreResolutionError, match="selected by the store"):
+        store_target.routes(public, extra_env={"BEADS_DIR": str(ws.checkout / ".beads")})
 
 
 def test_routes_refuse_an_uninitialized_store(ws, monkeypatch):

@@ -28,7 +28,8 @@ from harness.beads import embedded_env, skip_if_no_bd
         ("file:///srv/remotes/api", RemoteFamily.FILE, SupportLevel.IMPLEMENTED),
         ("s3://acme-beads/beads/api", RemoteFamily.S3, SupportLevel.IMPLEMENTED),
         ("aws://[tbl:acme-beads]/api", RemoteFamily.AWS, SupportLevel.IMPLEMENTED),
-        ("s3://b/api?endpoint=https://minio:9000", RemoteFamily.S3, SupportLevel.EXTENSION_POINT),
+        # S3-compatible: promoted by bh-82gpi's end-to-end proof (moto server mode).
+        ("s3://b/api?endpoint=https://s3.example:9000", RemoteFamily.S3, SupportLevel.IMPLEMENTED),
         ("gs://acme-beads/api", RemoteFamily.GS, SupportLevel.EXTENSION_POINT),
         (
             "https://doltremoteapi.dolthub.com/a/b",
@@ -162,7 +163,6 @@ def test_add_remote_refuses_when_the_registration_is_unreadable(bd_engine):
     [
         "https://doltremoteapi.dolthub.com/a/b",
         "gs://b/db",
-        "s3://b/db?endpoint=https://minio:9000",
         "future://h/db",
     ],
 )

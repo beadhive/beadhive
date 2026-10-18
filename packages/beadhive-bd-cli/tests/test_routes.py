@@ -5,7 +5,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from beadhive_bd_cli import CliRoutes, public_snapshot_argv
+from beadhive_bd_cli import CliRoutes, github_pull_only_argv, public_snapshot_argv
 
 
 class RecordingBd:
@@ -325,6 +325,21 @@ def test_public_snapshot_route_is_narrow_and_shared_with_the_root_contract() -> 
     assert public_snapshot_argv(output) == ["export", "-o", str(output)]
     CliRoutes(bd, "/hive").public_snapshot_export(output)
     assert bd.calls[-1][1] == public_snapshot_argv(output)
+
+
+def test_github_pull_only_route_never_pushes() -> None:
+    bd = RecordingBd()
+    routes = CliRoutes(bd, "/store")
+    routes.github_pull_only()
+    routes.github_pull_only(dry_run=True)
+    assert github_pull_only_argv() == ["github", "sync", "--pull-only", "--prefer-github"]
+    assert bd.calls == [
+        ("run", github_pull_only_argv(), "/store", "", True, None),
+        ("run", [*github_pull_only_argv(), "--dry-run"], "/store", "", True, None),
+    ]
+    for call in bd.calls:
+        argv = call[1]
+        assert "push" not in argv and "--push-only" not in argv and "--issues" not in argv
 
 
 def test_database_ping_route_owns_its_argv_and_timeout() -> None:
