@@ -13,6 +13,40 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.26.0 (2026-10-18)
+
+### Feat
+
+- **store**: publish a public projection store to its Git Dolt ref explicitly
+- **dolt**: promote the S3-compatible remote provider to implemented
+- **daemon**: make the readiness timeout configurable and report a timeout as unknown
+- **hive**: project GitHub Issues into the public store, pull-only
+- **onboard**: one ordered bootstrap for HQ remotes and partitioned stores
+- **config**: nest dolt-remote-descriptor/v1 per store
+- **hive**: prove HQ-configured Dolt remotes end to end and publish the runbook
+- **onboard**: apply HQ remote policy before Git-origin bootstrap auto-detection
+- **hive**: reconcile one hive's Dolt remote from HQ config with dry-run and drift reporting
+- **dolt-remote**: resolve S3 capabilities and host credentials without exposing secrets
+- **engine**: add scheme-neutral Dolt remote lifecycle operations
+- **config**: add fleet-scoped per-hive Dolt remote descriptors
+- **hive**: make hub, safety, doctor and publishing store-scope aware
+- **work**: route operational workflows exclusively to the internal store
+- **hive**: bootstrap managed internal stores before probing origin Dolt refs
+- **hive**: introduce an explicit StoreTarget resolution and execution seam
+- **config**: add per-repository internal and public store descriptors
+- **hive**: declare bd routing explicit at onboard and report drift
+
+### Fix
+
+- **onboard**: keep partitioned HQ-remote bootstraps private and zero-footprint
+- **config**: accept git+file:// Dolt remote URLs with an absolute path
+- **sync**: honor pull-only contribution policy in bulk hive sync
+- **daemon**: refuse a temporary verifier path and name a missing one with its recipe
+- **units**: carry HOME and WorkingDirectory and keep operator values on reinstall
+- **heartbeat**: skip a session-only beat before any other check can refuse
+- **onboard**: declare bd .beads ownership for the HQ clone helpers
+- **store**: scope detached-store bd calls to the store root, not the checkout
+
 ## v0.25.4 (2026-10-16)
 
 ### Fix
