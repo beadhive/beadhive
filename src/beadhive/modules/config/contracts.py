@@ -2295,6 +2295,24 @@ class DoltConfig(_Section):
         "the descriptor's `credentials` label (bh-b1scz). Lookups only, never secret values.",
     )
 
+    server_credentials: str = Field(
+        "",
+        description="Label of a dolt.remote_credentials profile whose resolved AWS environment "
+        "bh injects into the shared dolt sql-server when bh starts it (bh-pphik). In server "
+        "mode the sql-server, not the bd client, performs the s3:// transfer and only sees "
+        "its own start-up environment; one credential per host. Empty (default) = bh adds "
+        "nothing: the server inherits whatever its parent environment carries.",
+    )
+
+    @field_validator("server_credentials")
+    @classmethod
+    def _valid_server_label(cls, value):
+        if value and not _DOLT_REMOTE_LABEL.fullmatch(value):
+            raise _dolt_remote_error(
+                "dolt_remote_credentials_label_invalid", "invalid credential profile label"
+            )
+        return value
+
     @field_validator("remote_credentials")
     @classmethod
     def _valid_labels(cls, value):

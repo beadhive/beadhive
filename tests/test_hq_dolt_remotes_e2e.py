@@ -23,8 +23,18 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from beadhive import cli, config, doctor, dolt_remote, dolt_remote_reconcile, engine
+from beadhive import (
+    cli,
+    config,
+    doctor,
+    dolt_health,
+    dolt_remote,
+    dolt_remote_reconcile,
+    engine,
+    hub,
+)
 from beadhive.run import run
+from harness import s3 as harness_s3
 from harness.beads import embedded_env, skip_if_no_bd
 from harness.s3 import moto_s3  # noqa: F401 - pytest fixture
 from harness.world import free_port, reap_dolt_server
@@ -176,12 +186,12 @@ def test_configure_reconcile_sync_bootstrap_and_recover(fleet, tmp_path):
     assert {row["outcome"] for row in rows} == {"in-sync", "migration-required"}
 
 
-@pytest.fixture
-def s3_fleet(tmp_path, monkeypatch, moto_s3):  # noqa: F811 - the imported fixture
+def _s3_world(tmp_path, monkeypatch, moto_s3, *, ambient: bool):  # noqa: F811
     """One SERVER-mode hive whose HQ descriptor is an ``s3://…?endpoint=`` URL on moto.
 
-    Its own shared server (data dir + free port), started with moto's dummy credentials in its
-    environment and reaped however the test ends."""
+    Its own shared server (data dir + free port). ``ambient`` puts moto's dummy credentials in
+    the test process environment (the server inherits them); without it the process carries no
+    AWS variable at all. Returns ``(api, url, server_dir)``."""
     for key in set(os.environ) - set(embedded_env()):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("BD_NON_INTERACTIVE", "1")
@@ -189,8 +199,9 @@ def s3_fleet(tmp_path, monkeypatch, moto_s3):  # noqa: F811 - the imported fixtu
     monkeypatch.setenv("BEADS_DOLT_SHARED_SERVER", "1")
     monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(server_dir))
     monkeypatch.setenv("BEADS_DOLT_SERVER_PORT", str(free_port()))
-    for key, value in moto_s3.server_env().items():
-        monkeypatch.setenv(key, value)
+    if ambient:
+        for key, value in moto_s3.server_env().items():
+            monkeypatch.setenv(key, value)
     ws = tmp_path / "ws"
     api = _hive(ws, "api", "ac-api", tmp_path)
     url = moto_s3.url("internal/github/acme/api")
@@ -200,8 +211,25 @@ def s3_fleet(tmp_path, monkeypatch, moto_s3):  # noqa: F811 - the imported fixtu
     monkeypatch.setenv("BH_CONFIG", str(cfg_path))
     monkeypatch.setenv("BH_HOME", str(tmp_path / "bhhome"))
     monkeypatch.setattr(dolt_remote_reconcile, "_leased", lambda cfg, entry: False)
+    return api, url, server_dir
+
+
+@pytest.fixture
+def s3_fleet(tmp_path, monkeypatch, moto_s3):  # noqa: F811 - the imported fixture
+    """The S3 world with ambient credentials; its server is reaped however the test ends."""
+    api, url, server_dir = _s3_world(tmp_path, monkeypatch, moto_s3, ambient=True)
     try:
         yield api, url, moto_s3
+    finally:
+        reap_dolt_server(server_dir)
+
+
+@pytest.fixture
+def s3_fleet_non_ambient(tmp_path, monkeypatch, moto_s3):  # noqa: F811 - the imported fixture
+    """The S3 world with NO AWS variable in the test process (bh-pphik)."""
+    api, url, server_dir = _s3_world(tmp_path, monkeypatch, moto_s3, ambient=False)
+    try:
+        yield api, url, moto_s3, server_dir
     finally:
         reap_dolt_server(server_dir)
 
@@ -280,3 +308,51 @@ def test_s3_leg_round_trip(s3_fleet, tmp_path):
     assert "testing" not in out
     rows = doctor._data_hq_remotes(config.load())
     assert {row["outcome"] for row in rows} == {"in-sync"}
+
+
+class _FakeFnox:
+    """A fnox resolver that holds moto's dummy credentials; the test process never has them."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def get(self, reference, *, deadline):
+        values = harness_s3.DUMMY_CREDENTIALS
+        return {"akid": values["AWS_ACCESS_KEY_ID"], "sak": values["AWS_SECRET_ACCESS_KEY"]}[
+            reference["key"]
+        ]
+
+
+@pytest.mark.dolt_server
+def test_s3_round_trip_with_credentials_only_from_fnox(s3_fleet_non_ambient, tmp_path, monkeypatch):
+    """bh-pphik: credentials that come ONLY from a configured fnox source reach the sql-server
+    because bh injects them when it starts that server — not because the process inherited them."""
+    api, url, s3, server_dir = s3_fleet_non_ambient
+    assert not [name for name in os.environ if name.startswith("AWS_")]
+
+    ref = '{"config_path": "/etc/fnox.toml", "profile": "default", "key": "%s"}'
+    cfg_path = Path(os.environ["BH_CONFIG"])
+    cfg_path.write_text(
+        cfg_path.read_text().replace('"dolt_remote": {', '"dolt_remote": {"credentials": "host", ')
+        + "dolt:\n  server_credentials: host\n  remote_credentials:\n    host:\n"
+        + "      source: fnox\n"
+        + f"      access_key_id: {ref % 'akid'}\n      secret_access_key: {ref % 'sak'}\n"
+    )
+    monkeypatch.setattr("beadhive.hq_sql_transport.FnoxBroker", _FakeFnox)
+
+    # `bd init` auto-started a server with no credentials; replace it the way an operator
+    # restarts it, then let bh start it again with the configured source injected.
+    reap_dolt_server(server_dir)
+    assert not dolt_health.probe_shared_server().reachable
+    hub._ensure_shared_server_running(api, config.load())
+    assert dolt_health.probe_shared_server().reachable
+
+    code, out = _invoke("hive", "remote", "ac-api", "--reconcile")
+    assert code == 0, out
+    bead = _bd("create", "non-ambient", "-t", "task", "--silent", cwd=api).stdout.strip()
+    code, out = _invoke("hive", "sync", "remotes", "ac-api", "--push")
+    assert code == 0, out
+    assert s3.keys("internal/github/acme/api"), "nothing landed in the bucket"
+    fresh = _clone_fresh_server(tmp_path, url)
+    assert _bd("show", bead, "--json", cwd=fresh, check=False).returncode == 0
+    assert "testing" not in out

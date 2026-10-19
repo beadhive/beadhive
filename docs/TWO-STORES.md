@@ -54,11 +54,21 @@ internal descriptor, two descriptors sharing one location, and an internal remot
 code checkout.
 
 **Credentials.** None go into fleet config, a repository, `.beads/config.yaml` or output. For
-an `s3://` remote on the pinned bd 1.3.0 the **shared dolt sql-server** performs the transfer,
-so the AWS credentials (ambient chain or an instance role) must be in the server's environment
-when it starts; credentials on the `bh`/bd process alone fail with `get credentials: failed to
-refresh cached credentials` (`bh-pphik`). An `s3://` internal store needs **server mode**; bd's
-embedded engine cannot open `s3://`.
+an `s3://` remote on the pinned bd 1.3.0 the **shared dolt sql-server** performs the transfer
+and sees only its own start-up environment; credentials on the `bh`/bd process alone fail with
+`get credentials: failed to refresh cached credentials` (`bh-pphik`). An `s3://` internal store
+needs **server mode**; bd's embedded engine cannot open `s3://`. Two ways to get credentials
+into the server:
+
+- **Ambient:** start the server from an environment that already carries them.
+- **Configured source (opt-in):** set `dolt.server_credentials: <label>` in the host's
+  `config.yaml`, naming a `dolt.remote_credentials.<label>` profile (`fnox`, `aws-profile`,
+  `ambient` or `instance-role`). When bh starts the shared server (`hq clone`, hub hydration,
+  two-store clone, storage migration) it resolves that source and injects the result into the
+  `bd dolt start` child only. One credential per host, scoped to that server; nothing is written
+  to disk and the default (unset) changes nothing. A source that cannot be resolved stops the
+  start with a message naming what is missing. A server that is already running keeps its
+  environment: stop it, then let bh start it again.
 
 ## Local layout
 

@@ -259,3 +259,40 @@ def test_pinned_embedded_bd_speaks_aws_but_not_s3(embedded_bd):
     assert "DynamoDB" in _push(embedded_bd, "awsr")
     # s3:// is registered but bd 1.3.0's embedded engine cannot open it — for_store_mode's rule.
     assert "unknown url scheme: 's3'" in _push(embedded_bd, "s3r")
+
+
+class _Broker:
+    def get(self, reference, *, deadline):
+        return {"k": KEY_ID, "s": SECRET}[reference["key"]]
+
+
+def _server_cfg(label="host"):
+    ref = {"config_path": "/etc/fnox.toml", "profile": "default"}
+    return {
+        "dolt": {
+            "server_credentials": label,
+            "remote_credentials": {
+                "host": {
+                    "source": "fnox",
+                    "access_key_id": {**ref, "key": "k"},
+                    "secret_access_key": {**ref, "key": "s"},
+                }
+            },
+        }
+    }
+
+
+def test_server_env_is_empty_by_default():
+    res = dolt_remote_credentials.server_env({})
+    assert res.ok and not res.env
+
+
+def test_server_env_resolves_the_configured_source_without_leaking():
+    res = dolt_remote_credentials.server_env(_server_cfg(), broker=_Broker())
+    assert res.ok and res.env == {"AWS_ACCESS_KEY_ID": KEY_ID, "AWS_SECRET_ACCESS_KEY": SECRET}
+    assert SECRET not in repr(res)
+
+
+def test_server_env_fails_closed_naming_what_is_missing():
+    res = dolt_remote_credentials.server_env(_server_cfg("absent"), broker=_Broker())
+    assert not res.ok and "absent" in res.missing and SECRET not in res.missing

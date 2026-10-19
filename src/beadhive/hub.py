@@ -527,7 +527,7 @@ def _adopt_cache_identity(cache: Path, database: str) -> str:
     return f"{before} -> server/{database}"
 
 
-def _ensure_shared_server_running(cache: Path) -> None:
+def _ensure_shared_server_running(cache: Path, cfg=None) -> None:
     """Start bd's shared server if nothing is answering on its endpoint — the step
     `storage_migrate._bootstrap_shared_server` already takes for the same reason, and the one a
     FRESH HOST needs (bh-fnn3d's whole scenario is a host with no prior store): unlike `bd init
@@ -536,12 +536,27 @@ def _ensure_shared_server_running(cache: Path) -> None:
     endpoint connect, no subprocess) and only then attempt a start — an unconditional `bd dolt
     start --global` returns non-zero against a server already running outside bd's own
     bookkeeping (bh-hqmcl / bh-l90xk). Best-effort: a failed start is left for the bootstrap
-    below to report against the actual work it was trying to do."""
-    from . import dolt_health
+    below to report against the actual work it was trying to do.
+
+    When ``dolt.server_credentials`` is set, the resolved credential environment is injected
+    into the server being started (bh-pphik) — the sql-server performs s3:// transfers and sees
+    only its own start-up environment. A server already running is left alone (its environment
+    cannot change); a credential that cannot be resolved aborts the start loudly, naming what is
+    missing and never a value."""
+    from . import dolt_health, dolt_remote_credentials
 
     if dolt_health.probe_shared_server().reachable:
         return
-    bd.run(["dolt", "start", "--global"], cache, capture=True, env={**bootstrap_env()})
+    creds = dolt_remote_credentials.server_env(config.load() if cfg is None else cfg)
+    if not creds.ok:
+        typer.echo(f"  ✗ not starting the shared dolt server: {creds.missing}", err=True)
+        return
+    bd.run(
+        ["dolt", "start", "--global"],
+        cache,
+        capture=True,
+        env={**bootstrap_env(), **creds.env},
+    )
 
 
 def _fetch_cache(cfg, entry):
