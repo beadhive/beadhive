@@ -1224,8 +1224,7 @@ def _drop_code_origin_registration(ctx: Ctx, eng, descriptor) -> None:
         _hq_remote_failed(
             ctx,
             "register",
-            "could not remove bd's auto-wired `origin` (the code origin) from the "
-            "internal store",
+            "could not remove bd's auto-wired `origin` (the code origin) from the internal store",
             cleanup=True,
         )
     typer.echo("• beads: dropped the code origin's auto-wired Dolt remote from the internal store")
