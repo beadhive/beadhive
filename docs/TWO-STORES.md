@@ -121,32 +121,55 @@ Notes:
 
 Nothing moves between stores implicitly. Three explicit operations, each touching one store:
 
-1. **GitHub → public** (pull-only; GitHub is authoritative):
+1. **Tracker store: pull, then push its Dolt replica** (one verb; trackers are a kind of
+   remote and GitHub is the authority for the public store):
 
    ```sh
-   bh hive project-issues github/acme/widget --dry-run   # preview, writes nothing
-   bh hive project-issues github/acme/widget             # pull; re-runs update in place
+   bh hive remote sync github/acme/widget --store widpub --dry-run   # preview, writes nothing
+   bh hive remote sync github/acme/widget --store widpub             # pull, then fast-forward push
+   bh hive remote sync github/acme/widget --store widpub --pull-only # pull only, push nothing
    ```
 
-   Each issue keeps its GitHub URL as `external_ref`; a re-pull never duplicates it, and nothing
+   `--store` names the tracker store by its prefix (or `public`); only tracker stores are
+   handled by this verb for now, the internal store keeps `bh hive sync remotes`. The pull
+   keeps each issue's GitHub URL as `external_ref`; a re-pull never duplicates it, and nothing
    is ever written to GitHub. Credentials stay ambient (`GITHUB_TOKEN` / `GH_TOKEN` /
    `gh auth`). Mapper limits: [github-issue-projection.md](design/github-issue-projection.md).
+   A failed pull stops before the push. `bh hive project-issues <hive>` remains as a
+   **deprecated** alias of `--pull-only`.
 
-2. **Public → its Git Dolt ref** (publication). The sanctioned entry point is
-   `beadhive.public_publish.publish_public(entry)`: it resolves only the public store, refuses
-   any non-Git destination and the internal store's own remote, registers the destination
-   idempotently and pushes **without `--force`**. No `bh` verb wraps it yet (`bh-31rf7`); the
-   store-scoped equivalent is:
+2. **The push leg: public store → its Git Dolt ref.** It wraps
+   `beadhive.public_publish.publish_public`: it resolves only the public store, refuses any
+   non-Git destination and the internal store's own remote, registers the destination
+   idempotently and pushes **fast-forward only**. There is no bare `--force` route. A code
+   origin whose `refs/dolt/data` still carries another history (an unmigrated single store)
+   rejects the push as a non-fast-forward and keeps its data — that is the safety, not a fault
+   to force past. `--json` emits the versioned `hive remote sync` report. A plain `--dry-run`
+   also prints the replica's current `refs/dolt/data` SHA.
+
+   **One-time guarded replacement** (the `bh-l3zvc` rollout, step 3 of the gate below). Off by
+   default; a separate, explicit direction with compare-and-swap (force-with-lease) semantics:
 
    ```sh
-   P=~/.beadhive/stores/github/acme/widget/public
-   BEADS_DIR=$P/.beads bd -C "$P" dolt remote add git-origin git+https://github.com/acme/widget.git
-   BEADS_DIR=$P/.beads bd -C "$P" dolt push --remote git-origin    # never --force
+   bh hive remote sync github/acme/widget --store widpub --dry-run   # prints the current SHA
+   bh hive remote sync github/acme/widget --store widpub --dry-run --force-with-lease <40-hex-sha>
+   bh hive remote sync github/acme/widget --store widpub --force-with-lease <40-hex-sha> --confirm
    ```
 
-   A code origin whose `refs/dolt/data` still carries another history (an unmigrated single
-   store) rejects the push as a non-fast-forward and keeps its data — that is the safety, not a
-   fault to force past.
+   The dry run with a lease names the exact ref (`refs/dolt/data`), its current (old) SHA, the
+   new public store identity, every branch and tag that must not change, and the rollback rule.
+   The real run needs the full SHA and `--confirm`; it refuses, changing nothing, if the remote
+   ref no longer equals the lease, if the replica has no such ref, or if the internal store
+   still uses the code origin as its remote. It does not pull, and it moves only
+   `refs/dolt/data`: branches and tags are read before and after (a change is reported as an
+   error), and the old data is **not** parked under another ref. Rollback is a lease on the new
+   SHA (`git push --force-with-lease=refs/dolt/data:<new> <origin> <old>:refs/dolt/data`) and
+   only works while the destination still holds the old objects — keep your own copy of the old
+   data first. The check and the push are two steps (Dolt performs the transfer), so the lease
+   is re-read immediately before the push, not held atomically by the server.
+
+   `bh hive remote [HIVE]... [--reconcile]` (the registration compare) is unchanged: `remote`
+   is now a group whose default is that command.
 
 3. **Internal → its private remote** — the ordinary sync verb:
 
@@ -165,7 +188,7 @@ takes only the public store.
 | `bh doctor` | a **bead stores** section (only for hives that declare `stores`): each store's scope, root, prefix, transport, authority, sync and health |
 | `bh hive remote <hive>` | the internal descriptor against bd's registration (`in-sync`, `migration-required`, …) |
 | `bh hive sync remotes <hive> --push --dry-run` | what a push would attempt, by family and redacted URL |
-| `bh hive project-issues <hive> --dry-run` | which issues a pull would import or update |
+| `bh hive remote sync <hive> --store <tracker> --dry-run` | which issues a pull would import or update, and the replica's destination and current ref |
 
 Health is honest: an object-store remote has no read-only ahead/behind, so the internal store
 reads `unknown` (and its epoch fence is advisory, ADR section 9); the public store on
@@ -180,8 +203,8 @@ reads `unknown` (and its epoch fence is advisory, ADR section 9); the public sto
 | onboarding `[public-init]` | public store init or remote registration failed | fix the cause and re-run; the fresh public store was discarded, internal untouched |
 | `sync remotes --push`: `failed to push dolt: <name> (s3 remote …)` | endpoint unreachable or credentials missing on the server | restore access, re-run the same sync — nothing was written |
 | `sync remotes`: `dirty` | untracked or modified files in the checkout | commit or exclude them; `.beads/` belongs in `.git/info/exclude` |
-| `project-issues` fails | GitHub unreachable, bad token, or store config names another repository | fix and re-run; the public store keeps nothing half-imported and the internal store is untouched |
-| publication rejected as non-fast-forward | the code origin carries another `refs/dolt/data` history | migrate that corpus first (`bh-l3zvc`); never `--force` |
+| `remote sync` pull fails | GitHub unreachable, bad token, or store config names another repository | fix and re-run; the public store keeps nothing half-imported and the internal store is untouched |
+| publication rejected as non-fast-forward | the code origin carries another `refs/dolt/data` history | migrate that corpus first (`bh-l3zvc`) with the guarded `remote sync --force-with-lease`; never a bare `--force` |
 | `bh work … refuses <widpub-id>` | a public projection id was used for operational work | file or link an internal bead instead |
 
 ## Instance rollout gate
@@ -195,7 +218,8 @@ Until that gate is passed, a hive stays on its single store. The rollout must at
    host (the remote move is `bh-ksmt0`'s transactional migration);
 3. decide what happens to the code origin's existing `refs/dolt/data` — it still carries the
    internal corpus until it is replaced, and publishing the public store over it is refused;
-4. pick the public prefix and path, run the first `project-issues`, and publish;
+   the replacement is `bh hive remote sync <hive> --store <tracker> --force-with-lease <sha> --confirm`;
+4. pick the public prefix and path, run the first `remote sync`, and publish;
 5. update every host's fleet config together (older `bh` rejects a `stores` block).
 
 None of the steps above happens automatically, and none is reversible by re-running a sync.

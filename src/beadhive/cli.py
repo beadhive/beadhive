@@ -2370,13 +2370,43 @@ def _run_hive_remote(
         raise typer.Exit(1)
 
 
-@hive_app.command(
-    "remote",
+class RemoteGroup(DefaultGroup):
+    """`DefaultGroup` for `hive remote`, whose legacy form took options AFTER the hives
+    (`hive remote ac-api --reconcile --json`). A Click group stops option parsing at the first
+    positional; when the first token is not a subcommand this group instead parses exactly like
+    the plain command it used to be (interspersed options allowed)."""
+
+    def parse_args(self, ctx: typer.Context, args: list[str]) -> list[str]:
+        if not (args and args[0] in self.commands):
+            ctx.allow_interspersed_args = True
+        return super().parse_args(ctx, args)
+
+
+remote_app = typer.Typer(
+    invoke_without_command=True,
+    cls=RemoteGroup,
+    help="hive remotes: `sync` a tracker store (pull the tracker, push its Dolt replica). "
+    "Without a subcommand, `bh hive remote [HIVE]... [--reconcile]` compares each hive's "
+    "HQ-declared Dolt remote with bd's registration, exactly as before.",
+)
+
+
+# COMPATIBILITY (bh-31rf7): `hive remote` used to be a plain command taking `[HIVE]...`. It is
+# now a group so `hive remote sync` can exist, and it reuses `DefaultGroup` (see the long note at
+# `hive sync`): when the first token names a real subcommand (`sync`) Click dispatches to it;
+# any other first token (a hive id, `--all`, an option, nothing) falls through to this callback
+# with the original signature, so `bh hive remote [HIVE]... [--all] [--reconcile] [--dry-run]
+# [--json]` behaves byte-for-byte as before. The callback is catalogued as the operation
+# `hive.remote` (its path is unchanged, so wire consumers see no change); the tree adapter binds
+# it as the group default (adapters/cli/declarations.GROUP_DEFAULT_COMMANDS).
+@remote_app.callback(
+    invoke_without_command=True,
     help="compare each hive's HQ-declared Dolt remote (managed_repos[].dolt_remote) with bd's "
     "registration. Read-only unless --reconcile, which installs a MISSING registration "
-    "(idempotent) and never replaces, removes, pushes or pulls.",
+    "(idempotent) and never replaces, removes, pushes or pulls. Subcommand: `sync`.",
 )
 def hive_remote(
+    ctx: typer.Context,
     hive: list[str] = _HIVE_ARG,
     all_hives: bool = _ALL_OPT,
     reconcile: bool = typer.Option(
@@ -2387,12 +2417,75 @@ def hive_remote(
     ),
     as_json: bool = typer.Option(False, "--json", help="emit the versioned report"),
 ):
+    if ctx.invoked_subcommand is not None:
+        return
     _run_hive_remote(hive, all_hives, reconcile, dry_run, as_json)
+
+
+@remote_app.command(
+    "sync",
+    help="sync one TRACKER store (e.g. the public GitHub-Issues store): pull from the tracker "
+    "(authoritative), then fast-forward push the store to its Git Dolt replica "
+    "(refs/dolt/data). --pull-only stops after the pull. --force-with-lease <old-sha> --confirm "
+    "is the one-time compare-and-swap REPLACEMENT of a non-fast-forward replica (review it first "
+    "with --dry-run; moves no branch or tag; there is no bare --force). Internal stores keep "
+    "`bh hive sync remotes`.",
+)
+def hive_remote_sync(
+    hive_id: str = typer.Argument(..., metavar="HIVE", help="the hive whose store to sync"),
+    store: str = typer.Option(
+        ..., "--store", help="the tracker store (its prefix, or `public`) to sync"
+    ),
+    pull_only: bool = typer.Option(
+        False, "--pull-only", help="pull from the tracker only; push nothing"
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="name what would happen, write nothing"),
+    as_json: bool = typer.Option(False, "--json", help="emit the versioned report"),
+    force_with_lease: str = typer.Option(
+        "",
+        "--force-with-lease",
+        help="REPLACE the replica's refs/dolt/data iff it is still this full SHA (off by default)",
+    ),
+    confirm: bool = typer.Option(
+        False, "--confirm", help="with --force-with-lease: confirm the destructive replacement"
+    ),
+):
+    from . import github_projection, public_publish, store_target, tracker_sync
+
+    entry = registry.resolve_hive(config.load(), hive_id)
+    try:
+        report = tracker_sync.sync(
+            entry,
+            store,
+            pull_only=pull_only,
+            dry_run=dry_run,
+            force_with_lease=force_with_lease,
+            confirmed=confirm,
+        )
+    except (
+        tracker_sync.TrackerSyncError,
+        public_publish.PublishError,
+        github_projection.ProjectionError,
+        store_target.StoreResolutionError,
+    ) as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(1) from None
+    if as_json:
+        jsonout.emit(tracker_sync.payload(report))
+    else:
+        for line in tracker_sync.render(report):
+            typer.echo(line)
+    if not report.ok:
+        raise typer.Exit(1)
+
+
+hive_app.add_typer(remote_app, name="remote", rich_help_panel=HIVE_PANEL)
 
 
 @hive_app.command(
     "project-issues",
-    help="pull one hive's GitHub Issues into its configured PUBLIC bead store "
+    help="DEPRECATED alias of `bh hive remote sync HIVE --store <tracker store> --pull-only`: "
+    "pull one hive's GitHub Issues into its configured PUBLIC bead store "
     "(`bd github sync --pull-only`; GitHub is authoritative). Never pushes to GitHub, never "
     "touches the internal store; refuses a hive without a pull-only github-issues public store. "
     "Credentials stay ambient (GITHUB_TOKEN / GH_TOKEN / gh auth) and are never printed.",
@@ -2406,6 +2499,11 @@ def hive_project_issues(
 ):
     from . import github_projection, jsonout, store_target
 
+    typer.echo(
+        "note: `bh hive project-issues` is deprecated; use "
+        "`bh hive remote sync HIVE --store <tracker store> --pull-only`",
+        err=True,
+    )
     entry = registry.resolve_hive(config.load(), hive_id)
     try:
         report = github_projection.project(entry, dry_run=dry_run)

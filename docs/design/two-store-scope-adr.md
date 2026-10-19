@@ -231,8 +231,9 @@ Conservative options were taken and recorded as `DECISION ASK` comments on `bh-l
 an S3-compatible remote, public on the code origin's Git ref, an offline GitHub stub), including
 the failure cases. Publication of the public store goes through
 `public_publish.publish_public` (public store only, Git Dolt refs only, never the internal
-descriptor's location, never forced). Running it is documented in the operator guide
-[TWO-STORES.md](../TWO-STORES.md).
+descriptor's location, never forced; `bh hive remote sync --store` wraps it, with an off-by-default
+compare-and-swap `--force-with-lease` for the one-time replacement). Running it is
+documented in the operator guide [TWO-STORES.md](../TWO-STORES.md).
 
 ## Out of scope
 

@@ -20,6 +20,7 @@ from typer.models import CommandInfo, TyperInfo
 
 from ...kernel.operations import OperationSpec
 from .declarations import (
+    GROUP_DEFAULT_COMMANDS,
     PROJECTION_EXCLUSIONS,
     TRANSPORT_MECHANICS,
     CliCommandDeclaration,
@@ -231,7 +232,9 @@ def project_cli_tree(
 
     expected_commands = external_commands | {
         path
-        for path in set(declared_commands) - set(PROJECTION_EXCLUSIONS)
+        for path in set(declared_commands)
+        - set(PROJECTION_EXCLUSIONS)
+        - set(GROUP_DEFAULT_COMMANDS)
         if not is_unavailable(path)
     }
     if set(commands) != expected_commands:
@@ -249,7 +252,7 @@ def project_cli_tree(
             f"(missing={sorted(expected_parents - set(parents))!r}, "
             f"extra={sorted(set(parents) - expected_parents)!r})"
         )
-    mechanics = {row.path for row in TRANSPORT_MECHANICS}
+    mechanics = {row.path for row in TRANSPORT_MECHANICS} | set(GROUP_DEFAULT_COMMANDS)
     if callbacks != mechanics:
         raise CatalogProjectionError(
             "CLI transport mechanic drift "
@@ -274,7 +277,11 @@ def project_cli_tree(
             parent_app.registered_groups.append(info)
     _validate_live_parameters(app, declared_commands)
 
-    projected_commands = tuple(row for row in command_rows if row.path in expected_commands)
+    projected_commands = tuple(
+        row
+        for row in command_rows
+        if row.path in expected_commands or row.path in GROUP_DEFAULT_COMMANDS
+    )
     projected_parents = tuple(row for row in parent_rows if row.path in expected_parents)
     material = {
         "commands": [

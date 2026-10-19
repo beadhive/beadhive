@@ -18,6 +18,7 @@ from jsonschema import Draft202012Validator
 from typer.main import get_command
 
 from beadhive import plan, work
+from beadhive.adapters.cli.declarations import GROUP_DEFAULT_COMMANDS
 from beadhive.cli import app
 from beadhive.mcp import build_server
 from beadhive.operation_catalog import document, operations
@@ -246,7 +247,8 @@ def test_every_cli_leaf_and_signature_is_declared_exactly_once() -> None:
     projected = _projected_cli()
     by_name = {operation.name: operation for operation in operations()}
 
-    assert set(projected) == set(actual) - MANIFEST_CLI_COMMANDS
+    # A group-default operation (``hive remote``) is a group callback, not a Click leaf.
+    assert set(projected) - set(GROUP_DEFAULT_COMMANDS) == set(actual) - MANIFEST_CLI_COMMANDS
     assert MANIFEST_CLI_COMMANDS == set(actual) - set(projected)
     for path, metadata in actual.items():
         if path in MANIFEST_CLI_COMMANDS:
@@ -267,7 +269,7 @@ def test_every_cli_leaf_and_signature_is_declared_exactly_once() -> None:
 
 def test_every_projection_declares_granularity_progress_and_interactivity() -> None:
     cli = _projected_cli()
-    assert len(cli) == 249
+    assert len(cli) == 250
     assert {
         "hq beadyard",
         "hq beadyard-adopt",
@@ -367,10 +369,14 @@ def test_cli_parent_alias_and_passthrough_metadata_is_complete() -> None:
     root = get_command(app)
     actual_parents = _cli_parents(root)
     declared_parents = {row["path"]: row for row in document()["cli_parents"]}
-    assert set(declared_parents) == set(actual_parents) - MANIFEST_CLI_PARENTS
-    assert MANIFEST_CLI_PARENTS == set(actual_parents) - set(declared_parents)
+    assert set(declared_parents) == (
+        set(actual_parents) - MANIFEST_CLI_PARENTS - set(GROUP_DEFAULT_COMMANDS)
+    )
+    assert MANIFEST_CLI_PARENTS == (
+        set(actual_parents) - set(declared_parents) - set(GROUP_DEFAULT_COMMANDS)
+    )
     for path, actual in actual_parents.items():
-        if path in MANIFEST_CLI_PARENTS:
+        if path in MANIFEST_CLI_PARENTS or path in GROUP_DEFAULT_COMMANDS:
             continue
         declared = declared_parents[path]
         for key in ("declared_hidden", "effective_hidden", "panel", "effective_panel"):
@@ -614,7 +620,7 @@ def test_convention_8_scans_every_live_description_probe_and_test_filename() -> 
     scanned = {**cli_texts, **mcp_texts, **filename_texts}
 
     # Core catalog and package manifests are the two explicit CLI authorities.
-    assert len(cli_texts) == (249 + len(MANIFEST_CLI_COMMANDS)) * 2
+    assert len(cli_texts) == (250 - len(GROUP_DEFAULT_COMMANDS) + len(MANIFEST_CLI_COMMANDS)) * 2
     assert {"cli:host eligible:help", "cli:host eligible:docstring"} <= cli_texts.keys()
     assert mcp_counts == {"tools": 10, "resources": 21, "probes": 1}
     assert len(filename_texts) == len(test_files) > 0
