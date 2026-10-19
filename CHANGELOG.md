@@ -13,6 +13,18 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.27.0 (2026-10-19)
+
+### Feat
+
+- **dolt**: deliver fnox credentials to a service-managed shared Dolt server
+- **hive**: sync tracker stores with hive remote sync, with a guarded force-with-lease replace
+- **dolt**: inject configured remote credentials into the shared sql-server (bh-pphik)
+
+### Fix
+
+- **onboard**: seed the HQ remote with bd init --remote so the code origin's corpus is never read
+
 ## v0.26.0 (2026-10-18)
 
 ### Feat
