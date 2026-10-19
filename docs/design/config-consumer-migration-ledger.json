@@ -2385,7 +2385,7 @@
         "target": "beadhive.config.load"
       }
     ],
-    "production_config_importer_count": 89,
+    "production_config_importer_count": 90,
     "production_config_importers": [
       "src/beadhive/activity_publisher.py",
       "src/beadhive/agent_run_summary_reader.py",
@@ -2409,6 +2409,7 @@
       "src/beadhive/doctor.py",
       "src/beadhive/dolt.py",
       "src/beadhive/dolt_health.py",
+      "src/beadhive/dolt_server_credentials.py",
       "src/beadhive/engine.py",
       "src/beadhive/escalate.py",
       "src/beadhive/fleet_roster.py",
@@ -2594,6 +2595,11 @@
       {
         "owner": "bh-18hud.5 compatibility migration ledger",
         "path": "src/beadhive/dolt_health.py",
+        "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
+      },
+      {
+        "owner": "bh-18hud.5 compatibility migration ledger",
+        "path": "src/beadhive/dolt_server_credentials.py",
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       },
       {

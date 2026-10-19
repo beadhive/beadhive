@@ -3074,3 +3074,39 @@ def test_missing_durable_verifier_is_named_without_a_temporary_cause(temporary, 
     with pytest.raises(DaemonConfigurationError, match="does not exist; provision") as refused:
         daemon_config.validate_for_listener_startup(settings)
     assert "recorded under the temporary directory" not in str(refused.value)
+
+
+def test_data_store_engine_reports_server_credentials_only_when_configured(
+    prefix_hive, no_host_dolt_servers, monkeypatch
+):
+    from beadhive import dolt_health, dolt_server_credentials
+
+    _write_dolt_metadata(prefix_hive.main, dolt_mode="server")
+    monkeypatch.setattr(
+        doctor.dolt_health,
+        "probe_shared_server",
+        lambda **k: doctor.dolt_health.ProbeResult(True, "ok"),
+    )
+    cfg = _cfg_one_hive("mr")
+    assert "server_credentials" not in doctor._data_store_engine(cfg)
+
+    ref = {"config_path": "/etc/fnox.toml", "profile": "default"}
+    cfg["dolt"] = {
+        "server_credentials": "host",
+        "remote_credentials": {
+            "host": {
+                "source": "fnox",
+                "access_key_id": {**ref, "key": "k"},
+                "secret_access_key": {**ref, "key": "s"},
+            }
+        },
+    }
+    monkeypatch.setattr(
+        dolt_health,
+        "running_servers",
+        lambda **k: [dolt_health.RunningServer(5, "/d", True, "", "shared")],
+    )
+    monkeypatch.setattr(dolt_server_credentials, "read_proc_environ", lambda pid: {"PATH": "x"})
+    block = doctor._data_store_engine(cfg)["server_credentials"]
+    assert block["servers"][0]["state"] == "missing"
+    assert any("restart" in line for line in block["lines"])
