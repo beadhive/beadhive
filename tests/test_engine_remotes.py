@@ -96,6 +96,13 @@ def bd_engine(monkeypatch):
     eng = engine.BdEngine()
     rec = Recorder()
     monkeypatch.setattr(eng, "invoke", rec)
+    # The Dolt-level registry read is exercised by tests/test_engine_registry.py; here it is an
+    # empty registry so these tests keep asserting only their own bd calls.
+    monkeypatch.setattr(
+        eng,
+        "read_registry",
+        lambda cwd: engine.RegistryRead(ok=True, snapshot=dolt_remote.RegistrySnapshot()),
+    )
     return eng, rec
 
 

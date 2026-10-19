@@ -13,6 +13,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import re
 import subprocess
 import time
 from dataclasses import dataclass
@@ -111,6 +112,45 @@ class RemoteListing:
 
     def get(self, name: str) -> DoltRemoteEntry | None:
         return next((remote for remote in self.remotes if remote.name == name), None)
+
+
+@dataclass(frozen=True)
+class RegistryRead:
+    """Outcome of :meth:`Engine.read_registry`. ``ok`` False means the registry is UNKNOWN:
+    never read an empty ``snapshot`` as "nothing registered" then. ``error`` is value-free."""
+
+    ok: bool
+    error: str = ""
+    snapshot: object = None  # a dolt_remote.RegistrySnapshot when ok
+
+
+@dataclass(frozen=True)
+class RegistryOutcome:
+    """Result of a registry-mutating operation (replace, cut-over, restore). ``before`` is the
+    snapshot captured BEFORE any mutation; ``after`` is a fresh read-back. ``restored`` is True
+    when a failure path put ``before`` back (and the read-back proves it). ``error`` and
+    ``detail`` are redacted."""
+
+    ok: bool
+    error: str = ""
+    before: object = None
+    after: object = None
+    restored: bool = False
+    detail: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class CacheRebuild:
+    """Result of :meth:`Engine.rebuild_transport_cache`. ``state``: ``not-applicable`` (the
+    remote is not a Git remote, so there is no transport cache), ``present`` (pull already
+    works), ``rebuilt``, or ``failed``."""
+
+    state: str
+    detail: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.state != "failed"
 
 
 def _extra_env(env, extra_env):
@@ -463,6 +503,46 @@ class Engine(Protocol):
         as an empty remote."""
         ...
 
+    def read_registry(self, cwd) -> RegistryRead:
+        """EVERY Dolt-level remote and backup registration of ``cwd``'s database, read below
+        bd's listing (``dolt_remotes`` / ``dolt_backups``) and annotated with whether bd's own
+        listing shows each remote. Local read; never a network fetch. A failed read is
+        ``ok=False``, never an empty registry."""
+        ...
+
+    def add_backup(self, cwd, url: str, *, replace: bool = False):
+        """Register ``url`` as the bd backup slot. Probe-then-add: refused when a remote
+        already claims the address (Dolt would refuse it anyway, invisibly to bd), and refused
+        when the slot holds a different URL unless ``replace``."""
+        ...
+
+    def remove_backup(self, cwd):
+        """Drop the bd backup slot registration. Configuration only — never backup data."""
+        ...
+
+    def restore_registry(self, cwd, snapshot, *, extra_env=None) -> RegistryOutcome:
+        """Make ``cwd``'s remote and backup registrations EXACTLY ``snapshot`` and prove it by
+        read-back. Registration only; never moves data."""
+        ...
+
+    def cutover_remote(
+        self, cwd, name: str, url: str, *, retain_as: str, extra_env=None
+    ) -> RegistryOutcome:
+        """Re-point the remote called ``name`` (the HQ descriptor's own name — never assume
+        ``origin``) at ``url``, keeping the previous registration as ``retain_as``. The
+        registry is captured first; any failure restores it exactly."""
+        ...
+
+    def rebuild_transport_cache(self, cwd, name: str, *, extra_env=None) -> CacheRebuild:
+        """Rebuild (never copy) the Git transport cache of remote ``name`` when a pull reports
+        it missing (bh-j42f0). A no-op for every non-Git family."""
+        ...
+
+    def remote_channel(self, cwd, name: str) -> str:
+        """The channel state rides on remote ``name``: ``refs/dolt/data`` only for a Git
+        remote, else the object-store location. ``unknown`` when unregistered."""
+        ...
+
 
 class BdEngine:
     """The `bd` (Dolt) adapter — today's only implementation.
@@ -650,9 +730,13 @@ class BdEngine:
         # modules and still verifies non-legacy dynamic imports).
         host_fence = importlib.import_module("beadhive.host_fence")
         gitref = importlib.import_module("beadhive.gitref")
-        fence_remote = remote or "origin"
+        fence_remote = self._fence_remote(cwd, remote, cfg)
         try:
-            reservation = host_fence.reserve_managed_push(fence_remote, cwd=cwd, cfg=cfg)
+            reservation = (
+                host_fence.reserve_managed_push(fence_remote, cwd=cwd, cfg=cfg)
+                if fence_remote
+                else None
+            )
         except (
             host_fence.FenceError,
             gitref.RemoteUnreachable,
@@ -724,6 +808,34 @@ class BdEngine:
             )
         return pushed
 
+    def _fence_remote(self, cwd, remote, cfg):
+        """The remote the Git epoch fence addresses for a push to ``remote``, or ``""`` when no
+        Git-ref fence applies. The name is the caller's (the HQ descriptor's own name); with no
+        name given it is the sole registered remote. ``origin`` is only the last-resort default
+        for a hive that registers several. The fence is a Git ref (``capabilities.git_ref_fence``)
+        so a file/S3/hosted remote is never fenced through a Git remote of the same name.
+        Resolved only for a hive already in the multi-host model, so a legacy push makes no
+        extra bd call."""
+        name = remote or "origin"
+        guard = importlib.import_module("beadhive.guard")
+        try:
+            in_force = guard.primary_state(cfg=cfg, hive_dir=Path(cwd)) is not None
+        except Exception:  # noqa: BLE001 - dormancy probe; reserve_managed_push re-decides
+            return name
+        if not in_force:
+            return name
+        listing = self.list_remotes(cwd)
+        if not listing.ok:
+            return name
+        if not remote and len(listing.remotes) == 1:
+            name = listing.remotes[0].name
+        entry = listing.get(name)
+        if entry is None:
+            return name
+        dolt_remote = importlib.import_module("beadhive.dolt_remote")
+        target = dolt_remote.classify(entry.url)
+        return name if target.capabilities.git_ref_fence else ""
+
     def pull_state(self, cwd, *, remote="", extra_env=None):
         skipped = _forward_noop(cwd, ["dolt", "pull"])
         if skipped is not None:
@@ -783,6 +895,9 @@ class BdEngine:
                 f"remote {name!r} is already registered at "
                 f"{dolt_remote.redact_url(prior.url)}; not replaced (use replace_remote)",
             )
+        blocked = self._backup_claims(cwd, str(url), args, "added")
+        if blocked is not None:
+            return blocked
         return self.invoke(args, cwd=cwd, capture=True, env=_extra_env(None, extra_env))
 
     def remove_remote(self, cwd, name):
@@ -800,6 +915,9 @@ class BdEngine:
                 args, f"cannot read current remotes ({listing.error}); nothing replaced"
             )
         prior = listing.get(str(name))
+        blocked = self._backup_claims(cwd, str(url), args, "replaced")
+        if blocked is not None:
+            return blocked
         # bd's add re-points an existing name in one call, so a replace is a single add; the
         # prior URL is restored if that add fails part-way.
         added = self.invoke(args, cwd=cwd, capture=True, env=_extra_env(None, extra_env))
@@ -859,6 +977,339 @@ class BdEngine:
         finally:
             _drop_hint(config_path, url, prior)
         return result
+
+    # ---- registration inspection (bh-ksmt0.3; remote-migration-transaction-adr.md) ----
+
+    def _sql_rows(self, cwd, query):
+        """Rows of a read-only ``query`` as ``(rows, error)``; exactly one is meaningful.
+
+        Below bd's abstraction on purpose: ``bd dolt remote list`` hides remotes and has no
+        backup listing (bh-wov4i). Server mode asks the database through ``bd sql`` (the SQL
+        path bd refuses only for embedded); embedded mode has no bd SQL path, so the one Dolt
+        binary reads the database directory directly."""
+        store_locator = importlib.import_module("beadhive.store_locator")
+        if cwd is not None and store_locator.is_embedded_mode(Path(cwd)):
+            database = store_locator.embedded_database_dir(Path(cwd))
+            if not database.is_dir():
+                return None, "store-missing"
+            run = importlib.import_module("beadhive.run").run
+            try:
+                res = run(
+                    ["dolt", "sql", "-q", query, "-r", "json"],
+                    cwd=str(database),
+                    check=False,
+                    capture=True,
+                    timeout=60,
+                )
+            except subprocess.TimeoutExpired:
+                return None, "timeout"
+        else:
+            res = self.invoke(["sql", "--json", query], cwd=cwd, capture=True, timeout=60)
+        if res.returncode == 124:
+            return None, "timeout"
+        if res.returncode != 0:
+            return None, _stderr_tail(res) or f"exit {res.returncode}"
+        try:
+            data = json.loads(res.stdout or "")
+        except ValueError:
+            return None, "parse-error"
+        # `dolt sql -r json` prints `{}` (no `rows` key) for an empty result set.
+        rows = data.get("rows", []) if isinstance(data, dict) else data
+        if not isinstance(rows, list):
+            return None, "parse-error"
+        return [row for row in rows if isinstance(row, dict)], ""
+
+    def read_registry(self, cwd):
+        dolt_remote = importlib.import_module("beadhive.dolt_remote")
+        kind = dolt_remote.RegistryKind
+        remote_rows, error = self._sql_rows(cwd, "SELECT name, url FROM dolt_remotes")
+        if remote_rows is None:
+            return RegistryRead(ok=False, error=f"remotes: {error}")
+        backup_rows, error = self._sql_rows(cwd, "SELECT name, url FROM dolt_backups")
+        if backup_rows is None:
+            return RegistryRead(ok=False, error=f"backups: {error}")
+        listing = self.list_remotes(cwd)
+        shown = {r.name for r in listing.remotes} if listing.ok else None
+
+        def entries(which, rows, listed):
+            return tuple(
+                dolt_remote.RegistryEntry(
+                    which,
+                    str(row.get("name") or ""),
+                    str(row.get("url") or ""),
+                    listed(str(row.get("name") or "")),
+                )
+                for row in rows
+                if row.get("name")
+            )
+
+        snapshot = dolt_remote.RegistrySnapshot(
+            remotes=entries(
+                kind.REMOTE, remote_rows, lambda n: None if shown is None else n in shown
+            ),
+            backups=entries(kind.BACKUP, backup_rows, lambda _n: None),
+        )
+        return RegistryRead(ok=True, snapshot=snapshot)
+
+    def _backup_claims(self, cwd, url, args, verb):
+        """A refusal when a registered BACKUP already claims ``url`` (Dolt would refuse the
+        remote anyway, with an error naming something bd cannot list), else ``None``. An
+        unreadable registry also refuses: a conflict cannot be ruled out."""
+        dolt_remote = importlib.import_module("beadhive.dolt_remote")
+        read = self.read_registry(cwd)
+        if not read.ok:
+            return _refused(args, f"cannot read the Dolt registry ({read.error}); nothing {verb}")
+        claim = read.snapshot.claimants(url, kind=dolt_remote.RegistryKind.BACKUP)
+        if claim:
+            return _refused(
+                args,
+                f"{claim[0].describe()} already claims this address; a remote and a backup "
+                f"cannot share one; nothing {verb}",
+            )
+        return None
+
+    def _dolt_write(self, cwd, kind, op, name, url=None, *, extra_env=None):
+        """One registration write with no bd command: hidden remotes and non-default backups
+        (the cases the seam cannot reach). Server mode goes through ``DOLT_REMOTE`` /
+        ``DOLT_BACKUP``, embedded through the Dolt CLI on the database directory."""
+        store_locator = importlib.import_module("beadhive.store_locator")
+        argv = [str(name)] + ([str(url)] if op == "add" else [])
+        if store_locator.is_embedded_mode(Path(cwd)):
+            run = importlib.import_module("beadhive.run").run
+            database = store_locator.embedded_database_dir(Path(cwd))
+            return run(
+                ["dolt", kind, op, *argv],
+                cwd=str(database),
+                check=False,
+                capture=True,
+                timeout=60,
+                env=_extra_env(None, extra_env),
+            )
+
+        def quote(value):
+            return "'" + str(value).replace("\\", "\\\\").replace("'", "''") + "'"
+
+        proc = "DOLT_REMOTE" if kind == "remote" else "DOLT_BACKUP"
+        call = f"CALL {proc}({', '.join(quote(a) for a in [op, *argv])})"
+        return self.invoke(["sql", call], cwd=cwd, capture=True, env=_extra_env(None, extra_env))
+
+    def add_backup(self, cwd, url, *, replace=False):
+        dolt_remote = importlib.import_module("beadhive.dolt_remote")
+        args = ["backup", "add", str(url)]
+        read = self.read_registry(cwd)
+        if not read.ok:
+            return _refused(args, f"cannot read the Dolt registry ({read.error}); nothing added")
+        snapshot = read.snapshot
+        claim = snapshot.claimants(str(url), kind=dolt_remote.RegistryKind.REMOTE)
+        if claim:
+            return _refused(
+                args,
+                f"{claim[0].describe()} already claims this address; a backup cannot share it; "
+                "nothing added",
+            )
+        slot = snapshot.backup(dolt_remote.BD_BACKUP_SLOT)
+        if slot is not None:
+            if dolt_remote.same_remote(slot.url, str(url)):
+                return subprocess.CompletedProcess(
+                    args=["bd", *args], returncode=0, stdout="", stderr=""
+                )
+            if not replace:
+                return _refused(
+                    args,
+                    f"backup slot is already registered at {slot.redacted}; not replaced "
+                    "(pass replace=True)",
+                )
+        return self._state_call(args, cwd)
+
+    def remove_backup(self, cwd):
+        return self._state_call(["backup", "remove"], cwd)
+
+    def restore_registry(self, cwd, snapshot, *, extra_env=None):
+        dolt_remote = importlib.import_module("beadhive.dolt_remote")
+        kind = dolt_remote.RegistryKind
+        read = self.read_registry(cwd)
+        if not read.ok:
+            return RegistryOutcome(ok=False, error=f"cannot read the registry: {read.error}")
+        current = read.snapshot
+        delta = snapshot.diff(current)
+        notes: list[str] = []
+        failed = False
+
+        def attempt(label, res):
+            nonlocal failed
+            if res.returncode:
+                failed = True
+                notes.append(f"{label}: {_stderr_tail(res) or 'exit ' + str(res.returncode)}")
+                return False
+            return True
+
+        for which, name in (*delta.added, *delta.changed):
+            slot = which == kind.BACKUP and name == dolt_remote.BD_BACKUP_SLOT
+            if which == kind.REMOTE:
+                res = self.remove_remote(cwd, name)
+                if res.returncode:
+                    res = self._dolt_write(cwd, "remote", "remove", name)
+            else:
+                res = (
+                    self.remove_backup(cwd)
+                    if slot
+                    else self._dolt_write(cwd, "backup", "remove", name)
+                )
+            attempt(f"remove {which.value} {name!r}", res)
+        for which, name in (*delta.removed, *delta.changed):
+            want = snapshot.remote(name) if which == kind.REMOTE else snapshot.backup(name)
+            if want is None:
+                continue
+            if which == kind.REMOTE:
+                res = self.invoke(
+                    ["dolt", "remote", "add", name, want.url],
+                    cwd=cwd,
+                    capture=True,
+                    env=_extra_env(None, extra_env),
+                )
+            elif name == dolt_remote.BD_BACKUP_SLOT:
+                res = self._state_call(["backup", "add", want.url], cwd)
+            else:
+                res = self._dolt_write(cwd, "backup", "add", name, want.url, extra_env=extra_env)
+            attempt(f"add {which.value} {name!r}", res)
+        after = self.read_registry(cwd)
+        if not after.ok:
+            return RegistryOutcome(
+                ok=False,
+                error=f"restored but could not read back: {after.error}",
+                before=snapshot,
+                detail=tuple(notes),
+            )
+        remaining = snapshot.diff(after.snapshot)
+        if failed or not remaining.empty:
+            return RegistryOutcome(
+                ok=False,
+                error=f"registry does not match the snapshot: {remaining.describe()}",
+                before=snapshot,
+                after=after.snapshot,
+                detail=tuple(notes),
+            )
+        return RegistryOutcome(ok=True, before=snapshot, after=after.snapshot, restored=True)
+
+    def cutover_remote(self, cwd, name, url, *, retain_as, extra_env=None):
+        dolt_remote = importlib.import_module("beadhive.dolt_remote")
+        name, retain_as, url = str(name), str(retain_as), str(url)
+        if not name or not retain_as or name == retain_as:
+            return RegistryOutcome(ok=False, error="cut-over needs distinct non-empty names")
+        target = dolt_remote.classify(url)
+        if not target.allows(dolt_remote.RemoteOp.REPLACE):
+            return RegistryOutcome(
+                ok=False,
+                error=str(
+                    dolt_remote.UnsupportedRemoteOperation(target, dolt_remote.RemoteOp.REPLACE)
+                ),
+            )
+        read = self.read_registry(cwd)
+        if not read.ok:
+            return RegistryOutcome(ok=False, error=f"cannot read the registry: {read.error}")
+        before = read.snapshot
+        prior = before.remote(name)
+        if prior is None:
+            return RegistryOutcome(
+                ok=False,
+                before=before,
+                error=f"remote {name!r} is not registered; nothing to cut over",
+            )
+        if dolt_remote.same_remote(prior.url, url):
+            return RegistryOutcome(
+                ok=False, before=before, error=f"remote {name!r} already addresses the target"
+            )
+        taken = before.remote(retain_as)
+        if taken is not None:
+            return RegistryOutcome(
+                ok=False,
+                before=before,
+                error=f"retain name {retain_as!r} is already registered at {taken.redacted}",
+            )
+        claim = before.claimants(url)
+        if claim:
+            return RegistryOutcome(
+                ok=False, before=before, error=f"{claim[0].describe()} already claims the target"
+            )
+
+        def fail(why):
+            back = self.restore_registry(cwd, before, extra_env=extra_env)
+            return RegistryOutcome(
+                ok=False,
+                error=why if back.ok else f"{why}; RESTORE FAILED: {back.error}",
+                before=before,
+                after=back.after,
+                restored=back.ok,
+                detail=back.detail,
+            )
+
+        kept = self.invoke(
+            ["dolt", "remote", "add", retain_as, prior.url],
+            cwd=cwd,
+            capture=True,
+            env=_extra_env(None, extra_env),
+        )
+        if kept.returncode:
+            return fail(f"could not retain {name!r} as {retain_as!r}: {_stderr_tail(kept)}")
+        swapped = self.replace_remote(cwd, name, url, extra_env=extra_env)
+        if swapped.returncode:
+            return fail(f"could not re-point {name!r}: {_stderr_tail(swapped)}")
+        after = self.read_registry(cwd)
+        if not after.ok:
+            return fail(f"cannot read back the registry: {after.error}")
+        live, kept_entry = after.snapshot.remote(name), after.snapshot.remote(retain_as)
+        if live is None or live.url != url or kept_entry is None or kept_entry.url != prior.url:
+            return fail("registry does not read back as intended")
+        return RegistryOutcome(ok=True, before=before, after=after.snapshot)
+
+    def rebuild_transport_cache(self, cwd, name, *, extra_env=None):
+        dolt_remote = importlib.import_module("beadhive.dolt_remote")
+        entry = self.get_remote(cwd, str(name))
+        if entry is None:
+            return CacheRebuild("failed", f"remote {name!r} is not registered")
+        clone_url = dolt_remote.git_clone_url(entry.url)
+        if clone_url is None:
+            return CacheRebuild(
+                "not-applicable", f"{dolt_remote.classify(entry.url).family.value} remote"
+            )
+        pulled = self.pull_state(cwd, remote=str(name), extra_env=extra_env)
+        if pulled.returncode == 0:
+            return CacheRebuild("present")
+        text = f"{getattr(pulled, 'stderr', '') or ''}\n{getattr(pulled, 'stdout', '') or ''}"
+        found = re.search(r"not a git repository: '([^']+)'", text)
+        if not found:
+            return CacheRebuild("failed", _stderr_tail(pulled) or f"exit {pulled.returncode}")
+        path = Path(found.group(1))
+        # The path comes from Dolt's own error (the hash is not derivable, bh-j42f0), but it is
+        # only ever a place Dolt keeps its transport cache, and never something that exists.
+        if "git-remote-cache" not in path.parts or path.name != "repo.git":
+            return CacheRebuild("failed", "refusing an unrecognised cache path")
+        if path.exists() and any(path.iterdir()):
+            return CacheRebuild("failed", "cache path exists and is not empty; not overwritten")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        run = importlib.import_module("beadhive.run").run
+        cloned = run(
+            ["git", "clone", "--bare", "--quiet", clone_url, str(path)],
+            check=False,
+            capture=True,
+            timeout=STATE_TIMEOUT,
+            env=_extra_env(None, extra_env),
+        )
+        if cloned.returncode:
+            return CacheRebuild(
+                "failed",
+                f"git clone of {dolt_remote.redact_url(entry.url)} failed ({cloned.returncode})",
+            )
+        again = self.pull_state(cwd, remote=str(name), extra_env=extra_env)
+        if again.returncode:
+            return CacheRebuild("failed", _stderr_tail(again) or f"exit {again.returncode}")
+        return CacheRebuild("rebuilt")
+
+    def remote_channel(self, cwd, name):
+        entry = self.get_remote(cwd, str(name))
+        if entry is None:
+            return "unknown"
+        return importlib.import_module("beadhive.dolt_remote").channel_for(entry.url)
 
     def backup(self, cwd, dest, *, actor=""):
         # `bd backup add` + `bd backup sync` — bd's own wrapper around Dolt-native
