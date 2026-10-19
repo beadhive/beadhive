@@ -1,4 +1,4 @@
-"""Publish a PUBLIC projection store to its Git Dolt ref — explicit and public-only (bh-lniwf.8).
+"""Publish a PUBLIC tracker store to its Git Dolt replica — explicit and public-only (bh-lniwf.8).
 
 docs/design/two-store-scope-adr.md section 8: once a repository is partitioned only an
 explicitly selected public store may be published; the internal store is private even when the
@@ -23,11 +23,13 @@ It is off by default and compare-and-swap: it reads the destination's ``refs/dol
 ``git ls-remote`` and proceeds only when that SHA equals the operator-supplied expected old SHA
 (force-with-lease semantics — never a bare ``--force``), the confirmation was given, and the
 internal store no longer uses the code origin as its remote. It moves ONLY ``refs/dolt/data``:
-branches and tags are read before and after and the replacement reports a failure if any moved,
-and the old data is never parked under another ref.
+branches and tags (Dolt's own ``refs/heads/__dolt_remote_info__`` marker aside, which Dolt
+rewrites with the data) are read before and after and the replacement reports a failure if any
+moved, and the old data is never parked under another ref.
 
-Nothing here runs implicitly: no verb, sync or hook calls it, so a hive that never asks to
-publish never publishes. It never reads or writes the internal store.
+Nothing here runs implicitly: only ``bh hive remote sync --store <tracker>`` (tracker_sync)
+calls it, so a hive that never asks to sync never publishes. It never reads or writes the internal
+store.
 """
 
 from __future__ import annotations
@@ -43,7 +45,7 @@ from .modules.config.contracts import GIT_ORIGIN_REMOTE
 from .run import run
 from .store_target import SCOPE_PUBLIC, StoreTarget
 
-#: ``--json`` contract version for ``bh hive publish-public`` (see ``jsonout``).
+#: ``--json`` contract version of the push leg of ``bh hive remote sync`` (see ``jsonout``).
 PUBLISH_PUBLIC_SCHEMA = 1
 
 
@@ -65,10 +67,10 @@ class PublishPlan:
 DOLT_DATA_REF = "refs/dolt/data"
 _SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 ROLLBACK_RULE = (
-    "rollback: restore the old SHA with a lease on the new one "
-    "(`git push --force-with-lease={ref}:<new-sha> <remote> <old-sha>:{ref}`); that works only "
-    "while the destination still holds the old objects, and nothing is parked under another ref, "
-    "so keep your own copy of the old data before replacing"
+    "rollback: NEVER restore the old SHA -- {ref} held the private corpus, and re-pushing it "
+    "(even with a lease) republishes it. Recover from the verified private archive instead "
+    "(re-run the replace from the audited tracker store), or remove the ref; nothing is parked "
+    "under another ref"
 )
 
 
@@ -265,9 +267,19 @@ def _ls_remote(plan: PublishPlan) -> dict[str, str]:
     return refs
 
 
+#: The branch Dolt's own Git-remote blobstore keeps beside ``refs/dolt/data`` (one commit holding
+#: ``DOLT_REMOTE.md``). Dolt rewrites it on a forced push (a new commit with the same content,
+#: found by the real-bd proof bh-rgd4a), so it is Dolt's data, not a code branch to protect.
+DOLT_OWNED_REFS = frozenset({"refs/heads/__dolt_remote_info__"})
+
+
 def _code_refs(refs: Mapping[str, str]) -> tuple[tuple[str, str], ...]:
     return tuple(
-        sorted((r, s) for r, s in refs.items() if r.startswith(("refs/heads/", "refs/tags/")))
+        sorted(
+            (r, s)
+            for r, s in refs.items()
+            if r.startswith(("refs/heads/", "refs/tags/")) and r not in DOLT_OWNED_REFS
+        )
     )
 
 
@@ -396,7 +408,7 @@ def _replace_ref(
 
 
 def render_report(report: PublishReport) -> list[str]:
-    """Human lines for ``bh hive publish-public``."""
+    """Human lines for the push leg of ``bh hive remote sync``."""
     rep = report.replace
     head = f"{report.hive}: public store -> {report.destination} ({report.remote})"
     if rep is None:
@@ -468,6 +480,7 @@ def _tail(res: Any, plan: PublishPlan) -> str:
 
 __all__ = [
     "DOLT_DATA_REF",
+    "DOLT_OWNED_REFS",
     "PUBLISH_PUBLIC_SCHEMA",
     "ROLLBACK_RULE",
     "PublishError",

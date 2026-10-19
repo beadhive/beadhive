@@ -6,6 +6,7 @@ refusal over another corpus) is proven in tests/test_two_store_e2e_int.py.
 
 from __future__ import annotations
 
+import json
 import subprocess
 
 import pytest
@@ -272,6 +273,11 @@ def test_replace_dry_run_names_everything_and_writes_nothing(ws, origin):
     assert {r for r, _ in rep.code_refs} == {"refs/heads/main", "refs/tags/v1"}
     assert "widpub" in rep.new_store and "rollback" in rep.rollback
     text = "\n".join(public_publish.render_report(report))
+    # never-restore (bh-l3zvc): no surface advises re-pushing the old ref
+    for surface in (text, rep.rollback, json.dumps(public_publish.payload(report))):
+        assert "NEVER restore the old SHA" in surface and "private archive" in surface
+        assert "restore the old SHA with a lease" not in surface
+        assert "git push --force-with-lease" not in surface
     assert before["refs/dolt/data"] in text and "refs/heads/main" in text
     assert _refs(bare) == before
     doc = public_publish.payload(report)
@@ -351,3 +357,16 @@ def test_plain_dry_run_names_the_replicas_current_ref(ws, origin):
     report = public_publish.publish_public(_entry(ws), eng=eng, dry_run=True, origin_url=str(bare))
     assert report.remote_sha == before["refs/dolt/data"] and eng.calls == []
     assert before["refs/dolt/data"] in "\n".join(public_publish.render_report(report))
+
+
+def test_dolt_owned_marker_branch_is_not_a_protected_code_ref():
+    refs = {
+        "refs/dolt/data": "a" * 40,
+        "refs/heads/main": "b" * 40,
+        "refs/heads/__dolt_remote_info__": "c" * 40,
+        "refs/tags/v1": "d" * 40,
+    }
+    assert public_publish._code_refs(refs) == (
+        ("refs/heads/main", "b" * 40),
+        ("refs/tags/v1", "d" * 40),
+    )
