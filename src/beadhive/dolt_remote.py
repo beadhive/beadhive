@@ -136,6 +136,9 @@ _FAMILIES: dict[RemoteFamily, RemoteCapabilities] = {
 #: and its retry, status and doctor (tests/test_hq_dolt_remotes_e2e.py::test_s3_leg_round_trip).
 #: Like plain ``s3://`` it needs server mode (:data:`S3_EMBEDDED`), and there the credentials
 #: must be in the dolt sql-server's environment — the server performs the transfer.
+#: Garage (bh-w235a, 2026-10-19) needed nothing beyond this family: the URL carries
+#: ``endpoint=http://…&path-style=true&region=garage`` and no other capability differs. See
+#: docs/TWO-STORES.md "Garage" for the operational recipe and its limits (no object versioning).
 S3_COMPATIBLE = RemoteCapabilities(
     RemoteFamily.S3,
     SupportLevel.IMPLEMENTED,
