@@ -990,7 +990,7 @@ def _data_store_engine(cfg) -> dict:
 
     probe = dolt_health.probe_shared_server() if server_mode_hives else None
     srv_host, port = dolt_health.server_endpoint()
-    return {
+    data = {
         "relevant": True,
         "endpoint": {"host": srv_host, "port": port},
         "server_mode_hives": server_mode_hives,
@@ -999,6 +999,17 @@ def _data_store_engine(cfg) -> dict:
         "mismatches": mismatches,
         "running": running,
     }
+    # bh-gaytj: opt-in (dolt.server_credentials) value-free check that the RUNNING server has
+    # the credentials it needs; absent from the payload when unconfigured.
+    from . import dolt_server_credentials
+
+    inspected = dolt_server_credentials.inspect(cfg)
+    if inspected.configured:
+        data["server_credentials"] = {
+            **inspected.as_dict(),
+            "lines": dolt_server_credentials.render_inspection(inspected),
+        }
+    return data
 
 
 def _render_store_engine(d: dict) -> None:
@@ -1020,6 +1031,8 @@ def _render_store_engine(d: dict) -> None:
     for m in d["mismatches"]:
         typer.echo(f"  ⚠ {m['prefix']}: {m['reason']}")
     _render_running_servers(d.get("running") or {})
+    for line in (d.get("server_credentials") or {}).get("lines", []):
+        typer.echo(f"  {line}")
 
 
 # A ZOMBIE ANSWERS THE PROBE ABOVE (bh-hqmcl). The reachability line is a fact about a PORT, and

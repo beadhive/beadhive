@@ -70,6 +70,44 @@ into the server:
   start with a message naming what is missing. A server that is already running keeps its
   environment: stop it, then let bh start it again.
 
+**Service-managed servers (systemd / launchd, `bh-gaytj`).** When the shared server is a service
+unit, bh never starts it, so the injection above never applies; the service manager must hand the
+credentials over. Still opt-in: set `dolt.server_credentials` (above), then have the unit render a
+fresh private file from fnox on every start. The entry point is
+`python -m beadhive.dolt_server_credentials`, not a `bh` verb (it stays out of the public command
+catalog); below it is written `CRED` for short, meaning the installed environment's
+`python -m beadhive.dolt_server_credentials`.
+
+- `CRED render --path FILE [--format systemd|shell]` resolves the profile exactly
+  as bh does, writes FILE mode 0600 (atomically, from creation) and prints only the variable
+  names. `systemd` writes `NAME="value"` lines for `EnvironmentFile=`; `shell` writes
+  `export NAME='value'` for a launchd wrapper to source. A missing or unresolvable credential
+  fails closed and writes nothing.
+- `CRED status [--env-file FILE] [--json]` (and the Store Engine section of
+  `bh doctor`, when `dolt.server_credentials` is set) reads the RUNNING server's environment and reports
+  per server pid whether it holds each needed variable, by name only. `missing` means the server
+  must be restarted; with `--env-file`, a differing value is flagged `rotated since start`.
+  Where the environment cannot be read (another user, no `/proc` as on macOS) it says `unknown`.
+
+Operator steps (applied by the operator with sudo; bh and agents never edit units or `/etc`).
+systemd, as a drop-in via `sudo systemctl edit beadhive-dolt-hive.service`:
+
+```ini
+[Service]
+RuntimeDirectory=beadhive-dolt-hive
+RuntimeDirectoryMode=0700
+EnvironmentFile=-%t/beadhive-dolt-hive/credentials.env
+ExecStartPre=<bh-python> -m beadhive.dolt_server_credentials render --path %t/beadhive-dolt-hive/credentials.env
+```
+
+then `sudo systemctl restart beadhive-dolt-hive.service` and confirm with
+`CRED status`. The service user must be the one that holds the fnox key. If your
+systemd reads `EnvironmentFile=` before `ExecStartPre=` finishes, run `render` once by hand
+before the first restart, or use `ExecStart=/bin/sh -c '. FILE && exec dolt sql-server ...'`
+with `--format shell`. launchd: make the plist's `ProgramArguments` a wrapper that runs
+`CRED render --path "$HOME/.beadhive/run/dolt.env" --format shell`, sources that
+file and `exec`s `dolt sql-server`, then `launchctl kickstart -k` the job.
+
 ## Local layout
 
 On a host that has bootstrapped the hive:
