@@ -56,6 +56,7 @@ print(json.dumps(sorted(name for name in sys.modules if name.startswith('beadhiv
 
 
 def test_lazy_entrypoint_preserves_the_complete_checked_command_tree() -> None:
+    from beadhive.adapters.cli.declarations import GROUP_DEFAULT_COMMANDS
     from beadhive.cli import app
 
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
@@ -73,6 +74,7 @@ def test_lazy_entrypoint_preserves_the_complete_checked_command_tree() -> None:
         for alias in projection["aliases"]
     )
     expected.update(app._bh_manifest_commands)
+    expected -= set(GROUP_DEFAULT_COMMANDS)  # a group callback, not a leaf
 
     assert _leaf_paths(get_command(app)) == expected
 

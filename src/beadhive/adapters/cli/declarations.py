@@ -71,6 +71,16 @@ TRANSPORT_MECHANICS: tuple[CliTransportMechanic, ...] = (
     ),
 )
 
+# A catalog operation whose CLI path is ALSO a group: the operation's handler is the group's
+# default callback (``bh hive remote [HIVE]... [--reconcile]`` stays callable after ``hive remote``
+# became a group so ``hive remote sync`` could exist). Its path is unchanged on the wire; the tree
+# adapter binds the callback instead of a leaf command.
+GROUP_DEFAULT_COMMANDS: Mapping[str, str] = MappingProxyType(
+    {
+        "hive remote": "legacy `hive remote [HIVE]...` is the default of the `hive remote` group",
+    }
+)
+
 # All 213 public leaves are eligible today.  The explicit empty set is still policy: adding an
 # exclusion requires a named path and rationale in the same review as its catalog change.
 PROJECTION_EXCLUSIONS: Mapping[str, str] = MappingProxyType({})
@@ -98,7 +108,7 @@ def command_declarations(
 def parent_declarations() -> tuple[CliParentDeclaration, ...]:
     """Return every catalog-derived group mount in stable path order."""
 
-    return tuple(
+    rows = [
         CliParentDeclaration(
             path=row["path"],
             declared_hidden=bool(row["declared_hidden"]),
@@ -106,7 +116,14 @@ def parent_declarations() -> tuple[CliParentDeclaration, ...]:
             alias_of=row["alias_of"],
         )
         for row in cli_parents()
+    ]
+    # A group-default operation's group is derived from the operation, not published as a
+    # separate wire parent (the wire parent list is positional and append-only).
+    rows.extend(
+        CliParentDeclaration(path=path, declared_hidden=False, panel=None, alias_of=None)
+        for path in GROUP_DEFAULT_COMMANDS
     )
+    return tuple(sorted(rows, key=lambda row: row.path))
 
 
 def _command(

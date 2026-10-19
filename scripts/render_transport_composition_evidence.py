@@ -141,6 +141,7 @@ def _observed_registration_sets() -> dict[str, frozenset[str]]:
     from typer.main import get_command
 
     from beadhive import cli, frame_bridge, host_daemon, mcp, operator_api
+    from beadhive.adapters.cli.declarations import GROUP_DEFAULT_COMMANDS
 
     def cli_inventory() -> frozenset[str]:
         found: set[str] = set()
@@ -149,6 +150,8 @@ def _observed_registration_sets() -> dict[str, frozenset[str]]:
             for name, child in command.commands.items():
                 child_path = (*path, name)
                 if getattr(child, "commands", None) is not None:
+                    if " ".join(child_path) in GROUP_DEFAULT_COMMANDS:
+                        found.add(" ".join(child_path))  # the group's default callback
                     walk(child, child_path)
                 else:
                     found.add(" ".join(child_path))

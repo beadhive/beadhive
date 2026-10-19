@@ -9,7 +9,7 @@ this bead; see [Superseded beads](#superseded-beads)).
 ## What it does
 
 ```sh
-bh hive project-issues <hive> [--dry-run] [--json]
+bh hive remote sync <hive> --store <prefix> --pull-only [--dry-run] [--json]   # project-issues is the deprecated alias
 ```
 
 pulls the hive's GitHub Issues into the hive's configured **public** bead store. It runs

@@ -162,3 +162,192 @@ def test_a_registration_conflict_stops_before_the_push(ws):
     with pytest.raises(PublishError, match="could not register"):
         public_publish.publish_public(_entry(ws), eng=eng, origin_url="/o.git")
     assert [call[0] for call in eng.calls] == ["add"]
+
+
+# --- guarded REPLACE of refs/dolt/data (bh-31rf7): real bare git remotes, no network ---------
+
+
+def _git(cwd, *args):
+    env = {
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.com",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.com",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_SYSTEM": "/dev/null",
+        "PATH": __import__("os").environ["PATH"],
+    }
+    out = subprocess.run(
+        ["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True, env=env
+    )
+    return out.stdout.strip()
+
+
+def _refs(bare):
+    return dict(
+        line.split(" ", 1)[::-1]
+        for line in _git(bare, "for-each-ref", "--format=%(objectname) %(refname)").splitlines()
+    )
+
+
+@pytest.fixture
+def origin(tmp_path):
+    """A bare code origin: a branch, a tag and a legacy, unrelated refs/dolt/data history."""
+    bare = tmp_path / "origin.git"
+    seed = tmp_path / "seed"
+    _git(tmp_path, "init", "-q", "--bare", str(bare))
+    _git(tmp_path, "init", "-q", "-b", "main", str(seed))
+    (seed / "code.txt").write_text("code")
+    _git(seed, "add", "-A")
+    _git(seed, "commit", "-q", "-m", "code")
+    _git(seed, "tag", "v1")
+    _git(seed, "push", "-q", str(bare), "main", "v1")
+    _git(seed, "checkout", "-q", "--orphan", "legacy")
+    (seed / "code.txt").write_text("legacy dolt corpus")
+    _git(seed, "commit", "-q", "-am", "legacy")
+    _git(seed, "push", "-q", str(bare), "HEAD:refs/dolt/data")
+    # the unrelated public history that the replacement will force into place
+    _git(seed, "checkout", "-q", "--orphan", "public")
+    (seed / "code.txt").write_text("audited public store")
+    _git(seed, "commit", "-q", "-am", "public")
+    return bare, seed
+
+
+class ForcingEngine(FakeEngine):
+    """Stands in for `bd dolt push --force`: forces the public history over refs/dolt/data."""
+
+    def __init__(self, bare, seed, **kw):
+        super().__init__(**kw)
+        self.bare, self.seed = bare, seed
+
+    def push_state(self, cwd, actor="", message="", *, remote="", force=False, extra_env=None):
+        res = super().push_state(
+            cwd, actor, message, remote=remote, force=force, extra_env=extra_env
+        )
+        if res.returncode == 0:
+            flag = ["--force"] if force else []
+            moved = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(self.seed),
+                    "push",
+                    "-q",
+                    *flag,
+                    str(self.bare),
+                    "HEAD:refs/dolt/data",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            return _done(moved.returncode, moved.stderr)
+        return res
+
+
+def _replace(ws, bare, eng, **kw):
+    kw.setdefault("lease", "")
+    kw.setdefault("confirmed", False)
+    return public_publish.publish_public(_entry(ws), eng=eng, origin_url=str(bare), **kw)
+
+
+def test_default_mode_still_refuses_a_non_fast_forward(ws, origin):
+    bare, seed = origin
+    before = _refs(bare)
+    eng = ForcingEngine(bare, seed)
+    with pytest.raises(PublishError, match="non-fast-forward|failed"):
+        public_publish.publish_public(_entry(ws), eng=eng, origin_url=str(bare))
+    assert _refs(bare) == before
+    assert all(not call[3] for call in eng.calls if call[0] == "push")  # never forced
+
+
+def test_replace_dry_run_names_everything_and_writes_nothing(ws, origin):
+    bare, seed = origin
+    before = _refs(bare)
+    eng = ForcingEngine(bare, seed)
+    report = _replace(ws, bare, eng, dry_run=True, lease=before["refs/dolt/data"])
+    rep = report.replace
+    assert report.dry_run and not report.pushed and eng.calls == []
+    assert rep.ref == "refs/dolt/data" and rep.old_sha == before["refs/dolt/data"] and rep.matches
+    assert {r for r, _ in rep.code_refs} == {"refs/heads/main", "refs/tags/v1"}
+    assert "widpub" in rep.new_store and "rollback" in rep.rollback
+    text = "\n".join(public_publish.render_report(report))
+    assert before["refs/dolt/data"] in text and "refs/heads/main" in text
+    assert _refs(bare) == before
+    doc = public_publish.payload(report)
+    assert doc["command"] == "hive remote sync" and doc["replace"]["cas_match"] is True
+
+
+def test_cas_mismatch_refuses_and_changes_nothing(ws, origin):
+    bare, seed = origin
+    before = _refs(bare)
+    eng = ForcingEngine(bare, seed)
+    with pytest.raises(PublishError, match="compare-and-swap refused"):
+        _replace(ws, bare, eng, lease="0" * 40, confirmed=True)
+    assert eng.calls == [] and _refs(bare) == before
+
+
+def test_replace_needs_confirmation_and_an_expected_sha(ws, origin):
+    bare, seed = origin
+    before = _refs(bare)
+    eng = ForcingEngine(bare, seed)
+    with pytest.raises(PublishError, match="--confirm"):
+        _replace(ws, bare, eng, lease=before["refs/dolt/data"])
+    with pytest.raises(PublishError, match="only applies with --force-with-lease"):
+        _replace(ws, bare, eng, confirmed=True)
+    with pytest.raises(PublishError, match="full 40"):
+        _replace(ws, bare, eng, lease="abc", confirmed=True)
+    assert eng.calls == [] and _refs(bare) == before
+
+
+def test_replace_moves_only_the_dolt_ref(ws, origin):
+    bare, seed = origin
+    before = _refs(bare)
+    eng = ForcingEngine(bare, seed)
+    report = _replace(ws, bare, eng, lease=before["refs/dolt/data"], confirmed=True)
+    after = _refs(bare)
+    assert report.pushed and report.new_sha == after["refs/dolt/data"] != before["refs/dolt/data"]
+    assert {k: v for k, v in after.items() if k != "refs/dolt/data"} == {
+        k: v for k, v in before.items() if k != "refs/dolt/data"
+    }  # branches and tags untouched; old data not parked under another ref
+    assert [c[3] for c in eng.calls if c[0] == "push"] == [True]
+
+
+def test_replace_is_refused_while_the_internal_store_uses_the_code_origin(ws, origin):
+    bare, seed = origin
+    before = _refs(bare)
+    entry = _entry(ws)
+    entry["dolt_remote"] = {"name": "widget-private", "url": f"git+file://{bare}"}
+    eng = ForcingEngine(bare, seed)
+    with pytest.raises(PublishError, match="internal store"):
+        public_publish.publish_public(
+            entry,
+            eng=eng,
+            origin_url=str(bare),
+            lease=before["refs/dolt/data"],
+            confirmed=True,
+        )
+    assert eng.calls == [] and _refs(bare) == before
+
+
+def test_replace_refuses_when_there_is_no_ref_to_replace(ws, tmp_path):
+    bare = tmp_path / "empty.git"
+    _git(tmp_path, "init", "-q", "--bare", str(bare))
+    with pytest.raises(PublishError, match="nothing"):
+        _replace(ws, bare, FakeEngine(), dry_run=True, lease="a" * 40)
+
+
+def test_confirm_alone_is_refused_without_a_lease(ws):
+    with pytest.raises(PublishError, match="only applies with --force-with-lease"):
+        public_publish.publish_public(
+            _entry(ws), eng=FakeEngine(), origin_url="/o.git", confirmed=True
+        )
+
+
+def test_plain_dry_run_names_the_replicas_current_ref(ws, origin):
+    bare, seed = origin
+    before = _refs(bare)
+    eng = ForcingEngine(bare, seed)
+    report = public_publish.publish_public(_entry(ws), eng=eng, dry_run=True, origin_url=str(bare))
+    assert report.remote_sha == before["refs/dolt/data"] and eng.calls == []
+    assert before["refs/dolt/data"] in "\n".join(public_publish.render_report(report))

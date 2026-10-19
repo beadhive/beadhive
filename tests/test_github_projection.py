@@ -376,3 +376,112 @@ def test_cli_exits_nonzero_when_identity_is_broken(cli_fleet):
 def test_store_target_is_resolved_public(ws):
     target = store_target.resolve_store(_entry(ws), "public")
     assert github_projection.resolve_projection(_entry(ws)).target == target
+
+
+# --- `bh hive remote sync --store` (bh-31rf7): pull the tracker, push the replica ------------
+
+
+@pytest.fixture
+def pushes(monkeypatch):
+    """Record publish_public calls instead of touching bd/Dolt/Git."""
+    from beadhive import public_publish
+
+    calls: list[dict] = []
+
+    def fake(entry, **kw):
+        calls.append(kw)
+        return public_publish.PublishReport(
+            hive="github/acme/widget",
+            remote="git-origin",
+            destination="https://github.com/acme/widget.git",
+            dry_run=bool(kw.get("dry_run")),
+            pushed=not kw.get("dry_run"),
+        )
+
+    monkeypatch.setattr(public_publish, "publish_public", fake)
+    return calls
+
+
+def test_remote_sync_pulls_then_pushes_fast_forward_only(cli_fleet, pushes):
+    result = CliRunner().invoke(
+        cli.app, ["hive", "remote", "sync", "wid", "--store", "widpub", "--json"]
+    )
+    assert result.exit_code == 0, result.output
+    doc = json.loads(result.stdout)
+    assert doc["command"] == "hive remote sync" and doc["store"] == "widpub"
+    assert doc["pull"]["created"] == 2 and doc["push"]["pushed"] is True
+    assert len(pushes) == 1 and not pushes[0].get("lease")  # never a replacement
+
+
+def test_remote_sync_pull_only_pushes_nothing(cli_fleet, pushes):
+    result = CliRunner().invoke(
+        cli.app, ["hive", "remote", "sync", "wid", "--store", "public", "--pull-only"]
+    )
+    assert result.exit_code == 0, result.output
+    assert pushes == []
+
+
+def test_remote_sync_does_not_push_after_a_failed_pull(cli_fleet, pushes):
+    rows = _rows("list-after-pull-1.json")
+    cli_fleet.rows = [*rows, dict(rows[0], id="widpub-dup")]
+    result = CliRunner().invoke(cli.app, ["hive", "remote", "sync", "wid", "--store", "widpub"])
+    assert result.exit_code == 1 and pushes == []
+
+
+def test_remote_sync_passes_the_lease_and_skips_the_pull(cli_fleet, pushes):
+    sha = "a" * 40
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "hive",
+            "remote",
+            "sync",
+            "wid",
+            "--store",
+            "widpub",
+            "--force-with-lease",
+            sha,
+            "--confirm",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert pushes[0]["lease"] == sha and pushes[0]["confirmed"] is True
+    assert cli_fleet.calls == []  # no pull on the replacement direction
+
+
+def test_remote_sync_refuses_an_unknown_or_internal_store(cli_fleet, pushes):
+    for store in ("wid", "nope"):
+        result = CliRunner().invoke(cli.app, ["hive", "remote", "sync", "wid", "--store", store])
+        assert result.exit_code == 1 and "no tracker store" in result.output
+    assert pushes == [] and cli_fleet.calls == []
+
+
+def test_remote_sync_has_no_bare_force_route(cli_fleet, pushes):
+    result = CliRunner().invoke(
+        cli.app, ["hive", "remote", "sync", "wid", "--store", "widpub", "--force"]
+    )
+    assert result.exit_code != 0 and pushes == []
+
+
+def test_project_issues_is_a_deprecated_alias_that_still_works(cli_fleet):
+    result = CliRunner().invoke(cli.app, ["hive", "project-issues", "wid"])
+    assert result.exit_code == 0 and "deprecated" in result.output
+
+
+def test_legacy_hive_remote_still_takes_hives_and_flags_without_the_subcommand(
+    cli_fleet, monkeypatch
+):
+    from beadhive import dolt_remote_reconcile
+
+    seen = {}
+
+    def fake(hives, *, dry_run, cfg):
+        seen.update(hives=hives, dry_run=dry_run)
+        return []
+
+    monkeypatch.setattr(dolt_remote_reconcile, "reconcile", fake)
+    result = CliRunner().invoke(cli.app, ["hive", "remote", "--all", "--reconcile", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert seen == {"hives": None, "dry_run": True}
+    result = CliRunner().invoke(cli.app, ["hive", "remote", "wid", "--json"])
+    assert result.exit_code == 0 and seen["hives"] == ["wid"]
