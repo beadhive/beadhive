@@ -1137,10 +1137,16 @@ def _bootstrap_from_hq_remote(ctx: Ctx, descriptor, env: dict) -> None:
         "--skip-agents",
         "--skip-hooks",
         "--init-if-missing",
+        # bd init auto-detects the Git origin and CLONES its refs/dolt/data when present, so a
+        # bare init could "seed" the HQ remote with the code origin's (public or legacy) corpus
+        # (bh-wy2ia). Naming the verified-empty descriptor URL makes bd consult it instead of
+        # the origin: empty remote -> fresh mint, the origin ref is never read.
+        "--remote",
+        descriptor.url,
     ]
     if not ctx.furnish:
         bd_init.insert(4, "--setup-exclude")
-    _run_bd_mint(bd_init + ["--non-interactive"], ctx, env=env)
+    _run_bd_mint(bd_init + ["--non-interactive"], ctx, env=dict(env, **creds.env))
     if not ctx.furnish and hive._relocate_bd_gitignore(ctx.base):
         # Zero-footprint, as on the no-HQ mint path: bd's stray root .gitignore would leave the
         # checkout dirty, and a dirty checkout refuses `bh hive sync remotes --push`.
@@ -1160,6 +1166,11 @@ def _bootstrap_from_hq_remote(ctx: Ctx, descriptor, env: dict) -> None:
             _hq_remote_failed(ctx, "register", f"{shown}: could not register", cleanup=True)
     else:
         _register_hq_remote(ctx, eng, descriptor, target, creds, shown)
+    if descriptor.name != "origin":
+        # `bd init --remote` registers the descriptor URL under bd's own name `origin`.
+        bootstrap_origin = eng.get_remote(ctx.base, "origin")
+        if bootstrap_origin and dolt_remote.same_remote(bootstrap_origin.url, descriptor.url):
+            eng.remove_remote(ctx.base, "origin")
     _drop_code_origin_registration(ctx, eng, descriptor)
     pushed = eng.push_state(
         ctx.base,
@@ -1194,16 +1205,16 @@ def _exclude_clone_footprint(ctx: Ctx) -> None:
 
 
 def _drop_code_origin_registration(ctx: Ctx, eng, descriptor) -> None:
-    """Remove bd's auto-wired ``origin`` Git registration from a PARTITIONED hive's internal store.
+    """Remove bd's auto-wired ``origin`` Git registration from a HQ-managed internal store.
 
     `bd init` wires the checkout's Git origin as the Dolt remote ``origin`` when it can. When HQ
-    declares a differently named remote for the internal store of a hive with a public store,
-    that registration would let a bare `bd dolt push` publish the private corpus on the code
-    origin's refs/dolt/data (two-store ADR section 3: the internal remote is never git-origin),
-    so it is dropped. A one-store hive is left exactly as before."""
+    declares a differently named remote for the internal store, that registration would let a
+    bare `bd dolt push` publish the corpus on the code origin's refs/dolt/data (two-store ADR
+    section 3: the internal remote is never git-origin), so it is dropped, for a one-store hive
+    as well as a partitioned one (bh-wy2ia). A descriptor named ``origin`` is left alone."""
     from . import dolt_remote
 
-    if descriptor.name == "origin" or _partitioned_entry(ctx) is None:
+    if descriptor.name == "origin":
         return
     wired = eng.get_remote(ctx.base, "origin")
     if wired is None or dolt_remote.classify(wired.url).family != dolt_remote.RemoteFamily.GIT:
@@ -1213,8 +1224,7 @@ def _drop_code_origin_registration(ctx: Ctx, eng, descriptor) -> None:
         _hq_remote_failed(
             ctx,
             "register",
-            "could not remove bd's auto-wired `origin` (the code origin) from the private "
-            "internal store",
+            "could not remove bd's auto-wired `origin` (the code origin) from the internal store",
             cleanup=True,
         )
     typer.echo("• beads: dropped the code origin's auto-wired Dolt remote from the internal store")

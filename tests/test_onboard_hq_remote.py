@@ -369,11 +369,18 @@ def test_partitioned_hive_drops_bds_auto_wired_code_origin(tmp_path, capsys):
     assert "dropped the code origin" in capsys.readouterr().out
 
 
+def test_one_store_hive_also_drops_bds_auto_wired_code_origin(tmp_path):
+    # bh-wy2ia: a differently named descriptor must not leave the code origin as `origin`.
+    cfg = _cfg({"name": "widget-private", "url": URL})
+    fake = FakeEngine(remotes={"origin": "git+file:///srv/w.git", "widget-private": URL})
+    onboard._drop_code_origin_registration(_ctx(tmp_path, cfg), fake, _descriptor(cfg))
+    assert fake.calls == [("remove", "origin")]
+    assert fake.remotes == {"widget-private": URL}
+
+
 @pytest.mark.parametrize(
     ("cfg", "remotes"),
     [
-        # A one-store hive keeps today's behaviour.
-        (_cfg({"name": "widget-private", "url": URL}), {"origin": "git+file:///srv/w.git"}),
         # The HQ descriptor IS `origin`: nothing auto-wired to drop.
         (_partitioned_cfg("origin"), {"origin": URL}),
         # A non-Git `origin` is not the code origin's refs/dolt/data.
