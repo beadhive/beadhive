@@ -251,9 +251,12 @@ the preferred long-term surface and is raised as a decision for the operator on 
   work against a shared server ([Bucket Federation Quickstart][bucket-federation], "Auth works
   in the shell"). **Measured otherwise for `s3://` on the pinned bd 1.3.0** (evidence item 13):
   in server mode the dolt sql-server performs the transfer and sees only its own environment,
-  so credentials set on the bd child alone fail with an AWS credential error. Ambient
-  credentials work when the shared server was started with them; the `aws-profile` and `fnox`
-  sources do not reach a running server yet (`bh-pphik`).
+  so credentials set on the bd child alone fail with an AWS credential error. **Resolution
+  (`bh-pphik`, operator decision 2026-10-19):** the host opts in with
+  `dolt.server_credentials: <label>`; when bh starts the shared sql-server it resolves that
+  profile (`fnox`, `aws-profile`, ...) and injects the result into the `bd dolt start` child
+  only. One credential per host, scoped to that server, never persisted, off by default. A
+  server already running keeps its environment and must be restarted to pick up a change.
 - Before any remote mutation, bh checks that a credential source exists for an object-store
   family and fails with the *name* of what is missing, never a value.
 - Every rendered URL passes through one redaction function: user info is replaced and any

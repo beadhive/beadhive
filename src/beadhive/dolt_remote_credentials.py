@@ -105,10 +105,23 @@ def resolve(
 ) -> CredentialResolution:
     """Resolve credentials for ``target`` (whose descriptor names ``label``) on this host."""
 
-    environ = os.environ if environ is None else environ
-    home = Path.home() if home is None else home
     if target.capabilities.credentials != "aws":
         return CredentialResolution(True, "not-required")
+    return resolve_label(label, cfg, environ=environ, home=home, broker=broker)
+
+
+def resolve_label(
+    label: str,
+    cfg,
+    *,
+    environ: Mapping[str, str] | None = None,
+    home: Path | None = None,
+    broker=None,
+) -> CredentialResolution:
+    """Resolve the AWS credential source behind ``label`` (empty = ambient) on this host."""
+
+    environ = os.environ if environ is None else environ
+    home = Path.home() if home is None else home
     profile = _profile_config(cfg, label) if label else None
     if label and profile is None:
         return CredentialResolution(
@@ -162,3 +175,25 @@ def _fnox(profile, label: str, broker) -> CredentialResolution:
                 False, f"fnox:{label}", f"fnox credential {field_name} for '{label}' unavailable"
             )
     return CredentialResolution(True, f"fnox:{label}", env=env)
+
+
+def server_env(
+    cfg,
+    *,
+    environ: Mapping[str, str] | None = None,
+    home: Path | None = None,
+    broker=None,
+) -> CredentialResolution:
+    """Environment to inject into the shared dolt sql-server when bh starts it (bh-pphik).
+
+    In server mode the sql-server performs the ``s3://`` transfer and sees only its own start-up
+    environment, so per-call credentials on the bd child never reach it. When
+    ``dolt.server_credentials`` names a profile, resolve it once here and hand the result to the
+    ``bd dolt start`` child only. Unset (the default) resolves to an empty environment: bh adds
+    nothing and behaviour is unchanged. Same fail-closed, value-free messages as :func:`resolve`;
+    a source that needs no injection (ambient, instance-role) yields an empty environment."""
+
+    label = str(((cfg or {}).get("dolt") or {}).get("server_credentials") or "")
+    if not label:
+        return CredentialResolution(True, "not-configured")
+    return resolve_label(label, cfg, environ=environ, home=home, broker=broker)

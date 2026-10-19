@@ -23,6 +23,9 @@ the way it does:
   ``get credentials: failed to refresh cached credentials, no EC2 IMDS role found``. The
   credentials must be in the server's environment when it starts — :meth:`MotoS3.server_env`
   (bh-pphik).
+  Either the process environment carries them (ambient, ``server_env``), or bh injects a
+  configured ``dolt.server_credentials`` source when it starts the server (bh-pphik; the
+  non-ambient proof in ``test_hq_dolt_remotes_e2e``).
 
 :meth:`MotoS3.pause` / :meth:`MotoS3.resume` stop and restart the HTTP listener on the same port;
 moto keeps its state in-process, so the bucket's objects survive — an honest "endpoint went

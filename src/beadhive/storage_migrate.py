@@ -149,6 +149,7 @@ import contextlib
 import json
 import os
 import shutil
+import subprocess
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -526,8 +527,20 @@ def _bootstrap_shared_server(hive_dir: Path, actor: str) -> MechanismOutcome:
     still failed that way."""
     env = {SHARED_SERVER_ENV_VAR: "1"}
     if not dolt_health.probe_shared_server().reachable:
+        from . import dolt_remote_credentials
+
+        creds = dolt_remote_credentials.server_env(config.load())
+        if not creds.ok:
+            return MechanismOutcome(
+                result=subprocess.CompletedProcess([], 1, "", creds.missing),
+                command_label="bd dolt start --global",
+            )
         started = _bd(
-            ["dolt", "start", "--global"], hive_dir, actor=actor, timeout=BD_TIMEOUT, env=env
+            ["dolt", "start", "--global"],
+            hive_dir,
+            actor=actor,
+            timeout=BD_TIMEOUT,
+            env={**env, **creds.env},
         )
         if started.returncode:
             return MechanismOutcome(
