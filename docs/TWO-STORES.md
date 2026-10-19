@@ -108,6 +108,47 @@ with `--format shell`. launchd: make the plist's `ProgramArguments` a wrapper th
 `CRED render --path "$HOME/.beadhive/run/dolt.env" --format shell`, sources that
 file and `exec`s `dolt sql-server`, then `launchctl kickstart -k` the job.
 
+## Garage (S3-compatible, LAN) — proven bh-w235a
+
+The private internal store may live on [Garage](https://garagehq.deuxfleurs.fr/) rather than AWS
+S3. Proven 2026-10-19 on the pinned Dolt 2.3.5 / bd 1.3.0, server mode, against Garage on
+pve-03 (CT 121). The shared Dolt sql-server runs on the factory, HQ SQL on xeno-code and Garage
+on pve-03, so HQ SQL and the object store are separate hosts. The `S3_COMPATIBLE` family needed no Garage-specific
+setting.
+
+- **URL form.** `s3://<bucket>/<unique-path>?endpoint=http://<garage-host>:3900&path-style=true&region=garage`.
+  `path-style=true` is required (bucket-in-path addressing) and `region` must equal Garage's
+  configured region (default `garage`).
+- **Plain http, LAN only.** The endpoint is `http://` on the lab LAN; there is no TLS. SigV4
+  signs each request, so the secret key is never sent, but the access key ID, request metadata
+  and object data travel unencrypted to a LAN peer. Do not use this form across an untrusted
+  network. If TLS is added later, the Dolt sql-server must trust the CA (`AWS_CA_BUNDLE` in the
+  server's start-up environment); that path is not exercised here.
+- **Credentials.** A per-host Garage key, scoped by Garage to the bucket(s) (read+write, no
+  owner/create), delivered with the fnox injection above: `dolt.remote_credentials.<label>`
+  (`source: fnox`) plus `dolt.server_credentials: <label>`; on a service-managed server the
+  `ExecStartPre` render of `bh-gaytj`. `CRED status` must show both variables on the shared
+  server's pid. The `bh` client also needs the source (descriptor `credentials: <label>`),
+  because bh preflights credentials before it calls bd; without it the sync stops with
+  "no AWS credentials found on this host". Every host that runs bh against this remote (the
+  factory and the Mac) needs its own `dolt.remote_credentials.<label>` profile, because the
+  client preflight runs per host.
+- **Operational notes.** `bd bootstrap` (fresh clone) of a database that does not yet exist
+  waits about 70 s for "possible transient restart" retries (bh-mi40l). Do not set
+  `BEADS_DOLT_SHARED_SERVER=1` for a one-off clone on a busy host: bootstrap asks for the
+  exclusive shared-server gate and fails while any other bd runs; pass the host and port instead.
+  A push to an unreachable endpoint fails loudly after about 100 s and lands nothing.
+- **Rollback.** Garage has **no object versioning**, so an object store cannot be rolled back
+  by restoring an older object version. The rollback story is restore-tested native Dolt
+  backups (ksmt0.4) plus the nightly PBS snapshot of the Garage container (03:45
+  America/Los_Angeles; rootfs, metadata and object data). The restore test of that snapshot is
+  still pending (`bh-y8sut`) and must pass before the private store is cut over.
+- **Scratch verification.** Prove a new Garage deployment against a scratch bucket and a unique
+  path, never the production bucket: register, `bh hive sync remotes --push`, clone into a fresh
+  database, compare `bd history`, break the endpoint and retry, then `bh hive remote` and
+  `bh doctor`. A dropped scratch database leaves a copy under the server's
+  `.dolt_dropped_databases` (`bh-2hvmd`).
+
 ## Local layout
 
 On a host that has bootstrapped the hive:
