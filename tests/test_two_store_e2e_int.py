@@ -628,6 +628,32 @@ def test_accidental_public_export_is_refused_without_overwriting_anything(world,
     assert _snapshot(world, host) == before
 
 
+def test_seeding_never_reads_the_code_origins_legacy_corpus(world):
+    """bh-wy2ia: with a legacy corpus already on the code origin's refs/dolt/data, seeding the
+    EMPTY internal remote mints a FRESH store (bd init must not auto-clone the origin) and
+    leaves the origin ref untouched."""
+    legacy = world.tmp / "legacy"
+    git("clone", "-q", str(world.origin), str(legacy))
+    env = embedded_env()
+    init = ["bd", "init", "--prefix", "widget", "--quiet", "--skip-hooks", "--skip-agents"]
+    assert run(init, cwd=str(legacy), check=False, capture=True, env=env).returncode == 0
+    _bd("q", "LEGACY internal plan", cwd=legacy, env=env)
+    _bd("dolt", "push", cwd=legacy, env=env)
+    legacy_ref = _origin_dolt_ref(world.origin)
+    assert legacy_ref
+
+    host = world.host("solo")
+    _seed_first_host(world, host)
+
+    assert _titles(host.checkout) == set()  # fresh, not the legacy corpus
+    assert _origin_dolt_ref(world.origin) == legacy_ref
+    assert _remotes(host.checkout) == {"widget-private": world.internal_url}
+    assert world.s3.keys("internal/github/acme/widget")
+    _create(host.checkout, PRIVATE_TITLE)
+    assert _titles(host.checkout) == {PRIVATE_TITLE}
+    assert _origin_dolt_ref(world.origin) == legacy_ref
+
+
 def test_store_collisions_are_refused_before_any_store_exists(world):
     host = world.host("solo")
     other = {

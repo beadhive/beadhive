@@ -96,8 +96,12 @@ skipped when its store already exists, so re-running onboarding is the retry.
 Notes:
 
 - A failed clone is never taken to mean "empty"; seed only a remote you have verified empty.
-  Seed **before** anything has published to the code origin's `refs/dolt/data`: bd's own
-  `bd init` auto-clones that ref when it exists (`bh-wy2ia`).
+  A seed never reads the code origin: it runs `bd init --remote <descriptor url>`, so bd
+  consults the verified-empty HQ remote instead of auto-cloning the origin's `refs/dolt/data`
+  (`bh-wy2ia`). The seeded store is fresh even when a legacy or public corpus already sits on
+  the origin ref, and that ref is left untouched. bd's auto-wired `origin` registration (the
+  code origin, or the descriptor URL under bd's own name) is removed whenever the descriptor
+  has a different name, for one-store hives too, so a bare `bd dolt push` targets the HQ remote.
 - A server-mode clone first waits about 70 s for its not-yet-existing database
   (bd 1.3.0 retries 10 + 20 + 40 s, `bh-mi40l`). That wait is expected, not a hang.
 - The public store is always minted fresh on a host today; a second-host clone of the public
