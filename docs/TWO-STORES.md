@@ -200,11 +200,20 @@ Nothing moves between stores implicitly. Three explicit operations, each touchin
    ref no longer equals the lease, if the replica has no such ref, or if the internal store
    still uses the code origin as its remote. It does not pull, and it moves only
    `refs/dolt/data`: branches and tags are read before and after (a change is reported as an
-   error), and the old data is **not** parked under another ref. Rollback is a lease on the new
-   SHA (`git push --force-with-lease=refs/dolt/data:<new> <origin> <old>:refs/dolt/data`) and
-   only works while the destination still holds the old objects — keep your own copy of the old
-   data first. The check and the push are two steps (Dolt performs the transfer), so the lease
-   is re-read immediately before the push, not held atomically by the server.
+   error), and the old data is **not** parked under another ref. There is **no rollback by
+   restoring the old SHA**: that ref held the private corpus, and re-pushing it (even with a
+   lease) republishes it. Recover from the verified private archive instead (re-run the replace
+   from the audited tracker store) or remove the ref.
+
+   **CAS race window (runbook note for `bh-l3zvc.5`).** The lease is not atomic on the server:
+   the ref is read with `git ls-remote`, re-read immediately before the one forced push, and
+   Dolt then performs the transfer. A writer that moves `refs/dolt/data` between that last
+   read and the push is overwritten without notice. The window is small but real, so the
+   runbook freezes every other writer of the code origin's `refs/dolt/data` (old-corpus
+   pushers, `bd dolt push`, sync daemons) for the replacement, then re-verifies freeze-free:
+   `git ls-remote` shows the expected new SHA, branches and tags are unchanged, no extra ref
+   exists, and a fresh `git clone` + `bd bootstrap` sees only the public store's beads. The
+   real-bd/Dolt proof is `tests/test_two_store_e2e_int.py::test_guarded_replace_of_a_legacy_dolt_ref`.
 
    `bh hive remote [HIVE]... [--reconcile]` (the registration compare) is unchanged: `remote`
    is now a group whose default is that command.

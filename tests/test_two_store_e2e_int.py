@@ -699,3 +699,145 @@ def test_store_collisions_are_refused_before_any_store_exists(world):
     assert not (host.checkout / ".beads").exists()
     assert not (host.checkout / "public").exists()
     assert world.s3.keys() == [] and _origin_dolt_ref(world.origin) == ""
+
+
+# --------------------------------------------------------------------------------------------
+# the guarded replacement of a legacy refs/dolt/data, against real bd and Dolt (bh-rgd4a)
+# --------------------------------------------------------------------------------------------
+
+HIVE = "github/acme/widget"
+LEGACY_TITLE = "LEGACY private corpus plan"
+
+
+def _origin_refs(origin: Path) -> dict[str, str]:
+    out = git("ls-remote", str(origin), cwd=origin).stdout
+    return {line.split("\t")[1]: line.split("\t")[0] for line in out.splitlines() if line}
+
+
+MARKER = "refs/heads/__dolt_remote_info__"  # Dolt's own blobstore marker branch
+
+
+def _code_refs(refs: dict[str, str]) -> dict[str, str]:
+    return {
+        r: s for r, s in refs.items() if r.startswith(("refs/heads/", "refs/tags/")) and r != MARKER
+    }
+
+
+def _marker_note(origin: Path) -> str:
+    """The marker branch's DOLT_REMOTE.md: Dolt rewrites it (head, timestamp) on every push."""
+    return git("show", f"{MARKER}:DOLT_REMOTE.md", cwd=origin).stdout
+
+
+def _dolt_commits(cwd, env=None) -> set[str]:
+    """Every Dolt commit hash `bd history` reports for any bead in the store at ``cwd``."""
+    out: set[str] = set()
+    for bead in _ids(cwd, env):
+        res = _bd("history", bead, "--json", cwd=cwd, env=env)
+        out |= {row["CommitHash"] for row in json.loads(res.stdout or "[]")}
+    return out
+
+
+def _sync_args(*extra: str) -> tuple[str, ...]:
+    return ("hive", "remote", "sync", HIVE, "--store", "widpub", *extra)
+
+
+def test_guarded_replace_of_a_legacy_dolt_ref(world, github):
+    """The one-time replacement bh-l3zvc.5 will run, rehearsed on a local bare remote with the
+    real pinned bd and Dolt: a legacy corpus on refs/dolt/data is replaced by the fresh public
+    store, compare-and-swap guarded, moving nothing else. Never the real origin."""
+    world.monkeypatch.setenv("GITHUB_TOKEN", TOKEN)  # the offline stub; never a real token
+    host = world.host("solo")
+    _seed_first_host(world, host)
+    private = _create(host.checkout, PRIVATE_TITLE)
+    assert _pull(host.entry).created == 2
+
+    # A legacy corpus (a private bead with history) on the code origin's refs/dolt/data, next to
+    # extra branches and tags. Seeded after the host: bd init would otherwise auto-clone it.
+    legacy = world.tmp / "legacy"
+    git("clone", "-q", str(world.origin), str(legacy))
+    git("config", "user.email", "t@t.dev", cwd=legacy)
+    git("config", "user.name", "T", cwd=legacy)
+    git("branch", "release", cwd=legacy)
+    git("tag", "v1", cwd=legacy)
+    git("tag", "-a", "-m", "annotated", "v2", cwd=legacy)
+    git("push", "-q", "origin", "release", "v1", "v2", cwd=legacy)
+    env = embedded_env()
+    init = ["bd", "init", "--prefix", "widget", "--quiet", "--skip-hooks", "--skip-agents"]
+    assert run(init, cwd=str(legacy), check=False, capture=True, env=env).returncode == 0
+    legacy_id = _bd("q", LEGACY_TITLE, cwd=legacy, env=env).stdout.strip()
+    _bd("update", legacy_id, "--notes", "legacy history", cwd=legacy, env=env)
+    _bd("dolt", "push", cwd=legacy, env=env)
+    legacy_commits = _dolt_commits(legacy, env)
+    assert len(legacy_commits) >= 2
+    before = _origin_refs(world.origin)
+    old_sha = before["refs/dolt/data"]
+    assert {"refs/heads/main", "refs/heads/release", "refs/tags/v1", "refs/tags/v2"} <= set(before)
+    assert _titles(_ordinary_public_clone(world, "legacy-clone")) == {LEGACY_TITLE}
+    code_refs = _code_refs(before)
+    snapshot = _snapshot(world, host)
+
+    # A plain fast-forward sync is refused by the legacy history and keeps it.
+    code, out = _invoke(*_sync_args("--pull-only"))
+    assert code == 0, out
+    with pytest.raises(public_publish.PublishError, match="nothing was forced"):
+        public_publish.publish_public(host.entry)
+    assert _origin_refs(world.origin) == before
+
+    # The dry run names the right old SHA, the new store, the protected refs and the NEVER
+    # RESTORE recovery rule -- and writes nothing.
+    code, out = _invoke(*_sync_args("--dry-run", "--force-with-lease", old_sha))
+    assert code == 0, out
+    assert old_sha in out and "(matches --force-with-lease)" in out and "widpub" in out
+    assert "refs/tags/v2" in out and "refs/heads/release" in out
+    assert "NEVER restore the old SHA" in out and "verified private archive" in out
+    assert "restore the old SHA with a lease" not in out
+    assert _origin_refs(world.origin) == before
+
+    # A wrong expected SHA refuses and leaves the ref (and everything else) unchanged.
+    wrong = ("0" if old_sha[0] != "0" else "1") * len(old_sha)
+    code, out = _invoke(*_sync_args("--force-with-lease", wrong, "--confirm"))
+    assert code == 1 and "compare-and-swap refused" in out and "nothing was changed" in out, out
+    assert _origin_refs(world.origin) == before
+    # ...and so does the right SHA without --confirm.
+    code, out = _invoke(*_sync_args("--force-with-lease", old_sha))
+    assert code == 1 and "--confirm" in out, out
+    assert _origin_refs(world.origin) == before
+
+    # The replacement with the right expected SHA succeeds.
+    code, out = _invoke(*_sync_args("--force-with-lease", old_sha, "--confirm"))
+    assert code == 0, out
+    after = _origin_refs(world.origin)
+    new_sha = after["refs/dolt/data"]
+    assert new_sha != old_sha and f"new SHA:      {new_sha}" in out
+
+    # Only refs/dolt/data moved: branches and tags are byte-identical, and the old data is not
+    # parked under any other ref.
+    assert _code_refs(after) == code_refs
+    assert set(after) == set(before)
+    assert old_sha not in after.values()
+    #    (Dolt rewrites its own marker branch with the data; it is Dolt's, not a code branch.)
+    assert "ref=refs/dolt/data" in _marker_note(world.origin)
+
+    # A fresh clone + `bd bootstrap` sees only the public store's beads: no legacy bead and no
+    # legacy Dolt history reachable from refs/dolt/data.
+    clone = _ordinary_public_clone(world, "replaced-clone")
+    assert _titles(clone) == GITHUB_TITLES
+    assert legacy_id not in _ids(clone) and private not in _ids(clone)
+    assert _bd("show", legacy_id, "--json", cwd=clone, check=False).returncode != 0
+    assert _dolt_commits(clone).isdisjoint(legacy_commits)
+    assert _dolt_commits(clone) == _dolt_commits(host.public_root)
+    assert _snapshot(world, host)["internal"] == snapshot["internal"]
+
+    # An ordinary fast-forward publish works from the replaced ref.
+    tracked = sorted(_ids(host.public_root))[0]
+    _bd("update", tracked, "--notes", "post-replacement note", cwd=host.public_root)
+    code, out = _invoke(*_sync_args())
+    assert code == 0, out
+    advanced = _origin_refs(world.origin)
+    assert advanced["refs/dolt/data"] not in (old_sha, new_sha)
+    assert _code_refs(advanced) == code_refs and set(advanced) == set(before)
+    assert "ref=refs/dolt/data" in _marker_note(world.origin)
+    _bd("dolt", "pull", cwd=clone, env=embedded_env())
+    shown = json.loads(_bd("show", tracked, "--json", cwd=clone).stdout)
+    assert "post-replacement note" in json.dumps(shown) and legacy_id not in _ids(clone)
+    assert github.writes == []
