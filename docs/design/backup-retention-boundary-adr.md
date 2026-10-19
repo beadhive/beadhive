@@ -455,3 +455,45 @@ raised as worth considering). Fix 1's ordering already closes the practical haza
 only ever runs, inside `migrate_hive`, after the re-point has already happened — so the failure
 mode this guard would catch requires an operator to have hand-repointed bd back into a migrate
 set after the fact. Left as a follow-up rather than added speculatively to the retention path.
+
+## Amendment (bh-ksmt0.4): restore-attested native snapshots
+
+`bh backup snapshot|list|verify|restore` (module `native_backup`) produces and consumes ONE dated
+set in the migrate root that is *proven*, not merely non-empty
+(`remote-migration-transaction-adr.md` P2/P3). A set holds `issues.jsonl` (the JSONL floor,
+`bd export --all`, count-consistent with the store), `dolt-native/` (a native Dolt backup over the
+connection, never a tar), `registry.json` (0600; every remote and backup registration with real
+URLs) and a mandatory `manifest.json`.
+
+The manifest extends the bh-5009a one (`kind: native-snapshot`, `hive`, `prefix`, `taken_at`,
+`bh_version`, `verified`, `artifacts`) with: `schema` (`bh.native-backup-manifest/1`), `txn`,
+`dolt_mode`, the REAL `schema_version` (`dolt_health.probe_raw_schema_version`, equal to the
+fingerprint's), `tool_versions` (`bh`, `bd`, `dolt`), the strong-tier source `fingerprint`,
+`checksums` (sha256 of the JSONL, the registry capture and a deterministic tree digest of the
+native backup), `jsonl` (`issue_records` / `expected_records`), `prior_backup` (the slot as found,
+redacted) and, once restored, `attestation`. `verified` is true only when the native backup was
+restored into a uniquely named scratch database and its complete fingerprint equalled the
+source's. The manifest is written by a strict writer that raises, re-read from disk, and checked
+by `validate_manifest`; a missing or placeholder field is a failure, never a best-effort success.
+
+**The single bd backup slot.** bd has one `default` backup registration per database (bh-1sug).
+The snapshot registers a unique per-transaction destination there and restores the prior name and
+address (and bd's `dolt-backup*.json` bookkeeping) in a `finally`, proved by read-back through
+`Engine.restore_registry`. A slot that cannot be put back fails the snapshot and names the saved
+`registry.json` to reapply.
+
+**Scratch drop.** Server mode restores with `CALL DOLT_BACKUP('restore', ...)` into
+`<prefix>_scr_<txn>` and `DROP DATABASE`s it; Dolt keeps the dropped database under
+`<data-dir>/.dolt_dropped_databases/` and the report names its path and size (bh-2hvmd). Nothing
+is purged. Embedded mode restores into a directory inside the new set and removes it outright.
+
+**Restore** is never implicit: `--dry-run` previews with zero mutation; a real run needs
+`--confirm <provider/org/repo>` (the typed hive name), refuses a cross-hive set and a different
+project identity, re-applies the captured registry after `bd backup restore --force` and
+fingerprints the restored store against the manifest. Because the overwrite destroys every bead
+and commit written since the set was taken, a pre-restore snapshot of the LIVE store (same
+`take_snapshot` path, restore-attestation skipped, `purpose: pre-restore`) is taken first and
+recorded in the outcome; the restore is refused with zero mutation if it fails. The only escape
+is an unreadable live store plus the explicit `--no-pre-restore-snapshot`. HQ's own pre-push
+sets are listed by `bh backup list` and restored with `bh hq restore` (bh-q0kf); `--hq` targets
+the HQ store with the verbs above.

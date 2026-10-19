@@ -4709,6 +4709,86 @@ def backup_usage_cmd(
 
 
 @backup_app.command(
+    "snapshot",
+    help="take a restore-attested native snapshot of a hive: JSONL floor + native Dolt backup + "
+    "registry + manifest, restored into a scratch database and fingerprint-matched before it "
+    "reports success (bh-ksmt0.4). bd's single backup slot is always put back. --dry-run plans.",
+)
+def backup_snapshot_cmd(
+    hive: str = typer.Option("", "--hive", help="hive to snapshot (default: cwd's hive)"),
+    hq: bool = typer.Option(False, "--hq", help="snapshot the Factory HQ store"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="plan only; no writes"),
+    as_json: bool = typer.Option(False, "--json", help="emit machine-readable JSON"),
+):
+    from .backup_cli import impl_snapshot
+
+    impl_snapshot(config.load(), hive, hq, dry_run, as_json)
+
+
+@backup_app.command(
+    "list",
+    help="list backup sets (native snapshots with their verification state, plus HQ pre-push "
+    "sets). --hive narrows to one hive.",
+)
+def backup_list_cmd(
+    hive: str = typer.Option("", "--hive", help="only this hive's sets"),
+    as_json: bool = typer.Option(False, "--json", help="emit machine-readable JSON"),
+):
+    from .backup_cli import impl_list
+
+    impl_list(config.load(), hive, as_json)
+
+
+@backup_app.command(
+    "verify",
+    help="verify a snapshot set: manifest fitness, checksums, JSONL count; --restore-test also "
+    "restores the native backup into a scratch database and compares the full fingerprint.",
+)
+def backup_verify_cmd(
+    set_ref: str = typer.Argument(None, help="set directory or name (default: newest)"),
+    hive: str = typer.Option("", "--hive", help="hive the set belongs to (default: cwd's hive)"),
+    hq: bool = typer.Option(False, "--hq", help="the Factory HQ store"),
+    restore_test: bool = typer.Option(
+        False, "--restore-test", help="restore into a scratch database and compare fingerprints"
+    ),
+    as_json: bool = typer.Option(False, "--json", help="emit machine-readable JSON"),
+):
+    from .backup_cli import impl_verify
+
+    impl_verify(config.load(), set_ref, hive, hq, restore_test, as_json)
+
+
+@backup_app.command(
+    "restore",
+    help="restore a verified snapshot set over a hive's LIVE database. Never implicit: --dry-run "
+    "previews; a real run needs --confirm <hive> (type the hive's name) and first takes a "
+    "pre-restore snapshot of the live store (refused if that fails). The registry is "
+    "re-applied and the result fingerprint-checked afterwards.",
+)
+def backup_restore_cmd(
+    set_ref: str = typer.Argument(None, help="set directory or name (default: newest)"),
+    hive: str = typer.Option("", "--hive", help="hive to restore (default: cwd's hive)"),
+    hq: bool = typer.Option(False, "--hq", help="the Factory HQ store"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="preview the plan; no writes"),
+    confirm: str = typer.Option(
+        "", "--confirm", help="the hive's name (provider/org/repo), required to overwrite"
+    ),
+    as_json: bool = typer.Option(False, "--json", help="emit machine-readable JSON"),
+    no_pre_restore_snapshot: bool = typer.Option(
+        False,
+        "--no-pre-restore-snapshot",
+        help="restore WITHOUT a safety snapshot; accepted only when the live store is "
+        "unreadable (nothing to save)",
+    ),
+):
+    from .backup_cli import impl_restore
+
+    impl_restore(
+        config.load(), set_ref, hive, hq, dry_run, confirm, as_json, no_pre_restore_snapshot
+    )
+
+
+@backup_app.command(
     "migrate-layout",
     help="one-time relocation of pre-bh-5009a backup artifacts into $BH_HOME/backups/"
     "{hq,mirrors,migrate}/, and heal any hive left with a dangling/mis-pointed bd backup "

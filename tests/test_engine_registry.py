@@ -175,6 +175,8 @@ class Fake:
             self.backups["default"] = args[2]
         if args[:2] == ["backup", "remove"]:
             self.backups.pop("default", None)
+            # bd 1.3.0: `backup remove` also drops its other registration as collateral
+            self.backups.pop(getattr(self, "collateral", ""), None)
         return self._done()
 
     def _write(self, cwd, kind, op, name, url=None, **kw):
@@ -285,6 +287,14 @@ def test_restore_registry_reaches_hidden_registrations_below_bd(monkeypatch):
     out = fake.eng.restore_registry("/hive", _snap(remotes=[("origin", "file:///a")]))
     assert out.ok and fake.remotes == {"origin": "file:///a"}
     assert ["_dolt_write", "remote", "remove", "backup_export"] in fake.calls
+
+
+def test_restore_registry_converges_when_bd_backup_remove_drops_a_neighbour(monkeypatch):
+    fake = Fake(monkeypatch, backups={"default": "file:///k", "backup_export": "file:///e"})
+    fake.collateral = "backup_export"
+    out = fake.eng.restore_registry("/hive", _snap(backups=[("backup_export", "file:///e")]))
+    assert out.ok, out.error
+    assert fake.backups == {"backup_export": "file:///e"}
 
 
 def test_restore_registry_reports_a_mismatch_it_cannot_fix(monkeypatch):
