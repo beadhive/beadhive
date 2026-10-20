@@ -13,6 +13,14 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.28.1 (2026-10-20)
+
+### Fix
+
+- **engine**: size the bd passthrough timeout for long store transfers
+- **backup**: restore server-mode scratch over the Dolt SQL client and drop the partial database on any failure
+- **fingerprint**: canonicalise cell values and add Dolt-native hashes so server and embedded reads agree
+
 ## v0.28.0 (2026-10-20)
 
 ### Feat
