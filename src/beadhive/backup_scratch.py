@@ -32,6 +32,7 @@ from .corpus_fingerprint import (
     CorpusFacts,
     FingerprintError,
     FingerprintIncomplete,
+    native_hashes,
 )
 from .dolt_remote import redact_url
 from .run import run
@@ -356,11 +357,14 @@ def read_corpus_facts(
     database: str | None,
     tables: Sequence[str],
     schema_version: int | None,
+    native: bool = False,
 ) -> CorpusFacts:
     """Facts of ONE database. ``database`` is the schema name to filter ``information_schema``
     (``None``: the connection's current database). ``schema_version`` is supplied by the caller
     because the live source uses the ADR's real-store probe while a restored copy is read in
-    place; ``None`` makes the fingerprint refuse (:class:`FingerprintIncomplete`)."""
+    place; ``None`` makes the fingerprint refuse (:class:`FingerprintIncomplete`). ``native`` also
+    reads Dolt's own ``dolt_hashof_db``/``dolt_hashof_table`` -- only valid when ``query`` runs
+    with the database in question as the session's current database."""
     branches = query(f"SELECT name, hash FROM {qualify('dolt_branches')}")
     main = next((b for b in branches if str(b.get("name")) == "main"), None)
     where = f"table_schema = {_quote(database)}" if database else "table_schema = DATABASE()"
@@ -376,7 +380,11 @@ def read_corpus_facts(
         if not _IDENT_TABLE.match(table):
             raise FingerprintError(f"invalid table name {table!r}")
         out[table] = query(f"SELECT * FROM {qualify(table)}") if table in real else None
+    present = [
+        t for t in dict.fromkeys(("issues", *tables)) if t == "issues" or out.get(t) is not None
+    ]
     return CorpusFacts(
+        native=native_hashes(query, present) if native else None,
         project_id=str(_first(meta, "value", "") or ""),
         prefix=str(_first(prefix_rows, "value", "") or ""),
         schema_version=schema_version,
@@ -430,6 +438,7 @@ def source_facts(engine, hive_dir: Path, tables: Sequence[str]) -> CorpusFacts:
         database=None,
         tables=tables,
         schema_version=version,
+        native=True,
     )
 
 
@@ -443,5 +452,13 @@ def scratch_facts(
     version = scratch_schema_version(query, qualify)
     if version is None:
         raise FingerprintIncomplete("restored copy has no readable schema_migrations version")
-    facts = read_corpus_facts(query, qualify, database=db, tables=tables, schema_version=version)
+    facts = read_corpus_facts(
+        query,
+        qualify,
+        database=db,
+        tables=tables,
+        schema_version=version,
+        # a scratch DATABASE on a shared server is not the session's database: no native hashes
+        native=bool(handle.path),
+    )
     return facts, record_counts(query, qualify, database=db)

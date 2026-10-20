@@ -118,8 +118,12 @@ Invariants:
 
 ### 4. Corpus fingerprint
 
-Schema `bh.corpus-fingerprint/1`: a canonical JSON document, key-sorted, UTF-8, reduced to a
-sha256, with every component also kept so a mismatch reports *which* component differed.
+Schema `bh.corpus-fingerprint/2` (`/1` hashed engine-rendered values and differed between server
+and embedded reads; bh-m4ups): values are canonicalised (DATETIME to one UTC form, JSON
+key-sorted) before hashing, the strong tier also carries Dolt-native
+`dolt_hashof_db`/`dolt_hashof_table`, and `/1` digests are refused, never compared. A canonical
+JSON document, key-sorted, UTF-8, reduced to a sha256, with every component also kept so a
+mismatch reports *which* component differed.
 
 | Component | Source | Why |
 |---|---|---|
