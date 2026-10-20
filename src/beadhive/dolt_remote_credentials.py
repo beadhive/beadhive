@@ -110,7 +110,43 @@ def resolve(
     return resolve_label(label, cfg, environ=environ, home=home, broker=broker)
 
 
+#: Env that relaxes the AWS SDK v2 checksum handling for a profile with ``s3_checksums:
+#: when_required`` (bh-81gpj). Garage returns a composite multipart CRC32 without the ``-N``
+#: marker, which the SDK validates as a full-object CRC and rejects.
+CHECKSUM_ENV = {
+    "when_required": (
+        ("AWS_RESPONSE_CHECKSUM_VALIDATION", "when_required"),
+        ("AWS_REQUEST_CHECKSUM_CALCULATION", "when_required"),
+    ),
+}
+
+
+def checksum_env(cfg, label: str) -> dict[str, str]:
+    """Checksum env vars the profile ``label`` opts into (empty by default). Never a secret."""
+    profile = _profile_config(cfg, label) if label else None
+    mode = str((profile or {}).get("s3_checksums") or "")
+    return dict(CHECKSUM_ENV.get(mode, ()))
+
+
 def resolve_label(
+    label: str,
+    cfg,
+    *,
+    environ: Mapping[str, str] | None = None,
+    home: Path | None = None,
+    broker=None,
+) -> CredentialResolution:
+    """Resolve the AWS credential source behind ``label`` (empty = ambient) on this host, then
+    add the profile's opt-in ``s3_checksums`` environment (bh-81gpj)."""
+
+    result = _resolve_source(label, cfg, environ=environ, home=home, broker=broker)
+    extra = checksum_env(cfg, label) if result.ok else {}
+    if not extra:
+        return result
+    return CredentialResolution(True, result.source, env={**result.env, **extra})
+
+
+def _resolve_source(
     label: str,
     cfg,
     *,
