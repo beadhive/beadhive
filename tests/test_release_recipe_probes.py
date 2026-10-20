@@ -177,7 +177,7 @@ def test_the_next_version_lookup_has_exactly_one_implementation():
     assert script.exists() and os.access(script, os.X_OK)
 
     justfile = JUSTFILE.read_text()
-    body = justfile.split("\nbump-preview:\n", 1)[1].split("\n\n", 1)[0]
+    body = justfile.split("\nbump-preview *cz_flags:\n", 1)[1].split("\n\n", 1)[0]
     assert "next-version.sh" in body
     assert "cz bump" not in body  # asked through the shared script, never re-spelled here
 

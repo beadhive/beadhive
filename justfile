@@ -1020,7 +1020,7 @@ demo-live-ingress:
 #   just attest           prove THIS tree green and stamp it.        nothing committed
 #   just push             main to the remote. NO TAG.                reversible
 #   just bump-preview     what would the next bump write?            read-only
-#   just bump X.Y.Z       version + changelog + LOCAL tag.           reversible, still local
+#   just bump [X.Y.Z | cz flags]  version + changelog + LOCAL tag.   reversible, still local
 #   just release-preview  is the path clear? (--next: what would bump write?)   read-only
 #   just release          main + tag, atomic. CI publishes.          ONE-WAY DOOR
 
@@ -1065,8 +1065,8 @@ attest:
 # scripts/next-version.sh. What survives as a distinction is COST, not content — deciding "minor
 # or patch?" should not need a round-trip to PyPI and the remote. Keep it offline and instant.
 # the next version + its changelog entry (no writes) — the fast OFFLINE half of `release-preview`
-bump-preview:
-    ./scripts/next-version.sh
+bump-preview *cz_flags:
+    ./scripts/next-version.sh {{ cz_flags }}
     uv run cz changelog --incremental --dry-run
 
 # bump version (pyproject.toml) + uv.lock + CHANGELOG.md, tag, and commit as one unit
@@ -1094,9 +1094,21 @@ bump-preview:
 # Deliberately NOT probed for like `_await-bump-gate` is: an old `bh` here should fail the bump
 # loudly, not bump unproven. A release is exactly where "the check silently did not run" is
 # worst. Set BH_EXEC='uv run bh' to use this tree's bh.
+# CHOOSING THE VERSION (bh-rgc6p) — three mutually exclusive forms, all LOCAL and reversible:
+#   just bump                      Commitizen computes it from the commits
+#   just bump --increment PATCH    Commitizen computes it under YOUR cz bump flags, forwarded
+#                                  unchanged to the prediction and the real bump
+#   just bump 0.28.2               an exact version, handed to cz as its manual version; it must
+#                                  be an immediate successor of the current version (next patch /
+#                                  minor / major, or their a0/b0/rc0; from a pre-release its base or
+#                                  next pre-release number) — a skipped range or equal/lower/
+#                                  prefixed version is refused, listing the allowed ones
+# A version AND flags together are refused, as are flags that break the transaction (--dry-run
+# --files-only --version-files-only --no-verify --changelog-to-stdout --get-next --tag-format -h).
+# `just release` stays the one-way step.
 # BUMP: version + changelog + uv.lock + signed LOCAL tag. Nothing leaves this machine.
-bump expected_version:
-    python3 scripts/release_transaction.py bump "{{ expected_version }}"
+bump *args:
+    python3 scripts/release_transaction.py bump -- {{ args }}
     ${BH_EXEC:-bh} release attest --if-needed
 
 # is the release path clear? READ-ONLY, and a SUPERSET of `bump-preview` above rather than its
