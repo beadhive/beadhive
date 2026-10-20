@@ -828,6 +828,24 @@ def test_transfer_timeout_honours_beads_fsck_timeout(value, fsck, monkeypatch):
     assert "BEADS_FSCK_TIMEOUT" in info.source
 
 
+def test_transfer_timeout_cwd_none_default_path_resolves_process_cwd(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(store_locator, "database_dir", lambda cwd: seen.append(cwd) or tmp_path)
+    info = engine.transfer_timeout(["dolt", "push"], None, env={})
+    assert seen == [tmp_path]
+    assert info.seconds == engine.FSCK_TIMEOUT + engine.TRANSFER_MARGIN
+
+
+def test_transfer_timeout_unresolvable_store_falls_back_to_cap(monkeypatch):
+    def boom(_cwd):
+        raise TypeError("unresolvable")
+
+    monkeypatch.setattr(store_locator, "database_dir", boom)
+    info = engine.transfer_timeout(["dolt", "push"], None, env={})
+    assert info.seconds == engine.MAX_FSCK_TIMEOUT + engine.TRANSFER_MARGIN
+
+
 def test_transfer_timeout_ignores_garbage_fsck_value(monkeypatch):
     monkeypatch.setattr(engine, "_state_store_bytes", lambda _cwd: 0)
     info = engine.transfer_timeout(["dolt", "push"], "/h", env={"BEADS_FSCK_TIMEOUT": "soon"})
