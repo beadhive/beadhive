@@ -37,7 +37,8 @@ def _state_store_bytes(cwd) -> int:
     from . import store_locator
 
     total = 0
-    root = store_locator.database_dir(Path(cwd))
+    # cwd=None means "the directory the bd child runs in" (route.fan_out's current-hive case).
+    root = store_locator.database_dir(Path.cwd() if cwd is None else Path(cwd))
     try:
         for path in root.rglob("*"):
             if path.is_file():
@@ -116,7 +117,10 @@ def transfer_timeout(args, cwd, *, env=None) -> TransferTimeout:
     if configured is not None:
         cap, source = configured, CAP_ENV
     gib = 1024**3
-    sized = FSCK_TIMEOUT + ((_state_store_bytes(cwd) + gib - 1) // gib) * 60
+    try:
+        sized = FSCK_TIMEOUT + ((_state_store_bytes(cwd) + gib - 1) // gib) * 60
+    except (OSError, TypeError, ValueError, RuntimeError):
+        sized = cap  # unresolvable store: fall back to the cap rather than failing the verb
     fsck = max(float(FSCK_TIMEOUT), min(cap, float(sized)))
     return TransferTimeout(
         max(STATE_TIMEOUT, fsck + TRANSFER_MARGIN),
