@@ -233,13 +233,14 @@ def test_explicit_gate_override_is_forwarded_to_preflight(tmp_path: Path) -> Non
     ]
 
 
-def test_expected_version_mismatch_refuses_before_mutation(tmp_path: Path) -> None:
+def test_skipped_exact_version_refuses_before_mutation(tmp_path: Path) -> None:
     release_repo = _release_repo(tmp_path)
 
     result = release_repo.transaction("bump", "0.16.3")
 
     assert result.returncode == 1
-    assert "Commitizen predicts '0.16.2'" in result.stderr
+    assert "not an allowed successor of '0.16.1'" in result.stderr
+    assert "0.16.2" in result.stderr
     assert _must_git(release_repo.root, "rev-parse", "HEAD") == release_repo.start
     assert _must_git(release_repo.root, "status", "--porcelain") == ""
     assert _must_git(release_repo.root, "tag", "--list", "v0.16.3") == ""
@@ -382,3 +383,155 @@ def test_mcp_check_refuses_stale_release_metadata_and_sync_repairs_it(
     assert json.loads(path.read_text()) == metadata
     subprocess.run(command, check=True, capture_output=True)
     subprocess.run([*command, "--check", "--version", "0.16.1"], check=True, capture_output=True)
+
+
+def _logging_cz(release_repo: ReleaseRepo, tmp_path: Path) -> Path:
+    """A CZ_EXEC wrapper recording every argv, then delegating to the fixture's cz."""
+    real = release_repo.environment["CZ_EXEC"]
+    log = tmp_path / "cz.log"
+    wrapper = tmp_path / "cz-logging"
+    wrapper.write_text(f'#!/bin/sh\nprintf \'%s\\n\' "$*" >> {log}\nexec {real} "$@"\n')
+    wrapper.chmod(0o755)
+    release_repo.environment["CZ_EXEC"] = str(wrapper)
+    return log
+
+
+def test_flags_form_reaches_prediction_and_bump_identically(tmp_path: Path) -> None:
+    release_repo = _release_repo(tmp_path)
+    log = _logging_cz(release_repo, tmp_path)
+
+    # A fix would be 0.16.2; the operator forces MINOR and cz computes the version.
+    result = release_repo.transaction("bump", "--", "--increment", "MINOR")
+
+    assert result.returncode == 0, result.stderr
+    assert "cz overrides (operator): --increment MINOR" in result.stdout
+    assert "release version: 0.17.0" in result.stdout
+    dry_run, real = log.read_text().splitlines()
+    assert dry_run == "bump --dry-run --get-next --increment MINOR"
+    assert real == "bump --changelog --gpg-sign --increment MINOR"
+    assert _must_git(release_repo.root, "tag", "--list", "v0.17.0") == "v0.17.0"
+
+
+def test_no_argument_form_lets_cz_decide(tmp_path: Path) -> None:
+    release_repo = _release_repo(tmp_path)
+    log = _logging_cz(release_repo, tmp_path)
+
+    result = release_repo.transaction("bump", "--")
+
+    assert result.returncode == 0, result.stderr
+    assert "cz overrides" not in result.stdout
+    assert "release version: 0.16.2" in result.stdout
+    assert log.read_text().splitlines() == [
+        "bump --dry-run --get-next",
+        "bump --changelog --gpg-sign",
+    ]
+
+
+def test_exact_version_form_is_cz_manual_version(tmp_path: Path) -> None:
+    release_repo = _release_repo(tmp_path)
+    log = _logging_cz(release_repo, tmp_path)
+
+    result = release_repo.transaction("bump", "--", "0.16.2")
+
+    assert result.returncode == 0, result.stderr
+    assert log.read_text().splitlines() == ["bump --changelog --gpg-sign 0.16.2"]
+    assert _must_git(release_repo.root, "tag", "--list", "v0.16.2") == "v0.16.2"
+
+
+def test_version_and_flags_together_are_refused(tmp_path: Path) -> None:
+    release_repo = _release_repo(tmp_path)
+    log = _logging_cz(release_repo, tmp_path)
+
+    result = release_repo.transaction("bump", "--", "0.16.2", "--increment", "PATCH")
+
+    assert result.returncode == 1
+    assert "either an exact version or Commitizen flags" in result.stderr
+    assert not log.exists()
+    assert _must_git(release_repo.root, "rev-parse", "HEAD") == release_repo.start
+
+
+def test_existing_local_tag_refuses_exact_version(tmp_path: Path) -> None:
+    release_repo = _release_repo(tmp_path)
+    _must_git(release_repo.root, "tag", "v0.16.2")
+
+    result = release_repo.transaction("bump", "--", "0.16.2")
+
+    assert result.returncode == 1
+    assert "already exists" in result.stderr
+    assert _must_git(release_repo.root, "rev-parse", "HEAD") == release_repo.start
+
+
+@pytest.mark.parametrize(
+    ("current", "target", "ok"),
+    [
+        ("0.28.1", "0.28.2", True),
+        ("0.28.1", "0.29.0", True),
+        ("0.28.1", "1.0.0", True),
+        ("0.28.1", "0.29.0a0", True),
+        ("0.28.1", "0.28.2rc0", True),
+        ("0.28.1", "1.0.0b0", True),
+        ("0.29.0a0", "0.29.0a1", True),
+        ("0.29.0a0", "0.29.0", True),
+        ("0.29.0a1", "0.29.0b0", True),
+        ("0.29.0rc0", "0.29.0rc1", True),
+        ("0.28.1", "0.28.1", False),
+        ("0.28.1", "0.28.0", False),
+        ("0.28.1", "0.28.3", False),
+        ("0.28.1", "0.30.0", False),
+        ("0.28.1", "2.0.0", False),
+        ("0.28.1", "v0.28.2", False),
+        ("0.28.1", "0.28.2.0", False),
+        ("0.28.1", "0.28.02", False),
+        ("0.28.1", "0.28.2-rc1", False),
+        ("0.28.1", "", False),
+        ("0.28.1", "0.29.0a1", False),
+        ("0.29.0a1", "0.29.1", False),
+        ("0.29.0a1", "0.29.0a3", False),
+        ("0.29.0b1", "0.29.0a2", False),
+        ("0.29.0a1", "0.29.1a0", False),
+    ],
+)
+def test_check_successor_table(current: str, target: str, ok: bool) -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "release_transaction", ROOT / "scripts" / "release_transaction.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    if ok:
+        module.check_successor(current, target)
+    else:
+        with pytest.raises(module.Refusal) as info:
+            module.check_successor(current, target)
+        assert ", ".join(module.allowed_successors(current)) in str(info.value)
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ["--dry-run"],
+        ["--dry"],
+        ["--files-only"],
+        ["--no-verify"],
+        ["--changelog-to-stdout"],
+        ["--tag-format=x$version"],
+        ["--increment", "PATCH", "0.9.9"],
+        ["--dry-run", "--increment", "PATCH"],
+    ],
+)
+def test_transaction_breaking_flags_are_refused_before_anything_runs(
+    tmp_path: Path, flags: list[str]
+) -> None:
+    release_repo = _release_repo(tmp_path)
+    log = _logging_cz(release_repo, tmp_path)
+
+    result = release_repo.transaction("bump", "--", *flags)
+
+    assert result.returncode == 1
+    assert "cz override" in result.stderr
+    assert not log.exists()
+    assert not (tmp_path / "bh.log").exists()
+    assert _must_git(release_repo.root, "rev-parse", "HEAD") == release_repo.start
