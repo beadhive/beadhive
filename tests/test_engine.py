@@ -895,3 +895,56 @@ def test_bd_run_one_passes_sized_timeout_only_for_long_transfers(monkeypatch):
 
     assert seen[0][1]["timeout"] == engine.FSCK_TIMEOUT + engine.TRANSFER_MARGIN
     assert "timeout" not in seen[1][1]
+
+
+def _run_one_env(monkeypatch, args, *, fsck=None):
+    seen = []
+    monkeypatch.setattr(bd, "run", lambda a, cwd, **k: seen.append(k) or Completed(0, "", ""))
+    monkeypatch.setattr(engine, "_state_store_bytes", lambda _cwd: 2 * 1024**3)
+    monkeypatch.setattr(bd.guard, "bd_write_refusal", lambda *a, **k: "")
+    monkeypatch.setattr(bd, "wisp_cleanup_refusal", lambda *a, **k: "")
+    monkeypatch.delenv("BH_STATE_TIMEOUT_CAP", raising=False)
+    if fsck is None:
+        monkeypatch.delenv("BEADS_FSCK_TIMEOUT", raising=False)
+    else:
+        monkeypatch.setenv("BEADS_FSCK_TIMEOUT", fsck)
+    bd._run_one(args, "/hive", {})
+    return seen[0]
+
+
+@pytest.mark.parametrize("args", [["dolt", "push"], ["dolt", "pull"], ["dolt", "clone", "u"]])
+def test_passthrough_child_env_carries_computed_fsck_allowance(args, monkeypatch):
+    kw = _run_one_env(monkeypatch, args)
+    fsck = engine.FSCK_TIMEOUT + 120
+    assert kw["env"]["BEADS_FSCK_TIMEOUT"] == str(fsck)
+    assert kw["timeout"] == fsck + engine.TRANSFER_MARGIN
+
+
+def test_passthrough_child_env_keeps_explicit_fsck_value(monkeypatch):
+    kw = _run_one_env(monkeypatch, ["dolt", "push"], fsck="30m")
+    assert kw["env"]["BEADS_FSCK_TIMEOUT"] == "30m"
+    assert kw["timeout"] == 1800 + engine.TRANSFER_MARGIN
+
+
+def test_passthrough_short_verb_env_unchanged(monkeypatch):
+    kw = _run_one_env(monkeypatch, ["list"])
+    assert "env" not in kw and "timeout" not in kw
+
+
+def test_pull_state_child_env_carries_fsck_allowance(monkeypatch):
+    kwargs = []
+    monkeypatch.setattr(engine, "_state_store_bytes", lambda _cwd: 0)
+    monkeypatch.delenv("BEADS_FSCK_TIMEOUT", raising=False)
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: kwargs.append(k) or Completed(0, "", ""))
+    engine.BdEngine().pull_state("/hive")
+    pulls = [k for k in kwargs if k.get("env")]
+    assert pulls and pulls[-1]["env"]["BEADS_FSCK_TIMEOUT"] == str(engine.FSCK_TIMEOUT)
+
+
+def test_clone_remote_child_env_carries_fsck_allowance(tmp_path, monkeypatch):
+    kwargs = []
+    monkeypatch.setattr(engine, "_state_store_bytes", lambda _cwd: 0)
+    monkeypatch.delenv("BEADS_FSCK_TIMEOUT", raising=False)
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: kwargs.append(k) or Completed(0, "", ""))
+    engine.BdEngine().clone_remote(tmp_path, "file:///srv/r")
+    assert kwargs and kwargs[-1]["env"]["BEADS_FSCK_TIMEOUT"] == str(engine.FSCK_TIMEOUT)

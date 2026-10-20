@@ -95,6 +95,7 @@ class TransferTimeout:
     seconds: float
     source: str
     raise_hint: str
+    fsck: float = 0.0  # the fsck allowance handed to the bd child; 0 for a short verb
 
 
 def transfer_timeout(args, cwd, *, env=None) -> TransferTimeout:
@@ -110,7 +111,7 @@ def transfer_timeout(args, cwd, *, env=None) -> TransferTimeout:
     if explicit is not None:
         total = max(STATE_TIMEOUT, explicit + TRANSFER_MARGIN)
         return TransferTimeout(
-            total, f"{FSCK_ENV}={environ.get(FSCK_ENV)} + {TRANSFER_MARGIN:g}s", hint
+            total, f"{FSCK_ENV}={environ.get(FSCK_ENV)} + {TRANSFER_MARGIN:g}s", hint, explicit
         )
     cap, source = float(MAX_FSCK_TIMEOUT), "default cap"
     configured = parse_duration(environ.get(CAP_ENV))
@@ -126,7 +127,23 @@ def transfer_timeout(args, cwd, *, env=None) -> TransferTimeout:
         max(STATE_TIMEOUT, fsck + TRANSFER_MARGIN),
         f"store-sized fsck allowance {fsck:g}s ({source}) + {TRANSFER_MARGIN:g}s",
         hint,
+        fsck,
     )
+
+
+def transfer_env(args, cwd, *, env=None, info: TransferTimeout | None = None):
+    """The bd child environment for a passthrough/state verb: for a long store transfer, ``env``
+    (default: the process environment) plus ``BEADS_FSCK_TIMEOUT`` set to the same fsck
+    allowance ``transfer_timeout`` waits for, so bd's pre-transfer integrity check is not cut
+    short by its own shorter built-in default. ``setdefault``: an explicit operator value wins.
+    ``None`` for short verbs, so the child inherits exactly as before. The one helper shared by
+    the passthrough and the engine's pull/clone paths (bh-vqvqw)."""
+    if not is_long_transfer(args):
+        return None
+    info = info or transfer_timeout(args, cwd, env=env)
+    merged = dict(os.environ if env is None else env)
+    merged.setdefault(FSCK_ENV, str(int(info.fsck)))
+    return merged
 
 
 def timeout_message(args, timeout: float, info: TransferTimeout | None) -> str:
@@ -847,10 +864,12 @@ class BdEngine:
             )
 
         store_bytes = _state_store_bytes(cwd)
-        fsck_timeout = _fsck_timeout(cwd)
-        push_env = dict(os.environ)
-        push_env.update(extra_env or {})
-        push_env.setdefault("BEADS_FSCK_TIMEOUT", str(fsck_timeout))
+        # Same helper as the passthrough/pull/clone paths; operator extra_env wins over the
+        # computed allowance, so layer it first.
+        layered = {**os.environ, **(extra_env or {})}
+        info = transfer_timeout(args, cwd, env=layered)
+        fsck_timeout = int(info.fsck)
+        push_env = transfer_env(args, cwd, env=layered, info=info)
         started = time.monotonic()
         pushed = self._state_call(args, cwd, actor=actor, timeout=fsck_timeout + 60.0, env=push_env)
         elapsed = time.monotonic() - started
@@ -939,7 +958,7 @@ class BdEngine:
         args = ["dolt", "pull"]
         if remote:
             args += ["--remote", remote]
-        return self._state_call(args, cwd, env=_extra_env(None, extra_env))
+        return self._state_call(args, cwd, env=_extra_env(transfer_env(args, cwd), extra_env))
 
     # ---- remote lifecycle (bh-b1scz.3; docs/design/hq-dolt-remote-descriptor-adr.md) ----
 
@@ -1065,7 +1084,9 @@ class BdEngine:
             result = self.invoke(
                 args,
                 cwd=cwd,
-                env=_extra_env(env, extra_env),
+                env=_extra_env(
+                    env if env is not None else transfer_env(["dolt", "clone"], cwd), extra_env
+                ),
                 capture=True,
                 hive_aware=False,
                 pin_process_cwd=True,

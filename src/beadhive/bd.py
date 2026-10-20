@@ -974,7 +974,11 @@ def _run_one(args, cwd, cfg=None):
     extra = {}
     if engine.is_long_transfer(args):  # short verbs keep run()'s default timeout untouched
         info = engine.transfer_timeout(args, cwd)
-        extra = {"timeout": info.seconds, "timeout_info": info}
+        extra = {
+            "timeout": info.seconds,
+            "timeout_info": info,
+            "env": engine.transfer_env(args, cwd, info=info),
+        }
     return run(args, cwd, hive_aware=False, pin_process_cwd=True, **extra).returncode
 
 
