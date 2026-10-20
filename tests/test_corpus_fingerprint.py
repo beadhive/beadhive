@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 from types import SimpleNamespace
 
 import pytest
@@ -26,15 +28,15 @@ def facts(**over):
 TABLES = ("labels", "comments")
 
 
-def fp(tier=cf.TIER_STRONG, **over):
-    return cf.compute(facts(**over), tier, tables=TABLES)
+def fp(tier=cf.TIER_STRONG, scope=cf.SCOPE_COMMITTED, **over):
+    return cf.compute(facts(**over), tier, tables=TABLES, scope=scope)
 
 
 def test_equal_facts_equal_digest_and_roundtrip():
     a, b = fp(), fp()
     assert a.digest == b.digest and cf.compare(a, b).equal
     assert cf.Fingerprint.from_dict(a.to_dict()) == a
-    assert a.to_dict()["schema"] == "bh.corpus-fingerprint/2"
+    assert a.to_dict()["schema"] == "bh.corpus-fingerprint/3"
 
 
 def test_row_order_is_irrelevant_and_content_matters():
@@ -101,10 +103,13 @@ def test_bd_sql_reader_collects_facts(monkeypatch, tmp_path):
         "HASHOF": [{"h": "h1"}],
         "dolt_branches": [{"name": "main", "hash": "h1"}],
         "information_schema": [{"table_name": "labels"}],
-        "FROM issues": [{"id": "bh-1"}],
+        "`issues`": [{"id": "bh-1"}],
+        "dolt_ignore": [{"pattern": "events", "ignored": 1}],
+        "dolt_status": [],
         "issue_prefix": [{"value": "bh"}],
-        "FROM `labels`": [{"l": "x"}],
-        "dolt_hashof_db": [{"h": "dbh"}],
+        "`labels`": [{"l": "x"}],
+        "dolt_hashof_db('main')": [{"h": "root"}],
+        "dolt_hashof_db()": [{"h": "dbh"}],
         "dolt_hashof_table": [{"h": "th"}],
     }
 
@@ -117,7 +122,7 @@ def test_bd_sql_reader_collects_facts(monkeypatch, tmp_path):
     got = cf.BdSqlCorpusReader(sql, probe=probe).read(tmp_path, ("labels", "comments"))
     assert got.schema_version == 59 and got.prefix == "bh" and got.project_id == "p1"
     assert got.tables == {"labels": [{"l": "x"}], "comments": None}
-    assert got.native == {"db": "dbh", "tables": {"issues": "th", "labels": "th"}}
+    assert got.native == {"db": "dbh", "root": "root", "tables": {"issues": "th", "labels": "th"}}
     assert (
         cf.fingerprint(
             cf.BdSqlCorpusReader(sql, probe=probe), tmp_path, "strong", tables=("labels",)
@@ -186,17 +191,20 @@ def test_null_and_empty_string_stay_distinct():
 
 def test_native_hashes_ride_the_strong_tier_only_and_are_compared():
     native = {"db": "d1", "tables": {"labels": "l1", "issues": "i1", "other": "o"}}
-    strong = fp(native=native)
+    strong = fp(native=native, scope=cf.SCOPE_WORKING)
     assert strong.native == {"db": "d1", "tables": {"issues": "i1", "labels": "l1"}}
     assert fp(cf.TIER_CORPUS, native=native).native is None
     assert cf.Fingerprint.from_dict(strong.to_dict()) == strong
-    same = cf.compare(strong, fp(native=native))
+    same = cf.compare(strong, fp(native=native, scope=cf.SCOPE_WORKING))
     assert same.equal
-    bad = fp(native={"db": "d1", "tables": {"labels": "DIFFERENT", "issues": "i1"}})
+    bad = fp(
+        native={"db": "d1", "tables": {"labels": "DIFFERENT", "issues": "i1"}},
+        scope=cf.SCOPE_WORKING,
+    )
     diff = cf.compare(strong, bad)
     assert not diff.equal and diff.differing == ("dolt_native.tables.labels",)
     # one side unable to read them (a scratch on a shared server) is not a false mismatch
-    assert cf.compare(strong, fp()).equal
+    assert cf.compare(strong, fp(scope=cf.SCOPE_WORKING)).equal
 
 
 def test_old_schema_versions_are_refused_with_a_clear_message():
@@ -206,3 +214,193 @@ def test_old_schema_versions_are_refused_with_a_clear_message():
     legacy = cf.Fingerprint(**{**fp().__dict__, "schema": "bh.corpus-fingerprint/1"})
     with pytest.raises(cf.FingerprintVersionMismatch, match="refusing to compare"):
         cf.compare(legacy, fp())
+
+
+# ---- scopes (bh-omxyj) -------------------------------------------------------------------------
+
+EV_TABLES = ("labels", "events")
+
+
+def scoped(scope, *, events, ignored=("events",), **over):
+    base = dict(
+        tables={"labels": [{"i": "bh-1"}], "events": events},
+        ignored=ignored,
+        local_counts={"events": len(events or ()), "wisps": 4},
+    )
+    base.update(over)
+    return cf.compute(facts(**base), cf.TIER_STRONG, tables=EV_TABLES, scope=scope)
+
+
+def test_committed_scope_excludes_ignored_tables_but_reports_them():
+    a = scoped(cf.SCOPE_COMMITTED, events=[{"n": 1}, {"n": 2}])
+    b = scoped(cf.SCOPE_COMMITTED, events=None, local_counts={"wisps": 0})
+    assert set(a.components["tables"]) == {"labels"} and "local_only" not in a.components
+    assert a.digest == b.digest and cf.compare(a, b).equal
+    assert a.local_only["events"]["rows"] == 2 and a.local_only["wisps"] == {"rows": 4}
+    assert "dolt-ignored-tables" in a.excluded
+    assert cf.local_only_differences(a, b)
+    assert cf.Fingerprint.from_dict(a.to_dict()) == a
+
+
+def test_working_scope_digests_the_requested_local_tables_and_catches_drift():
+    a = scoped(cf.SCOPE_WORKING, events=[{"n": 1}])
+    same = scoped(cf.SCOPE_WORKING, events=[{"n": 1}])
+    drift = scoped(cf.SCOPE_WORKING, events=[{"n": 999}])
+    assert cf.compare(a, same).equal
+    diff = cf.compare(a, drift)
+    assert not diff.equal and "local_only.events.digest" in diff.differing
+    assert a.tables == ("events", "labels")  # a re-verify keeps checking the local table
+    assert cf.Fingerprint.from_dict(a.to_dict()) == a
+
+
+def test_committed_native_block_carries_root_not_the_working_set_hash():
+    native = {"db": "work", "root": "r1", "tables": {"labels": "l", "events": "e", "issues": "i"}}
+    c = scoped(cf.SCOPE_COMMITTED, events=None, native=native)
+    assert c.native == {"root": "r1", "tables": {"issues": "i", "labels": "l"}}
+    w = scoped(cf.SCOPE_WORKING, events=[], native=native)
+    assert w.native["db"] == "work" and w.native["tables"]["events"] == "e"
+    # a dirty committed table (no hash on one side) is not a false mismatch
+    other = scoped(cf.SCOPE_COMMITTED, events=None, native={**native, "tables": {"issues": "i"}})
+    assert cf.compare(c, other).equal
+
+
+def test_scopes_are_not_comparable():
+    with pytest.raises(cf.FingerprintScopeMismatch):
+        cf.compare(scoped(cf.SCOPE_COMMITTED, events=None), scoped(cf.SCOPE_WORKING, events=[]))
+
+
+def test_v2_documents_are_still_read_and_recomputed_for_comparison():
+    f = facts(tables={"labels": [{"i": "x"}], "events": [{"n": 1}]}, ignored=("events",))
+    old = cf.compute(f, cf.TIER_STRONG, tables=EV_TABLES, schema=cf.LEGACY_SCHEMA)
+    assert old.schema == "bh.corpus-fingerprint/2" and "scope" not in old.to_dict()
+    assert set(old.components["tables"]) == {"labels", "events"}  # /2 digested every table
+    loaded = cf.Fingerprint.from_dict(old.to_dict())
+    assert loaded == old and loaded.scope == cf.SCOPE_WORKING
+    again = cf.compute_like(f, loaded)
+    assert cf.compare(loaded, again).equal and again.schema == loaded.schema
+    with pytest.raises(cf.FingerprintVersionMismatch):
+        cf.compare(loaded, scoped(cf.SCOPE_WORKING, events=[{"n": 1}]))
+
+
+def test_ignored_tables_come_from_dolt_ignore_patterns():
+    pats = [
+        {"pattern": "events", "ignored": 1},
+        {"pattern": "wisp_%", "ignored": 1},
+        {"pattern": "bh_local_*", "ignored": True},
+        {"pattern": "wisp_keep", "ignored": 0},
+    ]
+    names = ["events", "wisps", "wisp_a", "wisp_keep", "bh_local_x", "labels", "myevents"]
+    assert cf.ignored_among(pats, names) == ["events", "wisp_a", "bh_local_x"]
+
+
+# ---- real Dolt: a clone of a pushed store (file:// remote, no server) ----------------------
+
+
+def _dolt(cwd, *args, env=None):
+    import subprocess
+
+    done = subprocess.run(
+        ["dolt", *args], cwd=cwd, env=env, capture_output=True, text=True, timeout=120
+    )
+    assert done.returncode == 0, done.stderr or done.stdout
+    return done.stdout
+
+
+def _store_facts(path, env, scope, tables=EV_TABLES):
+    import json
+
+    from beadhive.backup_scratch import read_corpus_facts
+
+    def query(q):
+        out = _dolt(path, "sql", "-r", "json", "-q", q, env=env).strip()
+        return json.loads(out).get("rows", []) if out else []
+
+    return read_corpus_facts(
+        query,
+        lambda t: f"`{t}`",
+        database=None,
+        tables=tables,
+        schema_version=59,
+        native=True,
+        scope=scope,
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(shutil.which("dolt") is None, reason="dolt is not installed")
+def test_clone_of_a_pushed_store_matches_its_source_in_the_committed_scope(tmp_path):
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path / "home"),
+        "DOLT_ROOT_PATH": str(tmp_path / "home"),
+    }
+    (tmp_path / "home").mkdir()
+    _dolt(tmp_path, "config", "--global", "--add", "user.name", "t", env=env)
+    _dolt(tmp_path, "config", "--global", "--add", "user.email", "t@example.com", env=env)
+    src = tmp_path / "src"
+    src.mkdir()
+    _dolt(src, "init", env=env)
+    _dolt(
+        src,
+        "sql",
+        "-q",
+        "INSERT INTO dolt_ignore VALUES ('events', true), ('wisp_%', true);"
+        "CREATE TABLE issues (id VARCHAR(20) PRIMARY KEY, title TEXT);"
+        "CREATE TABLE config (`key` VARCHAR(40) PRIMARY KEY, value TEXT);"
+        "CREATE TABLE metadata (`key` VARCHAR(40) PRIMARY KEY, value TEXT);"
+        "CREATE TABLE labels (issue_id VARCHAR(20), label VARCHAR(40));"
+        "INSERT INTO issues VALUES ('bh-1', 'one'), ('bh-2', 'two');"
+        "INSERT INTO config VALUES ('issue_prefix', 'bh');"
+        "INSERT INTO metadata VALUES ('_project_id', 'p1');"
+        "INSERT INTO labels VALUES ('bh-1', 'x');",
+        env=env,
+    )
+    _dolt(src, "add", ".", env=env)
+    _dolt(src, "commit", "-m", "committed state", env=env)
+    # ignored tables are created AFTER the commit: they are working-set only
+    _dolt(
+        src,
+        "sql",
+        "-q",
+        "CREATE TABLE events (id INT PRIMARY KEY, body TEXT);"
+        "INSERT INTO events VALUES (1, 'a'), (2, 'b'), (3, 'c');"
+        "CREATE TABLE wisp_x (id INT PRIMARY KEY); INSERT INTO wisp_x VALUES (7);",
+        env=env,
+    )
+    remote = f"file://{tmp_path / 'remote'}"
+    _dolt(src, "remote", "add", "origin", remote, env=env)
+    _dolt(src, "push", "origin", "main", env=env)
+    clone = tmp_path / "clone"
+    _dolt(tmp_path, "clone", remote, str(clone), env=env)
+
+    def fps(path, scope):
+        return cf.compute(
+            _store_facts(path, env, scope), cf.TIER_STRONG, tables=EV_TABLES, scope=scope
+        )
+
+    s_c, c_c = fps(src, cf.SCOPE_COMMITTED), fps(clone, cf.SCOPE_COMMITTED)
+    diff = cf.compare(s_c, c_c)
+    assert diff.equal, diff.detail
+    assert set(s_c.components["tables"]) == {"labels"}
+    assert set(s_c.native) == {"root", "tables"} and s_c.native == c_c.native
+    # the local-only tables are reported, not compared: the source has them, the clone does not
+    assert s_c.local_only["events"]["rows"] == 3 and s_c.local_only["wisp_x"]["rows"] == 1
+    assert "events" not in (c_c.local_only or {})
+    assert cf.local_only_differences(s_c, c_c)
+
+    # a native backup carries the working set, so its (working) scope still sees local-only drift
+    s_w, c_w = fps(src, cf.SCOPE_WORKING), fps(clone, cf.SCOPE_WORKING)
+    drift = cf.compare(s_w, c_w)
+    assert not drift.equal and "local_only.events.rows" in drift.differing
+    assert "dolt_native.db" in drift.differing  # the old failure, now confined to this scope
+
+    # and a committed change DOES break the committed comparison
+    _dolt(clone, "sql", "-q", "INSERT INTO labels VALUES ('bh-2', 'y');", env=env)
+    _dolt(clone, "add", ".", env=env)
+    _dolt(clone, "commit", "-m", "diverge", env=env)
+    moved = cf.compare(s_c, fps(clone, cf.SCOPE_COMMITTED))
+    assert (
+        not moved.equal
+        and "main_head" in moved.differing
+        and "tables.labels.rows" in moved.differing
+    )
