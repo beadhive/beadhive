@@ -381,6 +381,12 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     | _owned("hq_authority_guard.py", "main", "bh-authority-policy.json")
     | _owned("hq_git_broker.py", "serve", "bh-authority-policy.json")
     # Beads/Dolt own their repository and embedded-store roots.
+    # Dolt owns its soft-delete area and database directories; the scratch config home lives
+    # inside a unique, bh-created scratch root and is removed with it (bh-ksmt0.4).
+    | _owned("backup_scratch.py", "drop", ".dolt_dropped_databases")
+    | _owned("backup_scratch.py", "_env", ".dolt-home", ".dolt")
+    | _owned("backup_scratch.py", "restore", ".dolt")
+    | _owned("backup_scratch.py", "cleanup_embedded_root", ".dolt-home")
     | _owned("backup.py", "pre_migrate_stores", ".beads")
     | _owned("backup.py", "hive_backup_dir", ".beads")
     | _owned("backup.py", "bd_backup_target", ".beads")
