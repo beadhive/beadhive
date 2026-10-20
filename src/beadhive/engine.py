@@ -53,6 +53,89 @@ def _fsck_timeout(cwd) -> int:
     return min(MAX_FSCK_TIMEOUT, FSCK_TIMEOUT + extra)
 
 
+FSCK_ENV = "BEADS_FSCK_TIMEOUT"
+CAP_ENV = "BH_STATE_TIMEOUT_CAP"
+TRANSFER_MARGIN = 60.0
+_DURATION = re.compile(r"(\d+(?:\.\d+)?)(ms|s|m|h)")
+_UNIT = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
+
+
+def parse_duration(value) -> float | None:
+    """Seconds for a Go-style duration (``30m``, ``1h30m``, ``900s``) or bare seconds; None if
+    unparseable or non-positive."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    try:
+        seconds = float(text)
+    except ValueError:
+        parts = _DURATION.findall(text)
+        if not parts or "".join(n + u for n, u in parts) != text:
+            return None
+        seconds = sum(float(n) * _UNIT[u] for n, u in parts)
+    return seconds if seconds > 0 else None
+
+
+def is_long_transfer(args) -> bool:
+    """True for bd verbs that move a whole Dolt store (push/pull/clone/bootstrap/backup sync or
+    restore); every other passthrough verb keeps the short STATE_TIMEOUT."""
+    words = [str(a) for a in args if not str(a).startswith("-")]
+    if not words:
+        return False
+    if words[0] == "dolt":
+        return len(words) > 1 and words[1] in {"push", "pull", "clone"}
+    if words[0] == "bootstrap":
+        return True
+    return words[0] == "backup" and len(words) > 1 and words[1] in {"sync", "restore"}
+
+
+@dataclass(frozen=True)
+class TransferTimeout:
+    seconds: float
+    source: str
+    raise_hint: str
+
+
+def transfer_timeout(args, cwd, *, env=None) -> TransferTimeout:
+    """The bounded wait for a passthrough bd verb. Short verbs keep STATE_TIMEOUT. Long store
+    transfers get the fsck allowance plus a transfer margin: an explicit BEADS_FSCK_TIMEOUT is
+    honoured as-is; otherwise the store-sized allowance (as push_state), capped by the
+    cap (BH_STATE_TIMEOUT_CAP, default MAX_FSCK_TIMEOUT). Never below STATE_TIMEOUT."""
+    if not is_long_transfer(args):
+        return TransferTimeout(STATE_TIMEOUT, "default STATE_TIMEOUT", "")
+    environ = os.environ if env is None else env
+    hint = f"set {FSCK_ENV} (e.g. {FSCK_ENV}=30m) or {CAP_ENV} (e.g. {CAP_ENV}=1h)"
+    explicit = parse_duration(environ.get(FSCK_ENV))
+    if explicit is not None:
+        total = max(STATE_TIMEOUT, explicit + TRANSFER_MARGIN)
+        return TransferTimeout(
+            total, f"{FSCK_ENV}={environ.get(FSCK_ENV)} + {TRANSFER_MARGIN:g}s", hint
+        )
+    cap, source = float(MAX_FSCK_TIMEOUT), "default cap"
+    configured = parse_duration(environ.get(CAP_ENV))
+    if configured is not None:
+        cap, source = configured, CAP_ENV
+    gib = 1024**3
+    sized = FSCK_TIMEOUT + ((_state_store_bytes(cwd) + gib - 1) // gib) * 60
+    fsck = max(float(FSCK_TIMEOUT), min(cap, float(sized)))
+    return TransferTimeout(
+        max(STATE_TIMEOUT, fsck + TRANSFER_MARGIN),
+        f"store-sized fsck allowance {fsck:g}s ({source}) + {TRANSFER_MARGIN:g}s",
+        hint,
+    )
+
+
+def timeout_message(args, timeout: float, info: TransferTimeout | None) -> str:
+    base = f"bd {' '.join(str(arg) for arg in args)} timed out after {timeout:g}s"
+    if info is None or not info.raise_hint:
+        return base
+    msg = f"{base} (timeout source: {info.source}). To raise it, {info.raise_hint}."
+    words = [str(a) for a in args if not str(a).startswith("-")]
+    if words[:2] == ["dolt", "push"]:
+        msg += " Supported path: bh hive sync remotes <hive> --push."
+    return msg
+
+
 @dataclass(frozen=True)
 class FederationPeer:
     """One peer row from `bd federation status --json`. When `reachable` is False the counts
@@ -344,6 +427,7 @@ class Engine(Protocol):
         env=None,
         hive_aware: bool = True,
         no_work_markers: tuple[str, ...] = (),
+        timeout_info=None,
     ):
         """Invoke the backend through the one bounded subprocess seam.
 
@@ -575,6 +659,7 @@ class BdEngine:
         env=None,
         hive_aware=True,
         no_work_markers=(),
+        timeout_info=None,
     ):
         """Run one bounded bd process while preserving its real invocation variants."""
         cmd = ["bd"]
@@ -603,7 +688,7 @@ class BdEngine:
                 args=cmd,
                 returncode=124,
                 stdout="",
-                stderr=f"bd {' '.join(str(arg) for arg in args)} timed out after {timeout:g}s",
+                stderr=timeout_message(args, timeout, timeout_info),
             )
 
         if result.returncode == 0 and no_work_markers:

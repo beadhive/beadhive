@@ -63,6 +63,7 @@ def run(
     env=None,
     hive_aware=True,
     no_work_markers=(),
+    timeout_info=None,
 ):
     """Run a `bd` subcommand scoped to the hive via `-C <cwd>` (so the right Beads DB is hit
     regardless of the process cwd / `--hive`). Prepends `--actor <name>` for the audit trail;
@@ -78,6 +79,7 @@ def run(
     into an ordinary non-zero completed result."""
     from . import engine  # lazy: engine imports bd, so keep the cycle import-safe
 
+    extra = {"timeout_info": timeout_info} if timeout_info is not None else {}
     return engine.get_engine().invoke(
         args,
         cwd=cwd,
@@ -89,6 +91,7 @@ def run(
         env=env,
         hive_aware=hive_aware,
         no_work_markers=tuple(no_work_markers),
+        **extra,
     )
 
 
@@ -966,7 +969,13 @@ def _run_one(args, cwd, cfg=None):
         return _create(args[1:], cwd)
     if args and args[0] == "import":
         return _import(args[1:], cwd)
-    return run(args, cwd, hive_aware=False, pin_process_cwd=True).returncode
+    from . import engine
+
+    extra = {}
+    if engine.is_long_transfer(args):  # short verbs keep run()'s default timeout untouched
+        info = engine.transfer_timeout(args, cwd)
+        extra = {"timeout": info.seconds, "timeout_info": info}
+    return run(args, cwd, hive_aware=False, pin_process_cwd=True, **extra).returncode
 
 
 def passthrough(mode, target, args):
