@@ -13,6 +13,13 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.28.3 (2026-10-20)
+
+### Fix
+
+- **engine**: hand bd its fsck allowance on passthrough, pull and clone
+- **engine**: resolve cwd=None and tolerate unresolvable store when sizing transfer timeout
+
 ## v0.28.2 (2026-10-20)
 
 ### Feat
