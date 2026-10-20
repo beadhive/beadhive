@@ -13,6 +13,14 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.28.2 (2026-10-20)
+
+### Feat
+
+- **release**: choose the bump version by cz flags or a checked exact successor
+- **fingerprint**: split committed and working scopes so a clone matches its source
+- **dolt**: opt-in s3_checksums profile key for Garage multipart reads
+
 ## v0.28.1 (2026-10-20)
 
 ### Fix
