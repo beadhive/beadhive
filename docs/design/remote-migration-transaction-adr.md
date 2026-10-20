@@ -76,13 +76,13 @@ any phase before `cutover`, and never destroyed by any phase at all except `reti
 
 | # | Phase | What happens | Ledger gate (must be true to leave) |
 |---|---|---|---|
-| P0 | `assess` | Read-only. Resolve hive, store, engine (must be server mode), source and target remotes (`dolt_remote.classify`), credentials presence, free space, `bd` / Dolt versions, pending schema delta, whether a local and remote merge base exist. Compute the **source fingerprint** (section 4) at the current HEAD. Dry-run stops here and prints the plan. | assessment recorded, no blocker |
+| P0 | `assess` | Read-only. Resolve hive, store, engine (must be server mode), source and target remotes (`dolt_remote.classify`), credentials presence, free space, `bd` / Dolt versions, pending schema delta, whether a local and remote merge base exist. Compute the **source fingerprint** (section 4) at the current HEAD, in both scopes. Dry-run stops here and prints the plan. | assessment recorded, no blocker |
 | P1 | `quiesce` | Take the per-hive migration lock (reuse `hive_migration_lock`; stale-PID detection retained). Fence writers: set the store read-only for bh (writer fence), refuse concurrent `bd dolt push/pull`. Record the HEAD commit that will be migrated. | lock held, writers fenced, HEAD pinned |
 | P2 | `snapshot` | Three artifacts under a unique, dated set in the `migrate` backup root (manifest per `bh-5009a`): JSONL export, **native** Dolt backup (over the connection, never a tar), and the **registry snapshot** (every Dolt-level remote and backup registration read below bd's abstraction, plus HQ descriptor and `.beads/config.yaml` `sync.remote`). Source fingerprint re-taken and must equal P0's. | each artifact verified non-empty and count-consistent |
 | P3 | `attest-backup` | **Restore-test** the native backup into a scratch database with a unique name and unique path, compute its fingerprint, require equality with the source. Scratch is dropped afterwards. A backup that was not restored is *unverified* and blocks P4. | restored fingerprint == source fingerprint |
 | P4 | `stage` | Register the target under a **temporary remote name** (`migrate-<txn>`) at a unique path (section 5). The canonical `origin` is untouched. Push the full history. | push exit 0 **and** target readable |
 | P5 | `hydrate` | Full-history clone of the target into a clean, independent store (unique database name and path, never the live database, never shallow). | clone complete |
-| P6 | `verify` | Compute the hydrated store's fingerprint; compare to source (strong tier, section 4). Any mismatch is a stop, with a diff report. | fingerprints equal |
+| P6 | `verify` | Compute the hydrated store's fingerprint; compare to source (strong tier, **committed** scope, section 4). Any mismatch is a stop, with a diff report. | fingerprints equal |
 | P7 | `cutover` | The only phase that changes meaning: switch the canonical remote (replace `origin` by the engine remote API, never raw `dolt remote add`, which silently re-points an existing name) and update the HQ descriptor. Re-create transport caches rather than copy them. Source registration is kept under the name `retained-<txn>` for rollback. | registry reads back as intended |
 | P8 | `prove` | Prove normal operation: a write, `bd dolt push`, a fresh clone/bootstrap of the new remote, `bd dolt pull` rc=0, fingerprint of the bootstrapped store equal. Unfence writers. | round trip green |
 | P9 | `hold` | Source is retained untouched for a configured window. Backups from P2 are retained. This phase has no automatic exit. | operator or window |
@@ -118,10 +118,12 @@ Invariants:
 
 ### 4. Corpus fingerprint
 
-Schema `bh.corpus-fingerprint/2` (`/1` hashed engine-rendered values and differed between server
+Schema `bh.corpus-fingerprint/3` (`/1` hashed engine-rendered values and differed between server
 and embedded reads; bh-m4ups): values are canonicalised (DATETIME to one UTC form, JSON
 key-sorted) before hashing, the strong tier also carries Dolt-native
-`dolt_hashof_db`/`dolt_hashof_table`, and `/1` digests are refused, never compared. A canonical
+`dolt_hashof_db`/`dolt_hashof_table`, and `/1` digests are refused, never compared. `/3`
+(bh-omxyj) adds the **scope** below; `/2` documents (existing backup manifests) are still read and
+are re-computed in `/2` form when re-verified, never compared with a `/3` digest. A canonical
 JSON document, key-sorted, UTF-8, reduced to a sha256, with every component also kept so a
 mismatch reports *which* component differed.
 
@@ -144,6 +146,32 @@ the commit hashes and is the only tier meaningful when comparing a JSONL-derived
 re-initialised store (engine-mode migration, JSONL restore). A tier is always recorded next to
 the digest; comparing across tiers is refused. A non-empty directory, an exit code, or a JSONL
 row count alone is **never** verification.
+
+#### Fingerprint scope (committed vs working)
+
+`dolt_ignore` marks tables that live only in the Dolt **working set**: never committed, pushed or
+cloned. bd ignores `events`, `bd_events_journal`, `bd_events_seq`, `bh_local_%`,
+`ignored_schema_migrations`, `leases`, `local_metadata`, `repo_mtimes`, `wisp_%` and `wisps`. Ignored
+tables are discovered from the store's own `dolt_ignore` patterns (a pattern matching a requested
+table counts even when that table is absent, as it is in a clone), never from a hard-coded list. A
+clone of a pushed store therefore can never equal its source on `events`, so the fingerprint has two
+scopes, recorded next to the tier and refused across (`FingerprintScopeMismatch`):
+
+| Scope | Reads | Digested tables | Native block | Used by |
+|---|---|---|---|---|
+| `committed` (default) | `AS OF` the `main` head | non-ignored only | `root` = `dolt_hashof_db('main')` plus per-table `dolt_hashof_table` of clean committed tables | **relocation**: clone-vs-source (P0 baseline, P6, P8) |
+| `working` | the working set | non-ignored **and** the requested ignored tables (`components.local_only`) | `db` = `dolt_hashof_db()` plus per-table hashes | **native backups**: P2 snapshot, P3 restore attestation, `backup verify`/`restore` |
+
+Local-only tables are always reported beside the digest (`local_only`: name, row count, a digest
+wherever the rows were read) and never gate a relocation. `migration.fingerprint.local_digests`
+(default off) adds their digests to the committed-scope report. Because a native backup carries
+the working set, the `working` scope keeps comparing the requested ignored tables (default:
+`events`), so drift there still fails a backup verify. Per phase: P0 records BOTH scopes of the
+source (committed for the relocation baseline, working for the snapshot); P2 re-takes each at its
+own scope and requires equality with P0's; P3 compares working-scope source and scratch restore;
+P6 and P8 compare **committed**-scope fingerprints of the source and the hydrated/bootstrapped
+store (the working-set `events` of the source is not on the remote, so it is reported, not
+compared).
 
 ### 5. Official-guidance record
 
@@ -259,7 +287,8 @@ in phase A depends on B, and no phase A bead may grow B behaviour.
 | Key | Default | Meaning |
 |---|---|---|
 | `migration.enabled` | `false` | master switch for the relocation verbs |
-| `migration.fingerprint.tables` | dependencies, labels, comments, events, config, metadata | extra tables in the fingerprint |
+| `migration.fingerprint.tables` | dependencies, labels, comments, events, config, metadata | extra tables in the fingerprint (a `dolt_ignore`'d one is local-only: compared in the working scope, reported in the committed scope) |
+| `migration.fingerprint.local_digests` | off | digest the local-only tables in the committed-scope report |
 | `migration.attest.max_age` | `24h` | oldest accepted P3 attestation at cutover/retire |
 | `migration.hold.window` | `7d` | minimum `held` time before retire |
 | `migration.retry.max` | `3` | per-phase transient retries |

@@ -497,7 +497,12 @@ def take_snapshot(
         return abort("JSONL export is empty")
 
     try:
-        fp0 = cf.compute(source_facts(engine, hive_dir, tables), cf.TIER_STRONG, tables=tables)
+        fp0 = cf.compute(
+            source_facts(engine, hive_dir, tables),
+            cf.TIER_STRONG,
+            tables=tables,
+            scope=cf.SCOPE_WORKING,
+        )
         expected = record_counts(
             lambda q: engine.query_rows(hive_dir, q), lambda t: f"`{t}`", database=None
         )
@@ -536,7 +541,12 @@ def take_snapshot(
 
     # -- the source must not have moved while we copied it
     try:
-        fp1 = cf.compute(source_facts(engine, hive_dir, tables), cf.TIER_STRONG, tables=tables)
+        fp1 = cf.compute(
+            source_facts(engine, hive_dir, tables),
+            cf.TIER_STRONG,
+            tables=tables,
+            scope=cf.SCOPE_WORKING,
+        )
     except (cf.FingerprintError, RuntimeError) as exc:
         return _fail(res, f"source fingerprint unavailable after backup: {exc}")
     moved = cf.compare(fp0, fp1)
@@ -653,7 +663,7 @@ def attest(
     try:
         handle = store.restore(native_url, name)
         facts, restored_records = scratch_facts(store, handle, tables)
-        restored = cf.compute(facts, cf.TIER_STRONG, tables=tables)
+        restored = cf.compute_like(facts, source, tables=tables)
         diff = cf.compare(source, restored)
         attestation["restored_digest"] = restored.digest
         attestation["matched"] = (
@@ -886,10 +896,10 @@ def verify_set(
     handle = None
     try:
         handle = store.restore(f"file://{set_dir / NATIVE_NAME}", name)
-        use_tables = tuple(tables or m["fingerprint"]["components"]["tables"].keys())
-        facts, _records = scratch_facts(store, handle, use_tables)
-        got = cf.compute(facts, cf.TIER_STRONG, tables=use_tables)
         want_fp = cf.Fingerprint.from_dict(m["fingerprint"])
+        use_tables = tuple(tables or want_fp.tables)
+        facts, _records = scratch_facts(store, handle, use_tables)
+        got = cf.compute_like(facts, want_fp, tables=use_tables)
         diff = cf.compare(want_fp, got)
         rep.attested = diff.equal
         if not diff.equal:
@@ -979,13 +989,11 @@ def restore_set(
         return out
     engine = engine or engine_mod.get_engine(cfg)
     want = cf.Fingerprint.from_dict(m["fingerprint"])
-    use_tables = tuple(tables or want.components["tables"].keys())
+    use_tables = tuple(tables or want.tables)
     live_note = ""
     live_readable = False
     try:
-        live = cf.compute(
-            source_facts(engine, hive_dir, use_tables), cf.TIER_STRONG, tables=use_tables
-        )
+        live = cf.compute_like(source_facts(engine, hive_dir, use_tables), want, tables=use_tables)
         if live.components.get("project_id") not in ("", want.components.get("project_id")):
             out.problems.append(
                 "PROJECT IDENTITY MISMATCH: the live store belongs to a different project than "
@@ -1086,8 +1094,8 @@ def restore_set(
         )
     if res.returncode == 0:
         try:
-            got = cf.compute(
-                source_facts(engine, hive_dir, use_tables), cf.TIER_STRONG, tables=use_tables
+            got = cf.compute_like(
+                source_facts(engine, hive_dir, use_tables), want, tables=use_tables
             )
             diff = cf.compare(want, got)
             out.fingerprint_matched = diff.equal

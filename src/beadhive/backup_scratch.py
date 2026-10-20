@@ -31,10 +31,12 @@ from typing import Protocol
 
 from . import dolt_health, store_locator
 from .corpus_fingerprint import (
+    SCOPE_COMMITTED,
+    SCOPE_WORKING,
     CorpusFacts,
-    FingerprintError,
     FingerprintIncomplete,
-    native_hashes,
+    native_for,
+    read_scoped,
 )
 from .dolt_remote import redact_url
 from .run import run
@@ -485,13 +487,17 @@ def read_corpus_facts(
     tables: Sequence[str],
     schema_version: int | None,
     native: bool = False,
+    scope: str = SCOPE_COMMITTED,
+    local_digests: bool = False,
 ) -> CorpusFacts:
     """Facts of ONE database. ``database`` is the schema name to filter ``information_schema``
     (``None``: the connection's current database). ``schema_version`` is supplied by the caller
     because the live source uses the ADR's real-store probe while a restored copy is read in
     place; ``None`` makes the fingerprint refuse (:class:`FingerprintIncomplete`). ``native`` also
     reads Dolt's own ``dolt_hashof_db``/``dolt_hashof_table`` -- only valid when ``query`` runs
-    with the database in question as the session's current database."""
+    with the database in question as the session's current database. ``scope`` is the fingerprint
+    scope the facts are read for (:mod:`corpus_fingerprint`): ``committed`` reads AS OF ``main`` and
+    only counts the ``dolt_ignore``'d local-only tables; ``working`` reads the working set."""
     branches = query(f"SELECT name, hash FROM {qualify('dolt_branches')}")
     main = next((b for b in branches if str(b.get("name")) == "main"), None)
     where = f"table_schema = {_quote(database)}" if database else "table_schema = DATABASE()"
@@ -499,26 +505,25 @@ def read_corpus_facts(
         str(r.get("table_name") or r.get("TABLE_NAME"))
         for r in query(f"SELECT table_name FROM information_schema.tables WHERE {where}")
     }
-    issues = query(f"SELECT * FROM {qualify('issues')} ORDER BY id")
-    prefix_rows = query(f"SELECT value FROM {qualify('config')} WHERE `key` = 'issue_prefix'")
-    meta = query(f"SELECT value FROM {qualify('metadata')} WHERE `key` = '_project_id'")
-    out: dict = {}
-    for table in tables:
-        if not _IDENT_TABLE.match(table):
-            raise FingerprintError(f"invalid table name {table!r}")
-        out[table] = query(f"SELECT * FROM {qualify(table)}") if table in real else None
-    present = [
-        t for t in dict.fromkeys(("issues", *tables)) if t == "issues" or out.get(t) is not None
-    ]
+    read = read_scoped(
+        query, qualify, real=real, tables=tables, scope=scope, local_digests=local_digests
+    )
+    as_of = " AS OF 'main'" if scope == SCOPE_COMMITTED else ""
+    prefix_rows = query(
+        f"SELECT value FROM {qualify('config')}{as_of} WHERE `key` = 'issue_prefix'"
+    )
+    meta = query(f"SELECT value FROM {qualify('metadata')}{as_of} WHERE `key` = '_project_id'")
     return CorpusFacts(
-        native=native_hashes(query, present) if native else None,
+        native=native_for(query, read, scope) if native else None,
         project_id=str(_first(meta, "value", "") or ""),
         prefix=str(_first(prefix_rows, "value", "") or ""),
         schema_version=schema_version,
         main_head=str(main.get("hash") or "") if main else "",
         branches={str(b["name"]): str(b["hash"]) for b in branches},
-        issue_rows={str(r["id"]): r for r in issues},
-        tables=out,
+        issue_rows={str(r["id"]): r for r in read.issues},
+        tables=read.tables,
+        ignored=read.ignored,
+        local_counts=read.local_counts,
     )
 
 
@@ -552,7 +557,16 @@ def source_schema_version(hive_dir: Path) -> int | None:
     ).version
 
 
-def source_facts(engine, hive_dir: Path, tables: Sequence[str]) -> CorpusFacts:
+def source_facts(
+    engine,
+    hive_dir: Path,
+    tables: Sequence[str],
+    *,
+    scope: str = SCOPE_WORKING,
+    local_digests: bool = False,
+) -> CorpusFacts:
+    """The live store's facts. Defaults to the ``working`` scope: its callers are native backups,
+    which carry the working set; relocation passes ``scope=SCOPE_COMMITTED``."""
     version = source_schema_version(hive_dir)
     if version is None:
         raise FingerprintIncomplete(
@@ -566,13 +580,21 @@ def source_facts(engine, hive_dir: Path, tables: Sequence[str]) -> CorpusFacts:
         tables=tables,
         schema_version=version,
         native=True,
+        scope=scope,
+        local_digests=local_digests,
     )
 
 
 def scratch_facts(
-    scratch: ScratchStore, handle: ScratchHandle, tables: Sequence[str]
+    scratch: ScratchStore,
+    handle: ScratchHandle,
+    tables: Sequence[str],
+    *,
+    scope: str = SCOPE_WORKING,
+    local_digests: bool = False,
 ) -> tuple[CorpusFacts, int]:
-    """``(facts, export-record count)`` of a restored scratch database."""
+    """``(facts, export-record count)`` of a restored scratch database (``working`` scope by
+    default: a native backup carries the working set)."""
     query = lambda q: scratch.query(handle, q)  # noqa: E731
     qualify = lambda t: scratch.qualify(handle, t)  # noqa: E731
     db = handle.name if not handle.path else None
@@ -587,5 +609,7 @@ def scratch_facts(
         schema_version=version,
         # a scratch DATABASE on a shared server is not the session's database: no native hashes
         native=bool(handle.path),
+        scope=scope,
+        local_digests=local_digests,
     )
     return facts, record_counts(query, qualify, database=db)

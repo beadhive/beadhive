@@ -626,7 +626,9 @@ def embedded(monkeypatch, tmp_path):
 def _live_digest(eng, hive):
     from beadhive.backup_scratch import source_facts
 
-    return cf.compute(source_facts(eng, hive, cf.DEFAULT_TABLES), cf.TIER_STRONG).digest
+    return cf.compute(
+        source_facts(eng, hive, cf.DEFAULT_TABLES), cf.TIER_STRONG, scope=cf.SCOPE_WORKING
+    ).digest
 
 
 @pytest.mark.integration
@@ -818,19 +820,41 @@ def test_server_source_and_embedded_restore_of_its_own_backup_fingerprint_identi
     assert row_s["title"] == row_e["title"]  # unicode and escapes survive both paths
 
     for tier in (cf.TIER_STRONG, cf.TIER_CORPUS):
-        a = cf.compute(server, tier, tables=tables)
-        b = cf.compute(embedded, tier, tables=tables)
+        a = cf.compute(server, tier, tables=tables, scope=cf.SCOPE_WORKING)
+        b = cf.compute(embedded, tier, tables=tables, scope=cf.SCOPE_WORKING)
         assert a.digest == b.digest, cf.compare(a, b).detail
         assert cf.compare(a, b).equal
     # the Dolt-native cross-check is present on both sides and equal
-    a = cf.compute(server, cf.TIER_STRONG, tables=tables)
-    b = cf.compute(embedded, cf.TIER_STRONG, tables=tables)
+    a = cf.compute(server, cf.TIER_STRONG, tables=tables, scope=cf.SCOPE_WORKING)
+    b = cf.compute(embedded, cf.TIER_STRONG, tables=tables, scope=cf.SCOPE_WORKING)
     assert a.native and a.native == b.native and a.native["db"]
     assert set(a.native["tables"]) >= {"issues", *tables}
 
     # the server reader (bd sql) agrees with the embedded scratch reader too
-    via_bd_sql = cf.fingerprint(cf.BdSqlCorpusReader(), hive, cf.TIER_STRONG, tables=tables)
+    via_bd_sql = cf.fingerprint(
+        cf.BdSqlCorpusReader(), hive, cf.TIER_STRONG, tables=tables, scope=cf.SCOPE_WORKING
+    )
     assert via_bd_sql.digest == b.digest and via_bd_sql.native == b.native
+
+    # the committed scope (relocation) agrees across the two engines too, and leaves events out
+    c_server = cf.compute(
+        source_facts(eng, hive, tables, scope=cf.SCOPE_COMMITTED),
+        cf.TIER_STRONG,
+        tables=tables,
+        scope=cf.SCOPE_COMMITTED,
+    )
+    c_embedded = cf.compute(
+        scratch_facts(
+            store, store.restore(dest, "restored_nm_c"), tables, scope=cf.SCOPE_COMMITTED
+        )[0],
+        cf.TIER_STRONG,
+        tables=tables,
+        scope=cf.SCOPE_COMMITTED,
+    )
+    assert "events" not in c_server.components["tables"]
+    assert c_server.local_only and "events" in c_server.local_only
+    assert cf.compare(c_server, c_embedded).equal, cf.compare(c_server, c_embedded).detail
+    assert c_server.native["root"] == c_embedded.native["root"]
 
     # and the real snapshot attests a server-mode source by an EMBEDDED restore
     res = nb.take_snapshot(
@@ -840,7 +864,23 @@ def test_server_source_and_embedded_restore_of_its_own_backup_fingerprint_identi
     m = nb.load_manifest(res.set_dir)
     assert m["dolt_mode"] == "server" and m["verified"]
     assert m["attestation"]["restored_digest"] == m["fingerprint"]["digest"]
-    assert m["fingerprint"]["schema"] == "bh.corpus-fingerprint/2"
+    assert m["fingerprint"]["schema"] == "bh.corpus-fingerprint/3"
+
+    # local-only drift: the backup's (working-scope) fingerprint covers events, so a live store
+    # whose events changed afterwards no longer matches it, though its committed scope is untouched
+    want = cf.Fingerprint.from_dict(m["fingerprint"])
+    assert "events" in want.components["local_only"] and want.scope == cf.SCOPE_WORKING
+    committed_before = cf.compute(
+        source_facts(eng, hive, tables, scope=cf.SCOPE_COMMITTED), cf.TIER_STRONG, tables=tables
+    )
+    _bd(hive, "sql", "DELETE FROM events")
+    live = cf.compute_like(source_facts(eng, hive, tables), want, tables=tables)
+    drift = cf.compare(want, live)
+    assert not drift.equal and any(d.startswith("local_only.events") for d in drift.differing)
+    committed_after = cf.compute(
+        source_facts(eng, hive, tables, scope=cf.SCOPE_COMMITTED), cf.TIER_STRONG, tables=tables
+    )
+    assert cf.compare(committed_before, committed_after).equal
 
 
 def test_cli_verbs_are_catalogued_and_confirm_is_typed():
