@@ -15,6 +15,20 @@ Everything `bh` owns on a machine lives under **`~/.beadhive/`** (module: `confi
 | dolt env | `~/.beadhive/.env` | — | [DOLT](DOLT.md) server secrets |
 | dolt compose | `~/.beadhive/docker-compose.yml` | — | [DOLT](DOLT.md) |
 
+### bd passthrough timeouts for long store transfers
+
+`bh bd` runs ordinary bd commands under a 120s bound. Long store transfers (`dolt push`,
+`dolt pull`, `dolt clone`, `bootstrap`, `backup sync`, `backup restore`) instead get the fsck
+allowance plus a 60s transfer margin, never less than 120s:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `BEADS_FSCK_TIMEOUT` | unset | When set (`30m`, `1h30m`, `900s` or bare seconds), used as the fsck part, uncapped; total is this plus 60s. Unparseable values are ignored. |
+| `BH_STATE_TIMEOUT_CAP` | `900` (seconds) | Cap on the store-sized fsck allowance (300s plus 60s per GiB of store) used when `BEADS_FSCK_TIMEOUT` is unset. Same duration syntax. |
+
+When the bound fires the command exits 124 and the message names the timeout, its source and
+these variables; for `dolt push` it also points at `bh hive sync remotes <hive> --push`.
+
 `GIT_WORKSPACE` (defaults to `~/workspace`) is **git-workspace's** variable, shared — it's
 the root directory (canonical HQ launch directory) from which `bh` derives `<group>/<account>/<repo>`
 identity for all cloned hives during initial setup and beyond (the first segment is the repo-group

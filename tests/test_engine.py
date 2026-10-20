@@ -777,3 +777,103 @@ def test_bd_run_routes_through_get_engine(monkeypatch):
         )
     ]
     assert res.stdout == "faked"
+
+
+# bh-h67tf: the bd passthrough sizes long store transfers instead of cutting them at 120s.
+
+
+@pytest.mark.parametrize(
+    "args, long",
+    [
+        (["dolt", "push"], True),
+        (["dolt", "pull"], True),
+        (["dolt", "clone", "x"], True),
+        (["bootstrap"], True),
+        (["backup", "sync"], True),
+        (["backup", "restore", "p"], True),
+        (["list", "--json"], False),
+        (["dolt", "commit"], False),
+        (["backup", "status"], False),
+    ],
+)
+def test_transfer_timeout_per_command_class(args, long, monkeypatch):
+    monkeypatch.setattr(engine, "_state_store_bytes", lambda _cwd: 3 * 1024**3)
+    info = engine.transfer_timeout(args, "/hive", env={})
+    if long:
+        assert info.seconds == engine.FSCK_TIMEOUT + 180 + engine.TRANSFER_MARGIN
+        assert info.seconds > engine.STATE_TIMEOUT
+    else:
+        assert info.seconds == engine.STATE_TIMEOUT
+        assert not info.raise_hint
+
+
+def test_transfer_timeout_default_cap_does_not_shrink(monkeypatch):
+    monkeypatch.setattr(engine, "_state_store_bytes", lambda _cwd: 100 * 1024**3)
+    info = engine.transfer_timeout(["dolt", "push"], "/hive", env={})
+    assert info.seconds == engine.MAX_FSCK_TIMEOUT + engine.TRANSFER_MARGIN
+
+
+def test_transfer_timeout_cap_from_env(monkeypatch):
+    monkeypatch.setattr(engine, "_state_store_bytes", lambda _cwd: 100 * 1024**3)
+    by_env = engine.transfer_timeout(["dolt", "push"], "/h", env={engine.CAP_ENV: "30m"})
+    assert by_env.seconds == 1800 + engine.TRANSFER_MARGIN
+    assert engine.CAP_ENV in by_env.source
+
+
+@pytest.mark.parametrize("value, fsck", [("30m", 1800), ("900", 900), ("1h30m", 5400)])
+def test_transfer_timeout_honours_beads_fsck_timeout(value, fsck, monkeypatch):
+    monkeypatch.setattr(engine, "_state_store_bytes", lambda _cwd: 0)
+    info = engine.transfer_timeout(["dolt", "push"], "/h", env={"BEADS_FSCK_TIMEOUT": value})
+    assert info.seconds == fsck + engine.TRANSFER_MARGIN
+    assert "BEADS_FSCK_TIMEOUT" in info.source
+
+
+def test_transfer_timeout_ignores_garbage_fsck_value(monkeypatch):
+    monkeypatch.setattr(engine, "_state_store_bytes", lambda _cwd: 0)
+    info = engine.transfer_timeout(["dolt", "push"], "/h", env={"BEADS_FSCK_TIMEOUT": "soon"})
+    assert info.seconds == engine.FSCK_TIMEOUT + engine.TRANSFER_MARGIN
+
+
+def test_passthrough_timeout_message_names_source_and_supported_path(monkeypatch):
+    monkeypatch.setattr(engine, "_state_store_bytes", lambda _cwd: 0)
+
+    def boom(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+
+    monkeypatch.setattr(bd, "_run", boom)
+    info = engine.transfer_timeout(["dolt", "push"], "/h", env={})
+    res = engine.BdEngine().invoke(
+        ["dolt", "push"], cwd="/h", capture=True, timeout=info.seconds, timeout_info=info
+    )
+    assert res.returncode == 124
+    assert "timed out after 360s" in res.stderr
+    assert info.source in res.stderr
+    assert "BEADS_FSCK_TIMEOUT" in res.stderr and "BH_STATE_TIMEOUT_CAP" in res.stderr
+    assert "bh hive sync remotes <hive> --push" in res.stderr
+
+
+def test_short_command_timeout_message_unchanged(monkeypatch):
+    def boom(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+
+    monkeypatch.setattr(bd, "_run", boom)
+    res = engine.BdEngine().invoke(["list"], cwd="/h", capture=True)
+    assert res.stderr == "bd list timed out after 120s"
+
+
+def test_bd_run_one_passes_sized_timeout_only_for_long_transfers(monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        bd, "run", lambda args, cwd, **k: seen.append((list(args), k)) or Completed(0, "", "")
+    )
+    monkeypatch.setattr(engine, "_state_store_bytes", lambda _cwd: 0)
+    monkeypatch.setattr(bd.guard, "bd_write_refusal", lambda *a, **k: "")
+    monkeypatch.setattr(bd, "wisp_cleanup_refusal", lambda *a, **k: "")
+    monkeypatch.delenv("BEADS_FSCK_TIMEOUT", raising=False)
+    monkeypatch.delenv("BH_STATE_TIMEOUT_CAP", raising=False)
+
+    bd._run_one(["dolt", "push"], "/hive", {})
+    bd._run_one(["list"], "/hive", {})
+
+    assert seen[0][1]["timeout"] == engine.FSCK_TIMEOUT + engine.TRANSFER_MARGIN
+    assert "timeout" not in seen[1][1]
