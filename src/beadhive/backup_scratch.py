@@ -20,8 +20,10 @@ database name or path that already exists: a scratch is never an overwrite.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
+import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,8 +42,29 @@ from .run import run
 #: A restore copies the whole database; bound it generously (seconds), never leave it unbounded.
 RESTORE_TIMEOUT = 3600.0
 QUERY_TIMEOUT = 120.0
+#: Operator override (seconds) for the restore bound, for stores that need more than the default.
+RESTORE_TIMEOUT_ENV = "BH_SCRATCH_RESTORE_TIMEOUT"
+#: ``dolt`` (default) restores through the Dolt SQL client, which has no client-side read
+#: deadline; ``bd`` forces the legacy ``bd sql`` path (bd's Go MySQL driver cuts a call off after
+#: a fixed ~10s read timeout, bh-367wc), kept only as the fallback when ``dolt`` is not on PATH.
+RESTORE_TRANSPORT_ENV = "BH_SCRATCH_RESTORE_TRANSPORT"
 
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+#: ``<prefix>_scr_<txn>``: the only databases a failed restore may drop (never a live hive's).
+_SCRATCH_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*_scr_[A-Za-z0-9_]+$")
+_CUTOFF = re.compile(
+    r"invalid connection|bad connection|i/o timeout|connection reset|broken pipe|unexpected eof",
+    re.IGNORECASE,
+)
+_CUTOFF_HINT = (
+    "the SQL connection was cut off mid-call. bd's own SQL client enforces a short fixed read "
+    "timeout (about 10s; no bd flag or BEADS_DOLT_POOL_READ_TIMEOUT setting changes it for "
+    "`bd sql`), so install `dolt` on PATH to let bh restore over the Dolt SQL client; if the "
+    "server itself closes the connection, raise listener.read_timeout_millis and "
+    "write_timeout_millis in the Dolt server.yaml (an operator change; bh never edits it)"
+)
+_DEFAULT_SERVER_HOST = "127.0.0.1"
+_DEFAULT_SERVER_PORT = 3308
 _DROPPED_DIR = ".dolt_dropped_databases"
 
 
@@ -119,6 +142,15 @@ def _size(path: Path) -> int:
     return total
 
 
+def _env_seconds(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    try:
+        value = float(raw) if raw else default
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
 class ServerScratch:
     """Scratch database on the hive's own Dolt server (never a live hive's database)."""
 
@@ -128,12 +160,18 @@ class ServerScratch:
         hive_dir: Path,
         *,
         data_dir: Path | None = None,
-        restore_timeout: float = RESTORE_TIMEOUT,
+        restore_timeout: float | None = None,
+        transport: str | None = None,
     ):
         self._engine = engine
         self._hive_dir = Path(hive_dir)
         self._data_dir = data_dir
-        self._timeout = restore_timeout
+        self._timeout = (
+            restore_timeout
+            if restore_timeout is not None
+            else _env_seconds(RESTORE_TIMEOUT_ENV, RESTORE_TIMEOUT)
+        )
+        self._transport = (transport or os.environ.get(RESTORE_TRANSPORT_ENV) or "dolt").lower()
 
     def _sql(self, statement: str, *, timeout: float = QUERY_TIMEOUT):
         return self._engine.invoke(
@@ -149,23 +187,112 @@ class ServerScratch:
             raise ScratchError(f"cannot list databases: {exc}") from exc
         return {str(r.get("n") or r.get("SCHEMA_NAME") or r.get("schema_name") or "") for r in rows}
 
+    def _endpoint(self) -> tuple[str, int]:
+        """The server bd itself talks to: bd's env override, else the shared server's port file,
+        else the fleet default."""
+        host = os.environ.get("BEADS_DOLT_SERVER_HOST") or _DEFAULT_SERVER_HOST
+        raw = os.environ.get("BEADS_DOLT_SERVER_PORT", "").strip()
+        if not raw:
+            try:
+                raw = (store_locator.shared_server_dir() / "dolt-server.port").read_text().strip()
+            except OSError:
+                raw = ""
+        try:
+            return host, int(raw)
+        except ValueError:
+            return host, _DEFAULT_SERVER_PORT
+
+    def _dolt_client(self, statement: str) -> tuple[list[str], dict]:
+        """``dolt --host .. sql -q`` against the server, with bd's own credentials model
+        (``BEADS_DOLT_SERVER_USER`` / persisted user / root; ``BEADS_DOLT_PASSWORD``). The
+        password travels in the environment, never argv."""
+        host, port = self._endpoint()
+        user = (
+            os.environ.get("BEADS_DOLT_SERVER_USER", "")
+            or store_locator.server_user(self._hive_dir)
+            or "root"
+        )
+        argv = ["dolt", "--host", host, "--port", str(port)]
+        if os.environ.get("BEADS_DOLT_SERVER_TLS", "").strip().lower() not in {"1", "true"}:
+            argv.append("--no-tls")
+        argv += ["--user", user]
+        env = dict(os.environ)
+        password = os.environ.get("BEADS_DOLT_PASSWORD", "")
+        if password:
+            env["DOLT_CLI_PASSWORD"] = password
+        else:
+            argv += ["--password", ""]
+        return [*argv, "sql", "-q", statement], env
+
+    def _call_restore(self, statement: str):
+        """Run the long restore call; ``(returncode, output tail, transport used)``."""
+        if self._transport != "bd":
+            argv, env = self._dolt_client(statement)
+            try:
+                res = run(
+                    argv,
+                    cwd=str(self._hive_dir),
+                    env=env,
+                    check=False,
+                    capture=True,
+                    timeout=self._timeout,
+                )
+            except subprocess.TimeoutExpired:
+                return 124, f"timed out after {self._timeout:g}s", "dolt"
+            if res.returncode != 127:  # 127: no `dolt` on PATH -> fall back to bd
+                return res.returncode, res.stderr or res.stdout or "", "dolt"
+        res = self._sql(statement, timeout=self._timeout)
+        return res.returncode, res.stderr or res.stdout or "", "bd"
+
+    def _discard_partial(self, name: str) -> str:
+        """Drop a failed restore's partial database (only a ``<prefix>_scr_<txn>`` name) and say
+        what was left: Dolt keeps the dropped copy (bh-2hvmd)."""
+        if not _SCRATCH_NAME.match(name):
+            return f"{name!r} is not a scratch name; nothing dropped"
+        try:
+            if name not in self._databases():
+                return "no partial scratch database remained"
+            copy = self.drop(ScratchHandle(name))
+        except ScratchError as exc:
+            return f"partial scratch database {name!r} NOT dropped ({exc}); drop it by hand"
+        where = copy.location + (f" ({copy.size_bytes} bytes)" if copy.located else "")
+        return (
+            f"partial scratch database {name!r} dropped; Dolt kept the copy at {where} "
+            "(reclaim it deliberately)"
+        )
+
     def restore(self, source_url: str, name: str) -> ScratchHandle:
         if not _IDENT.match(name):
             raise ScratchError(f"unsafe scratch database name {name!r}")
         if name in self._databases():
             raise ScratchError(f"scratch database {name!r} already exists; refusing to overwrite")
-        res = self._sql(
-            f"CALL DOLT_BACKUP('restore', {_quote(source_url)}, {_quote(name)})",
-            timeout=self._timeout,
-        )
-        if res.returncode != 0:
-            tail = ((res.stderr or res.stdout or "").strip().splitlines() or [""])[-1]
-            raise ScratchError(
-                f"restore of {redact_url(source_url)} into {name!r} failed: "
-                f"{scrub(tail) or 'exit ' + str(res.returncode)}"
+        problem = ""
+        try:
+            code, output, via = self._call_restore(
+                f"CALL DOLT_BACKUP('restore', {_quote(source_url)}, {_quote(name)})"
             )
-        if name not in self._databases():
-            raise ScratchError(f"restore reported success but database {name!r} does not exist")
+            if code != 0:
+                tail = (output.strip().splitlines() or [""])[-1]
+                problem = (
+                    f"restore of {redact_url(source_url)} into {name!r} failed via {via}: "
+                    f"{scrub(tail) or 'exit ' + str(code)}"
+                )
+                if _CUTOFF.search(output):
+                    problem += f" -- {_CUTOFF_HINT}"
+            elif name not in self._databases():
+                problem = f"restore reported success but database {name!r} does not exist"
+        except BaseException as exc:
+            # Any failure (including an interrupt) must not leave the partial database behind.
+            cleanup = self._discard_partial(name)
+            if isinstance(exc, ScratchError):
+                raise ScratchError(f"{exc}; {cleanup}") from exc
+            if isinstance(exc, Exception):
+                raise ScratchError(
+                    f"restore into {name!r} failed: {scrub(str(exc))}; {cleanup}"
+                ) from exc
+            raise
+        if problem:
+            raise ScratchError(f"{problem}; {self._discard_partial(name)}")
         return ScratchHandle(name)
 
     def query(self, handle: ScratchHandle, sql: str) -> list[dict]:
