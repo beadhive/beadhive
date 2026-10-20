@@ -49,9 +49,13 @@ _CLI_ROWS = """
 alerts show|as_json:boolean:o
 backfill-complexity|hive:string:o,apply:boolean:o,dry_run:boolean:o,plan_path:string:o,pre_state:string:o,audit:string:o,as_json:boolean:o
 backup export|dest:string:o
+backup list|hive:string:o,as_json:boolean:o
 backup migrate-layout|dry_run:boolean:o,confirm:boolean:o
 backup reclaim|root:string:o,hive_id:string:o,dry_run:boolean:o,confirm:boolean:o,force:boolean:o
+backup restore|set_ref:string:o,hive:string:o,hq:boolean:o,dry_run:boolean:o,confirm:string:o,as_json:boolean:o,no_pre_restore_snapshot:boolean:o
+backup snapshot|hive:string:o,hq:boolean:o,dry_run:boolean:o,as_json:boolean:o
 backup usage|as_json:boolean:o
+backup verify|set_ref:string:o,hive:string:o,hq:boolean:o,restore_test:boolean:o,as_json:boolean:o
 bd|
 checkpoint run|bead:string:r,key:string:r,value:string:r,step:string:o,hive:string:o
 config get|key:string:r,scope:string:o
@@ -289,6 +293,7 @@ worktree status|hive:string:o,as_json:boolean:o,local_safe:boolean:o,root:array:
 
 _READ_PATHS = {
     "alerts show",
+    "backup list",
     "backup usage",
     "config get",
     "config path",

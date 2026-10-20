@@ -61,7 +61,7 @@
       "id": "urn:beadhive:wire-catalog:cli-projections:1",
       "kind": "catalog",
       "path": "artifacts/cli-projections-v1.json",
-      "sha256": "sha256:820cffc1704efa22ef8adc0a8c4a39400902d5db3ac69e626dcff3581d9fa91d",
+      "sha256": "sha256:37c4241e2949b18adc55cf1fac7a8e5967175074ff6f6a2682a12a23bc872227",
       "source_owner": "beadhive.transport_inventory.document",
       "version": 2
     },
@@ -152,7 +152,7 @@
       "id": "urn:beadhive:wire-catalog:operations:1",
       "kind": "catalog",
       "path": "artifacts/operation-catalog-v1.json",
-      "sha256": "sha256:64c90362eb434e4955820945ffa61513d9a3b295763e0823a22e7a05f1dc5327",
+      "sha256": "sha256:15b7f8b4f015c664b2e101b51c793a9e96937ce4d68228d8fd0a51358c7e1e61",
       "source_owner": "beadhive.kernel.operations.document",
       "version": 2
     },

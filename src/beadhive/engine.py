@@ -510,6 +510,13 @@ class Engine(Protocol):
         ``ok=False``, never an empty registry."""
         ...
 
+    def query_rows(self, cwd, query: str) -> list[dict]:
+        """Rows of a read-only SQL ``query`` against ``cwd``'s database in EITHER engine mode
+        (server: ``bd sql``; embedded: the Dolt CLI on the database directory). Raises
+        ``RuntimeError`` (value-free message) when the query cannot be answered, so a caller can
+        never mistake a failed read for an empty result."""
+        ...
+
     def add_backup(self, cwd, url: str, *, replace: bool = False):
         """Register ``url`` as the bd backup slot. Probe-then-add: refused when a remote
         already claims the address (Dolt would refuse it anyway, invisibly to bd), and refused
@@ -1019,6 +1026,12 @@ class BdEngine:
             return None, "parse-error"
         return [row for row in rows if isinstance(row, dict)], ""
 
+    def query_rows(self, cwd, query):
+        rows, error = self._sql_rows(cwd, query)
+        if rows is None:
+            raise RuntimeError(f"sql read failed: {error}")
+        return rows
+
     def read_registry(self, cwd):
         dolt_remote = importlib.import_module("beadhive.dolt_remote")
         kind = dolt_remote.RegistryKind
@@ -1127,11 +1140,6 @@ class BdEngine:
     def restore_registry(self, cwd, snapshot, *, extra_env=None):
         dolt_remote = importlib.import_module("beadhive.dolt_remote")
         kind = dolt_remote.RegistryKind
-        read = self.read_registry(cwd)
-        if not read.ok:
-            return RegistryOutcome(ok=False, error=f"cannot read the registry: {read.error}")
-        current = read.snapshot
-        delta = snapshot.diff(current)
         notes: list[str] = []
         failed = False
 
@@ -1143,35 +1151,50 @@ class BdEngine:
                 return False
             return True
 
-        for which, name in (*delta.added, *delta.changed):
-            slot = which == kind.BACKUP and name == dolt_remote.BD_BACKUP_SLOT
-            if which == kind.REMOTE:
-                res = self.remove_remote(cwd, name)
-                if res.returncode:
-                    res = self._dolt_write(cwd, "remote", "remove", name)
-            else:
-                res = (
-                    self.remove_backup(cwd)
-                    if slot
-                    else self._dolt_write(cwd, "backup", "remove", name)
-                )
-            attempt(f"remove {which.value} {name!r}", res)
-        for which, name in (*delta.removed, *delta.changed):
-            want = snapshot.remote(name) if which == kind.REMOTE else snapshot.backup(name)
-            if want is None:
-                continue
-            if which == kind.REMOTE:
-                res = self.invoke(
-                    ["dolt", "remote", "add", name, want.url],
-                    cwd=cwd,
-                    capture=True,
-                    env=_extra_env(None, extra_env),
-                )
-            elif name == dolt_remote.BD_BACKUP_SLOT:
-                res = self._state_call(["backup", "add", want.url], cwd)
-            else:
-                res = self._dolt_write(cwd, "backup", "add", name, want.url, extra_env=extra_env)
-            attempt(f"add {which.value} {name!r}", res)
+        # Converge, do not assume one pass is enough: `bd backup remove` also drops bd's other
+        # backup registration (`backup_export`) as collateral, which a single pass computed from
+        # the entry diff would never put back (measured on bd 1.3.0). Each pass re-reads.
+        for _pass in range(3):
+            read = self.read_registry(cwd)
+            if not read.ok:
+                return RegistryOutcome(ok=False, error=f"cannot read the registry: {read.error}")
+            delta = snapshot.diff(read.snapshot)
+            if delta.empty:
+                break
+            failed = False
+            for which, name in (*delta.added, *delta.changed):
+                slot = which == kind.BACKUP and name == dolt_remote.BD_BACKUP_SLOT
+                if slot and (which, name) in delta.changed:
+                    continue  # `bd backup add` replaces the slot; removing it drops collateral
+                if which == kind.REMOTE:
+                    res = self.remove_remote(cwd, name)
+                    if res.returncode:
+                        res = self._dolt_write(cwd, "remote", "remove", name)
+                else:
+                    res = (
+                        self.remove_backup(cwd)
+                        if slot
+                        else self._dolt_write(cwd, "backup", "remove", name)
+                    )
+                attempt(f"remove {which.value} {name!r}", res)
+            for which, name in (*delta.removed, *delta.changed):
+                want = snapshot.remote(name) if which == kind.REMOTE else snapshot.backup(name)
+                if want is None:
+                    continue
+                if which == kind.REMOTE:
+                    res = self.invoke(
+                        ["dolt", "remote", "add", name, want.url],
+                        cwd=cwd,
+                        capture=True,
+                        env=_extra_env(None, extra_env),
+                    )
+                elif name == dolt_remote.BD_BACKUP_SLOT:
+                    res = self._state_call(["backup", "add", want.url], cwd)
+                else:
+                    res = self._dolt_write(
+                        cwd, "backup", "add", name, want.url, extra_env=extra_env
+                    )
+                attempt(f"add {which.value} {name!r}", res)
         after = self.read_registry(cwd)
         if not after.ok:
             return RegistryOutcome(
