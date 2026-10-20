@@ -139,6 +139,9 @@ _FAMILIES: dict[RemoteFamily, RemoteCapabilities] = {
 #: Garage (bh-w235a, 2026-10-19) needed nothing beyond this family: the URL carries
 #: ``endpoint=http://…&path-style=true&region=garage`` and no other capability differs. See
 #: docs/TWO-STORES.md "Garage" for the operational recipe and its limits (no object versioning).
+#: Multipart reads (bh-81gpj) DO need a setting: Garage's composite multipart CRC32 lacks the
+#: ``-N`` marker and fails Dolt's SDK validation, so the credential profile must set
+#: ``s3_checksums: when_required`` (dolt_remote_credentials.checksum_env).
 S3_COMPATIBLE = RemoteCapabilities(
     RemoteFamily.S3,
     SupportLevel.IMPLEMENTED,

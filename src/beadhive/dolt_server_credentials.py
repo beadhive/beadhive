@@ -117,14 +117,18 @@ def expected_names(cfg) -> tuple[str, ...] | None:
     if not profile:
         return ()
     source = str(profile.get("source") or "ambient")
+    extra = tuple(sorted(dolt_remote_credentials.checksum_env(cfg, label)))
     if source == "aws-profile":
-        return ("AWS_PROFILE",)
+        return ("AWS_PROFILE", *extra)
     if source != "fnox":
-        return ()
-    return tuple(
-        var
-        for name, var, required in _FIELD_VARS
-        if required or (profile.get(name) or {}).get("key")
+        return extra
+    return (
+        *(
+            var
+            for name, var, required in _FIELD_VARS
+            if required or (profile.get(name) or {}).get("key")
+        ),
+        *extra,
     )
 
 
@@ -153,9 +157,11 @@ class Inspection:
     expected: tuple[str, ...] = ()
     servers: list[ServerStatus] = field(default_factory=list)
     detail: str = ""
+    s3_checksums: bool = False
 
     def as_dict(self) -> dict:
         return {
+            "s3_checksums": self.s3_checksums,
             "configured": self.configured,
             "label": self.label,
             "expected": list(self.expected),
@@ -205,6 +211,7 @@ def inspect(cfg, *, servers=None, environ_reader=None, env_file: Path | None = N
         return Inspection(False, detail="dolt.server_credentials not set")
     if not names:
         return Inspection(True, label, (), detail="profile needs no injected environment")
+    relaxed = bool(dolt_remote_credentials.checksum_env(cfg, label))
     running = dolt_health.running_servers() if servers is None else servers
     running = [s for s in running if s.role != "cache"]
     if not running:
@@ -224,16 +231,21 @@ def inspect(cfg, *, servers=None, environ_reader=None, env_file: Path | None = N
         stale = any(env.get(n) != v for n, v in wanted.items() if n in names and env.get(n))
         state = "missing" if missing else "has-credentials"
         rows.append(ServerStatus(server.pid, state, missing, stale))
-    return Inspection(True, label, names, rows)
+    return Inspection(True, label, names, rows, s3_checksums=relaxed)
 
 
 def render_inspection(result: Inspection) -> list[str]:
     """Human lines for doctor/status; names only, with the restart requirement spelled out."""
     if not result.configured:
         return []
+    note = (
+        [f"s3_checksums: when_required applies to '{result.label}' (multipart Garage reads)"]
+        if result.s3_checksums
+        else []
+    )
     if not result.servers:
-        return [f"server credentials ('{result.label}'): {result.detail}"]
-    lines = []
+        return [f"server credentials ('{result.label}'): {result.detail}", *note]
+    lines = list(note)
     for s in result.servers:
         if s.state == "has-credentials":
             note = "  (rotated since start: restart to pick it up)" if s.stale else ""

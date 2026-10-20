@@ -2255,6 +2255,14 @@ class DoltRemoteCredentialConfig(_Section):
     access_key_id: HqFnoxRef = Field(default_factory=HqFnoxRef)
     secret_access_key: HqFnoxRef = Field(default_factory=HqFnoxRef)
     session_token: HqFnoxRef = Field(default_factory=HqFnoxRef)
+    s3_checksums: Literal["", "when_required"] = Field(
+        "",
+        description="Opt-in relaxed AWS SDK checksum handling for this profile (bh-81gpj). "
+        "when_required sets AWS_RESPONSE_CHECKSUM_VALIDATION and "
+        "AWS_REQUEST_CHECKSUM_CALCULATION to when_required in every dolt/bd env using the "
+        "profile and in the rendered server credentials file. Needed for Garage multipart "
+        "objects. Empty (default) = SDK default.",
+    )
 
     @model_validator(mode="after")
     def _complete_source(self):

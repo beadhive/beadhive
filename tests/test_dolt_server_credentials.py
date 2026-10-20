@@ -115,3 +115,54 @@ def test_cli_render_unconfigured_exits_nonzero(tmp_path, monkeypatch):
     monkeypatch.setattr(dsc, "_load_config", lambda: {})
     res = CliRunner().invoke(app, ["render", "--path", str(tmp_path / "e")])
     assert res.exit_code == 1 and not (tmp_path / "e").exists()
+
+
+_CHECKSUM_VARS = ("AWS_REQUEST_CHECKSUM_CALCULATION", "AWS_RESPONSE_CHECKSUM_VALIDATION")
+
+
+def _opt_in(cfg, mode="when_required"):
+    cfg["dolt"]["remote_credentials"]["host"]["s3_checksums"] = mode
+    return cfg
+
+
+def test_checksum_env_rendered_only_when_profile_opts_in(tmp_path):
+    off, on = tmp_path / "off", tmp_path / "on"
+    assert dsc.render(_cfg(), off, broker=_Broker()).ok
+    assert not set(_CHECKSUM_VARS) & set(dsc._parse_env_file(off))
+    res = dsc.render(_opt_in(_cfg()), on, broker=_Broker())
+    assert res.ok and set(_CHECKSUM_VARS) <= set(res.names)
+    parsed = dsc._parse_env_file(on)
+    assert all(parsed[name] == "when_required" for name in _CHECKSUM_VARS)
+
+
+def test_checksum_env_reaches_client_resolution_only_when_opted_in():
+    from beadhive import dolt_remote_credentials as drc
+
+    kwargs = {"environ": {}, "home": None, "broker": _Broker()}
+    plain = drc.resolve_label("host", _cfg(), **kwargs)
+    assert not set(_CHECKSUM_VARS) & set(plain.env)
+    opted = drc.resolve_label("host", _opt_in(_cfg()), **kwargs)
+    assert opted.env["AWS_RESPONSE_CHECKSUM_VALIDATION"] == "when_required"
+    assert opted.env["AWS_REQUEST_CHECKSUM_CALCULATION"] == "when_required"
+    # sourceless profile (instance-role) also carries it
+    cfg = {
+        "dolt": {
+            "remote_credentials": {
+                "r": {"source": "instance-role", "s3_checksums": "when_required"}
+            }
+        }
+    }
+    assert drc.resolve_label("r", cfg).env == dict.fromkeys(_CHECKSUM_VARS, "when_required")
+
+
+def test_status_reports_checksum_requirement_and_missing_on_server():
+    cfg = _opt_in(_cfg())
+    env = {"AWS_ACCESS_KEY_ID": KEY_ID, "AWS_SECRET_ACCESS_KEY": SECRET}
+    res = dsc.inspect(cfg, servers=[_server()], environ_reader=lambda p: env)
+    assert res.s3_checksums and res.servers[0].state == "missing"
+    assert set(res.servers[0].missing) == set(_CHECKSUM_VARS)
+    text = " ".join(dsc.render_inspection(res))
+    assert "s3_checksums" in text and SECRET not in text
+    assert (
+        dsc.inspect(_cfg(), servers=[_server()], environ_reader=lambda p: env).s3_checksums is False
+    )

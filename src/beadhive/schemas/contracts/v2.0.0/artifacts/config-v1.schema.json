@@ -1158,6 +1158,16 @@
           "title": "Aws Profile",
           "type": "string"
         },
+        "s3_checksums": {
+          "default": "",
+          "description": "Opt-in relaxed AWS SDK checksum handling for this profile (bh-81gpj). when_required sets AWS_RESPONSE_CHECKSUM_VALIDATION and AWS_REQUEST_CHECKSUM_CALCULATION to when_required in every dolt/bd env using the profile and in the rendered server credentials file. Needed for Garage multipart objects. Empty (default) = SDK default.",
+          "enum": [
+            "",
+            "when_required"
+          ],
+          "title": "S3 Checksums",
+          "type": "string"
+        },
         "secret_access_key": {
           "$ref": "#/$defs/HqFnoxRef"
         },

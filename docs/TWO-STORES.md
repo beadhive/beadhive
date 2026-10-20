@@ -114,7 +114,19 @@ The private internal store may live on [Garage](https://garagehq.deuxfleurs.fr/)
 S3. Proven 2026-10-19 on the pinned Dolt 2.3.5 / bd 1.3.0, server mode, against Garage on
 pve-03 (CT 121). The shared Dolt sql-server runs on the factory, HQ SQL on xeno-code and Garage
 on pve-03, so HQ SQL and the object store are separate hosts. The `S3_COMPATIBLE` family needed no Garage-specific
-setting.
+URL setting, but multipart objects need the checksum opt-in below (bh-81gpj).
+
+- **Multipart checksums (required).** Garage stores a composite multipart CRC32 (the CRC of the
+  part CRCs) and returns it without AWS's `-N` composite marker. Dolt's AWS SDK v2 validates it as
+  a full-object CRC32 and fails every read of a multipart table file with `checksum did not
+  match: algorithm CRC32`. The bytes are intact. The bh-w235a proof used small single-part
+  objects, so it never exercised this; a real store hits it on clone or pull. Set
+  `s3_checksums: when_required` on the `dolt.remote_credentials.<label>` profile. bh then emits
+  `AWS_RESPONSE_CHECKSUM_VALIDATION=when_required` and `AWS_REQUEST_CHECKSUM_CALCULATION=when_required`
+  into the `credentials.env` rendered for the service-managed server and into every bh-spawned
+  dolt/bd client env that uses the profile. It is off by default (SDK default). `CRED status`
+  and `bh doctor` report that it applies and flag a running server that lacks the variables
+  (restart it after re-rendering).
 
 - **URL form.** `s3://<bucket>/<unique-path>?endpoint=http://<garage-host>:3900&path-style=true&region=garage`.
   `path-style=true` is required (bucket-in-path addressing) and `region` must equal Garage's
