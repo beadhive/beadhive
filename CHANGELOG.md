@@ -13,6 +13,14 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.28.0 (2026-10-20)
+
+### Feat
+
+- **backup**: attest native backups by isolated restore and add snapshot, list, verify and restore verbs
+- **hive**: add snapshot, fingerprint, lock and phase-ledger migration primitives
+- **engine**: read, probe, replace and restore Dolt remote and backup registrations
+
 ## v0.27.0 (2026-10-19)
 
 ### Feat
