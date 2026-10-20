@@ -1,4 +1,4 @@
-"""Corpus fingerprint ``bh.corpus-fingerprint/1`` (ADR section 4).
+"""Corpus fingerprint ``bh.corpus-fingerprint/2`` (ADR section 4).
 
 A canonical, key-sorted document reduced to a sha256, with every component also kept so a
 mismatch reports WHICH component differed. Two tiers:
@@ -11,22 +11,32 @@ mismatch reports WHICH component differed. Two tiers:
 The tier is recorded beside the digest and comparing across tiers is REFUSED. A store whose real
 schema version cannot be determined cannot be fingerprinted (a gate that cannot fail is a defect).
 
+Every value is CANONICALISED before hashing (:func:`canonical_value`) so one database fingerprints
+identically whether it is read through ``bd sql --json`` (server engine mode) or ``dolt sql -r
+json`` (embedded): the two render DATETIME, JSON columns and the like differently (bh-m4ups). The
+strong tier also carries Dolt-native ``dolt_hashof_db`` / ``dolt_hashof_table`` hashes, which are
+independent of any rendering, as a cross-check (``Fingerprint.native``). They sit beside, not in,
+the digest because a scratch database on a shared server cannot be asked for them.
+
 Collection is behind the :class:`CorpusReader` port. :class:`BdSqlCorpusReader` is the minimal
 implementation over ``bd sql``; bh-ksmt0.3's below-bd inspection can supply another.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol
 
 from . import dolt_health, fleet, store_locator
 from .migration_ledger import canonical, digest_of
 
-SCHEMA = "bh.corpus-fingerprint/1"
+SCHEMA = "bh.corpus-fingerprint/2"
+#: Schemas that existed before and can no longer be compared with the current one.
+OLD_SCHEMAS = ("bh.corpus-fingerprint/1",)
 TIER_STRONG = "strong"
 TIER_CORPUS = "corpus"
 TIERS = (TIER_STRONG, TIER_CORPUS)
@@ -50,6 +60,10 @@ class FingerprintError(Exception):
 
 class FingerprintTierMismatch(FingerprintError):
     """Fingerprints of different tiers were compared (refused)."""
+
+
+class FingerprintVersionMismatch(FingerprintError):
+    """Fingerprints of different schema versions were compared or loaded (refused)."""
 
 
 class FingerprintIncomplete(FingerprintError):
@@ -76,14 +90,72 @@ class CorpusFacts:
     issue_rows: Mapping[str, Mapping]  # id -> row
     # table -> rows, or None when the table does not exist in the real schema
     tables: Mapping[str, Sequence[Mapping] | None] = field(default_factory=dict)
+    # ``{"db": <dolt_hashof_db>, "tables": {table: <dolt_hashof_table>}}``, or None when the
+    # reader cannot ask Dolt (a scratch database on a shared server).
+    native: Mapping | None = None
 
 
 class CorpusReader(Protocol):
     def read(self, hive_dir: Path, tables: Sequence[str]) -> CorpusFacts: ...
 
 
+_DATETIME = re.compile(r"^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.(\d+))?(?:Z|\+00:?00)?$")
+
+
+def canonical_value(value):
+    """One engine-independent form of a single cell value.
+
+    * DATETIME/TIMESTAMP strings (``2026-09-23 20:38:43`` embedded, ``2026-09-23T20:38:43Z``
+      server) become ``YYYY-MM-DDTHH:MM:SS[.ffffff]Z``; Dolt stores them zone-less in UTC.
+    * JSON columns (a parsed object/array embedded; Dolt's compact text on the server) become
+      key-sorted compact JSON text. Text that merely looks like JSON but is not byte-for-byte
+      Dolt's compact rendering is left verbatim, so a text column's whitespace stays significant.
+    * bools become 0/1 (tinyint(1) is 0/1 in both modes already); integral floats become ints.
+    * ``None`` stays distinct from the empty string (but see :func:`canonical_row`).
+    """
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, (dict, list)):
+        return json.dumps(
+            _canonical_json(value), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        )
+    if isinstance(value, str):
+        m = _DATETIME.match(value)
+        if m:
+            day, clock, frac = m.groups()
+            frac = (frac or "").rstrip("0")
+            return f"{day}T{clock}{'.' + frac if frac else ''}Z"
+        if value[:1] in ("{", "["):
+            try:
+                parsed = json.loads(value)
+            except ValueError:
+                return value
+            if json.dumps(parsed, separators=(",", ":"), ensure_ascii=False) == value:
+                return canonical_value(parsed)
+    return value
+
+
+def _canonical_json(value):
+    if isinstance(value, dict):
+        return {k: _canonical_json(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_canonical_json(v) for v in value]
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
+
+def canonical_row(row: Mapping) -> dict:
+    """A row with every value canonicalised and NULL columns dropped: ``bd sql --json`` renders a
+    NULL as ``"col": null`` while ``dolt sql -r json`` omits the key. A NULL therefore equals an
+    absent column but stays distinct from the empty string, which both modes render as ``""``."""
+    return {k: canonical_value(v) for k, v in row.items() if v is not None}
+
+
 def _row_digest(row: Mapping) -> str:
-    return digest_of(dict(row))
+    return digest_of(canonical_row(row))
 
 
 def _table_component(rows: Sequence[Mapping] | None) -> dict:
@@ -103,24 +175,39 @@ class Fingerprint:
     excluded: tuple[str, ...]
     digest: str
     schema: str = SCHEMA
+    native: Mapping | None = None
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "schema": self.schema,
             "tier": self.tier,
             "components": dict(self.components),
             "excluded": list(self.excluded),
             "digest": self.digest,
         }
+        if self.native is not None:
+            out["native"] = dict(self.native)
+        return out
 
     @classmethod
     def from_dict(cls, raw: Mapping) -> Fingerprint:
         if raw.get("schema") != SCHEMA:
-            raise FingerprintError(f"unsupported fingerprint schema {raw.get('schema')!r}")
+            raise _version_error(raw.get("schema"))
         fp = _build(raw["tier"], raw["components"], tuple(raw.get("excluded", ())))
+        fp = replace(fp, native=raw.get("native"))
         if fp.digest != raw.get("digest"):
             raise FingerprintError("fingerprint digest does not match its components (edited?)")
         return fp
+
+
+def _version_error(found) -> FingerprintError:
+    if found in OLD_SCHEMAS:
+        return FingerprintVersionMismatch(
+            f"fingerprint schema {found!r} predates {SCHEMA!r}, which canonicalises values "
+            "(DATETIME, JSON) before hashing; its digests cannot be compared with current ones. "
+            "Take a new fingerprint or snapshot rather than comparing across versions"
+        )
+    return FingerprintError(f"unsupported fingerprint schema {found!r}")
 
 
 def _build(tier: str, components: Mapping, excluded: tuple[str, ...]) -> Fingerprint:
@@ -160,7 +247,20 @@ def compute(
             raise FingerprintIncomplete("strong tier needs main_head, which was not readable")
         comp["main_head"] = facts.main_head
         comp["branches"] = dict(sorted(facts.branches.items()))
-    return _build(tier, comp, EXCLUDED)
+    fp = _build(tier, comp, EXCLUDED)
+    if tier == TIER_STRONG and facts.native is not None:
+        fp = replace(fp, native=_native_component(facts.native, tables))
+    return fp
+
+
+def _native_component(native: Mapping, tables: Sequence[str]) -> dict:
+    """Only the hashes of the fingerprinted tables (plus ``issues``) and the database."""
+    wanted = {"issues", *tables}
+    per_table = native.get("tables") or {}
+    return {
+        "db": native.get("db"),
+        "tables": {t: per_table[t] for t in sorted(wanted) if t in per_table},
+    }
 
 
 def fingerprint(
@@ -182,6 +282,12 @@ class FingerprintDiff:
 
 
 def compare(left: Fingerprint, right: Fingerprint) -> FingerprintDiff:
+    if left.schema != right.schema:
+        raise FingerprintVersionMismatch(
+            f"refusing to compare fingerprint schema {left.schema!r} with {right.schema!r}; "
+            "their digests are computed over differently canonicalised values. Re-take the "
+            "older fingerprint with the current tool"
+        )
     if left.tier != right.tier:
         raise FingerprintTierMismatch(
             f"refusing to compare a {left.tier!r} fingerprint with a {right.tier!r} one; take "
@@ -197,7 +303,13 @@ def compare(left: Fingerprint, right: Fingerprint) -> FingerprintDiff:
             detail[path] = (a, b)
 
     walk("", left.components, right.components)
-    return FingerprintDiff(left.digest == right.digest, left.tier, tuple(detail), detail)
+    equal = left.digest == right.digest
+    # Dolt-native hashes are compared only when BOTH sides could produce them; one-sided
+    # absence is not a difference (it is a weaker check, never a false mismatch).
+    if left.native is not None and right.native is not None:
+        walk("dolt_native", left.native, right.native)
+        equal = equal and not any(k.startswith("dolt_native") for k in detail)
+    return FingerprintDiff(equal, left.tier, tuple(detail), detail)
 
 
 # ---- minimal reader over `bd sql` ----------------------------------------------------------
@@ -221,6 +333,24 @@ def bd_sql(hive_dir: Path, query: str, *, timeout: float = 60.0) -> list[dict]:
     if not isinstance(data, list):
         raise SqlError(f"unexpected bd sql shape for: {query[:60]}")
     return [r for r in data if isinstance(r, dict)]
+
+
+def native_hashes(query: Callable[[str], list[dict]], tables: Sequence[str]) -> dict:
+    """Dolt-native, rendering-independent content hashes of the session's CURRENT database:
+    ``dolt_hashof_db()`` and ``dolt_hashof_table(t)`` per table. ``query`` returns row dicts."""
+
+    def one(sql: str) -> str:
+        rows = query(sql)
+        if not rows or not rows[0]:
+            raise FingerprintIncomplete(f"no result for {sql[:60]}")
+        return str(next(iter(rows[0].values())) or "")
+
+    per_table: dict = {}
+    for table in dict.fromkeys(tables):
+        if not _IDENT.match(table):
+            raise FingerprintError(f"invalid table name {table!r}")
+        per_table[table] = one(f"SELECT dolt_hashof_table('{table}') AS h")
+    return {"db": one("SELECT dolt_hashof_db() AS h"), "tables": per_table}
 
 
 class BdSqlCorpusReader:
@@ -257,6 +387,14 @@ class BdSqlCorpusReader:
             branches={str(b["name"]): str(b["hash"]) for b in branches},
             issue_rows={str(r["id"]): r for r in issues},
             tables=out,
+            native=native_hashes(
+                lambda q: sql(hive_dir, q),
+                [
+                    t
+                    for t in dict.fromkeys(("issues", *tables))
+                    if t == "issues" or out.get(t) is not None
+                ],
+            ),
         )
 
 
@@ -267,6 +405,10 @@ __all__ = [
     "BdSqlCorpusReader",
     "Fingerprint",
     "FingerprintDiff",
+    "FingerprintVersionMismatch",
+    "canonical_row",
+    "canonical_value",
+    "native_hashes",
     "canonical",
     "compare",
     "compute",

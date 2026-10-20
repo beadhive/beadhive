@@ -25,6 +25,7 @@ from beadhive.backup_scratch import (
     EmbeddedScratch,
     ScratchError,
     ScratchHandle,
+    scratch_facts,
     scratch_name,
 )
 from beadhive.dolt_remote import RegistryEntry, RegistryKind, RegistrySnapshot
@@ -758,6 +759,88 @@ def test_real_server_mode_round_trip_reports_the_dropped_database_copy(tmp_path,
     assert res.scratch_database not in live_dbs
     assert before.diff(eng.read_registry(hive).snapshot).empty
     assert nb.verify_set(res.set_dir, cfg={}, hive_dir=hive, engine=eng, restore_test=True).ok
+
+
+@pytest.mark.integration
+@pytest.mark.dolt_server
+@skip_if_no_bd
+def test_server_source_and_embedded_restore_of_its_own_backup_fingerprint_identically(
+    tmp_path, private_server
+):
+    """bh-m4ups: the SAME database read through the server (``bd sql --json``) and through an
+    embedded restore of its own native backup (``dolt sql -r json``) has equal fingerprints,
+    although the two render DATETIME and JSON columns differently."""
+    from beadhive.backup_scratch import source_facts
+
+    hive = _git_repo(tmp_path / "hive")
+    run(
+        ["bd", "init", "--shared-server", "--prefix", "nm", "--non-interactive", "--quiet"],
+        cwd=str(hive),
+        check=True,
+        capture=True,
+        timeout=120,
+    )
+    out = _bd(
+        hive,
+        "create",
+        'ünï 日本 "q" \\ <b>&',
+        "-p",
+        "2",
+        "--json",
+        "--metadata",
+        '{"b":[1,2.5,"ü"],"a":{"z":1,"y":null}}',
+    )
+    first = json.loads(out.stdout)["id"]
+    second = json.loads(_bd(hive, "create", "second", "-p", "1", "-l", "foo", "--json").stdout)[
+        "id"
+    ]
+    _bd(hive, "comments", "add", first, "hi ü 日本")
+    _bd(hive, "dep", "add", second, first)
+    _bd(hive, "update", first, "--estimate", "90", "--due", "2026-12-01")
+    eng = engine.BdEngine()
+    dest = f"file://{tmp_path / 'native'}"
+    assert eng.add_backup(hive, dest).returncode == 0
+    assert eng.backup(hive, dest).returncode == 0
+
+    tables = cf.DEFAULT_TABLES
+    server = source_facts(eng, hive, tables)
+    store = EmbeddedScratch(tmp_path / "scratch")
+    handle = store.restore(dest, "restored_nm")
+    embedded, _records = scratch_facts(store, handle, tables)
+
+    # the two engines really do render differently -- the premise of the bug
+    row_s = server.issue_rows[first]
+    row_e = embedded.issue_rows[first]
+    assert row_s["created_at"].endswith("Z") and "T" in row_s["created_at"]
+    assert "T" not in row_e["created_at"]
+    assert "started_at" in row_s and "started_at" not in row_e  # NULLs: key present vs omitted
+    assert isinstance(row_e["metadata"], dict) and isinstance(row_s["metadata"], str)
+    assert row_s["title"] == row_e["title"]  # unicode and escapes survive both paths
+
+    for tier in (cf.TIER_STRONG, cf.TIER_CORPUS):
+        a = cf.compute(server, tier, tables=tables)
+        b = cf.compute(embedded, tier, tables=tables)
+        assert a.digest == b.digest, cf.compare(a, b).detail
+        assert cf.compare(a, b).equal
+    # the Dolt-native cross-check is present on both sides and equal
+    a = cf.compute(server, cf.TIER_STRONG, tables=tables)
+    b = cf.compute(embedded, cf.TIER_STRONG, tables=tables)
+    assert a.native and a.native == b.native and a.native["db"]
+    assert set(a.native["tables"]) >= {"issues", *tables}
+
+    # the server reader (bd sql) agrees with the embedded scratch reader too
+    via_bd_sql = cf.fingerprint(cf.BdSqlCorpusReader(), hive, cf.TIER_STRONG, tables=tables)
+    assert via_bd_sql.digest == b.digest and via_bd_sql.native == b.native
+
+    # and the real snapshot attests a server-mode source by an EMBEDDED restore
+    res = nb.take_snapshot(
+        {}, hive, slug=SLUG, prefix="nm", engine=eng, scratch=EmbeddedScratch(tmp_path / "s2")
+    )
+    assert res.ok, res.errors
+    m = nb.load_manifest(res.set_dir)
+    assert m["dolt_mode"] == "server" and m["verified"]
+    assert m["attestation"]["restored_digest"] == m["fingerprint"]["digest"]
+    assert m["fingerprint"]["schema"] == "bh.corpus-fingerprint/2"
 
 
 def test_cli_verbs_are_catalogued_and_confirm_is_typed():
