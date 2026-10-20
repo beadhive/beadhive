@@ -263,7 +263,9 @@ def test_push_and_pull_carry_extra_env_only_to_the_child(bd_engine, monkeypatch)
     eng.pull_state("/hive", extra_env={"AWS_PROFILE": "p"})
     assert rec.calls[0][1]["env"]["AWS_PROFILE"] == "p"
     eng.pull_state("/hive")
-    assert rec.calls[1][1]["env"] is None
+    # No extra_env: the child still inherits, plus only the computed fsck allowance (bh-vqvqw).
+    assert "AWS_PROFILE" not in (rec.calls[1][1]["env"] or {})
+    assert "BEADS_FSCK_TIMEOUT" in rec.calls[1][1]["env"]
 
 
 # ---- real bd, file:// remotes --------------------------------------------------------------
