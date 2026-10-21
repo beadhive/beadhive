@@ -30,7 +30,7 @@ transport cache, the backup slot), with verification that cannot fail (a constan
 Fixed inputs for the first consumer (`bh-l3zvc`):
 
 - The private internal store moves to
-  `s3://beadhive-hives/<db>?endpoint=http://garage-pve03.lab.xenophon.dev:3900&path-style=true&region=garage`.
+  `s3://beadhive-hives/<db>?endpoint=http://<garage-host>:3900&path-style=true&region=garage`.
   Dolt **server mode only**; bd embedded mode is being deprecated and is not designed for here.
 - **Garage has no S3 object versioning.** An overwrite or delete on the remote is
   unrecoverable from the remote. Recovery rests on native Dolt backups that have been
