@@ -127,6 +127,26 @@ def test_list_remotes_failure_is_unknown_never_empty(bd_engine, result, error):
     assert eng.get_remote("/hive", "origin") is None
 
 
+def test_list_remotes_preserves_structured_bd_error(bd_engine):
+    eng, rec = bd_engine
+    message = "Access denied for user 'forwarder' to table 'dolt_remotes'"
+    rec.results = [
+        _ok(
+            rc=1,
+            stderr=json.dumps(
+                {
+                    "code": "remote_list_failed",
+                    "error": message,
+                    "schema_version": 1,
+                },
+                indent=2,
+            ),
+        )
+    ]
+    listing = eng.list_remotes("/hive")
+    assert not listing.ok and listing.error == message
+
+
 @pytest.mark.parametrize(
     "url",
     ["git+ssh://git@github.com/a/b.git", "file:///srv/r", "s3://b/db", "aws://[t:b]/db"],

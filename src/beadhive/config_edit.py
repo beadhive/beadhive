@@ -208,6 +208,14 @@ def get_value(api, dotted: str, cfg=None, scope: str | None = None) -> dict:
             cfg = api.load_fleet()
         else:
             cfg = api.load()
+    if len(parts) > 2 and parts[0] == "hives" and scope != api.SCOPE_HOST:
+        from . import registry
+
+        try:
+            cfg = registry.resolve_hive(cfg, parts[1])
+        except (KeyError, ValueError) as exc:
+            return {"ok": False, "problems": [api._problem("error", str(exc))], "value": None}
+        parts = parts[2:]
     found, value = api._descend(cfg, parts)
     if not found:
         return {
