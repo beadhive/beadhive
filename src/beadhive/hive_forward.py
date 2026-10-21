@@ -13,6 +13,7 @@ operator guide. This module is the Typer-free core; ``hive_forward_cli`` renders
   created ``REQUIRE SSL`` by default. Its grants are **table-scoped, never database-wide**
   (M13, ``bh-uhx2r`` E2–E4; :func:`grant_plan`): DML on bd's tables and ``dolt_ignore``;
   ``SELECT`` on the fence tables (``bh_writer``, ``bh_epoch_live``, ``bh_local_ident``);
+  ``SELECT`` on ``dolt_remotes`` for read-only registration inspection;
   ``SELECT, INSERT`` on ``bh_write_mark`` (the guard trigger's inline insert is
   invoker-checked, ``bh-wtsrc`` E3); no database-level grant, so no ``DOLT_COMMIT`` right — bd's
   post-write commit defers to the primary's next commit. The table list is re-derived from
@@ -77,6 +78,7 @@ __all__ = [
     "DML",
     "FENCE_READ_TABLES",
     "IGNORE_TABLE",
+    "REMOTE_TABLE",
     "MARKER",
     "MARK_TABLE",
     "PASSWORD_ENV",
@@ -145,6 +147,7 @@ FENCE_READ_TABLES: tuple[str, ...] = ("bh_writer", "bh_epoch_live", LOCAL_IDENT_
 MARK_TABLE = "bh_write_mark"
 #: bd seeds ``dolt_ignore`` when it opens a database; without DML on it ``bd create`` fails.
 IGNORE_TABLE = "dolt_ignore"
+REMOTE_TABLE = "dolt_remotes"
 DML = frozenset({"SELECT", "INSERT", "UPDATE", "DELETE"})
 _READ = frozenset({"SELECT"})
 _MARK = frozenset({"SELECT", "INSERT"})
@@ -314,15 +317,20 @@ def table_shape(table: str) -> frozenset[str]:
     """The most a forwarder may hold on ``table``."""
     if table == MARK_TABLE:
         return _MARK
-    if table in FENCE_READ_TABLES or table in FENCE_TABLES or table.startswith("bh_"):
+    if (
+        table == REMOTE_TABLE
+        or table in FENCE_READ_TABLES
+        or table in FENCE_TABLES
+        or table.startswith("bh_")
+    ):
         return _READ
     return DML
 
 
 def grant_plan(tables: Iterable[str]) -> dict[str, frozenset[str]]:
-    """``table -> privileges`` for every base table plus ``dolt_ignore``."""
+    """``table -> privileges`` for base tables, ``dolt_ignore`` and read-only remotes."""
     plan: dict[str, frozenset[str]] = {}
-    for table in [*tables, IGNORE_TABLE]:
+    for table in [*tables, IGNORE_TABLE, REMOTE_TABLE]:
         if not _TABLE.fullmatch(table):
             raise ForwardError(f"refusing to grant on odd table name {table!r}")
         plan[table] = table_shape(table)

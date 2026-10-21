@@ -288,12 +288,24 @@ def test_tls_forwarders_provisioning_conformance_and_refusals(tls_hive):
     with pytest.raises(pymysql.MySQLError):
         pymysql.connect(host="127.0.0.1", port=server.port, user=fwd.user, password=PW)
     login = server.connect(fwd.user, PW)
+    with login.cursor() as cur:
+        cur.execute("SELECT name, url FROM dolt_remotes")
+        assert any(row[0] == "origin" for row in cur.fetchall())
+    forwarded_env = {
+        **_penv,
+        "BEADS_DOLT_SERVER_USER": fwd.user,
+        "BEADS_DOLT_PASSWORD": PW,
+    }
+    listing = _bd(_ws, forwarded_env, "dolt", "remote", "list", "--json")
+    assert listing.returncode == 0, listing.stdout + listing.stderr
+    assert any(row["name"] == "origin" for row in json.loads(listing.stdout))
     probes = {}
     for probe in (
         "UPDATE bh_local_ident SET frame = frame",
         "UPDATE bh_write_mark SET epoch = epoch",
         "CALL DOLT_COMMIT('--allow-empty', '-m', 'probe')",
         "CALL DOLT_RESET('--hard')",
+        "DELETE FROM dolt_remotes WHERE name = 'origin'",
     ):
         try:
             with login.cursor() as cur:

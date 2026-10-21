@@ -337,7 +337,14 @@ def _int(val) -> int:
 
 
 def _stderr_tail(res) -> str:
-    lines = (getattr(res, "stderr", "") or "").strip().splitlines()
+    stderr = (getattr(res, "stderr", "") or "").strip()
+    try:
+        payload = json.loads(stderr)
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict) and isinstance(payload.get("error"), str) and payload["error"]:
+        return payload["error"]
+    lines = stderr.splitlines()
     return lines[-1] if lines else ""
 
 
