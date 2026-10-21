@@ -230,3 +230,35 @@ def test_hive_set_refuses_a_shared_location(world):
 
     assert not refused["ok"]
     assert "path_shared" in " ".join(problem["message"] for problem in refused["problems"])
+
+
+@pytest.mark.parametrize("scope", [None, config.SCOPE_FLEET])
+@pytest.mark.parametrize("hive_id", ["ac-api", "github/acme/api"])
+def test_hive_alias_get_reads_the_published_descriptor(world, scope, hive_id):
+    path = _write_fleet(_FLEET_WITH_DESCRIPTOR)
+    before = path.read_bytes()
+    result = config.get_value(f"hives.{hive_id}.dolt_remote", scope=scope)
+    assert result == {
+        "ok": True,
+        "problems": [],
+        "value": {"url": "s3://acme-beads/beads/api", "credentials": "prod"},
+    }
+    assert (
+        config.get_value(f"hives.{hive_id}.dolt_remote.credentials", scope=scope)["value"] == "prod"
+    )
+    assert path.read_bytes() == before
+
+
+def test_hive_alias_get_preserves_host_scope_and_missing_field_errors(world):
+    from typer.testing import CliRunner
+
+    from beadhive.cli import app
+
+    _write_fleet(_FLEET_WITH_DESCRIPTOR)
+    assert not config.get_value("hives.ac-api.dolt_remote", scope=config.SCOPE_HOST)["ok"]
+    assert not config.get_value("hives.ac-web.dolt_remote", scope=config.SCOPE_FLEET)["ok"]
+    runner = CliRunner()
+    found = runner.invoke(app, ["config", "get", "hives.ac-api.dolt_remote", "--scope", "fleet"])
+    assert found.exit_code == 0 and "s3://acme-beads/beads/api" in found.stdout
+    missing = runner.invoke(app, ["config", "get", "hives.missing.dolt_remote", "--scope", "fleet"])
+    assert missing.exit_code == 1 and "no hive matching" in missing.output

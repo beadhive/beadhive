@@ -169,6 +169,7 @@ def test_grant_plan_is_table_scoped_with_read_only_fence():
     )
     assert plan["issues"] == hf.DML
     assert plan["dolt_ignore"] == hf.DML
+    assert plan["dolt_remotes"] == {"SELECT"}
     for table in ("bh_writer", "bh_epoch_live", "bh_local_ident"):
         assert plan[table] == {"SELECT"}
     assert plan["bh_write_mark"] == {"SELECT", "INSERT"}
@@ -196,6 +197,9 @@ def _g(privs: str, target: str, option: bool = False) -> str:
         (_g("DELETE", "`fx`.`bh_write_mark`"), "beyond"),
         (_g("INSERT", "`fx`.`bh_writer`"), "beyond"),
         (_g("SELECT", "`fx`.`issues`", option=True), "grant option"),
+        (_g("INSERT", "`fx`.`dolt_remotes`"), "beyond ['SELECT']"),
+        (_g("UPDATE", "`fx`.`dolt_remotes`"), "beyond ['SELECT']"),
+        (_g("DELETE", "`fx`.`dolt_remotes`"), "beyond ['SELECT']"),
         (_g("ALTER, DROP", "`fx`.`issues`"), "beyond"),
         (_g("EXECUTE", "PROCEDURE `fx`.`dolt_commit`"), "beyond"),
         ("GRANT `somerole` TO `fwd`@`10.0.0.2`", "unrecognised"),

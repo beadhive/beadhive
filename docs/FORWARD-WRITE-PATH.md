@@ -46,6 +46,7 @@ The grants are **table-scoped, never database-wide** (M13 E2–E4):
 | Table | Privileges |
 |---|---|
 | every bd base table (`SHOW FULL TABLES`), and `dolt_ignore` | `SELECT, INSERT, UPDATE, DELETE` |
+| `dolt_remotes` | `SELECT` (read-only registration inspection) |
 | `bh_writer`, `bh_epoch_live`, `bh_local_ident` (and any other `bh_*`) | `SELECT` |
 | `bh_write_mark` | `SELECT, INSERT` (the guard trigger's mark insert runs as the invoker) |
 
@@ -54,6 +55,10 @@ There is no database-level grant, so a forwarder has no `DOLT_COMMIT`, `DOLT_MER
 `post-tx dolt commit failed … (data already committed; change rides the next dolt commit)` and
 the write rides the primary's next managed push. Forwarded writes run under the primary's guard
 and identity, so their marks are stamped at the primary's epoch and `fence_audit` stays clean.
+
+Existing forwarding accounts acquire the remote-read grant by re-running `bh hive forward
+provision` on the primary for the same account, without a password argument. This preserves
+its password and TLS requirement; remote registrations remain managed by the primary.
 
 Why: a forwarder with `ALL` on the hive database lands a stale write with no global at all, and
 re-stamps its marks so `fence_audit` cannot see it (E2). Database-wide DML lets it rewrite
