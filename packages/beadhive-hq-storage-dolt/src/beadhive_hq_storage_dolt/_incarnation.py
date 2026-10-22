@@ -197,6 +197,7 @@ def account_statements(
     session: str,
     evidence: str,
     inbox: str | None = None,
+    catalog: bool = False,
 ) -> tuple[str, ...]:
     """The host-pinned, TLS-required account (``account`` is root's validated
     ``'<principal>'@'<address>'``) and its grants. ``CREATE USER`` binds the password as its one
@@ -209,4 +210,7 @@ def account_statements(
     ]
     if inbox is not None:
         statements.append(f"GRANT SELECT, INSERT ON `{database}`.`{inbox}` TO {account}")
+    if catalog:
+        # The signed release catalog (bh-vfrem.4): read-only, and only once it is provisioned.
+        statements.append(f"GRANT SELECT ON `{database}`.`hq_release_catalog` TO {account}")
     return tuple(statements)

@@ -1163,6 +1163,7 @@ def build_product_application(
     cfg: dict | None = None,
     settings: HostDaemonConfig | None = None,
     failover_loop: Any = None,
+    release_catalog_loop: Any = None,
 ) -> Starlette:
     """Assemble the installed daemon's current routes on the shared composition seam.
 
@@ -1298,6 +1299,9 @@ def build_product_application(
         # The director's unattended failover loop (bh-16347.5): only when
         # host.daemon.failover.enabled built one in `serve`; off by default.
         product_components.append(failover_loop.component())
+    if release_catalog_loop is not None:
+        # Opt-in release catalog auto-import (bh-vfrem.4): hq.release_catalog.auto_import.
+        product_components.append(release_catalog_loop.component())
     network_policy = None
     credential_sessions = None
     mcp_sessions = None
@@ -1432,6 +1436,20 @@ def _failover_loop(settings: HostDaemonConfig, cfg: dict | None = None) -> Any:
         raise DaemonError(str(exc)) from None
 
 
+def _release_catalog_loop(cfg: dict) -> Any:
+    """The release catalog auto-import timer when ``hq.release_catalog.auto_import`` (off by
+    default). A refused configuration refuses startup, like the failover loop."""
+    if not (((cfg or {}).get("hq") or {}).get("release_catalog") or {}).get("auto_import"):
+        return None
+    from .director_failover import host_hq_mode
+    from .release_catalog_auto_import import AutoImportRefused, build_loop
+
+    try:
+        return build_loop(cfg, hq_mode=host_hq_mode(cfg))
+    except AutoImportRefused as exc:
+        raise DaemonError(str(exc)) from None
+
+
 def serve(
     *,
     state_broker_factory: Callable[..., Any],
@@ -1461,6 +1479,8 @@ def serve(
         settings = HostDaemonConfig.model_validate(effective)
     validate_for_listener_startup(settings)
     failover_loop = _failover_loop(settings, raw_config)
+    # Programmatic callers that pass typed settings carry no HQ config section: nothing to run.
+    release_catalog_loop = _release_catalog_loop(raw_config or {})
 
     listener_host = settings.bind
     listener_port = settings.port
@@ -1488,6 +1508,7 @@ def serve(
             settings=settings,
             state_broker_factory=state_broker_factory,
             failover_loop=failover_loop,
+            release_catalog_loop=release_catalog_loop,
         )
         if failover_loop is not None:
             application.state.director_failover = failover_loop

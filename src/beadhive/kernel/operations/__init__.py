@@ -177,6 +177,7 @@ hq migrate|to:string:r,dry_run:boolean:o,confirm:boolean:o,intent:string:o,mirro
 hq placement|action:string:r,prefix:string:o,frame:string:o,expected:string:o,epoch:integer:o,tenure:integer:o,confirm:boolean:o,operator_settings:string:o,failover_after:string:o,executor_floor:string:o
 hq prune-aggregate|dry_run:boolean:o,confirm:boolean:o
 hq push|dry_run:boolean:o
+hq release-catalog|action:string:r,version:string:o,reason:string:o,all_:boolean:o,bundle:string:o,wheel:string:o,trusted_root:string:o,operator_settings:string:o
 hq restore|list_only:boolean:o,from_dir:string:o,level:string:o,dry_run:boolean:o,confirm:boolean:o
 hq status|as_json:boolean:o
 hub|
@@ -377,6 +378,7 @@ _HIDDEN_PATHS = {
     "host packup",
     "host release",
     "hq placement",
+    "hq release-catalog",
     "statusline",
 }
 

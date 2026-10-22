@@ -26,6 +26,7 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         "hq.authority_anchor",
         "hq.authority_mode",
         "hq.sql",
+        "hq.release_catalog",
         "dolt",
         "git_workspace",
         "log",

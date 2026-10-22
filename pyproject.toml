@@ -47,6 +47,9 @@ dependencies = [
     "pydantic-settings>=2.11",
     # Runtime dependency of the vendored Beads v1.3 client (generated attrs models, bh-bwnys.4, bh-bwnys.1).
     "attrs>=23",
+    # PEP 440 versions and specifiers for the signed release catalog (bh-vfrem.4) and, next, the
+    # frame release policy. Already resolved transitively; declared because core code imports it.
+    "packaging>=24",
 ]
 
 [project.urls]
@@ -72,6 +75,11 @@ otel = [
     "opentelemetry-exporter-otlp>=1.37,<2",
     "structlog>=24",
 ]
+# `beadhive[release-verify]` — Sigstore bundle verification for `bh hq release-catalog
+# import|verify` (bh-vfrem.4, docs/design/frame-release-range-adr.md section 3). Only the HQ host
+# that ingests the signed release catalog needs it; frames never verify a bundle and gain no
+# dependency. Core imports without it: the verbs lazy-import and print an install hint.
+release-verify = ["sigstore>=4,<5"]
 # `beadhive[pants]` — the Pants build-impact/verify backend plugin (bh-3fcl0.2). Split out of
 # [project].dependencies (was a hard `uv workspace` dependency never published to PyPI — the
 # v0.18.0 release smoke test failed resolving it: bh-mxjoy) so the root wheel installs

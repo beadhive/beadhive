@@ -87,6 +87,14 @@ _IGNORE_CHANGES = frozenset(
     }
 )
 _POLICY_ADDED = ("", "hq_liveness_policy", "added", 1, 1)
+#: The release catalog (bh-vfrem.4). A same-sequence commit whose ONLY diff is one of these is
+#: reviewed: rows appended to the existing table (``DOLT_DIFF_SUMMARY`` cannot tell an append
+#: from an edit or a delete, so the row-level diff must be all ``added``), or the one-time
+#: creation of the empty table with exactly the reviewed columns (``data_change`` is 0 for an
+#: empty table; a pre-filled one shows 1 and refuses). Mixed with any other change, or with an
+#: edited or deleted row, it refuses like any other unreviewed change.
+_CATALOG_ROWS = ("hq_release_catalog", "hq_release_catalog", "modified", 1, 0)
+_CATALOG_CREATED = ("", "hq_release_catalog", "added", 0, 1)
 _POLICY_COLUMNS = ["singleton_id", "session_ttl_s", "evidence_ttl_s"]
 
 
@@ -520,6 +528,26 @@ class SqlRuntimeAuthority:
             raise _ProvisioningRefusal("creates a liveness policy outside its TTL bounds") from None
 
     @staticmethod
+    def _check_catalog_append(sql, previous_head, head):
+        """Only appended rows: any edited or deleted catalog row refuses (bh-vfrem.4)."""
+        kinds = {row[0] for row in sql.catalog_diff_types(previous_head, head)}
+        if kinds != {"added"}:
+            raise _ProvisioningRefusal(
+                "edits or deletes hq_release_catalog rows (the catalog is append-only)"
+            )
+
+    @staticmethod
+    def _check_catalog_created(sql, head):
+        """The one-time creation: an empty table with exactly the reviewed columns."""
+        from beadhive_hq_storage_dolt import CATALOG_COLUMNS
+
+        rows, columns = sql.catalog_at(head)
+        if rows or columns != list(CATALOG_COLUMNS):
+            raise _ProvisioningRefusal(
+                "creates hq_release_catalog with rows or with columns other than the reviewed ones"
+            )
+
+    @staticmethod
     def _liveness_committed(sql, revision) -> bool:
         """Whether `revision` already has the ``frame_*`` rule and a valid liveness policy."""
         from .hq_sql_session import SessionError, _policy
@@ -538,6 +566,12 @@ class SqlRuntimeAuthority:
 
         sql = runtime_statements(cursor)
         changes = {tuple(row) for row in sql.diff_summary(previous_head, head)}
+        if changes == {_CATALOG_ROWS}:
+            SqlRuntimeAuthority._check_catalog_append(sql, previous_head, head)
+            return
+        if changes == {_CATALOG_CREATED}:
+            SqlRuntimeAuthority._check_catalog_created(sql, head)
+            return
         schema = changes & _SCHEMA_CHANGES
         ignore = changes & _IGNORE_CHANGES
         policy = changes & {_POLICY_ADDED}

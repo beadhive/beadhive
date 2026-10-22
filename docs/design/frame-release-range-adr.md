@@ -305,6 +305,29 @@ them.
    the head the frame verifies. The fallback is a separately committed catalog database that is
    cross-referenced like `config_head`, but only if that doesn't bring back a per-release operator
    step.
+
+   **Resolution (bh-vfrem.4, 2026-10-22): it composes, with one refinement.** The "authority
+   head" the eligibility statement already reads `AS OF` is not the commit where the authority
+   row was last signed. It is the runtime branch head that the same transaction read and the
+   restore floor verified (`hq_sql_runtime`: `head` is `DOLT_HASHOF('HEAD')`, the registry join
+   is `AS OF` it, and `fresh_runtime_head_fence(head)` re-checks it afterwards). So the catalog
+   is read `AS OF` that same head, not on the working set. A newly imported release moves the
+   runtime head at an unchanged authority sequence, and a frame sees the row the next time it
+   reads, with no authority publication. Nothing is added to the per-release steps.
+   The restore floor needed the exception this ADR already names, and nothing wider. A commit
+   that only adds catalog rows is accepted at an unchanged sequence, and tests show it advances
+   the floor of every reader. An edit, a delete, a primary-key rewrite and any mixed commit
+   still refuse. `DOLT_DIFF_SUMMARY` reports an append, an edit and a delete alike as
+   `modified`, so the floor adds a row-level `DOLT_DIFF` and requires every diff row to be
+   `added`. Two details came out of the real-server tests. An empty new table shows
+   `data_change` 0, so the one-time creation commit is accepted only when it is empty with
+   exactly the reviewed columns. The writer needs `EXECUTE` on `dolt_add` and `dolt_commit`,
+   because Dolt refuses both to an account without it, which is the authority writer's shape
+   too. The separately committed catalog database is not needed.
+   Slice 4 must read with `AS OF <the verified head>`, never the working set: a dirty working
+   set (an append whose commit failed) would otherwise be visible to a frame before any floor
+   has seen it. A head that moves between the read and the fence fails closed, as it does for
+   every other read in that transaction.
 2. **Should a policy cap how far an auto-imported release can move a frame?** For example, refuse
    a new minor unless the spec names it explicitly. The PEP 440 spec already expresses this
    (`==0.28.*`), so nothing extra is proposed.

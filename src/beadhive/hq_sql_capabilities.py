@@ -11,6 +11,13 @@ A release upgrade crosses three privilege tiers on Dolt 2.3.5:
 * **session inspection** — the authority writer that applies a session route re-checks the
   provisioned incarnation without repairing it. ``information_schema.triggers`` lists a
   trigger only to a holder of ``TRIGGER``, and the account/grant checks read ``mysql``.
+* **release catalog** (bh-vfrem.4) — the separately credentialed ``hq.sql.release_catalog``
+  binding reads the catalog and the working-tree status (``SELECT ON <runtime>.*``) and appends
+  with ``INSERT ON <runtime>.hq_release_catalog`` plus ``EXECUTE ON PROCEDURE
+  <runtime>.dolt_add`` / ``dolt_commit`` (Dolt refuses both without it) and nothing else. Its
+  INSERT cannot be probed without writing; :func:`release_catalog` probes the reads, and the
+  table-level write shape is checked from ``SHOW GRANTS`` by
+  :func:`beadhive.hq_sql_placement.check_grants` (``role="catalog"``).
 * **provisioning** — the server-local binding that creates tables, stamping triggers, the
   pinned frame account and its grants. Granting the frame ``SELECT, UPDATE`` on its new session
   and evidence tables is a delegation: the binding must itself hold ``UPDATE`` (and the grant
@@ -28,7 +35,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .hq_sql_runtime_schema import LIVENESS_POLICY_TABLE
+from .hq_sql_runtime_schema import LIVENESS_POLICY_TABLE, RELEASE_CATALOG_TABLE
 from .hq_storage_composition import runtime_statements
 
 #: MySQL/Dolt access-denied error codes. Dolt 2.3.5 reports most denials as 1105 with an
@@ -125,6 +132,27 @@ def runtime_read(cursor, database: str, head: str, *, session: bool = True) -> l
     )
     if diff is not None:
         problems.append(diff)
+    return problems
+
+
+def release_catalog(cursor, database: str) -> list[Missing]:
+    """What the catalog binding reads before it appends: the catalog and the working tree."""
+    sql = runtime_statements(cursor)
+    problems = []
+    for read, name in (
+        (lambda: sql.catalog_at(sql.head()), f"release catalog read ({RELEASE_CATALOG_TABLE})"),
+        (sql.dirty, "committed working-tree check (dolt_status)"),
+    ):
+        found = _probe(
+            read,
+            Missing(name, f"SELECT ON `{database}`.*"),
+            absent_remedy=Missing(
+                f"release catalog ({RELEASE_CATALOG_TABLE})",
+                "not provisioned; run the server-local release catalog provisioning first",
+            ),
+        )
+        if found is not None:
+            problems.append(found)
     return problems
 
 

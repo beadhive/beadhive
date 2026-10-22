@@ -1880,6 +1880,9 @@
           "title": "Mode",
           "type": "string"
         },
+        "release_catalog": {
+          "$ref": "#/$defs/HqReleaseCatalogConfig"
+        },
         "remote": {
           "default": "",
           "description": "HQ repo remote: `<owner>/beadhive-hq`, an absolute local path, or local `file://` URL. Empty (default) derives `<owner>` from the logged-in `gh` identity at read time (`config.hq_remote`) — host identity, so the answer does not vary by which hive you invoke from; an explicit value here always overrides the derivation. `bh hq init`/`clone` confirm the result interactively unless `--auto` is passed.",
@@ -1914,6 +1917,40 @@
         }
       },
       "title": "HqFnoxRef",
+      "type": "object"
+    },
+    "HqReleaseCatalogConfig": {
+      "additionalProperties": false,
+      "description": "Signed release catalog automation (``hq.release_catalog``, bh-vfrem.4). HOST-local: it\nnames the host whose daemon runs the importer. The catalog credential itself is\n``hq.sql.release_catalog`` in the operator settings file, never in host.yaml.",
+      "properties": {
+        "auto_import": {
+          "default": false,
+          "description": "Run a host-daemon timer that imports each new PyPI release into the signed release catalog (`bh hq release-catalog import`, same verification, INSERT-only credential). Off by default. Needs dolt-server HQ, the catalog writer settings file and `beadhive[release-verify]`; it never imports an older or pre-release version, and does nothing until the first entry has been imported by hand.",
+          "title": "Auto Import",
+          "type": "boolean"
+        },
+        "interval_seconds": {
+          "default": 3600.0,
+          "description": "Seconds between PyPI listings while auto_import is on.",
+          "exclusiveMinimum": 0,
+          "maximum": 86400,
+          "title": "Interval Seconds",
+          "type": "number"
+        },
+        "operator_settings": {
+          "default": "",
+          "description": "Absolute path of the operator settings file carrying hq.sql.release_catalog. When empty, BH_HQ_OPERATOR_SETTINGS in the daemon's environment is used.",
+          "title": "Operator Settings",
+          "type": "string"
+        },
+        "trusted_root": {
+          "default": "",
+          "description": "Absolute path of a pinned Sigstore trusted_root.json for offline verification. When empty the TUF root is refreshed online.",
+          "title": "Trusted Root",
+          "type": "string"
+        }
+      },
+      "title": "HqReleaseCatalogConfig",
       "type": "object"
     },
     "HqSqlConfig": {

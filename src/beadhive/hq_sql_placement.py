@@ -106,6 +106,7 @@ __all__ = [
     "SqlPlacementDirector",
     "Survey",
     "check_grants",
+    "reads_table",
     "cause_token",
     "check_triggers",
     "conformance",
@@ -127,6 +128,10 @@ __all__ = [
 #: The one placement row per hive (design A). Kept from the receiver era: the receiver reads and
 #: CASes the same row, which is what makes the Φ3 rollback a non-event.
 PLACEMENT_TABLE = "hq_live_hive_leases"
+#: The append-only signed release catalog (bh-vfrem.4): INSERT-only for its own binding.
+CATALOG_TABLE = "hq_release_catalog"
+#: The only procedures the catalog writer may execute: it stages and commits exactly its rows.
+CATALOG_PROCEDURES = frozenset({"dolt_add", "dolt_commit"})
 #: Domain of :func:`placement_witness` — the marker of a director-written row.
 PLACEMENT_DOMAIN = "beadhive/sql-placement/v1"
 #: Domain of :func:`cause_token` — the placement cause carried in a director row's
@@ -167,6 +172,7 @@ def _schema_tables() -> frozenset[str]:
         FAILOVER_POLICY_SCHEMA,
         LIVENESS_POLICY_SCHEMA,
         PROTECTED_LIVE_SCHEMA,
+        RELEASE_CATALOG_SCHEMA,
     )
 
     names = set()
@@ -175,6 +181,7 @@ def _schema_tables() -> frozenset[str]:
         *PROTECTED_LIVE_SCHEMA,
         *LIVENESS_POLICY_SCHEMA,
         *FAILOVER_POLICY_SCHEMA,
+        *RELEASE_CATALOG_SCHEMA,
     ):
         match = re.match(r"CREATE TABLE (\w+)", statement)
         if match:
@@ -1033,11 +1040,16 @@ def check_grants(
 
     ``role="frame"``: holds no write right on any protected HQ table, the database or the
     server; ``writable`` lists the frame-owned tables it may write (its inbox, and from M9 its
-    session/evidence tables)."""
-    if role not in ("director", "frame"):
-        raise ValueError("role must be 'director' or 'frame'")
+    session/evidence tables).
+
+    ``role="catalog"`` (bh-vfrem.4): the release-catalog writer. Must hold INSERT on
+    ``<database>.hq_release_catalog`` and no other write right anywhere (no UPDATE, DELETE,
+    TRIGGER or CREATE, and no grant option); may hold SELECT anywhere and EXECUTE on the
+    ``dolt_add`` / ``dolt_commit`` procedures of its database, which Dolt requires to commit."""
+    if role not in ("director", "frame", "catalog"):
+        raise ValueError("role must be 'director', 'frame' or 'catalog'")
     allowed = set(writable)
-    problems, can_update = [], False
+    problems, can_update, can_insert = [], False, False
     for line in lines:
         grant = parse_grant(line)
         if grant is None:
@@ -1055,7 +1067,21 @@ def check_grants(
         if grant.database == "*" or grant.table == "*":
             problems.append(f"{role} holds {sorted(writes)} on {scope} (wider than a table)")
             continue
-        if role == "director":
+        if role == "catalog":
+            if grant.database == database and grant.table == CATALOG_TABLE and writes == {"INSERT"}:
+                can_insert = True
+            elif (
+                grant.database == database
+                and grant.table in CATALOG_PROCEDURES
+                and writes == {"EXECUTE"}
+            ):
+                pass  # `GRANT EXECUTE ON PROCEDURE db.dolt_add|dolt_commit`: it commits its rows
+            else:
+                problems.append(
+                    f"catalog writer holds {sorted(writes)} on {scope}; only INSERT on "
+                    f"{database}.{CATALOG_TABLE} (and EXECUTE on dolt_add/dolt_commit) is allowed"
+                )
+        elif role == "director":
             if (
                 grant.database == database
                 and grant.table == PLACEMENT_TABLE
@@ -1078,7 +1104,24 @@ def check_grants(
             problems.append(f"frame holds {sorted(writes)} on {scope}")
     if role == "director" and not can_update:
         problems.append(f"director lacks UPDATE on {database}.{PLACEMENT_TABLE}")
+    if role == "catalog" and not can_insert:
+        problems.append(f"catalog writer lacks INSERT on {database}.{CATALOG_TABLE}")
     return problems
+
+
+def reads_table(lines: Iterable[str], *, database: str, table: str) -> bool:
+    """Whether the ``SHOW GRANTS`` lines give SELECT on ``database.table`` (table or database
+    level; a global grant counts too)."""
+    for line in lines:
+        grant = parse_grant(line)
+        if (
+            grant is not None
+            and grant.database in ("*", database)
+            and grant.table in ("*", table)
+            and grant.privileges & {"SELECT", "ALL", "ALL PRIVILEGES"}
+        ):
+            return True
+    return False
 
 
 def _policy_table() -> str:

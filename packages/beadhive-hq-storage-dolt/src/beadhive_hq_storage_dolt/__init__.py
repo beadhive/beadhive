@@ -97,6 +97,15 @@ from ._placement import (
     placement_seed_statement,
     placement_witness,
 )
+from ._release_catalog import (
+    CATALOG_COLUMNS,
+    CATALOG_DIFF_SQL,
+    CATALOG_INSERT_SQL,
+    CATALOG_ROWS_SQL,
+    RELEASE_CATALOG_TABLE,
+    catalog_account_statements,
+    catalog_select_statement,
+)
 from ._runtime import DoltRuntimeReads, HqRuntimeStatements, SqlDoltRuntimeReads
 from ._schema import (
     APPEND_TABLE,
@@ -168,6 +177,10 @@ __all__ = [
     "unknown_reason",
     # schema and wire format
     "APPEND_TABLE",
+    "CATALOG_COLUMNS",
+    "CATALOG_DIFF_SQL",
+    "CATALOG_INSERT_SQL",
+    "CATALOG_ROWS_SQL",
     "CAUSE_DOMAIN",
     "COMMITTED_TABLES",
     "CONFIG_TABLES",
@@ -186,11 +199,14 @@ __all__ = [
     "POLICY_SQL",
     "PUBLICATIONS_TABLE",
     "RECORDS_TABLE",
+    "RELEASE_CATALOG_TABLE",
     "RENEW_SQL",
     "STAMP_COLUMN",
     "UNMEASURED",
     "account_statements",
     "bump_statements",
+    "catalog_account_statements",
+    "catalog_select_statement",
     "cause_token",
     "committed_schema",
     "config_change_set",
