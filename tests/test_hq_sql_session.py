@@ -900,3 +900,55 @@ def test_lease_holder_read_accepts_an_in_range_upgrade_and_refuses_a_revocation(
     assert plane.read_hive_lease_record("bh", incumbent_identity="host-1")[1].epoch == 19
     world.catalog = [_catalog_row(UPGRADED), _catalog_row(UPGRADED, "revoked")]
     assert plane.read_hive_lease("bh", holder_identity="host-1") is None
+
+
+# ---- manifest relaxation on the session carrier (bh-vfrem.7, ADR section 4) --------------------
+
+
+def _manifest_plane(monkeypatch, *, manifest_release, policy=POLICY, catalog=()):
+    plane, world, record = _ownership_world(monkeypatch)
+    record["desired"]["release"] = REF
+    if policy is not None:
+        record["desired"]["release_policy"] = policy
+    row = list(world.session_row)
+    row[4], row[5], row[16] = UPGRADED["id"], UPGRADED["digest"], 0
+    world.session_row = tuple(row)
+    world.catalog = list(catalog)
+    manifest = SimpleNamespace(
+        frame_id="frame-1",
+        host_id="host-1",
+        instance_ref="vm-1",
+        beadyard_id=None,
+        release=SimpleNamespace(model_dump=lambda: dict(manifest_release)),
+    )
+    return plane, manifest, world
+
+
+def test_policy_manifest_equal_to_the_reference_reads_no_extra_catalog_row(monkeypatch):
+    plane, manifest, world = _manifest_plane(
+        monkeypatch, manifest_release=REF, catalog=[_catalog_row(UPGRADED)]
+    )
+    observation = plane.read_eligibility(manifest, prefix="bh")[2]
+    assert observation.release_matches and observation.manifest_release_catalog_row is None
+    assert len([1 for sql, _ in world.statements if "FROM hq_release_catalog" in sql]) == 1
+
+
+def test_policy_manifest_other_than_the_reference_is_judged_on_its_own_row(monkeypatch):
+    from beadhive.frame_eligibility import _manifest_release_ok
+
+    desired = {"release": REF, "release_policy": POLICY}
+    plane, manifest, world = _manifest_plane(
+        monkeypatch, manifest_release=UPGRADED, catalog=[_catalog_row(UPGRADED)]
+    )
+    observation = plane.read_eligibility(manifest, prefix="bh")[2]
+    assert observation.manifest_release_catalog_row["version"] == "0.28.3"
+    # AS OF the verified head, keyed by the manifest digest.
+    asked = [p for sql, p in world.statements if "FROM hq_release_catalog" in sql]
+    assert asked[-1] == ("head", "beadhive", "head", "beadhive", UPGRADED["digest"])
+    assert _manifest_release_ok(UPGRADED, desired, observation)
+    # Not catalogued: refused. Exact pin: any difference from the grant is refused.
+    plane, manifest, _ = _manifest_plane(monkeypatch, manifest_release=UPGRADED, catalog=[])
+    bare = plane.read_eligibility(manifest, prefix="bh")[2]
+    assert not _manifest_release_ok(UPGRADED, desired, bare)
+    assert not _manifest_release_ok(UPGRADED, {"release": REF}, observation)
+    assert _manifest_release_ok(REF, {"release": REF}, observation)

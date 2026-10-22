@@ -2741,6 +2741,19 @@ class SqlControlPlane:
                     head, policy["catalog"], lease.release.model_dump()
                 )
                 observation = dataclasses.replace(observation, release_catalog_row=row)
+            elif policy is not None and session is not None:
+                # Session carrier: the manifest release stays the reference and need not equal
+                # the grant's; it must itself be admitted (ADR section 4), judged on its own
+                # catalog row AS OF the same verified head.
+                held = getattr(manifest, "release", None)
+                manifest_release = held.model_dump() if held is not None else None
+                if manifest_release is not None and manifest_release != record["desired"].get(
+                    "release"
+                ):
+                    row = self._runtime_authority().read_release_catalog_row(
+                        head, policy["catalog"], manifest_release
+                    )
+                    observation = dataclasses.replace(observation, manifest_release_catalog_row=row)
             return head, desired, observation
         except ValueError as exc:
             if isinstance(exc, ControlPlaneError):

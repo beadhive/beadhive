@@ -454,6 +454,9 @@ class SessionObservation:
     age_basis: str = "hq-server-session-row"
     carrier: str = "session"
     predicates: dict = field(default_factory=dict)
+    # Catalog row for the committed manifest's release (bh-vfrem.7); set by the control plane
+    # only under a release_policy when the manifest differs from the grant's reference release.
+    manifest_release_catalog_row: dict | None = None
 
     @property
     def sha(self) -> str:
