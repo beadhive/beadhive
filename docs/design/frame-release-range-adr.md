@@ -110,7 +110,9 @@ digest is catalogued and in range is *meant* to satisfy the grant.
 - **Narrowing** takes effect on the next read. A frame left outside the range goes ineligible.
 - **Downgrade guard:** `plan` refuses a policy whose admitted set excludes the version the frame
   currently attests while still admitting lower ones, unless the operator passes
-  `--allow-downgrade`. The epic's floor rule is covered by the spec's own lower bound.
+  `--allow-downgrade`. The epic's floor rule is covered by the spec's own lower bound. The
+  attested version is read from the frame's session evidence row or newest verified signed beat
+  for its current epoch (the receipt in the authority record only on the Git/receiver carrier).
 - Moving from exact pin to policy, or back, is the same publication. Dropping the policy restores
   exact-pin behaviour against `release`.
 

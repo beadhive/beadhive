@@ -253,6 +253,97 @@ class SqlRuntimeOperator:
         finally:
             connection.close()
 
+    def attested_releases(self, state: dict, *, expected_revision: str, deadline=None) -> dict:
+        """The release each frame attests on the carrier this HQ uses: ``{(frame, slot): id}``.
+
+        Read through the same verified paths eligibility uses, AS OF the verified runtime head
+        (``expected_revision`` must still be the head, and is fenced again after the read):
+
+        * session evidence: the incarnation's evidence row, accepted only for the grant's
+          current epoch and only once measured (the frame account alone can write it);
+        * signed liveness: the newest heartbeat in the frame's inbox that verifies against the
+          grant's key and binds to the exact committed incarnation
+          (:func:`beadhive.hq_sql_runtime.newest_signed_heartbeat`).
+
+        A frame with no such evidence for its current epoch is simply absent: stale-epoch,
+        unmeasured, unverifiable or missing evidence never counts as a known release.
+        """
+        from .hq_sql_runtime import PrincipalBinding
+
+        connection, deadline = self._open(deadline=deadline)
+        found = {}
+        try:
+            with connection.cursor() as cursor:
+                sql = runtime_statements(cursor)
+                self._identity(sql)
+                sql.begin()
+                head = sql.head()
+                if head != expected_revision:
+                    raise SqlOperatorError("protected authority changed before observation")
+                for frame, entry in sorted((state.get("frames") or {}).items()):
+                    for slot in ("active", "candidate"):
+                        record = (entry or {}).get(slot)
+                        if record is None:
+                            continue
+                        authority = record["authority"]
+                        routes = [
+                            PrincipalBinding(*row)
+                            for row in sql.routes_for_frame_at(head, frame)
+                            if row[2] == authority["holder_identity"]
+                            and row[3] == authority["instance_ref"]
+                            and row[4] == authority["epoch"]
+                            and row[6] == authority["key_fingerprint"]
+                        ]
+                        if len(routes) != 1:
+                            continue
+                        route = routes[0]
+                        release = self._carrier_release(
+                            sql,
+                            route,
+                            record,
+                            now=self.clock(),
+                        )
+                        if release is not None:
+                            found[(frame, slot)] = release
+            connection.rollback()
+            self.authority.fresh_runtime_head_fence(head, deadline=deadline)
+            return found
+        except SqlOperatorError:
+            raise
+        except Exception:
+            raise SqlOperatorError("attested release evidence unavailable") from None
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _carrier_release(sql, route, record, *, now):
+        from .hq_sql_runtime import newest_signed_heartbeat
+
+        epoch = record["authority"]["epoch"]
+        session, evidence = (
+            session_table(route.principal, epoch),
+            evidence_table(route.principal, epoch),
+        )
+        present = sql.tables_present((session, evidence))
+        if present == {session, evidence}:
+            row = sql.evidence_release(evidence)
+            if (
+                row is not None
+                and row[0] == epoch
+                and row[1]
+                and row[4] is not None  # measured: the seeded row is unmeasured (NULL stamp)
+            ):
+                return str(row[1])
+        if routed_to_inbox(route.inbox_table, route.principal, epoch):
+            beat = newest_signed_heartbeat(
+                sql.inbox_heartbeats(route.inbox_table), route, record, now=now
+            )
+            if beat is not None:
+                release = json.loads(beat[3]).get("release")
+                if isinstance(release, dict) and release.get("id"):
+                    return str(release["id"])
+        return None
+
     def publish(
         self,
         state: dict,

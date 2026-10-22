@@ -27,7 +27,13 @@ from collections.abc import Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from ._incarnation import ELIGIBILITY_SQL, EVIDENCE_SQL, POLICY_SQL, RENEW_SQL
+from ._incarnation import (
+    ELIGIBILITY_SQL,
+    EVIDENCE_SQL,
+    POLICY_SQL,
+    READ_EVIDENCE_SQL,
+    RENEW_SQL,
+)
 from ._release_catalog import (
     CATALOG_DIFF_SQL,
     CATALOG_INSERT_SQL,
@@ -524,6 +530,11 @@ class HqRuntimeStatements:
     def publish_evidence(self, evidence: str, values: Sequence[Any]) -> int:
         """The conformance job's evidence ``UPDATE`` (server-stamped); the rowcount."""
         return self._count(EVIDENCE_SQL.format(evidence=evidence), tuple(values))
+
+    def evidence_release(self, evidence: str) -> Any:
+        """``(epoch, release_id, release_digest, status, measured_at)`` of the one evidence
+        row, or ``None``: the release the frame last attested, for the operator's reader check."""
+        return self._one(READ_EVIDENCE_SQL.format(evidence=evidence))
 
     def eligibility(
         self,

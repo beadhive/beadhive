@@ -28,6 +28,7 @@ __all__ = [
     "IGNORE_PATTERN",
     "LIVENESS_POLICY_TABLE",
     "POLICY_SQL",
+    "READ_EVIDENCE_SQL",
     "RENEW_SQL",
     "STAMP_COLUMN",
     "UNMEASURED",
@@ -68,6 +69,10 @@ EVIDENCE_SQL: Final = (
     "UPDATE {evidence} SET epoch = %s, release_id = %s, release_digest = %s, profile = %s, "
     "status = %s, report_digest = %s WHERE id = 1"
 )
+READ_EVIDENCE_SQL: Final = (
+    "SELECT epoch, release_id, release_digest, status, measured_at FROM {evidence} WHERE id = 1"
+)
+"""The operator's read of one evidence row (the release a frame attests); no policy join."""
 POLICY_SQL: Final = f"SELECT session_ttl_s, evidence_ttl_s FROM {LIVENESS_POLICY_TABLE}"
 
 #: Eligibility in ONE statement: grant route (committed, ``AS OF`` the authority head) ⋈ session
