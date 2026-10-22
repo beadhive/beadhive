@@ -2,7 +2,8 @@
 
 HIDDEN while frame release ranges are dormant (bh-vfrem): documented in ``docs/HQ.md``. One
 command with an action word (like ``bh hq placement``): ``import VERSION``, ``verify
-[VERSION|--all]`` and ``revoke VERSION --reason``. Every action is bound by the separately
+[VERSION|--all]``, ``revoke VERSION --reason`` and the one-time ``provision``. Every action but
+``provision`` is bound by the separately
 credentialed ``hq.sql.release_catalog`` binding (INSERT on ``hq_release_catalog`` only) in the
 operator settings file named by ``--operator-settings`` or ``$BH_HQ_OPERATOR_SETTINGS``.
 Verification needs the optional extra ``beadhive[release-verify]``; the rest of ``bh`` imports
@@ -25,12 +26,22 @@ from . import hq_operator_settings, hq_release_catalog
 
 __all__ = ["release_catalog_cmd"]
 
-ACTIONS = ("import", "verify", "revoke")
+ACTIONS = ("import", "verify", "revoke", "provision")
 
 
 def _store(operator_settings):
     path = operator_settings or os.environ.get(hq_operator_settings.ENV) or None
     return hq_operator_settings.release_catalog_store(path)
+
+
+def _operator(operator_settings):
+    """The server-local administrative operator (its ``authority_writer`` binding)."""
+    from .hq_sql_operator import SqlRuntimeOperator
+
+    path = operator_settings or os.environ.get(hq_operator_settings.ENV) or None
+    if not path:
+        raise ValueError(f"provision needs --operator-settings or {hq_operator_settings.ENV}")
+    return SqlRuntimeOperator(hq_operator_settings.load_settings(path))
 
 
 def _verifier():
@@ -46,7 +57,7 @@ def _remote():
 
 
 def release_catalog_cmd(
-    action: Annotated[str, typer.Argument(help="import, verify or revoke")],
+    action: Annotated[str, typer.Argument(help="import, verify, revoke or provision")],
     version: Annotated[str, typer.Argument(metavar="[VERSION]", help="PEP 440 version")] = "",
     reason: Annotated[
         str, typer.Option("--reason", help="revoke: why (kept in the tombstone)")
@@ -82,10 +93,19 @@ def release_catalog_cmd(
 
     verify [VERSION|--all] [--trusted-root F]: re-verify stored bundles with no fetch.
 
-    revoke VERSION --reason TEXT: append a revocation tombstone (a PyPI yank never revokes)."""
+    revoke VERSION --reason TEXT: append a revocation tombstone (a PyPI yank never revokes).
+
+    provision: one-time, idempotent creation of the empty catalog table, run with the SERVER-LOCAL
+    administrative operator settings (authority_writer with CREATE; not the catalog writer)."""
     try:
         if action not in ACTIONS:
             raise ValueError(f"unknown action {action!r} (expected one of {', '.join(ACTIONS)})")
+        if action == "provision":
+            if version or all_ or reason or bundle or wheel or trusted_root:
+                raise ValueError("provision takes no other arguments")
+            result = _operator(operator_settings).provision_release_catalog()
+            typer.echo(json.dumps(result, sort_keys=True))
+            return
         if action != "verify" and (all_ or not version):
             raise ValueError(f"{action} takes a VERSION" + (" and no --all" if all_ else ""))
         if action != "import" and (bundle or wheel):

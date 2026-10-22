@@ -614,6 +614,40 @@ class SqlRuntimeOperator:
         finally:
             connection.close()
 
+    def provision_release_catalog(self, *, deadline=None):
+        """One-time, server-local, idempotent: create and commit the empty release catalog table
+        (bh-vfrem). Runs on the ``authority_writer`` binding of a server-local administrative
+        operator-settings file (the same one session provisioning needs). Returns
+        ``{"created": bool, "head": <runtime head>}``; the authority is unchanged and both the
+        original and the resulting heads must verify (the restore floor accepts the one-time
+        creation commit)."""
+        from .hq_sql_session_provision import provision_release_catalog
+
+        connection, deadline = self._open(deadline=deadline)
+        try:
+            with connection.cursor() as cursor:
+                sql = runtime_statements(cursor)
+                self._identity(sql)
+                before = sql.head()
+                self.authority.verified_state_at(sql, before, deadline=deadline, allow_expired=True)
+                created = provision_release_catalog(cursor)
+                after = sql.head()
+                self.authority.verified_state_at(sql, after, deadline=deadline, allow_expired=True)
+                return {"created": created, "head": after}
+        except (SqlOperatorError, ValueError):
+            raise
+        except Exception as error:
+            from .hq_sql_capabilities import denied
+
+            if denied(error):
+                raise SqlOperatorError(
+                    "release catalog provisioning denied; use the server-local binding with "
+                    "CREATE and DOLT_ADD/DOLT_COMMIT (docs/HQ.md#runtime-sql-privileges)"
+                ) from None
+            raise SqlOperatorError("release catalog provisioning unavailable") from None
+        finally:
+            connection.close()
+
     def prune_inbox(self, frame: str, *, retention_s: float, dry_run=False, deadline=None):
         """Delete expired signed-mode heartbeat rows from a frame's inboxes (bh-ce886).
 
