@@ -274,8 +274,9 @@ no observer receipt to wait for.
 **Release ranges (`bh-vfrem`) are not part of 0.23.0.** A frame grant still pins one release;
 `release_matches` compares against it exactly. When release ranges land, `release_matches` and
 `conformance_pass` become range-aware over the evidence row; until then a release change is a
-reviewed grant rotation (`bh host release-upgrade`). The version ranges that do exist in 0.23.0
-belong to the test canary, not to grants
+reviewed grant rotation (`bh host release-upgrade`). The accepted design is in
+[frame-release-range-adr.md](design/frame-release-range-adr.md). The version ranges that do
+exist in 0.23.0 belong to the test canary, not to grants
 ([CONFIGURATION](CONFIGURATION.md#fence-canary-ranges)).
 
 Inspect a candidate and a hive's policy with:
