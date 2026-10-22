@@ -789,6 +789,7 @@ class GitControlPlane:
             raise ControlPlaneError("invalid authority carrier")
         state = json.loads(_git(self.hq_dir, "show", f"{sha}:authority.json"))
         guard.validate_state(state)
+        guard.refuse_release_policy(state)
         if (
             not witnesses
             or witnesses[-1] != f"{guard.WITNESS}{state['revision']:020d}"
@@ -855,6 +856,7 @@ class GitControlPlane:
             expires_at=expires_at,
         )
         guard.validate_state(state)
+        guard.refuse_release_policy(state)
         blob = _git(self.hq_dir, "hash-object", "-w", "--stdin", data=gitref.encode(state))
         tree = _git(self.hq_dir, "mktree", data=f"100644 blob {blob}\tauthority.json\n")
         args, message = authority_mode.commit_tree_args(
@@ -1184,6 +1186,10 @@ class GitControlPlane:
         }
         entry["epoch_floor"] = authority.epoch
         return self._write(state, expected, operator_key)
+
+    def release_policy(self, frame, action="plan", **_kwargs):
+        """Fail closed: release ranges need the SQL HQ release catalog (bh-vfrem.5)."""
+        raise ControlPlaneError("release-policy requires the protected SQL control plane")
 
     def bind_beadyard(self, *, expected, operator_key):
         """Atomically bind every live legacy frame without replacing its incarnation.
@@ -1627,6 +1633,12 @@ class SqlControlPlane:
         from .frame_release_upgrade import release_upgrade
 
         return release_upgrade(self, frame, action, **kwargs)
+
+    def release_policy(self, frame, action="plan", **kwargs):
+        """Reviewed operator-signed release-policy publication; never advances the epoch."""
+        from .frame_release_policy import release_policy
+
+        return release_policy(self, frame, action, **kwargs)
 
     config_backend = "sql"
 
